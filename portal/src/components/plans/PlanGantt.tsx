@@ -16,10 +16,12 @@
  *   (`pln-deadline`); resource names right of the bar. A task without the
  *   dates to draw gets no bar.
  * - Behind the lanes: nonworking days shaded (days and hours zooms), the
- *   today and status-date lines, the initiative's scheduled window as a
- *   faint band ("Scheduled: Nov 14–16"), and the link arrows in one SVG for
- *   the rows rendered (only links with both ends within them and the
- *   overscan).
+ *   today and status-date lines (each titled with its date), the
+ *   initiative's scheduled window as a faint band, labeled in the
+ *   timescale's top tier ("Scheduled: Nov 14–16") so the label never covers
+ *   a bar, and the link arrows in one SVG over the rows rendered: a link
+ *   with an end there is drawn, its far end placed by its row, so a link to
+ *   a task out of sight runs off the edge (as in MS Project).
  *
  * Only what is visible is drawn (lib/plans/ganttView): a window of the
  * scale around the visible part, in window coordinates, every span cut to
@@ -28,7 +30,8 @@
  * scrolling. The chart's sideways scroll is its own (SidePane, Splitter.tsx).
  *
  * A press on a lane selects its row (Shift extends, Ctrl/⌘ toggles, as on
- * the sheet's row numbers). Bars carry `data-task-id`, and
+ * the sheet's row numbers). The hover card is GanttHover's, a component of
+ * its own, so it never redraws the chart. Bars carry `data-task-id`, and
  * `onBarPointerDown` is the hook Task 9's drags attach to.
  */
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -40,18 +43,18 @@ import {
 import type { PlanTask } from '../../lib/plans/api';
 import { nonworkingBands } from '../../lib/plans/calendarShade';
 import { SHEET_HEAD_PX, SHEET_OVERSCAN } from '../../lib/plans/columns';
-import { formatShortDay } from '../../lib/plans/floatingTime';
+import { formatDay, formatShortDay } from '../../lib/plans/floatingTime';
 import {
   MILESTONE_HALF, baselineOf, barOf, fitScrollLeft, makeScale, msOf, progressWidth, tiers, widthOfMs, xOf, xOfMs,
-  type Bar, type LinkEnd, type Scale, type Zoom,
+  type Bar, type LinkEnd, type Scale, type Tick, type Zoom,
 } from '../../lib/plans/ganttGeometry';
 import {
-  bandsIn, barBox, chartWindow, clip, lineAt, linkEnd, linkShape, linkStub, linksToDraw, scaleSpan, taskScrollLeft,
-  windowLabel, windowSpan, type BarBox, type DayWindow, type LinkShape, type Span,
+  bandsIn, barBox, chartWindow, clip, lineAt, linkEnd, linkRow, linkShape, linkStub, linksToDraw, pillAt, scaleSpan,
+  taskScrollLeft, windowLabel, windowPillX, windowSpan, type BarBox, type DayWindow, type LinkShape, type Span,
 } from '../../lib/plans/ganttView';
 import type { LinkType } from '../../lib/plans/predecessors';
 import { extendRows, selectCell, toggleRow, type Selection } from '../../lib/plans/selection';
-import { useGanttHover } from './GanttHoverCard';
+import { GanttHover } from './GanttHoverCard';
 import { SidePane, type SidePaneHandle } from './Splitter';
 import type { PlanController } from './usePlan';
 import type { ChartScroll, GanttDisplay } from './usePlanCommands';
@@ -133,11 +136,17 @@ export default function PlanGantt({
   // the top tier's labels hold to the view's left edge (MS Project's
   // "November 2026" stays readable while its month scrolls past): one custom
   // property on the tier, the view's left edge in window coordinates, set
-  // on every scroll without a redraw
+  // on every scroll without a redraw; the window's label, up in the same
+  // tier, moves past the held label (`pillAt`) the same way
   const scaleTop = useRef<HTMLDivElement>(null);
+  const pillRef = useRef<HTMLSpanElement>(null);
+  const pill = useRef<{ base: number; text: string; top: Tick[] } | null>(null);
   const shownWin = useRef(win);
   const pinLabels = useCallback(() => {
-    scaleTop.current?.style.setProperty('--pln-view-x', `${scrollX.current - shownWin.current[0]}px`);
+    const viewX = scrollX.current - shownWin.current[0];
+    scaleTop.current?.style.setProperty('--pln-view-x', `${viewX}px`);
+    const p = pill.current;
+    if (p && pillRef.current) pillRef.current.style.left = `${pillAt(p.base, p.text, p.top, viewX)}px`;
   }, []);
   const onScrollX = useCallback((x: number) => {
     scrollX.current = x;
@@ -211,11 +220,14 @@ export default function PlanGantt({
   const allBands = useMemo(() => (calendar && scale ? nonworkingBands(calendar, scale) : []), [calendar, scale]);
   const offDays = useMemo(() => bandsIn(allBands, win), [allBands, win]);
 
-  // ── links: both ends within the rendered rows and the overscan ──
+  // ── links: an end within the rendered rows and the overscan; the SVG
+  // spans those rows, a far end is held one row past it (where it's cut) ──
   const rowIndex = useMemo(() => new Map(rows.map((id, i) => [id, i])), [rows]);
   const links = plan?.links;
-  const linkTop = Math.max(0, first - SHEET_OVERSCAN) * rowHeight;
-  const linkRows = Math.max(0, Math.min(count - 1, last + SHEET_OVERSCAN) - Math.max(0, first - SHEET_OVERSCAN) + 1);
+  const linkLo = Math.max(0, first - SHEET_OVERSCAN);
+  const linkHi = Math.min(count - 1, last + SHEET_OVERSCAN);
+  const linkTop = linkLo * rowHeight;
+  const linkRows = Math.max(0, linkHi - linkLo + 1);
   const drawnLinks = useMemo<DrawnLink[]>(() => {
     if (!scale || !links || last < first) return [];
     const stub = linkStub(zoom);
@@ -228,9 +240,10 @@ export default function PlanGantt({
       const b = succ && barOf(scale, succ);
       if (!pred || !succ || !a || !b) continue;
       const at = (bar: Bar): Bar => ({ x: bar.x - win[0], width: bar.width });
-      const from = linkEnd(at(a), pred.is_milestone, rowIndex.get(pred.id)! * rowHeight + box.mid - linkTop);
-      const shape = shapeInto(from, at(b), succ.is_milestone, rowIndex.get(succ.id)! * rowHeight + box.mid - linkTop,
-        link.link_type, rowHeight, stub, box.height / 2);
+      const yOf = (id: string) => linkRow(rowIndex.get(id)!, linkLo, linkHi) * rowHeight + box.mid - linkTop;
+      const from = linkEnd(at(a), pred.is_milestone, yOf(pred.id));
+      const shape = shapeInto(from, at(b), succ.is_milestone, yOf(succ.id), link.link_type, rowHeight, stub,
+        box.height / 2);
       if (!shape) continue;
       // both ends off the same side of the window: nothing of it shows
       const xs = [from.x0, from.x1, shape.tip[0]];
@@ -238,7 +251,8 @@ export default function PlanGantt({
       out.push({ id: link.id, shape, critical: display.critical && pred.is_critical && succ.is_critical });
     }
     return out;
-  }, [scale, links, rowIndex, first, last, tasksById, zoom, win, rowHeight, box, linkTop, display.critical]);
+  }, [scale, links, rowIndex, first, last, linkLo, linkHi, tasksById, zoom, win, rowHeight, box, linkTop,
+    display.critical]);
 
   // ── markers behind the lanes ──
   const now = plan?.now ?? null;
@@ -247,9 +261,16 @@ export default function PlanGantt({
   const status = scale && statusDate ? lineAt(xOf(scale, statusDate), win) : null;
   const bandPiece = scale && band ? clip(xOfMs(scale, band[0]), widthOfMs(scale, band[1] - band[0]), win) : null;
   const bandLabel = windowLabel({ start: winStart, end: winEnd });
+  const tierTop = useMemo(() => ticks.top.map((t) => ({ ...t, x: t.x - win[0] })), [ticks, win]);
+  const pillBase = bandPiece && bandLabel ? windowPillX(bandPiece.x, bandLabel, tierTop) : null;
+  useLayoutEffect(() => {
+    pill.current = pillBase !== null && bandLabel ? { base: pillBase, text: bandLabel, top: tierTop } : null;
+    pinLabels();
+  }, [pillBase, bandLabel, tierTop, pinLabels]);
 
-  // ── presses and the hover card ──
-  const hover = useGanttHover(tasksById, plan, scrollRef);
+  // ── presses (the hover card is GanttHover's) ──
+  const chartRef = useRef<HTMLDivElement>(null);
+  const chartBar = useRef<HTMLDivElement>(null);
   const latest = useRef({ selection, onSelect, rows, focusSheet, onBarPointerDown });
   useLayoutEffect(() => {
     latest.current = { selection, onSelect, rows, focusSheet, onBarPointerDown };
@@ -280,10 +301,11 @@ export default function PlanGantt({
 
   return (
     <SidePane className="pln-pane-chart" contentWidth={scale.width} origin={win[0]} onScrollX={onScrollX}
-              onWidth={setPaneW} onZoomStep={onZoomStep} handleRef={side}>
+              onWidth={setPaneW} onZoomStep={onZoomStep} handleRef={side} barRef={chartBar}>
       {/* everything here is the sheet's rows again, drawn: the sheet is the accessible view */}
       <div className={`pln-gantt${editable ? ' pln-gantt-editable' : ''}`} style={style} aria-hidden="true">
         <div className="pln-scale">
+          {bandPiece && <span className="pln-window-cap" style={{ left: bandPiece.x, width: bandPiece.width }} />}
           <div className="pln-scale-top" ref={scaleTop}>
             {ticks.top.map((t) => (
               <span key={t.x} className="pln-tick"
@@ -294,6 +316,9 @@ export default function PlanGantt({
                 <span className="pln-tick-label">{t.label}</span>
               </span>
             ))}
+            {/* the initiative window's label: up here, clear of the tier's labels, it never covers a bar */}
+            {/* placed by pinLabels, which follows the scroll */}
+            {pillBase !== null && <span ref={pillRef} className="pln-window-label">{bandLabel}</span>}
           </div>
           <div className="pln-scale-bottom">
             {ticks.bottom.map((t) => (
@@ -302,12 +327,14 @@ export default function PlanGantt({
           </div>
         </div>
 
-        <div className="pln-chart" style={{ height: virtualizer.getTotalSize() }} onMouseDown={onChartDown}
-             onMouseMove={hover.onMouseMove} onMouseLeave={hover.onMouseLeave}>
+        <div className="pln-chart" ref={chartRef} style={{ height: virtualizer.getTotalSize() }}
+             onMouseDown={onChartDown}>
           {offDays.map((b) => <span key={b.x} className="pln-offday" style={{ left: b.x, width: b.width }} />)}
           {bandPiece && <span className="pln-window" style={{ left: bandPiece.x, width: bandPiece.width }} />}
-          {today !== null && <span className="pln-today" style={{ left: today }} />}
-          {status !== null && <span className="pln-status-date" style={{ left: status }} />}
+          {today !== null && <span className="pln-today" title={`Today ${formatDay(now)}`} style={{ left: today }} />}
+          {status !== null && (
+            <span className="pln-status-date" title={`Status date ${formatDay(statusDate)}`} style={{ left: status }} />
+          )}
 
           {drawnLinks.length > 0 && (
             <svg className="pln-links" width={winW} height={linkRows * rowHeight} style={{ top: linkTop }}>
@@ -330,16 +357,9 @@ export default function PlanGantt({
                     onBarPointerDown={onBarPointerDown ? onBarDown : undefined} />
             );
           })}
-
-          {/* the window's label, over the lanes, held at the top of the view as it scrolls */}
-          {bandPiece && bandLabel && (
-            <span className="pln-window-pin" style={{ left: bandPiece.x, width: bandPiece.width }}>
-              <span className="pln-window-label">{bandLabel}</span>
-            </span>
-          )}
         </div>
       </div>
-      {hover.card}
+      <GanttHover chartRef={chartRef} scrollRef={scrollRef} barRef={chartBar} tasksById={tasksById} plan={plan} />
     </SidePane>
   );
 }

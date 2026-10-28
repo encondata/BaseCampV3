@@ -15,7 +15,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Plan, PlanTask } from '../../lib/plans/api';
 import { fitScrollLeft, makeScale, type Zoom } from '../../lib/plans/ganttGeometry';
-import { scaleSpan, taskScrollLeft, windowSpan } from '../../lib/plans/ganttView';
+import {
+  TIER_CHAR_PX, TIER_PAD, pillAt, pillWidth, scaleSpan, taskScrollLeft, windowPillX, windowSpan,
+} from '../../lib/plans/ganttView';
 import { planView } from '../../lib/plans/merge';
 import { makeLink, makePlan, makeTask } from '../../lib/plans/planFixtures';
 import { EMPTY_SELECTION, selectCell, type Selection } from '../../lib/plans/selection';
@@ -273,11 +275,45 @@ describe('timescale and markers', () => {
     expect(qa('.pln-scale-bottom .pln-tick').slice(0, 7).map((t) => t.textContent).join('')).toBe('SSMTWTF');
   });
 
-  it('labels the initiative window band "Scheduled: Nov 14–16"', () => {
+  it('labels the initiative window band "Scheduled: Nov 14–16" in the timescale, clear of the bars', () => {
     render(<Harness plan={plan3()} scheduled={{ start: '2026-11-14', end: '2026-11-16' }} />);
-    expect(q('.pln-window-label')?.textContent).toBe('Scheduled: Nov 14–16');
+    const label = q('.pln-window-label') as HTMLElement;
+    expect(label.textContent).toBe('Scheduled: Nov 14–16');
+    // in the timescale's top tier, not over the lanes
+    expect(label.closest('.pln-scale-top')).not.toBeNull();
+    expect(q('.pln-chart .pln-window-label')).toBeNull();
     const band = q('.pln-window') as HTMLElement;
     expect(px(band.style.width)).toBeCloseTo(3 * 48);
+    // beside the band (it ends at or past the band's start), clear of every week's label ("Nov 16, '26" here)
+    const [left, width] = [px(label.style.left), pillWidth(label.textContent ?? '')];
+    expect(left + width).toBeGreaterThanOrEqual(px(band.style.left));
+    expect(left).toBeLessThanOrEqual(px(band.style.left) + px(band.style.width));
+    for (const tick of qa('.pln-scale-top .pln-tick')) {
+      const [x, chars] = [px(tick.style.left), (tick.textContent ?? '').length];
+      expect(left >= x + TIER_PAD + chars * TIER_CHAR_PX || left + width <= x).toBe(true);
+    }
+    // the band's span is tinted in the timescale too
+    expect(px((q('.pln-scale .pln-window-cap') as HTMLElement).style.left)).toBeCloseTo(px(band.style.left));
+  });
+
+  it('moves the window label past the tier label held at the view’s left edge as the chart scrolls', () => {
+    render(<Harness plan={plan3()} scheduled={{ start: '2026-11-03', end: '2026-11-04' }} />);
+    const label = q('.pln-window-label') as HTMLElement;
+    const text = label.textContent ?? '';
+    const ticks = qa('.pln-scale-top .pln-tick')
+      .map((t) => ({ x: px(t.style.left), width: px(t.style.width), label: t.textContent ?? '' }));
+    const base = windowPillX(px((q('.pln-window') as HTMLElement).style.left), text, ticks);
+    const at = (x: number) => {
+      act(() => {
+        chartBar().scrollLeft = x;
+        chartBar().dispatchEvent(new Event('scroll'));
+      });
+      return px(label.style.left);
+    };
+    expect(at(0)).toBeCloseTo(pillAt(base, text, ticks, 0));
+    // "Nov 2, '26" held at the view's edge (101px in) would run into it: it moves past
+    expect(at(101)).toBeCloseTo(pillAt(base, text, ticks, 101));
+    expect(at(101)).toBeGreaterThan(at(0));
   });
 
   it('falls back to the plan’s copy of the initiative window', () => {
@@ -290,8 +326,11 @@ describe('timescale and markers', () => {
     expect(qa('.pln-today')).toHaveLength(1);
     expect(qa('.pln-status-date')).toHaveLength(0);
     expect(qa('.pln-offday').length).toBeGreaterThan(0);
+    expect(q('.pln-today')?.getAttribute('title')).toBe('Today Tue 11/3/26');
     rerender(<Harness plan={plan3({ now: '2026-11-03T12:00', status_date: '2026-11-04T17:00' })} />);
     expect(qa('.pln-status-date')).toHaveLength(1);
+    // told apart from the today line on hover
+    expect(q('.pln-status-date')?.getAttribute('title')).toBe('Status date Wed 11/4/26');
     rerender(<Harness plan={plan3()} zoom="weeks" />);
     expect(qa('.pln-offday')).toHaveLength(0);
   });
@@ -334,7 +373,16 @@ describe('drawing only what is visible (Review Focus 5)', () => {
     const drawn = qa('svg.pln-links path').map((p) => p.getAttribute('data-link'));
     expect(drawn.length).toBeGreaterThan(0);
     expect(drawn.length).toBeLessThan(100);
-    expect(drawn).not.toContain('far');
+    // t0 is in view: its link to row 1,400 runs off the bottom edge, as in MS Project
+    expect(drawn).toContain('far');
+    const svg = q('svg.pln-links') as unknown as SVGSVGElement;
+    const height = Number(svg.getAttribute('height'));
+    expect(height).toBeLessThan(80 * 30);
+    const far = q('svg.pln-links path[data-link="far"]')?.getAttribute('d') ?? '';
+    const drops = [...far.matchAll(/V (-?[\d.]+)/g)].map((m) => Number(m[1]));
+    // its far end is held one row past the SVG, which cuts it: the line leaves the edge, the SVG stays small
+    expect(Math.max(...drops)).toBeGreaterThan(height);
+    expect(Math.max(...drops)).toBeLessThan(height + 2 * 30);
     // the body is as tall as every row, as the sheet's is
     expect((q('.pln-chart') as HTMLElement).style.height).toBe(`${1500 * 30}px`);
   });
@@ -386,7 +434,9 @@ describe('hover card', () => {
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
-    expect(card.getAttribute('role')).toBe('tooltip');
+    // nothing points at it and the chart it describes is hidden from the tree: so is the card
+    expect(card.getAttribute('aria-hidden')).toBe('true');
+    expect(card.getAttribute('role')).toBeNull();
     expect(card.querySelector('.pln-hover-name')?.textContent).toBe('Survey');
     const facts = [...card.querySelectorAll('dt')].map((dt) => `${dt.textContent}: ${dt.nextElementSibling?.textContent}`);
     expect(facts).toEqual([
@@ -394,6 +444,36 @@ describe('hover card', () => {
       'Resource Names: Dana Reyes', 'Deadline: Fri 11/6/26', 'Total Slack: 0 days',
     ]);
     fireEvent.mouseLeave(q('.pln-chart') as HTMLElement);
+    expect(q('.pln-hover')).toBeNull();
+  });
+
+  it('shows and follows the pointer without redrawing the chart', async () => {
+    render(<Harness plan={plan3()} />);
+    const bar = q('.pln-bar[data-task-id="a"]') as HTMLElement;
+    const ganttRenders = () => virt.calls.filter((c) => /PlanGantt/.test(c.stack)).length;
+    const before = ganttRenders();
+    fireEvent.mouseMove(bar, { clientX: 300, clientY: 200 });
+    await waitFor(() => expect(q('.pln-hover')).not.toBeNull());
+    const left = (q('.pln-hover') as HTMLElement).style.left;
+    fireEvent.mouseMove(bar, { clientX: 340, clientY: 200 });
+    await waitFor(() => expect((q('.pln-hover') as HTMLElement).style.left).not.toBe(left));
+    // the card moved; the chart (its timescale, lanes and links) didn't render again
+    expect(ganttRenders()).toBe(before);
+  });
+
+  it('goes when the chart scrolls sideways, or the view up and down', async () => {
+    render(<Harness plan={plan3()} />);
+    const bar = q('.pln-bar[data-task-id="b"]') as HTMLElement;
+    fireEvent.mouseMove(bar, { clientX: 300, clientY: 200 });
+    await waitFor(() => expect(q('.pln-hover')).not.toBeNull());
+    act(() => {
+      chartBar().scrollLeft = 120;
+      chartBar().dispatchEvent(new Event('scroll'));
+    });
+    expect(q('.pln-hover')).toBeNull();
+    fireEvent.mouseMove(bar, { clientX: 310, clientY: 200 });
+    await waitFor(() => expect(q('.pln-hover')).not.toBeNull());
+    act(() => { (q('.pln-panes') as HTMLElement).dispatchEvent(new Event('scroll')); });
     expect(q('.pln-hover')).toBeNull();
   });
 });
@@ -437,7 +517,7 @@ describe('in the tab beside the sheet', () => {
   it('the sheet and the chart virtualize against the one scroll box, with the same settings', async () => {
     api.getPlan.mockResolvedValueOnce(plan3());
     const { container } = renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' });
+    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
     const panes = container.querySelector('.pln-panes');
     const sheet = virt.calls.filter((c) => /PlanSheet/.test(c.stack));
     const gantt = virt.calls.filter((c) => /PlanGantt/.test(c.stack));
@@ -453,7 +533,7 @@ describe('in the tab beside the sheet', () => {
   it('collapsing a summary in the sheet hides its subtasks’ bars too', async () => {
     api.getPlan.mockResolvedValueOnce(makePlan({ tasks: outlineTasks() }));
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' });
+    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
     expect(ids('.pln-bar')).toEqual(['a', 'b']);
     expect(ids('.pln-bar-summary')).toEqual(['s1', 's2']);
     fireEvent.click(within(grid()).getByRole('button', { name: 'Collapse Labels' }));
@@ -466,10 +546,22 @@ describe('in the tab beside the sheet', () => {
     expect(qa('.pln-lane').map((l) => l.getAttribute('data-lane'))).toEqual(['s1', 'c', 'blank']);
   });
 
+  it('hides a link into a task collapsed away under its summary', async () => {
+    api.getPlan.mockResolvedValueOnce(makePlan({
+      tasks: outlineTasks(), links: [makeLink('ab', 'a', 'b'), makeLink('ac', 'a', 'c')],
+    }));
+    renderTab();
+    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    const links = () => qa('svg.pln-links path').map((p) => p.getAttribute('data-link'));
+    expect(links()).toEqual(['ab', 'ac']);
+    fireEvent.click(within(grid()).getByRole('button', { name: 'Collapse Labels' }));
+    expect(links()).toEqual(['ac']);
+  });
+
   it('each pane scrolls sideways on its own; the shared box never does', async () => {
     api.getPlan.mockResolvedValueOnce(plan3());
     const { container } = renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' });
+    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
     const panes = container.querySelector('.pln-panes') as HTMLElement;
     const sheetShift = q('.pln-pane-sheet > .pln-pane-shift') as HTMLElement;
     const chartShift = q('.pln-pane-chart > .pln-pane-shift') as HTMLElement;
@@ -504,12 +596,12 @@ describe('in the tab beside the sheet', () => {
   it('keeps the zoom per plan; Ctrl+wheel over the chart zooms', async () => {
     api.getPlan.mockResolvedValue(plan3());
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' });
+    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
     fireEvent.click(screen.getByRole('button', { name: 'Zoom In' }));
     expect(localStorage.getItem('plans.zoom.plan-1')).toBe('hours');
     cleanup();
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' });
+    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
     expect(screen.getByRole('button', { name: 'Zoom In' }).getAttribute('aria-disabled')).toBe('true');
     fireEvent.wheel(q('.pln-pane-chart') as HTMLElement, { deltaY: 100, ctrlKey: true });
     expect(localStorage.getItem('plans.zoom.plan-1')).toBe('days');
@@ -520,7 +612,7 @@ describe('in the tab beside the sheet', () => {
     const plan = plan3();
     api.getPlan.mockResolvedValueOnce(plan);
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' });
+    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
     fireEvent.click(screen.getByRole('button', { name: 'Fit Project' }));
     // 3.4 days fit 800px at 48px a day (162px), not at 480 (1,620px)
     expect(localStorage.getItem('plans.zoom.plan-1')).toBe('days');
@@ -532,7 +624,7 @@ describe('in the tab beside the sheet', () => {
     const plan = plan3();
     api.getPlan.mockResolvedValueOnce(plan);
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' });
+    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
     const row = within(grid()).getAllByRole('row').find((r) => r.getAttribute('data-task') === 'c') as HTMLElement;
     fireEvent.mouseDown(row.querySelector('[data-col="name"]') as HTMLElement, { button: 0 });
     fireEvent.click(screen.getByRole('button', { name: 'Scroll to Task' }));
@@ -543,12 +635,13 @@ describe('in the tab beside the sheet', () => {
   it('the splitter moves the sheet’s edge, by drag or arrows, and keeps its place', async () => {
     api.getPlan.mockResolvedValue(plan3());
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' });
+    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
     const split = () => q('.pln-split')?.style.getPropertyValue('--pln-split');
     const splitter = screen.getByRole('separator', { name: 'Resize the task sheet' });
     // 45% of the 800px view until moved
     expect(split()).toBe('360px');
     expect(splitter.getAttribute('aria-valuenow')).toBe('360');
+    expect(splitter.getAttribute('aria-valuetext')).toBe('Sheet 360 pixels wide');
     fireEvent.pointerDown(splitter, { clientX: 500, pointerId: 1, button: 0 });
     fireEvent.pointerMove(splitter, { clientX: 560, pointerId: 1 });
     expect(split()).toBe('420px');
@@ -559,7 +652,7 @@ describe('in the tab beside the sheet', () => {
     expect(localStorage.getItem('plans.split.v1')).toBe('404');
     cleanup();
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' });
+    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
     expect(split()).toBe('404px');
   });
 });

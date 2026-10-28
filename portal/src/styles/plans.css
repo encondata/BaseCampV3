@@ -335,27 +335,46 @@
 }
 .pln-today { width: 0; margin-left: -1px; border-left: 2px solid var(--c-blue); }
 .pln-status-date { width: 0; margin-left: -1px; border-left: 2px dashed var(--c-violet); }
-/* the window's label: above the lanes, held under the timescale as the view
-   scrolls. No overflow here: a clipping box would be the scroll box the
-   label sticks to, and a narrow band (months, quarters) would cut it. */
-.pln-window-pin {
+/* the two lines over the lanes, each with a thin strip that takes the hover
+   for its title ("Today …", "Status date …"), so they can be told apart */
+.pln-today,
+.pln-status-date { z-index: 1; }
+.pln-today::before,
+.pln-status-date::before {
+  content: '';
   position: absolute;
   top: 0;
   bottom: 0;
-  z-index: 2;
+  left: -3px;
+  width: 6px;
+  pointer-events: auto;
+}
+
+/* the initiative window's span, tinted across the timescale too */
+.pln-window-cap {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(var(--accent-rgb), 0.12);
   pointer-events: none;
 }
+/* the window's label, in the top tier (never over a bar), clear of the
+   tier's labels: in the tier's monospace type, so ganttView's windowPillX
+   knows its width (TIER_CHAR_PX a character, 18px of padding and border) */
 .pln-window-label {
-  position: sticky;
-  top: calc(var(--pln-head-h) + 4px);
-  display: inline-block;
-  margin: 4px 0 0 4px;
-  padding: 1px 8px;
-  border: 1px solid rgba(var(--accent-rgb), 0.55);
+  position: absolute;
+  top: 2px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 8px;
+  border: 1px solid rgba(var(--accent-rgb), 0.6);
   border-radius: 999px;
   background: var(--surface);
-  font-size: 11px;
-  font-weight: 500;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
   color: var(--text-dark);
   white-space: nowrap;
 }

@@ -17,7 +17,7 @@ import type { Band } from './calendarShade';
 import { formatDuration } from './durations';
 import { dayOf, formatCell, formatDayRange, fromMs, toMs } from './floatingTime';
 import {
-  LINK_STUB, MILESTONE_HALF, MS_PER_DAY, ZOOMS, barOf, linkPath, type Bar, type LinkEnd, type Scale, type Zoom,
+  LINK_STUB, MILESTONE_HALF, MS_PER_DAY, ZOOMS, barOf, linkPath, type Bar, type LinkEnd, type Scale, type Tick, type Zoom,
 } from './ganttGeometry';
 import { planUnits } from './merge';
 import type { LinkType } from './predecessors';
@@ -148,6 +148,62 @@ export function windowLabel(w: DayWindow | null | undefined): string | null {
   return null;
 }
 
+// the window's label in the timescale's top tier: the tier's type is
+// monospace (10.5px, 0.02em spacing), so a label's width is its length
+
+/** px one character of the timescale's type takes (a little generous). */
+export const TIER_CHAR_PX = 6.8;
+/** A tick's left padding before its label. */
+export const TIER_PAD = 6;
+/** The room kept between the window's label and a tick's label. */
+export const PILL_GAP = 8;
+/** The window label's padding and border, both sides together. */
+const PILL_PAD = 18;
+
+/** The window label's width for `text`. */
+export function pillWidth(text: string): number {
+  return text.length * TIER_CHAR_PX + PILL_PAD;
+}
+
+/**
+ * Where the window's label goes in the top tier (window coordinates, like
+ * `top`): at the band's left edge when that is clear of the tier's labels,
+ * else at the clear spot nearest it — just after a tick's label, or ending
+ * just before one. It sits in the timescale, so it never covers a bar.
+ */
+export function windowPillX(bandX: number, text: string, top: readonly Tick[]): number {
+  const width = pillWidth(text);
+  const ends = top.map((t) => t.x + TIER_PAD + t.label.length * TIER_CHAR_PX + PILL_GAP);
+  const clear = (x: number) => top.every((t, i) => x >= ends[i] || x + width + PILL_GAP <= t.x);
+  if (clear(bandX)) return bandX;
+  const spots = [...ends, ...top.map((t) => t.x - PILL_GAP - width)].filter((x) => x >= 0 && clear(x));
+  return spots.reduce((best, x) => (Math.abs(x - bandX) < Math.abs(best - bandX) ? x : best), spots[0] ?? bandX);
+}
+
+/**
+ * The window label's x with the view scrolled to `viewX` (window
+ * coordinates): the top-tier unit holding the view's left edge keeps its
+ * label there (plans.css `.pln-tick-label`, stopping whole at the unit's
+ * end), so a label at `baseX` that it would run into moves past it, and
+ * on past any later unit's label it then runs into.
+ */
+export function pillAt(baseX: number, text: string, top: readonly Tick[], viewX: number): number {
+  const at = top.findIndex((t) => viewX >= t.x && viewX < t.x + t.width);
+  if (at < 0) return baseX;
+  const width = pillWidth(text);
+  const tick = top[at];
+  const labelW = tick.label.length * TIER_CHAR_PX;
+  const held = Math.min(Math.max(0, viewX - tick.x), Math.max(0, tick.width - 2 * TIER_PAD - labelW));
+  const left = tick.x + TIER_PAD + held;
+  if (!(baseX < left + labelW + PILL_GAP && baseX + width + PILL_GAP > left)) return baseX;
+  let x = left + labelW + PILL_GAP;
+  for (const next of top.slice(at + 1)) {
+    const end = next.x + TIER_PAD + next.label.length * TIER_CHAR_PX + PILL_GAP;
+    if (x < end && x + width + PILL_GAP > next.x) x = end;
+  }
+  return x;
+}
+
 /** The span makeScale is given: the project's, widened to take in the
  *  initiative's window so its band is always on the scale. */
 export function scaleSpan(
@@ -165,21 +221,31 @@ export function scaleSpan(
 // ── links ────────────────────────────────────────────────────────────
 
 /**
- * The links to draw: both ends on screen (in `rowIndex`, the rows shown)
- * and within the rendered rows `first..last` and `overscan` more rows each
- * side. A link to a row out of that range is drawn once both ends come
- * near, so a 1,500-task plan draws tens of paths, not thousands.
+ * The links to draw: both ends shown (in `rowIndex`; a task collapsed
+ * away under a summary has no row, so its links are hidden) and at least
+ * one end within the rendered rows `first..last` and `overscan` more rows
+ * each side. The far end is placed by its row (`linkRow`), so a link to
+ * a task out of sight runs off the edge, as in MS Project. A 1,500-task
+ * plan draws the links touching tens of rows, not thousands.
  */
 export function linksToDraw(
   links: readonly PlanLink[], rowIndex: ReadonlyMap<string, number>, first: number, last: number, overscan: number,
 ): PlanLink[] {
   const lo = first - overscan;
   const hi = last + overscan;
+  const near = (i: number) => i >= lo && i <= hi;
   return links.filter((link) => {
     const a = rowIndex.get(link.predecessor_id);
     const b = rowIndex.get(link.successor_id);
-    return a !== undefined && b !== undefined && a >= lo && a <= hi && b >= lo && b <= hi;
+    return a !== undefined && b !== undefined && (near(a) || near(b));
   });
+}
+
+/** The row a link end is drawn at: its own, or for a far end one row past
+ *  the drawn rows `lo..hi`, where the SVG cuts it, so its line visibly
+ *  leaves the edge without the SVG growing to reach it. */
+export function linkRow(index: number, lo: number, hi: number): number {
+  return Math.min(Math.max(index, lo - 1), hi + 1);
 }
 
 /** The straight run out of and into a bar: shorter at the coarse zooms,

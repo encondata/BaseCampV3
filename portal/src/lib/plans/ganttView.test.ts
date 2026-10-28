@@ -9,8 +9,9 @@ import { toMs } from './floatingTime';
 import { MILESTONE_HALF, makeScale, xOf, type Zoom } from './ganttGeometry';
 import {
   ARROW_LEN, MIN_CHART_PX, MIN_LEAD_PX, MIN_SHEET_PX, SCROLL_PAD, SPLIT_KEY, SPLITTER_PX, bandsIn, barBox,
-  chartWindow, clip, hoverFacts, lineAt, linkEnd, linkShape, linkStub, linksToDraw, readSplit, readZoom,
-  scaleSpan, splitWidth, taskScrollLeft, windowLabel, windowSpan, writeSplit, writeZoom,
+  PILL_GAP, TIER_CHAR_PX, TIER_PAD, chartWindow, clip, hoverFacts, lineAt, linkEnd, linkRow, linkShape, linkStub,
+  linksToDraw, pillAt, pillWidth, readSplit, readZoom, scaleSpan, splitWidth, taskScrollLeft, windowLabel, windowPillX,
+  windowSpan, writeSplit, writeZoom,
 } from './ganttView';
 import { makeLink, makePlan, makeTask } from './planFixtures';
 
@@ -147,15 +148,24 @@ describe('links', () => {
   const rows = ['a', 'b', 'c', 'd', 'e', 'f'];
   const index = new Map(rows.map((id, i) => [id, i]));
 
-  it('draws a link only when both its rows are within the rendered rows and the overscan', () => {
+  it('draws a link when both its tasks are shown and one end is within the rendered rows and the overscan', () => {
     const links = [
       makeLink('ab', 'a', 'b'), makeLink('bf', 'b', 'f'), makeLink('cd', 'c', 'd'), makeLink('xz', 'x', 'a'),
     ];
-    // rendered rows 2..3 (c, d), one row of overscan: rows 1..4
-    expect(linksToDraw(links, index, 2, 3, 1).map((l) => l.id)).toEqual(['cd']);
-    expect(linksToDraw(links, index, 0, 3, 2).map((l) => l.id)).toEqual(['ab', 'bf', 'cd']);
-    // a link to a task that isn't on screen (collapsed under a summary) is never drawn
+    // rendered rows 2..3 (c, d), one row of overscan: rows 1..4; bf's far end (f) runs off the edge
+    expect(linksToDraw(links, index, 2, 3, 1).map((l) => l.id)).toEqual(['ab', 'bf', 'cd']);
+    // only row 5 near: bf alone
+    expect(linksToDraw(links, index, 5, 5, 0).map((l) => l.id)).toEqual(['bf']);
+    // neither end near: not drawn
+    expect(linksToDraw([makeLink('ab', 'a', 'b')], index, 4, 5, 0)).toEqual([]);
+    // a link to a task that isn't shown (collapsed under a summary) is never drawn
     expect(linksToDraw(links, index, 0, 5, 20).map((l) => l.id)).not.toContain('xz');
+  });
+
+  it('holds a far end one row past the drawn rows, so its line visibly leaves the edge', () => {
+    expect(linkRow(10, 5, 20)).toBe(10);
+    expect(linkRow(1400, 0, 58)).toBe(59);
+    expect(linkRow(0, 30, 90)).toBe(29);
   });
 
   it('uses a shorter stub at the coarse zooms', () => {
@@ -209,6 +219,61 @@ describe('links', () => {
 
   it('draws nothing for an end that is not a number', () => {
     expect(linkShape({ x0: Number.NaN, x1: 1, y: 1 }, { x0: 2, x1: 3, y: 4 }, 'FS', 30, { stub: 8, toHalf: 6 })).toBeNull();
+  });
+});
+
+describe('the window label in the timescale’s top tier', () => {
+  // a week at the days zoom: 336px, its label at its left
+  const ticks = [{ x: 0, width: 336, label: "Nov 2, '26" }, { x: 336, width: 336, label: "Nov 9, '26" }];
+  const labelEnd = (t: { x: number; label: string }) => t.x + TIER_PAD + t.label.length * TIER_CHAR_PX + PILL_GAP;
+
+  it('is as wide as its text in the tier’s monospace type, plus its padding', () => {
+    expect(pillWidth('Scheduled: Nov 4–5')).toBeCloseTo(18 * TIER_CHAR_PX + 18);
+  });
+
+  it('sits at the band’s left edge when that is clear of the tier’s labels', () => {
+    expect(windowPillX(150, 'Scheduled: Nov 4–5', ticks)).toBe(150);
+  });
+
+  it('moves past the label of the unit it starts in', () => {
+    expect(windowPillX(340, 'Scheduled: Nov 9–10', ticks)).toBeCloseTo(labelEnd(ticks[1]));
+    expect(windowPillX(10, 'Scheduled: Nov 2', ticks)).toBeCloseTo(labelEnd(ticks[0]));
+  });
+
+  it('ends just before the next unit’s label when that is nearer than going past it', () => {
+    // a band starting 36px before the next week: its label can't start there
+    expect(windowPillX(300, 'Scheduled: Nov 8–9', ticks)).toBeCloseTo(336 - PILL_GAP - pillWidth('Scheduled: Nov 8–9'));
+    // too little room before the next label: past it
+    const wide = 'Scheduled: Nov 8, 2026 – Jan 4, 2027';
+    expect(windowPillX(300, wide, ticks)).toBeCloseTo(labelEnd(ticks[1]));
+  });
+
+  it('moves past the label held at the view’s left edge as the view scrolls', () => {
+    const quarters = [{ x: 0, width: 460, label: 'Q3 2026' }, { x: 460, width: 460, label: 'Q4 2026' }];
+    const labelW = 7 * TIER_CHAR_PX;
+    // the view's edge at 60: Q3's label is held at 66, so a label at 100 moves past it
+    expect(pillAt(100, 'Scheduled: Sep 7–25', quarters, 60)).toBeCloseTo(60 + TIER_PAD + labelW + PILL_GAP);
+    // at the scale's start the held label is where it always is, clear of 100
+    expect(pillAt(100, 'Scheduled: Sep 7–25', quarters, 0)).toBe(100);
+    // near its unit's end the held label stops whole inside the unit (ending at 454); just past it
+    // the label would meet Q4's at 466, so it goes on past that
+    expect(pillAt(420, 'Scheduled: Sep 7–25', quarters, 440)).toBeCloseTo(460 + TIER_PAD + labelW + PILL_GAP);
+    // past the view's edge's unit: nothing to move for
+    expect(pillAt(700, 'Scheduled: Oct 7–9', quarters, 60)).toBe(700);
+    // moved past the held label into the next unit's: on past that one too
+    expect(pillAt(330, 'Scheduled: Sep 7–25', quarters, 300)).toBeCloseTo(460 + TIER_PAD + labelW + PILL_GAP);
+  });
+
+  it('never overlaps a tick’s label', () => {
+    for (let x = 0; x < 600; x += 7) {
+      for (const text of ['Scheduled: Nov 4–5', 'Scheduled: Nov 30 – Dec 2']) {
+        const at = windowPillX(x, text, ticks);
+        for (const t of ticks) {
+          const clear = at >= labelEnd(t) || at + pillWidth(text) + PILL_GAP <= t.x;
+          expect(clear).toBe(true);
+        }
+      }
+    }
   });
 });
 

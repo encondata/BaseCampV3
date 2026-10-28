@@ -219,7 +219,8 @@ export default function Splitter({ value, min, max, label, onChange, onCommit }:
 
   return (
     <div role="separator" aria-orientation="vertical" aria-label={label} aria-valuenow={value}
-         aria-valuemin={min} aria-valuemax={Math.max(min, max)} tabIndex={0}
+         aria-valuetext={`Sheet ${value} pixels wide`} aria-valuemin={min} aria-valuemax={Math.max(min, max)}
+         tabIndex={0}
          className={`pln-splitter${dragging ? ' on' : ''}`}
          onPointerDown={(e: PointerEvent<HTMLDivElement>) => {
            if (e.button !== 0) return;
