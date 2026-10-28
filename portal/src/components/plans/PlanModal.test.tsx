@@ -6,7 +6,7 @@
  * control inside already handled it (a ComboBox closing its list) or a
  * write is in flight.
  */
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -113,4 +113,56 @@ it('neither Escape nor the scrim closes it while busy', async () => {
   await user.click(container.querySelector('.modal-scrim') as HTMLElement);
   expect(onClose).not.toHaveBeenCalled();
   expect(screen.getByRole('button', { name: 'Close' }).hasAttribute('disabled')).toBe(true);
+});
+
+it('with tabs, focus lands in the visible panel, not a hidden one before it', () => {
+  render(
+    <PlanModal title="Task Information" onClose={() => {}}>
+      <div role="group" hidden><input aria-label="Task Name" /></div>
+      <div aria-hidden="true"><input aria-label="Duration" /></div>
+      <div role="group"><textarea aria-label="Notes" /></div>
+    </PlanModal>,
+  );
+  expect(document.activeElement).toBe(screen.getByLabelText('Notes'));
+});
+
+it('closing a dialog whose opener can’t take focus back hands it to the dialog under it', async () => {
+  const user = userEvent.setup();
+  let openTop: (on: boolean) => void = () => {};
+  function Host() {
+    const [top, setTop] = useState(false);
+    openTop = setTop;
+    return (
+      <>
+        <PlanModal title="Task Information" onClose={() => {}}>
+          <input aria-label="Task Name" />
+          <button type="button" disabled>OK</button>
+        </PlanModal>
+        {top && <PlanModal title="Confirm completion" onClose={() => setTop(false)}><p>Two subtasks</p></PlanModal>}
+      </>
+    );
+  }
+  render(<Host />);
+  // OK was pressed and went busy (disabled), so the page had focus when the check opened
+  (document.activeElement as HTMLElement).blur();
+  act(() => openTop(true));
+  expect(document.activeElement).toBe(screen.getByRole('dialog', { name: 'Confirm completion' }));
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('dialog', { name: 'Confirm completion' })).toBeNull();
+  expect(document.activeElement).toBe(screen.getByRole('dialog', { name: 'Task Information' }));
+});
+
+it('stacked dialogs: Escape closes only the one on top', async () => {
+  const user = userEvent.setup();
+  const under = vi.fn();
+  const over = vi.fn();
+  render(
+    <>
+      <PlanModal title="Task Information" onClose={under}><input aria-label="Task Name" /></PlanModal>
+      <PlanModal title="Confirm completion" onClose={over}><p>Two subtasks</p></PlanModal>
+    </>,
+  );
+  await user.keyboard('{Escape}');
+  expect(over).toHaveBeenCalledTimes(1);
+  expect(under).not.toHaveBeenCalled();
 });

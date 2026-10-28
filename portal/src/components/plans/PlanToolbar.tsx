@@ -31,10 +31,11 @@ import { canAddTasks } from '../../lib/plans/editOps';
 import { ZOOMS } from '../../lib/plans/ganttGeometry';
 import { detectPlatform, planShortcutKeys, type PlanShortcutId, type Platform } from '../../lib/plans/shortcuts';
 import { RowActionsMenu, type RowAction } from '../hardware/RowActionsMenu';
-import { COMING_SOON, type PlanCommands } from './usePlanCommands';
+import type { PlanCommands } from './usePlanCommands';
 import type { PlanController } from './usePlan';
 
 export const LOCKED_HINT = 'Schedule is locked';
+export const NO_BASELINE_HINT = 'No baseline set';
 const SELECT_HINT = 'Select a task first';
 const SELECT_TWO_HINT = 'Select two or more tasks';
 const PERCENTS = [0, 25, 50, 75, 100] as const;
@@ -56,19 +57,21 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform }: Prop
   const structure = (need: 1 | 2 = 1) => (locked ? LOCKED_HINT
     : count < need ? (need === 2 ? SELECT_TWO_HINT : SELECT_HINT) : null);
   const progress = count ? null : SELECT_HINT;
-  const coming = (kind: 'taskInfo') => (cmd.canOpen(kind) ? (count ? null : SELECT_HINT) : COMING_SOON);
   const zoomAt = ZOOMS.indexOf(cmd.zoom);
 
   const more: RowAction[] = [];
   if (canChange) {
+    const noBaseline = plan.baseline_set_at === null;
     more.push(
-      { key: 'baseline', label: 'Set baseline…', onSelect: () => undefined, disabled: true, hint: COMING_SOON },
-      { key: 'clear-baseline', label: 'Clear baseline', onSelect: () => undefined, disabled: true, hint: COMING_SOON },
-      { key: 'update', label: 'Update project…', onSelect: () => undefined, disabled: true, hint: COMING_SOON },
+      { key: 'baseline', label: 'Set baseline…', onSelect: cmd.setBaseline, disabled: locked,
+        hint: locked ? LOCKED_HINT : undefined },
+      { key: 'clear-baseline', label: 'Clear baseline…', onSelect: () => cmd.open('clearBaseline'),
+        disabled: locked || noBaseline, hint: locked ? LOCKED_HINT : noBaseline ? NO_BASELINE_HINT : undefined },
+      { key: 'update', label: 'Update project…', onSelect: () => cmd.open('updateProject') },
       locked
         ? { key: 'unlock', label: 'Unlock schedule', onSelect: cmd.unlock }
-        : { key: 'lock', label: 'Lock schedule', onSelect: cmd.lock },
-      { key: 'settings', label: 'Plan settings…', onSelect: () => undefined, disabled: true, hint: COMING_SOON },
+        : { key: 'lock', label: 'Lock schedule…', onSelect: cmd.lock },
+      { key: 'settings', label: 'Plan settings…', onSelect: () => cmd.open('settings') },
     );
   }
   more.push(
@@ -76,8 +79,7 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform }: Prop
     { key: 'shortcuts', label: 'Keyboard shortcuts', onSelect: () => cmd.open('shortcuts') },
   );
   if (plan.permissions.delete) {
-    more.push({ key: 'delete-plan', label: 'Delete plan…', onSelect: () => undefined, destructive: true,
-      disabled: true, hint: COMING_SOON });
+    more.push({ key: 'delete-plan', label: 'Delete plan…', onSelect: () => cmd.open('deletePlan'), destructive: true });
   }
 
   const tool = (label: string, run: () => void, icon: ReactNode, o: {
@@ -153,8 +155,8 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform }: Prop
 
       {canChange && (
         <Group label="Properties">
-          {tool('Information', () => cmd.info(), <Icon name="info" />, { shortcut: 'info', hint: coming('taskInfo') })}
-          {tool('Notes', () => cmd.info('notes'), <Icon name="notes" />, { hint: coming('taskInfo') })}
+          {tool('Information', () => cmd.info(), <Icon name="info" />, { shortcut: 'info', hint: progress })}
+          {tool('Notes', () => cmd.info('notes'), <Icon name="notes" />, { hint: progress })}
           {tool('Add to Timeline', cmd.timeline, <Icon name="timeline" />, {
             hint: structure(), pressed: cmd.onTimeline,
           })}

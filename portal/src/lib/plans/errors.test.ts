@@ -176,7 +176,7 @@ describe('isPlanChanged', () => {
   });
 });
 
-describe('completionText (the completion prompt until Task 10’s dialog)', () => {
+describe('completionText (a stop said in one line: Task Dependency, a refusal under a dialog)', () => {
   const blocker = (displayId: number, reason: 'subtask' | 'predecessor' = 'subtask') =>
     ({ task_id: 't' + displayId, display_id: displayId, name: 'Task ' + displayId, reason });
 

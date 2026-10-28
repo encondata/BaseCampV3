@@ -118,5 +118,16 @@ export function useSheetView(ctl: PlanController, taskParam: string | null,
   /** Scrolls the task's row to the middle of the view (Scroll to task). */
   const reveal = useCallback((id: string) => setScrollTo(id), []);
 
-  return { rows, collapsed, toggleCollapse, selection, select: setSelection, reveal };
+  /** Go to task (the completion check's): its collapsed summaries open,
+   *  its row is selected and scrolled to the middle of the view. */
+  const goTo = useCallback((id: string) => {
+    const { collapsed: now, tasksById: byId } = latest.current;
+    if (!byId.has(id)) return;
+    const closed = ancestors(id, byId).filter((a) => now.has(a));
+    if (closed.length) setCollapsed(new Set([...now].filter((a) => !closed.includes(a))));
+    setSelection(selectCell(id, 'name'));
+    setScrollTo(id);
+  }, [setCollapsed]);
+
+  return { rows, collapsed, toggleCollapse, selection, select: setSelection, reveal, goTo };
 }

@@ -22,7 +22,7 @@ export interface UndoEntry {
   /** The inverse batches, in the order their edits were applied. */
   readonly batches: readonly (readonly Op[])[];
   /** Which step this is, set by the stack: a batch that comes later (a
-   *  paste's "Complete anyway") joins the step by this id, and only while
+   *  paste's Complete in the completion check) joins the step by this id, and only while
    *  it is still on top. */
   readonly id?: number;
 }

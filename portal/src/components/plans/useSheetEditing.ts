@@ -17,7 +17,7 @@
  * - While a commit is in flight the editor is read-only; keys typed then
  *   are kept and start the next cell's editor once the move lands.
  * - Notices (a constraint the edit added or cleared) toast with Undo; a
- *   completion the rules stopped goes to useCompletionPrompt.
+ *   completion the rules stopped goes to the completion check (useCompletion).
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
@@ -27,7 +27,7 @@ import type { PlanColumn } from '../../lib/plans/columns';
 import { canEditCell, editLabel, editText, opsForCell, type EditContext } from '../../lib/plans/editOps';
 import { planUnits } from '../../lib/plans/merge';
 import { moveActive, selectCell, type MoveDir, type Selection } from '../../lib/plans/selection';
-import { sayNotices, useCompletionPrompt } from './useCompletionPrompt';
+import { sayNotices, useCompletionPrompt } from './useCompletion';
 import type { PlanController } from './usePlan';
 
 /** How a column is edited (CellEditor draws one of these). */
@@ -91,7 +91,7 @@ const SEEDED: ReadonlySet<EditorKind> = new Set(['text']);
 
 export function useSheetEditing(o: Options): SheetEditing {
   const toast = useToast();
-  const prompt = useCompletionPrompt(o.ctl);
+  const prompt = useCompletionPrompt();
   const [editor, setEditorState] = useState<SheetEditor | null>(null);
   const [queued, setQueued] = useState<{ id: string; col: string; seed: string } | null>(null);
 

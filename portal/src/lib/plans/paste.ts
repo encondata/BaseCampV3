@@ -31,7 +31,7 @@
  * them may name a new row by the ID it gets (the new rows go at the end,
  * so they take the next IDs and no existing ID moves), and so does every
  * % Complete: only the last batch can stop for a completion check, so
- * "Complete anyway" resends just that batch, into the paste's undo step.
+ * the completion check's Complete resends just that batch, into the paste's undo step.
  * PlanController.applyThen sends both in one write.
  *
  * A batch is at most 5,000 ops (MAX_OPS): a paste that needs more in

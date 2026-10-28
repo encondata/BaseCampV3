@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { indicatorsOf } from './indicators';
+import { indicatorsOf, noteExcerpt } from './indicators';
 import { makeTask } from './planFixtures';
 
 const CTX = { showTimes: false, locked: false };
@@ -47,12 +47,22 @@ describe('indicatorsOf', () => {
     expect(kinds({ percent_complete: 99 })).toEqual([]);
   });
 
-  it('a note shows its text on one line, cut short when long', () => {
-    expect(title('note', { notes: 'Call the\nloading dock' })).toBe('Notes: Call the loading dock');
-    const long = title('note', { notes: 'x'.repeat(400) })!;
-    expect(long.length).toBeLessThanOrEqual('Notes: '.length + 201);
+  it('a note shows its text, its lines kept (blank runs closed up), cut short when long', () => {
+    expect(title('note', { notes: 'Call the dock' })).toBe('Notes: Call the dock');
+    expect(title('note', { notes: 'Call the\r\nloading   dock\n\n\n\nthen pack  ' }))
+      .toBe('Notes:\nCall the\nloading dock\n\nthen pack');
+    const long = title('note', { notes: 'x'.repeat(900) })!;
+    expect(long.length).toBeLessThanOrEqual('Notes: '.length + 401);
     expect(long.endsWith('…')).toBe(true);
+    const tall = title('note', { notes: Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n') })!;
+    expect(tall.split('\n')).toHaveLength(1 + 8);
+    expect(tall.endsWith('line 8…')).toBe(true);
     expect(kinds({ notes: '   ' })).toEqual([]);
+  });
+
+  it('noteExcerpt: the note as a tooltip shows it', () => {
+    expect(noteExcerpt('one\n\n\ntwo')).toBe('one\n\ntwo');
+    expect(noteExcerpt(null)).toBe('');
   });
 
   it('a locked schedule marks every task', () => {

@@ -747,6 +747,17 @@
 .modal-card.reports-modal-card.rgm-card.pln-modal.pln-modal-xwide { max-width: min(1200px, 96vw); }
 /* the card takes focus on open when it has no field: no ring around the whole dialog */
 .modal-card.pln-modal:focus { outline: none; }
+/* a dialog taller than the window scrolls (the card, whose scrollbar
+   chrome.css keeps inside its corners) with its footer (OK, Save) pinned
+   in view at the bottom */
+.modal-card.pln-modal > .modal-foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+/* a one-question dialog has no body: one rule between the header and the footer */
+.modal-card.pln-modal > :first-child + .modal-foot { border-top: 0; }
 
 .pln-note { margin: 0; font-size: 12.5px; color: var(--text-mute); }
 /* a footer button set apart at the right (Reset to default) */
@@ -834,3 +845,210 @@
   color: var(--text-dark);
 }
 .pln-doomed-id { display: inline-block; min-width: 2.5em; font-family: var(--font-mono); font-size: 12px; color: var(--text-mute); }
+
+/* ── shared by the plan dialogs' forms ──────────────────────────── */
+
+/* a switch with its words beside it (Milestone, Show times, …) */
+.pln-switch-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.pln-switch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pln-switch-text b { font-size: 13.5px; font-weight: 500; color: var(--text-dark); }
+.pln-switch-text span { font-size: 12px; color: var(--text-mute); }
+/* `.pf-form label` would make the switch's own label a block with a gap under it */
+.pf-form .pln-switch-line .switch,
+.pln-set-inherit .switch,
+.pf-form.pln-cal .switch { margin: 0; display: inline-block; }
+/* a field's caption that isn't a <label> (a segmented control's) */
+.pln-ti-label,
+.pln-set-label {
+  display: block;
+  margin-bottom: 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.pln-ti-error,
+.pln-set-error,
+.pln-cal-error { margin: 6px 0 0; }
+.pln-ti input[readonly] { background: var(--surface); color: var(--text-mute); }
+.pln-ti input:disabled:not([type="checkbox"]),
+.pln-set input:disabled:not([type="checkbox"]) { opacity: 0.6; cursor: not-allowed; }
+/* "Schedule is locked: …" over a dialog's fields */
+.pln-locked-note { margin: 0; color: var(--c-amber); }
+
+/* ── the completion check (CompletionDialog) ────────────────────── */
+
+.pln-done-group { width: min(520px, 86vw); }
+.pln-done-group + .pln-done-group { margin-top: 18px; }
+.pln-done-title { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--text-dark); }
+.pln-done-tasks {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.pln-done-task {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  background: var(--surface);
+  font-size: 13.5px;
+  color: var(--text-dark);
+}
+.pln-done-id { flex: none; min-width: 2.2em; font-family: var(--font-mono); font-size: 12px; color: var(--text-mute); }
+.pln-done-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.pln-done-why { flex: none; font-size: 11.5px; color: var(--text-mute); }
+.pln-done-task .mini-btn { flex: none; }
+
+/* ── Task Information (TaskInfoModal) ───────────────────────────── */
+
+.pln-ti { width: min(780px, 88vw); display: flex; flex-direction: column; gap: 14px; }
+.pln-ti-tabs { align-self: flex-start; }
+.pln-ti-state { margin: 0; }
+/* the tallest tab's height, so the dialog doesn't jump between tabs */
+.pln-ti-body { min-height: 430px; }
+.pln-ti-panel { display: flex; flex-direction: column; gap: 12px; }
+.pln-ti-mode { display: flex; }
+.pln-ti-mode button:disabled { opacity: 0.55; cursor: not-allowed; }
+.pf-form textarea.pln-ti-notes {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 220px;
+  resize: vertical;
+  padding: 10px 12px;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  color: var(--text-dark);
+  background: var(--surface-2);
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  outline: none;
+}
+.pf-form textarea.pln-ti-notes:focus {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
+  background: var(--surface);
+}
+.pf-form textarea.pln-ti-notes:disabled { opacity: 0.6; }
+/* the Predecessors grid: ID · Task Name · Type · Lag · remove */
+.pln-ti-preds {
+  display: grid;
+  grid-template-columns: 40px minmax(200px, 1fr) minmax(170px, 0.8fr) 104px 34px;
+  gap: 8px 10px;
+  align-items: center;
+}
+.pln-ti-pred-cols,
+.pln-ti-pred { display: contents; }
+.pln-ti-pred-cols > span {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.pln-ti-pred-id { text-align: right; color: var(--text-mute); }
+.pln-ti-lag {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  color: var(--text-dark);
+  background: var(--surface-2);
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  outline: none;
+}
+.pln-ti-lag:focus { border-color: var(--amber); background: var(--surface); }
+.pln-ti-lag:disabled { opacity: 0.6; }
+.pln-ti-pred-error { grid-column: 2 / -1; margin: -2px 0 4px; }
+
+/* ── Plan settings (PlanSettingsModal, CalendarEditor) ──────────── */
+
+.pln-set { width: min(980px, 90vw); display: flex; flex-direction: column; gap: 14px; }
+.pln-set-tabs { align-self: flex-start; }
+.pln-set-body { min-height: 380px; }
+.pln-set-hint { margin: 6px 0 0; }
+.pln-set-choice { display: flex; flex-wrap: wrap; }
+.pln-set-control .pln-set-choice { display: inline-flex; }
+.pln-set-choice button:disabled { opacity: 0.55; cursor: not-allowed; }
+.pln-set-items { display: flex; flex-direction: column; gap: 10px; }
+.pln-set-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 18px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.pln-set-inherit { display: inline-flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--text-mute); }
+.pln-set-control,
+.pln-set-item > .pln-set-error { grid-column: 1 / -1; }
+.pln-set-short {
+  width: 140px;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  color: var(--text-dark);
+  background: var(--surface-2);
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  outline: none;
+}
+.pln-set-short:focus { border-color: var(--amber); background: var(--surface); }
+
+.pf-form.pln-cal { display: flex; flex-direction: column; gap: 20px; }
+.pln-cal-title { margin: 0 0 10px; font-size: 13px; font-weight: 600; color: var(--text-dark); }
+.pln-cal-week {
+  display: grid;
+  grid-template-columns: 100px auto minmax(0, 1fr);
+  gap: 8px 14px;
+  align-items: center;
+}
+.pln-cal-day { display: contents; }
+.pln-cal-dayname { font-size: 13.5px; color: var(--text-dark); }
+.pln-cal-off { font-size: 12.5px; color: var(--text-mute); }
+.pln-cal-day-error { grid-column: 3; margin: -4px 0 2px; }
+.pln-cal-hours { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+.pln-cal-range { display: inline-flex; align-items: center; gap: 6px; color: var(--text-mute); }
+.pf-form input.pln-cal-time { width: 72px; padding: 7px 8px; text-align: center; font-variant-numeric: tabular-nums; }
+.pln-cal-units { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.pln-cal-part > .pln-note { margin-top: 10px; }
+.pln-cal-excs { display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
+.pln-cal-exc {
+  display: grid;
+  grid-template-columns: 160px minmax(160px, 1fr) auto minmax(0, 1.4fr) 34px;
+  gap: 8px 12px;
+  align-items: center;
+}
+.pln-cal-exc-kind { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-mute); }
+.pln-cal-exc-error { grid-column: 1 / -1; margin: -2px 0 0; }
+@media (max-width: 900px) {
+  .pln-cal-units { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pln-cal-exc { grid-template-columns: 1fr 1fr; }
+}
+
+/* ── Update project, Delete plan ────────────────────────────────── */
+
+.pln-update,
+.pln-delete-plan { width: min(520px, 86vw); }

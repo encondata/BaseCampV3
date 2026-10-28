@@ -8,8 +8,8 @@
  * - A command that sends two batches (a new summary's subtask, a paste
  *   that names its new rows: Ruling B3) sends the second with the ids the
  *   first answered, joined into its undo step, so one Undo takes back both.
- * - A completion the rules stop goes to useCompletionPrompt (Ruling B2:
- *   the one call site Task 10's CompletionDialog replaces).
+ * - A completion the rules stop goes to the tab's completion check
+ *   (`completion`, useCompletion: Ruling B2).
  * - Copy writes TSV of the selected rows' visible columns: through
  *   navigator.clipboard where the browser has it, and through the
  *   browser's own copy, which the shortcut aims at a hidden field in the
@@ -20,10 +20,10 @@
  *   fallback when no event comes. Focus is back on the sheet at once.
  *   Pasting the sheet's own copy re-creates the tasks; anything else fills
  *   cells (lib/plans/paste). Cut is copy, then Delete.
- * - Dialogs open through PlanTab's host (`openDialog`). Task 10's —
- *   Task Information, Notes, the baseline, Update project, Plan settings,
- *   Delete plan — have kinds here already; until they exist (`DIALOGS_READY`)
- *   their buttons stay off, "Coming in this release".
+ * - Dialogs open through PlanTab's host (`openDialog`). Set baseline
+ *   sends at once; the dialog only asks when it would replace one
+ *   (`replaceBaseline`, from the 409 `baseline_exists`). Unlock goes at
+ *   once; Lock, Clear baseline and Delete plan ask first.
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 
@@ -38,19 +38,16 @@ import {
 } from '../../lib/plans/commands';
 import { fitZoom, zoomIn as zoomInOf, zoomOut as zoomOutOf, type Zoom } from '../../lib/plans/ganttGeometry';
 import { readZoom, writeZoom } from '../../lib/plans/ganttView';
-import { PLAN_ERRORS, completionText, isPlanChanged, planErrorText } from '../../lib/plans/errors';
+import { PLAN_ERRORS, isPlanChanged, planErrorText } from '../../lib/plans/errors';
 import { descendants } from '../../lib/plans/outline';
 import {
   copyCell, copyRows, opsForInternalPaste, opsForPaste, parseClipboard, sameClipboard, type PasteContext, type PlanCopy,
 } from '../../lib/plans/paste';
 import { EMPTY_SELECTION, selectCell, type Selection } from '../../lib/plans/selection';
-import { useApplyAnswer, useCompletionPrompt } from './useCompletionPrompt';
+import type { TaskInfoTab } from '../../lib/plans/taskInfo';
+import { SAID_ALREADY, type Completion } from './useCompletion';
 import type { PlanController, ThenOps } from './usePlan';
 import { keysBelongElsewhere, type PlanShortcutHandlers } from './usePlanShortcuts';
-
-/** Task 10's dialogs: wired to these kinds, rendered by PlanTab's host
- *  once they exist. */
-export type ComingDialog = 'taskInfo' | 'setBaseline' | 'clearBaseline' | 'updateProject' | 'settings' | 'deletePlan';
 
 /** The dialog the tab has open. */
 export type PlanDialog =
@@ -58,16 +55,18 @@ export type PlanDialog =
   | { kind: 'columns' }
   | { kind: 'shortcuts' }
   | { kind: 'deleteTasks'; ops: Op[]; tasks: PlanTask[]; subtasks: number; next: Selection }
-  | { kind: 'taskInfo'; taskId: string; tab?: 'notes' }
+  | { kind: 'taskInfo'; taskId: string; tab?: TaskInfoTab }
   | { kind: 'dependency'; linkId: string }
-  | { kind: Exclude<ComingDialog, 'taskInfo'> };
+  /** Set baseline met one already there (409 `baseline_exists`, set `setAt`). */
+  | { kind: 'replaceBaseline'; setAt: string | null }
+  | { kind: 'clearBaseline' }
+  | { kind: 'lock' }
+  | { kind: 'updateProject' }
+  | { kind: 'settings' }
+  | { kind: 'deletePlan' };
 
-/** The dialogs that exist; Task 10 adds its kinds. */
-export const DIALOGS_READY: ReadonlySet<PlanDialog['kind']> = new Set(
-  ['create', 'columns', 'shortcuts', 'deleteTasks', 'dependency']);
-
-export const COMING_SOON = 'Coming in this release';
 export const PASTE_LABEL = 'Paste';
+export const BASELINE_SET = 'Baseline set: every task’s Start, Finish and Duration were copied.';
 /** How long Ctrl+V waits for the browser's paste event before asking
  *  navigator.clipboard instead. */
 const PASTE_WAIT_MS = 120;
@@ -80,7 +79,7 @@ let lastCopy: PlanCopy | null = null;
 interface PartWords {
   /** The toast: why, and whether Undo still takes the first batch back. */
   said(reason: string, undoable: boolean): string;
-  /** Before a completion check's own words ("Complete anyway"). */
+  /** What already went in, said first in the completion check. */
   lead: string;
 }
 
@@ -134,6 +133,8 @@ export interface SheetState {
   select(sel: Selection): void;
   toggleCollapse(id: string): void;
   reveal(id: string): void;
+  /** Opens its summaries, selects the row and scrolls it into view. */
+  goTo(id: string): void;
 }
 
 interface Options {
@@ -144,6 +145,8 @@ interface Options {
   /** A hidden field in the tab: the clipboard shortcuts' keystroke target. */
   clip: RefObject<HTMLTextAreaElement | null>;
   openDialog(dialog: PlanDialog): void;
+  /** The tab's completion check (useCompletion). */
+  completion: Pick<Completion, 'answer' | 'prompt'>;
 }
 
 export interface PlanCommands {
@@ -158,7 +161,6 @@ export interface PlanCommands {
   zoom: Zoom;
   /** The chart's latest one-off sideways scroll (Fit, Scroll to Task). */
   chartScroll: ChartScroll | null;
-  canOpen(kind: PlanDialog['kind']): boolean;
 
   undo(): void;
   redo(): void;
@@ -174,7 +176,10 @@ export interface PlanCommands {
   deleteTasks(): void;
   /** The confirmed delete of a summary with its subtasks. */
   confirmDelete(dialog: Extract<PlanDialog, { kind: 'deleteTasks' }>): Promise<void>;
-  info(tab?: 'notes'): void;
+  info(tab?: TaskInfoTab): void;
+  /** Selects the task and scrolls it into view in the sheet and the chart. */
+  goToTask(id: string): void;
+  setBaseline(): void;
   toggleCritical(): void;
   toggleBaseline(): void;
   zoomIn(): void;
@@ -188,7 +193,7 @@ export interface PlanCommands {
   paste(text: string): void;
   lock(): void;
   unlock(): void;
-  open(kind: 'columns' | 'shortcuts'): void;
+  open(kind: 'columns' | 'shortcuts' | 'clearBaseline' | 'updateProject' | 'settings' | 'deletePlan'): void;
   /** Focus back on the sheet (a toolbar click hands it back). */
   focusSheet(): void;
   /** For usePlanShortcuts. */
@@ -200,9 +205,9 @@ function visibleColumns(): PlanColumn[] {
   return columnPrefsSnapshot().visible.map((k) => COLUMN_BY_KEY.get(k)).filter((c): c is PlanColumn => !!c);
 }
 
-export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options): PlanCommands {
+export function usePlanCommands({ ctl, sheet, root, clip, openDialog, completion }: Options): PlanCommands {
   const toast = useToast();
-  const prompt = useCompletionPrompt(ctl);
+  const { prompt, answer: answered } = completion;
   const [display, setDisplay] = useState<GanttDisplay>({ critical: false, baseline: false });
   const [zoom, setZoom] = usePlanZoom(ctl.plan?.id ?? null);
   const [chartScroll, setChartScroll] = useState<ChartScroll | null>(null);
@@ -233,10 +238,6 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
     };
   }, []);
 
-  /** One answer said: notices with Undo, a stopped completion to the
-   *  prompt, a refusal as a toast (unless usePlan said it already). */
-  const answered = useApplyAnswer(ctl);
-
   /** A second batch that didn't go in, said as the outcome of the whole
    *  command, in one message: the first batch's rows stay (its undo step
    *  takes them back); a completion stop's Complete resends the second
@@ -246,11 +247,10 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
   const partlyDone = useCallback((second: Exclude<ApplyResult, { ok: true }>, more: Op[], label: string,
     step: number | null | undefined, words: PartWords) => {
     const { toast: say, prompt: ask } = latest.current;
-    if (second.kind === 'confirm') {
+    if (second.kind !== 'error') {
+      // the completion check, saying what went in (a blocked one has nothing to resend)
       ask(second, () => latest.current.ctl.apply(more, label, { confirm: true, joinUndo: step ?? null }),
         { lead: words.lead });
-    } else if (second.kind === 'blocked') {
-      say(words.said(completionText(second), true));
     } else if (second.code === 'plan_changed') {
       say(words.said(second.reloaded === false
         ? `someone else changed the plan, and reloading it failed${second.message ? `: ${second.message}` : '.'}`
@@ -556,11 +556,10 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
   const onTimeline = selected.length > 0 && selected.every((t) => t.show_on_timeline);
 
   const commands = useMemo(() => {
-    const canOpen = (kind: PlanDialog['kind']) => DIALOGS_READY.has(kind);
-    const info = (tab?: 'notes') => {
+    const info = (tab?: TaskInfoTab) => {
       const { sheet: view, ctl: now, openDialog: open } = latest.current;
       const task = now.plan ? selectedTasks(view.selection, now.plan)[0] : undefined;
-      if (!task || !canOpen('taskInfo')) return false;
+      if (!task) return false;
       open({ kind: 'taskInfo', taskId: task.id, ...(tab ? { tab } : {}) });
       return true;
     };
@@ -592,11 +591,31 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
       scrollSeq.current += 1;
       setChartScroll({ seq: scrollSeq.current, to: 'fit' });
     };
+    // Go to task: the row selected and in view in the sheet, the bar in
+    // the chart, focus on the sheet — unless a dialog is still open over it
+    // (Task Information, whose completion check this came from)
+    const goToTask = (id: string) => {
+      const { sheet: view } = latest.current;
+      view.goTo(id);
+      scrollSeq.current += 1;
+      setChartScroll({ seq: scrollSeq.current, to: 'task', taskId: id });
+      if (!document.querySelector('.modal-scrim')) focusSheet();
+    };
     const undo = () => { void latest.current.ctl.undo(); };
     const redo = () => { void latest.current.ctl.redo(); };
-    const lockWith = (write: () => Promise<void>) => {
-      void write().catch((err: unknown) => {
+    const unlock = () => {
+      void latest.current.ctl.unlock().catch((err: unknown) => {
         if (!isPlanChanged(err)) latest.current.toast(planErrorText(err));
+      });
+    };
+    // sent at once; only replacing one asks (the 409 says when it was set)
+    const setBaseline = () => {
+      void latest.current.ctl.setBaseline(false).then((result) => {
+        const { toast: say, openDialog: open } = latest.current;
+        if (result.ok) say(BASELINE_SET);
+        else if (result.kind === 'error' && result.code === 'baseline_exists') {
+          open({ kind: 'replaceBaseline', setAt: result.setAt ?? null });
+        } else if (result.kind === 'error' && !SAID_ALREADY.has(result.code) && result.message) say(result.message);
       });
     };
 
@@ -624,7 +643,9 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
       timeline: () => { withPlan(toggleTimeline, 'Add to Timeline', 'schedule'); },
       deleteTasks,
       confirmDelete,
-      info: (tab?: 'notes') => { info(tab); },
+      info: (tab?: TaskInfoTab) => { info(tab); },
+      goToTask,
+      setBaseline,
       toggleCritical: () => setDisplay((d) => ({ ...d, critical: !d.critical })),
       toggleBaseline: () => setDisplay((d) => ({ ...d, baseline: !d.baseline })),
       zoomIn: () => setZoom(zoomInOf),
@@ -636,11 +657,11 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
       copy,
       cut,
       paste,
-      lock: () => lockWith(() => latest.current.ctl.lock()),
-      unlock: () => lockWith(() => latest.current.ctl.unlock()),
-      open: (kind: 'columns' | 'shortcuts') => latest.current.openDialog({ kind }),
+      lock: () => latest.current.openDialog({ kind: 'lock' }),
+      unlock,
+      open: (kind: 'columns' | 'shortcuts' | 'clearBaseline' | 'updateProject' | 'settings' | 'deletePlan') =>
+        latest.current.openDialog({ kind }),
       focusSheet,
-      canOpen,
     };
     const handlers: PlanShortcutHandlers = {
       insert: () => insert('task'),

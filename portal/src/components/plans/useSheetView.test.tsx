@@ -56,4 +56,17 @@ describe('useSheetView', () => {
     act(() => result.current.toggleCollapse('s1'));
     expect(result.current.rows).toEqual(['s1', 'a', 'c']);
   });
+
+  it('goTo opens the task’s collapsed summary and selects its row (Go to task)', () => {
+    const { result } = renderHook(({ ctl }) => useSheetView(ctl, null, scrollRef, 30),
+      { initialProps: { ctl: ctlOf(outlinePlan()) } });
+    act(() => result.current.toggleCollapse('s1'));
+    expect(result.current.rows).toEqual(['s1', 'c']);
+    act(() => result.current.goTo('a'));
+    expect(result.current.rows).toEqual(['s1', 'a', 'c']);
+    expect(result.current.selection.active).toEqual({ id: 'a', col: 'name' });
+    // an id the plan doesn't have changes nothing
+    act(() => result.current.goTo('zz'));
+    expect(result.current.selection.active).toEqual({ id: 'a', col: 'name' });
+  });
 });

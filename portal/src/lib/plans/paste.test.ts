@@ -24,8 +24,8 @@ function ctx(over: Partial<PasteContext['plan']> = {}): PasteContext {
     plan: makePlan({
       tasks: flatTasks(['a', 'b', 'c']).map((t, i) => ({ ...t, name: ['Survey', 'Pack', 'Go live'][i] })),
       resources: [
-        { kind: 'person', id: 'p1', name: 'Dana Reyes', group: 'team', has_email: true, has_account: true },
-        { kind: 'partner', id: 'x1', name: 'Acme Freight', group: 'partner', has_email: true, has_account: false },
+        { kind: 'person', id: 'p1', name: 'Dana Reyes', group: 'team', has_email: true, has_account: true, is_staff: true },
+        { kind: 'partner', id: 'x1', name: 'Acme Freight', group: 'partner', has_email: true, has_account: false, is_staff: false },
       ],
       ...over,
     }),
@@ -177,8 +177,8 @@ describe('opsForPaste', () => {
   it('Resource Names: the whole cell, then each ;-part, then commas, so a name with a comma reads', () => {
     const named = ctx({
       resources: [
-        { kind: 'partner', id: 'x2', name: 'Acme, Inc.', group: 'partner', has_email: true, has_account: false },
-        { kind: 'person', id: 'p1', name: 'Dana Reyes', group: 'team', has_email: true, has_account: true },
+        { kind: 'partner', id: 'x2', name: 'Acme, Inc.', group: 'partner', has_email: true, has_account: false, is_staff: false },
+        { kind: 'person', id: 'p1', name: 'Dana Reyes', group: 'team', has_email: true, has_account: true, is_staff: true },
       ],
     });
     const at = { id: 'b', col: 'resources' };

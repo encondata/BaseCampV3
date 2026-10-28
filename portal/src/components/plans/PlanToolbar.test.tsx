@@ -12,8 +12,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Plan } from '../../lib/plans/api';
 import { makePlan, makeTask } from '../../lib/plans/planFixtures';
-import PlanToolbar, { LOCKED_HINT, useRovingToolbar } from './PlanToolbar';
-import { COMING_SOON, DIALOGS_READY, type PlanCommands } from './usePlanCommands';
+import PlanToolbar, { LOCKED_HINT, NO_BASELINE_HINT, useRovingToolbar } from './PlanToolbar';
+import type { PlanCommands } from './usePlanCommands';
 
 afterEach(cleanup);
 
@@ -22,7 +22,7 @@ function commands(over: Partial<PlanCommands> = {}): PlanCommands {
   return {
     selected: [makeTask('a')], mode: 'auto', onTimeline: false,
     display: { critical: false, baseline: false }, zoom: 'days', chartScroll: null,
-    canOpen: (kind) => DIALOGS_READY.has(kind),
+    goToTask: fn(), setBaseline: fn(),
     undo: fn(), redo: fn(), percent: fn(), markOnTrack: fn(), link: fn(), unlink: fn(), indent: fn(),
     outdent: fn(), setMode: fn(), insert: fn(), timeline: fn(), deleteTasks: fn(), confirmDelete: vi.fn(async () => {}),
     info: fn(), toggleCritical: fn(), toggleBaseline: fn(), zoomIn: fn(), zoomOut: fn(), fit: fn(), scrollToTask: fn(),
@@ -106,9 +106,19 @@ describe('groups', () => {
     expect(cmd.setMode).toHaveBeenCalledWith('auto');
   });
 
-  it('Information and Notes wait for their dialog', () => {
-    render(<Bar plan={makePlan()} cmd={commands()} />);
-    expect(button('Information').title).toBe(`Information (Shift+F2) — ${COMING_SOON}`);
+  it('Information and Notes open Task Information (Notes on its tab), even on a locked plan', () => {
+    const cmd = commands();
+    render(<Bar plan={makePlan({ locked_at: '2026-10-27T12:00:00Z' })} cmd={cmd} />);
+    expect(button('Information').title).toBe('Information (Shift+F2)');
+    fireEvent.click(button('Information'));
+    expect(cmd.info).toHaveBeenLastCalledWith();
+    fireEvent.click(button('Notes'));
+    expect(cmd.info).toHaveBeenLastCalledWith('notes');
+  });
+
+  it('Information and Notes need a task selected', () => {
+    render(<Bar plan={makePlan()} cmd={commands({ selected: [], mode: null })} />);
+    expect(button('Information').title).toBe('Information (Shift+F2) — Select a task first');
     expect(button('Notes').getAttribute('aria-disabled')).toBe('true');
   });
 
@@ -124,32 +134,48 @@ describe('groups', () => {
 });
 
 describe('More', () => {
-  it('lists the plan commands; the dialogs still to come are off with a hint; the menu sits above full screen', async () => {
+  it('lists the plan commands, each opening its dialog; the menu sits above full screen', async () => {
     const user = userEvent.setup();
     const cmd = commands();
-    render(<Bar plan={makePlan()} cmd={cmd} />);
+    render(<Bar plan={makePlan({ baseline_set_at: '2026-10-20T10:00:00Z' })} cmd={cmd} />);
     await user.click(screen.getByRole('button', { name: 'More ▾' }));
     expect(screen.getAllByRole('menuitem').map((m) => m.firstChild?.textContent)).toEqual([
-      'Set baseline…', 'Clear baseline', 'Update project…', 'Lock schedule', 'Plan settings…', 'Columns…',
+      'Set baseline…', 'Clear baseline…', 'Update project…', 'Lock schedule…', 'Plan settings…', 'Columns…',
       'Keyboard shortcuts', 'Delete plan…',
     ]);
-    const baseline = screen.getByRole('menuitem', { name: 'Set baseline…' }) as HTMLButtonElement;
-    expect(baseline.disabled).toBe(true);
-    expect(baseline.textContent).toContain(COMING_SOON);
     const menu = document.querySelector('.pop-menu') as HTMLElement;
     expect(Number(menu.style.zIndex)).toBeGreaterThan(60);
-    await user.click(screen.getByRole('menuitem', { name: 'Lock schedule' }));
-    expect(cmd.lock).toHaveBeenCalled();
+    await user.click(screen.getByRole('menuitem', { name: 'Set baseline…' }));
+    expect(cmd.setBaseline).toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'More ▾' }));
-    await user.click(screen.getByRole('menuitem', { name: 'Columns…' }));
-    expect(cmd.open).toHaveBeenCalledWith('columns');
+    await user.click(screen.getByRole('menuitem', { name: 'Lock schedule…' }));
+    expect(cmd.lock).toHaveBeenCalled();
+    for (const [item, kind] of [['Clear baseline…', 'clearBaseline'], ['Update project…', 'updateProject'],
+      ['Plan settings…', 'settings'], ['Delete plan…', 'deletePlan'], ['Columns…', 'columns']] as const) {
+      await user.click(screen.getByRole('button', { name: 'More ▾' }));
+      await user.click(screen.getByRole('menuitem', { name: item }));
+      expect(cmd.open).toHaveBeenLastCalledWith(kind);
+    }
   });
 
-  it('a locked plan offers Unlock schedule', async () => {
+  it('no baseline yet: Clear baseline is off, saying why', async () => {
+    const user = userEvent.setup();
+    render(<Bar plan={makePlan({ baseline_set_at: null })} cmd={commands()} />);
+    await user.click(screen.getByRole('button', { name: 'More ▾' }));
+    const clear = screen.getByRole('menuitem', { name: 'Clear baseline…' }) as HTMLButtonElement;
+    expect(clear.disabled).toBe(true);
+    expect(clear.textContent).toContain(NO_BASELINE_HINT);
+  });
+
+  it('a locked plan offers Unlock schedule; the baseline waits for it, Update project doesn’t', async () => {
     const user = userEvent.setup();
     const cmd = commands();
     render(<Bar plan={makePlan({ locked_at: '2026-10-27T12:00:00Z' })} cmd={cmd} />);
     await user.click(screen.getByRole('button', { name: 'More ▾' }));
+    const set = screen.getByRole('menuitem', { name: 'Set baseline…' }) as HTMLButtonElement;
+    expect(set.disabled).toBe(true);
+    expect(set.textContent).toContain(LOCKED_HINT);
+    expect((screen.getByRole('menuitem', { name: 'Update project…' }) as HTMLButtonElement).disabled).toBe(false);
     await user.click(screen.getByRole('menuitem', { name: 'Unlock schedule' }));
     expect(cmd.unlock).toHaveBeenCalled();
   });

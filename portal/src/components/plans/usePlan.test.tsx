@@ -735,6 +735,7 @@ describe('plan-level writes', () => {
     api.setBaseline.mockRejectedValueOnce(apiError(409, { code: 'baseline_exists', set_at: '2026-10-20T10:00:00Z' }));
     expect(await call(() => result.current.setBaseline(false))).toEqual({
       ok: false, kind: 'error', code: 'baseline_exists', message: 'This plan already has a baseline.',
+      setAt: '2026-10-20T10:00:00Z',
     });
     api.setBaseline.mockResolvedValueOnce(makePlan({ version: 6, baseline_set_at: '2026-10-28T10:00:00Z' }));
     expect(await call(() => result.current.setBaseline(true))).toEqual({ ok: true, notices: [], tempIds: {} });

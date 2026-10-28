@@ -31,11 +31,33 @@ export const CONSTRAINT_LABELS: Record<ConstraintType, string> = {
 };
 
 export const LOCKED_TITLE = 'Schedule locked — progress updates only';
-const NOTE_CHARS = 200;
+/** A note's tooltip: at most this much of it, the rest in Task Information. */
+const NOTE_CHARS = 400;
+const NOTE_LINES = 8;
 
 /** Text on one line: runs of whitespace (newlines too) become one space. */
 export function oneLine(text: string | null | undefined): string {
   return (text ?? '').replace(/\s+/g, ' ').trim();
+}
+
+/** A note as a tooltip shows it: its lines kept (spaces in a line and
+ *  runs of blank lines closed up), cut short with … past NOTE_LINES lines
+ *  or NOTE_CHARS characters. The whole note is in Task Information. */
+export function noteExcerpt(text: string | null | undefined): string {
+  const kept: string[] = [];
+  for (const raw of (text ?? '').split(/\r\n?|\n/)) {
+    const line = raw.replace(/[ \t]+/g, ' ').trim();
+    if (!line && (!kept.length || kept[kept.length - 1] === '')) continue;
+    kept.push(line);
+  }
+  while (kept.length && kept[kept.length - 1] === '') kept.pop();
+  let out = kept.slice(0, NOTE_LINES).join('\n');
+  let cut = kept.length > NOTE_LINES;
+  if (out.length > NOTE_CHARS) {
+    out = out.slice(0, NOTE_CHARS).trimEnd();
+    cut = true;
+  }
+  return cut ? `${out}…` : out;
 }
 
 function completeTitle(task: PlanTask, showTimes: boolean): string {
@@ -66,11 +88,9 @@ export function indicatorsOf(task: PlanTask, ctx: IndicatorContext): Indicator[]
       title: `Missed deadline: finishes ${day(task.finish)}, deadline ${day(task.deadline)}`,
     });
   }
-  const note = oneLine(task.notes);
-  if (note) {
-    const shown = note.length > NOTE_CHARS ? `${note.slice(0, NOTE_CHARS).trimEnd()}…` : note;
-    out.push({ kind: 'note', title: `Notes: ${shown}` });
-  }
+  const note = noteExcerpt(task.notes);
+  // a note of several lines starts on its own line
+  if (note) out.push({ kind: 'note', title: note.includes('\n') ? `Notes:\n${note}` : `Notes: ${note}` });
   if (ctx.locked) out.push({ kind: 'locked', title: LOCKED_TITLE });
   return out;
 }

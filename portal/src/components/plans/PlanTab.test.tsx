@@ -328,16 +328,14 @@ describe('full screen', () => {
     api.getPlan.mockResolvedValueOnce(makePlan());
     const { container } = renderTab();
     await user.click(await screen.findByRole('button', { name: 'Full screen' }, { timeout: 3000 }));
-    // any dialog over the tab: a stand-in scrim like every PlanModal's
-    const scrim = document.createElement('div');
-    scrim.className = 'modal-scrim';
-    document.body.appendChild(scrim);
-    try {
-      await user.keyboard('{Escape}');
-      expect(root(container).classList.contains('pln-fullscreen')).toBe(true);
-    } finally {
-      scrim.remove();
-    }
+    // a real dialog over the tab: More › Plan settings…
+    await user.click(screen.getByRole('button', { name: 'More ▾' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Plan settings…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Plan settings' });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(root(container).classList.contains('pln-fullscreen')).toBe(true);
     await user.keyboard('{Escape}');
     expect(root(container).classList.contains('pln-fullscreen')).toBe(false);
   });

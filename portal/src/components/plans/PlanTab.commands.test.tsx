@@ -3,7 +3,7 @@
  * The plan tab's commands end to end (PlanTab + usePlan + usePlanCommands
  * against a mocked lib/plans/api): the MS Project keys on the sheet and
  * not in an editor (Review Focus 3), the toolbar, Delete's confirm, the
- * completion prompt (Ruling B2), copy, and a paste that adds rows sending
+ * completion check (Ruling B2), copy, and a paste that adds rows sending
  * two batches that one Undo takes back (Ruling B3).
  */
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -75,6 +75,11 @@ const cellOf = (name: string, col: string) => rowOf(name).querySelector(`[data-c
 const blankCell = (col: string) => grid().querySelector(`[data-blank] [data-col="${col}"]`) as HTMLElement;
 const sent = (call = 0): Op[] => api.postOps.mock.calls[call]?.[2];
 const tool = (name: string) => within(screen.getByRole('toolbar', { name: 'Project plan' })).getByRole('button', { name });
+/** The completion check open now, and its Complete. */
+const check = () => screen.findByRole('dialog', { name: 'Confirm completion' });
+async function complete() {
+  fireEvent.click(within(await check()).getByRole('button', { name: 'Complete' }));
+}
 
 async function ready(plan: Plan = plan3()) {
   api.getPlan.mockResolvedValueOnce(plan);
@@ -194,7 +199,7 @@ describe('the toolbar', () => {
     expect(cellOf('Go live', 'name').getAttribute('aria-selected')).toBe('true');
   });
 
-  it('100% goes through the completion prompt; Complete anyway resends with confirm', async () => {
+  it('100% goes through the completion check; Complete resends with confirm', async () => {
     const user = await ready();
     api.postOps.mockRejectedValueOnce(new ApiError(409, 'completion_confirm', {
       code: 'completion_confirm', will_complete: [],
@@ -202,12 +207,27 @@ describe('the toolbar', () => {
     }));
     await user.click(cellOf('Pack', 'name'));
     await user.click(tool('100% Complete'));
-    await waitFor(() => expect(toast).toHaveBeenCalledWith('Task 1 comes before it and isn’t complete yet.',
-      expect.objectContaining({ label: 'Complete anyway' })));
+    expect(within(await check()).getByText('Survey')).toBeTruthy();
+    expect(toast).not.toHaveBeenCalled();
     api.postOps.mockResolvedValueOnce(makeOpsResult());
-    act(() => toast.mock.calls[0][1].onClick());
+    await complete();
     await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(2));
     expect(sent(1)).toEqual([{ op: 'set_percent', ids: ['b'], percent: 100, confirm: true }]);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('Mark on Track blocked: Go to task selects the blocker and scrolls the chart to it', async () => {
+    const user = await ready();
+    api.postOps.mockRejectedValueOnce(new ApiError(409, 'completion_blocked', {
+      code: 'completion_blocked', blockers: [{ task_id: 'a', display_id: 1, name: 'Survey', reason: 'predecessor' }],
+    }));
+    await user.click(cellOf('Go live', 'name'));
+    await user.click(tool('Mark on Track'));
+    const blocked = await screen.findByRole('dialog', { name: 'Can’t complete yet' });
+    await user.click(within(blocked).getByRole('button', { name: 'Go to task 1' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() => expect(cellOf('Survey', 'name').getAttribute('aria-selected')).toBe('true'));
+    expect(document.activeElement).toBe(grid());
   });
 
   it('a click on a command hands focus back to the sheet', async () => {
@@ -390,12 +410,11 @@ describe('copy and paste', () => {
       open_predecessors: [{ task_id: 'a', display_id: 1, name: 'Survey', reason: 'predecessor' }],
     }));
     fireEvent.paste(grid(), { clipboardData: { getData: () => 'Crate\t2d\t\t\t3\r\n' } });
-    await waitFor(() => expect(toast).toHaveBeenCalledWith('Task 1 comes before it and isn’t complete yet.',
-      expect.objectContaining({ label: 'Complete anyway' })));
+    await check();
     expect(api.postOps).toHaveBeenCalledTimes(1);
     pasteRowWithLinkAnswer();
     api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 7, inverse: [makeRestore('two')] }));
-    await act(async () => { toast.mock.calls.at(-1)![1].onClick(); });
+    await complete();
     await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(3));
     expect(sent(1)).toEqual(sent(0));
     // the second batch went too, by the new id, into the paste's one step
@@ -412,7 +431,7 @@ describe('copy and paste', () => {
     }));
   }
 
-  it('% over existing rows and new rows: the check stops the last batch; Complete anyway finishes the one paste', async () => {
+  it('% over existing rows and new rows: the check stops the last batch; Complete finishes the one paste', async () => {
     const user = await ready();
     await user.click(cellOf('Go live', 'percent'));
     api.postOps.mockImplementationOnce(async (_plan: string, _v: number, ops: Op[]) => makeOpsResult({
@@ -433,11 +452,10 @@ describe('copy and paste', () => {
       { op: 'set_percent', ids: ['c'], percent: 100 },
       { op: 'set_percent', ids: ['n1'], percent: 50 },
     ]);
-    await waitFor(() => expect(toast).toHaveBeenCalledWith(
-      'Rows were added. Task 1 comes before it and isn’t complete yet.',
-      expect.objectContaining({ label: 'Complete anyway' })));
+    // the dialog says the rows went in and the rest waits
+    expect(within(await check()).getByText('Rows were added. The rest waits on this check.')).toBeTruthy();
     api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 7, inverse: [makeRestore('two')] }));
-    await act(async () => { toast.mock.calls.at(-1)![1].onClick(); });
+    await complete();
     await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(3));
     expect(api.postOps.mock.calls[2][1]).toBe(6);
     expect(sent(2)).toEqual([
@@ -456,6 +474,25 @@ describe('copy and paste', () => {
     await waitFor(() => expect(tool('Undo').getAttribute('aria-disabled')).toBe('true'));
   });
 
+  it('a paste’s last batch the rules block: the check says the rows went in, with Go to task', async () => {
+    const user = await ready();
+    await user.click(cellOf('Go live', 'percent'));
+    api.postOps.mockImplementationOnce(async (_plan: string, _v: number, ops: Op[]) => makeOpsResult({
+      version: 6, inverse: [makeRestore('one')],
+      temp_ids: { [(ops[0] as AddTaskOp).temp_id!]: 'n1' },
+      tasks: [makeTask('n1', { display_id: 4, wbs: '4', position: 3, name: '' })],
+      order: ['a', 'b', 'c', 'n1'],
+    }));
+    api.postOps.mockRejectedValueOnce(new ApiError(409, 'completion_blocked', {
+      code: 'completion_blocked', blockers: [{ task_id: 'a', display_id: 1, name: 'Survey', reason: 'predecessor' }],
+    }));
+    fireEvent.paste(grid(), { clipboardData: { getData: () => '100%\r\n50%\r\n' } });
+    const blocked = await screen.findByRole('dialog', { name: 'Can’t complete yet' });
+    expect(within(blocked).getByText('Rows were added. The rest waits until these tasks are complete.')).toBeTruthy();
+    expect(within(blocked).getByRole('button', { name: 'Go to task 1' })).toBeTruthy();
+    expect(toast).not.toHaveBeenCalled();
+  });
+
   it('a one-batch paste the check stops (100% on a row) resends that batch with confirm, as one step', async () => {
     const user = await ready();
     await user.click(cellOf('Pack', 'percent'));
@@ -464,10 +501,9 @@ describe('copy and paste', () => {
       open_predecessors: [{ task_id: 'a', display_id: 1, name: 'Survey', reason: 'predecessor' }],
     }));
     fireEvent.paste(grid(), { clipboardData: { getData: () => '100\r\n' } });
-    await waitFor(() => expect(toast).toHaveBeenCalledWith('Task 1 comes before it and isn’t complete yet.',
-      expect.objectContaining({ label: 'Complete anyway' })));
+    await check();
     api.postOps.mockResolvedValueOnce(makeOpsResult({ inverse: [makeRestore('done')] }));
-    await act(async () => { toast.mock.calls.at(-1)![1].onClick(); });
+    await complete();
     await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(2));
     expect(sent(1)).toEqual([{ op: 'set_percent', ids: ['b'], percent: 100, confirm: true }]);
     await waitFor(() => expect(tool('Undo').title).toBe('Undo Paste (Ctrl+Z)'));

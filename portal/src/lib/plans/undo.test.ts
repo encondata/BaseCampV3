@@ -105,7 +105,7 @@ describe('UndoStack', () => {
     expect(paste).toEqual(expect.any(Number));
     expect(stack.join(batch('links'), 'Paste', paste)).toBe(paste);
     stack.push(batch('rename'), 'Edit Task Name');
-    // the paste is no longer on top: its late batch (Complete anyway) stands alone
+    // the paste is no longer on top: its late batch (the check's Complete) stands alone
     const late = stack.join(batch('percent'), 'Paste', paste);
     expect(late).not.toBe(paste);
     expect(tags(stack.undo())).toEqual(['percent']);

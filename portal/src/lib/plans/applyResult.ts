@@ -17,8 +17,9 @@ export type ApplyResult =
   | { ok: false; kind: 'blocked'; blockers: CompletionBlocker[] }
   /** `reloaded`: on a `plan_changed` the caller words itself (a paste's
    *  second batch), whether the plan was reloaded; `message` then says
-   *  why not. */
-  | { ok: false; kind: 'error'; message: string; code: string; taskIds?: string[]; reloaded?: boolean };
+   *  why not. `setAt`: on `baseline_exists`, the instant the baseline
+   *  in the way was set. */
+  | { ok: false; kind: 'error'; message: string; code: string; taskIds?: string[]; reloaded?: boolean; setAt?: string };
 
 /** A failed write as an ApplyResult. A 409 `plan_changed` reads as a plain
  *  error here; the hook reloads before it answers one. */
@@ -40,6 +41,7 @@ export function failureOf(err: unknown): ApplyResult {
     ok: false, kind: 'error', message: planErrorText(err),
     code: typeof code === 'string' ? code : 'unknown_error',
     ...(taskIds ? { taskIds } : {}),
+    ...(detail?.code === 'baseline_exists' && detail.set_at ? { setAt: detail.set_at } : {}),
   };
 }
 

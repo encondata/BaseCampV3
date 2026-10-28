@@ -38,7 +38,7 @@
  *   reads the same at any scroll.
  * - What letting go answers is said as everywhere else (useApplyAnswer): a
  *   constraint the move added as a toast with Undo, a completion the rules
- *   stopped to the completion prompt, a refusal (a link cycle, naming its
+ *   stopped to the completion check, a refusal (a link cycle, naming its
  *   tasks' IDs) as a toast.
  */
 import {
@@ -59,7 +59,7 @@ import {
 } from '../../lib/plans/ganttGeometry';
 import type { BarBox, Fact } from '../../lib/plans/ganttView';
 import { planUnits } from '../../lib/plans/merge';
-import { useApplyAnswer } from './useCompletionPrompt';
+import { useApplyAnswer } from './useCompletion';
 import type { PlanController } from './usePlan';
 
 /** What the chart's drags may do here. */
@@ -181,7 +181,7 @@ interface Session {
 const taskName = (t: PlanTask): string => t.name || 'Untitled task';
 
 export function useGanttDrag(o: Options): GanttDrag {
-  const answer = useApplyAnswer(o.ctl);
+  const answer = useApplyAnswer();
   const toast = useToast();
   const store = useMemo(makeStore, []);
   const latest = useRef({ ...o, answer, toast });

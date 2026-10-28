@@ -86,7 +86,7 @@ const FIELD_LABELS: Record<string, string> = {
 
 /** The plan settings a `bad_field` names (`settings.<path>` from a PATCH,
  *  or the bare key from the system settings). */
-const SETTING_LABELS: Record<string, string> = {
+export const SETTING_LABELS: Record<string, string> = {
   honor_constraints: 'Honor constraints',
   critical_slack_days: 'Critical slack',
   default_task_mode: 'Default task mode',

@@ -4,7 +4,7 @@
  * F2, double-click, Enter / Tab / Shift+Tab commit and move, Esc cancels,
  * arrows move), the blank new-task row, the cell editors (text, date,
  * ComboBox selects, the Resource Names picker), row-number selection, the
- * locked and read-only rules, notices and the completion prompt.
+ * locked and read-only rules, notices and the completion check.
  *
  * Review Focus 1: an edit the API rejects leaves the cell showing its old
  * value with the error under it, never a phantom new value.
@@ -95,7 +95,9 @@ const active = () => {
   const row = cell.closest('[role="row"]') as HTMLElement;
   return `${row.hasAttribute('data-blank') ? 'blank' : row.querySelector('[data-col="name"]')?.textContent}/${cell.getAttribute('data-col')}`;
 };
-const editor = (label: string) => screen.queryByRole('textbox', { name: label }) as HTMLInputElement | null;
+/** The sheet's own cell editor (not a dialog's field of the same name). */
+const editor = (label: string) => within(grid()).queryByRole('textbox', { name: label }) as HTMLInputElement | null;
+const taskInfo = () => screen.queryByRole('dialog', { name: 'Task Information' });
 const sentOps = (call = 0) => api.postOps.mock.calls[call]?.[2];
 
 async function ready(plan: Plan = plan3()) {
@@ -430,7 +432,9 @@ describe('fix round 1', () => {
     const tasks = tasks3().map((t) => (t.id === 'b' ? { ...t, notes: 'Call the dock\nthen pack' } : t));
     const user = await ready(plan3({ tasks }));
     const cell = cellOf('Pack', 'notes');
-    expect(cell.querySelector('[title]')?.getAttribute('title')).toBe('Multi-line note — edit in Task Information');
+    // the whole note on hover, and where to edit it
+    expect(cell.querySelector('[title]')?.getAttribute('title'))
+      .toBe('Call the dock\nthen pack\n\nMulti-line note — edit in Task Information');
     await user.dblClick(cell);
     expect(editor('Notes')).toBeNull();
     await user.dblClick(cellOf('Survey', 'notes'));
@@ -440,8 +444,8 @@ describe('fix round 1', () => {
   describe('Resource Names picker focus', () => {
     const withPeople = () => plan3({
       resources: [
-        { kind: 'person', id: 'p1', name: 'Dana Reyes', group: 'team', has_email: true, has_account: true },
-        { kind: 'person', id: 'p2', name: 'Lee Park', group: 'team', has_email: true, has_account: true },
+        { kind: 'person', id: 'p1', name: 'Dana Reyes', group: 'team', has_email: true, has_account: true, is_staff: true },
+        { kind: 'person', id: 'p2', name: 'Lee Park', group: 'team', has_email: true, has_account: true, is_staff: true },
       ],
     });
     const picker = () => screen.queryByRole('dialog', { name: 'Resource Names' });
@@ -531,8 +535,12 @@ describe('who may edit', () => {
     expect(editor('Duration')).toBeNull();
     await user.keyboard('{F2}');
     expect(editor('Duration')).toBeNull();
+    // a double-click on a cell that doesn't edit opens Task Information instead
     await user.dblClick(cellOf('Pack', 'duration'));
     expect(editor('Duration')).toBeNull();
+    expect((within(taskInfo()!).getByLabelText('Duration') as HTMLInputElement).disabled).toBe(true);
+    await user.keyboard('{Escape}');
+    expect(taskInfo()).toBeNull();
     api.postOps.mockResolvedValueOnce(makeOpsResult());
     await user.click(cellOf('Pack', 'percent'));
     await user.keyboard('5');
@@ -548,7 +556,9 @@ describe('who may edit', () => {
     await user.keyboard('x{F2}');
     expect(screen.queryByRole('textbox')).toBeNull();
     await user.dblClick(cellOf('Pack', 'percent'));
-    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(within(grid()).queryByRole('textbox')).toBeNull();
+    // Task Information instead, to read
+    expect(within(taskInfo()!).queryByRole('button', { name: 'OK' })).toBeNull();
   });
 
   it('a summary’s Duration does not open; its name does', async () => {
@@ -559,8 +569,11 @@ describe('who may edit', () => {
     const user = await ready(makePlan({ tasks }));
     await user.dblClick(cellOf('Prep', 'duration'));
     expect(editor('Duration')).toBeNull();
+    expect(taskInfo()).not.toBeNull();
+    await user.keyboard('{Escape}');
     await user.dblClick(cellOf('Prep', 'name'));
     expect(editor('Task Name')?.value).toBe('Prep');
+    expect(taskInfo()).toBeNull();
   });
 });
 
@@ -573,15 +586,15 @@ describe('% Complete and the completion rules', () => {
     }));
     await user.click(cellOf('Pack', 'percent'));
     await user.keyboard('100{Enter}');
-    await waitFor(() => expect(toast).toHaveBeenCalled());
+    const check = await screen.findByRole('dialog', { name: 'Confirm completion' });
     // the edit did not go through: no phantom 100%
     expect(editor('% Complete')).toBeNull();
     expect(cellOf('Pack', 'percent').textContent).toBe('0%');
-    const [message, action] = toast.mock.calls[0];
-    expect(message).toBe('Task 1 comes before it and isn’t complete yet.');
-    expect(action.label).toBe('Complete anyway');
+    expect(within(check).getByRole('region', { name: 'This predecessor isn’t complete yet' }).textContent)
+      .toContain('Survey');
+    expect(toast).not.toHaveBeenCalled();
     api.postOps.mockResolvedValueOnce(makeOpsResult({ tasks: [{ ...tasks3()[1], percent_complete: 100 }] }));
-    act(() => action.onClick());
+    await user.click(within(check).getByRole('button', { name: 'Complete' }));
     await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(2));
     expect(sentOps(1)).toEqual([{ op: 'set_percent', ids: ['b'], percent: 100, confirm: true }]);
     await waitFor(() => expect(cellOf('Pack', 'percent').textContent).toBe('100%'));
@@ -594,8 +607,13 @@ describe('% Complete and the completion rules', () => {
     }));
     await user.click(cellOf('Pack', 'percent'));
     await user.keyboard('100{Enter}');
-    await waitFor(() => expect(toast).toHaveBeenCalledWith('Some tasks have to be complete first. Check task 1.'));
+    const check = await screen.findByRole('dialog', { name: 'Can’t complete yet' });
+    expect(within(check).queryByRole('button', { name: 'Complete' })).toBeNull();
     expect(cellOf('Pack', 'percent').textContent).toBe('0%');
+    // Go to task: the blocker's row is selected, the dialog gone
+    await user.click(within(check).getByRole('button', { name: 'Go to task 1' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() => expect(active()).toBe('Survey/name'));
   });
 });
 
@@ -614,10 +632,10 @@ describe('select and Resource Names editors', () => {
   it('Resource Names lists the plan’s resources by group, notes who won’t get reminders, and saves', async () => {
     const plan = plan3({
       resources: [
-        { kind: 'partner', id: 'x1', name: 'Acme Freight', group: 'partner', has_email: true, has_account: false },
-        { kind: 'person', id: 'p3', name: 'Ari Moss', group: 'staff', has_email: true, has_account: true },
-        { kind: 'person', id: 'p1', name: 'Dana Reyes', group: 'team', has_email: true, has_account: true },
-        { kind: 'person', id: 'p2', name: 'Lee Park', group: 'team', has_email: false, has_account: false },
+        { kind: 'partner', id: 'x1', name: 'Acme Freight', group: 'partner', has_email: true, has_account: false, is_staff: false },
+        { kind: 'person', id: 'p3', name: 'Ari Moss', group: 'staff', has_email: true, has_account: true, is_staff: true },
+        { kind: 'person', id: 'p1', name: 'Dana Reyes', group: 'team', has_email: true, has_account: true, is_staff: true },
+        { kind: 'person', id: 'p2', name: 'Lee Park', group: 'team', has_email: false, has_account: false, is_staff: false },
       ],
     });
     const user = await ready(plan);

@@ -17,7 +17,11 @@
  *    is in Splitter.tsx). The splitter's place is the sheet pane's width,
  *    kept in localStorage `plans.split.v1`; Calendar and Board arrive in
  *    Plan C;
- *  - the dialogs host: one PlanModal-based dialog at a time (`PlanDialog`).
+ *  - the dialogs host: one PlanModal-based dialog at a time (`PlanDialog`),
+ *    and over it the completion check (useCompletion: every 100% path,
+ *    Task Information's and Update project's too, ends there). The check
+ *    reaches the sheet and the chart through CompletionContext; its Go to
+ *    task selects the task and scrolls it into view in both.
  *
  * The Gantt view's shared state lives here too (useSheetView.ts): the rows on
  * screen (the outline less collapsed subtasks; collapse state per plan in
@@ -51,17 +55,23 @@ import { canAddTasks } from '../../lib/plans/editOps';
 import { isPlanChanged, planErrorText } from '../../lib/plans/errors';
 import { MIN_SHEET_PX, maxSplit, readSplit, splitWidth, writeSplit } from '../../lib/plans/ganttView';
 import ColumnsModal from './ColumnsModal';
+import DeletePlanModal from './DeletePlanModal';
 import DeleteTasksModal from './DeleteTasksModal';
+import { ClearBaselineModal, LockModal, ReplaceBaselineModal } from './PlanConfirmModals';
 import PlanCreateModal, { type PlanInitiative } from './PlanCreateModal';
 import PlanEmptyState from './PlanEmptyState';
 import PlanGantt from './PlanGantt';
+import PlanSettingsModal from './PlanSettingsModal';
 import PlanSheet from './PlanSheet';
 import PlanToolbar, { useRovingToolbar } from './PlanToolbar';
 import ShortcutsModal from './ShortcutsModal';
 import Splitter, { SidePane } from './Splitter';
 import TaskDependencyModal from './TaskDependencyModal';
+import TaskInfoModal from './TaskInfoModal';
+import UpdateProjectModal from './UpdateProjectModal';
+import { CompletionContext, useCompletion } from './useCompletion';
 import { usePlan, type PlanController } from './usePlan';
-import { DIALOGS_READY, usePlanCommands, type PlanDialog } from './usePlanCommands';
+import { usePlanCommands, type PlanDialog } from './usePlanCommands';
 import { usePlanShortcuts } from './usePlanShortcuts';
 import { useSheetView } from './useSheetView';
 
@@ -205,7 +215,13 @@ export default function PlanTab({ initiativeId, initiative }: {
   const clipRef = useRef<HTMLTextAreaElement>(null);
   const rowHeight = Math.round(SHEET_ROW_PX * listScale(preferences?.list_size));
   const sheet = useSheetView(ctl, searchParams.get('task'), scrollRef, rowHeight);
-  const commands = usePlanCommands({ ctl, sheet, root: rootRef, clip: clipRef, openDialog: setDialog });
+  // the completion check's Go to task: the commands' (they come after it)
+  const goToRef = useRef<(taskId: string) => void>(() => {});
+  const completion = useCompletion(ctl, { onGoTo: (taskId) => goToRef.current(taskId) });
+  const commands = usePlanCommands({ ctl, sheet, root: rootRef, clip: clipRef, openDialog: setDialog, completion });
+  useLayoutEffect(() => {
+    goToRef.current = commands.goToTask;
+  });
   usePlanShortcuts(commands.handlers, { root: rootRef, enabled: ready && view === 'gantt' });
   useRovingToolbar(toolbarRef, ready);
   const split = useSplit(scrollRef, ready && view === 'gantt');
@@ -213,12 +229,11 @@ export default function PlanTab({ initiativeId, initiative }: {
   const scheduled = useMemo(() => ({ start: scheduledStart, end: scheduledEnd }), [scheduledStart, scheduledEnd]);
   const { zoomIn, zoomOut } = commands;
   const zoomStep = useCallback((dir: -1 | 1) => (dir < 0 ? zoomIn() : zoomOut()), [zoomIn, zoomOut]);
-  // the chart's link click and bar double-click; Task Information opens
-  // once it exists (Task 10 adds it to DIALOGS_READY), until then nothing
+  // the chart's link click and bar double-click, the sheet's double-click
+  // on a cell that doesn't edit (a row's number): Task Dependency, Task Information
   const openLink = useCallback((linkId: string) => setDialog({ kind: 'dependency', linkId }), []);
-  const openTaskInfo = useCallback((task: PlanTask) => {
-    if (DIALOGS_READY.has('taskInfo')) setDialog({ kind: 'taskInfo', taskId: task.id });
-  }, []);
+  const openTaskInfo = useCallback((task: PlanTask) => setDialog({ kind: 'taskInfo', taskId: task.id }), []);
+  const openTaskInfoById = useCallback((taskId: string) => setDialog({ kind: 'taskInfo', taskId }), []);
 
   const selectView = (next: PlanViewKey) => {
     setSearchParams((prev) => {
@@ -302,7 +317,7 @@ export default function PlanTab({ initiativeId, initiative }: {
                   <PlanSheet ctl={ctl} rows={sheet.rows} collapsed={sheet.collapsed} rowHeight={rowHeight}
                              scrollRef={scrollRef} sideScrollRef={sheetSideRef} selection={sheet.selection}
                              onSelect={sheet.select} onToggleCollapse={sheet.toggleCollapse}
-                             blankRow={canAddTasks(plan)} />
+                             blankRow={canAddTasks(plan)} onOpenInfo={openTaskInfoById} />
                 </SidePane>
                 <Splitter value={split.width} min={MIN_SHEET_PX} max={split.max} label="Resize the task sheet"
                           onChange={split.move} onCommit={split.save} />
@@ -321,6 +336,7 @@ export default function PlanTab({ initiativeId, initiative }: {
 
   return (
     <div className={`pln-tab${isFull ? ' pln-fullscreen' : ''}`} ref={rootRef}>
+      <CompletionContext.Provider value={completion}>
       {body}
 
       {/* the clipboard shortcuts' keystroke target (usePlanCommands): hidden but for that keystroke */}
@@ -337,7 +353,21 @@ export default function PlanTab({ initiativeId, initiative }: {
                           onConfirm={() => commands.confirmDelete(dialog)} />
       )}
       {dialog?.kind === 'dependency' && <TaskDependencyModal ctl={ctl} linkId={dialog.linkId} onClose={closeDialog} />}
-      {/* Task 10 renders taskInfo, setBaseline, clearBaseline, updateProject, settings and deletePlan */}
+      {dialog?.kind === 'taskInfo' && (
+        <TaskInfoModal key={dialog.taskId} ctl={ctl} taskId={dialog.taskId} tab={dialog.tab} onClose={closeDialog} />
+      )}
+      {dialog?.kind === 'replaceBaseline' && <ReplaceBaselineModal ctl={ctl} setAt={dialog.setAt} onClose={closeDialog} />}
+      {dialog?.kind === 'clearBaseline' && <ClearBaselineModal ctl={ctl} onClose={closeDialog} />}
+      {dialog?.kind === 'lock' && <LockModal ctl={ctl} onClose={closeDialog} />}
+      {dialog?.kind === 'updateProject' && <UpdateProjectModal ctl={ctl} onClose={closeDialog} />}
+      {dialog?.kind === 'settings' && <PlanSettingsModal ctl={ctl} onClose={closeDialog} />}
+      {dialog?.kind === 'deletePlan' && (
+        <DeletePlanModal ctl={ctl} initiativeName={initiative.name} onClose={closeDialog} />
+      )}
+
+      {/* the completion check, over any dialog it answers for */}
+      {completion.dialog}
+      </CompletionContext.Provider>
     </div>
   );
 }

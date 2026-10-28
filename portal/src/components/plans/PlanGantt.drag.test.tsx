@@ -55,6 +55,7 @@ vi.mock('../../lib/plans/api', async (importActual) => ({
 
 const { default: PlanTab } = await import('./PlanTab');
 const { default: PlanGantt } = await import('./PlanGantt');
+const { CompletionHost } = await import('./useCompletion');
 
 const INITIATIVE = { name: 'NAP11 Hall Migration', scheduled_start: '2026-11-14', scheduled_end: '2026-11-16' };
 const NO_WINDOW = { start: null, end: null };
@@ -136,11 +137,13 @@ function Harness({ plan, s, zoom = 'days', selection = EMPTY_SELECTION, onSelect
     undo: s.undo,
   } as unknown as PlanController;
   return (
-    <div ref={scrollRef} className="pln-panes">
-      <PlanGantt ctl={ctl} rows={plan.tasks.map((t) => t.id)} rowHeight={ROW} scrollRef={scrollRef} zoom={zoom}
-                 display={OFF} selection={selection} onSelect={onSelect} onLinkClick={onLinkClick}
-                 onBarDoubleClick={onBarDoubleClick} />
-    </div>
+    <CompletionHost ctl={ctl}>
+      <div ref={scrollRef} className="pln-panes">
+        <PlanGantt ctl={ctl} rows={plan.tasks.map((t) => t.id)} rowHeight={ROW} scrollRef={scrollRef} zoom={zoom}
+                   display={OFF} selection={selection} onSelect={onSelect} onLinkClick={onLinkClick}
+                   onBarDoubleClick={onBarDoubleClick} />
+      </div>
+    </CompletionHost>
   );
 }
 
@@ -441,8 +444,11 @@ describe('resizing and progress', () => {
     const left = clientAt(plan, '2026-11-03T08:00', 'hours');
     drag(barOf('b'), [left + 1, rowY(1)], [left + 200, rowY(1)]);
     expect(s.apply).toHaveBeenCalledWith([{ op: 'set_percent', ids: ['b'], percent: 100 }], '100% Complete');
-    await waitFor(() => expect(toast).toHaveBeenCalledWith(
-      'Task 1 comes before it and isn’t complete yet.', expect.objectContaining({ label: 'Complete anyway' })));
+    const check = await screen.findByRole('dialog', { name: 'Confirm completion' });
+    expect(within(check).getByText('Survey')).toBeTruthy();
+    fireEvent.click(within(check).getByRole('button', { name: 'Complete' }));
+    await waitFor(() => expect(s.apply).toHaveBeenLastCalledWith([{ op: 'set_percent', ids: ['b'], percent: 100 }],
+      '100% Complete', { confirm: true }));
   });
 });
 
@@ -717,10 +723,11 @@ describe('in the tab', () => {
     expect(sentOps()).toEqual([{ op: 'add_link', predecessor_id: 'b', successor_id: 'a', link_type: 'FS' }]);
   });
 
-  it('a double-click on a bar opens nothing yet', async () => {
+  it('a double-click on a bar opens Task Information for its task', async () => {
     await ready(plan3());
     fireEvent.doubleClick(barOf('c'));
-    expect(screen.queryByRole('dialog')).toBeNull();
+    const dialog = await screen.findByRole('dialog', { name: 'Task Information' });
+    expect((within(dialog).getByLabelText('Task Name') as HTMLInputElement).value).toBe('Move');
   });
 });
 

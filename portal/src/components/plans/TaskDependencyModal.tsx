@@ -22,7 +22,7 @@ import { planUnits } from '../../lib/plans/merge';
 import { LINK_TYPES, type LinkType } from '../../lib/plans/predecessors';
 import ComboBox, { type ComboOption } from '../ComboBox';
 import PlanModal from './PlanModal';
-import { SAID_ALREADY } from './useCompletionPrompt';
+import { SAID_ALREADY } from './useCompletion';
 import type { PlanController } from './usePlan';
 
 import '../../styles/profile.css';   // .pf-form, .btn-solid

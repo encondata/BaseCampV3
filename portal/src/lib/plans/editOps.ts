@@ -248,7 +248,7 @@ export function canAddTasks(plan: PlanAccess): boolean {
 }
 
 /** A note with line breaks: the one-line cell editor would flatten it, so
- *  it is edited in Task Information instead (Task 10). */
+ *  it is edited in Task Information instead. */
 export function multiLineNote(task: Pick<PlanTask, 'notes'>): boolean {
   return /[\r\n]/.test(task.notes ?? '');
 }

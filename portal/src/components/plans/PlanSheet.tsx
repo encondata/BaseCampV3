@@ -18,7 +18,10 @@
  * Editing is a spreadsheet's (lib/plans/sheetKeys): the grid takes focus
  * and keeps the active cell as `aria-activedescendant`; arrows, Enter and
  * Tab move it; typing, F2 or a double-click open the cell's editor
- * (CellEditor, state in useSheetEditing), which sits over the cell.
+ * (CellEditor, state in useSheetEditing), which sits over the cell. A
+ * double-click on a cell that doesn't edit — a row's number, a summary's
+ * dates, any cell for someone who may only read — opens Task Information
+ * (`onOpenInfo`), as a double-click does in MS Project.
  */
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
@@ -33,7 +36,7 @@ import {
   saveColumnPrefs, subscribeColumnPrefs, type PlanColumn, type SheetContext,
 } from '../../lib/plans/columns';
 import { MULTILINE_NOTE_TITLE, multiLineNote } from '../../lib/plans/editOps';
-import { indicatorsOf, type IndicatorKind } from '../../lib/plans/indicators';
+import { indicatorsOf, noteExcerpt, type IndicatorKind } from '../../lib/plans/indicators';
 import { planUnits } from '../../lib/plans/merge';
 import { extendRows, moveActive, selectCell, toggleRow, type Selection } from '../../lib/plans/selection';
 import { gridKey, keyLike, scrollToShow } from '../../lib/plans/sheetKeys';
@@ -62,6 +65,8 @@ export interface PlanSheetProps {
   onToggleCollapse(id: string): void;
   /** The blank new-task row is shown (editOps.canAddTasks). */
   blankRow: boolean;
+  /** Task Information for the task (a double-click on a cell that doesn't edit). */
+  onOpenInfo?(taskId: string): void;
 }
 
 /** What a mousedown on a cell needs to know. */
@@ -75,7 +80,7 @@ const NO_OPTIONS: ComboOption[] = [];
 const alignClass = (col: PlanColumn) => (col.align === 'start' ? '' : ` pln-${col.align}`);
 
 export default function PlanSheet({
-  ctl, rows, collapsed, rowHeight, scrollRef, sideScrollRef, selection, onSelect, onToggleCollapse, blankRow,
+  ctl, rows, collapsed, rowHeight, scrollRef, sideScrollRef, selection, onSelect, onToggleCollapse, blankRow, onOpenInfo,
 }: PlanSheetProps) {
   const plan = ctl.plan;
   const prefs = useSyncExternalStore(subscribeColumnPrefs, columnPrefsSnapshot);
@@ -129,9 +134,9 @@ export default function PlanSheet({
   const editing = useSheetEditing({ ctl, columns, rows, blankRow, selection, onSelect, focusGrid });
 
   // what the row callbacks read, so they keep one identity (rows are memoized)
-  const latest = useRef({ selection, rows, onSelect, editing });
+  const latest = useRef({ selection, rows, onSelect, editing, onOpenInfo });
   useLayoutEffect(() => {
-    latest.current = { selection, rows, onSelect, editing };
+    latest.current = { selection, rows, onSelect, editing, onOpenInfo };
   });
   const onCellDown = useCallback((id: string | 'blank', col: string, e: CellPress) => {
     if (e.button !== 0) return;
@@ -149,7 +154,9 @@ export default function PlanSheet({
     select(selectCell(id, col));
   }, []);
   const onCellOpen = useCallback((id: string | 'blank', col: string) => {
-    latest.current.editing.open(id, col, null);
+    const { editing: cells, onOpenInfo: info } = latest.current;
+    if (cells.open(id, col, null) || id === 'blank' || cells.editor) return;
+    info?.(id);
   }, []);
 
   // Tab into a sheet with nothing selected: the first row's Task Name is
@@ -403,8 +410,9 @@ function CellContent({ col, task, ctx, collapsed, onToggleCollapse }: {
       const text = col.value(task, ctx);
       if (!text) return null;
       const kind = col.text === 'mono' ? 'mono' : col.text === 'sub' ? 'cell-sub' : 'cell-top';
-      // a multi-line note is edited in Task Information, not this cell
-      const title = col.key === 'notes' && multiLineNote(task) ? MULTILINE_NOTE_TITLE
+      // a multi-line note is edited in Task Information, not this cell: its
+      // lines show on hover, with where to edit it
+      const title = col.key === 'notes' && multiLineNote(task) ? `${noteExcerpt(task.notes)}\n\n${MULTILINE_NOTE_TITLE}`
         : kind !== 'mono' || TITLED.has(col.key) ? text : undefined;
       return <span className={`${kind} cell-line`} title={title}>{text}</span>;
     }

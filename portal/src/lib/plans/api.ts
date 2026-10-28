@@ -95,7 +95,8 @@ export interface Assignee {
 }
 
 /** One entry of the Resource Names picker (ResourceOut). A person on the
- *  team who is also staff is listed once, as team. */
+ *  team who is also staff is listed once, as team; `is_staff` still says
+ *  so (only staff can own a plan). */
 export interface PlanResource {
   kind: ResourceKind;
   id: string;
@@ -103,6 +104,7 @@ export interface PlanResource {
   group: 'team' | 'staff' | 'partner';
   has_email: boolean;
   has_account: boolean;
+  is_staff: boolean;
 }
 
 export interface PlanLink {
@@ -175,6 +177,8 @@ export interface Plan {
   calendar: PlanCalendar;
   settings_overrides: PlanSettingsOverrides;
   settings: PlanSettings;
+  /** The system values the plan inherits ("Use system default (<value>)"). */
+  system_settings: PlanSettings;
   owner_id: string | null;
   owner_name: string | null;
   locked_at: string | null;           // instant
