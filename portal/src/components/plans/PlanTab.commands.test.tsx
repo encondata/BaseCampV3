@@ -343,6 +343,75 @@ describe('copy and paste', () => {
     await waitFor(() => expect(tool('Undo').getAttribute('aria-disabled')).toBe('true'));
   });
 
+  /** A paste of one new row with Predecessors: rows, then their links. */
+  function pasteRowWithLink() {
+    api.postOps.mockImplementationOnce(async (_plan: string, _v: number, ops: Op[]) => makeOpsResult({
+      version: 6, inverse: [makeRestore('one')],
+      temp_ids: { [(ops[0] as AddTaskOp).temp_id!]: 'n1' },
+      tasks: [makeTask('n1', { display_id: 4, wbs: '4', position: 3, name: 'Crate' })],
+      order: ['a', 'b', 'c', 'n1'],
+    }));
+    fireEvent.paste(grid(), { clipboardData: { getData: () => 'Crate\t2d\t\t\t3\r\n' } });
+  }
+
+  it('a second batch someone else’s change stopped: one message, saying the plan was reloaded', async () => {
+    const user = await ready();
+    await user.click(blankCell('name'));
+    pasteRowWithLink();
+    api.postOps.mockRejectedValueOnce(new ApiError(409, 'plan_changed', { code: 'plan_changed', version: 9 }));
+    api.getPlan.mockResolvedValueOnce(plan3({ version: 9 }));
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
+    expect(toast).toHaveBeenCalledWith('Rows were added, but some values couldn’t be set: '
+      + 'someone else changed the plan, so it was reloaded.');
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(toast).toHaveBeenCalledTimes(1);
+  });
+
+  it('a second batch whose reload failed: one message, not claiming a reload', async () => {
+    const user = await ready();
+    await user.click(blankCell('name'));
+    pasteRowWithLink();
+    api.postOps.mockRejectedValueOnce(new ApiError(409, 'plan_changed', { code: 'plan_changed', version: 9 }));
+    api.getPlan.mockRejectedValueOnce(new ApiError(503, 'unavailable', { code: 'unavailable' }, 'Service unavailable'));
+    await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
+    const [message] = toast.mock.calls[0];
+    expect(message).toMatch(/^Rows were added, but some values couldn’t be set: someone else changed the plan, and reloading it failed/);
+    expect(message).not.toContain('so it was reloaded');
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(toast).toHaveBeenCalledTimes(1);
+  });
+
+  it('should the check ever stop a two-batch command’s first batch, Complete resends both batches', async () => {
+    const user = await ready();
+    await user.click(blankCell('name'));
+    api.postOps.mockRejectedValueOnce(new ApiError(409, 'completion_confirm', {
+      code: 'completion_confirm', will_complete: [],
+      open_predecessors: [{ task_id: 'a', display_id: 1, name: 'Survey', reason: 'predecessor' }],
+    }));
+    fireEvent.paste(grid(), { clipboardData: { getData: () => 'Crate\t2d\t\t\t3\r\n' } });
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('Task 1 comes before it and isn’t complete yet.',
+      expect.objectContaining({ label: 'Complete anyway' })));
+    expect(api.postOps).toHaveBeenCalledTimes(1);
+    pasteRowWithLinkAnswer();
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 7, inverse: [makeRestore('two')] }));
+    await act(async () => { toast.mock.calls.at(-1)![1].onClick(); });
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(3));
+    expect(sent(1)).toEqual(sent(0));
+    // the second batch went too, by the new id, into the paste's one step
+    expect(sent(2)).toEqual([{ op: 'update_task', id: 'n1', fields: { predecessors: '3' } }]);
+    await waitFor(() => expect(tool('Undo').title).toBe('Undo Paste (Ctrl+Z)'));
+  });
+
+  function pasteRowWithLinkAnswer() {
+    api.postOps.mockImplementationOnce(async (_plan: string, _v: number, ops: Op[]) => makeOpsResult({
+      version: 6, inverse: [makeRestore('one')],
+      temp_ids: { [(ops[0] as AddTaskOp).temp_id!]: 'n1' },
+      tasks: [makeTask('n1', { display_id: 4, wbs: '4', position: 3, name: 'Crate' })],
+      order: ['a', 'b', 'c', 'n1'],
+    }));
+  }
+
   it('% over existing rows and new rows: the check stops the last batch; Complete anyway finishes the one paste', async () => {
     const user = await ready();
     await user.click(cellOf('Go live', 'percent'));
@@ -486,24 +555,46 @@ describe('copy and paste', () => {
     expect(api.postOps).toHaveBeenCalledTimes(2);
   });
 
-  it('text the person selected (the lock banner) copies as text: the sheet leaves it to the browser', async () => {
-    const user = await ready(plan3({ locked_at: '2026-10-27T12:00:00Z', locked_by_name: 'Dana Reyes' }));
-    await user.click(cellOf('Pack', 'name'));
+  /** Selects the lock banner's text. A drag across it also takes focus
+   *  off the sheet (`blur`: the banner itself takes none). */
+  function selectBanner(blur: boolean): HTMLElement {
     const banner = document.querySelector('.pln-lock-text') as HTMLElement;
     const range = document.createRange();
     range.selectNodeContents(banner);
     window.getSelection()!.removeAllRanges();
     window.getSelection()!.addRange(range);
-    // the shortcut steps aside...
-    const key = new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true, cancelable: true });
-    grid().dispatchEvent(key);
-    expect(clipboard.writeText).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(grid());
-    // ...and so does the copy event
+    if (blur) (document.activeElement as HTMLElement | null)?.blur();
+    return banner;
+  }
+
+  it('text the person selected (the lock banner) copies as text: the sheet leaves it to the browser', async () => {
+    const user = await ready(plan3({ locked_at: '2026-10-27T12:00:00Z', locked_by_name: 'Dana Reyes' }));
+    await user.click(cellOf('Pack', 'name'));
+    const banner = selectBanner(true);
+    expect(document.activeElement).toBe(document.body);
+    // the copy event, on the selection or on the sheet, is the browser's
     const setData = vi.fn();
     expect(fireEvent.copy(banner, { clipboardData: { setData } })).toBe(true);
     expect(fireEvent.copy(grid(), { clipboardData: { setData } })).toBe(true);
     expect(setData).not.toHaveBeenCalled();
+    expect(clipboard.writeText).not.toHaveBeenCalled();
+    window.getSelection()!.removeAllRanges();
+  });
+
+  it('a selection left in the banner doesn’t block ⌘C on a row once the sheet has focus again', async () => {
+    const user = await ready(plan3({ locked_at: '2026-10-27T12:00:00Z', locked_by_name: 'Dana Reyes' }));
+    // the person was on a row, with the banner's text still selected from before
+    await user.click(cellOf('Pack', 'name'));
+    selectBanner(false);
+    expect(document.activeElement).toBe(grid());
+    expect(window.getSelection()!.toString()).not.toBe('');
+    fireEvent.keyDown(grid(), { key: 'c', ctrlKey: true });
+    expect(clipboard.writeText).toHaveBeenCalledTimes(1);
+    expect(parseClipboard(clipboard.writeText.mock.calls[0][0] as string)[0][3]).toBe('Pack');
+    // and the browser's copy event, at the hidden field, carries the row
+    const setData = vi.fn();
+    fireEvent.copy(document.activeElement!, { clipboardData: { setData } });
+    expect(setData).toHaveBeenCalledWith('text/plain', expect.stringContaining('\tPack\t'));
     window.getSelection()!.removeAllRanges();
   });
 

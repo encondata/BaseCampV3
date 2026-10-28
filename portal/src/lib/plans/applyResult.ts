@@ -15,7 +15,10 @@ export type ApplyResult =
   | { ok: true; notices: Notice[]; tempIds: Record<string, string>; undoStep?: number | null }
   | { ok: false; kind: 'confirm'; willComplete: CompletionBlocker[]; openPredecessors: CompletionBlocker[] }
   | { ok: false; kind: 'blocked'; blockers: CompletionBlocker[] }
-  | { ok: false; kind: 'error'; message: string; code: string; taskIds?: string[] };
+  /** `reloaded`: on a `plan_changed` the caller words itself (a paste's
+   *  second batch), whether the plan was reloaded; `message` then says
+   *  why not. */
+  | { ok: false; kind: 'error'; message: string; code: string; taskIds?: string[]; reloaded?: boolean };
 
 /** A failed write as an ApplyResult. A 409 `plan_changed` reads as a plain
  *  error here; the hook reloads before it answers one. */

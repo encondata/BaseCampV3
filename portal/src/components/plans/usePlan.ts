@@ -61,14 +61,16 @@ export type PlanStatus = 'loading' | 'none' | 'ready' | 'error';
 export interface ApplyOptions {
   /** Resend after a `completion_confirm`: every completing op confirms. */
   confirm?: boolean;
-  /** Undo this batch with the step on top (a paste's second batch); with a
-   *  step id (ApplyResult `undoStep`), only while that step is still on
-   *  top, else the batch is a step of its own. */
-  joinUndo?: boolean | number;
+  /** Undo this batch with the step that id names (ApplyResult `undoStep`:
+   *  a paste's second batch, resent after its completion check), only
+   *  while that step is still on top; else, or with null, the batch is a
+   *  step of its own. */
+  joinUndo?: number | null;
 }
 
-/** What `applyThen` answers: the first batch's result, and the second's
- *  (null when it wasn't sent: the first failed, or there was nothing). */
+/** What `applyThen` answers: the first batch's result, and the second's:
+ *  null when there was nothing to send (the first failed, or `then` built
+ *  nothing), `gone` when the tab moved on before it could go. */
 export interface ApplyThenResult {
   first: ApplyResult;
   second: ApplyResult | null;
@@ -128,7 +130,7 @@ const OUT_OF_REACH = new Set(['initiative_not_found', 'plan_not_found', 'forbidd
 
 const OK: ApplyResult = { ok: true, notices: [], tempIds: {} };
 const NO_PLAN: ApplyResult = { ok: false, kind: 'error', code: 'no_plan', message: PLAN_ERRORS.no_plan };
-const PLAN_CHANGED: ApplyResult = {
+const PLAN_CHANGED: Extract<ApplyResult, { kind: 'error' }> = {
   ok: false, kind: 'error', code: 'plan_changed', message: PLAN_CHANGED_TOAST,
 };
 /** What a write answers once the tab has moved on to another plan. */
@@ -244,9 +246,9 @@ export function usePlan(initiativeId: string): PlanController {
     }
 
     /** Reads the plan; true when what is on screen was replaced. A passing
-     *  failure (the network, a 500) keeps a plan already shown and says so;
-     *  one that puts it out of reach does not. */
-    async function fetchPlan(alive: () => boolean): Promise<boolean> {
+     *  failure (the network, a 500) keeps a plan already shown and says so
+     *  (to `say`, a toast by default); one that puts it out of reach does not. */
+    async function fetchPlan(alive: () => boolean, say?: (text: string) => void): Promise<boolean> {
       try {
         const plan = await getPlan(initiativeId);
         if (!alive()) return false;
@@ -264,7 +266,7 @@ export function usePlan(initiativeId: string): PlanController {
           return true;
         }
         if (viewRef.current && !OUT_OF_REACH.has(code)) {
-          toastRef.current(planErrorText(err));
+          (say ?? toastRef.current)(planErrorText(err));
           return false;
         }
         show(null);
@@ -279,29 +281,38 @@ export function usePlan(initiativeId: string): PlanController {
      *  typed against the old state too) — but only when it holds something
      *  new: the same plan at the same version (a manual reload with nothing
      *  changed) is the state those edits were typed against. */
-    async function refresh(ctx: Job): Promise<boolean> {
+    async function refresh(ctx: Job, say?: (text: string) => void): Promise<boolean> {
       forget();
       const before = viewRef.current?.plan ?? null;
-      const replaced = await fetchPlan(ctx.alive);
+      const replaced = await fetchPlan(ctx.alive, say);
       const after = viewRef.current?.plan ?? null;
       const same = before?.id === after?.id && before?.version === after?.version;
       if (replaced && !same) supersede();
       return replaced;
     }
 
-    /** Someone else changed the plan under a write: reload and say so. */
-    async function changedElsewhere(ctx: Job): Promise<void> {
-      if (!(await refresh(ctx)) || !ctx.alive()) return;
+    /** Someone else changed the plan under a write: reload and say so.
+     *  `quiet`: say nothing (the caller words it, a paste's second batch),
+     *  and answer what to say: null once reloaded, else why the reload
+     *  failed. */
+    async function changedElsewhere(ctx: Job, quiet = false): Promise<string | null> {
+      let why: string | null = null;
+      const replaced = await refresh(ctx, quiet ? (text) => { why = text; } : undefined);
+      if (!replaced || !ctx.alive()) return why ?? '';
       toastedEpochRef.current = epochRef.current;
-      toastRef.current(PLAN_CHANGED_TOAST);
+      if (!quiet) toastRef.current(PLAN_CHANGED_TOAST);
+      return null;
     }
 
-    /** A failed write's answer; plan_changed reloads first. */
-    async function failed(err: unknown, ctx: Job): Promise<ApplyResult> {
+    /** A failed write's answer; plan_changed reloads first. `quiet`: a
+     *  plan_changed is not toasted here but answered with `reloaded` and
+     *  the words for it, for the caller's one message. */
+    async function failed(err: unknown, ctx: Job, quiet = false): Promise<ApplyResult> {
       if (!ctx.alive()) return failureOf(err);
       if (isPlanChanged(err)) {
-        await changedElsewhere(ctx);
-        return PLAN_CHANGED;
+        const why = await changedElsewhere(ctx, quiet);
+        if (!quiet) return PLAN_CHANGED;
+        return why === null ? { ...PLAN_CHANGED, reloaded: true } : { ...PLAN_CHANGED, message: why, reloaded: false };
       }
       return failureOf(err);
     }
@@ -369,6 +380,7 @@ export function usePlan(initiativeId: string): PlanController {
      *  inverse handed to `remember` for undo. */
     async function opsWrite(
       ctx: Job, post: (sentAt: PlanView) => Promise<OpsResult>, remember: (inverse: Op[]) => number | null | void,
+      quiet = false,
     ): Promise<ApplyResult> {
       const sentAt = viewRef.current;
       if (!sentAt) return NO_PLAN;
@@ -376,7 +388,7 @@ export function usePlan(initiativeId: string): PlanController {
       try {
         out = await post(sentAt);
       } catch (err) {
-        return failed(err, ctx);
+        return failed(err, ctx, quiet);
       }
       let undoStep: number | null = null;
       if (ctx.alive()) {
@@ -387,13 +399,15 @@ export function usePlan(initiativeId: string): PlanController {
       return { ok: true, notices: out.notices, tempIds: out.temp_ids, undoStep };
     }
 
-    /** One batch posted and remembered for undo (`apply`'s, and each half of `applyThen`'s). */
-    const batchWrite = (ctx: Job, ops: Op[], label: string, opts: ApplyOptions) => opsWrite(
+    /** One batch posted and remembered for undo (`apply`'s, and each half
+     *  of `applyThen`'s). `quiet`: a plan_changed is the caller's to say. */
+    const batchWrite = (ctx: Job, ops: Op[], label: string, opts: ApplyOptions, quiet = false) => opsWrite(
       ctx,
       (at) => postOps(at.plan.id, at.plan.version, opts.confirm ? withConfirm(ops) : ops),
-      (inverse) => (opts.joinUndo === undefined || opts.joinUndo === false
+      (inverse) => (opts.joinUndo === undefined
         ? stackRef.current.push(inverse, label)
-        : stackRef.current.join(inverse, label, opts.joinUndo === true ? undefined : opts.joinUndo)),
+        : stackRef.current.join(inverse, label, opts.joinUndo)),
+      quiet,
     );
 
     /** Undo or redo: the step on top of that side, replayed. */
@@ -481,14 +495,18 @@ export function usePlan(initiativeId: string): PlanController {
             return { first: PLAN_CHANGED, second: null };
           }
           const first = await batchWrite(ctx, ops, label, opts);
-          if (!first.ok || !ctx.alive()) return { first, second: null };
+          if (!first.ok) return { first, second: null };
           const more = then(first);
           if (!more?.length) return { first, second: null };
+          // the tab moved on after the first went in: the second never goes,
+          // which the caller must not read as "nothing to send"
+          if (!ctx.alive()) return { first, second: GONE };
           // the same job: nothing of ours lands between, and the second
-          // batch goes into the first one's undo step
+          // batch goes into the first one's undo step. Its plan_changed is
+          // the command's to word (one message: rows in, the rest not)
           const second = await batchWrite(ctx, more, label, {
-            confirm: opts.confirm, joinUndo: first.undoStep ?? false,
-          });
+            confirm: opts.confirm, joinUndo: first.undoStep ?? null,
+          }, true);
           return { first, second };
         }, { first: GONE, second: null }),
 

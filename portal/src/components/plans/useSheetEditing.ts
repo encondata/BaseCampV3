@@ -249,7 +249,7 @@ export function useSheetEditing(o: Options): SheetEditing {
       }
       if (result.kind !== 'error') {
         close(refocus);
-        ask(result, edit.ops, label);
+        ask(result, () => latest.current.ctl.apply(edit.ops, label, { confirm: true }));
         return;
       }
       if (result.code === 'plan_changed' || result.code === 'gone' || !now.plan) {

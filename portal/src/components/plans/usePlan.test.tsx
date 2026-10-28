@@ -422,7 +422,7 @@ describe('grouped undo', () => {
     const newId = added.tempIds.t1;
     expect(newId).toBe('n');
     await call(() => result.current.apply(
-      [{ op: 'update_task', id: newId, fields: { predecessors: '1' } }], 'Paste', { joinUndo: true }));
+      [{ op: 'update_task', id: newId, fields: { predecessors: '1' } }], 'Paste', { joinUndo: added.undoStep ?? null }));
     expect(api.postOps.mock.calls[1][1]).toBe(6);
     expect(api.postOps.mock.calls[1][2]).toEqual([{ op: 'update_task', id: 'n', fields: { predecessors: '1' } }]);
     expect(result.current.undoLabel).toBe('Paste');
@@ -471,8 +471,9 @@ describe('grouped undo', () => {
     api.postOps
       .mockResolvedValueOnce(makeOpsResult({ version: 6, inverse: inv1 }))
       .mockResolvedValueOnce(makeOpsResult({ version: 7, inverse: inv2 }));
-    await call(() => result.current.apply(rename, 'Paste'));
-    await call(() => result.current.apply(rename, 'Paste', { joinUndo: true }));
+    const pasted = await call(() => result.current.apply(rename, 'Paste'));
+    if (!pasted.ok) throw new Error('paste failed');
+    await call(() => result.current.apply(rename, 'Paste', { joinUndo: pasted.undoStep ?? null }));
 
     const redo2 = [makeRestore('redo2')];
     api.postOps
@@ -569,6 +570,49 @@ describe('applyThen (a paste: rows, then what names them)', () => {
     expect(result.current.canUndo).toBe(false);
   });
 
+  it('a tab that moved on between the batches answers the second as gone, not as nothing to send', async () => {
+    const hook = await loaded();
+    const held = deferred<OpsResult>();
+    api.postOps.mockReturnValueOnce(held.promise);
+    let paste!: Promise<{ first: ApplyResult; second: ApplyResult | null }>;
+    act(() => { paste = hook.result.current.applyThen(add, 'Paste', linkNew); });
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    hook.unmount();
+    held.resolve(addResult());
+    const out = await paste;
+    expect(out.first.ok).toBe(true);
+    expect(out.second).toMatchObject({ ok: false, kind: 'error', code: 'gone' });
+    expect(api.postOps).toHaveBeenCalledTimes(1);
+  });
+
+  it('a second batch someone else’s change stopped reloads quietly and says so in its answer (one message)', async () => {
+    const { result } = await loaded();
+    api.postOps
+      .mockResolvedValueOnce(addResult())
+      .mockRejectedValueOnce(apiError(409, { code: 'plan_changed', version: 9 }));
+    api.getPlan.mockResolvedValueOnce(makePlan({ version: 9 }));
+    const out = await call(() => result.current.applyThen(add, 'Paste', linkNew));
+    expect(out.second).toMatchObject({ ok: false, kind: 'error', code: 'plan_changed', reloaded: true });
+    expect(result.current.plan?.version).toBe(9);
+    expect(result.current.canUndo).toBe(false);
+    // the caller words the paste's outcome: usePlan says nothing of its own
+    expect(toast).not.toHaveBeenCalled();
+  });
+
+  it('a second batch whose reload failed doesn’t claim it was reloaded, and toasts nothing itself', async () => {
+    const { result } = await loaded();
+    api.postOps
+      .mockResolvedValueOnce(addResult())
+      .mockRejectedValueOnce(apiError(409, { code: 'plan_changed', version: 9 }));
+    api.getPlan.mockRejectedValueOnce(apiError(500, { code: 'server_error' }));
+    const out = await call(() => result.current.applyThen(add, 'Paste', linkNew));
+    expect(out.second).toMatchObject({ ok: false, kind: 'error', code: 'plan_changed', reloaded: false });
+    expect(out.second && !out.second.ok && out.second.kind === 'error' && out.second.message).toBeTruthy();
+    expect(out.second && !out.second.ok && out.second.kind === 'error' && out.second.message)
+      .not.toBe('This plan was changed by someone else — reloaded.');
+    expect(toast).not.toHaveBeenCalled();
+  });
+
   it('a late batch joins the step it names only while that step is still on top', async () => {
     const { result } = await loaded();
     api.postOps
@@ -578,7 +622,7 @@ describe('applyThen (a paste: rows, then what names them)', () => {
     const first = await call(() => result.current.apply(rename, 'Paste'));
     if (!first.ok) throw new Error('paste failed');
     await call(() => result.current.apply(relink, 'Edit Predecessors'));
-    await call(() => result.current.apply(rename, 'Paste', { joinUndo: first.undoStep ?? false }));
+    await call(() => result.current.apply(rename, 'Paste', { joinUndo: first.undoStep ?? null }));
     // the paste's step isn't on top any more: the late batch is its own step
     api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 9 }));
     await call(() => result.current.undo());

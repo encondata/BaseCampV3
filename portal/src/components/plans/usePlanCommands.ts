@@ -45,7 +45,7 @@ import {
 } from '../../lib/plans/paste';
 import { EMPTY_SELECTION, selectCell, type Selection } from '../../lib/plans/selection';
 import { useApplyAnswer, useCompletionPrompt } from './useCompletionPrompt';
-import type { PlanController } from './usePlan';
+import type { PlanController, ThenOps } from './usePlan';
 import { keysBelongElsewhere, type PlanShortcutHandlers } from './usePlanShortcuts';
 
 /** Task 10's dialogs: wired to these kinds, rendered by PlanTab's host
@@ -84,8 +84,10 @@ interface PartWords {
   lead: string;
 }
 
+const capitalized = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
 const PART_WORDS: PartWords = {
-  said: (reason, undoable) => `Only part of that went in. ${reason}${undoable ? ' Undo takes it back.' : ''}`,
+  said: (reason, undoable) => `Only part of that went in. ${capitalized(reason)}${undoable ? ' Undo takes it back.' : ''}`,
   lead: 'Only part of that went in. ',
 };
 
@@ -99,9 +101,14 @@ const PASTE_WORDS: PartWords = {
 const skippedText = (n: number) =>
   `${n} cell${n === 1 ? ' was' : 's were'} skipped (read-only or hidden columns).`;
 
-/** Text the person selected on the page (the lock banner, a toast): a
- *  copy of it is the browser's, not the sheet's. */
+/** Text the person selected on the page outside the sheet (the lock
+ *  banner, a toast) and is still on: a copy of it is the browser's, not
+ *  the sheet's. Selecting it takes focus off the sheet; once focus is back
+ *  in the sheet (a click on a row), a selection left behind elsewhere is
+ *  stale and the sheet copies. */
 function textSelected(): boolean {
+  const focus = document.activeElement;
+  if (focus instanceof Element && focus.closest('.pln-sheet')) return false;
   const selection = typeof window.getSelection === 'function' ? window.getSelection() : null;
   return !!selection && !selection.isCollapsed && selection.toString() !== '';
 }
@@ -231,18 +238,23 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
   const answered = useApplyAnswer(ctl);
 
   /** A second batch that didn't go in, said as the outcome of the whole
-   *  command: the first batch's rows stay (its undo step takes them back);
-   *  a completion stop's "Complete anyway" resends the second batch into
-   *  that same step. */
+   *  command, in one message: the first batch's rows stay (its undo step
+   *  takes them back); a completion stop's Complete resends the second
+   *  batch into that same step. Someone else's change under it: usePlan
+   *  reloaded without a word of its own (undo went with the reload), so
+   *  this is the one message, and it says "reloaded" only when it was. */
   const partlyDone = useCallback((second: Exclude<ApplyResult, { ok: true }>, more: Op[], label: string,
     step: number | null | undefined, words: PartWords) => {
     const { toast: say, prompt: ask } = latest.current;
     if (second.kind === 'confirm') {
-      ask(second, more, label, { joinUndo: step ?? false }, (text) => `${words.lead}${text}`);
+      ask(second, () => latest.current.ctl.apply(more, label, { confirm: true, joinUndo: step ?? null }),
+        { lead: words.lead });
     } else if (second.kind === 'blocked') {
       say(words.said(completionText(second), true));
     } else if (second.code === 'plan_changed') {
-      say(words.said('someone else changed the plan, so it was reloaded.', false));
+      say(words.said(second.reloaded === false
+        ? `someone else changed the plan, and reloading it failed${second.message ? `: ${second.message}` : '.'}`
+        : 'someone else changed the plan, so it was reloaded.', false));
     } else if (second.code !== 'gone' && second.message) {
       say(words.said(second.message, true));
     }
@@ -264,20 +276,37 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
     }
     const then = cmd.then;
     let more: Op[] = [];
-    const { first, second } = await latest.current.ctl.applyThen(cmd.ops, label, then
-      ? (done) => { more = then(done.tempIds); return more; }
-      : () => null);
-    // a stop in the first batch is a one-batch command's (every completing
-    // op rides in the last batch): the prompt resends it as it was
-    if (!answered(first, cmd.ops, label) || !first.ok) return false;
-    if (second && !second.ok) {
-      partlyDone(second, more, label, first.undoStep, words);
+    const build: ThenOps = (done) => {
+      more = then ? then(done.tempIds) : [];
+      return more.length ? more : null;
+    };
+    /** Once the first batch went in: the second's answer, the cells
+     *  skipped, and what follows the command. */
+    const rest = (first: Extract<ApplyResult, { ok: true }>, second: ApplyResult | null): boolean => {
+      if (second && !second.ok) {
+        partlyDone(second, more, label, first.undoStep, words);
+        return false;
+      }
+      if (second) answered(second, more, label);
+      skipped();
+      after?.(first.tempIds);
+      return true;
+    };
+    const ctl = latest.current.ctl;
+    const { first, second } = await ctl.applyThen(cmd.ops, label, build);
+    if (!first.ok && first.kind !== 'error') {
+      // every completing op rides in the last batch, so a stop here is a
+      // one-batch command's. The guard all the same: Complete resends the
+      // whole command, so a second batch is never dropped
+      latest.current.prompt(first, async () => {
+        const again = await latest.current.ctl.applyThen(cmd.ops, label, build, { confirm: true });
+        if (again.first.ok) rest(again.first, again.second);
+        return again.first;
+      });
       return false;
     }
-    if (second) answered(second, more, label);
-    skipped();
-    after?.(first.tempIds);
-    return true;
+    if (!answered(first, cmd.ops, label) || !first.ok) return false;
+    return rest(first, second);
   }, [answered, partlyDone]);
 
   /** A command on the selection, for the plan on screen. `need`: what it

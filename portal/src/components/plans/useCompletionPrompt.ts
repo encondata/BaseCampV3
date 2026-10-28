@@ -1,15 +1,17 @@
 /**
  * What happens when a write that completes a task is stopped by the plan's
  * completion rules (ApplyResult `confirm` or `blocked`): the one place the
- * sheet, the toolbar's 0–100% and Mark on Track, and a paste call, so
- * Task 10 can swap the CompletionDialog in here without touching them
- * (Ruling B2). `opts` go with the resend (a paste's second batch joins
- * its undo step).
+ * sheet, the toolbar's 0–100% and Mark on Track, the chart's drags and a
+ * paste call, so Task 10 can swap the CompletionDialog in here without
+ * touching them (Ruling B2).
  *
  * Until then it is a toast. `blocked` names the tasks in the way; `confirm`
  * names what completes along with it (or the open predecessors the plan
- * warns about) and offers "Complete anyway", which sends the same batch
- * again with `confirm: true` on each completing op (usePlan's `confirm`).
+ * warns about) and offers "Complete anyway", which calls `resend`: the
+ * caller's own write again with `confirm: true` (usePlan's `confirm`), so
+ * a two-batch command resends both of its batches and a paste's last batch
+ * joins the paste's undo step. What the resend answers is said like any
+ * other write.
  *
  * `sayNotices` and `useApplyAnswer` are how every write's answer is said:
  * a notice (a constraint an edit added or cleared) as a toast with Undo,
@@ -23,19 +25,30 @@ import type { Notice, Op } from '../../lib/plans/api';
 import type { ApplyResult } from '../../lib/plans/applyResult';
 import { noticeText } from '../../lib/plans/editOps';
 import { completionText } from '../../lib/plans/errors';
-import type { ApplyOptions, PlanController } from './usePlan';
+import type { PlanController } from './usePlan';
 
 export type CompletionStop = Extract<ApplyResult, { kind: 'confirm' | 'blocked' }>;
 
-/** `opts` go with the resend (`joinUndo`: a paste's last batch joins the
- *  paste's own undo step); `frame` words the toast in context ("Rows were
- *  added. …"). */
-export type CompletionPrompt = (stop: CompletionStop, ops: Op[], label: string, opts?: ApplyOptions,
-  frame?: (text: string) => string) => void;
+/** The stopped write sent again with `confirm: true`. */
+export type Resend = () => Promise<ApplyResult>;
+
+export interface PromptOptions {
+  /** What already went in, said first ("Rows were added. "). */
+  lead?: string;
+}
+
+export type CompletionPrompt = (stop: CompletionStop, resend: Resend, opts?: PromptOptions) => void;
 
 /** Errors usePlan has already told the person about (or that mean the tab
  *  moved on): no second toast. */
 export const SAID_ALREADY: ReadonlySet<string> = new Set(['plan_changed', 'gone']);
+
+type Toast = (message: string, action?: ToastAction) => void;
+
+/** A batch's notices, each a toast with Undo (which takes the batch back). */
+export function sayNotices(toast: Toast, notices: readonly Notice[], undo: () => void): void {
+  for (const notice of notices) toast(noticeText(notice), { label: 'Undo', onClick: undo });
+}
 
 export function useCompletionPrompt(ctl: PlanController): CompletionPrompt {
   const toast = useToast();
@@ -44,18 +57,19 @@ export function useCompletionPrompt(ctl: PlanController): CompletionPrompt {
     ctlRef.current = ctl;
   }, [ctl]);
 
-  return useCallback((stop: CompletionStop, ops: Op[], label: string, opts: ApplyOptions = {},
-    frame: (text: string) => string = (text) => text) => {
+  return useCallback((stop: CompletionStop, resend: Resend, opts: PromptOptions = {}) => {
+    const lead = opts.lead ?? '';
     if (stop.kind === 'blocked') {
-      toast(frame(completionText(stop)));
+      toast(`${lead}${completionText(stop)}`);
       return;
     }
-    toast(frame(completionText(stop)), {
+    toast(`${lead}${completionText(stop)}`, {
       label: 'Complete anyway',
       onClick: () => {
-        void ctlRef.current.apply(ops, label, { ...opts, confirm: true }).then((again) => {
-          if (again.ok) return;
-          if (again.kind === 'error') {
+        void resend().then((again) => {
+          if (again.ok) {
+            sayNotices(toast, again.notices, () => void ctlRef.current.undo());
+          } else if (again.kind === 'error') {
             if (!SAID_ALREADY.has(again.code) && again.message) toast(again.message);
           } else {
             toast(completionText(again));
@@ -66,16 +80,9 @@ export function useCompletionPrompt(ctl: PlanController): CompletionPrompt {
   }, [toast]);
 }
 
-type Toast = (message: string, action?: ToastAction) => void;
-
-/** A batch's notices, each a toast with Undo (which takes the batch back). */
-export function sayNotices(toast: Toast, notices: readonly Notice[], undo: () => void): void {
-  for (const notice of notices) toast(noticeText(notice), { label: 'Undo', onClick: undo });
-}
-
 /** Says one write's answer: notices with Undo, a stopped completion to the
- *  prompt, a refusal as a toast (unless usePlan said it already). True
- *  when the batch went through. */
+ *  prompt (Complete resends `ops` with confirm), a refusal as a toast
+ *  (unless usePlan said it already). True when the batch went through. */
 export type ApplyAnswer = (result: ApplyResult, ops: Op[], label: string) => boolean;
 
 export function useApplyAnswer(ctl: PlanController): ApplyAnswer {
@@ -93,7 +100,7 @@ export function useApplyAnswer(ctl: PlanController): ApplyAnswer {
       return true;
     }
     if (result.kind !== 'error') {
-      ask(result, ops, label);
+      ask(result, () => latest.current.ctl.apply(ops, label, { confirm: true }));
       return false;
     }
     if (!SAID_ALREADY.has(result.code) && result.message) say(result.message);
