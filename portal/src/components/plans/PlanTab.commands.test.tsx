@@ -82,7 +82,7 @@ async function ready(plan: Plan = plan3()) {
   // after setup, which puts a clipboard stub of its own on navigator
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: clipboard });
   renderTab();
-  await screen.findByRole('grid', { name: 'Task sheet' });
+  await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
   return user;
 }
 

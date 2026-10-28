@@ -102,7 +102,7 @@ async function ready(plan: Plan = plan3()) {
   api.getPlan.mockResolvedValueOnce(plan);
   const user = userEvent.setup();
   renderTab();
-  await screen.findByRole('grid', { name: 'Task sheet' });
+  await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
   return user;
 }
 

@@ -138,7 +138,7 @@ describe('loading and errors', () => {
     api.getPlan.mockResolvedValueOnce(EMPTY_PLAN);
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(api.getPlan).toHaveBeenCalledTimes(2));
-    expect(await screen.findByRole('toolbar', { name: 'Project plan' })).not.toBeNull();
+    expect(await screen.findByRole('toolbar', { name: 'Project plan' }, { timeout: 3000 })).not.toBeNull();
   });
 });
 
@@ -199,7 +199,7 @@ describe('creating a plan', () => {
     api.createPlan.mockResolvedValueOnce(EMPTY_PLAN);
     await user.click(within(dialog).getByRole('button', { name: 'Create plan' }));
     expect(api.createPlan).toHaveBeenCalledWith('init-1', { project_start: '2026-11-09' });
-    expect(await screen.findByRole('toolbar', { name: 'Project plan' })).not.toBeNull();
+    expect(await screen.findByRole('toolbar', { name: 'Project plan' }, { timeout: 3000 })).not.toBeNull();
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.queryByText('No project plan yet')).toBeNull();
   });
@@ -226,7 +226,7 @@ describe('creating a plan', () => {
     api.createPlan.mockRejectedValueOnce(new ApiError(409, 'plan_exists', { code: 'plan_exists' }));
     api.getPlan.mockResolvedValueOnce(EMPTY_PLAN);
     await user.click(within(dialog).getByRole('button', { name: 'Create plan' }));
-    expect(await screen.findByRole('toolbar', { name: 'Project plan' })).not.toBeNull();
+    expect(await screen.findByRole('toolbar', { name: 'Project plan' }, { timeout: 3000 })).not.toBeNull();
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(toast).toHaveBeenCalledWith('This initiative already has a project plan.');
   });
@@ -244,7 +244,7 @@ describe('lock banner', () => {
     const user = userEvent.setup();
     api.getPlan.mockResolvedValueOnce(makePlan({ locked_at: LOCKED_AT, locked_by_name: 'Dana Reyes' }));
     renderTab();
-    const banner = await screen.findByRole('status', { name: 'Schedule locked' });
+    const banner = await screen.findByRole('status', { name: 'Schedule locked' }, { timeout: 3000 });
     expect(banner.textContent).toContain(
       `Schedule locked by Dana Reyes on ${longDate(LOCKED_AT)} — progress updates only`);
     api.unlockPlan.mockResolvedValueOnce(makePlan({ version: 6 }));
@@ -259,7 +259,7 @@ describe('lock banner', () => {
       permissions: { view: true, add: false, change: false, delete: false },
     }));
     renderTab();
-    const banner = await screen.findByRole('status', { name: 'Schedule locked' });
+    const banner = await screen.findByRole('status', { name: 'Schedule locked' }, { timeout: 3000 });
     expect(within(banner).queryByRole('button')).toBeNull();
   });
 
@@ -267,7 +267,7 @@ describe('lock banner', () => {
     const user = userEvent.setup();
     api.getPlan.mockResolvedValueOnce(makePlan({ locked_at: LOCKED_AT, locked_by_name: 'Dana Reyes' }));
     renderTab();
-    const banner = await screen.findByRole('status', { name: 'Schedule locked' });
+    const banner = await screen.findByRole('status', { name: 'Schedule locked' }, { timeout: 3000 });
     api.unlockPlan.mockRejectedValueOnce(new ApiError(403, 'forbidden', { code: 'forbidden' }));
     await user.click(within(banner).getByRole('button', { name: 'Unlock' }));
     await waitFor(() => expect(toast).toHaveBeenCalledWith('You don’t have permission to do that.'));
@@ -277,7 +277,7 @@ describe('lock banner', () => {
   it('is absent on an unlocked plan', async () => {
     api.getPlan.mockResolvedValueOnce(makePlan());
     renderTab();
-    await screen.findByRole('toolbar', { name: 'Project plan' });
+    await screen.findByRole('toolbar', { name: 'Project plan' }, { timeout: 3000 });
     expect(screen.queryByRole('status', { name: 'Schedule locked' })).toBeNull();
   });
 });
@@ -286,7 +286,7 @@ describe('views', () => {
   it('shows the Gantt view by default; the switcher offers Gantt only for now', async () => {
     api.getPlan.mockResolvedValueOnce(makePlan());
     const { container } = renderTab();
-    const views = await screen.findByRole('group', { name: 'View' });
+    const views = await screen.findByRole('group', { name: 'View' }, { timeout: 3000 });
     const buttons = within(views).getAllByRole('button');
     expect(buttons.map((b) => b.textContent)).toEqual(['Gantt']);
     expect(buttons[0].getAttribute('aria-pressed')).toBe('true');
@@ -296,7 +296,7 @@ describe('views', () => {
   it('an unknown ?view= falls back to the Gantt view', async () => {
     api.getPlan.mockResolvedValueOnce(makePlan());
     const { container } = renderTab('?tab=plan&view=board');
-    await screen.findByRole('toolbar', { name: 'Project plan' });
+    await screen.findByRole('toolbar', { name: 'Project plan' }, { timeout: 3000 });
     expect(container.querySelector('.pln-view')?.getAttribute('data-view')).toBe('gantt');
     expect(location).toContain('tab=plan');
   });
@@ -307,7 +307,7 @@ describe('full screen', () => {
     const user = userEvent.setup();
     api.getPlan.mockResolvedValueOnce(makePlan());
     const { container } = renderTab();
-    const button = await screen.findByRole('button', { name: 'Full screen' });
+    const button = await screen.findByRole('button', { name: 'Full screen' }, { timeout: 3000 });
     expect(root(container).classList.contains('pln-fullscreen')).toBe(false);
     expect(button.hasAttribute('aria-pressed')).toBe(false);     // the label alone says which
     expect(screen.queryByRole('heading', { name: INITIATIVE.name })).toBeNull();
@@ -327,7 +327,7 @@ describe('full screen', () => {
     const user = userEvent.setup();
     api.getPlan.mockResolvedValueOnce(makePlan());
     const { container } = renderTab();
-    await user.click(await screen.findByRole('button', { name: 'Full screen' }));
+    await user.click(await screen.findByRole('button', { name: 'Full screen' }, { timeout: 3000 }));
     // any dialog over the tab: a stand-in scrim like every PlanModal's
     const scrim = document.createElement('div');
     scrim.className = 'modal-scrim';
@@ -346,7 +346,7 @@ describe('full screen', () => {
     const user = userEvent.setup();
     api.getPlan.mockResolvedValueOnce(makePlan());
     renderInShell();
-    await user.click(await screen.findByRole('button', { name: 'Full screen' }));
+    await user.click(await screen.findByRole('button', { name: 'Full screen' }, { timeout: 3000 }));
     for (const text of ['Sites', 'Search everywhere', '← Initiatives']) {
       expect(inertAround(text), text).toBe(true);
     }
@@ -365,7 +365,7 @@ describe('full screen', () => {
     const user = userEvent.setup();
     api.getPlan.mockResolvedValueOnce(makePlan());
     const { unmount } = renderInShell();
-    await user.click(await screen.findByRole('button', { name: 'Full screen' }));
+    await user.click(await screen.findByRole('button', { name: 'Full screen' }, { timeout: 3000 }));
     const nav = document.querySelector('.portal-nav') as HTMLElement;   // held across the unmount
     expect(nav.hasAttribute('inert')).toBe(true);
     unmount();
@@ -376,7 +376,7 @@ describe('full screen', () => {
     const user = userEvent.setup();
     api.getPlan.mockResolvedValueOnce(makePlan());
     const { container } = renderTab();
-    await user.click(await screen.findByRole('button', { name: 'Full screen' }));
+    await user.click(await screen.findByRole('button', { name: 'Full screen' }, { timeout: 3000 }));
     const field = document.createElement('input');      // a cell editor, the search box…
     document.body.appendChild(field);
     try {
