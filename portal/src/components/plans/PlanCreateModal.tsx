@@ -3,7 +3,8 @@
  * `ctl.create`. The plan's own zone is unknown until it exists, so the
  * date defaults to the browser's today; a date alone starts at the
  * calendar's default start time (the API applies it). The calendar is the
- * system one and the owner is set later in Plan settings.
+ * system one, and the API makes the creator the owner (changed later in
+ * Plan settings).
  *
  * A 409 `plan_exists` (someone else made one meanwhile) closes on their
  * plan, which usePlan has already loaded, and says so; any other refusal
