@@ -194,13 +194,20 @@ class UpdateTaskOp(BaseModel):
     stood when the batch began, before any of the batch's outline changes
     (add, delete, move, indent, outdent, restore) are applied, since that
     is the outline the text was typed against. A task added in the batch
-    cannot be named, nor one deleted earlier in it."""
+    cannot be named, nor one deleted earlier in it.
+
+    `fields.percent_complete` is a progress edit, the same as `set_percent`
+    (its actuals, stamps and completion rules), applied after the task's
+    other fields and its Predecessors; an actual sent in the same `fields`
+    wins over the one % would fill or clear. `confirm` answers a
+    `completion_confirm` (see `SetPercentOp`)."""
 
     model_config = ConfigDict(extra="forbid")
 
     op: Literal["update_task"]
     id: uuid.UUID
     fields: TaskFields
+    confirm: bool = False
 
 
 class DeleteTasksOp(BaseModel):
@@ -282,13 +289,61 @@ class ResourceRef(BaseModel):
 class SetAssigneesOp(BaseModel):
     """Replaces the task's assignees (an empty list clears them). A new
     assignee must be in the plan's `resources`; one the task already has
-    stays allowed after leaving that list (archived, off the team)."""
+    stays allowed after leaving that list (archived, off the team).
+    "Already has" means assigned when this op runs (an earlier op in the
+    same batch counts), not when the batch began."""
 
     model_config = ConfigDict(extra="forbid")
 
     op: Literal["set_assignees"]
     task_id: uuid.UUID
     resources: list[ResourceRef]
+
+
+class SetPercentOp(BaseModel):
+    """Sets each task's % complete (0-100) with its actuals: above 0 an
+    empty actual start becomes the scheduled start; 100 fills an empty
+    actual finish with the scheduled finish and stamps who completed it
+    and when; below 100 clears the actual finish and the stamps, and 0 the
+    actual start too. A summary's % is derived: 100 completes it (as
+    `complete`), anything else is 422 `summary_field`.
+
+    A task reaching 100% goes through the plan's completion rules
+    (plans/completion.py) once the batch's ops have run: 409
+    `completion_blocked` {blockers}, or 409 `completion_confirm`
+    {will_complete, open_predecessors} until the op is resent with
+    `confirm: true`; either way nothing is written."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["set_percent"]
+    ids: list[uuid.UUID]
+    percent: int
+    confirm: bool = False
+
+
+class CompleteOp(BaseModel):
+    """`set_percent` 100."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["complete"]
+    ids: list[uuid.UUID]
+    confirm: bool = False
+
+
+class MarkOnTrackOp(BaseModel):
+    """MS Project's Mark on Track: each task's % becomes the share of its
+    duration scheduled before the status date (the plan's, else now); a
+    milestone is 100 once it is reached, else 0. A summary marks every leaf
+    below it. Reaching 100 goes through the completion rules, so it takes a
+    `confirm` like `set_percent`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["mark_on_track"]
+    ids: list[uuid.UUID]
+    confirm: bool = False
 
 
 class RestoreOp(BaseModel):
@@ -319,7 +374,8 @@ class RestoreOp(BaseModel):
 
 Op = Annotated[
     AddTaskOp | UpdateTaskOp | DeleteTasksOp | MoveTasksOp | IndentOp | OutdentOp
-    | AddLinkOp | UpdateLinkOp | DeleteLinkOp | SetAssigneesOp | RestoreOp,
+    | AddLinkOp | UpdateLinkOp | DeleteLinkOp | SetAssigneesOp | SetPercentOp | CompleteOp
+    | MarkOnTrackOp | RestoreOp,
     Field(discriminator="op"),
 ]
 
@@ -329,6 +385,21 @@ class OpsIn(BaseModel):
 
     base_version: int
     ops: list[Op] = Field(min_length=1, max_length=MAX_OPS)
+
+
+class UpdateProjectIn(BaseModel):
+    """POST /plans/{plan_id}/update-project (MS Project's Update Project).
+    `status_date` is stored (null = now); with `complete_through` every
+    incomplete leaf finishing by then goes to 100% and every incomplete
+    leaf spanning it is marked on track through it. A date alone is the
+    calendar's default end of that day. `confirm` answers a
+    `completion_confirm`, as on `set_percent`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status_date: str | None
+    complete_through: str | None = None
+    confirm: bool = False
 
 
 class OpsOut(BaseModel):

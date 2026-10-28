@@ -14,10 +14,11 @@ from sqlalchemy.exc import IntegrityError
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.plans import ops, service
-from serversherpa.plans.calendar import WorkCalendar
-from serversherpa.plans.floating import parse_floating
+from serversherpa.plans.calendar import CalendarError, WorkCalendar
+from serversherpa.plans.floating import format_floating, parse_floating
 from serversherpa.plans.models import PlanTask
-from serversherpa.plans.schemas import OpsIn, OpsOut, PlanCreateIn, PlanOut
+from serversherpa.plans.ops_progress import UpdateProjectOp
+from serversherpa.plans.schemas import OpsIn, OpsOut, PlanCreateIn, PlanOut, UpdateProjectIn
 from serversherpa.plans.service import err
 from serversherpa.services.audit import audit
 
@@ -111,5 +112,39 @@ async def post_ops(
         if body.base_version != plan.version:
             raise err(409, "plan_changed", version=plan.version)
     out = await ops.run_batch(db, plan, body.ops, actor)
+    await db.commit()
+    return out
+
+
+@router.post("/plans/{plan_id}/update-project", response_model=OpsOut)
+async def update_project(
+    plan_id: uuid.UUID,
+    body: UpdateProjectIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("project_plans", "change"),
+) -> OpsOut:
+    """MS Project's Update Project: stores the status date (null = now)
+    and, with `complete_through`, completes every incomplete leaf finishing
+    by then and marks every one spanning it on track through it, under the
+    completion rules (plans/ops_progress.py). A progress edit: no version
+    to match, and accepted on a locked plan. Its `inverse` puts the tasks
+    back; the status date stays."""
+    plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
+    try:
+        end_of_day = service.calendar_of(plan).default_end
+    except CalendarError as exc:
+        raise err(422, exc.code) from None
+    moments = {}
+    for name in ("status_date", "complete_through"):
+        text = getattr(body, name)
+        try:
+            moments[name] = None if text is None else parse_floating(
+                text, date_only_time=end_of_day)
+        except ValueError:
+            raise err(422, "bad_field", field=name) from None
+    plan.status_date = moments["status_date"]
+    out = await ops.run_batch(
+        db, plan, [UpdateProjectOp(through=moments["complete_through"], confirm=body.confirm)],
+        actor, changes={name: format_floating(value) for name, value in moments.items()})
     await db.commit()
     return out

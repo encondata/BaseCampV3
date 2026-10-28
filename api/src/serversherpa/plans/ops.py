@@ -8,12 +8,15 @@ A batch (`apply_ops`):
    the positions are normalized, every row's input fields (for the undo)
    and the outline order (what Predecessors text numbers);
 2. applies the ops in order: the task edits in plans/ops_tasks.py, the
-   link, Predecessors and assignee edits in plans/ops_links.py (an
-   `update_task` writes the task's own fields first, then its
-   Predecessors), the `restore` op in plans/ops_inverse.py;
-3. writes the outline, renumbers, and recalculates the whole plan (the
+   link, Predecessors and assignee edits in plans/ops_links.py, the
+   progress edits in plans/ops_progress.py (an `update_task` writes the
+   task's own fields first, then its Predecessors, then its % complete),
+   the `restore` op in plans/ops_inverse.py;
+3. applies the completion rules to the tasks the batch completed (409
+   `completion_blocked` / `completion_confirm`, plans/ops_progress.py);
+4. writes the outline, renumbers, and recalculates the whole plan (the
    engine's ScheduleError and CalendarError propagate);
-4. stamps every row whose stored values changed and answers the changed
+5. stamps every row whose stored values changed and answers the changed
    and deleted rows, the outline order when it moved, the client's temp
    ids, notices, the inverse (one `restore` op) and who was newly assigned
    (people a `set_assignees` op put on a task they were not on when the
@@ -24,11 +27,14 @@ errors to 422s, bumping the version, the audit row, the deferred parent
 check, the response.
 
 Concurrency (spec API): a batch made only of progress edits
-(`is_progress_only`) applies against the current state without a version
-match and on a locked plan; every other batch needs `base_version` to be
-the plan's version and an unlocked plan. The route checks both, after
-`check_restores` has verified every restore op's signature (so a forged
-restore never reaches the progress-only check)."""
+(`is_progress_only`: `set_percent`, `complete`, `mark_on_track`, an
+`update_task` of PROGRESS_FIELDS only, and the restores that undo them)
+applies against the current state without a version match and on a locked
+plan; every other batch needs `base_version` to be the plan's version and
+an unlocked plan. The route checks both, after `check_restores` has
+verified every restore op's signature (so a forged restore never reaches
+the progress-only check). Update project (`run_batch` with an
+`UpdateProjectOp`) is a progress edit as well."""
 
 import uuid
 from collections import Counter
@@ -42,13 +48,20 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.deps import AuthContext
-from serversherpa.plans import ops_links, ops_tasks
+from serversherpa.plans import ops_links, ops_progress, ops_tasks
 from serversherpa.plans.calendar import CalendarError
 from serversherpa.plans.engine import SUMMARY_LINK_TYPES, ScheduleError, SummaryLinkError
 from serversherpa.plans.models import ProjectPlan
 from serversherpa.plans.ops_inverse import Snapshot, Stored, check_signature, restore
 from serversherpa.plans.ops_tasks import Batch, Outline, write_outline
-from serversherpa.plans.schemas import OpsOut, RestoreOp, UpdateTaskOp
+from serversherpa.plans.schemas import (
+    CompleteOp,
+    MarkOnTrackOp,
+    OpsOut,
+    RestoreOp,
+    SetPercentOp,
+    UpdateTaskOp,
+)
 from serversherpa.plans.service import (
     PlanState,
     calendar_of,
@@ -68,15 +81,26 @@ from serversherpa.services.audit import audit
 PROGRESS_FIELDS = frozenset({"percent_complete", "actual_start", "actual_finish", "notes"})
 # What the undo of a progress edit carries (completion stamps included).
 _PROGRESS_RESTORE_KEYS = PROGRESS_FIELDS | {"id", "completed_at", "completed_by"}
+# the ops that are progress edits whatever they carry
+PROGRESS_OPS = (SetPercentOp, CompleteOp, MarkOnTrackOp)
+# ops that leave the batch's dates as they found them, or mark the batch
+# stale themselves (plans/ops_progress.py); any other marks it stale
+_KEEP_DATES = frozenset({"set_percent", "complete", "mark_on_track", "update_task"})
 # deferred so a batch can write rows in any order; checked before it ends
 PARENT_FK = "plan_tasks_parent_id_fkey"
 
 
 async def _update_task(b: Batch, op: UpdateTaskOp) -> None:
-    """The task's own fields, then its Predecessors text (links)."""
+    """The task's own fields, then its Predecessors text (links), then its
+    % complete (a progress edit, on the dates the rest left)."""
+    sent = op.fields.model_fields_set
     await ops_tasks.update_task(b, op)
-    if "predecessors" in op.fields.model_fields_set:
+    if "predecessors" in sent:
         await ops_links.set_predecessors(b, op.id, op.fields.predecessors)
+    if "percent_complete" in sent:
+        ops_progress.typed_percent(b, op)
+    elif sent - {"notes"}:
+        b.stale = True
 
 
 _HANDLERS = {
@@ -90,6 +114,10 @@ _HANDLERS = {
     "update_link": ops_links.update_link,
     "delete_link": ops_links.delete_link,
     "set_assignees": ops_links.set_assignees,
+    "set_percent": ops_progress.set_percent,
+    "complete": ops_progress.complete,
+    "mark_on_track": ops_progress.mark_on_track,
+    "update_project": ops_progress.update_project,
     "restore": restore,
 }
 
@@ -125,19 +153,23 @@ def check_restores(plan_id: uuid.UUID, ops: Sequence) -> None:
 
 
 def _progress_restore(op: RestoreOp) -> bool:
-    """The undo of a progress edit: progress fields of existing tasks only."""
-    if op.links or op.assignments or op.remove_tasks or op.remove_links or not op.tasks:
+    """The undo of a progress edit: progress fields of existing tasks only
+    (none at all for the undo of a batch that changed nothing)."""
+    if op.links or op.assignments or op.remove_tasks or op.remove_links:
         return False
     return all("id" in row and len(row) > 1 and row.keys() <= _PROGRESS_RESTORE_KEYS
                for row in op.tasks)
 
 
 def is_progress_only(ops: Sequence) -> bool:
-    """True for a batch of progress edits only: `update_task` touching
-    nothing but PROGRESS_FIELDS, or the restore that undoes one."""
+    """True for a batch of progress edits only: `set_percent`, `complete`,
+    `mark_on_track`, `update_task` touching nothing but PROGRESS_FIELDS, or
+    the restore that undoes one."""
     if not ops:
         return False
     for op in ops:
+        if isinstance(op, PROGRESS_OPS):
+            continue
         if isinstance(op, UpdateTaskOp):
             sent = op.fields.model_fields_set
             if not sent or not sent <= PROGRESS_FIELDS:
@@ -167,6 +199,9 @@ async def apply_ops(db: AsyncSession, state: PlanState, ops: Sequence, actor: Au
 
     for op in ops:
         await _HANDLERS[op.op](batch, op)
+        if op.op not in _KEEP_DATES:
+            batch.stale = True
+    ops_progress.finish(batch)
     write_outline(batch)
     renumber(state)
     recalc(state, settings)
@@ -229,9 +264,10 @@ def schedule_error(state: PlanState, exc: ScheduleError) -> HTTPException:
 
 
 async def run_batch(db: AsyncSession, plan: ProjectPlan, ops: Sequence,
-                    actor: AuthContext) -> OpsOut:
+                    actor: AuthContext, *, changes: dict | None = None) -> OpsOut:
     """Apply a batch to a plan the caller has locked and checked, bump its
-    version, audit it and answer what changed. The caller commits."""
+    version, audit it (with `changes` the caller made to the plan itself)
+    and answer what changed. The caller commits."""
     state = await load_state(db, plan)
     try:
         settings = await settings_of(db, plan)
@@ -244,10 +280,13 @@ async def run_batch(db: AsyncSession, plan: ProjectPlan, ops: Sequence,
     plan.version += 1
     plan.updated_by, plan.updated_at = actor.person.id, result.now
     audit(db, actor_id=actor.person.id, entity_type="project_plan", entity_id=str(plan.id),
-          action="plan_update", changes={"ops": dict(Counter(op.op for op in ops))})
+          action="plan_update",
+          changes={"ops": dict(Counter(op.op for op in ops)), **(changes or {})})
     await db.flush()
     try:
-        # a dangling or looping parent fails here, inside the batch, not at commit
+        # the FK catches a dangling parent (one no row has) here, inside the
+        # batch, not at commit; it cannot see a parent loop, which the
+        # outline ops and restore refuse before this
         await db.execute(text(f"SET CONSTRAINTS {PARENT_FK} IMMEDIATE"))
     except IntegrityError:
         raise err(422, "bad_field", field="parent_id") from None

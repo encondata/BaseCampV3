@@ -5,6 +5,8 @@ generic undo (`inverse`), the schedule lock and MS Project's editing rules.
 Reference week (Standard calendar): the plan starts Mon 2026-11-02 08:00."""
 
 import copy
+import hashlib
+import hmac
 import json
 import uuid
 from datetime import UTC, datetime
@@ -938,12 +940,37 @@ async def test_restore_refuses_non_finite_numbers(client, db):
                                  content=text.replace('"notes": null', f'"notes": {bad}'))
         assert resp.status_code == 422, resp.text
         assert resp.json()["detail"] == {"code": "bad_restore"}
-        # anywhere in the payload
-        nested = json.dumps({"base_version": body["version"], "ops": [
-            {**inverse, "links": [{"lag_minutes": "@"}]}]}).replace('"@"', bad)
-        resp = await client.post(url, headers=headers, content=nested)
-        assert resp.json()["detail"] == {"code": "bad_restore"}, resp.text
     assert (await _get(client, hdrs, plan))["tasks"][0]["notes"] == "on site"
+
+
+def _nan_tolerant_sig(plan_id, op) -> str:
+    """The signature a signer that let NaN through would give `op`: the
+    server's key and message, but a dump that writes NaN out."""
+    text = json.dumps(ops_inverse._signed_fields(op), sort_keys=True, separators=(",", ":"),
+                      default=ops_inverse._id_text)
+    message = str(plan_id).encode() + b"\0" + text.encode()
+    return hmac.new(ops_inverse._restore_key(), message, hashlib.sha256).hexdigest()
+
+
+async def test_restore_refuses_a_non_finite_number_inside_a_row(client, db):
+    """A NaN in place of a number inside a signed row is refused for being
+    NaN: the signature here is right for the NaN payload, so only the
+    non-finite check stands between it and the row parser."""
+    hdrs, _move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "A")
+    body = await _ok(client, hdrs, plan, [_update(ids["A"], duration="3d")])
+    inverse = body["inverse"][0]
+    assert inverse["tasks"] == [{"id": ids["A"], "duration_minutes": 480}]
+    url, headers = f"/plans/{plan['id']}/ops", {**hdrs, "content-type": "application/json"}
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        op = {**inverse, "tasks": [{"id": ids["A"], "duration_minutes": bad}]}
+        op["sig"] = _nan_tolerant_sig(plan["id"], op)
+        resp = await client.post(url, headers=headers,
+                                 content=json.dumps({"base_version": body["version"],
+                                                     "ops": [op]}))
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["detail"] == {"code": "bad_restore"}
+    assert (await _get(client, hdrs, plan))["tasks"][0]["duration_minutes"] == 1440
 
 
 def test_every_restore_field_is_signed(monkeypatch):

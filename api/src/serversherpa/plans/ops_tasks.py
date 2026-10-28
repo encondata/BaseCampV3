@@ -20,7 +20,8 @@ Editing rules (spec "Editing rules that touch the engine"):
 - A zero duration makes a milestone; a non-zero one clears the flag again
   when the milestone came from a zero duration.
 - A summary's duration, dates, % complete and actuals are derived and
-  cannot be typed (422 `summary_field`).
+  cannot be typed (422 `summary_field`); a % of 100 completes it instead
+  (plans/ops_progress.py).
 - A task that gains its first subtask (add, move, indent, outdent) keeps
   only an ASAP or SNET constraint: any other is reset to ASAP with a
   `constraint_cleared` notice. A finish link (FF/SF) into it is left for
@@ -181,6 +182,13 @@ class Batch:
     added_people: dict[uuid.UUID, set[uuid.UUID]] = field(default_factory=dict)
     # the plan's resources as (kind, id), read once on first use
     resources: set[tuple[str, uuid.UUID]] | None = None
+    # progress (plans/ops_progress.py): True when an op since the last
+    # recalc may have moved the stored dates a % edit fills actuals from
+    stale: bool = False
+    # the tasks progress ops took to 100% (or asked to complete, for a
+    # summary) -> whether an op that did so confirmed; the completion rules
+    # run over them once every op has run
+    completing: dict[uuid.UUID, bool] = field(default_factory=dict)
 
     @property
     def units(self) -> Units:
@@ -363,7 +371,8 @@ def set_duration(task: PlanTask, minutes: int, unit: str | None = None,
 def edit_task(b: Batch, task: PlanTask, sent: dict, *, new: bool = False) -> None:
     """Apply the fields the client sent (a None clears) to one task. The
     Predecessors text is only checked for null here: it edits links, which
-    plans/ops_links.py does once the task's own fields are in."""
+    plans/ops_links.py does once the task's own fields are in. % complete
+    is not one of them: it is a progress edit (plans/ops_progress.py)."""
     for name in NOT_NULL & sent.keys():
         if sent[name] is None:
             raise bad_field(name)
@@ -391,11 +400,6 @@ def edit_task(b: Batch, task: PlanTask, sent: dict, *, new: bool = False) -> Non
     if "deadline" in sent:
         text = sent["deadline"]
         task.deadline = None if text is None else when(b, text, "deadline", end=True)
-    if "percent_complete" in sent:
-        percent = sent["percent_complete"]
-        if not 0 <= percent <= 100:
-            raise bad_field("percent_complete")
-        task.percent_complete = percent
     for name, end in (("actual_start", False), ("actual_finish", True)):
         if name in sent:
             text = sent[name]
@@ -498,8 +502,11 @@ async def add_task(b: Batch, op: AddTaskOp) -> None:
 
 
 async def update_task(b: Batch, op: UpdateTaskOp) -> None:
+    """The task's own fields but % complete (plans/ops.py hands that to
+    plans/ops_progress.py)."""
     task = b.task(op.id)
-    edit_task(b, task, {k: getattr(op.fields, k) for k in op.fields.model_fields_set})
+    edit_task(b, task, {k: getattr(op.fields, k) for k in op.fields.model_fields_set
+                        if k != "percent_complete"})
 
 
 async def delete_tasks(b: Batch, op: DeleteTasksOp) -> None:
