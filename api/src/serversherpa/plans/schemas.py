@@ -45,7 +45,8 @@ class AssigneeOut(BaseModel):
 
 class ResourceOut(BaseModel):
     """One entry of the Resource Names picker. A person on the team who is
-    also staff is listed once, as team."""
+    also staff is listed once, as team; `is_staff` still says so (who can
+    own the plan: service.is_staff)."""
 
     kind: Literal["person", "partner"]
     id: uuid.UUID
@@ -53,6 +54,7 @@ class ResourceOut(BaseModel):
     group: Literal["team", "staff", "partner"]
     has_email: bool
     has_account: bool
+    is_staff: bool
 
 
 class PlanLinkOut(BaseModel):
@@ -128,6 +130,7 @@ class PlanOut(BaseModel):
     calendar: dict[str, Any]
     settings_overrides: dict[str, Any]
     settings: dict[str, Any]                # effective: system + overrides
+    system_settings: dict[str, Any]         # what the plan inherits: the system values, no calendar
     owner_id: uuid.UUID | None
     owner_name: str | None
     locked_at: datetime | None

@@ -325,12 +325,13 @@ async def test_resources_listed(client, db):
     by_id = {r["id"]: r for r in body["resources"]}
     assert by_id[str(worker.id)] == {
         "kind": "person", "id": str(worker.id), "name": "Wanda Worker", "group": "team",
-        "has_email": True, "has_account": False}
+        "has_email": True, "has_account": False, "is_staff": False}
     assert by_id[str(nobody.id)]["has_email"] is False
     assert by_id[str(shipper.id)] == {
         "kind": "partner", "id": str(shipper.id), "name": "Champagne Logistics",
-        "group": "partner", "has_email": False, "has_account": False}
+        "group": "partner", "has_email": False, "has_account": False, "is_staff": False}
     assert by_id[str(me)]["group"] == "staff"
+    assert by_id[str(me)]["is_staff"] is True
     assert by_id[str(me)]["has_account"] is True
     assert by_id[str(me)]["has_email"] is True
     # the partner named in two fields is listed once
@@ -352,6 +353,26 @@ async def test_staff_on_the_team_listed_once_as_team(client, db):
     assert len(mine) == 1
     assert mine[0]["group"] == "team"
     assert mine[0]["has_account"] is True
+    # listed as team, still staff: the owner picker offers them
+    assert mine[0]["is_staff"] is True
+
+
+async def test_team_member_without_a_global_role_is_not_staff(client, db):
+    """`is_staff` is the owner rule (service.is_staff), whatever the group:
+    a team member whose login holds only a worker role is not staff."""
+    hdrs = await _admin(db, client)
+    crew = Person(first_name="Kiosk", last_name="Crew")
+    db.add(crew)
+    await db.flush()
+    db.add_all([UserAccount(person_id=crew.id, email=f"kc-{uuid4().hex[:8]}@test.example.com"),
+                PersonRole(person_id=crew.id, role="worker")])
+    move = await _initiative(db)
+    db.add(InitiativePerson(initiative_id=move.id, person_id=crew.id))
+    await db.commit()
+    body = await _create(client, hdrs, move)
+    mine = next(r for r in body["resources"] if r["id"] == str(crew.id))
+    assert mine["group"] == "team" and mine["has_account"] is True
+    assert mine["is_staff"] is False
 
 
 async def test_resources_skip_archived_revoked_and_non_global(client, db):

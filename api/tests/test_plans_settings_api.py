@@ -112,6 +112,28 @@ async def test_patch_overrides_and_inherit(client, db):
     assert body["settings_overrides"] == {}
 
 
+async def test_plan_carries_the_system_values_it_inherits(client, db):
+    """`system_settings`: the system values under the plan's overrides, so
+    Plan settings can say "Use system default (<value>)". No calendar (a
+    plan owns its own); an override leaves it alone; a system change shows."""
+    hdrs, _move, plan = await _setup(client, db)
+    body = await _get(client, hdrs, plan)
+    expected = {k: v for k, v in SYSTEM_DEFAULTS.items() if k != "calendar"}
+    assert body["system_settings"] == expected
+    assert body["system_settings"] == body["settings"]
+
+    body = await _patched(client, hdrs, plan, settings={"completion": {"predecessors": "warn"},
+                                                       "critical_slack_days": 2})
+    assert body["settings"]["completion"]["predecessors"] == "warn"
+    assert body["system_settings"]["completion"]["predecessors"] == "block"
+    assert body["system_settings"]["critical_slack_days"] == 0
+
+    await _put_system(client, hdrs, reminders=REMINDERS)
+    body = await _get(client, hdrs, plan)
+    assert body["system_settings"]["reminders"] == REMINDERS
+    assert body["settings"]["reminders"] == REMINDERS
+
+
 async def test_patch_overrides_merge_key_by_key(client, db):
     hdrs, _move, plan = await _setup(client, db)
     await _patched(client, hdrs, plan, settings={

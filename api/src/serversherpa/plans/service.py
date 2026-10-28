@@ -467,13 +467,14 @@ _PERSON_COLUMNS = (Person.id, Person.preferred_name, Person.first_name, Person.l
                    UserAccount.person_id, *ADDRESS_COLUMNS)
 
 
-def _person_resource(row, group: str) -> ResourceOut:
+def _person_resource(row, group: str, staff: bool) -> ResourceOut:
     person_id, preferred, first, last, account_id, *address = row
     disabled_at = address[3]
     return ResourceOut(
         kind="person", id=person_id, name=_name(preferred, first, last), group=group,
         has_email=listed_address(*address) is not None,
         has_account=account_id is not None and disabled_at is None,
+        is_staff=staff,
     )
 
 
@@ -484,7 +485,8 @@ async def resources_of(db: AsyncSession, initiative: Initiative) -> list[Resourc
     the team and staff is listed once, as team; archived people are left
     out. `has_email` uses the address a reminder would go to (contact
     email, else login email; none for a disabled account), the same rule
-    as learning/emails.address_for."""
+    as learning/emails.address_for. `is_staff` (the staff query's rule, the
+    same as `is_staff`) holds for staff listed as team too."""
     team_rows = (await db.execute(
         select(*_PERSON_COLUMNS)
         .join(InitiativePerson, InitiativePerson.person_id == Person.id)
@@ -497,11 +499,12 @@ async def resources_of(db: AsyncSession, initiative: Initiative) -> list[Resourc
         .where(Person.archived_at.is_(None), UserAccount.disabled_at.is_(None),
                _is_staff()))).all()
 
+    staff_ids = {row[0] for row in staff_rows}
     people: dict[uuid.UUID, ResourceOut] = {}
     for rows, group in ((team_rows, "team"), (staff_rows, "staff")):
         for row in rows:
             if row[0] not in people:
-                people[row[0]] = _person_resource(row, group)
+                people[row[0]] = _person_resource(row, group, row[0] in staff_ids)
 
     partner_ids = list(dict.fromkeys(
         pid for pid in (getattr(initiative, f) for f in PARTNER_FIELDS) if pid is not None))
@@ -510,7 +513,7 @@ async def resources_of(db: AsyncSession, initiative: Initiative) -> list[Resourc
         for pid, name in (await db.execute(
                 select(Partner.id, Partner.name).where(Partner.id.in_(partner_ids)))).all():
             partners.append(ResourceOut(kind="partner", id=pid, name=name, group="partner",
-                                        has_email=False, has_account=False))
+                                        has_email=False, has_account=False, is_staff=False))
 
     found = [*people.values(), *partners]
     found.sort(key=lambda r: (_GROUPS.index(r.group), r.name.casefold(), str(r.id)))
@@ -684,11 +687,12 @@ def _day(value: datetime | None) -> str | None:
 
 async def plan_out(db: AsyncSession, state: PlanState, actor: AuthContext) -> PlanOut:
     """The whole plan as GET /initiatives/{id}/plan serves it: stored
-    values (no recalc), plus the effective settings, the actor's
-    permissions and the resource list."""
+    values (no recalc), plus the effective settings, the system values
+    they inherit from, the actor's permissions and the resource list."""
     plan = state.plan
     initiative = await db.get(Initiative, plan.initiative_id)
-    settings = await settings_of(db, plan)
+    system = await load_system(db)
+    settings = effective(system, plan.settings)
     names = await person_names(db, [plan.owner_id, plan.locked_by])
     finishes = [t.finish for t in state.tasks.values() if t.finish is not None]
     return PlanOut(
@@ -705,6 +709,7 @@ async def plan_out(db: AsyncSession, state: PlanState, actor: AuthContext) -> Pl
         calendar=plan.calendar,
         settings_overrides=plan.settings or {},
         settings=dataclasses.asdict(settings),
+        system_settings=dataclasses.asdict(effective(system, None)),
         owner_id=plan.owner_id,
         owner_name=names.get(plan.owner_id) if plan.owner_id else None,
         locked_at=plan.locked_at,
