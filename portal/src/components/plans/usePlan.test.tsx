@@ -707,6 +707,41 @@ describe('plan-level writes', () => {
     expect(result.current.plan).toBe(before);
     expect(toast).toHaveBeenCalledWith('Something went wrong. Try again.');
   });
+
+  it('a reload that finds nothing new drops nothing queued behind it and says nothing', async () => {
+    const { result } = await loaded();
+    const fresh = deferred<Plan>();
+    api.getPlan.mockImplementationOnce(() => fresh.promise);
+    let reloaded!: Promise<void>;
+    let applied!: Promise<ApplyResult>;
+    act(() => {
+      reloaded = result.current.reload();
+      applied = result.current.apply(rename, 'Rename');   // typed while it loads
+    });
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 6 }));
+    fresh.resolve(makePlan({ version: 5 }));                // the version already on screen
+    await act(async () => { await reloaded; });
+    expect((await call(() => applied)).ok).toBe(true);
+    expect(api.postOps).toHaveBeenCalledWith('plan-1', 5, rename);
+    expect(toast).not.toHaveBeenCalled();
+  });
+
+  it('a reload that finds a newer version still drops what was queued behind it', async () => {
+    const { result } = await loaded();
+    const fresh = deferred<Plan>();
+    api.getPlan.mockImplementationOnce(() => fresh.promise);
+    let reloaded!: Promise<void>;
+    let applied!: Promise<ApplyResult>;
+    act(() => {
+      reloaded = result.current.reload();
+      applied = result.current.apply(rename, 'Rename');
+    });
+    fresh.resolve(makePlan({ version: 6 }));
+    await act(async () => { await reloaded; });
+    expect(await call(() => applied)).toEqual(CHANGED);
+    expect(api.postOps).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('polling', () => {

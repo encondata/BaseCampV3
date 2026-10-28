@@ -259,11 +259,16 @@ export function usePlan(initiativeId: string): PlanController {
 
     /** A fresh copy from the server: undo cleared, queued writes superseded
      *  once it is on screen (not before: an edit typed while it loads was
-     *  typed against the old state too). */
+     *  typed against the old state too) — but only when it holds something
+     *  new: the same plan at the same version (a manual reload with nothing
+     *  changed) is the state those edits were typed against. */
     async function refresh(ctx: Job): Promise<boolean> {
       forget();
+      const before = viewRef.current?.plan ?? null;
       const replaced = await fetchPlan(ctx.alive);
-      if (replaced) supersede();
+      const after = viewRef.current?.plan ?? null;
+      const same = before?.id === after?.id && before?.version === after?.version;
+      if (replaced && !same) supersede();
       return replaced;
     }
 
