@@ -134,6 +134,13 @@ export function planErrorDetail(err: unknown): PlanErrorDetail | null {
   return detail as PlanErrorDetail;
 }
 
+/** True for a 409 `plan_changed`: someone else changed the plan. usePlan
+ *  has already reloaded it and said so in a toast, so a dialog that gets
+ *  this from a write closes quietly. */
+export function isPlanChanged(err: unknown): boolean {
+  return planErrorDetail(err)?.code === 'plan_changed';
+}
+
 /** "2", "2 and 5", "2, 5 and 7". */
 function idList(ids: readonly number[]): string {
   if (ids.length < 2) return ids.join('');

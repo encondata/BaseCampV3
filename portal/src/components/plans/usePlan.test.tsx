@@ -14,10 +14,13 @@ import type { Op, OpsResult, Plan, PlanVersion } from '../../lib/plans/api';
 import {
   flatTasks, makeLink, makeOpsResult, makePlan, makeRestore, makeTask,
 } from '../../lib/plans/planFixtures';
-import type { PlanController } from './usePlan';
+import type { ApplyResult, PlanController } from './usePlan';
 
 const toast = vi.hoisted(() => vi.fn());
 vi.mock('../../lib/notificationsContext', () => ({ useToast: () => toast }));
+
+const auth = vi.hoisted(() => ({ person: { id: 'p-me', display_name: 'Jimmy Henderson' } }));
+vi.mock('../../auth/AuthContext', () => ({ useAuth: () => auth }));
 
 const api = vi.hoisted(() => ({
   getPlan: vi.fn(),
@@ -38,6 +41,7 @@ vi.mock('../../lib/plans/api', async (importActual) => ({
 }));
 
 const { ApiError } = await import('../../lib/api');
+const { isPlanChanged } = await import('../../lib/plans/errors');
 const { usePlan, POLL_MS } = await import('./usePlan');
 
 type Hook = RenderHookResult<PlanController, unknown>;
@@ -56,6 +60,13 @@ const version = (v: number, name: string | null = 'Dana Reyes'): PlanVersion =>
   ({ version: v, updated_at: '2026-10-28T10:00:00Z', updated_by_name: name });
 
 const rename: Op[] = [{ op: 'update_task', id: 'b', fields: { name: 'Rack servers' } }];
+const relink: Op[] = [{ op: 'update_task', id: 'c', fields: { predecessors: '1' } }];
+
+/** What a write answers when someone else's change got there first. */
+const CHANGED: ApplyResult = {
+  ok: false, kind: 'error', code: 'plan_changed',
+  message: 'This plan was changed by someone else — reloaded.',
+};
 
 const blocker = (task_id: string, display_id: number, reason: 'subtask' | 'predecessor') =>
   ({ task_id, display_id, name: `Task ${task_id}`, reason });
@@ -162,7 +173,9 @@ describe('apply', () => {
     }));
     const res = await call(() => result.current.apply(rename, 'Rename'));
     expect(api.postOps).toHaveBeenCalledWith('plan-1', 5, rename);
-    expect(res).toEqual({ ok: true, notices: [{ code: 'constraint_added', task_id: 'b', constraint_type: 'snet' }] });
+    expect(res).toEqual({
+      ok: true, notices: [{ code: 'constraint_added', task_id: 'b', constraint_type: 'snet' }], tempIds: {},
+    });
     const plan = result.current.plan!;
     expect(plan.version).toBe(6);
     expect(plan.tasks.map((t) => t.id)).toEqual(['b', 'a', 'c']);
@@ -177,6 +190,18 @@ describe('apply', () => {
     const ops: Op[] = [{ op: 'set_percent', ids: ['a'], percent: 50 }];
     await call(() => result.current.apply(ops, '50% Complete'));
     expect(api.postOps).toHaveBeenCalledWith('plan-1', 5, ops);
+  });
+
+  it('hands back the real ids of the tasks the batch added', async () => {
+    const { result } = await loaded();
+    api.postOps.mockResolvedValueOnce(makeOpsResult({
+      version: 6, temp_ids: { t1: 'task-9', t2: 'task-10' },
+      tasks: [makeTask('task-9', { position: 3 }), makeTask('task-10', { position: 4 })],
+      order: ['a', 'b', 'c', 'task-9', 'task-10'],
+    }));
+    const res = await call(() => result.current.apply(
+      [{ op: 'add_task', temp_id: 't1' }, { op: 'add_task', temp_id: 't2' }], 'Insert Task'));
+    expect(res).toEqual({ ok: true, notices: [], tempIds: { t1: 'task-9', t2: 'task-10' } });
   });
 
   it('puts the inverse on the undo stack; undo posts it as received and redo posts its answer', async () => {
@@ -240,8 +265,8 @@ describe('apply', () => {
 
     first.resolve(makeOpsResult({ version: 6 }));
     const [r1, r2] = await call(() => Promise.all([one, two]));
-    expect(r1).toEqual({ ok: true, notices: [] });
-    expect(r2).toEqual({ ok: true, notices: [] });
+    expect(r1).toEqual({ ok: true, notices: [], tempIds: {} });
+    expect(r2).toEqual({ ok: true, notices: [], tempIds: {} });
     expect(api.postOps).toHaveBeenCalledTimes(2);
     expect(api.postOps.mock.calls[1]).toEqual(['plan-1', 6, second]);
     expect(result.current.plan?.version).toBe(7);
@@ -392,10 +417,14 @@ describe('grouped undo', () => {
         tasks: [makeTask('n', { position: 3 })], order: ['a', 'b', 'c', 'n'],
       }))
       .mockResolvedValueOnce(makeOpsResult({ version: 7, inverse: inv2 }));
-    await call(() => result.current.apply([{ op: 'add_task', temp_id: 't1', name: 'New' }], 'Paste'));
+    const added = await call(() => result.current.apply([{ op: 'add_task', temp_id: 't1', name: 'New' }], 'Paste'));
+    if (!added.ok) throw new Error('the add batch failed');
+    const newId = added.tempIds.t1;
+    expect(newId).toBe('n');
     await call(() => result.current.apply(
-      [{ op: 'update_task', id: 'n', fields: { predecessors: '1' } }], 'Paste', { joinUndo: true }));
+      [{ op: 'update_task', id: newId, fields: { predecessors: '1' } }], 'Paste', { joinUndo: true }));
     expect(api.postOps.mock.calls[1][1]).toBe(6);
+    expect(api.postOps.mock.calls[1][2]).toEqual([{ op: 'update_task', id: 'n', fields: { predecessors: '1' } }]);
     expect(result.current.undoLabel).toBe('Paste');
 
     // one undo posts both batches, the later one first
@@ -527,7 +556,9 @@ describe('plan-level writes', () => {
     const conflict = apiError(409, { code: 'plan_changed', version: 9 });
     api.patchPlan.mockRejectedValueOnce(conflict);
     api.getPlan.mockResolvedValueOnce(makePlan({ version: 9 }));
-    expect(await rejection(() => result.current.patch({ settings: { show_times: true } }))).toBe(conflict);
+    const caught = await rejection(() => result.current.patch({ settings: { show_times: true } }));
+    expect(caught).toBe(conflict);
+    expect(isPlanChanged(caught)).toBe(true);
     expect(api.getPlan).toHaveBeenCalledTimes(2);
     expect(toast).toHaveBeenCalledWith('This plan was changed by someone else — reloaded.');
     expect(result.current.plan?.version).toBe(9);
@@ -566,7 +597,7 @@ describe('plan-level writes', () => {
       ok: false, kind: 'error', code: 'baseline_exists', message: 'This plan already has a baseline.',
     });
     api.setBaseline.mockResolvedValueOnce(makePlan({ version: 6, baseline_set_at: '2026-10-28T10:00:00Z' }));
-    expect(await call(() => result.current.setBaseline(true))).toEqual({ ok: true, notices: [] });
+    expect(await call(() => result.current.setBaseline(true))).toEqual({ ok: true, notices: [], tempIds: {} });
     expect(api.setBaseline).toHaveBeenLastCalledWith('plan-1', true);
     expect(result.current.plan?.baseline_set_at).toBe('2026-10-28T10:00:00Z');
   });
@@ -580,7 +611,7 @@ describe('plan-level writes', () => {
     const body = { status_date: '2026-11-03', complete_through: '2026-11-03' };
     const res = await call(() => result.current.updateProject(body));
     expect(api.updateProject).toHaveBeenCalledWith('plan-1', body);
-    expect(res).toEqual({ ok: true, notices: [] });
+    expect(res).toEqual({ ok: true, notices: [], tempIds: {} });
     expect(api.getPlan).toHaveBeenCalledTimes(2);
     expect(result.current.plan?.status_date).toBe('2026-11-03T17:00');
     expect(result.current.canUndo).toBe(true);
@@ -790,10 +821,328 @@ describe('polling', () => {
     expect(api.getPlanVersion).toHaveBeenCalledTimes(1);
   });
 
+  it('waits while any editor holds editing, and reloads once the last lets go', async () => {
+    const { result } = await loadedWithFakeTimers();
+    let releaseCell!: () => void;
+    let releaseDialog!: () => void;
+    act(() => {
+      releaseCell = result.current.beginEditing('cell');
+      releaseDialog = result.current.beginEditing('dialog');
+    });
+    api.getPlanVersion.mockResolvedValue(version(6));
+    await tick();
+    expect(result.current.staleBy).toBe('Plan updated by Dana Reyes');
+
+    act(() => releaseCell());
+    await tick(0);
+    expect(api.getPlan).toHaveBeenCalledTimes(1);          // the dialog still holds it
+    act(() => releaseCell());                              // a second release is a no-op
+    await tick(0);
+    expect(api.getPlan).toHaveBeenCalledTimes(1);
+
+    api.getPlan.mockResolvedValueOnce(makePlan({ version: 6 }));
+    act(() => releaseDialog());
+    await tick(0);
+    expect(api.getPlan).toHaveBeenCalledTimes(2);
+    expect(result.current.plan?.version).toBe(6);
+    expect(result.current.staleBy).toBeNull();
+  });
+
+  it('moving to the next cell (let go, then hold again in the same tick) does not reload', async () => {
+    const { result } = await loadedWithFakeTimers();
+    let release!: () => void;
+    act(() => { release = result.current.beginEditing('cell'); });
+    api.getPlanVersion.mockResolvedValue(version(6));
+    await tick();
+    expect(result.current.staleBy).toBe('Plan updated by Dana Reyes');
+
+    act(() => {
+      release();
+      release = result.current.beginEditing('cell');       // Enter: the next cell's editor
+    });
+    await tick(0);
+    expect(api.getPlan).toHaveBeenCalledTimes(1);
+    expect(result.current.staleBy).toBe('Plan updated by Dana Reyes');
+
+    // the setEditing shim flipping false then true in one tick behaves the same
+    act(() => {
+      release();
+      result.current.setEditing(true);
+    });
+    act(() => {
+      result.current.setEditing(false);
+      result.current.setEditing(true);
+    });
+    await tick(0);
+    expect(api.getPlan).toHaveBeenCalledTimes(1);
+
+    api.getPlan.mockResolvedValueOnce(makePlan({ version: 6 }));
+    act(() => result.current.setEditing(false));
+    await tick(0);
+    expect(api.getPlan).toHaveBeenCalledTimes(2);
+    expect(result.current.staleBy).toBeNull();
+  });
+
+  it('never names the signed-in person as the one who changed the plan', async () => {
+    const { result } = await loadedWithFakeTimers();
+    act(() => result.current.setEditing(true));
+    api.getPlanVersion.mockResolvedValue(version(6, 'Jimmy Henderson'));
+    await tick();
+    expect(result.current.staleBy).toBe('Plan updated elsewhere');
+  });
+
+  it('a write queued behind a poll reload does not post against the reloaded plan', async () => {
+    const { result } = await loadedWithFakeTimers();
+    api.getPlanVersion.mockResolvedValue(version(6));
+    const fresh = deferred<Plan>();
+    api.getPlan.mockImplementationOnce(() => fresh.promise);
+    await tick();
+    expect(api.getPlan).toHaveBeenCalledTimes(2);          // the poll's reload is in flight
+
+    let applied!: Promise<ApplyResult>;
+    act(() => { applied = result.current.apply(relink, 'Predecessors'); });  // typed against the old outline
+    fresh.resolve(makePlan({ version: 6 }));
+    await tick(0);
+    expect(await applied).toEqual(CHANGED);
+    expect(api.postOps).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledTimes(1);
+    expect(toast).toHaveBeenCalledWith('This plan was changed by someone else — reloaded.');
+
+    // a write made after the reload landed goes through
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 7 }));
+    await act(async () => { await result.current.apply(rename, 'Rename'); });
+    expect(api.postOps).toHaveBeenCalledWith('plan-1', 6, rename);
+  });
+
+  it('an undo queued behind a poll reload says why it did nothing', async () => {
+    const { result } = await loadedWithFakeTimers();
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 6 }));
+    await act(async () => { await result.current.apply(rename, 'Rename'); });
+    api.getPlanVersion.mockResolvedValue(version(7));
+    const fresh = deferred<Plan>();
+    api.getPlan.mockImplementationOnce(() => fresh.promise);
+    await tick();
+
+    let undone!: Promise<void>;
+    act(() => { undone = result.current.undo(); });        // pressed while the reload loads
+    fresh.resolve(makePlan({ version: 7 }));
+    await tick(0);
+    await act(async () => { await undone; });
+    expect(api.postOps).toHaveBeenCalledTimes(1);          // only the edit itself
+    expect(toast).toHaveBeenCalledTimes(1);
+    expect(toast).toHaveBeenCalledWith('This plan was changed by someone else — reloaded.');
+    expect(result.current.canUndo).toBe(false);
+  });
+
   it('stops probing once unmounted', async () => {
     const { unmount } = await loadedWithFakeTimers();
     unmount();
     await tick();
     expect(api.getPlanVersion).not.toHaveBeenCalled();
+  });
+});
+
+describe('writes queued behind someone else’s change', () => {
+  it('a batch queued behind a plan_changed never posts against the reloaded plan', async () => {
+    const { result } = await loaded();
+    const first = deferred<OpsResult>();
+    api.postOps.mockImplementationOnce(() => first.promise);
+    api.getPlan.mockResolvedValueOnce(makePlan({ version: 9 }));
+    let one!: Promise<ApplyResult>;
+    let two!: Promise<ApplyResult>;
+    act(() => {
+      one = result.current.apply(rename, 'Rename');
+      two = result.current.apply(relink, 'Predecessors');    // typed before the conflict came back
+    });
+    first.reject(apiError(409, { code: 'plan_changed', version: 9 }));
+    const [r1, r2] = await call(() => Promise.all([one, two]));
+    expect(r1).toEqual(CHANGED);
+    expect(r2).toEqual(CHANGED);
+    expect(api.postOps).toHaveBeenCalledTimes(1);
+    expect(api.getPlan).toHaveBeenCalledTimes(2);          // one reload
+    expect(toast).toHaveBeenCalledTimes(1);                // one toast
+    expect(result.current.plan?.version).toBe(9);
+  });
+
+  it('an undo, a redo and a patch queued behind it neither post nor reload again', async () => {
+    const { result } = await loaded();
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 6 }));
+    await call(() => result.current.apply(rename, 'Rename'));
+    const first = deferred<OpsResult>();
+    api.postOps.mockImplementationOnce(() => first.promise);
+    api.getPlan.mockResolvedValueOnce(makePlan({ version: 9 }));
+    let applied!: Promise<ApplyResult>;
+    let undone!: Promise<void>;
+    let redone!: Promise<void>;
+    let patched!: Promise<unknown>;
+    act(() => {
+      applied = result.current.apply(relink, 'Predecessors');
+      undone = result.current.undo();
+      redone = result.current.redo();
+      patched = result.current.patch({ status_date: null }).then(() => null, (err: unknown) => err);
+    });
+    first.reject(apiError(409, { code: 'plan_changed', version: 9 }));
+    const [, , , patchError] = await call(() => Promise.all([applied, undone, redone, patched]));
+    expect(api.postOps).toHaveBeenCalledTimes(2);          // the first edit and the conflicting one
+    expect(api.patchPlan).not.toHaveBeenCalled();
+    expect(isPlanChanged(patchError)).toBe(true);
+    expect(api.getPlan).toHaveBeenCalledTimes(2);
+    expect(toast).toHaveBeenCalledTimes(1);
+  });
+
+  it('a write queued behind a lock whose answer skipped someone else’s write is dropped', async () => {
+    const { result } = await loaded();
+    const locking = deferred<Plan>();
+    api.lockPlan.mockImplementationOnce(() => locking.promise);
+    let locked!: Promise<void>;
+    let applied!: Promise<ApplyResult>;
+    act(() => {
+      locked = result.current.lock();
+      applied = result.current.apply(relink, 'Predecessors');
+    });
+    locking.resolve(makePlan({ version: 8, locked_at: '2026-10-28T10:00:00Z' }));
+    await call(() => locked);
+    expect(await call(() => applied)).toEqual(CHANGED);
+    expect(api.postOps).not.toHaveBeenCalled();
+    expect(result.current.plan?.version).toBe(8);
+  });
+});
+
+describe('the gap rule for plan-level writes', () => {
+  it('keeps undo when the answer is the next version', async () => {
+    const { result } = await loaded();
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 6 }));
+    await call(() => result.current.apply(rename, 'Rename'));
+    api.lockPlan.mockResolvedValueOnce(makePlan({ version: 7, locked_at: '2026-10-28T10:00:00Z' }));
+    await call(() => result.current.lock());
+    expect(result.current.canUndo).toBe(true);
+  });
+
+  it('forgets undo when lock, unlock, setBaseline or clearBaseline skipped someone else’s write', async () => {
+    const { result } = await loaded();
+    const edit = async (v: number) => {
+      api.postOps.mockResolvedValueOnce(makeOpsResult({ version: v }));
+      await call(() => result.current.apply(rename, 'Rename'));
+      expect(result.current.canUndo).toBe(true);
+    };
+    await edit(6);
+    api.lockPlan.mockResolvedValueOnce(makePlan({ version: 8 }));
+    await call(() => result.current.lock());
+    expect(result.current.canUndo).toBe(false);
+
+    await edit(9);
+    api.unlockPlan.mockResolvedValueOnce(makePlan({ version: 11 }));
+    await call(() => result.current.unlock());
+    expect(result.current.canUndo).toBe(false);
+
+    await edit(12);
+    api.setBaseline.mockResolvedValueOnce(makePlan({ version: 14 }));
+    await call(() => result.current.setBaseline(false));
+    expect(result.current.canUndo).toBe(false);
+
+    await edit(15);
+    api.clearBaseline.mockResolvedValueOnce(makePlan({ version: 17 }));
+    await call(() => result.current.clearBaseline());
+    expect(result.current.canUndo).toBe(false);
+    expect(result.current.plan?.version).toBe(17);
+  });
+
+  it('forgets undo when Update Project’s refetch finds someone else’s write', async () => {
+    const { result } = await loaded();
+    api.updateProject.mockResolvedValueOnce(makeOpsResult({ version: 6, inverse: [makeRestore('up')] }));
+    api.getPlan.mockResolvedValueOnce(makePlan({ version: 8 }));
+    await call(() => result.current.updateProject({ status_date: '2026-11-03' }));
+    expect(result.current.plan?.version).toBe(8);
+    expect(result.current.canUndo).toBe(false);
+  });
+});
+
+describe('a controller the tab has moved on from', () => {
+  it('does nothing to the next initiative’s plan', async () => {
+    api.getPlan.mockResolvedValueOnce(makePlan());
+    const { result, rerender } = renderHook(({ id }) => usePlan(id), { initialProps: { id: 'init-1' } });
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    const old = result.current;
+    api.getPlan.mockResolvedValueOnce(makePlan({ id: 'plan-2', initiative_id: 'init-2', version: 1 }));
+    rerender({ id: 'init-2' });
+    await waitFor(() => expect(result.current.plan?.id).toBe('plan-2'));
+
+    const res = await call(() => old.apply(rename, 'Rename'));
+    await call(() => old.reload());
+    await call(() => old.undo());
+    await call(() => old.lock());
+    expect(res).toMatchObject({ ok: false, kind: 'error', code: 'gone' });
+    expect(api.postOps).not.toHaveBeenCalled();
+    expect(api.lockPlan).not.toHaveBeenCalled();
+    expect(api.getPlan).toHaveBeenCalledTimes(2);
+    expect(result.current.plan?.id).toBe('plan-2');
+  });
+
+  it('a write still queued when the tab closes never posts', async () => {
+    const { result, unmount } = await loaded();
+    const first = deferred<OpsResult>();
+    api.postOps.mockImplementationOnce(() => first.promise);
+    let one!: Promise<ApplyResult>;
+    let two!: Promise<ApplyResult>;
+    act(() => {
+      one = result.current.apply(rename, 'Rename');
+      two = result.current.apply(relink, 'Predecessors');
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(api.postOps).toHaveBeenCalledTimes(1);          // the first is posting
+    unmount();
+    first.resolve(makeOpsResult({ version: 6 }));
+    const [r1, r2] = await Promise.all([one, two]);
+    expect(r1).toEqual({ ok: true, notices: [], tempIds: {} });
+    expect(r2).toEqual({ ok: false, kind: 'error', code: 'gone', message: '' });
+    expect(api.postOps).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('more undo coverage', () => {
+  it('an undo pressed while its edit is still posting undoes that edit', async () => {
+    const { result } = await loaded();
+    const first = deferred<OpsResult>();
+    api.postOps.mockImplementationOnce(() => first.promise);
+    let applied!: Promise<ApplyResult>;
+    let undone!: Promise<void>;
+    act(() => {
+      applied = result.current.apply(rename, 'Rename');
+      undone = result.current.undo();
+    });
+    const inverse = [makeRestore('inv')];
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 7, inverse: [makeRestore('redo')] }));
+    first.resolve(makeOpsResult({ version: 6, inverse }));
+    await call(() => Promise.all([applied, undone]));
+    expect(api.postOps).toHaveBeenCalledTimes(2);
+    expect(api.postOps.mock.calls[1]).toEqual(['plan-1', 6, inverse]);
+    expect(result.current.canUndo).toBe(false);
+    expect(result.current.canRedo).toBe(true);
+  });
+
+  it('keeps a redo the API refused on the redo side and says why', async () => {
+    const { result } = await loaded();
+    api.postOps
+      .mockResolvedValueOnce(makeOpsResult({ version: 6 }))
+      .mockResolvedValueOnce(makeOpsResult({ version: 7, inverse: [makeRestore('redo')] }));
+    await call(() => result.current.apply(rename, 'Rename'));
+    await call(() => result.current.undo());
+    const before = result.current.plan;
+    api.postOps.mockRejectedValueOnce(apiError(422, { code: 'bad_restore' }));
+    await call(() => result.current.redo());
+    expect(toast).toHaveBeenCalledWith('That change can’t be undone anymore, so reload the plan and try again.');
+    expect(result.current.plan).toBe(before);
+    expect(result.current.canRedo).toBe(true);
+    expect(result.current.canUndo).toBe(false);
+  });
+});
+
+describe('types', () => {
+  it('leaves base_version to the controller', async () => {
+    const { result } = await loaded();
+    api.patchPlan.mockResolvedValueOnce(makePlan({ version: 6 }));
+    // @ts-expect-error base_version is the controller's, never the caller's
+    await call(() => result.current.patch({ base_version: 3, status_date: null }));
+    expect(api.patchPlan).toHaveBeenCalledWith('plan-1', { status_date: null, base_version: 5 });
   });
 });

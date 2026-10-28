@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ApiError } from '../api';
 import { DurationError, STANDARD_UNITS, parseDuration } from './durations';
-import { PLAN_ERRORS, planErrorDetail, planErrorText } from './errors';
+import { PLAN_ERRORS, isPlanChanged, planErrorDetail, planErrorText } from './errors';
 import { PredecessorError, parsePredecessors } from './predecessors';
 
 const API = path.resolve(__dirname, '../../../../api/src/serversherpa');
@@ -163,5 +163,15 @@ describe('planErrorDetail', () => {
     expect(planErrorDetail(new Error('x'))).toBeNull();
     expect(planErrorDetail(new ApiError(500, 'unknown_error'))).toBeNull();
     expect(planErrorDetail(new ApiError(500, 'unknown_error', 'text'))).toBeNull();
+  });
+});
+
+describe('isPlanChanged', () => {
+  it('tells someone else’s change from every other failure', () => {
+    expect(isPlanChanged(apiError(409, { code: 'plan_changed', version: 9 }))).toBe(true);
+    expect(isPlanChanged(apiError(409, { code: 'plan_locked' }))).toBe(false);
+    expect(isPlanChanged(new ApiError(409, 'plan_changed'))).toBe(false);   // no plan error body
+    expect(isPlanChanged(new Error('plan_changed'))).toBe(false);
+    expect(isPlanChanged(null)).toBe(false);
   });
 });

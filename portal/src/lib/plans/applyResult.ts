@@ -8,7 +8,9 @@ import type { CompletionBlocker, Notice, Op } from './api';
 import { planErrorDetail, planErrorText } from './errors';
 
 export type ApplyResult =
-  | { ok: true; notices: Notice[] }
+  /** `tempIds`: each added task's temp_id to its real id, for a second
+   *  batch that names the new rows (a paste's links and resources). */
+  | { ok: true; notices: Notice[]; tempIds: Record<string, string> }
   | { ok: false; kind: 'confirm'; willComplete: CompletionBlocker[]; openPredecessors: CompletionBlocker[] }
   | { ok: false; kind: 'blocked'; blockers: CompletionBlocker[] }
   | { ok: false; kind: 'error'; message: string; code: string; taskIds?: string[] };
