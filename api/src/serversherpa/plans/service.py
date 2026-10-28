@@ -76,7 +76,9 @@ _GROUPS = ("team", "staff", "partner")
 _UNKNOWN = "(unknown)"
 
 
-def _err(status: int, code: str, **extra) -> HTTPException:
+def err(status: int, code: str, **extra) -> HTTPException:
+    """An API error: `{"code": code, **extra}` as the detail. The one helper
+    every plan route and service uses."""
     return HTTPException(status_code=status, detail={"code": code, **extra})
 
 
@@ -89,13 +91,13 @@ async def visible_initiative(db: AsyncSession, initiative_id: uuid.UUID,
     404 `initiative_not_found` (an out-of-scope id reads as nonexistent)."""
     initiative = await db.get(Initiative, initiative_id)
     if initiative is None:
-        raise _err(404, "initiative_not_found")
+        raise err(404, "initiative_not_found")
     cond = scope_conditions("initiatives", actor.access, actor.person.id)
     if cond is not None:
         visible = await db.scalar(
             select(Initiative.id).where(Initiative.id == initiative_id, cond))
         if visible is None:
-            raise _err(404, "initiative_not_found")
+            raise err(404, "initiative_not_found")
     return initiative
 
 
@@ -116,7 +118,7 @@ async def plan_for_actor(db: AsyncSession, plan_id: uuid.UUID, actor: AuthContex
                 .execution_options(populate_existing=True))
     plan = await db.scalar(stmt)
     if plan is None:
-        raise _err(404, "plan_not_found")
+        raise err(404, "plan_not_found")
     return plan
 
 

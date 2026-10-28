@@ -8,7 +8,7 @@ the actor cannot see reads as 404, never 403."""
 
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
@@ -18,15 +18,12 @@ from serversherpa.plans.calendar import WorkCalendar
 from serversherpa.plans.floating import parse_floating
 from serversherpa.plans.models import PlanTask
 from serversherpa.plans.schemas import OpsIn, OpsOut, PlanCreateIn, PlanOut
+from serversherpa.plans.service import err
 from serversherpa.services.audit import audit
 
 router = APIRouter(tags=["plans"])
 
 PLAN_UNIQUE = "project_plans_initiative_id_key"
-
-
-def _err(status: int, code: str, **extra) -> HTTPException:
-    return HTTPException(status_code=status, detail={"code": code, **extra})
 
 
 @router.get("/initiatives/{initiative_id}/plan", response_model=PlanOut)
@@ -38,7 +35,7 @@ async def get_plan(
     await service.visible_initiative(db, initiative_id, actor)
     plan = await service.plan_of_initiative(db, initiative_id)
     if plan is None:
-        raise _err(404, "no_plan")
+        raise err(404, "no_plan")
     return await service.plan_out(db, await service.load_state(db, plan), actor)
 
 
@@ -51,7 +48,7 @@ async def create_plan(
 ) -> PlanOut:
     initiative = await service.visible_initiative(db, initiative_id, actor)
     if await service.plan_of_initiative(db, initiative_id) is not None:
-        raise _err(409, "plan_exists")
+        raise err(409, "plan_exists")
     # a date-only start begins at the calendar's default start, and the new
     # plan's calendar is the system one
     calendar = WorkCalendar.from_json(await service.system_calendar(db))
@@ -59,9 +56,9 @@ async def create_plan(
         project_start = parse_floating(body.project_start,
                                        date_only_time=calendar.default_start)
     except ValueError:
-        raise _err(422, "bad_field", field="project_start") from None
+        raise err(422, "bad_field", field="project_start") from None
     if body.owner_id is not None and not await service.is_staff(db, body.owner_id):
-        raise _err(422, "bad_owner")
+        raise err(422, "bad_owner")
     # body.template_id is accepted and unused until templates land (Plan C)
     try:
         plan = await service.create_plan(db, initiative, actor, project_start=project_start,
@@ -72,7 +69,7 @@ async def create_plan(
         if PLAN_UNIQUE not in str(getattr(exc, "orig", "")) and PLAN_UNIQUE not in str(exc):
             raise
         await db.rollback()
-        raise _err(409, "plan_exists") from None
+        raise err(409, "plan_exists") from None
     return await service.plan_out(db, await service.load_state(db, plan), actor)
 
 
@@ -85,7 +82,7 @@ async def delete_plan(
     await service.visible_initiative(db, initiative_id, actor)
     plan = await service.plan_of_initiative(db, initiative_id, lock=True)
     if plan is None:
-        raise _err(404, "no_plan")
+        raise err(404, "no_plan")
     tasks = await db.scalar(
         select(func.count()).select_from(PlanTask).where(PlanTask.plan_id == plan.id))
     audit(db, actor_id=actor.person.id, entity_type="project_plan", entity_id=str(plan.id),
@@ -108,9 +105,9 @@ async def post_ops(
     plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
     if not ops.is_progress_only(body.ops):
         if plan.locked_at is not None:
-            raise _err(409, "plan_locked")
+            raise err(409, "plan_locked")
         if body.base_version != plan.version:
-            raise _err(409, "plan_changed", version=plan.version)
+            raise err(409, "plan_changed", version=plan.version)
     out = await ops.run_batch(db, plan, body.ops, actor)
     await db.commit()
     return out

@@ -63,12 +63,16 @@ DDL = (
     """,
     # `position` is the whole-plan outline order; summary-ness is derived from
     # children and never stored. start/finish are engine output for auto tasks
-    # and user input for manual ones.
+    # and user input for manual ones. The parent FK is checked at COMMIT, so
+    # one ops batch can insert a task and point an existing one at it in any
+    # statement order (the ORM sends a table's UPDATEs before its INSERTs);
+    # the cascade on delete still runs at once.
     """
     CREATE TABLE plan_tasks (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         plan_id uuid NOT NULL REFERENCES project_plans(id) ON DELETE CASCADE,
-        parent_id uuid REFERENCES plan_tasks(id) ON DELETE CASCADE,
+        parent_id uuid REFERENCES plan_tasks(id) ON DELETE CASCADE
+            DEFERRABLE INITIALLY DEFERRED,
         position integer NOT NULL,
         name text NOT NULL,
         is_milestone boolean NOT NULL DEFAULT false,

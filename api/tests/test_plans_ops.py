@@ -4,6 +4,7 @@ generic undo (`inverse`), the schedule lock and MS Project's editing rules.
 
 Reference week (Standard calendar): the plan starts Mon 2026-11-02 08:00."""
 
+import copy
 import uuid
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -12,6 +13,7 @@ from sqlalchemy import func, select
 
 from serversherpa.db.models import AuditLog, InitiativePerson, Partner, Person
 from serversherpa.plans.models import PlanAssignment, PlanLink, PlanTask, ProjectPlan
+from serversherpa.plans.ops_inverse import sign_restore
 from tests.test_plans_api import _admin, _create, _initiative, _plan_row
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -65,6 +67,14 @@ def _by_id(body) -> dict[str, dict]:
 
 def _update(task_id, **fields) -> dict:
     return {"op": "update_task", "id": task_id, "fields": fields}
+
+
+def _signed(plan, **fields) -> dict:
+    """A restore op signed the way the server signs the inverses it sends,
+    to reach the content checks behind the signature."""
+    op = {"op": "restore", "tasks": [], "links": [], "assignments": [],
+          "remove_tasks": [], "remove_links": [], **fields}
+    return {**op, "sig": sign_restore(plan["id"], op)}
 
 
 def _comparable(body) -> list[dict]:
@@ -413,6 +423,29 @@ async def test_indent_outdent(client, db):
     assert detail["task_id"] == a
 
 
+async def test_insert_summary_task(client, db):
+    """MS Project's Insert Summary Task in one batch: a new row above B, then
+    B indented under it. B's UPDATE points at a row inserted in the same
+    flush (the parent FK is checked at commit)."""
+    hdrs, _move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "A", "B", "C")
+    before = await _get(client, hdrs, plan)
+    body = await _ok(client, hdrs, plan, [
+        {"op": "add_task", "temp_id": "s", "name": "Summary", "before_id": ids["B"]},
+        {"op": "indent", "ids": [ids["B"]]},
+    ])
+    s = body["temp_ids"]["s"]
+    assert body["order"] == [ids["A"], s, ids["B"], ids["C"]]
+    after = await _get(client, hdrs, plan)
+    got = {t["id"]: t for t in after["tasks"]}
+    assert got[ids["B"]]["parent_id"] == s and got[s]["is_summary"] is True
+
+    undo = await _ok(client, hdrs, plan, body["inverse"])
+    assert _comparable(await _get(client, hdrs, plan)) == _comparable(before)
+    await _ok(client, hdrs, plan, undo["inverse"])
+    assert _comparable(await _get(client, hdrs, plan)) == _comparable(after)
+
+
 async def test_indent_and_outdent_several(client, db):
     hdrs, _move, plan = await _setup(client, db)
     ids = await _add(client, hdrs, plan, "P", "A", "B", "C")
@@ -594,12 +627,15 @@ async def test_other_plans_task_id(client, db):
                {"op": "move_tasks", "ids": [foreign]},
                {"op": "add_task", "name": "X", "parent_id": foreign},
                {"op": "add_task", "name": "X", "before_id": foreign},
-               {"op": "restore", "tasks": [{"id": foreign, "name": "Hijacked"}]},
-               {"op": "restore", "remove_tasks": [foreign]},
+               # behind a valid signature the rows are still checked
+               _signed(plan, tasks=[{"id": foreign, "name": "Hijacked"}]),
+               _signed(plan, remove_tasks=[foreign]),
                # re-creating a row under another plan's task id
-               {"op": "restore", "tasks": [{"id": foreign, "name": "Hijacked",
-                                            "position": 0}]}):
+               _signed(plan, tasks=[{"id": foreign, "name": "Hijacked", "position": 0}])):
         await _fails(client, hdrs, plan, [op], 422, "unknown_task")
+    # and an unsigned one is not read at all
+    await _fails(client, hdrs, plan, [{"op": "restore", "remove_tasks": [foreign]}],
+                 422, "bad_restore")
     got = await _get(client, hdrs, other)
     assert [t["name"] for t in got["tasks"]] == ["Theirs"]
 
@@ -789,6 +825,76 @@ async def test_restore_rejects_bad_rows(client, db):
                      "lag_elapsed": False}]}, "bad_link"),
         ({"assignments": [{"task_id": a, "resources": [
             {"kind": "person", "id": str(uuid4())}]}]}, "bad_resource"),
+        ({"assignments": [{"task_id": a, "resources": [
+            {"kind": "partner", "id": str(uuid4())}]}]}, "bad_resource"),
+        ({"tasks": [{"id": a, "actual_start": "2026-11-03T08:00",
+                     "actual_finish": "2026-11-02T17:00"}]}, "bad_field"),
+        ({"tasks": [{"id": a, "position": 1_000_000}]}, "bad_restore"),
+        ({"tasks": [{"id": a, "position": -1}]}, "bad_restore"),
     ]
     for body, code in cases:
-        await _fails(client, hdrs, plan, [{"op": "restore", **body}], 422, code)
+        await _fails(client, hdrs, plan, [_signed(plan, **body)], 422, code)
+
+
+async def test_restore_needs_the_server_signature(client, db):
+    hdrs, move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "A")
+    forger = Person(first_name="Fake", last_name="Finisher")
+    shipper = Partner(name="Sham Freight")
+    db.add_all([forger, shipper])
+    await db.commit()
+    body = await _ok(client, hdrs, plan, [_update(ids["A"], notes="on site")])
+    inverse = body["inverse"][0]
+    assert len(inverse["sig"]) == 64
+    version = body["version"]
+
+    def forged(**changes) -> dict:
+        return {**copy.deepcopy(inverse), **changes}
+
+    row = inverse["tasks"][0]
+    stamped = forged(tasks=[{**row, "completed_by": str(forger.id),
+                             "completed_at": "2026-11-02T09:00:00+00:00"}])
+    for op in (
+        {k: v for k, v in inverse.items() if k != "sig"},          # unsigned
+        forged(sig="0" * 64),
+        forged(sig="\u00e9" * 64),                                # not even hex
+        forged(tasks=[{**row, "notes": "forged"}]),                # a tampered field
+        stamped,                                                   # forged attribution
+        forged(assignments=[{"task_id": ids["A"], "resources": [
+            {"kind": "partner", "id": str(shipper.id)}]}]),        # an extra assignee
+        forged(remove_tasks=[ids["A"]]),
+    ):
+        await _fails(client, hdrs, plan, [op], 422, "bad_restore")
+    got = await _get(client, hdrs, plan)
+    assert got["version"] == version
+    assert got["tasks"][0]["notes"] == "on site"
+    assert got["tasks"][0]["assignees"] == [] and got["tasks"][0]["completed_at"] is None
+
+    # a forged progress-only restore gets no further on a locked plan
+    row_plan = await _plan_row(db, move)
+    row_plan.locked_at = datetime.now(UTC)
+    await db.commit()
+    await _fails(client, hdrs, plan, [stamped], 422, "bad_restore", version=1)
+
+    # the genuine one applies (key order is not part of the signature), and
+    # the undo it answers is signed too
+    genuine = dict(reversed(list(copy.deepcopy(inverse).items())))
+    body = await _ok(client, hdrs, plan, [genuine], version=1)
+    assert _by_id(body)[ids["A"]]["notes"] is None
+    redo = body["inverse"][0]
+    assert len(redo["sig"]) == 64 and redo["sig"] != inverse["sig"]
+    body = await _ok(client, hdrs, plan, [redo], version=1)
+    assert _by_id(body)[ids["A"]]["notes"] == "on site"
+
+
+async def test_restore_signature_is_bound_to_its_plan(client, db):
+    hdrs, _move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "A")
+    body = await _ok(client, hdrs, plan, [_update(ids["A"], name="A2")])
+    other = await _create(client, hdrs, await _initiative(db, name="Other"))
+    await _add(client, hdrs, other, "B")
+    await _fails(client, hdrs, other, body["inverse"], 422, "bad_restore")
+    assert [t["name"] for t in (await _get(client, hdrs, other))["tasks"]] == ["B"]
+    # still good on the plan it was issued for
+    await _ok(client, hdrs, plan, body["inverse"])
+    assert [t["name"] for t in (await _get(client, hdrs, plan))["tasks"]] == ["A"]

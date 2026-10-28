@@ -75,8 +75,11 @@ class PlanTask(Base):
     id: Mapped[uuid.UUID] = _id()
     plan_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("project_plans.id", ondelete="CASCADE"))
+    # checked at COMMIT (migration 0110): an ops batch may point a task at
+    # a parent it inserts in the same flush
     parent_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("plan_tasks.id", ondelete="CASCADE"))
+        ForeignKey("plan_tasks.id", ondelete="CASCADE", deferrable=True,
+                   initially="DEFERRED"))
     position: Mapped[int] = mapped_column(Integer)    # whole-plan outline order
     name: Mapped[str]
     is_milestone: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))

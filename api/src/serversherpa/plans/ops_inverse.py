@@ -23,17 +23,30 @@ link is {"id", "predecessor_id", "successor_id", "link_type",
 that task's assignees.
 
 Applying a batch's inverse and then that restore's own inverse returns the
-plan to the state after the batch."""
+plan to the state after the batch.
 
+Only the server writes restore ops. Every inverse is signed (`sig`):
+HMAC-SHA256 over the plan id and the op's canonical JSON (sorted keys, no
+whitespace), keyed by a key derived from `jwt_secret` for this one use. A
+restore without a valid signature for its plan is refused (422
+`bad_restore`) before anything is read, so a client can neither forge rows
+nor carry one plan's undo to another. The content checks below stay as a
+second line; they accept what a snapshot holds (archived assignees,
+completion stamps) and refuse what no snapshot could."""
+
+import hashlib
+import hmac
+import json
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
 
-from serversherpa.db.models import Initiative, Partner, Person
+from serversherpa.config import get_settings
+from serversherpa.db.models import Partner, Person
 from serversherpa.plans.durations import UNITS
 from serversherpa.plans.engine import CONSTRAINT_TYPES, LINK_TYPES, MODES
 from serversherpa.plans.floating import format_floating, parse_floating
@@ -43,7 +56,6 @@ from serversherpa.plans.ops_tasks import (
     Outline,
     bad_field,
     check_constraint,
-    err,
     max_minutes,
     remove_subtrees,
     selected,
@@ -51,7 +63,7 @@ from serversherpa.plans.ops_tasks import (
     write_outline,
 )
 from serversherpa.plans.schemas import RestoreOp
-from serversherpa.plans.service import PlanState, resources_of
+from serversherpa.plans.service import PlanState, err
 
 # Input fields of every task; a leaf adds LEAF_FIELDS, a manual leaf
 # MANUAL_FIELDS too.
@@ -74,6 +86,38 @@ STORED_FIELDS = (
     "baseline_finish", "baseline_duration_minutes", "completed_at", "completed_by",
 )
 _MISSING = object()
+MAX_POSITION = 1_000_000            # a restored position is below this
+RESTORE_CONTEXT = b"plan-restore-v1"
+# what the signature covers, with the value an op left out reads as
+_SIGNED = (("op", "restore"), ("tasks", []), ("links", []), ("assignments", []),
+           ("remove_tasks", []), ("remove_links", []))
+
+
+# --- signatures ---------------------------------------------------------------------
+
+
+def _restore_key() -> bytes:
+    """The signing key: `jwt_secret` put through HMAC with a fixed context,
+    so it is the key of nothing else signed with that secret."""
+    secret = get_settings().jwt_secret.get_secret_value()
+    return hmac.new(secret.encode(), RESTORE_CONTEXT, hashlib.sha256).digest()
+
+
+def sign_restore(plan_id: uuid.UUID | str, op: Mapping[str, Any]) -> str:
+    """The hex signature of a restore op (its `sig`, if any, aside) for one
+    plan. Ids are lower-case strings, as `model_dump(mode="json")` and the
+    snapshots write them."""
+    body = {key: op.get(key, default) for key, default in _SIGNED}
+    message = (str(plan_id).encode() + b"\0"
+               + json.dumps(body, sort_keys=True, separators=(",", ":")).encode())
+    return hmac.new(_restore_key(), message, hashlib.sha256).hexdigest()
+
+
+def check_signature(plan_id: uuid.UUID, op: RestoreOp) -> None:
+    """422 `bad_restore` unless the server signed this op for this plan."""
+    expected = sign_restore(plan_id, op.model_dump(mode="json", exclude={"sig"}))
+    if op.sig is None or not hmac.compare_digest(op.sig.encode(), expected.encode()):
+        raise err(422, "bad_restore")
 
 
 # --- snapshots ----------------------------------------------------------------------
@@ -177,7 +221,7 @@ class Snapshot:
             gone = tid not in state.tasks
             if (gone and old) or (not gone and assignees(state, tid) != old):
                 entries.append({"task_id": str(tid), "resources": old})
-        return {
+        op = {
             "op": "restore",
             "tasks": tasks,
             "links": links,
@@ -185,6 +229,7 @@ class Snapshot:
             "remove_tasks": [str(tid) for tid in state.order if tid not in self.tasks],
             "remove_links": sorted(str(lid) for lid in state.links if lid not in self.links),
         }
+        return {**op, "sig": sign_restore(state.plan.id, op)}
 
 
 # --- reading restore rows -----------------------------------------------------------
@@ -312,6 +357,7 @@ def _read(raw, parsers: dict[str, Callable], key: str = "id"
 
 async def restore(b: Batch, op: RestoreOp) -> None:
     state, db = b.state, b.db
+    check_signature(state.plan.id, op)
     write_outline(b)        # the rows' positions are the outline's before rows move
     await db.flush()        # rows an earlier op added can now be deleted like any other
     for lid in op.remove_links:
@@ -338,6 +384,8 @@ async def _restore_tasks(b: Batch, raw_rows: list) -> None:
     rows: dict[uuid.UUID, dict[str, Any]] = {}
     for raw in raw_rows:
         tid, fields = _read(raw, parsers)
+        if not 0 <= fields.get("position", 0) < MAX_POSITION:
+            raise err(422, "bad_restore", field="position")
         rows.setdefault(tid, {}).update(fields)
     if not rows:
         return
@@ -382,6 +430,11 @@ async def _restore_tasks(b: Batch, raw_rows: list) -> None:
             if getattr(task, name) != value:
                 setattr(task, name, value)
         check_constraint(task)
+    for tid in rows:
+        task = state.tasks[tid]
+        if (task.actual_start is not None and task.actual_finish is not None
+                and task.actual_finish < task.actual_start):
+            raise bad_field("actual_finish")
 
 
 def _depths(parent: dict[uuid.UUID, uuid.UUID | None]) -> dict[uuid.UUID, int]:
@@ -492,24 +545,14 @@ def _resource(raw) -> tuple[str, uuid.UUID]:
 
 
 async def _check_resources(b: Batch, keys: set[tuple[str, uuid.UUID]]) -> None:
-    """A restored assignee must be one the plan can take (its resource
-    list), or one already assigned somewhere in the plan when the batch
-    began. Beyond that a partner (display-only) or an archived person
-    (never mailed) only has to exist: an assignee archived since, or a
-    partner taken off the initiative, still comes back with its task."""
-    if not keys:
-        return
-    if b.allowed_resources is None:
-        initiative = await b.db.get(Initiative, b.state.plan.initiative_id)
-        listed = await resources_of(b.db, initiative)
-        b.allowed_resources = {(r.kind, r.id) for r in listed} | b.assigned_before
-    rest = keys - b.allowed_resources
-    people = {rid for kind, rid in rest if kind == "person"}
-    partners = {rid for kind, rid in rest if kind == "partner"}
+    """A restored assignee only has to exist still: the signature says the
+    server snapshotted it, so one archived or taken off the initiative since
+    comes back with its task. A person or partner deleted since is 422
+    `bad_resource`."""
+    people = {rid for kind, rid in keys if kind == "person"}
+    partners = {rid for kind, rid in keys if kind == "partner"}
     if people:
-        found = set(await b.db.scalars(select(Person.id).where(
-            Person.id.in_(people), Person.archived_at.is_not(None))))
-        people -= found
+        people -= set(await b.db.scalars(select(Person.id).where(Person.id.in_(people))))
     if partners:
         partners -= set(await b.db.scalars(select(Partner.id).where(Partner.id.in_(partners))))
     for kind, missing in (("person", people), ("partner", partners)):

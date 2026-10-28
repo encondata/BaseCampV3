@@ -139,6 +139,7 @@ class PlanOut(BaseModel):
 # where it does not (name, duration, mode, ...).
 
 MAX_OPS = 5000          # one paste of a whole plan, with room to spare
+MAX_RESTORE_ROWS = 20_000   # rows in each list of one restore op
 
 
 class TaskFields(BaseModel):
@@ -236,16 +237,22 @@ class RestoreOp(BaseModel):
     given fields onto an existing one; `links` likewise; each `assignments`
     entry ({task_id, resources: [{kind, id}]}) replaces that task's
     assignees; `remove_tasks` (with their subtasks) and `remove_links` are
-    deleted."""
+    deleted.
+
+    Only the server writes these: `sig` is its signature over the plan id
+    and the rest of the op, and a restore without a valid one for this
+    plan is refused (422 `bad_restore`). Send an inverse back unchanged."""
 
     model_config = ConfigDict(extra="forbid")
 
     op: Literal["restore"]
-    tasks: list[dict[str, Any]] = []
-    links: list[dict[str, Any]] = []
-    assignments: list[dict[str, Any]] = []
-    remove_tasks: list[uuid.UUID] = []
-    remove_links: list[uuid.UUID] = []
+    tasks: list[dict[str, Any]] = Field(default_factory=list, max_length=MAX_RESTORE_ROWS)
+    links: list[dict[str, Any]] = Field(default_factory=list, max_length=MAX_RESTORE_ROWS)
+    assignments: list[dict[str, Any]] = Field(default_factory=list,
+                                              max_length=MAX_RESTORE_ROWS)
+    remove_tasks: list[uuid.UUID] = Field(default_factory=list, max_length=MAX_RESTORE_ROWS)
+    remove_links: list[uuid.UUID] = Field(default_factory=list, max_length=MAX_RESTORE_ROWS)
+    sig: str | None = Field(default=None, max_length=128)
 
 
 Op = Annotated[

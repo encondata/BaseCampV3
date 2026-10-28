@@ -298,6 +298,33 @@ async def test_one_plan_per_initiative_and_cascade(db):
     assert await db.scalar(text("SELECT count(*) FROM plan_tasks")) == 0
 
 
+async def test_parent_fk_is_checked_at_commit(db):
+    """A task may name a parent inserted later in the same transaction (an
+    ops batch flushes UPDATEs before INSERTs); a parent that never comes
+    still fails, at COMMIT."""
+    row = await db.execute(text(
+        "SELECT condeferrable, condeferred, confdeltype::text FROM pg_constraint "
+        "WHERE conname = 'plan_tasks_parent_id_fkey'"))
+    assert tuple(row.one()) == (True, True, "c")
+
+    _initiative, plan, (a, _b) = await _plan_with_tasks(db)
+    await db.commit()
+    later = uuid.uuid4()
+    await db.execute(text("UPDATE plan_tasks SET parent_id = :l WHERE id = :a"),
+                     {"l": later, "a": a})
+    await db.execute(text("INSERT INTO plan_tasks (id, plan_id, position, name) "
+                          "VALUES (:l, :p, 9, 'Later')"), {"l": later, "p": plan})
+    await db.commit()
+    assert await db.scalar(text("SELECT parent_id FROM plan_tasks WHERE id = :a"),
+                           {"a": a}) == later
+
+    await db.execute(text("UPDATE plan_tasks SET parent_id = :n WHERE id = :a"),
+                     {"n": uuid.uuid4(), "a": a})
+    with pytest.raises(IntegrityError):
+        await db.commit()
+    await db.rollback()
+
+
 async def test_template_names_are_unique_ignoring_case(db):
     sql = text("INSERT INTO plan_templates (name, data) VALUES (:n, '{}'::jsonb)")
     try:

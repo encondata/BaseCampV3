@@ -37,11 +37,12 @@ from serversherpa.plans.calendar import CalendarError
 from serversherpa.plans.engine import SUMMARY_LINK_TYPES, ScheduleError, SummaryLinkError
 from serversherpa.plans.models import ProjectPlan
 from serversherpa.plans.ops_inverse import Snapshot, Stored, restore
-from serversherpa.plans.ops_tasks import Batch, Outline, err, write_outline
+from serversherpa.plans.ops_tasks import Batch, Outline, write_outline
 from serversherpa.plans.schemas import OpsOut, RestoreOp, UpdateTaskOp
 from serversherpa.plans.service import (
     PlanState,
     calendar_of,
+    err,
     links_out,
     load_state,
     recalc,
@@ -84,6 +85,8 @@ class OpResult:
     newly_assigned: dict[uuid.UUID, list[uuid.UUID]] = field(default_factory=dict)
     # the deleted tasks in their outline order before the batch
     deleted_order: list[uuid.UUID] = field(default_factory=list)
+    # the batch's moment: every row it changed is stamped with it
+    now: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 def _progress_restore(op: RestoreOp) -> bool:
@@ -123,11 +126,7 @@ async def apply_ops(db: AsyncSession, state: PlanState, ops: Sequence, actor: Au
     snapshot = Snapshot.take(state)
     batch = Batch(
         db=db, state=state, actor_id=actor.person.id, settings=settings,
-        calendar=calendar_of(state.plan), now=now, outline=Outline.of(state),
-        assigned_before={
-            ("person", row.person_id) if row.person_id is not None
-            else ("partner", row.partner_id)
-            for rows in state.assignments.values() for row in rows})
+        calendar=calendar_of(state.plan), now=now, outline=Outline.of(state))
 
     for op in ops:
         await _HANDLERS[op.op](batch, op)
@@ -151,6 +150,7 @@ async def apply_ops(db: AsyncSession, state: PlanState, ops: Sequence, actor: Au
         inverse=[snapshot.inverse(state)],
         notices=batch.notices,
         deleted_order=[tid for tid in snapshot.tasks if tid in deleted_tasks],
+        now=now,
     )
 
 
@@ -184,7 +184,7 @@ async def run_batch(db: AsyncSession, plan: ProjectPlan, ops: Sequence,
         raise err(422, exc.code) from None
 
     plan.version += 1
-    plan.updated_by, plan.updated_at = actor.person.id, datetime.now(UTC)
+    plan.updated_by, plan.updated_at = actor.person.id, result.now
     audit(db, actor_id=actor.person.id, entity_type="project_plan", entity_id=str(plan.id),
           action="plan_update", changes={"ops": dict(Counter(op.op for op in ops))})
     await db.flush()

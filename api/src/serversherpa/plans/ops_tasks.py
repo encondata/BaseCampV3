@@ -48,7 +48,7 @@ from serversherpa.plans.schemas import (
     OutdentOp,
     UpdateTaskOp,
 )
-from serversherpa.plans.service import PlanState
+from serversherpa.plans.service import PlanState, err
 from serversherpa.plans.settings import PlanSettings
 
 # Durations and lags are capped at 10 years: 260 working days a year of
@@ -65,10 +65,6 @@ NOT_NULL = frozenset({"name", "duration", "start", "finish", "mode", "is_milesto
                       "predecessors"})
 _CONSTRAINT_KEYS = frozenset({"start", "finish", "constraint_type", "constraint_date"})
 _MINUTE = timedelta(minutes=1)
-
-
-def err(status: int, code: str, **extra) -> HTTPException:
-    return HTTPException(status_code=status, detail={"code": code, **extra})
 
 
 def bad_field(name: str) -> HTTPException:
@@ -176,12 +172,8 @@ class Batch:
     calendar: WorkCalendar
     now: datetime
     outline: Outline
-    # (kind, id) of every resource assigned anywhere in the plan when the
-    # batch began; a restore may put any of them back
-    assigned_before: set[tuple[str, uuid.UUID]] = field(default_factory=set)
     notices: list[dict] = field(default_factory=list)
     temp_ids: dict[str, uuid.UUID] = field(default_factory=dict)
-    allowed_resources: set[tuple[str, uuid.UUID]] | None = None
 
     @property
     def units(self) -> Units:
