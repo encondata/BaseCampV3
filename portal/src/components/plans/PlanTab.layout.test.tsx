@@ -21,7 +21,7 @@ import type { Plan, PlanTask } from '../../lib/plans/api';
 import { COMMAND_TIPS, OFF_NOTES } from '../../lib/plans/commandTips';
 import { fitScrollLeft, makeScale, xOf, type Zoom } from '../../lib/plans/ganttGeometry';
 import {
-  LABEL_MAX_PX, LAYOUT_KEY, SPLIT_BELOW_KEY, SPLIT_KEY, scaleSpan, taskScrollLeft, windowSpan,
+  LABEL_MAX_PX, LAYOUT_KEY, SPLIT_BELOW_KEY, SPLIT_KEY, chartWindow, scaleSpan, taskScrollLeft, windowSpan,
 } from '../../lib/plans/ganttView';
 import { makeOpsResult, makePlan, makeTask } from '../../lib/plans/planFixtures';
 import { planShortcutKeys } from '../../lib/plans/shortcuts';
@@ -453,8 +453,10 @@ describe('Below: the chart on its own scroller', () => {
     const start = fitScrollLeft(scaleFor(plan, 'days'), plan.project_start);
     expect(start).toBeGreaterThan(0);
     expect(chartBar().scrollLeft).toBeCloseTo(start);
-    // under it: the names' room further left, as far as the scale goes
-    choose('Below');
+    // opened under it: the names' room further left, as far as the scale goes
+    cleanup();
+    localStorage.setItem(LAYOUT_KEY, 'below');
+    await ready(plan);
     expect(chartBar().scrollLeft).toBeCloseTo(Math.max(0, start - LABEL_MAX_PX));
     cleanup();
     localStorage.setItem('plans.zoom.plan-1', 'months');
@@ -462,6 +464,34 @@ describe('Below: the chart on its own scroller', () => {
     const later = fitScrollLeft(scaleFor(plan, 'months'), plan.project_start);
     expect(later).toBeGreaterThan(LABEL_MAX_PX);
     expect(chartBar().scrollLeft).toBeCloseTo(later - LABEL_MAX_PX);
+  });
+
+  it('keeps the chart’s place in time across a switch: Beside → Below → Hidden → Beside', async () => {
+    const plan = plan40();
+    await ready(plan);
+    const scrollChartTo = (x: number) => act(() => {
+      chartBar().scrollLeft = x;
+      chartBar().dispatchEvent(new Event('scroll'));
+    });
+    scrollChartTo(1234);
+    choose('Below');
+    // the same moment at the left edge (the same zoom: the same px), not the project start
+    expect(chartBar().scrollLeft).toBeCloseTo(1234);
+    scrollChartTo(1500);
+    choose('Hidden');
+    expect(q('.pln-pane-chart')).toBeNull();
+    choose('Beside');
+    expect(chartBar().scrollLeft).toBeCloseTo(1500);
+    // the content is drawn there too: the window follows the restored scroll
+    const shift = q('.pln-pane-chart > .pln-pane-shift') as HTMLElement;
+    const [from] = chartWindow(1500, 800, scaleFor(plan).width);
+    expect(from).toBeGreaterThan(0);
+    expect(shift.style.transform).toBe(`translateX(${from - 1500}px)`);
+    // another zoom is another scale: still the same moment, in its px
+    fireEvent.click(button('Zoom Out'));
+    const atWeeks = chartBar().scrollLeft;
+    choose('Below');
+    expect(chartBar().scrollLeft).toBeCloseTo(atWeeks);
   });
 
   it('Fit picks the zoom from the chart pane, less the names’ room, and scrolls the chart; Scroll to Task brings the row and the bar', async () => {

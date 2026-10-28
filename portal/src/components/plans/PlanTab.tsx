@@ -311,7 +311,8 @@ export default function PlanTab({ initiativeId, initiative }: {
                                      scrollRequest={commands.chartScroll} onZoomStep={zoomStep}
                                      focusSheet={commands.focusSheet} onLinkClick={openLink}
                                      onBarDoubleClick={openTaskInfo} taskLabels={slot.taskLabels}
-                                     endPad={slot.endPad} startTop={slot.startTop} />
+                                     endPad={slot.endPad} startTop={slot.startTop}
+                                     startMoment={slot.startMoment} onLeftMoment={slot.onLeftMoment} />
                         )} />
           )}
         </div>

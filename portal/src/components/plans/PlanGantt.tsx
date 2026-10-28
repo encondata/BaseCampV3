@@ -114,6 +114,12 @@ export interface PlanGanttProps {
   endPad?: number;
   /** Where its scroll box is as the chart mounts (the sheet's place); the box's own scrollTop by default. */
   startTop?(): number;
+  /** The moment (ms) a chart of this plan last had at its left edge, to
+   *  open there instead of at the project start (a layout switch mounts
+   *  the chart again); null for none. */
+  startMoment?(planId: string): number | null;
+  /** Each sideways scroll: the moment (ms) now at the chart's left edge. */
+  onLeftMoment?(planId: string, ms: number): void;
 }
 
 /** A link with its shape, ready to draw. */
@@ -128,9 +134,10 @@ const NO_TICKS = { top: [], bottom: [] };
 export default function PlanGantt({
   ctl, rows, rowHeight, scrollRef, zoom, display, selection, onSelect, blankRow = false, scheduled,
   scrollRequest = null, onZoomStep, focusSheet, onLinkClick, onBarDoubleClick, taskLabels = false, endPad = 0,
-  startTop,
+  startTop, startMoment, onLeftMoment,
 }: PlanGanttProps) {
   const plan = ctl.plan;
+  const planId = plan?.id ?? null;
   const tasks = plan?.tasks;
   const tasksById = useMemo(() => new Map((tasks ?? []).map((t) => [t.id, t])), [tasks]);
 
@@ -152,12 +159,24 @@ export default function PlanGantt({
   }, [projectStart, projectFinish, band, zoom]);
   const scaleW = scale?.width ?? 0;
 
+  // where the chart left off (a layout switch mounts it again): the moment
+  // at its left edge, in this scale's px; null to open at the project start
+  const [resumeX] = useState<number | null>(() => {
+    const ms = scale && planId ? startMoment?.(planId) ?? null : null;
+    return scale && ms !== null ? xOfMs(scale, ms) : null;
+  });
+  // the moment at the left edge goes up on every sideways scroll
+  const report = useRef({ scale, planId, onLeftMoment });
+  useLayoutEffect(() => {
+    report.current = { scale, planId, onLeftMoment };
+  });
+
   // ── the drawn window: moves only when the scroll crosses a lead ──
   const side = useRef<SidePaneHandle>(null);
   const [paneW, setPaneW] = useState(0);
-  const scrollX = useRef(0);
+  const scrollX = useRef(resumeX ?? 0);
   const sizes = useRef({ paneW: 0, scaleW: 0 });
-  const [win, setWin] = useState<Span>(() => chartWindow(0, 0, scaleW));
+  const [win, setWin] = useState<Span>(() => chartWindow(resumeX ?? 0, 0, scaleW));
   const updateWin = useCallback(() => {
     const next = chartWindow(scrollX.current, sizes.current.paneW, sizes.current.scaleW);
     setWin((cur) => (cur[0] === next[0] && cur[1] === next[1] ? cur : next));
@@ -181,6 +200,8 @@ export default function PlanGantt({
     scrollX.current = x;
     pinLabels();
     updateWin();
+    const { scale: s, planId: id, onLeftMoment: tell } = report.current;
+    if (s && id) tell?.(id, msOf(s, x));
   }, [pinLabels, updateWin]);
   useLayoutEffect(() => {
     sizes.current = { paneW, scaleW };
@@ -202,14 +223,16 @@ export default function PlanGantt({
 
   // a plan opens at its start (the scale may begin weeks earlier, at the
   // initiative's window), as a fit leaves it; under the sheet, with room
-  // left of it for the first tasks' names
-  const planId = plan?.id ?? null;
+  // left of it for the first tasks' names. A chart mounted again for the
+  // same plan (a layout switch) opens where the last one left off.
   const opened = useRef<string | null>(null);
   const labelRoom = taskLabels ? LABEL_MAX_PX : 0;
   useLayoutEffect(() => {
     if (!scale || !projectStart || !planId || opened.current === planId) return;
     opened.current = planId;
-    side.current?.scrollTo(fitScrollLeft(scale, projectStart) - labelRoom);
+    const ms = startMoment?.(planId) ?? null;
+    side.current?.scrollTo(ms !== null ? xOfMs(scale, ms) : fitScrollLeft(scale, projectStart) - labelRoom);
+    // (startMoment is read once per plan, at its opening: not a dependency)
   }, [scale, projectStart, planId, labelRoom]);
 
   // Fit and Scroll to Task, once per request

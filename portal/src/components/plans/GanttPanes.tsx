@@ -17,8 +17,10 @@
  * The sheet keeps its place in the tree in all three (`.pln-panes` › `.pln-split`
  * › the sheet's SidePane), so a switch leaves it mounted and its box keeps
  * its scrollTop: the same rows stay on screen and the selection stays. The
- * chart moves between boxes, so it mounts again, at the sheet's row. The
- * scroll design is in Splitter.tsx.
+ * chart moves between boxes, so it mounts again, at the sheet's row and at
+ * the moment the last chart had at its left edge (kept here per plan, as
+ * the chart reports each sideways scroll). The scroll design is in
+ * Splitter.tsx.
  */
 import {
   useCallback, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject,
@@ -53,6 +55,10 @@ export interface ChartSlot {
    *  is new and gets its ref only after the chart's first render, so the
    *  chart can't read it from there.) */
   startTop(): number;
+  /** The moment (ms) the last chart of this plan had at its left edge, or null. */
+  startMoment(planId: string): number | null;
+  /** The chart's report of the moment now at its left edge. */
+  onLeftMoment(planId: string, ms: number): void;
 }
 
 export default function GanttPanes({ layout, on, viewRef, scrollRef, sheetSideRef, sheet, chart }: {
@@ -75,6 +81,16 @@ export default function GanttPanes({ layout, on, viewRef, scrollRef, sheetSideRe
   const stack = useSplitBelow(viewRef, on && below);
   const pads = useLevelScroll(scrollRef, chartRef, on && below);
   const startTop = useCallback(() => scrollRef.current?.scrollTop ?? 0, [scrollRef]);
+  // the chart's place in time, kept across its remounts (and Hidden)
+  const leftMoment = useRef<{ planId: string; ms: number } | null>(null);
+  const startMoment = useCallback((planId: string) => {
+    const m = leftMoment.current;
+    return m && m.planId === planId ? m.ms : null;
+  }, []);
+  const onLeftMoment = useCallback((planId: string, ms: number) => {
+    leftMoment.current = { planId, ms };
+  }, []);
+  const slot = { startTop, startMoment, onLeftMoment };
 
   return (
     <>
@@ -89,7 +105,7 @@ export default function GanttPanes({ layout, on, viewRef, scrollRef, sheetSideRe
             <Splitter value={split.width} min={MIN_SHEET_PX} max={split.max} label="Resize the task sheet"
                       onChange={split.move} onCommit={split.save} />
           )}
-          {beside && chart({ scrollRef, endPad: 0, taskLabels: false, startTop })}
+          {beside && chart({ scrollRef, endPad: 0, taskLabels: false, ...slot })}
         </div>
       </div>
       {below && (
@@ -99,7 +115,7 @@ export default function GanttPanes({ layout, on, viewRef, scrollRef, sheetSideRe
       {below && (
         <div className="pln-panes pln-panes-chart" ref={chartRef}>
           <div className="pln-split pln-solo">
-            {chart({ scrollRef: chartRef, endPad: pads.chart, taskLabels: true, startTop })}
+            {chart({ scrollRef: chartRef, endPad: pads.chart, taskLabels: true, ...slot })}
           </div>
         </div>
       )}

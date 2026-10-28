@@ -178,8 +178,8 @@ locked", "Select a task first", "Select two or more tasks", "Show the Gantt
 chart to use this"). That covers every toolbar group, More, the view
 switcher, Full screen / Exit full screen (Esc) and the lock banner's Unlock;
 the empty state's cards and the More menu's items already say what they do.
-The copy is one table (`lib/plans/commandTips.ts`). Read-only users also see
-the Gantt group below.
+The copy is one table (`lib/plans/commandTips.ts`). Read-only users also get
+the Display group's Gantt Layout button (below).
 
 ## Data model (migration 0110)
 
@@ -497,9 +497,13 @@ reload or on a version conflict.
   deadline, slack.
 
 **Amendment 2026-10-28 (Jimmy, during Plan B): the Gantt beside, below or
-hidden.** For narrower monitors, a `.segmented` **Gantt** group after
-Display picks where the chart goes, remembered per browser (it's about the
-monitor, not the plan; localStorage `plans.layout.v1`, Beside by default):
+hidden.** For narrower monitors, one **Gantt Layout** icon button at the
+end of the Display group (its icon shows the layout now) opens a menu of
+Beside, Below and Hidden, a ✓ on the current one, each with a line on what
+it does. One button keeps the toolbar on one line at 1512px with the nav
+open. The choice is remembered per browser (it's about the monitor, not the
+plan; localStorage `plans.layout.v1`, Beside by default), and focus goes
+back to the button:
 
 - **Beside** — the split above: sheet left, chart right, one vertical
   scroller, the sheet's width in `plans.split.v1`.
@@ -516,8 +520,8 @@ monitor, not the plan; localStorage `plans.layout.v1`, Beside by default):
   commands (Critical Path, Baseline, Zoom, Fit, Scroll to Task) are off with
   "Show the Gantt chart to use this".
 
-Full screen works in all three; switching keeps the selection and the rows
-on screen.
+Full screen works in all three; switching keeps the selection, the rows on
+screen and the chart's place in time (its left edge).
 
 ## Dialogs
 
