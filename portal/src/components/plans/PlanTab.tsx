@@ -13,9 +13,10 @@
  * by default; only Gantt exists until Plan C, so anything else reads as
  * Gantt) and `&task=<id>`, which the sheet's deep link reads (Task 5).
  *
- * Full screen fills the viewport above the portal chrome; Escape leaves
- * it unless a dialog or menu is open (Escape closes that first) or an
- * editor has focus (Escape cancels the edit).
+ * Full screen fills the viewport above the portal chrome, which goes
+ * inert meanwhile (Tab stays in the plan); Escape leaves it unless a
+ * dialog or menu is open (Escape closes that first) or an editor has
+ * focus (Escape cancels the edit).
  */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
@@ -86,6 +87,35 @@ function useFillHeight(ref: RefObject<HTMLElement | null>, on: boolean): number 
   return height;
 }
 
+/** What stays live behind full screen: the toasts, whose actions (Undo,
+ *  Open) still have to be reachable. */
+const KEEP_LIVE = '.toast-host';
+
+/** While `on`, everything in the shell outside `ref` — the nav, the top
+ *  bar, the page header and tabs — is `inert`, so neither Tab nor a click
+ *  reaches what full screen covers. Each sibling along the path from the
+ *  tab root up to `.portal-shell` (document.body without one) is marked;
+ *  an element some other surface already made inert is left to it. The
+ *  marks come off on exit and on unmount. */
+function useInertOutside(ref: RefObject<HTMLElement | null>, on: boolean): void {
+  useEffect(() => {
+    const root = ref.current;
+    if (!on || !root) return undefined;
+    const top = root.closest('.portal-shell') ?? document.body;
+    const marked: Element[] = [];
+    for (let node: Element = root; node !== top && node.parentElement; node = node.parentElement) {
+      for (const sibling of Array.from(node.parentElement.children)) {
+        if (sibling === node || sibling.hasAttribute('inert') || sibling.matches(KEEP_LIVE)) continue;
+        sibling.setAttribute('inert', '');
+        marked.push(sibling);
+      }
+    }
+    return () => {
+      for (const el of marked) el.removeAttribute('inert');
+    };
+  }, [ref, on]);
+}
+
 /** Where Escape belongs to someone else: a dialog or an open menu takes it
  *  first, and inside a field it cancels the edit. */
 function escapeTakenElsewhere(e: KeyboardEvent): boolean {
@@ -110,8 +140,10 @@ export default function PlanTab({ initiativeId, initiative }: {
 
   const ready = ctl.status === 'ready' && ctl.plan !== null;
   const isFull = fullScreen && ready;
+  const rootRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<HTMLDivElement>(null);
   const viewHeight = useFillHeight(viewRef, ready && !isFull);
+  useInertOutside(rootRef, isFull);
 
   const selectView = (next: PlanViewKey) => {
     setSearchParams((prev) => {
@@ -170,7 +202,7 @@ export default function PlanTab({ initiativeId, initiative }: {
           </div>
           <div className="pln-tools">{/* PlanToolbar (Task 7) */}</div>
           {ctl.staleBy && <span className="pln-stale" role="status">{ctl.staleBy}</span>}
-          <button type="button" className="mini-btn pln-screen-btn" aria-pressed={isFull}
+          <button type="button" className="mini-btn pln-screen-btn"
                   title={isFull ? 'Exit full screen (Esc)' : undefined}
                   onClick={() => setFullScreen((on) => !on)}>
             <FullScreenIcon exit={isFull} />
@@ -188,7 +220,7 @@ export default function PlanTab({ initiativeId, initiative }: {
   }
 
   return (
-    <div className={`pln-tab${isFull ? ' pln-fullscreen' : ''}`}>
+    <div className={`pln-tab${isFull ? ' pln-fullscreen' : ''}`} ref={rootRef}>
       {body}
 
       {/* the dialogs host */}

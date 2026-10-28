@@ -3,16 +3,26 @@
  * the report-generate header (eyebrow "Project plan", h3 title, one-line
  * description), sized to its content between the `size` bounds, rounded
  * like every modal card. Dropdowns inside it portal out of the card on
- * their own (ComboBox/TagInput via useMenuPlacement). Closing is blocked
- * while `busy` (a write is in flight). Modeled on LearningModal.
+ * their own (ComboBox/TagInput via useMenuPlacement). Modeled on
+ * LearningModal.
+ *
+ * Focus moves in on open — to the body's first field, else the dialog
+ * itself — and goes back to what had it when the dialog closes. Escape
+ * closes it unless a control inside already handled that Escape (a
+ * ComboBox closing its list marks it `defaultPrevented`); neither Escape
+ * nor the scrim closes it while `busy` (a write is in flight).
  */
 
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
 import '../../styles/reports.css';   // .rgm-* — the roomy modal header
 import '../../styles/plans.css';
 
 export type PlanModalSize = 'normal' | 'wide' | 'xwide';
+
+/** The body's first field that takes focus. */
+const FIRST_FIELD = '.modal-body :is(input:not([type="hidden"]), select, textarea):not(:disabled), '
+  + '.modal-body [contenteditable]:not([contenteditable="false"])';
 
 export default function PlanModal({
   eyebrow = 'Project plan', title, description, label, onClose, busy = false, size = 'normal',
@@ -32,11 +42,26 @@ export default function PlanModal({
   children: ReactNode;
   footer?: ReactNode;
 }) {
+  const cardRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) onClose(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.defaultPrevented && !busy) onClose();
+    };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [busy, onClose]);
+
+  // focus in on open, back out on close
+  useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const card = cardRef.current;
+    const field = card?.querySelector<HTMLElement>(FIRST_FIELD);
+    (field ?? card)?.focus();
+    return () => {
+      if (opener?.isConnected) opener.focus();
+    };
+  }, []);
 
   const sizeClass = size === 'normal' ? '' : ` pln-modal-${size}`;
   return (
@@ -44,7 +69,7 @@ export default function PlanModal({
       if (e.target === e.currentTarget && !busy) onClose();
     }}>
       <div className={`modal-card reports-modal-card rgm-card pln-modal${sizeClass}${className ? ` ${className}` : ''}`}
-           role="dialog" aria-modal="true" aria-label={label ?? title}>
+           role="dialog" aria-modal="true" aria-label={label ?? title} tabIndex={-1} ref={cardRef}>
         <div className="modal-head">
           <div className="rgm-head-text">
             <div className="eyebrow">{eyebrow}</div>

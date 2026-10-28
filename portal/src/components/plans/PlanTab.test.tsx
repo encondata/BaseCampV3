@@ -80,6 +80,38 @@ function renderTab(search = '?tab=plan') {
 
 const root = (container: HTMLElement) => container.querySelector('.pln-tab') as HTMLElement;
 
+/** The tab inside a stand-in of the portal's shell: nav, toasts, top bar,
+ *  the page header, and one element some other surface already made inert. */
+function renderInShell() {
+  const alreadyInert = { inert: '' };
+  return render(
+    <MemoryRouter initialEntries={['/initiatives/init-1?tab=plan']}>
+      <Routes>
+        <Route path="/initiatives/:id" element={(
+          <div className="portal-shell">
+            <nav className="portal-nav"><a href="/sites">Sites</a></nav>
+            <div className="portal-main-col">
+              <div className="toast-host"><button type="button">Undo</button></div>
+              <header className="topbar"><button type="button">Search everywhere</button></header>
+              <main className="portal-main">
+                <div className="portal-page">
+                  <a href="/initiatives">← Initiatives</a>
+                  <div className="other-surface" {...alreadyInert}><button type="button">Hidden already</button></div>
+                  <div className="detail-grid">
+                    <div className="idet-plan"><PlanTab initiativeId="init-1" initiative={INITIATIVE} /></div>
+                  </div>
+                </div>
+              </main>
+            </div>
+          </div>
+        )} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+const inertAround = (text: string) => screen.getByText(text).closest('[inert]') !== null;
+
 beforeEach(() => {
   for (const fn of [toast, ...Object.values(api)]) fn.mockReset();
   auth.plans = { view: true, add: true, change: true, delete: true };
@@ -153,6 +185,7 @@ describe('creating a plan', () => {
     expect(within(dialog).getByText('Project plan')).not.toBeNull();       // eyebrow
     expect(within(dialog).getByRole('heading', { level: 3, name: 'New project plan' })).not.toBeNull();
     const start = within(dialog).getByLabelText('Project start') as HTMLInputElement;
+    expect(document.activeElement).toBe(start);               // focus lands on the first field
     expect(start.type).toBe('date');
     expect(start.value).toBe('2026-11-02');
     expect(start.closest('.pf-form')).not.toBeNull();
@@ -276,10 +309,11 @@ describe('full screen', () => {
     const { container } = renderTab();
     const button = await screen.findByRole('button', { name: 'Full screen' });
     expect(root(container).classList.contains('pln-fullscreen')).toBe(false);
+    expect(button.hasAttribute('aria-pressed')).toBe(false);     // the label alone says which
     expect(screen.queryByRole('heading', { name: INITIATIVE.name })).toBeNull();
     await user.click(button);
     expect(root(container).classList.contains('pln-fullscreen')).toBe(true);
-    expect(screen.getByRole('button', { name: 'Exit full screen' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Exit full screen' }).hasAttribute('aria-pressed')).toBe(false);
     // the page header is covered, so the toolbar says whose plan this is
     expect(screen.getByRole('heading', { name: INITIATIVE.name })).not.toBeNull();
     await user.keyboard('{Escape}');
@@ -306,6 +340,36 @@ describe('full screen', () => {
     }
     await user.keyboard('{Escape}');
     expect(root(container).classList.contains('pln-fullscreen')).toBe(false);
+  });
+
+  it('makes everything outside the tab inert while on, so Tab stays in full screen', async () => {
+    const user = userEvent.setup();
+    api.getPlan.mockResolvedValueOnce(makePlan());
+    renderInShell();
+    await user.click(await screen.findByRole('button', { name: 'Full screen' }));
+    for (const text of ['Sites', 'Search everywhere', '← Initiatives']) {
+      expect(inertAround(text), text).toBe(true);
+    }
+    expect(inertAround('Undo')).toBe(false);                   // toasts keep their actions
+    expect(inertAround('Exit full screen')).toBe(false);
+    expect(screen.getByRole('toolbar', { name: 'Project plan' }).closest('[inert]')).toBeNull();
+
+    await user.keyboard('{Escape}');
+    for (const text of ['Sites', 'Search everywhere', '← Initiatives']) {
+      expect(inertAround(text), text).toBe(false);
+    }
+    expect(inertAround('Hidden already')).toBe(true);          // not ours to undo
+  });
+
+  it('lets go of the inert shell when the tab unmounts in full screen', async () => {
+    const user = userEvent.setup();
+    api.getPlan.mockResolvedValueOnce(makePlan());
+    const { unmount } = renderInShell();
+    await user.click(await screen.findByRole('button', { name: 'Full screen' }));
+    const nav = document.querySelector('.portal-nav') as HTMLElement;   // held across the unmount
+    expect(nav.hasAttribute('inert')).toBe(true);
+    unmount();
+    expect(nav.hasAttribute('inert')).toBe(false);
   });
 
   it('Escape typed into a field stays in full screen', async () => {

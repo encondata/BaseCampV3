@@ -138,5 +138,7 @@
 }
 .modal-card.reports-modal-card.rgm-card.pln-modal.pln-modal-wide { max-width: min(980px, 96vw); }
 .modal-card.reports-modal-card.rgm-card.pln-modal.pln-modal-xwide { max-width: min(1200px, 96vw); }
+/* the card takes focus on open when it has no field: no ring around the whole dialog */
+.modal-card.pln-modal:focus { outline: none; }
 
 .pln-note { margin: 0; font-size: 12.5px; color: var(--text-mute); }
