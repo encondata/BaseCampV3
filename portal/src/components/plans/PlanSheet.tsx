@@ -40,6 +40,7 @@ import { indicatorsOf, noteExcerpt, type IndicatorKind } from '../../lib/plans/i
 import { planUnits } from '../../lib/plans/merge';
 import { extendRows, moveActive, selectCell, toggleRow, type Selection } from '../../lib/plans/selection';
 import { gridKey, keyLike, scrollToShow } from '../../lib/plans/sheetKeys';
+import { isPaletteColor } from '../../lib/plans/taskColor';
 import CellEditor from './CellEditor';
 import { resourceOptions } from './ResourcePicker';
 import type { PlanController } from './usePlan';
@@ -408,6 +409,17 @@ function CellContent({ col, task, ctx, collapsed, onToggleCollapse }: {
       return col.key === 'mode' ? <ModeIcon manual={task.mode === 'manual'} /> : <Indicators task={task} ctx={ctx} />;
     case 'chip':
       return <span className={`chip ${STATUS_CHIP[task.status]}`}>{col.value(task, ctx)}</span>;
+    case 'color': {
+      // the bar's color: a swatch, then the palette name (or the hex of a custom one)
+      if (!task.color) return null;
+      const text = col.value(task, ctx);
+      return (
+        <>
+          <span className="color-swatch" style={{ background: task.color }} aria-hidden="true" />
+          <span className={`${isPaletteColor(task.color) ? 'cell-top' : 'mono'} cell-line`} title={text}>{text}</span>
+        </>
+      );
+    }
     default: {
       const text = col.value(task, ctx);
       if (!text) return null;

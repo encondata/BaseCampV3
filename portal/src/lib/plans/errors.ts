@@ -72,6 +72,7 @@ const FIELD_LABELS: Record<string, string> = {
   actual_finish: 'Actual Finish',
   notes: 'Notes',
   show_on_timeline: 'Display on Timeline',
+  color: 'Color',
   predecessors: 'Predecessors',
   link_type: 'Type',
   lag: 'Lag',

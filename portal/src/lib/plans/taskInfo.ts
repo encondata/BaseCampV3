@@ -70,10 +70,11 @@ export interface TaskInfoForm {
   constraintType: ConstraintType;
   constraintDate: string;
   notes: string;
+  color: string | null;              // the bar's color; null = the default
 }
 
 export type InfoField = 'name' | 'percent' | 'duration' | 'start' | 'finish' | 'mode' | 'milestone' | 'timeline'
-  | 'deadline' | 'predecessors' | 'resources' | 'constraint' | 'notes';
+  | 'deadline' | 'predecessors' | 'resources' | 'constraint' | 'notes' | 'color';
 
 /** The task field each form field writes (what PROGRESS_FIELDS names). */
 const TASK_FIELD: Record<InfoField, string> = {
@@ -90,6 +91,7 @@ const TASK_FIELD: Record<InfoField, string> = {
   resources: 'assignees',
   constraint: 'constraint_type',
   notes: 'notes',
+  color: 'color',
 };
 
 const TAB_OF: Record<InfoField, TaskInfoTab> = {
@@ -106,6 +108,7 @@ const TAB_OF: Record<InfoField, TaskInfoTab> = {
   resources: 'resources',
   constraint: 'advanced',
   notes: 'notes',
+  color: 'general',
 };
 
 /** The constraints a summary takes (the engine's SUMMARY_CONSTRAINT_TYPES). */
@@ -166,6 +169,7 @@ export function taskInfoForm(task: PlanTask, plan: Plan): TaskInfoForm {
     constraintType: task.constraint_type,
     constraintDate: dateInput(task.constraint_date, showTimes),
     notes: task.notes ?? '',
+    color: task.color,
   };
 }
 
@@ -323,6 +327,7 @@ export function taskInfoOps(form: TaskInfoForm, task: PlanTask, plan: Plan): { o
     const notes = form.notes.trim();
     if (notes !== (task.notes ?? '').trim()) fields.notes = notes || null;
   }
+  if (can('color') && form.color !== task.color) fields.color = form.color;
 
   const links = can('predecessors') ? linkOps(form, task, plan, units, errors) : [];
 

@@ -25,6 +25,7 @@ import { PLAN_ERRORS } from './errors';
 import { dayOf, fromDateInput, toDateInput, toDateTimeInput } from './floatingTime';
 import { CONSTRAINT_LABELS, oneLine } from './indicators';
 import { PredecessorError, parsePredecessors } from './predecessors';
+import { COLOR_HINT, parseColor } from './taskColor';
 
 export interface EditContext {
   units: Units;                       // the plan calendar's
@@ -52,6 +53,7 @@ const TASK_FIELD: Readonly<Record<string, keyof TaskFields>> = {
   actual_start: 'actual_start',
   actual_finish: 'actual_finish',
   notes: 'notes',
+  color: 'color',
 };
 
 type DateKey = 'start' | 'finish' | 'deadline' | 'constraint_date' | 'actual_start' | 'actual_finish';
@@ -61,7 +63,8 @@ const DATE_KEYS: ReadonlySet<string> = new Set<DateKey>(
 const REQUIRED_DATES: ReadonlySet<string> = new Set(['start', 'finish']);
 
 /** The fields an add_task takes (AddTaskOp): the blank row's columns. */
-export const ADD_FIELDS: ReadonlySet<string> = new Set(['name', 'duration', 'start', 'finish', 'mode', 'deadline', 'notes']);
+export const ADD_FIELDS: ReadonlySet<string> = new Set(
+  ['name', 'duration', 'start', 'finish', 'mode', 'deadline', 'notes', 'color']);
 
 /** A summary's own duration and dates come from its subtasks (the API's
  *  SUMMARY_FIELDS). Its % stays open: 100 completes it. */
@@ -108,6 +111,7 @@ export function editText(task: PlanTask | null, column: PlanColumn, showTimes: b
     case 'mode': return task.mode;
     case 'constraint_type': return task.constraint_type;
     case 'resources': return task.assignees.map(resourceKey).join(',');
+    case 'color': return task.color ?? '';
     default: return '';
   }
 }
@@ -180,6 +184,11 @@ function parseField(task: PlanTask | null, column: PlanColumn, text: string, ctx
       if (!column.options?.some((o) => o.value === text)) return { error: PLAN_ERRORS.bad_field };
       return task && text === task[key] ? 'same' : { value: text };
     }
+    case 'color': {
+      const color = parseColor(text);
+      if (color === undefined) return { error: COLOR_HINT };
+      return task && color === task.color ? 'same' : { value: color };
+    }
     case 'resources': {
       const refs = resourcesOf(text);
       if (!refs) return { error: PLAN_ERRORS.bad_resource };
@@ -230,7 +239,7 @@ function probe(key: string): Op | null {
 }
 
 /** The columns a locked plan still edits: those whose op is a progress
- *  edit (% Complete, Actual Start, Actual Finish, Notes). */
+ *  edit (% Complete, Actual Start, Actual Finish, Notes, Color). */
 export const LOCKED_COLUMNS: ReadonlySet<string> = new Set(PLAN_COLUMNS
   .filter((c) => c.editor !== 'none')
   .map((c) => c.key)

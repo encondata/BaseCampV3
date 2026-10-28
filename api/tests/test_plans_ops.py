@@ -20,7 +20,7 @@ from serversherpa.db.models import AuditLog, InitiativePerson, Partner, Person
 from serversherpa.plans import ops, ops_inverse
 from serversherpa.plans.models import PlanAssignment, PlanLink, PlanTask, ProjectPlan
 from serversherpa.plans.ops_inverse import check_signature, sign_restore
-from serversherpa.plans.schemas import RestoreOp
+from serversherpa.plans.schemas import RestoreOp, UpdateTaskOp
 from tests.test_plans_api import _admin, _create, _initiative, _plan_row
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -339,6 +339,44 @@ async def test_other_fields(client, db):
     body = await _ok(client, hdrs, plan, [_update(ids["A"], deadline=None, notes=None)])
     a = _by_id(body)[ids["A"]]
     assert a["deadline"] is None and a["notes"] is None
+
+
+async def test_task_color(client, db):
+    """A color is any #rrggbb, stored lower-case; null clears it. It is
+    cosmetic: setting one changes that task and moves nothing."""
+    hdrs, _move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "A", "B")
+    await _ok(client, hdrs, plan, [{"op": "add_link", "predecessor_id": ids["A"],
+                                    "successor_id": ids["B"]}])
+    got = await _get(client, hdrs, plan)
+    assert [t["color"] for t in got["tasks"]] == [None, None]
+
+    body = await _ok(client, hdrs, plan, [_update(ids["A"], color="#1E88E5")])
+    assert set(_by_id(body)) == {ids["A"]}
+    assert _by_id(body)[ids["A"]]["color"] == "#1e88e5"
+    row = await db.scalar(select(PlanTask).where(PlanTask.id == uuid.UUID(ids["A"]))
+                          .execution_options(populate_existing=True))
+    assert row.color == "#1e88e5"
+
+    body = await _ok(client, hdrs, plan, [_update(ids["A"], color=None)])
+    assert _by_id(body)[ids["A"]]["color"] is None
+
+    body = await _ok(client, hdrs, plan, [
+        {"op": "add_task", "temp_id": "c", "name": "C", "color": "#E53935"}])
+    assert _by_id(body)[body["temp_ids"]["c"]]["color"] == "#e53935"
+
+
+async def test_bad_color(client, db):
+    hdrs, _move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "A")
+    for bad in ("blue", "#12345", "#1234567", "1e88e5", "#ggg000", " #1e88e5", "#1e88e5 ",
+                "", "#1e88e5\n"):
+        detail = await _fails(client, hdrs, plan, [_update(ids["A"], color=bad)],
+                              422, "bad_field")
+        assert detail["field"] == "color", bad
+    detail = await _fails(client, hdrs, plan, [
+        {"op": "add_task", "name": "C", "color": "red"}], 422, "bad_field")
+    assert detail["field"] == "color"
 
 
 async def test_bad_fields(client, db):
@@ -702,6 +740,40 @@ async def test_progress_only_skips_version_and_lock(client, db):
     assert a["notes"] is None and a["percent_complete"] == 0
 
 
+async def test_color_is_a_progress_edit(client, db):
+    """A color-only batch goes in on a locked plan without a version match,
+    and so does its undo, which brings back the exact old value (null too)."""
+    hdrs, move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "A", "B")
+    await _ok(client, hdrs, plan, [_update(ids["B"], color="#43a047")])
+    row = await _plan_row(db, move)
+    row.locked_at = datetime.now(UTC)
+    await db.commit()
+
+    assert ops.is_progress_only([UpdateTaskOp(op="update_task", id=uuid4(),
+                                              fields={"color": "#1e88e5"})])
+    assert not ops.is_progress_only([UpdateTaskOp(op="update_task", id=uuid4(),
+                                                  fields={"color": "#1e88e5", "name": "X"})])
+
+    body = await _ok(client, hdrs, plan, [_update(ids["A"], color="#1E88E5"),
+                                          _update(ids["B"], color="#fb8c00")], version=1)
+    got = _by_id(body)
+    assert got[ids["A"]]["color"] == "#1e88e5" and got[ids["B"]]["color"] == "#fb8c00"
+    restore = body["inverse"][0]
+    assert sorted(restore["tasks"], key=lambda r: r["id"] != ids["A"]) == [
+        {"id": ids["A"], "color": None}, {"id": ids["B"], "color": "#43a047"}]
+
+    undone = await _ok(client, hdrs, plan, body["inverse"], version=1)
+    back = _by_id(undone)
+    assert back[ids["A"]]["color"] is None and back[ids["B"]]["color"] == "#43a047"
+    # and the redo (the undo's own inverse) is a progress edit as well
+    redone = await _ok(client, hdrs, plan, undone["inverse"], version=1)
+    assert _by_id(redone)[ids["A"]]["color"] == "#1e88e5"
+    # a color with a schedule field is not
+    await _fails(client, hdrs, plan, [_update(ids["A"], color="#e53935", name="X")],
+                 409, "plan_locked")
+
+
 async def test_unknown_plan_and_permissions(client, db, seeded_user):
     from tests.test_sites_api import login
 
@@ -848,6 +920,8 @@ async def test_restore_rejects_bad_rows(client, db):
     cases = [
         ({"tasks": [{"id": a, "colour": "red"}]}, "bad_field"),
         ({"tasks": [{"id": a, "position": "first"}]}, "bad_field"),
+        ({"tasks": [{"id": a, "color": "blue"}]}, "bad_field"),
+        ({"tasks": [{"id": a, "color": "#1E88E5"}]}, "bad_field"),
         ({"tasks": [{"id": a, "mode": "fixed"}]}, "bad_field"),
         ({"tasks": [{"id": a, "start": "soon"}]}, "bad_field"),
         ({"tasks": [{"id": a, "parent_id": b}, {"id": b, "parent_id": a}]}, "bad_field"),

@@ -575,7 +575,7 @@ async def test_tasks_and_links_served(client, db):
               notes="call first")
     b = _task(plan, 2, "Pack", parent_id=s.id, duration_unit="h", duration_minutes=240)
     m = _task(plan, 3, "Go live", duration_minutes=0, is_milestone=True,
-              show_on_timeline=True)
+              show_on_timeline=True, color="#8e24aa")
     db.add(s)
     await db.flush()
     db.add_all([a, b, m])
@@ -617,6 +617,7 @@ async def test_tasks_and_links_served(client, db):
     assert tasks["Pack"]["finish"] == "2026-11-04T12:00"
     assert tasks["Go live"]["predecessors"] == "1FS+2 days"
     assert tasks["Go live"]["is_milestone"] is True
+    assert tasks["Go live"]["color"] == "#8e24aa"
     assert tasks["Go live"]["start"] == tasks["Go live"]["finish"] == "2026-11-06T12:00"
     assert tasks["Prep"]["successors"] == "4FS+2 days"
     assert tasks["Prep"]["duration_minutes"] == 1200
@@ -635,8 +636,9 @@ async def test_tasks_and_links_served(client, db):
                 "completed_at", "completed_by_name", "show_on_timeline", "mode",
                 "elapsed", "duration_unit", "position", "updated_at", "status",
                 "missed_deadline", "percent_complete", "created_at",
-                "start_variance_minutes", "finish_variance_minutes"):
+                "start_variance_minutes", "finish_variance_minutes", "color"):
         assert key in crates, key
+    assert crates["color"] is None
     assert crates["created_at"] is not None
     assert crates["start_variance_minutes"] is None     # no baseline yet
 

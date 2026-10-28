@@ -658,6 +658,51 @@ describe('select and Resource Names editors', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Resource Names' })).toBeNull());
   });
 
+  it('Color opens the task color picker: a swatch sets the color, No color clears it', async () => {
+    localStorage.setItem('plans.columns.v1', JSON.stringify({
+      visible: ['id', 'name', 'color'], widths: {}, seen: ['id', 'name', 'color'],
+    }));
+    const tasks = tasks3().map((t) => (t.id === 'b' ? { ...t, color: '#c03540' } : t));
+    const user = await ready(plan3({ tasks }));
+    // a swatch and the palette name; nothing for no color
+    expect(cellOf('Pack', 'color').textContent).toBe('Red');
+    expect(cellOf('Pack', 'color').querySelector('.color-swatch')).not.toBeNull();
+    expect(cellOf('Survey', 'color').textContent).toBe('');
+    // Task Name has no swatch
+    expect(cellOf('Pack', 'name').querySelector('.color-swatch')).toBeNull();
+
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ tasks: [{ ...tasks[0], color: '#178a4c' }] }));
+    await user.dblClick(cellOf('Survey', 'color'));
+    const picker = screen.getByRole('dialog', { name: 'Task color' });
+    await user.click(within(picker).getByRole('button', { name: 'Green' }));
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    expect(sentOps()).toEqual([{ op: 'update_task', id: 'a', fields: { color: '#178a4c' } }]);
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Task color' })).toBeNull());
+    expect(cellOf('Survey', 'color').textContent).toBe('Green');
+
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ tasks: [{ ...tasks[1], color: null }], version: 7 }));
+    await user.dblClick(cellOf('Pack', 'color'));
+    await user.click(within(screen.getByRole('dialog', { name: 'Task color' })).getByRole('button', { name: 'No color' }));
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(2));
+    expect(sentOps(1)).toEqual([{ op: 'update_task', id: 'b', fields: { color: null } }]);
+    await waitFor(() => expect(cellOf('Pack', 'color').textContent).toBe(''));
+  });
+
+  it('Escape in the Color picker cancels the edit and is marked handled', async () => {
+    localStorage.setItem('plans.columns.v1', JSON.stringify({
+      visible: ['id', 'name', 'color'], widths: {}, seen: ['id', 'name', 'color'],
+    }));
+    const user = await ready();
+    await user.dblClick(cellOf('Pack', 'color'));
+    const picker = screen.getByRole('dialog', { name: 'Task color' });
+    const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    act(() => { within(picker).getByRole('button', { name: 'Blue' }).dispatchEvent(esc); });
+    expect(esc.defaultPrevented).toBe(true);
+    expect(screen.queryByRole('dialog', { name: 'Task color' })).toBeNull();
+    expect(api.postOps).not.toHaveBeenCalled();
+    await waitFor(() => expect(active()).toBe('Pack/color'));
+  });
+
   it('Escape in the picker cancels it and is marked handled (full screen stays)', async () => {
     const user = await ready();
     await user.dblClick(cellOf('Pack', 'resources'));

@@ -324,3 +324,55 @@ describe('copy and paste within the plan', () => {
     ]);
   });
 });
+
+describe('task colors in a copy and a paste', () => {
+  const COLOR = COLUMN_BY_KEY.get('color')!;
+
+  it('a copy of whole tasks carries each one’s color; pasted back, the new tasks have it', () => {
+    const c = ctx({
+      tasks: [
+        makeTask('A', { display_id: 1, name: 'Survey', color: '#1668a7' }),
+        makeTask('S', { display_id: 2, is_summary: true, name: 'Pack', color: '#c03540' }),
+        makeTask('S1', { display_id: 3, parent_id: 'S', outline_level: 2, name: 'Crates', color: '#e91e63' }),
+        makeTask('B', { display_id: 4, name: 'Go live' }),
+      ],
+    });
+    const { copy } = copyRows(new Set(['S', 'A']), COLUMNS, c.plan);
+    expect(copy.tasks.map((t) => t.color)).toEqual(['#1668a7', '#c03540', '#e91e63']);
+    const result = opsForInternalPaste(copy, selectCell('B', 'name'), c);
+    if (!('ops' in result)) throw new Error(result.error);
+    expect((result.ops as AddTaskOp[]).map((op) => [op.name, op.color])).toEqual([
+      ['Survey', '#1668a7'], ['Pack', '#c03540'], ['Crates', '#e91e63'],
+    ]);
+  });
+
+  it('the Color column copies as the palette name, or the hex of a custom color', () => {
+    const c = ctx();
+    const pack = c.plan.tasks[1];
+    expect(copyCell({ ...pack, color: '#1668a7' }, COLOR, c.plan)).toBe('Blue\r\n');
+    expect(copyCell({ ...pack, color: '#e91e63' }, COLOR, c.plan)).toBe('#e91e63\r\n');
+    expect(copyCell(pack, COLOR, c.plan)).toBe('\r\n');
+  });
+
+  it('pasted into the Color column: #rrggbb or a palette name; anything else is refused', () => {
+    const shown = [...COLUMNS, COLOR];
+    expect(opsForPaste([['#E91E63'], ['violet']], { id: 'a', col: 'color' }, shown, ROWS, ctx())).toEqual({
+      ops: [
+        { op: 'update_task', id: 'a', fields: { color: '#e91e63' } },
+        { op: 'update_task', id: 'b', fields: { color: '#6d4fc4' } },
+      ],
+    });
+    expect(opsForPaste([['sky blue']], { id: 'a', col: 'color' }, shown, ROWS, ctx())).toEqual({
+      error: expect.stringMatching(/^Row 1, Color: .*#rrggbb/),
+    });
+    // a locked plan still takes colors
+    expect(opsForPaste([['Red']], { id: 'a', col: 'color' }, shown, ROWS, ctx({ locked_at: '2026-10-27T12:00:00Z' })))
+      .toEqual({ ops: [{ op: 'update_task', id: 'a', fields: { color: '#c03540' } }] });
+    // a new row past the end takes its color in the add
+    // (Task Name to Color is nine columns: Wrap up, seven empty, Green)
+    const row = ['Wrap up', ...Array<string>(7).fill(''), 'Green'];
+    expect(opsForPaste([row], { id: 'blank', col: 'name' }, shown, ROWS, ctx())).toEqual({
+      ops: [{ op: 'add_task', temp_id: 't1', parent_id: null, name: 'Wrap up', color: '#178a4c' }],
+    });
+  });
+});

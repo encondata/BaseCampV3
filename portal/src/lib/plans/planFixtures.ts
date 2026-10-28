@@ -31,6 +31,7 @@ export function makeTask(id: string, over: Partial<PlanTask> = {}): PlanTask {
     actual_finish: null,
     notes: null,
     show_on_timeline: false,
+    color: null,
     total_slack_minutes: 0,
     is_critical: false,
     conflict: null,

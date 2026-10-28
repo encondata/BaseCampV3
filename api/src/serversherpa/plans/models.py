@@ -97,6 +97,7 @@ class PlanTask(Base):
     actual_finish: Mapped[datetime | None] = _wall()
     notes: Mapped[str | None]
     show_on_timeline: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    color: Mapped[str | None]                         # Gantt bar color, lower-case #rrggbb
     total_slack_minutes: Mapped[int | None] = mapped_column(Integer)
     is_critical: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     conflict: Mapped[str | None]                      # link | constraint

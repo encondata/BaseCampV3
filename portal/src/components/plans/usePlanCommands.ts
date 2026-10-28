@@ -33,8 +33,8 @@ import type { ApplyResult } from '../../lib/plans/applyResult';
 import { COLUMN_BY_KEY, columnPrefsSnapshot, type PlanColumn } from '../../lib/plans/columns';
 import {
   deleteSelected, indentSelected, insertTask, linkSelected, markOnTrack, outdentSelected, selectedTasks,
-  selectionMode, setMode as modeOps, setPercent, toggleTimeline, unlinkSelected, type Command, type CommandOps,
-  type InsertKind,
+  selectionMode, setColor, setMode as modeOps, setPercent, toggleTimeline, unlinkSelected, type Command,
+  type CommandOps, type InsertKind,
 } from '../../lib/plans/commands';
 import { fitZoom, zoomIn as zoomInOf, zoomOut as zoomOutOf, type Zoom } from '../../lib/plans/ganttGeometry';
 import { LABEL_MAX_PX, readZoom, writeZoom, type GanttLayout } from '../../lib/plans/ganttView';
@@ -176,6 +176,8 @@ export interface PlanCommands {
   setMode(mode: TaskMode): void;
   insert(kind: InsertKind): void;
   timeline(): void;
+  /** Properties › Task color: the color (null: the default) on every selected task, one undo step. */
+  color(color: string | null): void;
   deleteTasks(): void;
   /** The confirmed delete of a summary with its subtasks. */
   confirmDelete(dialog: Extract<PlanDialog, { kind: 'deleteTasks' }>): Promise<void>;
@@ -658,6 +660,8 @@ export function usePlanCommands({
       },
       insert: (kind: InsertKind) => { insert(kind); },
       timeline: () => { withPlan(toggleTimeline, 'Add to Timeline', 'schedule'); },
+      // cosmetic: a locked plan takes it too (PROGRESS_FIELDS)
+      color: (c: string | null) => { withPlan((sel, ctx) => setColor(sel, c, ctx), 'Task color', 'progress'); },
       deleteTasks,
       confirmDelete,
       info: (tab?: TaskInfoTab) => { info(tab); },

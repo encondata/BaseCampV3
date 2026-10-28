@@ -14,7 +14,7 @@
  *   over this dialog: Complete resends the same batch with confirm and
  *   closes both; Cancel comes back here with the edits.
  * - A summary's duration and dates show read-only; a locked plan edits
- *   only progress (% Complete, Notes); someone who may only read the plan
+ *   only progress and color (% Complete, Notes, Color); someone who may only read the plan
  *   sees it all, with Close.
  * - It holds editing while open, and a task that goes away (a reload)
  *   closes it.
@@ -129,7 +129,7 @@ export default function TaskInfoModal({ ctl, taskId, tab = 'general', onClose }:
   const panel: PanelProps = { plan, task, form, set, errors, can, units };
   let note: string | null = null;
   if (readOnly) note = 'You can see this task, but not change it.';
-  else if (plan.locked_at) note = 'Schedule is locked: only % Complete and Notes can change.';
+  else if (plan.locked_at) note = 'Schedule is locked: only % Complete, Notes and Color can change.';
 
   return (
     <PlanModal title="Task Information" size="wide" busy={busy} onClose={onClose}

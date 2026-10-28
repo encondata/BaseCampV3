@@ -270,6 +270,49 @@ describe('a locked plan', () => {
   });
 });
 
+describe('the task’s color', () => {
+  it('General has a Color field: its picker sets the color, sent with the batch', async () => {
+    const { s, onClose, user } = open(plan3(), 'b');
+    const field = screen.getByLabelText('Color');
+    expect(field.textContent).toBe('No color');
+    await user.click(field);
+    const picker = screen.getByRole('dialog', { name: 'Task color' });
+    await user.click(within(picker).getByRole('button', { name: 'Violet' }));
+    expect(screen.queryByRole('dialog', { name: 'Task color' })).toBeNull();
+    expect(field.textContent).toBe('Violet');
+    expect(onClose).not.toHaveBeenCalled();
+    await user.click(within(dialog()).getByRole('button', { name: 'OK' }));
+    await waitFor(() => expect(sentOps(s)).toEqual([{ op: 'update_task', id: 'b', fields: { color: '#6d4fc4' } }]));
+  });
+
+  it('a locked plan still changes it; Escape in the picker leaves Task Information open', async () => {
+    const plan = plan3({ locked_at: '2026-10-27T12:00:00Z' });
+    plan.tasks[1] = { ...plan.tasks[1], color: '#e91e63' };
+    const { s, onClose, user } = open(plan, 'b');
+    const field = screen.getByLabelText('Color') as HTMLButtonElement;
+    expect(field.textContent).toBe('#e91e63');
+    expect(field.disabled).toBe(false);
+    expect(within(dialog()).getByText(/only % Complete, Notes and Color can change/)).toBeTruthy();
+    await user.click(field);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'Task color' })).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    await user.click(field);
+    await user.click(within(screen.getByRole('dialog', { name: 'Task color' })).getByRole('button', { name: 'No color' }));
+    await user.click(within(dialog()).getByRole('button', { name: 'OK' }));
+    await waitFor(() => expect(sentOps(s)).toEqual([{ op: 'update_task', id: 'b', fields: { color: null } }]));
+  });
+
+  it('someone who may only read sees the color, off', () => {
+    const plan = plan3({ permissions: { view: true, add: false, change: false, delete: false } });
+    plan.tasks[1] = { ...plan.tasks[1], color: '#178a4c' };
+    open(plan, 'b');
+    const field = screen.getByLabelText('Color') as HTMLButtonElement;
+    expect(field.textContent).toBe('Green');
+    expect(field.disabled).toBe(true);
+  });
+});
+
 describe('the completion check', () => {
   const confirm: ApplyResult = {
     ok: false, kind: 'confirm', willComplete: [],

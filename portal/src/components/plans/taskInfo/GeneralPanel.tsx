@@ -1,10 +1,14 @@
 /**
  * Task Information › General: Task Name, Duration, % Complete, Start,
- * Finish, the task mode, Deadline (due date), Milestone and Display on
- * Timeline. A summary's Duration, Start and Finish come from its subtasks:
- * shown read-only, with a note saying so.
+ * Finish, the task mode, Deadline (due date), Color (the task color
+ * popover), Milestone and Display on Timeline. A summary's Duration, Start
+ * and Finish come from its subtasks: shown read-only, with a note saying so.
  */
+import { useState } from 'react';
+
+import { colorLabel } from '../../../lib/plans/taskColor';
 import { Switch } from '../../Switch';
+import TaskColorPicker from '../TaskColorPicker';
 import { errorId, dateType, type PanelProps } from './panel';
 
 function FieldError({ field, errors }: { field: string; errors: PanelProps['errors'] }) {
@@ -14,6 +18,12 @@ function FieldError({ field, errors }: { field: string; errors: PanelProps['erro
 
 export default function GeneralPanel({ plan, task, form, set, errors, can }: PanelProps) {
   const type = dateType(plan);
+  const [colorButton, setColorButton] = useState<HTMLButtonElement | null>(null);
+  const [picking, setPicking] = useState(false);
+  const donePicking = () => {
+    setPicking(false);
+    colorButton?.focus();
+  };
   const derived = task.is_summary;
   const invalid = (field: string) => (errors[field]
     ? { 'aria-invalid': true as const, 'aria-describedby': errorId(field) } : {});
@@ -72,6 +82,25 @@ export default function GeneralPanel({ plan, task, form, set, errors, can }: Pan
         <input id="pln-ti-deadline" type={type} value={form.deadline} disabled={!can('deadline')}
                onChange={(e) => set({ deadline: e.target.value })} {...invalid('deadline')} />
         <FieldError field="deadline" errors={errors} />
+      </div>
+      <div>
+        <label htmlFor="pln-ti-color">Color</label>
+        <button ref={setColorButton} id="pln-ti-color" type="button" className="org-select pln-ti-color"
+                disabled={!can('color')} aria-haspopup="dialog" aria-expanded={picking}
+                onClick={() => setPicking((on) => !on)}>
+          {form.color && <span className="color-swatch" style={{ background: form.color }} aria-hidden="true" />}
+          {form.color ? colorLabel(form.color) : 'No color'}
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"
+               strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+        </button>
+        {picking && colorButton && (
+          <TaskColorPicker anchor={colorButton} value={form.color}
+                           onPick={(color) => {
+                             set({ color });
+                             donePicking();
+                           }}
+                           onClose={donePicking} />
+        )}
       </div>
       <div className="full pln-switch-line">
         <span className="pln-switch-text">

@@ -118,12 +118,14 @@
 /* off (locked, nothing selected, not yet built): reachable, explained by its tooltip */
 .mini-btn.pln-tbtn[aria-disabled] { opacity: 0.38; cursor: default; }
 .mini-btn.pln-tbtn[aria-disabled]:hover { border-color: transparent; background: transparent; }
-.pln-tsep { align-self: stretch; width: 1px; margin: 5px 3px; background: var(--paper-line); }
+/* 2px each side (with the buttons' 1px gaps): with Task color in Properties
+   the groups still fit one line at 1512px with the nav open */
+.pln-tsep { align-self: stretch; width: 1px; margin: 5px 2px; background: var(--paper-line); }
 /* the view switcher and Auto / Manual: as tall as a group frame */
 .segmented.pln-views,
 .segmented.pln-modes { padding: 2px; gap: 2px; border-radius: 10px; }
 .segmented.pln-views button,
-.segmented.pln-modes button { height: 26px; padding: 0 11px; }
+.segmented.pln-modes button { height: 26px; padding: 0 8px; }
 .segmented.pln-modes button[aria-disabled] { opacity: 0.45; cursor: default; }
 /* the clipboard shortcuts' hidden field: off screen, never clicked */
 .pln-clip {
@@ -541,6 +543,46 @@
   color: var(--text-dark);
 }
 
+/* a task's own color (Task Information, the Color column, Properties ›
+   Task color): `--pln-task`, set inline on its bar, bracket or diamond.
+   Read through --pln-hue, which keeps the hue and chroma as picked and, on
+   the dark theme, lifts the lightness off the dark lanes the way
+   .chip.custom does (directory.css); --pln-hue-deep is the darker shade
+   the part done is filled with. The lightness tokens stay unregistered,
+   so `l` is still a token when oklch(from …) reads it. No text sits on a
+   colored bar: names and resource names are beside it, on the lane. */
+.portal-shell { --pln-hue-l: l; --pln-deep-l: calc(l * 0.72); }
+.portal-shell[data-theme='dark'] {
+  --pln-hue-l: clamp(0.66, calc(l + 0.18), 0.88);
+  --pln-deep-l: clamp(0.5, calc(l + 0.04), 0.74);
+}
+.pln-tinted, .pln-bar-hue {
+  --pln-hue: oklch(from var(--pln-task) var(--pln-hue-l, l) c h);
+  --pln-hue-deep: oklch(from var(--pln-task) var(--pln-deep-l, calc(l * 0.72)) c h);
+}
+.pln-bar.pln-tinted {
+  border-color: var(--pln-hue);
+  background: color-mix(in srgb, var(--pln-hue) 42%, transparent);
+}
+.pln-tinted .pln-bar-done { background: var(--pln-hue-deep); }
+.pln-bar-summary.pln-tinted { background: var(--pln-hue); }
+.pln-bar-summary.pln-tinted::before,
+.pln-bar-summary.pln-tinted::after { border-top-color: var(--pln-hue); }
+.pln-diamond.pln-tinted { background: var(--pln-hue); }
+/* Critical Path on: a critical task stays red; its own color is a 3px
+   stripe along the bar's top edge (the diamond's top point), so it isn't lost */
+.pln-bar-hue {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--pln-hue);
+  pointer-events: none;
+}
+/* a diamond's 3px point would be a speck: its top 5px (a 10px-wide cap) */
+.pln-diamond > .pln-bar-hue { height: 5px; }
+
 /* the baseline: thin and gray under the bar (a small diamond under a milestone) */
 .pln-baseline {
   position: absolute;
@@ -754,6 +796,57 @@
 .pln-respick[aria-busy] { cursor: progress; }
 .pln-respick[aria-busy] > :first-child { opacity: 0.6; }
 .pln-respick [aria-disabled] { opacity: 0.55; cursor: progress; }
+
+/* the task color popover (TaskColorPicker): the toolbar's Task color, the
+   Color cell, Task Information's Color field. Portaled into the shell,
+   above full screen (60) and the dialogs (80), under the hover tips */
+.pln-hues {
+  position: fixed;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px);
+  padding: 12px;
+  background: var(--surface);
+  color: var(--text-dark);
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  box-shadow: 0 18px 50px -18px rgba(12, 17, 23, 0.35);
+}
+.pln-hues:focus { outline: none; }
+.pln-hues .pf-error { margin: 0; }
+.pln-hues[aria-busy] { cursor: progress; }
+.pln-hues-set { display: flex; flex-wrap: wrap; gap: 8px; }
+/* a swatch: the color itself, a check on the one picked */
+.pln-hue {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--text-dark) 18%, transparent);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.pln-hue svg { width: 16px; height: 16px; }
+.pln-hue:hover { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--paper-line); }
+.pln-hue[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--text-dark); }
+.pln-hue:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.pln-hues-foot { display: flex; justify-content: space-between; gap: 8px; }
+.pln-hues-foot .mini-btn[aria-pressed="true"] { border-color: var(--text-dark); }
+
+/* Task Information › General: the Color field, a button that opens the popover */
+.pln-ti-color {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+}
+.pln-ti-color svg { flex: none; width: 14px; height: 14px; margin-left: auto; color: var(--text-mute); }
+.pln-ti-color:disabled { opacity: 0.55; cursor: not-allowed; }
 
 /* ── lock banner ──────────────────────────────────────────────── */
 

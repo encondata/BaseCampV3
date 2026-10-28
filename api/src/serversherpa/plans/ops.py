@@ -81,8 +81,10 @@ from serversherpa.plans.settings import PlanSettings
 from serversherpa.services.audit import audit
 
 # The task fields a progress edit may touch (spec Lock: % complete,
-# actuals, notes); a batch of only these needs no version match.
-PROGRESS_FIELDS = frozenset({"percent_complete", "actual_start", "actual_finish", "notes"})
+# actuals, notes, and the cosmetic bar color); a batch of only these needs
+# no version match.
+PROGRESS_FIELDS = frozenset({"percent_complete", "actual_start", "actual_finish", "notes",
+                             "color"})
 # What the undo of a progress edit carries (completion stamps included).
 _PROGRESS_RESTORE_KEYS = PROGRESS_FIELDS | {"id", "completed_at", "completed_by"}
 # the ops that are progress edits whatever they carry
@@ -113,7 +115,7 @@ async def _update_task(b: Batch, op: UpdateTaskOp) -> None:
         raise bad_field("actual_finish")
     if sent & _ACTUALS:
         ops_progress.actuals_typed(b, op.id, sent & _ACTUALS)
-    if sent - {"notes"}:
+    if sent - ops_tasks.COSMETIC_FIELDS:
         b.stale = True
 
 

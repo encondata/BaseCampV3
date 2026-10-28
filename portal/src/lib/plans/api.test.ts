@@ -149,6 +149,14 @@ describe('isProgressOnly', () => {
     expect(P.isProgressOnly([update({ notes: 'x', name: undefined })])).toBe(true);
   });
 
+  it('takes a color: cosmetic, like the API’s PROGRESS_FIELDS (a locked plan still changes colors)', () => {
+    expect(P.PROGRESS_FIELDS.has('color')).toBe(true);
+    expect(P.isProgressOnly([update({ color: '#1e88e5' }), update({ color: null })])).toBe(true);
+    expect(P.isProgressOnly([update({ color: '#1e88e5', name: 'y' })])).toBe(false);
+    // and so is its undo
+    expect(P.isProgressOnly([{ ...SIGNED_RESTORE, tasks: [{ id: 't1', color: null }] }])).toBe(true);
+  });
+
   it('takes the signed restore that undoes a progress edit, and an empty one', () => {
     expect(P.isProgressOnly([SIGNED_RESTORE])).toBe(true);
     expect(P.isProgressOnly([{ ...SIGNED_RESTORE, tasks: [] }])).toBe(true);

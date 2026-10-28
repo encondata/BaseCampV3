@@ -201,6 +201,25 @@ export function toggleTimeline(sel: Selection, ctx: CommandContext): Command {
   };
 }
 
+/** Properties › Task color: the color (null: the default) for every
+ *  selected task that doesn't have it yet, in one batch (one undo step).
+ *  Cosmetic, so a locked plan takes it too (PROGRESS_FIELDS). */
+export function setColor(sel: Selection, color: string | null, ctx: CommandContext): Command {
+  const chosen = selectedTasks(sel, ctx.plan);
+  if (!chosen.length) return { error: SELECT_FIRST };
+  return {
+    ops: chosen.filter((t) => t.color !== color)
+      .map((t): Op => ({ op: 'update_task', id: t.id, fields: { color } })),
+  };
+}
+
+/** The color the tasks share (null: none of them has one); undefined
+ *  when they differ or there are none (the picker shows nothing picked). */
+export function sharedColor(tasks: readonly Pick<PlanTask, 'color'>[]): string | null | undefined {
+  const colors = new Set(tasks.map((t) => t.color));
+  return colors.size === 1 ? [...colors][0] : undefined;
+}
+
 /** The mode the Auto / Manual pair shows: the selection's, when it agrees. */
 export function selectionMode(sel: Selection, plan: Pick<Plan, 'tasks'>): TaskMode | null {
   const modes = new Set(selectedTasks(sel, plan).map((t) => t.mode));

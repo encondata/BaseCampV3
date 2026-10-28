@@ -5,7 +5,8 @@
  *   Undo · Schedule (0–100%, Mark on Track, Link, Unlink, Indent, Outdent)
  *   · Tasks (Auto / Manual, a `.segmented` pair showing the selection's
  *   mode) · Insert (Task, Summary, Milestone) · Properties (Information,
- *   Notes, Add to Timeline) · Display (Critical path, Baseline, Zoom − / +
+ *   Notes, Add to Timeline, Task color: a popover of colors for every
+ *   selected task) · Display (Critical path, Baseline, Zoom − / +
  *   / Fit, Scroll to task, then Gantt Layout: one button whose icon is the
  *   layout now, opening a menu of Beside, Below and Hidden; the Timeline
  *   strip comes in Plan C) · More.
@@ -19,7 +20,7 @@
  * Read-only people see Display (Gantt Layout included) and More (Columns…,
  * Keyboard shortcuts) only. On a locked plan the buttons that change the schedule
  * stay reachable but off, their tip saying "Schedule is locked"; progress
- * (0–100%, Mark on Track, Notes) still works. A button that needs a
+ * (0–100%, Mark on Track, Notes) and Task color still work. A button that needs a
  * selection says so instead; with the chart Hidden, the chart-only commands
  * (Critical Path, Baseline, Zoom, Fit, Scroll to Task) say to show it. Off
  * buttons are `aria-disabled`, not `disabled`, so they keep their tip and
@@ -31,9 +32,10 @@
  * focus back to the sheet, as MS Project does; a key press on one keeps
  * it on the button.
  */
-import { useEffect, useLayoutEffect, useRef, type MouseEvent, type ReactNode, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from 'react';
 
 import type { Plan } from '../../lib/plans/api';
+import { sharedColor } from '../../lib/plans/commands';
 import {
   COMMAND_TIPS, OFF_NOTES, redoDesc, tipKeys, undoDesc, type CommandTipId,
 } from '../../lib/plans/commandTips';
@@ -43,6 +45,7 @@ import type { GanttLayout } from '../../lib/plans/ganttView';
 import { detectPlatform, type Platform } from '../../lib/plans/shortcuts';
 import { RowActionsMenu, type RowAction } from '../hardware/RowActionsMenu';
 import Tip from '../Tip';
+import TaskColorPicker from './TaskColorPicker';
 import type { PlanCommands } from './usePlanCommands';
 import type { PlanController } from './usePlan';
 
@@ -184,6 +187,7 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform, layout
           {tool('info', () => cmd.info(), <Icon name="info" />, { hint: progress })}
           {tool('notes', () => cmd.info('notes'), <Icon name="notes" />, { hint: progress })}
           {tool('timeline', cmd.timeline, <Icon name="timeline" />, { hint: structure(), pressed: cmd.onTimeline })}
+          <ColorTool cmd={cmd} hint={progress} />
         </Group>
       )}
 
@@ -252,6 +256,55 @@ function Tool({ label, desc, keys, hint, pressed, onRun, focusSheet, children }:
         {children}
       </button>
     </Tip>
+  );
+}
+
+/**
+ * Properties › Task color: a button whose popover (TaskColorPicker) colors
+ * every selected task in one batch. It works on a locked plan (a color is
+ * cosmetic) and needs a selection. A pick made with the mouse hands focus
+ * back to the sheet, as the other commands do; Escape, or a pick by key,
+ * leaves it on the button.
+ */
+function ColorTool({ cmd, hint }: { cmd: PlanCommands; hint: string | null }) {
+  const [open, setOpen] = useState(false);
+  const [button, setButton] = useState<HTMLButtonElement | null>(null);
+  const byMouse = useRef(false);
+  const tip = COMMAND_TIPS.color;
+
+  // the selection went (or the plan turned read-only) under the open picker
+  useEffect(() => {
+    if (hint) setOpen(false);
+  }, [hint]);
+
+  const done = (picked: boolean) => {
+    setOpen(false);
+    if (picked && byMouse.current) cmd.focusSheet();
+    else button?.focus();
+  };
+
+  return (
+    <>
+      <Tip label={tip.label} desc={tip.desc} note={hint}>
+        <button ref={setButton} type="button" className="mini-btn pln-tbtn" aria-label={tip.label}
+                aria-disabled={hint ? true : undefined} aria-haspopup="dialog" aria-expanded={open}
+                onClick={(e) => {
+                  if (hint) return;
+                  byMouse.current = e.detail > 0;
+                  setOpen((o) => !o);
+                }}>
+          <Icon name="color" />
+        </button>
+      </Tip>
+      {open && button && (
+        <TaskColorPicker anchor={button} value={sharedColor(cmd.selected)}
+                         onPick={(color) => {
+                           cmd.color(color);
+                           done(true);
+                         }}
+                         onClose={() => done(false)} />
+      )}
+    </>
   );
 }
 
@@ -343,6 +396,7 @@ const ICONS: Record<string, ReactNode> = {
   info: <><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7.5v.2" /></>,
   notes: <><path d="M6 3h8.5L19 7.5V21H6z" /><path d="M9 11.5h7M9 15.5h7" /></>,
   timeline: <><rect x="3" y="9" width="18" height="6" rx="3" /><path d="M9 4v5M15 15v5" /></>,
+  color: <><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.8-.8 1.8-1.8 0-.5-.2-.9-.5-1.2-.3-.4-.5-.8-.5-1.3 0-1 .8-1.8 1.8-1.8H17a4 4 0 0 0 4-4c0-4.4-4-7.9-9-7.9z" /><circle cx="7.5" cy="11.5" r="1" /><circle cx="10.5" cy="7.5" r="1" /><circle cx="15.5" cy="8.5" r="1" /></>,
   critical: <><rect x="3" y="5" width="8" height="5" rx="1.2" /><rect x="13" y="14" width="8" height="5" rx="1.2" /><path d="M11 7.5h3.5v6.5" /></>,
   baseline: <><rect x="3" y="5" width="14" height="6" rx="1.2" /><rect x="7" y="15" width="14" height="4" rx="1" /></>,
   zoomOut: <><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5M8 11h6" /></>,

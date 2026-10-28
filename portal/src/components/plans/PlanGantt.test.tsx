@@ -290,6 +290,54 @@ describe('bars and links', () => {
     expect(qa('.pln-bar-label, .pln-bar-label-after')).toHaveLength(0);
   });
 
+  it('a task’s color fills its bar, bracket or diamond; others keep the default; baselines stay gray', () => {
+    const tasks = outlineTasks().map((t) => (t.id === 'a' ? { ...t, color: '#1e88e5', percent_complete: 50,
+      baseline_start: t.start, baseline_finish: t.finish }
+      : t.id === 's1' ? { ...t, color: '#c03540' } : t.id === 'c' ? { ...t, color: '#6d4fc4' } : t));
+    render(<Harness plan={makePlan({ tasks, initiative_window: NO_WINDOW })} display={{ critical: false, baseline: true }} />);
+    const bar = q('.pln-bar[data-task-id="a"]') as HTMLElement;
+    // the bar's inline color drives its fill, border and the darker part done (plans.css .pln-tinted)
+    expect(bar.classList.contains('pln-tinted')).toBe(true);
+    expect(bar.style.getPropertyValue('--pln-task')).toBe('#1e88e5');
+    expect(bar.querySelector('.pln-bar-done')).not.toBeNull();
+    const bracket = q('.pln-bar-summary[data-task-id="s1"]') as HTMLElement;
+    expect(bracket.classList.contains('pln-tinted')).toBe(true);
+    expect(bracket.style.getPropertyValue('--pln-task')).toBe('#c03540');
+    const diamond = q('.pln-diamond[data-task-id="c"]') as HTMLElement;
+    expect(diamond.classList.contains('pln-tinted')).toBe(true);
+    expect(diamond.style.getPropertyValue('--pln-task')).toBe('#6d4fc4');
+    // a task without one: no class, no color
+    const plain = q('.pln-bar[data-task-id="b"]') as HTMLElement;
+    expect(plain.classList.contains('pln-tinted')).toBe(false);
+    expect(plain.style.getPropertyValue('--pln-task')).toBe('');
+    // the baseline under the colored bar carries none of it
+    const base = q('.pln-lane[data-lane="a"] .pln-baseline') as HTMLElement;
+    expect(base.classList.contains('pln-tinted')).toBe(false);
+    expect(base.style.getPropertyValue('--pln-task')).toBe('');
+  });
+
+  it('Critical Path on: a critical task shows the critical red, its own color as a stripe along the top', () => {
+    const tasks = tasks3().map((t) => (t.id === 'a' || t.id === 'm' ? { ...t, is_critical: true, color: '#1e88e5' }
+      : t.id === 'b' ? { ...t, color: '#178a4c' } : t));
+    const plan = plan3({ tasks });
+    const { rerender } = render(<Harness plan={plan} />);
+    expect(qa('.pln-bar-hue')).toHaveLength(0);
+    expect((q('.pln-bar[data-task-id="a"]') as HTMLElement).classList.contains('pln-tinted')).toBe(true);
+    rerender(<Harness plan={plan} display={{ critical: true, baseline: false }} />);
+    const critical = q('.pln-bar[data-task-id="a"]') as HTMLElement;
+    expect(critical.classList.contains('pln-bar-critical')).toBe(true);
+    expect(critical.classList.contains('pln-tinted')).toBe(false);
+    expect(critical.style.getPropertyValue('--pln-task')).toBe('#1e88e5');
+    expect(critical.querySelectorAll('.pln-bar-hue')).toHaveLength(1);
+    // the milestone too; a colored task off the critical path keeps its color as the fill
+    const diamond = q('.pln-diamond[data-task-id="m"]') as HTMLElement;
+    expect(diamond.classList.contains('pln-diamond-critical')).toBe(true);
+    expect(diamond.querySelectorAll('.pln-bar-hue')).toHaveLength(1);
+    const pack = q('.pln-bar[data-task-id="b"]') as HTMLElement;
+    expect(pack.classList.contains('pln-tinted')).toBe(true);
+    expect(pack.querySelector('.pln-bar-hue')).toBeNull();
+  });
+
   it('skips a task with no dates to draw', () => {
     const tasks = tasks3();
     tasks[2] = { ...tasks[2], start: null, finish: null };

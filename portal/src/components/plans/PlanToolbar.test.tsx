@@ -37,7 +37,7 @@ function commands(over: Partial<PlanCommands> = {}): PlanCommands {
     outdent: fn(), setMode: fn(), insert: fn(), timeline: fn(), deleteTasks: fn(), confirmDelete: vi.fn(async () => {}),
     info: fn(), toggleCritical: fn(), toggleBaseline: fn(), zoomIn: fn(), zoomOut: fn(), fit: fn(), scrollToTask: fn(),
     collapse: fn(), expand: fn(), copy: vi.fn(() => true), cut: fn(), paste: fn(), lock: fn(), unlock: fn(), open: fn(),
-    focusSheet: fn(), handlers: {},
+    focusSheet: fn(), color: fn(), handlers: {},
     ...over,
   };
 }
@@ -154,6 +154,43 @@ describe('groups', () => {
     expect(cmd.info).toHaveBeenLastCalledWith('notes');
   });
 
+  it('Task color, in Properties: on a locked plan too; its picker colors the selected tasks', () => {
+    const cmd = commands({ selected: [makeTask('a'), makeTask('b', { color: '#1668a7' })] });
+    render(<Bar plan={makePlan({ locked_at: '2026-10-27T12:00:00Z' })} cmd={cmd} />);
+    const color = button('Task color');
+    expect(color.closest('[role="group"]')?.getAttribute('aria-label')).toBe('Properties');
+    expect(color.getAttribute('aria-disabled')).toBeNull();
+    expect(color.getAttribute('aria-haspopup')).toBe('dialog');
+    fireEvent.click(color);
+    expect(color.getAttribute('aria-expanded')).toBe('true');
+    const picker = screen.getByRole('dialog', { name: 'Task color' });
+    // the two differ: neither shows as picked
+    expect(within(picker).queryAllByRole('button', { pressed: true })).toEqual([]);
+    fireEvent.click(within(picker).getByRole('button', { name: 'Green' }));
+    expect(cmd.color).toHaveBeenCalledWith('#178a4c');
+    expect(screen.queryByRole('dialog', { name: 'Task color' })).toBeNull();
+    expect(color.getAttribute('aria-expanded')).toBe('false');
+    // No color clears it
+    fireEvent.click(color);
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Task color' })).getByRole('button', { name: 'No color' }));
+    expect(cmd.color).toHaveBeenLastCalledWith(null);
+  });
+
+  it('Task color shows the color the selection shares; Escape closes its picker, back on the button', async () => {
+    const user = userEvent.setup();
+    const cmd = commands({ selected: [makeTask('a', { color: '#c03540' }), makeTask('b', { color: '#c03540' })] });
+    render(<Bar plan={makePlan()} cmd={cmd} />);
+    const color = button('Task color');
+    color.focus();
+    await user.keyboard('{Enter}');
+    const picker = screen.getByRole('dialog', { name: 'Task color' });
+    expect(within(picker).getByRole('button', { name: 'Red' }).getAttribute('aria-pressed')).toBe('true');
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'Task color' })).toBeNull();
+    expect(document.activeElement).toBe(color);
+    expect(cmd.color).not.toHaveBeenCalled();
+  });
+
   it('Information and Notes need a task selected', () => {
     render(<Bar plan={makePlan()} cmd={commands({ selected: [], mode: null })} />);
     expect(button('Information').getAttribute('aria-disabled')).toBe('true');
@@ -214,6 +251,19 @@ describe('hover tips', () => {
     const redo = hoverTip(button('Redo'));
     expect(redo.keys).toEqual(['Ctrl+Y', 'Ctrl+Shift+Z']);
     expect(redo.note).toBe('Nothing to redo');
+  });
+
+  it('Task color: its tip from the one table; “Select a task first” with nothing selected', () => {
+    const { rerender } = render(<Bar plan={makePlan()} cmd={commands()} />);
+    expect(hoverTip(button('Task color'))).toEqual({
+      label: 'Task color', keys: [], desc: 'Color the selected tasks’ bars on the Gantt chart.', note: null,
+    });
+    rerender(<Bar plan={makePlan()} cmd={commands({ selected: [], mode: null })} />);
+    const off = button('Task color');
+    expect(off.getAttribute('aria-disabled')).toBe('true');
+    expect(hoverTip(off).note).toBe('Select a task first');
+    fireEvent.click(off);
+    expect(screen.queryByRole('dialog', { name: 'Task color' })).toBeNull();
   });
 
   it('a locked plan: the schedule changes say “Schedule is locked”; progress says nothing', () => {

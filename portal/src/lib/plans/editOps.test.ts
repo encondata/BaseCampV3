@@ -135,6 +135,17 @@ describe('opsForCell: the ops an edit sends', () => {
       .toEqual([{ op: 'set_assignees', task_id: 'b', resources: [] }]);
   });
 
+  it('Color sends the color lower-case, a palette name as its hex, and null for none', () => {
+    expect(ops(opsForCell(task(), col('color'), '#1E88E5', ctx())))
+      .toEqual([{ op: 'update_task', id: 'b', fields: { color: '#1e88e5' } }]);
+    expect(ops(opsForCell(task(), col('color'), 'blue', ctx())))
+      .toEqual([{ op: 'update_task', id: 'b', fields: { color: '#1668a7' } }]);
+    expect(ops(opsForCell(task({ color: '#1668a7' }), col('color'), '', ctx())))
+      .toEqual([{ op: 'update_task', id: 'b', fields: { color: null } }]);
+    expect(opsForCell(task(), col('color'), 'sky', ctx())).toEqual({ error: expect.stringContaining('#rrggbb') });
+    expect(opsForCell(task(), col('color'), '#12345', ctx())).toEqual({ error: expect.any(String) });
+  });
+
   it('Notes sends the text, and null once emptied', () => {
     expect(ops(opsForCell(task(), col('notes'), 'call first', ctx())))
       .toEqual([{ op: 'update_task', id: 'b', fields: { notes: 'call first' } }]);
@@ -155,6 +166,9 @@ describe('opsForCell: an unchanged value sends nothing', () => {
     ['mode', { mode: 'auto' }, 'auto'],
     ['notes', { notes: 'line one\nline two' }, 'line one line two'],
     ['resources', { assignees: [{ kind: 'person', id: 'p1', name: 'Dana' }] }, 'person:p1'],
+    ['color', { color: '#1668a7' }, '#1668A7'],
+    ['color', { color: '#1668a7' }, 'Blue'],
+    ['color', { color: null }, ''],
   ] as const)('%s', (key, over, text) => {
     expect(opsForCell(task(over as Partial<PlanTask>), col(key), text, ctx())).toEqual({ ops: [] });
   });
@@ -206,6 +220,8 @@ describe('editText (what F2 starts from)', () => {
     expect(editText(t, col('mode'), false)).toBe('manual');
     expect(editText(t, col('resources'), false)).toBe('person:p1,partner:x');
     expect(editText(null, col('name'), false)).toBe('');
+    expect(editText(t, col('color'), false)).toBe('');
+    expect(editText(task({ color: '#1668a7' }), col('color'), false)).toBe('#1668a7');
   });
 });
 
@@ -215,7 +231,7 @@ describe('which cells open an editor', () => {
   const readOnly = makePlan({ permissions: { view: true, add: false, change: false, delete: false } });
 
   it('locked: only the columns whose ops are progress edits (PROGRESS_FIELDS)', () => {
-    expect([...LOCKED_COLUMNS].sort()).toEqual(['actual_finish', 'actual_start', 'notes', 'percent']);
+    expect([...LOCKED_COLUMNS].sort()).toEqual(['actual_finish', 'actual_start', 'color', 'notes', 'percent']);
     for (const key of LOCKED_COLUMNS) {
       expect(PROGRESS_FIELDS.has(key === 'percent' ? 'percent_complete' : key)).toBe(true);
     }
@@ -223,6 +239,8 @@ describe('which cells open an editor', () => {
     expect(canEditCell(locked, task(), col('name'))).toBe(false);
     expect(canEditCell(locked, task(), col('percent'))).toBe(true);
     expect(canEditCell(locked, task(), col('notes'))).toBe(true);
+    expect(canEditCell(locked, task(), col('color'))).toBe(true);
+    expect(canEditCell(locked, task({ is_summary: true }), col('color'))).toBe(true);
   });
 
   it('read-only: none', () => {
@@ -265,7 +283,7 @@ describe('which cells open an editor', () => {
   });
 
   it('the blank row: only fields a new task takes, and only while tasks can be added', () => {
-    for (const key of ['name', 'duration', 'start', 'finish', 'mode', 'deadline', 'notes']) {
+    for (const key of ['name', 'duration', 'start', 'finish', 'mode', 'deadline', 'notes', 'color']) {
       expect(canEditCell(plan, null, col(key))).toBe(true);
     }
     for (const key of ['predecessors', 'resources', 'percent', 'constraint_type', 'actual_start']) {

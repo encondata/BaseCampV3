@@ -158,7 +158,7 @@ transfers. Icon buttons with text tooltips that include the shortcut.
   Unlink · Indent · Outdent
 - **Tasks:** Auto Schedule / Manually Schedule
 - **Insert:** Task · Summary · Milestone
-- **Properties:** Information · Notes · Add to Timeline
+- **Properties:** Information · Notes · Add to Timeline · Task color (amended 2026-10-28, under The Gantt chart)
 - **Display:** Critical path · Baseline · Timeline strip · Zoom − / + / Fit
   project · Scroll to task
 - **More ▾** (`RowActionsMenu`-style menu): Set baseline… · Clear baseline ·
@@ -522,6 +522,18 @@ back to the button:
 
 Full screen works in all three; switching keeps the selection, the rows on
 screen and the chart's place in time (its left edge).
+
+**Amendment 2026-10-28 (Jimmy, during Plan B): task colors.** A task may
+carry a bar color (`plan_tasks.color`, lower-case `#rrggbb`, null = the
+default; anything else is 422 `bad_field`), picked from one shared popover —
+the portal's named palette, No color, Custom… (the initiative ColorWheel) —
+by Properties › Task color (every selected task, one undo step), an optional
+Color column and Task Information › General. It is cosmetic: it never moves a
+date and is one of PROGRESS_FIELDS, so a locked plan still takes it. Bars,
+summary brackets and diamonds fill with it (the part done a darker shade,
+lifted on the dark theme); under Critical Path a critical task stays red with
+its color as a 3px stripe along the top; baselines stay gray. Copies of whole
+tasks carry it; templates, Excel and MSPDI carry it in Plan C.
 
 ## Dialogs
 

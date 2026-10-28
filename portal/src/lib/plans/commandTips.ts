@@ -57,6 +57,7 @@ export const COMMAND_TIPS = {
   info: { label: 'Information', desc: 'Open Task Information for the selected task.', shortcut: 'info' },
   notes: { label: 'Notes', desc: 'Open the selected task’s notes.' },
   timeline: { label: 'Add to Timeline', desc: 'Show the selected tasks on the timeline.' },
+  color: { label: 'Task color', desc: 'Color the selected tasks’ bars on the Gantt chart.' },
 
   // Display
   critical: { label: 'Critical Path', desc: 'Show in red the tasks that set the project’s finish date.' },

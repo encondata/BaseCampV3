@@ -96,6 +96,7 @@ class PlanTaskOut(BaseModel):
     actual_finish: str | None
     notes: str | None
     show_on_timeline: bool
+    color: str | None                       # Gantt bar color "#rrggbb"; None = the default
     total_slack_minutes: int | None
     is_critical: bool
     conflict: str | None
@@ -148,7 +149,7 @@ class PlanOut(BaseModel):
 # Values are checked by plans/ops.py, not here, so a bad one answers 422
 # {"code": "bad_field", "field": ...} (or `bad_duration`) like the rest of
 # the plan API. A field left out of `fields` is not touched; a field sent
-# as null clears it where that makes sense (dates, notes) and is refused
+# as null clears it where that makes sense (dates, notes, color) and is refused
 # where it does not (name, duration, mode, ...).
 
 MAX_OPS = 5000          # one paste of a whole plan, with room to spare
@@ -173,6 +174,7 @@ class TaskFields(BaseModel):
     actual_finish: str | None = None
     notes: str | None = None
     show_on_timeline: bool | None = None
+    color: str | None = None                # "#rrggbb", any case (stored lower-case); null clears
     # The Predecessors cell, MS Project text ("2,3SS+1d"): replaces every
     # link into the task (numbering: see UpdateTaskOp).
     predecessors: str | None = None
@@ -198,6 +200,7 @@ class AddTaskOp(BaseModel):
     is_milestone: bool | None = None
     deadline: str | None = None
     notes: str | None = None
+    color: str | None = None
 
 
 class UpdateTaskOp(BaseModel):

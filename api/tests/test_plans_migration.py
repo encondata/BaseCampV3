@@ -62,9 +62,15 @@ def _state(conn) -> dict:
         "WHERE table_schema = 'public' AND table_name = ANY(%s)", (list(TABLES),))}
     indexes = {r[0] for r in conn.execute(
         "SELECT indexname FROM pg_indexes WHERE indexname = ANY(%s)", (list(INDEXES),))}
+    color = conn.execute(
+        "SELECT c.data_type, c.is_nullable, pg_get_constraintdef(k.oid) "
+        "FROM information_schema.columns c LEFT JOIN pg_constraint k "
+        "ON k.conname = 'plan_tasks_color_check' "
+        "WHERE c.table_name = 'plan_tasks' AND c.column_name = 'color'").fetchone()
     return {
         "tables": tables,
         "indexes": indexes,
+        "color": color and tuple(color),
         "grants": {role: {r[0] for r in conn.execute(
             "SELECT action FROM role_permissions "
             "WHERE role = %s AND resource = 'project_plans'", (role,))}
@@ -104,6 +110,8 @@ def test_downgrade_and_upgrade_again(throwaway_url):
         up = _state(conn)
         assert up["tables"] == set(TABLES)
         assert up["indexes"] == set(INDEXES)
+        # a task's color: optional, lower-case #rrggbb
+        assert up["color"] == ("text", "YES", "CHECK ((color ~ '^#[0-9a-f]{6}$'::text))")
         for role in GRANTED_ROLES:
             assert up["grants"][role] == FULL, role
         # nothing for staff or below, and the learning_admin role is untouched
@@ -123,6 +131,7 @@ def test_downgrade_and_upgrade_again(throwaway_url):
         down = _state(conn)
         assert down["tables"] == set()
         assert down["indexes"] == set()
+        assert down["color"] is None
         assert all(grants == set() for grants in down["grants"].values())
         assert conn.execute(
             "SELECT categories FROM notification_groups WHERE name = 'Mixed'"
@@ -220,6 +229,7 @@ async def test_task_check_constraints(db):
 @pytest.mark.parametrize("column, bad", [
     ("mode", "semi"), ("duration_unit", "y"), ("constraint_type", "alap"),
     ("conflict", "other"), ("duration_minutes", -1),
+    ("color", "#1E88E5"), ("color", "blue"), ("color", "#1e88e5x"), ("color", "#1e88e"),
 ])
 async def test_task_enum_checks(db, column, bad):
     _, _plan, (a, _b) = await _plan_with_tasks(db)
@@ -240,6 +250,11 @@ async def test_task_defaults_and_conflict_values(db):
     assert tuple(row) == ("auto", 0, "d", False, "asap", 0, False, False, None, None)
     for ok in ("link", "constraint", None):
         await db.execute(text("UPDATE plan_tasks SET conflict = :v WHERE id = :t"),
+                         {"v": ok, "t": a})
+    await db.commit()
+    assert await db.scalar(text("SELECT color FROM plan_tasks WHERE id = :t"), {"t": a}) is None
+    for ok in ("#1e88e5", "#000000", None):
+        await db.execute(text("UPDATE plan_tasks SET color = :v WHERE id = :t"),
                          {"v": ok, "t": a})
     await db.commit()
 

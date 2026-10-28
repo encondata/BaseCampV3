@@ -31,7 +31,7 @@ import { sayNotices, useCompletionPrompt } from './useCompletion';
 import type { PlanController } from './usePlan';
 
 /** How a column is edited (CellEditor draws one of these). */
-export type EditorKind = 'text' | 'date' | 'datetime' | 'select' | 'resources';
+export type EditorKind = 'text' | 'date' | 'datetime' | 'select' | 'resources' | 'color';
 
 export function editorKind(column: PlanColumn, showTimes: boolean): EditorKind | null {
   switch (column.editor) {
@@ -40,6 +40,7 @@ export function editorKind(column: PlanColumn, showTimes: boolean): EditorKind |
     case 'datetime': return 'datetime';
     case 'select': return 'select';
     case 'resources': return 'resources';
+    case 'color': return 'color';
     default: return 'text';
   }
 }

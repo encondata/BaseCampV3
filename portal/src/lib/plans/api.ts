@@ -143,6 +143,8 @@ export interface PlanTask {
   actual_finish: string | null;
   notes: string | null;
   show_on_timeline: boolean;
+  /** The bar's color on the Gantt chart, `#rrggbb` lower-case; null = the default. */
+  color: string | null;
   total_slack_minutes: number | null;
   is_critical: boolean;
   conflict: 'link' | 'constraint' | null;
@@ -235,6 +237,7 @@ export interface TaskFields {
   actual_finish?: string | null;
   notes?: string | null;
   show_on_timeline?: boolean;
+  color?: string | null;              // `#rrggbb` (stored lower-case); null = the default
   /** Replaces every link into the task. Its numbers are display IDs of
    *  the outline as it stood when the batch began; a task added in the
    *  same batch cannot be named. */
@@ -257,6 +260,7 @@ export interface AddTaskOp {
   is_milestone?: boolean | null;
   deadline?: string | null;
   notes?: string | null;
+  color?: string | null;
 }
 
 export interface UpdateTaskOp {
@@ -416,9 +420,10 @@ export interface CompletionBlocker {
 
 // ── progress-only batches ────────────────────────────────────────────
 
-/** The task fields a progress edit may touch (ops.PROGRESS_FIELDS). */
+/** The task fields a progress edit may touch (ops.PROGRESS_FIELDS): progress,
+ *  notes, and the cosmetic bar color (it never moves a date). */
 export const PROGRESS_FIELDS: ReadonlySet<string> = new Set(
-  ['percent_complete', 'actual_start', 'actual_finish', 'notes']);
+  ['percent_complete', 'actual_start', 'actual_finish', 'notes', 'color']);
 const PROGRESS_RESTORE_KEYS: ReadonlySet<string> = new Set(
   [...PROGRESS_FIELDS, 'id', 'completed_at', 'completed_by']);
 

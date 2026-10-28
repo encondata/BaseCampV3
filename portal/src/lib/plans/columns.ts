@@ -12,15 +12,17 @@ import type { PlanTask, TaskStatus } from './api';
 import { formatDuration, type Units } from './durations';
 import { formatCell, fromInstant } from './floatingTime';
 import { CONSTRAINT_LABELS, indicatorsOf, oneLine } from './indicators';
+import { colorLabel } from './taskColor';
 
 export type ColumnEditor =
-  | 'text' | 'duration' | 'date' | 'datetime' | 'predecessors' | 'resources' | 'percent' | 'select' | 'none';
+  | 'text' | 'duration' | 'date' | 'datetime' | 'predecessors' | 'resources' | 'percent' | 'select' | 'color'
+  | 'none';
 
 /** How a cell renders its value, by the kind of datum (directory.css's
  *  golden classes): the task name, plain text (`cell-top`), prose
  *  (`cell-sub`), identifiers, dates and numbers (`mono`), a status chip,
- *  or icons. */
-export type CellText = 'name' | 'top' | 'sub' | 'mono' | 'chip' | 'icons';
+ *  icons, or a task color (its swatch and name). */
+export type CellText = 'name' | 'top' | 'sub' | 'mono' | 'chip' | 'icons' | 'color';
 
 /** What a cell needs beyond its task. */
 export interface SheetContext {
@@ -173,6 +175,11 @@ const OPTIONAL: Def[] = [
   {
     key: 'notes', label: 'Notes', width: 220, min: 80, align: 'start', editor: 'text', text: 'sub',
     value: (t) => oneLine(t.notes),
+  },
+  // the bar's color: its palette name, or the hex of a custom one (MS Project has no such column)
+  {
+    key: 'color', label: 'Color', width: 112, min: 64, align: 'start', editor: 'color', text: 'color',
+    value: (t) => colorLabel(t.color),
   },
   {
     key: 'created', label: 'Created', width: 108, min: 80, align: 'start', editor: 'none', text: 'mono', date: true,

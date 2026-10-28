@@ -9,7 +9,9 @@
  *    shows times;
  *  - Mode and Constraint Type: the house ComboBox, its menu portaled so it
  *    shows above full screen and outside the sheet's scroll box;
- *  - Resource Names: the ResourcePicker popover.
+ *  - Resource Names: the ResourcePicker popover;
+ *  - Color: the task color popover (TaskColorPicker): a pick commits it,
+ *    Escape cancels.
  *
  * Enter and Tab commit and move (a select's Enter picks, then moves down,
  * Shift+Enter up; a mouse pick stays), Esc cancels, a click elsewhere
@@ -29,7 +31,9 @@ import type { PlanColumn } from '../../lib/plans/columns';
 import { PARTIAL_DATE } from '../../lib/plans/editOps';
 import type { MoveDir } from '../../lib/plans/selection';
 import { editorKey, keyLike, type KeyLike } from '../../lib/plans/sheetKeys';
+import { colorLabel } from '../../lib/plans/taskColor';
 import ResourcePicker from './ResourcePicker';
+import TaskColorPicker from './TaskColorPicker';
 import type { SheetEditor } from './useSheetEditing';
 
 import '../../styles/profile.css';   // .pf-error, .btn-solid
@@ -63,6 +67,8 @@ export default function CellEditor({
 }: Props) {
   const { kind, text, error, refusals, pending } = editor;
   const isDate = kind === 'date' || kind === 'datetime';
+  /** A popover editor (Resource Names, Color) owns its keys, focus and commit. */
+  const popover = kind === 'resources' || kind === 'color';
   /** The select's pick under way came from Enter (down) or Shift+Enter (up). */
   const enterPick = useRef<MoveDir | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -102,7 +108,7 @@ export default function CellEditor({
   // back, the same message again included (`refusals`); typing starts at
   // the end, as in a spreadsheet
   useEffect(() => {
-    if (kind === 'resources' || pending) return;
+    if (popover || pending) return;
     const input = wrapRef.current?.querySelector<HTMLInputElement>('input');
     if (!input) return;
     if (document.activeElement !== input) input.focus({ preventScroll: true });
@@ -154,7 +160,7 @@ export default function CellEditor({
       return;
     }
     // the picker owns its keys; an Enter the ComboBox used was a pick
-    if (kind === 'resources' || e.defaultPrevented) return;
+    if (popover || e.defaultPrevented) return;
     const action = editorKey(k);
     if (action.kind === 'commit') {
       e.preventDefault();
@@ -168,7 +174,7 @@ export default function CellEditor({
   // leaving the field (a click on another cell, the toolbar) commits where
   // it is; the window losing focus does not
   const onBlur = (e: FocusEvent<HTMLDivElement>) => {
-    if (pending || kind === 'resources') return;
+    if (pending || popover) return;
     const next = e.relatedTarget as Node | null;
     if (next && wrapRef.current?.contains(next)) return;
     if (!document.hasFocus()) return;
@@ -204,6 +210,18 @@ export default function CellEditor({
         )}
       </>
     );
+  } else if (kind === 'color') {
+    control = (
+      <>
+        <div className="org-select pln-editor-names pln-editor-hue" aria-hidden="true">
+          {text && <><span className="color-swatch" style={{ background: text }} /><span>{colorLabel(text)}</span></>}
+        </div>
+        {anchor && (
+          <TaskColorPicker anchor={anchor} value={text || null} pending={pending} error={error}
+                           onPick={(color) => onCommit(color ?? '', null, true)} onClose={() => onCancel(true)} />
+        )}
+      </>
+    );
   } else {
     control = (
       <input className="org-select" type={kind === 'date' ? 'date' : kind === 'datetime' ? 'datetime-local' : 'text'}
@@ -218,7 +236,7 @@ export default function CellEditor({
          data-kind={kind}
          aria-busy={pending || undefined} onKeyDownCapture={onKeyDownCapture} onKeyDown={onKeyDown} onBlur={onBlur}>
       {control}
-      {error && kind !== 'resources' && (
+      {error && !popover && (
         <p ref={errorRef} id={errorId} className={`pf-error pln-editor-error${errorFit}`} role="alert">{error}</p>
       )}
     </div>

@@ -7,8 +7,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { PlanTask } from './api';
 import {
-  deleteSelected, indentSelected, insertTask, linkSelected, markOnTrack, outdentSelected, selectedTasks,
-  setMode, setPercent, toggleTimeline, unlinkSelected, type CommandContext,
+  SELECT_FIRST, deleteSelected, indentSelected, insertTask, linkSelected, markOnTrack, outdentSelected, selectedTasks,
+  setColor, sharedColor, setMode, setPercent, toggleTimeline, unlinkSelected, type CommandContext,
 } from './commands';
 import { PLAN_ERRORS } from './errors';
 import { flatTasks, makeLink, makeTask } from './planFixtures';
@@ -167,6 +167,33 @@ describe('progress and properties', () => {
       ops: [{ op: 'update_task', id: 'S1', fields: { mode: 'manual' } }],
     });
     expect(setMode(pick('S2'), 'manual', ctx())).toEqual({ ops: [] });
+  });
+
+  it('Task color: one update_task per selected task, in one batch; null clears it', () => {
+    expect(setColor(pick('A', 'S', 'S1'), '#1668a7', ctx())).toEqual({
+      ops: [
+        { op: 'update_task', id: 'A', fields: { color: '#1668a7' } },
+        { op: 'update_task', id: 'S', fields: { color: '#1668a7' } },
+        { op: 'update_task', id: 'S1', fields: { color: '#1668a7' } },
+      ],
+    });
+    // a task that has it already is left out; None clears the others
+    const colored = tasks().map((t) => (t.id === 'A' ? { ...t, color: '#1668a7' } : t));
+    expect(setColor(pick('A', 'B'), '#1668a7', ctx({ tasks: colored }))).toEqual({
+      ops: [{ op: 'update_task', id: 'B', fields: { color: '#1668a7' } }],
+    });
+    expect(setColor(pick('A', 'B'), null, ctx({ tasks: colored }))).toEqual({
+      ops: [{ op: 'update_task', id: 'A', fields: { color: null } }],
+    });
+    expect(setColor(EMPTY_SELECTION, '#1668a7', ctx())).toEqual({ error: SELECT_FIRST });
+  });
+
+  it('the selection’s color: the one they share, null for none, undefined when they differ', () => {
+    const [a, b, c] = [{ color: '#1668a7' }, { color: '#1668a7' }, { color: null }];
+    expect(sharedColor([a, b])).toBe('#1668a7');
+    expect(sharedColor([c])).toBeNull();
+    expect(sharedColor([a, c])).toBeUndefined();
+    expect(sharedColor([])).toBeUndefined();
   });
 
   it('Add to Timeline turns it on for all unless all have it, then off', () => {

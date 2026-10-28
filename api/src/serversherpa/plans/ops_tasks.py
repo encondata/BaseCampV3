@@ -27,6 +27,7 @@ Editing rules (spec "Editing rules that touch the engine"):
   `constraint_cleared` notice. A finish link (FF/SF) into it is left for
   the engine to refuse, never dropped."""
 
+import re
 import uuid
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
@@ -67,6 +68,10 @@ NOT_NULL = frozenset({"name", "duration", "start", "finish", "mode", "is_milesto
                       "constraint_type", "percent_complete", "show_on_timeline",
                       "predecessors"})
 _CONSTRAINT_KEYS = frozenset({"start", "finish", "constraint_type", "constraint_date"})
+# fields that never move a date: an edit of only these leaves the schedule alone
+COSMETIC_FIELDS = frozenset({"notes", "color"})
+# a task color as typed (any case); it is stored lower-case
+COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 _MINUTE = timedelta(minutes=1)
 
 
@@ -422,10 +427,22 @@ def edit_task(b: Batch, task: PlanTask, sent: dict, *, new: bool = False) -> Non
         raise bad_field("actual_finish")
     if "notes" in sent:
         task.notes = sent["notes"]
+    if "color" in sent:
+        task.color = color_of(sent["color"])
     if "show_on_timeline" in sent:
         task.show_on_timeline = sent["show_on_timeline"]
     if new:
         task.show_on_timeline = task.is_milestone
+
+
+def color_of(value: str | None) -> str | None:
+    """A typed task color: `#rrggbb` in any case, stored lower-case; None
+    clears it (the default bar color). Anything else is 422 `bad_field`."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or COLOR.fullmatch(value) is None:
+        raise bad_field("color")
+    return value.lower()
 
 
 def _typed_dates(b: Batch, task: PlanTask, start_text: str | None,
@@ -485,7 +502,8 @@ def check_constraint(task: PlanTask) -> None:
 
 # --- the ops ------------------------------------------------------------------------
 
-_ADD_FIELDS = ("duration", "start", "finish", "mode", "is_milestone", "deadline", "notes")
+_ADD_FIELDS = ("duration", "start", "finish", "mode", "is_milestone", "deadline", "notes",
+               "color")
 
 
 async def add_task(b: Batch, op: AddTaskOp) -> None:

@@ -66,7 +66,8 @@ DDL = (
     # and user input for manual ones. The parent FK is checked at COMMIT, so
     # one ops batch can insert a task and point an existing one at it in any
     # statement order (the ORM sends a table's UPDATEs before its INSERTs);
-    # the cascade on delete still runs at once.
+    # the cascade on delete still runs at once. `color` is the task's Gantt
+    # bar color, a lower-case #rrggbb (null = the default bar color).
     """
     CREATE TABLE plan_tasks (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -90,6 +91,7 @@ DDL = (
         actual_finish timestamp,
         notes text,
         show_on_timeline boolean NOT NULL DEFAULT false,
+        color text,
         total_slack_minutes integer,
         is_critical boolean NOT NULL DEFAULT false,
         conflict text,
@@ -111,7 +113,8 @@ DDL = (
         CONSTRAINT plan_tasks_percent_complete_check
             CHECK (percent_complete BETWEEN 0 AND 100),
         CONSTRAINT plan_tasks_conflict_check
-            CHECK (conflict IS NULL OR conflict IN ('link', 'constraint'))
+            CHECK (conflict IS NULL OR conflict IN ('link', 'constraint')),
+        CONSTRAINT plan_tasks_color_check CHECK (color ~ '^#[0-9a-f]{6}$')
     )
     """,
     "CREATE INDEX plan_tasks_plan_position_idx ON plan_tasks (plan_id, position)",

@@ -13,8 +13,10 @@
  *   sheet's (Splitter.tsx). A task
  *   bar (`pln-bar`, accent, its progress filled in), a summary's bracket
  *   (`pln-bar-summary`), a milestone's diamond (`pln-diamond`) with its
- *   date; red (`pln-bar-critical`) for critical tasks while Display ›
- *   Critical Path is on; the baseline under the bar while Display ›
+ *   date, each in the task's own color when it has one (`pln-tinted`,
+ *   `--pln-task`); red (`pln-bar-critical`) for critical tasks while
+ *   Display › Critical Path is on, a colored one keeping its color as a
+ *   stripe along the top (`pln-bar-hue`); the baseline under the bar while Display ›
  *   Baseline is on (`pln-baseline`); a deadline's green down-arrow
  *   (`pln-deadline`); resource names right of the bar. A task without the
  *   dates to draw gets no bar. Under the sheet (`taskLabels`), where the
@@ -544,6 +546,12 @@ function TaskMarks({ task, scale, win, box, display, labels, access, onBarPointe
 }) {
   const out: ReactNode[] = [];
   const critical = display.critical && task.is_critical && !task.is_summary;
+  // the task's own color: the fill of its bar, bracket or diamond; under
+  // Critical Path (red), a stripe along the top instead (plans.css .pln-tinted)
+  const color = task.color;
+  const tint = color && !critical ? ' pln-tinted' : '';
+  const hue = color ? ({ '--pln-task': color } as CSSProperties) : undefined;
+  const stripe = color && critical ? <span className="pln-bar-hue" /> : null;
   const down = access === 'none' ? undefined : (e: PointerEvent<HTMLElement>) => onBarPointerDown(e, task);
   const dbl = () => onBarDoubleClick(task);
   /** The link handle, right of the bar's end (window px): open plans only. */
@@ -591,9 +599,11 @@ function TaskMarks({ task, scale, win, box, display, labels, access, onBarPointe
       const before = nameBefore(bar.x - MILESTONE_HALF, at - MILESTONE_HALF);
       out.push(
         before,
-        <div key="bar" className={`pln-diamond${critical ? ' pln-diamond-critical' : ''}`} data-task-id={task.id}
-             style={{ left: at - MILESTONE_HALF, top: box.mid - MILESTONE_HALF }} onPointerDown={down}
-             onDoubleClick={dbl} />,
+        <div key="bar" className={`pln-diamond${critical ? ' pln-diamond-critical' : ''}${tint}`}
+             data-task-id={task.id} style={{ ...hue, left: at - MILESTONE_HALF, top: box.mid - MILESTONE_HALF }}
+             onPointerDown={down} onDoubleClick={dbl}>
+          {stripe}
+        </div>,
         dot(at + MILESTONE_HALF, box.mid - DOT_MARK_H / 2, DOT_MARK_H),
         <span key="names" className="pln-bar-names" style={{ left: at + MILESTONE_HALF + NAMES_GAP, top: box.mid }}>
           <span className="pln-diamond-date">{formatShortDay(task.start ?? task.finish)}</span>
@@ -621,9 +631,10 @@ function TaskMarks({ task, scale, win, box, display, labels, access, onBarPointe
       const after = labels && !before && !piece.cutStart;
       out.push(
         before,
-        <div key="bar" className={`${kind}${cut(piece)}`} data-task-id={task.id} onPointerDown={down}
-             onDoubleClick={dbl} style={{ left: piece.x, width: piece.width, top: box.top, height }}>
+        <div key="bar" className={`${kind}${tint}${cut(piece)}`} data-task-id={task.id} onPointerDown={down}
+             onDoubleClick={dbl} style={{ ...hue, left: piece.x, width: piece.width, top: box.top, height }}>
           {done > 0 && <span className="pln-bar-done" style={{ width: done }} />}
+          {stripe}
           {grip !== null && <span className="pln-pct-grip" style={{ left: grip, width: 2 * GRIP_PX }} />}
         </div>,
       );

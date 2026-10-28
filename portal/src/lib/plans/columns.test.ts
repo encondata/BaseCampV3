@@ -36,7 +36,7 @@ describe('PLAN_COLUMNS', () => {
       'indicators', 'id', 'mode', 'name', 'duration', 'start', 'finish', 'predecessors', 'resources',
       'percent', 'deadline', 'wbs', 'successors', 'slack', 'critical', 'status', 'constraint_type',
       'constraint_date', 'actual_start', 'actual_finish', 'baseline_start', 'baseline_finish',
-      'baseline_duration', 'start_variance', 'finish_variance', 'notes', 'created', 'updated',
+      'baseline_duration', 'start_variance', 'finish_variance', 'notes', 'color', 'created', 'updated',
     ]);
     expect(DEFAULT_VISIBLE).toEqual([
       'indicators', 'id', 'mode', 'name', 'duration', 'start', 'finish', 'predecessors', 'resources',
@@ -108,6 +108,16 @@ describe('cell values', () => {
     expect(cell('critical', { is_critical: true })).toBe('Yes');
     expect(cell('critical', { is_critical: false })).toBe('No');
     expect(cell('notes', { notes: 'Call the\nloading dock' })).toBe('Call the loading dock');
+  });
+
+  it('Color: optional (hidden by default), the palette name, or the hex of a custom color', () => {
+    const color = COLUMN_BY_KEY.get('color')!;
+    expect(color.label).toBe('Color');
+    expect(color.defaultVisible).toBe(false);
+    expect(color.editor).toBe('color');
+    expect(cell('color', { color: '#1668a7' })).toBe('Blue');
+    expect(cell('color', { color: '#e91e63' })).toBe('#e91e63');
+    expect(cell('color')).toBe('');
   });
 
   it('Created and Updated read in the plan’s time zone', () => {

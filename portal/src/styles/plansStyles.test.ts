@@ -45,6 +45,28 @@ it('the Gantt colors critical work with --c-red, deadlines with --c-green, and b
   expect(declarations('.pln-deadline')).toMatch(/color:\s*var\(--c-green\)/);
 });
 
+it('a task’s color: its bar, bracket and diamond read --pln-task through the theme’s lift; the critical stripe; gray baselines', () => {
+  // the hue as picked on the light theme, lifted on the dark one (as .chip.custom is), its part done a darker shade
+  expect(declarations('.pln-tinted')).toMatch(/--pln-hue:\s*oklch\(from var\(--pln-task\)/);
+  expect(declarations('.pln-tinted')).toMatch(/--pln-hue-deep:\s*oklch\(from var\(--pln-task\)/);
+  expect(declarations('.portal-shell')).toMatch(/--pln-hue-l:\s*l;/);
+  expect(declarations(".portal-shell[data-theme='dark']")).toMatch(/--pln-hue-l:\s*clamp\(/);
+  expect(declarations('.pln-bar.pln-tinted')).toMatch(/border-color:\s*var\(--pln-hue\)/);
+  expect(declarations('.pln-bar.pln-tinted')).toMatch(/background:\s*color-mix\(in srgb, var\(--pln-hue\)/);
+  expect(declarations('.pln-tinted .pln-bar-done')).toMatch(/background:\s*var\(--pln-hue-deep\)/);
+  expect(declarations('.pln-bar-summary.pln-tinted')).toMatch(/background:\s*var\(--pln-hue\)/);
+  expect(allDeclarations('.pln-bar-summary.pln-tinted::before')).toMatch(/border-top-color:\s*var\(--pln-hue\)/);
+  expect(declarations('.pln-diamond.pln-tinted')).toMatch(/background:\s*var\(--pln-hue\)/);
+  // Critical Path on: the critical red stays, the task's own color a 3px stripe along the top
+  const stripe = allDeclarations('.pln-bar-hue');
+  expect(stripe).toMatch(/top:\s*0/);
+  expect(stripe).toMatch(/height:\s*3px/);
+  expect(stripe).toMatch(/background:\s*var\(--pln-hue\)/);
+  expect(stripe).toMatch(/pointer-events:\s*none/);
+  // baselines stay gray
+  expect(allDeclarations('.pln-baseline')).not.toMatch(/--pln-(task|hue)/);
+});
+
 it('the today and status-date lines sit behind the lanes and never take the pointer; their marks in the timescale do', () => {
   for (const line of ['.pln-today', '.pln-status-date']) {
     expect(allDeclarations(line)).toMatch(/pointer-events:\s*none/);

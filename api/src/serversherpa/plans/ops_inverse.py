@@ -59,6 +59,7 @@ from serversherpa.plans.floating import format_floating, parse_floating
 from serversherpa.plans.models import PlanAssignment, PlanLink, PlanTask
 from serversherpa.plans.ops_links import resource_key, write_assignees
 from serversherpa.plans.ops_tasks import (
+    COLOR,
     Batch,
     Outline,
     bad_field,
@@ -76,7 +77,7 @@ from serversherpa.plans.service import PlanState, err
 INPUT_FIELDS = (
     "parent_id", "position", "name", "is_milestone", "mode", "duration_unit", "elapsed",
     "constraint_type", "constraint_date", "deadline", "actual_start", "actual_finish",
-    "notes", "show_on_timeline", "baseline_start", "baseline_finish",
+    "notes", "show_on_timeline", "color", "baseline_start", "baseline_finish",
     "baseline_duration_minutes", "completed_at", "completed_by",
 )
 LEAF_FIELDS = ("duration_minutes", "percent_complete")
@@ -88,7 +89,7 @@ STORED_FIELDS = (
     "parent_id", "position", "name", "is_milestone", "mode", "duration_minutes",
     "duration_unit", "elapsed", "start", "finish", "constraint_type", "constraint_date",
     "deadline", "percent_complete", "actual_start", "actual_finish", "notes",
-    "show_on_timeline", "total_slack_minutes", "is_critical", "conflict", "baseline_start",
+    "show_on_timeline", "color", "total_slack_minutes", "is_critical", "conflict", "baseline_start",
     "baseline_finish", "baseline_duration_minutes", "completed_at", "completed_by",
 )
 _MISSING = object()
@@ -315,6 +316,15 @@ def _wall(value) -> datetime:
     return parse_floating(value, date_only_time=datetime.min.time())
 
 
+def _color(value) -> str:
+    """A snapshot's color: always stored lower-case."""
+    if not isinstance(value, str):
+        raise TypeError
+    if COLOR.fullmatch(value) is None or value != value.lower():
+        raise ValueError
+    return value
+
+
 def _instant(value) -> datetime:
     if not isinstance(value, str):
         raise TypeError
@@ -340,6 +350,7 @@ def _task_parsers(b: Batch) -> dict[str, Callable]:
         "constraint_type": _one_of(CONSTRAINT_TYPES), "constraint_date": wall,
         "deadline": wall, "percent_complete": _ranged(0, 100), "actual_start": wall,
         "actual_finish": wall, "notes": _opt(_of(str)), "show_on_timeline": _of(bool),
+        "color": _opt(_color),
         "baseline_start": wall, "baseline_finish": wall,
         "baseline_duration_minutes": _opt(_ranged(0, longest)),
         "completed_at": _opt(_instant), "completed_by": _opt(_uuid),

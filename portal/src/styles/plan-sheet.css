@@ -201,6 +201,8 @@
   overflow: hidden;
   white-space: nowrap;
 }
+/* Color: the color picked so far (its swatch and name), while the picker is open */
+.pln-editor-hue { gap: 6px; }
 /* a refusal, under the cell (Review Focus 1); .pf-error colors and sizes it */
 .pln-editor-error {
   position: absolute;

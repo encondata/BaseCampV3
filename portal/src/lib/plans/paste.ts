@@ -50,6 +50,7 @@ import { planUnits } from './merge';
 import { descendants } from './outline';
 import type { ActiveCell, Selection } from './selection';
 import type { Command } from './commands';
+import { COLOR_HINT, parseColor } from './taskColor';
 
 export interface PasteContext {
   plan: Plan;
@@ -194,6 +195,7 @@ export interface CopiedTask {
   constraintType: ConstraintType;
   constraintDate: string | null;
   resources: ResourceRef[];
+  color: string | null;
 }
 
 export interface CopiedLink {
@@ -253,7 +255,7 @@ export function copyRows(selected: ReadonlySet<string>, columns: readonly PlanCo
       duration: exactText(t.duration_minutes, t.duration_unit, t.elapsed, units),
       start: t.start, finish: t.finish, deadline: t.deadline, notes: t.notes,
       constraintType: t.constraint_type, constraintDate: t.constraint_date,
-      resources: t.assignees.map((a) => ({ kind: a.kind, id: a.id })),
+      resources: t.assignees.map((a) => ({ kind: a.kind, id: a.id })), color: t.color,
     };
   });
   const links = plan.links.filter((l) => ids.has(l.predecessor_id) && ids.has(l.successor_id))
@@ -322,6 +324,7 @@ export function opsForInternalPaste(copy: PlanCopy, sel: Selection, ctx: PasteCo
     }
     if (t.deadline) op.deadline = t.deadline;
     if (t.notes) op.notes = t.notes;
+    if (t.color) op.color = t.color;
     return op;
   });
 
@@ -368,7 +371,8 @@ function newRow(id: string): PlanTask {
     name: '\u0000', is_milestone: false, mode: '' as TaskMode, duration_minutes: -1, duration_unit: 'd',
     elapsed: false, duration_text: '', start: null, finish: null, constraint_type: '' as ConstraintType,
     constraint_date: null, deadline: null, percent_complete: -1, actual_start: null, actual_finish: null,
-    notes: null, show_on_timeline: false, total_slack_minutes: null, is_critical: false, conflict: null,
+    notes: null, show_on_timeline: false, color: '\u0000', total_slack_minutes: null, is_critical: false,
+    conflict: null,
     baseline_start: null, baseline_finish: null, baseline_duration_minutes: null, start_variance_minutes: null,
     finish_variance_minutes: null, completed_at: null, completed_by_name: null, predecessors: '', successors: '',
     assignees: [], status: 'not_started', missed_deadline: false, created_at: '', updated_at: '',
@@ -442,6 +446,11 @@ function editorText(column: PlanColumn, raw: string, plan: Plan, task: PlanTask 
     case 'resources': {
       const keys = resourceKeys(raw, resourceNames(plan, task));
       return Array.isArray(keys) ? keys.join(',') : keys;
+    }
+    case 'color': {
+      // #rrggbb or a palette name, as the hex the editor commits
+      const color = parseColor(raw);
+      return color === undefined ? { error: COLOR_HINT } : color ?? '';
     }
     default:
       // a name is one line

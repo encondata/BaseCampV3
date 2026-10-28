@@ -40,13 +40,13 @@ from datetime import datetime, timedelta
 
 from serversherpa.plans.completion import SUBTASK, check_completion
 from serversherpa.plans.models import PlanTask
-from serversherpa.plans.ops_tasks import Batch, bad_field, write_outline
+from serversherpa.plans.ops_tasks import COSMETIC_FIELDS, Batch, bad_field, write_outline
 from serversherpa.plans.schemas import CompleteOp, MarkOnTrackOp, SetPercentOp, UpdateTaskOp
 from serversherpa.plans.service import err, recalc, renumber, status_now
 
 _MINUTE = timedelta(minutes=1)
 # what an update_task may change without moving any dates
-_DATELESS_FIELDS = frozenset({"percent_complete", "notes"})
+_DATELESS_FIELDS = COSMETIC_FIELDS | {"percent_complete"}
 _ACTUALS = frozenset({"actual_start", "actual_finish"})
 
 
