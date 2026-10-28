@@ -35,6 +35,8 @@ describe('PlanFilterBar', () => {
     expect(box.classList.contains('org-select')).toBe(true);
     expect((box as HTMLInputElement).value).toBe('All Tasks');
     fireEvent.focus(box);
+    // open, the box is for typing: it still names the filter on now, not "Select…"
+    expect((box as HTMLInputElement).placeholder).toBe('All Tasks');
     const items = document.querySelectorAll('.combo-menu .kbar-item');
     expect([...items].map((i) => i.textContent)).toEqual(PLAN_FILTERS.map((f) => f.label));
     fireEvent.mouseDown([...items].find((i) => i.textContent === 'Late Tasks')!);
@@ -46,6 +48,7 @@ describe('PlanFilterBar', () => {
     const box = screen.getByRole('combobox', { name: 'Group by' }) as HTMLInputElement;
     expect(box.value).toBe('Status');
     fireEvent.focus(box);
+    expect(box.placeholder).toBe('Status');
     const items = [...document.querySelectorAll('.combo-menu .kbar-item')];
     expect(items.map((i) => i.textContent)).toEqual(['No Group', 'Resource', 'Status']);
     fireEvent.mouseDown(items[1]);

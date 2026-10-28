@@ -89,8 +89,15 @@
 .pln-row.pln-context { opacity: 0.55; }
 /* Group by: a group's band across the row, its name then its count */
 .pln-row.pln-band { background: var(--surface-2); }
-.pln-band-cell { grid-column: 1 / -1; gap: 8px; border-right: 0; }
-.pln-band-cell .cell-sub { flex: none; }
+/* its name held at the pane's visible left edge as the sheet scrolls
+   sideways (SidePane's --pln-pane-x) */
+.pln-band .pln-band-cell {
+  grid-column: 1 / -1;
+  gap: 8px;
+  padding-left: calc(8px + var(--pln-pane-x, 0px));
+  border-right: 0;
+}
+.pln-band .pln-band-cell .cell-sub { flex: none; }
 
 .pln-cell {
   display: flex;

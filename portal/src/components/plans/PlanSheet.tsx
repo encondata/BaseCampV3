@@ -92,6 +92,9 @@ const TITLED = new Set(['predecessors', 'successors']);
 const NO_OPTIONS: ComboOption[] = [];
 const NO_KEYS: ReadonlySet<string> = new Set();
 const NO_BANDS: ReadonlyMap<string, GroupBand> = new Map();
+/** Grouped, a task's name sits one level in from its band, whatever its
+ *  outline level (the outline isn't shown while grouped). */
+const GROUPED_LEVEL = 2;
 
 const alignClass = (col: PlanColumn) => (col.align === 'start' ? '' : ` pln-${col.align}`);
 
@@ -345,6 +348,7 @@ export default function PlanSheet({
           if (!task) return null;
           return (
             <SheetRow key={key} rowKey={key} task={task} index={item.index} y={y} columns={columns} ctx={ctx}
+                      level={bands.size ? GROUPED_LEVEL : task.outline_level}
                       idBase={idBase} inert={context.has(key)} collapsed={collapsed.has(task.id)}
                       selected={selection.rows.has(key)} activeCol={active?.id === key ? active.col : null}
                       onCellDown={onCellDown} onCellOpen={onCellOpen} onToggleCollapse={onToggleCollapse} />
@@ -376,6 +380,8 @@ interface SheetRowProps extends RowEvents {
   task: PlanTask;
   /** A filter's context row: dimmed and inert. */
   inert: boolean;
+  /** The Task Name's indent: the outline level, or one in from a group's band. */
+  level: number;
   index: number;
   y: number;
   columns: PlanColumn[];
@@ -388,7 +394,7 @@ interface SheetRowProps extends RowEvents {
 
 /** One task's row; redraws only when its task object, place or state changes. */
 const SheetRow = memo(function SheetRow({
-  rowKey, task, index, y, columns, ctx, inert, collapsed, selected, activeCol, idBase, onCellDown, onCellOpen,
+  rowKey, task, index, y, columns, ctx, inert, level, collapsed, selected, activeCol, idBase, onCellDown, onCellOpen,
   onToggleCollapse,
 }: SheetRowProps) {
   return (
@@ -399,7 +405,7 @@ const SheetRow = memo(function SheetRow({
         <div key={col.key} id={`${idBase}-${rowKey}-${col.key}`} role="gridcell" aria-colindex={i + 1}
              aria-selected={activeCol === col.key} data-col={col.key}
              className={`cell pln-cell${alignClass(col)}${col.key === 'id' ? ' pln-idcell' : ''}${col.key === 'name' ? ' pln-namecell' : ''}`}
-             style={col.key === 'name' ? { '--pln-level': task.outline_level } as CSSProperties : undefined}
+             style={col.key === 'name' ? { '--pln-level': level } as CSSProperties : undefined}
              onMouseDown={inert ? undefined : (e) => onCellDown(rowKey, col.key, e)}
              onDoubleClick={inert ? undefined : () => onCellOpen(rowKey, col.key)}>
           <CellContent col={col} task={task} ctx={ctx} collapsed={collapsed}

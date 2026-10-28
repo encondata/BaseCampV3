@@ -23,6 +23,8 @@ import Tip from '../Tip';
 
 const FILTER_OPTIONS = PLAN_FILTERS.map((f) => ({ value: f.value, label: f.label }));
 const GROUP_OPTIONS = PLAN_GROUPS.map((g) => ({ value: g.value, label: g.label }));
+const labelOf = (options: readonly { value: string; label: string }[], value: string) =>
+  options.find((o) => o.value === value)?.label;
 
 export interface PlanFilterBarProps {
   view: PlanViewState;
@@ -68,7 +70,9 @@ export default function PlanFilterBar({
       <Tip label={filterTip.label} desc={filterTip.desc}>
         <div className="pln-fbox">
           <label className="pln-flabel" htmlFor={`${id}-filter`}>{filterTip.label}</label>
+          {/* open, the box is for typing: its placeholder still names the filter on now */}
           <ComboBox inputId={`${id}-filter`} options={FILTER_OPTIONS} value={view.filter}
+                    placeholder={labelOf(FILTER_OPTIONS, view.filter)}
                     onChange={(v) => onChange({ filter: (v || 'all') as PlanFilter })} />
         </div>
       </Tip>
@@ -77,6 +81,7 @@ export default function PlanFilterBar({
           <div className="pln-fbox">
             <label className="pln-flabel" htmlFor={`${id}-group`}>{groupTip.label}</label>
             <ComboBox inputId={`${id}-group`} options={GROUP_OPTIONS} value={view.group}
+                      placeholder={labelOf(GROUP_OPTIONS, view.group)}
                       onChange={(v) => onChange({ group: (v || 'none') as PlanGroupBy })} />
           </div>
         </Tip>

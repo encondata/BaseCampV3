@@ -99,11 +99,16 @@ export function SidePane({
     latest.current = { origin, onScrollX, onWidth, onZoomStep };
   });
 
-  // the content follows the scrollbar: moved by a transform, no scroll box
+  // the content follows the scrollbar: moved by a transform, no scroll box.
+  // `--pln-pane-x` is how far the content is moved, for what holds to the
+  // pane's visible left edge (a group band's name)
   const place = useCallback(() => {
     const b = bar.current;
     const shift = shiftRef.current;
-    if (b && shift) shift.style.transform = `translateX(${latest.current.origin - b.scrollLeft}px)`;
+    if (!b || !shift) return;
+    const x = b.scrollLeft - latest.current.origin;
+    shift.style.transform = `translateX(${-x}px)`;
+    shift.style.setProperty('--pln-pane-x', `${x}px`);
   }, [bar]);
   const sync = useCallback(() => {
     place();

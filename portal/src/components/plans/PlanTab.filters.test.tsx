@@ -17,7 +17,7 @@
  * - The view is kept per plan (`plans.view.<planId>`); the `&task=` deep
  *   link clears a filter that hides its task.
  */
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -283,6 +283,10 @@ describe('Group by', () => {
       bandKey('person:p-me'), rowKey('person:p-me', 'a'), rowKey('person:p-me', 'b'),
       bandKey('unassigned'), rowKey('unassigned', 'm'), rowKey('unassigned', 'w'),
     ]);
+    // a grouped task's name sits one level in from its band, whatever its outline level
+    const levels = sheetRows().filter((r) => r.hasAttribute('data-task'))
+      .map((r) => (r.querySelector('[data-col="name"]') as HTMLElement).style.getPropertyValue('--pln-level'));
+    expect(new Set(levels)).toEqual(new Set(['2']));
     // no blank row, no links drawn
     expect(grid().querySelector('[data-blank]')).toBeNull();
     expect(q('.pln-link-path')).toBeNull();
@@ -367,6 +371,23 @@ describe('Group by', () => {
     fireEvent.pointerUp(bar, { clientX: x + 1, clientY: y, pointerId: 2 });
     expect(rowOf('b', 1).getAttribute('aria-selected')).toBe('true');
     expect(rowOf('b', 0).getAttribute('aria-selected')).toBe('false');
+  });
+
+  it('a band’s name stays at the sheet’s visible left edge as the sheet scrolls sideways', async () => {
+    await ready();
+    pick('Group by', 'Resource');
+    await waitFor(() => expect(q('.pln-band-cell')).not.toBeNull());
+    const bar = q('.pln-pane-sheet > .pln-hbar') as HTMLElement;
+    const shift = q('.pln-pane-sheet > .pln-pane-shift') as HTMLElement;
+    act(() => {
+      bar.scrollLeft = 57;
+      bar.dispatchEvent(new Event('scroll'));
+    });
+    // the pane's sideways scroll as a custom property the band's label is offset by (plan-sheet.css)
+    expect(shift.style.getPropertyValue('--pln-pane-x')).toBe('57px');
+    const css = (await import('node:fs')).readFileSync(
+      (await import('node:path')).join(__dirname, '../../styles/plan-sheet.css'), 'utf8');
+    expect(css).toMatch(/\.pln-band-cell\s*\{[^}]*var\(--pln-pane-x/);
   });
 
   it('switching grouping keeps the selected task selected', async () => {
