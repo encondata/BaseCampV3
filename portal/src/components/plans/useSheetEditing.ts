@@ -50,6 +50,9 @@ export interface SheetEditor {
   kind: EditorKind;
   text: string;
   error: string | null;
+  /** Bumped by every refusal, so the field takes focus back even when the
+   *  same message comes again (a click away refused like the Enter before). */
+  refusals: number;
   /** A commit is in flight. */
   pending: boolean;
   /** One per opening: keys the editor element and tells a stale answer apart. */
@@ -102,6 +105,7 @@ export function useSheetEditing(o: Options): SheetEditing {
   const releaseRef = useRef<(() => void) | null>(null);
   const aheadRef = useRef('');
   const seqRef = useRef(0);
+  const refusalRef = useRef(0);
   const tempRef = useRef(0);
 
   const setEditor = useCallback((next: SheetEditor | null) => {
@@ -142,7 +146,7 @@ export function useSheetEditing(o: Options): SheetEditing {
     releaseRef.current = latest.current.ctl.beginEditing(HOLD_OWNER);
     seqRef.current += 1;
     aheadRef.current = '';
-    setEditor({ id, col, kind, text, error: null, pending: false, seq: seqRef.current });
+    setEditor({ id, col, kind, text, error: null, refusals: 0, pending: false, seq: seqRef.current });
     return true;
   }, [setEditor]);
 
@@ -166,7 +170,8 @@ export function useSheetEditing(o: Options): SheetEditing {
    *  may have committed it). */
   const refuse = useCallback((ed: SheetEditor, text: string, message: string) => {
     aheadRef.current = '';
-    setEditor({ ...ed, text, error: message, pending: false });
+    refusalRef.current += 1;
+    setEditor({ ...ed, text, error: message, refusals: refusalRef.current, pending: false });
     const { selection, onSelect } = latest.current;
     if (selection.active?.id !== ed.id || selection.active.col !== ed.col) onSelect(selectCell(ed.id, ed.col));
   }, [setEditor]);

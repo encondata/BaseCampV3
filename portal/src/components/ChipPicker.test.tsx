@@ -161,3 +161,20 @@ it('a picked id with no option shows the id itself', () => {
   render(<Harness initial={['gone']} />);
   expect(screen.getByRole('button', { name: 'Remove gone' })).toBeTruthy();
 });
+
+it('an IME composition in the box neither picks (its Enter) nor takes a chip off (its Backspace)', () => {
+  const onChange = vi.fn();
+  render(<Harness initial={['s1']} onChange={onChange} />);
+  fireEvent.focus(box());
+  fireEvent.change(box(), { target: { value: 'NAP' } });
+  fireEvent.keyDown(box(), { key: 'Enter', isComposing: true });
+  fireEvent.keyDown(box(), { key: 'Enter', keyCode: 229 });
+  expect(onChange).not.toHaveBeenCalled();
+  fireEvent.change(box(), { target: { value: '' } });
+  fireEvent.keyDown(box(), { key: 'Backspace', isComposing: true });
+  expect(onChange).not.toHaveBeenCalled();
+  expect(chips()).toEqual(['NAP1']);
+  // outside a composition Backspace in the empty box still takes it off
+  fireEvent.keyDown(box(), { key: 'Backspace' });
+  expect(onChange).toHaveBeenLastCalledWith([]);
+});

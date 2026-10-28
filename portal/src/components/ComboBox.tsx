@@ -149,6 +149,10 @@ export default function ComboBox({
   };
 
   const onKey = (e: React.KeyboardEvent) => {
+    // an IME composition's keys are its own (its Enter confirms the text,
+    // its arrows pick a candidate); keyCode 229: Safari ends the
+    // composition before the keydown of the Enter that confirms it
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (!open && (e.key === 'ArrowDown' || e.key === 'Enter')) {
       e.preventDefault();
       openList();

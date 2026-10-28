@@ -388,6 +388,41 @@ describe('fix round 1', () => {
     ]);
   });
 
+  it('the same refusal again, after focus left the field, brings focus back to it', async () => {
+    const user = await ready();
+    await user.click(cellOf('Pack', 'duration'));
+    await user.keyboard('abc{Enter}');
+    const message = screen.getByRole('alert').textContent;
+    expect(document.activeElement).toBe(editor('Duration'));
+    // focus leaves (the toolbar): leaving commits, and the same text is
+    // refused the same way. (jsdom answers hasFocus() false mid-move; a
+    // browser window that has focus answers true.)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    act(() => screen.getByRole('button', { name: /Full screen/ }).focus());
+    expect(screen.getByRole('alert').textContent).toBe(message);
+    expect(document.activeElement).toBe(editor('Duration'));
+    expect(api.postOps).not.toHaveBeenCalled();
+  });
+
+  it('Shift+Enter on an open select picks and moves up; on a closed one it commits and moves up', async () => {
+    const user = await ready();
+    api.postOps.mockResolvedValue(makeOpsResult());
+    await user.dblClick(cellOf('Pack', 'mode'));
+    await screen.findByRole('button', { name: 'Manually Scheduled' });
+    await user.keyboard('{ArrowDown}{Shift>}{Enter}{/Shift}');
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    expect(sentOps()).toEqual([{ op: 'update_task', id: 'b', fields: { mode: 'manual' } }]);
+    await waitFor(() => expect(active()).toBe('Survey/mode'));
+    // the list closed (Escape closes only the list... here the editor), then Shift+Enter
+    await user.dblClick(cellOf('Go live', 'mode'));
+    const box = await screen.findByRole('combobox', { name: 'Mode' });
+    fireEvent.mouseDown(document.body);          // closes the list, the editor stays
+    expect(box.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.keyDown(box, { key: 'Enter', shiftKey: true });
+    await waitFor(() => expect(active()).toBe('Pack/mode'));
+    expect(api.postOps).toHaveBeenCalledTimes(1);   // unchanged: nothing to send
+  });
+
   it('a note with a line break does not open in the cell, and its title says where to edit it', async () => {
     localStorage.setItem('plans.columns.v1', JSON.stringify({
       visible: ['id', 'name', 'notes'], widths: {}, seen: ['id', 'name', 'notes'],

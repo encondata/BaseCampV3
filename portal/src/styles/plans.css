@@ -134,6 +134,12 @@
 .pln-respick:focus { outline: none; }
 .pln-respick .pf-error { margin: 0; }
 .pln-respick-foot { display: flex; justify-content: flex-end; gap: 8px; }
+/* a commit in flight: nothing is disabled (focus stays inside), so the
+   busy picker and its waiting buttons look it. Presence selectors: the
+   attributes are only set while busy. */
+.pln-respick[aria-busy] { cursor: progress; }
+.pln-respick[aria-busy] > :first-child { opacity: 0.6; }
+.pln-respick [aria-disabled] { opacity: 0.55; cursor: progress; }
 
 /* ── lock banner ──────────────────────────────────────────────── */
 

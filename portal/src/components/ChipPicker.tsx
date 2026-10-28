@@ -76,9 +76,11 @@ export default function ChipPicker({
     setFocusNext(next !== undefined ? { kind: 'chip', value: next } : { kind: 'box' });
   };
 
-  // Backspace in the empty box takes the last chip off
+  // Backspace in the empty box takes the last chip off (not one that edits
+  // an IME composition; keyCode 229 is Safari's composition key)
   const onKeyDownCapture = (e: KeyboardEvent<HTMLDivElement>) => {
     const target = e.target as HTMLInputElement;
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key !== 'Backspace' || disabled || target.getAttribute('role') !== 'combobox') return;
     if (target.value === '' && selected.length > 0) onChange(selected.slice(0, -1));
   };

@@ -11,8 +11,9 @@
  *    shows above full screen and outside the sheet's scroll box;
  *  - Resource Names: the ResourcePicker popover.
  *
- * Enter and Tab commit and move (a select's Enter picks, then moves down;
- * a mouse pick stays), Esc cancels, a click elsewhere commits where it is.
+ * Enter and Tab commit and move (a select's Enter picks, then moves down,
+ * Shift+Enter up; a mouse pick stays), Esc cancels, a click elsewhere
+ * commits where it is.
  * Keys that belong to an IME composition (the Enter that confirms one)
  * do nothing here. Every key typed here stays here: the grid and the
  * plan's shortcuts never see it (Review Focus 3). A refusal shows in
@@ -53,10 +54,10 @@ const printable = (k: KeyLike) => [...k.key].length === 1 && !k.ctrlKey && !k.me
 export default function CellEditor({
   editor, column, style, options, onChange, onCommit, onCancel, onFail, onTypeAhead,
 }: Props) {
-  const { kind, text, error, pending } = editor;
+  const { kind, text, error, refusals, pending } = editor;
   const isDate = kind === 'date' || kind === 'datetime';
-  /** The select's pick under way came from Enter (so it moves down). */
-  const enterPick = useRef(false);
+  /** The select's pick under way came from Enter (down) or Shift+Enter (up). */
+  const enterPick = useRef<MoveDir | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const errorId = useId();
@@ -91,14 +92,15 @@ export default function CellEditor({
   }, [error]);
 
   // the field takes focus when the editor opens and when a refusal comes
-  // back; typing starts at the end, as in a spreadsheet
+  // back, the same message again included (`refusals`); typing starts at
+  // the end, as in a spreadsheet
   useEffect(() => {
     if (kind === 'resources' || pending) return;
     const input = wrapRef.current?.querySelector<HTMLInputElement>('input');
     if (!input) return;
     if (document.activeElement !== input) input.focus({ preventScroll: true });
     if (kind === 'text') input.setSelectionRange(input.value.length, input.value.length);
-  }, [kind, error, pending]);
+  }, [kind, error, refusals, pending]);
 
   /** Commits what the field holds, unless a date field holds part of a date
    *  (its value then reads as empty, which would clear the field). */
@@ -111,8 +113,8 @@ export default function CellEditor({
   };
 
   // a select's keys before the ComboBox sees them: Escape cancels the edit
-  // at once (not only the list); Enter on an open list picks and moves down,
-  // on a closed one commits as it is and moves down
+  // at once (not only the list); Enter on an open list picks and moves down
+  // (Shift+Enter up), on a closed one commits as it is and moves the same way
   const onKeyDownCapture = (e: KeyboardEvent<HTMLDivElement>) => {
     if (kind !== 'select' || pending) return;
     const k = keyLike(e);
@@ -121,20 +123,21 @@ export default function CellEditor({
       e.preventDefault();
       e.stopPropagation();
       onCancel(true);
-    } else if (k.key === 'Enter' && !k.shiftKey && !k.ctrlKey && !k.metaKey && !k.altKey) {
+    } else if (k.key === 'Enter' && !k.ctrlKey && !k.metaKey && !k.altKey) {
+      const dir: MoveDir = k.shiftKey ? 'up' : 'down';
       if ((e.target as HTMLElement).getAttribute('aria-expanded') === 'true') {
-        enterPick.current = true;
+        enterPick.current = dir;
         return;
       }
       e.preventDefault();
       e.stopPropagation();
-      onCommit(text, 'down', true);
+      onCommit(text, dir, true);
     }
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     e.stopPropagation();
-    enterPick.current = false;          // a pick it led to has happened by now
+    enterPick.current = null;           // a pick it led to has happened by now
     const k = keyLike(e);
     if (k.isComposing) return;          // the IME's keys (its Enter confirms the text)
     if (pending) {
@@ -173,8 +176,8 @@ export default function CellEditor({
       <ComboBox portal options={column.options ?? []} value={text} ariaLabel={column.label}
                 placeholder={column.options?.find((o) => o.value === text)?.label}
                 onChange={(v) => {
-                  const dir = enterPick.current ? 'down' : null;
-                  enterPick.current = false;
+                  const dir = enterPick.current;
+                  enterPick.current = null;
                   onCommit(v, dir, true);
                 }} />
     );

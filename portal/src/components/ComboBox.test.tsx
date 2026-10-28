@@ -106,6 +106,29 @@ describe('Escape', () => {
   });
 });
 
+describe('an IME composition in the filter box', () => {
+  afterEach(cleanup);
+
+  const OPTIONS = [{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' }];
+
+  it('its keys (the Enter that confirms it, arrows, Escape) neither pick, move nor close', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<ComboBox value="" onChange={onChange} options={OPTIONS} />);
+    await user.click(screen.getByRole('combobox'));
+    const input = screen.getByRole('combobox');
+    fireEvent.keyDown(input, { key: 'ArrowDown', isComposing: true });
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });     // Safari: composition ended first
+    fireEvent.keyDown(input, { key: 'Escape', isComposing: true });
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByText('Alpha')).toBeTruthy();                 // still open
+    // the Enter after it picks the active option, which never moved
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onChange).toHaveBeenCalledWith('a');
+  });
+});
+
 describe('portal', () => {
   afterEach(cleanup);
 
