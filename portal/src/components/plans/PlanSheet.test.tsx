@@ -100,7 +100,7 @@ const grid = () => screen.getByRole('grid', { name: 'Task sheet' });
 const headers = () => within(grid()).getAllByRole('columnheader').map((h) => h.textContent);
 /** More › Columns… (the toolbar's More menu). */
 async function openColumns(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole('button', { name: 'More ▾' }));
+  await user.click(screen.getByRole('button', { name: 'More' }));
   await user.click(screen.getByRole('menuitem', { name: 'Columns…' }));
 }
 /** The task rows on screen (not the header, not the blank new-task row), by name. */

@@ -31,7 +31,10 @@ it('renders the "Actions ▾" trigger; menu items are hidden until clicked, then
   const acts = actions();
   render(<RowActionsMenu actions={acts} />);
 
-  const trigger = screen.getByRole('button', { name: 'Actions ▾' });
+  // named by its label; the ▾ only marks the menu (hidden from the name)
+  const trigger = screen.getByRole('button', { name: 'Actions' });
+  expect(trigger.textContent).toBe('Actions ▾');
+  expect(trigger.querySelector('[aria-hidden="true"]')?.textContent).toBe(' ▾');
   expect(screen.queryByRole('menuitem')).toBeNull();
 
   await user.click(trigger);
@@ -47,7 +50,7 @@ it('selecting an item calls its onSelect and closes the menu', async () => {
   const acts = actions();
   render(<RowActionsMenu actions={acts} />);
 
-  await user.click(screen.getByRole('button', { name: 'Actions ▾' }));
+  await user.click(screen.getByRole('button', { name: 'Actions' }));
   await user.click(screen.getByRole('menuitem', { name: 'Register' }));
 
   expect(acts[1].onSelect).toHaveBeenCalledTimes(1);
@@ -58,7 +61,7 @@ it('Escape closes the menu', async () => {
   const user = userEvent.setup();
   render(<RowActionsMenu actions={actions()} />);
 
-  await user.click(screen.getByRole('button', { name: 'Actions ▾' }));
+  await user.click(screen.getByRole('button', { name: 'Actions' }));
   expect(screen.queryAllByRole('menuitem')).not.toHaveLength(0);
 
   fireEvent.keyDown(document, { key: 'Escape' });
@@ -68,7 +71,7 @@ it('Escape closes the menu', async () => {
 it('the Escape that closes the menu is marked handled (a full-screen view or dialog behind stays); a later one is not', async () => {
   const user = userEvent.setup();
   render(<RowActionsMenu actions={actions()} />);
-  await user.click(screen.getByRole('button', { name: 'Actions ▾' }));
+  await user.click(screen.getByRole('button', { name: 'Actions' }));
 
   // a host listening on document after the menu (full screen, a dialog)
   const seen: boolean[] = [];
@@ -88,7 +91,7 @@ it('a mousedown outside the menu closes it', async () => {
   const user = userEvent.setup();
   render(<RowActionsMenu actions={actions()} />);
 
-  await user.click(screen.getByRole('button', { name: 'Actions ▾' }));
+  await user.click(screen.getByRole('button', { name: 'Actions' }));
   expect(screen.queryAllByRole('menuitem')).not.toHaveLength(0);
 
   fireEvent.mouseDown(document.body);
@@ -99,7 +102,7 @@ it('a mousedown on the portaled menu itself is not treated as outside', async ()
   const user = userEvent.setup();
   render(<RowActionsMenu actions={actions()} />);
 
-  await user.click(screen.getByRole('button', { name: 'Actions ▾' }));
+  await user.click(screen.getByRole('button', { name: 'Actions' }));
   const items = screen.getAllByRole('menuitem');
   expect(items).not.toHaveLength(0);
 
@@ -115,7 +118,7 @@ it('renders the open menu as a child of document.body, not the .row-actions wrap
   const user = userEvent.setup();
   const { container } = render(<RowActionsMenu actions={actions()} />);
 
-  await user.click(screen.getByRole('button', { name: 'Actions ▾' }));
+  await user.click(screen.getByRole('button', { name: 'Actions' }));
 
   const menu = screen.getByRole('menu');
   expect(menu.parentElement).toBe(document.body);
@@ -129,7 +132,7 @@ it('inside a .portal-shell, the menu goes into the shell, where the theme tokens
       <div className="dir-list"><RowActionsMenu actions={actions()} /></div>
     </div>,
   );
-  await user.click(screen.getByRole('button', { name: 'Actions ▾' }));
+  await user.click(screen.getByRole('button', { name: 'Actions' }));
   const menu = screen.getByRole('menu');
   expect(menu.parentElement).toBe(document.querySelector('.portal-shell'));
   expect(menu.closest('.dir-list')).toBeNull();
@@ -143,7 +146,7 @@ it('renders nothing at all when actions is empty', () => {
 
 it('supports a custom label', async () => {
   render(<RowActionsMenu label="Row" actions={actions()} />);
-  expect(screen.getByRole('button', { name: 'Row ▾' })).not.toBeNull();
+  expect(screen.getByRole('button', { name: 'Row' })).not.toBeNull();
 });
 
 it('only one menu is open at a time, even for keyboard activation with no mousedown', () => {
@@ -163,7 +166,7 @@ it('only one menu is open at a time, even for keyboard activation with no moused
     </>,
   );
 
-  const triggers = screen.getAllByRole('button', { name: 'Actions ▾' });
+  const triggers = screen.getAllByRole('button', { name: 'Actions' });
   expect(triggers).toHaveLength(2);
 
   // Keyboard activation dispatches a plain click with no mousedown.
@@ -183,7 +186,7 @@ it('when menu flips upward (spaceBelow < 200px), clears the CSS class top rule b
   const user = userEvent.setup();
   render(<RowActionsMenu actions={actions()} />);
 
-  const trigger = screen.getByRole('button', { name: 'Actions ▾' });
+  const trigger = screen.getByRole('button', { name: 'Actions' });
 
   // Stub getBoundingClientRect to force upward flip: trigger near bottom, not enough space below
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
@@ -221,7 +224,7 @@ it('a disabled item renders disabled, does not fire onSelect, and leaves the men
     />,
   );
 
-  await user.click(screen.getByRole('button', { name: 'Actions ▾' }));
+  await user.click(screen.getByRole('button', { name: 'Actions' }));
 
   const item = screen.getByRole('menuitem', { name: 'Remove' }) as HTMLButtonElement;
   expect(item.disabled).toBe(true);
@@ -242,7 +245,7 @@ it('a destructive item can also be disabled and keeps its danger class', async (
     />,
   );
 
-  await user.click(screen.getByRole('button', { name: 'Actions ▾' }));
+  await user.click(screen.getByRole('button', { name: 'Actions' }));
 
   const item = screen.getByRole('menuitem', { name: 'Delete' }) as HTMLButtonElement;
   expect(item.disabled).toBe(true);
@@ -262,7 +265,7 @@ it('still renders the trigger when every item is disabled', async () => {
     />,
   );
 
-  const trigger = screen.getByRole('button', { name: 'Actions ▾' });
+  const trigger = screen.getByRole('button', { name: 'Actions' });
   expect(trigger).not.toBeNull();
 
   await user.click(trigger);
@@ -281,7 +284,7 @@ it('a disabled item can say why it is off: a hint line that describes it', async
       ]}
     />,
   );
-  await user.click(screen.getByRole('button', { name: 'Actions ▾' }));
+  await user.click(screen.getByRole('button', { name: 'Actions' }));
   // the name stays the label; the hint shows under it and describes it
   const item = screen.getByRole('menuitem', { name: 'Rename…' }) as HTMLButtonElement;
   expect(item.disabled).toBe(true);

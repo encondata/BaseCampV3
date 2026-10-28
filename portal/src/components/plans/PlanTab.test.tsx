@@ -329,7 +329,7 @@ describe('full screen', () => {
     const { container } = renderTab();
     await user.click(await screen.findByRole('button', { name: 'Full screen' }, { timeout: 3000 }));
     // a real dialog over the tab: More › Plan settings…
-    await user.click(screen.getByRole('button', { name: 'More ▾' }));
+    await user.click(screen.getByRole('button', { name: 'More' }));
     await user.click(screen.getByRole('menuitem', { name: 'Plan settings…' }));
     const dialog = await screen.findByRole('dialog', { name: 'Plan settings' });
     expect(dialog.contains(document.activeElement)).toBe(true);

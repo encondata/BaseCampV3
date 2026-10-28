@@ -221,7 +221,6 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform, layout
       </Group>
 
       <div className="pln-tmore">
-        {/* the trigger's ▾ marks its menu; the tip names the command */}
         <Tip label={moreTip.label} desc={moreTip.desc}>
           <RowActionsMenu label="More" actions={more} />
         </Tip>

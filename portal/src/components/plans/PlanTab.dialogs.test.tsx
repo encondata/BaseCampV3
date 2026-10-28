@@ -87,7 +87,7 @@ async function ready(plan: Plan = plan3()) {
 }
 
 async function more(user: ReturnType<typeof userEvent.setup>, item: string) {
-  await user.click(screen.getByRole('button', { name: 'More ▾' }));
+  await user.click(screen.getByRole('button', { name: 'More' }));
   await user.click(screen.getByRole('menuitem', { name: item }));
 }
 

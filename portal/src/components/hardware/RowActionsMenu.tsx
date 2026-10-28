@@ -151,7 +151,8 @@ export function RowActionsMenu({ label, actions, 'aria-describedby': describedBy
                 }
                 setOpen(next);
               }}>
-        {label ?? 'Actions'} ▾
+        {/* the ▾ marks the menu; the trigger is named by its label alone */}
+        {label ?? 'Actions'}<span aria-hidden="true"> ▾</span>
       </button>
       {open && pos && createPortal(
         <div className="pop-menu" role="menu" ref={menuRef}

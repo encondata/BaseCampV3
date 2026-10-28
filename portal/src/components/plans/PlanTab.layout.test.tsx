@@ -546,9 +546,11 @@ describe('hover tips on the tab’s own commands', () => {
     const buttons = [...within(bar).getAllByRole('button'),
       within(screen.getByRole('status', { name: 'Schedule locked' })).getByRole('button', { name: 'Unlock' })];
     for (const b of buttons) {
-      const name = b.getAttribute('aria-label') ?? (b.textContent ?? '').trim();
+      const copy = b.cloneNode(true) as HTMLElement;
+      copy.querySelectorAll('[aria-hidden="true"]').forEach((n) => n.remove());
+      const name = b.getAttribute('aria-label') ?? (copy.textContent ?? '').trim();
       const tip = hoverTip(b);
-      expect(tip.label, name).toBe(name.replace(/ ▾$/, ''));
+      expect(tip.label, name).toBe(name);
       const entry = Object.values(COMMAND_TIPS).find((t) => t.label === tip.label);
       expect(entry, name).toBeDefined();
       expect(tip.desc, name).toBeTruthy();

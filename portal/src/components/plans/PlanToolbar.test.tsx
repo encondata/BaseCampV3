@@ -58,8 +58,14 @@ function Bar({ plan, cmd, layout = 'beside', onLayout = () => {} }: {
 
 const groups = () => within(screen.getByRole('toolbar')).getAllByRole('group').map((g) => g.getAttribute('aria-label'));
 const button = (name: string) => screen.getByRole('button', { name });
-/** A button's accessible name: its aria-label, else its text (the icons are aria-hidden). */
-const nameOf = (el: HTMLElement) => el.getAttribute('aria-label') ?? (el.textContent ?? '').trim();
+/** A button's accessible name: its aria-label, else its text less what is aria-hidden (icons, More's ▾). */
+function nameOf(el: HTMLElement): string {
+  const label = el.getAttribute('aria-label');
+  if (label !== null) return label;
+  const copy = el.cloneNode(true) as HTMLElement;
+  copy.querySelectorAll('[aria-hidden="true"]').forEach((n) => n.remove());
+  return (copy.textContent ?? '').trim();
+}
 
 /** What a hover on `el` shows (fake timers): the tip's label, keycaps,
  *  description and note; the pointer then leaves. */
@@ -84,7 +90,7 @@ describe('groups', () => {
     expect(within(screen.getByRole('group', { name: 'Schedule' })).getAllByRole('button').map((b) => b.getAttribute('aria-label')))
       .toEqual(['0% Complete', '25% Complete', '50% Complete', '75% Complete', '100% Complete', 'Mark on Track',
         'Link Tasks', 'Unlink Tasks', 'Outdent', 'Indent']);
-    expect(screen.getByRole('button', { name: 'More ▾' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'More' })).toBeTruthy();
   });
 
   it('read-only: only Display and the Gantt layout (and More, with what a reader can use)', async () => {
@@ -94,7 +100,7 @@ describe('groups', () => {
     expect(groups()).toEqual(['Display', 'Gantt']);
     expect(screen.queryByRole('group', { name: 'Schedule' })).toBeNull();
     expect(screen.queryByRole('group', { name: 'Insert' })).toBeNull();
-    await user.click(screen.getByRole('button', { name: 'More ▾' }));
+    await user.click(screen.getByRole('button', { name: 'More' }));
     expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Columns…', 'Keyboard shortcuts']);
   });
 
@@ -164,12 +170,11 @@ describe('hover tips', () => {
     render(<Bar plan={makePlan()} cmd={commands()} />);
     const buttons = within(screen.getByRole('toolbar')).getAllByRole('button');
     expect(buttons.length).toBeGreaterThan(25);
-    expect(buttons.map(nameOf)).toContain('More ▾');
+    expect(buttons.map(nameOf)).toContain('More');
     for (const b of buttons) {
       const name = nameOf(b);
       const tip = hoverTip(b);
-      // More's ▾ marks the menu; the tip names the command
-      expect(tip.label, name).toBe(name.replace(/ ▾$/, ''));
+      expect(tip.label, name).toBe(name);
       const entry = Object.values(COMMAND_TIPS).find((t) => t.label === tip.label);
       expect(entry, name).toBeDefined();
       const shortcut = entry && 'shortcut' in entry ? entry.shortcut : undefined;
@@ -232,7 +237,7 @@ describe('hover tips', () => {
 
   it('the More trigger’s tip says what it holds, and goes once its menu opens', () => {
     render(<Bar plan={makePlan()} cmd={commands()} />);
-    const more = button('More ▾');
+    const more = button('More');
     fireEvent.pointerEnter(more);
     act(() => { vi.advanceTimersByTime(TIP_DELAY_MS); });
     expect(screen.getByRole('tooltip').querySelector('.tip-label')?.textContent).toBe('More');
@@ -299,7 +304,7 @@ describe('More', () => {
     const user = userEvent.setup();
     const cmd = commands();
     render(<Bar plan={makePlan({ baseline_set_at: '2026-10-20T10:00:00Z' })} cmd={cmd} />);
-    await user.click(screen.getByRole('button', { name: 'More ▾' }));
+    await user.click(screen.getByRole('button', { name: 'More' }));
     expect(screen.getAllByRole('menuitem').map((m) => m.firstChild?.textContent)).toEqual([
       'Set baseline…', 'Clear baseline…', 'Update project…', 'Lock schedule…', 'Plan settings…', 'Columns…',
       'Keyboard shortcuts', 'Delete plan…',
@@ -308,12 +313,12 @@ describe('More', () => {
     expect(Number(menu.style.zIndex)).toBeGreaterThan(60);
     await user.click(screen.getByRole('menuitem', { name: 'Set baseline…' }));
     expect(cmd.setBaseline).toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'More ▾' }));
+    await user.click(screen.getByRole('button', { name: 'More' }));
     await user.click(screen.getByRole('menuitem', { name: 'Lock schedule…' }));
     expect(cmd.lock).toHaveBeenCalled();
     for (const [item, kind] of [['Clear baseline…', 'clearBaseline'], ['Update project…', 'updateProject'],
       ['Plan settings…', 'settings'], ['Delete plan…', 'deletePlan'], ['Columns…', 'columns']] as const) {
-      await user.click(screen.getByRole('button', { name: 'More ▾' }));
+      await user.click(screen.getByRole('button', { name: 'More' }));
       await user.click(screen.getByRole('menuitem', { name: item }));
       expect(cmd.open).toHaveBeenLastCalledWith(kind);
     }
@@ -322,7 +327,7 @@ describe('More', () => {
   it('no baseline yet: Clear baseline is off, saying why', async () => {
     const user = userEvent.setup();
     render(<Bar plan={makePlan({ baseline_set_at: null })} cmd={commands()} />);
-    await user.click(screen.getByRole('button', { name: 'More ▾' }));
+    await user.click(screen.getByRole('button', { name: 'More' }));
     const clear = screen.getByRole('menuitem', { name: 'Clear baseline…' }) as HTMLButtonElement;
     expect(clear.disabled).toBe(true);
     expect(clear.textContent).toContain(NO_BASELINE_HINT);
@@ -332,7 +337,7 @@ describe('More', () => {
     const user = userEvent.setup();
     const cmd = commands();
     render(<Bar plan={makePlan({ locked_at: '2026-10-27T12:00:00Z' })} cmd={cmd} />);
-    await user.click(screen.getByRole('button', { name: 'More ▾' }));
+    await user.click(screen.getByRole('button', { name: 'More' }));
     const set = screen.getByRole('menuitem', { name: 'Set baseline…' }) as HTMLButtonElement;
     expect(set.disabled).toBe(true);
     expect(set.textContent).toContain(LOCKED_HINT);
@@ -358,7 +363,7 @@ describe('the keyboard', () => {
     await user.keyboard('{ArrowRight}');
     expect(document.activeElement).toBe(button('Redo'));
     await user.keyboard('{ArrowLeft}{ArrowLeft}');
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'More ▾' }));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'More' }));
     await user.keyboard('{Home}');
     expect(document.activeElement).toBe(button('Undo'));
     await user.keyboard('{ArrowRight}');
@@ -380,7 +385,7 @@ describe('the keyboard', () => {
     expect([...bar.querySelectorAll('.tip-trigger')].some((w) => w.hasAttribute('tabindex'))).toBe(false);
     act(() => { buttons[0].focus(); });
     await user.keyboard('{End}');
-    expect(document.activeElement).toBe(button('More ▾'));
+    expect(document.activeElement).toBe(button('More'));
     // back along every button: each the stop in turn, its tip showing
     for (let i = buttons.length - 2; i >= 0; i -= 1) {
       await user.keyboard('{ArrowLeft}');
@@ -390,7 +395,7 @@ describe('the keyboard', () => {
     }
     // and round to the end
     await user.keyboard('{ArrowLeft}');
-    expect(document.activeElement).toBe(button('More ▾'));
+    expect(document.activeElement).toBe(button('More'));
     expect(screen.getAllByRole('tooltip')).toHaveLength(1);
   });
 
