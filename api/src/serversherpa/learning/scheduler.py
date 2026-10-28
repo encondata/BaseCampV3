@@ -42,7 +42,7 @@ from serversherpa.learning.models import (
     LearningEmailLog,
     LearningInviteSchedule,
 )
-from serversherpa.learning.stats import INACTIVE_STATUSES
+from serversherpa.learning.stats import INACTIVE_STATUSES, initiative_live
 from serversherpa.notifications.inbox import notify
 from serversherpa.services.timezone import stored_day
 
@@ -61,11 +61,7 @@ def _now() -> datetime:
 _LIVE = (Initiative.archived_at.is_(None), Initiative.status.not_in(INACTIVE_STATUSES))
 
 
-def _live(initiative: Initiative | None) -> bool:
-    """Not archived and not over: cancelled, completed or archived
-    initiatives get no invites, reminders or overdue notices."""
-    return (initiative is not None and initiative.archived_at is None
-            and initiative.status not in INACTIVE_STATUSES)
+_live = initiative_live
 
 
 async def _open_initiatives(db: AsyncSession, since: datetime) -> list[uuid.UUID]:

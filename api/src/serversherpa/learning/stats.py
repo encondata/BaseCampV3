@@ -44,6 +44,13 @@ HARD_MISS_PERCENT = 40
 # initiatives that are over don't need chasing
 INACTIVE_STATUSES = ("completed", "cancelled")
 
+
+def initiative_live(initiative: Initiative | None) -> bool:
+    """Not archived and not over: cancelled, completed or archived
+    initiatives get no invites, reminders or overdue notices."""
+    return (initiative is not None and initiative.archived_at is None
+            and initiative.status not in INACTIVE_STATUSES)
+
 STATUS_TEXT = {
     "never_signed": "Not signed",
     "expired": "Expired",

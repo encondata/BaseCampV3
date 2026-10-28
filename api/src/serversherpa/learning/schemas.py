@@ -424,6 +424,8 @@ class ScheduleOut(BaseModel):
     codes_expire_on: date | None
     # the initiative's local end day is before today: no invites go out
     ended: bool
+    # archived, cancelled or completed: no invites or reminders go out
+    inactive: bool
     # no schedule saved yet: these are the learning settings' defaults
     is_default: bool
 

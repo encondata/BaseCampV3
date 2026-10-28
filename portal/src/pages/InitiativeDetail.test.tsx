@@ -186,7 +186,7 @@ beforeEach(() => {
     schedule: {
       mode: 'manual', send_offset_days: 7, send_time: '08:00', reminder_offsets: [5, 3],
       due_offset_days: 2, late_adds: true, sent_at: null, send_at: null,
-      codes_expire_on: null, ended: false, is_default: true,
+      codes_expire_on: null, ended: false, inactive: false, is_default: true,
     },
     packets: [], extras: [], timeline: [],
   });

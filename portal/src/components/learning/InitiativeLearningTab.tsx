@@ -304,6 +304,7 @@ export default function InitiativeLearningTab({ initiativeId }: { initiativeId: 
                       loading={filterLoading} failed={rosterFailed} onRetry={refresh}
                       canChange={canChange} canViewWorker={canViewWorker} busyId={null}
                       invitesEnded={schedule.ended}
+                      remindClosed={schedule.inactive}
                       onRemind={(ids) => setDialog({
                         remind: (everyone ?? []).filter((r) => ids.includes(r.person_id)),
                       })}

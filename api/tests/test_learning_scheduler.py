@@ -396,6 +396,23 @@ async def test_ended_initiative_refuses_manual_invites(client, db, seeded_user):
     assert (await client.post(f"{base}/send", headers=hdrs, json={})).status_code == 200
 
 
+@pytest.mark.parametrize("over", ["cancelled", "completed", "archived"])
+async def test_manual_reminder_refused_on_an_over_initiative(client, db, seeded_user, over):
+    hdrs, move, [worker] = await _setup(db, client, start=TODAY + timedelta(days=3))
+    base = f"/learning/initiatives/{move.id}"
+    await client.post(f"{base}/send", headers=hdrs, json={})
+    assert (await client.get(base, headers=hdrs)).json()["schedule"]["inactive"] is False
+    values = {"archived_at": datetime.now(UTC)} if over == "archived" else {"status": over}
+    await db.execute(update(Initiative).where(Initiative.id == move.id).values(**values))
+    await db.commit()
+    for body in ({}, {"person_ids": [str(worker.id)]}):
+        resp = await client.post(f"{base}/remind", headers=hdrs, json=body)
+        assert resp.status_code == 409, resp.text
+        assert resp.json()["detail"]["code"] == "initiative_inactive"
+    assert await _outbox(db, "learning_reminder") == []
+    assert (await client.get(base, headers=hdrs)).json()["schedule"]["inactive"] is True
+
+
 async def test_ended_is_read_on_the_sites_local_day(db, seeded_user):
     """End day Mar 10: at 16:00 UTC it is already Mar 11 in Tokyo."""
     now = datetime(2026, 3, 10, 16, 0, tzinfo=UTC)

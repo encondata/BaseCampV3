@@ -37,6 +37,7 @@ from serversherpa.learning.models import (
     LearningRule,
     LearningSignoff,
 )
+from serversherpa.learning.stats import initiative_live
 from serversherpa.services.timezone import stored_day
 
 STATUSES = ("nothing_assigned", "complete", "in_progress", "overdue", "not_opened",
@@ -218,6 +219,7 @@ async def schedule_out(db: AsyncSession, initiative: Initiative,
         "send_at": await send_at(db, initiative, schedule),
         "codes_expire_on": end,
         "ended": await initiative_ended(db, initiative),
+        "inactive": not initiative_live(initiative),
         "is_default": await db.get(LearningInviteSchedule, initiative.id) is None,
     }
 
