@@ -8,7 +8,6 @@ All datetimes are naive wall-clock times.
 
 import copy
 import random
-import time as clock
 from bisect import bisect_left
 from datetime import date, datetime, time, timedelta
 
@@ -48,8 +47,11 @@ def calendar_json(**changes) -> dict:
     return {**copy.deepcopy(STANDARD_CALENDAR), **changes}
 
 
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
 def empty_week() -> dict:
-    return {day: [] for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")}
+    return {day: [] for day in WEEKDAYS}
 
 
 @pytest.fixture(scope="module")
@@ -432,6 +434,127 @@ def test_calendar_is_a_snapshot_of_the_json():
     assert snap.units.minutes_per_day == 480
 
 
+# --- 24:00: round-the-clock days, shifts across midnight ------------------------------
+
+
+@pytest.fixture(scope="module")
+def clock_cal() -> WorkCalendar:
+    """Mon-Sun 00:00-24:00, a move crew that never goes home."""
+    week = {day: [["00:00", "24:00"]] for day in WEEKDAYS}
+    return WorkCalendar.from_json(calendar_json(
+        week=week, hours_per_day=24, hours_per_week=168, exceptions=[THANKSGIVING]))
+
+
+def test_24_hour_day_is_a_full_1440_minutes(clock_cal):
+    assert clock_cal.intervals(date(2026, 11, 2)) == [
+        (dt("2026-11-02 00:00"), dt("2026-11-03 00:00"))]
+    assert clock_cal.work_between(dt("2026-11-02 00:00"), dt("2026-11-03 00:00")) == 1440
+    assert clock_cal.work_between(dt("2026-11-03 00:00"), dt("2026-11-02 00:00")) == -1440
+    assert clock_cal.work_between(dt("2026-11-02 00:00"), dt("2026-11-09 00:00")) == 10080
+    assert clock_cal.units.minutes_per_day == 1440
+
+
+def test_24_hour_days_lose_no_minute_at_midnight(clock_cal):
+    assert clock_cal.add_work(dt("2026-11-02 00:00"), 2880) == dt("2026-11-04 00:00")
+    assert clock_cal.add_work(dt("2026-11-02 00:00"), 1440) == dt("2026-11-03 00:00")
+    assert clock_cal.add_work(dt("2026-11-02 00:00"), 1441) == dt("2026-11-03 00:01")
+    assert clock_cal.add_work(dt("2026-11-02 23:59"), 1) == dt("2026-11-03 00:00")
+    assert clock_cal.add_work(dt("2026-11-02 23:59"), 2) == dt("2026-11-03 00:01")
+    assert clock_cal.sub_work(dt("2026-11-04 00:00"), 2880) == dt("2026-11-02 00:00")
+    assert clock_cal.sub_work(dt("2026-11-03 00:00"), 1) == dt("2026-11-02 23:59")
+    assert clock_cal.sub_work(dt("2026-11-03 00:01"), 2) == dt("2026-11-02 23:59")
+
+
+def test_24_hour_midnight_is_inside_the_next_day_for_starting_work(clock_cal):
+    assert clock_cal.next_work_start(dt("2026-11-03 00:00")) == dt("2026-11-03 00:00")
+    assert clock_cal.next_work_start(dt("2026-11-02 23:59")) == dt("2026-11-02 23:59")
+
+
+def test_24_hour_midnight_is_inside_the_previous_day_for_finishing_work(clock_cal):
+    assert clock_cal.prev_work_end(dt("2026-11-03 00:00")) == dt("2026-11-03 00:00")
+    assert clock_cal.prev_work_end(dt("2026-11-03 00:01")) == dt("2026-11-03 00:01")
+    assert clock_cal.prev_work_end(dt("2026-11-02 00:00")) == dt("2026-11-02 00:00")
+
+
+def test_24_hour_days_touch_at_midnight(clock_cal):
+    assert clock_cal.intervals(date(2026, 11, 2))[-1][1] == clock_cal.intervals(
+        date(2026, 11, 3))[0][0] == dt("2026-11-03 00:00")
+
+
+def test_24_hour_weeks_are_jumped_whole(clock_cal):
+    week = 10080
+    monday, in_three_weeks = dt("2026-11-30 00:00"), dt("2026-12-21 00:00")  # after Thanksgiving
+    assert clock_cal.add_work(monday, 3 * week) == in_three_weeks
+    assert clock_cal.add_work(monday, 3 * week + 1) == dt("2026-12-21 00:01")
+    assert clock_cal.sub_work(in_three_weeks, 3 * week) == monday
+    assert clock_cal.work_between(monday, in_three_weeks) == 3 * week
+    # the same three weeks with the holiday inside them take one more day
+    before = dt("2026-11-16 00:00")
+    assert clock_cal.add_work(before, 3 * week) == dt("2026-12-08 00:00")
+    assert clock_cal.sub_work(dt("2026-12-08 00:00"), 3 * week) == before
+    assert clock_cal.work_between(before, dt("2026-12-07 00:00")) == 3 * week - 1440
+
+
+def test_24_hour_calendar_still_honors_a_holiday(clock_cal):
+    # Wed noon + 24 h: 12 h left of Wednesday, nothing on Thanksgiving, 12 h of Friday
+    assert clock_cal.add_work(dt("2026-11-25 12:00"), 1440) == dt("2026-11-27 12:00")
+    assert clock_cal.next_work_start(dt("2026-11-26 00:00")) == dt("2026-11-27 00:00")
+    assert clock_cal.prev_work_end(dt("2026-11-27 00:00")) == dt("2026-11-26 00:00")
+
+
+@pytest.fixture(scope="module")
+def night_cal() -> WorkCalendar:
+    """Standard week, except Mon 11-09 is an evening shift ending at 24:00 and
+    Wed 11-11 starts at midnight: an overnight shift is two entries."""
+    return WorkCalendar.from_json(calendar_json(exceptions=[
+        {"date": "2026-11-09", "name": "Evening", "hours": [["18:00", "24:00"]]},
+        {"date": "2026-11-11", "name": "Small hours", "hours": [["00:00", "06:00"]]},
+    ]))
+
+
+def test_an_evening_to_24_00_runs_into_a_normal_next_day(night_cal):
+    assert night_cal.intervals(date(2026, 11, 9)) == [
+        (dt("2026-11-09 18:00"), dt("2026-11-10 00:00"))]
+    # six hours fill Monday evening exactly, and the finish stays at midnight
+    assert night_cal.add_work(dt("2026-11-09 18:00"), 360) == dt("2026-11-10 00:00")
+    # one more minute goes to Tuesday's normal 08:00 start
+    assert night_cal.add_work(dt("2026-11-09 18:00"), 361) == dt("2026-11-10 08:01")
+    assert night_cal.next_work_start(dt("2026-11-10 00:00")) == dt("2026-11-10 08:00")
+    assert night_cal.prev_work_end(dt("2026-11-10 08:00")) == dt("2026-11-10 00:00")
+    assert night_cal.work_between(dt("2026-11-09 18:00"), dt("2026-11-10 12:00")) == 360 + 240
+    assert night_cal.sub_work(dt("2026-11-10 09:00"), 120) == dt("2026-11-09 23:00")
+
+
+def test_two_entries_across_midnight_are_one_continuous_stretch():
+    both = WorkCalendar.from_json(calendar_json(exceptions=[
+        {"date": "2026-11-09", "name": "Night", "hours": [["18:00", "24:00"]]},
+        {"date": "2026-11-10", "name": "Night, cont.", "hours": [["00:00", "06:00"]]},
+    ]))
+    assert both.add_work(dt("2026-11-09 18:00"), 480) == dt("2026-11-10 02:00")
+    assert both.add_work(dt("2026-11-09 18:00"), 720) == dt("2026-11-10 06:00")
+    assert both.add_work(dt("2026-11-09 18:00"), 721) == dt("2026-11-11 08:01")
+    assert both.sub_work(dt("2026-11-10 02:00"), 480) == dt("2026-11-09 18:00")
+    assert both.work_between(dt("2026-11-09 12:00"), dt("2026-11-10 02:00")) == 360 + 120
+    assert both.next_work_start(dt("2026-11-10 00:00")) == dt("2026-11-10 00:00")
+    assert both.prev_work_end(dt("2026-11-10 00:00")) == dt("2026-11-10 00:00")
+
+
+def test_a_midnight_start_follows_a_normal_day(night_cal):
+    # Wed 11-11 works 00:00-06:00; Tuesday (a normal day) ends at 17:00
+    assert night_cal.next_work_start(dt("2026-11-10 17:00")) == dt("2026-11-11 00:00")
+    assert night_cal.add_work(dt("2026-11-10 16:00"), 120) == dt("2026-11-11 01:00")
+
+
+def test_a_24_00_end_on_the_last_day_is_off_the_end_of_the_calendar():
+    all_day = WorkCalendar.from_json(calendar_json(
+        week={day: [["00:00", "24:00"]] for day in WEEKDAYS}))
+    assert all_day.intervals(date(9999, 12, 30)) == [
+        (datetime(9999, 12, 30), datetime(9999, 12, 31))]
+    with pytest.raises(CalendarError) as caught:
+        all_day.intervals(date(9999, 12, 31))
+    assert caught.value.code == "no_working_time"
+
+
 # --- no working time ----------------------------------------------------------------
 
 
@@ -512,24 +635,40 @@ def test_running_off_the_end_of_the_calendar_is_a_calendar_error():
         standard.sub_work(datetime(1, 1, 1, 9, 0), 61)
 
 
+def limit_day_lookups(calendar: WorkCalendar, limit: int) -> list:
+    """Make `calendar` fail the moment it looks at more than `limit` days: a
+    deterministic stand-in for 'it must not walk every day', which a stopwatch
+    would only measure loosely. Returns the list of days looked at."""
+    looked_at = []
+    real = calendar._day
+
+    def counted(day):
+        looked_at.append(day)
+        assert len(looked_at) <= limit, f"walked more than {limit} days"
+        return real(day)
+
+    calendar._day = counted
+    return looked_at
+
+
 def test_an_absurd_duration_fails_fast_instead_of_walking_every_day():
     standard = WorkCalendar.from_json(STANDARD_CALENDAR)
-    started = clock.perf_counter()
+    # walking day by day would visit millions of days before running out of dates
+    looked_at = limit_day_lookups(standard, 1000)
     for huge in (10**12, 10**15, 10**30):
         with pytest.raises(CalendarError):
             standard.add_work(dt("2026-11-02 08:00"), huge)
         with pytest.raises(CalendarError):
             standard.sub_work(dt("2026-11-02 17:00"), huge)
-    # ~3.6 million calendar days would take seconds if they were walked one by one
-    assert clock.perf_counter() - started < 2.0
+    assert len(looked_at) <= 1000
 
 
-def test_a_millennium_between_two_dates_is_summed_quickly():
+def test_a_millennium_between_two_dates_is_summed_not_walked():
     standard = WorkCalendar.from_json(STANDARD_CALENDAR)
-    started = clock.perf_counter()
+    looked_at = limit_day_lookups(standard, 1000)  # 3.6 million days if walked
     total = standard.work_between(datetime(1, 1, 1), datetime(9999, 12, 31, 23, 59))
     assert total > 0 and total % 480 == 0
-    assert clock.perf_counter() - started < 2.0
+    assert len(looked_at) <= 1000
 
 
 # --- from_json validation -----------------------------------------------------------
@@ -547,7 +686,15 @@ def test_bad_calendar():
     [["08:00", "12:00"], ["08:00", "12:00"]],  # the same interval twice
     [["08:00", "17:00"], ["10:00", "11:00"]],  # nested
     [["8:00", "12:00"]],  # not zero padded
-    [["08:00", "24:00"]],  # there is no 24:00
+    [["24:00", "24:00"]],  # 24:00 only ever ends an interval
+    [["24:00", "08:00"]],
+    [["00:00", "24:00"], ["24:00", "24:00"]],
+    [["08:00", "24:01"]],  # and nothing runs past it
+    [["08:00", "25:00"]],
+    [["08:00", "24:00:00"]],
+    [["08:00", "24"]],
+    [["00:00", "24:00"], ["23:00", "24:00"]],  # overlap at the end of the day
+    [["12:00", "24:00"], ["18:00", "24:00"]],
     [["08:00", "12:60"]],
     [["08:00", "12:00:00"]],
     [["08:00", "12h"]],
@@ -610,6 +757,8 @@ def test_calendar_must_be_an_object(data):
     [{"date": "2026-11-26", "hours": [["12:00", "08:00"]]}],
     [{"date": "2026-11-26", "hours": [["08:00", "12:00"], ["10:00", "14:00"]]}],
     [{"date": "2026-11-26", "hours": [["8", "12"]]}],
+    [{"date": "2026-11-26", "hours": [["24:00", "24:00"]]}],  # 24:00 never starts one
+    [{"date": "2026-11-26", "hours": [["18:00", "24:01"]]}],
     [{"date": "2026-11-26", "name": 7, "hours": []}],
     [THANKSGIVING, THANKSGIVING],  # one day, two rules
     [{"date": "2026-11-26", "hours": []}, {"date": "2026-11-26", "hours": [["09:00", "10:00"]]}],
@@ -663,6 +812,8 @@ def test_bad_units(key, value):
     ("default_end", "5pm"),
     ("default_end", "08:00"),  # not after the default start
     ("default_start", "17:00"),  # not before the default end
+    ("default_start", "24:00"),  # 24:00 ends intervals only, never a default time
+    ("default_end", "24:00"),
 ])
 def test_bad_default_times(key, value):
     bad_calendar(calendar_json(**{key: value}))
@@ -674,11 +825,32 @@ def test_units_from_calendar():
     assert ten_hour.units == Units.from_calendar(calendar_json(hours_per_day=10))
 
 
-def test_units_default_to_the_standard_values_when_missing():
+@pytest.mark.parametrize("key", ["hours_per_day", "hours_per_week", "days_per_month"])
+@pytest.mark.parametrize("how", ["missing", "null"])
+def test_each_unit_key_defaults_to_the_standard_value(key, how):
+    data = calendar_json()
+    if how == "missing":
+        del data[key]
+    else:
+        data[key] = None
+    assert WorkCalendar.from_json(data).units == Units()
+
+
+@pytest.mark.parametrize("how", ["missing", "null"])
+def test_a_missing_hours_per_week_keeps_the_other_keys(how):
+    data = calendar_json(hours_per_day=10, days_per_month=22)
+    if how == "missing":
+        del data["hours_per_week"]
+    else:
+        data["hours_per_week"] = None
+    units = WorkCalendar.from_json(data).units
+    assert units == Units(minutes_per_day=600, minutes_per_week=2400, minutes_per_month=13200)
+
+
+def test_all_three_unit_keys_missing_is_the_standard_calendar_units():
     data = calendar_json()
     for key in ("hours_per_day", "hours_per_week", "days_per_month"):
         del data[key]
-    data["hours_per_week"] = None
     assert WorkCalendar.from_json(data).units == Units()
 
 
@@ -721,11 +893,33 @@ SUN_THU_WEEK = {
     "sat": [],
     "sun": [["09:00", "10:00"], ["10:30", "18:00"]],
 }
-BOUNDARY_TIMES = [time(0, 0), time(5, 59), time(6, 0), time(7, 0), time(7, 59), time(8, 0),
-                  time(8, 1), time(9, 30), time(11, 29), time(11, 30), time(11, 59),
-                  time(12, 0), time(12, 1), time(12, 30), time(12, 59), time(13, 0),
-                  time(13, 1), time(16, 0), time(16, 59), time(17, 0), time(17, 1),
-                  time(21, 59), time(22, 0), time(23, 59)]
+# 24:00 ends: a round-the-clock week, and night shifts written as two entries
+# (18:00-24:00 then 00:00-06:00 the next day) with exceptions across a month and a
+# year boundary.
+AROUND_THE_CLOCK_WEEK = {day: [["00:00", "24:00"]] for day in WEEKDAYS}
+NIGHT_WEEK = {
+    "mon": [["00:00", "06:00"], ["18:00", "24:00"]],
+    "tue": [["00:00", "06:00"], ["18:00", "24:00"]],
+    "wed": [["00:00", "06:00"], ["18:00", "24:00"]],
+    "thu": [["00:00", "06:00"], ["18:00", "24:00"]],
+    "fri": [["00:00", "06:00"], ["18:00", "24:00"]],
+    "sat": [["00:00", "06:00"]],
+    "sun": [["18:00", "24:00"]],
+}
+NIGHT_EXCEPTIONS = [
+    {"date": "2026-11-26", "name": "Thanksgiving", "hours": []},
+    {"date": "2026-11-27", "name": "Day after", "hours": [["00:00", "24:00"]]},
+    {"date": "2026-12-12", "name": "Evening shift", "hours": [["12:00", "24:00"]]},
+    {"date": "2026-12-31", "name": "New Year's Eve", "hours": [["18:00", "24:00"]]},
+    {"date": "2027-01-01", "name": "New Year", "hours": [["00:00", "02:00"], ["20:00", "24:00"]]},
+    {"date": "2027-01-02", "name": "Quiet", "hours": []},
+]
+BOUNDARY_TIMES = [time(0, 0), time(0, 1), time(5, 59), time(6, 0), time(6, 1), time(7, 0),
+                  time(7, 59), time(8, 0), time(8, 1), time(9, 30), time(11, 29),
+                  time(11, 30), time(11, 59), time(12, 0), time(12, 1), time(12, 30),
+                  time(12, 59), time(13, 0), time(13, 1), time(16, 0), time(16, 59),
+                  time(17, 0), time(17, 1), time(18, 0), time(18, 1), time(21, 59),
+                  time(22, 0), time(23, 58), time(23, 59)]
 SPAN_FIRST, SPAN_LAST = date(2026, 10, 1), date(2027, 3, 31)
 
 
@@ -750,13 +944,22 @@ def random_moment(rng: random.Random, first: date, last: date) -> datetime:
     return datetime.combine(day, time.min) + timedelta(minutes=rng.randrange(1440))
 
 
-def random_minutes(rng: random.Random) -> int:
+def weekly_minutes(calendar: WorkCalendar) -> int:
+    """Work in one ordinary week (Mon 2026-10-05 ... Sun, before any exception)."""
+    first = date(2026, 10, 5)
+    return sum((end - start) // MINUTE
+               for offset in range(7)
+               for start, end in calendar.intervals(first + timedelta(days=offset)))
+
+
+def random_minutes(rng: random.Random, week: int = 2400) -> int:
+    """From a minute to six weeks of work, so whole-week skipping is exercised."""
     roll = rng.random()
     if roll < 0.35:
         return rng.randrange(1, 60)
     if roll < 0.7:
-        return rng.randrange(1, 2500)
-    return rng.randrange(1, 14000)  # several weeks: exercises whole-week skipping
+        return rng.randrange(1, week + 1)
+    return rng.randrange(1, 6 * week)
 
 
 @pytest.mark.parametrize("name,data", [
@@ -764,22 +967,29 @@ def random_minutes(rng: random.Random) -> int:
     ("odd week", calendar_json(week=SUN_THU_WEEK)),
     ("odd week with exceptions", calendar_json(week=SUN_THU_WEEK, exceptions=BRUTE_EXCEPTIONS)),
     ("no exceptions", calendar_json()),
+    ("around the clock", calendar_json(week=AROUND_THE_CLOCK_WEEK)),
+    ("around the clock with exceptions",
+     calendar_json(week=AROUND_THE_CLOCK_WEEK, exceptions=BRUTE_EXCEPTIONS)),
+    ("night shifts", calendar_json(week=NIGHT_WEEK)),
+    ("night shifts with exceptions", calendar_json(week=NIGHT_WEEK, exceptions=NIGHT_EXCEPTIONS)),
+    ("standard week with night exceptions", calendar_json(exceptions=NIGHT_EXCEPTIONS)),
 ])
 def test_arithmetic_matches_a_minute_by_minute_reference(name, data):
     calendar = WorkCalendar.from_json(data)
     minutes = working_minutes(calendar)
+    week = weekly_minutes(calendar)
     rng = random.Random(f"plans-calendar-{name}")
     # keep every walk inside the span the reference covers
     early, late = date(2026, 10, 15), date(2026, 12, 31)
     for _ in range(300):
         t = random_moment(rng, early, late)
-        n = random_minutes(rng)
+        n = random_minutes(rng, week)
         index = bisect_left(minutes, t)
         assert calendar.next_work_start(t) == minutes[index]
         assert calendar.add_work(t, n) == minutes[index + n - 1] + MINUTE, (t, n)
     for _ in range(300):
         t = random_moment(rng, date(2026, 12, 1), date(2027, 2, 28))
-        n = random_minutes(rng)
+        n = random_minutes(rng, week)
         index = bisect_left(minutes, t)
         assert calendar.prev_work_end(t) == minutes[index - 1] + MINUTE
         assert calendar.sub_work(t, n) == minutes[index - n], (t, n)
@@ -791,12 +1001,18 @@ def test_arithmetic_matches_a_minute_by_minute_reference(name, data):
         assert calendar.work_between(b, a) == -expected, (b, a)
 
 
-def test_adding_then_subtracting_and_counting_agree():
-    calendar = WorkCalendar.from_json(calendar_json(exceptions=BRUTE_EXCEPTIONS))
-    rng = random.Random("plans-calendar-round-trip")
+@pytest.mark.parametrize("name,data", [
+    ("standard", calendar_json(exceptions=BRUTE_EXCEPTIONS)),
+    ("around the clock", calendar_json(week=AROUND_THE_CLOCK_WEEK, exceptions=BRUTE_EXCEPTIONS)),
+    ("night shifts", calendar_json(week=NIGHT_WEEK, exceptions=NIGHT_EXCEPTIONS)),
+])
+def test_adding_then_subtracting_and_counting_agree(name, data):
+    calendar = WorkCalendar.from_json(data)
+    week = weekly_minutes(calendar)
+    rng = random.Random(f"plans-calendar-round-trip-{name}")
     for _ in range(400):
         t = random_moment(rng, date(2026, 10, 15), date(2027, 1, 31))
-        n = random_minutes(rng)
+        n = random_minutes(rng, week)
         end = calendar.add_work(t, n)
         start = calendar.next_work_start(t)
         assert calendar.work_between(start, end) == n, (t, n)

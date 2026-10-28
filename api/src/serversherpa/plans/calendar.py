@@ -18,6 +18,11 @@ Boundaries (they match MS Project and decide every scheduled date):
   result may sit exactly on an interval end (08:00 + 8 h = 17:00, not Tue
   08:00). `sub_work` mirrors it. Zero minutes returns the moment unchanged,
   so a milestone does not snap.
+
+An interval never crosses midnight: an overnight shift is two entries on
+consecutive days, and `24:00` is a valid interval END (the next midnight, so
+00:00-24:00 is a full 1,440-minute day and neighboring days touch there). It
+is never valid as a start or as a default start/end time.
 """
 
 import re
@@ -95,6 +100,22 @@ def _parse_time(value, where: str) -> time:
     return time(int(match[1]), int(match[2]))
 
 
+def _parse_offset(value, where: str, *, is_end: bool) -> timedelta:
+    """An interval's HH:MM as the time since midnight. `24:00` (the next
+    midnight) is accepted only as an end."""
+    if value == "24:00":
+        if not is_end:
+            raise _bad(f"{where}: 24:00 can end an interval but not start one")
+        return _ONE_DAY
+    clock = _parse_time(value, where)
+    return timedelta(hours=clock.hour, minutes=clock.minute)
+
+
+def _clock(offset: timedelta) -> str:
+    minutes = offset // _MINUTE
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
 def _parse_date(value, where: str) -> date:
     match = _ISO_DATE.fullmatch(value) if isinstance(value, str) else None
     if match is None:
@@ -105,28 +126,27 @@ def _parse_date(value, where: str) -> date:
         raise _bad(f"{where}: not a real date: {_shown(value)}") from None
 
 
-def _parse_hours(value, where: str) -> tuple[tuple[time, time], ...]:
-    """A list of [start, end] pairs, returned sorted. Intervals may touch (a
-    day split at 13:00) but not overlap, and each must end after it starts."""
+def _parse_hours(value, where: str) -> tuple[tuple[timedelta, timedelta], ...]:
+    """A list of [start, end] pairs as offsets from midnight, returned sorted.
+    Intervals may touch (a day split at 13:00) but not overlap, and each must
+    end after it starts (so none crosses midnight; the end may be 24:00)."""
     if not isinstance(value, (list, tuple)):
         raise _bad(f"{where}: hours must be a list of [start, end] pairs")
     spans = []
     for pair in value:
         if not isinstance(pair, (list, tuple)) or len(pair) != 2:
             raise _bad(f"{where}: each interval must be [start, end]")
-        start, end = _parse_time(pair[0], where), _parse_time(pair[1], where)
+        start = _parse_offset(pair[0], where, is_end=False)
+        end = _parse_offset(pair[1], where, is_end=True)
         if end <= start:
-            raise _bad(f"{where}: {start:%H:%M}-{end:%H:%M} must end after it starts")
+            raise _bad(f"{where}: {_clock(start)}-{_clock(end)} must end after it starts")
         spans.append((start, end))
     spans.sort()
     for (start1, end1), (start2, end2) in pairwise(spans):
         if start2 < end1:
-            raise _bad(f"{where}: {start1:%H:%M}-{end1:%H:%M} overlaps {start2:%H:%M}-{end2:%H:%M}")
+            raise _bad(f"{where}: {_clock(start1)}-{_clock(end1)} overlaps "
+                       f"{_clock(start2)}-{_clock(end2)}")
     return tuple(spans)
-
-
-def _length(start: time, end: time) -> timedelta:
-    return timedelta(hours=end.hour - start.hour, minutes=end.minute - start.minute)
 
 
 def _check_minutes(minutes) -> None:
@@ -151,13 +171,14 @@ class WorkCalendar:
         self._default_start = default_start
         self._default_end = default_end
         self._week_work = sum(
-            (_length(s, e) for pattern in week for s, e in pattern), timedelta(0))
+            (e - s for pattern in week for s, e in pattern), timedelta(0))
         self._cache: dict[date, tuple[tuple[datetime, datetime], ...]] = {}
 
     @classmethod
     def from_json(cls, data: dict) -> "WorkCalendar":
         """Parse and validate a stored calendar (see `STANDARD_CALENDAR`).
         Anything malformed raises `CalendarError` with code `bad_calendar`.
+        Interval times are `HH:MM`; `24:00` is valid as an interval end only.
         `week` must name all seven days; `exceptions`, the three unit keys and
         the two default times keep the Standard value when missing or null.
         The input is only read, never kept or modified."""
@@ -177,7 +198,7 @@ class WorkCalendar:
             raw = []
         if not isinstance(raw, (list, tuple)):
             raise _bad("calendar.exceptions must be a list")
-        exceptions: dict[date, tuple[tuple[time, time], ...]] = {}
+        exceptions: dict[date, tuple[tuple[timedelta, timedelta], ...]] = {}
         for index, item in enumerate(raw):
             where = f"exceptions[{index}]"
             if not isinstance(item, dict):
@@ -241,8 +262,11 @@ class WorkCalendar:
             pattern = self._exceptions.get(day)
             if pattern is None:
                 pattern = self._week[day.weekday()]
-            cached = tuple((datetime.combine(day, s), datetime.combine(day, e))
-                           for s, e in pattern)
+            midnight = datetime.combine(day, time.min)
+            try:
+                cached = tuple((midnight + s, midnight + e) for s, e in pattern)
+            except OverflowError:  # a 24:00 end on the very last day
+                raise _off_the_end() from None
             if len(self._cache) >= _CACHE_LIMIT:
                 self._cache.clear()
             self._cache[day] = cached
