@@ -53,7 +53,7 @@ from sqlalchemy import select
 
 from serversherpa.config import get_settings
 from serversherpa.db.models import Partner, Person
-from serversherpa.plans.durations import UNITS
+from serversherpa.plans.durations import UNITS, max_minutes
 from serversherpa.plans.engine import CONSTRAINT_TYPES, LINK_TYPES, MODES
 from serversherpa.plans.floating import format_floating, parse_floating
 from serversherpa.plans.models import PlanAssignment, PlanLink, PlanTask
@@ -63,7 +63,6 @@ from serversherpa.plans.ops_tasks import (
     Outline,
     bad_field,
     check_constraint,
-    max_minutes,
     remove_subtrees,
     selected,
     unknown_task,

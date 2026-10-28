@@ -37,7 +37,13 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.plans.calendar import CalendarError, WorkCalendar
-from serversherpa.plans.durations import Duration, DurationError, Units, parse_duration
+from serversherpa.plans.durations import (
+    Duration,
+    DurationError,
+    Units,
+    max_minutes,
+    parse_duration,
+)
 from serversherpa.plans.engine import CONSTRAINT_TYPES, MODES, SUMMARY_CONSTRAINT_TYPES
 from serversherpa.plans.floating import parse_floating
 from serversherpa.plans.models import PlanTask
@@ -52,10 +58,6 @@ from serversherpa.plans.schemas import (
 from serversherpa.plans.service import PlanState, err
 from serversherpa.plans.settings import PlanSettings
 
-# Durations and lags are capped at 10 years: 260 working days a year of
-# the plan's own day, or 365 wall-clock days for elapsed time. The parser
-# has no magnitude cap, and an absurd value only overflows later.
-MAX_YEARS = 10
 FINISH_CONSTRAINTS = frozenset({"fnet", "fnlt", "mfo"})
 # derived on a summary task, so never typed on one
 SUMMARY_FIELDS = ("duration", "start", "finish", "percent_complete",
@@ -304,12 +306,6 @@ def when(b: Batch, text: str, name: str, *, end: bool) -> datetime:
         return parse_floating(text, date_only_time=clock)
     except ValueError:
         raise bad_field(name) from None
-
-
-def max_minutes(units: Units, elapsed: bool) -> int:
-    if elapsed:
-        return 1440 * 365 * MAX_YEARS
-    return units.minutes_per_day * 260 * MAX_YEARS
 
 
 def check_bound(d: Duration, units: Units, name: str) -> Duration:

@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
-from serversherpa.plans import ops, service
+from serversherpa.plans import ops, plan_writes, service
 from serversherpa.plans.calendar import CalendarError, WorkCalendar
 from serversherpa.plans.floating import format_floating, parse_floating
 from serversherpa.plans.models import PlanTask
@@ -178,7 +178,7 @@ async def patch_plan(
     """Plan settings: the overrides, calendar, project start, timezone,
     status date and owner (PlanPatchIn has the rules)."""
     plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
-    state = await service.patch_plan(db, plan, body, actor)
+    state = await plan_writes.patch_plan(db, plan, body, actor)
     return await _answer(db, state, actor)
 
 
@@ -191,7 +191,7 @@ async def lock_plan(
     """Lock the schedule: then only progress edits (ops.is_progress_only,
     Update project) and a PATCH of the status date or owner are accepted."""
     plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
-    service.set_lock(db, plan, actor, locked=True)
+    plan_writes.set_lock(db, plan, actor, locked=True)
     return await _answer(db, await service.load_state(db, plan), actor)
 
 
@@ -202,7 +202,7 @@ async def unlock_plan(
     actor: AuthContext = require_permission("project_plans", "change"),
 ) -> PlanOut:
     plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
-    service.set_lock(db, plan, actor, locked=False)
+    plan_writes.set_lock(db, plan, actor, locked=False)
     return await _answer(db, await service.load_state(db, plan), actor)
 
 
@@ -217,7 +217,7 @@ async def set_baseline(
     duration. 409 `baseline_exists` {set_at} unless `replace`."""
     plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
     state = await service.load_state(db, plan)
-    service.set_baseline(db, state, actor, replace=body is not None and body.replace)
+    plan_writes.set_baseline(db, state, actor, replace=body is not None and body.replace)
     return await _answer(db, state, actor)
 
 
@@ -229,7 +229,7 @@ async def clear_baseline(
 ) -> PlanOut:
     plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
     state = await service.load_state(db, plan)
-    service.clear_baseline(db, state, actor)
+    plan_writes.clear_baseline(db, state, actor)
     return await _answer(db, state, actor)
 
 
@@ -242,4 +242,4 @@ async def plan_version(
     """The plan's version, polled by an open tab to notice another admin's
     change; every write bumps it."""
     plan = await service.plan_for_actor(db, plan_id, actor)
-    return await service.version_out(db, plan)
+    return await plan_writes.version_out(db, plan)

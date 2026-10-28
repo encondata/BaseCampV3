@@ -173,6 +173,19 @@ def parse_lag(text: str, units: Units, default_unit: str = "d") -> Duration:
     return _parse(text, units, default_unit, signed=True)
 
 
+# Durations and lags are capped at 10 years: 260 working days a year of
+# the plan's own day, or 365 wall-clock days for elapsed time. The parser
+# has no magnitude cap, and an absurd value only overflows later.
+MAX_YEARS = 10
+
+
+def max_minutes(units: Units, elapsed: bool) -> int:
+    """The longest duration or lag (either way) a plan takes, in minutes."""
+    if elapsed:
+        return 1440 * 365 * MAX_YEARS
+    return units.minutes_per_day * 260 * MAX_YEARS
+
+
 def _format(d: Duration, units: Units, plus: bool) -> str:
     per_unit = units.unit_minutes(d.unit, d.elapsed)
     # hundredths of a unit, halves up: at most two decimals shown
