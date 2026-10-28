@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  dayOf, formatCell, formatDay, formatDayTime, fromDateInput, fromMs, toDateInput,
+  dayOf, formatCell, formatDay, formatDayTime, fromDateInput, fromInstant, fromMs, toDateInput,
   toDateTimeInput, toMs,
 } from './floatingTime';
 
@@ -112,4 +112,22 @@ describe('in a browser far from the plan’s zone (Review Focus 4)', () => {
       expect(ft.fromMs(ft.toMs('2026-03-08T02:30'))).toBe('2026-03-08T02:30');   // a US DST gap
       expect(ft.fromDateInput('2026-11-02')).toBe('2026-11-02');
     });
+});
+
+describe('fromInstant', () => {
+  it('turns an instant into the plan’s wall-clock time', () => {
+    expect(fromInstant('2026-11-04T15:30:00Z', 'America/Chicago')).toBe('2026-11-04T09:30');
+    expect(fromInstant('2026-10-30T15:30:00Z', 'America/Chicago')).toBe('2026-10-30T10:30');   // CDT
+    expect(fromInstant('2026-11-04T15:30:00.123456+00:00', 'Asia/Tokyo')).toBe('2026-11-05T00:30');
+  });
+
+  it('reads midnight as 00:00, not 24:00', () => {
+    expect(fromInstant('2026-11-05T06:00:00Z', 'America/Chicago')).toBe('2026-11-05T00:00');
+  });
+
+  it('falls back to UTC for a zone the browser does not know, and to nothing for a bad instant', () => {
+    expect(fromInstant('2026-11-04T15:30:00Z', 'Mars/Olympus_Mons')).toBe('2026-11-04T15:30');
+    expect(fromInstant('not a time', 'America/Chicago')).toBe('');
+    expect(fromInstant(null, 'America/Chicago')).toBe('');
+  });
 });

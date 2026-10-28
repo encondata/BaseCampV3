@@ -518,6 +518,8 @@ async def test_baseline(client, db):
         assert task["baseline_start"] == task["start"]
         assert task["baseline_finish"] == task["finish"]
         assert task["baseline_duration_minutes"] == task["duration_minutes"]
+        assert task["start_variance_minutes"] == 0
+        assert task["finish_variance_minutes"] == 0
 
     resp = await client.post(f"/plans/{plan['id']}/baseline", headers=hdrs)
     assert resp.status_code == 409
@@ -527,9 +529,14 @@ async def test_baseline(client, db):
     # the schedule moves; the baseline stays until it is replaced
     await _ok(client, hdrs, plan, [{"op": "update_task", "id": ids["A"],
                                     "fields": {"duration": "3d"}}])
-    moved = _by_id(await _get(client, hdrs, plan))[ids["B"]]
+    after = _by_id(await _get(client, hdrs, plan))
+    moved = after[ids["B"]]
     assert moved["start"] == "2026-11-05T08:00"
     assert moved["baseline_start"] == "2026-11-04T08:00"
+    # variances are working time from the baseline to the schedule (MS Project)
+    assert (moved["start_variance_minutes"], moved["finish_variance_minutes"]) == (480, 480)
+    longer = after[ids["A"]]
+    assert (longer["start_variance_minutes"], longer["finish_variance_minutes"]) == (0, 480)
 
     resp = await client.post(f"/plans/{plan['id']}/baseline", headers=hdrs,
                              json={"replace": True})
@@ -545,6 +552,8 @@ async def test_baseline(client, db):
     for task in cleared["tasks"]:
         assert task["baseline_start"] is None and task["baseline_finish"] is None
         assert task["baseline_duration_minutes"] is None
+        assert task["start_variance_minutes"] is None
+        assert task["finish_variance_minutes"] is None
     assert cleared["version"] == replaced["version"] + 1
     actions = [r.action for r in await _audits(db, "plan_baseline_set")
                + await _audits(db, "plan_baseline_clear")]

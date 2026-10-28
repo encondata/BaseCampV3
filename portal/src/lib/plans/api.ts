@@ -147,6 +147,10 @@ export interface PlanTask {
   baseline_start: string | null;
   baseline_finish: string | null;
   baseline_duration_minutes: number | null;
+  /** Working minutes from the baseline to the schedule (MS Project's Start
+   *  / Finish Variance); negative when ahead, null without a baseline. */
+  start_variance_minutes: number | null;
+  finish_variance_minutes: number | null;
   completed_at: string | null;        // instant; never stamped on a summary
   completed_by_name: string | null;
   predecessors: string;               // MS Project text: "2,3SS+1 day"
@@ -154,6 +158,7 @@ export interface PlanTask {
   assignees: Assignee[];
   status: TaskStatus;
   missed_deadline: boolean;
+  created_at: string;                 // instant
   updated_at: string;                 // instant
 }
 

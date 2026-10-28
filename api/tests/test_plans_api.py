@@ -613,8 +613,11 @@ async def test_tasks_and_links_served(client, db):
                 "baseline_start", "baseline_finish", "baseline_duration_minutes",
                 "completed_at", "completed_by_name", "show_on_timeline", "mode",
                 "elapsed", "duration_unit", "position", "updated_at", "status",
-                "missed_deadline", "percent_complete"):
+                "missed_deadline", "percent_complete", "created_at",
+                "start_variance_minutes", "finish_variance_minutes"):
         assert key in crates, key
+    assert crates["created_at"] is not None
+    assert crates["start_variance_minutes"] is None     # no baseline yet
 
 
 async def test_task_status_and_missed_deadline(client, db):

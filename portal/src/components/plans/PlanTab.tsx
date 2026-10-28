@@ -6,12 +6,20 @@
  *  - the toolbar slot (`.pln-toolbar`): the view switcher at the left,
  *    PlanToolbar's groups in `.pln-tools` (Task 7), Full screen at the right;
  *  - the view area (`.pln-view`): the Gantt view (sheet + chart, Tasks 5
- *    and 8); Calendar and Board arrive in Plan C;
+ *    and 8) inside one scroll box (`.pln-panes`, `scrollRef`) both panes
+ *    virtualize against; Calendar and Board arrive in Plan C;
  *  - the dialogs host: one PlanModal-based dialog at a time (`PlanDialog`).
+ *
+ * The Gantt view's shared state lives here too (useSheetView): the rows on
+ * screen (the outline less collapsed subtasks; collapse state per plan in
+ * localStorage `plans.collapsed.<planId>`), the selection, and the row
+ * height (the list size).
  *
  * URL state lives beside `?tab=plan`: `&view=gantt|calendar|board` (Gantt
  * by default; only Gantt exists until Plan C, so anything else reads as
- * Gantt) and `&task=<id>`, which the sheet's deep link reads (Task 5).
+ * Gantt) and `&task=<id>` (reminder emails link to it): once the plan
+ * loads, that task's collapsed summaries open, its row is selected and
+ * scrolled into view; an id the plan doesn't have is ignored.
  *
  * Full screen fills the viewport above the portal chrome, which goes
  * inert meanwhile (Tab stays in the plan); Escape leaves it unless a
@@ -19,17 +27,24 @@
  * focus (Escape cancels the edit).
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import {
+  useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject,
+} from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '../../auth/AuthContext';
 import { longDate } from '../../lib/format';
+import { listScale } from '../../lib/listTools';
 import { useToast } from '../../lib/notificationsContext';
-import type { Plan } from '../../lib/plans/api';
+import type { Plan, PlanTask } from '../../lib/plans/api';
+import { SHEET_HEAD_PX, SHEET_ROW_PX } from '../../lib/plans/columns';
 import { isPlanChanged, planErrorText } from '../../lib/plans/errors';
-import { formatDay } from '../../lib/plans/floatingTime';
+import { ancestors, visibleRows } from '../../lib/plans/outline';
+import { EMPTY_SELECTION, selectCell, type Selection } from '../../lib/plans/selection';
+import ColumnsModal from './ColumnsModal';
 import PlanCreateModal, { type PlanInitiative } from './PlanCreateModal';
 import PlanEmptyState from './PlanEmptyState';
+import PlanSheet from './PlanSheet';
 import { usePlan, type PlanController } from './usePlan';
 
 import '../../styles/plans.css';
@@ -42,7 +57,7 @@ const PLAN_VIEWS: readonly { key: PlanViewKey; label: string }[] = [
 ];
 
 /** The dialog the tab has open; later tasks add their kinds here. */
-type PlanDialog = { kind: 'create' };
+type PlanDialog = { kind: 'create' } | { kind: 'columns' };
 
 /** `?view=` as one of the views on offer; anything else is the Gantt. */
 function readView(param: string | null): PlanViewKey {
@@ -126,12 +141,106 @@ function escapeTakenElsewhere(e: KeyboardEvent): boolean {
     && !!target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])');
 }
 
+const COLLAPSED_PREFIX = 'plans.collapsed.';
+const NO_TASKS: PlanTask[] = [];
+
+/** The summaries collapsed in this browser for the plan. */
+function readCollapsed(planId: string): Set<string> {
+  try {
+    const stored: unknown = JSON.parse(localStorage.getItem(COLLAPSED_PREFIX + planId) ?? '[]');
+    return new Set(Array.isArray(stored) ? stored.filter((id): id is string => typeof id === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeCollapsed(planId: string, ids: Iterable<string>): void {
+  try {
+    localStorage.setItem(COLLAPSED_PREFIX + planId, JSON.stringify([...ids]));
+  } catch {
+    // storage refused: the choice lasts this visit only
+  }
+}
+
+/**
+ * The Gantt view's shared state: the rows the sheet and the chart show,
+ * which summaries are collapsed, the selection, and the `&task=` deep
+ * link (handled once per plan and task id).
+ */
+function useSheetView(ctl: PlanController, taskParam: string | null,
+  scrollRef: RefObject<HTMLDivElement | null>, rowHeight: number) {
+  const plan = ctl.plan;
+  const planId = plan?.id ?? null;
+  const tasks = plan?.tasks ?? NO_TASKS;
+  const tasksById = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
+  const order = useMemo(() => tasks.map((t) => t.id), [tasks]);
+
+  const stored = useMemo(() => (planId ? readCollapsed(planId) : new Set<string>()), [planId]);
+  const [changed, setChanged] = useState<{ planId: string; ids: Set<string> } | null>(null);
+  const collapsed = changed && changed.planId === planId ? changed.ids : stored;
+  const setCollapsed = useCallback((ids: Set<string>) => {
+    if (!planId) return;
+    setChanged({ planId, ids });
+    writeCollapsed(planId, [...ids].filter((id) => tasksById.has(id)));
+  }, [planId, tasksById]);
+
+  const rows = useMemo(() => visibleRows(order, tasksById, collapsed), [order, tasksById, collapsed]);
+
+  // another plan (another initiative) starts with nothing selected
+  const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
+  const [selectionPlan, setSelectionPlan] = useState(planId);
+  if (selectionPlan !== planId) {
+    setSelectionPlan(planId);
+    setSelection(EMPTY_SELECTION);
+  }
+
+  const toggleCollapse = useCallback((id: string) => {
+    const next = new Set(collapsed);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+      // the active cell's row going out of sight: the summary takes it (MS Project)
+      setSelection((sel) => (sel.active && sel.active.id !== 'blank'
+        && ancestors(sel.active.id, tasksById).includes(id) ? selectCell(id, sel.active.col) : sel));
+    }
+    setCollapsed(next);
+  }, [collapsed, setCollapsed, tasksById]);
+
+  const linked = useRef<string | null>(null);
+  const [scrollTo, setScrollTo] = useState<string | null>(null);
+  useEffect(() => {
+    if (!planId || !taskParam) return;
+    const key = `${planId}:${taskParam}`;
+    if (linked.current === key) return;
+    linked.current = key;
+    if (!tasksById.has(taskParam)) return;
+    const closed = ancestors(taskParam, tasksById).filter((id) => collapsed.has(id));
+    if (closed.length) setCollapsed(new Set([...collapsed].filter((id) => !closed.includes(id))));
+    setSelection(selectCell(taskParam, 'name'));
+    setScrollTo(taskParam);
+  }, [planId, taskParam, tasksById, collapsed, setCollapsed]);
+
+  // runs once the rows include the task, so the scroll box is tall enough
+  useEffect(() => {
+    if (!scrollTo) return;
+    const index = rows.indexOf(scrollTo);
+    const box = scrollRef.current;
+    if (index < 0 || !box) return;
+    const below = Math.max(0, box.clientHeight - SHEET_HEAD_PX - rowHeight);
+    box.scrollTop = Math.max(0, index * rowHeight - below / 2);
+    setScrollTo(null);
+  }, [scrollTo, rows, rowHeight, scrollRef]);
+
+  return { rows, collapsed, toggleCollapse, selection, select: setSelection };
+}
+
 export default function PlanTab({ initiativeId, initiative }: {
   initiativeId: string;
   initiative: PlanInitiative;
 }) {
   const ctl = usePlan(initiativeId);
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const view = readView(searchParams.get('view'));
   const [fullScreen, setFullScreen] = useState(false);
@@ -144,6 +253,9 @@ export default function PlanTab({ initiativeId, initiative }: {
   const viewRef = useRef<HTMLDivElement>(null);
   const viewHeight = useFillHeight(viewRef, ready && !isFull);
   useInertOutside(rootRef, isFull);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const rowHeight = Math.round(SHEET_ROW_PX * listScale(preferences?.list_size));
+  const sheet = useSheetView(ctl, searchParams.get('task'), scrollRef, rowHeight);
 
   const selectView = (next: PlanViewKey) => {
     setSearchParams((prev) => {
@@ -200,7 +312,12 @@ export default function PlanTab({ initiativeId, initiative }: {
               </button>
             ))}
           </div>
-          <div className="pln-tools">{/* PlanToolbar (Task 7) */}</div>
+          <div className="pln-tools">
+            {/* PlanToolbar (Task 7); Columns… moves into its More menu */}
+            <button type="button" className="mini-btn" onClick={() => setDialog({ kind: 'columns' })}>
+              Columns…
+            </button>
+          </div>
           {ctl.staleBy && <span className="pln-stale" role="status">{ctl.staleBy}</span>}
           <button type="button" className="mini-btn pln-screen-btn"
                   title={isFull ? 'Exit full screen (Esc)' : undefined}
@@ -213,7 +330,13 @@ export default function PlanTab({ initiativeId, initiative }: {
         {/* the view area */}
         <div className="pln-view" data-view={view} ref={viewRef}
              style={viewHeight === null ? undefined : { height: viewHeight }}>
-          {view === 'gantt' && <PlanSummaryNote plan={plan} />}
+          {view === 'gantt' && (
+            <div className="pln-panes" ref={scrollRef}>
+              <PlanSheet ctl={ctl} rows={sheet.rows} collapsed={sheet.collapsed} rowHeight={rowHeight}
+                         scrollRef={scrollRef} selection={sheet.selection} onSelect={sheet.select}
+                         onToggleCollapse={sheet.toggleCollapse} editable={plan.permissions.change} />
+            </div>
+          )}
         </div>
       </>
     );
@@ -227,6 +350,7 @@ export default function PlanTab({ initiativeId, initiative }: {
       {dialog?.kind === 'create' && (
         <PlanCreateModal ctl={ctl} initiative={initiative} onClose={closeDialog} />
       )}
+      {dialog?.kind === 'columns' && <ColumnsModal onClose={closeDialog} />}
     </div>
   );
 }
@@ -265,23 +389,6 @@ function LockBanner({ ctl, plan }: { ctl: PlanController; plan: Plan }) {
           Unlock
         </button>
       )}
-    </div>
-  );
-}
-
-/** The Gantt view's place until the task sheet (Task 5) and the chart
- *  (Task 8) fill it: what the plan holds. */
-function PlanSummaryNote({ plan }: { plan: Plan }) {
-  const count = plan.tasks.length;
-  return (
-    <div className="pln-view-note">
-      <span className="pln-view-note-title">
-        {count === 0 ? 'No tasks yet' : `${count} task${count === 1 ? '' : 's'}`}
-      </span>
-      <p className="page-hint">
-        Project start {formatDay(plan.project_start)}
-        {plan.project_finish ? ` · Finish ${formatDay(plan.project_finish)}` : ''}
-      </p>
     </div>
   );
 }

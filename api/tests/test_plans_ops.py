@@ -85,8 +85,10 @@ def _signed(plan, **fields) -> dict:
 
 
 def _comparable(body) -> list[dict]:
-    """A plan's tasks without the edit stamps."""
-    return [{k: v for k, v in t.items() if k != "updated_at"} for t in body["tasks"]]
+    """A plan's tasks without the edit stamps (an undone delete re-creates
+    its tasks, so they are created again)."""
+    return [{k: v for k, v in t.items() if k not in ("created_at", "updated_at")}
+            for t in body["tasks"]]
 
 
 # ── add / insert / update ────────────────────────────────────────────

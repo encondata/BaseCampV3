@@ -37,6 +37,8 @@ export function makeTask(id: string, over: Partial<PlanTask> = {}): PlanTask {
     baseline_start: null,
     baseline_finish: null,
     baseline_duration_minutes: null,
+    start_variance_minutes: null,
+    finish_variance_minutes: null,
     completed_at: null,
     completed_by_name: null,
     predecessors: '',
@@ -44,6 +46,7 @@ export function makeTask(id: string, over: Partial<PlanTask> = {}): PlanTask {
     assignees: [],
     status: 'not_started',
     missed_deadline: false,
+    created_at: '2026-10-26T12:00:00Z',
     updated_at: '2026-10-27T12:00:00Z',
     ...over,
   };

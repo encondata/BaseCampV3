@@ -1,0 +1,92 @@
+/**
+ * lib/plans/selection.ts: the sheet's selection (active cell, selected rows,
+ * anchor) and moving the active cell with the arrows, clamped at the edges
+ * of the visible rows and columns.
+ */
+import { describe, expect, it } from 'vitest';
+
+import { EMPTY_SELECTION, moveActive, selectCell, selectRow, type Selection } from './selection';
+
+const ROWS = ['a', 'b', 'c'];
+const COLS = ['name', 'duration', 'start'];
+
+const at = (id: string, col: string): Selection => selectCell(id, col);
+
+describe('selectCell and selectRow', () => {
+  it('a cell makes its row the only selected row and the anchor', () => {
+    const sel = selectCell('b', 'duration');
+    expect(sel.active).toEqual({ id: 'b', col: 'duration' });
+    expect([...sel.rows]).toEqual(['b']);
+    expect(sel.anchor).toBe('b');
+  });
+
+  it('the blank row selects no task row', () => {
+    const sel = selectCell('blank', 'name');
+    expect(sel.active).toEqual({ id: 'blank', col: 'name' });
+    expect(sel.rows.size).toBe(0);
+    expect(sel.anchor).toBeNull();
+  });
+
+  it('a row selection keeps the active column', () => {
+    const sel = selectRow('c', 'start');
+    expect(sel.active).toEqual({ id: 'c', col: 'start' });
+    expect([...sel.rows]).toEqual(['c']);
+  });
+
+  it('starts empty', () => {
+    expect(EMPTY_SELECTION.active).toBeNull();
+    expect(EMPTY_SELECTION.rows.size).toBe(0);
+    expect(EMPTY_SELECTION.anchor).toBeNull();
+  });
+});
+
+describe('moveActive', () => {
+  it('moves down and up through the visible rows', () => {
+    expect(moveActive(at('a', 'name'), 'down', ROWS, COLS).active).toEqual({ id: 'b', col: 'name' });
+    expect(moveActive(at('c', 'start'), 'up', ROWS, COLS).active).toEqual({ id: 'b', col: 'start' });
+  });
+
+  it('moves left and right through the visible columns', () => {
+    expect(moveActive(at('b', 'name'), 'right', ROWS, COLS).active).toEqual({ id: 'b', col: 'duration' });
+    expect(moveActive(at('b', 'start'), 'left', ROWS, COLS).active).toEqual({ id: 'b', col: 'duration' });
+  });
+
+  it('stops at every edge', () => {
+    expect(moveActive(at('a', 'name'), 'up', ROWS, COLS).active).toEqual({ id: 'a', col: 'name' });
+    expect(moveActive(at('c', 'name'), 'down', ROWS, COLS).active).toEqual({ id: 'c', col: 'name' });
+    expect(moveActive(at('b', 'name'), 'left', ROWS, COLS).active).toEqual({ id: 'b', col: 'name' });
+    expect(moveActive(at('b', 'start'), 'right', ROWS, COLS).active).toEqual({ id: 'b', col: 'start' });
+  });
+
+  it('the selection follows the active cell', () => {
+    const sel: Selection = { active: { id: 'a', col: 'name' }, rows: new Set(['a', 'b']), anchor: 'a' };
+    const next = moveActive(sel, 'down', ROWS, COLS);
+    expect([...next.rows]).toEqual(['b']);
+    expect(next.anchor).toBe('b');
+  });
+
+  it('reaches the blank row when the rows end with it, and comes back', () => {
+    const rows = [...ROWS, 'blank'];
+    const down = moveActive(at('c', 'name'), 'down', rows, COLS);
+    expect(down.active).toEqual({ id: 'blank', col: 'name' });
+    expect(down.rows.size).toBe(0);
+    expect(moveActive(down, 'down', rows, COLS).active).toEqual({ id: 'blank', col: 'name' });
+    expect(moveActive(down, 'up', rows, COLS).active).toEqual({ id: 'c', col: 'name' });
+  });
+
+  it('without an active cell, starts at the first row and column', () => {
+    expect(moveActive(EMPTY_SELECTION, 'down', ROWS, COLS).active).toEqual({ id: 'a', col: 'name' });
+    expect(moveActive(EMPTY_SELECTION, 'left', ROWS, COLS).active).toEqual({ id: 'a', col: 'name' });
+  });
+
+  it('an active row or column that is no longer shown starts over from the first', () => {
+    expect(moveActive(at('gone', 'duration'), 'down', ROWS, COLS).active).toEqual({ id: 'a', col: 'duration' });
+    expect(moveActive(at('b', 'hidden'), 'right', ROWS, COLS).active).toEqual({ id: 'b', col: 'name' });
+  });
+
+  it('nothing to move to leaves the selection as it was', () => {
+    const sel = at('a', 'name');
+    expect(moveActive(sel, 'down', [], COLS)).toBe(sel);
+    expect(moveActive(sel, 'down', ROWS, [])).toBe(sel);
+  });
+});

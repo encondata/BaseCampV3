@@ -592,8 +592,14 @@ async def tasks_out(db: AsyncSession, state: PlanState,
     if task_ids is not None:
         wanted = set(task_ids)
         ordered = [tid for tid in ordered if tid in wanted]
-    units = calendar_of(plan).units
+    calendar = calendar_of(plan)
+    units = calendar.units
     now = status_now(plan)
+
+    def variance(scheduled: datetime | None, baseline: datetime | None) -> int | None:
+        if scheduled is None or baseline is None:
+            return None
+        return calendar.work_between(baseline, scheduled)
 
     into: dict[uuid.UUID, list[PlanLink]] = {}
     out_of: dict[uuid.UUID, list[PlanLink]] = {}
@@ -656,6 +662,8 @@ async def tasks_out(db: AsyncSession, state: PlanState,
             baseline_start=format_floating(task.baseline_start),
             baseline_finish=format_floating(task.baseline_finish),
             baseline_duration_minutes=task.baseline_duration_minutes,
+            start_variance_minutes=variance(task.start, task.baseline_start),
+            finish_variance_minutes=variance(task.finish, task.baseline_finish),
             completed_at=task.completed_at,
             completed_by_name=people.get(task.completed_by) if task.completed_by else None,
             predecessors=link_text(into.get(tid, []), lambda lk: lk.predecessor_id),
@@ -664,6 +672,7 @@ async def tasks_out(db: AsyncSession, state: PlanState,
             status=task_status(task, now),
             missed_deadline=(task.deadline is not None and task.finish is not None
                              and task.finish > task.deadline),
+            created_at=task.created_at,
             updated_at=task.updated_at,
         ))
     return result

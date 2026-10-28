@@ -82,6 +82,38 @@ export function toDateTimeInput(s: string | null | undefined): string {
   return s.length === 10 ? `${s}T00:00` : s.slice(0, 16);
 }
 
+const zoneFormats = new Map<string, Intl.DateTimeFormat>();
+
+/** en-US numeric parts in `timeZone` (UTC when the browser doesn't know it). */
+function zoneFormat(timeZone: string): Intl.DateTimeFormat {
+  let format = zoneFormats.get(timeZone);
+  if (!format) {
+    const options: Intl.DateTimeFormatOptions = {
+      year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    };
+    try {
+      format = new Intl.DateTimeFormat('en-US', { ...options, timeZone });
+    } catch {
+      format = new Intl.DateTimeFormat('en-US', { ...options, timeZone: 'UTC' });
+    }
+    zoneFormats.set(timeZone, format);
+  }
+  return format;
+}
+
+/** An instant (ISO text with an offset, as `updated_at` arrives) as plan
+ *  text on the wall clock of `timeZone` (the plan's zone), to the minute;
+ *  '' for a missing or unreadable instant. */
+export function fromInstant(iso: string | null | undefined, timeZone: string): string {
+  if (!iso) return '';
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return '';
+  const part: Record<string, string> = {};
+  for (const p of zoneFormat(timeZone).formatToParts(ms)) part[p.type] = p.value;
+  const hour = part.hour === '24' ? '00' : part.hour;   // some engines write midnight as 24
+  return `${part.year}-${part.month}-${part.day}T${hour}:${part.minute}`;
+}
+
 /** A date or datetime-local input's value as plan text, or null when it is
  *  blank or not a real date. A date alone stays `YYYY-MM-DD`, so the API
  *  applies the calendar's default start or end time; seconds are dropped. */

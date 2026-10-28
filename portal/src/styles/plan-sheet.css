@@ -1,0 +1,160 @@
+/* ============================================================
+   plan-sheet.css — the Project plan task sheet (PlanSheet): grid
+   layout only. Class prefix `pln-`.
+
+   LAYOUT ONLY (styles/listTypography.test.ts): `.pln-row` / `.pln-cell`
+   make every `.pln-*` selector in this file list-ish, so nothing here
+   sets font-size / font-family / font-weight / line-height / min-height.
+   Text styling comes from directory.css's golden classes on the cell
+   contents (`cell-top`, `b.cell-top` for summaries, `cell-sub`, `mono`,
+   `chip`), which carry the --list-fs-* tokens and the list size.
+
+   The grid's columns are one custom property (`--pln-cols`, set by the
+   sheet from the person's widths) shared by the header and every row;
+   rows are absolutely placed by the virtualizer at `--pln-row-h`.
+   ============================================================ */
+
+.pln-sheet {
+  display: flex;
+  flex-direction: column;
+  min-width: 100%;
+}
+
+/* ── header: sticky at the top of the scroll box ─────────────── */
+
+.pln-sheet-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: var(--pln-cols);
+  height: var(--pln-head-h);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--paper-line);
+}
+.pln-hcell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  border-right: 1px solid var(--paper-line);
+  color: var(--text-mute);
+}
+.pln-hcell.on { background: rgba(var(--accent-rgb), 0.08); }
+.pln-hicon { width: 14px; height: 14px; flex: none; }
+
+/* the column border: drag it, or focus it and use the arrows */
+.pln-resize {
+  position: absolute;
+  top: 0;
+  right: -5px;
+  bottom: 0;
+  z-index: 1;
+  width: 9px;
+  cursor: col-resize;
+  touch-action: none;
+}
+/* the last border stays inside the sheet, so it adds no sideways scroll */
+.pln-hcell:last-child .pln-resize { right: 0; }
+.pln-resize:hover,
+.pln-resize:focus-visible,
+.pln-hcell.on .pln-resize {
+  outline: none;
+  background: linear-gradient(to right, transparent 3px, var(--accent) 3px, var(--accent) 6px, transparent 6px);
+}
+
+/* ── rows ─────────────────────────────────────────────────────── */
+
+.pln-sheet-body { position: relative; }
+
+.pln-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  display: grid;
+  grid-template-columns: var(--pln-cols);
+  height: var(--pln-row-h);
+  border-bottom: 1px solid var(--paper-line);
+  background: var(--surface);
+}
+.pln-row[aria-selected="true"] { background: rgba(var(--accent-rgb), 0.08); }
+
+.pln-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 0 8px;
+  border-right: 1px solid var(--paper-line);
+  overflow: hidden;
+  cursor: default;
+}
+.pln-cell[aria-selected="true"] { box-shadow: inset 0 0 0 2px var(--accent); }
+.pln-cell .cell-line { min-width: 0; }
+.pln-cell .cell-sub { margin-top: 0; }
+.pln-cell .chip { flex: none; }
+.pln-cell .mono { color: var(--text-dark); }
+
+.pln-end { justify-content: flex-end; }
+.pln-center { justify-content: center; }
+
+/* the ID column reads as MS Project's row header */
+.pln-idcell { background: var(--surface-2); }
+.pln-idcell .mono { color: var(--text-mute); }
+.pln-row[aria-selected="true"] .pln-idcell { background: rgba(var(--accent-rgb), 0.16); }
+
+/* Task Name: indented by outline level, a chevron slot before the name */
+.pln-namecell { padding-left: calc(8px + (var(--pln-level, 1) - 1) * 16px); }
+.pln-twisty-slot {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+.pln-twisty {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-mute);
+  cursor: pointer;
+  font: inherit;
+}
+.pln-twisty:hover { background: rgba(var(--accent-rgb), 0.14); color: var(--text-dark); }
+.pln-twisty:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pln-twisty svg { width: 11px; height: 11px; transition: transform 0.15s; }
+.pln-twisty[aria-expanded="true"] svg { transform: rotate(90deg); }
+
+/* ── indicators and the Mode icon ────────────────────────────── */
+
+.pln-ind {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--text-mute);
+}
+.pln-ind svg { width: 14px; height: 14px; }
+.pln-ind-complete { color: var(--c-green); }
+.pln-ind-constraint { color: var(--c-blue); }
+.pln-ind-conflict,
+.pln-ind-deadline { color: var(--c-red); }
+.pln-ind-locked { color: var(--c-amber); }
+.pln-mode-manual { color: var(--c-violet); }
+
+/* the Indicators header's name, for screen readers */
+.pln-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

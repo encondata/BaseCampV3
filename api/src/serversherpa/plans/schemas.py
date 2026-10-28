@@ -100,6 +100,10 @@ class PlanTaskOut(BaseModel):
     baseline_start: str | None
     baseline_finish: str | None
     baseline_duration_minutes: int | None
+    # working minutes from the baseline to the schedule (MS Project's Start /
+    # Finish Variance): negative when ahead, None without a baseline
+    start_variance_minutes: int | None
+    finish_variance_minutes: int | None
     completed_at: datetime | None
     completed_by_name: str | None
     predecessors: str                       # MS Project text: "2,3SS+1 day"
@@ -107,6 +111,7 @@ class PlanTaskOut(BaseModel):
     assignees: list[AssigneeOut]
     status: TaskStatus
     missed_deadline: bool
+    created_at: datetime
     updated_at: datetime
 
 

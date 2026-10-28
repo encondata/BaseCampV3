@@ -21,7 +21,7 @@ export interface PlanView {
 
 /** The calendar's units; Standard ones for a calendar the API would never
  *  have stored (unitsOf throws on one). */
-function planUnits(plan: Plan): Units {
+export function planUnits(plan: Pick<Plan, 'calendar'>): Units {
   try {
     return unitsOf(plan.calendar);
   } catch {
