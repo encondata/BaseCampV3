@@ -30,8 +30,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.access.resolver import resolve_access
 from serversherpa.config import get_settings
-from serversherpa.db.models import Device, UserAccount
-from serversherpa.learning import emails
+from serversherpa.db.models import Device, Initiative, UserAccount
+from serversherpa.learning import emails, invites
 from serversherpa.learning.assign import OPEN_STATUSES
 from serversherpa.learning.models import (
     LearningAssignment,
@@ -108,15 +108,27 @@ async def status_block(db: AsyncSession, person_id: uuid.UUID, initiative_id: uu
     if not items:
         return None
     return {"outstanding": items,
-            "link_email": await emails.address_for(db, person_id) is not None}
+            "link_email": await _can_email_link(db, person_id, initiative_id)}
+
+
+async def _can_email_link(db: AsyncSession, person_id: uuid.UUID,
+                          initiative_id: uuid.UUID | None) -> bool:
+    """The person has an address and the station's initiative hasn't ended
+    (a code for an ended initiative would already be expired)."""
+    if initiative_id is not None and await invites.initiative_ended(
+            db, await db.get(Initiative, initiative_id)):
+        return False
+    return await emails.address_for(db, person_id) is not None
 
 
 async def send_link(db: AsyncSession, person_id: uuid.UUID, initiative_id: uuid.UUID | None,
                     site_id: uuid.UUID | None, today: date) -> bool:
     """"Email me the link": only while the station would warn this person
-    (the same `outstanding` as the status). One per person per minute
-    (emails.send_link's stage)."""
+    (the same `outstanding` as the status) and the initiative hasn't ended.
+    One per person per minute (emails.send_link's stage)."""
     if not await outstanding(db, person_id, initiative_id, site_id, today):
+        return False
+    if not await _can_email_link(db, person_id, initiative_id):
         return False
     return await emails.send_link(db, person_id, initiative_id) is not None
 

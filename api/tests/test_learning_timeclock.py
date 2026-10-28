@@ -17,6 +17,7 @@ from serversherpa.db.models import (
     AuthSession,
     Device,
     EmailOutbox,
+    Initiative,
     Person,
     PersonRole,
     Site,
@@ -30,7 +31,7 @@ from tests.test_kiosk_station_key import SERIAL
 from tests.test_kiosk_station_scans import _auth
 from tests.test_kiosk_timeclock_api import _just_past_midnight_zone
 from tests.test_kiosk_timeclock_station_key import _timeclock_station
-from tests.test_learning_assign import _doc, _initiative, _worker
+from tests.test_learning_assign import TODAY, _doc, _initiative, _midnight, _worker
 from tests.test_sites_api import login
 from tests.test_totp_api import _enroll_direct, _next_code, _security
 
@@ -591,6 +592,23 @@ async def test_learning_link_only_when_the_station_would_warn(client, db, seeded
     assert (await link(pid, tz=zone)).json() == {"sent": False}
     mails = await db.scalar(select(func.count()).select_from(EmailOutbox))
     assert mails == 0
+
+
+async def test_learning_link_not_offered_once_the_initiative_has_ended(client, db, seeded_user):
+    """A code for an ended initiative would already be expired: the warning
+    still shows, without the link button, and the link isn't sent."""
+    _, init, key = await _timeclock_station(db)
+    pid = await _owing(db, init)
+    (await db.get(Initiative, init.id)).scheduled_end = _midnight(TODAY - timedelta(days=2))
+    await db.commit()
+
+    r = await _status(client, key, pid)
+    assert r.json()["learning"] == {
+        "outstanding": [{"title": "Site safety", "kind": "required"}], "link_email": False}
+    r = await client.post("/kiosk/station/timeclock/learning-link", headers=_auth(key),
+                          json={"serial": SERIAL, "person_id": str(pid)})
+    assert r.json() == {"sent": False}
+    assert await db.scalar(select(func.count()).select_from(EmailOutbox)) == 0
 
 
 async def test_learning_link_cap_counts_only_sends(client, db, seeded_user, monkeypatch):
