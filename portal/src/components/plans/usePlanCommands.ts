@@ -220,8 +220,18 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog, completion
   });
   const tempRef = useRef(0);
 
+  // focus back on the sheet without it taking that for a Tab into it: the
+  // quiet flag tells its focus handler not to select the first row (and
+  // scroll up to it) when nothing is selected
   const focusSheet = useCallback(() => {
-    root.current?.querySelector<HTMLElement>('.pln-sheet')?.focus({ preventScroll: true });
+    const sheet = root.current?.querySelector<HTMLElement>('.pln-sheet');
+    if (!sheet) return;
+    sheet.dataset.quietFocus = '1';
+    try {
+      sheet.focus({ preventScroll: true });
+    } finally {
+      delete sheet.dataset.quietFocus;
+    }
   }, [root]);
 
   /** The command context for the plan on screen. */

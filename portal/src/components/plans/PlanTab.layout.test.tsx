@@ -400,6 +400,19 @@ describe('switching layouts', () => {
     expect(within(grid()).getAllByRole('row').filter((r) => r.getAttribute('aria-selected') === 'true')).toEqual([]);
   });
 
+  it('a toolbar command clicked with nothing selected selects no row and keeps the place (focus comes back quietly)', async () => {
+    await ready();
+    userScroll(sheetBox(), 450);
+    fireEvent.click(button('Zoom In'), { detail: 1 });
+    expect(localStorage.getItem('plans.zoom.plan-1')).toBe('hours');
+    // the command handed focus back to the sheet, which took it without selecting its first row
+    expect(document.activeElement).toBe(grid());
+    expect(within(grid()).getAllByRole('row').filter((r) => r.getAttribute('aria-selected') === 'true')).toEqual([]);
+    expect(grid().querySelector('[aria-selected="true"], .on')).toBeNull();
+    expect(sheetBox().scrollTop).toBe(450);
+    expect(grid().hasAttribute('data-quiet-focus')).toBe(false);
+  });
+
   it('full screen works in all three', async () => {
     const { container } = await ready();
     const root = container.querySelector('.pln-tab') as HTMLElement;

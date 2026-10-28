@@ -168,6 +168,8 @@ export default function PlanSheet({
   };
   const onGridFocus = (e: FocusEvent<HTMLDivElement>) => {
     if (e.target !== e.currentTarget || pressed.current || selection.active) return;
+    // a toolbar command handing focus back (usePlanCommands' focusSheet), not a Tab in
+    if (e.currentTarget.dataset.quietFocus) return;
     const first = rows[0] ?? (blankRow ? 'blank' : null);
     const col = columns.some((c) => c.key === 'name') ? 'name' : columns[0]?.key;
     if (first && col) onSelect(selectCell(first, col));
