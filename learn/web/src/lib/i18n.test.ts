@@ -1,15 +1,24 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { en } from '../i18n/en';
 import { he } from '../i18n/he';
 import { ja } from '../i18n/ja';
 import { ko } from '../i18n/ko';
-import { LANGS, LANG_KEY, getLang, setLang, t } from './i18n';
+import { LANG_KEY, getLang, nativeName, setLang, setOffered, t } from './i18n';
+
+const FOUR = [
+  { code: 'en', rtl: false }, { code: 'ja', rtl: false }, { code: 'ko', rtl: false }, { code: 'he', rtl: true },
+];
 
 const placeholders = (s: string) => [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
 
-afterEach(() => { setLang('en'); localStorage.clear(); });
+afterEach(() => {
+  setLang('en');
+  localStorage.clear();
+  setOffered([{ code: 'en', rtl: false }]);
+  vi.unstubAllGlobals();
+});
 
 describe('dictionaries', () => {
   it.each([['ja', ja], ['ko', ko], ['he', he]] as const)('%s has exactly the English keys', (_lang, dict) => {
@@ -24,13 +33,11 @@ describe('dictionaries', () => {
       }
     });
 
-  it('offers the four languages under their own names', () => {
-    expect(LANGS.map((l) => l.code)).toEqual(['en', 'ja', 'ko', 'he']);
-    expect(LANGS.map((l) => l.name)).toEqual(['English', '日本語', '한국어', 'עברית']);
-  });
 });
 
 describe('t and setLang', () => {
+  beforeEach(() => setOffered(FOUR));
+
   it('translates, fills placeholders and follows the chosen language', () => {
     expect(t('signin.title')).toBe('Enter your learning code');
     expect(t('signin.codeBox', { n: 3 })).toBe('Character 3 of 6');
@@ -47,6 +54,47 @@ describe('t and setLang', () => {
     expect(document.documentElement.dir).toBe('rtl');
     setLang('ko');
     expect(document.documentElement.lang).toBe('ko');
+    expect(document.documentElement.dir).toBe('ltr');
+  });
+});
+
+describe('the offered languages', () => {
+  it('names each language in itself, capitalized for the picker', () => {
+    expect(['en', 'ja', 'ko', 'he', 'ms', 'zh-Hans', 'es'].map(nativeName))
+      .toEqual(['English', '日本語', '한국어', 'עברית', 'Melayu', '简体中文', 'Español']);
+    expect(nativeName('not a tag')).toBe('not a tag');
+  });
+
+  it('a language with no screen text of its own shows English, laid out as the API says', () => {
+    setOffered([{ code: 'en', rtl: false }, { code: 'ar', rtl: true }, { code: 'ms', rtl: false }]);
+    setLang('ms');
+    expect(t('signin.title')).toBe('Enter your learning code');
+    expect(document.documentElement.lang).toBe('ms');
+    setLang('ar');
+    expect(document.documentElement.dir).toBe('rtl');
+  });
+
+  it('keeps a saved choice that is offered', () => {
+    localStorage.setItem(LANG_KEY, 'ja');
+    setOffered(FOUR);
+    expect(getLang()).toBe('ja');
+  });
+
+  it("uses the browser's own language when nothing offered was saved", () => {
+    vi.stubGlobal('navigator', { languages: ['ms-MY', 'en-US'], language: 'ms-MY' });
+    localStorage.setItem(LANG_KEY, 'ko');   // not offered here
+    setOffered([{ code: 'en', rtl: false }, { code: 'ms', rtl: false }]);
+    expect(getLang()).toBe('ms');
+    // the saved choice is kept for when Korean is switched on again
+    expect(localStorage.getItem(LANG_KEY)).toBe('ko');
+  });
+
+  it('falls back to English when the language in use is switched off', () => {
+    setOffered(FOUR);
+    setLang('he');
+    localStorage.clear();
+    setOffered([{ code: 'en', rtl: false }]);
+    expect(getLang()).toBe('en');
     expect(document.documentElement.dir).toBe('ltr');
   });
 });

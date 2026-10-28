@@ -15,7 +15,7 @@ vi.mock('@portal/pages/Login', () => ({
 }));
 
 import { getToken } from '../lib/session';
-import { setLang } from '../lib/i18n';
+import { setLang, setOffered } from '../lib/i18n';
 import SignIn from './SignIn';
 
 function json(status: number, body: unknown): Response {
@@ -36,8 +36,12 @@ function renderSignIn() {
 const boxes = () => screen.getAllByRole('textbox', { name: /Character \d of 6/ }) as HTMLInputElement[];
 const code = () => boxes().map((b) => b.value).join('');
 
-beforeEach(() => { sessionStorage.clear(); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); setLang('en'); });
+beforeEach(() => {
+  sessionStorage.clear();
+  setOffered([{ code: 'en', rtl: false }, { code: 'ja', rtl: false }, { code: 'ko', rtl: false },
+    { code: 'he', rtl: true }]);
+});
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); setLang('en'); setOffered([{ code: 'en', rtl: false }]); });
 
 describe('SignIn', () => {
   it('shows the code form first, with the account sign-in and the languages below', () => {
@@ -152,6 +156,13 @@ describe('SignIn', () => {
     expect(screen.queryByRole('heading', { name: 'Enter your learning code' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Use a learning code instead' }));
     expect(screen.getByRole('heading', { name: 'Enter your learning code' })).toBeTruthy();
+  });
+
+  it('shows no language links when English is the only language offered', () => {
+    setOffered([{ code: 'en', rtl: false }]);
+    renderSignIn();
+    expect(screen.queryByRole('navigation', { name: 'Language' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'English' })).toBeNull();
   });
 
   it('switches language in place', () => {
