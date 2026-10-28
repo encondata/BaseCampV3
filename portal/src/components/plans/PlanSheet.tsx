@@ -2,8 +2,15 @@
  * The task sheet: MS Project's Gantt Chart table, as a CSS grid
  * (`role="grid"`). The columns are the person's choice (lib/plans/columns,
  * changed in ColumnsModal or by dragging a header border); the rows are
- * the ones the tab gives it (`rows`: the outline minus collapsed subtasks),
- * plus the blank new-task row at the bottom while tasks can be added.
+ * the ones the tab gives it (`rows`: the outline minus collapsed subtasks,
+ * filtered, maybe grouped: useSheetView), plus the blank new-task row at
+ * the bottom while tasks can be added. A row's key is its task's id, or
+ * under Group by its group and task (lib/plans/filters `taskOfRow`), so a
+ * task with two resources has two rows, each selected on its own. A
+ * filter's context rows (`context`: the summaries that place a match) are
+ * dimmed and inert — no selection, no editing, no chevron; a group's band
+ * (`bands`) spans the row with its name and count. Neither is a stop for
+ * the arrow keys.
  *
  * Rows are virtualized against `scrollRef`, the tab's scroll box: the
  * header sits sticky at its top and the body starts below it
@@ -31,6 +38,7 @@ import {
 
 import type { ComboOption } from '../ComboBox';
 import type { PlanTask } from '../../lib/plans/api';
+import { taskOfRow, type GroupBand } from '../../lib/plans/filters';
 import {
   COLUMN_BY_KEY, SHEET_HEAD_PX, SHEET_OVERSCAN, SHEET_ROW_PX, STATUS_CHIP, columnPrefsSnapshot, columnWidth,
   saveColumnPrefs, subscribeColumnPrefs, type PlanColumn, type SheetContext,
@@ -50,8 +58,13 @@ import '../../styles/plan-sheet.css';
 
 export interface PlanSheetProps {
   ctl: PlanController;
-  /** The task ids to show, in order (the outline less collapsed subtasks). */
+  /** The rows to show, in order, by key (useSheetView): a task's id, or a
+   *  grouped row's or a band's key. */
   rows: string[];
+  /** A filter's context rows: dimmed and inert. */
+  context?: ReadonlySet<string>;
+  /** Group by's bands, by row key. */
+  bands?: ReadonlyMap<string, GroupBand>;
   /** The summaries shown collapsed (their chevron points right). */
   collapsed: ReadonlySet<string>;
   rowHeight: number;
@@ -77,11 +90,14 @@ const MAX_WIDTH = 1200;
 const KEY_STEP_PX = 8;
 const TITLED = new Set(['predecessors', 'successors']);
 const NO_OPTIONS: ComboOption[] = [];
+const NO_KEYS: ReadonlySet<string> = new Set();
+const NO_BANDS: ReadonlyMap<string, GroupBand> = new Map();
 
 const alignClass = (col: PlanColumn) => (col.align === 'start' ? '' : ` pln-${col.align}`);
 
 export default function PlanSheet({
-  ctl, rows, collapsed, rowHeight, scrollRef, sideScrollRef, selection, onSelect, onToggleCollapse, blankRow, onOpenInfo,
+  ctl, rows, context = NO_KEYS, bands = NO_BANDS, collapsed, rowHeight, scrollRef, sideScrollRef, selection, onSelect,
+  onToggleCollapse, blankRow, onOpenInfo,
 }: PlanSheetProps) {
   const plan = ctl.plan;
   const prefs = useSyncExternalStore(subscribeColumnPrefs, columnPrefsSnapshot);
@@ -107,6 +123,9 @@ export default function PlanSheet({
   } : null), [calendar, timeZone, locked, showTimes]);
   const tasks = plan?.tasks;
   const tasksById = useMemo(() => new Map((tasks ?? []).map((t) => [t.id, t])), [tasks]);
+  // the rows the keys and a Shift-click step through: not context rows, not bands
+  const nav = useMemo(() => (context.size || bands.size
+    ? rows.filter((key) => !context.has(key) && !bands.has(key)) : rows), [rows, context, bands]);
 
   const count = rows.length + (blankRow ? 1 : 0);
   const itemKey = useCallback((i: number) => rows[i] ?? 'blank', [rows]);
@@ -132,16 +151,16 @@ export default function PlanSheet({
       gridRef.current?.focus({ preventScroll: true });
     }
   }, []);
-  const editing = useSheetEditing({ ctl, columns, rows, blankRow, selection, onSelect, focusGrid });
+  const editing = useSheetEditing({ ctl, columns, rows: nav, blankRow, selection, onSelect, focusGrid });
 
   // what the row callbacks read, so they keep one identity (rows are memoized)
-  const latest = useRef({ selection, rows, onSelect, editing, onOpenInfo });
+  const latest = useRef({ selection, nav, onSelect, editing, onOpenInfo });
   useLayoutEffect(() => {
-    latest.current = { selection, rows, onSelect, editing, onOpenInfo };
+    latest.current = { selection, nav, onSelect, editing, onOpenInfo };
   });
   const onCellDown = useCallback((id: string | 'blank', col: string, e: CellPress) => {
     if (e.button !== 0) return;
-    const { selection: sel, rows: shown, onSelect: select } = latest.current;
+    const { selection: sel, nav: shown, onSelect: select } = latest.current;
     if (col === 'id' && id !== 'blank') {
       if (e.shiftKey) {
         select(extendRows(sel, id, col, shown));
@@ -157,7 +176,8 @@ export default function PlanSheet({
   const onCellOpen = useCallback((id: string | 'blank', col: string) => {
     const { editing: cells, onOpenInfo: info } = latest.current;
     if (cells.open(id, col, null) || id === 'blank' || cells.editor) return;
-    info?.(id);
+    const task = taskOfRow(id);
+    if (task) info?.(task);
   }, []);
 
   // Tab into a sheet with nothing selected: the first row's Task Name is
@@ -171,7 +191,7 @@ export default function PlanSheet({
     if (e.target !== e.currentTarget || pressed.current || selection.active) return;
     // a toolbar command handing focus back (usePlanCommands' focusSheet), not a Tab in
     if (e.currentTarget.dataset.quietFocus) return;
-    const first = rows[0] ?? (blankRow ? 'blank' : null);
+    const first = nav[0] ?? (blankRow ? 'blank' : null);
     const col = columns.some((c) => c.key === 'name') ? 'name' : columns[0]?.key;
     if (first && col) onSelect(selectCell(first, col));
   };
@@ -180,7 +200,7 @@ export default function PlanSheet({
     if (e.target !== e.currentTarget || editing.editor) return;
     const action = gridKey(keyLike(e));
     if (action.kind === 'move') {
-      const next = moveActive(selection, action.dir, blankRow ? [...rows, 'blank'] : rows, columns.map((c) => c.key));
+      const next = moveActive(selection, action.dir, blankRow ? [...nav, 'blank'] : nav, columns.map((c) => c.key));
       const moved = next.active?.id !== selection.active?.id || next.active?.col !== selection.active?.col;
       if (!moved && e.key === 'Tab') return;      // the row's edge: Tab leaves the sheet
       e.preventDefault();
@@ -284,7 +304,7 @@ export default function PlanSheet({
   const items = virtualizer.getVirtualItems();
   const cellId = (rowKey: string, col: string) => `${idBase}-${rowKey}-${col}`;
   const activeShown = active && activeCol >= 0 && items.some((i) => i.key === active.id);
-  const edTask = ed && ed.id !== 'blank' ? tasksById.get(ed.id) : undefined;
+  const edTask = ed && ed.id !== 'blank' ? tasksById.get(taskOfRow(ed.id) ?? '') : undefined;
 
   return (
     <div ref={gridRef} className="pln-sheet" role="grid" aria-label="Task sheet" aria-rowcount={count + 1}
@@ -316,12 +336,17 @@ export default function PlanSheet({
                         onCellOpen={onCellOpen} />
             );
           }
-          const task = tasksById.get(rows[item.index]);
+          const key = rows[item.index];
+          const band = bands.get(key);
+          if (band) {
+            return <BandRow key={key} band={band} index={item.index} y={y} span={columns.length} />;
+          }
+          const task = tasksById.get(taskOfRow(key) ?? '');
           if (!task) return null;
           return (
-            <SheetRow key={task.id} task={task} index={item.index} y={y} columns={columns} ctx={ctx} idBase={idBase}
-                      collapsed={collapsed.has(task.id)} selected={selection.rows.has(task.id)}
-                      activeCol={active?.id === task.id ? active.col : null}
+            <SheetRow key={key} rowKey={key} task={task} index={item.index} y={y} columns={columns} ctx={ctx}
+                      idBase={idBase} inert={context.has(key)} collapsed={collapsed.has(task.id)}
+                      selected={selection.rows.has(key)} activeCol={active?.id === key ? active.col : null}
                       onCellDown={onCellDown} onCellOpen={onCellOpen} onToggleCollapse={onToggleCollapse} />
           );
         })}
@@ -346,7 +371,11 @@ interface RowEvents {
 }
 
 interface SheetRowProps extends RowEvents {
+  /** The row's key: the task's id, or its group's and its own. */
+  rowKey: string;
   task: PlanTask;
+  /** A filter's context row: dimmed and inert. */
+  inert: boolean;
   index: number;
   y: number;
   columns: PlanColumn[];
@@ -359,28 +388,46 @@ interface SheetRowProps extends RowEvents {
 
 /** One task's row; redraws only when its task object, place or state changes. */
 const SheetRow = memo(function SheetRow({
-  task, index, y, columns, ctx, collapsed, selected, activeCol, idBase, onCellDown, onCellOpen, onToggleCollapse,
+  rowKey, task, index, y, columns, ctx, inert, collapsed, selected, activeCol, idBase, onCellDown, onCellOpen,
+  onToggleCollapse,
 }: SheetRowProps) {
   return (
-    <div role="row" aria-rowindex={index + 2} aria-selected={selected} data-task={task.id}
-         className={`pln-row${task.is_summary ? ' pln-summary' : ''}`}
+    <div role="row" aria-rowindex={index + 2} aria-selected={selected} aria-disabled={inert || undefined}
+         data-task={task.id} className={`pln-row${task.is_summary ? ' pln-summary' : ''}${inert ? ' pln-context' : ''}`}
          style={{ transform: `translateY(${y}px)` }}>
       {columns.map((col, i) => (
-        <div key={col.key} id={`${idBase}-${task.id}-${col.key}`} role="gridcell" aria-colindex={i + 1}
+        <div key={col.key} id={`${idBase}-${rowKey}-${col.key}`} role="gridcell" aria-colindex={i + 1}
              aria-selected={activeCol === col.key} data-col={col.key}
              className={`cell pln-cell${alignClass(col)}${col.key === 'id' ? ' pln-idcell' : ''}${col.key === 'name' ? ' pln-namecell' : ''}`}
              style={col.key === 'name' ? { '--pln-level': task.outline_level } as CSSProperties : undefined}
-             onMouseDown={(e) => onCellDown(task.id, col.key, e)}
-             onDoubleClick={() => onCellOpen(task.id, col.key)}>
-          <CellContent col={col} task={task} ctx={ctx} collapsed={collapsed} onToggleCollapse={onToggleCollapse} />
+             onMouseDown={inert ? undefined : (e) => onCellDown(rowKey, col.key, e)}
+             onDoubleClick={inert ? undefined : () => onCellOpen(rowKey, col.key)}>
+          <CellContent col={col} task={task} ctx={ctx} collapsed={collapsed}
+                       onToggleCollapse={inert ? undefined : onToggleCollapse} />
         </div>
       ))}
     </div>
   );
 });
 
+/** A group's band (Group by): its name and how many rows are under it,
+ *  across the row. Not a stop for the keys; a click on it selects nothing. */
+function BandRow({ band, index, y, span }: { band: GroupBand; index: number; y: number; span: number }) {
+  return (
+    <div role="row" aria-rowindex={index + 2} className="pln-row pln-band" data-band=""
+         style={{ transform: `translateY(${y}px)` }}>
+      <div role="rowheader" aria-colspan={span} className="cell pln-cell pln-band-cell">
+        <b className="cell-top cell-line" title={band.label}>{band.label}</b>
+        <span className="cell-sub">{band.count} task{band.count === 1 ? '' : 's'}</span>
+      </div>
+    </div>
+  );
+}
+
 function CellContent({ col, task, ctx, collapsed, onToggleCollapse }: {
-  col: PlanColumn; task: PlanTask; ctx: SheetContext; collapsed: boolean; onToggleCollapse(id: string): void;
+  col: PlanColumn; task: PlanTask; ctx: SheetContext; collapsed: boolean;
+  /** Absent on a context row: it is always open (it places a match). */
+  onToggleCollapse?(id: string): void;
 }): ReactNode {
   switch (col.text ?? 'top') {
     case 'name': {
@@ -388,7 +435,7 @@ function CellContent({ col, task, ctx, collapsed, onToggleCollapse }: {
       return (
         <>
           <span className="pln-twisty-slot">
-            {task.is_summary && (
+            {task.is_summary && onToggleCollapse && (
               <button type="button" className="pln-twisty" aria-expanded={!collapsed}
                       aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${name}`} tabIndex={-1}
                       onMouseDown={(e) => e.stopPropagation()}

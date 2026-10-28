@@ -21,6 +21,9 @@
  * without opening its list (a ChipPicker after its last chip goes), which
  * then opens only on a click, typing or ↓/Enter.
  *
+ * The options are no tab stops: Tab leaves the box for the next field and
+ * closes the list.
+ *
  * An option's `group` (opt-in) puts a `.kbar-group` heading over each run
  * of options that share one (the command palette's look); a group left
  * empty by the filter loses its heading.
@@ -167,6 +170,11 @@ export default function ComboBox({
     } else if (e.key === 'Enter') {
       e.preventDefault();
       if (visible[active]) select(visible[active].value);
+    } else if (e.key === 'Tab') {
+      // Tab goes on to the next field (the options are picked with the
+      // arrows, Enter or the mouse, never tabbed to): the list closes
+      setOpen(false);
+      setFilter('');
     } else if (e.key === 'Escape') {
       // Scope Escape to the open list: preventDefault so a host modal's own
       // Escape-closes-the-dialog listener (which checks defaultPrevented,
@@ -192,6 +200,7 @@ export default function ComboBox({
         <button
           key={o.value}
           type="button"
+          tabIndex={-1}
           className={`kbar-item ${i === active ? 'active' : ''} ${o.value === value ? 'selected' : ''}`}
           onMouseEnter={() => setActive(i)}
           onMouseDown={(e) => { e.preventDefault(); select(o.value); }}

@@ -24,6 +24,12 @@
  *   sends at once; the dialog only asks when it would replace one
  *   (`replaceBaseline`, from the 409 `baseline_exists`). Unlock goes at
  *   once; Lock, Clear baseline and Delete plan ask first.
+ * - The commands work on tasks: `sheet` is useSheetView's `forCommands`
+ *   (the tasks shown, each once, and the selection by task). While the
+ *   sheet is grouped (Group by) the outline can't change: Insert, Indent,
+ *   Outdent and a paste that adds rows say so instead (OFF_NOTES.grouped).
+ * - Ctrl+F (⌘F) focuses the filter bar's search box (`searchBox`), its
+ *   text selected; with no box the browser finds.
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 
@@ -31,6 +37,7 @@ import { useToast } from '../../lib/notificationsContext';
 import type { Op, Plan, PlanTask, TaskMode } from '../../lib/plans/api';
 import type { ApplyResult } from '../../lib/plans/applyResult';
 import { COLUMN_BY_KEY, columnPrefsSnapshot, type PlanColumn } from '../../lib/plans/columns';
+import { OFF_NOTES } from '../../lib/plans/commandTips';
 import {
   deleteSelected, indentSelected, insertTask, linkSelected, markOnTrack, outdentSelected, selectedTasks,
   selectionMode, setColor, setMode as modeOps, setPercent, toggleTimeline, unlinkSelected, type Command,
@@ -67,6 +74,8 @@ export type PlanDialog =
   | { kind: 'deletePlan' };
 
 export const PASTE_LABEL = 'Paste';
+/** What an outline command says while the sheet is grouped. */
+export const GROUPED_SAID = `${OFF_NOTES.grouped}.`;
 export const BASELINE_SET = 'Baseline set: every task’s Start, Finish and Duration were copied.';
 /** How long Ctrl+V waits for the browser's paste event before asking
  *  navigator.clipboard instead. */
@@ -136,6 +145,8 @@ export interface SheetState {
   reveal(id: string): void;
   /** Opens its summaries, selects the row and scrolls it into view. */
   goTo(id: string): void;
+  /** Grouped (Group by): the outline can't change. */
+  grouped?: boolean;
 }
 
 interface Options {
@@ -151,6 +162,8 @@ interface Options {
   /** Where the Gantt chart is (Beside by default): Fit leaves room for the
    *  names under the sheet; Hidden has no chart to scroll to a task. */
   layout?: GanttLayout;
+  /** The filter bar's search box: Ctrl+F (⌘F) focuses it. */
+  searchBox?: RefObject<HTMLInputElement | null>;
 }
 
 export interface PlanCommands {
@@ -165,6 +178,8 @@ export interface PlanCommands {
   zoom: Zoom;
   /** The chart's latest one-off sideways scroll (Fit, Scroll to Task). */
   chartScroll: ChartScroll | null;
+  /** The sheet is grouped: Insert, Indent and Outdent are off. */
+  grouped: boolean;
 
   undo(): void;
   redo(): void;
@@ -212,7 +227,7 @@ function visibleColumns(): PlanColumn[] {
 }
 
 export function usePlanCommands({
-  ctl, sheet, root, clip, openDialog, completion, layout = 'beside',
+  ctl, sheet, root, clip, openDialog, completion, layout = 'beside', searchBox,
 }: Options): PlanCommands {
   const toast = useToast();
   const { prompt, answer: answered } = completion;
@@ -322,17 +337,22 @@ export function usePlanCommands({
 
   /** A command on the selection, for the plan on screen. `need`: what it
    *  changes — progress (any plan the person may change), the schedule
-   *  (not while locked), or new tasks (adding allowed too). False when
-   *  it can't run at all here (a reader's key goes on to the browser). */
+   *  (not while locked), or new tasks (adding allowed too); `outline`: it
+   *  changes the outline (not while grouped). False when it can't run at
+   *  all here (a reader's key goes on to the browser). */
   const withPlan = useCallback((build: (sel: Selection, ctx: PasteContext) => Command, label: string,
     need: 'progress' | 'schedule' | 'add',
-    after?: (cmd: CommandOps, ids: Readonly<Record<string, string>>) => void): boolean => {
+    after?: (cmd: CommandOps, ids: Readonly<Record<string, string>>) => void, outline = false): boolean => {
     const { ctl: now, sheet: view, toast: say } = latest.current;
     const plan = now.plan;
     if (!plan || !plan.permissions.change) return false;
     if (need === 'add' && !plan.permissions.add) return false;
     if (need !== 'progress' && plan.locked_at) {
       say(PLAN_ERRORS.plan_locked);
+      return true;
+    }
+    if (outline && view.grouped) {
+      say(GROUPED_SAID);
       return true;
     }
     const cmd = build(view.selection, contextOf(plan));
@@ -484,14 +504,23 @@ export function usePlanCommands({
     const ctx = contextOf(plan);
     if (lastCopy && sameClipboard(text, lastCopy.text)) {
       // the sheet's own copy: the tasks again, right above the active row
+      if (view.grouped) {
+        latest.current.toast(GROUPED_SAID);
+        return;
+      }
       const cmd = opsForInternalPaste(lastCopy, view.selection, ctx);
       void run(cmd, PASTE_LABEL, 'ops' in cmd ? (ids) => selectNew(cmd, ids) : undefined);
       return;
     }
     const grid = parseClipboard(text);
     if (!grid.length) return;
-    void run(opsForPaste(grid, view.selection.active, visibleColumns(), view.rows, ctx), PASTE_LABEL, undefined,
-      PASTE_WORDS);
+    const cmd = opsForPaste(grid, view.selection.active, visibleColumns(), view.rows, ctx);
+    // grouped, cells fill in; rows past the last would be new tasks
+    if (view.grouped && 'ops' in cmd && cmd.ops.some((op) => op.op === 'add_task')) {
+      latest.current.toast(GROUPED_SAID);
+      return;
+    }
+    void run(cmd, PASTE_LABEL, undefined, PASTE_WORDS);
   }, [contextOf, run, selectNew]);
 
   // the browser's own clipboard events: on the hidden field after a
@@ -634,9 +663,9 @@ export function usePlanCommands({
 
     const insert = (kind: InsertKind) => withPlan((sel, c) => insertTask(sel, kind, c),
       kind === 'summary' ? 'Insert Summary Task' : kind === 'milestone' ? 'Insert Milestone' : 'Insert Task',
-      'add', selectNew);
-    const indent = () => withPlan(indentSelected, 'Indent', 'schedule');
-    const outdent = () => withPlan(outdentSelected, 'Outdent', 'schedule');
+      'add', selectNew, true);
+    const indent = () => withPlan(indentSelected, 'Indent', 'schedule', undefined, true);
+    const outdent = () => withPlan(outdentSelected, 'Outdent', 'schedule', undefined, true);
     const link = () => withPlan(linkSelected, 'Link Tasks', 'schedule');
     const unlink = () => withPlan(unlinkSelected, 'Unlink Tasks', 'schedule');
 
@@ -693,18 +722,26 @@ export function usePlanCommands({
       scrollToTask: () => (latest.current.layout === 'hidden' ? undefined : scrollToTask()),
       collapse: () => (summariesSelected().length ? collapseTo(true) : false),
       expand: () => (summariesSelected().length ? collapseTo(false) : false),
-      // the search box arrives with the filters (Task 11): until then the browser finds
-      find: () => false,
+      // the filter bar's search box, its text selected; without one the browser finds
+      find: () => {
+        const box = searchBox?.current;
+        if (!box) return false;
+        box.focus();
+        box.select();
+        return true;
+      },
       help: () => actions.open('shortcuts'),
       copy: () => copy(),
       cut: () => cut(),
       paste: () => (latest.current.ctl.plan?.permissions.change ? pasteKey() : false),
     };
     return { ...actions, handlers };
-  }, [withPlan, selectNew, deleteTasks, confirmDelete, copy, cut, paste, pasteKey, focusSheet, root, setZoom]);
+  }, [withPlan, selectNew, deleteTasks, confirmDelete, copy, cut, paste, pasteKey, focusSheet, root, setZoom,
+    searchBox]);
 
-  return useMemo(() => ({ ...commands, selected, mode, onTimeline, display, zoom, chartScroll }),
-    [commands, selected, mode, onTimeline, display, zoom, chartScroll]);
+  const grouped = !!sheet.grouped;
+  return useMemo(() => ({ ...commands, selected, mode, onTimeline, display, zoom, chartScroll, grouped }),
+    [commands, selected, mode, onTimeline, display, zoom, chartScroll, grouped]);
 }
 
 /** The Gantt's zoom for the plan on screen: kept per plan in this browser

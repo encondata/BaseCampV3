@@ -22,7 +22,9 @@
  * stay reachable but off, their tip saying "Schedule is locked"; progress
  * (0–100%, Mark on Track, Notes) and Task color still work. A button that needs a
  * selection says so instead; with the chart Hidden, the chart-only commands
- * (Critical Path, Baseline, Zoom, Fit, Scroll to Task) say to show it. Off
+ * (Critical Path, Baseline, Zoom, Fit, Scroll to Task) say to show it;
+ * while the sheet is grouped (the filter bar's Group by), Insert, Indent and
+ * Outdent say "Turn off Group by to change the outline". Off
  * buttons are `aria-disabled`, not `disabled`, so they keep their tip and
  * their place in the arrow-key order (the ARIA toolbar pattern).
  *
@@ -79,6 +81,10 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform, layout
   /** Why a schedule change is off now, or null. */
   const structure = (need: 1 | 2 = 1) => (locked ? LOCKED_HINT
     : count < need ? (need === 2 ? SELECT_TWO_HINT : SELECT_HINT) : null);
+  /** Why an outline change (Indent, Outdent, Insert) is off now, or null. */
+  const grouped = cmd.grouped ? OFF_NOTES.grouped : null;
+  const outline = () => (locked ? LOCKED_HINT : grouped ?? structure());
+  const adding = canAddTasks(plan) ? grouped : LOCKED_HINT;
   const progress = count ? null : SELECT_HINT;
   const zoomAt = ZOOMS.indexOf(cmd.zoom);
   /** The chart-only commands are off while the chart is hidden. */
@@ -138,8 +144,8 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform, layout
           {tool('link', cmd.link, <Icon name="link" />, { hint: structure(2) })}
           {tool('unlink', cmd.unlink, <Icon name="unlink" />, { hint: structure() })}
           <span className="pln-tsep" aria-hidden="true" />
-          {tool('outdent', cmd.outdent, <Icon name="outdent" />, { hint: structure() })}
-          {tool('indent', cmd.indent, <Icon name="indent" />, { hint: structure() })}
+          {tool('outdent', cmd.outdent, <Icon name="outdent" />, { hint: outline() })}
+          {tool('indent', cmd.indent, <Icon name="indent" />, { hint: outline() })}
         </Group>
       )}
 
@@ -170,15 +176,9 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform, layout
 
       {canChange && plan.permissions.add && (
         <Group label="Insert">
-          {tool('insertTask', () => cmd.insert('task'), <Icon name="task" />, {
-            hint: canAddTasks(plan) ? null : LOCKED_HINT,
-          })}
-          {tool('insertSummary', () => cmd.insert('summary'), <Icon name="summary" />, {
-            hint: canAddTasks(plan) ? null : LOCKED_HINT,
-          })}
-          {tool('insertMilestone', () => cmd.insert('milestone'), <Icon name="milestone" />, {
-            hint: canAddTasks(plan) ? null : LOCKED_HINT,
-          })}
+          {tool('insertTask', () => cmd.insert('task'), <Icon name="task" />, { hint: adding })}
+          {tool('insertSummary', () => cmd.insert('summary'), <Icon name="summary" />, { hint: adding })}
+          {tool('insertMilestone', () => cmd.insert('milestone'), <Icon name="milestone" />, { hint: adding })}
         </Group>
       )}
 

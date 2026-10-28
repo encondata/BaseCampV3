@@ -106,6 +106,27 @@ describe('Escape', () => {
   });
 });
 
+describe('Tab', () => {
+  afterEach(cleanup);
+
+  it('leaves the box for the next field: the options are no tab stops, and the list closes', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <ComboBox value="a" onChange={() => {}} ariaLabel="Pick" options={[
+          { value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' },
+        ]} />
+        <input aria-label="Next" />
+      </>,
+    );
+    await user.click(screen.getByRole('combobox', { name: 'Pick' }));
+    expect(screen.getByText('Beta')).toBeTruthy();
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Next' }));
+    expect(screen.queryByText('Beta')).toBeNull();
+  });
+});
+
 describe('an IME composition in the filter box', () => {
   afterEach(cleanup);
 

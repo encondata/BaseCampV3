@@ -156,6 +156,39 @@
 .pln-toolbar > .pln-screen-btn { height: 32px; flex: none; }
 .pln-screen-btn svg { width: 14px; height: 14px; flex: none; }
 
+/* ── the filter bar: Filter and Group by at the left, the count and the
+   search at the right (PlanFilterBar) ── */
+
+.pln-filterbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  min-width: 0;
+}
+.pln-fbox { display: flex; align-items: center; gap: 8px; }
+.pln-fbox .combo-wrap { flex: none; width: 172px; }
+/* named like the toolbar's group captions */
+.pln-flabel {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+.pln-ftools { display: flex; align-items: center; gap: 12px; min-width: 0; margin-left: auto; }
+.pln-ftools > .tip-trigger { min-width: 0; }
+.dir-search.pln-search { margin-left: 0; min-width: 0; }
+.dir-search.pln-search input { width: 260px; max-width: 100%; box-sizing: border-box; }
+.pln-fcount { white-space: nowrap; }
+@media (max-width: 720px) {
+  .pln-ftools { margin-left: 0; flex: 1 1 100%; }
+  .pln-ftools > .tip-trigger { flex: 1 1 auto; }
+  .dir-search.pln-search { flex: 1 1 auto; }
+  .dir-search.pln-search input { width: 100%; }
+}
+
 /* ── view area: the Gantt (Plan B), Calendar and Board (Plan C) ── */
 
 .pln-view {
@@ -447,6 +480,12 @@
   --pln-lane-bg: color-mix(in srgb, rgb(var(--accent-rgb)) 8%, var(--surface));
   background-color: rgba(var(--accent-rgb), 0.08);
 }
+/* a filter's context row (a summary that places a match): its marks
+   dimmed and deaf to the pointer, as the sheet's row is (the initiatives
+   tree's rule) */
+.pln-lane.pln-context > * { opacity: 0.45; pointer-events: none; }
+/* Group by: a group's band, shaded as the sheet's band is */
+.pln-lane.pln-band-lane { --pln-lane-bg: var(--surface-2); background: var(--surface-2); }
 
 /* a task's bar: accent, the part done filled in */
 .pln-bar {

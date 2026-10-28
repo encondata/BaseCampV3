@@ -9,7 +9,8 @@
  *    beside it, outside the toolbar, the initiative's name in full screen
  *    and the "Plan updated by…" status. The commands, the MS Project
  *    keyboard map and the clipboard are usePlanCommands' and
- *    usePlanShortcuts';
+ *    usePlanShortcuts'. Under it the filter bar (PlanFilterBar: Filter,
+ *    Group by in the Gantt view, the search; Ctrl+F focuses the search);
  *  - the view area (`.pln-view`): the Gantt view — the task sheet and the
  *    chart in the layout the toolbar's Gantt group picks (GanttPanes: side
  *    by side in one vertical scroll box, `scrollRef`, both panes
@@ -25,8 +26,9 @@
  *    task selects the task and scrolls it into view in both.
  *
  * The Gantt view's shared state lives here too (useSheetView.ts): the rows on
- * screen (the outline less collapsed subtasks; collapse state per plan in
- * localStorage `plans.collapsed.<planId>`), the selection, and the row
+ * screen (the outline less collapsed subtasks, filtered and maybe grouped;
+ * collapse state per plan in localStorage `plans.collapsed.<planId>`, the
+ * filter bar's in `plans.view.<planId>`), the selection, and the row
  * height (the list size).
  *
  * URL state lives beside `?tab=plan`: `&view=gantt|calendar|board` (Gantt
@@ -55,6 +57,7 @@ import { SHEET_ROW_PX } from '../../lib/plans/columns';
 import { COMMAND_TIPS, tipKeys, type CommandTipId } from '../../lib/plans/commandTips';
 import { canAddTasks } from '../../lib/plans/editOps';
 import { isPlanChanged, planErrorText } from '../../lib/plans/errors';
+import { selectCell } from '../../lib/plans/selection';
 import { detectPlatform } from '../../lib/plans/shortcuts';
 import Tip from '../Tip';
 import ColumnsModal from './ColumnsModal';
@@ -64,6 +67,7 @@ import GanttPanes, { useGanttLayout } from './GanttPanes';
 import { ClearBaselineModal, LockModal, ReplaceBaselineModal } from './PlanConfirmModals';
 import PlanCreateModal, { type PlanInitiative } from './PlanCreateModal';
 import PlanEmptyState from './PlanEmptyState';
+import PlanFilterBar from './PlanFilterBar';
 import PlanGantt from './PlanGantt';
 import PlanSettingsModal from './PlanSettingsModal';
 import PlanSheet from './PlanSheet';
@@ -199,7 +203,7 @@ export default function PlanTab({ initiativeId, initiative }: {
   initiative: PlanInitiative;
 }) {
   const ctl = usePlan(initiativeId);
-  const { can, preferences } = useAuth();
+  const { can, preferences, person } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const view = readView(searchParams.get('view'));
   const [fullScreen, setFullScreen] = useState(false);
@@ -216,14 +220,18 @@ export default function PlanTab({ initiativeId, initiative }: {
   const sheetSideRef = useRef<HTMLDivElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const clipRef = useRef<HTMLTextAreaElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const rowHeight = Math.round(SHEET_ROW_PX * listScale(preferences?.list_size));
-  const sheet = useSheetView(ctl, searchParams.get('task'), scrollRef, rowHeight);
+  const sheet = useSheetView(ctl, searchParams.get('task'), scrollRef, rowHeight, {
+    me: person?.id ?? '', groupable: view === 'gantt',
+  });
   // the completion check's Go to task: the commands' (they come after it)
   const goToRef = useRef<(taskId: string) => void>(() => {});
   const completion = useCompletion(ctl, { onGoTo: (taskId) => goToRef.current(taskId) });
   const [layout, setLayout] = useGanttLayout();
   const commands = usePlanCommands({
-    ctl, sheet, root: rootRef, clip: clipRef, openDialog: setDialog, completion, layout,
+    ctl, sheet: sheet.forCommands, root: rootRef, clip: clipRef, openDialog: setDialog, completion, layout,
+    searchBox: searchRef,
   });
   useLayoutEffect(() => {
     goToRef.current = commands.goToTask;
@@ -240,6 +248,13 @@ export default function PlanTab({ initiativeId, initiative }: {
   const openLink = useCallback((linkId: string) => setDialog({ kind: 'dependency', linkId }), []);
   const openTaskInfo = useCallback((task: PlanTask) => setDialog({ kind: 'taskInfo', taskId: task.id }), []);
   const openTaskInfoById = useCallback((taskId: string) => setDialog({ kind: 'taskInfo', taskId }), []);
+  // the search box's Enter: the first match selected, the sheet focused
+  const { rows: shownRows, context: contextRows, bands: bandRows, select: selectRows } = sheet;
+  const toFirstMatch = useCallback(() => {
+    const first = shownRows.find((key) => !contextRows.has(key) && !bandRows.has(key));
+    if (first) selectRows(selectCell(first, 'name'));
+    focusSheet();
+  }, [shownRows, contextRows, bandRows, selectRows, focusSheet]);
 
   const selectView = (next: PlanViewKey) => {
     setSearchParams((prev) => {
@@ -281,6 +296,8 @@ export default function PlanTab({ initiativeId, initiative }: {
   } else {
     const plan = ctl.plan;
     const screenTip = COMMAND_TIPS[isFull ? 'exitFullScreen' : 'fullScreen'];
+    // grouped, the outline can't change: no new-task row
+    const blankRow = canAddTasks(plan) && !sheet.grouped;
     body = (
       <>
         {plan.locked_at && <LockBanner ctl={ctl} plan={plan} />}
@@ -317,21 +334,26 @@ export default function PlanTab({ initiativeId, initiative }: {
           {ctl.staleBy && <span className="pln-stale" role="status">{ctl.staleBy}</span>}
         </div>
 
+        <PlanFilterBar view={sheet.view} onChange={sheet.setView} groupable={view === 'gantt'} searchRef={searchRef}
+                       counts={sheet.counts} onSearchEnter={toFirstMatch} onLeave={focusSheet} />
+
         {/* the view area */}
         <div className="pln-view" data-view={view} data-layout={layout} ref={viewRef}
              style={viewHeight === null ? undefined : { height: viewHeight }}>
           {view === 'gantt' && (
             <GanttPanes layout={layout} on={ready} viewRef={viewRef} scrollRef={scrollRef} sheetSideRef={sheetSideRef}
                         sheet={(
-                          <PlanSheet ctl={ctl} rows={sheet.rows} collapsed={sheet.collapsed} rowHeight={rowHeight}
+                          <PlanSheet ctl={ctl} rows={sheet.rows} context={sheet.context} bands={sheet.bands}
+                                     collapsed={sheet.collapsed} rowHeight={rowHeight}
                                      scrollRef={scrollRef} sideScrollRef={sheetSideRef} selection={sheet.selection}
                                      onSelect={sheet.select} onToggleCollapse={sheet.toggleCollapse}
-                                     blankRow={canAddTasks(plan)} onOpenInfo={openTaskInfoById} />
+                                     blankRow={blankRow} onOpenInfo={openTaskInfoById} />
                         )}
                         chart={(slot) => (
-                          <PlanGantt ctl={ctl} rows={sheet.rows} rowHeight={rowHeight} scrollRef={slot.scrollRef}
+                          <PlanGantt ctl={ctl} rows={sheet.rows} context={sheet.context} bands={sheet.bands}
+                                     rowHeight={rowHeight} scrollRef={slot.scrollRef}
                                      zoom={commands.zoom} display={commands.display} selection={sheet.selection}
-                                     onSelect={sheet.select} blankRow={canAddTasks(plan)} scheduled={scheduled}
+                                     onSelect={sheet.select} blankRow={blankRow} scheduled={scheduled}
                                      scrollRequest={commands.chartScroll} onZoomStep={zoomStep}
                                      focusSheet={commands.focusSheet} onLinkClick={openLink}
                                      onBarDoubleClick={openTaskInfo} taskLabels={slot.taskLabels}

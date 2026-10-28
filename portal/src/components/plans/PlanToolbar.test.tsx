@@ -37,7 +37,7 @@ function commands(over: Partial<PlanCommands> = {}): PlanCommands {
     outdent: fn(), setMode: fn(), insert: fn(), timeline: fn(), deleteTasks: fn(), confirmDelete: vi.fn(async () => {}),
     info: fn(), toggleCritical: fn(), toggleBaseline: fn(), zoomIn: fn(), zoomOut: fn(), fit: fn(), scrollToTask: fn(),
     collapse: fn(), expand: fn(), copy: vi.fn(() => true), cut: fn(), paste: fn(), lock: fn(), unlock: fn(), open: fn(),
-    focusSheet: fn(), color: fn(), handlers: {},
+    focusSheet: fn(), color: fn(), handlers: {}, grouped: false,
     ...over,
   };
 }
@@ -282,6 +282,20 @@ describe('hover tips', () => {
     for (const name of ['50% Complete', 'Mark on Track', 'Information', 'Notes']) {
       expect(hoverTip(button(name)).note, name).toBeNull();
     }
+  });
+
+  it('grouped (Group by): Insert, Indent and Outdent say to turn it off; the rest work, locked still wins', () => {
+    const { rerender } = render(<Bar plan={makePlan()} cmd={commands({ grouped: true })} />);
+    for (const name of ['Indent', 'Outdent', 'Insert Task', 'Insert Summary Task', 'Insert Milestone']) {
+      expect(button(name).getAttribute('aria-disabled'), name).toBe('true');
+      expect(hoverTip(button(name)).note, name).toBe('Turn off Group by to change the outline');
+    }
+    for (const name of ['Unlink Tasks', '50% Complete', 'Information', 'Auto Schedule']) {
+      expect(hoverTip(button(name)).note, name).toBeNull();
+    }
+    rerender(<Bar plan={makePlan({ locked_at: '2026-10-27T12:00:00Z' })} cmd={commands({ grouped: true })} />);
+    expect(hoverTip(button('Indent')).note).toBe(LOCKED_HINT);
+    expect(hoverTip(button('Insert Task')).note).toBe(LOCKED_HINT);
   });
 
   it('nothing selected: the commands that need a task say so; Link needs two', () => {

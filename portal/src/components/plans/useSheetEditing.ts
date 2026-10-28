@@ -24,6 +24,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useToast } from '../../lib/notificationsContext';
 import type { Plan, PlanTask } from '../../lib/plans/api';
 import type { PlanColumn } from '../../lib/plans/columns';
+import { taskOfRow } from '../../lib/plans/filters';
 import { canEditCell, editLabel, editText, opsForCell, type EditContext } from '../../lib/plans/editOps';
 import { planUnits } from '../../lib/plans/merge';
 import { moveActive, selectCell, type MoveDir, type Selection } from '../../lib/plans/selection';
@@ -63,7 +64,7 @@ export interface SheetEditor {
 interface Options {
   ctl: PlanController;
   columns: readonly PlanColumn[];       // shown, in order
-  rows: readonly string[];              // the task rows shown, in order
+  rows: readonly string[];              // the task rows shown, in order, by key (not context rows or bands)
   blankRow: boolean;
   selection: Selection;
   onSelect(sel: Selection): void;
@@ -129,7 +130,11 @@ export function useSheetEditing(o: Options): SheetEditing {
     releaseRef.current = null;
   }, []);
 
-  const taskOf = (plan: Plan, id: string): PlanTask | null => plan.tasks.find((t) => t.id === id) ?? null;
+  // a row's task: its key is the task's id, or (grouped) its group's and the task's
+  const taskOf = (plan: Plan, key: string): PlanTask | null => {
+    const id = taskOfRow(key);
+    return id ? plan.tasks.find((t) => t.id === id) ?? null : null;
+  };
   const columnOf = (key: string) => latest.current.columns.find((c) => c.key === key) ?? null;
 
   const open = useCallback((id: string | 'blank', col: string, seed: string | null): boolean => {
@@ -266,7 +271,8 @@ export function useSheetEditing(o: Options): SheetEditing {
   useEffect(() => {
     if (!queued) return;
     const plan = o.ctl.plan;
-    if (queued.id !== 'blank' && !plan?.tasks.some((t) => t.id === queued.id)) return;
+    const id = taskOfRow(queued.id);
+    if (queued.id !== 'blank' && !plan?.tasks.some((t) => t.id === id)) return;
     setQueued(null);
     open(queued.id, queued.col, queued.seed);
   }, [queued, o.ctl.plan, open]);

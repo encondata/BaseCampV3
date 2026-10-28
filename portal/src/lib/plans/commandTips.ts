@@ -78,6 +78,18 @@ export const COMMAND_TIPS = {
   },
   layoutHidden: { label: 'Hidden', desc: 'Hide the Gantt chart and show only the task sheet.' },
 
+  // the filter bar (Read-only people have it too)
+  filter: {
+    label: 'Filter',
+    desc: 'Show only the tasks that match, their summary tasks dimmed to keep the outline. Tasks you add or '
+      + 'change stay until you filter again.',
+  },
+  groupBy: {
+    label: 'Group by',
+    desc: 'List the tasks under each resource or status. The outline and the links come back with No Group.',
+  },
+  search: { label: 'Search', desc: 'Find tasks by name, notes or resource names.', shortcut: 'find' },
+
   // More, and what's around the toolbar
   // More: what its menu holds for you
   more: {
@@ -114,6 +126,7 @@ export const OFF_NOTES = {
   zoomedIn: 'Zoomed in all the way',
   noChart: 'Show the Gantt chart to use this',
   noBaseline: 'No baseline set',
+  grouped: 'Turn off Group by to change the outline',
 } as const;
 
 /** Undo's sentence, naming the step it takes back ("Indent") when there is one. */

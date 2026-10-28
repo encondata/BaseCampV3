@@ -5,7 +5,8 @@
  * - Shows 350 ms into a hover, and at once on keyboard focus (the
  *   `:focus-visible` rule: focus that came from the keyboard, never the
  *   focus a mouse click gives). Hides on pointer leave, blur, Escape, Enter
- *   or Space on the trigger (it was used), any pointer press, a scroll or
+ *   or Space on the trigger (it was used), any key typed in a text field
+ *   trigger (a search box), any pointer press, a scroll or
  *   a resize, and when the trigger turns disabled while it shows (its
  *   state changed under the tip; a fresh hover shows the new reason). One
  *   tip shows at a time, and none while the trigger's own menu is open
@@ -81,6 +82,10 @@ function watchModality(): void {
 
 // The tip on screen now: showing another closes it.
 let closeShown: (() => void) | null = null;
+
+/** A text field: typing in one hides its tip (it would cover what the typing shows). */
+const isField = (target: EventTarget): boolean =>
+  target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
 
 export default function Tip({ label, keys, desc, note, children }: {
   label: string;
@@ -184,7 +189,7 @@ export default function Tip({ label, keys, desc, note, children }: {
   return (
     <span ref={wrapRef} className="tip-trigger" onPointerEnter={onPointerEnter} onPointerLeave={hide}
       onPointerDown={hide} onFocus={onFocus} onBlur={hide}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') hide(); }}>
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ' || isField(e.target)) hide(); }}>
       {trigger}
       {open && createPortal(
         <div ref={tipRef} id={tipId} role="tooltip" className={`tip${pos ? ` is-${pos.placement}` : ''}`}

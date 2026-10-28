@@ -242,6 +242,10 @@ describe('typing into a cell', () => {
     const user = await ready(plan3({ tasks: [], links: [] }));
     await user.click(screen.getByRole('button', { name: /Full screen/ }));
     await user.click(screen.getByRole('button', { name: /Exit full screen/ }));
+    // past the filter bar: Filter, Group by, the search
+    await user.tab();
+    await user.tab();
+    await user.tab();
     await user.tab();
     expect(document.activeElement).toBe(grid());
     expect(active()).toBe('blank/name');
@@ -555,7 +559,7 @@ describe('who may edit', () => {
     const user = await ready(plan3({ permissions: { view: true, add: false, change: false, delete: false } }));
     await user.click(cellOf('Pack', 'name'));
     await user.keyboard('x{F2}');
-    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(within(grid()).queryByRole('textbox')).toBeNull();
     await user.dblClick(cellOf('Pack', 'percent'));
     expect(within(grid()).queryByRole('textbox')).toBeNull();
     // Task Information instead, to read

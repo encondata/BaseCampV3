@@ -7,7 +7,8 @@
  *   the view and exactly as tall as the sheet's header (SHEET_HEAD_PX), so
  *   the rows line up across the panes.
  * - Lanes: one per row the sheet shows (`rows`, the outline less collapsed
- *   subtasks, plus the blank new-task row), virtualized against the same
+ *   subtasks, filtered, maybe grouped — useSheetView — plus the blank
+ *   new-task row), virtualized against the same
  *   scroll box with the same settings as the sheet (Review Focus 5) — under
  *   the sheet, against a box of its own PlanTab keeps level with the
  *   sheet's (Splitter.tsx). A task
@@ -40,6 +41,13 @@
  * zoom is ~528,000 px). The window changes only every half a pane of
  * scrolling. The chart's sideways scroll is its own (SidePane, Splitter.tsx).
  *
+ * Filters and Group by (the filter bar): a filter's context rows
+ * (`context`) are dimmed and inert here too — their marks take no press,
+ * a press on their lane selects nothing — and a group's band (`bands`) is a
+ * shaded lane. A lane is keyed by its row's key, its task by
+ * `taskOfRow`; a link is drawn only between rows keyed by its tasks' ids,
+ * so a grouped chart draws none (a task can be on two rows).
+ *
  * Presses. The lanes let the pointer through: only the marks that do
  * something take it — a bar, a diamond, a summary's bracket, a link handle,
  * and a link's wide invisible hit line. A press anywhere else on the chart
@@ -61,6 +69,7 @@ import {
 } from 'react';
 
 import type { PlanTask } from '../../lib/plans/api';
+import { taskOfRow, type GroupBand } from '../../lib/plans/filters';
 import { nonworkingBands } from '../../lib/plans/calendarShade';
 import { SHEET_HEAD_PX, SHEET_OVERSCAN } from '../../lib/plans/columns';
 import { GRIP_PX, gripX, hasGrip } from '../../lib/plans/drag';
@@ -84,8 +93,12 @@ import type { ChartScroll, GanttDisplay } from './usePlanCommands';
 
 export interface PlanGanttProps {
   ctl: PlanController;
-  /** The task ids shown, in order: the sheet's rows. */
+  /** The rows shown, in order, by key: the sheet's rows. */
   rows: string[];
+  /** A filter's context rows: dimmed and inert. */
+  context?: ReadonlySet<string>;
+  /** Group by's bands, by row key. */
+  bands?: ReadonlyMap<string, GroupBand>;
   rowHeight: number;
   /** The chart's vertical scroll box: the view's one box, which the sheet
    *  reads too (Beside), or the chart's own (Below). */
@@ -132,9 +145,12 @@ interface DrawnLink {
 }
 
 const NO_TICKS = { top: [], bottom: [] };
+const NO_KEYS: ReadonlySet<string> = new Set();
+const NO_BANDS: ReadonlyMap<string, GroupBand> = new Map();
 
 export default function PlanGantt({
-  ctl, rows, rowHeight, scrollRef, zoom, display, selection, onSelect, blankRow = false, scheduled,
+  ctl, rows, context = NO_KEYS, bands = NO_BANDS, rowHeight, scrollRef, zoom, display, selection, onSelect,
+  blankRow = false, scheduled,
   scrollRequest = null, onZoomStep, focusSheet, onLinkClick, onBarDoubleClick, taskLabels = false, endPad = 0,
   startTop, startMoment, onLeftMoment,
 }: PlanGanttProps) {
@@ -332,13 +348,18 @@ export default function PlanGantt({
   // ── presses (the hover card is GanttHover's, the drags useGanttDrag's) ──
   const chartRef = useRef<HTMLDivElement>(null);
   const chartBar = useRef<HTMLDivElement>(null);
-  const latest = useRef({ selection, onSelect, rows, focusSheet, onLinkClick, onBarDoubleClick });
+  /** A row nobody selects: a filter's context row, a group's band. */
+  const inert = useCallback((key: string) => context.has(key) || bands.has(key), [context, bands]);
+  // the rows a Shift-press steps through
+  const nav = useMemo(() => (context.size || bands.size ? rows.filter((key) => !inert(key)) : rows),
+    [rows, context, bands, inert]);
+  const latest = useRef({ selection, onSelect, rows, nav, inert, focusSheet, onLinkClick, onBarDoubleClick });
   useLayoutEffect(() => {
-    latest.current = { selection, onSelect, rows, focusSheet, onLinkClick, onBarDoubleClick };
+    latest.current = { selection, onSelect, rows, nav, inert, focusSheet, onLinkClick, onBarDoubleClick };
   });
-  /** A press on a task's row, as on the sheet's row numbers. */
+  /** A press on a task's row (by its key), as on the sheet's row numbers. */
   const selectRow = useCallback((id: string, mods: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => {
-    const { selection: sel, onSelect: select, rows: shownRows, focusSheet: focus } = latest.current;
+    const { selection: sel, onSelect: select, nav: shownRows, focusSheet: focus } = latest.current;
     const col = sel.active?.col ?? 'name';
     if (mods.shiftKey) select(extendRows(sel, id, col, shownRows));
     else if (mods.ctrlKey || mods.metaKey) select(toggleRow(sel, id, col));
@@ -355,7 +376,7 @@ export default function PlanGantt({
       const top = chartRef.current?.getBoundingClientRect().top ?? 0;
       id = latest.current.rows[Math.floor((e.clientY - top) / rowHeight)] ?? null;
     }
-    if (!id || id === 'blank') return;
+    if (!id || id === 'blank' || latest.current.inert(id)) return;
     selectRow(id, e);
   };
   const onLinkHit = useCallback((e: MouseEvent<SVGPathElement>) => {
@@ -364,7 +385,7 @@ export default function PlanGantt({
   }, []);
   const onBarDouble = useCallback((task: PlanTask) => latest.current.onBarDoubleClick?.(task), []);
   const drag = useGanttDrag({
-    ctl, scale, zoom, rows, rowHeight, box, tasksById, chartRef, barRef: chartBar, select: selectRow,
+    ctl, scale, zoom, rows, inert, rowHeight, box, tasksById, chartRef, barRef: chartBar, select: selectRow,
   });
 
   if (!plan || !scale) return null;
@@ -430,13 +451,20 @@ export default function PlanGantt({
           )}
 
           {items.map((item) => {
-            const id = rows[item.index];
-            const task = id === undefined ? undefined : tasksById.get(id);
-            const selected = task ? selection.rows.has(task.id) || selection.active?.id === task.id : false;
+            const key = rows[item.index];
+            if (key !== undefined && bands.has(key)) {
+              return <span key={key} className="pln-lane pln-band-lane" data-lane={key}
+                           style={{ transform: `translateY(${item.start - SHEET_HEAD_PX}px)` }} />;
+            }
+            const taskId = key === undefined ? null : taskOfRow(key);
+            const task = taskId === null ? undefined : tasksById.get(taskId);
+            const selected = task ? selection.rows.has(key) || selection.active?.id === key : false;
+            const dim = task !== undefined && context.has(key);
             return (
-              <Lane key={item.key} laneId={task?.id ?? 'blank'} task={task} y={item.start - SHEET_HEAD_PX}
-                    scale={scale} win={win} box={box} display={display} selected={selected} access={drag.access}
-                    labels={taskLabels} onBarPointerDown={drag.onBarPointerDown} onBarDoubleClick={onBarDouble} />
+              <Lane key={item.key} laneId={task ? key : 'blank'} task={task} y={item.start - SHEET_HEAD_PX}
+                    scale={scale} win={win} box={box} display={display} selected={selected} context={dim}
+                    access={dim ? 'none' : drag.access} labels={taskLabels} onBarPointerDown={drag.onBarPointerDown}
+                    onBarDoubleClick={onBarDouble} />
             );
           })}
 
@@ -468,7 +496,7 @@ const runsOf = (d: string): number => (d.match(/[HV]/g) ?? []).length;
 /** A bar's handlers: the drags' press and Task Information's double-click. */
 interface BarHandlers {
   access: DragAccess;
-  onBarPointerDown(e: PointerEvent<HTMLElement>, task: PlanTask): void;
+  onBarPointerDown(e: PointerEvent<HTMLElement>, task: PlanTask, rowKey: string): void;
   onBarDoubleClick(task: PlanTask): void;
 }
 
@@ -481,14 +509,17 @@ interface LaneProps extends BarHandlers {
   box: BarBox;
   display: GanttDisplay;
   selected: boolean;
+  /** A filter's context row: dimmed, its marks inert. */
+  context: boolean;
   labels: boolean;
 }
 
 /** One row's lane; redraws only when its task, place, window or state changes. */
-const Lane = memo(function Lane({ laneId, task, y, selected, ...marks }: LaneProps) {
+const Lane = memo(function Lane({ laneId, task, y, selected, context, ...marks }: LaneProps) {
   return (
-    <div className={`pln-lane${selected ? ' on' : ''}`} data-lane={laneId} style={{ transform: `translateY(${y}px)` }}>
-      {task && <TaskMarks task={task} {...marks} />}
+    <div className={`pln-lane${selected ? ' on' : ''}${context ? ' pln-context' : ''}`} data-lane={laneId}
+         style={{ transform: `translateY(${y}px)` }}>
+      {task && <TaskMarks task={task} rowKey={laneId} inert={context} {...marks} />}
     </div>
   );
 });
@@ -541,8 +572,11 @@ const NAMES_GAP = 6;
 /** A link handle's height beside a milestone's diamond. */
 const DOT_MARK_H = 2 * MILESTONE_HALF;
 
-function TaskMarks({ task, scale, win, box, display, labels, access, onBarPointerDown, onBarDoubleClick }: BarHandlers & {
-  task: PlanTask; scale: Scale; win: Span; box: BarBox; display: GanttDisplay; labels: boolean;
+function TaskMarks({
+  task, rowKey, inert, scale, win, box, display, labels, access, onBarPointerDown, onBarDoubleClick,
+}: BarHandlers & {
+  task: PlanTask; rowKey: string; inert: boolean; scale: Scale; win: Span; box: BarBox; display: GanttDisplay;
+  labels: boolean;
 }) {
   const out: ReactNode[] = [];
   const critical = display.critical && task.is_critical && !task.is_summary;
@@ -552,8 +586,9 @@ function TaskMarks({ task, scale, win, box, display, labels, access, onBarPointe
   const tint = color && !critical ? ' pln-tinted' : '';
   const hue = color ? ({ '--pln-task': color } as CSSProperties) : undefined;
   const stripe = color && critical ? <span className="pln-bar-hue" /> : null;
-  const down = access === 'none' ? undefined : (e: PointerEvent<HTMLElement>) => onBarPointerDown(e, task);
-  const dbl = () => onBarDoubleClick(task);
+  const down = access === 'none' ? undefined : (e: PointerEvent<HTMLElement>) => onBarPointerDown(e, task, rowKey);
+  // a context row's bar opens nothing (it is only there to place a match)
+  const dbl = inert ? undefined : () => onBarDoubleClick(task);
   /** The link handle, right of the bar's end (window px): open plans only. */
   const dot = (at: number, top: number, height: number) => (access === 'full'
     ? <span key="dot" className="pln-link-dot" data-task-id={task.id} style={{ left: at, top, height }}

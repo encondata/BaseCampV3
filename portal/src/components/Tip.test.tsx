@@ -220,6 +220,20 @@ describe('the trigger at work', () => {
     expect(screen.queryByRole('tooltip')).toBeNull();
   });
 
+  it('typing in a field trigger (a search box) hides its tip, so it never covers what the typing shows', async () => {
+    const user = userEvent.setup();
+    render(
+      <Tip label="Search" keys="⌘F" desc="Find tasks.">
+        <div className="dir-search"><input aria-label="Search tasks" /></div>
+      </Tip>,
+    );
+    await user.tab();
+    expect(screen.getByRole('tooltip')).toBeTruthy();
+    await user.keyboard('c');
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    expect((screen.getByRole('textbox', { name: 'Search tasks' }) as HTMLInputElement).value).toBe('c');
+  });
+
   it('a trigger turned off while its tip shows hides the tip', () => {
     vi.useFakeTimers();
     const view = (disabled: boolean) => (

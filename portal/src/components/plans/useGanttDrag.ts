@@ -59,6 +59,7 @@ import {
   MILESTONE_HALF, barOf, msOf, progressWidth, widthOfMs, xOfMs, type Bar, type Scale, type Zoom,
 } from '../../lib/plans/ganttGeometry';
 import type { BarBox, Fact } from '../../lib/plans/ganttView';
+import { taskOfRow } from '../../lib/plans/filters';
 import { planUnits } from '../../lib/plans/merge';
 import { useApplyAnswer } from './useCompletion';
 import type { PlanController } from './usePlan';
@@ -141,8 +142,11 @@ interface Options {
   ctl: PlanController;
   scale: Scale | null;
   zoom: Zoom;
-  /** The task ids shown, in order (the sheet's rows). */
+  /** The rows shown, in order, by key (the sheet's rows: a task's id, or
+   *  grouped, its group's and its own). */
   rows: readonly string[];
+  /** A row that takes no link (a filter's context row, a group's band). */
+  inert?(key: string): boolean;
   rowHeight: number;
   box: BarBox;
   tasksById: ReadonlyMap<string, PlanTask>;
@@ -150,14 +154,14 @@ interface Options {
   chartRef: RefObject<HTMLElement | null>;
   /** The chart's sideways scrollbar: its scrollLeft is the chart's scroll. */
   barRef: RefObject<HTMLElement | null>;
-  /** A press too short to be a drag selects its task, as a lane press does. */
-  select(id: string, mods: Mods): void;
+  /** A press too short to be a drag selects its row (by key), as a lane press does. */
+  select(key: string, mods: Mods): void;
 }
 
 export interface GanttDrag {
   access: DragAccess;
-  /** For every bar, diamond, summary bracket and link handle. */
-  onBarPointerDown(e: ReactPointerEvent<HTMLElement>, task: PlanTask): void;
+  /** For every bar, diamond, summary bracket and link handle, with its row's key. */
+  onBarPointerDown(e: ReactPointerEvent<HTMLElement>, task: PlanTask, rowKey: string): void;
   store: DragStore;
 }
 
@@ -165,6 +169,8 @@ interface Session {
   pointerId: number;
   el: HTMLElement;
   task: PlanTask;
+  /** The pressed bar's row: its key and its index. */
+  key: string;
   kind: DragKind;
   row: number;
   bar: Bar;
@@ -221,12 +227,12 @@ export function useGanttDrag(o: Options): GanttDrag {
     const { scale, rows, tasksById } = latest.current;
     const now = tasksById.get(s.task.id);
     const bar = now && scale ? barOf(scale, now) : null;
-    return !bar || rows[s.row] !== s.task.id || bar.x !== s.bar.x || bar.width !== s.bar.width;
+    return !bar || rows[s.row] !== s.key || bar.x !== s.bar.x || bar.width !== s.bar.width;
   }, []);
 
   /** Where the pointer at (clientX, clientY) puts the drag: its ops, label and preview. */
   const follow = useCallback((s: Session, clientX: number, clientY: number) => {
-    const { ctl, scale, zoom, rows, rowHeight, box, tasksById, chartRef } = latest.current;
+    const { ctl, scale, zoom, rows, inert, rowHeight, box, tasksById, chartRef } = latest.current;
     const plan = ctl.plan;
     if (!scale || !plan) return;
     const t = s.task;
@@ -274,7 +280,9 @@ export function useGanttDrag(o: Options): GanttDrag {
       // the bar under the pointer: its row by y, and on (or just beside) it by x
       const y = clientY - (chartRef.current?.getBoundingClientRect().top ?? 0);
       const row = Math.floor(y / rowHeight);
-      const onto = rows[row] === undefined ? undefined : tasksById.get(rows[row]);
+      const ontoKey = rows[row];
+      const ontoId = ontoKey === undefined || inert?.(ontoKey) ? null : taskOfRow(ontoKey);
+      const onto = ontoId === null ? undefined : tasksById.get(ontoId);
       const ontoBar = onto ? barOf(scale, onto) : null;
       let target: PlanTask | null = null;
       if (onto && ontoBar) {
@@ -308,14 +316,14 @@ export function useGanttDrag(o: Options): GanttDrag {
     if (sent) void sent.then((result) => { latest.current.answer(result, ops, label); });
   }, [end]);
 
-  const onBarPointerDown = useCallback((e: ReactPointerEvent<HTMLElement>, task: PlanTask) => {
+  const onBarPointerDown = useCallback((e: ReactPointerEvent<HTMLElement>, task: PlanTask, key: string) => {
     if (e.button !== 0 || session.current) return;
     const { ctl, scale, rows } = latest.current;
     const plan = ctl.plan;
     const access = dragAccess(plan);
     if (!plan || !scale || access === 'none') return;
     const bar = barOf(scale, task);
-    const row = rows.indexOf(task.id);
+    const row = rows.indexOf(key);
     if (!bar || row < 0) return;
     const downX = scaleX(e.clientX);
     const kind = dragKind(downX, {
@@ -365,7 +373,7 @@ export function useGanttDrag(o: Options): GanttDrag {
       if (!s || ev.pointerId !== s.pointerId) return;
       if (!s.live) {
         end(s);
-        latest.current.select(s.task.id, s.mods);   // a click
+        latest.current.select(s.key, s.mods);   // a click
         return;
       }
       if (stale(s)) {
@@ -405,7 +413,7 @@ export function useGanttDrag(o: Options): GanttDrag {
     document.addEventListener('visibilitychange', onVisibility);
 
     session.current = {
-      pointerId: e.pointerId, el, task, kind, row, bar, downX,
+      pointerId: e.pointerId, el, task, key, kind, row, bar, downX,
       downClientX: e.clientX, downClientY: e.clientY,
       mods: { shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey },
       live: false, release: null, ops: [], label: '',

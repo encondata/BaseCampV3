@@ -650,7 +650,7 @@ describe('copy and paste', () => {
     const user = await ready();
     const clip = document.querySelector('.pln-clip') as HTMLTextAreaElement;
     expect(clip.hidden).toBe(true);                         // no blank field for a screen reader to find
-    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Clipboard' })).toBeNull();
     expect(clip.getAttribute('aria-hidden')).toBeNull();
     expect(clip.tabIndex).toBe(-1);
     await user.click(cellOf('Pack', 'name'));
