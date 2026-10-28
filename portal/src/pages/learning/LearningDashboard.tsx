@@ -101,7 +101,7 @@ export default function LearningDashboard() {
    *  dialog shows it and stays open. */
   const remind = async (initiativeId: string, name: string) => {
     const result = await remindInitiative(initiativeId);
-    toast(`${remindText(result)} on ${name}`);
+    toast(`${name}: ${remindText(result)}`);
     setReminding(null);
     void load(days);
   };
