@@ -15,7 +15,9 @@ function sub(item: TrainingItem): string {
   return item.has_quiz ? t('training.minQuiz', { n: item.minutes }) : t('training.minRead', { n: item.minutes });
 }
 
-export default function TaskRow({ item, next }: { item: TrainingItem; next: boolean }) {
+/** `from` rides along as router state so the reader's Back returns to the
+ *  page that listed the row (as HistoryList does). */
+export default function TaskRow({ item, next, from }: { item: TrainingItem; next: boolean; from?: string }) {
   const done = item.status === 'signed';
   const locked = !done && item.locked;
   const body = (
@@ -37,5 +39,5 @@ export default function TaskRow({ item, next }: { item: TrainingItem; next: bool
   );
   const cls = `learn-task ${done ? 'done' : ''} ${locked ? 'locked' : ''} ${next ? 'next' : ''}`.replace(/\s+/g, ' ').trim();
   if (locked) return <li className={cls}><div className="row">{body}</div></li>;
-  return <li className={cls}><Link className="row" to={`/training/${item.assignment_id}`}>{body}</Link></li>;
+  return <li className={cls}><Link className="row" to={`/training/${item.assignment_id}`} state={from ? { from } : undefined}>{body}</Link></li>;
 }

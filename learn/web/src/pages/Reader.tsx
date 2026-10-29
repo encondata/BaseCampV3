@@ -154,7 +154,7 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
   };
 
   const rtl = isRtl(doc.language);
-  const back = from === '/history' ? '/history' : '/training';
+  const back = from === '/history' || from === '/home' ? from : '/training';
   return (
     <>
       <div className="learn-readhead">

@@ -94,6 +94,9 @@ export const en = {
   'home.recentEmptyHint': 'Every document you sign stays here so you can reopen it any time.',
   'home.timeClock': 'Your training is complete. Show your time clock code at the station.',
   'home.showCode': 'Show my code',
+  'home.lockedTitle': 'Your remaining training is locked.',
+  'home.lockedHint': 'Ask your supervisor to unlock it.',
+  'home.movesMore': '{name} and {n} more',
 
   'history.title': 'Completed training',
   'history.link': 'Completed training ({n})',

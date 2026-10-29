@@ -20,6 +20,7 @@ import { getToken } from '../lib/session';
 import type { TrainingItem } from '../lib/training';
 
 const CHECK = 'M8.5 12.2l2.4 2.4 4.7-4.9M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17z';
+const LOCK = 'M5 11h14v9H5zM8 11V8a4 4 0 0 1 8 0v3';
 const DOCS = 'M7 3.5h7l4 4V20.5H7zM14 3.5v4h4M9.5 12.5h5M9.5 16h5';
 const LIMIT = 5;
 
@@ -66,7 +67,9 @@ export default function Home() {
   const moves = groups.filter((g) => g.initiative).length;
   const recent = signed?.slice(0, LIMIT) ?? [];
 
-  const moveSub = moves > 0 ? '' : groups.length > 0 ? t('home.generalOnly') : t('home.noneAssigned');
+  const moveNames = groups.flatMap((g) => g.initiative ? [g.initiative.name] : []);
+  const moveSub = moves === 0 ? (groups.length > 0 ? t('home.generalOnly') : t('home.noneAssigned'))
+    : moves === 1 ? moveNames[0] : t('home.movesMore', { name: moveNames[0], n: moves - 1 });
 
   return (
     <div className="portal-page learn-home">
@@ -96,7 +99,7 @@ export default function Home() {
               <div className="dash-kpi-sub">
                 {signed && signed.length > 0
                   ? t('home.lastSigned', { date: signedDay(signed[0].signed_at) })
-                  : signed ? t('home.noneYet') : ''}
+                  : signed ? t('home.noneYet') : history.loading ? '' : '—'}
               </div>
             </div>
             <div className="dash-kpi">
@@ -118,13 +121,17 @@ export default function Home() {
           <Panel title={t('home.upNext')} className="dash-span-6"
                  link={<Link className="dash-panel-link" to="/training">{t('home.allTraining')}</Link>}>
             {!next
-              ? <Empty icon={CHECK} title={t('home.upNextEmpty')} hint={t('home.upNextEmptyHint')} />
+              ? open.length > 0
+                // everything left is locked (a quiz lock, say): not "nothing to sign"
+                ? <Empty icon={LOCK} title={t('home.lockedTitle')} hint={t('home.lockedHint')} />
+                : <Empty icon={CHECK} title={t('home.upNextEmpty')} hint={t('home.upNextEmptyHint')} />
               : (
                 <>
                   <ul className="learn-tasks">
-                    {upNext.map((item) => <TaskRow key={item.assignment_id} item={item} next={item === next} />)}
+                    {upNext.map((item) => <TaskRow key={item.assignment_id} item={item} next={item === next} from="/home" />)}
                   </ul>
-                  <Link className="learn-cta learn-continue" to={`/training/${next.assignment_id}`}>
+                  <Link className="learn-cta learn-continue" to={`/training/${next.assignment_id}`}
+                        state={{ from: '/home' }}>
                     {t('training.continue', { title: next.title })}
                   </Link>
                 </>
@@ -136,7 +143,7 @@ export default function Home() {
                    ? <Link className="dash-panel-link" to="/history">{t('home.viewAll', { n: signed.length })}</Link>
                    : undefined}>
             {recent.length > 0
-              ? <HistoryList items={recent} />
+              ? <HistoryList items={recent} from="/home" />
               : history.loading && !signed
                 ? <p className="learn-note" aria-live="polite">{t('common.loading')}</p>
                 : <Empty icon={DOCS} title={t('home.recentEmpty')} hint={t('home.recentEmptyHint')} />}

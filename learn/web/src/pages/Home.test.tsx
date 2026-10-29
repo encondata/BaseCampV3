@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen, within } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const auth = vi.hoisted(() => ({ value: { status: 'anon', person: null } as { status: string; person: Record<string, unknown> | null } }));
@@ -36,11 +37,18 @@ function api(training: unknown, history: unknown[] | Response = []) {
   }));
 }
 
+/** Stands in for the reader: shows the state the row was opened with. */
+function ReaderProbe() {
+  const { pathname, state } = useLocation();
+  return <p>{`reader ${pathname} from ${(state as { from?: string } | null)?.from ?? 'nowhere'}`}</p>;
+}
+
 function renderHome() {
   return render(
     <MemoryRouter initialEntries={['/home']}>
       <Routes>
         <Route path="/home" element={<Home />} />
+        <Route path="/training/:id" element={<ReaderProbe />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -106,7 +114,7 @@ describe('Home', () => {
     expect(tile('To sign')).toEqual({ value: '2', sub: 'Next due Sun, Nov 8' });
     expect(await screen.findByText('Last signed Nov 4')).toBeTruthy();
     expect(tile('Completed').value).toBe('7');
-    expect(tile('Moves').value).toBe('1');
+    expect(tile('Moves')).toEqual({ value: '1', sub: 'Acme move' });
 
     const up = panel('Up next');
     expect(up.getByRole('link', { name: /^Acme site rules/ }).getAttribute('href')).toBe('/training/a-1');
@@ -117,6 +125,20 @@ describe('Home', () => {
     const recent = panel('Recently completed');
     expect(recent.getAllByRole('listitem')).toHaveLength(5);
     expect(recent.getByRole('link', { name: 'View all (7)' }).getAttribute('href')).toBe('/history');
+  });
+
+  it('names the first move, and counts the others', async () => {
+    api({
+      groups: [
+        { initiative: { id: 'i-1', name: 'Acme move', start: null }, due_on: null, items: [item({ assignment_id: 'a-1' })] },
+        { initiative: { id: 'i-2', name: 'Beta move', start: null }, due_on: null, items: [item({ assignment_id: 'a-2' })] },
+        { initiative: { id: 'i-3', name: 'Gamma move', start: null }, due_on: null, items: [item({ assignment_id: 'a-3' })] },
+      ],
+      complete: false, badge_uid: null,
+    });
+    renderHome();
+    expect(await screen.findByText('3 to sign')).toBeTruthy();
+    expect(tile('Moves')).toEqual({ value: '3', sub: 'Acme move and 2 more' });
   });
 
   it('says "General training only" when only general items exist', async () => {
@@ -146,6 +168,22 @@ describe('Home', () => {
     expect(up.getAllByRole('listitem')).toHaveLength(1);
     expect(up.queryByText('Locked quiz doc')).toBeNull();
     expect(screen.getByRole('link', { name: 'Continue: Open doc' })).toBeTruthy();
+  });
+
+  it('says so when everything left is locked, instead of "nothing to sign"', async () => {
+    api({
+      groups: [{ initiative: null, due_on: null,
+        items: [item({ assignment_id: 'a-1', title: 'Locked doc', locked: true, has_quiz: true })] }],
+      complete: false, badge_uid: null,
+    });
+    renderHome();
+    expect(await screen.findByText('1 to sign')).toBeTruthy();
+    const up = panel('Up next');
+    expect(up.getByText('Your remaining training is locked.')).toBeTruthy();
+    expect(up.getByText('Ask your supervisor to unlock it.')).toBeTruthy();
+    expect(up.queryByText('Nothing to sign right now.')).toBeNull();
+    expect(up.queryAllByRole('listitem')).toHaveLength(0);
+    expect(screen.queryByText(/^Continue/)).toBeNull();
   });
 
   it('takes "next due" from groups that still have an open item', async () => {
@@ -182,7 +220,7 @@ describe('Home', () => {
     renderHome();
     expect(await screen.findByText('2 to sign')).toBeTruthy();
     expect(await screen.findByText('Your signed training will appear here.')).toBeTruthy();
-    expect(tile('Completed').value).toBe('—');
+    expect(tile('Completed')).toEqual({ value: '—', sub: '—' });
   });
 
   it('offers the time clock code once everything is signed', async () => {
@@ -192,7 +230,22 @@ describe('Home', () => {
     expect(screen.getByRole('link', { name: 'Show my code' }).getAttribute('href')).toBe('/done');
   });
 
-  it('shows the loading line, then a retry when training fails', async () => {
+  it('opens rows from Home with Home as the place to come back to', async () => {
+    api(OPEN, [hist(1)]);
+    renderHome();
+    await userEvent.click(await screen.findByRole('link', { name: /^Dress code/ }));
+    expect(await screen.findByText('reader /training/a-2 from /home')).toBeTruthy();
+    cleanup();
+    renderHome();
+    await userEvent.click(await screen.findByRole('link', { name: 'Continue: Acme site rules' }));
+    expect(await screen.findByText('reader /training/a-1 from /home')).toBeTruthy();
+    cleanup();
+    renderHome();
+    await userEvent.click(await screen.findByRole('link', { name: /^Signed doc 1/ }));
+    expect(await screen.findByText('reader /training/h-1 from /home')).toBeTruthy();
+  });
+
+  it('offers a retry when training fails to load', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json(500, { detail: { code: 'boom' } })));
     renderHome();
     expect(await screen.findByRole('button', { name: 'Try again' })).toBeTruthy();

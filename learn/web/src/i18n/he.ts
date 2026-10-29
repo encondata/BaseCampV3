@@ -95,6 +95,9 @@ export const he: Dictionary = {
   'home.recentEmptyHint': 'כל מסמך שתחתמו יישאר כאן, ואפשר לפתוח אותו שוב בכל עת.',
   'home.timeClock': 'ההדרכה שלכם הושלמה. הציגו את קוד שעון הנוכחות בעמדה.',
   'home.showCode': 'הצגת הקוד שלי',
+  'home.lockedTitle': 'ההדרכה שנותרה נעולה.',
+  'home.lockedHint': 'בקשו מהמפקח לפתוח אותה.',
+  'home.movesMore': '{name} ועוד {n}',
 
   'history.title': 'הדרכות שהושלמו',
   'history.link': 'הדרכות שהושלמו ({n})',

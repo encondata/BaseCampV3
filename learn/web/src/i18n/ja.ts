@@ -94,6 +94,9 @@ export const ja: Dictionary = {
   'home.recentEmptyHint': '署名した書類はここに残るので、いつでも開き直せます。',
   'home.timeClock': '研修が完了しました。ステーションでタイムクロック用コードを提示してください。',
   'home.showCode': 'コードを表示',
+  'home.lockedTitle': '残りの研修はロックされています。',
+  'home.lockedHint': '監督者にロック解除を依頼してください。',
+  'home.movesMore': '{name} ほか {n} 件',
 
   'history.title': '完了した研修',
   'history.link': '完了した研修（{n}）',

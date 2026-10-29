@@ -56,6 +56,7 @@ function renderReader(state?: unknown) {
         <Route path="/training/:id/quiz" element={<p>quiz page</p>} />
         <Route path="/training" element={<p>training page</p>} />
         <Route path="/history" element={<p>history page</p>} />
+        <Route path="/home" element={<p>home page</p>} />
         <Route path="/done" element={<p>done page</p>} />
       </Routes>
     </MemoryRouter>,
@@ -383,6 +384,17 @@ describe('Reader', () => {
       }
       await userEvent.click(screen.getAllByRole('link', { name: 'Back' }).at(-1)!);
       expect(await screen.findByText('history page')).toBeTruthy();
+    });
+
+    it('goes back to Home when it was opened from there', async () => {
+      api(SIGNED);
+      renderReader({ from: '/home' });
+      await screen.findByText('Badges');
+      for (const link of screen.getAllByRole('link', { name: 'Back' })) {
+        expect(link.getAttribute('href')).toBe('/home');
+      }
+      await userEvent.click(screen.getAllByRole('link', { name: 'Back' }).at(-1)!);
+      expect(await screen.findByText('home page')).toBeTruthy();
     });
 
     it('goes back to the training list otherwise', async () => {
