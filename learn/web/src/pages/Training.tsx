@@ -35,7 +35,7 @@ export default function Training() {
   const next: TrainingItem | undefined = all.find((i) => i.status !== 'signed' && !i.locked);
 
   return (
-    <main className="learn-page">
+    <div className="learn-page">
       <div className="learn-top">
         <span className="learn-mark" aria-hidden="true" />
         <span>{t('app.short')}</span>
@@ -86,6 +86,6 @@ export default function Training() {
       )}
 
       <LanguageLinks />
-    </main>
+    </div>
   );
 }

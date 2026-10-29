@@ -240,14 +240,14 @@ function ReaderPage({ id }: { id: string }) {
   // a newer version was published while the worker read the last one
   const [changed, setChanged] = useState(false);
   return (
-    <main className="learn-page learn-reader">
+    <div className="learn-page learn-reader">
       {changed && <p className="learn-banner" role="status">{t('reader.versionChanged')}</p>}
       {doc.data
         ? <ReaderBody key={`${id}:${doc.data.language}:${doc.data.version_no}`} id={id} doc={doc.data}
                       place={place.data} changed={changed}
                       onVersionChanged={() => { setChanged(true); doc.reload(); }} />
         : <LoadState error={doc.error} onRetry={doc.reload} />}
-    </main>
+    </div>
   );
 }
 

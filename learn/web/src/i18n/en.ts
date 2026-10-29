@@ -43,6 +43,20 @@ export const en = {
   'common.back': 'Back',
   'common.loading': 'Loading…',
 
+  'nav.tag': 'Learning',
+  'nav.section': 'Learning',
+  'nav.home': 'Home',
+  'nav.training': 'My training',
+  'nav.history': 'Completed training',
+  'nav.timeClock': 'Time clock code',
+  'nav.open': 'Open navigation',
+
+  'shell.account': 'Account',
+  'shell.codeSession': 'Learning code',
+  'shell.backToPortal': 'Back to portal',
+  'shell.signOut': 'Sign out',
+  'shell.language': 'Language',
+
   'training.hi': 'Hi {name}',
   'training.hiNoName': 'Hi',
   'training.general': 'General training',

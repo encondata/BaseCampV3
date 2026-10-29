@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 
 import '@portal/styles/base.css';
 import '@portal/styles/portal-theme.css';
+import '@portal/styles/chrome.css';
+import '@portal/styles/dashboard.css';
 
 import Root from './Root';
 import './styles/learn.css';

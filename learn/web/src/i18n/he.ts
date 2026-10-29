@@ -44,6 +44,20 @@ export const he: Dictionary = {
   'common.back': 'חזרה',
   'common.loading': 'טוען…',
 
+  'nav.tag': 'למידה',
+  'nav.section': 'למידה',
+  'nav.home': 'בית',
+  'nav.training': 'ההדרכה שלי',
+  'nav.history': 'הדרכות שהושלמו',
+  'nav.timeClock': 'קוד שעון נוכחות',
+  'nav.open': 'פתיחת הניווט',
+
+  'shell.account': 'חשבון',
+  'shell.codeSession': 'קוד למידה',
+  'shell.backToPortal': 'חזרה לפורטל',
+  'shell.signOut': 'יציאה',
+  'shell.language': 'שפה',
+
   'training.hi': 'שלום {name}',
   'training.hiNoName': 'שלום',
   'training.general': 'הדרכה כללית',

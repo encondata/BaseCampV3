@@ -206,3 +206,41 @@ body { background: #FFF9F2; }
   inline-size: 180px; block-size: 180px; padding: 12px; box-sizing: content-box; background: #fff;
   border: 1px solid var(--l-line); border-radius: 14px; image-rendering: pixelated;
 }
+
+/* ---------- the signed-in shell (the portal's NavPanel, topbar and main column) ---------- */
+/* no search box to push them over: the actions sit at the far end */
+.learn-shell .topbar .tb-actions { margin-inline-start: auto }
+.learn-lang-menu { min-inline-size: 180px }
+/* the portal's account menu holds only buttons; Back to portal is a link */
+.learn-shell .portal-nav a.um-item { text-decoration: none }
+
+/* the main column scrolls with a slim themed bar, never the browser default */
+.learn-shell .portal-main::-webkit-scrollbar { inline-size: 10px; block-size: 10px }
+.learn-shell .portal-main::-webkit-scrollbar-track,
+.learn-shell .portal-main::-webkit-scrollbar-corner { background: transparent }
+.learn-shell .portal-main::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--text-mute) 35%, transparent);
+  border: 3px solid transparent; background-clip: padding-box; border-radius: 999px;
+}
+.learn-shell .portal-main::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--text-mute) 60%, transparent) }
+@supports not selector(::-webkit-scrollbar) {
+  .learn-shell .portal-main { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text-mute) 35%, transparent) transparent }
+}
+
+/* the worker screens sized themselves to the window; in the shell the main column scrolls them */
+.learn-shell .learn-page { min-block-size: 0 }
+
+/* right to left: the nav docks on the right (the grid follows dir), so its
+   edge line, active marker, chevrons, overlay and menus mirror */
+[dir='rtl'] .learn-shell .portal-nav { border-right: 0; border-left: 1px solid var(--nav-line, var(--ink-line)) }
+[dir='rtl'] .learn-shell .portal-nav .nav-item a.active::before { left: auto; right: -16px; border-radius: 3px 0 0 3px }
+[dir='rtl'] .learn-shell .portal-nav .nav-sec:not(.open) .nav-sec-head svg { transform: scaleX(-1) }
+[dir='rtl'] .learn-shell :is(.user-chip, .um-item, .pop-item) { text-align: right }
+[dir='rtl'] .learn-shell a.um-item svg { transform: scaleX(-1) }
+[dir='rtl'] .learn-shell .portal-main-col::before { left: auto; right: 0 }
+[dir='rtl'] .learn-shell .portal-nav.overlay { left: auto; right: 0; animation-name: learn-nav-overlay-in-rtl }
+@keyframes learn-nav-overlay-in-rtl { from { transform: translateX(100%) } to { transform: translateX(0) } }
+[dir='rtl'] .learn-shell .topbar .pop-menu { right: auto; left: 0 }
+@media (max-width: 900px) {
+  [dir='rtl'] .learn-shell .portal-nav.docked { border-left-width: 0 }
+}

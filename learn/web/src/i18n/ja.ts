@@ -43,6 +43,20 @@ export const ja: Dictionary = {
   'common.back': '戻る',
   'common.loading': '読み込み中…',
 
+  'nav.tag': '研修',
+  'nav.section': '研修',
+  'nav.home': 'ホーム',
+  'nav.training': '研修一覧',
+  'nav.history': '完了した研修',
+  'nav.timeClock': 'タイムクロック用コード',
+  'nav.open': 'メニューを開く',
+
+  'shell.account': 'アカウント',
+  'shell.codeSession': '学習コード',
+  'shell.backToPortal': 'ポータルに戻る',
+  'shell.signOut': 'サインアウト',
+  'shell.language': '言語',
+
   'training.hi': '{name} さん、こんにちは',
   'training.hiNoName': 'こんにちは',
   'training.general': '一般研修',

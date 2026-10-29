@@ -34,7 +34,7 @@ export default function Done() {
     (n, g) => n + g.items.filter((i) => i.status === 'signed').length, 0) ?? 0;
 
   return (
-    <main className="learn-page learn-done">
+    <div className="learn-page learn-done">
       {!data ? <LoadState error={error} onRetry={reload} /> : (
         <>
           <div className="learn-badge ok big" aria-hidden="true">✓</div>
@@ -50,6 +50,6 @@ export default function Done() {
           <Link className="learn-link" to="/training">{t('done.back')}</Link>
         </>
       )}
-    </main>
+    </div>
   );
 }

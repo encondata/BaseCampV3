@@ -43,6 +43,20 @@ export const ko: Dictionary = {
   'common.back': '뒤로',
   'common.loading': '불러오는 중…',
 
+  'nav.tag': '교육',
+  'nav.section': '교육',
+  'nav.home': '홈',
+  'nav.training': '내 교육',
+  'nav.history': '완료한 교육',
+  'nav.timeClock': '타임클록 코드',
+  'nav.open': '메뉴 열기',
+
+  'shell.account': '계정',
+  'shell.codeSession': '학습 코드',
+  'shell.backToPortal': '포털로 돌아가기',
+  'shell.signOut': '로그아웃',
+  'shell.language': '언어',
+
   'training.hi': '{name} 님, 안녕하세요',
   'training.hiNoName': '안녕하세요',
   'training.general': '일반 교육',

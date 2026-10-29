@@ -22,8 +22,9 @@ const PACKAGE_JSON = resolve(SRC, '../../package.json');
 
 /** Portal modules the learn app may import (paths under portal/src, no
  *  extension); a trailing `/*` allows every module in that folder. The
- *  wiki's list, plus the sign-in scene the code form sits on and the QR
- *  helper the done screen draws the time clock code with. */
+ *  wiki's list, plus the sign-in scene the code form sits on, the QR
+ *  helper the done screen draws the time clock code with and the portal's
+ *  left nav the signed-in shell is built on. */
 const REACT_ALLOWLIST = [
   'auth/AuthContext',
   'pages/Login',
@@ -40,6 +41,8 @@ const REACT_ALLOWLIST = [
   'components/login/LoginScene',
   'components/login/loginIcons',
   'lib/qr',
+  // the signed-in shell's left nav (presentational: sections in, markup out)
+  'layout/NavPanel',
 ];
 
 // static `import … from '…'`, `import '…'` and `export … from '…'`; the
