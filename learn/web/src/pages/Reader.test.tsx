@@ -360,7 +360,7 @@ describe('Reader', () => {
 
   describe('a signed document (review)', () => {
     const SIGNED = { signed_at: '2026-11-04T15:00:00Z', version_no: 2, has_quiz: true,
-                     quiz_passed: false, min_read_seconds: 60 };
+                     quiz_passed: false, min_read_seconds: 60, change_note: 'Dock hours moved to 7 AM.' };
 
     it('shows the document and when it was signed, with no way to sign again', async () => {
       api(SIGNED);
@@ -371,6 +371,7 @@ describe('Reader', () => {
       expect(screen.queryByRole('checkbox')).toBeNull();
       expect(screen.queryByRole('button', { name: 'Sign and continue' })).toBeNull();
       expect(screen.queryByRole('link', { name: 'Take the quiz' })).toBeNull();
+      expect(screen.queryByText(/^What changed:/)).toBeNull();
     });
 
     it('goes back to the history when it was opened from there', async () => {

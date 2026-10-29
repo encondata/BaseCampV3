@@ -177,7 +177,7 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
         </p>
       )}
       {doc.fallback && <p className="learn-banner">{t('reader.fallback')}</p>}
-      {doc.change_note && <p className="learn-banner">{t('reader.changed', { note: doc.change_note })}</p>}
+      {!review && doc.change_note && <p className="learn-banner">{t('reader.changed', { note: doc.change_note })}</p>}
 
       <div ref={box} className="learn-doc" role="region" aria-label={t('reader.body')} tabIndex={0}
            lang={doc.language} dir={rtl ? 'rtl' : 'ltr'} onScroll={checkEnd} onLoadCapture={checkFit}>
