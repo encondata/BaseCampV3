@@ -16,6 +16,7 @@ import { siblingOrigin } from '@portal/lib/siblingOrigin';
 import { t, useLang } from '../lib/i18n';
 import { LearnerDataProvider, learnerName, useLearnerData } from '../lib/learner';
 import { getToken, learnSignOut } from '../lib/session';
+import Icon from './Icon';
 import { learnNavSections } from './learnNav';
 import LearnTopbar from './LearnTopbar';
 
@@ -32,11 +33,6 @@ function portalOrigin(): string {
   return siblingOrigin('portal', location) ?? `${location.protocol}//${location.hostname}:5173`;
 }
 
-const Icon = ({ d }: { d: string }) => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
-       strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
-);
-
 export default function LearnShell() {
   return (
     <LearnerDataProvider>
@@ -52,8 +48,10 @@ function Shell() {
   const { training } = useLearnerData();
   // a learn token wins over an account, as it does for every call
   const account = getToken() ? null : person;
-  const name = learnerName(account);
   const role = account ? t('shell.account') : t('shell.codeSession');
+  const { full } = learnerName(account);
+  // a code session may have no name: the chip says "Learning code" then
+  const name = full || role;
 
   const [mobile, setMobile] = useState(matchesMobile);
   const [overlayOpen, setOverlayOpen] = useState(false);
@@ -100,13 +98,15 @@ function Shell() {
     setMenuOpen(false);
     setOverlayOpen(false);
     if (account) await logout();
-    else void learnSignOut();   // the token is gone at once; the server revoke needn't hold the page
+    // the token is gone at once (the server revoke needn't hold the page); an
+    // account also signed in in this browser then takes over at `/` (accepted)
+    else void learnSignOut();
     navigate('/', { replace: true });
   };
 
   const avatar = (
     <div className="user-avatar">
-      {account?.avatar_url ? <img src={account.avatar_url} alt="" /> : (initials(name.full) || '·')}
+      {account?.avatar_url ? <img src={account.avatar_url} alt="" /> : (initials(full) || '·')}
     </div>
   );
 
@@ -117,7 +117,7 @@ function Shell() {
           <div className="um-head">
             {avatar}
             <div className="user-meta">
-              <div className="user-name">{name.full}</div>
+              <div className="user-name">{name}</div>
               <div className="user-role">{account?.email ?? role}</div>
             </div>
           </div>
@@ -140,7 +140,7 @@ function Shell() {
               aria-expanded={menuOpen} onClick={() => setMenuOpen((v) => !v)}>
         {avatar}
         <div className="user-meta">
-          <div className="user-name">{name.full}</div>
+          <div className="user-name">{name}</div>
           <div className="user-role">{role}</div>
         </div>
         <svg className="chip-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor"

@@ -6,12 +6,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 
 import { setLang, t, useLang, useOffered } from '../lib/i18n';
+import Icon from './Icon';
 import { learnNavSections } from './learnNav';
-
-const Icon = ({ d }: { d: string }) => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
-       strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
-);
 
 function LanguageMenu() {
   const lang = useLang();

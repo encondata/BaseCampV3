@@ -24,8 +24,9 @@ const LearnerDataContext = createContext<LearnerData | null>(null);
 const DOCUMENT = /^\/training\/[^/]+/;
 
 export function LearnerDataProvider({ children }: { children: ReactNode }) {
-  const training = useLoad(getTraining, []);
-  const history = useLoad(getHistory, []);
+  // a reload keeps what is on screen (the nav's time clock code, the lists)
+  const training = useLoad(getTraining, [], { keepData: true });
+  const history = useLoad(getHistory, [], { keepData: true });
   const { pathname } = useLocation();
   const previous = useRef(pathname);
   useEffect(() => {
@@ -41,8 +42,8 @@ export function LearnerDataProvider({ children }: { children: ReactNode }) {
 
 export function useLearnerData(): LearnerData {
   const shared = useContext(LearnerDataContext);
-  const training = useLoad(getTraining, [], !shared);
-  const history = useLoad(getHistory, [], !shared);
+  const training = useLoad(getTraining, [], { enabled: !shared });
+  const history = useLoad(getHistory, [], { enabled: !shared });
   return shared ?? { training, history };
 }
 

@@ -235,7 +235,7 @@ body { background: #FFF9F2; }
 [dir='rtl'] .learn-shell .portal-nav { border-right: 0; border-left: 1px solid var(--nav-line, var(--ink-line)) }
 [dir='rtl'] .learn-shell .portal-nav .nav-item a.active::before { left: auto; right: -16px; border-radius: 3px 0 0 3px }
 [dir='rtl'] .learn-shell .portal-nav .nav-sec:not(.open) .nav-sec-head svg { transform: scaleX(-1) }
-[dir='rtl'] .learn-shell :is(.user-chip, .um-item, .pop-item) { text-align: right }
+[dir='rtl'] .learn-shell :is(.user-chip, .um-item, .pop-item) { text-align: start }
 [dir='rtl'] .learn-shell a.um-item svg { transform: scaleX(-1) }
 [dir='rtl'] .learn-shell .portal-main-col::before { left: auto; right: 0 }
 [dir='rtl'] .learn-shell .portal-nav.overlay { left: auto; right: 0; animation-name: learn-nav-overlay-in-rtl }

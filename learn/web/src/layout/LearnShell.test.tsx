@@ -26,11 +26,15 @@ function json(status: number, body: unknown): Response {
 }
 
 /** /learn/training answers with each of `trainings` in turn (the last one
- *  from then on), /learn/history with [], sign-out and languages with 200. */
+ *  from then on; a Response or a pending promise is returned as is),
+ *  /learn/history with [], sign-out and languages with 200. */
 function api(...trainings: unknown[]) {
   let calls = 0;
   const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
-    if (url.endsWith('/learn/training')) return json(200, trainings[Math.min(calls++, trainings.length - 1)]);
+    if (url.endsWith('/learn/training')) {
+      const next = trainings[Math.min(calls++, trainings.length - 1)];
+      return next instanceof Response || next instanceof Promise ? next : json(200, next);
+    }
     if (url.endsWith('/learn/history')) return json(200, []);
     if (url.endsWith('/learn/languages')) return json(200, [{ code: 'en', rtl: false }]);
     if (url.endsWith('/learn/auth/logout')) return json(200, {});
@@ -123,6 +127,20 @@ describe('LearnShell', () => {
     expect(await within(nav()).findByRole('link', { name: 'Time clock code' })).toBeTruthy();
   });
 
+  it.each([
+    ['while the reload is in flight', new Promise<Response>(() => {})],
+    ['when the reload fails', json(500, { detail: { code: 'boom' } })],
+  ])('keeps the time clock code %s after leaving a document', async (_when, reloaded) => {
+    setToken('tok', LATER, 'Wanda');
+    const fetchMock = api(COMPLETE, reloaded);
+    renderShell('/training/a-1');
+    expect(await within(nav()).findByRole('link', { name: 'Time clock code' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('link', { name: 'finish reading' }));
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([u]) => u.endsWith('/learn/training'))).toHaveLength(2));
+    await act(async () => {});
+    expect(within(nav()).getByRole('link', { name: 'Time clock code' })).toBeTruthy();
+  });
+
   it('crumbs read Learning, then the page on screen', async () => {
     setToken('tok', LATER, 'Wanda');
     api(OPEN);
@@ -149,6 +167,30 @@ describe('LearnShell', () => {
     await userEvent.click(screen.getByRole('menuitem', { name: 'Sign out' }));
     expect(sessionStorage.getItem(TOKEN_KEY)).toBeNull();
     expect(screen.getByTestId('where').textContent).toBe('/');
+  });
+
+  it('a code session without a first name says "Learning code" on the chip', () => {
+    setToken('tok', LATER);
+    api(OPEN);
+    renderShell('/home');
+    const chip = within(nav()).getByRole('button', { name: /Learning code/ });
+    expect(chip.querySelector('.user-name')?.textContent).toBe('Learning code');
+  });
+
+  it('the user menu closes on an outside click and on Escape', async () => {
+    setToken('tok', LATER, 'Wanda');
+    api(OPEN);
+    renderShell('/home');
+    const chip = within(nav()).getByRole('button', { name: /Wanda/ });
+    await userEvent.click(chip);
+    expect(screen.getByRole('menuitem', { name: 'Sign out' })).toBeTruthy();
+    await userEvent.click(screen.getByText('home page'));
+    expect(screen.queryByRole('menuitem', { name: 'Sign out' })).toBeNull();
+
+    await userEvent.click(chip);
+    expect(screen.getByRole('menuitem', { name: 'Sign out' })).toBeTruthy();
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('menuitem', { name: 'Sign out' })).toBeNull();
   });
 
   it('an account: the chip names the person, and the menu goes back to the portal or signs out', async () => {
@@ -190,6 +232,11 @@ describe('LearnShell', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
     expect(container.querySelector('.portal-nav.overlay')).toBeTruthy();
     await userEvent.keyboard('{Escape}');
+    expect(container.querySelector('.portal-nav.overlay')).toBeNull();
+
+    // and so does a click on the scrim
+    await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+    await userEvent.click(container.querySelector('.nav-overlay-scrim') as HTMLElement);
     expect(container.querySelector('.portal-nav.overlay')).toBeNull();
   });
 
