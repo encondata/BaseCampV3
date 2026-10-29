@@ -69,6 +69,7 @@ export const ko: Dictionary = {
   'training.locked': '잠김',
   'training.continue': '계속: {title}',
   'training.caughtUp': '모두 완료했습니다.',
+  'training.caughtUpHint': '새 교육이 배정되면 바로 여기에 표시됩니다.',
   'training.showCode': '타임클록 코드 보기',
 
   'home.title': '다시 오신 것을 환영합니다, {name}님',

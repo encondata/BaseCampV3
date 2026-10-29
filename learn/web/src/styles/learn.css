@@ -248,6 +248,14 @@ body { background: #FFF9F2; }
 @media (max-width: 900px) {
   .learn-home .dash-span-6 { grid-column: span 12 }
 }
+/* a 375px phone keeps the three tiles in one row: tighter, smaller, sub lines wrapping */
+@media (max-width: 600px) {
+  .learn-home .dash-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px }
+  .learn-home .dash-kpi { padding-block: 12px 10px; padding-inline: 10px; gap: 2px }
+  .learn-home .dash-kpi-label { letter-spacing: .08em; overflow-wrap: anywhere }
+  .learn-home .dash-kpi-value { font-size: 22px }
+  .learn-home .dash-kpi-sub { min-block-size: 0; font-size: 11px; line-height: 1.35; overflow-wrap: anywhere }
+}
 .learn-home .dash-panel-head { align-items: center }
 .learn-home .dash-panel-title { margin: 0; font-weight: 400 }
 .learn-home .learn-continue { margin-block-start: 14px }

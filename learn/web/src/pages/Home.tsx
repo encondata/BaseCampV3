@@ -9,30 +9,17 @@ import { Link } from 'react-router-dom';
 
 import { useAuth } from '@portal/auth/AuthContext';
 
+import EmptyState, { CHECK, DOCS, LOCK } from '../components/EmptyState';
 import HistoryList from '../components/HistoryList';
 import LoadState from '../components/LoadState';
 import TaskRow from '../components/TaskRow';
-import Icon from '../layout/Icon';
 import { dueDay, signedDay } from '../lib/format';
 import { t, useLang } from '../lib/i18n';
 import { learnerName, useLearnerData } from '../lib/learner';
 import { getToken } from '../lib/session';
 import type { TrainingItem } from '../lib/training';
 
-const CHECK = 'M8.5 12.2l2.4 2.4 4.7-4.9M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17z';
-const LOCK = 'M5 11h14v9H5zM8 11V8a4 4 0 0 1 8 0v3';
-const DOCS = 'M7 3.5h7l4 4V20.5H7zM14 3.5v4h4M9.5 12.5h5M9.5 16h5';
 const LIMIT = 5;
-
-function Empty({ icon, title, hint }: { icon: string; title: string; hint: string }) {
-  return (
-    <div className="learn-empty">
-      <span className="learn-empty-icon"><Icon d={icon} /></span>
-      <div className="dash-panel-empty">{title}</div>
-      <p className="learn-empty-hint">{hint}</p>
-    </div>
-  );
-}
 
 function Panel({ title, link, className, children }: {
   title: string; link?: ReactNode; className?: string; children: ReactNode;
@@ -123,8 +110,8 @@ export default function Home() {
             {!next
               ? open.length > 0
                 // everything left is locked (a quiz lock, say): not "nothing to sign"
-                ? <Empty icon={LOCK} title={t('home.lockedTitle')} hint={t('home.lockedHint')} />
-                : <Empty icon={CHECK} title={t('home.upNextEmpty')} hint={t('home.upNextEmptyHint')} />
+                ? <EmptyState icon={LOCK} title={t('home.lockedTitle')} hint={t('home.lockedHint')} />
+                : <EmptyState icon={CHECK} title={t('home.upNextEmpty')} hint={t('home.upNextEmptyHint')} />
               : (
                 <>
                   <ul className="learn-tasks">
@@ -146,7 +133,7 @@ export default function Home() {
               ? <HistoryList items={recent} from="/home" />
               : history.loading && !signed
                 ? <p className="learn-note" aria-live="polite">{t('common.loading')}</p>
-                : <Empty icon={DOCS} title={t('home.recentEmpty')} hint={t('home.recentEmptyHint')} />}
+                : <EmptyState icon={DOCS} title={t('home.recentEmpty')} hint={t('home.recentEmptyHint')} />}
           </Panel>
         </div>
       )}

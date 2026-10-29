@@ -61,7 +61,10 @@ describe('History', () => {
 
   it('says so when nothing is signed yet', async () => {
     renderHistory([]);
-    expect(await screen.findByText('Nothing signed yet.')).toBeTruthy();
+    const title = await screen.findByText('Nothing signed yet.');
+    expect(title.closest('.learn-empty')).not.toBeNull();
+    expect(title.closest('.dash-panel')).not.toBeNull();
+    expect(screen.getByText('Every document you sign stays here so you can reopen it any time.')).toBeTruthy();
     expect(screen.queryByRole('listitem')).toBeNull();
   });
 

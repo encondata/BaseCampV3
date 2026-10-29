@@ -69,6 +69,7 @@ export const en = {
   'training.locked': 'Locked',
   'training.continue': 'Continue: {title}',
   'training.caughtUp': "You're all caught up.",
+  'training.caughtUpHint': 'New training shows up here as soon as it is assigned to you.',
   'training.showCode': 'Show my time clock code',
 
   'home.title': 'Welcome back, {name}',

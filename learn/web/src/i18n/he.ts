@@ -70,6 +70,7 @@ export const he: Dictionary = {
   'training.locked': 'נעול',
   'training.continue': 'המשך: {title}',
   'training.caughtUp': 'סיימתם הכול.',
+  'training.caughtUpHint': 'הדרכה חדשה תופיע כאן מיד כשתוקצה לכם.',
   'training.showCode': 'הצגת קוד שעון הנוכחות',
 
   'home.title': 'ברוכים השבים, {name}',

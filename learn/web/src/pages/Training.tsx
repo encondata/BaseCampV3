@@ -9,6 +9,7 @@ import { Link } from 'react-router-dom';
 
 import { useAuth } from '@portal/auth/AuthContext';
 
+import EmptyState, { CHECK } from '../components/EmptyState';
 import HistoryList from '../components/HistoryList';
 import LoadState from '../components/LoadState';
 import ProgressBar from '../components/ProgressBar';
@@ -42,7 +43,11 @@ export default function Training() {
       <div className="learn-list-body">
         {!data && <LoadState error={error} onRetry={() => { reload(); hist.reload(); }} />}
 
-        {data && settled && data.groups.length === 0 && <p className="learn-note">{t('training.caughtUp')}</p>}
+        {data && settled && data.groups.length === 0 && (
+          <div className="dash-panel">
+            <EmptyState icon={CHECK} title={t('training.caughtUp')} hint={t('training.caughtUpHint')} />
+          </div>
+        )}
         {data && settled && data.groups.length === 0 && history.length > 0 && (
           <section className="learn-group">
             <h2 className="eyebrow">{t('history.title')}</h2>

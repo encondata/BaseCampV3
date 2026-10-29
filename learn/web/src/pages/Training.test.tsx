@@ -132,8 +132,12 @@ describe('Training', () => {
   it('says so when nothing is assigned', async () => {
     api({ groups: [], complete: false, badge_uid: null });
     renderTraining();
-    expect(await screen.findByText("You're all caught up.")).toBeTruthy();
+    const title = await screen.findByText("You're all caught up.");
     expect(screen.queryByRole('link', { name: /^Continue/ })).toBeNull();
+    // an intentional empty state in a card, not a bare line
+    expect(title.closest('.learn-empty')).not.toBeNull();
+    expect(title.closest('.dash-panel')).not.toBeNull();
+    expect(screen.getByText('New training shows up here as soon as it is assigned to you.')).toBeTruthy();
   });
 
   it('offers the time clock code once everything is signed', async () => {

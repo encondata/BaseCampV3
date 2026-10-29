@@ -69,6 +69,7 @@ export const ja: Dictionary = {
   'training.locked': 'ロック中',
   'training.continue': '続ける: {title}',
   'training.caughtUp': 'すべて完了しています。',
+  'training.caughtUpHint': '新しい研修が割り当てられると、ここに表示されます。',
   'training.showCode': 'タイムクロック用コードを表示',
 
   'home.title': 'おかえりなさい、{name} さん',
