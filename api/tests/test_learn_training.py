@@ -446,3 +446,80 @@ async def test_enforce_order_locks_later_items(client, db, seeded_user):
     await client.get(f"/learn/assignments/{b.id}", headers=hdrs)
     assert (await client.post(f"/learn/assignments/{b.id}/sign", headers=hdrs,
                               json=SIGN)).status_code == 200
+
+
+# ── history ──────────────────────────────────────────────────────────
+
+
+async def _sign(client, hdrs, row):
+    r = await client.post(f"/learn/assignments/{row.id}/sign", headers=hdrs, json=SIGN)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def test_history_lists_own_signoffs_newest_first(client, db, seeded_user):
+    safety, nda, open_doc = (await _plain_doc(db, "Site safety"), await _plain_doc(db, "Acme NDA"),
+                             await _plain_doc(db, "Still open"))
+    move = await _initiative(db, "Acme move")
+    wanda, hdrs = await _learner(db)
+    otto, otto_hdrs = await _learner(db, "Otto", "Other")
+    first = await _assign(db, wanda, safety)
+    second = await _assign(db, wanda, nda, initiative=move)
+    await _assign(db, wanda, open_doc)
+    other = await _assign(db, otto, safety)
+    for who, row in ((hdrs, first), (hdrs, second), (otto_hdrs, other)):
+        await _sign(client, who, row)
+
+    r = await client.get("/learn/history", headers=hdrs)
+    assert r.status_code == 200, r.text
+    rows = r.json()
+    assert [x["title"] for x in rows] == ["Acme NDA", "Site safety"]
+    nda_row, safety_row = rows
+    assert nda_row["initiative"] == {"id": str(move.id), "name": "Acme move"}
+    assert safety_row["initiative"] is None
+    assert nda_row["assignment_id"] == str(second.id)
+    assert safety_row["assignment_id"] == str(first.id)
+    for x in rows:
+        assert (x["version_no"], x["language"], x["newer_version"]) == (1, "en", False)
+        assert x["signed_at"]
+    assert (await client.get("/learn/history")).status_code == 401
+
+
+async def test_history_keeps_old_version_and_ended_moves(client, db, seeded_user):
+    doc = await _plain_doc(db, "Site safety")
+    gone = await _plain_doc(db, "Withdrawn")
+    ended = await _initiative(db, "Old move", start=TODAY - timedelta(days=20),
+                              end=TODAY - timedelta(days=5))
+    wanda, hdrs = await _learner(db)
+    signed = await _assign(db, wanda, doc, initiative=ended)
+    cancelled = await _assign(db, wanda, gone)
+    await _sign(client, hdrs, signed)
+    await _sign(client, hdrs, cancelled)
+    (await _fresh(db, cancelled)).status = "cancelled"
+    await db.commit()
+
+    doc.title = "Site safety v2"
+    await _publish(db, doc)
+    await _assign(db, wanda, doc)                 # the v2 assignment, general training
+
+    groups = (await client.get("/learn/training", headers=hdrs)).json()["groups"]
+    assert [g["initiative"] for g in groups] == [None]
+
+    [row] = (await client.get("/learn/history", headers=hdrs)).json()
+    assert row["assignment_id"] == str(signed.id)
+    assert (row["title"], row["version_no"], row["newer_version"]) == ("Site safety", 1, True)
+    assert row["initiative"]["name"] == "Old move"
+
+
+async def test_read_signed_assignment_reports_signed_at(client, db, seeded_user):
+    doc = await _plain_doc(db)
+    wanda, hdrs = await _learner(db)
+    row = await _assign(db, wanda, doc)
+    before = (await client.get(f"/learn/assignments/{row.id}", headers=hdrs)).json()
+    assert before["signed_at"] is None
+
+    signed = await _sign(client, hdrs, row)
+    await _publish(db, doc)
+    after = (await client.get(f"/learn/assignments/{row.id}", headers=hdrs)).json()
+    assert after["signed_at"] == signed["signed_at"]
+    assert after["version_no"] == 1

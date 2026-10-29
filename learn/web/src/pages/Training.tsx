@@ -2,11 +2,13 @@
  *  block per scope (an initiative, or the general set) with its progress
  *  and its documents, and a button into the next unsigned one. When
  *  everything is signed the button takes the worker to their time clock
- *  code. */
+ *  code. What they signed is "Completed training": listed here when nothing
+ *  else is open, otherwise a link to its own page. */
 import { Link } from 'react-router-dom';
 
 import { useAuth } from '@portal/auth/AuthContext';
 
+import HistoryList from '../components/HistoryList';
 import LanguageLinks from '../components/LanguageLinks';
 import LoadState from '../components/LoadState';
 import ProgressBar from '../components/ProgressBar';
@@ -14,13 +16,18 @@ import TaskRow from '../components/TaskRow';
 import { dueDay } from '../lib/format';
 import { t, useLang } from '../lib/i18n';
 import { getFirstName } from '../lib/session';
-import { getTraining, type TrainingItem } from '../lib/training';
+import { getHistory, getTraining, type TrainingItem } from '../lib/training';
 import { useLoad } from '../lib/useLoad';
 
 export default function Training() {
   useLang();
   const { person } = useAuth();
   const { data, error, reload } = useLoad(getTraining, []);
+  // a failed history load only hides the history parts
+  const hist = useLoad(getHistory, []);
+  const history = hist.data ?? [];
+  // the history parts wait for the load to settle, so they don't pop in late
+  const settled = !hist.loading;
   const first = getFirstName() || person?.first_name || '';
 
   // the next document: the first open, unlocked one, in list order
@@ -35,9 +42,15 @@ export default function Training() {
       </div>
       <h1 className="learn-hi">{first ? t('training.hi', { name: first }) : t('training.hiNoName')}</h1>
 
-      {!data && <LoadState error={error} onRetry={reload} />}
+      {!data && <LoadState error={error} onRetry={() => { reload(); hist.reload(); }} />}
 
-      {data && data.groups.length === 0 && <p className="learn-note">{t('training.caughtUp')}</p>}
+      {data && settled && data.groups.length === 0 && <p className="learn-note">{t('training.caughtUp')}</p>}
+      {data && settled && data.groups.length === 0 && history.length > 0 && (
+        <section className="learn-group">
+          <h2 className="eyebrow">{t('history.title')}</h2>
+          <HistoryList items={history} />
+        </section>
+      )}
 
       {data?.groups.map((g) => {
         const done = g.items.filter((i) => i.status === 'signed').length;
@@ -67,6 +80,9 @@ export default function Training() {
       )}
       {data?.complete && data.badge_uid && (
         <Link className="learn-cta" to="/done">{t('training.showCode')}</Link>
+      )}
+      {data && settled && data.groups.length > 0 && history.length > 0 && (
+        <Link className="learn-link" to="/history">{t('history.link', { n: history.length })}</Link>
       )}
 
       <LanguageLinks />

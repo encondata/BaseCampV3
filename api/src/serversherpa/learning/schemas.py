@@ -597,6 +597,22 @@ class AssignmentReadOut(BaseModel):
     min_read_seconds: int | None
     has_quiz: bool
     quiz_passed: bool
+    signed_at: datetime | None      # set once the assignment is signed (review mode)
+
+
+class HistoryInitiativeOut(BaseModel):
+    id: uuid.UUID
+    name: str
+
+
+class HistoryItemOut(BaseModel):
+    assignment_id: uuid.UUID
+    title: str                      # of the version signed
+    version_no: int
+    initiative: HistoryInitiativeOut | None
+    signed_at: datetime
+    language: str
+    newer_version: bool             # the document has a newer published version
 
 
 class QuizChoiceOut(BaseModel):

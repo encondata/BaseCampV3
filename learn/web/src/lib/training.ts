@@ -1,4 +1,4 @@
-/** The signed-in worker's calls: their training, one assignment to read,
+/** The signed-in worker's calls: their training and history, one assignment to read,
  *  its quiz and the sign-off. All go through `learnFetch`; a failure is an
  *  ApiError (status + detail.code), a network failure code `network`. */
 import { ApiError } from '@portal/lib/api';
@@ -39,6 +39,20 @@ export interface AssignmentRead {
   min_read_seconds: number | null;
   has_quiz: boolean;
   quiz_passed: boolean;
+  /** Set once signed: the document is then read-only, at the version signed. */
+  signed_at: string | null;
+}
+
+/** One sign-off in the worker's history, newest first. */
+export interface HistoryItem {
+  assignment_id: string;
+  title: string;
+  version_no: number;
+  initiative: { id: string; name: string } | null;
+  signed_at: string;
+  language: string;
+  /** A newer version of the document was published since. */
+  newer_version: boolean;
 }
 
 export interface QuizQuestion {
@@ -102,6 +116,8 @@ const lang = (l: string) => `?lang=${encodeURIComponent(l)}`;
 const seg = (id: string) => encodeURIComponent(id);
 
 export const getTraining = () => call<Training>('/learn/training');
+
+export const getHistory = () => call<HistoryItem[]>('/learn/history');
 
 export const getAssignment = (id: string, l: string) =>
   call<AssignmentRead>(`/learn/assignments/${seg(id)}${lang(l)}`);

@@ -12,9 +12,13 @@
  *  gates don't start over (the server still counts from when it was
  *  opened). The sign-off names the version shown; if a newer one was
  *  published meanwhile the server refuses (409 `version_changed`) and the
- *  page loads the new version to read. */
+ *  page loads the new version to read.
+ *
+ *  A signed document opens read-only (from the list or the history): the
+ *  header, a "You signed this on …" notice and the text at the version
+ *  that was signed, then Back — no agreement, signature, quiz or timer. */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
+import { Link, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import { ApiError } from '@portal/lib/api';
 
@@ -22,7 +26,7 @@ import LoadState from '../components/LoadState';
 import SignaturePad from '../components/SignaturePad';
 import type { MessageKey } from '../i18n/en';
 import { errorKey } from '../lib/errors';
-import { mmss } from '../lib/format';
+import { mmss, signedDay } from '../lib/format';
 import { isUuid } from '../lib/ids';
 import { getLang, isRtl, t, useLang } from '../lib/i18n';
 import { getAssignment, getTraining, signAssignment, type AssignmentRead } from '../lib/training';
@@ -47,6 +51,9 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
   changed: boolean; onVersionChanged: () => void;
 }) {
   const navigate = useNavigate();
+  const from = (useLocation().state as { from?: string } | null)?.from;
+  // signed: read-only, so none of the sign-off gating below applies
+  const review = !!doc.signed_at;
   const box = useRef<HTMLDivElement>(null);
   const started = useRef(Date.now());
   const [now, setNow] = useState(Date.now());
@@ -91,7 +98,7 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
   const minSeconds = alreadyRead ? 0 : doc.min_read_seconds ?? 0;
   const elapsed = Math.floor((now - started.current) / 1000);
   const left = Math.max(0, minSeconds - elapsed, Math.ceil((holdUntil - now) / 1000));
-  const ready = scrolled && left <= 0;
+  const ready = review || (scrolled && left <= 0);
   useEffect(() => {
     if (ready) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -147,10 +154,11 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
   };
 
   const rtl = isRtl(doc.language);
+  const back = from === '/history' ? '/history' : '/training';
   return (
     <>
       <div className="learn-readhead">
-        <Link to="/training" className="learn-backlink" aria-label={t('common.back')}>
+        <Link to={back} className="learn-backlink" aria-label={t('common.back')}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
                strokeLinejoin="round" aria-hidden="true"><path d="M19 12H5m6-6-6 6 6 6" /></svg>
         </Link>
@@ -163,8 +171,13 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
         </div>
       </div>
 
+      {review && doc.signed_at && (
+        <p className="learn-banner">
+          {t('reader.signedOn', { date: signedDay(doc.signed_at), v: doc.version_no })}
+        </p>
+      )}
       {doc.fallback && <p className="learn-banner">{t('reader.fallback')}</p>}
-      {doc.change_note && <p className="learn-banner">{t('reader.changed', { note: doc.change_note })}</p>}
+      {!review && doc.change_note && <p className="learn-banner">{t('reader.changed', { note: doc.change_note })}</p>}
 
       <div ref={box} className="learn-doc" role="region" aria-label={t('reader.body')} tabIndex={0}
            lang={doc.language} dir={rtl ? 'rtl' : 'ltr'} onScroll={checkEnd} onLoadCapture={checkFit}>
@@ -172,7 +185,7 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
         <div dangerouslySetInnerHTML={{ __html: doc.html }} />
       </div>
 
-      {!needsQuiz && !alreadyRead && (doc.require_scroll || minSeconds > 0) && scrolled && left <= 0 && (
+      {!review && !needsQuiz && !alreadyRead && (doc.require_scroll || minSeconds > 0) && scrolled && left <= 0 && (
         <p className="learn-readdone">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
                strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="m8 12.5 3 3 5-6" /></svg>
@@ -180,7 +193,9 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
         </p>
       )}
 
-      {needsQuiz ? (
+      {review ? (
+        <Link className="learn-cta" to={back}>{t('reader.back')}</Link>
+      ) : needsQuiz ? (
         <Link className="learn-cta" to={`/training/${encodeURIComponent(id)}/quiz`}>{t('reader.takeQuiz')}</Link>
       ) : (
         <>

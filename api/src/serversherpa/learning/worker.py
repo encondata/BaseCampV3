@@ -264,6 +264,37 @@ async def training(db: AsyncSession, person_id: uuid.UUID) -> dict:
     return {"groups": groups, "complete": complete, "badge_uid": badge_uid}
 
 
+async def history(db: AsyncSession, person_id: uuid.UUID) -> list[dict]:
+    """Everything the person has signed, newest first: one row per signed
+    assignment at the version and language it was signed in. Unlike
+    `training`, nothing drops off when a move ends or a newer version is
+    assigned; `newer_version` flags that the document has moved on."""
+    rows = (await db.execute(
+        select(LearningAssignment.id, LearningSignoff.signed_at, LearningSignoff.language,
+               LearningDocumentVersion.title, LearningDocumentVersion.version_no,
+               LearningDocument.current_version_id, Initiative.id, Initiative.name)
+        .join(LearningSignoff, LearningSignoff.id == LearningAssignment.signoff_id)
+        .join(LearningDocumentVersion, LearningDocumentVersion.id == LearningSignoff.version_id)
+        .join(LearningDocument, LearningDocument.id == LearningAssignment.document_id)
+        .outerjoin(Initiative, Initiative.id == LearningAssignment.initiative_id)
+        .where(LearningAssignment.person_id == person_id,
+               LearningAssignment.status == "signed"))).all()
+    current_ids = {r[5] for r in rows if r[5]}
+    current_nos = dict((await db.execute(
+        select(LearningDocumentVersion.id, LearningDocumentVersion.version_no)
+        .where(LearningDocumentVersion.id.in_(current_ids)))).all()) if current_ids else {}
+    out = [{
+        "assignment_id": assignment_id, "title": title, "version_no": version_no,
+        "initiative": {"id": initiative_id, "name": initiative_name} if initiative_id else None,
+        "signed_at": signed_at, "language": language,
+        "newer_version": current_id is not None and current_nos.get(current_id, 0) > version_no,
+    } for (assignment_id, signed_at, language, title, version_no, current_id,
+           initiative_id, initiative_name) in rows]
+    out.sort(key=lambda r: r["title"].casefold())
+    out.sort(key=lambda r: r["signed_at"], reverse=True)
+    return out
+
+
 # ── reading ──────────────────────────────────────────────────────────
 
 
@@ -289,6 +320,7 @@ async def read(db: AsyncSession, assignment: LearningAssignment, lang: str | Non
         "sign_style": document.sign_style, "require_scroll": document.require_scroll,
         "min_read_seconds": document.min_read_seconds, "has_quiz": has_quiz,
         "quiz_passed": has_quiz and await quiz.passed(db, assignment.id) is not None,
+        "signed_at": assignment.signed_at if assignment.status == "signed" else None,
     }
 
 

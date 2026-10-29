@@ -57,6 +57,12 @@ export const ko: Dictionary = {
   'training.caughtUp': '모두 완료했습니다.',
   'training.showCode': '타임클록 코드 보기',
 
+  'history.title': '완료한 교육',
+  'history.link': '완료한 교육 ({n})',
+  'history.empty': '아직 서명한 문서가 없습니다.',
+  'history.signed': '{date} 서명 · v{v}',
+  'history.updated': '이후 업데이트됨',
+
   'reader.position': '{n}개 중 {k}번째 · v{v}',
   'reader.versionOnly': 'v{v}',
   'reader.fallback': '이 문서는 아직 번역되지 않았습니다. 영어 버전을 보고 있습니다.',
@@ -70,6 +76,8 @@ export const ko: Dictionary = {
   'reader.sign': '서명하고 계속',
   'reader.takeQuiz': '퀴즈 풀기',
   'reader.signing': '서명하는 중…',
+  'reader.signedOn': '{date}에 서명했습니다 (버전 {v}).',
+  'reader.back': '뒤로',
   'reader.versionChanged': '이 문서가 방금 업데이트되었습니다. 새 버전을 읽은 후 서명해 주세요.',
 
   'sign.mustAgree': '읽고 동의했다는 뜻으로 확인란을 선택하세요.',
