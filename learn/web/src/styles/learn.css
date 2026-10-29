@@ -69,15 +69,18 @@ body { background: #FFF9F2; }
 .login-shell.login-light .learn-start-msg { margin: 14px 0 0; font-size: 16px; line-height: 1.5 }
 .login-shell.login-light .learn-start-btn { margin-block-start: 22px; text-decoration: none }
 
-/* ---------- signed-in pages and the error screen ---------- */
-.learn-page, .learn-crash {
+/* ---------- the error screen, and the eyebrow the worker screens share ---------- */
+.learn-crash {
   max-inline-size: 640px; margin: 0 auto; padding: 24px 16px;
   color: #0F172A; font-family: 'Geologica', -apple-system, BlinkMacSystemFont, sans-serif;
 }
-.learn-page .eyebrow, .learn-crash .eyebrow {
+.learn-crash .eyebrow, .learn-page .eyebrow, .portal-page .learn-list-body .eyebrow {
   font-family: 'Fragment Mono', monospace; font-size: 12px; letter-spacing: .12em;
   text-transform: uppercase; color: #64748B;
 }
+/* a group's name in the list is a quiet label, not the portal's page-head eyebrow */
+.portal-page .learn-list-body .eyebrow { display: block }
+.portal-page .learn-list-body .eyebrow::after { content: none }
 .learn-crash pre { white-space: pre-wrap; font-size: 12px; color: #64748B }
 .learn-crash button {
   padding: 10px 18px; border: 0; border-radius: 10px; cursor: pointer;
@@ -85,15 +88,19 @@ body { background: #FFF9F2; }
 }
 
 /* ---------- training list, reader, quiz and done (worker screens) ---------- */
-.learn-page, .learn-home {
+.learn-page, .learn-home, .learn-list {
   --l-ink: #0F172A; --l-mute: #64748B; --l-line: #E2E8F0; --l-orange: #FF6A00;
   --l-orange-bg: #FFF1E3; --l-green: #15803D; --l-green-bg: #E6F6EC; --l-red: #B91C1C;
 }
+/* Training and History: the portal page head, then the list held to a
+   readable width (the page itself takes the full window like Home) */
+.learn-list-body { display: flex; flex-direction: column; gap: 12px; max-inline-size: 760px; margin-block-start: 18px }
+/* the document, quiz and done screens: their own header, centered in the shell's main column */
 .learn-page {
-  display: flex; flex-direction: column; gap: 12px; min-block-size: 100dvh;
+  display: flex; flex-direction: column; gap: 12px;
+  max-inline-size: 760px; margin-inline: auto; padding: 24px 16px;
+  color: var(--l-ink); font-family: 'Geologica', -apple-system, BlinkMacSystemFont, sans-serif;
 }
-.learn-top { display: flex; align-items: center; gap: 8px; font-weight: 500; font-size: 14px }
-.learn-mark { inline-size: 24px; block-size: 24px; border-radius: 8px; background: var(--l-orange) }
 .learn-hi { margin: 0; font-size: 22px; font-weight: 500; letter-spacing: -.01em }
 .learn-sub { margin: 0; font-size: 13px; color: var(--l-mute); line-height: 1.5 }
 .learn-note { margin: 12px 0; color: var(--l-mute); font-size: 14px }
@@ -136,16 +143,6 @@ body { background: #FFF9F2; }
   border: 0; background: transparent; padding: 0 8px; cursor: pointer; font: inherit; font-size: 13px;
   color: #B45309; text-decoration: none; align-self: center;
 }
-.learn-page .learn-langs {
-  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
-  gap: 6px 14px; margin-block-start: 14px; color: var(--l-mute); font-size: 14px;
-}
-.learn-page .learn-langs svg { inline-size: 16px; block-size: 16px; flex: none }
-.learn-page .learn-langs button {
-  border: 0; background: transparent; padding: 2px 0; cursor: pointer; font: inherit; color: inherit;
-  border-block-end: 1px solid transparent;
-}
-.learn-page .learn-langs button.on { color: var(--l-ink); border-block-end-color: var(--l-orange) }
 
 /* reader and quiz */
 .learn-readhead { display: flex; align-items: center; gap: 10px }
@@ -228,9 +225,6 @@ body { background: #FFF9F2; }
 @supports not selector(::-webkit-scrollbar) {
   .learn-shell .portal-main { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text-mute) 35%, transparent) transparent }
 }
-
-/* the worker screens sized themselves to the window; in the shell the main column scrolls them */
-.learn-shell .learn-page { min-block-size: 0 }
 
 /* right to left: the nav docks on the right (the grid follows dir), so its
    edge line, active marker, chevrons, overlay and menus mirror */
