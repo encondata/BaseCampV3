@@ -13,6 +13,7 @@ from serversherpa.learning.models import LearningDocument
 from serversherpa.learning.schemas import (
     LANG_PATTERN,
     AssignmentReadOut,
+    HistoryItemOut,
     QuizAnswersIn,
     QuizQuestionOut,
     QuizResultOut,
@@ -41,6 +42,11 @@ async def _quiz_document(db, assignment) -> LearningDocument:
 @router.get("/training", response_model=TrainingOut)
 async def my_training(actor: CurrentLearner, db: DbSession) -> dict:
     return await worker.training(db, actor.person_id)
+
+
+@router.get("/history", response_model=list[HistoryItemOut])
+async def my_history(actor: CurrentLearner, db: DbSession) -> list[dict]:
+    return await worker.history(db, actor.person_id)
 
 
 @router.get("/assignments/{assignment_id}", response_model=AssignmentReadOut)
