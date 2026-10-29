@@ -58,3 +58,14 @@ it('carries the change reason and expiry date, and clearMustChange clears them',
   expect(ctx.mustChangeReason).toBeNull();
   expect(ctx.passwordExpiresAt).toBeNull();
 });
+
+it('logout signs out locally even when the server can not be reached', async () => {
+  api.loginRequest.mockResolvedValue(SESSION);
+  api.logoutRequest.mockRejectedValue(new TypeError('Failed to fetch'));
+  render(<AuthProvider><Probe /></AuthProvider>);
+  await act(async () => {});
+  await act(() => ctx.login('a@b.c', 'pw'));
+  expect(ctx.status).toBe('authed');
+  await act(() => ctx.logout().catch(() => {}));
+  expect(ctx.status).toBe('anon');
+});
