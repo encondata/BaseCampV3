@@ -85,9 +85,11 @@ body { background: #FFF9F2; }
 }
 
 /* ---------- training list, reader, quiz and done (worker screens) ---------- */
-.learn-page {
+.learn-page, .learn-home {
   --l-ink: #0F172A; --l-mute: #64748B; --l-line: #E2E8F0; --l-orange: #FF6A00;
   --l-orange-bg: #FFF1E3; --l-green: #15803D; --l-green-bg: #E6F6EC; --l-red: #B91C1C;
+}
+.learn-page {
   display: flex; flex-direction: column; gap: 12px; min-block-size: 100dvh;
 }
 .learn-top { display: flex; align-items: center; gap: 8px; font-weight: 500; font-size: 14px }
@@ -244,3 +246,30 @@ body { background: #FFF9F2; }
 @media (max-width: 900px) {
   [dir='rtl'] .learn-shell .portal-nav.docked { border-left-width: 0 }
 }
+
+/* ---------- Home (the portal's dashboard idiom) ---------- */
+/* the two lists sit side by side down to the portal's mobile breakpoint, not the dashboard's 1160px */
+.learn-home .dash-span-6 { grid-column: span 6 }
+.learn-home .dash-span-12 { grid-column: span 12 }
+@media (max-width: 900px) {
+  .learn-home .dash-span-6 { grid-column: span 12 }
+}
+.learn-home .dash-panel-head { align-items: center }
+.learn-home .dash-panel-title { margin: 0; font-weight: 400 }
+.learn-home .learn-continue { margin-block-start: 14px }
+.learn-home .learn-note { margin: 0 }
+.learn-clock { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap }
+.learn-clock p { margin: 0; font-size: 14px; color: var(--text-dark); flex: 1 1 260px }
+.learn-clock .learn-cta { inline-size: auto; padding-inline: 22px; flex: none }
+/* an empty panel: a quiet icon, a title line and a hint, centered */
+.learn-empty {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; padding: 22px 12px; text-align: center;
+}
+.learn-empty-icon {
+  inline-size: 44px; block-size: 44px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--l-orange-bg); color: var(--l-orange); margin-block-end: 6px;
+}
+.learn-empty-icon svg { inline-size: 22px; block-size: 22px }
+.learn-empty .dash-panel-empty { padding: 0; font-size: 14px; font-weight: 500; color: var(--text-dark) }
+.learn-empty-hint { margin: 0; max-inline-size: 34ch; font-size: 12.5px; line-height: 1.5; color: var(--text-mute) }

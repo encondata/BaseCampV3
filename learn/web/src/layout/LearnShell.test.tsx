@@ -270,7 +270,7 @@ describe('App routes', () => {
         <Where />
       </MemoryRouter>,
     );
-    expect(await screen.findByRole('heading', { name: 'Home' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Welcome back, Wanda' })).toBeTruthy();
     expect(screen.getByTestId('where').textContent).toBe('/home');
   });
 });
