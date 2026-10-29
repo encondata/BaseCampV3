@@ -1,11 +1,14 @@
 /** The learn site's top bar, in the portal's `topbar` markup: the
  *  hamburger while the nav is hidden, crumbs (Learning / the page on
  *  screen; a document and its quiz sit under My training) and the
- *  language menu, shown when more than one language is offered. */
+ *  language menu, shown when more than one language is offered — but not
+ *  on a document or its quiz, where switching reloads the page and loses
+ *  the agreement, signature, timers and answers. */
 import { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 
 import { setLang, t, useLang, useOffered } from '../lib/i18n';
+import { isDocumentPath } from '../lib/learner';
 import Icon from './Icon';
 import { learnNavSections } from './learnNav';
 
@@ -72,7 +75,7 @@ export default function LearnTopbar({ onOpenNav }: { onOpenNav: (() => void) | n
         {page && <><span className="crumb-sep">/</span><b>{page.label}</b></>}
       </div>
       <div className="tb-actions">
-        <LanguageMenu />
+        {!isDocumentPath(pathname) && <LanguageMenu />}
       </div>
     </header>
   );

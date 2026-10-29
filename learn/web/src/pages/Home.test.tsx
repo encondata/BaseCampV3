@@ -29,10 +29,13 @@ const hist = (n: number, over: Record<string, unknown> = {}) => ({
 
 const EMPTY = { groups: [], complete: false, badge_uid: null };
 
-/** Answers /learn/history with `history` (a Response for a failure) and everything else with `training`. */
-function api(training: unknown, history: unknown[] | Response = []) {
+/** Answers /learn/history with `history` (a Response for a failure, a
+ *  promise for one still loading) and everything else with `training`. */
+function api(training: unknown, history: unknown[] | Response | Promise<Response> = []) {
   vi.stubGlobal('fetch', vi.fn(async (url: string, _init?: RequestInit) => {
-    if (url.endsWith('/learn/history')) return history instanceof Response ? history : json(200, history);
+    if (url.endsWith('/learn/history')) {
+      return history instanceof Response || history instanceof Promise ? history : json(200, history);
+    }
     return json(200, training);
   }));
 }
@@ -221,6 +224,13 @@ describe('Home', () => {
     expect(await screen.findByText('2 to sign')).toBeTruthy();
     expect(await screen.findByText('Your signed training will appear here.')).toBeTruthy();
     expect(tile('Completed')).toEqual({ value: '—', sub: '—' });
+  });
+
+  it('leaves the Completed tile blank while the history loads', async () => {
+    api(OPEN, new Promise<Response>(() => {}));
+    renderHome();
+    expect(await screen.findByText('2 to sign')).toBeTruthy();
+    expect(tile('Completed')).toEqual({ value: '', sub: '' });
   });
 
   it('offers the time clock code once everything is signed', async () => {

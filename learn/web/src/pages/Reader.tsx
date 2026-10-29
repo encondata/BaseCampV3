@@ -29,6 +29,7 @@ import { errorKey } from '../lib/errors';
 import { mmss, signedDay } from '../lib/format';
 import { isUuid } from '../lib/ids';
 import { getLang, isRtl, t, useLang } from '../lib/i18n';
+import { useMarkSigned } from '../lib/learner';
 import { getAssignment, getTraining, signAssignment, type AssignmentRead } from '../lib/training';
 import { useLoad } from '../lib/useLoad';
 
@@ -51,6 +52,7 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
   changed: boolean; onVersionChanged: () => void;
 }) {
   const navigate = useNavigate();
+  const markSigned = useMarkSigned();
   const from = (useLocation().state as { from?: string } | null)?.from;
   // signed: read-only, so none of the sign-off gating below applies
   const review = !!doc.signed_at;
@@ -130,6 +132,8 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
         scrolled_to_end: scrolled,
         version_no: doc.version_no,
       });
+      // the list shows it signed at once; the shell's reload on leaving confirms it
+      markSigned(id, out.signed_at, out.complete);
       navigate(out.complete ? '/done' : '/training', { replace: true });
     } catch (err) {
       setBusy(false);

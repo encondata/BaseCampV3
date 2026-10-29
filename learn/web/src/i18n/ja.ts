@@ -86,7 +86,7 @@ export const ja: Dictionary = {
   'home.generalOnly': '一般研修のみ',
   'home.noneAssigned': '割り当てなし',
   'home.upNext': '次の研修',
-  'home.allTraining': '自分の研修',
+  'home.allTraining': '研修一覧',
   'home.upNextEmpty': '今、署名するものはありません。',
   'home.upNextEmptyHint': '新しい研修が割り当てられると、ここに表示されます。',
   'home.recent': '最近完了した研修',

@@ -3,14 +3,16 @@
  *  show: learnFetch is already sending the worker back to sign-in.
  *  Options: `enabled: false` loads nothing (someone else has the data);
  *  `keepData` keeps the last answer on screen while a reload runs, and
- *  through a failed one (the error shows only when there is no answer). */
+ *  through a failed one (the error shows only when there is no answer).
+ *  `patch` edits the answer in place (a change the caller already knows
+ *  of, ahead of the next load). */
 import { useCallback, useEffect, useState } from 'react';
 
 import { ApiError } from '@portal/lib/api';
 
 interface Loaded<T> { data: T | null; error: ApiError | null; loading: boolean }
 
-export type UseLoad<T> = Loaded<T> & { reload: () => void };
+export type UseLoad<T> = Loaded<T> & { reload: () => void; patch: (edit: (data: T) => T) => void };
 
 export interface LoadOptions { enabled?: boolean; keepData?: boolean }
 
@@ -20,6 +22,9 @@ export function useLoad<T>(
   const [state, setState] = useState<Loaded<T>>({ data: null, error: null, loading: true });
   const [round, setRound] = useState(0);
   const reload = useCallback(() => setRound((n) => n + 1), []);
+  const patch = useCallback((edit: (data: T) => T) => {
+    setState((s) => (s.data === null ? s : { ...s, data: edit(s.data) }));
+  }, []);
 
   useEffect(() => {
     if (!enabled) return;
@@ -39,5 +44,5 @@ export function useLoad<T>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, round, enabled, keepData]);
 
-  return { ...state, reload };
+  return { ...state, reload, patch };
 }

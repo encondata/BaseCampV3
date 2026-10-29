@@ -87,7 +87,7 @@ export const he: Dictionary = {
   'home.generalOnly': 'הדרכה כללית בלבד',
   'home.noneAssigned': 'לא הוקצו',
   'home.upNext': 'הבא בתור',
-  'home.allTraining': 'ההדרכות שלי',
+  'home.allTraining': 'ההדרכה שלי',
   'home.upNextEmpty': 'אין כרגע מה לחתום.',
   'home.upNextEmptyHint': 'הדרכה חדשה תופיע כאן מיד כשתוקצה לכם.',
   'home.recent': 'הושלמו לאחרונה',

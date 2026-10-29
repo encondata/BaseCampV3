@@ -93,7 +93,7 @@ export const ko: Dictionary = {
   'home.viewAll': '모두 보기 ({n})',
   'home.recentEmpty': '서명한 교육이 여기에 표시됩니다.',
   'home.recentEmptyHint': '서명한 문서는 여기에 남아 언제든 다시 열 수 있습니다.',
-  'home.timeClock': '교육을 모두 마쳤습니다. 스테이션에서 근태 코드를 보여 주세요.',
+  'home.timeClock': '교육을 모두 마쳤습니다. 스테이션에서 타임클록 코드를 보여 주세요.',
   'home.showCode': '내 코드 보기',
   'home.lockedTitle': '남은 교육이 잠겨 있습니다.',
   'home.lockedHint': '감독자에게 잠금 해제를 요청하세요.',

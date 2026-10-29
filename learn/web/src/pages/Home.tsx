@@ -2,7 +2,8 @@
  *  Three tiles (to sign, completed, moves), then what to do next (open,
  *  unlocked documents, with a Continue button) beside what was signed
  *  lately. Built from the shared training and history loads; a failed
- *  history load only empties its panel and dashes its tile. Once
+ *  history load only empties its panel and dashes its tile (blank while it
+ *  loads). Once
  *  everything is signed, a panel at the top points to the time clock code. */
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
@@ -82,7 +83,7 @@ export default function Home() {
             </div>
             <div className="dash-kpi">
               <div className="dash-kpi-label">{t('home.kpiCompleted')}</div>
-              <div className="dash-kpi-value">{signed ? signed.length : '—'}</div>
+              <div className="dash-kpi-value">{signed ? signed.length : history.loading ? '' : '—'}</div>
               <div className="dash-kpi-sub">
                 {signed && signed.length > 0
                   ? t('home.lastSigned', { date: signedDay(signed[0].signed_at) })

@@ -56,6 +56,7 @@ function renderShell(at: string) {
           <Route path="/home" element={<p>home page</p>} />
           <Route path="/training" element={<p>training page</p>} />
           <Route path="/training/:id" element={<Link to="/training">finish reading</Link>} />
+          <Route path="/training/:id/quiz" element={<p>quiz page</p>} />
           <Route path="/history" element={<p>history page</p>} />
           <Route path="/done" element={<p>done page</p>} />
         </Route>
@@ -212,6 +213,21 @@ describe('LearnShell', () => {
     expect(screen.getByTestId('where').textContent).toBe('/');
   });
 
+  it('an account whose sign-out call fails (offline) still lands on sign-in', async () => {
+    const logout = vi.fn(async () => { throw new Error('offline'); });
+    auth.value = {
+      status: 'authed',
+      person: { id: 'p-1', first_name: 'Ana', last_name: 'Ruiz', display_name: 'Ana Ruiz', email: 'ana@example.com', avatar_url: null },
+      logout,
+    };
+    api(OPEN);
+    renderShell('/home');
+    await userEvent.click(within(nav()).getByRole('button', { name: /Ana Ruiz/ }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Sign out' }));
+    expect(logout).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('/'));
+  });
+
   it('on a phone the nav hides behind a hamburger that opens it as an overlay', async () => {
     stubViewport(true);
     setToken('tok', LATER, 'Wanda');
@@ -258,6 +274,22 @@ describe('LearnShell', () => {
     expect(getLang()).toBe('ja');
     expect(screen.queryByRole('menu', { name: /./ })).toBeNull();
   });
+
+  it('hides the language menu on a document and its quiz (switching there would lose the work)', () => {
+    setToken('tok', LATER, 'Wanda');
+    api(OPEN);
+    setOffered([{ code: 'en', rtl: false }, { code: 'ja', rtl: false }]);
+    for (const at of ['/training/a-1', '/training/a-1/quiz']) {
+      const { unmount } = renderShell(at);
+      expect(screen.queryByRole('button', { name: 'Language' })).toBeNull();
+      unmount();
+    }
+    for (const at of ['/home', '/training', '/history', '/done']) {
+      const { unmount } = renderShell(at);
+      expect(screen.getByRole('button', { name: 'Language' })).toBeTruthy();
+      unmount();
+    }
+  });
 });
 
 describe('App routes', () => {
@@ -272,5 +304,105 @@ describe('App routes', () => {
     );
     expect(await screen.findByRole('heading', { name: 'Welcome back, Wanda' })).toBeTruthy();
     expect(screen.getByTestId('where').textContent).toBe('/home');
+  });
+
+  it('a learn token and an account at once: the code session wins on the chip, the menu and Home', async () => {
+    auth.value = {
+      status: 'authed',
+      person: { id: 'p-1', first_name: 'Ana', last_name: 'Ruiz', display_name: 'Ana Ruiz', email: 'ana@example.com', avatar_url: null },
+      logout: async () => {},
+    };
+    setToken('tok', LATER, 'Wanda');
+    api(OPEN);
+    render(
+      <MemoryRouter initialEntries={['/home']}>
+        <App />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByRole('heading', { name: 'Welcome back, Wanda' })).toBeTruthy();
+    const chip = within(nav()).getByRole('button', { name: /Wanda/ });
+    expect(chip.querySelector('.user-name')?.textContent).toBe('Wanda');
+    expect(chip.querySelector('.user-role')?.textContent).toBe('Learning code');
+    await userEvent.click(chip);
+    expect(screen.queryByRole('menuitem', { name: 'Back to portal' })).toBeNull();
+    expect(screen.queryByText('Ana Ruiz')).toBeNull();
+  });
+});
+
+describe('Signing in the shell', () => {
+  const ID = '0b6e5a2c-4f1d-4d57-9a0e-3c1f2a7b8d44';
+  const doc = (id: string, title: string) => ({
+    assignment_id: id, title, status: 'assigned', minutes: 4, has_quiz: false, locked: false, signed_at: null,
+  });
+  const BEFORE = {
+    groups: [{ initiative: null, due_on: null, items: [doc(ID, 'Acme site rules'), doc('a-2', 'Dress code')] }],
+    complete: false, badge_uid: null,
+  };
+  const DOC = {
+    title: 'Acme site rules', html: '<p>Wear your badge.</p>', language: 'en', fallback: false, version_no: 1,
+    change_note: null, sign_style: 'checkbox', require_scroll: false, min_read_seconds: null,
+    has_quiz: false, quiz_passed: false, signed_at: null,
+  };
+
+  const SIGNED_BEFORE = [{
+    assignment_id: 'h-1', title: 'Fire safety', version_no: 1, initiative: null,
+    signed_at: '2026-11-04T15:00:00Z', language: 'en', newer_version: false,
+  }];
+
+  /** The training and history loads answer with `BEFORE` and one signed
+   *  document until the sign-off, then with `reloaded` (a pending promise
+   *  or a failure). */
+  function signingApi(reloaded: () => Response | Promise<Response>) {
+    let signed = false;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === 'POST' && url.endsWith(`/learn/assignments/${ID}/sign`)) {
+        signed = true;
+        return json(200, { signoff_id: 's-1', signed_at: '2026-11-05T10:00:00Z', complete: false });
+      }
+      if (url.endsWith('/learn/training')) return signed ? reloaded() : json(200, BEFORE);
+      if (url.endsWith('/learn/history')) return signed ? reloaded() : json(200, SIGNED_BEFORE);
+      if (url.includes(`/learn/assignments/${ID}`)) return json(200, DOC);
+      if (url.endsWith('/learn/languages')) return json(200, [{ code: 'en', rtl: false }]);
+      return json(404, {});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  /** The signed document is done, and Continue offers the next one. */
+  function expectSigned() {
+    const row = screen.getByText('Acme site rules').closest('li') as HTMLElement;
+    expect(row.className).toContain('done');
+    expect(within(row).getByText(/^Signed /)).toBeTruthy();
+    expect(screen.getByText('1 of 2 done')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Continue: Acme site rules' })).toBeNull();
+    expect(screen.getByRole('link', { name: 'Continue: Dress code' })).toBeTruthy();
+    // the history link doesn't drop out while the history reloads
+    expect(screen.getByRole('link', { name: 'Completed training (1)' })).toBeTruthy();
+  }
+
+  it.each([
+    ['while the reload is pending', () => new Promise<Response>(() => {})],
+    ['after the reload fails', () => json(500, { detail: { code: 'boom' } })],
+  ])('the document just signed shows as signed on My training %s', async (_when, reloaded) => {
+    setToken('tok', LATER, 'Kenji');
+    const fetchMock = signingApi(reloaded);
+    render(
+      <MemoryRouter initialEntries={[`/training/${ID}`]}>
+        <App />
+        <Where />
+      </MemoryRouter>,
+    );
+    await userEvent.click(await screen.findByRole('checkbox'));
+    await userEvent.click(screen.getByRole('button', { name: 'Sign and continue' }));
+    expect(await screen.findByRole('heading', { name: 'My training' })).toBeTruthy();
+    expect(screen.getByTestId('where').textContent).toBe('/training');
+    // from the first frame on My training
+    expectSigned();
+    // the shell's reload after leaving the document has gone out
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([u]) => u.endsWith('/learn/training')).length)
+      .toBeGreaterThanOrEqual(3));
+    await act(async () => {});
+    expectSigned();
   });
 });

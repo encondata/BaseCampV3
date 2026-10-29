@@ -16,8 +16,8 @@ import ProgressBar from '../components/ProgressBar';
 import TaskRow from '../components/TaskRow';
 import { dueDay } from '../lib/format';
 import { t, useLang } from '../lib/i18n';
-import { getFirstName } from '../lib/session';
-import { useLearnerData } from '../lib/learner';
+import { learnerName, useLearnerData } from '../lib/learner';
+import { getToken } from '../lib/session';
 import type { TrainingItem } from '../lib/training';
 
 export default function Training() {
@@ -26,9 +26,11 @@ export default function Training() {
   const { training: { data, error, reload }, history: hist } = useLearnerData();
   // a failed history load only hides the history parts
   const history = hist.data ?? [];
-  // the history parts wait for the load to settle, so they don't pop in late
-  const settled = !hist.loading;
-  const first = getFirstName() || person?.first_name || '';
+  // the history parts wait for the first load to settle, so they don't pop
+  // in late (a background reload keeps them on screen)
+  const settled = hist.data !== null || !hist.loading;
+  // a learn token wins over an account, as it does for every call
+  const { first } = learnerName(getToken() ? null : person);
 
   // the next document: the first open, unlocked one, in list order
   const all = data?.groups.flatMap((g) => g.items) ?? [];

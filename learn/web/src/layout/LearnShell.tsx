@@ -97,11 +97,16 @@ function Shell() {
   const signOut = async () => {
     setMenuOpen(false);
     setOverlayOpen(false);
-    if (account) await logout();
-    // the token is gone at once (the server revoke needn't hold the page); an
-    // account also signed in in this browser then takes over at `/` (accepted)
-    else void learnSignOut();
-    navigate('/', { replace: true });
+    try {
+      if (account) await logout();
+      // the token is gone at once (the server revoke needn't hold the page); an
+      // account also signed in in this browser then takes over at `/` (accepted)
+      else void learnSignOut();
+    } catch {
+      // offline: the server couldn't be told, but the worker still leaves
+    } finally {
+      navigate('/', { replace: true });
+    }
   };
 
   const avatar = (
