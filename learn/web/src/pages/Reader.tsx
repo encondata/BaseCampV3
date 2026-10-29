@@ -51,6 +51,7 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
   changed: boolean; onVersionChanged: () => void;
 }) {
   const navigate = useNavigate();
+  const from = (useLocation().state as { from?: string } | null)?.from;
   // signed: read-only, so none of the sign-off gating below applies
   const review = !!doc.signed_at;
   const box = useRef<HTMLDivElement>(null);
@@ -153,7 +154,7 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
   };
 
   const rtl = isRtl(doc.language);
-  const back = (useLocation().state as { from?: string } | null)?.from === '/history' ? '/history' : '/training';
+  const back = from === '/history' ? '/history' : '/training';
   return (
     <>
       <div className="learn-readhead">

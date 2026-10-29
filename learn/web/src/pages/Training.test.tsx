@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -173,5 +174,39 @@ describe('Training', () => {
     renderTraining();
     expect(await screen.findByText('Acme site rules')).toBeTruthy();
     expect(screen.queryByRole('link', { name: /Completed training/ })).toBeNull();
+  });
+
+  it('holds the caught-up line until the history has loaded, so the section does not pop in', async () => {
+    let finish: (r: Response) => void = () => {};
+    vi.stubGlobal('fetch', vi.fn(async (url: string, _init?: RequestInit) => {
+      if (url.endsWith('/learn/history')) return new Promise<Response>((res) => { finish = res; });
+      return json(200, { groups: [], complete: false, badge_uid: null });
+    }));
+    renderTraining();
+    expect(await screen.findByText('Hi Kenji')).toBeTruthy();
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByText("You're all caught up.")).toBeNull();
+    await act(async () => { finish(json(200, [hist(1)])); });
+    expect(await screen.findByText("You're all caught up.")).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Completed training' })).toBeTruthy();
+  });
+
+  it('shows the caught-up line alone once the history has failed', async () => {
+    api({ groups: [], complete: false, badge_uid: null }, json(500, { detail: { code: 'boom' } }));
+    renderTraining();
+    expect(await screen.findByText("You're all caught up.")).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Completed training' })).toBeNull();
+  });
+
+  it('retry fetches the history again too', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('offline'));
+    vi.stubGlobal('fetch', fetchMock);
+    renderTraining();
+    const retry = await screen.findByRole('button', { name: 'Try again' });
+    const before = fetchMock.mock.calls.length;
+    await userEvent.click(retry);
+    const urls = fetchMock.mock.calls.slice(before).map(([u]) => String(u));
+    expect(urls.some((u) => u.endsWith('/learn/training'))).toBe(true);
+    expect(urls.some((u) => u.endsWith('/learn/history'))).toBe(true);
   });
 });
