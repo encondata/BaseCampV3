@@ -1,5 +1,6 @@
-/** One document in the training list: done (green check, "Signed Nov 4"),
- *  next (highlighted, opens), open (opens) or locked (lock icon, inert). */
+/** One document in the training list: done (green check, "Signed Nov 4",
+ *  opens read-only), next (highlighted, opens), open (opens) or locked
+ *  (lock icon, inert). */
 import { Link } from 'react-router-dom';
 
 import { signedDay } from '../lib/format';
@@ -29,12 +30,12 @@ export default function TaskRow({ item, next }: { item: TrainingItem; next: bool
         <span className="t">{item.title}</span>
         <span className="s">{sub(item)}</span>
       </span>
-      {!done && !locked && (
+      {!locked && (
         <svg {...ICON} className="chev"><path d="m9 6 6 6-6 6" /></svg>
       )}
     </>
   );
   const cls = `learn-task ${done ? 'done' : ''} ${locked ? 'locked' : ''} ${next ? 'next' : ''}`.replace(/\s+/g, ' ').trim();
-  if (done || locked) return <li className={cls}><div className="row">{body}</div></li>;
+  if (locked) return <li className={cls}><div className="row">{body}</div></li>;
   return <li className={cls}><Link className="row" to={`/training/${item.assignment_id}`}>{body}</Link></li>;
 }

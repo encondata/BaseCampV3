@@ -57,6 +57,12 @@ export const ja: Dictionary = {
   'training.caughtUp': 'すべて完了しています。',
   'training.showCode': 'タイムクロック用コードを表示',
 
+  'history.title': '完了した研修',
+  'history.link': '完了した研修（{n}）',
+  'history.empty': '署名済みのものはまだありません。',
+  'history.signed': '{date} に署名済み · v{v}',
+  'history.updated': 'その後更新あり',
+
   'reader.position': '{n} 件中 {k} 件目 · v{v}',
   'reader.versionOnly': 'v{v}',
   'reader.fallback': 'この資料はまだ翻訳されていません。英語版を表示しています。',
@@ -70,6 +76,8 @@ export const ja: Dictionary = {
   'reader.sign': '署名して次へ',
   'reader.takeQuiz': 'クイズを受ける',
   'reader.signing': '署名中…',
+  'reader.signedOn': '{date} に署名しました（バージョン {v}）。',
+  'reader.back': '戻る',
   'reader.versionChanged': 'この文書は更新されたばかりです。新しい版を読んでから署名してください。',
 
   'sign.mustAgree': '読んで同意したことを示すため、チェックボックスをオンにしてください。',

@@ -58,6 +58,12 @@ export const he: Dictionary = {
   'training.caughtUp': 'סיימתם הכול.',
   'training.showCode': 'הצגת קוד שעון הנוכחות',
 
+  'history.title': 'הדרכות שהושלמו',
+  'history.link': 'הדרכות שהושלמו ({n})',
+  'history.empty': 'עדיין לא נחתם דבר.',
+  'history.signed': 'נחתם ב-{date} · v{v}',
+  'history.updated': 'עודכן מאז',
+
   'reader.position': '{k} מתוך {n} · v{v}',
   'reader.versionOnly': 'v{v}',
   'reader.fallback': 'המסמך הזה עדיין לא תורגם. מוצגת הגרסה באנגלית.',
@@ -71,6 +77,8 @@ export const he: Dictionary = {
   'reader.sign': 'חתימה והמשך',
   'reader.takeQuiz': 'למעבר לחידון',
   'reader.signing': 'חותם…',
+  'reader.signedOn': 'חתמתם על המסמך הזה ב-{date} (גרסה {v}).',
+  'reader.back': 'חזרה',
   'reader.versionChanged': 'המסמך עודכן זה עתה. קראו את הגרסה החדשה ואז חתמו.',
 
   'sign.mustAgree': 'סמנו את התיבה כדי לאשר שקראתם ואתם מסכימים.',

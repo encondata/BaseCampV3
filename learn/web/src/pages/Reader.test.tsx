@@ -19,7 +19,7 @@ function json(status: number, body: unknown): Response {
 const DOC: AssignmentRead = {
   title: 'Acme site rules', html: '<h2>Badges</h2><p>Wear your badge.</p>', language: 'en', fallback: false,
   version_no: 2, change_note: null, sign_style: 'typed_name', require_scroll: true,
-  min_read_seconds: null, has_quiz: false, quiz_passed: false,
+  min_read_seconds: null, has_quiz: false, quiz_passed: false, signed_at: null,
 };
 
 const TRAINING = {
@@ -48,13 +48,14 @@ const signCalls = (m: ReturnType<typeof api>) =>
   m.mock.calls.filter(([, init]) => init?.method === 'POST');
 const signBody = (m: ReturnType<typeof api>) => JSON.parse(String(signCalls(m)[0][1]?.body));
 
-function renderReader() {
+function renderReader(state?: unknown) {
   return render(
-    <MemoryRouter initialEntries={[`/training/${ID}`]}>
+    <MemoryRouter initialEntries={[{ pathname: `/training/${ID}`, state }]}>
       <Routes>
         <Route path="/training/:id" element={<Reader />} />
         <Route path="/training/:id/quiz" element={<p>quiz page</p>} />
         <Route path="/training" element={<p>training page</p>} />
+        <Route path="/history" element={<p>history page</p>} />
         <Route path="/done" element={<p>done page</p>} />
       </Routes>
     </MemoryRouter>,
@@ -355,5 +356,43 @@ describe('Reader', () => {
     );
     expect(screen.getByText('training page')).toBeTruthy();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  describe('a signed document (review)', () => {
+    const SIGNED = { signed_at: '2026-11-04T15:00:00Z', version_no: 2, has_quiz: true,
+                     quiz_passed: false, min_read_seconds: 60 };
+
+    it('shows the document and when it was signed, with no way to sign again', async () => {
+      api(SIGNED);
+      renderReader();
+      expect(await screen.findByText('Badges')).toBeTruthy();
+      expect(screen.getByText(/^You signed this on Nov [34] \(version 2\)\.$/)).toBeTruthy();
+      expect(screen.getAllByRole('link', { name: 'Back' }).length).toBeGreaterThan(0);
+      expect(screen.queryByRole('checkbox')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Sign and continue' })).toBeNull();
+      expect(screen.queryByRole('link', { name: 'Take the quiz' })).toBeNull();
+    });
+
+    it('goes back to the history when it was opened from there', async () => {
+      api(SIGNED);
+      renderReader({ from: '/history' });
+      await screen.findByText('Badges');
+      for (const link of screen.getAllByRole('link', { name: 'Back' })) {
+        expect(link.getAttribute('href')).toBe('/history');
+      }
+      await userEvent.click(screen.getAllByRole('link', { name: 'Back' }).at(-1)!);
+      expect(await screen.findByText('history page')).toBeTruthy();
+    });
+
+    it('goes back to the training list otherwise', async () => {
+      api(SIGNED);
+      renderReader();
+      await screen.findByText('Badges');
+      for (const link of screen.getAllByRole('link', { name: 'Back' })) {
+        expect(link.getAttribute('href')).toBe('/training');
+      }
+      await userEvent.click(screen.getAllByRole('link', { name: 'Back' }).at(-1)!);
+      expect(await screen.findByText('training page')).toBeTruthy();
+    });
   });
 });

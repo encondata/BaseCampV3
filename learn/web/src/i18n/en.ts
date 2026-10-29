@@ -57,6 +57,12 @@ export const en = {
   'training.caughtUp': "You're all caught up.",
   'training.showCode': 'Show my time clock code',
 
+  'history.title': 'Completed training',
+  'history.link': 'Completed training ({n})',
+  'history.empty': 'Nothing signed yet.',
+  'history.signed': 'Signed {date} · v{v}',
+  'history.updated': 'Updated since',
+
   'reader.position': '{k} of {n} · v{v}',
   'reader.versionOnly': 'v{v}',
   'reader.fallback': "This document isn't translated yet. You're reading the English version.",
@@ -70,6 +76,8 @@ export const en = {
   'reader.sign': 'Sign and continue',
   'reader.takeQuiz': 'Take the quiz',
   'reader.signing': 'Signing…',
+  'reader.signedOn': 'You signed this on {date} (version {v}).',
+  'reader.back': 'Back',
   'reader.versionChanged': 'This document was just updated. Read the new version, then sign.',
 
   'sign.mustAgree': "Tick the box to say you've read it and agree.",
