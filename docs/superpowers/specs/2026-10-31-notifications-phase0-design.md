@@ -60,9 +60,13 @@ debugged.
 
 ### 1. /me tells the truth (Notifications tab)
 
-- For each non-security category the person's groups are checked: email is possible
-  only when the server can send email **and** one of their groups subscribes to the
-  category with Email among its effective channels.
+- Each category declares where its email permission comes from (`email_source`):
+  `groups` (approvals, reports, wiki, learning — a subscribed group must allow it) or
+  `always` (account security). A later category whose email follows the /me choice
+  alone (the unmerged Plans work) uses `direct`. Email is possible when the server can
+  send email **and** the source is `always` or `direct`, or the source is `groups` and
+  one of the person's groups subscribes to the category with Email among its effective
+  channels.
 - When email is not possible, the "Inbox + Email" segment is disabled and "Inbox only"
   shows as selected. The saved choice is **not** changed, so joining a group later turns
   email back on with no extra click. While groups load, the saved choice is shown as is.
@@ -174,20 +178,37 @@ the API shows the address an email went to by joining its outbox row.
 
 **API (super admin and above).** `GET /notifications/log` — keyset paged (`rows`,
 `next_cursor`, `total`), filters: search, event, channel, category, since, person,
-notification, outbox email. `GET /notifications/check?person_id=&category=` — explains,
-without writing anything, what would happen right now: inbox written or not, the email
-outcome (now / held until / not sent) with its reason, the address and its source, and a
-verdict per group (subscribed, paused, email channel, open / quiet hours / inactive day /
-urgent bypass, earliest send). The email decision behind `maybe_email()` and the check is
-one function, so they cannot drift.
+notification, outbox email. `GET /notifications/check?person_id=&kind=&owner_copy=` —
+explains, for one registered notification kind, without writing anything, what would
+happen right now: inbox written or not, the email outcome (now / held until / not sent)
+with its reason, the address and its source, and a verdict per group (subscribed, paused,
+email channel, open / quiet hours / inactive day / urgent bypass, earliest send). For a
+kind the account owner always receives (`owner_always`), `owner_copy` picks the owner's
+own copy (default) or an admin's copy, which goes through groups. `GET
+/notifications/kinds` lists the registered kinds (key, label, category, emailed or not,
+owner-always, urgent) for the tool's picker. The email decision behind `maybe_email()` and
+the check is one function, so they cannot drift.
 
 **Portal.** System › Notifications gets tabs **Groups** (today's content) and **Delivery
 log** (super admin and above only). The log is a standard list: When, Person,
 Notification, Category, Channel, Outcome, Detail; filters for search, outcome, channel,
 category and time range (24 h, 7 days, 30 days, all); "Load more" paging. Opening a row
 shows that notification's (or email's) full trail in order, with links to the person and
-the notification. A **Check delivery** button opens the dry-run tool (person + category →
-explanation). Hint copy: "Every notification and email decision — who, what and why."
+the notification. A **Check delivery** button opens the dry-run tool (person +
+notification type, plus Owner / Admin copy for owner-always types → explanation). Hint
+copy: "Every notification and email decision — who, what and why."
+
+## Calls made after the builder check (mine, not Jimmy's)
+
+- Check delivery models one notification kind, not a whole category: a category mixes
+  kinds with different rules (never-emailed kinds such as the password-reset card,
+  security notices the owner always gets), so a category-only answer would be wrong for
+  exactly the cases people troubleshoot.
+- Each category carries an `email_source` (`groups` / `always`, later `direct`), mirrored
+  in the portal, so /me stays honest when a category's email does not come from groups.
+- The unmerged `project-plans` branch also uses migration 0110. Whichever branch merges
+  second renumbers its migration and rechains it; that branch also adds a `plans`
+  category, which takes `email_source = "direct"` when the two meet.
 
 ## Left to the builder
 
