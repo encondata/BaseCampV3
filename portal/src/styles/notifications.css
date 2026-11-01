@@ -7,8 +7,9 @@
    cover: the Delivery-defaults panel's heading+button row, labeled
    switch rows inside a dialog's .pf-form grid, the Active-days toggle
    pills, and NotificationModal's card size (.nm-card) and the muted
-   hint under a control (.nm-hint); and the /notifications page's frame
-   (its category picker and day headings).
+   hint under a control (.nm-hint); the /notifications page's frame
+   (its category picker and day headings); and the System › Notifications
+   Delivery log (its person link, row trail and Check delivery result).
    ============================================================ */
 
 /* ── NotificationModal (components/notifications/NotificationModal.tsx) ──
@@ -227,3 +228,69 @@
 
 /* The empty state carries the bell's icon over its line, centered. */
 .dir-empty.notif-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+
+/* ── Delivery log (components/notifications/DeliveryLogTab.tsx,
+ *    DeliveryLogTrail.tsx, CheckDeliveryModal.tsx) ────────────────────
+ * The list is the standard directory list and the dialog the standard
+ * notification card; this adds the in-row person link, the trail under an
+ * opened row, the dry run's result area, and slim scrollbars on the boxes
+ * that scroll sideways in a narrow window. Layout and color only: the type
+ * comes from directory.css's tokens. */
+
+/* The Person cell's link, in the in-row link look of .idet-people-list
+ * a.cell-top. `.cell .cell-line` makes it a block; inline-block keeps the
+ * click target on the name, so the rest of the cell still opens the row. */
+.dlog-person { color: var(--c-blue); text-decoration: none; }
+.dlog-person:hover { text-decoration: underline; }
+.cell a.dlog-person.cell-line { display: inline-block; max-width: 100%; vertical-align: top; }
+
+/* The trail: its table, then the address the email went to and the links,
+ * from the left like every row's detail actions (in a list scrolled
+ * sideways the right end is off screen). */
+.dlog-trail { padding-top: 16px; }
+.dlog-trail-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-top: 14px;
+}
+.dlog-trail-foot .nm-hint { margin: 0; }
+.dlog-trail-links { display: flex; flex-wrap: wrap; gap: 10px; }
+.dlog-trail a.mini-btn { text-decoration: none; }
+
+/* Check delivery: under the pickers, the result card, then the groups. While
+ * a new pick is being checked the last answer stays, dimmed. */
+.dlog-check { margin-top: 20px; }
+.dlog-check > .nm-hint { margin: 0; }
+.dlog-check-note { margin: 0 0 10px; }
+.dlog-check-result { transition: opacity 0.15s; }
+.dlog-check-result[aria-busy='true'] { opacity: 0.55; }
+
+/* The list card and the two tables scroll sideways only below their
+ * floors; then they show the slim themed bar, never the browser's classic
+ * one, and the card's stops short of its rounded corners. */
+:is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll)::-webkit-scrollbar {
+  height: 12px;
+}
+:is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll)::-webkit-scrollbar-track {
+  background: transparent;
+  margin-inline: 16px;
+}
+:is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll)::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+:is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll)::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--muted, #51606f) 65%, transparent);
+}
+/* Firefox has no ::-webkit-scrollbar; give it the slim, trackless bar. Only
+   there: in Chromium, scrollbar-width/color would override the rules above. */
+@supports not selector(::-webkit-scrollbar) {
+  :is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll) {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent) transparent;
+  }
+}

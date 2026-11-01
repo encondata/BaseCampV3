@@ -6558,3 +6558,157 @@ export async function clearReadInbox(): Promise<void> {
   const resp = await apiFetch('/notifications/inbox/clear-read', { method: 'POST' });
   if (!resp.ok) throw await errorFrom(resp);
 }
+
+/* ── delivery log + Check delivery (super admin and above) ───────────
+ * Mirrors api/src/serversherpa/api/schemas.py DeliveryLogEntryOut,
+ * DeliveryCheckOut, DeliveryCheckGroupOut and NotificationKindOut; every
+ * call below answers 403 under super admin (global access, rank 80+). */
+
+/** The delivery log's events (notifications/delivery_log.py EVENTS). */
+export type DeliveryLogEvent =
+  | 'inbox_written' | 'inbox_suppressed'
+  | 'email_queued' | 'email_not_queued'
+  | 'email_sent' | 'email_skipped' | 'email_retry' | 'email_failed';
+
+/** One recorded decision with the names it points at. `event`, `channel`,
+ *  `reason` and `category` are codes; one a newer API adds shows as itself.
+ *  `detail` holds ids, codes and counts only (never an address or a body):
+ *  email_queued → template, send_at, deferred, and for notification mail
+ *  reason (quiet_hours / inactive_day), groups (names) and via (contact /
+ *  login); email_sent → attempt; email_retry → attempt, error (exception
+ *  class), smtp_code, next_attempt_at; email_failed → attempts, error,
+ *  smtp_code. `to_address` and `outbox_status` come from the outbox row. */
+export interface DeliveryLogEntry {
+  id: number;
+  at: string;
+  /** A DeliveryLogEvent, or a newer code (shown as itself). */
+  event: string;
+  channel: string;
+  reason: string | null;
+  kind: string | null;
+  /** The registry label, or the kind / template itself when unregistered. */
+  kind_label: string | null;
+  category: string | null;
+  detail: Record<string, unknown>;
+  process: string | null;
+  person_id: string | null;
+  person_name: string | null;
+  notification_id: string | null;
+  notification_title: string | null;
+  notification_link: string | null;
+  outbox_id: string | null;
+  to_address: string | null;
+  outbox_status: string | null;
+}
+
+/** What the Delivery log filters by (the paging is usePagedList's). An empty
+ *  `events` list means every event; `since` is an ISO instant. The trail of
+ *  one notification (or one template email) is the same call narrowed by
+ *  `notificationId` (or `outboxId`). */
+export interface DeliveryLogQuery {
+  events: DeliveryLogEvent[];
+  channel: 'inbox' | 'email' | null;
+  category: NotificationCategory | null;
+  since: string | null;
+  notificationId?: string;
+  outboxId?: string;
+}
+
+/** Rows per page: the API's default page. A trail (one notification's or
+ *  one email's entries, a handful at most) always fits in one. */
+const DELIVERY_LOG_PAGE_SIZE = 100;
+
+/** One page of the delivery log, newest first (GET /notifications/log).
+ *  `search` goes out as `q`; each event is its own `event` parameter. */
+export async function getDeliveryLogPage(
+  params: PagedFetchParams<DeliveryLogQuery>, signal?: AbortSignal,
+): Promise<PagedResponse<DeliveryLogEntry>> {
+  const qs = new URLSearchParams({ limit: String(DELIVERY_LOG_PAGE_SIZE) });
+  if (params.cursor) qs.set('cursor', params.cursor);
+  const q = params.search.trim();
+  if (q) qs.set('q', q);
+  for (const event of params.events) qs.append('event', event);
+  if (params.channel) qs.set('channel', params.channel);
+  if (params.category) qs.set('category', params.category);
+  if (params.since) qs.set('since', params.since);
+  if (params.notificationId) qs.set('notification_id', params.notificationId);
+  if (params.outboxId) qs.set('outbox_id', params.outboxId);
+  const resp = await apiFetch(`/notifications/log?${qs.toString()}`, { signal });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** One group the person is in, with its effective settings for them and its
+ *  answer right now: `verdict` is open, quiet_hours, inactive_day,
+ *  urgent_bypass or no_email_channel for an enabled group that covers the
+ *  category, else paused or not_subscribed. `allowed_at` is the earliest it
+ *  allows the email (null: never, or not asked). */
+export interface DeliveryCheckGroup {
+  group_id: string;
+  name: string;
+  enabled: boolean;
+  subscribed: boolean;
+  email_channel: boolean;
+  verdict: string;
+  allowed_at: string | null;
+  quiet_start: string | null;
+  quiet_end: string | null;
+  timezone: string;
+  active_days: string[];
+}
+
+/** What would happen right now if this person got a notification of this
+ *  kind; nothing is written. `outcome` is the email's (sent now, held until
+ *  `send_at`, or not sent), `reason` why it waits or does not go.
+ *  `email_source` is the category's, so an admin's copy of a security kind
+ *  still reads "always": `owner_copy` says which copy was modeled. */
+export interface DeliveryCheck {
+  person_id: string;
+  person_name: string;
+  kind: string;
+  kind_label: string;
+  category: string;
+  email_source: string;
+  owner_copy: boolean;
+  active: boolean;
+  has_account: boolean;
+  choice: string;
+  inbox: 'written' | 'suppressed';
+  email_enabled: boolean;
+  outcome: 'now' | 'held' | 'not_sent';
+  send_at: string | null;
+  reason: string | null;
+  address: string | null;
+  address_source: 'contact' | 'login' | null;
+  groups: DeliveryCheckGroup[];
+}
+
+/** One registered notification kind, for Check delivery's picker. */
+export interface NotificationKindInfo {
+  kind: string;
+  label: string;
+  category: NotificationCategory;
+  email: boolean;
+  owner_always: boolean;
+  urgent: boolean;
+}
+
+/** The registered kinds in registry order (GET /notifications/kinds). */
+export async function listNotificationKinds(): Promise<NotificationKindInfo[]> {
+  const resp = await apiFetch('/notifications/kinds');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** The dry run (GET /notifications/check): 404 person_not_found, 422
+ *  invalid_kind. `owner_copy` goes out only when `ownerCopy` is given; for a
+ *  kind the owner always gets, false models an admin's copy. */
+export async function checkDelivery(
+  personId: string, kind: string, ownerCopy?: boolean,
+): Promise<DeliveryCheck> {
+  const qs = new URLSearchParams({ person_id: personId, kind });
+  if (ownerCopy !== undefined) qs.set('owner_copy', String(ownerCopy));
+  const resp = await apiFetch(`/notifications/check?${qs.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}

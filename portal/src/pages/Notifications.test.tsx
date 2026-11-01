@@ -4,21 +4,35 @@
  * AssetModels.tsx). Covers what a unit test can see that the pure
  * lib/notifications.ts helpers can't: wiring of load/search/permission
  * gating and the navigate-on-row-click contract (no inline expansion).
+ * Super admins and above (global access, rank 80+) also get a Groups |
+ * Delivery log tab strip, kept in ?tab=log.
  */
 
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render as rtlRender, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ReactElement } from 'react';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
+import type { ScopeInfo } from '../lib/access';
 import { ApiError, type MembershipRequest, type NotificationGroup, type UiPreferences } from '../lib/api';
 import { LIST_FIT } from '../lib/listTools';
 
 const navigate = vi.hoisted(() => vi.fn());
-vi.mock('react-router-dom', () => ({ useNavigate: () => navigate }));
+vi.mock('react-router-dom', async (importActual) => ({
+  ...(await importActual<typeof import('react-router-dom')>()),
+  useNavigate: () => navigate,
+}));
 
 const auth = vi.hoisted(() => {
-  const state: { can: (resource: string, action: string) => boolean } = {
+  const state: {
+    can: (resource: string, action: string) => boolean;
+    maxRank: number;
+    scope: ScopeInfo | null;
+  } = {
     can: () => true,
+    maxRank: 60,
+    scope: { global: true, client_ids: [], partner_ids: [] },
   };
   return state;
 });
@@ -26,6 +40,8 @@ const auth = vi.hoisted(() => {
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
     can: auth.can,
+    maxRank: auth.maxRank,
+    scope: auth.scope,
     godMode: false,
     preferences: {
       accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default', motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default', list_view: 'expanded',
@@ -42,6 +58,7 @@ const api = vi.hoisted(() => ({
   listMembershipRequests: vi.fn(),
   approveMembershipRequest: vi.fn(),
   rejectMembershipRequest: vi.fn(),
+  getDeliveryLogPage: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -74,18 +91,123 @@ const REQUESTS: MembershipRequest[] = [
   },
 ];
 
+/** Where the page opens: the router's starting URL (?tab=log, say). */
+const at = { url: '/system/notifications' };
+
+/** The current ?query, so a test can see what the tab strip wrote. */
+function SearchProbe() {
+  return <output data-testid="search">{useLocation().search}</output>;
+}
+
+/** Every render sits in a router (the page reads ?tab=; the log links people). */
+const render = (ui: ReactElement) => rtlRender(
+  <MemoryRouter initialEntries={[at.url]}>{ui}<SearchProbe /></MemoryRouter>);
+
 beforeEach(() => {
   vi.clearAllMocks();
   auth.can = () => true;
+  auth.maxRank = 60;
+  auth.scope = { global: true, client_ids: [], partner_ids: [] };
+  at.url = '/system/notifications';
   api.listNotificationGroups.mockResolvedValue(GROUPS);
   api.listMembershipRequests.mockResolvedValue([]);
   api.approveMembershipRequest.mockResolvedValue(REQUESTS[0]);
   api.rejectMembershipRequest.mockResolvedValue(REQUESTS[0]);
+  api.getDeliveryLogPage.mockResolvedValue({ rows: [], next_cursor: null, total: 0 });
 });
 
 afterEach(cleanup);
 
 const { default: Notifications } = await import('./Notifications');
+
+/* ── Groups | Delivery log (super admin and above) ─────────────────── */
+
+const superAdmin = () => {
+  auth.maxRank = 80;
+  auth.scope = { global: true, client_ids: [], partner_ids: [] };
+};
+
+it('shows no tab strip to an admin (rank 60)', async () => {
+  render(<Notifications />);
+  await screen.findByText('Ops Alerts');
+  expect(screen.queryByRole('tablist')).toBeNull();
+  expect(screen.queryByRole('tab', { name: 'Delivery log' })).toBeNull();
+});
+
+it('shows Groups | Delivery log to a super admin with global access, Groups first', async () => {
+  superAdmin();
+  render(<Notifications />);
+  await screen.findByText('Ops Alerts');
+  const strip = screen.getByRole('tablist');
+  expect(strip.classList.contains('subs-tabs')).toBe(true);
+  expect(within(strip).getAllByRole('tab').map((t) => [t.textContent, t.getAttribute('aria-selected')]))
+    .toEqual([['Groups', 'true'], ['Delivery log', 'false']]);
+  expect(api.getDeliveryLogPage).not.toHaveBeenCalled();
+});
+
+it('shows no tab strip to a rank-80 role without global access', async () => {
+  auth.maxRank = 80;
+  auth.scope = { global: false, client_ids: ['c1'], partner_ids: [] };
+  render(<Notifications />);
+  await screen.findByText('Ops Alerts');
+  expect(screen.queryByRole('tablist')).toBeNull();
+});
+
+it('?tab=log below super admin falls back to the groups list', async () => {
+  at.url = '/system/notifications?tab=log';
+  render(<Notifications />);
+  expect(await screen.findByText('Ops Alerts')).toBeTruthy();
+  expect(screen.queryByRole('tablist')).toBeNull();
+  expect(screen.queryByText('Every notification and email decision — who, what and why.')).toBeNull();
+  expect(api.getDeliveryLogPage).not.toHaveBeenCalled();
+});
+
+it('?tab=log opens the Delivery log for a super admin, and the header describes it', async () => {
+  superAdmin();
+  at.url = '/system/notifications?tab=log';
+  api.getDeliveryLogPage.mockResolvedValue({ rows: [], next_cursor: null, total: 1234 });
+  render(<Notifications />);
+  expect(screen.getByRole('tab', { name: 'Delivery log' }).getAttribute('aria-selected')).toBe('true');
+  expect(screen.getByText('Every notification and email decision — who, what and why.').className)
+    .toContain('page-hint');
+  expect(screen.queryByText('Notification groups — who gets notified, how, and when.')).toBeNull();
+  await waitFor(() => expect(api.getDeliveryLogPage).toHaveBeenCalled());
+  // the header count follows the log, not the groups
+  await waitFor(() => expect(document.querySelector('.badge-count')?.textContent).toBe('1234'));
+  expect(screen.queryByText('Ops Alerts')).toBeNull();
+  expect(screen.queryByRole('button', { name: /New group/i })).toBeNull();
+});
+
+it('the tabs switch views and keep the choice in ?tab=log', async () => {
+  superAdmin();
+  const user = userEvent.setup();
+  render(<Notifications />);
+  await screen.findByText('Ops Alerts');
+
+  await user.click(screen.getByRole('tab', { name: 'Delivery log' }));
+  expect(screen.getByTestId('search').textContent).toBe('?tab=log');
+  expect(screen.getByRole('tab', { name: 'Delivery log' }).getAttribute('aria-selected')).toBe('true');
+  expect(await screen.findByRole('button', { name: 'Check delivery' })).toBeTruthy();
+  expect(screen.queryByText('Ops Alerts')).toBeNull();
+
+  await user.click(screen.getByRole('tab', { name: 'Groups' }));
+  expect(screen.getByTestId('search').textContent).toBe('');
+  expect(await screen.findByText('Ops Alerts')).toBeTruthy();
+  expect(document.querySelector('.badge-count')?.textContent).toBe('2');
+});
+
+it('pending requests stay with the groups, under the page header', async () => {
+  superAdmin();
+  const user = userEvent.setup();
+  api.listMembershipRequests.mockResolvedValue(REQUESTS);
+  render(<Notifications />);
+  const panel = (await screen.findByText('Pending requests')).closest('.panel') as HTMLElement;
+  const head = document.querySelector('.dir-head') as HTMLElement;
+  expect(head.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+  await user.click(screen.getByRole('tab', { name: 'Delivery log' }));
+  expect(screen.queryByText('Pending requests')).toBeNull();
+});
 
 it('renders rows from the loaded groups', async () => {
   render(<Notifications />);

@@ -10,17 +10,25 @@
  * "+ New group" opens a create-only modal (model:
  * components/access/GroupsTab.tsx's CreateGroupModal) that hands off to
  * that detail page on success.
+ *
+ * Super admins and above (global access and rank 80+, the API's own gate)
+ * also get a `.subs-tabs` strip (pages/Access.tsx): Groups, the list above
+ * with its pending requests, and Delivery log (DeliveryLogTab), kept in
+ * ?tab=log. Everyone else sees the groups with no strip, whatever the URL
+ * says. The header's hint and count follow the tab.
  */
 
 import { useEffect, useId, useMemo, useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import DataTable, { type DataTableColumn, type DataTableRow } from '../components/DataTable';
 import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
 import CategoryChips, { NO_CATEGORIES } from '../components/notifications/CategoryChips';
 import ChannelChips, { NO_EMAIL } from '../components/notifications/ChannelChips';
+import DeliveryLogTab from '../components/notifications/DeliveryLogTab';
 import NotificationModal from '../components/notifications/NotificationModal';
+import { SUPER_ADMIN_RANK } from '../lib/access';
 import {
   ApiError, approveMembershipRequest, createNotificationGroup, listMembershipRequests,
   listNotificationGroups, rejectMembershipRequest,
@@ -30,6 +38,7 @@ import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
   usePersistentListState, type CellText,
 } from '../lib/columnMenu';
+import { DELIVERY_LOG_HINT } from '../lib/deliveryLog';
 import { relativeTime } from '../lib/format';
 import {
   ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
@@ -43,9 +52,19 @@ import {
 } from '../lib/notifications';
 import { naturalCompare } from '../lib/sites';
 import { VirtualRows } from '../lib/virtualRows';
+import '../styles/access.css';   /* .subs-tabs — the page-local tab strip */
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
+
+type Tab = 'groups' | 'log';
+
+const TABS: { key: Tab; label: string }[] = [
+  { key: 'groups', label: 'Groups' },
+  { key: 'log', label: 'Delivery log' },
+];
+
+const GROUPS_HINT = 'Notification groups — who gets notified, how, and when.';
 
 /** Copy for request-decision error codes — same mapping as the popover's
  *  strip (NotificationsPanel.tsx), plus the one code unique to a second
@@ -184,11 +203,27 @@ const msgFor = (err: unknown): string =>
     : 'Network error — nothing was saved.';
 
 export default function Notifications() {
-  const { can, preferences } = useAuth();
+  const { can, preferences, maxRank, scope } = useAuth();
   const listGridScale = listScale(preferences?.list_size);
   const canAdd = can('notifications', 'add');
   const canChange = can('notifications', 'change');
   const navigate = useNavigate();
+
+  // The Delivery log's gate mirrors the API's (ensure_super_admin): global
+  // access and super admin rank or above.
+  const superAdmin = maxRank >= SUPER_ADMIN_RANK && !!scope?.global;
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab: Tab = superAdmin && searchParams.get('tab') === 'log' ? 'log' : 'groups';
+  const [logCount, setLogCount] = useState<number | null>(null);
+  const selectTab = (next: Tab) => {
+    if (next === tab) return;
+    setLogCount(null);
+    setSearchParams((prev) => {
+      const p = new URLSearchParams(prev);
+      if (next === 'groups') p.delete('tab'); else p.set('tab', next);
+      return p;
+    }, { replace: true });
+  };
 
   const [groups, setGroups] = useState<NotificationGroup[] | null>(null);
   const [error, setError] = useState('');
@@ -398,7 +433,32 @@ export default function Notifications() {
 
   return (
     <div className="portal-page">
-      {canChange && pendingRequests.length > 0 && (
+      <div className="dir-head">
+        <div>
+          <div className="eyebrow">System</div>
+          <h1 className="page-title">
+            Notifications
+            <span className="badge-count">{(tab === 'log' ? logCount : groups?.length) ?? '…'}</span>
+          </h1>
+          <p className="page-hint">{tab === 'log' ? DELIVERY_LOG_HINT : GROUPS_HINT}</p>
+        </div>
+      </div>
+
+      {superAdmin && (
+        <div className="subs-tabs" role="tablist">
+          {TABS.map((t) => (
+            <button key={t.key} type="button" role="tab" aria-selected={tab === t.key}
+                    className={tab === t.key ? 'on' : ''}
+                    onClick={() => selectTab(t.key)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {tab === 'log' && <DeliveryLogTab onCount={setLogCount} />}
+
+      {tab === 'groups' && canChange && pendingRequests.length > 0 && (
         <div className="panel">
           <div className="panel-head">
             <h3>Pending requests</h3>
@@ -410,44 +470,35 @@ export default function Notifications() {
         </div>
       )}
 
-      <div className="dir-head">
-        <div>
-          <div className="eyebrow">System</div>
-          <h1 className="page-title">
-            Notifications
-            <span className="badge-count">{groups?.length ?? '…'}</span>
-          </h1>
-          <p className="page-hint">
-            Notification groups — who gets notified, how, and when.
-          </p>
-        </div>
-      </div>
-
-      <div className="dir-toolbar">
-        <div className="toolbar-right">
-          <div className="dir-search" style={{ marginLeft: 0 }}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                 strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
-            <input placeholder="Filter this list…" value={query}
-                   onChange={(e) => setQuery(e.target.value)} />
+      {tab === 'groups' && (
+        <div className="dir-toolbar">
+          <div className="toolbar-right">
+            <div className="dir-search" style={{ marginLeft: 0 }}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                   strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+              <input placeholder="Filter this list…" value={query}
+                     onChange={(e) => setQuery(e.target.value)} />
+            </div>
+            <span className="result-count">{visible.length} of {groups?.length ?? 0} shown</span>
+            <FilterButton groups={facetGroups} state={facets} onChange={setFacets} />
+            <FilterSummaryChip filters={filters} onClear={clearFilters} />
+            <ColumnsButton columns={orderedCols} visible={visibleCols} onChange={setVisibleCols}
+                           onReorder={setColOrder} />
+            <ExportButton onExport={() => exportCsv('notification-groups', CSV_COLUMNS, visible)} />
+            {canAdd && (
+              <button className="btn-solid" onClick={() => setCreating(true)}>
+                + New group
+              </button>
+            )}
           </div>
-          <span className="result-count">{visible.length} of {groups?.length ?? 0} shown</span>
-          <FilterButton groups={facetGroups} state={facets} onChange={setFacets} />
-          <FilterSummaryChip filters={filters} onClear={clearFilters} />
-          <ColumnsButton columns={orderedCols} visible={visibleCols} onChange={setVisibleCols}
-                         onReorder={setColOrder} />
-          <ExportButton onExport={() => exportCsv('notification-groups', CSV_COLUMNS, visible)} />
-          {canAdd && (
-            <button className="btn-solid" onClick={() => setCreating(true)}>
-              + New group
-            </button>
-          )}
         </div>
-      </div>
+      )}
 
-      {error && <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load notification groups</b>{error}</div>}
+      {tab === 'groups' && error && (
+        <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load notification groups</b>{error}</div>
+      )}
 
-      {!error && (
+      {tab === 'groups' && !error && (
         <div className="dir-list list-scroll">
           <div className="list-head" style={rowStyle}>
             {shownCols.map((c) => (
