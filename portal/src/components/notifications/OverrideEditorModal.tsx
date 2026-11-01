@@ -10,9 +10,11 @@
  * choice+value against the member's loaded overrides so the PATCH carries
  * only what changed, with an explicit `null` for anything reset back to
  * inherit (the PATCH distinguishes an absent field from one explicitly set to
- * null). A stored channel the screen does not show (Text, Push and Web cannot
- * send; Email for a member who has no address) is never dropped: the saved
- * list is the switches' selections plus the hidden channels already stored.
+ * null). Channels that have no switch (Text, Push and Web cannot send; Email
+ * for a member with no address) are never lost by an edit that leaves the list
+ * alone — the list is then not sent at all. When the list does change, the
+ * saved list is the switches' selections plus the stored no-switch channels
+ * the member can still receive, since the API refuses any other.
  */
 
 import { useId, useMemo, useState, type FormEvent } from 'react';
@@ -172,13 +174,26 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved, o
 
     const patch: Partial<NotificationMemberOverrides> = {};
 
-    // The switches' selections plus every stored channel with no switch.
-    const hidden = (ov.channels ?? []).filter((c) => !shownChannels.includes(c as Channel));
-    const nextChannelsArr = CHANNELS.filter((c) => channelsCustom.has(c) || hidden.includes(c));
-    const origChannelsMode: Mode = ov.channels === null ? 'default' : 'custom';
-    if (channelsMode !== origChannelsMode
-        || (channelsMode === 'custom' && !sameArr(nextChannelsArr, ov.channels ?? []))) {
-      patch.channels = channelsMode === 'default' ? null : nextChannelsArr;
+    // Channels. A list left alone is never sent: the server keeps what is
+    // stored, hidden channels included. "Left alone" is the Group default |
+    // Custom choice and the switches matching what is stored for the channels
+    // that have a switch. When the list does change it is the switches'
+    // selections plus the stored channels with no switch that the member can
+    // still receive — the API refuses a channel outside their capabilities
+    // (Text needs a phone, Push and Web an account, Email an address) with a
+    // 422 channel_unavailable, so a stale one is dropped here instead of
+    // failing the whole save.
+    const storedChannels = ov.channels ?? [];
+    const selectedChannels = CHANNELS.filter((c) => channelsCustom.has(c));
+    const storedShown = shownChannels.filter((c) => storedChannels.includes(c));
+    const channelsChanged = channelsMode === 'default'
+      ? ov.channels !== null
+      : (ov.channels === null || !sameArr(selectedChannels, storedShown));
+    if (channelsChanged) {
+      const kept = storedChannels.filter((c) => !shownChannels.includes(c as Channel)
+        && canForChannel(member, c as Channel));
+      patch.channels = channelsMode === 'default'
+        ? null : CHANNELS.filter((c) => channelsCustom.has(c) || kept.includes(c));
     }
 
     const nextQuietMode = quietMode === 'default' ? null : quietMode;

@@ -400,6 +400,90 @@ it('keeps a stored email override that the member cannot receive right now', asy
     .toHaveBeenCalledWith('g1', 'p1', { urgent_bypass: false }));
 });
 
+// ── a stored channel the member can no longer receive ──────────────────
+// The API refuses a channel list that holds a channel outside the person's
+// capabilities (Text needs a phone, Push and Web need an account) with a 422
+// channel_unavailable. So a save that changes the list sends only what the
+// member can still receive, and a list left alone is not sent at all (the
+// server keeps what is stored).
+
+/** Alice with her phone number gone: Text is stored on her override but she cannot get it. */
+const noPhone = (overrides: Partial<NotificationMemberOverrides>): NotificationMember => (
+  { ...member(overrides), can_text: false });
+
+it('turning Email off drops a stored Text the member can no longer receive', async () => {
+  const user = userEvent.setup();
+  const dialog = open(noPhone({ channels: ['email', 'text'] }));
+  await user.click(within(dialog).getByRole('checkbox', { name: 'Email' }));
+  await user.click(save(dialog));
+  await waitFor(() => expect(api.updateNotificationMember)
+    .toHaveBeenCalledWith('g1', 'p1', { channels: [] }));
+});
+
+it('turning Email on keeps only the stored channels the member can still receive', async () => {
+  const user = userEvent.setup();
+  const dialog = open(noPhone({ channels: ['text', 'web'] }));   // Web still reachable, Text not
+  await user.click(within(dialog).getByRole('checkbox', { name: 'Email' }));
+  await user.click(save(dialog));
+  await waitFor(() => expect(api.updateNotificationMember)
+    .toHaveBeenCalledWith('g1', 'p1', { channels: ['email', 'web'] }));
+});
+
+it('Group default → Custom → Email on sends only what the member can receive', async () => {
+  const user = userEvent.setup();
+  const dialog = open(noPhone({ channels: ['text'] }));
+  await user.click(press(dialog, 'Channels', 'Group default'));
+  await user.click(press(dialog, 'Channels', 'Custom'));
+  await user.click(within(dialog).getByRole('checkbox', { name: 'Email' }));
+  await user.click(save(dialog));
+  await waitFor(() => expect(api.updateNotificationMember)
+    .toHaveBeenCalledWith('g1', 'p1', { channels: ['email'] }));
+});
+
+it('a member without an account loses a stored Push or Web the same way', async () => {
+  const user = userEvent.setup();
+  const dialog = open({ ...member({ channels: ['email', 'push', 'web'] }), can_push: false, can_web: false });
+  await user.click(within(dialog).getByRole('checkbox', { name: 'Email' }));
+  await user.click(save(dialog));
+  await waitFor(() => expect(api.updateNotificationMember)
+    .toHaveBeenCalledWith('g1', 'p1', { channels: [] }));
+});
+
+it('self-service (onSave) gets the same list the API accepts', async () => {
+  const user = userEvent.setup();
+  const onSave = vi.fn().mockResolvedValue(undefined);
+  const dialog = open(noPhone({ channels: ['email', 'text'] }), { onSave });
+  await user.click(within(dialog).getByRole('checkbox', { name: 'Email' }));
+  await user.click(save(dialog));
+  await waitFor(() => expect(onSave).toHaveBeenCalledWith({ channels: [] }));
+  expect(api.updateNotificationMember).not.toHaveBeenCalled();
+});
+
+it('an untouched channel list is not sent, so a stored Text nobody can receive stays stored', async () => {
+  const user = userEvent.setup();
+  const dialog = open(noPhone({ channels: ['email', 'text'] }));
+  await user.click(save(dialog));
+  await waitFor(() => expect(api.updateNotificationMember).toHaveBeenCalledWith('g1', 'p1', {}));
+});
+
+it('changing something else leaves that same channel list out of the patch', async () => {
+  const user = userEvent.setup();
+  const dialog = open(noPhone({ channels: ['email', 'text'] }));
+  await user.click(press(dialog, 'Urgent bypass', 'Off'));
+  await user.click(save(dialog));
+  await waitFor(() => expect(api.updateNotificationMember)
+    .toHaveBeenCalledWith('g1', 'p1', { urgent_bypass: false }));
+});
+
+it('switching Email off and on again is still an untouched list', async () => {
+  const user = userEvent.setup();
+  const dialog = open(noPhone({ channels: ['email', 'text'] }));
+  await user.click(within(dialog).getByRole('checkbox', { name: 'Email' }));
+  await user.click(within(dialog).getByRole('checkbox', { name: 'Email' }));
+  await user.click(save(dialog));
+  await waitFor(() => expect(api.updateNotificationMember).toHaveBeenCalledWith('g1', 'p1', {}));
+});
+
 it('Group default clears a custom channel list with an explicit null', async () => {
   const user = userEvent.setup();
   const dialog = open(member({ channels: ['email'] }));

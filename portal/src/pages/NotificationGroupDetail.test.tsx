@@ -608,7 +608,7 @@ it('retries the recipients fetch after a failed attempt on reopen', async () => 
   expect(api.listNotificationRecipients).toHaveBeenCalledTimes(2);
 });
 
-it('keeps a stored channel the editor hides when saving a custom override', async () => {
+it('drops a stored channel the member can no longer receive when the channel list changes', async () => {
   const user = userEvent.setup();
   const member: NotificationMember = {
     ...MEMBER_1,
@@ -633,12 +633,14 @@ it('keeps a stored channel the editor hides when saving a custom override', asyn
   expect(within(dialog).getByRole('checkbox', { name: /^email$/i })).not.toBeNull();
   expect(within(dialog).queryByRole('checkbox', { name: /text/i })).toBeNull();
 
-  // Turning Email off must not drop the Text the editor does not show.
+  // Turning Email off changes the list. The API refuses a channel the person
+  // cannot receive (Text needs a phone), so the Text Dana can no longer get is
+  // not sent back: the list is empty.
   await user.click(within(dialog).getByRole('checkbox', { name: /^email$/i }));
   await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
 
   await waitFor(() => expect(api.updateNotificationMember)
-    .toHaveBeenCalledWith('g1', 'p4', { channels: ['text'] }));
+    .toHaveBeenCalledWith('g1', 'p4', { channels: [] }));
 });
 
 it('saving an untouched custom override sends nothing for its hidden channels', async () => {
