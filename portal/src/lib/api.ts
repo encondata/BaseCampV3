@@ -19,6 +19,7 @@ import type { Action, PermMap, ScopeInfo } from './access';
 import type { OrgItem } from './orgs';
 import { trucksFeedQuery, trucksListQuery, trucksMapQuery } from './shipments';
 import { siblingOrigin } from './siblingOrigin';
+import type { PagedFetchParams, PagedResponse } from './usePagedList';
 import type { Visibility } from './visibility';
 import type { WorkerItem } from './workers';
 
@@ -6497,14 +6498,39 @@ export async function getTimesheetPreview(params: {
 
 export interface InboxItem {
   id: string; kind: string; title: string; body: string; link: string | null;
+  /** The category the item's kind belongs to; null for a kind the registry does not know. */
+  category: NotificationCategory | null;
   payload: Record<string, unknown>; created_at: string; read_at: string | null;
 }
-export interface Inbox { unread_count: number; items: InboxItem[] }
+/** `unread_count` is the person's overall live unread count whatever the filters;
+ *  `total` counts the live rows matching `unread_only` and `category`. */
+export interface Inbox {
+  unread_count: number; items: InboxItem[]; next_cursor: string | null; total: number;
+}
 
 export async function listInbox(unreadOnly = false): Promise<Inbox> {
   const resp = await apiFetch(`/notifications/inbox${unreadOnly ? '?unread_only=true' : ''}`);
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
+}
+
+/** What the /notifications page filters by (the paging itself is usePagedList's). */
+export interface InboxPageQuery { category: NotificationCategory | null; unreadOnly: boolean }
+
+const INBOX_PAGE_SIZE = 50;
+
+/** One page of the inbox, newest first, for usePagedList (`items` become `rows`). */
+export async function listInboxPage(
+  params: PagedFetchParams<InboxPageQuery>, signal?: AbortSignal,
+): Promise<PagedResponse<InboxItem>> {
+  const qs = new URLSearchParams({ limit: String(INBOX_PAGE_SIZE) });
+  if (params.cursor) qs.set('cursor', params.cursor);
+  if (params.category) qs.set('category', params.category);
+  if (params.unreadOnly) qs.set('unread_only', 'true');
+  const resp = await apiFetch(`/notifications/inbox?${qs.toString()}`, { signal });
+  if (!resp.ok) throw await errorFrom(resp);
+  const body: Inbox = await resp.json();
+  return { rows: body.items, next_cursor: body.next_cursor, total: body.total };
 }
 
 export async function markInboxRead(id: string): Promise<void> {

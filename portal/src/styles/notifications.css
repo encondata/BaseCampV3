@@ -7,7 +7,8 @@
    cover: the Delivery-defaults panel's heading+button row, labeled
    switch rows inside a dialog's .pf-form grid, the Active-days toggle
    pills, and NotificationModal's card size (.nm-card) and the muted
-   hint under a control (.nm-hint).
+   hint under a control (.nm-hint); and the /notifications page's frame
+   (its category picker and day headings).
    ============================================================ */
 
 /* ── NotificationModal (components/notifications/NotificationModal.tsx) ──
@@ -181,3 +182,48 @@
   padding-top: 16px;
   border-top: 1px solid var(--paper-line);
 }
+
+/* ── /notifications page (pages/NotificationsInbox.tsx) ───────────────
+ * The rows are the bell's (.notif-row and friends, toast.css); the toolbar
+ * and the card are the directory ones. This file only frames them. */
+
+/* The Settings link reads as a button, not an underlined link. */
+.notif-inbox a.mini-btn { text-decoration: none; }
+
+/* The category dropdown (a ComboBox, the house type-to-filter select): a
+ * fixed width in the toolbar and the toolbar's 34px control height. */
+.notif-category { flex: 0 0 auto; width: 230px; max-width: 100%; }
+.notif-category .org-select { height: 34px; padding-top: 0; padding-bottom: 0; }
+
+/* Today / Yesterday / Earlier: a band over each group of rows, set like the
+ * directory list header (same tokens). A day after the first gets a hairline
+ * above it; the rows' own dividers stop at each group's last row. */
+.notif-day {
+  margin: 0;
+  padding: 9px 20px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--paper-line);
+  font-family: var(--font-mono);
+  font-size: var(--list-fs-head);
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.notif-day-group + .notif-day-group .notif-day { border-top: 1px solid var(--paper-line); }
+
+/* A card as wide as the page: the side padding of the directory rows, not the
+ * popover's 12px. */
+.notif-inbox .notif-row { padding-left: 20px; padding-right: 20px; }
+/* Row tips sit above their buttons on every row: the bell flips the first
+ * row's below (its popover clips what rises above it), but here a day band is
+ * always above, and a tip below the last row would be clipped by the card. */
+.notif-inbox .notif-row:first-child .notif-actions .icon-btn[data-tip]::after {
+  top: auto; bottom: calc(100% + 6px);
+}
+
+/* The error line beside Retry under the list. */
+.notif-more { align-items: center; gap: 12px; }
+
+/* The empty state carries the bell's icon over its line, centered. */
+.dir-empty.notif-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; }

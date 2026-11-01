@@ -35,7 +35,8 @@ const { leaveFor } = await import('../lib/inboxLinks');
 const { default: NotificationsPanel } = await import('./NotificationsPanel');
 
 const item = (id: string, over: Partial<InboxItem> = {}): InboxItem => ({
-  id, kind: 'report_ready', title: `Report ${id}`, body: 'NAP11', link: `/reports?tab=history&run=${id}`,
+  id, kind: 'report_ready', category: 'reports', title: `Report ${id}`, body: 'NAP11',
+  link: `/reports?tab=history&run=${id}`,
   payload: { run_id: id }, created_at: new Date(Date.now() - 90_000).toISOString(), read_at: null, ...over,
 });
 
@@ -161,7 +162,7 @@ it('empty state, cap footer, and keyboard: Escape closes, arrows move focus, Ent
   ctx.items = Array.from({ length: 50 }, (_, i) => item(`n${i}`));
   ctx.unreadCount = 50;
   const onClose2 = renderPanel();
-  expect(screen.getByText('Showing the 50 most recent')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'View all notifications · showing the 50 most recent' })).toBeTruthy();
   const rows = screen.getAllByRole('listitem');
   rows[0].focus();
   await user.keyboard('{ArrowDown}');
@@ -183,6 +184,71 @@ it('Escape reaches the panel even when focus is on a row action button', async (
   screen.getByRole('button', { name: 'Hide' }).focus();
   await user.keyboard('{Escape}');
   expect(onClose).toHaveBeenCalled();
+});
+
+/** The panel at "/", with stand-ins for the two pages its links open. */
+function renderPanelWithRoutes(onClose = vi.fn()) {
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <Routes>
+        <Route path="/" element={<NotificationsPanel onClose={onClose} />} />
+        <Route path="/me/notifications" element={<div>settings page</div>} />
+        <Route path="/notifications" element={<div>all notifications page</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  return onClose;
+}
+
+it('the gear opens notification settings and closes the panel', async () => {
+  const user = userEvent.setup();
+  ctx.items = [item('a')];
+  ctx.unreadCount = 1;
+  const onClose = renderPanelWithRoutes();
+  await user.click(screen.getByRole('button', { name: 'Notification settings' }));
+  expect(onClose).toHaveBeenCalledTimes(1);
+  expect(screen.getByText('settings page')).toBeTruthy();
+  expect(ctx.markRead).not.toHaveBeenCalled();           // a header control, not a row
+});
+
+it('the gear sits with the header actions and carries a Settings tip and no native title', () => {
+  renderPanel();
+  const gear = screen.getByRole('button', { name: 'Notification settings' });
+  expect(gear.classList.contains('icon-btn')).toBe(true);
+  expect(gear.getAttribute('data-tip')).toBe('Settings');
+  expect(gear.hasAttribute('title')).toBe(false);
+  expect(gear.closest('.notif-head-actions')).toBeTruthy();
+  expect(gear.querySelector('svg')).toBeTruthy();
+});
+
+it('"View all notifications" opens the full page and closes the panel', async () => {
+  const user = userEvent.setup();
+  ctx.items = [item('a')];
+  const onClose = renderPanelWithRoutes();
+  await user.click(screen.getByRole('button', { name: 'View all notifications' }));
+  expect(onClose).toHaveBeenCalledTimes(1);
+  expect(screen.getByText('all notifications page')).toBeTruthy();
+});
+
+it('the footer link is always there; only a full panel adds the "showing the 50 most recent" note', () => {
+  renderPanel();                                          // empty inbox
+  expect(screen.getByRole('button', { name: 'View all notifications' })).toBeTruthy();
+  cleanup();
+  ctx.items = Array.from({ length: 49 }, (_, i) => item(`n${i}`));
+  renderPanel();
+  expect(screen.getByRole('button', { name: 'View all notifications' })).toBeTruthy();
+  expect(screen.queryByText(/showing the 50 most recent/)).toBeNull();
+  cleanup();
+  ctx.items = Array.from({ length: 50 }, (_, i) => item(`n${i}`));
+  renderPanel();
+  expect(screen.getByRole('button', { name: 'View all notifications · showing the 50 most recent' })).toBeTruthy();
+});
+
+it('the shared row still exports what the panel used to: relativeTime and INBOX_CAP', async () => {
+  const panel = await import('./NotificationsPanel');
+  expect(panel.INBOX_CAP).toBe(50);
+  expect(panel.relativeTime(new Date(Date.now() - 5 * 60_000).toISOString())).toBe('5m ago');
+  expect(panel.relativeTime(new Date().toISOString())).toBe('just now');
 });
 
 const requestItem = (id: string, payload: Record<string, unknown>, over: Partial<InboxItem> = {}): InboxItem => item(id, {
@@ -237,6 +303,14 @@ it('a decided membership_request row shows the outcome line and no buttons', () 
   expect(screen.getByText('Approved by Ada')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull();
+});
+
+it('a canceled membership_request row shows the outcome line in American spelling', () => {
+  // 'cancelled' is the state value the API stores; the line it shows is spelled the American way
+  ctx.items = [requestItem('n1', { request_id: 'r1', group_id: 'g1', state: 'cancelled' })];
+  renderPanel();
+  expect(screen.getByText('Canceled')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
 });
 
 it('a report_ready row renders no membership strip', () => {

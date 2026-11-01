@@ -118,3 +118,14 @@ it('names the Shipments dashboard in the crumbs and finds it in page search', as
   await user.type(search, 'shipm');
   expect(await screen.findByText('Shipments', { selector: '*:not(.crumbs *)' })).toBeDefined();
 });
+
+it('names the full notifications page in the crumbs, under Account like the other account pages', () => {
+  render(
+    <MemoryRouter initialEntries={['/notifications']}>
+      <Topbar />
+    </MemoryRouter>,
+  );
+  const crumbs = document.querySelector('.crumbs') as HTMLElement;
+  expect(crumbs.textContent).toBe('Account/Notifications');
+  expect(crumbs.querySelector('b')?.textContent).toBe('Notifications');
+});

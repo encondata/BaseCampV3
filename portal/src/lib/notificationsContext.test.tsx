@@ -20,9 +20,9 @@ vi.mock('../auth/AuthContext', () => ({ useAuth: () => auth }));
 const { NotificationsProvider, useNotifications, INBOX_POLL_MS } = await import('./notificationsContext');
 
 const inbox = (items: Inbox['items']): Inbox =>
-  ({ unread_count: items.filter((i) => !i.read_at).length, items });
+  ({ unread_count: items.filter((i) => !i.read_at).length, items, next_cursor: null, total: items.length });
 const item = (id: string, read = false) => ({
-  id, kind: 'report_ready', title: `T${id}`, body: '', link: '/reports', payload: {},
+  id, kind: 'report_ready', category: 'reports' as const, title: `T${id}`, body: '', link: '/reports', payload: {},
   created_at: '2026-09-09T12:00:00Z', read_at: read ? '2026-09-09T12:01:00Z' : null,
 });
 
