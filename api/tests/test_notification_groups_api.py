@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import select
 
+from serversherpa.api.routes.notifications import capabilities
 from serversherpa.db.models import (
     AuditLog, NotificationGroup, NotificationGroupMember, Person, UserAccount,
 )
@@ -552,6 +553,19 @@ async def test_member_with_only_a_login_email_can_email(client, db, seeded_user)
     assert resp.status_code == 200, resp.text
     assert resp.json()["overrides"]["channels"] == ["email"]
     assert resp.json()["can_email"] is True
+
+
+def test_capabilities_needs_the_sign_in_email_by_name():
+    """A caller can't leave the sign-in email out (that was the login-only
+    bug: a person with only a sign-in email read as unreachable) or pass it
+    by position."""
+    person = Person(first_name="Lou", last_name="Login")         # no profile email
+    with pytest.raises(TypeError):
+        capabilities(person, True)
+    with pytest.raises(TypeError):
+        capabilities(person, True, "lou@test.example.com")
+    assert capabilities(person, True, account_email="lou@test.example.com")["can_email"] is True
+    assert capabilities(person, False, account_email=None)["can_email"] is False
 
 
 # ── categories ───────────────────────────────────────────────────────

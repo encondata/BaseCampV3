@@ -6,9 +6,10 @@ import base64
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from serversherpa.api.routes.notifications import _decode_inbox_cursor, _encode_inbox_cursor
+from serversherpa.db.engine import get_engine
 from serversherpa.db.models import Notification, Person
 from serversherpa.notifications.inbox import notify
 
@@ -295,6 +296,42 @@ async def test_inbox_default_call_unchanged(client, db, seeded_user):
     assert [i["title"] for i in unread["items"]] == [
         f"n{n:02d}" for n in range(59, 8, -1) if n != 57]
     assert unread["unread_count"] == 59 and unread["total"] == 59
+
+
+async def test_inbox_bell_poll_counts_in_one_query(client, db, seeded_user):
+    """The bell's 30 s poll (no params): `total` is the person's live rows and
+    `unread_count` the unread ones among them, both from one statement, so
+    the call reads the inbox twice (the counts, the page), not three times."""
+    hdrs = await login(client)
+    await _make(db, client, "staff", "bob@test.example.com")
+    bob = await db.scalar(select(Person).where(Person.email == "bob@test.example.com"))
+    db.add_all([
+        _row(seeded_user.id, "unread 1", at=BASE + timedelta(minutes=1)),
+        _row(seeded_user.id, "unread 2", at=BASE + timedelta(minutes=2)),
+        _row(seeded_user.id, "read", at=BASE + timedelta(minutes=3), read=True),
+        _row(seeded_user.id, "hidden unread", at=BASE + timedelta(minutes=4), hidden=True),
+        _row(seeded_user.id, "hidden read", at=BASE + timedelta(minutes=5), read=True,
+             hidden=True),
+        _row(bob.id, "Bob's", at=BASE + timedelta(minutes=6)),
+    ])
+    await db.commit()
+
+    statements: list[str] = []
+
+    def remember(conn, cursor, statement, parameters, context, executemany):
+        statements.append(" ".join(statement.split()))
+
+    engine = get_engine().sync_engine
+    event.listen(engine, "before_cursor_execute", remember)
+    try:
+        body = (await client.get("/notifications/inbox", headers=hdrs)).json()
+    finally:
+        event.remove(engine, "before_cursor_execute", remember)
+
+    assert (body["total"], body["unread_count"]) == (3, 2)
+    assert [i["title"] for i in body["items"]] == ["read", "unread 2", "unread 1"]
+    inbox_reads = [s for s in statements if "FROM notifications" in s]
+    assert len(inbox_reads) == 2, inbox_reads
 
 
 async def test_inbox_limit_is_clamped_to_1_through_100(client, db, seeded_user):

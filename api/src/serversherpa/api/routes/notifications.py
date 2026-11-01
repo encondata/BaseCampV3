@@ -145,13 +145,14 @@ CHANNEL_CAPABILITY = {"email": "can_email", "text": "can_text",
                        "push": "can_push", "web": "can_web"}
 
 
-def capabilities(person: Person, has_account: bool,
-                 account_email: str | None = None) -> dict[str, bool]:
+def capabilities(person: Person, has_account: bool, *,
+                 account_email: str | None) -> dict[str, bool]:
     """What a person is actually reachable on, independent of any group's
     aspirational channel list. Drives both the recipients picker and the
     per-member channel-override validation below. Email needs a profile
-    email or a sign-in email (`account_email`): the sender falls back to
-    the sign-in one."""
+    email or a sign-in email (`account_email`, None without an account): the
+    sender falls back to the sign-in one. Required and by name, so no caller
+    can leave it out and misreport a sign-in-only person as unreachable."""
     return {"can_email": bool(person.email or account_email),
             "can_text": person.phone is not None,
             "can_push": has_account, "can_web": has_account}
@@ -162,7 +163,7 @@ def _member_out(group: NotificationGroup, member: NotificationGroupMember,
     """`account_email` is the person's sign-in email, None without an account
     (every account has one)."""
     has_account = account_email is not None
-    caps = capabilities(person, has_account, account_email)
+    caps = capabilities(person, has_account, account_email=account_email)
     return NotificationMemberOut(
         person_id=person.id, display_name=person.display_name,
         job_title=person.job_title, avatar_url=presign_get(person.avatar_key),
@@ -367,7 +368,7 @@ def apply_member_overrides(member: NotificationGroupMember,
             raise _err(422, "invalid_quiet_hours")
 
     if "channels" in fields_set and body.channels is not None:
-        caps = capabilities(person, account_email is not None, account_email)
+        caps = capabilities(person, account_email is not None, account_email=account_email)
         allowed = {ch for ch, cap_key in CHANNEL_CAPABILITY.items() if caps[cap_key]}
         if not set(body.channels) <= allowed:
             raise _err(422, "channel_unavailable")
@@ -505,7 +506,7 @@ async def list_recipients(
     out = []
     for person, account_email in rows:
         has_account = account_email is not None
-        caps = capabilities(person, has_account, account_email)
+        caps = capabilities(person, has_account, account_email=account_email)
         out.append(NotificationRecipientOut(
             person_id=person.id, display_name=person.display_name,
             job_title=person.job_title, avatar_url=presign_get(person.avatar_key),
@@ -571,17 +572,21 @@ async def inbox(user: CurrentUser, db: DbSession, unread_only: bool = False,
     limit = max(1, min(limit, INBOX_MAX_LIMIT))
 
     live = (Notification.person_id == user.person.id, Notification.dismissed_at.is_(None))
-    unread = await db.scalar(select(func.count()).select_from(Notification)
-                             .where(*live, Notification.read_at.is_(None)))
-    shown = list(live)
+    filters = []
     if unread_only:
-        shown.append(Notification.read_at.is_(None))
+        filters.append(Notification.read_at.is_(None))
     if category is not None:
-        shown.append(Notification.kind.in_(
+        filters.append(Notification.kind.in_(
             [kind for kind, info in KINDS.items() if info.category == category]))
-    total = await db.scalar(select(func.count()).select_from(Notification).where(*shown))
+    # Both counts in one statement over the live rows, so the bell's poll reads
+    # the inbox twice (counts, page): the overall unread count, whatever the
+    # filters, and the total the filters leave.
+    unread, total = (await db.execute(
+        select(func.count().filter(Notification.read_at.is_(None)),
+               func.count().filter(*filters) if filters else func.count())
+        .select_from(Notification).where(*live))).one()
 
-    q = select(Notification).where(*shown)
+    q = select(Notification).where(*live, *filters)
     if after is not None:
         # a row comparison on the full sort key: rows sharing a created_at are
         # neither skipped nor repeated across the page boundary

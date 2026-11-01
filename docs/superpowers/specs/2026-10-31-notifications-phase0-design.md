@@ -172,9 +172,10 @@ by the log-service retention pass. `email_outbox` gains `skip_reason`.
 | `email_retry` | delivery | a send failed and will retry; `detail.attempt`, error class, SMTP code, next attempt |
 | `email_failed` | delivery | gave up after the last attempt |
 
-Every event is also written as an INFO line under the `serversherpa.notifications.log`
-logger for developers. Neither the row nor the line carries an email body or address;
-the API shows the address an email went to by joining its outbox row.
+Every event is also written as a DEBUG line under the `serversherpa.notifications.log`
+logger for developers; it reaches the process log only when the Logging minimum level is
+lowered to DEBUG. Neither the row nor the line carries an email body or address; the API
+shows the address an email went to by joining its outbox row.
 
 **API (super admin and above).** `GET /notifications/log` — keyset paged (`rows`,
 `next_cursor`, `total`), filters: search, event, channel, category, since, person,

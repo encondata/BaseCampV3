@@ -21,10 +21,11 @@ async def notify(db: AsyncSession, person_id: uuid.UUID, kind: str, title: str, 
                  payload: dict | None = None,
                  owner_notice: bool = False) -> Notification | None:
     """Write the inbox row and queue the email when the rules allow it.
-    Returns None (nothing written) when the person turned this category
-    off (except for kinds that are never emailed). `owner_notice` marks the copy sent to the account owner about
-    their own account (it can email regardless of group membership).
-    Logs `inbox_written` or `inbox_suppressed`; the email decision logs its own."""
+    Returns None (no inbox row) when the person turned this category off
+    (except for kinds that are never emailed). `owner_notice` marks the copy
+    sent to the account owner about their own account (it can email
+    regardless of group membership). Logs `inbox_written` or
+    `inbox_suppressed`; the email decision logs its own."""
     info = kind_info(kind)
     contact = None
     choice = "email"

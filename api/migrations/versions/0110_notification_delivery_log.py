@@ -11,9 +11,13 @@
   log-service retention pass.
 - `email_outbox.skip_reason`: the reason code of a `skipped` row (NULL for
   every other status).
+- One-time data step: approval cards (membership requests, router approvals,
+  password-reset requests) decided before this revision are marked read, as
+  every decision marks its copies read from now on. Pending and open cards
+  stay unread; a card already read keeps its first read time.
 
 Rolling back drops the table and the column (the log and the recorded skip
-reasons are lost).
+reasons are lost). It leaves the read state alone: that step is data only.
 
 Design: docs/superpowers/specs/2026-10-31-notifications-phase0-design.md
 
@@ -72,7 +76,16 @@ def upgrade() -> None:
 
     op.add_column("email_outbox", sa.Column("skip_reason", sa.Text(), nullable=True))
 
+    # Approval cards decided before this revision stay unread otherwise: the
+    # rule that a decision marks every copy read only applies to new ones.
+    op.execute(
+        "UPDATE notifications SET read_at = COALESCE(read_at, now()) "
+        "WHERE kind IN ('membership_request', 'router_approval', 'password_reset_request') "
+        "AND payload ->> 'state' IS NOT NULL "
+        "AND payload ->> 'state' NOT IN ('pending', 'open')")
+
 
 def downgrade() -> None:
+    # the read state set by upgrade's data step is left as it is
     op.drop_column("email_outbox", "skip_reason")
     op.drop_table("notification_log")      # its indexes and checks go with it

@@ -1,8 +1,10 @@
 """The notification delivery log writer. `record()` adds one `notification_log`
 row to the caller's session — never flushes or commits — the same contract as
 notify(), enqueue() and audit(), so a log row can't outlive a rolled-back
-mutation. Each row is also written as one INFO line on the
-`serversherpa.notifications.log` logger for developers.
+mutation. Each row is also written as one DEBUG line on the
+`serversherpa.notifications.log` logger for developers: it reaches the process
+log only when the Logging min level is lowered to DEBUG, so the default INFO
+level does not copy every decision into log_entries as well.
 
 Neither a row's `detail` nor that line may carry an email address or a message
 body: they hold ids, codes and counts. The address lives only on the outbox
@@ -58,7 +60,7 @@ def record(db: AsyncSession, event: str, *, channel: str,
     # ids and codes only, and only those that are set; never `detail`
     fields = {"channel": channel, "kind": kind, "person": person_id,
               "notification": notification_id, "outbox": outbox_id, "reason": reason}
-    logger.info("%s %s", event,
-                " ".join(f"{key}={value}" for key, value in fields.items()
-                         if value is not None))
+    logger.debug("%s %s", event,
+                 " ".join(f"{key}={value}" for key, value in fields.items()
+                          if value is not None))
     return row

@@ -52,18 +52,26 @@ async def test_record_only_adds_to_the_session(db, seeded_user):
 
 async def test_record_line_carries_ids_not_detail(db, seeded_user, caplog):
     notification_id, outbox_id = uuid.uuid4(), uuid.uuid4()
-    with caplog.at_level(logging.INFO, logger=LOG_NAME):
+    with caplog.at_level(logging.DEBUG, logger=LOG_NAME):
         record(db, "email_not_queued", channel="email", person_id=seeded_user.id,
                notification_id=notification_id, outbox_id=outbox_id,
                kind="report_ready", category="reports", reason="no_email_group",
                detail={"note": "secret-body"})
     lines = [r for r in caplog.records if r.name == LOG_NAME]
-    assert len(lines) == 1 and lines[0].levelno == logging.INFO
+    assert len(lines) == 1 and lines[0].levelno == logging.DEBUG
     message = lines[0].getMessage()
     for part in ("email_not_queued", "email", "report_ready", "no_email_group",
                  str(seeded_user.id), str(notification_id), str(outbox_id)):
         assert part in message
     assert "secret-body" not in message
+
+
+async def test_record_line_stays_out_of_an_info_level_log(db, caplog):
+    """The line is DEBUG: the process log's handler (Logging min level INFO by
+    default) would otherwise copy every decision into log_entries too."""
+    with caplog.at_level(logging.INFO, logger=LOG_NAME):
+        record(db, "inbox_written", channel="inbox", kind="report_ready")
+    assert [r for r in caplog.records if r.name == LOG_NAME] == []
 
 
 async def test_record_stamps_the_installed_process(db, monkeypatch):
