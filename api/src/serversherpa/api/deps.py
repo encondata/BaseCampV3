@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from serversherpa.access.defaults import SUPER_ADMIN_RANK
+from serversherpa.access.defaults import GATE_BYPASS_RANK, SUPER_ADMIN_RANK
 from serversherpa.access.resolver import AccessInfo, resolve_access
 from serversherpa.config import get_settings
 from serversherpa.db.engine import get_db
@@ -355,6 +355,17 @@ def ensure_super_admin(actor: AuthContext) -> None:
     not qualify. Called in the route body, after require_permission (System ›
     Processes, the notification delivery log)."""
     if not actor.access.is_global or actor.access.max_rank < SUPER_ADMIN_RANK:
+        raise HTTPException(status_code=403, detail={"code": "forbidden"})
+
+
+def ensure_admin(actor: AuthContext) -> None:
+    """403 `forbidden` unless the actor is an admin or above: global access
+    and a highest role rank of at least GATE_BYPASS_RANK. The gate of System ›
+    Notifications › Defaults, and the same rule as `require_bulk_rank` (Bulk
+    Actions). Like ensure_super_admin, a high-ranked role anchored to a client
+    or partner does not qualify. Called in the route body, after
+    require_permission."""
+    if not actor.access.is_global or actor.access.max_rank < GATE_BYPASS_RANK:
         raise HTTPException(status_code=403, detail={"code": "forbidden"})
 
 

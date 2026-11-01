@@ -2,9 +2,10 @@
 channels, quiet hours, active days, and DND behavior for its members.
 Task 2 adds member endpoints (with per-member overrides); the React UI
 is a later task still. This file also hosts the per-person in-app
-inbox routes (/inbox, mark-one-read, mark-all-read) and, for super admins
-and above, the delivery log (/log), Check delivery (/check) and the kinds
-it picks from (/kinds).
+inbox routes (/inbox, mark-one-read, mark-all-read), the company
+notification settings (/settings: anyone signed in reads them, admins and
+above change them) and, for super admins and above, the delivery log
+(/log), Check delivery (/check) and the kinds it picks from (/kinds).
 
 CHANNELS/DAYS are the source of truth other modules (the future
 notification sender, Task 2's member validation) should import from."""
@@ -17,25 +18,33 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import AwareDatetime
 from sqlalchemy import func, or_, select, tuple_
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import aliased
 
 from serversherpa.api.deps import (
-    AuthContext, CurrentUser, DbSession, ensure_super_admin, require_permission,
+    AuthContext, CurrentUser, DbSession, ensure_admin, ensure_super_admin,
+    require_permission,
 )
 from serversherpa.api.schemas import (
     DeliveryCheckOut, DeliveryLogEntryOut, DeliveryLogPageOut,
     MembershipDecisionIn, MembershipRequestOut, NotificationEffectiveSettings,
     NotificationGroupCreateIn, NotificationGroupDetailOut, NotificationGroupOut,
     NotificationGroupPatchIn, NotificationInboxItemOut, NotificationInboxOut,
-    NotificationKindOut, NotificationMemberAddIn, NotificationMemberOut,
-    NotificationMemberOverrides, NotificationRecipientOut,
+    NotificationKindOut, NotificationKindSettingOut, NotificationMemberAddIn,
+    NotificationMemberOut, NotificationMemberOverrides, NotificationRecipientOut,
+    NotificationSettingsIn, NotificationSettingsOut, SwitchPair,
 )
 from serversherpa.db.models import (
     EmailOutbox, Notification, NotificationGroup, NotificationGroupMember,
-    NotificationLog, NotificationMembershipRequest, Person, UserAccount,
+    NotificationLog, NotificationMembershipRequest, Person, SystemConfig,
+    UserAccount,
 )
 from serversherpa.db.ordering import natural
 from serversherpa.notifications import check as delivery_check
+from serversherpa.notifications.company import (
+    CONFIGURABLE_CATEGORIES, SECTION as COMPANY_SECTION, SECURITY_CATEGORY,
+    CompanySettings, Switches, critical_eligible, is_critical, load_company_settings,
+)
 from serversherpa.notifications.delivery_log import EVENTS
 from serversherpa.notifications.kinds import CATEGORY_KEYS, KINDS, kind_info
 from serversherpa.notifications.requests import RequestError, decide_request
@@ -804,3 +813,89 @@ async def list_kinds(
                                 email=info.email, owner_always=info.owner_always,
                                 urgent=info.urgent)
             for kind, info in KINDS.items()]
+
+
+# ── company settings (anyone signed in reads; admin and above changes) ─────
+# The switches a person follows until they change their own, and the kinds an
+# admin marked critical (notifications/company.py). /me shows both.
+
+def _stored_settings(company: CompanySettings) -> dict:
+    """The settings in the shape the `notifications` section stores and the
+    audit records: every configurable category, the marked kinds in registry
+    order."""
+    return {"defaults": {category: {"inbox": switches.inbox, "email": switches.email}
+                         for category, switches in company.defaults.items()},
+            "critical_kinds": [kind for kind in KINDS if kind in company.critical_kinds]}
+
+
+def _settings_out(company: CompanySettings) -> NotificationSettingsOut:
+    stored = _stored_settings(company)
+    return NotificationSettingsOut(
+        defaults={category: SwitchPair(**pair) for category, pair in stored["defaults"].items()},
+        critical_kinds=stored["critical_kinds"],
+        kinds=[NotificationKindSettingOut(
+            kind=kind, label=info.label, category=info.category, email=info.email,
+            owner_always=info.owner_always, critical=is_critical(kind, company),
+            locked=info.category == SECURITY_CATEGORY)
+            for kind, info in KINDS.items()])
+
+
+@router.get("/settings", response_model=NotificationSettingsOut)
+async def get_notification_settings(
+    _user: CurrentUser,
+    db: DbSession,
+) -> NotificationSettingsOut:
+    """The company defaults, the critical kinds an admin marked, and every
+    registered kind with its flags: what /me needs to say what a switch follows
+    and which notifications skip quiet hours. Any signed-in person."""
+    return _settings_out(await load_company_settings(db))
+
+
+@router.put("/settings", response_model=NotificationSettingsOut)
+async def put_notification_settings(
+    body: NotificationSettingsIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("notifications", "change"),
+) -> NotificationSettingsOut:
+    """Change the company defaults and/or the critical kinds, and answer with
+    the whole settings. `defaults` merges per category; `critical_kinds`
+    replaces the list (de-duplicated, in registry order). Admin and above.
+    422 `invalid_category` for a default of a category that has none (account
+    security included), `invalid_kind` for a critical kind that is
+    unregistered, never emailed or account security. Frozen by read-only mode
+    like every other write."""
+    ensure_admin(actor)
+    if body.defaults is not None and not body.defaults.keys() <= set(CONFIGURABLE_CATEGORIES):
+        raise _err(422, "invalid_category")
+    if body.critical_kinds is not None and not all(
+            critical_eligible(kind) for kind in body.critical_kinds):
+        raise _err(422, "invalid_kind")
+
+    # The section's row, created if missing and locked for this transaction: a
+    # partial save is read-merge-write, and two of them (a category each) must
+    # not overwrite each other, nor two first saves collide on the insert.
+    await db.execute(pg_insert(SystemConfig).values(section=COMPANY_SECTION, data={})
+                     .on_conflict_do_nothing(index_elements=[SystemConfig.section]))
+    row = await db.get(SystemConfig, COMPANY_SECTION, with_for_update=True,
+                       populate_existing=True)
+
+    before = await load_company_settings(db)
+    defaults = dict(before.defaults)
+    if body.defaults is not None:
+        defaults.update({category: Switches(pair.inbox, pair.email)
+                         for category, pair in body.defaults.items()})
+    after = CompanySettings(
+        defaults=defaults,
+        critical_kinds=(before.critical_kinds if body.critical_kinds is None
+                        else frozenset(body.critical_kinds)))
+
+    old, new = _stored_settings(before), _stored_settings(after)
+    row.data = new
+    row.updated_at = datetime.now(UTC)
+    row.updated_by = actor.person.id
+    changes = {key: {"from": old[key], "to": new[key]} for key in new if old[key] != new[key]}
+    if changes:
+        audit(db, actor_id=actor.person.id, entity_type="system", entity_id=COMPANY_SECTION,
+              action="notifications_config_update", changes=changes)
+    await db.commit()
+    return _settings_out(after)

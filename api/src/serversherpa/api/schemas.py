@@ -3077,6 +3077,51 @@ class NotificationKindOut(BaseModel):
     urgent: bool
 
 
+class SwitchPair(BaseModel):
+    """One category's two switches: written to the inbox, and emailed."""
+
+    inbox: bool
+    email: bool
+
+
+class NotificationKindSettingOut(BaseModel):
+    """One registered kind in the company settings. `email` is whether it is
+    ever emailed; `critical` whether it skips quiet hours, days off and the
+    summary; `locked` whether that is fixed (account security is always
+    critical, and is not the admin's to change)."""
+
+    kind: str
+    label: str
+    category: str
+    email: bool
+    owner_always: bool
+    critical: bool
+    locked: bool
+
+
+class NotificationSettingsOut(BaseModel):
+    """The company notification settings. `defaults` holds each configurable
+    category's switches (account security has none: it is always on);
+    `critical_kinds` the kinds an admin marked critical, in registry order,
+    not the always-critical security kinds; `kinds` every registered kind,
+    in registry order."""
+
+    defaults: dict[str, SwitchPair]
+    critical_kinds: list[str]
+    kinds: list[NotificationKindSettingOut]
+
+
+class NotificationSettingsIn(BaseModel):
+    """Partial update: only sent keys change. `defaults` merges per category
+    (a category sent replaces both its switches); `critical_kinds` replaces
+    the whole list."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    defaults: dict[str, SwitchPair] | None = None
+    critical_kinds: list[str] | None = None
+
+
 # ── notification-group membership requests (self-service + approval) ──
 
 class MembershipRequestOut(BaseModel):
