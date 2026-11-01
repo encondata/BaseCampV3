@@ -2959,6 +2959,9 @@ class NotificationInboxItemOut(BaseModel):
 
     id: uuid.UUID
     kind: str
+    # The kind's category in the kinds registry; None for a kind it does not
+    # list. Filled in by the route: the table has no such column.
+    category: str | None = None
     title: str
     body: str
     link: str | None = None
@@ -2968,8 +2971,15 @@ class NotificationInboxItemOut(BaseModel):
 
 
 class NotificationInboxOut(BaseModel):
+    """One page of a person's live inbox. `unread_count` is the person's overall
+    unread count, whatever the filters; `total` counts every row matching
+    category/unread_only, not only this page; `next_cursor` is null on the
+    last page."""
+
     unread_count: int
     items: list[NotificationInboxItemOut]
+    next_cursor: str | None = None
+    total: int
 
 
 # ── notification-group membership requests (self-service + approval) ──

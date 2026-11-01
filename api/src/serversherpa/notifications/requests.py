@@ -179,11 +179,16 @@ async def decide_request(db: AsyncSession, *, request_id: uuid.UUID, actor: Pers
 async def resolve_copies(db: AsyncSession, request_id: uuid.UUID, state: str,
                          decided_by: str | None) -> None:
     """Update every approver's copy of the `membership_request` notification
-    so the popover stops rendering Approve/Reject and shows the outcome."""
+    so the popover stops rendering Approve/Reject and shows the outcome. Once
+    the request is decided (any state but pending/open) the copies are also
+    marked read, for everyone: there is nothing left to act on. A copy that
+    was already read keeps its first read time."""
     await db.execute(text(
         "UPDATE notifications SET payload = payload || "
         "jsonb_build_object('state', CAST(:state AS text), "
-        "'decided_by', CAST(:decided_by AS text)) "
+        "'decided_by', CAST(:decided_by AS text)), "
+        "read_at = CASE WHEN CAST(:state AS text) IN ('pending', 'open') "
+        "THEN read_at ELSE COALESCE(read_at, now()) END "
         "WHERE kind = 'membership_request' "
         "AND payload ->> 'request_id' = CAST(:request_id AS text)"),
         {"state": state, "decided_by": decided_by, "request_id": str(request_id)})

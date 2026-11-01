@@ -7,12 +7,13 @@ inbox routes (/inbox, mark-one-read, mark-all-read).
 CHANNELS/DAYS are the source of truth other modules (the future
 notification sender, Task 2's member validation) should import from."""
 
+import base64
 import uuid
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, HTTPException, Response
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.orm import aliased
 
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession, require_permission
@@ -28,7 +29,7 @@ from serversherpa.db.models import (
     NotificationMembershipRequest, Person, UserAccount,
 )
 from serversherpa.db.ordering import natural
-from serversherpa.notifications.kinds import CATEGORY_KEYS
+from serversherpa.notifications.kinds import CATEGORY_KEYS, KINDS, kind_info
 from serversherpa.notifications.requests import RequestError, decide_request
 from serversherpa.notifications.settings import effective_settings
 from serversherpa.services.audit import audit, diff, snapshot
@@ -500,7 +501,8 @@ async def list_recipients(
 
 # ── in-app inbox (any signed-in person; no resource permission) ──────
 
-INBOX_LIMIT = 50
+INBOX_LIMIT = 50        # default page size, and the bell's
+INBOX_MAX_LIMIT = 100
 
 
 def _own_live(user: CurrentUser, notification_id: uuid.UUID):
@@ -510,17 +512,74 @@ def _own_live(user: CurrentUser, notification_id: uuid.UUID):
         Notification.dismissed_at.is_(None))
 
 
+def _encode_inbox_cursor(created_at: datetime, id: uuid.UUID) -> str:
+    """The cursor for the row a page ended on: base64url, unpadded, of
+    "<created_at ISO>|<id>". Clients pass it back verbatim as `cursor`."""
+    stamp = created_at.astimezone(UTC).isoformat()
+    return base64.urlsafe_b64encode(f"{stamp}|{id}".encode()).decode().rstrip("=")
+
+
+def _decode_inbox_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
+    """(created_at, id) of the row the previous page ended on. Anything
+    `_encode_inbox_cursor` could not have made is a 422 `invalid_cursor`,
+    including a timestamp with no UTC offset (it would be read as local time)."""
+    try:
+        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode()
+        stamp, separator, row_id = raw.partition("|")
+        created_at = datetime.fromisoformat(stamp)
+        if not separator or created_at.tzinfo is None:
+            raise ValueError(cursor)
+        return created_at.astimezone(UTC), uuid.UUID(row_id)
+    except (ValueError, OverflowError):
+        raise _err(422, "invalid_cursor") from None
+
+
+def _inbox_item(row: Notification) -> NotificationInboxItemOut:
+    """The row as the API shows it, with its kind's registry category."""
+    info = kind_info(row.kind)
+    return NotificationInboxItemOut.model_validate(row).model_copy(
+        update={"category": info.category if info else None})
+
+
 @router.get("/inbox", response_model=NotificationInboxOut)
-async def inbox(user: CurrentUser, db: DbSession,
-                unread_only: bool = False) -> NotificationInboxOut:
+async def inbox(user: CurrentUser, db: DbSession, unread_only: bool = False,
+                category: str | None = None, cursor: str | None = None,
+                limit: int = INBOX_LIMIT) -> NotificationInboxOut:
+    """The person's live (not hidden) notifications, newest first, a page at a
+    time. `limit` is clamped to 1..100; `category` is a kinds-registry category
+    (a kind the registry does not list belongs to none, so it only shows
+    unfiltered); `cursor` is the previous page's `next_cursor`. The bell calls
+    this with no parameters and gets its 50 newest."""
+    if category is not None and category not in CATEGORY_KEYS:
+        raise _err(422, "invalid_category")
+    after = _decode_inbox_cursor(cursor) if cursor is not None else None
+    limit = max(1, min(limit, INBOX_MAX_LIMIT))
+
     live = (Notification.person_id == user.person.id, Notification.dismissed_at.is_(None))
     unread = await db.scalar(select(func.count()).select_from(Notification)
                              .where(*live, Notification.read_at.is_(None)))
-    q = select(Notification).where(*live).order_by(Notification.created_at.desc()).limit(INBOX_LIMIT)
+    shown = list(live)
     if unread_only:
-        q = q.where(Notification.read_at.is_(None))
-    items = (await db.scalars(q)).all()
-    return NotificationInboxOut(unread_count=int(unread or 0), items=items)
+        shown.append(Notification.read_at.is_(None))
+    if category is not None:
+        shown.append(Notification.kind.in_(
+            [kind for kind, info in KINDS.items() if info.category == category]))
+    total = await db.scalar(select(func.count()).select_from(Notification).where(*shown))
+
+    q = select(Notification).where(*shown)
+    if after is not None:
+        # a row comparison on the full sort key: rows sharing a created_at are
+        # neither skipped nor repeated across the page boundary
+        q = q.where(tuple_(Notification.created_at, Notification.id) < tuple_(*after))
+    rows = (await db.scalars(
+        q.order_by(Notification.created_at.desc(), Notification.id.desc())
+        .limit(limit + 1))).all()          # one past the page: is there another?
+    page = rows[:limit]
+    next_cursor = (_encode_inbox_cursor(page[-1].created_at, page[-1].id)
+                   if len(rows) > limit else None)
+    return NotificationInboxOut(
+        unread_count=int(unread or 0), items=[_inbox_item(row) for row in page],
+        next_cursor=next_cursor, total=int(total or 0))
 
 
 @router.post("/inbox/{notification_id}/read", status_code=204)

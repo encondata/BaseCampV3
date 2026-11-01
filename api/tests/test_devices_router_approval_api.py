@@ -6,10 +6,12 @@ import hashlib
 
 from sqlalchemy import select, text
 
-from serversherpa.db.models import AuditLog, Device, Notification
+from serversherpa.db.models import AuditLog, Device, Notification, Person
 from serversherpa.notifications.inbox import notify
+from serversherpa.services.router_agent import resolve_router_copies
 from tests.test_access_roles_api import login_admin
 from tests.test_notification_groups_api import login_staff
+from tests.test_status_values_write import _make
 
 OLD = hashlib.sha256(b"a" * 64).hexdigest()
 NEW = hashlib.sha256(b"b" * 64).hexdigest()
@@ -96,6 +98,65 @@ async def test_decisions_resolve_every_approver_copy(client, db, seeded_user):
     await client.post(f"/devices/{d.id}/revoke", headers=hdrs)
     await db.refresh(n)
     assert n.payload["state"] == "revoked"
+
+
+async def _copies(db):
+    """Every approver's router_approval copy as the database has it now (the
+    decision is a raw UPDATE the session's already-loaded rows know nothing of)."""
+    return list((await db.scalars(
+        select(Notification).where(Notification.kind == "router_approval")
+        .execution_options(populate_existing=True))).all())
+
+
+async def _waiting_copies(db, device, *people):
+    for person in people:
+        await notify(db, person.id, "router_approval", "Router waiting for approval",
+                     payload={"device_id": str(device.id), "mac": device.mac,
+                              "state": "pending"})
+    await db.commit()
+
+
+async def test_approving_marks_router_copies_read(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    await _make(db, client, "admin", "bob@test.example.com")
+    bob = await db.scalar(select(Person).where(Person.email == "bob@test.example.com"))
+    d = await _router(db)
+    await _waiting_copies(db, d, seeded_user, bob)
+    assert all(c.read_at is None for c in await _copies(db))
+
+    assert (await client.post(f"/devices/{d.id}/approve", headers=hdrs)).status_code == 200
+
+    copies = await _copies(db)
+    assert len(copies) == 2
+    assert all(c.read_at is not None and c.payload["state"] == "approved" for c in copies)
+    first_read = {c.id: c.read_at for c in copies}
+    # a later revoke changes the state but never the time they were first read
+    assert (await client.post(f"/devices/{d.id}/revoke", headers=hdrs)).status_code == 200
+    again = await _copies(db)
+    assert all(c.payload["state"] == "revoked" for c in again)
+    assert {c.id: c.read_at for c in again} == first_read
+
+
+async def test_revoking_marks_router_copies_read(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    d = await _router(db, approval_state="approved")
+    await _waiting_copies(db, d, seeded_user)
+
+    assert (await client.post(f"/devices/{d.id}/revoke", headers=hdrs)).status_code == 200
+
+    (copy,) = await _copies(db)
+    assert copy.payload["state"] == "revoked" and copy.read_at is not None
+
+
+async def test_a_router_copy_set_back_to_pending_stays_unread(db, seeded_user):
+    d = await _router(db)
+    await _waiting_copies(db, d, seeded_user)
+
+    await resolve_router_copies(db, d.id, "pending", None)
+    await db.commit()
+
+    (copy,) = await _copies(db)
+    assert copy.payload["state"] == "pending" and copy.read_at is None
 
 
 async def test_errors(client, db, seeded_user):
