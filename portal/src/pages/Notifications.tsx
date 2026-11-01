@@ -12,7 +12,7 @@
  * that detail page on success.
  */
 
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useId, useMemo, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -20,6 +20,7 @@ import DataTable, { type DataTableColumn, type DataTableRow } from '../component
 import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
 import CategoryChips, { NO_CATEGORIES } from '../components/notifications/CategoryChips';
 import ChannelChips, { NO_EMAIL } from '../components/notifications/ChannelChips';
+import NotificationModal from '../components/notifications/NotificationModal';
 import {
   ApiError, approveMembershipRequest, createNotificationGroup, listMembershipRequests,
   listNotificationGroups, rejectMembershipRequest,
@@ -509,14 +510,16 @@ export default function Notifications() {
 }
 
 /* ── create group modal ─────────────────────────────────────────────
- * Model: components/access/GroupsTab.tsx's CreateGroupModal (lines
- * ~295-353) — same .modal-scrim/.modal-card skeleton and ERRORS/msgFor
- * pattern. Create-only (no edit here); settings beyond name/description
- * are configured on the detail page (Task 4). */
+ * Model: components/access/GroupsTab.tsx's CreateGroupModal — the same
+ * ERRORS/msgFor pattern, in the shared NotificationModal shell (standard
+ * header; the Create button sits in the footer and submits the form by id, so
+ * Enter in a field still creates). Create-only (no edit here); settings
+ * beyond name/description are configured on the detail page. */
 
 function NewGroupModal({ onClose, onDone }: {
   onClose: () => void; onDone: (id: string) => void;
 }) {
+  const formId = useId();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [saving, setSaving] = useState(false);
@@ -539,37 +542,35 @@ function NewGroupModal({ onClose, onDone }: {
   };
 
   return (
-    <div className="modal-scrim" onMouseDown={(e) => {
-      if (e.target === e.currentTarget) onClose();
-    }}>
-      <div className="modal-card">
-        <div className="modal-head">
-          <h3>New notification group</h3>
-          <button className="modal-close" aria-label="Close" onClick={onClose}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
-                 strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
+    <NotificationModal
+      eyebrow="Notifications" title="New notification group"
+      description="Name the group. Delivery settings and members come next."
+      onClose={onClose} busy={saving}
+      footer={(
+        <>
+          <button className="btn-solid" type="submit" form={formId} disabled={saving}>
+            {saving ? 'Creating…' : 'Create group'}
           </button>
+          <button className="mini-btn" type="button" onClick={onClose} disabled={saving}>
+            Cancel
+          </button>
+          {error && <span className="pf-error" role="alert">{error}</span>}
+        </>
+      )}>
+      <form id={formId} onSubmit={submit}>
+        <div className="pf-form">
+          <div className="full">
+            <label htmlFor="new-group-name">Name *</label>
+            <input id="new-group-name" value={name} required disabled={saving}
+                   onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="full">
+            <label htmlFor="new-group-description">Description</label>
+            <input id="new-group-description" value={description} disabled={saving}
+                   onChange={(e) => setDescription(e.target.value)} />
+          </div>
         </div>
-        <form onSubmit={submit}>
-          <div className="modal-body">
-            <div className="pf-form">
-              <div className="full"><label>Name *</label>
-                <input value={name} required onChange={(e) => setName(e.target.value)} /></div>
-              <div className="full"><label>Description</label>
-                <input value={description} onChange={(e) => setDescription(e.target.value)} /></div>
-            </div>
-          </div>
-          <div className="modal-foot">
-            <button className="btn-solid" type="submit" disabled={saving}>
-              {saving ? 'Creating…' : 'Create group'}
-            </button>
-            <button className="mini-btn" type="button" onClick={onClose} disabled={saving}>
-              Cancel
-            </button>
-            {error && <span className="pf-error">{error}</span>}
-          </div>
-        </form>
-      </div>
-    </div>
+      </form>
+    </NotificationModal>
   );
 }

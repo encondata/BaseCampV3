@@ -1,30 +1,63 @@
 /**
  * OverrideEditorModal — per-member override editor opened from
- * MembersPanel's row Edit action. Every setting is an explicit
- * inherit-vs-custom choice (a "Group default (…)" / "Custom" — or, for
- * quiet hours, "…" / "None" / "Custom" — <select>, per house convention
- * for small fixed enums) so inheritance stays legible rather than an
- * implicit "blank means inherit". Diffs each field's mode+value against
- * the member's loaded overrides so the PATCH carries only what changed,
- * with an explicit `null` for anything reset back to inherit (Task 2's
- * PATCH distinguishes an absent field from one explicitly set to null).
+ * MembersPanel's row Edit action, and (through `onSave`) the self-service
+ * editor on /me › Notifications. Every setting is an explicit inherit-or-custom
+ * choice in the house segmented control — "Group default" / "Custom", or for
+ * quiet hours "Group default" / "None" / "Custom", for When blocked "Group
+ * default" / "Defer" / "Skip", for Urgent bypass "Group default" / "On" /
+ * "Off" — with the group's own value as a hint under it, so inheritance stays
+ * legible rather than an implicit "blank means inherit". Diffs each field's
+ * choice+value against the member's loaded overrides so the PATCH carries
+ * only what changed, with an explicit `null` for anything reset back to
+ * inherit (the PATCH distinguishes an absent field from one explicitly set to
+ * null). A stored channel the screen does not show (Text, Push and Web cannot
+ * send; Email for a member who has no address) is never dropped: the saved
+ * list is the switches' selections plus the hidden channels already stored.
  */
 
-import { useState, type FormEvent } from 'react';
+import { useId, useMemo, useState, type FormEvent } from 'react';
 
 import {
   ApiError, updateNotificationMember,
   type NotificationGroupDetail, type NotificationMember, type NotificationMemberOverrides,
 } from '../../lib/api';
 import {
-  CHANNELS, CHANNEL_LABELS, DAYS, canForChannel, formatDays, formatQuietHours,
-  timezoneOptions, type Channel, type Day,
+  CHANNELS, CHANNEL_LABELS, DAYS, LIVE_CHANNELS, canForChannel, formatDays, formatQuietHours,
+  liveChannels, timezoneOptions, type Channel, type Day,
 } from '../../lib/notifications';
-import { avatarGradient, initials } from '../../lib/format';
+import { timeOptions } from '../../lib/timeChoices';
 import ComboBox from '../ComboBox';
+import { Switch } from '../Switch';
+import { NO_EMAIL } from './ChannelChips';
+import ChoiceField from './ChoiceField';
+import NotificationModal from './NotificationModal';
 
 type Mode = 'default' | 'custom';
 type QuietMode = 'default' | 'none' | 'custom';
+type DndChoice = 'default' | 'defer' | 'skip';
+type UrgentChoice = 'default' | 'on' | 'off';
+
+const GROUP_DEFAULT = { key: 'default', label: 'Group default' } as const;
+
+const MODE_CHOICES: { key: Mode; label: string }[] = [
+  GROUP_DEFAULT,
+  { key: 'custom', label: 'Custom' },
+];
+const QUIET_CHOICES: { key: QuietMode; label: string }[] = [
+  GROUP_DEFAULT,
+  { key: 'none', label: 'None' },
+  { key: 'custom', label: 'Custom' },
+];
+const DND_CHOICES: { key: DndChoice; label: string }[] = [
+  GROUP_DEFAULT,
+  { key: 'defer', label: 'Defer' },
+  { key: 'skip', label: 'Skip' },
+];
+const URGENT_CHOICES: { key: UrgentChoice; label: string }[] = [
+  GROUP_DEFAULT,
+  { key: 'on', label: 'On' },
+  { key: 'off', label: 'Off' },
+];
 
 const DAY_LABELS: Record<Day, string> = {
   mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun',
@@ -54,23 +87,11 @@ function sameArr(a: string[], b: string[]): boolean {
   return a.every((x) => setB.has(x));
 }
 
-/** Local copy of components/Switch.tsx's aligned labeled switch — a bare
- *  <input type="checkbox"> would violate the "never a raw floating
- *  checkbox" form rule, so every boolean here is one of these. */
-function Switch({ checked, onChange, disabled = false, label }: {
-  checked: boolean;
-  onChange?: (v: boolean) => void;
-  disabled?: boolean;
-  label?: string;
-}) {
-  return (
-    <label className="switch">
-      <input type="checkbox" checked={checked} disabled={disabled} aria-label={label}
-             onChange={(e) => onChange?.(e.target.checked)} />
-      <span className="track" />
-    </label>
-  );
-}
+/** The API's "HH:MM:SS" as the pickers' "HH:MM"; null stays null. */
+const clock = (t: string | null): string | null => (t === null ? null : t.slice(0, 5));
+
+const dndChoiceOf = (v: string | null): DndChoice => (v === null ? 'default' : v === 'skip' ? 'skip' : 'defer');
+const urgentChoiceOf = (v: boolean | null): UrgentChoice => (v === null ? 'default' : v ? 'on' : 'off');
 
 export default function OverrideEditorModal({ group, member, onClose, onSaved, onSave }: {
   group: NotificationGroupDetail;
@@ -80,19 +101,24 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved, o
   /** When given, called with the diffed patch instead of the admin PATCH
    *  (updateNotificationMember) — the self-service /me/notification-
    *  groups/{id}/overrides endpoint reuses this same editor + diffing via
-   *  this hook. Default (admin) behaviour is unchanged when omitted. */
+   *  this hook, under its own "My settings" header. Default (admin)
+   *  behavior is unchanged when omitted. */
   onSave?: (body: Partial<NotificationMemberOverrides>) => Promise<unknown>;
 }) {
   const ov = member.overrides;
+  const formId = useId();
+
+  // The channels with a switch: the ones that can send, that this member can receive.
+  const shownChannels = CHANNELS.filter((c) => LIVE_CHANNELS.includes(c) && canForChannel(member, c));
 
   const [channelsMode, setChannelsMode] = useState<Mode>(ov.channels === null ? 'default' : 'custom');
   const [channelsCustom, setChannelsCustom] = useState<Set<Channel>>(
-    () => new Set((ov.channels ?? []).filter((c) => canForChannel(member, c as Channel)) as Channel[]));
+    () => new Set(shownChannels.filter((c) => (ov.channels ?? []).includes(c))));
 
   const [quietMode, setQuietMode] = useState<QuietMode>(
     ov.quiet_mode === null ? 'default' : (ov.quiet_mode as QuietMode));
-  const [quietStart, setQuietStart] = useState(ov.quiet_start ? ov.quiet_start.slice(0, 5) : '');
-  const [quietEnd, setQuietEnd] = useState(ov.quiet_end ? ov.quiet_end.slice(0, 5) : '');
+  const [quietStart, setQuietStart] = useState(clock(ov.quiet_start) ?? '');
+  const [quietEnd, setQuietEnd] = useState(clock(ov.quiet_end) ?? '');
 
   const [timezoneMode, setTimezoneMode] = useState<Mode>(ov.timezone === null ? 'default' : 'custom');
   const [timezoneCustom, setTimezoneCustom] = useState(ov.timezone ?? group.timezone);
@@ -101,16 +127,14 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved, o
   const [daysCustom, setDaysCustom] = useState<Set<Day>>(
     () => new Set((ov.active_days ?? []) as Day[]));
 
-  const [dndMode, setDndMode] = useState<Mode>(ov.dnd_behavior === null ? 'default' : 'custom');
-  const [dndCustom, setDndCustom] = useState(ov.dnd_behavior ?? group.dnd_behavior);
-
-  const [urgentMode, setUrgentMode] = useState<Mode>(ov.urgent_bypass === null ? 'default' : 'custom');
-  const [urgentCustom, setUrgentCustom] = useState(ov.urgent_bypass ?? group.urgent_bypass);
+  const [dnd, setDnd] = useState<DndChoice>(dndChoiceOf(ov.dnd_behavior));
+  const [urgent, setUrgent] = useState<UrgentChoice>(urgentChoiceOf(ov.urgent_bypass));
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const reachableChannels = CHANNELS.filter((c) => canForChannel(member, c));
+  const startOptions = useMemo(() => timeOptions(ov.quiet_start), [ov.quiet_start]);
+  const endOptions = useMemo(() => timeOptions(ov.quiet_end), [ov.quiet_end]);
 
   const toggleChannel = (c: Channel, on: boolean) => setChannelsCustom((prev) => {
     const next = new Set(prev);
@@ -124,10 +148,11 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved, o
     return next;
   });
 
-  const groupChannelsLabel = group.channels.length
-    ? group.channels.map((c) => CHANNEL_LABELS[c as Channel] ?? c).join(', ')
-    : 'None';
-  const groupQuietLabel = formatQuietHours(group.quiet_start, group.quiet_end, group.timezone);
+  // The group's own values, as the hints under each control.
+  const groupChannelsLabel = liveChannels(group.channels).map((c) => CHANNEL_LABELS[c]).join(', ')
+    || NO_EMAIL;
+  const groupQuietLabel = group.quiet_start !== null && group.quiet_end !== null
+    ? formatQuietHours(group.quiet_start, group.quiet_end, group.timezone) : 'None';
   const groupDaysLabel = formatDays(group.active_days);
   const groupDndLabel = DND_LABELS[group.dnd_behavior] ?? group.dnd_behavior;
   const groupUrgentLabel = group.urgent_bypass ? 'Ignores quiet hours' : 'Respects quiet hours';
@@ -147,7 +172,9 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved, o
 
     const patch: Partial<NotificationMemberOverrides> = {};
 
-    const nextChannelsArr = CHANNELS.filter((c) => channelsCustom.has(c));
+    // The switches' selections plus every stored channel with no switch.
+    const hidden = (ov.channels ?? []).filter((c) => !shownChannels.includes(c as Channel));
+    const nextChannelsArr = CHANNELS.filter((c) => channelsCustom.has(c) || hidden.includes(c));
     const origChannelsMode: Mode = ov.channels === null ? 'default' : 'custom';
     if (channelsMode !== origChannelsMode
         || (channelsMode === 'custom' && !sameArr(nextChannelsArr, ov.channels ?? []))) {
@@ -155,11 +182,11 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved, o
     }
 
     const nextQuietMode = quietMode === 'default' ? null : quietMode;
-    const nextQuietStart = quietMode === 'custom' ? `${quietStart}:00` : null;
-    const nextQuietEnd = quietMode === 'custom' ? `${quietEnd}:00` : null;
+    const nextQuietStart = quietMode === 'custom' ? quietStart : null;
+    const nextQuietEnd = quietMode === 'custom' ? quietEnd : null;
     if (nextQuietMode !== ov.quiet_mode
-        || nextQuietStart !== ov.quiet_start
-        || nextQuietEnd !== ov.quiet_end) {
+        || nextQuietStart !== clock(ov.quiet_start)
+        || nextQuietEnd !== clock(ov.quiet_end)) {
       patch.quiet_mode = nextQuietMode;
       patch.quiet_start = nextQuietStart;
       patch.quiet_end = nextQuietEnd;
@@ -174,11 +201,11 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved, o
       : (ov.active_days === null || !sameArr(nextDaysArr, ov.active_days));
     if (daysChanged) patch.active_days = daysMode === 'default' ? null : nextDaysArr;
 
-    const nextDnd = dndMode === 'default' ? null : dndCustom;
-    if (nextDnd !== ov.dnd_behavior) patch.dnd_behavior = nextDnd;
+    if (dnd !== dndChoiceOf(ov.dnd_behavior)) patch.dnd_behavior = dnd === 'default' ? null : dnd;
 
-    const nextUrgent = urgentMode === 'default' ? null : urgentCustom;
-    if (nextUrgent !== ov.urgent_bypass) patch.urgent_bypass = nextUrgent;
+    if (urgent !== urgentChoiceOf(ov.urgent_bypass)) {
+      patch.urgent_bypass = urgent === 'default' ? null : urgent === 'on';
+    }
 
     setSaving(true);
     try {
@@ -192,170 +219,114 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved, o
     }
   };
 
-  const dismiss = () => { if (!saving) onClose(); };
+  const self = onSave !== undefined;
+  const firstName = member.display_name.trim().split(/\s+/)[0] || member.display_name;
 
   return (
-    <div className="modal-scrim" onMouseDown={(e) => {
-      if (e.target === e.currentTarget) dismiss();
-    }}>
-      <div className="modal-card">
-        <div className="modal-head">
-          <div className="ov-head">
-            <span className="av-sm"
-                  style={{ background: member.avatar_url ? 'var(--surface-2)' : avatarGradient(member.display_name) }}>
-              {member.avatar_url ? <img src={member.avatar_url} alt="" /> : initials(member.display_name)}
-            </span>
-            <h3>Overrides — {member.display_name}</h3>
-          </div>
-          <button className="modal-close" aria-label="Close" onClick={dismiss}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
-                 strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
+    <NotificationModal
+      eyebrow={self ? 'Your settings' : 'Notification group'}
+      title={self ? `My settings — ${group.name}` : `Overrides — ${member.display_name}`}
+      description={self
+        ? 'Anything on Group default follows the group.'
+        : `${firstName}'s own settings for this group. Anything on Group default follows the group.`}
+      onClose={onClose} busy={saving}
+      footer={(
+        <>
+          <button className="btn-solid" type="submit" form={formId} disabled={saving}>
+            {saving ? 'Saving…' : 'Save'}
           </button>
+          <button className="mini-btn" type="button" onClick={onClose} disabled={saving}>
+            Cancel
+          </button>
+          {error && <span className="pf-error" role="alert">{error}</span>}
+        </>
+      )}>
+      <form id={formId} className="ov-body" onSubmit={submit}>
+        <div className="pf-form">
+          <ChoiceField className="full" label="Channels" options={MODE_CHOICES} value={channelsMode}
+                       onChange={setChannelsMode} disabled={saving}
+                       hint={`Group default: ${groupChannelsLabel}`} />
+          {channelsMode === 'custom' && (
+            <>
+              {shownChannels.map((c) => (
+                <div className="full ngd-switch-row" key={c}>
+                  <span>{CHANNEL_LABELS[c]}</span>
+                  <Switch checked={channelsCustom.has(c)} label={CHANNEL_LABELS[c]} disabled={saving}
+                          onChange={(v) => toggleChannel(c, v)} />
+                </div>
+              ))}
+              {channelsCustom.size === 0 && (
+                <p className="full cell-sub nm-hint">This member will get no email from this group.</p>
+              )}
+            </>
+          )}
         </div>
-        <form onSubmit={submit}>
-          <div className="modal-body ov-body">
-            <div className="pf-form">
-              <div className="full">
-                <label htmlFor="ov-channels-mode">Channels</label>
-                <select id="ov-channels-mode" value={channelsMode} disabled={saving}
-                        onChange={(e) => setChannelsMode(e.target.value as Mode)}>
-                  <option value="default">{`Group default (${groupChannelsLabel})`}</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </div>
-              {channelsMode === 'custom' && (
-                <>
-                  {reachableChannels.map((c) => (
-                    <div className="full ngd-switch-row" key={c}>
-                      <span>{CHANNEL_LABELS[c]}</span>
-                      <Switch checked={channelsCustom.has(c)} label={CHANNEL_LABELS[c]} disabled={saving}
-                              onChange={(v) => toggleChannel(c, v)} />
-                    </div>
-                  ))}
-                  {channelsCustom.size === 0 && (
-                    <p className="full set-note" style={{ padding: '4px 0 0' }}>
-                      This member will receive nothing from this group.
-                    </p>
-                  )}
-                </>
-              )}
-            </div>
 
-            <div className="pf-form">
-              <div className="full">
-                <label htmlFor="ov-days-mode">Active days</label>
-                <select id="ov-days-mode" value={daysMode} disabled={saving}
-                        onChange={(e) => setDaysMode(e.target.value as Mode)}>
-                  <option value="default">{`Group default (${groupDaysLabel})`}</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </div>
+        <div className="pf-form">
+          <ChoiceField className="full" label="Active days" options={MODE_CHOICES} value={daysMode}
+                       onChange={setDaysMode} disabled={saving}
+                       hint={`Group default: ${groupDaysLabel}`} />
+          {daysMode === 'custom' && (
+            <div className="full day-pills" role="group" aria-label="Custom days">
+              {DAYS.map((d) => (
+                <button type="button" key={d} disabled={saving}
+                        aria-pressed={daysCustom.has(d)}
+                        className={`mini-btn${daysCustom.has(d) ? ' active' : ''}`}
+                        onClick={() => toggleDay(d)}>
+                  {DAY_LABELS[d]}
+                </button>
+              ))}
             </div>
-            {daysMode === 'custom' && (
-              <div className="day-pills">
-                {DAYS.map((d) => (
-                  <button type="button" key={d} disabled={saving}
-                          className={`mini-btn${daysCustom.has(d) ? ' active' : ''}`}
-                          onClick={() => toggleDay(d)}>
-                    {DAY_LABELS[d]}
-                  </button>
-                ))}
-              </div>
-            )}
+          )}
+        </div>
 
-            <div className="pf-form">
-              <div className="full">
-                <label htmlFor="ov-quiet-mode">Quiet hours</label>
-                <select id="ov-quiet-mode" value={quietMode} disabled={saving}
-                        onChange={(e) => setQuietMode(e.target.value as QuietMode)}>
-                  <option value="default">{`Group default (${groupQuietLabel})`}</option>
-                  <option value="none">None</option>
-                  <option value="custom">Custom</option>
-                </select>
+        <div className="pf-form">
+          <ChoiceField className="full" label="Quiet hours" options={QUIET_CHOICES} value={quietMode}
+                       onChange={setQuietMode} disabled={saving}
+                       hint={`Group default: ${groupQuietLabel}`} />
+          {quietMode === 'custom' && (
+            <>
+              <div>
+                <label htmlFor="ov-quiet-start">Start</label>
+                <ComboBox inputId="ov-quiet-start" options={startOptions} value={quietStart}
+                          onChange={setQuietStart} disabled={saving}
+                          placeholder="Select a time…" />
               </div>
-              {quietMode === 'custom' && (
-                <>
-                  <div>
-                    <label htmlFor="ov-quiet-start">Start</label>
-                    <input id="ov-quiet-start" type="time" value={quietStart} disabled={saving}
-                           onChange={(e) => setQuietStart(e.target.value)} />
-                  </div>
-                  <div>
-                    <label htmlFor="ov-quiet-end">End</label>
-                    <input id="ov-quiet-end" type="time" value={quietEnd} disabled={saving}
-                           onChange={(e) => setQuietEnd(e.target.value)} />
-                  </div>
-                </>
-              )}
+              <div>
+                <label htmlFor="ov-quiet-end">End</label>
+                <ComboBox inputId="ov-quiet-end" options={endOptions} value={quietEnd}
+                          onChange={setQuietEnd} disabled={saving}
+                          placeholder="Select a time…" />
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="pf-form">
+          <ChoiceField className="full" label="Timezone" options={MODE_CHOICES} value={timezoneMode}
+                       onChange={setTimezoneMode} disabled={saving}
+                       hint={`Group default: ${group.timezone}`} />
+          {timezoneMode === 'custom' && (
+            <div className="full">
+              <ComboBox ariaLabel="Timezone" options={timezoneOptions()} value={timezoneCustom}
+                        onChange={setTimezoneCustom} disabled={saving}
+                        placeholder="Type to search timezones…" />
             </div>
+          )}
+        </div>
 
-            <div className="pf-form">
-              <div className="full">
-                <label htmlFor="ov-tz-mode">Timezone</label>
-                <select id="ov-tz-mode" value={timezoneMode} disabled={saving}
-                        onChange={(e) => setTimezoneMode(e.target.value as Mode)}>
-                  <option value="default">{`Group default (${group.timezone})`}</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </div>
-              {timezoneMode === 'custom' && (
-                <div className="full">
-                  <label>Custom timezone</label>
-                  <ComboBox options={timezoneOptions()} value={timezoneCustom}
-                            onChange={setTimezoneCustom} disabled={saving}
-                            placeholder="Type to search timezones…" />
-                </div>
-              )}
-            </div>
+        <div className="pf-form">
+          <ChoiceField className="full" label="When blocked" options={DND_CHOICES} value={dnd}
+                       onChange={setDnd} disabled={saving}
+                       hint={`Group default: ${groupDndLabel}`} />
+        </div>
 
-            <div className="pf-form">
-              <div className="full">
-                <label htmlFor="ov-dnd-mode">When blocked</label>
-                <select id="ov-dnd-mode" value={dndMode} disabled={saving}
-                        onChange={(e) => setDndMode(e.target.value as Mode)}>
-                  <option value="default">{`Group default (${groupDndLabel})`}</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </div>
-              {dndMode === 'custom' && (
-                <div className="full">
-                  <label htmlFor="ov-dnd-custom">Custom behavior</label>
-                  <select id="ov-dnd-custom" value={dndCustom} disabled={saving}
-                          onChange={(e) => setDndCustom(e.target.value)}>
-                    <option value="defer">Defer until window opens</option>
-                    <option value="skip">Skip entirely</option>
-                  </select>
-                </div>
-              )}
-              <div className="full">
-                <label htmlFor="ov-urgent-mode">Urgent bypass</label>
-                <select id="ov-urgent-mode" value={urgentMode} disabled={saving}
-                        onChange={(e) => setUrgentMode(e.target.value as Mode)}>
-                  <option value="default">{`Group default (${groupUrgentLabel})`}</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </div>
-              {urgentMode === 'custom' && (
-                <div className="full ngd-switch-row">
-                  <span>Urgent bypass</span>
-                  <Switch checked={urgentCustom} label="Urgent bypass" disabled={saving}
-                          onChange={setUrgentCustom} />
-                </div>
-              )}
-            </div>
-
-            {error && <span className="pf-error">{error}</span>}
-          </div>
-          <div className="modal-foot">
-            <button className="btn-solid" type="submit" disabled={saving}>
-              {saving ? 'Saving…' : 'Save'}
-            </button>
-            <button className="mini-btn" type="button" onClick={dismiss} disabled={saving}>
-              Cancel
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <div className="pf-form">
+          <ChoiceField className="full" label="Urgent bypass" options={URGENT_CHOICES} value={urgent}
+                       onChange={setUrgent} disabled={saving}
+                       hint={`Group default: ${groupUrgentLabel}`} />
+        </div>
+      </form>
+    </NotificationModal>
   );
 }

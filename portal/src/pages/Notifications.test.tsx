@@ -10,7 +10,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { MembershipRequest, NotificationGroup, UiPreferences } from '../lib/api';
+import { ApiError, type MembershipRequest, type NotificationGroup, type UiPreferences } from '../lib/api';
 import { LIST_FIT } from '../lib/listTools';
 
 const navigate = vi.hoisted(() => vi.fn());
@@ -326,6 +326,93 @@ it('shows the New group button with the add permission', async () => {
   await screen.findByText('Ops Alerts');
 
   expect(screen.getByRole('button', { name: /New group/i })).not.toBeNull();
+});
+
+it('New group opens a dialog with the standard header', async () => {
+  const user = userEvent.setup();
+  render(<Notifications />);
+  await screen.findByText('Ops Alerts');
+
+  await user.click(screen.getByRole('button', { name: /New group/i }));
+  const dialog = screen.getByRole('dialog', { name: 'New notification group' });
+  expect(dialog.querySelector('.eyebrow')?.textContent).toBe('Notifications');
+  expect(within(dialog).getByRole('heading', { name: 'New notification group' })).not.toBeNull();
+  expect(within(dialog).getByText('Name the group. Delivery settings and members come next.').className)
+    .toContain('page-hint');
+  expect(dialog.classList.contains('rgm-card')).toBe(true);
+  expect(within(dialog).getByRole('button', { name: 'Create group' })).not.toBeNull();
+});
+
+it('creating a group posts the trimmed name and description, then opens its page', async () => {
+  const user = userEvent.setup();
+  api.createNotificationGroup.mockResolvedValue({ ...GROUPS[0], id: 'g9', name: 'Night Desk' });
+  render(<Notifications />);
+  await screen.findByText('Ops Alerts');
+
+  await user.click(screen.getByRole('button', { name: /New group/i }));
+  const dialog = screen.getByRole('dialog', { name: 'New notification group' });
+  await user.type(within(dialog).getByLabelText('Name *'), '  Night Desk ');
+  await user.type(within(dialog).getByLabelText('Description'), 'After hours');
+  await user.click(within(dialog).getByRole('button', { name: 'Create group' }));
+
+  await waitFor(() => expect(api.createNotificationGroup)
+    .toHaveBeenCalledWith({ name: 'Night Desk', description: 'After hours' }));
+  await waitFor(() => expect(navigate).toHaveBeenCalledWith('/system/notifications/g9'));
+  expect(screen.queryByRole('dialog', { name: 'New notification group' })).toBeNull();
+});
+
+it('the Create button submits the form, so a name is required and Enter in a field creates', async () => {
+  const user = userEvent.setup();
+  api.createNotificationGroup.mockResolvedValue({ ...GROUPS[0], id: 'g9', name: 'Night Desk' });
+  render(<Notifications />);
+  await screen.findByText('Ops Alerts');
+
+  await user.click(screen.getByRole('button', { name: /New group/i }));
+  const dialog = screen.getByRole('dialog', { name: 'New notification group' });
+  const name = within(dialog).getByLabelText('Name *');
+  const create = within(dialog).getByRole('button', { name: 'Create group' }) as HTMLButtonElement;
+  // The button lives in the dialog's footer, outside the form; the `form`
+  // attribute makes it the form's default button (what Enter presses).
+  const form = name.closest('form') as HTMLFormElement;
+  expect(form.contains(create)).toBe(false);
+  expect(create.type).toBe('submit');
+  expect(create.getAttribute('form')).toBe(form.id);
+  expect(form.id).not.toBe('');
+
+  await user.click(create);
+  expect(api.createNotificationGroup).not.toHaveBeenCalled();   // Name is required
+
+  await user.type(name, 'Night Desk');
+  await user.click(create);
+  await waitFor(() => expect(api.createNotificationGroup)
+    .toHaveBeenCalledWith({ name: 'Night Desk', description: '' }));
+});
+
+it('a duplicate name shows the server error beside the buttons and keeps the dialog open', async () => {
+  const user = userEvent.setup();
+  api.createNotificationGroup.mockRejectedValue(new ApiError(409, 'group_exists'));
+  render(<Notifications />);
+  await screen.findByText('Ops Alerts');
+
+  await user.click(screen.getByRole('button', { name: /New group/i }));
+  const dialog = screen.getByRole('dialog', { name: 'New notification group' });
+  await user.type(within(dialog).getByLabelText('Name *'), 'Ops Alerts');
+  await user.click(within(dialog).getByRole('button', { name: 'Create group' }));
+
+  const message = await within(dialog).findByText('A group with that name already exists.');
+  expect(message.closest('.modal-foot')).not.toBeNull();
+  expect(navigate).not.toHaveBeenCalled();
+});
+
+it('Cancel closes the New group dialog without creating anything', async () => {
+  const user = userEvent.setup();
+  render(<Notifications />);
+  await screen.findByText('Ops Alerts');
+
+  await user.click(screen.getByRole('button', { name: /New group/i }));
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(api.createNotificationGroup).not.toHaveBeenCalled();
 });
 
 it('navigates to the group detail page on row click, with no inline expansion', async () => {

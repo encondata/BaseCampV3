@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { MyNotificationGroup, UiPreferences } from '../../lib/api';
+import { ApiError, type MyNotificationGroup, type UiPreferences } from '../../lib/api';
 import { LIST_FIT } from '../../lib/listTools';
 
 const auth = vi.hoisted(() => ({
@@ -56,7 +56,7 @@ vi.mock('../../lib/api', async (importActual) => ({
 }));
 
 // OverrideEditorModal is the admin group-detail editor reused as-is; its
-// own behaviour has its own coverage elsewhere. Here we only need to
+// own behavior has its own coverage elsewhere. Here we only need to
 // confirm MeNotifications opens it with the right member and wires its
 // onSave hook to the self-service PATCH — a tiny stand-in exposing both.
 vi.mock('../../components/notifications/OverrideEditorModal', () => ({
@@ -359,6 +359,52 @@ it('Leave opens the request modal, Send posts the leave request, and a pending l
   await waitFor(() => expect(screen.queryByText('Leave requested')).toBeNull());
   fireEvent.click(within(region('My groups')).getByRole('button', { name: /Actions/ }));
   expect(screen.getByRole('menuitem', { name: 'Leave group' })).toBeTruthy();
+});
+
+it('the request modal wears the standard header, for Leave and for Join', async () => {
+  api.listMyNotificationGroups.mockResolvedValueOnce([G1, G2]);
+  render(<MeNotifications />);
+  await waitFor(() => expect(screen.getByText('Ops')).toBeTruthy());
+
+  pickAction('My groups', 'Leave group');
+  let dialog = screen.getByRole('dialog', { name: 'Ask to leave Ops' });
+  expect(dialog.querySelector('.eyebrow')?.textContent).toBe('Notification groups');
+  expect(within(dialog).getByRole('heading', { name: 'Ask to leave Ops' })).toBeTruthy();
+  expect(within(dialog).getByText('An admin approves the request. Add a note if it helps.').className)
+    .toContain('page-hint');
+  expect(dialog.classList.contains('rgm-card')).toBe(true);
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+
+  pickAction('Join a group', 'Ask to join');
+  dialog = screen.getByRole('dialog', { name: 'Ask to join Warehouse Alerts' });
+  expect(dialog.querySelector('.eyebrow')?.textContent).toBe('Notification groups');
+  expect(within(dialog).getByRole('heading', { name: 'Ask to join Warehouse Alerts' })).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(api.requestGroupMembership).not.toHaveBeenCalled();
+});
+
+it('the request modal is locked while the request is on its way, and shows a server error beside the buttons', async () => {
+  api.listMyNotificationGroups.mockResolvedValueOnce([G1]);
+  let reject: (e: unknown) => void = () => {};
+  api.requestGroupMembership.mockReturnValueOnce(new Promise((_, r) => { reject = r; }));
+  render(<MeNotifications />);
+  await waitFor(() => expect(screen.getByText('Ops')).toBeTruthy());
+
+  pickAction('My groups', 'Leave group');
+  const dialog = screen.getByRole('dialog', { name: 'Ask to leave Ops' });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Send request' }));
+
+  const sending = await within(dialog).findByRole('button', { name: 'Sending…' }) as HTMLButtonElement;
+  expect(sending.disabled).toBe(true);
+  expect((within(dialog).getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((within(dialog).getByRole('button', { name: 'Close' }) as HTMLButtonElement).disabled).toBe(true);
+
+  reject(new ApiError(409, 'request_pending'));
+  const message = await within(dialog).findByText("There's already a request waiting for this group.");
+  expect(message.closest('.modal-foot')).not.toBeNull();
+  expect(screen.getByRole('dialog', { name: 'Ask to leave Ops' })).toBeTruthy();   // stays open
 });
 
 it('Join a group search filters non-member groups and Join posts an empty-note request', async () => {

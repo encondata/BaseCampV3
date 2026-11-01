@@ -14,11 +14,6 @@ export const CHANNEL_LABELS: Record<Channel, string> = {
   email: 'Email', text: 'Text (SMS)', push: 'Push', web: 'Web',
 };
 
-/** Channels the server cannot deliver on yet; shown next to them. */
-export const CHANNEL_NOTES: Partial<Record<Channel, string>> = {
-  text: 'not available yet', push: 'not available yet',
-};
-
 /** The channels that can actually send — email only. Text, Push and Web have
  *  no sender, so lists, chips, filters and exports leave them out. They stay
  *  valid stored values: the API's channel list and every saved setting are

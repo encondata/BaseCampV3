@@ -5,6 +5,13 @@ import {
 } from './notifications';
 import { naturalCompare } from './naturalSort';
 
+describe('hidden channels carry no note', () => {
+  it('no longer exports CHANNEL_NOTES ("not available yet" went with the hidden channels)', async () => {
+    const mod = await import('./notifications');
+    expect('CHANNEL_NOTES' in mod).toBe(false);
+  });
+});
+
 describe('liveChannels', () => {
   it('keeps only the channels the server can send', () => {
     expect(LIVE_CHANNELS).toEqual(['email']);

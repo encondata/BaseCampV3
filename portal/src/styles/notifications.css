@@ -1,13 +1,30 @@
 /* ============================================================
-   notifications.css — Notification group detail page. Reuses the
-   .idet-*, .init-panel, .kv, .pf-form, .modal-*, .switch, .mini-btn chrome
-   already defined by initiatives.css, directory.css, profile.css and
-   settings.css (all imported by the page) — this file only adds the
-   handful of rules those stylesheets don't already cover: the
-   Delivery-defaults panel's heading+button row, labeled switch rows
-   inside the settings modal's .pf-form grid, and the Active-days
-   toggle pills.
+   notifications.css — Notification group detail page and the
+   notification dialogs. Reuses the .idet-*, .init-panel, .kv, .pf-form,
+   .modal-*, .switch, .segmented, .mini-btn chrome already defined by
+   initiatives.css, directory.css, profile.css and settings.css — this
+   file only adds the handful of rules those stylesheets don't already
+   cover: the Delivery-defaults panel's heading+button row, labeled
+   switch rows inside a dialog's .pf-form grid, the Active-days toggle
+   pills, and NotificationModal's card size (.nm-card) and the muted
+   hint under a control (.nm-hint).
    ============================================================ */
+
+/* ── NotificationModal (components/notifications/NotificationModal.tsx) ──
+ * Every notification dialog is the report-generate card; this sizes it.
+ * The doubled-up selector out-specifies reports.css's roomy 980px
+ * `.rgm-card` width, which these small forms don't want. */
+.modal-card.reports-modal-card.rgm-card.nm-card { width: min(640px, 96vw); max-width: 96vw; }
+.modal-card.reports-modal-card.rgm-card.nm-card.nm-card-wide { width: min(920px, 96vw); }
+
+/* The muted line under a segmented control (the group's own value) or
+ * beside a switch list. Typography only; `cell-sub` is its semantic class. */
+.nm-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  font-weight: 300;
+  color: var(--text-mute);
+}
 
 .ngd-panel-head {
   display: flex;
@@ -88,23 +105,6 @@
   box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
   background: var(--surface, #fff);
 }
-.pf-form input[type='time'] {
-  width: 100%;
-  box-sizing: border-box;
-  font-family: var(--font-display);
-  font-size: 13.5px;
-  color: var(--text-dark);
-  background: var(--surface-2, #f5f7fa);
-  border: 1px solid var(--paper-line);
-  border-radius: 9px;
-  padding: 9px 12px;
-  outline: none;
-}
-.pf-form input[type='time']:focus {
-  border-color: var(--amber);
-  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
-  background: var(--surface, #fff);
-}
 
 /* ── members panel ────────────────────────────────────────── */
 
@@ -170,27 +170,14 @@
   justify-content: flex-end;
 }
 
-/* OverrideEditorModal dropped all of its per-section .modal-section
-   headings (pass 2 removed the last one, Behavior — with the others
-   already gone it read as just another field label rather than a
-   section boundary; When blocked/Urgent bypass are self-explanatory
-   without it), but .modal-section was also the only source of vertical
-   rhythm between sections. Scoped to .ov-body so no other modal's
-   .modal-body/.pf-form pairing is affected. Two selectors cover the two
-   ways a section can precede the next .pf-form: back-to-back .pf-form
-   blocks (Channels/Quiet hours/Timezone/Active days/Behavior), and
-   Active days' .pf-form followed by the .day-pills block instead when
-   daysMode is 'custom' — Behavior's .pf-form still needs the same gap
-   whichever one came right before it. */
-.ov-body > .pf-form + .pf-form,
-.ov-body > .day-pills + .pf-form {
-  margin-top: 18px;
-}
-
-/* "not available yet" note beside a channel that cannot deliver. */
-.channel-soon {
-  margin-left: 8px;
-  font-size: 12px;
-  font-weight: 300;
-  color: var(--text-mute);
+/* OverrideEditorModal's body: one .pf-form block per setting (label,
+   segmented control, the group's value as a hint, then the custom
+   editor when Custom), with no section headings — a hairline and some
+   air between the blocks is the whole rhythm. Scoped to .ov-body (the
+   <form> inside the dialog's body) so no other dialog's .pf-form
+   pairing is affected. */
+.ov-body > .pf-form + .pf-form {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--paper-line);
 }
