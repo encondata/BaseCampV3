@@ -40,7 +40,9 @@ export default function MeNotifications() {
   const { preferences, update, saveState } = usePreferenceSave();
   const { person } = useAuth();
 
-  const { status } = useSystemStatus();
+  // Until the first status lands its defaults read "email off": say nothing
+  // about email until it is known.
+  const { status, loaded: statusLoaded } = useSystemStatus();
 
   const [groups, setGroups] = useState<MyNotificationGroup[] | null>(null);
   const [loadError, setLoadError] = useState('');
@@ -93,7 +95,7 @@ export default function MeNotifications() {
             </div>
             <Link className="mini-btn" to="/notifications">View all notifications</Link>
           </div>
-          {!status.email_enabled && (
+          {statusLoaded && !status.email_enabled && (
             <p className="page-hint set-hint">
               Email isn't set up on this server yet — notifications stay in the inbox.
             </p>
@@ -101,7 +103,7 @@ export default function MeNotifications() {
           <CategoryDelivery
             categories={preferences.notif.categories}
             groups={groups}
-            emailEnabled={status.email_enabled}
+            emailEnabled={statusLoaded ? status.email_enabled : null}
             onChange={(category, choice) => update({
               notif: {
                 ...preferences.notif,

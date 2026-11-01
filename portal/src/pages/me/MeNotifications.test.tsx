@@ -40,8 +40,10 @@ vi.mock('../../lib/notificationSounds', async (importActual) => ({
 }));
 
 const status = vi.hoisted(() => ({ email_enabled: true }));
+// false: the first /system/status answer has not landed yet
+const statusLoaded = vi.hoisted(() => ({ value: true }));
 vi.mock('../../lib/systemStatusContext', () => ({
-  useSystemStatus: () => ({ status: { ...status }, refresh: () => {} }),
+  useSystemStatus: () => ({ status: { ...status }, loaded: statusLoaded.value, refresh: () => {} }),
 }));
 
 const api = vi.hoisted(() => ({
@@ -83,6 +85,7 @@ beforeEach(() => {
   api.cancelMembershipRequest.mockReset();
   auth.categories = { approvals: 'email', reports: 'inbox', wiki: 'email', learning: 'email', security: 'email' };
   status.email_enabled = true;
+  statusLoaded.value = true;
 });
 
 const { default: MeNotificationsPage } = await import('./MeNotifications');
@@ -253,6 +256,7 @@ it('both group lists have a Categories column, in registry order, or say inbox o
   expect(chipsOf(mine, 'Wiki')).toEqual(['Approvals & requests', 'Wiki']);
   expect(chipsOf(joinable, 'Learning')).toEqual(['Learning']);
   expect(joinable.getByText('None — inbox only').className).toContain('c-slate');
+  expect(mine.getByText('Approvals & requests').title).toBe('Approvals & requests');   // full label on hover
 });
 
 it('a member row shows their effective channels, quiet hours and days, not the group defaults', async () => {
@@ -331,6 +335,9 @@ it('My groups list: column floors, shared template + minimum, sideways-scroll ca
   // The Categories column sits right after Group in the measured grid.
   const labels = [...head.querySelectorAll('.col-head')].map((h) => h.textContent?.trim());
   expect(labels.slice(0, 3)).toEqual(['Group', 'Categories', 'Channels']);
+  // Floors that hold the longest values at the 1512px reference width.
+  expect(head.style.gridTemplateColumns).toContain(' minmax(156px, 1.5fr) ');   // "Approvals & requests"
+  expect(head.style.gridTemplateColumns).toContain(' minmax(168px, 1.2fr) ');   // "12:00 AM – 12:00 AM CT"
 });
 
 /** Standard-list rows keep their actions behind the "Actions ▾" menu:
@@ -557,6 +564,40 @@ it('with email off on the server, every category reads inbox only and says why',
   const security = within(rowOf('Account security'));
   expect(security.getByText("Inbox only — email isn't set up")).toBeTruthy();
   expect(security.queryByText('Always emailed')).toBeNull();
+  expect(auth.updatePreferences).not.toHaveBeenCalled();
+});
+
+it('claims nothing about email until the server status lands, then says email is off', async () => {
+  // A hard refresh on /me: the status's defaults read "email off" until the
+  // first /system/status answer, which here has not landed yet.
+  statusLoaded.value = false;
+  status.email_enabled = false;
+  api.listMyNotificationGroups.mockResolvedValue([]);
+  const { rerender } = render(<MeNotifications />);
+  await screen.findByText("You're not in any notification groups yet.");   // the groups are in
+
+  expect(screen.queryByText(/isn't set up/)).toBeNull();
+  for (const label of GROUP_SOURCED) {
+    for (const b of within(delivery(label)).getAllByRole('button')) {
+      expect((b as HTMLButtonElement).disabled).toBe(false);
+      expect(b.hasAttribute('title')).toBe(false);
+    }
+    expect(within(rowOf(label)).getByText('—')).toBeTruthy();         // Email from: not known yet
+    expect(within(rowOf(label)).queryByText('No group — inbox only')).toBeNull();
+  }
+  expect(pressedOf('Approvals & requests')).toEqual(['Inbox + Email']);   // the saved choice, as is
+  const security = () => [...rowOf('Account security').children].map((c) => c.textContent);
+  expect(security()).toEqual(['Account security', '—', '—']);
+
+  statusLoaded.value = true;                                          // it lands: email is off
+  rerender(<MeNotifications />);
+  expect(screen.getByText("Email isn't set up on this server yet — notifications stay in the inbox.")).toBeTruthy();
+  for (const label of GROUP_SOURCED) {
+    expect(emailButton(label).disabled).toBe(true);
+    expect(emailButton(label).title).toBe("Email isn't set up on this server");
+    expect(pressedOf(label)).toEqual(['Inbox only']);
+  }
+  expect(security()).toEqual(['Account security', "Inbox only — email isn't set up", '—']);
   expect(auth.updatePreferences).not.toHaveBeenCalled();
 });
 

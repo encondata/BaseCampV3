@@ -87,7 +87,7 @@ it('carries the standard header: eyebrow, title and description', () => {
   expect(dialog.querySelector('.eyebrow')?.textContent).toBe('Delivery log');
   expect(within(dialog).getByRole('heading', { name: 'Check delivery' })).toBeTruthy();
   expect(dialog.querySelector('p.page-hint')?.textContent).toBe(
-    'What would happen right now if this person got a notification in this category. Nothing is sent.');
+    'What would happen right now if this person got this type of notification. Nothing is sent.');
   expect(dialog.classList.contains('nm-card')).toBe(true);
 });
 
@@ -236,6 +236,54 @@ it('renders every group\'s verdict in a table', async () => {
   expect(cells(rows[4]).slice(1)).toEqual(['No', 'Yes', 'Not subscribed', '—']);
   expect(within(rows[0]).getByText('Quiet hours', { selector: '.chip' }).className).toContain('c-amber');
   expect(within(rows[1]).getByText('Open', { selector: '.chip' }).className).toContain('c-green');
+});
+
+/** Each groups-table row's Now and Earliest send cells. */
+const verdictCells = (table: HTMLElement) => within(table).getAllByRole('row').slice(1)
+  .map((r) => [...r.children].slice(3).map((c) => c.textContent));
+
+it('an email stopped before any group is consulted shows the groups as not asked, and says why', async () => {
+  const user = userEvent.setup();
+  api.checkDelivery.mockResolvedValue(check({
+    choice: 'inbox', outcome: 'not_sent', send_at: null, reason: 'category_inbox_only',
+    groups: [
+      group(),
+      group({ group_id: 'g2', name: 'Ops Alerts', verdict: 'open', allowed_at: NOW }),
+    ],
+  }));
+  const dialog = open();
+  await pick(user, 'Person', /^Ada Lovelace/);
+  await pick(user, 'Notification type', /^Report ready/);
+
+  const table = await within(dialog).findByRole('table', { name: 'Groups' });
+  expect(verdictCells(table)).toEqual([['Not asked', '—'], ['Not asked', '—']]);
+  expect(within(table).getAllByText('Not asked', { selector: '.chip' })
+    .every((chip) => chip.className.includes('c-slate'))).toBe(true);
+  expect(within(table).queryByText('Quiet hours')).toBeNull();
+  expect(within(table).queryByText('Open')).toBeNull();
+  expect(within(dialog).getByText(
+    'This person keeps the category in the inbox only, so no group is asked.')).toBeTruthy();
+  expect(within(dialog).queryByText(/It is emailed when one of these groups/)).toBeNull();
+});
+
+it('an email the groups stopped keeps each group\'s verdict', async () => {
+  const user = userEvent.setup();
+  api.checkDelivery.mockResolvedValue(check({
+    outcome: 'not_sent', send_at: null, reason: 'blocked_by_schedule',
+    groups: [
+      group({ verdict: 'quiet_hours', allowed_at: null }),                  // skips instead of deferring
+      group({ group_id: 'g2', name: 'Weekend Desk', verdict: 'inactive_day', allowed_at: null }),
+    ],
+  }));
+  const dialog = open();
+  await pick(user, 'Person', /^Ada Lovelace/);
+  await pick(user, 'Notification type', /^Report ready/);
+
+  const table = await within(dialog).findByRole('table', { name: 'Groups' });
+  expect(verdictCells(table)).toEqual([['Quiet hours', 'Never'], ['Not an active day', 'Never']]);
+  expect(within(table).queryByText('Not asked')).toBeNull();
+  expect(within(dialog).getByText(/It is emailed when one of these groups covers Reports & labels/))
+    .toBeTruthy();
 });
 
 it('a person in no group gets an empty groups table that says so', async () => {

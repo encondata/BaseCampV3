@@ -45,12 +45,14 @@ export type GroupsListKind = 'member' | 'joinable';
 // under /me/notifications).
 const COLUMNS: ColumnDef[] = [
   { key: 'group', label: 'Group', width: '2fr', default: true, min: 200 },
-  // Category chips wrap onto extra lines; a long label ellipsizes at the floor.
-  { key: 'categories', label: 'Categories', width: '1.5fr', default: true, min: 140 },
+  // 156px holds the longest chip, "Approvals & requests" (measured, as on the
+  // admin list); chips wrap onto extra lines, and one cut short has its title.
+  { key: 'categories', label: 'Categories', width: '1.5fr', default: true, min: 156 },
   // One short chip (Email / No email) — the header's own floor is enough.
   { key: 'channels', label: 'Channels', width: '1fr', default: true },
-  // 144px holds "9:00 PM – 7:00 AM CT" on one line, as on the admin list.
-  { key: 'quiet_hours', label: 'Quiet hours', width: '1.2fr', default: true, min: 144 },
+  // 168px holds the longest value, "12:00 AM – 12:00 AM CT", on one line
+  // (measured), as on the admin list.
+  { key: 'quiet_hours', label: 'Quiet hours', width: '1.2fr', default: true, min: 168 },
   { key: 'days', label: 'Days', width: '0.7fr', default: true },
   { key: 'members', label: 'Members', width: '0.6fr', default: true },
   { key: 'status', label: 'Status', width: '0.9fr', default: true },

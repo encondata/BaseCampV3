@@ -271,7 +271,10 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved, o
                 </div>
               ))}
               {channelsCustom.size === 0 && (
-                <p className="full cell-sub nm-hint">This member will get no email from this group.</p>
+                <p className="full cell-sub nm-hint">
+                  {self ? 'You will get no email from this group.'
+                    : 'This member will get no email from this group.'}
+                </p>
               )}
             </>
           )}

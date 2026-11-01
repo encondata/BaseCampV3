@@ -230,6 +230,26 @@ it('notification groups: column floors, shared template + minimum, sideways-scro
   expect(within(head).getByRole('button', { name: 'Categories' })).not.toBeNull();
 });
 
+it('group-list floors hold their longest values at the 1512px reference width', async () => {
+  const user = userEvent.setup();
+  render(<Notifications />);
+  const row = (await screen.findByText('Ops Alerts')).closest('.dir-row') as HTMLElement;
+  const head = row.closest('.dir-list')?.querySelector('.list-head') as HTMLElement;
+  const tracks = head.style.gridTemplateColumns;
+  expect(tracks.startsWith('minmax(184px, 1.3fr) ')).toBe(true);   // Name: "Destination Side Ops Team"
+  expect(tracks).toContain(' minmax(156px, 1.6fr) ');              // Categories: "Approvals & requests"
+  expect(tracks).toContain(' minmax(168px, 1.2fr) ');              // Quiet hours: "12:00 AM – 12:00 AM CT"
+  // Created is off by default, to leave Name the room; Columns still offers it.
+  expect(within(head).queryByRole('button', { name: 'Created' })).toBeNull();
+  expect(within(row).queryByText(new Date(GROUPS[0].created_at).toLocaleDateString())).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Columns' }));
+  const popover = screen.getByText('Visible columns').parentElement as HTMLElement;
+  const created = within(popover).getByRole('button', { name: 'Created' });
+  expect(created.classList.contains('on')).toBe(false);
+  await user.click(created);
+  await waitFor(() => expect(within(head).getByRole('button', { name: 'Created' })).not.toBeNull());
+});
+
 /** A group row with a few fields overridden, for the channel/category tests. */
 const group = (over: Partial<NotificationGroup>): NotificationGroup => ({ ...GROUPS[0], ...over });
 
@@ -253,8 +273,12 @@ it('lists each group\'s categories as chips in registry order, or says inbox onl
 
   const docs = await rowOf('Docs Team');
   expect(chipsHolding(docs, 'Wiki')).toEqual(['Approvals & requests', 'Wiki']);
+  // A chip cut short at a narrow width still names its category on hover.
+  expect(within(docs).getByText('Approvals & requests').title).toBe('Approvals & requests');
+  expect(within(docs).getByText('Wiki').title).toBe('Wiki');
   const quiet = await rowOf('Quiet Team');
   expect(within(quiet).getByText('None — inbox only').className).toContain('c-slate');
+  expect(within(quiet).getByText('None — inbox only').title).toBe('None — inbox only');
 });
 
 it('shows only the channels that can send, or a No email chip', async () => {

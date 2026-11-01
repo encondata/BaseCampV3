@@ -347,6 +347,14 @@ it('a member who cannot be emailed gets no channel switch', async () => {
   expect(within(dialog).getByText('This member will get no email from this group.')).not.toBeNull();
 });
 
+it('your own settings (onSave) say "You" when no channel is on', async () => {
+  const user = userEvent.setup();
+  const dialog = open(member(), { onSave: vi.fn().mockResolvedValue(undefined) });
+  await user.click(press(dialog, 'Channels', 'Custom'));   // nothing switched on yet
+  expect(within(dialog).getByText('You will get no email from this group.')).not.toBeNull();
+  expect(within(dialog).queryByText('This member will get no email from this group.')).toBeNull();
+});
+
 it('a member override of Text only, switched to Custom with Email on, saves Email and Text', async () => {
   const user = userEvent.setup();
   const dialog = open(member({ channels: ['text'] }));

@@ -9,7 +9,9 @@
 import { CHANNEL_LABELS, liveChannels } from '../../lib/notifications';
 
 /** What a list with no live channel reads as — the same words the Channels
- *  filter, search and export use. */
+ *  filter, column menu and export use. Search leaves them out on purpose
+ *  (groupSearchText in pages/Notifications.tsx): "email" finds the groups
+ *  that email, not every group that says it does not. */
 export const NO_EMAIL = 'No email';
 
 export default function ChannelChips({ channels }: { channels: readonly string[] }) {

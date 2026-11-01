@@ -83,22 +83,24 @@ const requestErrorMsg = (err: unknown): string =>
  * viewports (~1024px), the plain `fr` width keeps the original relative
  * growth once there's slack; see notif-polish1-brief.md fix 6.
  * listGridStyle (lib/listTools.tsx, spec 2026-09-23-list-column-floors)
- * now owns turning `min` into the track's `minmax(floor, fr)` — these
- * used to be literal `minmax()` strings in `width` itself; the numbers
- * are unchanged, just moved onto `min`. Members/Days/Status/Created carry
- * short, low-variance content (a count, a day summary, a two-word chip, a
- * locale date) that gains nothing from growing, so those four stay plain
- * fixed px instead — this is what keeps the floors + gaps inside the fit
- * below (polish pass 2, fix 3). Categories chips wrap onto extra lines and
- * a long label ellipsizes at the floor (.cell .chip, directory.css);
- * Channels now holds one short chip (Email / No email), so it carries only
- * the floor its header derives. Description is clamped to 2 lines and
- * shrinks furthest, Quiet hours stays a nowrap ellipsis at its ~150px floor.
+ * owns turning `min` into the track's `minmax(floor, fr)`. Members/Days/
+ * Status/Created carry short, low-variance content (a count, a day summary,
+ * a two-word chip, a locale date) that gains nothing from growing, so those
+ * four stay plain fixed px instead — this is what keeps the floors + gaps
+ * inside the fit below (polish pass 2, fix 3). Three floors hold their
+ * column's longest everyday value at the 1512px reference width, measured
+ * in the browser: Name 184px ("Destination Side Ops Team"), Categories 156px
+ * (the "Approvals & requests" chip, as on the Delivery log; chips wrap onto
+ * extra lines, and one cut short still has its title) and Quiet hours 168px
+ * ("12:00 AM – 12:00 AM CT", a nowrap ellipsis below that). Created is off
+ * by default (still offered in Columns) to leave Name that room. Channels
+ * holds one short chip (Email / No email), so it carries only the floor its
+ * header derives; Description is clamped to 2 lines and shrinks furthest.
  *
  * Fit: default columns + trailing ≤ LIST_FIT.page
  * (1172px — .portal-page at a 1512px window, nav expanded). */
 const COLUMNS: ColumnDef[] = [
-  { key: 'name', label: 'Name', width: '1.3fr', default: true, min: 110 },
+  { key: 'name', label: 'Name', width: '1.3fr', default: true, min: 184 },
   // 'Desc' isn't wordy enough on its own to need a short label (11 chars,
   // under the ~12 rule of thumb) — it's here so the *derived* floor for
   // the full "Description" label (~112px) doesn't outgrow the deliberately
@@ -108,12 +110,12 @@ const COLUMNS: ColumnDef[] = [
     width: '2fr', default: true, min: 75,
   },
   { key: 'members', label: 'Members', width: '60px', default: true },
-  { key: 'categories', label: 'Categories', width: '1.6fr', default: true, min: 140 },
+  { key: 'categories', label: 'Categories', width: '1.6fr', default: true, min: 156 },
   { key: 'channels', label: 'Channels', width: '1fr', default: true },
-  { key: 'quiet_hours', label: 'Quiet hours', width: '1.2fr', default: true, min: 144 },
+  { key: 'quiet_hours', label: 'Quiet hours', width: '1.2fr', default: true, min: 168 },
   { key: 'days', label: 'Days', width: '70px', default: true },
   { key: 'status', label: 'Status', width: '90px', default: true },
-  { key: 'created', label: 'Created', width: '85px', default: true },
+  { key: 'created', label: 'Created', width: '85px', default: false },
 ];
 
 const ALL_COLUMN_KEYS = new Set<string>(COLUMNS.map((c) => c.key));

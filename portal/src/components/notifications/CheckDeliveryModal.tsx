@@ -11,6 +11,10 @@
  * "Always emailed" is said only of the owner's own copy (`owner_copy`), never
  * read off the category's `email_source`: an admin's copy of a security notice
  * still reports "always" there, but it is emailed through groups.
+ *
+ * An email stopped before any group is consulted (email off, the person's own
+ * choice, no address…) lists the person's groups as "Not asked", with a note
+ * saying why, rather than verdicts nobody acted on.
  */
 
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
@@ -74,9 +78,33 @@ function schedule(g: DeliveryCheckGroup): string {
   return `${quiet === '—' ? 'No quiet hours' : quiet} · ${formatDays(g.active_days)}`;
 }
 
+/** Why no group was asked, by the reason an email is not sent when the
+ *  decision (the API's decide_email, whose checks run in order with the
+ *  groups last) settles it before looking at any group. */
+const NOT_ASKED_NOTES: Record<string, string> = {
+  email_not_set_up: "Email isn't set up on this server, so no group is asked.",
+  unregistered_kind: "This type isn't registered, so no group is asked.",
+  kind_not_emailed: 'This type is never emailed, so no group is asked.',
+  category_off: 'This person turned the category off, so no group is asked.',
+  category_inbox_only: 'This person keeps the category in the inbox only, so no group is asked.',
+  recipient_inactive: 'This person is archived or their account is disabled, so no group is asked.',
+  no_address: 'This person has no email address, so no group is asked.',
+};
+
+/** The groups' Now cell when they were never asked. */
+const NOT_ASKED = { label: 'Not asked', chip: 'c-slate' };
+
+/** Why the groups were never asked about this email, or null when they were
+ *  (it goes, waits, or the groups themselves stopped it). */
+function notAskedNote(r: DeliveryCheck): string | null {
+  if (r.outcome !== 'not_sent' || r.reason === null) return null;
+  return Object.hasOwn(NOT_ASKED_NOTES, r.reason) ? NOT_ASKED_NOTES[r.reason] : null;
+}
+
 /** What the groups have to do with this email, above their table. */
-function groupsNote(r: DeliveryCheck, kind: NotificationKindInfo | null): string {
-  if (kind && !kind.email) return 'This type is never emailed, so no group is asked.';
+function groupsNote(r: DeliveryCheck): string {
+  const notAsked = notAskedNote(r);
+  if (notAsked) return notAsked;
   if (r.owner_copy) return "The account owner's own copy is always emailed, whatever these groups say.";
   if (r.email_source === 'direct') return "This category's email follows the person's own choice, not their groups.";
   return `It is emailed when one of these groups covers ${categoryLabel(r.category)} with Email on, `
@@ -135,8 +163,6 @@ export default function CheckDeliveryModal({ onClose }: { onClose: () => void })
   const kindInfo = kinds?.find((k) => k.kind === kind) ?? null;
   const copyApplies = kindInfo?.owner_always === true;
   const adminCopy = copyApplies && copy === 'admin';
-  // The answer on screen can be the previous pick's while a new one loads.
-  const resultKind = kinds?.find((k) => k.kind === result?.kind) ?? null;
 
   // Ask again on every change; an answer to an older question is dropped.
   // The last answer stays up, dimmed, until the new one lands, so the dialog
@@ -169,8 +195,10 @@ export default function CheckDeliveryModal({ onClose }: { onClose: () => void })
     value: k.kind, label: k.label, sub: categoryLabel(k.category),
   })), [kinds]);
 
+  // An email stopped before any group was consulted: no verdict was acted on.
+  const groupsAsked = result !== null && notAskedNote(result) === null;
   const groupRows: DataTableRow[] = (result?.groups ?? []).map((g) => {
-    const verdict = verdictOf(g.verdict);
+    const verdict = groupsAsked ? verdictOf(g.verdict) : NOT_ASKED;
     return {
       key: g.group_id,
       cells: [
@@ -180,7 +208,7 @@ export default function CheckDeliveryModal({ onClose }: { onClose: () => void })
         g.subscribed ? 'Yes' : 'No',
         g.email_channel ? 'Yes' : 'No',
         <span key="now" className={`chip ${verdict.chip}`}>{verdict.label}</span>,
-        earliestSend(g),
+        groupsAsked ? earliestSend(g) : '—',
       ],
     };
   });
@@ -188,7 +216,7 @@ export default function CheckDeliveryModal({ onClose }: { onClose: () => void })
   return (
     <NotificationModal
       eyebrow="Delivery log" title="Check delivery" wide onClose={onClose}
-      description="What would happen right now if this person got a notification in this category. Nothing is sent."
+      description="What would happen right now if this person got this type of notification. Nothing is sent."
       footer={<button type="button" className="btn-solid" onClick={onClose}>Done</button>}>
       <div className="pf-form">
         <div>
@@ -229,7 +257,7 @@ export default function CheckDeliveryModal({ onClose }: { onClose: () => void })
             </section>
 
             <div className="modal-section">Groups</div>
-            <p className="cell-sub nm-hint dlog-check-note">{groupsNote(result, resultKind)}</p>
+            <p className="cell-sub nm-hint dlog-check-note">{groupsNote(result)}</p>
             <div className="dlog-check-groups">
               <DataTable ariaLabel="Groups" columns={GROUP_COLUMNS} rows={groupRows}
                          emptyText="Not in any notification group." />
