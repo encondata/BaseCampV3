@@ -46,6 +46,7 @@ const CRUMBS: Record<string, string[]> = {
   '/settings': ['System', 'Settings'],
   '/system/notifications': ['System', 'Notifications'],
   '/me': ['Account', 'My profile'],
+  '/notifications': ['Account', 'Notifications'],
   '/dev': ['Portal', 'Developer tools'],
   '/dev/database/variables': ['Portal', 'Developer tools', 'Database', 'Variables'],
 };

@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from serversherpa.notifications.kinds import (
-    CATEGORIES, CATEGORY_KEYS, KINDS, KindInfo, kind_info,
+    CATEGORIES, CATEGORY_EMAIL_SOURCE, CATEGORY_KEYS, KINDS, KindInfo, kind_info,
 )
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "serversherpa"
@@ -21,6 +21,15 @@ def test_categories_order_and_labels():
         ("security", "Account security"),
     ]
     assert CATEGORY_KEYS == ("approvals", "reports", "wiki", "learning", "security")
+
+
+def test_every_category_has_an_email_source():
+    assert set(CATEGORY_EMAIL_SOURCE) == set(CATEGORY_KEYS)
+    assert set(CATEGORY_EMAIL_SOURCE.values()) <= {"groups", "always", "direct"}
+    # account security is emailed whatever the groups say; the rest need a group
+    assert CATEGORY_EMAIL_SOURCE == {"approvals": "groups", "reports": "groups",
+                                     "wiki": "groups", "learning": "groups",
+                                     "security": "always"}
 
 
 def test_every_kind_has_a_known_category_and_a_label():

@@ -5,13 +5,24 @@ import {
 } from './notificationKinds';
 
 it('lists the five categories in spec order with their labels', () => {
-  expect(NOTIFICATION_CATEGORIES).toEqual([
+  expect(NOTIFICATION_CATEGORIES.map(({ key, label }) => ({ key, label }))).toEqual([
     { key: 'approvals', label: 'Approvals & requests' },
     { key: 'reports', label: 'Reports & labels' },
     { key: 'wiki', label: 'Wiki' },
     { key: 'learning', label: 'Learning' },
     { key: 'security', label: 'Account security' },
   ]);
+});
+
+it('every category says where its email permission comes from; only account security is "always"', () => {
+  // Mirrors CATEGORY_EMAIL_SOURCE in api/src/serversherpa/notifications/kinds.py.
+  for (const c of NOTIFICATION_CATEGORIES) {
+    expect(['groups', 'always', 'direct']).toContain(c.emailSource);
+  }
+  expect(NOTIFICATION_CATEGORIES.filter((c) => c.emailSource === 'always').map((c) => c.key))
+    .toEqual(['security']);
+  expect(NOTIFICATION_CATEGORIES.filter((c) => c.emailSource === 'groups').map((c) => c.key))
+    .toEqual(['approvals', 'reports', 'wiki', 'learning']);
 });
 
 it('offers the three personal choices with the exact labels', () => {

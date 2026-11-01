@@ -4,6 +4,7 @@ lifecycle rules, and copy resolution — exercised at the service layer
 (no HTTP), since the API routes land in Task 2."""
 
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -14,7 +15,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.notifications.requests import (
     RequestError, approver_ids, cancel_request, create_request, decide_request,
-    is_member,
+    is_member, resolve_copies,
 )
 from serversherpa.security.passwords import hash_password
 
@@ -319,6 +320,97 @@ async def test_decide_request_unknown_id_raises_request_not_found(db):
     except RequestError as e:
         assert e.code == "request_not_found"
         assert e.status == 404
+
+
+# ── a decided request is read for every approver ─────────────────────
+
+async def _copies(db):
+    """Every approver's membership_request copy as the database has it now (the
+    decision is a raw UPDATE the session's already-loaded rows know nothing of)."""
+    return list((await db.scalars(
+        select(Notification).where(Notification.kind == "membership_request")
+        .execution_options(populate_existing=True))).all())
+
+
+async def test_decided_request_marks_every_copy_read(db):
+    requester = await _person(db, "staff", first="Ray", last="Requester",
+                              with_account=True)
+    admin = await _person(db, "admin", first="Ann", last="Admin", with_account=True)
+    await _person(db, "admin", first="Bo", last="Boss", with_account=True)
+    group = await _group(db)
+    req = await create_request(db, person=requester, group=group,
+                               action="join", note="")
+    await db.commit()
+    before = await _copies(db)
+    assert len(before) == 2 and all(c.read_at is None for c in before)
+
+    await decide_request(db, request_id=req.id, actor=admin, approve=True, note="")
+    await db.commit()
+
+    copies = await _copies(db)
+    assert len(copies) == 2
+    assert all(c.read_at is not None and c.payload["state"] == "approved"
+               for c in copies)
+    assert all(c.payload["decided_by"] == "Ann Admin" for c in copies)   # still says who
+
+
+async def test_a_decision_keeps_the_time_a_copy_was_already_read(db):
+    requester = await _person(db, "staff", with_account=True)
+    admin = await _person(db, "admin", first="Ann", last="Admin", with_account=True)
+    await _person(db, "admin", first="Bo", last="Boss", with_account=True)
+    group = await _group(db)
+    req = await create_request(db, person=requester, group=group,
+                               action="join", note="")
+    await db.commit()
+    earlier = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    already_read = (await _copies(db))[0]
+    already_read.read_at = earlier
+    await db.commit()
+
+    await decide_request(db, request_id=req.id, actor=admin, approve=True, note="")
+    await db.commit()
+
+    copies = {c.id: c for c in await _copies(db)}
+    assert copies[already_read.id].read_at == earlier        # first read time wins
+    assert all(c.read_at is not None for c in copies.values())
+    assert [c.read_at for c in copies.values()].count(earlier) == 1
+
+
+async def test_a_rejected_or_canceled_request_is_read_too(db):
+    requester = await _person(db, "staff", with_account=True)
+    admin = await _person(db, "admin", with_account=True)
+    rejected_group = await _group(db, "Rejected")
+    canceled_group = await _group(db, "Canceled")
+    rejected = await create_request(db, person=requester, group=rejected_group,
+                                    action="join", note="")
+    canceled = await create_request(db, person=requester, group=canceled_group,
+                                    action="join", note="")
+    await db.commit()
+
+    await decide_request(db, request_id=rejected.id, actor=admin, approve=False, note="")
+    await cancel_request(db, request_id=canceled.id, person_id=requester.id)
+    await db.commit()
+
+    by_request = {c.payload["request_id"]: c for c in await _copies(db)}
+    assert by_request[str(rejected.id)].payload["state"] == "rejected"
+    assert by_request[str(canceled.id)].payload["state"] == "cancelled"   # the stored state
+    assert all(c.read_at is not None for c in by_request.values())
+
+
+async def test_a_copy_set_back_to_pending_stays_unread(db):
+    requester = await _person(db, "staff", with_account=True)
+    await _person(db, "admin", with_account=True)
+    group = await _group(db)
+    req = await create_request(db, person=requester, group=group,
+                               action="join", note="")
+    await db.commit()
+
+    await resolve_copies(db, req.id, "pending", None)
+    await db.commit()
+
+    copies = await _copies(db)
+    assert len(copies) == 1
+    assert copies[0].payload["state"] == "pending" and copies[0].read_at is None
 
 
 # ── is_member ─────────────────────────────────────────────────────────

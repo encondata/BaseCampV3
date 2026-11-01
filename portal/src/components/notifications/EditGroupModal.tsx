@@ -1,17 +1,19 @@
 /**
  * EditGroupModal — name/description editor for an existing notification
  * group, invoked from NotificationGroupDetail.tsx's hero "Edit" action.
- * Model: components/access/GroupsTab.tsx's CreateGroupModal (same
- * .modal-scrim/.modal-card skeleton) — pre-filled here and diffed to a
- * partial PATCH so an untouched field never overwrites itself.
+ * Model: components/access/GroupsTab.tsx's CreateGroupModal — pre-filled here
+ * and diffed to a partial PATCH so an untouched field never overwrites
+ * itself. Wears the shared NotificationModal header; the Save button sits in
+ * the footer and submits the form by id, so Enter in a field still saves.
  */
 
-import { useState, type FormEvent } from 'react';
+import { useId, useState, type FormEvent } from 'react';
 
 import {
   ApiError, updateNotificationGroup,
   type NotificationGroupDetail, type NotificationGroupPatchIn,
 } from '../../lib/api';
+import NotificationModal from './NotificationModal';
 
 const ERRORS: Record<string, string> = {
   group_exists: 'A group with that name already exists.',
@@ -27,6 +29,7 @@ export default function EditGroupModal({ group, onClose, onSaved }: {
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const formId = useId();
   const [name, setName] = useState(group.name);
   const [description, setDescription] = useState(group.description);
   const [saving, setSaving] = useState(false);
@@ -52,39 +55,35 @@ export default function EditGroupModal({ group, onClose, onSaved }: {
   };
 
   return (
-    <div className="modal-scrim" onMouseDown={(e) => {
-      if (e.target === e.currentTarget) onClose();
-    }}>
-      <div className="modal-card">
-        <div className="modal-head">
-          <h3>Edit group</h3>
-          <button className="modal-close" aria-label="Close" onClick={onClose}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
-                 strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
+    <NotificationModal
+      eyebrow="Notification group" title="Edit group"
+      description="Rename the group or change its description."
+      onClose={onClose} busy={saving}
+      footer={(
+        <>
+          <button className="btn-solid" type="submit" form={formId} disabled={saving}>
+            {saving ? 'Saving…' : 'Save'}
           </button>
+          <button className="mini-btn" type="button" onClick={onClose} disabled={saving}>
+            Cancel
+          </button>
+          {error && <span className="pf-error" role="alert">{error}</span>}
+        </>
+      )}>
+      <form id={formId} onSubmit={submit}>
+        <div className="pf-form">
+          <div className="full">
+            <label htmlFor="ngd-group-name">Name *</label>
+            <input id="ngd-group-name" value={name} required disabled={saving}
+                   onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="full">
+            <label htmlFor="ngd-group-description">Description</label>
+            <input id="ngd-group-description" value={description} disabled={saving}
+                   onChange={(e) => setDescription(e.target.value)} />
+          </div>
         </div>
-        <form onSubmit={submit}>
-          <div className="modal-body">
-            <div className="pf-form">
-              <div className="full"><label>Name *</label>
-                <input value={name} required disabled={saving}
-                       onChange={(e) => setName(e.target.value)} /></div>
-              <div className="full"><label>Description</label>
-                <input value={description} disabled={saving}
-                       onChange={(e) => setDescription(e.target.value)} /></div>
-            </div>
-          </div>
-          <div className="modal-foot">
-            <button className="btn-solid" type="submit" disabled={saving}>
-              {saving ? 'Saving…' : 'Save'}
-            </button>
-            <button className="mini-btn" type="button" onClick={onClose} disabled={saving}>
-              Cancel
-            </button>
-            {error && <span className="pf-error">{error}</span>}
-          </div>
-        </form>
-      </div>
-    </div>
+      </form>
+    </NotificationModal>
   );
 }

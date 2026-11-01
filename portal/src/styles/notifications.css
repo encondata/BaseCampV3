@@ -1,13 +1,32 @@
 /* ============================================================
-   notifications.css — Notification group detail page. Reuses the
-   .idet-*, .init-panel, .kv, .pf-form, .modal-*, .switch, .mini-btn chrome
-   already defined by initiatives.css, directory.css, profile.css and
-   settings.css (all imported by the page) — this file only adds the
-   handful of rules those stylesheets don't already cover: the
-   Delivery-defaults panel's heading+button row, labeled switch rows
-   inside the settings modal's .pf-form grid, and the Active-days
-   toggle pills.
+   notifications.css — Notification group detail page and the
+   notification dialogs. Reuses the .idet-*, .init-panel, .kv, .pf-form,
+   .modal-*, .switch, .segmented, .mini-btn chrome already defined by
+   initiatives.css, directory.css, profile.css and settings.css — this
+   file only adds the handful of rules those stylesheets don't already
+   cover: the Delivery-defaults panel's heading+button row, labeled
+   switch rows inside a dialog's .pf-form grid, the Active-days toggle
+   pills, and NotificationModal's card size (.nm-card) and the muted
+   hint under a control (.nm-hint); the /notifications page's frame
+   (its category picker and day headings); and the System › Notifications
+   Delivery log (its person link, row trail and Check delivery result).
    ============================================================ */
+
+/* ── NotificationModal (components/notifications/NotificationModal.tsx) ──
+ * Every notification dialog is the report-generate card; this sizes it.
+ * The doubled-up selector out-specifies reports.css's roomy 980px
+ * `.rgm-card` width, which these small forms don't want. */
+.modal-card.reports-modal-card.rgm-card.nm-card { width: min(640px, 96vw); max-width: 96vw; }
+.modal-card.reports-modal-card.rgm-card.nm-card.nm-card-wide { width: min(920px, 96vw); }
+
+/* The muted line under a segmented control (the group's own value) or
+ * beside a switch list. Typography only; `cell-sub` is its semantic class. */
+.nm-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  font-weight: 300;
+  color: var(--text-mute);
+}
 
 .ngd-panel-head {
   display: flex;
@@ -88,23 +107,6 @@
   box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
   background: var(--surface, #fff);
 }
-.pf-form input[type='time'] {
-  width: 100%;
-  box-sizing: border-box;
-  font-family: var(--font-display);
-  font-size: 13.5px;
-  color: var(--text-dark);
-  background: var(--surface-2, #f5f7fa);
-  border: 1px solid var(--paper-line);
-  border-radius: 9px;
-  padding: 9px 12px;
-  outline: none;
-}
-.pf-form input[type='time']:focus {
-  border-color: var(--amber);
-  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
-  background: var(--surface, #fff);
-}
 
 /* ── members panel ────────────────────────────────────────── */
 
@@ -170,27 +172,125 @@
   justify-content: flex-end;
 }
 
-/* OverrideEditorModal dropped all of its per-section .modal-section
-   headings (pass 2 removed the last one, Behavior — with the others
-   already gone it read as just another field label rather than a
-   section boundary; When blocked/Urgent bypass are self-explanatory
-   without it), but .modal-section was also the only source of vertical
-   rhythm between sections. Scoped to .ov-body so no other modal's
-   .modal-body/.pf-form pairing is affected. Two selectors cover the two
-   ways a section can precede the next .pf-form: back-to-back .pf-form
-   blocks (Channels/Quiet hours/Timezone/Active days/Behavior), and
-   Active days' .pf-form followed by the .day-pills block instead when
-   daysMode is 'custom' — Behavior's .pf-form still needs the same gap
-   whichever one came right before it. */
-.ov-body > .pf-form + .pf-form,
-.ov-body > .day-pills + .pf-form {
-  margin-top: 18px;
+/* OverrideEditorModal's body: one .pf-form block per setting (label,
+   segmented control, the group's value as a hint, then the custom
+   editor when Custom), with no section headings — a hairline and some
+   air between the blocks is the whole rhythm. Scoped to .ov-body (the
+   <form> inside the dialog's body) so no other dialog's .pf-form
+   pairing is affected. */
+.ov-body > .pf-form + .pf-form {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--paper-line);
 }
 
-/* "not available yet" note beside a channel that cannot deliver. */
-.channel-soon {
-  margin-left: 8px;
-  font-size: 12px;
-  font-weight: 300;
+/* ── /notifications page (pages/NotificationsInbox.tsx) ───────────────
+ * The rows are the bell's (.notif-row and friends, toast.css); the toolbar
+ * and the card are the directory ones. This file only frames them. */
+
+/* The Settings link reads as a button, not an underlined link. */
+.notif-inbox a.mini-btn { text-decoration: none; }
+
+/* The category dropdown (a ComboBox, the house type-to-filter select): a
+ * fixed width in the toolbar and the toolbar's 34px control height. */
+.notif-category { flex: 0 0 auto; width: 230px; max-width: 100%; }
+.notif-category .org-select { height: 34px; padding-top: 0; padding-bottom: 0; }
+
+/* Today / Yesterday / Earlier: a band over each group of rows, set like the
+ * directory list header (same tokens). A day after the first gets a hairline
+ * above it; the rows' own dividers stop at each group's last row. */
+.notif-day {
+  margin: 0;
+  padding: 9px 20px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--paper-line);
+  font-family: var(--font-mono);
+  font-size: var(--list-fs-head);
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--text-mute);
+}
+.notif-day-group + .notif-day-group .notif-day { border-top: 1px solid var(--paper-line); }
+
+/* A card as wide as the page: the side padding of the directory rows, not the
+ * popover's 12px. */
+.notif-inbox .notif-row { padding-left: 20px; padding-right: 20px; }
+/* Row tips sit above their buttons on every row: the bell flips the first
+ * row's below (its popover clips what rises above it), but here a day band is
+ * always above, and a tip below the last row would be clipped by the card. */
+.notif-inbox .notif-row:first-child .notif-actions .icon-btn[data-tip]::after {
+  top: auto; bottom: calc(100% + 6px);
+}
+
+/* The error line beside Retry under the list. */
+.notif-more { align-items: center; gap: 12px; }
+
+/* The empty state carries the bell's icon over its line, centered. */
+.dir-empty.notif-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+
+/* ── Delivery log (components/notifications/DeliveryLogTab.tsx,
+ *    DeliveryLogTrail.tsx, CheckDeliveryModal.tsx) ────────────────────
+ * The list is the standard directory list and the dialog the standard
+ * notification card; this adds the in-row person link, the trail under an
+ * opened row, the dry run's result area, and slim scrollbars on the boxes
+ * that scroll sideways in a narrow window. Layout and color only: the type
+ * comes from directory.css's tokens. */
+
+/* The Person cell's link, in the in-row link look of .idet-people-list
+ * a.cell-top. `.cell .cell-line` makes it a block; inline-block keeps the
+ * click target on the name, so the rest of the cell still opens the row. */
+.dlog-person { color: var(--c-blue); text-decoration: none; }
+.dlog-person:hover { text-decoration: underline; }
+.cell a.dlog-person.cell-line { display: inline-block; max-width: 100%; vertical-align: top; }
+
+/* The trail: its table, then the address the email went to and the links,
+ * from the left like every row's detail actions (in a list scrolled
+ * sideways the right end is off screen). */
+.dlog-trail { padding-top: 16px; }
+.dlog-trail-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-top: 14px;
+}
+.dlog-trail-foot .nm-hint { margin: 0; }
+.dlog-trail-links { display: flex; flex-wrap: wrap; gap: 10px; }
+.dlog-trail a.mini-btn { text-decoration: none; }
+
+/* Check delivery: under the pickers, the result card, then the groups. While
+ * a new pick is being checked the last answer stays, dimmed. */
+.dlog-check { margin-top: 20px; }
+.dlog-check > .nm-hint { margin: 0; }
+.dlog-check-note { margin: 0 0 10px; }
+.dlog-check-result { transition: opacity 0.15s; }
+.dlog-check-result[aria-busy='true'] { opacity: 0.55; }
+
+/* The list card and the two tables scroll sideways only below their
+ * floors; then they show the slim themed bar, never the browser's classic
+ * one, and the card's stops short of its rounded corners. */
+:is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll)::-webkit-scrollbar {
+  height: 12px;
+}
+:is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll)::-webkit-scrollbar-track {
+  background: transparent;
+  margin-inline: 16px;
+}
+:is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll)::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+:is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll)::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--muted, #51606f) 65%, transparent);
+}
+/* Firefox has no ::-webkit-scrollbar; give it the slim, trackless bar. Only
+   there: in Chromium, scrollbar-width/color would override the rules above. */
+@supports not selector(::-webkit-scrollbar) {
+  :is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll) {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent) transparent;
+  }
 }

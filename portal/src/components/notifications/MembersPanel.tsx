@@ -20,11 +20,13 @@ import {
 } from '../../lib/api';
 import { avatarGradient, initials } from '../../lib/format';
 import {
-  CHANNELS, CHANNEL_LABELS, canForChannel, formatDays, formatQuietHours, type Channel,
+  CHANNEL_LABELS, LIVE_CHANNELS, canForChannel, formatDays, formatQuietHours, liveChannels,
+  type Channel,
 } from '../../lib/notifications';
 import ComboBox, { type ComboOption } from '../ComboBox';
 import DataTable from '../DataTable';
 import { RowActionsMenu, type RowAction } from '../hardware/RowActionsMenu';
+import { NO_EMAIL } from './ChannelChips';
 import OverrideEditorModal from './OverrideEditorModal';
 
 const msgFor = (err: unknown): string =>
@@ -33,9 +35,10 @@ const msgFor = (err: unknown): string =>
     : 'Network error — nothing was saved.';
 
 /** Why a chip's channel isn't actually reachable for this person — mirrors
- *  the API's capabilities() gating (api/routes/notifications.py). */
+ *  the API's capabilities() gating (api/routes/notifications.py). Only live
+ *  channels ever reach a chip today, so Email's note is the one people see. */
 const CHANNEL_WARNING_TITLE: Record<Channel, string> = {
-  email: 'No email address on profile',
+  email: 'No email address',
   text: 'No phone number',
   push: 'No user account',
   web: 'No user account',
@@ -43,9 +46,36 @@ const CHANNEL_WARNING_TITLE: Record<Channel, string> = {
 
 type Capable = { can_email: boolean; can_text: boolean; can_push: boolean; can_web: boolean };
 
+/** What the add-member picker says under a person's name: the live channels
+ *  they can receive, or why they can't be emailed. */
 function reachableSummary(r: Capable): string {
-  const reachable = CHANNELS.filter((c) => canForChannel(r, c));
-  return reachable.length ? reachable.map((c) => CHANNEL_LABELS[c]).join(', ') : 'No channels available';
+  const reachable = LIVE_CHANNELS.filter((c) => canForChannel(r, c));
+  return reachable.length
+    ? reachable.map((c) => CHANNEL_LABELS[c]).join(', ')
+    : CHANNEL_WARNING_TITLE.email;
+}
+
+/** A member's Channels cell: the live channels in their effective settings
+ *  (red, with the reason, when they have no way to receive it), "No email"
+ *  when none are live, and an Override marker beside a personal choice. */
+function MemberChannels({ member }: { member: NotificationMember }) {
+  const live = liveChannels(member.effective.channels);
+  return (
+    <div className="chips">
+      {live.length === 0 && <span className="chip c-slate">{NO_EMAIL}</span>}
+      {live.map((c) => {
+        const reachable = canForChannel(member, c);
+        return (
+          <span key={c}
+                className={`chip ${reachable ? 'tag' : 'c-red'}`}
+                title={reachable ? undefined : CHANNEL_WARNING_TITLE[c]}>
+            {CHANNEL_LABELS[c]}
+          </span>
+        );
+      })}
+      {member.overrides.channels != null && <span className="chip c-amber">Override</span>}
+    </div>
+  );
 }
 
 export default function MembersPanel({ group, canChange, reload }: {
@@ -176,24 +206,9 @@ export default function MembersPanel({ group, canChange, reload }: {
                 <span>{m.email ?? '—'}</span>
                 <span>{m.phone ?? '—'}</span>
               </div>,
-              <div className="chips">
-                {m.effective.channels.length === 0 && <span className="chip tag">Muted</span>}
-                {m.effective.channels.map((c) => {
-                  const channel = c as Channel;
-                  const reachable = canForChannel(m, channel);
-                  return (
-                    <span key={c}
-                          className={`chip ${reachable ? 'tag' : 'c-red'}`}
-                          title={reachable ? undefined : (CHANNEL_WARNING_TITLE[channel]
-                            ?? "That channel isn't available for this person.")}>
-                      {CHANNEL_LABELS[channel] ?? c}
-                    </span>
-                  );
-                })}
-                {m.overrides.channels != null && <span className="chip c-amber">Override</span>}
-              </div>,
+              <MemberChannels member={m} />,
               <div className="ngd-cell-marker">
-                <span className="mono">{formatQuietHours(m.effective.quiet_start, m.effective.quiet_end, m.effective.timezone)}</span>
+                <span className="mono ngd-nowrap">{formatQuietHours(m.effective.quiet_start, m.effective.quiet_end, m.effective.timezone)}</span>
                 {m.overrides.quiet_mode != null && <span className="chip c-amber">Override</span>}
               </div>,
               <div className="ngd-cell-marker">

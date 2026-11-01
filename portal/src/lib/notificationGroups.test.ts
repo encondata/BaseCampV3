@@ -4,41 +4,8 @@ import type {
   MyNotificationGroup, NotificationMemberOverrides,
 } from './api';
 import {
-  GROUP_ERRORS, daysText, hasOverrides, quietHoursText, toGroupDetail, toMember,
+  GROUP_ERRORS, hasOverrides, toGroupDetail, toMember,
 } from './notificationGroups';
-
-describe('quietHoursText', () => {
-  it('formats a raw HH:MM:SS pair with the timezone name in parens', () => {
-    expect(quietHoursText({ quiet_start: '22:00:00', quiet_end: '07:00:00', timezone: 'America/New_York' }))
-      .toBe('22:00–07:00 (America/New_York)');
-  });
-
-  it('returns None when either quiet time is null', () => {
-    expect(quietHoursText({ quiet_start: null, quiet_end: null, timezone: 'America/New_York' })).toBe('None');
-  });
-});
-
-describe('daysText', () => {
-  it('collapses all 7 days to Every day', () => {
-    expect(daysText(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'])).toBe('Every day');
-  });
-
-  it('collapses exactly the weekday set to Mon–Fri', () => {
-    expect(daysText(['mon', 'tue', 'wed', 'thu', 'fri'])).toBe('Mon–Fri');
-  });
-
-  it('collapses out-of-order weekdays to Mon–Fri too', () => {
-    expect(daysText(['fri', 'tue', 'thu', 'mon', 'wed'])).toBe('Mon–Fri');
-  });
-
-  it('falls back to a comma list in week order for anything else', () => {
-    expect(daysText(['fri', 'mon', 'wed'])).toBe('Mon, Wed, Fri');
-  });
-
-  it('returns None for an empty list', () => {
-    expect(daysText([])).toBe('None');
-  });
-});
 
 const NO_OVERRIDES: NotificationMemberOverrides = {
   channels: null, quiet_mode: null, quiet_start: null, quiet_end: null,
@@ -98,17 +65,28 @@ describe('toGroupDetail', () => {
 });
 
 describe('toMember', () => {
-  it('derives capability flags from the person\'s email/phone, and always allows push/web', () => {
+  it('derives can_text from the person\'s phone, and always allows email/push/web', () => {
     const member = toMember(GROUP, {
       id: 'p1', display_name: 'Ada Lovelace', email: 'ada@test.example.com', phone: null,
     });
     expect(member.person_id).toBe('p1');
     expect(member.display_name).toBe('Ada Lovelace');
+    expect(member.email).toBe('ada@test.example.com');
     expect(member.can_email).toBe(true);
     expect(member.can_text).toBe(false);
     expect(member.can_push).toBe(true);
     expect(member.can_web).toBe(true);
     expect(member.has_account).toBe(true);
+  });
+
+  it('can_email stays true for a person with no profile email: the sign-in email counts', () => {
+    // The sender falls back to the sign-in email (user_accounts.email is NOT NULL),
+    // so a signed-in person is always reachable by email.
+    for (const email of [null, undefined]) {
+      const member = toMember(GROUP, { id: 'p1', display_name: 'Ada Lovelace', email });
+      expect(member.can_email).toBe(true);
+      expect(member.email).toBeNull(); // nothing to show as the contact address
+    }
   });
 
   it('passes the group\'s overrides/effective through unchanged when present', () => {

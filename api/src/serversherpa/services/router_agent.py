@@ -278,11 +278,16 @@ async def handle_report(db: AsyncSession, report: RouterReportIn, ip: str) -> st
 async def resolve_router_copies(db: AsyncSession, device_id: uuid.UUID, state: str,
                                 decided_by: str | None) -> None:
     """Rewrite every approver's copy of this router's approval notification
-    so the popover stops offering Approve/Reject and shows the outcome."""
+    so the popover stops offering Approve/Reject and shows the outcome. A
+    decision (any state but pending/open) also marks the copies read, for
+    everyone; one already read keeps its first read time. Setting a copy back
+    to pending leaves its read state alone."""
     await db.execute(text(
         "UPDATE notifications SET payload = payload || "
         "jsonb_build_object('state', CAST(:state AS text), "
-        "'decided_by', CAST(:decided_by AS text)) "
+        "'decided_by', CAST(:decided_by AS text)), "
+        "read_at = CASE WHEN CAST(:state AS text) IN ('pending', 'open') "
+        "THEN read_at ELSE COALESCE(read_at, now()) END "
         "WHERE kind = 'router_approval' "
         "AND payload ->> 'device_id' = CAST(:device_id AS text)"),
         {"state": state, "decided_by": decided_by, "device_id": str(device_id)})

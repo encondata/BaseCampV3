@@ -40,7 +40,10 @@
 
 /* ── notifications panel (bell) — follows Settings via the list tokens ── */
 .pop-menu.notif-panel {
-  width: min(420px, calc(100vw - 32px));
+  /* 460, not the 420 it was: the settings gear takes 38px of the header line,
+     and at 420 the title, the unread chip and the three actions wrapped onto
+     two lines whenever anything was unread. */
+  width: min(460px, calc(100vw - 32px));
   max-height: min(70vh, 560px);
   display: flex; flex-direction: column;
   padding: 0;
@@ -50,21 +53,47 @@
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 12px 12px 10px; border-bottom: 1px solid var(--paper-line);
 }
-.notif-head .pop-title { margin: 0; }
+/* No trailing padding: the unread chip sits one gap from the title, which
+   leaves the actions room to stay on this line up to a three-digit count. */
+.notif-head .pop-title { margin: 0; padding-right: 0; }
 .notif-chip {
   font-size: var(--list-fs-head); letter-spacing: 0.08em; text-transform: uppercase;
   padding: 3px 8px; border-radius: 999px; white-space: nowrap;
   color: var(--accent); background: rgba(var(--accent-rgb), 0.14);
 }
-/* wrap rather than overflow the popover: at Extra large the two actions no
-   longer fit beside the title + chip on one 420px line. */
+/* wrap rather than overflow the popover: at the larger list text sizes the
+   actions no longer fit beside the title + chip on one 460px line. */
 .notif-head-actions { margin-left: auto; display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
 .notif-head-actions .btn-ghost { font-size: var(--list-fs-sub); padding: 5px 9px; }
 /* .btn-ghost has no disabled skin of its own — without this "Clear read"
    with nothing read reads as an available action. */
 .notif-head-actions .btn-ghost:disabled { opacity: 0.4; cursor: default; }
 .notif-head-actions .btn-ghost:disabled:hover { border-color: var(--paper-line); }
+/* The settings gear is the last header action, at the panel's right edge: its
+   tip hangs from the button's right edge instead of centering under it, where
+   the panel's overflow: hidden would clip it. */
+.notif-head-actions .icon-btn[data-tip]::after { left: auto; right: 0; transform: none; }
 .notif-list { overflow-y: auto; }
+/* A light classic scrollbar looks unfinished on the popover: a transparent
+   track and a slim padded pill, in the muted text color so it follows the
+   theme. */
+.notif-list::-webkit-scrollbar { width: 12px; }
+.notif-list::-webkit-scrollbar-track { background: transparent; }
+.notif-list::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--text-mute) 45%, transparent);
+  border: 3px solid transparent; background-clip: padding-box; border-radius: 999px;
+}
+.notif-list::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--text-mute) 65%, transparent);
+}
+/* Firefox has no ::-webkit-scrollbar; give it the slim, trackless bar. Only
+   there: in Chromium, scrollbar-width/color would override the rules above. */
+@supports not selector(::-webkit-scrollbar) {
+  .notif-list {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--text-mute) 45%, transparent) transparent;
+  }
+}
 .notif-row {
   display: flex; align-items: flex-start; gap: 12px;
   min-height: var(--list-row-min-h); padding: var(--list-row-pad-y) 12px;
@@ -93,7 +122,17 @@
 .notif-row:first-child .notif-actions .icon-btn[data-tip]::after { bottom: auto; top: calc(100% + 6px); }
 .pop-empty.notif-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; font-size: var(--list-fs-cell); }
 .notif-empty .notif-icon { width: 26px; height: 26px; }
-.notif-foot { padding: 8px 12px; font-size: var(--list-fs-sub); color: var(--text-mute); text-align: center; border-top: 1px solid var(--paper-line); }
+/* The footer is a button ("View all notifications"), always shown; the
+   native chrome is reset by hand (there is no global button style). */
+.notif-foot {
+  display: block; width: 100%; padding: 10px 12px;
+  border: 0; border-top: 1px solid var(--paper-line); border-radius: 0; background: transparent;
+  font-family: var(--font-display); font-size: var(--list-fs-sub); font-weight: 500;
+  color: var(--text-dark); text-align: center; cursor: pointer;
+  transition: background 0.15s;
+}
+.notif-foot:hover, .notif-foot:focus-visible { background: rgba(var(--accent-rgb), 0.06); }
+.notif-foot:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* membership_request inline strip (Approve/Reject or the outcome line) —
    layout only, no typography: size/weight/line-height come from the

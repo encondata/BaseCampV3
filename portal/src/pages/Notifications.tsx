@@ -3,21 +3,32 @@
  * notified, how, and when). Directory pattern, modeled on
  * pages/AssetModels.tsx: dir-head/dir-toolbar/dir-list, VirtualRows,
  * ColumnMenu per-column filters, usePersistentListState, toolbar
- * FilterButton facets (Status, Channels), CSV export.
+ * FilterButton facets (Status, Channels, Categories), CSV export.
  *
  * Row click navigates straight to the group's detail page — no inline
  * expansion (the detail view, with membership management, is Tasks 4-5).
  * "+ New group" opens a create-only modal (model:
  * components/access/GroupsTab.tsx's CreateGroupModal) that hands off to
  * that detail page on success.
+ *
+ * Super admins and above (global access and rank 80+, the API's own gate)
+ * also get a `.subs-tabs` strip (pages/Access.tsx): Groups, the list above
+ * with its pending requests, and Delivery log (DeliveryLogTab), kept in
+ * ?tab=log. Everyone else sees the groups with no strip, whatever the URL
+ * says. The header's hint and count follow the tab.
  */
 
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useId, useMemo, useState, type FormEvent } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import DataTable, { type DataTableColumn, type DataTableRow } from '../components/DataTable';
 import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
+import CategoryChips, { NO_CATEGORIES } from '../components/notifications/CategoryChips';
+import ChannelChips, { NO_EMAIL } from '../components/notifications/ChannelChips';
+import DeliveryLogTab from '../components/notifications/DeliveryLogTab';
+import NotificationModal from '../components/notifications/NotificationModal';
+import { SUPER_ADMIN_RANK } from '../lib/access';
 import {
   ApiError, approveMembershipRequest, createNotificationGroup, listMembershipRequests,
   listNotificationGroups, rejectMembershipRequest,
@@ -27,6 +38,7 @@ import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
   usePersistentListState, type CellText,
 } from '../lib/columnMenu';
+import { DELIVERY_LOG_HINT } from '../lib/deliveryLog';
 import { relativeTime } from '../lib/format';
 import {
   ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
@@ -34,14 +46,25 @@ import {
   visibleColumnsFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { GROUP_ERRORS } from '../lib/notificationGroups';
+import { NOTIFICATION_CATEGORIES, categoryLabels } from '../lib/notificationKinds';
 import {
-  CHANNEL_LABELS, CHANNELS, formatDays, formatQuietHours, type Channel,
+  CHANNEL_LABELS, LIVE_CHANNELS, formatDays, formatQuietHours, liveChannels,
 } from '../lib/notifications';
 import { naturalCompare } from '../lib/sites';
 import { VirtualRows } from '../lib/virtualRows';
+import '../styles/access.css';   /* .subs-tabs — the page-local tab strip */
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
+
+type Tab = 'groups' | 'log';
+
+const TABS: { key: Tab; label: string }[] = [
+  { key: 'groups', label: 'Groups' },
+  { key: 'log', label: 'Delivery log' },
+];
+
+const GROUPS_HINT = 'Notification groups — who gets notified, how, and when.';
 
 /** Copy for request-decision error codes — same mapping as the popover's
  *  strip (NotificationsPanel.tsx), plus the one code unique to a second
@@ -60,20 +83,24 @@ const requestErrorMsg = (err: unknown): string =>
  * viewports (~1024px), the plain `fr` width keeps the original relative
  * growth once there's slack; see notif-polish1-brief.md fix 6.
  * listGridStyle (lib/listTools.tsx, spec 2026-09-23-list-column-floors)
- * now owns turning `min` into the track's `minmax(floor, fr)` — these
- * used to be literal `minmax()` strings in `width` itself; the numbers
- * are unchanged, just moved onto `min`. Members/Days/Status/Created carry
- * short, low-variance content (a count, a day summary, a two-word chip, a
- * locale date) that gains nothing from growing, so those four stay plain
- * fixed px instead — this is what keeps the 8 floors + gaps fitting a
- * ~1000px content area without a scrollbar (polish pass 2, fix 3);
- * Description is clamped to 2 lines and shrinks furthest, Quiet hours
- * stays a nowrap ellipsis at its ~150px floor.
+ * owns turning `min` into the track's `minmax(floor, fr)`. Members/Days/
+ * Status/Created carry short, low-variance content (a count, a day summary,
+ * a two-word chip, a locale date) that gains nothing from growing, so those
+ * four stay plain fixed px instead — this is what keeps the floors + gaps
+ * inside the fit below (polish pass 2, fix 3). Three floors hold their
+ * column's longest everyday value at the 1512px reference width, measured
+ * in the browser: Name 184px ("Destination Side Ops Team"), Categories 156px
+ * (the "Approvals & requests" chip, as on the Delivery log; chips wrap onto
+ * extra lines, and one cut short still has its title) and Quiet hours 168px
+ * ("12:00 AM – 12:00 AM CT", a nowrap ellipsis below that). Created is off
+ * by default (still offered in Columns) to leave Name that room. Channels
+ * holds one short chip (Email / No email), so it carries only the floor its
+ * header derives; Description is clamped to 2 lines and shrinks furthest.
  *
  * Fit: default columns + trailing ≤ LIST_FIT.page
  * (1172px — .portal-page at a 1512px window, nav expanded). */
 const COLUMNS: ColumnDef[] = [
-  { key: 'name', label: 'Name', width: '1.3fr', default: true, min: 110 },
+  { key: 'name', label: 'Name', width: '1.3fr', default: true, min: 184 },
   // 'Desc' isn't wordy enough on its own to need a short label (11 chars,
   // under the ~12 rule of thumb) — it's here so the *derived* floor for
   // the full "Description" label (~112px) doesn't outgrow the deliberately
@@ -83,18 +110,23 @@ const COLUMNS: ColumnDef[] = [
     width: '2fr', default: true, min: 75,
   },
   { key: 'members', label: 'Members', width: '60px', default: true },
-  { key: 'channels', label: 'Channels', width: '1.6fr', default: true, min: 128 },
-  { key: 'quiet_hours', label: 'Quiet hours', width: '1.2fr', default: true, min: 144 },
+  { key: 'categories', label: 'Categories', width: '1.6fr', default: true, min: 156 },
+  { key: 'channels', label: 'Channels', width: '1fr', default: true },
+  { key: 'quiet_hours', label: 'Quiet hours', width: '1.2fr', default: true, min: 168 },
   { key: 'days', label: 'Days', width: '70px', default: true },
   { key: 'status', label: 'Status', width: '90px', default: true },
-  { key: 'created', label: 'Created', width: '85px', default: true },
+  { key: 'created', label: 'Created', width: '85px', default: false },
 ];
 
 const ALL_COLUMN_KEYS = new Set<string>(COLUMNS.map((c) => c.key));
 const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
 
-const channelLabel = (c: string): string => CHANNEL_LABELS[c as Channel] ?? c;
 const formatCreated = (iso: string): string => new Date(iso).toLocaleDateString();
+
+/** Labels of the channels that can send — the only ones the Channels cell,
+ *  filter, search and export ever show (stored text/push/web stay hidden). */
+const channelLabels = (g: NotificationGroup): string[] =>
+  liveChannels(g.channels).map((c) => CHANNEL_LABELS[c]);
 
 /** Column-menu / search accessor — mirrors cellFor's display text exactly. */
 const groupCellText: CellText<NotificationGroup> = (g, colKey) => {
@@ -102,7 +134,8 @@ const groupCellText: CellText<NotificationGroup> = (g, colKey) => {
     case 'name': return g.name;
     case 'description': return g.description;
     case 'members': return String(g.member_count);
-    case 'channels': return g.channels.map(channelLabel).join(', ');
+    case 'categories': return categoryLabels(g.categories).join(', ') || NO_CATEGORIES;
+    case 'channels': return channelLabels(g).join(', ') || NO_EMAIL;
     case 'quiet_hours': return formatQuietHours(g.quiet_start, g.quiet_end, g.timezone);
     case 'days': return formatDays(g.active_days);
     case 'status': return g.enabled ? 'Enabled' : 'Paused';
@@ -111,8 +144,11 @@ const groupCellText: CellText<NotificationGroup> = (g, colKey) => {
   }
 };
 
+// The empty-state words ("No email", "None — inbox only") are left out of the
+// search text on purpose: "email" must find the groups that email, not also
+// every group that says it does not.
 const groupSearchText = (g: NotificationGroup): string => [
-  g.name, g.description, g.channels.map(channelLabel).join(' '),
+  g.name, g.description, channelLabels(g).join(' '), categoryLabels(g.categories).join(' '),
   formatDays(g.active_days), g.enabled ? 'enabled' : 'paused', g.timezone,
 ].join(' ').toLowerCase();
 
@@ -121,7 +157,8 @@ function sortValueFor(g: NotificationGroup, key: string): string {
     case 'name': return g.name.toLowerCase();
     case 'description': return g.description.toLowerCase();
     case 'members': return String(g.member_count);
-    case 'channels': return g.channels.map(channelLabel).join(', ').toLowerCase();
+    case 'categories': return categoryLabels(g.categories).join(', ').toLowerCase();
+    case 'channels': return channelLabels(g).join(', ').toLowerCase();
     case 'quiet_hours': return formatQuietHours(g.quiet_start, g.quiet_end, g.timezone).toLowerCase();
     case 'days': return formatDays(g.active_days).toLowerCase();
     case 'status': return g.enabled ? 'enabled' : 'paused';
@@ -135,7 +172,8 @@ const CSV_COLUMNS: [string, (g: NotificationGroup) => string][] = [
   ['Name', (g) => g.name],
   ['Description', (g) => g.description],
   ['Members', (g) => String(g.member_count)],
-  ['Channels', (g) => g.channels.map(channelLabel).join('; ')],
+  ['Categories', (g) => categoryLabels(g.categories).join('; ') || 'None'],
+  ['Channels', (g) => channelLabels(g).join('; ') || NO_EMAIL],
   ['Quiet hours', (g) => formatQuietHours(g.quiet_start, g.quiet_end, g.timezone)],
   ['Timezone', (g) => g.timezone],
   ['Days', (g) => formatDays(g.active_days)],
@@ -167,11 +205,27 @@ const msgFor = (err: unknown): string =>
     : 'Network error — nothing was saved.';
 
 export default function Notifications() {
-  const { can, preferences } = useAuth();
+  const { can, preferences, maxRank, scope } = useAuth();
   const listGridScale = listScale(preferences?.list_size);
   const canAdd = can('notifications', 'add');
   const canChange = can('notifications', 'change');
   const navigate = useNavigate();
+
+  // The Delivery log's gate mirrors the API's (ensure_super_admin): global
+  // access and super admin rank or above.
+  const superAdmin = maxRank >= SUPER_ADMIN_RANK && !!scope?.global;
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab: Tab = superAdmin && searchParams.get('tab') === 'log' ? 'log' : 'groups';
+  const [logCount, setLogCount] = useState<number | null>(null);
+  const selectTab = (next: Tab) => {
+    if (next === tab) return;
+    setLogCount(null);
+    setSearchParams((prev) => {
+      const p = new URLSearchParams(prev);
+      if (next === 'groups') p.delete('tab'); else p.set('tab', next);
+      return p;
+    }, { replace: true });
+  };
 
   const [groups, setGroups] = useState<NotificationGroup[] | null>(null);
   const [error, setError] = useState('');
@@ -251,14 +305,27 @@ export default function Notifications() {
       { value: 'enabled', label: 'Enabled' },
       { value: 'paused', label: 'Paused' },
     ] },
-    { key: 'channels', title: 'Channels', options: CHANNELS.map((c) => (
-      { value: c, label: CHANNEL_LABELS[c] }
-    )) },
+    { key: 'channels', title: 'Channels', options: [
+      ...LIVE_CHANNELS.map((c) => ({ value: c, label: CHANNEL_LABELS[c] })),
+      { value: 'none', label: NO_EMAIL },
+    ] },
+    { key: 'categories', title: 'Categories', options: [
+      ...NOTIFICATION_CATEGORIES.map((c) => ({ value: c.key, label: c.label })),
+      { value: 'none', label: 'None' },
+    ] },
   ], []);
 
   const facetValues = (g: NotificationGroup) => (groupKey: string): string[] => {
     if (groupKey === 'status') return [g.enabled ? 'enabled' : 'paused'];
-    if (groupKey === 'channels') return g.channels;
+    if (groupKey === 'channels') {
+      const live = liveChannels(g.channels);
+      return live.length ? live : ['none'];
+    }
+    if (groupKey === 'categories') {
+      // Registry keys only, like the chips — an unknown stored key is not a category here.
+      const keys = NOTIFICATION_CATEGORIES.filter((c) => g.categories.includes(c.key)).map((c) => c.key);
+      return keys.length ? keys : ['none'];
+    }
     return [];
   };
 
@@ -293,14 +360,10 @@ export default function Notifications() {
         return <span className="cell-sub cell-clamp2">{g.description || '—'}</span>;
       case 'members':
         return <span className="mono cell-line" style={{ display: 'block', textAlign: 'right' }}>{g.member_count}</span>;
+      case 'categories':
+        return <CategoryChips categories={g.categories} />;
       case 'channels':
-        return (
-          <div className="chips">
-            {g.channels.length
-              ? g.channels.map((c) => <span key={c} className="chip tag">{channelLabel(c)}</span>)
-              : <span className="chip tag">—</span>}
-          </div>
-        );
+        return <ChannelChips channels={g.channels} />;
       case 'quiet_hours': {
         const text = formatQuietHours(g.quiet_start, g.quiet_end, g.timezone);
         return <span className="mono cell-nowrap cell-line" title={titleFor(text)}>{text}</span>;
@@ -372,7 +435,32 @@ export default function Notifications() {
 
   return (
     <div className="portal-page">
-      {canChange && pendingRequests.length > 0 && (
+      <div className="dir-head">
+        <div>
+          <div className="eyebrow">System</div>
+          <h1 className="page-title">
+            Notifications
+            <span className="badge-count">{(tab === 'log' ? logCount : groups?.length) ?? '…'}</span>
+          </h1>
+          <p className="page-hint">{tab === 'log' ? DELIVERY_LOG_HINT : GROUPS_HINT}</p>
+        </div>
+      </div>
+
+      {superAdmin && (
+        <div className="subs-tabs" role="tablist">
+          {TABS.map((t) => (
+            <button key={t.key} type="button" role="tab" aria-selected={tab === t.key}
+                    className={tab === t.key ? 'on' : ''}
+                    onClick={() => selectTab(t.key)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {tab === 'log' && <DeliveryLogTab onCount={setLogCount} />}
+
+      {tab === 'groups' && canChange && pendingRequests.length > 0 && (
         <div className="panel">
           <div className="panel-head">
             <h3>Pending requests</h3>
@@ -384,44 +472,35 @@ export default function Notifications() {
         </div>
       )}
 
-      <div className="dir-head">
-        <div>
-          <div className="eyebrow">System</div>
-          <h1 className="page-title">
-            Notifications
-            <span className="badge-count">{groups?.length ?? '…'}</span>
-          </h1>
-          <p className="page-hint">
-            Notification groups — who gets notified, how, and when.
-          </p>
-        </div>
-      </div>
-
-      <div className="dir-toolbar">
-        <div className="toolbar-right">
-          <div className="dir-search" style={{ marginLeft: 0 }}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                 strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
-            <input placeholder="Filter this list…" value={query}
-                   onChange={(e) => setQuery(e.target.value)} />
+      {tab === 'groups' && (
+        <div className="dir-toolbar">
+          <div className="toolbar-right">
+            <div className="dir-search" style={{ marginLeft: 0 }}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                   strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+              <input placeholder="Filter this list…" value={query}
+                     onChange={(e) => setQuery(e.target.value)} />
+            </div>
+            <span className="result-count">{visible.length} of {groups?.length ?? 0} shown</span>
+            <FilterButton groups={facetGroups} state={facets} onChange={setFacets} />
+            <FilterSummaryChip filters={filters} onClear={clearFilters} />
+            <ColumnsButton columns={orderedCols} visible={visibleCols} onChange={setVisibleCols}
+                           onReorder={setColOrder} />
+            <ExportButton onExport={() => exportCsv('notification-groups', CSV_COLUMNS, visible)} />
+            {canAdd && (
+              <button className="btn-solid" onClick={() => setCreating(true)}>
+                + New group
+              </button>
+            )}
           </div>
-          <span className="result-count">{visible.length} of {groups?.length ?? 0} shown</span>
-          <FilterButton groups={facetGroups} state={facets} onChange={setFacets} />
-          <FilterSummaryChip filters={filters} onClear={clearFilters} />
-          <ColumnsButton columns={orderedCols} visible={visibleCols} onChange={setVisibleCols}
-                         onReorder={setColOrder} />
-          <ExportButton onExport={() => exportCsv('notification-groups', CSV_COLUMNS, visible)} />
-          {canAdd && (
-            <button className="btn-solid" onClick={() => setCreating(true)}>
-              + New group
-            </button>
-          )}
         </div>
-      </div>
+      )}
 
-      {error && <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load notification groups</b>{error}</div>}
+      {tab === 'groups' && error && (
+        <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load notification groups</b>{error}</div>
+      )}
 
-      {!error && (
+      {tab === 'groups' && !error && (
         <div className="dir-list list-scroll">
           <div className="list-head" style={rowStyle}>
             {shownCols.map((c) => (
@@ -484,14 +563,16 @@ export default function Notifications() {
 }
 
 /* ── create group modal ─────────────────────────────────────────────
- * Model: components/access/GroupsTab.tsx's CreateGroupModal (lines
- * ~295-353) — same .modal-scrim/.modal-card skeleton and ERRORS/msgFor
- * pattern. Create-only (no edit here); settings beyond name/description
- * are configured on the detail page (Task 4). */
+ * Model: components/access/GroupsTab.tsx's CreateGroupModal — the same
+ * ERRORS/msgFor pattern, in the shared NotificationModal shell (standard
+ * header; the Create button sits in the footer and submits the form by id, so
+ * Enter in a field still creates). Create-only (no edit here); settings
+ * beyond name/description are configured on the detail page. */
 
 function NewGroupModal({ onClose, onDone }: {
   onClose: () => void; onDone: (id: string) => void;
 }) {
+  const formId = useId();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [saving, setSaving] = useState(false);
@@ -514,37 +595,35 @@ function NewGroupModal({ onClose, onDone }: {
   };
 
   return (
-    <div className="modal-scrim" onMouseDown={(e) => {
-      if (e.target === e.currentTarget) onClose();
-    }}>
-      <div className="modal-card">
-        <div className="modal-head">
-          <h3>New notification group</h3>
-          <button className="modal-close" aria-label="Close" onClick={onClose}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
-                 strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
+    <NotificationModal
+      eyebrow="Notifications" title="New notification group"
+      description="Name the group. Delivery settings and members come next."
+      onClose={onClose} busy={saving}
+      footer={(
+        <>
+          <button className="btn-solid" type="submit" form={formId} disabled={saving}>
+            {saving ? 'Creating…' : 'Create group'}
           </button>
+          <button className="mini-btn" type="button" onClick={onClose} disabled={saving}>
+            Cancel
+          </button>
+          {error && <span className="pf-error" role="alert">{error}</span>}
+        </>
+      )}>
+      <form id={formId} onSubmit={submit}>
+        <div className="pf-form">
+          <div className="full">
+            <label htmlFor="new-group-name">Name *</label>
+            <input id="new-group-name" value={name} required disabled={saving}
+                   onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="full">
+            <label htmlFor="new-group-description">Description</label>
+            <input id="new-group-description" value={description} disabled={saving}
+                   onChange={(e) => setDescription(e.target.value)} />
+          </div>
         </div>
-        <form onSubmit={submit}>
-          <div className="modal-body">
-            <div className="pf-form">
-              <div className="full"><label>Name *</label>
-                <input value={name} required onChange={(e) => setName(e.target.value)} /></div>
-              <div className="full"><label>Description</label>
-                <input value={description} onChange={(e) => setDescription(e.target.value)} /></div>
-            </div>
-          </div>
-          <div className="modal-foot">
-            <button className="btn-solid" type="submit" disabled={saving}>
-              {saving ? 'Creating…' : 'Create group'}
-            </button>
-            <button className="mini-btn" type="button" onClick={onClose} disabled={saving}>
-              Cancel
-            </button>
-            {error && <span className="pf-error">{error}</span>}
-          </div>
-        </form>
-      </div>
-    </div>
+      </form>
+    </NotificationModal>
   );
 }

@@ -49,6 +49,7 @@ import LabelTemplates from './pages/LabelTemplates';
 import LinkKiosk from './pages/LinkKiosk';
 import MoveAssetDetail from './pages/MoveAssetDetail';
 import Notifications from './pages/Notifications';
+import NotificationsInbox from './pages/NotificationsInbox';
 import NotificationGroupDetailPage from './pages/NotificationGroupDetail';
 import Partners from './pages/Partners';
 import PeopleDashboard from './pages/PeopleDashboard';
@@ -307,6 +308,7 @@ export default function App() {
                 <Route path="/me/preferences" element={<Profile />} />
                 <Route path="/me/notifications" element={<Profile />} />
                 <Route path="/me/history" element={<Profile />} />
+                <Route path="/notifications" element={<NotificationsInbox />} />
               </Route>
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

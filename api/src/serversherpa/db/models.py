@@ -127,7 +127,8 @@ class PasswordResetToken(Base):
 class EmailOutbox(Base):
     """One outbound email, fully rendered at enqueue time (mail/outbox.py)
     and delivered by notification-worker (mail/delivery.py). status:
-    queued → sending → sent | failed | skipped (no SMTP configured)."""
+    queued → sending → sent | failed | skipped (no SMTP configured, or
+    dropped by the send-time re-check; skip_reason says which)."""
     __tablename__ = "email_outbox"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -147,6 +148,8 @@ class EmailOutbox(Base):
     attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     next_attempt_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     last_error: Mapped[str | None]
+    # Reason code of a `skipped` row (migration 0110); NULL for every other status.
+    skip_reason: Mapped[str | None]
     worker_id: Mapped[str | None]
     heartbeat_at: Mapped[datetime | None]
     # files to attach at delivery (migration 0109)
@@ -2003,6 +2006,34 @@ class Notification(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     read_at: Mapped[datetime | None]
     dismissed_at: Mapped[datetime | None]
+
+
+class NotificationLog(Base):
+    """One notification or email decision (migration 0110), written by
+    notifications/delivery_log.py record() in the caller's transaction. The
+    links are ON DELETE SET NULL so the trail outlives the rows it describes;
+    the log-service retention pass deletes rows older than the Logging
+    setting local_max_age_days. Carries ids and codes, never an email
+    address or a message body. `channel` accepts text and push in the
+    database for later; the writer only accepts inbox and email."""
+
+    __tablename__ = "notification_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    event: Mapped[str]
+    channel: Mapped[str]
+    person_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    notification_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("notifications.id", ondelete="SET NULL"))
+    outbox_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("email_outbox.id", ondelete="SET NULL"))
+    kind: Mapped[str | None]               # notification kind, or the email template
+    category: Mapped[str | None]
+    reason: Mapped[str | None]             # a reason code, not prose
+    detail: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    process: Mapped[str | None]            # the writing process (db_logging name)
 
 
 class WikiSpace(Base):

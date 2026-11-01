@@ -49,9 +49,13 @@ async def open_or_bump(db: AsyncSession, person: Person) -> int:
 
 
 async def resolve(db: AsyncSession, person_id: uuid.UUID, resolved_by: str) -> None:
+    """Mark every open card for this person resolved, and read for every
+    approver: nothing is left to act on. A card already read keeps its first
+    read time; the card still says who resolved it."""
     await db.execute(text(
         "UPDATE notifications SET payload = payload || "
-        "jsonb_build_object('state', 'resolved', 'resolved_by', CAST(:by AS text)) "
+        "jsonb_build_object('state', 'resolved', 'resolved_by', CAST(:by AS text)), "
+        "read_at = COALESCE(read_at, now()) "
         "WHERE kind = :kind AND payload ->> 'target_person_id' = CAST(:pid AS text) "
         "AND payload ->> 'state' = 'open'"),
         {"by": resolved_by, "kind": KIND, "pid": str(person_id)})

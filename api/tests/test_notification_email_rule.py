@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from serversherpa.notifications.email_rule import allowed_at, email_send_time
+from serversherpa.notifications.email_rule import allowed_at, email_send_time, group_verdict
 
 NY = ZoneInfo("America/New_York")
 ALL_DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -241,3 +241,64 @@ def test_dst_spring_forward_quiet_end_in_the_gap_opens_at_the_gap_end():
 def test_allowed_at_directly():
     now = ny(2026, 10, 5, 12)
     assert allowed_at(make(), now, urgent=False) == now
+
+
+# ── one group's verdict (what the delivery log and Check delivery show) ──
+
+# A fixed Wednesday, 15:00 UTC; the groups below keep their clock in UTC.
+WED_15 = datetime(2026, 10, 7, 15, 0, tzinfo=UTC)
+QUIET_14_16 = {"timezone": "UTC", "quiet_start": time(14, 0), "quiet_end": time(16, 0)}
+
+
+def test_group_verdict_open():
+    verdict, at = group_verdict(make(timezone="UTC"), WED_15, urgent=False)
+    assert (verdict, at) == ("open", WED_15)
+    assert at.utcoffset() == timedelta(0)
+    # a "now" in another zone answers in UTC all the same
+    verdict, at = group_verdict(make(timezone="UTC"), WED_15.astimezone(NY), urgent=False)
+    assert (verdict, at) == ("open", WED_15)
+    assert at.tzinfo is UTC
+
+
+def test_group_verdict_quiet_hours_with_its_open_time():
+    got = group_verdict(make(**QUIET_14_16), WED_15, urgent=False)
+    assert got == ("quiet_hours", datetime(2026, 10, 7, 16, 0, tzinfo=UTC))
+
+
+def test_group_verdict_inactive_day():
+    no_wednesday = ["mon", "tue", "thu", "fri"]
+    thursday = datetime(2026, 10, 8, 0, 0, tzinfo=UTC)
+    s = make(timezone="UTC", active_days=no_wednesday)
+    assert group_verdict(s, WED_15, urgent=False) == ("inactive_day", thursday)
+    # an inactive day wins over quiet hours on the same day
+    s = make(active_days=no_wednesday, **QUIET_14_16)
+    assert group_verdict(s, WED_15, urgent=False) == ("inactive_day", thursday)
+    # nothing open within the search horizon: inactive, never
+    s = make(timezone="UTC", active_days=[])
+    assert group_verdict(s, WED_15, urgent=False) == ("inactive_day", None)
+
+
+def test_group_verdict_urgent_bypass():
+    s = make(urgent_bypass=True, **QUIET_14_16)
+    assert group_verdict(s, WED_15, urgent=True) == ("urgent_bypass", WED_15)
+    # an urgent kind is all it takes: the same group holds a normal one
+    assert group_verdict(s, WED_15, urgent=False) == (
+        "quiet_hours", datetime(2026, 10, 7, 16, 0, tzinfo=UTC))
+    # and a group without the bypass holds an urgent one
+    s = make(urgent_bypass=False, **QUIET_14_16)
+    assert group_verdict(s, WED_15, urgent=True) == (
+        "quiet_hours", datetime(2026, 10, 7, 16, 0, tzinfo=UTC))
+
+
+def test_group_verdict_no_email_channel():
+    for channels in (["inbox", "web"], [], None):
+        s = make(channels=channels, urgent_bypass=True, **QUIET_14_16)
+        assert group_verdict(s, WED_15, urgent=True) == ("no_email_channel", None)
+        assert group_verdict(s, WED_15, urgent=False) == ("no_email_channel", None)
+
+
+def test_group_verdict_skip_is_never():
+    s = make(dnd_behavior="skip", **QUIET_14_16)
+    assert group_verdict(s, WED_15, urgent=False) == ("quiet_hours", None)
+    with pytest.raises(ValueError):
+        group_verdict(s, datetime(2026, 10, 7, 15, 0), urgent=False)  # noqa: DTZ001

@@ -1,7 +1,9 @@
 """The in-app inbox writer. `notify()` is the ONLY code path that creates
 Notification rows; email fans out from here (notifications/email.py) and
-the table shape stays. Adds to the caller's session — never commits — so a
-notification (and its queued email) can't outlive a rolled-back mutation."""
+the table shape stays. Every call leaves its decisions in the delivery log
+(notifications/delivery_log.py). Adds to the caller's session — never
+commits — so a notification (and its queued email, and their log rows)
+can't outlive a rolled-back mutation."""
 
 import uuid
 from datetime import UTC, datetime
@@ -9,6 +11,7 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import Notification
+from serversherpa.notifications.delivery_log import record
 from serversherpa.notifications.email import load_contact, maybe_email, personal_choice
 from serversherpa.notifications.kinds import kind_info
 
@@ -18,9 +21,11 @@ async def notify(db: AsyncSession, person_id: uuid.UUID, kind: str, title: str, 
                  payload: dict | None = None,
                  owner_notice: bool = False) -> Notification | None:
     """Write the inbox row and queue the email when the rules allow it.
-    Returns None (nothing written) when the person turned this category
-    off (except for kinds that are never emailed). `owner_notice` marks the copy sent to the account owner about
-    their own account (it can email regardless of group membership)."""
+    Returns None (no inbox row) when the person turned this category off
+    (except for kinds that are never emailed). `owner_notice` marks the copy
+    sent to the account owner about their own account (it can email
+    regardless of group membership). Logs `inbox_written` or
+    `inbox_suppressed`; the email decision logs its own."""
     info = kind_info(kind)
     contact = None
     choice = "email"
@@ -31,6 +36,8 @@ async def notify(db: AsyncSession, person_id: uuid.UUID, kind: str, title: str, 
         # category is off: password_reset_request is the only way a
         # locked-out user reaches an admin when SMTP is off.
         if choice == "off" and info.email:
+            record(db, "inbox_suppressed", channel="inbox", person_id=person_id,
+                   kind=kind, category=info.category, reason="category_off")
             return None
     # created_at is set here rather than left to the column's `now()`
     # server_default: several notify() calls commonly land in the same
@@ -42,6 +49,9 @@ async def notify(db: AsyncSession, person_id: uuid.UUID, kind: str, title: str, 
                        link=link, payload=payload or {}, created_at=datetime.now(UTC))
     db.add(row)
     await db.flush()
+    record(db, "inbox_written", channel="inbox", person_id=person_id,
+           notification_id=row.id, kind=kind,
+           category=info.category if info else None)
     await maybe_email(db, row, info=info, owner_notice=owner_notice,
                       choice=choice, contact=contact)
     return row

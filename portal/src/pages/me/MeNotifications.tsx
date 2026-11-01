@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { useAuth } from '../../auth/AuthContext';
 import MembershipRequestModal from '../../components/notifications/MembershipRequestModal';
@@ -39,7 +40,9 @@ export default function MeNotifications() {
   const { preferences, update, saveState } = usePreferenceSave();
   const { person } = useAuth();
 
-  const { status } = useSystemStatus();
+  // Until the first status lands its defaults read "email off": say nothing
+  // about email until it is known.
+  const { status, loaded: statusLoaded } = useSystemStatus();
 
   const [groups, setGroups] = useState<MyNotificationGroup[] | null>(null);
   const [loadError, setLoadError] = useState('');
@@ -81,14 +84,18 @@ export default function MeNotifications() {
 
       <div className="set-stack">
         <section className="set-section">
-          <div className="set-head">
-            <h3>Notifications</h3>
-            <p>
-              Emails go to your contact email. Your groups decide which categories can email
-              you and when; here you can turn them down.
-            </p>
+          <div className="set-head set-head-actions">
+            <div>
+              <h3>Notifications</h3>
+              <p>
+                Emails go to your contact email; account security notices go to your sign-in
+                email. Your groups decide which categories can email you and when — here you
+                can turn them down.
+              </p>
+            </div>
+            <Link className="mini-btn" to="/notifications">View all notifications</Link>
           </div>
-          {!status.email_enabled && (
+          {statusLoaded && !status.email_enabled && (
             <p className="page-hint set-hint">
               Email isn't set up on this server yet — notifications stay in the inbox.
             </p>
@@ -96,6 +103,7 @@ export default function MeNotifications() {
           <CategoryDelivery
             categories={preferences.notif.categories}
             groups={groups}
+            emailEnabled={statusLoaded ? status.email_enabled : null}
             onChange={(category, choice) => update({
               notif: {
                 ...preferences.notif,

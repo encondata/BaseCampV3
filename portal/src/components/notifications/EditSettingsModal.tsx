@@ -1,28 +1,49 @@
 /**
- * EditSettingsModal — the delivery-defaults editor (channels, quiet
- * hours, timezone, active days, when-blocked, urgent bypass) for a
- * notification group, invoked from the Delivery defaults panel's
- * "Edit settings" button. 2-col label-above-control .pf-form grid
- * throughout; every boolean is an aligned labeled switch row
- * (.ngd-switch-row), never a bare checkbox. Diffs every field against
- * the loaded group so the PATCH body carries only what actually changed.
+ * EditSettingsModal — the delivery-defaults editor (channels, categories,
+ * quiet hours, timezone, active days, when-blocked, urgent bypass) for a
+ * notification group, invoked from the Delivery defaults panel's "Edit
+ * settings" button. House controls throughout: a Switch for each live
+ * channel (Email — Text, Push and Web cannot send, so they are not offered),
+ * segmented Off | Custom and Defer | Skip, ComboBox pickers for the
+ * quarter-hour times and the timezone, and .ngd-switch-row labeled switches
+ * for every boolean, never a bare checkbox. Diffs every field against the
+ * loaded group so the PATCH body carries only what actually changed; a stored
+ * channel the screen hides is never dropped — the saved list is the live
+ * selections plus the hidden ones already stored.
  */
 
-import { useState, type FormEvent } from 'react';
+import { useId, useMemo, useState, type FormEvent } from 'react';
 
 import {
   ApiError, updateNotificationGroup,
   type NotificationGroupDetail, type NotificationGroupPatchIn,
 } from '../../lib/api';
-import ComboBox from '../ComboBox';
-import {
-  CHANNEL_LABELS, CHANNEL_NOTES, CHANNELS, DAYS, timezoneOptions, type Channel, type Day,
-} from '../../lib/notifications';
 import { NOTIFICATION_CATEGORIES, type NotificationCategory } from '../../lib/notificationKinds';
+import {
+  CHANNEL_LABELS, CHANNELS, DAYS, LIVE_CHANNELS, liveChannels, timezoneOptions,
+  type Channel, type Day,
+} from '../../lib/notifications';
+import { timeOptions } from '../../lib/timeChoices';
+import ComboBox from '../ComboBox';
+import { Switch } from '../Switch';
+import ChoiceField from './ChoiceField';
+import NotificationModal from './NotificationModal';
 
 const DAY_LABELS: Record<Day, string> = {
   mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun',
 };
+
+type QuietMode = 'off' | 'custom';
+
+const QUIET_CHOICES: { key: QuietMode; label: string }[] = [
+  { key: 'off', label: 'Off' },
+  { key: 'custom', label: 'Custom' },
+];
+
+const DND_CHOICES = [
+  { key: 'defer', label: 'Defer until window opens' },
+  { key: 'skip', label: 'Skip entirely' },
+];
 
 const ERRORS: Record<string, string> = {
   invalid_quiet_hours: "Quiet hours need both a start and an end (and they can't be equal).",
@@ -43,41 +64,24 @@ function sameMembers(a: string[], b: string[]): boolean {
   return a.every((x) => setB.has(x));
 }
 
-/** Reused from components/Switch.tsx — the app's aligned labeled
- *  switch: a bare <input type="checkbox"> would violate the "never a raw
- *  floating checkbox" form rule, so every boolean in this modal is one of
- *  these, paired with a sibling label in a flex row. `label` sets the
- *  input's accessible name since the switch itself carries no visible text. */
-function Switch({ checked, onChange, disabled = false, label }: {
-  checked: boolean;
-  onChange?: (v: boolean) => void;
-  disabled?: boolean;
-  label?: string;
-}) {
-  return (
-    <label className="switch">
-      <input type="checkbox" checked={checked} disabled={disabled} aria-label={label}
-             onChange={(e) => onChange?.(e.target.checked)} />
-      <span className="track" />
-    </label>
-  );
-}
+/** The API's "HH:MM:SS" as the pickers' "HH:MM"; null stays null. */
+const clock = (t: string | null): string | null => (t === null ? null : t.slice(0, 5));
 
 export default function EditSettingsModal({ group, onClose, onSaved }: {
   group: NotificationGroupDetail;
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const formId = useId();
+  // Only the live channels are switches; the rest of the stored list is kept as is on save.
   const [channels, setChannels] = useState<Set<Channel>>(
-    () => new Set(group.channels as Channel[]));
+    () => new Set(liveChannels(group.channels)));
   const [categories, setCategories] = useState<Set<NotificationCategory>>(
     () => new Set(group.categories as NotificationCategory[]));
-  const [quietMode, setQuietMode] = useState<'off' | 'custom'>(
+  const [quietMode, setQuietMode] = useState<QuietMode>(
     group.quiet_start !== null ? 'custom' : 'off');
-  const [quietStart, setQuietStart] = useState(
-    group.quiet_start ? group.quiet_start.slice(0, 5) : '');
-  const [quietEnd, setQuietEnd] = useState(
-    group.quiet_end ? group.quiet_end.slice(0, 5) : '');
+  const [quietStart, setQuietStart] = useState(clock(group.quiet_start) ?? '');
+  const [quietEnd, setQuietEnd] = useState(clock(group.quiet_end) ?? '');
   const [timezone, setTimezone] = useState(group.timezone);
   const [activeDays, setActiveDays] = useState<Set<Day>>(
     () => new Set(group.active_days as Day[]));
@@ -85,6 +89,9 @@ export default function EditSettingsModal({ group, onClose, onSaved }: {
   const [urgentBypass, setUrgentBypass] = useState(group.urgent_bypass);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  const startOptions = useMemo(() => timeOptions(group.quiet_start), [group.quiet_start]);
+  const endOptions = useMemo(() => timeOptions(group.quiet_end), [group.quiet_end]);
 
   const toggleChannel = (c: Channel, on: boolean) => setChannels((prev) => {
     const next = new Set(prev);
@@ -121,16 +128,20 @@ export default function EditSettingsModal({ group, onClose, onSaved }: {
 
     const patch: NotificationGroupPatchIn = {};
 
-    const nextChannels = CHANNELS.filter((c) => channels.has(c));
+    // The live selections plus every stored channel the screen does not show,
+    // in CHANNELS order; sent only when that is not what is already stored.
+    const hidden = group.channels.filter((c) => !LIVE_CHANNELS.includes(c as Channel));
+    const nextChannels = CHANNELS.filter((c) => channels.has(c) || hidden.includes(c));
     if (!sameMembers(nextChannels, group.channels)) patch.channels = nextChannels;
 
     const nextCategories = NOTIFICATION_CATEGORIES.map((c) => c.key).filter((c) => categories.has(c));
     if (!sameMembers(nextCategories, group.categories)) patch.categories = nextCategories;
 
-    const origMode = group.quiet_start !== null ? 'custom' : 'off';
-    const nextStart = quietMode === 'custom' ? `${quietStart}:00` : null;
-    const nextEnd = quietMode === 'custom' ? `${quietEnd}:00` : null;
-    if (quietMode !== origMode || nextStart !== group.quiet_start || nextEnd !== group.quiet_end) {
+    const origMode: QuietMode = group.quiet_start !== null ? 'custom' : 'off';
+    const nextStart = quietMode === 'custom' ? quietStart : null;
+    const nextEnd = quietMode === 'custom' ? quietEnd : null;
+    if (quietMode !== origMode || nextStart !== clock(group.quiet_start)
+        || nextEnd !== clock(group.quiet_end)) {
       patch.quiet_start = nextStart;
       patch.quiet_end = nextEnd;
     }
@@ -155,118 +166,96 @@ export default function EditSettingsModal({ group, onClose, onSaved }: {
   };
 
   return (
-    <div className="modal-scrim" onMouseDown={(e) => {
-      if (e.target === e.currentTarget) onClose();
-    }}>
-      <div className="modal-card">
-        <div className="modal-head">
-          <h3>Edit settings</h3>
-          <button className="modal-close" aria-label="Close" onClick={onClose}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
-                 strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
+    <NotificationModal
+      eyebrow="Notification group" title="Delivery settings"
+      description="Defaults every member inherits unless they set their own."
+      onClose={onClose} busy={saving}
+      footer={(
+        <>
+          <button className="btn-solid" type="submit" form={formId} disabled={saving}>
+            {saving ? 'Saving…' : 'Save'}
           </button>
+          <button className="mini-btn" type="button" onClick={onClose} disabled={saving}>
+            Cancel
+          </button>
+          {error && <span className="pf-error" role="alert">{error}</span>}
+        </>
+      )}>
+      <form id={formId} onSubmit={submit}>
+        <div className="ngd-section">Channels</div>
+        <div className="pf-form">
+          {LIVE_CHANNELS.map((c) => (
+            <div className="full ngd-switch-row" key={c}>
+              <span>{CHANNEL_LABELS[c]}</span>
+              <Switch checked={channels.has(c)} label={CHANNEL_LABELS[c]} disabled={saving}
+                      onChange={(v) => toggleChannel(c, v)} />
+            </div>
+          ))}
         </div>
-        <form onSubmit={submit}>
-          <div className="modal-body">
-            <div className="ngd-section">Channels</div>
-            <div className="pf-form">
-              {CHANNELS.map((c) => (
-                <div className="full ngd-switch-row" key={c}>
-                  <span>
-                    {CHANNEL_LABELS[c]}
-                    {CHANNEL_NOTES[c] && <span className="channel-soon">{CHANNEL_NOTES[c]}</span>}
-                  </span>
-                  <Switch checked={channels.has(c)} label={CHANNEL_LABELS[c]} disabled={saving}
-                          onChange={(v) => toggleChannel(c, v)} />
-                </div>
-              ))}
-            </div>
 
-            <div className="ngd-section">Categories</div>
-            <div className="day-pills" role="group" aria-label="Categories">
-              {NOTIFICATION_CATEGORIES.map((c) => (
-                <button type="button" key={c.key} disabled={saving}
-                        aria-pressed={categories.has(c.key)}
-                        className={`mini-btn${categories.has(c.key) ? ' active' : ''}`}
-                        onClick={() => toggleCategory(c.key)}>
-                  {c.label}
-                </button>
-              ))}
-            </div>
-
-            <div className="ngd-section">Quiet hours</div>
-            <div className="pf-form">
-              <div>
-                <label htmlFor="ngd-quiet-mode">Window</label>
-                <select id="ngd-quiet-mode" value={quietMode} disabled={saving}
-                        onChange={(e) => setQuietMode(e.target.value as 'off' | 'custom')}>
-                  <option value="off">Off</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </div>
-              <div>
-                <label>Timezone</label>
-                <ComboBox options={timezoneOptions()} value={timezone}
-                          onChange={setTimezone} disabled={saving}
-                          placeholder="Type to search timezones…" />
-              </div>
-              {quietMode === 'custom' && (
-                <>
-                  <div>
-                    <label htmlFor="ngd-quiet-start">Start</label>
-                    <input id="ngd-quiet-start" type="time" value={quietStart} disabled={saving}
-                           onChange={(e) => setQuietStart(e.target.value)} />
-                  </div>
-                  <div>
-                    <label htmlFor="ngd-quiet-end">End</label>
-                    <input id="ngd-quiet-end" type="time" value={quietEnd} disabled={saving}
-                           onChange={(e) => setQuietEnd(e.target.value)} />
-                  </div>
-                </>
-              )}
-            </div>
-
-            <div className="ngd-section">Active days</div>
-            <div className="day-pills" role="group" aria-label="Active days">
-              {DAYS.map((d) => (
-                <button type="button" key={d} disabled={saving}
-                        aria-pressed={activeDays.has(d)}
-                        className={`mini-btn${activeDays.has(d) ? ' active' : ''}`}
-                        onClick={() => toggleDay(d)}>
-                  {DAY_LABELS[d]}
-                </button>
-              ))}
-            </div>
-
-            <div className="ngd-section">Behavior</div>
-            <div className="pf-form">
-              <div>
-                <label htmlFor="ngd-dnd">When blocked</label>
-                <select id="ngd-dnd" value={dndBehavior} disabled={saving}
-                        onChange={(e) => setDndBehavior(e.target.value)}>
-                  <option value="defer">Defer until window opens</option>
-                  <option value="skip">Skip entirely</option>
-                </select>
-              </div>
-              <div className="full ngd-switch-row">
-                <span>Urgent bypass</span>
-                <Switch checked={urgentBypass} label="Urgent bypass" disabled={saving}
-                        onChange={setUrgentBypass} />
-              </div>
-            </div>
-
-            {error && <span className="pf-error">{error}</span>}
-          </div>
-          <div className="modal-foot">
-            <button className="btn-solid" type="submit" disabled={saving}>
-              {saving ? 'Saving…' : 'Save'}
+        <div className="ngd-section">Categories</div>
+        <div className="day-pills" role="group" aria-label="Categories">
+          {NOTIFICATION_CATEGORIES.map((c) => (
+            <button type="button" key={c.key} disabled={saving}
+                    aria-pressed={categories.has(c.key)}
+                    className={`mini-btn${categories.has(c.key) ? ' active' : ''}`}
+                    onClick={() => toggleCategory(c.key)}>
+              {c.label}
             </button>
-            <button className="mini-btn" type="button" onClick={onClose} disabled={saving}>
-              Cancel
-            </button>
+          ))}
+        </div>
+
+        <div className="ngd-section">Quiet hours</div>
+        <div className="pf-form">
+          <ChoiceField label="Window" options={QUIET_CHOICES} value={quietMode}
+                       onChange={setQuietMode} disabled={saving} />
+          <div>
+            <label htmlFor="ngd-timezone">Timezone</label>
+            <ComboBox inputId="ngd-timezone" options={timezoneOptions()} value={timezone}
+                      onChange={setTimezone} disabled={saving}
+                      placeholder="Type to search timezones…" />
           </div>
-        </form>
-      </div>
-    </div>
+          {quietMode === 'custom' && (
+            <>
+              <div>
+                <label htmlFor="ngd-quiet-start">Start</label>
+                <ComboBox inputId="ngd-quiet-start" options={startOptions} value={quietStart}
+                          onChange={setQuietStart} disabled={saving}
+                          placeholder="Select a time…" />
+              </div>
+              <div>
+                <label htmlFor="ngd-quiet-end">End</label>
+                <ComboBox inputId="ngd-quiet-end" options={endOptions} value={quietEnd}
+                          onChange={setQuietEnd} disabled={saving}
+                          placeholder="Select a time…" />
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="ngd-section">Active days</div>
+        <div className="day-pills" role="group" aria-label="Active days">
+          {DAYS.map((d) => (
+            <button type="button" key={d} disabled={saving}
+                    aria-pressed={activeDays.has(d)}
+                    className={`mini-btn${activeDays.has(d) ? ' active' : ''}`}
+                    onClick={() => toggleDay(d)}>
+              {DAY_LABELS[d]}
+            </button>
+          ))}
+        </div>
+
+        <div className="ngd-section">Behavior</div>
+        <div className="pf-form">
+          <ChoiceField className="full" label="When blocked" options={DND_CHOICES}
+                       value={dndBehavior} onChange={setDndBehavior} disabled={saving} />
+          <div className="full ngd-switch-row">
+            <span>Urgent bypass</span>
+            <Switch checked={urgentBypass} label="Urgent bypass" disabled={saving}
+                    onChange={setUrgentBypass} />
+          </div>
+        </div>
+      </form>
+    </NotificationModal>
   );
 }

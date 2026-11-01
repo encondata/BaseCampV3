@@ -2,6 +2,8 @@
 fan-out to users:change holders, bump instead of duplicate, resolve on
 reset (admin route or self-service)."""
 
+from datetime import UTC, datetime
+
 from sqlalchemy import select
 
 from serversherpa.db.models import Notification, UserAccount
@@ -69,6 +71,34 @@ async def test_resolve_marks_every_copy(client, db, seeded_user):
     assert len([c for c in await _cards(db) if c.payload["state"] == "open"]) >= 1
 
 
+async def test_resolving_marks_cards_read(client, db, seeded_user):
+    await _make(db, client, "super_admin", "sa@test.example.com")
+    await _make(db, client, "admin", "ad@test.example.com")
+    pid = seeded_user.id        # _cards() expires everything it loaded, this included
+    await reset_requests.open_or_bump(db, seeded_user)
+    await db.commit()
+    cards = await _cards(db)
+    assert len(cards) >= 2 and all(c.read_at is None for c in cards)
+    earlier = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    first = cards[0].id
+    cards[0].read_at = earlier                  # one approver had already looked at it
+    await db.commit()
+
+    await reset_requests.resolve(db, pid, "Sam Admin")
+    await db.commit()
+
+    resolved = {c.id: c for c in await _cards(db)}
+    assert all(c.read_at is not None and c.payload["state"] == "resolved"
+               and c.payload["resolved_by"] == "Sam Admin" for c in resolved.values())
+    assert resolved[first].read_at == earlier   # the first read time stays
+    # a later request opens a fresh card, and that one is unread again
+    await db.refresh(seeded_user)
+    await reset_requests.open_or_bump(db, seeded_user)
+    await db.commit()
+    fresh = [c for c in await _cards(db) if c.payload["state"] == "open"]
+    assert fresh and all(c.read_at is None for c in fresh)
+
+
 async def test_admin_reset_route_resolves_cards(client, db, seeded_user):
     hdrs = await _make(db, client, "super_admin", "sa@test.example.com")
     await reset_requests.open_or_bump(db, seeded_user)
@@ -79,3 +109,4 @@ async def test_admin_reset_route_resolves_cards(client, db, seeded_user):
     cards = await _cards(db)
     assert cards and all(c.payload["state"] == "resolved" for c in cards)
     assert all(c.payload["resolved_by"] == "R X" for c in cards)   # _make's name
+    assert all(c.read_at is not None for c in cards)               # decided: read for everyone

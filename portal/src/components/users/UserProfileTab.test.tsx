@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-/** The user page's Require 2FA switch says when two-factor is off site-wide. */
-import { cleanup, render, screen } from '@testing-library/react';
+/** The user page's Require 2FA switch says when two-factor is off site-wide,
+ *  and its notification-groups table lists only channels that can send. */
+import { cleanup, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
-import type { UserDetailOut } from '../../lib/api';
+import type { UserDetailOut, UserNotificationGroup } from '../../lib/api';
 
 vi.mock('../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/api')>()),
@@ -31,8 +32,13 @@ const DETAIL: UserDetailOut = {
 
 const NOTE = /Not in effect — two-factor is off in/;
 
-function renderTab(twoFactorEnabled: boolean, canManageUsers = true) {
-  const detail = { ...DETAIL, account: { ...DETAIL.account, two_factor_enabled: twoFactorEnabled } };
+function renderTab(
+  twoFactorEnabled: boolean, canManageUsers = true, groups: UserNotificationGroup[] = [],
+) {
+  const detail = {
+    ...DETAIL, notification_groups: groups,
+    account: { ...DETAIL.account, two_factor_enabled: twoFactorEnabled },
+  };
   return render(
     <MemoryRouter>
       <UserProfileTab detail={detail} mode="manage" canManageUsers={canManageUsers} reloadKey={0}
@@ -63,4 +69,40 @@ it('no switch, no note', () => {
   renderTab(false, false);
   expect(screen.queryByRole('checkbox', { name: /require 2fa/i })).toBeNull();
   expect(screen.queryByText(NOTE)).toBeNull();
+});
+
+const membership = (id: string, name: string, channels: string[]): UserNotificationGroup => (
+  { id, name, channels, added_at: '2026-02-01T00:00:00Z' }
+);
+
+it('notification groups list only the channels that can send, or No email', () => {
+  renderTab(true, true, [
+    membership('g1', 'Night Desk', ['text', 'push', 'web']),
+    membership('g2', 'Ops Alerts', ['email', 'web']),
+    membership('g3', 'Muted Crew', []),
+  ]);
+  const table = within(screen.getByRole('table', { name: 'Notification groups' }));
+  /** The chips in a membership's Channels cell (the second column). */
+  const chipsOf = (group: string) => [
+    ...(table.getByRole('link', { name: group }).closest('tr')!.querySelectorAll('td')[1]
+      .querySelectorAll('.chip')),
+  ] as HTMLElement[];
+
+  // Stored text/push/web are hidden: nothing there can send.
+  const [nightDesk, ...nightRest] = chipsOf('Night Desk');
+  expect(nightDesk.textContent).toBe('No email');
+  expect(nightDesk.className).toContain('c-slate');
+  expect(nightRest).toEqual([]);
+
+  // Email is listed, the hidden web channel next to it is not.
+  const [opsAlerts, ...opsRest] = chipsOf('Ops Alerts');
+  expect(opsAlerts.textContent).toBe('Email');
+  expect(opsAlerts.className).toContain('c-blue');
+  expect(opsRest).toEqual([]);
+
+  // An empty channel list reads the same as one with nothing live; the old "muted" chip is gone.
+  expect(chipsOf('Muted Crew').map((c) => c.textContent)).toEqual(['No email']);
+  for (const raw of ['text', 'push', 'web', 'email', 'muted']) {
+    expect(table.queryByText(raw)).toBeNull();
+  }
 });

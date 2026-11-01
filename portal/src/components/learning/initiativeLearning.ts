@@ -25,20 +25,13 @@ export const instantLabel = (iso: string): string =>
     month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
   });
 
-/** "08:00" -> "8:00 AM" (locale-independent, so copy and tests agree). */
-export function timeLabel(hhmm: string): string {
-  const [h, m] = hhmm.split(':').map(Number);
-  if (Number.isNaN(h) || Number.isNaN(m)) return hhmm;
-  const hour = h % 12 === 0 ? 12 : h % 12;
-  return `${hour}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
-}
+// The time grid and its 12-hour label live in lib/timeChoices.ts, shared with
+// the notification quiet-hours editors; re-exported so the Learning imports
+// from this module keep working.
+export { TIME_CHOICES, timeLabel } from '../../lib/timeChoices';
 
 /** Reminder days the pickers offer (the API allows up to 365). */
 export const REMINDER_CHOICES = Array.from({ length: 61 }, (_, i) => i);
-
-/** Times of day, every 15 minutes. */
-export const TIME_CHOICES = Array.from({ length: 96 }, (_, i) =>
-  `${String(Math.floor(i / 4)).padStart(2, '0')}:${String((i % 4) * 15).padStart(2, '0')}`);
 
 /** "5 days before" / "1 day before" / "On the start day" (reminder offsets). */
 export const offsetLabel = (days: number): string =>

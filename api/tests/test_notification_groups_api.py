@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import select
 
+from serversherpa.api.routes.notifications import capabilities
 from serversherpa.db.models import (
     AuditLog, NotificationGroup, NotificationGroupMember, Person, UserAccount,
 )
@@ -518,6 +519,53 @@ async def test_staff_forbidden_from_recipients(client, db, seeded_user):
     hdrs = await login_staff(client, seeded_user)
     resp = await client.get("/notifications/recipients", headers=hdrs)
     assert resp.status_code == 403
+
+
+async def test_member_with_only_a_login_email_can_email(client, db, seeded_user):
+    """The sender falls back to the sign-in email, so a person with no profile
+    email but an account is reachable by email (spec section 8)."""
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/notifications/groups", headers=hdrs,
+                             json={"name": "Login only"})
+    gid = resp.json()["id"]
+    person = await _person(db, "Lou", "Login")          # no profile email
+    db.add(UserAccount(person_id=person.id, email="lou@test.example.com",
+                       password_hash="x"))
+    await db.commit()
+
+    resp = await client.post(f"/notifications/groups/{gid}/members",
+                             headers=hdrs, json={"person_id": str(person.id)})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["can_email"] is True
+
+    detail = await client.get(f"/notifications/groups/{gid}", headers=hdrs)
+    [member] = detail.json()["members"]
+    assert (member["email"], member["has_account"], member["can_email"]) == (
+        None, True, True)
+
+    recipients = await client.get("/notifications/recipients", headers=hdrs)
+    lou = {row["person_id"]: row for row in recipients.json()}[str(person.id)]
+    assert (lou["email"], lou["can_email"]) == (None, True)
+
+    resp = await client.patch(
+        f"/notifications/groups/{gid}/members/{person.id}", headers=hdrs,
+        json={"channels": ["email"]})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["overrides"]["channels"] == ["email"]
+    assert resp.json()["can_email"] is True
+
+
+def test_capabilities_needs_the_sign_in_email_by_name():
+    """A caller can't leave the sign-in email out (that was the login-only
+    bug: a person with only a sign-in email read as unreachable) or pass it
+    by position."""
+    person = Person(first_name="Lou", last_name="Login")         # no profile email
+    with pytest.raises(TypeError):
+        capabilities(person, True)
+    with pytest.raises(TypeError):
+        capabilities(person, True, "lou@test.example.com")
+    assert capabilities(person, True, account_email="lou@test.example.com")["can_email"] is True
+    assert capabilities(person, False, account_email=None)["can_email"] is False
 
 
 # ── categories ───────────────────────────────────────────────────────

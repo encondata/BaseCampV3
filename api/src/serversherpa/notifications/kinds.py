@@ -29,6 +29,19 @@ CATEGORIES: dict[str, str] = {
 
 CATEGORY_KEYS: tuple[str, ...] = tuple(CATEGORIES)
 
+# Where a category's email permission comes from: "groups" (one of the
+# person's groups must subscribe to the category with Email among its
+# channels) or "always" (account security: the owner's own notices email
+# whatever the groups say). "direct" is reserved for a later category whose
+# email follows the person's /me choice alone. Mirrored in the portal.
+CATEGORY_EMAIL_SOURCE: dict[str, str] = {
+    "approvals": "groups",
+    "reports": "groups",
+    "wiki": "groups",
+    "learning": "groups",
+    "security": "always",
+}
+
 KINDS: dict[str, KindInfo] = {
     "membership_request": KindInfo("approvals", "Group membership request"),
     "membership_decided": KindInfo("approvals", "Group membership decision"),
