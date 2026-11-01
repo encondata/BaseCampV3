@@ -3,7 +3,7 @@
 import pytest
 from sqlalchemy import func, select
 
-from serversherpa.db.models import EmailOutbox
+from serversherpa.db.models import EmailOutbox, NotificationLog
 from serversherpa.mail import email_enabled, enqueue
 from serversherpa.mail.render import render
 
@@ -122,3 +122,19 @@ async def test_enqueue_defaults_send_now_and_no_kind(db, seeded_user):
                         name="Alice", login_url="https://p/login")
     assert row.kind is None and row.notification_id is None
     assert before <= row.next_attempt_at <= datetime.now(UTC) + timedelta(seconds=1)
+
+
+async def test_enqueue_logs_template_mail(db, seeded_user):
+    row = await enqueue(db, "password_reset", "x@test.example.com",
+                        person_id=seeded_user.id, name="Alice", link=LINK, ttl_minutes=15)
+    [entry] = list(await db.scalars(select(NotificationLog)))
+    assert (entry.event, entry.channel) == ("email_queued", "email")
+    assert (entry.outbox_id, entry.person_id) == (row.id, seeded_user.id)
+    assert entry.kind == "password_reset"          # the template stands in for the kind
+    assert entry.category is None and entry.notification_id is None
+    assert entry.detail["template"] == "password_reset"
+    assert entry.detail["deferred"] is False
+    assert entry.detail["send_at"] == row.next_attempt_at.isoformat()
+    # never the address, never the body (the reset link is in the body)
+    assert "x@test.example.com" not in str(entry.detail)
+    assert LINK not in str(entry.detail)

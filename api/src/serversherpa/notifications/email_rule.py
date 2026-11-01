@@ -5,6 +5,9 @@ Takes effective notification-group settings (the shape returned by
 answers with the earliest UTC instant the email is allowed, or ``None``
 when it is never allowed (no email channel, ``skip`` during quiet hours or
 an inactive day, or nothing open within the search horizon).
+``group_verdict`` gives one group's answer with the reason behind it (the
+delivery log and Check delivery show it); ``email_send_time`` folds those
+answers across a person's groups.
 """
 
 from datetime import UTC, datetime, time, timedelta
@@ -86,6 +89,28 @@ def allowed_at(s: dict, now: datetime, *, urgent: bool) -> datetime | None:
     return None
 
 
+def group_verdict(s: dict, now: datetime, *,
+                  urgent: bool) -> tuple[str, datetime | None]:
+    """One group's answer for one email: (verdict, earliest UTC instant it
+    allows the email). ``no_email_channel`` never allows it; ``urgent_bypass``
+    and ``open`` allow it now; otherwise the group is closed now, by an
+    ``inactive_day`` (today is not one of its days) or by ``quiet_hours``, and
+    the time is when it opens: None when it skips instead of deferring, or
+    when nothing opens within the search horizon."""
+    _require_aware(now)
+    if "email" not in (s.get("channels") or ()):
+        return "no_email_channel", None
+    now_utc = now.astimezone(UTC)
+    if urgent and s.get("urgent_bypass"):
+        return "urgent_bypass", now_utc
+    local = now_utc.astimezone(ZoneInfo(s.get("timezone") or "UTC"))
+    if _is_open(s, local):
+        return "open", now_utc
+    closed_by = ("inactive_day" if _DAYS[local.weekday()] not in (s.get("active_days") or ())
+                 else "quiet_hours")
+    return closed_by, allowed_at(s, now, urgent=urgent)
+
+
 def email_send_time(settings: list[dict], now: datetime, *,
                     urgent: bool) -> datetime | None:
     """Earliest allowed send time across the email-enabled groups (the most
@@ -93,8 +118,7 @@ def email_send_time(settings: list[dict], now: datetime, *,
     _require_aware(now)
     times = [
         t for s in settings
-        if "email" in (s.get("channels") or ())
-        for t in (allowed_at(s, now, urgent=urgent),)
+        for _, t in (group_verdict(s, now, urgent=urgent),)
         if t is not None
     ]
     return min(times) if times else None
