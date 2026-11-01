@@ -4,41 +4,8 @@ import type {
   MyNotificationGroup, NotificationMemberOverrides,
 } from './api';
 import {
-  GROUP_ERRORS, daysText, hasOverrides, quietHoursText, toGroupDetail, toMember,
+  GROUP_ERRORS, hasOverrides, toGroupDetail, toMember,
 } from './notificationGroups';
-
-describe('quietHoursText', () => {
-  it('formats a raw HH:MM:SS pair with the timezone name in parens', () => {
-    expect(quietHoursText({ quiet_start: '22:00:00', quiet_end: '07:00:00', timezone: 'America/New_York' }))
-      .toBe('22:00–07:00 (America/New_York)');
-  });
-
-  it('returns None when either quiet time is null', () => {
-    expect(quietHoursText({ quiet_start: null, quiet_end: null, timezone: 'America/New_York' })).toBe('None');
-  });
-});
-
-describe('daysText', () => {
-  it('collapses all 7 days to Every day', () => {
-    expect(daysText(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'])).toBe('Every day');
-  });
-
-  it('collapses exactly the weekday set to Mon–Fri', () => {
-    expect(daysText(['mon', 'tue', 'wed', 'thu', 'fri'])).toBe('Mon–Fri');
-  });
-
-  it('collapses out-of-order weekdays to Mon–Fri too', () => {
-    expect(daysText(['fri', 'tue', 'thu', 'mon', 'wed'])).toBe('Mon–Fri');
-  });
-
-  it('falls back to a comma list in week order for anything else', () => {
-    expect(daysText(['fri', 'mon', 'wed'])).toBe('Mon, Wed, Fri');
-  });
-
-  it('returns None for an empty list', () => {
-    expect(daysText([])).toBe('None');
-  });
-});
 
 const NO_OVERRIDES: NotificationMemberOverrides = {
   channels: null, quiet_mode: null, quiet_start: null, quiet_end: null,

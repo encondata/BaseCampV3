@@ -6,7 +6,7 @@
  * gating and the navigate-on-row-click contract (no inline expansion).
  */
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -104,6 +104,193 @@ it('notification groups: column floors, shared template + minimum, sideways-scro
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
+  // The Categories column is on by default, so the fit above covers it.
+  expect(within(head).getByRole('button', { name: 'Categories' })).not.toBeNull();
+});
+
+/** A group row with a few fields overridden, for the channel/category tests. */
+const group = (over: Partial<NotificationGroup>): NotificationGroup => ({ ...GROUPS[0], ...over });
+
+/** The chip labels inside the chips container that holds `text` in `row`. */
+const chipsHolding = (row: HTMLElement, text: string): (string | null)[] => {
+  const chips = within(row).getByText(text).closest('.chips') as HTMLElement;
+  return [...chips.children].map((c) => c.textContent);
+};
+
+const rowOf = async (name: string) => (await screen.findByText(name)).closest('.dir-row') as HTMLElement;
+
+/** Names of the rendered rows, top to bottom. */
+const rowNames = () => [...document.querySelectorAll('.dir-row .cell-top b')].map((b) => b.textContent);
+
+it('lists each group\'s categories as chips in registry order, or says inbox only', async () => {
+  api.listNotificationGroups.mockResolvedValue([
+    group({ id: 'g3', name: 'Docs Team', categories: ['wiki', 'approvals'] }),
+    group({ id: 'g4', name: 'Quiet Team', categories: [] }),
+  ]);
+  render(<Notifications />);
+
+  const docs = await rowOf('Docs Team');
+  expect(chipsHolding(docs, 'Wiki')).toEqual(['Approvals & requests', 'Wiki']);
+  const quiet = await rowOf('Quiet Team');
+  expect(within(quiet).getByText('None — inbox only').className).toContain('c-slate');
+});
+
+it('shows only the channels that can send, or a No email chip', async () => {
+  api.listNotificationGroups.mockResolvedValue([
+    group({ id: 'g3', name: 'Mixed Channels', channels: ['email', 'web', 'text'] }),
+    group({ id: 'g4', name: 'Text Only', channels: ['text', 'push'] }),
+  ]);
+  render(<Notifications />);
+
+  const mixed = await rowOf('Mixed Channels');
+  expect(chipsHolding(mixed, 'Email')).toEqual(['Email']);
+  expect(within(mixed).getByText('Email').className).toContain('c-blue');
+  const textOnly = await rowOf('Text Only');
+  expect(within(textOnly).getByText('No email').className).toContain('c-slate');
+  for (const hidden of ['Text (SMS)', 'Push', 'Web']) {
+    expect(screen.queryByText(hidden)).toBeNull();
+  }
+});
+
+/** Open the toolbar Filters popover and return it. */
+async function openFilters(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: /Filters/ }));
+  return screen.getByText('Categories', { selector: '.pop-title' }).closest('.pop-menu') as HTMLElement;
+}
+
+it('Filters offers live channels plus No email, and every category plus None', async () => {
+  const user = userEvent.setup();
+  render(<Notifications />);
+  await screen.findByText('Ops Alerts');
+
+  const menu = await openFilters(user);
+  const optionsAfter = (title: string) => {
+    const options: (string | null)[] = [];
+    for (let el = screen.getByText(title, { selector: '.pop-title' }).nextElementSibling;
+      el && el.classList.contains('pop-item'); el = el.nextElementSibling) options.push(el.textContent);
+    return options;
+  };
+  expect(optionsAfter('Channels')).toEqual(['Email', 'No email']);
+  expect(optionsAfter('Categories')).toEqual([
+    'Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Account security', 'None',
+  ]);
+  for (const hidden of ['Text (SMS)', 'Push', 'Web']) {
+    expect(within(menu).queryByRole('button', { name: hidden })).toBeNull();
+  }
+});
+
+it('the Categories filter keeps groups that cover a category, and None keeps those with none', async () => {
+  const user = userEvent.setup();
+  api.listNotificationGroups.mockResolvedValue([
+    group({ id: 'g3', name: 'Docs Team', categories: ['wiki', 'approvals'] }),
+    group({ id: 'g4', name: 'Learning Team', categories: ['learning'] }),
+    group({ id: 'g5', name: 'Quiet Team', categories: [] }),
+  ]);
+  render(<Notifications />);
+  await screen.findByText('Docs Team');
+
+  const menu = await openFilters(user);
+  await user.click(within(menu).getByRole('button', { name: 'Wiki' }));
+  expect(rowNames()).toEqual(['Docs Team']);
+
+  await user.click(within(menu).getByRole('button', { name: 'Wiki' })); // off again
+  await user.click(within(menu).getByRole('button', { name: 'None' }));
+  expect(rowNames()).toEqual(['Quiet Team']);
+});
+
+it('the Channels filter has No email for groups that cannot email, and ignores hidden channels', async () => {
+  const user = userEvent.setup();
+  api.listNotificationGroups.mockResolvedValue([
+    group({ id: 'g3', name: 'Emailing Team', channels: ['email', 'web'] }),
+    group({ id: 'g4', name: 'Pushing Team', channels: ['push'] }),
+    group({ id: 'g5', name: 'Silent Team', channels: [] }),
+  ]);
+  render(<Notifications />);
+  await screen.findByText('Emailing Team');
+
+  const menu = await openFilters(user);
+  await user.click(within(menu).getByRole('button', { name: 'No email' }));
+  expect(rowNames()).toEqual(['Pushing Team', 'Silent Team']);
+
+  await user.click(within(menu).getByRole('button', { name: 'No email' })); // off again
+  await user.click(within(menu).getByRole('button', { name: 'Email' }));
+  expect(rowNames()).toEqual(['Emailing Team']);
+});
+
+it('search finds a category by its label, and does not find a hidden channel', async () => {
+  const user = userEvent.setup();
+  api.listNotificationGroups.mockResolvedValue([
+    group({ id: 'g3', name: 'Docs Team', categories: ['wiki'], channels: ['email', 'push'] }),
+    group({ id: 'g4', name: 'Other Team', categories: ['learning'], channels: ['email'] }),
+  ]);
+  render(<Notifications />);
+  await screen.findByText('Docs Team');
+
+  const box = screen.getByPlaceholderText('Filter this list…');
+  await user.type(box, 'wiki');
+  expect(rowNames()).toEqual(['Docs Team']);
+
+  await user.clear(box);
+  await user.type(box, 'push');
+  expect(rowNames()).toEqual([]);
+  expect(screen.getByText('No matches')).not.toBeNull();
+});
+
+it('sorts by the Categories column', async () => {
+  const user = userEvent.setup();
+  api.listNotificationGroups.mockResolvedValue([
+    group({ id: 'g3', name: 'Docs Team', categories: ['wiki'] }),
+    group({ id: 'g4', name: 'Alpha Team', categories: ['approvals'] }),
+    group({ id: 'g5', name: 'Quiet Team', categories: [] }),
+  ]);
+  render(<Notifications />);
+  await screen.findByText('Docs Team');
+  expect(rowNames()).toEqual(['Alpha Team', 'Docs Team', 'Quiet Team']); // by name
+
+  // Held once: after a click the header's name gains the sort caret.
+  const header = screen.getByRole('button', { name: 'Categories' });
+  await user.click(header);
+  expect(rowNames()).toEqual(['Quiet Team', 'Alpha Team', 'Docs Team']);
+
+  await user.click(header);
+  expect(rowNames()).toEqual(['Docs Team', 'Alpha Team', 'Quiet Team']);
+});
+
+it('exports live channels and a Categories column', async () => {
+  api.listNotificationGroups.mockResolvedValue([
+    group({ id: 'g3', name: 'Docs Team', channels: ['email', 'text'], categories: ['wiki', 'approvals'] }),
+    group({ id: 'g4', name: 'Quiet Team', channels: ['push'], categories: [] }),
+  ]);
+  let blob: Blob | null = null;
+  const prevCreate = URL.createObjectURL;
+  const prevRevoke = URL.revokeObjectURL;
+  URL.createObjectURL = vi.fn((b: Blob) => { blob = b; return 'blob:groups'; }) as unknown as typeof URL.createObjectURL;
+  URL.revokeObjectURL = vi.fn();
+  const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  try {
+    const user = userEvent.setup();
+    render(<Notifications />);
+    await screen.findByText('Docs Team');
+    await user.click(screen.getByRole('button', { name: /Export/ }));
+
+    const text = await new Promise<string>((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.readAsText(blob as unknown as Blob);
+    });
+    const [header, ...rows] = text.split('\n').map((line) => line.split(','));
+    const cell = (row: string[], name: string) => row[header.indexOf(name)];
+    expect(cell(rows[0], 'Name')).toBe('Docs Team');
+    expect(cell(rows[0], 'Channels')).toBe('Email');
+    expect(cell(rows[0], 'Categories')).toBe('Approvals & requests; Wiki');
+    expect(cell(rows[1], 'Name')).toBe('Quiet Team');
+    expect(cell(rows[1], 'Channels')).toBe('No email');
+    expect(cell(rows[1], 'Categories')).toBe('None');
+  } finally {
+    clickSpy.mockRestore();
+    URL.createObjectURL = prevCreate;
+    URL.revokeObjectURL = prevRevoke;
+  }
 });
 
 it('filters rows via the search box', async () => {

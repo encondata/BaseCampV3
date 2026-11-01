@@ -3,7 +3,7 @@
  * notified, how, and when). Directory pattern, modeled on
  * pages/AssetModels.tsx: dir-head/dir-toolbar/dir-list, VirtualRows,
  * ColumnMenu per-column filters, usePersistentListState, toolbar
- * FilterButton facets (Status, Channels), CSV export.
+ * FilterButton facets (Status, Channels, Categories), CSV export.
  *
  * Row click navigates straight to the group's detail page — no inline
  * expansion (the detail view, with membership management, is Tasks 4-5).
@@ -18,6 +18,8 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import DataTable, { type DataTableColumn, type DataTableRow } from '../components/DataTable';
 import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
+import CategoryChips, { NO_CATEGORIES } from '../components/notifications/CategoryChips';
+import ChannelChips, { NO_EMAIL } from '../components/notifications/ChannelChips';
 import {
   ApiError, approveMembershipRequest, createNotificationGroup, listMembershipRequests,
   listNotificationGroups, rejectMembershipRequest,
@@ -34,8 +36,9 @@ import {
   visibleColumnsFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { GROUP_ERRORS } from '../lib/notificationGroups';
+import { NOTIFICATION_CATEGORIES, categoryLabels } from '../lib/notificationKinds';
 import {
-  CHANNEL_LABELS, CHANNELS, formatDays, formatQuietHours, type Channel,
+  CHANNEL_LABELS, LIVE_CHANNELS, formatDays, formatQuietHours, liveChannels,
 } from '../lib/notifications';
 import { naturalCompare } from '../lib/sites';
 import { VirtualRows } from '../lib/virtualRows';
@@ -65,10 +68,12 @@ const requestErrorMsg = (err: unknown): string =>
  * are unchanged, just moved onto `min`. Members/Days/Status/Created carry
  * short, low-variance content (a count, a day summary, a two-word chip, a
  * locale date) that gains nothing from growing, so those four stay plain
- * fixed px instead — this is what keeps the 8 floors + gaps fitting a
- * ~1000px content area without a scrollbar (polish pass 2, fix 3);
- * Description is clamped to 2 lines and shrinks furthest, Quiet hours
- * stays a nowrap ellipsis at its ~150px floor.
+ * fixed px instead — this is what keeps the floors + gaps inside the fit
+ * below (polish pass 2, fix 3). Categories chips wrap onto extra lines and
+ * a long label ellipsizes at the floor (.cell .chip, directory.css);
+ * Channels now holds one short chip (Email / No email), so it carries only
+ * the floor its header derives. Description is clamped to 2 lines and
+ * shrinks furthest, Quiet hours stays a nowrap ellipsis at its ~150px floor.
  *
  * Fit: default columns + trailing ≤ LIST_FIT.page
  * (1172px — .portal-page at a 1512px window, nav expanded). */
@@ -83,7 +88,8 @@ const COLUMNS: ColumnDef[] = [
     width: '2fr', default: true, min: 75,
   },
   { key: 'members', label: 'Members', width: '60px', default: true },
-  { key: 'channels', label: 'Channels', width: '1.6fr', default: true, min: 128 },
+  { key: 'categories', label: 'Categories', width: '1.6fr', default: true, min: 140 },
+  { key: 'channels', label: 'Channels', width: '1fr', default: true },
   { key: 'quiet_hours', label: 'Quiet hours', width: '1.2fr', default: true, min: 144 },
   { key: 'days', label: 'Days', width: '70px', default: true },
   { key: 'status', label: 'Status', width: '90px', default: true },
@@ -93,8 +99,12 @@ const COLUMNS: ColumnDef[] = [
 const ALL_COLUMN_KEYS = new Set<string>(COLUMNS.map((c) => c.key));
 const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
 
-const channelLabel = (c: string): string => CHANNEL_LABELS[c as Channel] ?? c;
 const formatCreated = (iso: string): string => new Date(iso).toLocaleDateString();
+
+/** Labels of the channels that can send — the only ones the Channels cell,
+ *  filter, search and export ever show (stored text/push/web stay hidden). */
+const channelLabels = (g: NotificationGroup): string[] =>
+  liveChannels(g.channels).map((c) => CHANNEL_LABELS[c]);
 
 /** Column-menu / search accessor — mirrors cellFor's display text exactly. */
 const groupCellText: CellText<NotificationGroup> = (g, colKey) => {
@@ -102,7 +112,8 @@ const groupCellText: CellText<NotificationGroup> = (g, colKey) => {
     case 'name': return g.name;
     case 'description': return g.description;
     case 'members': return String(g.member_count);
-    case 'channels': return g.channels.map(channelLabel).join(', ');
+    case 'categories': return categoryLabels(g.categories).join(', ') || NO_CATEGORIES;
+    case 'channels': return channelLabels(g).join(', ') || NO_EMAIL;
     case 'quiet_hours': return formatQuietHours(g.quiet_start, g.quiet_end, g.timezone);
     case 'days': return formatDays(g.active_days);
     case 'status': return g.enabled ? 'Enabled' : 'Paused';
@@ -111,8 +122,11 @@ const groupCellText: CellText<NotificationGroup> = (g, colKey) => {
   }
 };
 
+// The empty-state words ("No email", "None — inbox only") are left out of the
+// search text on purpose: "email" must find the groups that email, not also
+// every group that says it does not.
 const groupSearchText = (g: NotificationGroup): string => [
-  g.name, g.description, g.channels.map(channelLabel).join(' '),
+  g.name, g.description, channelLabels(g).join(' '), categoryLabels(g.categories).join(' '),
   formatDays(g.active_days), g.enabled ? 'enabled' : 'paused', g.timezone,
 ].join(' ').toLowerCase();
 
@@ -121,7 +135,8 @@ function sortValueFor(g: NotificationGroup, key: string): string {
     case 'name': return g.name.toLowerCase();
     case 'description': return g.description.toLowerCase();
     case 'members': return String(g.member_count);
-    case 'channels': return g.channels.map(channelLabel).join(', ').toLowerCase();
+    case 'categories': return categoryLabels(g.categories).join(', ').toLowerCase();
+    case 'channels': return channelLabels(g).join(', ').toLowerCase();
     case 'quiet_hours': return formatQuietHours(g.quiet_start, g.quiet_end, g.timezone).toLowerCase();
     case 'days': return formatDays(g.active_days).toLowerCase();
     case 'status': return g.enabled ? 'enabled' : 'paused';
@@ -135,7 +150,8 @@ const CSV_COLUMNS: [string, (g: NotificationGroup) => string][] = [
   ['Name', (g) => g.name],
   ['Description', (g) => g.description],
   ['Members', (g) => String(g.member_count)],
-  ['Channels', (g) => g.channels.map(channelLabel).join('; ')],
+  ['Categories', (g) => categoryLabels(g.categories).join('; ') || 'None'],
+  ['Channels', (g) => channelLabels(g).join('; ') || NO_EMAIL],
   ['Quiet hours', (g) => formatQuietHours(g.quiet_start, g.quiet_end, g.timezone)],
   ['Timezone', (g) => g.timezone],
   ['Days', (g) => formatDays(g.active_days)],
@@ -251,14 +267,27 @@ export default function Notifications() {
       { value: 'enabled', label: 'Enabled' },
       { value: 'paused', label: 'Paused' },
     ] },
-    { key: 'channels', title: 'Channels', options: CHANNELS.map((c) => (
-      { value: c, label: CHANNEL_LABELS[c] }
-    )) },
+    { key: 'channels', title: 'Channels', options: [
+      ...LIVE_CHANNELS.map((c) => ({ value: c, label: CHANNEL_LABELS[c] })),
+      { value: 'none', label: NO_EMAIL },
+    ] },
+    { key: 'categories', title: 'Categories', options: [
+      ...NOTIFICATION_CATEGORIES.map((c) => ({ value: c.key, label: c.label })),
+      { value: 'none', label: 'None' },
+    ] },
   ], []);
 
   const facetValues = (g: NotificationGroup) => (groupKey: string): string[] => {
     if (groupKey === 'status') return [g.enabled ? 'enabled' : 'paused'];
-    if (groupKey === 'channels') return g.channels;
+    if (groupKey === 'channels') {
+      const live = liveChannels(g.channels);
+      return live.length ? live : ['none'];
+    }
+    if (groupKey === 'categories') {
+      // Registry keys only, like the chips — an unknown stored key is not a category here.
+      const keys = NOTIFICATION_CATEGORIES.filter((c) => g.categories.includes(c.key)).map((c) => c.key);
+      return keys.length ? keys : ['none'];
+    }
     return [];
   };
 
@@ -293,14 +322,10 @@ export default function Notifications() {
         return <span className="cell-sub cell-clamp2">{g.description || '—'}</span>;
       case 'members':
         return <span className="mono cell-line" style={{ display: 'block', textAlign: 'right' }}>{g.member_count}</span>;
+      case 'categories':
+        return <CategoryChips categories={g.categories} />;
       case 'channels':
-        return (
-          <div className="chips">
-            {g.channels.length
-              ? g.channels.map((c) => <span key={c} className="chip tag">{channelLabel(c)}</span>)
-              : <span className="chip tag">—</span>}
-          </div>
-        );
+        return <ChannelChips channels={g.channels} />;
       case 'quiet_hours': {
         const text = formatQuietHours(g.quiet_start, g.quiet_end, g.timezone);
         return <span className="mono cell-nowrap cell-line" title={titleFor(text)}>{text}</span>;

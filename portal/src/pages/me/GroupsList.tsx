@@ -11,27 +11,12 @@ import { useMemo, useState } from 'react';
 
 import { useAuth } from '../../auth/AuthContext';
 import { RowActionsMenu, type RowAction } from '../../components/hardware/RowActionsMenu';
+import CategoryChips from '../../components/notifications/CategoryChips';
+import ChannelChips from '../../components/notifications/ChannelChips';
 import type { MyNotificationGroup } from '../../lib/api';
 import { ColHead, listGridStyle, listScale, titleFor, type ColumnDef } from '../../lib/listTools';
-import { CHANNEL_LABELS, type Channel } from '../../lib/notifications';
-import { daysText, hasOverrides, quietHoursText } from '../../lib/notificationGroups';
-
-const CHANNEL_CHIP: Record<string, string> = {
-  email: 'c-blue', web: 'c-green', sms: 'c-amber', text: 'c-amber', push: 'c-violet',
-};
-
-function ChannelChips({ channels }: { channels: string[] }) {
-  return (
-    <div className="chips">
-      {channels.length === 0 && <span className="chip c-slate">None</span>}
-      {channels.map((c) => (
-        <span key={c} className={`chip ${CHANNEL_CHIP[c] ?? 'c-slate'}`}>
-          {CHANNEL_LABELS[c as Channel] ?? c}
-        </span>
-      ))}
-    </div>
-  );
-}
+import { formatDays, formatQuietHours } from '../../lib/notifications';
+import { hasOverrides } from '../../lib/notificationGroups';
 
 /** Status cell: the pending request (if any) wins over "Customized". */
 function StatusChip({ group }: { group: MyNotificationGroup }) {
@@ -60,8 +45,12 @@ export type GroupsListKind = 'member' | 'joinable';
 // under /me/notifications).
 const COLUMNS: ColumnDef[] = [
   { key: 'group', label: 'Group', width: '2fr', default: true, min: 200 },
-  { key: 'channels', label: 'Channels', width: '1.3fr', default: true },
-  { key: 'quiet_hours', label: 'Quiet hours', width: '1.2fr', default: true },
+  // Category chips wrap onto extra lines; a long label ellipsizes at the floor.
+  { key: 'categories', label: 'Categories', width: '1.5fr', default: true, min: 140 },
+  // One short chip (Email / No email) — the header's own floor is enough.
+  { key: 'channels', label: 'Channels', width: '1fr', default: true },
+  // 144px holds "9:00 PM – 7:00 AM CT" on one line, as on the admin list.
+  { key: 'quiet_hours', label: 'Quiet hours', width: '1.2fr', default: true, min: 144 },
   { key: 'days', label: 'Days', width: '0.7fr', default: true },
   { key: 'members', label: 'Members', width: '0.6fr', default: true },
   { key: 'status', label: 'Status', width: '0.9fr', default: true },
@@ -152,17 +141,26 @@ export default function GroupsList({
         )}
 
         {visible.map((g) => {
-          const quietHours = quietHoursText(g);
-          const days = daysText(g.active_days);
+          // A member sees what they actually get — their own channels, quiet
+          // hours and days after any overrides; someone deciding whether to
+          // join sees the group's. (`effective` is only set for members.)
+          const shown = kind === 'member' ? (g.effective ?? g) : g;
+          const quietHours = formatQuietHours(shown.quiet_start, shown.quiet_end, shown.timezone);
+          const days = formatDays(shown.active_days);
           return (
             <div className="dir-row" key={g.id} style={{ minWidth: rowStyle.minWidth }}>
               <div className="row-main" style={rowStyle}>
                 <div className="cell cell-primary">
                   <div className="pn"><b>{g.name}</b><span>{g.description || '—'}</span></div>
                 </div>
-                <div className="cell"><ChannelChips channels={g.channels} /></div>
-                <div className="cell mono cell-line" title={titleFor(quietHours)}>{quietHours}</div>
-                <div className="cell cell-top cell-line" title={titleFor(days)}>{days}</div>
+                <div className="cell"><CategoryChips categories={g.categories} /></div>
+                <div className="cell"><ChannelChips channels={shown.channels} /></div>
+                <div className="cell">
+                  <span className="mono cell-nowrap cell-line" title={titleFor(quietHours)}>{quietHours}</span>
+                </div>
+                <div className="cell">
+                  <span className="cell-top cell-nowrap cell-line" title={titleFor(days)}>{days}</span>
+                </div>
                 <div className="cell mono cell-line">{g.member_count}</div>
                 <div className="cell"><StatusChip group={g} /></div>
                 <div className="cell row-actions-cell" style={{ justifySelf: 'end' }} onClick={(e) => e.stopPropagation()}>

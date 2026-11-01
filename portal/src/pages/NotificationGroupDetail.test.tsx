@@ -176,17 +176,34 @@ it('delivery defaults list the categories by label, or say members get inbox onl
   expect(screen.getByText('None — members get inbox only')).not.toBeNull();
 });
 
-it('marks the text and push channels as not available yet on the page and in the modal', async () => {
-  const user = userEvent.setup();
+it('shows only the channel that can send, in the header and in Delivery defaults', async () => {
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, channels: ['email', 'web'] });
   renderPage();
-  await screen.findByText('Ops Alerts');
+  const title = await screen.findByRole('heading', { name: 'Ops Alerts' });
+  const header = title.closest('.idet-title-row') as HTMLElement;
   const dd = screen.getByText('Channels').nextElementSibling as HTMLElement;
-  expect(within(dd).getAllByText(/not available yet/i)).toHaveLength(1); // push only (email is live)
 
-  const dialog = await openSettingsDialog(user);
-  expect(within(dialog).getAllByText(/not available yet/i)).toHaveLength(2); // text + push
-  expect(within(dialog.querySelector('.ngd-switch-row:nth-of-type(1)') as HTMLElement)
-    .queryByText(/not available yet/i)).toBeNull(); // email carries no note
+  for (const area of [header, dd]) {
+    expect(within(area).getByText('Email').className).toContain('c-blue');
+    expect(within(area).queryByText('Web')).toBeNull();
+    expect(within(area).queryByText('No email')).toBeNull();
+  }
+  // Hidden channels carry no "not available yet" note: they are not shown at all.
+  expect(screen.queryByText(/not available yet/i)).toBeNull();
+});
+
+it('says No email in the header and in Delivery defaults when no live channel is stored', async () => {
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, channels: ['text', 'push'] });
+  renderPage();
+  const title = await screen.findByRole('heading', { name: 'Ops Alerts' });
+  const header = title.closest('.idet-title-row') as HTMLElement;
+  const dd = screen.getByText('Channels').nextElementSibling as HTMLElement;
+
+  for (const area of [header, dd]) {
+    expect(within(area).getByText('No email').className).toContain('c-slate');
+    for (const hidden of ['Text (SMS)', 'Push']) expect(within(area).queryByText(hidden)).toBeNull();
+  }
+  expect(screen.queryByText(/not available yet/i)).toBeNull();
 });
 
 it('settings modal Categories toggles save as the categories patch', async () => {
@@ -387,19 +404,64 @@ it('closes the settings modal and reloads the group on a successful save', async
 
 // ── Members panel (Task 5) ──────────────────────────────────────────
 
-it('members table renders effective channel chips, a warning on an unreachable channel, and an Override marker', async () => {
-  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1, MEMBER_2] });
+it('members table shows live channels only, a warning on an unreachable email, and an Override marker', async () => {
+  // Eve is set to email but has no address; Tess's effective channels hold
+  // nothing that can send.
+  const eve: NotificationMember = {
+    ...MEMBER_1, person_id: 'p5', display_name: 'Eve Nomail', email: null, can_email: false,
+    effective: { ...MEMBER_1.effective, channels: ['email'] },
+  };
+  const tess: NotificationMember = {
+    ...MEMBER_1, person_id: 'p6', display_name: 'Tess Textonly',
+    effective: { ...MEMBER_1.effective, channels: ['text', 'push'] },
+  };
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1, MEMBER_2, eve, tess] });
+  renderPage();
+  await screen.findByText('Ops Alerts');
+  await screen.findByText('Alice Tech');
+
+  /** The chips in a member's Channels cell (the third column). */
+  const channelChips = (name: RegExp) => [
+    ...(screen.getByRole('row', { name }).querySelectorAll('td')[2] as HTMLElement).querySelectorAll('.chip'),
+  ] as HTMLElement[];
+  const labels = (chips: HTMLElement[]) => chips.map((c) => c.textContent);
+
+  // Alice's stored Text is hidden; Bob's channel override surfaces an Override marker.
+  expect(labels(channelChips(/alice tech/i))).toEqual(['Email']);
+  expect(labels(channelChips(/bob override/i))).toEqual(['Email', 'Override']);
+
+  const [eveEmail] = channelChips(/eve nomail/i);
+  expect(eveEmail.textContent).toBe('Email');
+  expect(eveEmail.title).toBe('No email address');
+  expect(eveEmail.className).toContain('c-red');
+
+  const [noEmail] = channelChips(/tess textonly/i);
+  expect(noEmail.textContent).toBe('No email');
+  expect(noEmail.className).toContain('c-slate');
+
+  expect(screen.queryByText('Text (SMS)')).toBeNull();
+  expect(screen.queryByText('Muted')).toBeNull();
+});
+
+it('the add-member picker names who can be emailed, and says No email address otherwise', async () => {
+  const user = userEvent.setup();
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [] });
+  api.listNotificationRecipients.mockResolvedValue([
+    RECIPIENTS[1],
+    {
+      person_id: 'p7', display_name: 'Dan Nomail', job_title: 'Driver', avatar_url: null,
+      email: null, phone: '555-3333', has_account: true,
+      can_email: false, can_text: true, can_push: true, can_web: true,
+    },
+  ]);
   renderPage();
   await screen.findByText('Ops Alerts');
 
-  await screen.findByText('Alice Tech');
-  const textChip = screen.getByText('Text (SMS)');
-  expect(textChip.title).toBe('No phone number');
-  expect(textChip.className).toContain('c-red');
+  await user.click(screen.getByPlaceholderText(/add a member/i));
 
-  // Alice has no override on channels; Bob's channel override should
-  // surface an "Override" marker.
-  expect(screen.getAllByText('Override').length).toBeGreaterThan(0);
+  // Carol can also be texted, but Text is not a live channel, so it is not offered.
+  expect(await screen.findByText('Coordinator · Email')).not.toBeNull();
+  expect(screen.getByText('Driver · No email address')).not.toBeNull();
 });
 
 it('excludes current members from the add-member recipients combo', async () => {

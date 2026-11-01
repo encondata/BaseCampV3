@@ -213,10 +213,91 @@ it('renders a member group with channel chips, quiet-hours text, days, and a Cus
   await waitFor(() => expect(screen.getByText('Ops')).toBeTruthy());
   expect(screen.getByText('Operations alerts')).toBeTruthy();
   expect(screen.getByText('Email')).toBeTruthy();
-  expect(screen.getByText('Push')).toBeTruthy();
-  expect(screen.getByText('22:00–07:00 (America/New_York)')).toBeTruthy();
+  expect(screen.queryByText('Push')).toBeNull(); // stored, but nothing can send it
+  expect(screen.getByText('10:00 PM – 7:00 AM ET')).toBeTruthy();
   expect(screen.getByText('Mon–Fri')).toBeTruthy();
   expect(screen.getByText('Customized')).toBeTruthy();
+});
+
+it('both group lists have a Categories column, in registry order, or say inbox only', async () => {
+  api.listMyNotificationGroups.mockResolvedValueOnce([
+    { ...G1, categories: ['wiki', 'approvals'] },
+    { ...G2, categories: ['learning'] },
+    { ...G3, categories: [] },
+  ]);
+  render(<MeNotifications />);
+  await waitFor(() => expect(screen.getByText('Warehouse Alerts')).toBeTruthy());
+
+  const mine = within(screen.getByRole('region', { name: 'My groups' }));
+  const joinable = within(screen.getByRole('region', { name: 'Join a group' }));
+  // These headers are plain labels (the lists do not sort), so look for the text.
+  expect(mine.getByText('Categories')).toBeTruthy();
+  expect(joinable.getByText('Categories')).toBeTruthy();
+  const chipsOf = (list: ReturnType<typeof within>, text: string) =>
+    [...(list.getByText(text).closest('.chips') as HTMLElement).children].map((c) => c.textContent);
+  expect(chipsOf(mine, 'Wiki')).toEqual(['Approvals & requests', 'Wiki']);
+  expect(chipsOf(joinable, 'Learning')).toEqual(['Learning']);
+  expect(joinable.getByText('None — inbox only').className).toContain('c-slate');
+});
+
+it('a member row shows their effective channels, quiet hours and days, not the group defaults', async () => {
+  api.listMyNotificationGroups.mockResolvedValueOnce([{
+    ...G1,
+    // The group emails 22:00-07:00 Eastern on weekdays; this member has
+    // narrowed it to text only, with a window in Chicago.
+    effective: {
+      ...G1.effective!,
+      channels: ['text'], quiet_start: '21:00:00', quiet_end: '07:00:00',
+      timezone: 'America/Chicago', active_days: ['mon', 'tue', 'wed', 'thu', 'fri'],
+    },
+  }]);
+  render(<MeNotifications />);
+  await waitFor(() => expect(screen.getByText('Ops')).toBeTruthy());
+
+  const row = (screen.getByText('Ops').closest('.dir-row')) as HTMLElement;
+  expect(within(row).getByText('No email').className).toContain('c-slate');
+  expect(within(row).queryByText('Email')).toBeNull();
+  expect(within(row).getByText('9:00 PM – 7:00 AM CT')).toBeTruthy();
+  expect(within(row).queryByText('10:00 PM – 7:00 AM ET')).toBeNull();
+  expect(within(row).getByText('Mon–Fri')).toBeTruthy();
+});
+
+it('a joinable row shows the group\'s own channels, quiet hours and days, in the one format', async () => {
+  api.listMyNotificationGroups.mockResolvedValueOnce([
+    G2,
+    {
+      ...G3, quiet_start: '23:00:00', quiet_end: '06:30:00', timezone: 'America/Los_Angeles',
+      active_days: ['sat', 'sun'],
+    },
+  ]);
+  render(<MeNotifications />);
+  await waitFor(() => expect(screen.getByText('Warehouse Alerts')).toBeTruthy());
+
+  const rowFor = (name: string) => (screen.getByText(name).closest('.dir-row')) as HTMLElement;
+  // Warehouse Alerts: push only, no quiet hours, every day.
+  const warehouse = within(rowFor('Warehouse Alerts'));
+  expect(warehouse.getByText('No email')).toBeTruthy();
+  expect(warehouse.getByText('Daily')).toBeTruthy();
+  expect(warehouse.queryByText('Push')).toBeNull();
+  // Fleet Updates: emails, overnight Pacific window, weekends.
+  const fleet = within(rowFor('Fleet Updates'));
+  expect(fleet.getByText('Email')).toBeTruthy();
+  expect(fleet.getByText('11:00 PM – 6:30 AM PT')).toBeTruthy();
+  expect(fleet.getByText('Weekends')).toBeTruthy();
+});
+
+it('quiet hours and days stay on one line, with the full text on hover', async () => {
+  api.listMyNotificationGroups.mockResolvedValueOnce([G1]);
+  render(<MeNotifications />);
+  await waitFor(() => expect(screen.getByText('Ops')).toBeTruthy());
+
+  for (const text of ['10:00 PM – 7:00 AM ET', 'Mon–Fri']) {
+    const el = screen.getByText(text);
+    expect(el.classList.contains('cell-nowrap')).toBe(true);
+    expect(el.classList.contains('cell-line')).toBe(true);
+    expect(el.title).toBe(text);
+    expect(el.parentElement?.classList.contains('cell')).toBe(true); // .cell .cell-line is a descendant rule
+  }
 });
 
 it('My groups list: column floors, shared template + minimum, sideways-scroll card', async () => {
@@ -232,6 +313,9 @@ it('My groups list: column floors, shared template + minimum, sideways-scroll ca
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
+  // The Categories column sits right after Group in the measured grid.
+  const labels = [...head.querySelectorAll('.col-head')].map((h) => h.textContent?.trim());
+  expect(labels.slice(0, 3)).toEqual(['Group', 'Categories', 'Channels']);
 });
 
 /** Standard-list rows keep their actions behind the "Actions ▾" menu:

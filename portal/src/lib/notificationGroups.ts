@@ -1,51 +1,15 @@
 /**
- * notificationGroups — pure display helpers, error copy, and adapters for
+ * notificationGroups — error copy, the override check, and the adapters for
  * the self-service "My groups" / "Join a group" sections on
- * /me/notifications (pages/me/MeNotifications.tsx). Kept separate from
- * lib/notifications.ts, whose formatQuietHours/formatDays are tuned for
- * the admin group-detail page's 12-hour/abbreviated-timezone display —
- * these read the raw "HH:MM:SS" strings straight, per the self-service
- * spec's copy.
+ * /me/notifications (pages/me/MeNotifications.tsx). Quiet hours and days on
+ * those lists read through lib/notifications.ts's formatQuietHours /
+ * formatDays, the same as every other notification list.
  */
 
 import type {
   MyNotificationGroup, NotificationEffectiveSettings, NotificationGroupDetail,
   NotificationMember, NotificationMemberOverrides,
 } from './api';
-
-const WEEK_ORDER = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-const WEEKDAYS = ['mon', 'tue', 'wed', 'thu', 'fri'];
-const DAY_LABELS: Record<string, string> = {
-  mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun',
-};
-
-/** "22:00:00" -> "22:00". */
-function hm(hms: string): string {
-  return hms.slice(0, 5);
-}
-
-/** "22:00:00", "07:00:00", "America/New_York" -> "22:00–07:00
- *  (America/New_York)". Either quiet time null (both should be — quiet
- *  hours are both-or-neither) -> "None". */
-export function quietHoursText(g: {
-  quiet_start: string | null;
-  quiet_end: string | null;
-  timezone: string;
-}): string {
-  if (g.quiet_start === null || g.quiet_end === null) return 'None';
-  return `${hm(g.quiet_start)}–${hm(g.quiet_end)} (${g.timezone})`;
-}
-
-/** All 7 days -> "Every day"; exactly Mon-Fri -> "Mon–Fri"; else a
- *  comma-separated list in week order, e.g. "Mon, Wed, Fri". Empty ->
- *  "None". */
-export function daysText(days: string[]): string {
-  if (days.length === 0) return 'None';
-  const set = new Set(days);
-  if (WEEK_ORDER.every((d) => set.has(d))) return 'Every day';
-  if (set.size === WEEKDAYS.length && WEEKDAYS.every((d) => set.has(d))) return 'Mon–Fri';
-  return WEEK_ORDER.filter((d) => set.has(d)).map((d) => DAY_LABELS[d]).join(', ');
-}
 
 /** True when any override field is non-null — the member has customized
  *  at least one setting away from the group default. */

@@ -1,9 +1,25 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  canForChannel, formatDays, formatQuietHours,
+  LIVE_CHANNELS, canForChannel, formatDays, formatQuietHours, liveChannels,
 } from './notifications';
 import { naturalCompare } from './naturalSort';
+
+describe('liveChannels', () => {
+  it('keeps only the channels the server can send', () => {
+    expect(LIVE_CHANNELS).toEqual(['email']);
+    expect(liveChannels(['web', 'text', 'email', 'push'])).toEqual(['email']);
+  });
+
+  it('is empty when no live channel is present', () => {
+    expect(liveChannels(['text'])).toEqual([]);
+    expect(liveChannels([])).toEqual([]);
+  });
+
+  it('ignores unknown values and repeats', () => {
+    expect(liveChannels(['sms', 'email', 'email'])).toEqual(['email']);
+  });
+});
 
 describe('formatQuietHours', () => {
   it('formats a normal (non-overnight) window with the tz abbreviation', () => {

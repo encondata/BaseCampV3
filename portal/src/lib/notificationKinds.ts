@@ -28,7 +28,7 @@ export function categoryLabel(key: string): string {
 }
 
 /** Labels for a group's category keys, in registry order; unknown keys drop. */
-export function categoryLabels(keys: string[]): string[] {
+export function categoryLabels(keys: readonly string[]): string[] {
   const set = new Set(keys);
   return NOTIFICATION_CATEGORIES.filter((c) => set.has(c.key)).map((c) => c.label);
 }

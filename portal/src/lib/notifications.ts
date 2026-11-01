@@ -19,6 +19,18 @@ export const CHANNEL_NOTES: Partial<Record<Channel, string>> = {
   text: 'not available yet', push: 'not available yet',
 };
 
+/** The channels that can actually send — email only. Text, Push and Web have
+ *  no sender, so lists, chips, filters and exports leave them out. They stay
+ *  valid stored values: the API's channel list and every saved setting are
+ *  unchanged, they are just not shown. */
+export const LIVE_CHANNELS: readonly Channel[] = ['email'];
+
+/** The live channels among `channels`, in CHANNELS order. Unknown values and
+ *  repeats drop out, so an empty result means "nothing here can send". */
+export function liveChannels(channels: readonly string[]): Channel[] {
+  return CHANNELS.filter((c) => LIVE_CHANNELS.includes(c) && channels.includes(c));
+}
+
 export const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
 export type Day = typeof DAYS[number];
 

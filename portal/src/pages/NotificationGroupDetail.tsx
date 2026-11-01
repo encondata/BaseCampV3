@@ -16,6 +16,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
+import ChannelChips from '../components/notifications/ChannelChips';
 import EditGroupModal from '../components/notifications/EditGroupModal';
 import EditSettingsModal from '../components/notifications/EditSettingsModal';
 import MembersPanel from '../components/notifications/MembersPanel';
@@ -23,7 +24,7 @@ import {
   ApiError, deleteNotificationGroup, getNotificationGroup, updateNotificationGroup,
   type NotificationGroupDetail as NotificationGroupDetailOut,
 } from '../lib/api';
-import { CHANNEL_LABELS, CHANNEL_NOTES, formatDays, formatQuietHours, type Channel } from '../lib/notifications';
+import { formatDays, formatQuietHours } from '../lib/notifications';
 import { categoryLabels } from '../lib/notificationKinds';
 import '../styles/directory.css';
 import '../styles/profile.css';
@@ -153,9 +154,7 @@ export default function NotificationGroupDetailPage() {
             <span className="chip tag">
               {group.member_count} member{group.member_count === 1 ? '' : 's'}
             </span>
-            {group.channels.map((c) => (
-              <span key={c} className="chip tag">{CHANNEL_LABELS[c as Channel] ?? c}</span>
-            ))}
+            <ChannelChips channels={group.channels} />
           </div>
           {group.description && <p className="page-hint idet-desc">{group.description}</p>}
           {pauseError && <span className="pf-error">{pauseError}</span>}
@@ -202,20 +201,7 @@ export default function NotificationGroupDetailPage() {
         </div>
         <dl className="kv">
           <dt>Channels</dt>
-          <dd>
-            <div className="chips">
-              {group.channels.length
-                ? group.channels.map((c) => (
-                  <span key={c} className="chip tag">
-                    {CHANNEL_LABELS[c as Channel] ?? c}
-                    {CHANNEL_NOTES[c as Channel] && (
-                      <span className="channel-soon">{CHANNEL_NOTES[c as Channel]}</span>
-                    )}
-                  </span>
-                ))
-                : '—'}
-            </div>
-          </dd>
+          <dd><ChannelChips channels={group.channels} /></dd>
           <dt>Categories</dt>
           <dd>
             {categoryLabels(group.categories).length
