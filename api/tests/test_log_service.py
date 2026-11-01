@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 from sqlalchemy import func, select
 
-from serversherpa.db.models import LogEntry, SystemConfig, SystemProcess
+from serversherpa.db.models import LogEntry, NotificationLog, SystemConfig, SystemProcess
 from serversherpa.system import log_service
 
 
@@ -53,6 +53,25 @@ async def test_retention_age_cap(db):
     await _fill(db, "ret-age", 2, age_days=0)
     await log_service.enforce_retention(db)
     assert await _count(db, "ret-age") == 2
+
+
+async def test_retention_deletes_old_notification_log_rows(db):
+    # Same cutoff as log_entries. Live log handlers only add fresh rows, so
+    # nothing but our two old rows can count toward `deleted` here.
+    await _set_logging(db, local_max_age_days=7)
+    now = datetime.now(UTC)
+    db.add_all([
+        NotificationLog(event="inbox_written", channel="inbox", kind="old-1",
+                        at=now - timedelta(days=10)),
+        NotificationLog(event="email_sent", channel="email", kind="old-2",
+                        at=now - timedelta(days=8)),
+        NotificationLog(event="inbox_written", channel="inbox", kind="fresh", at=now),
+    ])
+    await db.commit()
+    result = await log_service.enforce_retention(db)
+    assert result["deleted"] >= 2
+    kept = (await db.scalars(select(NotificationLog.kind))).all()
+    assert kept == ["fresh"]
 
 
 async def test_remote_mode_uses_buffer_cap(db):

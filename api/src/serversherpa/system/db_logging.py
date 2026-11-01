@@ -169,3 +169,10 @@ def install(process: str) -> DbLogHandler:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     _installed[process] = handler
     return handler
+
+
+def installed_process() -> str | None:
+    """The process name `install()` registered in this process, or None
+    when the pipeline was never installed here (a script, a test). Each
+    process installs once, under its own name, so there is at most one."""
+    return next(iter(_installed), None)
