@@ -276,7 +276,13 @@ async def recheck_before_send(db: AsyncSession, row: EmailOutbox) -> str | None:
     sending: a deferred email can wait hours, and meanwhile the person may have
     read or hidden the inbox row, an admin may have decided the approval, or
     the person's choice or groups may have changed. The checks run in order
-    and the first that fails decides; timing is not re-computed. Reads only.
+    and the first that fails decides: notification_gone, resolved, hidden,
+    read, recipient_inactive, category_turned_down, no_email_group. Timing is
+    not re-computed. Reads only.
+
+    `resolved` comes before `hidden` and `read` because deciding an approval
+    marks every copy of it read: the log must name the decision, not a read
+    nobody did.
 
     Never re-checked (None at once): mail that mirrors no notification
     (`row.kind` is None: password resets, invites, learning), a kind the
@@ -292,13 +298,13 @@ async def recheck_before_send(db: AsyncSession, row: EmailOutbox) -> str | None:
                     if row.notification_id else None)
     if notification is None:
         return "notification_gone"
+    state = notification.payload.get("state")
+    if state is not None and state not in ("pending", "open"):
+        return "resolved"      # an approval someone already decided
     if notification.dismissed_at is not None:
         return "hidden"
     if notification.read_at is not None:
         return "read"
-    state = notification.payload.get("state")
-    if state is not None and state not in ("pending", "open"):
-        return "resolved"      # an approval someone already decided
     contact = await load_contact(db, notification.person_id)
     if contact is None or not contact.active:
         return "recipient_inactive"

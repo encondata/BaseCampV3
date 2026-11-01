@@ -321,6 +321,24 @@ async def test_decided_approval_is_dropped(db, email_on):
     assert (await _get(waiting_mail.id)).status == "sent"
 
 
+@pytest.mark.parametrize("seen", [("read_at",), ("dismissed_at",), ("read_at", "dismissed_at")],
+                         ids=["read", "hidden", "read-then-cleared"])
+async def test_decided_approval_is_named_resolved_even_when_read(db, email_on, seen):
+    """Deciding an approval marks every copy of it read, so the log must name
+    the decision, not a read nobody did: `resolved` is checked before `hidden`
+    and `read`."""
+    _, note, mail = await _notification_mail(db, "membership_request",
+                                             payload={"state": "pending"})
+    now = datetime.now(UTC)
+    await _run(update(Notification).where(Notification.id == note.id)
+               .values(payload={"state": "approved", "decided_by": "Alice"},
+                       **{column: now for column in seen}))
+    send = FakeSend()
+    assert await deliver_once(get_sessionmaker(), send=send) == 1
+    assert send.calls == []
+    await _assert_dropped(mail.id, "resolved")
+
+
 @pytest.mark.parametrize("state,reason", [("rejected", "resolved"), ("open", None)])
 async def test_resolved_is_any_state_but_pending_or_open(db, email_on, state, reason):
     """`resolved` is any payload state but pending or open (a reset card is
