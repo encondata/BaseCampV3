@@ -7,7 +7,9 @@ The rule lives in docs/superpowers/specs/2026-10-08-notification-email-design.md
 ("Sending rule"); the pure timing part is notifications/email_rule.py. The
 decision itself is one function, `decide_email()`, shared by `maybe_email()`
 and the read-only Check delivery tool so the two cannot drift
-(docs/superpowers/specs/2026-10-31-notifications-phase0-design.md, section 9)."""
+(docs/superpowers/specs/2026-10-31-notifications-phase0-design.md, section 9).
+`recheck_before_send()` is the other half: the delivery worker asks it, just
+before sending, whether a queued email is still wanted (same spec, section 4)."""
 
 import logging
 import uuid
@@ -21,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.api.schemas import UiPreferences
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
+    EmailOutbox,
     Notification,
     NotificationGroup,
     NotificationGroupMember,
@@ -30,7 +33,7 @@ from serversherpa.db.models import (
 from serversherpa.mail.outbox import email_enabled, enqueue
 from serversherpa.notifications.delivery_log import record
 from serversherpa.notifications.email_rule import group_verdict
-from serversherpa.notifications.kinds import KindInfo
+from serversherpa.notifications.kinds import KindInfo, kind_info
 from serversherpa.notifications.settings import effective_settings
 from serversherpa.services.timezone import DEFAULT_TIMEZONE
 
@@ -265,3 +268,43 @@ async def maybe_email(db: AsyncSession, notification: Notification, *,
         link=_absolute(notification.link),
         security=decision.owner_copy,
         prefs_url=portal_link(INBOX_PATH))
+
+
+async def recheck_before_send(db: AsyncSession, row: EmailOutbox) -> str | None:
+    """Why this queued notification email should no longer go out, as a reason
+    code, or None when it still should. The delivery worker asks just before
+    sending: a deferred email can wait hours, and meanwhile the person may have
+    read or hidden the inbox row, an admin may have decided the approval, or
+    the person's choice or groups may have changed. The checks run in order
+    and the first that fails decides; timing is not re-computed. Reads only.
+
+    Never re-checked (None at once): mail that mirrors no notification
+    (`row.kind` is None: password resets, invites, learning), a kind the
+    registry does not list, and account-security kinds, owner and admin copies
+    alike: whoever can read or hide the inbox item must not be able to
+    suppress that email."""
+    if row.kind is None:
+        return None
+    info = kind_info(row.kind)
+    if info is None or info.category == "security":
+        return None
+    notification = (await db.get(Notification, row.notification_id)
+                    if row.notification_id else None)
+    if notification is None:
+        return "notification_gone"
+    if notification.dismissed_at is not None:
+        return "hidden"
+    if notification.read_at is not None:
+        return "read"
+    state = notification.payload.get("state")
+    if state is not None and state not in ("pending", "open"):
+        return "resolved"      # an approval someone already decided
+    contact = await load_contact(db, notification.person_id)
+    if contact is None or not contact.active:
+        return "recipient_inactive"
+    if personal_choice(info, contact) != "email":
+        return "category_turned_down"
+    groups = await _group_settings(db, notification.person_id, info.category)
+    if not any("email" in (g["channels"] or ()) for g in groups):
+        return "no_email_group"
+    return None
