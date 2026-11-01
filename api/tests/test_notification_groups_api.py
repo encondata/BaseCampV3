@@ -520,6 +520,40 @@ async def test_staff_forbidden_from_recipients(client, db, seeded_user):
     assert resp.status_code == 403
 
 
+async def test_member_with_only_a_login_email_can_email(client, db, seeded_user):
+    """The sender falls back to the sign-in email, so a person with no profile
+    email but an account is reachable by email (spec section 8)."""
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/notifications/groups", headers=hdrs,
+                             json={"name": "Login only"})
+    gid = resp.json()["id"]
+    person = await _person(db, "Lou", "Login")          # no profile email
+    db.add(UserAccount(person_id=person.id, email="lou@test.example.com",
+                       password_hash="x"))
+    await db.commit()
+
+    resp = await client.post(f"/notifications/groups/{gid}/members",
+                             headers=hdrs, json={"person_id": str(person.id)})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["can_email"] is True
+
+    detail = await client.get(f"/notifications/groups/{gid}", headers=hdrs)
+    [member] = detail.json()["members"]
+    assert (member["email"], member["has_account"], member["can_email"]) == (
+        None, True, True)
+
+    recipients = await client.get("/notifications/recipients", headers=hdrs)
+    lou = {row["person_id"]: row for row in recipients.json()}[str(person.id)]
+    assert (lou["email"], lou["can_email"]) == (None, True)
+
+    resp = await client.patch(
+        f"/notifications/groups/{gid}/members/{person.id}", headers=hdrs,
+        json={"channels": ["email"]})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["overrides"]["channels"] == ["email"]
+    assert resp.json()["can_email"] is True
+
+
 # ── categories ───────────────────────────────────────────────────────
 
 async def test_create_group_categories_deduped_in_registry_order(

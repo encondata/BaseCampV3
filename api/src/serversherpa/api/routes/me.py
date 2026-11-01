@@ -336,8 +336,9 @@ async def update_my_overrides(
     group = await _get_group(db, group_id)
 
     # CurrentUser always has a UserAccount (that's how they signed in), so
-    # push/web channels are always reachable for the caller.
-    changes = apply_member_overrides(member, body, user.person, True)
+    # push/web channels are always reachable for the caller, and email is
+    # too: the sender falls back to the sign-in email.
+    changes = apply_member_overrides(member, body, user.person, user.account.email)
     if changes:
         audit(db, actor_id=user.person.id, entity_type="notification_group",
               entity_id=str(group_id), action="member.self_override",

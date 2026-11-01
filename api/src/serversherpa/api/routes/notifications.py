@@ -2,7 +2,9 @@
 channels, quiet hours, active days, and DND behavior for its members.
 Task 2 adds member endpoints (with per-member overrides); the React UI
 is a later task still. This file also hosts the per-person in-app
-inbox routes (/inbox, mark-one-read, mark-all-read).
+inbox routes (/inbox, mark-one-read, mark-all-read) and, for super admins
+and above, the delivery log (/log), Check delivery (/check) and the kinds
+it picks from (/kinds).
 
 CHANNELS/DAYS are the source of truth other modules (the future
 notification sender, Task 2's member validation) should import from."""
@@ -12,23 +14,29 @@ import uuid
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, HTTPException, Response
-from sqlalchemy import func, select, tuple_
+from fastapi import APIRouter, HTTPException, Query, Response
+from pydantic import AwareDatetime
+from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.orm import aliased
 
-from serversherpa.api.deps import AuthContext, CurrentUser, DbSession, require_permission
+from serversherpa.api.deps import (
+    AuthContext, CurrentUser, DbSession, ensure_super_admin, require_permission,
+)
 from serversherpa.api.schemas import (
+    DeliveryCheckOut, DeliveryLogEntryOut, DeliveryLogPageOut,
     MembershipDecisionIn, MembershipRequestOut, NotificationEffectiveSettings,
     NotificationGroupCreateIn, NotificationGroupDetailOut, NotificationGroupOut,
     NotificationGroupPatchIn, NotificationInboxItemOut, NotificationInboxOut,
-    NotificationMemberAddIn, NotificationMemberOut, NotificationMemberOverrides,
-    NotificationRecipientOut,
+    NotificationKindOut, NotificationMemberAddIn, NotificationMemberOut,
+    NotificationMemberOverrides, NotificationRecipientOut,
 )
 from serversherpa.db.models import (
-    Notification, NotificationGroup, NotificationGroupMember,
-    NotificationMembershipRequest, Person, UserAccount,
+    EmailOutbox, Notification, NotificationGroup, NotificationGroupMember,
+    NotificationLog, NotificationMembershipRequest, Person, UserAccount,
 )
 from serversherpa.db.ordering import natural
+from serversherpa.notifications import check as delivery_check
+from serversherpa.notifications.delivery_log import EVENTS
 from serversherpa.notifications.kinds import CATEGORY_KEYS, KINDS, kind_info
 from serversherpa.notifications.requests import RequestError, decide_request
 from serversherpa.notifications.settings import effective_settings
@@ -137,18 +145,24 @@ CHANNEL_CAPABILITY = {"email": "can_email", "text": "can_text",
                        "push": "can_push", "web": "can_web"}
 
 
-def capabilities(person: Person, has_account: bool) -> dict[str, bool]:
+def capabilities(person: Person, has_account: bool,
+                 account_email: str | None = None) -> dict[str, bool]:
     """What a person is actually reachable on, independent of any group's
     aspirational channel list. Drives both the recipients picker and the
-    per-member channel-override validation below."""
-    return {"can_email": person.email is not None,
+    per-member channel-override validation below. Email needs a profile
+    email or a sign-in email (`account_email`): the sender falls back to
+    the sign-in one."""
+    return {"can_email": bool(person.email or account_email),
             "can_text": person.phone is not None,
             "can_push": has_account, "can_web": has_account}
 
 
 def _member_out(group: NotificationGroup, member: NotificationGroupMember,
-                 person: Person, has_account: bool) -> NotificationMemberOut:
-    caps = capabilities(person, has_account)
+                 person: Person, account_email: str | None) -> NotificationMemberOut:
+    """`account_email` is the person's sign-in email, None without an account
+    (every account has one)."""
+    has_account = account_email is not None
+    caps = capabilities(person, has_account, account_email)
     return NotificationMemberOut(
         person_id=person.id, display_name=person.display_name,
         job_title=person.job_title, avatar_url=presign_get(person.avatar_key),
@@ -164,9 +178,10 @@ def _member_out(group: NotificationGroup, member: NotificationGroupMember,
         added_at=member.added_at)
 
 
-async def _has_account(db: DbSession, person_id: uuid.UUID) -> bool:
-    return await db.scalar(select(UserAccount.person_id).where(
-        UserAccount.person_id == person_id)) is not None
+async def _account_email(db: DbSession, person_id: uuid.UUID) -> str | None:
+    """The person's sign-in email; None when they have no account."""
+    return await db.scalar(select(UserAccount.email).where(
+        UserAccount.person_id == person_id))
 
 
 async def _get_member(db: DbSession, group_id: uuid.UUID,
@@ -285,13 +300,13 @@ async def get_group(
 ) -> NotificationGroupDetailOut:
     group = await _get_group(db, group_id)
     rows = (await db.execute(
-        select(NotificationGroupMember, Person, UserAccount.person_id)
+        select(NotificationGroupMember, Person, UserAccount.email)
         .join(Person, Person.id == NotificationGroupMember.person_id)
         .outerjoin(UserAccount, UserAccount.person_id == Person.id)
         .where(NotificationGroupMember.group_id == group_id)
         .order_by(natural(Person.last_name), natural(Person.first_name)))).all()
-    members = [_member_out(group, member, person, account_id is not None)
-               for member, person, account_id in rows]
+    members = [_member_out(group, member, person, account_email)
+               for member, person, account_email in rows]
     return NotificationGroupDetailOut(
         **_out(group, len(members)).model_dump(), members=members)
 
@@ -321,19 +336,19 @@ async def add_member(
           entity_id=str(group_id), action="member.add",
           changes={"person_id": str(person.id)})
     await db.commit()
-    has_account = await _has_account(db, person.id)
-    return _member_out(group, member, person, has_account)
+    return _member_out(group, member, person, await _account_email(db, person.id))
 
 
 def apply_member_overrides(member: NotificationGroupMember,
                             body: NotificationMemberOverrides,
-                            person: Person, has_account: bool) -> dict:
+                            person: Person, account_email: str | None) -> dict:
     """Validate `body` (same rules as `validate_settings` plus the
     quiet-mode/quiet-hours and channel-capability checks) and apply it onto
     `member` in place. Returns the snapshot diff (empty if nothing
     changed) so the caller decides whether to audit. Shared by the admin
     member-override PATCH and the self-service one under /auth/me — same
-    rules for both, only the caller (and thus the audit action) differs."""
+    rules for both, only the caller (and thus the audit action) differs.
+    `account_email` is the person's sign-in email, None without an account."""
     validate_settings(body, check_quiet_hours=False)
 
     fields_set = body.model_fields_set
@@ -352,7 +367,7 @@ def apply_member_overrides(member: NotificationGroupMember,
             raise _err(422, "invalid_quiet_hours")
 
     if "channels" in fields_set and body.channels is not None:
-        caps = capabilities(person, has_account)
+        caps = capabilities(person, account_email is not None, account_email)
         allowed = {ch for ch, cap_key in CHANNEL_CAPABILITY.items() if caps[cap_key]}
         if not set(body.channels) <= allowed:
             raise _err(422, "channel_unavailable")
@@ -377,14 +392,14 @@ async def patch_member(
     member = await _get_member(db, group_id, person_id)
     group = await _get_group(db, group_id)
     person = await db.get(Person, person_id)
-    has_account = await _has_account(db, person_id)
+    account_email = await _account_email(db, person_id)
 
-    changes = apply_member_overrides(member, body, person, has_account)
+    changes = apply_member_overrides(member, body, person, account_email)
     if changes:
         audit(db, actor_id=actor.person.id, entity_type="notification_group",
               entity_id=str(group_id), action="member.update", changes=changes)
     await db.commit()
-    return _member_out(group, member, person, has_account)
+    return _member_out(group, member, person, account_email)
 
 
 @router.delete("/groups/{group_id}/members/{person_id}", status_code=204)
@@ -482,15 +497,15 @@ async def list_recipients(
     _actor: AuthContext = require_permission("notifications", "change"),
 ) -> list[NotificationRecipientOut]:
     rows = (await db.execute(
-        select(Person, UserAccount.person_id)
+        select(Person, UserAccount.email)
         .outerjoin(UserAccount, UserAccount.person_id == Person.id)
         .where(Person.archived_at.is_(None),
                Person.source != KIOSK_MOVE_SOURCE)   # a move's hidden kiosk identity
         .order_by(natural(Person.last_name), natural(Person.first_name)))).all()
     out = []
-    for person, account_id in rows:
-        has_account = account_id is not None
-        caps = capabilities(person, has_account)
+    for person, account_email in rows:
+        has_account = account_email is not None
+        caps = capabilities(person, has_account, account_email)
         out.append(NotificationRecipientOut(
             person_id=person.id, display_name=person.display_name,
             job_title=person.job_title, avatar_url=presign_get(person.avatar_key),
@@ -639,3 +654,148 @@ async def inbox_clear_read(user: CurrentUser, db: DbSession) -> Response:
         row.dismissed_at = now
     await db.commit()
     return Response(status_code=204)
+
+
+# ── delivery log + Check delivery (super admin and above) ─────────────
+# Gated notifications:view, then ensure_super_admin: every decision names
+# people, and an email's entry shows the address it went to.
+
+LOG_LIMIT = 100         # default page size
+LOG_MAX_LIMIT = 500
+_MAX_LOG_ID = 2**63 - 1     # notification_log.id is a bigint
+
+# The same text as Person.display_name, NULL for an entry that names no
+# person (`||` keeps the NULL where concat() would make it " ").
+_PERSON_NAME = (func.coalesce(func.nullif(Person.preferred_name, ""), Person.first_name)
+                + " " + Person.last_name)
+
+
+def _decode_log_cursor(cursor: str) -> int:
+    """The id the previous page ended on: `next_cursor` is that id as text.
+    Anything else is a 422 `invalid_cursor`."""
+    try:
+        after = int(cursor)
+    except ValueError:
+        raise _err(422, "invalid_cursor") from None
+    if not 1 <= after <= _MAX_LOG_ID:
+        raise _err(422, "invalid_cursor")
+    return after
+
+
+def _log_entry(entry: NotificationLog, person_name: str | None, title: str | None,
+               link: str | None, to_address: str | None,
+               outbox_status: str | None) -> DeliveryLogEntryOut:
+    """One row as the Delivery log shows it; the address and status come
+    from the outbox row the entry points at."""
+    info = kind_info(entry.kind) if entry.kind else None
+    return DeliveryLogEntryOut(
+        id=entry.id, at=entry.at, event=entry.event, channel=entry.channel,
+        reason=entry.reason, kind=entry.kind,
+        kind_label=info.label if info else entry.kind,
+        category=entry.category, detail=entry.detail, process=entry.process,
+        person_id=entry.person_id, person_name=person_name,
+        notification_id=entry.notification_id, notification_title=title,
+        notification_link=link, outbox_id=entry.outbox_id,
+        to_address=to_address, outbox_status=outbox_status)
+
+
+def _with_names(stmt):
+    """`stmt` over the log, outer-joined to the person, notification and
+    outbox email each entry points at (at most one of each)."""
+    return (stmt.select_from(NotificationLog)
+            .outerjoin(Person, Person.id == NotificationLog.person_id)
+            .outerjoin(Notification, Notification.id == NotificationLog.notification_id)
+            .outerjoin(EmailOutbox, EmailOutbox.id == NotificationLog.outbox_id))
+
+
+@router.get("/log", response_model=DeliveryLogPageOut)
+async def delivery_log(
+    db: DbSession,
+    cursor: str | None = None,
+    limit: int = Query(LOG_LIMIT, ge=1, le=LOG_MAX_LIMIT),
+    q: str = "",
+    event: list[str] | None = Query(None),
+    channel: str | None = None,
+    category: str | None = None,
+    since: AwareDatetime | None = None,
+    person_id: uuid.UUID | None = None,
+    notification_id: uuid.UUID | None = None,
+    outbox_id: uuid.UUID | None = None,
+    actor: AuthContext = require_permission("notifications", "view"),
+) -> DeliveryLogPageOut:
+    """Every notification and email decision, newest first, a page at a time
+    (`cursor` is the previous page's `next_cursor`). `q` finds literal text in
+    the person's name, the notification's title or the kind (the template,
+    for mail that mirrors no notification); `event` may repeat, each one of
+    the log's events; `since` is an aware time. Super admin and above."""
+    ensure_super_admin(actor)
+    if event and not set(event) <= set(EVENTS):
+        raise _err(422, "invalid_event")
+    after = _decode_log_cursor(cursor) if cursor is not None else None
+
+    shown = []
+    if event:
+        shown.append(NotificationLog.event.in_(event))
+    for column, value in ((NotificationLog.channel, channel),
+                          (NotificationLog.category, category),
+                          (NotificationLog.person_id, person_id),
+                          (NotificationLog.notification_id, notification_id),
+                          (NotificationLog.outbox_id, outbox_id)):
+        if value is not None:
+            shown.append(column == value)
+    if since is not None:
+        shown.append(NotificationLog.at >= since)
+    if needle := q.strip():
+        # literal text: its %, _ and backslashes are not wildcards
+        escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        shown.append(or_(*(column.ilike(f"%{escaped}%", escape="\\") for column in
+                           (_PERSON_NAME, Notification.title, NotificationLog.kind))))
+    total = await db.scalar(_with_names(select(func.count())).where(*shown))
+
+    query = _with_names(select(
+        NotificationLog, _PERSON_NAME, Notification.title, Notification.link,
+        EmailOutbox.to_address, EmailOutbox.status)).where(*shown)
+    if after is not None:
+        query = query.where(NotificationLog.id < after)
+    rows = (await db.execute(
+        query.order_by(NotificationLog.id.desc()).limit(limit + 1))).all()
+    page = rows[:limit]                    # one past the page: is there another?
+    return DeliveryLogPageOut(
+        rows=[_log_entry(*row) for row in page],
+        next_cursor=str(page[-1][0].id) if len(rows) > limit else None,
+        total=int(total or 0))
+
+
+@router.get("/check", response_model=DeliveryCheckOut)
+async def check_delivery(
+    db: DbSession,
+    person_id: uuid.UUID,
+    kind: str,
+    owner_copy: bool | None = None,
+    actor: AuthContext = require_permission("notifications", "view"),
+) -> DeliveryCheckOut:
+    """What would happen right now if this person got a notification of this
+    registered kind: the inbox row, the email's outcome and why, the address,
+    and each of the person's groups. Writes nothing. For a kind the account
+    owner always receives, `owner_copy=false` models an admin's copy instead
+    of the owner's. Super admin and above."""
+    ensure_super_admin(actor)
+    if kind not in KINDS:
+        raise _err(422, "invalid_kind")
+    if await db.get(Person, person_id) is None:
+        raise _err(404, "person_not_found")
+    return DeliveryCheckOut(**await delivery_check.check_delivery(
+        db, person_id, kind, owner_copy=owner_copy, now=datetime.now(UTC)))
+
+
+@router.get("/kinds", response_model=list[NotificationKindOut])
+async def list_kinds(
+    actor: AuthContext = require_permission("notifications", "view"),
+) -> list[NotificationKindOut]:
+    """The registered notification kinds in registry order, for Check
+    delivery's picker. Super admin and above."""
+    ensure_super_admin(actor)
+    return [NotificationKindOut(kind=kind, label=info.label, category=info.category,
+                                email=info.email, owner_always=info.owner_always,
+                                urgent=info.urgent)
+            for kind, info in KINDS.items()]

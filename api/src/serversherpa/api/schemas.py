@@ -2982,6 +2982,101 @@ class NotificationInboxOut(BaseModel):
     total: int
 
 
+# ── notification delivery log + Check delivery (super admin and above) ──
+
+class DeliveryLogEntryOut(BaseModel):
+    """One notification_log row with the names it points at. `kind_label` is
+    the registry label, or the kind/template itself for one the registry does
+    not list. `to_address` and `outbox_status` come from the email_outbox row
+    the entry points at: the log row itself never holds an address."""
+
+    id: int
+    at: datetime
+    event: str
+    channel: str
+    reason: str | None = None
+    kind: str | None = None
+    kind_label: str | None = None
+    category: str | None = None
+    detail: dict
+    process: str | None = None
+    person_id: uuid.UUID | None = None
+    person_name: str | None = None
+    notification_id: uuid.UUID | None = None
+    notification_title: str | None = None
+    notification_link: str | None = None
+    outbox_id: uuid.UUID | None = None
+    to_address: str | None = None
+    outbox_status: str | None = None
+
+
+class DeliveryLogPageOut(BaseModel):
+    """One page of the delivery log, newest first. `total` counts every row
+    matching the filters, not only this page; `next_cursor` (the last row's
+    id, as text) is null on the last page."""
+
+    rows: list[DeliveryLogEntryOut]
+    next_cursor: str | None = None
+    total: int
+
+
+class DeliveryCheckGroupOut(BaseModel):
+    """One group the person belongs to, with its effective settings for
+    them. `verdict` is the group's answer right now (open, quiet_hours,
+    inactive_day, urgent_bypass, no_email_channel) when it is enabled and
+    covers the category, else `paused` or `not_subscribed`; `allowed_at` is
+    the earliest it allows the email (null: never, or not asked)."""
+
+    group_id: uuid.UUID
+    name: str
+    enabled: bool
+    subscribed: bool
+    email_channel: bool
+    verdict: str
+    allowed_at: datetime | None = None
+    quiet_start: time | None = None
+    quiet_end: time | None = None
+    timezone: str
+    active_days: list[str]
+
+
+class DeliveryCheckOut(BaseModel):
+    """What would happen right now if this person got a notification of this
+    kind. Nothing is written. `outcome` is the email's: sent now, held until
+    `send_at`, or not sent (`reason` says why; for a held email, why it
+    waits). `owner_copy` is the copy that was modeled."""
+
+    person_id: uuid.UUID
+    person_name: str
+    kind: str
+    kind_label: str
+    category: str
+    email_source: str
+    owner_copy: bool
+    active: bool
+    has_account: bool
+    choice: str
+    inbox: Literal["written", "suppressed"]
+    email_enabled: bool
+    outcome: Literal["now", "held", "not_sent"]
+    send_at: datetime | None = None
+    reason: str | None = None
+    address: str | None = None
+    address_source: str | None = None
+    groups: list[DeliveryCheckGroupOut]
+
+
+class NotificationKindOut(BaseModel):
+    """One registered notification kind, for the Check delivery picker."""
+
+    kind: str
+    label: str
+    category: str
+    email: bool
+    owner_always: bool
+    urgent: bool
+
+
 # ── notification-group membership requests (self-service + approval) ──
 
 class MembershipRequestOut(BaseModel):

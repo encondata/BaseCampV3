@@ -19,9 +19,9 @@ from fastapi import (
 from sqlalchemy import update, delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from serversherpa.access.defaults import SUPER_ADMIN_RANK
 from serversherpa.api.deps import (
-    AuthContext, DbSession, authenticate_token, password_change_owed, require_permission,
+    AuthContext, DbSession, authenticate_token, ensure_super_admin, password_change_owed,
+    require_permission,
 )
 from serversherpa.api.routes.attachments import MAX_IMAGE_BYTES, _sniff_image
 from serversherpa.api.schemas import (
@@ -69,17 +69,12 @@ def _err(status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra})
 
 
-def _require_super_admin(actor: AuthContext) -> None:
-    if not actor.access.is_global or actor.access.max_rank < SUPER_ADMIN_RANK:
-        raise _err(403, "forbidden")
-
-
 @router.get("/processes", response_model=list[SystemProcessOut])
 async def list_processes(
     db: DbSession,
     actor: AuthContext = require_permission("dashboard", "view"),
 ) -> list[SystemProcessOut]:
-    _require_super_admin(actor)
+    ensure_super_admin(actor)
     now = datetime.now(UTC)
     rows = (await db.scalars(select(SystemProcess))).all()
     out = []

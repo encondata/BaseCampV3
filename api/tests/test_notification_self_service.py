@@ -179,6 +179,23 @@ async def test_patch_overrides_invalid_quiet_hours_422(client, db, seeded_user):
     assert resp.json()["detail"]["code"] == "invalid_quiet_hours"
 
 
+async def test_patch_overrides_email_with_only_a_login_email(client, db, seeded_user):
+    """No profile email, but the sign-in email the sender falls back to: an
+    Email channel override is reachable, not channel_unavailable."""
+    seeded_user.email = None
+    await db.commit()
+    hdrs = await _login_alice(client)
+    group = await _group(db, "On-call")
+    db.add(NotificationGroupMember(group_id=group.id, person_id=seeded_user.id))
+    await db.commit()
+
+    resp = await client.patch(
+        f"/auth/me/notification-groups/{group.id}/overrides", headers=hdrs,
+        json={"channels": ["email"]})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["overrides"]["channels"] == ["email"]
+
+
 async def test_patch_overrides_non_member_404(client, db, seeded_user):
     hdrs = await login_admin(client, db, seeded_user)
     group = await _group(db, "On-call")
