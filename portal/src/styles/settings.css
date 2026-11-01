@@ -25,6 +25,11 @@
 }
 .set-head h3 { margin: 0; font-size: 15px; font-weight: 600; color: var(--text-dark); }
 .set-head p { margin: 3px 0 0; font-size: 12.5px; font-weight: 300; color: var(--text-mute); }
+/* A section head with an action at its right edge: the title block (h3 + p)
+   fills the row and the button drops below it when the section is narrow. */
+.set-head-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px 20px; flex-wrap: wrap; }
+.set-head-actions > div { flex: 1 1 320px; min-width: 0; }
+.set-head-actions .mini-btn { text-decoration: none; }   /* a link, not a button */
 
 .set-row {
   display: flex;
@@ -225,6 +230,11 @@
 /* Notice line inside a .set-section (e.g. email-off hint on /me › Notifications). */
 .set-hint { margin: 0; padding: 12px 20px; border-bottom: 1px solid var(--paper-line); }
 .set-section .data-table-scroll { border-bottom: 1px solid var(--paper-line); }
+
+/* /me › Notifications delivery choice: "Inbox + Email" is dimmed and inert when
+   nothing could send the email (its title says why), and doesn't light up on hover. */
+.delivery-seg button:disabled { opacity: 0.45; cursor: default; }
+.delivery-seg button:disabled:hover { color: var(--text-mute); }
 
 /* ── System settings › Branding ───────────────────────────── */
 

@@ -65,17 +65,28 @@ describe('toGroupDetail', () => {
 });
 
 describe('toMember', () => {
-  it('derives capability flags from the person\'s email/phone, and always allows push/web', () => {
+  it('derives can_text from the person\'s phone, and always allows email/push/web', () => {
     const member = toMember(GROUP, {
       id: 'p1', display_name: 'Ada Lovelace', email: 'ada@test.example.com', phone: null,
     });
     expect(member.person_id).toBe('p1');
     expect(member.display_name).toBe('Ada Lovelace');
+    expect(member.email).toBe('ada@test.example.com');
     expect(member.can_email).toBe(true);
     expect(member.can_text).toBe(false);
     expect(member.can_push).toBe(true);
     expect(member.can_web).toBe(true);
     expect(member.has_account).toBe(true);
+  });
+
+  it('can_email stays true for a person with no profile email: the sign-in email counts', () => {
+    // The sender falls back to the sign-in email (user_accounts.email is NOT NULL),
+    // so a signed-in person is always reachable by email.
+    for (const email of [null, undefined]) {
+      const member = toMember(GROUP, { id: 'p1', display_name: 'Ada Lovelace', email });
+      expect(member.can_email).toBe(true);
+      expect(member.email).toBeNull(); // nothing to show as the contact address
+    }
   });
 
   it('passes the group\'s overrides/effective through unchanged when present', () => {

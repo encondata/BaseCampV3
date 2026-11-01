@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { useAuth } from '../../auth/AuthContext';
 import MembershipRequestModal from '../../components/notifications/MembershipRequestModal';
@@ -81,12 +82,16 @@ export default function MeNotifications() {
 
       <div className="set-stack">
         <section className="set-section">
-          <div className="set-head">
-            <h3>Notifications</h3>
-            <p>
-              Emails go to your contact email. Your groups decide which categories can email
-              you and when; here you can turn them down.
-            </p>
+          <div className="set-head set-head-actions">
+            <div>
+              <h3>Notifications</h3>
+              <p>
+                Emails go to your contact email; account security notices go to your sign-in
+                email. Your groups decide which categories can email you and when — here you
+                can turn them down.
+              </p>
+            </div>
+            <Link className="mini-btn" to="/notifications">View all notifications</Link>
           </div>
           {!status.email_enabled && (
             <p className="page-hint set-hint">
@@ -96,6 +101,7 @@ export default function MeNotifications() {
           <CategoryDelivery
             categories={preferences.notif.categories}
             groups={groups}
+            emailEnabled={status.email_enabled}
             onChange={(category, choice) => update({
               notif: {
                 ...preferences.notif,

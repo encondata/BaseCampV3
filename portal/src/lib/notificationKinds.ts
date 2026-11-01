@@ -9,12 +9,22 @@ import type { DeliveryChoice, MyNotificationGroup, NotificationCategory } from '
 
 export type { DeliveryChoice, NotificationCategory };
 
-export const NOTIFICATION_CATEGORIES: { key: NotificationCategory; label: string }[] = [
-  { key: 'approvals', label: 'Approvals & requests' },
-  { key: 'reports', label: 'Reports & labels' },
-  { key: 'wiki', label: 'Wiki' },
-  { key: 'learning', label: 'Learning' },
-  { key: 'security', label: 'Account security' },
+/** Where a category's email permission comes from — CATEGORY_EMAIL_SOURCE in
+ *  the API's notifications/kinds.py:
+ *  - 'groups': one of the person's groups must subscribe to the category
+ *    with Email among its effective channels;
+ *  - 'always': the owner's own notices email whatever the groups say
+ *    (account security);
+ *  - 'direct': email follows the person's /me choice alone (reserved for a
+ *    later category; no group is involved). */
+export type EmailSource = 'groups' | 'always' | 'direct';
+
+export const NOTIFICATION_CATEGORIES: { key: NotificationCategory; label: string; emailSource: EmailSource }[] = [
+  { key: 'approvals', label: 'Approvals & requests', emailSource: 'groups' },
+  { key: 'reports', label: 'Reports & labels', emailSource: 'groups' },
+  { key: 'wiki', label: 'Wiki', emailSource: 'groups' },
+  { key: 'learning', label: 'Learning', emailSource: 'groups' },
+  { key: 'security', label: 'Account security', emailSource: 'always' },
 ];
 
 export const DELIVERY_CHOICES: { key: DeliveryChoice; label: string }[] = [

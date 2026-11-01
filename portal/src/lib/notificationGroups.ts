@@ -58,10 +58,10 @@ export function toGroupDetail(g: MyNotificationGroup): NotificationGroupDetail {
 }
 
 /** Adapts a MyNotificationGroup + the signed-in person into the
- *  NotificationMember shape OverrideEditorModal expects. Capability flags
- *  come straight from what's on the person's own profile — can_push/
+ *  NotificationMember shape OverrideEditorModal expects. can_text comes
+ *  from the phone on the person's own profile; can_email, can_push and
  *  can_web are always true because reaching /me/notifications requires a
- *  signed-in account. */
+ *  signed-in account (which always has a sign-in email). */
 export function toMember(
   g: MyNotificationGroup,
   person: {
@@ -89,7 +89,7 @@ export function toMember(
     email: person.email ?? null,
     phone: person.phone ?? null,
     has_account: true,
-    can_email: !!person.email,
+    can_email: true, // the sender falls back to the sign-in email, and every account has one
     can_text: !!person.phone,
     can_push: true,
     can_web: true,

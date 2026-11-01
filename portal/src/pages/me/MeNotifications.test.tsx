@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { ApiError, type MyNotificationGroup, type UiPreferences } from '../../lib/api';
@@ -7,6 +8,8 @@ import { LIST_FIT } from '../../lib/listTools';
 
 const auth = vi.hoisted(() => ({
   updatePreferences: vi.fn(async (_prefs: UiPreferences) => true),
+  // The person's saved choices; beforeEach resets them, tests change them.
+  categories: {} as UiPreferences['notif']['categories'],
 }));
 
 vi.mock('../../auth/AuthContext', () => ({
@@ -23,10 +26,7 @@ vi.mock('../../auth/AuthContext', () => ({
       nav_bg: 'default',
       nav_size: 'default',
       list_view: 'expanded',
-      notif: {
-        sound: 'chime',
-        categories: { approvals: 'email', reports: 'inbox', wiki: 'email', learning: 'email', security: 'email' },
-      },
+      notif: { sound: 'chime', categories: auth.categories },
       list_prefs: {},
     } satisfies UiPreferences,
     updatePreferences: auth.updatePreferences,
@@ -81,11 +81,20 @@ beforeEach(() => {
   api.updateMyGroupOverrides.mockReset();
   api.requestGroupMembership.mockReset();
   api.cancelMembershipRequest.mockReset();
+  auth.categories = { approvals: 'email', reports: 'inbox', wiki: 'email', learning: 'email', security: 'email' };
+  status.email_enabled = true;
 });
 
-const { default: MeNotifications } = await import('./MeNotifications');
+const { default: MeNotificationsPage } = await import('./MeNotifications');
+const { default: CategoryDelivery } = await import('./CategoryDelivery');
+
+// The page links to /notifications, so it renders inside a router like the real app.
+const MeNotifications = () => <MemoryRouter><MeNotificationsPage /></MemoryRouter>;
 
 const delivery = (label: string) => screen.getByRole('group', { name: `${label} delivery` });
+
+const SECTION_COPY = 'Emails go to your contact email; account security notices go to your sign-in email. '
+  + 'Your groups decide which categories can email you and when — here you can turn them down.';
 
 it('replaces the four old switches with a per-category delivery table', async () => {
   api.listMyNotificationGroups.mockResolvedValueOnce([]);
@@ -97,12 +106,12 @@ it('replaces the four old switches with a per-category delivery table', async ()
   for (const label of ['Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Account security']) {
     expect(within(table).getByText(label)).toBeTruthy();
   }
-  expect(screen.getByText(/Emails go to your contact email\. Your groups decide which categories can email you and when; here you can turn them down\./)).toBeTruthy();
+  expect(screen.getByText(SECTION_COPY)).toBeTruthy();
   expect(screen.queryByText('Appearance')).toBeNull();
 });
 
-it('shows each stored choice as the pressed segment', async () => {
-  api.listMyNotificationGroups.mockResolvedValueOnce([]);
+it('while the groups load, each stored choice shows as the pressed segment and nothing is disabled', async () => {
+  api.listMyNotificationGroups.mockReturnValueOnce(new Promise(() => {}));   // never settles
   render(<MeNotifications />);
   const pressed = (label: string) =>
     within(delivery(label)).getAllByRole('button').filter((b) => b.getAttribute('aria-pressed') === 'true')
@@ -111,6 +120,12 @@ it('shows each stored choice as the pressed segment', async () => {
   expect(pressed('Reports & labels')).toEqual(['Inbox only']);
   expect(within(delivery('Wiki')).getAllByRole('button').map((b) => b.textContent))
     .toEqual(['Inbox + Email', 'Inbox only', 'Off']);
+  for (const label of ['Approvals & requests', 'Reports & labels', 'Wiki', 'Learning']) {
+    for (const b of within(delivery(label)).getAllByRole('button')) {
+      expect((b as HTMLButtonElement).disabled).toBe(false);
+      expect(b.hasAttribute('title')).toBe(false);
+    }
+  }
 });
 
 it('choosing a delivery saves the merged notif.categories object', async () => {
@@ -450,4 +465,152 @@ it('Edit overrides opens the override modal and wires onSave to updateMyGroupOve
   fireEvent.click(screen.getByRole('button', { name: 'mock-save' }));
   await waitFor(() => expect(api.updateMyGroupOverrides)
     .toHaveBeenCalledWith('g1', { urgent_bypass: true }));
+});
+
+// ── the delivery table only offers email that can happen ─────────────────
+// What the control shows is what will really happen; the saved choice is
+// never rewritten by looking at the page.
+
+/** A group the person belongs to whose effective channels include email. */
+const emailing = (...categories: string[]): MyNotificationGroup => ({
+  ...G1, categories, effective_channels: ['email'],
+});
+const choiceButton = (label: string, name: string) =>
+  within(delivery(label)).getByRole('button', { name }) as HTMLButtonElement;
+const emailButton = (label: string) => choiceButton(label, 'Inbox + Email');
+const pressedOf = (label: string) =>
+  within(delivery(label)).getAllByRole('button').filter((b) => b.getAttribute('aria-pressed') === 'true')
+    .map((b) => b.textContent);
+const rowOf = (label: string) =>
+  within(screen.getByRole('table', { name: 'Notification delivery' })).getByText(label).closest('tr') as HTMLElement;
+const GROUP_SOURCED = ['Approvals & requests', 'Reports & labels', 'Wiki', 'Learning'];
+
+it('shows inbox only when no group emails the category', async () => {
+  auth.categories = { ...auth.categories, reports: 'email' };
+  api.listMyNotificationGroups.mockResolvedValueOnce([]);
+  render(<MeNotifications />);
+
+  await waitFor(() => expect(emailButton('Reports & labels').disabled).toBe(true));
+  expect(emailButton('Reports & labels').title).toBe('None of your groups email this category');
+  expect(emailButton('Reports & labels').getAttribute('aria-pressed')).toBe('false');
+  expect(choiceButton('Reports & labels', 'Inbox only').getAttribute('aria-pressed')).toBe('true');
+  expect(choiceButton('Reports & labels', 'Inbox only').disabled).toBe(false);
+  expect(within(rowOf('Reports & labels')).getByText('No group — inbox only')).toBeTruthy();
+  // Saved as Inbox + Email, and nothing can email them: all four read Inbox only.
+  for (const label of GROUP_SOURCED) expect(pressedOf(label)).toEqual(['Inbox only']);
+  expect(auth.updatePreferences).not.toHaveBeenCalled();   // looking changes nothing
+});
+
+it('turns email back on once a group emails it', () => {
+  const onChange = vi.fn();
+  const props = { categories: { ...auth.categories, reports: 'email' as const }, emailEnabled: true, onChange };
+  const { rerender } = render(<CategoryDelivery {...props} groups={[]} />);
+  expect(emailButton('Reports & labels').disabled).toBe(true);
+  expect(pressedOf('Reports & labels')).toEqual(['Inbox only']);
+
+  rerender(<CategoryDelivery {...props} groups={[emailing('reports')]} />);
+  expect(emailButton('Reports & labels').disabled).toBe(false);
+  expect(emailButton('Reports & labels').hasAttribute('title')).toBe(false);
+  expect(pressedOf('Reports & labels')).toEqual(['Inbox + Email']);
+  expect(within(rowOf('Reports & labels')).getByText('Ops')).toBeTruthy();   // the group, as a chip
+  expect(onChange).not.toHaveBeenCalled();
+});
+
+it('the same page shows Inbox + Email again once a reload finds a group that emails it, with no extra click', async () => {
+  auth.categories = { ...auth.categories, reports: 'email' };
+  api.listMyNotificationGroups.mockResolvedValueOnce([G2]);                 // in no group yet
+  api.requestGroupMembership.mockResolvedValueOnce({
+    id: 'req3', group_id: 'g2', group_name: 'Warehouse Alerts', person_id: 'ada1', person_name: 'Ada Lovelace',
+    action: 'join', status: 'pending', note: '', decided_by_name: null, decided_at: null,
+    decision_note: '', created_at: '2026-09-10T00:00:00Z',
+  });
+  // By the time the page reloads its groups, the join has been approved.
+  api.listMyNotificationGroups.mockResolvedValueOnce([
+    { ...emailing('reports'), id: 'g2', name: 'Warehouse Alerts' },
+  ]);
+  render(<MeNotifications />);
+  await waitFor(() => expect(emailButton('Reports & labels').disabled).toBe(true));
+  expect(pressedOf('Reports & labels')).toEqual(['Inbox only']);
+
+  pickAction('Join a group', 'Ask to join');
+  fireEvent.click(screen.getByRole('button', { name: 'Send request' }));
+
+  await waitFor(() => expect(emailButton('Reports & labels').disabled).toBe(false));
+  expect(pressedOf('Reports & labels')).toEqual(['Inbox + Email']);
+  expect(auth.updatePreferences).not.toHaveBeenCalled();                    // the saved choice was never touched
+});
+
+it('with email off on the server, every category reads inbox only and says why', async () => {
+  status.email_enabled = false;
+  api.listMyNotificationGroups.mockResolvedValueOnce([emailing('approvals', 'reports', 'wiki', 'learning')]);
+  render(<MeNotifications />);
+
+  await waitFor(() => expect(emailButton(GROUP_SOURCED[0]).disabled).toBe(true));
+  for (const label of GROUP_SOURCED) {
+    expect(emailButton(label).disabled).toBe(true);
+    expect(emailButton(label).title).toBe("Email isn't set up on this server");
+    expect(pressedOf(label)).toEqual(['Inbox only']);
+    const from = within(rowOf(label));
+    expect(from.getByText("Email isn't set up")).toBeTruthy();
+    expect(from.queryByText('Ops')).toBeNull();   // a group can't email what the server can't send
+  }
+  const security = within(rowOf('Account security'));
+  expect(security.getByText("Inbox only — email isn't set up")).toBeTruthy();
+  expect(security.queryByText('Always emailed')).toBeNull();
+  expect(auth.updatePreferences).not.toHaveBeenCalled();
+});
+
+it('keeps the saved choice: clicking Inbox only while it already shows as selected sends no update', async () => {
+  auth.categories = { ...auth.categories, wiki: 'email', learning: 'off' };
+  api.listMyNotificationGroups.mockResolvedValueOnce([]);
+  render(<MeNotifications />);
+  await waitFor(() => expect(emailButton('Wiki').disabled).toBe(true));
+
+  fireEvent.click(choiceButton('Wiki', 'Inbox only'));   // already the one shown as selected
+  fireEvent.click(emailButton('Wiki'));                  // disabled
+  expect(auth.updatePreferences).not.toHaveBeenCalled();
+  expect(screen.queryByText('saved')).toBeNull();
+  expect(pressedOf('Learning')).toEqual(['Off']);        // an Off choice is not relabeled
+
+  // A deliberate change still saves, and every other saved choice goes up as it was.
+  fireEvent.click(choiceButton('Wiki', 'Off'));
+  await waitFor(() => expect(auth.updatePreferences).toHaveBeenCalledTimes(1));
+  expect(auth.updatePreferences.mock.calls[0][0].notif.categories)
+    .toEqual({ approvals: 'email', reports: 'inbox', wiki: 'off', learning: 'off', security: 'email' });
+});
+
+it('links to all notifications from the section head, under the new copy', async () => {
+  api.listMyNotificationGroups.mockResolvedValueOnce([]);
+  render(<MeNotifications />);
+
+  const link = screen.getByRole('link', { name: 'View all notifications' });
+  expect(link.getAttribute('href')).toBe('/notifications');
+  expect(link.classList.contains('mini-btn')).toBe(true);
+  const head = link.closest('.set-head') as HTMLElement;
+  expect(within(head).getByRole('heading', { name: 'Notifications', level: 3 })).toBeTruthy();
+  expect(within(head).getByText(SECTION_COPY)).toBeTruthy();
+});
+
+it('a direct category needs no group: Inbox + Email stays enabled and pressed', () => {
+  const direct = [{ key: 'reports' as const, label: 'Reports & labels', emailSource: 'direct' as const }];
+  const categories = { ...auth.categories, reports: 'email' as const };
+  const { rerender } = render(
+    <CategoryDelivery categories={categories} groups={[]} emailEnabled categoryList={direct}
+                      onChange={() => {}} />,
+  );
+  expect(emailButton('Reports & labels').disabled).toBe(false);
+  expect(pressedOf('Reports & labels')).toEqual(['Inbox + Email']);
+  // No group is involved, so the column has none to name and makes no "No group" claim.
+  const from = within(rowOf('Reports & labels'));
+  expect(from.queryByText('No group — inbox only')).toBeNull();
+  expect(from.getByText('—')).toBeTruthy();
+
+  // It still needs a server that can send email.
+  rerender(
+    <CategoryDelivery categories={categories} groups={[]} emailEnabled={false} categoryList={direct}
+                      onChange={() => {}} />,
+  );
+  expect(emailButton('Reports & labels').disabled).toBe(true);
+  expect(emailButton('Reports & labels').title).toBe("Email isn't set up on this server");
+  expect(pressedOf('Reports & labels')).toEqual(['Inbox only']);
 });
