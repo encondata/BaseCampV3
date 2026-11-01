@@ -77,6 +77,15 @@ const titlesIn = (group: string) =>
   within(screen.getByRole('list', { name: group })).getAllByRole('listitem')
     .map((r) => r.querySelector('.notif-title')?.textContent);
 const lastQuery = () => api.listInboxPage.mock.lastCall![0];
+const listCard = () => document.querySelector('.dir-list') as HTMLElement;
+
+/** A promise the test settles by hand, to hold a page-1 reload open. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+type Page = ReturnType<typeof page>;
 
 beforeEach(() => {
   ctx.unreadCount = 0;
@@ -395,21 +404,58 @@ it('Clear read hides the loaded read rows at once, before the server has answere
   expect(api.listInboxPage).toHaveBeenCalledTimes(1);
 });
 
-it('a reload brings in the server state: a row marked unread on the page is read again after Mark all read', async () => {
+// The hook keeps the old rows on screen until page 1 lands, so the page's patches stay on them until then
+// and go when the fresh rows arrive. The tests below hold the reload open to see both sides of that.
+
+it('Mark all read keeps the rows read while page 1 reloads; when the fresh rows land their word wins', async () => {
   const user = userEvent.setup();
   const readAt = new Date().toISOString();
-  api.listInboxPage.mockResolvedValueOnce(page([item('a', { read_at: readAt })]))
-    .mockResolvedValue(page([item('a', { read_at: readAt })]));
-  ctx.unreadCount = 0;
+  const reload = deferred<Page>();
+  ctx.unreadCount = 2;
+  api.listInboxPage.mockResolvedValueOnce(page([item('a'), item('b')])).mockReturnValueOnce(reload.promise);
   renderPage();
   await screen.findByText('Report a');
-  await user.click(screen.getByRole('button', { name: 'Mark unread' }));
-  expect(rowOf('Report a').className).toContain('unread');             // overlay: unread
-  expect(screen.getByRole('button', { name: 'Mark all read' }).hasAttribute('disabled')).toBe(false);
 
   await user.click(screen.getByRole('button', { name: 'Mark all read' }));
-  await waitFor(() => expect(api.listInboxPage).toHaveBeenCalledTimes(2));
-  await waitFor(() => expect(rowOf('Report a').className).not.toContain('unread'));   // the server's word wins
+  await waitFor(() => expect(api.listInboxPage).toHaveBeenCalledTimes(2));            // the reload is out, held open
+  await waitFor(() => expect(listCard().getAttribute('aria-busy')).toBe('true'));      // and the page shows it is loading
+  expect(rowOf('Report a').className).not.toContain('unread');                         // the old rows keep what was painted on them
+  expect(rowOf('Report b').className).not.toContain('unread');
+
+  reload.resolve(page([item('a', { read_at: readAt }), item('b')]));                   // the server: b is unread (someone marked it again)
+  await waitFor(() => expect(rowOf('Report b').className).toContain('unread'));        // fresh rows replace the patches
+  expect(rowOf('Report a').className).not.toContain('unread');
+  expect(listCard().getAttribute('aria-busy')).toBe('false');
+});
+
+it('a row marked read stays read while an All to Unread switch loads; the new view then brings in the server state', async () => {
+  const user = userEvent.setup();
+  const reload = deferred<Page>();
+  api.listInboxPage.mockResolvedValueOnce(page([item('a'), item('b')])).mockReturnValueOnce(reload.promise);
+  renderPage();
+  await screen.findByText('Report a');
+  await user.click(within(rowOf('Report a')).getByRole('button', { name: 'Mark read' }));
+
+  await user.click(screen.getByRole('button', { name: 'Unread' }));
+  await waitFor(() => expect(lastQuery()).toMatchObject({ unreadOnly: true }));
+  expect(rowOf('Report a').className).not.toContain('unread');                         // the old view is still up, with its patch
+  expect(rowOf('Report b').className).toContain('unread');
+
+  reload.resolve(page([item('b')]));                                                   // the server: only b is unread
+  await waitFor(() => expect(screen.queryByText('Report a')).toBeNull());
+  expect(rowOf('Report b').className).toContain('unread');
+});
+
+it('"Load more" keeps what the page painted on the rows it already showed', async () => {
+  const user = userEvent.setup();
+  api.listInboxPage.mockResolvedValueOnce(page([item('a')], 'cursor-2')).mockResolvedValueOnce(page([item('b')], null));
+  renderPage();
+  await screen.findByText('Report a');
+  await user.click(screen.getByRole('button', { name: 'Mark read' }));                  // only a is on screen
+  await user.click(screen.getByRole('button', { name: 'Load more' }));
+  await screen.findByText('Report b');
+  expect(rowOf('Report a').className).not.toContain('unread');
+  expect(rowOf('Report b').className).toContain('unread');
 });
 
 it('Clear read goes through the shared inbox, then reloads page 1', async () => {
@@ -551,6 +597,40 @@ it('the approve/reject strips work on the page: Approve decides, then the bell a
   expect(await screen.findByText('Approved by Ada')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
   expect(screen.queryByText('reports page')).toBeNull();               // a strip click never opens the row
+});
+
+it('Approve stays busy until the fresh rows land, so a second click cannot reach an already-decided request', async () => {
+  const user = userEvent.setup();
+  const reload = deferred<Page>();
+  api.listInboxPage.mockResolvedValueOnce(page([requestItem('n1', 'pending')])).mockReturnValueOnce(reload.promise);
+  renderPage();
+  await user.click(await screen.findByRole('button', { name: 'Approve' }));
+  await waitFor(() => expect(api.listInboxPage).toHaveBeenCalledTimes(2));            // decided, the bell refreshed, page 1 held open
+  expect(api.approveMembershipRequest).toHaveBeenCalledTimes(1);
+  expect(ctx.refresh).toHaveBeenCalled();
+  const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
+  const reject = screen.getByRole('button', { name: 'Reject' }) as HTMLButtonElement;
+  expect(approve.disabled).toBe(true);                                                 // the stale pending row is still up
+  expect(reject.disabled).toBe(true);
+  await user.click(approve);
+  expect(api.approveMembershipRequest).toHaveBeenCalledTimes(1);
+
+  reload.resolve(page([requestItem('n1', 'approved')]));
+  expect(await screen.findByText('Approved by Ada')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
+});
+
+it('the strip is free again once the fresh rows land, even when the row still says pending', async () => {
+  const user = userEvent.setup();
+  const reload = deferred<Page>();
+  api.listInboxPage.mockResolvedValueOnce(page([requestItem('n1', 'pending')])).mockReturnValueOnce(reload.promise);
+  renderPage();
+  await user.click(await screen.findByRole('button', { name: 'Approve' }));
+  await waitFor(() => expect(api.listInboxPage).toHaveBeenCalledTimes(2));
+  expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(true);
+
+  reload.resolve(page([requestItem('n1', 'pending')]));
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(false));
 });
 
 it('a pending router approval shows its strip on the page too', async () => {

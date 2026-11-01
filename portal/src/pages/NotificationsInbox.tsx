@@ -9,10 +9,12 @@
  * Row actions go through the shared inbox context so the bell's badge and
  * list follow, and show on this page at once through a local overlay (a row's
  * read_at, or hidden by id) — no reload, so the list keeps its place. Mark all
- * read, Clear read and a decided approval reload page 1, which also drops the
- * overlay: the server's word wins.
+ * read, Clear read and a decided approval reload page 1. The overlay's read
+ * part lasts until the fresh rows LAND (not until they are asked for: the old
+ * rows stay on screen while page 1 loads, and keep what was painted on them),
+ * and then the server's word wins.
  */
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
 import ComboBox, { type ComboOption } from '../components/ComboBox';
@@ -86,22 +88,23 @@ export default function NotificationsInbox() {
     .map((label) => ({ label, rows: shown.filter((r) => dayLabelOf(r.created_at, now) === label) }))
     .filter((g) => g.rows.length > 0);
 
-  // A new view reads from the server, so what the page overlaid on the old one goes.
-  const pickView = (next: boolean) => {
-    if (next === unreadOnly) return;
-    setReadOverlay({});
-    setUnreadOnly(next);
-  };
-  const pickCategory = (value: string) => {
-    const next = value === '' ? null : value as NotificationCategory;
-    if (next === category) return;
-    setReadOverlay({});
-    setCategory(next);
-  };
-  const reloadFresh = () => {
-    setReadOverlay({});
-    list.reload();
-  };
+  // The read overlay ends when the fresh rows LAND, not when page 1 is asked
+  // for: while it loads (a reload, a new view) the hook keeps the old rows on
+  // screen, and they keep what the page painted on them. So it goes on the
+  // falling edge of `loading`, in a layout effect so the old patches are never
+  // painted over the fresh rows. "Load more" does not touch `loading`, so
+  // paging keeps the overlay. A decision waits on the same edge (afterDecision).
+  const wasLoading = useRef(list.loading);
+  const waitingForRows = useRef<Array<() => void>>([]);
+  useLayoutEffect(() => {
+    if (wasLoading.current && !list.loading) {
+      setReadOverlay((o) => (Object.keys(o).length ? {} : o));
+      waitingForRows.current.splice(0).forEach((release) => release());
+    }
+    wasLoading.current = list.loading;
+  }, [list.loading]);
+
+  const pickCategory = (value: string) => setCategory(value === '' ? null : value as NotificationCategory);
 
   // Paint first, like the bell does: the server (through the context) catches up.
   const paintRead = (ids: string[]) => {
@@ -138,17 +141,22 @@ export default function NotificationsInbox() {
   const markAll = async () => {
     paintRead(shown.filter((r) => !r.read_at).map((r) => r.id));
     await markAllRead();
-    reloadFresh();
+    list.reload();
   };
   const clearAllRead = async () => {
     paintHidden(shown.filter((r) => r.read_at).map((r) => r.id));
     await clearRead();
-    reloadFresh();
+    list.reload();
   };
-  // A decided approval changed server-side payload: repaint the bell and page 1.
+  // A decided approval changed the row server-side: repaint the bell, then load
+  // page 1 and wait for the fresh rows, so the strip that asked stays busy until
+  // they land (the stale pending row would offer a second click on a request that
+  // is already decided).
   const afterDecision = async () => {
     await refresh();
-    reloadFresh();
+    const landed = new Promise<void>((resolve) => waitingForRows.current.push(resolve));
+    list.reload();
+    await landed;
   };
 
   // Off only when the page KNOWS there is nothing to do: unread is the bell's
@@ -209,9 +217,9 @@ export default function NotificationsInbox() {
       <div className="dir-toolbar">
         <div className="segmented" role="group" aria-label="Show">
           <button type="button" className={unreadOnly ? '' : 'on'} aria-pressed={!unreadOnly}
-                  onClick={() => pickView(false)}>All</button>
+                  onClick={() => setUnreadOnly(false)}>All</button>
           <button type="button" className={unreadOnly ? 'on' : ''} aria-pressed={unreadOnly}
-                  onClick={() => pickView(true)}>Unread</button>
+                  onClick={() => setUnreadOnly(true)}>Unread</button>
         </div>
         <div className="notif-category">
           <ComboBox ariaLabel="Category" options={CATEGORY_OPTIONS} value={category ?? ''}
