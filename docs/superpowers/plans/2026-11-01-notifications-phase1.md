@@ -288,7 +288,7 @@
     8. `no_address`
     9. Owner copy → queue now (owner_copy).
     10. `is_critical` → queue now (critical).
-    11. `hold_decision(schedule_from_prefs(<the person's notif.schedule>), now)`: hold → `hold=True` with reason and `summary_at`; else queue now, with `after_summary` from the decision.
+    11. `hold_decision(schedule_from_prefs(contact.choice_prefs.notif.schedule.model_dump()), now)`: hold → `hold=True` with reason and `summary_at`; else queue now, with `after_summary` from the decision. A person without an account has default prefs and therefore the open schedule.
   - **`maybe_email(db, notification, *, info, owner_notice, contact, company)`:**
     - Not queued and not held → `record("email_not_queued", reason=…, detail={"source": <inbox_source or email_source>})` for `category_off` / `category_inbox_only`, else no detail.
     - Held → `hold_email(...)`.
@@ -345,7 +345,7 @@
 - Test: `api/tests/test_notification_summary.py` (new), `api/tests/test_notification_worker.py`
 
 **Interfaces:**
-- Consumes: Task 4 `recheck_notification`, `_address`, `load_contact`, `portal_link`, `INBOX_PATH`; Task 2 `schedule_from_prefs`, `summary_at`; Task 1 `load_company_settings`; `mail.outbox.enqueue`; `delivery_log.record`.
+- Consumes: Task 4 `recheck_notification`, `_address`, `_absolute`, `load_contact`, `portal_link`, `INBOX_PATH`; Task 2 `schedule_from_prefs`, `summary_at`; Task 1 `load_company_settings`; `mail.outbox.enqueue`; `delivery_log.record`.
 - Produces: `async def run_summaries_once(maker: async_sessionmaker, *, now: datetime | None = None) -> int`, which returns how many summary emails were queued. Per person with held rows, in one session per person, committed per person:
   - **Claim and test whether it is due.** Lock their rows (`SELECT … FOR UPDATE SKIP LOCKED`, ordered by `held_at`). Due when `summary_at(schedule, oldest.held_at) <= now`, using the person's current schedule; None counts as due. Not due → roll back and continue.
   - **Server can't send email** (`email_enabled()` false): log `email_skipped`, reason `email_not_set_up`, for every row and delete them.
@@ -448,7 +448,7 @@
 - Create: `portal/src/lib/notificationSchedule.ts`
 - Create: `portal/src/components/notifications/SwitchGrid.tsx`
 - Create: `portal/src/components/notifications/ScheduleCard.tsx`
-- Move: `.day-pills` CSS from `styles/notifications.css` to `styles/settings.css`. It is shared now.
+- Reuse: the `.day-pills` CSS where it is, in `styles/notifications.css`, imported by `ScheduleCard`. The two group modals still use it until Task 10 deletes them, and Task 10 may then move it to `settings.css`.
 - Test: `portal/src/lib/notificationSwitches.test.ts`, `portal/src/lib/notificationSchedule.test.ts`, `portal/src/components/notifications/SwitchGrid.test.tsx`, `portal/src/components/notifications/ScheduleCard.test.tsx`, `portal/src/lib/api.notificationSettings.test.ts` (all new)
 
 **Interfaces:**
@@ -521,7 +521,10 @@
 - Modify: `portal/src/lib/api.ts` (`NotifPrefs = {sound; switches: NotifSwitches; schedule: NotifSchedule}`; delete `DeliveryChoice`)
 - Modify: `portal/src/lib/settings.ts` (`DEFAULT_PREFERENCES.notif = {sound: 'chime', switches: {}, schedule: DEFAULT_SCHEDULE}`)
 - Modify: `portal/src/pages/me/MeNotifications.tsx`. It loads `getNotificationSettings()` on mount and renders `SwitchGrid` (person mode), the critical note, the Sound row and `ScheduleCard`, all saved through `usePreferenceSave`, then the trimmed groups lists. The section copy follows spec §1.
-- Delete: `portal/src/pages/me/CategoryDelivery.tsx`; in `lib/notificationKinds.ts`, `DELIVERY_CHOICES`, `emailGroupsFor` and `EmailSource` (the categories keep `key` and `label`); in `lib/notificationGroups.ts`, `toGroupDetail` and `toMember`
+- Delete:
+  - `portal/src/pages/me/CategoryDelivery.tsx`;
+  - in `lib/notificationKinds.ts`, `DELIVERY_CHOICES` and `emailGroupsFor`. The categories keep `key` and `label`. Also delete `EmailSource` and `emailSource` once nothing imports them; `CheckDeliveryModal` may still need them until Task 11;
+  - in `lib/notificationGroups.ts`, `toGroupDetail` and `toMember`.
 - Modify: `portal/src/pages/me/GroupsList.tsx`. Its columns are Group, Members, Status (request state), plus Actions. Remove the overrides action, the "Customized" chip, and the Categories, Channels, Quiet hours and Days columns. The hints follow spec §6.
 - Modify: every test fixture with `notif: { sound, categories }`. Replace `categories: {…}` with `switches: {}, schedule: { timezone: null, days: ['mon','tue','wed','thu','fri','sat','sun'], quiet_start: null, quiet_end: null }`. About 30 files; find them with `grep -rln "categories:" portal/src --include='*.test.ts*'`, then check each hit is a notif fixture.
 - Test: `portal/src/pages/me/MeNotifications.test.tsx` (rewrite), `portal/src/pages/Profile.test.tsx`, `portal/src/lib/notificationKinds.test.ts`, `portal/src/lib/notificationGroups.test.ts`
