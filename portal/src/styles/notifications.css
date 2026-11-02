@@ -8,8 +8,10 @@
    switch rows inside a dialog's .pf-form grid, the Active-days toggle
    pills, and NotificationModal's card size (.nm-card) and the muted
    hint under a control (.nm-hint); the /notifications page's frame
-   (its category picker and day headings); and the System › Notifications
-   Delivery log (its person link, row trail and Check delivery result).
+   (its category picker and day headings); the System › Notifications
+   Delivery log (its person link, row trail and Check delivery result); and
+   the switch grid and schedule card (the state line under a category, the
+   schedule rows' wrapping and picker widths, the shaded summary line).
    ============================================================ */
 
 /* ── NotificationModal (components/notifications/NotificationModal.tsx) ──
@@ -294,3 +296,45 @@
     scrollbar-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent) transparent;
   }
 }
+
+/* ── Switch grid and schedule card (components/notifications/SwitchGrid.tsx,
+ *    ScheduleCard.tsx) ────────────────────────────────────────────────────
+ * The grid is a DataTable and the card a .set-section, so their type comes from
+ * directory.css and settings.css (the day pills above are the group dialogs'
+ * too). This adds only what those don't cover: the state line under a
+ * category, how the schedule rows wrap and size their pickers, and the shaded
+ * summary line. */
+
+/* "Company default" / "Your choice · Use company default" under a category. */
+.swgrid-state { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 6px; }
+.swgrid-sep { color: var(--text-mute); }
+/* The way back reads as a link, not a button. */
+.swgrid-reset {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--c-blue);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.swgrid-reset:disabled { opacity: 0.45; cursor: default; }
+
+/* A schedule row that doesn't fit drops its control under its label. */
+.sched-card .set-row { flex-wrap: wrap; }
+.sched-zone { flex: 0 1 280px; min-width: 0; }
+.sched-quiet { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; }
+.sched-time { flex: 0 1 132px; min-width: 112px; }
+.sched-to { font-size: 12.5px; color: var(--text-mute); }
+
+/* The shaded line under the controls: when the summary email goes out, or
+ * what still has to be picked. The last row's own bottom border is its divider. */
+.sched-summary {
+  margin: 0;
+  padding: 14px 20px;
+  background: rgba(var(--accent-rgb), 0.07);
+  font-size: 13px;
+  color: var(--text-dark);
+}
+.sched-summary.warn { background: var(--c-red-bg); color: var(--c-red); }

@@ -16,6 +16,7 @@
 import type { BulkDiff } from '../components/bulk/BulkApplySummary';
 import type { TagKey } from '../labels/tagTypes';
 import type { Action, PermMap, ScopeInfo } from './access';
+import type { Day } from './notifications';
 import type { OrgItem } from './orgs';
 import { trucksFeedQuery, trucksListQuery, trucksMapQuery } from './shipments';
 import { siblingOrigin } from './siblingOrigin';
@@ -6709,6 +6710,78 @@ export async function checkDelivery(
   const qs = new URLSearchParams({ person_id: personId, kind });
   if (ownerCopy !== undefined) qs.set('owner_copy', String(ownerCopy));
   const resp = await apiFetch(`/notifications/check?${qs.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/* ── your switches and schedule, and the company settings ────────────────
+ * Mirrors api/src/serversherpa/api/schemas.py SwitchPair, SwitchOverride,
+ * NotifSchedule, NotificationKindSettingOut and NotificationSettingsOut. The
+ * person's own values live in ui_prefs.notif and are saved through
+ * PUT /auth/me/preferences; the company defaults and the critical kinds are
+ * the /notifications/settings calls below. */
+
+/** One category's two switches: written to the inbox, and emailed. */
+export interface SwitchPair { inbox: boolean; email: boolean }
+
+/** A person's own switch values (ui_prefs.notif.switches): only what they
+ *  changed. A category or a value that is missing follows the company
+ *  default. Account security is always on, so it is never here. */
+export type NotifSwitches = Partial<Record<NotificationCategory, { inbox?: boolean; email?: boolean }>>;
+
+/** When email may reach a person (ui_prefs.notif.schedule). `timezone` null
+ *  is the company reference zone; `days` are the days they work, at least
+ *  one, in week order; the quiet hours are both local "HH:MM" times, or
+ *  neither, and differ (the window may run past midnight). */
+export interface NotifSchedule {
+  timezone: string | null;
+  days: Day[];
+  quiet_start: string | null;
+  quiet_end: string | null;
+}
+
+/** One registered kind in the company settings. `email` is whether it is ever
+ *  emailed; `critical` whether it skips quiet hours, days off and the summary;
+ *  `locked` whether that is fixed (account security is always critical). */
+export interface NotificationKindSetting {
+  kind: string;
+  label: string;
+  category: NotificationCategory;
+  email: boolean;
+  owner_always: boolean;
+  critical: boolean;
+  locked: boolean;
+}
+
+/** The company notification settings. `defaults` holds each configurable
+ *  category's switches by category key (account security has none);
+ *  `critical_kinds` the kinds an admin marked critical (not the always-critical
+ *  security kinds); `kinds` every registered kind, in registry order. */
+export interface NotificationSettings {
+  defaults: Record<string, SwitchPair>;
+  critical_kinds: string[];
+  kinds: NotificationKindSetting[];
+}
+
+/** The company settings (GET /notifications/settings), for any signed-in
+ *  person: /me needs the defaults and the critical list to show what a
+ *  switch they have not changed follows. */
+export async function getNotificationSettings(): Promise<NotificationSettings> {
+  const resp = await apiFetch('/notifications/settings');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Change the company settings (PUT /notifications/settings), admin and above.
+ *  A partial body: a category in `defaults` replaces both its switches, and
+ *  `critical_kinds` replaces the whole list. Answers the whole settings; 422
+ *  `invalid_category` / `invalid_kind`, and `read_only_mode` in read-only mode. */
+export async function updateNotificationSettings(
+  body: { defaults?: Record<string, SwitchPair>; critical_kinds?: string[] },
+): Promise<NotificationSettings> {
+  const resp = await apiFetch('/notifications/settings', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

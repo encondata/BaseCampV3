@@ -29,7 +29,7 @@ export function liveChannels(channels: readonly string[]): Channel[] {
 export const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
 export type Day = typeof DAYS[number];
 
-const DAY_LABELS: Record<Day, string> = {
+export const DAY_LABELS: Record<Day, string> = {
   mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun',
 };
 
@@ -50,8 +50,10 @@ function formatClock(hms: string): string {
  *  stripping the daylight/standard middle letter (CDT/CST -> CT, EDT/EST
  *  -> ET, etc.). Zones outside that 3-letter D/S pattern (UTC, IST, ...)
  *  pass through unchanged. Falls back to the raw zone name if Intl can't
- *  resolve one (e.g. an invalid zone in a test environment). */
-function tzAbbrev(tz: string): string {
+ *  resolve one (e.g. an invalid zone in a test environment). Shared by the
+ *  quiet-hours column and the schedule card's summary line, so both read a
+ *  zone the same way. */
+export function tzAbbrev(tz: string): string {
   try {
     const parts = new Intl.DateTimeFormat('en-US', {
       timeZone: tz, timeZoneName: 'short',
