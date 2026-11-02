@@ -79,11 +79,17 @@ function emailLine(r: DeliveryCheck): ReactNode {
   return <>{chip}{to && ` ${to}`}</>;
 }
 
-/** "Inbox on (Company default) · Email off (Their choice)". */
+/** "Inbox on (Company default) · Email off (Their choice)". Email needs Inbox:
+ *  while Inbox is off the API reports Email off whatever the person's own Email
+ *  value is, and its source says where that value comes from, not what turned
+ *  Email off (turning a category off in /me writes only the Inbox value, so the
+ *  Email source then reads "default"). So with Inbox off the Email part names
+ *  no source: "Email off (needs Inbox)". */
 function switchesLine(r: DeliveryCheck): string {
+  const { inbox, email } = r.switches;
   const one = (name: string, s: DeliveryCheck['switches']['inbox']) =>
     `${name} ${s.on ? 'on' : 'off'} (${switchSourceLabel(s.source)})`;
-  return `${one('Inbox', r.switches.inbox)} · ${one('Email', r.switches.email)}`;
+  return `${one('Inbox', inbox)} · ${inbox.on ? one('Email', email) : 'Email off (needs Inbox)'}`;
 }
 
 /** "America/Chicago · Mon–Fri · 9:00 PM – 7:00 AM CT · now In quiet hours". */

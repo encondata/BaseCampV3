@@ -253,6 +253,7 @@ it('a category turned off keeps it out of the inbox too, and says whose choice i
   await ask(dialog, user);
   expect(line(dialog, 'Inbox')).toBe('Not in inbox · Category turned off · Their choice');
   expect(line(dialog, 'Email')).toBe('Not sent · Category turned off');
+  expect(line(dialog, 'Their switches')).toBe('Inbox off (Their choice) · Email off (needs Inbox)');
 });
 
 it('says Company default when the company default keeps it out of the inbox', async () => {
@@ -264,6 +265,7 @@ it('says Company default when the company default keeps it out of the inbox', as
   const dialog = open();
   await ask(dialog, user);
   expect(line(dialog, 'Inbox')).toBe('Not in inbox · Category turned off · Company default');
+  expect(line(dialog, 'Their switches')).toBe('Inbox off (Company default) · Email off (needs Inbox)');
 });
 
 it('Their switches gives each switch on or off, with where it comes from', async () => {
@@ -274,6 +276,30 @@ it('Their switches gives each switch on or off, with where it comes from', async
   const dialog = open();
   await ask(dialog, user);
   expect(line(dialog, 'Their switches')).toBe('Inbox on (Company default) · Email off (Their choice)');
+});
+
+it('with Inbox off, Their switches says Email needs Inbox instead of naming where the Email value comes from', async () => {
+  const user = userEvent.setup();
+  // What the API sends when someone turns the category off: /me writes only their Inbox value, so
+  // the Email switch still follows the company default (on) and its source stays "default". Email
+  // is off only because Inbox is, and naming "Company default" would blame the wrong thing.
+  api.checkDelivery.mockResolvedValue(notSent('category_off', {
+    inbox: 'suppressed', inbox_source: 'own',
+    switches: { inbox: { on: false, source: 'own' }, email: { on: false, source: 'default' } },
+  }));
+  const dialog = open();
+  await ask(dialog, user);
+  expect(line(dialog, 'Their switches')).toBe('Inbox off (Their choice) · Email off (needs Inbox)');
+});
+
+it('with Inbox on, an Email switch the company default turned off says Company default', async () => {
+  const user = userEvent.setup();
+  api.checkDelivery.mockResolvedValue(notSent('category_inbox_only', {
+    switches: { inbox: { on: true, source: 'default' }, email: { on: false, source: 'default' } },
+  }));
+  const dialog = open();
+  await ask(dialog, user);
+  expect(line(dialog, 'Their switches')).toBe('Inbox on (Company default) · Email off (Company default)');
 });
 
 it('Their schedule gives the zone, days, quiet hours and whether it is open right now', async () => {
