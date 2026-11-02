@@ -1,18 +1,10 @@
 /**
- * notificationGroups — error copy and the override check for the
- * self-service "My groups" / "Join a group" sections on /me/notifications
- * (pages/me/MeNotifications.tsx). Groups only list their members now: they
- * no longer decide what a person gets, so /me has nothing per group to edit.
+ * notificationGroups — error copy for notification group membership: the
+ * self-service requests on /me/notifications ("My groups" / "Join a group")
+ * and the approvals of them (the Notifications page, the inbox). Groups only
+ * list their members now: they no longer decide what a person gets, so a
+ * member has no per-group settings to check or edit.
  */
-
-import type { NotificationMemberOverrides } from './api';
-
-/** True when any override field is non-null — the member has customized
- *  at least one setting away from the group default. */
-export function hasOverrides(ov: NotificationMemberOverrides | null): boolean {
-  if (!ov) return false;
-  return Object.values(ov).some((v) => v !== null);
-}
 
 /** Copy for the self-service error codes (design spec, verbatim). */
 export const GROUP_ERRORS: Record<string, string> = {

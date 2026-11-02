@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 /**
- * Notification group detail page — hero (status/pause/edit/delete),
- * Delivery defaults read view, and the Edit settings modal's diff-only
- * PATCH behavior. Mocking style mirrors Notifications.test.tsx (hoisted
- * mocks for react-router-dom / AuthContext / lib/api).
+ * Notification group detail page — hero (status/pause/edit/delete) and the
+ * Members panel with its row menu. A group is a member list: it carries no
+ * delivery settings, so the page shows none and a member row has nothing to
+ * edit but its place on the list. Mocking style mirrors Notifications.test.tsx
+ * (hoisted mocks for react-router-dom / AuthContext / lib/api).
  */
 
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
@@ -38,7 +39,6 @@ const api = vi.hoisted(() => ({
   updateNotificationGroup: vi.fn(),
   deleteNotificationGroup: vi.fn(),
   addNotificationMember: vi.fn(),
-  updateNotificationMember: vi.fn(),
   removeNotificationMember: vi.fn(),
   listNotificationRecipients: vi.fn(),
 }));
@@ -52,23 +52,13 @@ const BASE: NotificationGroupDetail = {
   id: 'g1',
   name: 'Ops Alerts',
   description: 'Operational issues',
-  channels: ['email', 'push'],
   categories: ['approvals', 'security'],
-  quiet_start: '21:00:00',
-  quiet_end: '07:00:00',
-  timezone: 'America/Chicago',
-  active_days: ['mon', 'tue', 'wed', 'thu', 'fri'],
-  dnd_behavior: 'defer',
-  urgent_bypass: true,
   enabled: true,
   member_count: 5,
   created_at: '2026-01-01T00:00:00Z',
   members: [],
 };
 
-// Alice: no override (inherits the group's channels), but can't actually
-// receive Text (no phone on file) — exercises the unreachable-channel
-// warning chip.
 const MEMBER_1: NotificationMember = {
   person_id: 'p1',
   display_name: 'Alice Tech',
@@ -77,45 +67,17 @@ const MEMBER_1: NotificationMember = {
   email: 'alice@example.com',
   phone: null,
   has_account: true,
-  can_email: true,
-  can_text: false,
-  can_push: true,
-  can_web: true,
-  overrides: {
-    channels: null, quiet_mode: null, quiet_start: null, quiet_end: null,
-    timezone: null, active_days: null, dnd_behavior: null, urgent_bypass: null,
-  },
-  effective: {
-    channels: ['email', 'text'],
-    quiet_start: '21:00:00', quiet_end: '07:00:00', timezone: 'America/Chicago',
-    active_days: ['mon', 'tue', 'wed', 'thu', 'fri'], dnd_behavior: 'defer', urgent_bypass: true,
-  },
   added_at: '2026-01-02T00:00:00Z',
 };
 
-// Bob: fully reachable, but has a channel override restricting him to
-// email only — exercises the Override marker + reset-to-inherit.
 const MEMBER_2: NotificationMember = {
   person_id: 'p2',
-  display_name: 'Bob Override',
+  display_name: 'Bob Mason',
   job_title: null,
   avatar_url: null,
   email: 'bob@example.com',
   phone: '555-1212',
   has_account: true,
-  can_email: true,
-  can_text: true,
-  can_push: true,
-  can_web: true,
-  overrides: {
-    channels: ['email'], quiet_mode: null, quiet_start: null, quiet_end: null,
-    timezone: null, active_days: null, dnd_behavior: null, urgent_bypass: null,
-  },
-  effective: {
-    channels: ['email'],
-    quiet_start: '21:00:00', quiet_end: '07:00:00', timezone: 'America/Chicago',
-    active_days: ['mon', 'tue', 'wed', 'thu', 'fri'], dnd_behavior: 'defer', urgent_bypass: true,
-  },
   added_at: '2026-01-03T00:00:00Z',
 };
 
@@ -149,104 +111,43 @@ function renderPage() {
   return render(<MemoryRouter><NotificationGroupDetailPage /></MemoryRouter>);
 }
 
-it('renders the hero and delivery defaults from the mocked detail payload', async () => {
+// ── the hero ────────────────────────────────────────────────────────
+
+it('the hero keeps the name, status, member count, description and the Pause, Edit and Delete actions', async () => {
   renderPage();
 
-  expect(await screen.findByText('Ops Alerts')).not.toBeNull();
-  expect(screen.getByText('Operational issues')).not.toBeNull();
-  expect(screen.getByText('Enabled')).not.toBeNull();
-  expect(screen.getByText('9:00 PM – 7:00 AM CT')).not.toBeNull();
-  expect(screen.getByText('America/Chicago')).not.toBeNull();
-  expect(screen.getByText('Mon–Fri')).not.toBeNull();
-  expect(screen.getByText('Defer until window opens')).not.toBeNull();
-  expect(screen.getByText('Urgent notifications ignore quiet hours')).not.toBeNull();
-});
-
-it('delivery defaults list the categories by label, or say members get inbox only', async () => {
-  const { unmount } = renderPage();
-  await screen.findByText('Ops Alerts');
-  const dd = screen.getByText('Categories').nextElementSibling as HTMLElement;
-  expect(within(dd).getByText('Approvals & requests')).not.toBeNull();
-  expect(within(dd).getByText('Account security')).not.toBeNull();
-  expect(within(dd).queryByText('Wiki')).toBeNull();
-  unmount();
-
-  api.getNotificationGroup.mockResolvedValue({ ...BASE, categories: [] });
-  renderPage();
-  await screen.findByText('Ops Alerts');
-  expect(screen.getByText('None — members get inbox only')).not.toBeNull();
-});
-
-it('shows only the channel that can send, in the header and in Delivery defaults', async () => {
-  api.getNotificationGroup.mockResolvedValue({ ...BASE, channels: ['email', 'web'] });
-  renderPage();
   const title = await screen.findByRole('heading', { name: 'Ops Alerts' });
-  const header = title.closest('.idet-title-row') as HTMLElement;
-  const dd = screen.getByText('Channels').nextElementSibling as HTMLElement;
-
-  for (const area of [header, dd]) {
-    expect(within(area).getByText('Email').className).toContain('c-blue');
-    expect(within(area).queryByText('Web')).toBeNull();
-    expect(within(area).queryByText('No email')).toBeNull();
+  expect(screen.getByText('Operational issues').className).toContain('page-hint');
+  expect(within(title.closest('.idet-title-row') as HTMLElement).getByText('Enabled').className)
+    .toContain('c-green');
+  expect(screen.getByText('5 members')).not.toBeNull();
+  for (const name of [/^pause$/i, /^edit$/i, /^delete$/i]) {
+    expect(screen.getByRole('button', { name })).not.toBeNull();
   }
-  // Hidden channels carry no "not available yet" note: they are not shown at all.
-  expect(screen.queryByText(/not available yet/i)).toBeNull();
 });
 
-it('says No email in the header and in Delivery defaults when no live channel is stored', async () => {
-  api.getNotificationGroup.mockResolvedValue({ ...BASE, channels: ['text', 'push'] });
+it('group page has no delivery settings', async () => {
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1] });
   renderPage();
-  const title = await screen.findByRole('heading', { name: 'Ops Alerts' });
-  const header = title.closest('.idet-title-row') as HTMLElement;
-  const dd = screen.getByText('Channels').nextElementSibling as HTMLElement;
+  await screen.findByText('Alice Tech');
 
-  for (const area of [header, dd]) {
-    expect(within(area).getByText('No email').className).toContain('c-slate');
-    for (const hidden of ['Text (SMS)', 'Push']) expect(within(area).queryByText(hidden)).toBeNull();
+  expect(screen.queryByText('Delivery defaults')).toBeNull();
+  expect(screen.queryByRole('button', { name: /edit settings/i })).toBeNull();
+  expect(screen.queryByRole('dialog')).toBeNull();
+  // None of the old panel's rows, and nothing like them in the members table.
+  for (const label of [
+    'Channels', 'Categories', 'Quiet hours', 'Timezone', 'Active days', 'When blocked', 'Urgent bypass',
+  ]) {
+    expect(screen.queryByText(label)).toBeNull();
   }
-  expect(screen.queryByText(/not available yet/i)).toBeNull();
-});
-
-it('settings modal Categories toggles save as the categories patch', async () => {
-  const user = userEvent.setup();
-  api.updateNotificationGroup.mockResolvedValue(BASE);
-  renderPage();
-  await screen.findByText('Ops Alerts');
-  const dialog = await openSettingsDialog(user);
-
-  const cats = within(dialog).getByRole('group', { name: 'Categories' });
-  expect(within(cats).getAllByRole('button').map((b) => b.textContent)).toEqual([
-    'Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Account security',
-  ]);
-  expect(within(cats).getByRole('button', { name: 'Approvals & requests' }).getAttribute('aria-pressed')).toBe('true');
-  expect(within(cats).getByRole('button', { name: 'Wiki' }).getAttribute('aria-pressed')).toBe('false');
-
-  await user.click(within(cats).getByRole('button', { name: 'Wiki' }));
-  await user.click(within(cats).getByRole('button', { name: 'Approvals & requests' }));
-  await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
-  await waitFor(() => expect(api.updateNotificationGroup)
-    .toHaveBeenCalledWith('g1', { categories: ['wiki', 'security'] }));
-});
-
-it('settings modal sends no categories when they are untouched', async () => {
-  const user = userEvent.setup();
-  api.updateNotificationGroup.mockResolvedValue(BASE);
-  renderPage();
-  await screen.findByText('Ops Alerts');
-  const dialog = await openSettingsDialog(user);
-  await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
-  await waitFor(() => expect(api.updateNotificationGroup).toHaveBeenCalledWith('g1', {}));
-});
-
-it('maps a server 422 invalid_category error on settings save', async () => {
-  const user = userEvent.setup();
-  api.updateNotificationGroup.mockRejectedValue(new ApiError(422, 'invalid_category'));
-  renderPage();
-  await screen.findByText('Ops Alerts');
-  const dialog = await openSettingsDialog(user);
-  await user.click(within(dialog).getByRole('button', { name: 'Wiki' }));
-  await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
-  expect(await within(dialog).findByText(/category is not recognized/i)).not.toBeNull();
+  // The group's categories are kept by the API but shown nowhere.
+  expect(screen.queryByText('Approvals & requests')).toBeNull();
+  expect(screen.queryByText('Account security')).toBeNull();
+  // The hero carries no channel chips either: only its status and member count.
+  const title = screen.getByRole('heading', { name: 'Ops Alerts' });
+  const row = title.closest('.idet-title-row') as HTMLElement;
+  expect(row.querySelector('.chips')).toBeNull();
+  expect([...row.querySelectorAll('.chip')].map((c) => c.textContent)).toEqual(['Enabled', '5 members']);
 });
 
 it('shows a Paused chip when the group is disabled', async () => {
@@ -377,132 +278,64 @@ it('delete requires a second click, then navigates to the list on success', asyn
   await waitFor(() => expect(navigate).toHaveBeenCalledWith('/system/notifications'));
 });
 
-async function openSettingsDialog(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole('button', { name: /edit settings/i }));
-  const heading = await screen.findByRole('heading', { name: 'Delivery settings' });
-  return heading.closest('.modal-card') as HTMLElement;
-}
+// ── the Members panel ───────────────────────────────────────────────
 
-it('settings modal wears the standard header and offers house controls only', async () => {
-  const user = userEvent.setup();
+it('members table columns are Person, Contact and Actions', async () => {
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1, MEMBER_2] });
   renderPage();
-  await screen.findByText('Ops Alerts');
-
-  const dialog = await openSettingsDialog(user);
-  expect(dialog.querySelector('.eyebrow')?.textContent).toBe('Notification group');
-  expect(within(dialog).getByText('Defaults every member inherits unless they set their own.').className)
-    .toContain('page-hint');
-  expect(dialog.querySelector('select')).toBeNull();
-  expect(dialog.querySelector('input[type="time"]')).toBeNull();
-  expect(screen.queryByText(/not available yet/i)).toBeNull();
-});
-
-it('settings modal opens with current values and PATCHes only changed fields', async () => {
-  const user = userEvent.setup();
-  api.updateNotificationGroup.mockResolvedValue(BASE);
-  renderPage();
-  await screen.findByText('Ops Alerts');
-
-  const dialog = await openSettingsDialog(user);
-
-  // Email is the only channel with a switch. Turn it off — the only field
-  // that should change — and the stored Push (hidden) is kept.
-  expect(within(dialog).queryByRole('checkbox', { name: /push/i })).toBeNull();
-  await user.click(within(dialog).getByRole('checkbox', { name: 'Email' }));
-  await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
-
-  await waitFor(() => expect(api.updateNotificationGroup)
-    .toHaveBeenCalledWith('g1', { channels: ['push'] }));
-});
-
-it('requires at least one active day before saving settings', async () => {
-  const user = userEvent.setup();
-  renderPage();
-  await screen.findByText('Ops Alerts');
-
-  const dialog = await openSettingsDialog(user);
-
-  for (const label of ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']) {
-    await user.click(within(dialog).getByRole('button', { name: label }));
-  }
-  await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
-
-  expect(await within(dialog).findByText(/pick at least one active day/i)).not.toBeNull();
-  expect(api.updateNotificationGroup).not.toHaveBeenCalled();
-});
-
-it('maps a server 422 invalid_quiet_hours error on settings save', async () => {
-  const user = userEvent.setup();
-  api.updateNotificationGroup.mockRejectedValue(new ApiError(422, 'invalid_quiet_hours'));
-  renderPage();
-  await screen.findByText('Ops Alerts');
-
-  const dialog = await openSettingsDialog(user);
-  await user.click(within(dialog).getByRole('combobox', { name: 'Start' }));
-  await user.click(await screen.findByRole('button', { name: '10:00 PM' }));
-  await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
-
-  // A changed start travels with the end, the pair the server validates.
-  await waitFor(() => expect(api.updateNotificationGroup)
-    .toHaveBeenCalledWith('g1', { quiet_start: '22:00', quiet_end: '07:00' }));
-  expect(await within(dialog).findByText(/need both a start and an end/i)).not.toBeNull();
-});
-
-it('closes the settings modal and reloads the group on a successful save', async () => {
-  const user = userEvent.setup();
-  api.updateNotificationGroup.mockResolvedValue(BASE);
-  renderPage();
-  await screen.findByText('Ops Alerts');
-
-  const dialog = await openSettingsDialog(user);
-  await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
-
-  await waitFor(() => expect(api.getNotificationGroup).toHaveBeenCalledTimes(2));
-  expect(screen.queryByRole('button', { name: /^save$/i })).toBeNull();
-});
-
-// ── Members panel (Task 5) ──────────────────────────────────────────
-
-it('members table shows live channels only, a warning on an unreachable email, and an Override marker', async () => {
-  // Eve is set to email but has no address; Tess's effective channels hold
-  // nothing that can send.
-  const eve: NotificationMember = {
-    ...MEMBER_1, person_id: 'p5', display_name: 'Eve Nomail', email: null, can_email: false,
-    effective: { ...MEMBER_1.effective, channels: ['email'] },
-  };
-  const tess: NotificationMember = {
-    ...MEMBER_1, person_id: 'p6', display_name: 'Tess Textonly',
-    effective: { ...MEMBER_1.effective, channels: ['text', 'push'] },
-  };
-  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1, MEMBER_2, eve, tess] });
-  renderPage();
-  await screen.findByText('Ops Alerts');
   await screen.findByText('Alice Tech');
 
-  /** The chips in a member's Channels cell (the third column). */
-  const channelChips = (name: RegExp) => [
-    ...(screen.getByRole('row', { name }).querySelectorAll('td')[2] as HTMLElement).querySelectorAll('.chip'),
-  ] as HTMLElement[];
-  const labels = (chips: HTMLElement[]) => chips.map((c) => c.textContent);
+  const table = screen.getByRole('table', { name: 'Members' });
+  expect(within(table).getAllByRole('columnheader').map((h) => h.textContent))
+    .toEqual(['Person', 'Contact', 'Actions']);
 
-  // Alice's stored Text is hidden; Bob's channel override surfaces an Override marker.
-  expect(labels(channelChips(/alice tech/i))).toEqual(['Email']);
-  expect(labels(channelChips(/bob override/i))).toEqual(['Email', 'Override']);
+  // One cell per column: who they are, how to reach them, the menu.
+  const alice = within(table).getByRole('row', { name: /alice tech/i });
+  const cells = alice.querySelectorAll('td');
+  expect(cells).toHaveLength(3);
+  expect(cells[0].textContent).toContain('Alice Tech');
+  expect(cells[0].textContent).toContain('Technician');
+  expect(cells[1].textContent).toContain('alice@example.com');
+  expect(cells[1].textContent).toContain('—');                  // no phone on file
+  expect(within(cells[2] as HTMLElement).getByRole('button', { name: /Actions/ })).not.toBeNull();
 
-  const [eveEmail] = channelChips(/eve nomail/i);
-  expect(eveEmail.textContent).toBe('Email');
-  expect(eveEmail.title).toBe('No email address');
-  expect(eveEmail.className).toContain('c-red');
+  // A person with no job title says so with a dash; their phone shows.
+  const bob = within(table).getByRole('row', { name: /bob mason/i }).querySelectorAll('td');
+  expect(bob[0].textContent).toContain('Bob Mason');
+  expect(bob[0].textContent).toContain('—');
+  expect(bob[1].textContent).toContain('555-1212');
 
-  const [noEmail] = channelChips(/tess textonly/i);
-  expect(noEmail.textContent).toBe('No email');
-  expect(noEmail.className).toContain('c-slate');
-
-  expect(screen.queryByText('Text (SMS)')).toBeNull();
-  expect(screen.queryByText('Muted')).toBeNull();
+  // Nothing of the old delivery columns or their markers.
+  expect(within(table).queryByText('Override')).toBeNull();
+  expect(table.querySelector('.chip')).toBeNull();
 });
 
-it('the add-member picker names who can be emailed, and says No email address otherwise', async () => {
+it('members table columns are Person and Contact without change permission', async () => {
+  auth.can = () => false;
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1] });
+  renderPage();
+  await screen.findByText('Alice Tech');
+
+  const table = screen.getByRole('table', { name: 'Members' });
+  expect(within(table).getAllByRole('columnheader').map((h) => h.textContent))
+    .toEqual(['Person', 'Contact']);
+  const row = within(table).getByRole('row', { name: /alice tech/i });
+  expect(row.querySelectorAll('td')).toHaveLength(2);
+  expect(within(row).queryByRole('button', { name: /Actions/ })).toBeNull();
+  // and no add-member field
+  expect(screen.queryByPlaceholderText(/add a member/i)).toBeNull();
+});
+
+it('a group with no members says "No members yet."', async () => {
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, member_count: 0, members: [] });
+  renderPage();
+
+  expect(await screen.findByText('No members yet.')).not.toBeNull();
+  expect(screen.queryByText(/add people above/i)).toBeNull();
+  expect(screen.queryByRole('table', { name: 'Members' })).toBeNull();
+});
+
+it('the add-member picker names a person by job title only, with no channel parts', async () => {
   const user = userEvent.setup();
   api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [] });
   api.listNotificationRecipients.mockResolvedValue([
@@ -518,9 +351,24 @@ it('the add-member picker names who can be emailed, and says No email address ot
 
   await user.click(screen.getByPlaceholderText(/add a member/i));
 
-  // Carol can also be texted, but Text is not a live channel, so it is not offered.
-  expect(await screen.findByText('Coordinator · Email')).not.toBeNull();
-  expect(screen.getByText('Driver · No email address')).not.toBeNull();
+  expect(await screen.findByText('Coordinator')).not.toBeNull();
+  expect(screen.getByText('Driver')).not.toBeNull();
+  expect(screen.queryByText(/email/i)).toBeNull();
+});
+
+it('picking a person adds them to the group and reloads it', async () => {
+  const user = userEvent.setup();
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [] });
+  api.addNotificationMember.mockResolvedValue({ ...MEMBER_1, person_id: 'p3', display_name: 'Carol New' });
+  api.listNotificationRecipients.mockResolvedValue(RECIPIENTS);
+  renderPage();
+  await screen.findByText('Ops Alerts');
+
+  await user.click(screen.getByPlaceholderText(/add a member/i));
+  await user.click(await screen.findByText('Carol New'));
+
+  await waitFor(() => expect(api.addNotificationMember).toHaveBeenCalledWith('g1', 'p3'));
+  await waitFor(() => expect(api.getNotificationGroup).toHaveBeenCalledTimes(2));
 });
 
 it('excludes current members from the add-member recipients combo', async () => {
@@ -536,52 +384,6 @@ it('excludes current members from the add-member recipients combo', async () => 
   // Alice already appears once (in the members table) — the combo must
   // not add a second occurrence for a person already in the group.
   expect(screen.getAllByText('Alice Tech')).toHaveLength(1);
-});
-
-it('override modal shows a switch row only for the live channel, when the member can receive it', async () => {
-  const user = userEvent.setup();
-  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1] });
-  renderPage();
-  await screen.findByText('Ops Alerts');
-
-  await openRowMenu(user, /alice tech/i);
-  await user.click(screen.getByRole('menuitem', { name: 'Edit' }));
-
-  const heading = await screen.findByRole('heading', { name: /overrides — alice tech/i });
-  const dialog = heading.closest('.modal-card') as HTMLElement;
-  expect(dialog.querySelector('select')).toBeNull();
-
-  const channels = within(dialog).getByRole('group', { name: 'Channels' });
-  await user.click(within(channels).getByRole('button', { name: 'Custom' }));
-
-  expect(within(dialog).getByRole('checkbox', { name: /^email$/i })).not.toBeNull();
-  // Push and Web cannot send, and Alice has no phone on file: no switch rows for them.
-  for (const hidden of [/push/i, /web/i, /text/i]) {
-    expect(within(dialog).queryByRole('checkbox', { name: hidden })).toBeNull();
-  }
-  expect(screen.queryByText(/not available yet/i)).toBeNull();
-});
-
-it('resetting a channel override to inherit sends an explicit null', async () => {
-  const user = userEvent.setup();
-  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_2] });
-  api.updateNotificationMember.mockResolvedValue(MEMBER_2);
-  renderPage();
-  await screen.findByText('Ops Alerts');
-
-  await openRowMenu(user, /bob override/i);
-  await user.click(screen.getByRole('menuitem', { name: 'Edit' }));
-
-  const heading = await screen.findByRole('heading', { name: /overrides — bob override/i });
-  const dialog = heading.closest('.modal-card') as HTMLElement;
-
-  const channels = within(dialog).getByRole('group', { name: 'Channels' });
-  expect(within(channels).getByRole('button', { name: 'Custom' }).getAttribute('aria-pressed')).toBe('true');
-  await user.click(within(channels).getByRole('button', { name: 'Group default' }));
-  await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
-
-  await waitFor(() => expect(api.updateNotificationMember)
-    .toHaveBeenCalledWith('g1', 'p2', { channels: null }));
 });
 
 it('retries the recipients fetch after a failed attempt on reopen', async () => {
@@ -608,65 +410,7 @@ it('retries the recipients fetch after a failed attempt on reopen', async () => 
   expect(api.listNotificationRecipients).toHaveBeenCalledTimes(2);
 });
 
-it('drops a stored channel the member can no longer receive when the channel list changes', async () => {
-  const user = userEvent.setup();
-  const member: NotificationMember = {
-    ...MEMBER_1,
-    person_id: 'p4',
-    display_name: 'Dana Stale',
-    overrides: { ...MEMBER_1.overrides, channels: ['email', 'text'] },
-    effective: { ...MEMBER_1.effective, channels: ['email'] },
-  };
-  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [member] });
-  api.updateNotificationMember.mockResolvedValue(member);
-  renderPage();
-  await screen.findByText('Ops Alerts');
-
-  await openRowMenu(user, /dana stale/i);
-  await user.click(screen.getByRole('menuitem', { name: 'Edit' }));
-
-  const heading = await screen.findByRole('heading', { name: /overrides — dana stale/i });
-  const dialog = heading.closest('.modal-card') as HTMLElement;
-
-  // Channels mode is already Custom (overrides.channels is non-null). Email is
-  // the only switch: Dana's stored Text can't send and she has no phone on file.
-  expect(within(dialog).getByRole('checkbox', { name: /^email$/i })).not.toBeNull();
-  expect(within(dialog).queryByRole('checkbox', { name: /text/i })).toBeNull();
-
-  // Turning Email off changes the list. The API refuses a channel the person
-  // cannot receive (Text needs a phone), so the Text Dana can no longer get is
-  // not sent back: the list is empty.
-  await user.click(within(dialog).getByRole('checkbox', { name: /^email$/i }));
-  await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
-
-  await waitFor(() => expect(api.updateNotificationMember)
-    .toHaveBeenCalledWith('g1', 'p4', { channels: [] }));
-});
-
-it('saving an untouched custom override sends nothing for its hidden channels', async () => {
-  const user = userEvent.setup();
-  const member: NotificationMember = {
-    ...MEMBER_1,
-    person_id: 'p4',
-    display_name: 'Dana Stale',
-    overrides: { ...MEMBER_1.overrides, channels: ['email', 'text'] },
-    effective: { ...MEMBER_1.effective, channels: ['email'] },
-  };
-  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [member] });
-  api.updateNotificationMember.mockResolvedValue(member);
-  renderPage();
-  await screen.findByText('Ops Alerts');
-
-  await openRowMenu(user, /dana stale/i);
-  await user.click(screen.getByRole('menuitem', { name: 'Edit' }));
-  const heading = await screen.findByRole('heading', { name: /overrides — dana stale/i });
-  const dialog = heading.closest('.modal-card') as HTMLElement;
-  await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
-
-  await waitFor(() => expect(api.updateNotificationMember).toHaveBeenCalledWith('g1', 'p4', {}));
-});
-
-// ── Members panel row actions (Task 3) ──────────────────────────────
+// ── the member row's Actions menu ───────────────────────────────────
 
 /** Open one member row's Actions menu. Items are then queried via
  *  `screen`, NOT `within(row)`: RowActionsMenu portals the open menu to
@@ -680,20 +424,23 @@ async function openRowMenu(user: ReturnType<typeof userEvent.setup>, name: RegEx
   return row;
 }
 
-it('member row: one Actions trigger replaces the inline Edit/Remove buttons', async () => {
+it('member menu offers Remove only', async () => {
   const user = userEvent.setup();
   api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1] });
   renderPage();
-  await screen.findByText('Ops Alerts');
+  await screen.findByText('Alice Tech');
 
+  // One Actions trigger, not an inline button.
   const row = screen.getByRole('row', { name: /alice tech/i });
   expect(within(row).queryByRole('button', { name: /^edit$/i })).toBeNull();
   expect(within(row).queryByRole('button', { name: /^remove$/i })).toBeNull();
 
-  await user.click(within(row).getByRole('button', { name: /Actions/ }));
-  expect(screen.getByRole('menuitem', { name: 'Edit' })).not.toBeNull();
-  const remove = screen.getByRole('menuitem', { name: 'Remove' });
-  expect(remove.className).toContain('danger');
+  await openRowMenu(user, /alice tech/i);
+
+  const items = screen.getAllByRole('menuitem');
+  expect(items.map((i) => i.textContent)).toEqual(['Remove']);
+  expect(items[0].className).toContain('danger');
+  expect(screen.queryByRole('menuitem', { name: 'Edit' })).toBeNull();
 });
 
 it('member row: Remove confirms through confirm() and never reflows the row', async () => {
@@ -705,13 +452,13 @@ it('member row: Remove confirms through confirm() and never reflows the row', as
   await screen.findByText('Ops Alerts');
 
   const row = screen.getByRole('row', { name: /alice tech/i });
-  const actionCell = row.querySelectorAll('td')[5] as HTMLElement;
+  const actionCell = row.querySelectorAll('td')[2] as HTMLElement;
   const before = actionCell.innerHTML;
 
   await user.click(within(row).getByRole('button', { name: /Actions/ }));
   await user.click(screen.getByRole('menuitem', { name: 'Remove' }));
 
-  expect(confirmSpy).toHaveBeenCalled();
+  expect(confirmSpy).toHaveBeenCalledWith('Remove Alice Tech from this group?');
   expect(api.removeNotificationMember).not.toHaveBeenCalled();
   // The old inline confirm swapped the cell into Edit + "Really remove?" +
   // Cancel, which is the only reason the column was 250px wide. The menu
@@ -725,6 +472,23 @@ it('member row: Remove confirms through confirm() and never reflows the row', as
   await user.click(screen.getByRole('menuitem', { name: 'Remove' }));
 
   await waitFor(() => expect(api.removeNotificationMember).toHaveBeenCalledWith('g1', 'p1'));
+  await waitFor(() => expect(api.getNotificationGroup).toHaveBeenCalledTimes(2));
+  confirmSpy.mockRestore();
+});
+
+it('member row: a failed Remove says so under the menu and keeps the row', async () => {
+  const user = userEvent.setup();
+  const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1] });
+  api.removeNotificationMember.mockRejectedValue(new ApiError(403, 'forbidden'));
+  renderPage();
+  await screen.findByText('Ops Alerts');
+
+  await openRowMenu(user, /alice tech/i);
+  await user.click(screen.getByRole('menuitem', { name: 'Remove' }));
+
+  expect(await screen.findByText('Request failed (forbidden).')).not.toBeNull();
+  expect(screen.getByRole('row', { name: /alice tech/i })).not.toBeNull();
   confirmSpy.mockRestore();
 });
 
@@ -734,10 +498,11 @@ it('member row: the actions column is sized to the trigger, not to an inline con
   await screen.findByText('Alice Tech');
 
   const cols = container.querySelectorAll('.ngd-members-table col');
+  expect(cols).toHaveLength(3);
   expect((cols[cols.length - 1] as HTMLElement).style.width).toBe('88px');
 });
 
-it('member row: menu items are disabled, not dropped, while the row is in flight', async () => {
+it('member row: Remove is disabled, not dropped, while the row is in flight', async () => {
   const user = userEvent.setup();
   const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
   api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1] });
@@ -751,19 +516,8 @@ it('member row: menu items are disabled, not dropped, while the row is in flight
 
   await user.click(within(row).getByRole('button', { name: /Actions/ }));
   await waitFor(() => {
-    expect((screen.getByRole('menuitem', { name: 'Edit' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('menuitem', { name: 'Remove' }) as HTMLButtonElement).disabled).toBe(true);
   });
+  expect(screen.getAllByRole('menuitem')).toHaveLength(1);
   confirmSpy.mockRestore();
-});
-
-it('member row: no Actions column at all without change permission', async () => {
-  auth.can = () => false;
-  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1] });
-  renderPage();
-  await screen.findByText('Alice Tech');
-
-  const row = screen.getByRole('row', { name: /alice tech/i });
-  expect(within(row).queryByRole('button', { name: /Actions/ })).toBeNull();
-  expect(screen.queryByRole('columnheader', { name: /actions/i })).toBeNull();
 });

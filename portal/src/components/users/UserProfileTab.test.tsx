@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 /** The user page's Require 2FA switch says when two-factor is off site-wide,
- *  and its notification-groups table lists only channels that can send. */
+ *  and its notification-groups table names each group and when the person
+ *  joined it (a group decides nothing about what they get, so no channels). */
 import { cleanup, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import type { UserDetailOut, UserNotificationGroup } from '../../lib/api';
+import { longDate } from '../../lib/format';
 
 vi.mock('../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/api')>()),
@@ -71,38 +73,34 @@ it('no switch, no note', () => {
   expect(screen.queryByText(NOTE)).toBeNull();
 });
 
-const membership = (id: string, name: string, channels: string[]): UserNotificationGroup => (
-  { id, name, channels, added_at: '2026-02-01T00:00:00Z' }
+const membership = (id: string, name: string): UserNotificationGroup => (
+  { id, name, added_at: '2026-02-01T00:00:00Z' }
 );
 
-it('notification groups list only the channels that can send, or No email', () => {
+it('user page groups table has no Channels column', () => {
   renderTab(true, true, [
-    membership('g1', 'Night Desk', ['text', 'push', 'web']),
-    membership('g2', 'Ops Alerts', ['email', 'web']),
-    membership('g3', 'Muted Crew', []),
+    membership('g1', 'Night Desk'),
+    membership('g2', 'Ops Alerts'),
   ]);
-  const table = within(screen.getByRole('table', { name: 'Notification groups' }));
-  /** The chips in a membership's Channels cell (the second column). */
-  const chipsOf = (group: string) => [
-    ...(table.getByRole('link', { name: group }).closest('tr')!.querySelectorAll('td')[1]
-      .querySelectorAll('.chip')),
-  ] as HTMLElement[];
+  const table = screen.getByRole('table', { name: 'Notification groups' });
 
-  // Stored text/push/web are hidden: nothing there can send.
-  const [nightDesk, ...nightRest] = chipsOf('Night Desk');
-  expect(nightDesk.textContent).toBe('No email');
-  expect(nightDesk.className).toContain('c-slate');
-  expect(nightRest).toEqual([]);
+  expect(within(table).getAllByRole('columnheader').map((h) => h.textContent))
+    .toEqual(['Group', 'Member since']);
+  const row = within(table).getByRole('link', { name: 'Ops Alerts' }).closest('tr') as HTMLElement;
+  expect(row.querySelectorAll('td')).toHaveLength(2);
+  expect(within(table).getByRole('link', { name: 'Ops Alerts' }).getAttribute('href'))
+    .toBe('/system/notifications/g2');
+  expect(within(row).getByText(longDate('2026-02-01T00:00:00Z'))).not.toBeNull();
+  // no channel chips of any kind, not even a "No email" for a group without one
+  expect(table.querySelector('.chip')).toBeNull();
+  expect(within(table).queryByText(/email|channels/i)).toBeNull();
+});
 
-  // Email is listed, the hidden web channel next to it is not.
-  const [opsAlerts, ...opsRest] = chipsOf('Ops Alerts');
-  expect(opsAlerts.textContent).toBe('Email');
-  expect(opsAlerts.className).toContain('c-blue');
-  expect(opsRest).toEqual([]);
+it('a person in no notification groups sees the empty line under the same two columns', () => {
+  renderTab(true);
+  const table = screen.getByRole('table', { name: 'Notification groups' });
 
-  // An empty channel list reads the same as one with nothing live; the old "muted" chip is gone.
-  expect(chipsOf('Muted Crew').map((c) => c.textContent)).toEqual(['No email']);
-  for (const raw of ['text', 'push', 'web', 'email', 'muted']) {
-    expect(table.queryByText(raw)).toBeNull();
-  }
+  expect(within(table).getAllByRole('columnheader').map((h) => h.textContent))
+    .toEqual(['Group', 'Member since']);
+  expect(within(table).getByText('Not in any notification groups')).not.toBeNull();
 });

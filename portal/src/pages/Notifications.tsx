@@ -90,14 +90,23 @@ const requestErrorMsg = (err: unknown): string =>
  * width keeps the original relative growth once there's slack; see
  * notif-polish1-brief.md fix 6. listGridStyle (lib/listTools.tsx, spec
  * 2026-09-23-list-column-floors) owns turning `min` into the track's
- * `minmax(floor, fr)`. Members/Status/Created carry short, low-variance
- * content (a count, a two-word chip, a locale date) that gains nothing from
- * growing, so those three stay plain fixed px instead. Name's floor holds
- * its longest everyday value at the 1512px reference width, measured in the
- * browser: 184px ("Destination Side Ops Team"). Created is off by default
- * (still offered in Columns, spec §6). Description is clamped to 2 lines
- * and shrinks furthest. The delivery columns (Categories, Channels, Quiet
- * hours, Days) went with the settings they showed.
+ * `minmax(floor, fr)`. Status/Created carry short, low-variance content (a
+ * two-word chip, a locale date) that gains nothing from growing, so those two
+ * stay plain fixed px instead. Name's floor holds its longest everyday value
+ * at the 1512px reference width, measured in the browser: 184px
+ * ("Destination Side Ops Team"). Members' floor holds its header, not its
+ * count: measured in the browser at the default list size, "MEMBERS" with the
+ * column menu's funnel needs 75px, and 87px once the list is sorted by it (the
+ * sort caret joins the label); sorted, it needs 81px at the small size and 105px
+ * at xlarge. The 60px fixed track this column once had clipped it to "MEMBE",
+ * and columnFloor's own 82px for the label would still cut the caret, so `min`
+ * is 92: the 87px plus a little room (83px at the small size, 120px at xlarge).
+ * The count is short, so the track barely grows (0.3fr), but it is an `fr` and
+ * not px because only an `fr` floor scales with the list size preference (a
+ * fixed track clips the header at the larger sizes). Created is off by default
+ * (still offered in Columns, spec §6). Description is clamped to 2 lines and
+ * shrinks furthest. The delivery columns (Categories, Channels, Quiet hours,
+ * Days) went with the settings they showed.
  *
  * Fit: default columns + trailing ≤ LIST_FIT.page
  * (1172px — .portal-page at a 1512px window, nav expanded). */
@@ -111,7 +120,7 @@ const COLUMNS: ColumnDef[] = [
     key: 'description', label: 'Description', short: 'Desc',
     width: '2fr', default: true, min: 75,
   },
-  { key: 'members', label: 'Members', width: '60px', default: true },
+  { key: 'members', label: 'Members', width: '0.3fr', default: true, min: 92 },
   { key: 'status', label: 'Status', width: '90px', default: true },
   { key: 'created', label: 'Created', width: '85px', default: false },
 ];
@@ -475,7 +484,6 @@ export default function Notifications() {
             groups.length === 0 ? (
               <div className="dir-empty">
                 <b>No notification groups yet</b>
-                Create a group to define who gets notified and how.
               </div>
             ) : (
               <div className="dir-empty">

@@ -20,9 +20,3 @@ export const NOTIFICATION_CATEGORIES: { key: NotificationCategory; label: string
 export function categoryLabel(key: string): string {
   return NOTIFICATION_CATEGORIES.find((c) => c.key === key)?.label ?? key;
 }
-
-/** Labels for a group's category keys, in registry order; unknown keys drop. */
-export function categoryLabels(keys: readonly string[]): string[] {
-  const set = new Set(keys);
-  return NOTIFICATION_CATEGORIES.filter((c) => set.has(c.key)).map((c) => c.label);
-}

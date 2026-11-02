@@ -752,7 +752,7 @@ export interface UserWorkerCard {
 }
 
 export interface UserNotificationGroup {
-  id: string; name: string; channels: string[]; added_at: string;
+  id: string; name: string; added_at: string;
 }
 
 export interface UserAccessGroupRow {
@@ -4755,46 +4755,22 @@ export async function testSpecLookup(): Promise<{ ok: boolean; latency_ms: numbe
 
 /* ── notification groups ─────────────────────────────────────────────
  * Mirrors api/src/serversherpa/api/schemas.py's Notification*Out shapes.
- * Times ("quiet_start"/"quiet_end") serialize as "HH:MM:SS" strings. */
+ * A group is a name, a description, Active/Paused and its members: it decides
+ * nothing about what anyone gets, so it carries no delivery settings. Its
+ * `categories` are kept by the API but shown nowhere. */
 
 export interface NotificationGroup {
   id: string;
   name: string;
   description: string;
-  channels: string[];
   categories: string[];
-  quiet_start: string | null;
-  quiet_end: string | null;
-  timezone: string;
-  active_days: string[];
-  dnd_behavior: string;
-  urgent_bypass: boolean;
   enabled: boolean;
   member_count: number;
   created_at: string;
 }
 
-export interface NotificationMemberOverrides {
-  channels: string[] | null;
-  quiet_mode: string | null;
-  quiet_start: string | null;
-  quiet_end: string | null;
-  timezone: string | null;
-  active_days: string[] | null;
-  dnd_behavior: string | null;
-  urgent_bypass: boolean | null;
-}
-
-export interface NotificationEffectiveSettings {
-  channels: string[];
-  quiet_start: string | null;
-  quiet_end: string | null;
-  timezone: string;
-  active_days: string[];
-  dnd_behavior: string;
-  urgent_bypass: boolean;
-}
-
+/** A person on a group's list. What they can be reached on is the recipients
+ *  picker's business (NotificationRecipient), not the member's. */
 export interface NotificationMember {
   person_id: string;
   display_name: string;
@@ -4803,12 +4779,6 @@ export interface NotificationMember {
   email: string | null;
   phone: string | null;
   has_account: boolean;
-  can_email: boolean;
-  can_text: boolean;
-  can_push: boolean;
-  can_web: boolean;
-  overrides: NotificationMemberOverrides;
-  effective: NotificationEffectiveSettings;
   added_at: string;
 }
 
@@ -4830,28 +4800,19 @@ export interface NotificationRecipient {
   can_web: boolean;
 }
 
-/** Shared shape for group create/patch — all fields optional so callers can
- *  send a partial patch. */
-export interface NotificationGroupSettingsIn {
-  channels?: string[];
-  categories?: string[];
-  quiet_start?: string | null;
-  quiet_end?: string | null;
-  timezone?: string;
-  active_days?: string[];
-  dnd_behavior?: string;
-  urgent_bypass?: boolean;
-}
-
-export interface NotificationGroupCreateIn extends NotificationGroupSettingsIn {
+/** `categories` is what the API still accepts and keeps; no screen sends it. */
+export interface NotificationGroupCreateIn {
   name: string;
   description?: string;
+  categories?: string[];
 }
 
-export interface NotificationGroupPatchIn extends NotificationGroupSettingsIn {
+/** All fields optional so a caller can send a partial patch. */
+export interface NotificationGroupPatchIn {
   name?: string;
   description?: string;
   enabled?: boolean;
+  categories?: string[];
 }
 
 export async function listNotificationGroups(): Promise<NotificationGroup[]> {
@@ -4907,18 +4868,6 @@ export async function addNotificationMember(
   return resp.json();
 }
 
-export async function updateNotificationMember(
-  groupId: string, personId: string, overrides: Partial<NotificationMemberOverrides>,
-): Promise<NotificationMember> {
-  const resp = await apiFetch(`/notifications/groups/${groupId}/members/${personId}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(overrides),
-  });
-  if (!resp.ok) throw await errorFrom(resp);
-  return resp.json();
-}
-
 export async function removeNotificationMember(
   groupId: string, personId: string,
 ): Promise<void> {
@@ -4950,19 +4899,9 @@ export interface MyNotificationGroup {
   id: string;
   name: string;
   description: string;
-  channels: string[];
   categories: string[];
-  effective_channels: string[];
-  quiet_start: string | null;
-  quiet_end: string | null;
-  timezone: string;
-  active_days: string[];
-  dnd_behavior: string;
-  urgent_bypass: boolean;
   member_count: number;
   is_member: boolean;
-  overrides: NotificationMemberOverrides | null;
-  effective: NotificationEffectiveSettings | null;
   pending_request: MyPendingRequest | null;
 }
 
@@ -4985,18 +4924,6 @@ export async function listMyNotificationGroups(q = ''): Promise<MyNotificationGr
   const params = new URLSearchParams();
   if (q) params.set('q', q);
   const resp = await apiFetch(`/auth/me/notification-groups?${params.toString()}`);
-  if (!resp.ok) throw await errorFrom(resp);
-  return resp.json();
-}
-
-export async function updateMyGroupOverrides(
-  groupId: string, body: Partial<NotificationMemberOverrides>,
-): Promise<MyNotificationGroup> {
-  const resp = await apiFetch(`/auth/me/notification-groups/${groupId}/overrides`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

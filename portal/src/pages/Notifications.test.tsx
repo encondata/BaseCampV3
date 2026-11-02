@@ -21,7 +21,7 @@ import {
   ApiError, type MembershipRequest, type NotificationGroup, type NotificationSettings,
   type UiPreferences,
 } from '../lib/api';
-import { LIST_FIT } from '../lib/listTools';
+import { LIST_FIT, columnFloor, listScale } from '../lib/listTools';
 
 const navigate = vi.hoisted(() => vi.fn());
 vi.mock('react-router-dom', async (importActual) => ({
@@ -34,10 +34,12 @@ const auth = vi.hoisted(() => {
     can: (resource: string, action: string) => boolean;
     maxRank: number;
     scope: ScopeInfo | null;
+    listSize: 'small' | 'default' | 'large' | 'xlarge';
   } = {
     can: () => true,
     maxRank: 60,
     scope: { global: true, client_ids: [], partner_ids: [] },
+    listSize: 'default',
   };
   return state;
 });
@@ -49,7 +51,7 @@ vi.mock('../auth/AuthContext', () => ({
     scope: auth.scope,
     godMode: false,
     preferences: {
-      accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default', motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default', list_view: 'expanded',
+      accent: 'blue', theme: 'dark', density: 'comfortable', list_size: auth.listSize, motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default', list_view: 'expanded',
       notif: { sound: 'chime', switches: {}, schedule: { timezone: null, days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'], quiet_start: null, quiet_end: null } },
       list_prefs: {},
     } satisfies UiPreferences,
@@ -73,22 +75,17 @@ vi.mock('../lib/api', async (importActual) => ({
   ...api,
 }));
 
-/* The groups below still carry the delivery fields the API no longer returns
- * (the NotificationGroup type drops them with the group page, a later task).
- * They are distinctive on purpose: the list must show none of them. */
+/* A group is a name, a description, Active/Paused and its members. The API
+ * still returns its (hidden) categories: the list must show none of them. */
 const GROUPS: NotificationGroup[] = [
   {
     id: 'g1', name: 'Ops Alerts', description: 'Operational issues',
-    channels: ['email', 'push'], categories: ['approvals'], quiet_start: '21:00:00', quiet_end: '07:00:00',
-    timezone: 'America/Chicago', active_days: ['mon', 'tue', 'wed', 'thu', 'fri'],
-    dnd_behavior: 'defer', urgent_bypass: true, enabled: true, member_count: 5,
+    categories: ['approvals'], enabled: true, member_count: 5,
     created_at: '2026-01-01T00:00:00Z',
   },
   {
     id: 'g2', name: 'Weekend Oncall', description: '',
-    channels: [], categories: [], quiet_start: null, quiet_end: null,
-    timezone: 'America/New_York', active_days: ['sat', 'sun'],
-    dnd_behavior: 'skip', urgent_bypass: false, enabled: false, member_count: 0,
+    categories: [], enabled: false, member_count: 0,
     created_at: '2026-02-01T00:00:00Z',
   },
 ];
@@ -133,6 +130,7 @@ beforeEach(() => {
   auth.can = () => true;
   auth.maxRank = 60;
   auth.scope = { global: true, client_ids: [], partner_ids: [] };
+  auth.listSize = 'default';
   at.url = '/system/notifications';
   api.listNotificationGroups.mockResolvedValue(GROUPS);
   api.listMembershipRequests.mockResolvedValue([]);
@@ -420,6 +418,39 @@ it('group-list floors hold their longest values at the 1512px reference width', 
   await waitFor(() => expect(within(head).getByRole('button', { name: 'Created' })).not.toBeNull());
 });
 
+/** The Members track's floor in px: Name, Description and Members are the three
+ *  `minmax(floor, fr)` tracks (Status and the chevron are fixed). */
+async function membersFloor(): Promise<{ floor: number; head: HTMLElement }> {
+  const row = (await screen.findByText('Ops Alerts')).closest('.dir-row') as HTMLElement;
+  const head = row.closest('.dir-list')?.querySelector('.list-head') as HTMLElement;
+  const tracks = [...head.style.gridTemplateColumns.matchAll(/minmax\((\d+)px, ([\d.]+)fr\)/g)];
+  expect(tracks).toHaveLength(3);
+  return { floor: Number(tracks[2][1]), head };
+}
+
+it('the Members track holds its header: a 60px track clipped it to "MEMBE"', async () => {
+  render(<Notifications />);
+  const { floor, head } = await membersFloor();
+
+  // Measured in Chromium at the default list size, with the real fonts: "MEMBERS" and the
+  // column menu's funnel need 75px, and 87px once the list is sorted by Members (the sort caret
+  // joins the label). columnFloor's own 82px cuts the caret, so the floor must clear 87px.
+  expect(floor).toBeGreaterThanOrEqual(87);
+  expect(floor).toBeGreaterThanOrEqual(columnFloor({ key: 'members', label: 'Members', width: '', default: true }));
+  // ...and the list still fits the 1512px reference width.
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
+});
+
+it('the Members floor grows with the list size, so the header holds at the larger sizes too', async () => {
+  auth.listSize = 'xlarge';
+  render(<Notifications />);
+  const { floor } = await membersFloor();
+
+  // Measured at xlarge: the sorted header needs 105px. A fixed px track would stay at its default width.
+  expect(floor).toBe(Math.ceil(92 * listScale('xlarge')));
+  expect(floor).toBeGreaterThanOrEqual(105);
+});
+
 /** A group row with a few fields overridden. */
 const group = (over: Partial<NotificationGroup>): NotificationGroup => ({ ...GROUPS[0], ...over });
 
@@ -452,17 +483,13 @@ it('the columns are Name, Description, Members and Status: none of the delivery 
     .toEqual(['Name', 'Description', 'Members', 'Status', 'Created']);
 });
 
-it('a group row shows none of its old delivery settings', async () => {
+it('a group row shows its name, description, members and status, and not its categories', async () => {
   render(<Notifications />);
   const row = await rowOf('Ops Alerts');
-  // GROUPS[0] still carries categories, channels, quiet hours and days
+  // GROUPS[0] still carries categories (the API keeps them), but nothing shows them
   expect(within(row).queryByText('Approvals & requests')).toBeNull();
-  expect(within(row).queryByText('Email')).toBeNull();
-  expect(within(row).queryByText('Push')).toBeNull();
-  expect(within(row).queryByText('No email')).toBeNull();
   expect(within(row).queryByText('None — inbox only')).toBeNull();
   expect(row.querySelector('.chips')).toBeNull();
-  expect(row.textContent).not.toMatch(/9:00 PM|7:00 AM|Mon–Fri/);
   // what is left: name, description, members, status
   expect(row.textContent).toContain('Operational issues');
   expect(within(row).getByText('5')).not.toBeNull();
@@ -499,13 +526,11 @@ it('the Status filter keeps the enabled or the paused groups', async () => {
   expect(rowNames()).toEqual(['Ops Alerts']);
 });
 
-it('search matches the name, the description and the status, and nothing of the old delivery settings', async () => {
+it('search matches the name, the description and the status, and not the categories', async () => {
   const user = userEvent.setup();
   api.listNotificationGroups.mockResolvedValue([
-    group({ id: 'g3', name: 'Group A', description: 'Description A', categories: ['wiki'], channels: ['email', 'push'],
-      timezone: 'America/Chicago', active_days: ['mon'], enabled: true }),
-    group({ id: 'g4', name: 'Group B', description: 'Description B', categories: ['learning'], channels: ['email'],
-      timezone: 'America/Denver', active_days: ['sat'], enabled: false }),
+    group({ id: 'g3', name: 'Group A', description: 'Description A', categories: ['wiki'], enabled: true }),
+    group({ id: 'g4', name: 'Group B', description: 'Description B', categories: ['learning'], enabled: false }),
   ]);
   render(<Notifications />);
   await screen.findByText('Group A');
@@ -518,10 +543,10 @@ it('search matches the name, the description and the status, and nothing of the 
   await user.type(box, 'paused');
   expect(rowNames()).toEqual(['Group B']);
 
-  // categories, channels, time zones and days are not part of a group any more
-  for (const old of ['wiki', 'learning', 'email', 'push', 'chicago', 'denver', 'sat']) {
+  // a group's categories are kept by the API but are not shown, so not searched either
+  for (const hidden of ['wiki', 'learning']) {
     await user.clear(box);
-    await user.type(box, old);
+    await user.type(box, hidden);
     expect(rowNames()).toEqual([]);
     expect(screen.getByText('No matches')).not.toBeNull();
   }
@@ -702,6 +727,16 @@ it('shows the empty state when there are no groups', async () => {
   api.listNotificationGroups.mockResolvedValue([]);
   render(<Notifications />);
   expect(await screen.findByText('No notification groups yet')).not.toBeNull();
+});
+
+it('the empty state is the bold title alone: a group no longer defines who is notified or how', async () => {
+  api.listNotificationGroups.mockResolvedValue([]);
+  render(<Notifications />);
+  const title = await screen.findByText('No notification groups yet');
+
+  expect(title.tagName).toBe('B');
+  expect((title.closest('.dir-empty') as HTMLElement).textContent).toBe('No notification groups yet');
+  expect(screen.queryByText(/define who gets notified/i)).toBeNull();
 });
 
 it('renders the Pending requests panel from the mocked list, hidden when empty', async () => {

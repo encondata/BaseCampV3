@@ -1,32 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  LIVE_CHANNELS, canForChannel, formatDays, formatQuietHours, liveChannels,
-} from './notifications';
+import { formatDays, formatQuietHours } from './notifications';
 import { naturalCompare } from './naturalSort';
-
-describe('hidden channels carry no note', () => {
-  it('no longer exports CHANNEL_NOTES ("not available yet" went with the hidden channels)', async () => {
-    const mod = await import('./notifications');
-    expect('CHANNEL_NOTES' in mod).toBe(false);
-  });
-});
-
-describe('liveChannels', () => {
-  it('keeps only the channels the server can send', () => {
-    expect(LIVE_CHANNELS).toEqual(['email']);
-    expect(liveChannels(['web', 'text', 'email', 'push'])).toEqual(['email']);
-  });
-
-  it('is empty when no live channel is present', () => {
-    expect(liveChannels(['text'])).toEqual([]);
-    expect(liveChannels([])).toEqual([]);
-  });
-
-  it('ignores unknown values and repeats', () => {
-    expect(liveChannels(['sms', 'email', 'email'])).toEqual(['email']);
-  });
-});
 
 describe('formatQuietHours', () => {
   it('formats a normal (non-overnight) window with the tz abbreviation', () => {
@@ -67,17 +42,6 @@ describe('formatDays', () => {
 
   it('returns an em dash for an empty list', () => {
     expect(formatDays([])).toBe('—');
-  });
-});
-
-describe('canForChannel', () => {
-  const caps = { can_email: true, can_text: false, can_push: true, can_web: false };
-
-  it('reads the matching capability flag for each channel', () => {
-    expect(canForChannel(caps, 'email')).toBe(true);
-    expect(canForChannel(caps, 'text')).toBe(false);
-    expect(canForChannel(caps, 'push')).toBe(true);
-    expect(canForChannel(caps, 'web')).toBe(false);
   });
 });
 

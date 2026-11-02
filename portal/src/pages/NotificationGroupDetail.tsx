@@ -2,40 +2,30 @@
  * NotificationGroupDetail — the Full Details page for one notification
  * group (/system/notifications/:groupId). Hero mirrors InitiativeDetail's
  * idet-header (back-link, title row with status/summary chips, header
- * actions); the Delivery defaults panel follows the same .init-panel +
- * dl.kv convention as InitiativeDetail's Overview panel. Editing is
- * delegated to components/notifications/{EditGroupModal,EditSettingsModal}
- * to keep this file under the house ~500-line split threshold. The
- * Members panel (add/remove, per-member override editor, capability
- * warnings) is similarly delegated to components/notifications/
- * MembersPanel.tsx, which reuses this page's `load()` as its `reload()`
- * contract.
+ * actions). A group is a name, a description, Active/Paused and its members:
+ * it decides nothing about what anyone gets, so the page has no delivery
+ * settings, only the hero and the Members panel. Renaming is delegated to
+ * components/notifications/EditGroupModal to keep this file under the house
+ * ~500-line split threshold. The Members panel (add/remove) is similarly
+ * delegated to components/notifications/MembersPanel.tsx, which reuses this
+ * page's `load()` as its `reload()` contract.
  */
 
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
-import ChannelChips from '../components/notifications/ChannelChips';
 import EditGroupModal from '../components/notifications/EditGroupModal';
-import EditSettingsModal from '../components/notifications/EditSettingsModal';
 import MembersPanel from '../components/notifications/MembersPanel';
 import {
   ApiError, deleteNotificationGroup, getNotificationGroup, updateNotificationGroup,
   type NotificationGroupDetail as NotificationGroupDetailOut,
 } from '../lib/api';
-import { formatDays, formatQuietHours } from '../lib/notifications';
-import { categoryLabels } from '../lib/notificationKinds';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/initiatives.css';
 import '../styles/settings.css';
 import '../styles/notifications.css';
-
-const DND_LABELS: Record<string, string> = {
-  defer: 'Defer until window opens',
-  skip: 'Skip entirely',
-};
 
 const msgFor = (err: unknown): string =>
   err instanceof ApiError
@@ -61,7 +51,6 @@ export default function NotificationGroupDetailPage() {
   const [deleteError, setDeleteError] = useState('');
 
   const [editingGroup, setEditingGroup] = useState(false);
-  const [editingSettings, setEditingSettings] = useState(false);
 
   const load = useCallback(async () => {
     if (!groupId) return;
@@ -154,7 +143,6 @@ export default function NotificationGroupDetailPage() {
             <span className="chip tag">
               {group.member_count} member{group.member_count === 1 ? '' : 's'}
             </span>
-            <ChannelChips channels={group.channels} />
           </div>
           {group.description && <p className="page-hint idet-desc">{group.description}</p>}
           {pauseError && <span className="pf-error">{pauseError}</span>}
@@ -190,45 +178,6 @@ export default function NotificationGroupDetailPage() {
         </div>
       </div>
 
-      <div className="init-panel" style={{ marginTop: 18 }}>
-        <div className="ngd-panel-head">
-          <p className="eyebrow-sm">Delivery defaults</p>
-          {canChange && (
-            <button className="mini-btn sm" onClick={() => setEditingSettings(true)}>
-              Edit settings
-            </button>
-          )}
-        </div>
-        <dl className="kv">
-          <dt>Channels</dt>
-          <dd><ChannelChips channels={group.channels} /></dd>
-          <dt>Categories</dt>
-          <dd>
-            {categoryLabels(group.categories).length
-              ? (
-                <div className="chips">
-                  {categoryLabels(group.categories).map((l) => (
-                    <span key={l} className="chip tag">{l}</span>
-                  ))}
-                </div>
-              )
-              : 'None — members get inbox only'}
-          </dd>
-          <dt>Quiet hours</dt>
-          <dd>{formatQuietHours(group.quiet_start, group.quiet_end, group.timezone)}</dd>
-          <dt>Timezone</dt>
-          <dd>{group.timezone}</dd>
-          <dt>Active days</dt>
-          <dd>{formatDays(group.active_days)}</dd>
-          <dt>When blocked</dt>
-          <dd>{DND_LABELS[group.dnd_behavior] ?? group.dnd_behavior}</dd>
-          <dt>Urgent bypass</dt>
-          <dd>{group.urgent_bypass
-            ? 'Urgent notifications ignore quiet hours'
-            : 'Urgent notifications respect quiet hours'}</dd>
-        </dl>
-      </div>
-
       <MembersPanel group={group} canChange={canChange} reload={load} />
 
       {editingGroup && (
@@ -236,13 +185,6 @@ export default function NotificationGroupDetailPage() {
           group={group}
           onClose={() => setEditingGroup(false)}
           onSaved={() => { setEditingGroup(false); void load(); }}
-        />
-      )}
-      {editingSettings && (
-        <EditSettingsModal
-          group={group}
-          onClose={() => setEditingSettings(false)}
-          onSaved={() => { setEditingSettings(false); void load(); }}
         />
       )}
     </div>

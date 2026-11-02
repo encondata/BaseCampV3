@@ -11,7 +11,6 @@ import { ApiError, type UserDetailOut } from '../../lib/api';
 import { statusChip } from '../../lib/chips';
 import { describeUserAgent, longDate, relativeTime } from '../../lib/format';
 import { STATUS_META, type DetailMode } from '../../lib/users';
-import ChannelChips from '../notifications/ChannelChips';
 import { Switch } from '../Switch';
 import TwoFactorOffNote from '../TwoFactorOffNote';
 import UserBiometricKeys from './UserBiometricKeys';
@@ -192,14 +191,13 @@ export default function UserProfileTab({
             <div className="ud-membership-head"><p className="eyebrow-sm" style={{ margin: 0 }}>Notification groups</p></div>
             <DataTable ariaLabel="Notification groups" emptyText="Not in any notification groups"
               columns={[
-                { key: 'group', label: 'Group' }, { key: 'channels', label: 'Channels' },
+                { key: 'group', label: 'Group' },
                 { key: 'at', label: 'Member since', mono: true },
               ]}
               rows={groups.map((g) => ({
                 key: g.id,
                 cells: [
                   <Link key="group" to={`/system/notifications/${g.id}`}>{g.name}</Link>,
-                  <ChannelChips key="channels" channels={g.channels} />,
                   longDate(g.added_at),
                 ],
               }))} />

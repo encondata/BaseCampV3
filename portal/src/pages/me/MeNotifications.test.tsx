@@ -505,37 +505,21 @@ it('an invalid schedule is never saved: removing every day asks for one and send
 
 // ── the groups lists ─────────────────────────────────────────────────────
 
-/** The API no longer sends a group's delivery settings, but the type still
- *  declares them. The values are deliberately distinctive, so a list that
- *  read them would show them. */
-const LEGACY = {
-  channels: ['email', 'push'], effective_channels: ['email', 'push'],
-  quiet_start: '22:00:00', quiet_end: '07:00:00', timezone: 'America/New_York',
-  active_days: ['mon', 'tue', 'wed', 'thu', 'fri'], dnd_behavior: 'defer', urgent_bypass: false,
-  overrides: {
-    channels: null, quiet_mode: null, quiet_start: null, quiet_end: null,
-    timezone: null, active_days: null, dnd_behavior: null, urgent_bypass: true,
-  },
-  effective: {
-    channels: ['email', 'push'], quiet_start: '22:00:00', quiet_end: '07:00:00',
-    timezone: 'America/New_York', active_days: ['mon', 'tue', 'wed', 'thu', 'fri'],
-    dnd_behavior: 'defer', urgent_bypass: true,
-  },
-};
-
+/** A group as the API answers: a name, a description, its (hidden) categories,
+ *  its members and the viewer's own request. No delivery settings. */
 const G1: MyNotificationGroup = {
-  ...LEGACY, id: 'g1', name: 'Ops', description: 'Operations alerts', categories: ['approvals', 'wiki'],
+  id: 'g1', name: 'Ops', description: 'Operations alerts', categories: ['approvals', 'wiki'],
   member_count: 3, is_member: true, pending_request: null,
 };
 
 const G2: MyNotificationGroup = {
-  ...LEGACY, id: 'g2', name: 'Warehouse Alerts', description: 'Forklift and stock alerts', categories: ['learning'],
-  member_count: 5, is_member: false, overrides: null, effective: null, pending_request: null,
+  id: 'g2', name: 'Warehouse Alerts', description: 'Forklift and stock alerts', categories: ['learning'],
+  member_count: 5, is_member: false, pending_request: null,
 };
 
 const G3: MyNotificationGroup = {
-  ...LEGACY, id: 'g3', name: 'Fleet Updates', description: 'Truck status changes', categories: [],
-  member_count: 2, is_member: false, overrides: null, effective: null, pending_request: null,
+  id: 'g3', name: 'Fleet Updates', description: 'Truck status changes', categories: [],
+  member_count: 2, is_member: false, pending_request: null,
 };
 
 /** Standard-list rows keep their actions behind the "Actions ▾" menu:
@@ -568,8 +552,8 @@ it('a member group row shows its name, description, member count and no delivery
   expect(within(row).getByText('3')).toBeTruthy();
   expect(within(row).getByText('—')).toBeTruthy();                       // no request waiting
   // Nothing of the group's old delivery settings, categories or overrides is shown.
-  for (const text of ['Email', 'No email', 'Push', '10:00 PM – 7:00 AM ET', 'Mon–Fri', 'Customized',
-    'Approvals & requests', 'None — inbox only']) {
+  for (const text of ['Email', 'No email', 'Push', 'Customized',
+    'Approvals & requests', 'Wiki', 'None — inbox only']) {
     expect(within(row).queryByText(text)).toBeNull();
   }
 });
@@ -609,7 +593,7 @@ it('a joinable group row offers Ask to join, and shows no delivery settings eith
   const row = screen.getByText('Warehouse Alerts').closest('.dir-row') as HTMLElement;
   expect(within(row).getByText('Forklift and stock alerts')).toBeTruthy();
   expect(within(row).getByText('5')).toBeTruthy();
-  for (const text of ['Email', 'No email', 'Push', 'Daily', 'Learning', '10:00 PM – 7:00 AM ET']) {
+  for (const text of ['Email', 'No email', 'Push', 'Daily', 'Learning']) {
     expect(within(row).queryByText(text)).toBeNull();
   }
   fireEvent.click(within(region('Join a group')).getByRole('button', { name: /Actions/ }));

@@ -80,11 +80,6 @@
     "reason": "not list content: eyebrow label (out of scope per spec)"
   },
   {
-    "file": "styles/notifications.css",
-    "selector": ".ngd-switch-row",
-    "reason": "not list content: labeled settings-form switch row \u2014 per the design spec's migration map this stays permanently, it is a form row not a list"
-  },
-  {
     "file": "styles/portal-theme.css",
     "selector": ".portal-nav .nav-list",
     "reason": "not list content: primary app navigation sidebar, not a data list"
@@ -323,11 +318,6 @@
     "file": "styles/initiatives.css",
     "selector": ".idet-time-stat-value",
     "reason": "not list content: time-tracking stat tile value (see .idet-time-stat-label)"
-  },
-  {
-    "file": "styles/notifications.css",
-    "selector": ".ngd-section",
-    "reason": "not list content: EditSettingsModal section heading"
   },
   {
     "file": "styles/notifications.css",
