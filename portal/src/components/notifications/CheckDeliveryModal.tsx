@@ -1,33 +1,32 @@
 /**
  * CheckDeliveryModal — the Delivery log's dry run (GET /notifications/check).
  * Pick a person and a notification type and it explains what would happen
- * right now: whether the inbox row is written, whether the email goes now, is
- * held (until when, and why) or does not go (and why), the address it would go
- * to, and every group's verdict. For a type the account owner always gets, a
- * segmented choice models the owner's own copy or an admin's copy, which goes
- * through groups. It asks as soon as both pickers are set and again on every
- * change. Nothing is sent or written.
+ * right now: whether the inbox row is written and whose switch decides it,
+ * whether the email goes now, is held for the person's summary (until when,
+ * and why) or does not go (and why), the address it would go to, the person's
+ * switches and where each comes from, their schedule and whether it is open
+ * right now, and whether the type is critical. For a type the account owner
+ * always gets, a segmented choice models the owner's own copy or an admin's
+ * copy, which stays in the inbox. It asks as soon as both pickers are set and
+ * again on every change. Nothing is sent or written.
  *
- * "Always emailed" is said only of the owner's own copy (`owner_copy`), never
- * read off the category's `email_source`: an admin's copy of a security notice
- * still reports "always" there, but it is emailed through groups.
- *
- * An email stopped before any group is consulted (email off, the person's own
- * choice, no address…) lists the person's groups as "Not asked", with a note
- * saying why, rather than verdicts nobody acted on.
+ * "Critical type" describes the TYPE (it skips quiet hours, days off and the
+ * summary), not this answer: an admin's copy of a security notice is critical
+ * as a type and still is not emailed.
  */
 
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 
 import {
   ApiError, checkDelivery, listNotificationKinds, listNotificationRecipients,
-  type DeliveryCheck, type DeliveryCheckGroup, type NotificationKindInfo, type NotificationRecipient,
+  type DeliveryCheck, type NotificationKindInfo, type NotificationRecipient,
 } from '../../lib/api';
-import { ADDRESS_SOURCE_LABELS, reasonLabel, shortWhen, verdictOf } from '../../lib/deliveryLog';
+import {
+  ADDRESS_SOURCE_LABELS, reasonLabel, scheduleStateOf, shortWhen, switchSourceLabel,
+} from '../../lib/deliveryLog';
 import { categoryLabel } from '../../lib/notificationKinds';
 import { formatDays, formatQuietHours } from '../../lib/notifications';
 import ComboBox, { type ComboOption } from '../ComboBox';
-import DataTable, { type DataTableColumn, type DataTableRow } from '../DataTable';
 import ChoiceField from './ChoiceField';
 import NotificationModal from './NotificationModal';
 
@@ -53,69 +52,12 @@ const ERRORS: Record<string, string> = {
 const msgFor = (err: unknown): string =>
   err instanceof ApiError ? (ERRORS[err.code] ?? `Request failed (${err.code}).`) : 'Network error — try again.';
 
-const GROUP_COLUMNS: DataTableColumn[] = [
-  { key: 'group', label: 'Group' },
-  { key: 'subscribed', label: 'Subscribed' },
-  { key: 'email', label: 'Email' },
-  { key: 'now', label: 'Now' },
-  { key: 'earliest', label: 'Earliest send', mono: true },
-];
-
-/** When a group would let the email go: now when it is open, the time it
- *  opens when it is closed and defers, never when it skips; "—" for a group
- *  that was not asked (paused, not subscribed, no email). */
-function earliestSend(g: DeliveryCheckGroup): string {
-  if (g.verdict === 'open' || g.verdict === 'urgent_bypass') return 'Now';
-  if (g.verdict === 'quiet_hours' || g.verdict === 'inactive_day') {
-    return g.allowed_at ? shortWhen(g.allowed_at) : 'Never';
-  }
-  return '—';
-}
-
-/** The group's quiet hours and days, under its name. */
-function schedule(g: DeliveryCheckGroup): string {
-  const quiet = formatQuietHours(g.quiet_start, g.quiet_end, g.timezone);
-  return `${quiet === '—' ? 'No quiet hours' : quiet} · ${formatDays(g.active_days)}`;
-}
-
-/** Why no group was asked, by the reason an email is not sent when the
- *  decision (the API's decide_email, whose checks run in order with the
- *  groups last) settles it before looking at any group. */
-const NOT_ASKED_NOTES: Record<string, string> = {
-  email_not_set_up: "Email isn't set up on this server, so no group is asked.",
-  unregistered_kind: "This type isn't registered, so no group is asked.",
-  kind_not_emailed: 'This type is never emailed, so no group is asked.',
-  category_off: 'This person turned the category off, so no group is asked.',
-  category_inbox_only: 'This person keeps the category in the inbox only, so no group is asked.',
-  recipient_inactive: 'This person is archived or their account is disabled, so no group is asked.',
-  no_address: 'This person has no email address, so no group is asked.',
-};
-
-/** The groups' Now cell when they were never asked. */
-const NOT_ASKED = { label: 'Not asked', chip: 'c-slate' };
-
-/** Why the groups were never asked about this email, or null when they were
- *  (it goes, waits, or the groups themselves stopped it). */
-function notAskedNote(r: DeliveryCheck): string | null {
-  if (r.outcome !== 'not_sent' || r.reason === null) return null;
-  return Object.hasOwn(NOT_ASKED_NOTES, r.reason) ? NOT_ASKED_NOTES[r.reason] : null;
-}
-
-/** What the groups have to do with this email, above their table. */
-function groupsNote(r: DeliveryCheck): string {
-  const notAsked = notAskedNote(r);
-  if (notAsked) return notAsked;
-  if (r.owner_copy) return "The account owner's own copy is always emailed, whatever these groups say.";
-  if (r.email_source === 'direct') return "This category's email follows the person's own choice, not their groups.";
-  return `It is emailed when one of these groups covers ${categoryLabel(r.category)} with Email on, `
-    + 'at the earliest time any of them allows.';
-}
-
 function inboxLine(r: DeliveryCheck): ReactNode {
+  const source = switchSourceLabel(r.inbox_source);
   return r.inbox === 'written'
-    ? <span className="chip c-blue">In inbox</span>
+    ? <><span className="chip c-blue">In inbox</span> · {source}</>
     // notify() keeps the row out only for a category turned off
-    : <><span className="chip c-slate">Not in inbox</span> · {reasonLabel('category_off')}</>;
+    : <><span className="chip c-slate">Not in inbox</span> · {reasonLabel('category_off')} · {source}</>;
 }
 
 function emailLine(r: DeliveryCheck): ReactNode {
@@ -125,15 +67,36 @@ function emailLine(r: DeliveryCheck): ReactNode {
   const source = r.address_source ? ADDRESS_SOURCE_LABELS[r.address_source] : null;
   const to = r.address ? `to ${r.address}${source ? ` (${source})` : ''}` : null;
   if (r.outcome === 'held') {
+    // the email waits for the person's one summary, due at summary_at
     return (
       <>
-        {chip} until {r.send_at ? shortWhen(r.send_at) : '—'}
+        {chip} until {r.summary_at ? shortWhen(r.summary_at) : '—'}
         {r.reason && ` · ${reasonLabel(r.reason)}`}
         {to && ` · ${to}`}
       </>
     );
   }
   return <>{chip}{to && ` ${to}`}</>;
+}
+
+/** "Inbox on (Company default) · Email off (Their choice)". */
+function switchesLine(r: DeliveryCheck): string {
+  const one = (name: string, s: DeliveryCheck['switches']['inbox']) =>
+    `${name} ${s.on ? 'on' : 'off'} (${switchSourceLabel(s.source)})`;
+  return `${one('Inbox', r.switches.inbox)} · ${one('Email', r.switches.email)}`;
+}
+
+/** "America/Chicago · Mon–Fri · 9:00 PM – 7:00 AM CT · now In quiet hours". */
+function scheduleLine(r: DeliveryCheck): ReactNode {
+  const { timezone, days, quiet_start: start, quiet_end: end, state } = r.schedule;
+  const quiet = formatQuietHours(start, end, timezone);
+  const now = scheduleStateOf(state);
+  return (
+    <>
+      {timezone} · {formatDays(days)} · {quiet === '—' ? 'No quiet hours' : quiet} · now{' '}
+      <span className={`chip ${now.chip}`}>{now.label}</span>
+    </>
+  );
 }
 
 export default function CheckDeliveryModal({ onClose }: { onClose: () => void }) {
@@ -195,24 +158,6 @@ export default function CheckDeliveryModal({ onClose }: { onClose: () => void })
     value: k.kind, label: k.label, sub: categoryLabel(k.category),
   })), [kinds]);
 
-  // An email stopped before any group was consulted: no verdict was acted on.
-  const groupsAsked = result !== null && notAskedNote(result) === null;
-  const groupRows: DataTableRow[] = (result?.groups ?? []).map((g) => {
-    const verdict = groupsAsked ? verdictOf(g.verdict) : NOT_ASKED;
-    return {
-      key: g.group_id,
-      cells: [
-        <div key="group" className="cell-primary">
-          <div className="pn"><b>{g.name}</b><span>{schedule(g)}</span></div>
-        </div>,
-        g.subscribed ? 'Yes' : 'No',
-        g.email_channel ? 'Yes' : 'No',
-        <span key="now" className={`chip ${verdict.chip}`}>{verdict.label}</span>,
-        groupsAsked ? earliestSend(g) : '—',
-      ],
-    };
-  });
-
   return (
     <NotificationModal
       eyebrow="Delivery log" title="Check delivery" wide onClose={onClose}
@@ -253,15 +198,14 @@ export default function CheckDeliveryModal({ onClose }: { onClose: () => void })
                 <dd>{inboxLine(result)}</dd>
                 <dt>Email</dt>
                 <dd>{emailLine(result)}</dd>
+                <dt>Their switches</dt>
+                <dd>{switchesLine(result)}</dd>
+                <dt>Their schedule</dt>
+                <dd>{scheduleLine(result)}</dd>
+                <dt>Critical type</dt>
+                <dd>{result.critical ? 'Yes — skips quiet hours and the summary' : 'No'}</dd>
               </dl>
             </section>
-
-            <div className="modal-section">Groups</div>
-            <p className="cell-sub nm-hint dlog-check-note">{groupsNote(result)}</p>
-            <div className="dlog-check-groups">
-              <DataTable ariaLabel="Groups" columns={GROUP_COLUMNS} rows={groupRows}
-                         emptyText="Not in any notification group." />
-            </div>
           </div>
         )}
       </div>

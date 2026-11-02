@@ -6491,23 +6491,29 @@ export async function clearReadInbox(): Promise<void> {
 
 /* ── delivery log + Check delivery (super admin and above) ───────────
  * Mirrors api/src/serversherpa/api/schemas.py DeliveryLogEntryOut,
- * DeliveryCheckOut, DeliveryCheckGroupOut and NotificationKindOut; every
- * call below answers 403 under super admin (global access, rank 80+). */
+ * DeliveryCheckOut (with DeliveryCheckSwitchesOut and DeliveryCheckScheduleOut)
+ * and NotificationKindOut; every call below answers 403 under super admin
+ * (global access, rank 80+). */
 
 /** The delivery log's events (notifications/delivery_log.py EVENTS). */
 export type DeliveryLogEvent =
   | 'inbox_written' | 'inbox_suppressed'
-  | 'email_queued' | 'email_not_queued'
+  | 'email_queued' | 'email_not_queued' | 'email_held' | 'email_summarized'
   | 'email_sent' | 'email_skipped' | 'email_retry' | 'email_failed';
 
 /** One recorded decision with the names it points at. `event`, `channel`,
  *  `reason` and `category` are codes; one a newer API adds shows as itself.
  *  `detail` holds ids, codes and counts only (never an address or a body):
- *  email_queued → template, send_at, deferred, and for notification mail
- *  reason (quiet_hours / inactive_day), groups (names) and via (contact /
- *  login); email_sent → attempt; email_retry → attempt, error (exception
- *  class), smtp_code, next_attempt_at; email_failed → attempts, error,
- *  smtp_code. `to_address` and `outbox_status` come from the outbox row. */
+ *  email_queued → template, send_at, deferred, and for notification mail via
+ *  (contact / login) plus critical, owner_copy and after_summary when true;
+ *  for the summary email itself summary (true) and count; rows from before
+ *  Phase 1 may also carry reason (quiet_hours / inactive_day) and groups
+ *  (names) on a deferred email; email_held (reason: quiet_hours /
+ *  inactive_day) → summary_at; email_summarized → nothing (its `outbox_id`
+ *  is the summary email); email_sent → attempt; email_retry → attempt, error
+ *  (exception class), smtp_code, next_attempt_at; email_failed → attempts,
+ *  error, smtp_code. `to_address` and `outbox_status` come from the outbox
+ *  row. */
 export interface DeliveryLogEntry {
   id: number;
   at: string;
@@ -6568,59 +6574,69 @@ export async function getDeliveryLogPage(
   return resp.json();
 }
 
-/** One group the person is in, with its effective settings for them and its
- *  answer right now: `verdict` is open, quiet_hours, inactive_day,
- *  urgent_bypass or no_email_channel for an enabled group that covers the
- *  category, else paused or not_subscribed. `allowed_at` is the earliest it
- *  allows the email (null: never, or not asked). */
-export interface DeliveryCheckGroup {
-  group_id: string;
-  name: string;
-  enabled: boolean;
-  subscribed: boolean;
-  email_channel: boolean;
-  verdict: string;
-  allowed_at: string | null;
+/** Where a switch's value comes from: the company default the person
+ *  follows, their own choice, or fixed (account security is always on). */
+export type SwitchSource = 'default' | 'own' | 'fixed';
+
+/** One of the person's switches for the category: whether it is on, and
+ *  where that comes from. */
+export interface DeliveryCheckSwitch { on: boolean; source: SwitchSource }
+
+/** The person's schedule as the decision reads it, and where it stands right
+ *  now: `timezone` is the reference zone when they set none (or theirs no
+ *  longer loads), `days` the days they work in week order, the quiet hours
+ *  both "HH:MM" or both null. */
+export interface DeliveryCheckSchedule {
+  timezone: string;
+  days: Day[];
   quiet_start: string | null;
   quiet_end: string | null;
-  timezone: string;
-  active_days: string[];
+  state: 'open' | 'quiet_hours' | 'inactive_day';
 }
 
 /** What would happen right now if this person got a notification of this
- *  kind; nothing is written. `outcome` is the email's (sent now, held until
- *  `send_at`, or not sent), `reason` why it waits or does not go.
- *  `email_source` is the category's, so an admin's copy of a security kind
- *  still reads "always": `owner_copy` says which copy was modeled. */
+ *  kind; nothing is written. `inbox` is whether the row is written and
+ *  `inbox_source` where the Inbox switch behind it comes from. `outcome` is
+ *  the email's: sent now (`send_at`), held for the person's summary (due
+ *  `summary_at`), or not sent; `reason` says why it is held or does not go.
+ *  `owner_copy` is the copy that was modeled; `critical` is whether the TYPE
+ *  skips quiet hours, days off and the summary (true for an admin copy that
+ *  is not emailed, too). */
 export interface DeliveryCheck {
   person_id: string;
   person_name: string;
   kind: string;
   kind_label: string;
   category: string;
-  email_source: string;
   owner_copy: boolean;
   active: boolean;
   has_account: boolean;
-  choice: string;
   inbox: 'written' | 'suppressed';
+  inbox_source: SwitchSource;
   email_enabled: boolean;
+  critical: boolean;
+  switches: { inbox: DeliveryCheckSwitch; email: DeliveryCheckSwitch };
+  schedule: DeliveryCheckSchedule;
   outcome: 'now' | 'held' | 'not_sent';
   send_at: string | null;
+  summary_at: string | null;
   reason: string | null;
   address: string | null;
   address_source: 'contact' | 'login' | null;
-  groups: DeliveryCheckGroup[];
 }
 
-/** One registered notification kind, for Check delivery's picker. */
+/** One registered notification kind, for Check delivery's picker. `email` is
+ *  whether it is ever emailed; `critical` whether it skips quiet hours, days
+ *  off and the summary; `locked` whether that is fixed (account security is
+ *  always critical). */
 export interface NotificationKindInfo {
   kind: string;
   label: string;
   category: NotificationCategory;
   email: boolean;
   owner_always: boolean;
-  urgent: boolean;
+  critical: boolean;
+  locked: boolean;
 }
 
 /** The registered kinds in registry order (GET /notifications/kinds). */

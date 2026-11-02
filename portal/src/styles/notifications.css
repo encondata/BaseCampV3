@@ -24,9 +24,8 @@
 .modal-card.reports-modal-card.rgm-card.nm-card { width: min(640px, 96vw); max-width: 96vw; }
 .modal-card.reports-modal-card.rgm-card.nm-card.nm-card-wide { width: min(920px, 96vw); }
 
-/* The muted line under a control (ChoiceField's hint) or a result (Check
- * delivery's and the trail's notes). Typography only; `cell-sub` is its
- * semantic class. */
+/* The muted line under a result (Check delivery's prompt and the trail's
+ * notes). Typography only; `cell-sub` is its semantic class. */
 .nm-hint {
   margin: 6px 0 0;
   font-size: 12px;
@@ -194,37 +193,36 @@
 .dlog-trail-links { display: flex; flex-wrap: wrap; gap: 10px; }
 .dlog-trail a.mini-btn { text-decoration: none; }
 
-/* Check delivery: under the pickers, the result card, then the groups. While
- * a new pick is being checked the last answer stays, dimmed. */
+/* Check delivery: under the pickers, the result card. While a new pick is
+ * being checked the last answer stays, dimmed. */
 .dlog-check { margin-top: 20px; }
 .dlog-check > .nm-hint { margin: 0; }
-.dlog-check-note { margin: 0 0 10px; }
 .dlog-check-result { transition: opacity 0.15s; }
 .dlog-check-result[aria-busy='true'] { opacity: 0.55; }
 
-/* The list card and the two tables scroll sideways only below their
+/* The list card and the trail's table scroll sideways only below their
  * floors; then they show the slim themed bar, never the browser's classic
  * one, and the card's stops short of its rounded corners. */
-:is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll)::-webkit-scrollbar {
+:is(.dlog-list, .dlog-trail .data-table-scroll)::-webkit-scrollbar {
   height: 12px;
 }
-:is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll)::-webkit-scrollbar-track {
+:is(.dlog-list, .dlog-trail .data-table-scroll)::-webkit-scrollbar-track {
   background: transparent;
   margin-inline: 16px;
 }
-:is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll)::-webkit-scrollbar-thumb {
+:is(.dlog-list, .dlog-trail .data-table-scroll)::-webkit-scrollbar-thumb {
   background-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent);
   border: 3px solid transparent;
   background-clip: padding-box;
   border-radius: 999px;
 }
-:is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll)::-webkit-scrollbar-thumb:hover {
+:is(.dlog-list, .dlog-trail .data-table-scroll)::-webkit-scrollbar-thumb:hover {
   background-color: color-mix(in srgb, var(--muted, #51606f) 65%, transparent);
 }
 /* Firefox has no ::-webkit-scrollbar; give it the slim, trackless bar. Only
    there: in Chromium, scrollbar-width/color would override the rules above. */
 @supports not selector(::-webkit-scrollbar) {
-  :is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll) {
+  :is(.dlog-list, .dlog-trail .data-table-scroll) {
     scrollbar-width: thin;
     scrollbar-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent) transparent;
   }
@@ -240,7 +238,7 @@
 /* The grid (and the Defaults tab's critical list, which is a table of switches
  * too) scrolls sideways only in a card narrower than its floor (the grid's is
  * about 315px: a 360px-wide phone). Then it shows the slim themed bar, never
- * the browser's classic one — the Delivery log's tables, above, are the model. */
+ * the browser's classic one — the Delivery log's list and trail, above, are the model. */
 :is(.swgrid, .nd-crit) .data-table-scroll::-webkit-scrollbar { height: 12px; }
 :is(.swgrid, .nd-crit) .data-table-scroll::-webkit-scrollbar-track { background: transparent; margin-inline: 16px; }
 :is(.swgrid, .nd-crit) .data-table-scroll::-webkit-scrollbar-thumb {

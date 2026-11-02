@@ -1,15 +1,16 @@
 /**
  * The Delivery log's words: a label for every event and every reason code the
- * API writes (spec 2026-10-31-notifications-phase0, sections 4 and 9), the
- * outcome chip a row shows, and the one-line detail. A code this file does not
- * know (a newer API) shows as itself.
+ * API writes (specs 2026-10-31-notifications-phase0, sections 4 and 9, and
+ * 2026-11-01-notifications-phase1, section 7), the outcome chip a row shows,
+ * the one-line detail, and Check delivery's words for a switch's source and the
+ * schedule's state. A code this file does not know (a newer API) shows as itself.
  */
 import { describe, expect, it } from 'vitest';
 
 import type { DeliveryLogEntry } from './api';
 import {
-  DELIVERY_LOG_EVENTS, EVENT_LABELS, REASON_LABELS, describeEntry, outcomeOf, reasonLabel,
-  shortWhen, sinceFor,
+  DELIVERY_LOG_EVENTS, EVENT_LABELS, REASON_LABELS, SCHEDULE_STATES, SWITCH_SOURCE_LABELS,
+  describeEntry, outcomeOf, reasonLabel, scheduleStateOf, shortWhen, sinceFor, switchSourceLabel,
 } from './deliveryLog';
 
 const entry = (over: Partial<DeliveryLogEntry> = {}): DeliveryLogEntry => ({
@@ -30,6 +31,8 @@ describe('labels', () => {
       inbox_suppressed: 'Not in inbox',
       email_queued: 'Queued',
       email_not_queued: 'Not emailed',
+      email_held: 'Held for summary',
+      email_summarized: 'In summary',
       email_sent: 'Sent',
       email_skipped: 'Dropped',
       email_retry: 'Retrying',
@@ -38,17 +41,16 @@ describe('labels', () => {
     expect([...DELIVERY_LOG_EVENTS].sort()).toEqual(Object.keys(EVENT_LABELS).sort());
   });
 
-  it('names every reason code in the spec, in words', () => {
+  it('names every reason code the API writes, in words', () => {
     const codes = [
-      // section 4: dropped before sending, plus SMTP off
+      // dropped before sending (or at summary time), plus SMTP off
       'notification_gone', 'hidden', 'read', 'resolved', 'recipient_inactive',
-      'category_turned_down', 'no_email_group', 'email_not_set_up',
-      // section 9: the inbox row not written
+      'category_turned_down', 'email_not_set_up',
+      // the inbox row not written
       'category_off',
-      // section 9: a notification not emailed
-      'unregistered_kind', 'kind_not_emailed', 'category_inbox_only', 'no_address',
-      'blocked_by_schedule',
-      // section 9: why a queued email waits
+      // a notification not emailed (admin_copy is new in Phase 1)
+      'unregistered_kind', 'kind_not_emailed', 'category_inbox_only', 'no_address', 'admin_copy',
+      // why an email is held for the summary
       'quiet_hours', 'inactive_day',
     ];
     for (const code of codes) {
@@ -57,14 +59,35 @@ describe('labels', () => {
     }
   });
 
+  it('keeps the words for the retired codes, so rows from before Phase 1 still read well', () => {
+    expect(REASON_LABELS.no_email_group).toBe('No group emails this category');
+    expect(REASON_LABELS.blocked_by_schedule).toBe("Every group's schedule blocks it");
+  });
+
   it('uses the agreed words for the codes people ask about most', () => {
     expect(REASON_LABELS.read).toBe('Already read in the portal');
     expect(REASON_LABELS.resolved).toBe('Already decided');
-    expect(REASON_LABELS.no_email_group).toBe('No group emails this category');
     expect(REASON_LABELS.quiet_hours).toBe('Quiet hours');
     expect(REASON_LABELS.inactive_day).toBe('Not an active day');
     expect(REASON_LABELS.email_not_set_up).toBe("Email isn't set up");
+    expect(REASON_LABELS.admin_copy).toBe('Admin copy — inbox only');
   });
+
+  it('names where a switch comes from and how the schedule stands right now', () => {
+    expect(SWITCH_SOURCE_LABELS).toEqual({ default: 'Company default', own: 'Their choice', fixed: 'Always' });
+    expect(switchSourceLabel('own')).toBe('Their choice');
+    expect(switchSourceLabel('newer_source')).toBe('newer_source');
+    expect(switchSourceLabel('constructor')).toBe('constructor');   // never an Object.prototype member
+
+    expect(SCHEDULE_STATES).toEqual({
+      open: { label: 'Open', chip: 'c-green' },
+      quiet_hours: { label: 'In quiet hours', chip: 'c-amber' },
+      inactive_day: { label: 'Day off', chip: 'c-amber' },
+    });
+    expect(scheduleStateOf('quiet_hours').label).toBe('In quiet hours');
+    expect(scheduleStateOf('holiday')).toEqual({ label: 'holiday', chip: 'c-slate' });
+  });
+
 
   it('shows a reason code it does not know as the code itself', () => {
     expect(reasonLabel('read')).toBe('Already read in the portal');
@@ -75,7 +98,18 @@ describe('labels', () => {
 });
 
 describe('outcomeOf', () => {
-  it('reads a deferred queued email as Held, in amber', () => {
+  it('reads an email held for the summary as Held for summary, in amber', () => {
+    expect(outcomeOf(entry({
+      event: 'email_held', channel: 'email', reason: 'quiet_hours', detail: { summary_at: MONDAY_7AM },
+    }))).toEqual({ label: 'Held for summary', chip: 'c-amber' });
+  });
+
+  it('reads an email that went out in a summary as In summary, in blue', () => {
+    expect(outcomeOf(entry({ event: 'email_summarized', channel: 'email', outbox_id: 'o9' })))
+      .toEqual({ label: 'In summary', chip: 'c-blue' });
+  });
+
+  it('reads a queued email from before Phase 1 that carries deferred as Held, in amber', () => {
     expect(outcomeOf(entry({
       event: 'email_queued', channel: 'email',
       detail: { template: 'notification', send_at: MONDAY_7AM, deferred: true, reason: 'quiet_hours' },
@@ -114,7 +148,64 @@ describe('outcomeOf', () => {
 });
 
 describe('describeEntry', () => {
-  it('a deferred email says until when, why, and which group lets it go', () => {
+  it('an email held for the summary says until when, and why', () => {
+    expect(describeEntry(entry({
+      event: 'email_held', channel: 'email', reason: 'quiet_hours', detail: { summary_at: MONDAY_7AM },
+    }))).toBe('Until Mon 7:00 AM · Quiet hours');
+    expect(describeEntry(entry({
+      event: 'email_held', channel: 'email', reason: 'inactive_day', detail: { summary_at: MONDAY_7AM },
+    }))).toBe('Until Mon 7:00 AM · Not an active day');
+  });
+
+  it('a held email whose reason is new shows the code, and one with no time says only why', () => {
+    expect(describeEntry(entry({
+      event: 'email_held', channel: 'email', reason: 'holiday', detail: { summary_at: MONDAY_7AM },
+    }))).toBe('Until Mon 7:00 AM · holiday');
+    expect(describeEntry(entry({ event: 'email_held', channel: 'email', reason: 'quiet_hours' })))
+      .toBe('Quiet hours');
+  });
+
+  it('an email in a summary has nothing more to say; the label says it', () => {
+    expect(describeEntry(entry({ event: 'email_summarized', channel: 'email', outbox_id: 'o9' }))).toBe('');
+  });
+
+  it('an email queued for now says so', () => {
+    expect(describeEntry(entry({
+      event: 'email_queued', channel: 'email',
+      detail: { template: 'notification', send_at: MONDAY_7AM, deferred: false, via: 'contact' },
+    }))).toBe('Due now');
+    // template mail (a password reset) is the same
+    expect(describeEntry(entry({
+      event: 'email_queued', channel: 'email', kind: 'password_reset', kind_label: 'password_reset',
+      category: null, notification_id: null,
+      detail: { template: 'password_reset', send_at: MONDAY_7AM, deferred: false },
+    }))).toBe('Due now');
+  });
+
+  it('a queued email adds why it did not wait: critical, the owner\'s copy, or after the summary', () => {
+    const queued = (extra: Record<string, unknown>) => describeEntry(entry({
+      event: 'email_queued', channel: 'email',
+      detail: { template: 'notification', send_at: MONDAY_7AM, deferred: false, via: 'contact', ...extra },
+    }));
+    expect(queued({ critical: true })).toBe('Due now · critical');
+    expect(queued({ owner_copy: true, via: 'login' })).toBe("Due now · owner's copy");
+    expect(queued({ after_summary: true })).toBe('Due now · after the summary');
+    // a flag that is false adds nothing
+    expect(queued({ critical: false, owner_copy: false, after_summary: false })).toBe('Due now');
+  });
+
+  it('the summary email names how many notifications it holds', () => {
+    const summary = (count: unknown) => describeEntry(entry({
+      event: 'email_queued', channel: 'email', kind: 'notification_summary',
+      kind_label: 'notification_summary', category: null, notification_id: null, outbox_id: 'o9',
+      detail: { template: 'notification_summary', send_at: MONDAY_7AM, deferred: false, summary: true, count },
+    }));
+    expect(summary(3)).toBe('Summary email · 3 notifications');
+    expect(summary(1)).toBe('Summary email · 1 notification');
+    expect(summary(undefined)).toBe('Summary email');
+  });
+
+  it('a queued email from before Phase 1 that waited says until when, why, and which group let it go', () => {
     expect(describeEntry(entry({
       event: 'email_queued', channel: 'email', outbox_id: 'o1',
       detail: {
@@ -124,7 +215,7 @@ describe('describeEntry', () => {
     }))).toBe('Held until Mon 7:00 AM · Quiet hours · Destination Side Ops Team');
   });
 
-  it('an email queued for now says so, with the groups that let it go', () => {
+  it('a queued email from before Phase 1 that went at once names the groups that let it go', () => {
     expect(describeEntry(entry({
       event: 'email_queued', channel: 'email',
       detail: {
@@ -132,12 +223,6 @@ describe('describeEntry', () => {
         groups: ['Ops Alerts', 'Night Desk'], via: 'contact',
       },
     }))).toBe('Due now · Ops Alerts, Night Desk');
-    // template mail (a password reset) names no group
-    expect(describeEntry(entry({
-      event: 'email_queued', channel: 'email', kind: 'password_reset', kind_label: 'password_reset',
-      category: null, notification_id: null,
-      detail: { template: 'password_reset', send_at: MONDAY_7AM, deferred: false },
-    }))).toBe('Due now');
   });
 
   it('a deferred email whose reason is new shows the code', () => {
@@ -173,10 +258,24 @@ describe('describeEntry', () => {
   it('a drop, a not-emailed and a suppressed inbox row read as their reason', () => {
     expect(describeEntry(entry({ event: 'email_skipped', channel: 'email', reason: 'read' })))
       .toBe('Already read in the portal');
-    expect(describeEntry(entry({ event: 'email_not_queued', channel: 'email', reason: 'no_email_group' })))
-      .toBe('No group emails this category');
+    expect(describeEntry(entry({ event: 'email_not_queued', channel: 'email', reason: 'admin_copy' })))
+      .toBe('Admin copy — inbox only');
     expect(describeEntry(entry({ event: 'inbox_suppressed', reason: 'category_off', notification_id: null })))
       .toBe('Category turned off');
+  });
+
+  it('a held email dropped when its summary came reads as the reason it was dropped', () => {
+    expect(describeEntry(entry({ event: 'email_skipped', channel: 'email', reason: 'category_turned_down' })))
+      .toBe('Category turned down');
+    expect(describeEntry(entry({ event: 'email_skipped', channel: 'email', reason: 'notification_gone' })))
+      .toBe('Inbox item no longer exists');
+  });
+
+  it('a row from before Phase 1 still reads as the retired reason', () => {
+    expect(describeEntry(entry({ event: 'email_not_queued', channel: 'email', reason: 'no_email_group' })))
+      .toBe('No group emails this category');
+    expect(describeEntry(entry({ event: 'email_not_queued', channel: 'email', reason: 'blocked_by_schedule' })))
+      .toBe("Every group's schedule blocks it");
   });
 
   it('an unknown reason code returns the code', () => {
