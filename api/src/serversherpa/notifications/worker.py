@@ -7,7 +7,8 @@ overdue notices) and the summary sweep (notifications/summary.py: email
 held for a person's quiet hours or day off goes out as one summary); once
 a day it refreshes Google's Android attestation revocation list
 (security/attestation_status.py, retried hourly after a failure); every 15
-minutes it logs a status line. A person's schedule is applied when a
+minutes it logs a status line (how much email is held for a summary, and
+whether email delivery is on). A person's schedule is applied when a
 notification's email is decided (notifications/email.py): email that has
 to wait is held (notifications/held.py) until the summary sweep sends it."""
 
@@ -18,7 +19,7 @@ import time
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import NotificationGroup, NotificationGroupMember
+from serversherpa.db.models import NotificationHeld
 from serversherpa.learning.scheduler import run_learning_once
 from serversherpa.mail import email_enabled
 from serversherpa.mail.delivery import deliver_once
@@ -35,27 +36,19 @@ ATTESTATION_STATUS_INTERVAL_SECONDS = 86_400
 ATTESTATION_STATUS_RETRY_SECONDS = 3600
 
 
-async def status_counts(db: AsyncSession) -> tuple[int, int]:
-    """(enabled_group_count, member_count_across_enabled_groups) —
-    read-only."""
-    group_count = await db.scalar(
-        select(func.count()).select_from(NotificationGroup)
-        .where(NotificationGroup.enabled.is_(True)))
-    member_count = await db.scalar(
-        select(func.count()).select_from(NotificationGroupMember)
-        .join(NotificationGroup,
-              NotificationGroupMember.group_id == NotificationGroup.id)
-        .where(NotificationGroup.enabled.is_(True)))
-    return group_count or 0, member_count or 0
+async def held_count(db: AsyncSession) -> int:
+    """How many notification emails are held for a summary (rows of
+    notification_held, whoever they wait for) — read-only."""
+    return await db.scalar(select(func.count()).select_from(NotificationHeld)) or 0
 
 
 async def run_once(maker) -> None:
-    """One status pass: query counts, log the idle line."""
+    """One status pass: count the held email, log the idle line."""
     async with maker() as db:
-        groups, members = await status_counts(db)
+        held = await held_count(db)
     logger.info(
-        "idle — %d enabled group(s), %d member(s); email delivery %s",
-        groups, members, "on" if email_enabled() else "off (SMTP not configured)")
+        "idle — %d email(s) waiting for a summary; email delivery %s",
+        held, "on" if email_enabled() else "off (SMTP not configured)")
 
 
 async def run_attestation_refresh(maker) -> bool:

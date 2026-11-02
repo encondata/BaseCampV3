@@ -1,20 +1,15 @@
-"""notification-worker placeholder: heartbeat + status logs only, no
-delivery pipeline. Fixtures modeled on test_notification_groups_api.py;
-run_forever smoke test modeled on test_system_registry.py's direct use
-of the `db` fixture alongside a heartbeat task writing through its own
-session."""
+"""notification-worker: heartbeat, the sweeps and status logs. The idle status line
+reports the email held for a summary. Run_forever smoke tests modeled on
+test_system_registry.py's direct use of the `db` fixture alongside a heartbeat task
+writing through its own session."""
 
 import asyncio
 import logging
 from datetime import UTC, datetime
 
-import pytest
-
 from serversherpa.db.engine import get_sessionmaker
-from serversherpa.db.models import (
-    NotificationGroup, NotificationGroupMember, Person, SystemProcess,
-)
-from serversherpa.notifications.worker import run_forever, run_once, status_counts
+from serversherpa.db.models import NotificationHeld, Person, SystemProcess
+from serversherpa.notifications.worker import held_count, run_forever, run_once
 
 
 async def _person(db, first="Terry", last="Tech"):
@@ -24,51 +19,53 @@ async def _person(db, first="Terry", last="Tech"):
     return p
 
 
-async def _group(db, name, *, enabled=True):
-    g = NotificationGroup(name=name, enabled=enabled)
-    db.add(g)
-    await db.flush()
-    return g
-
-
-async def _add_member(db, group, person):
-    db.add(NotificationGroupMember(group_id=group.id, person_id=person.id))
+async def _hold(db, person, *, reason="quiet_hours"):
+    """One notification email held for `person`'s summary (no inbox row behind it: a
+    deleted notification leaves the held row, and it still waits)."""
+    db.add(NotificationHeld(person_id=person.id, kind="report_ready", category="reports",
+                            reason=reason, held_at=datetime.now(UTC)))
     await db.flush()
 
 
-async def test_status_counts_excludes_disabled_groups(db):
-    enabled = await _group(db, "On-call")
-    disabled = await _group(db, "Archived", enabled=False)
-    p1 = await _person(db, "A")
-    p2 = await _person(db, "B")
-    p3 = await _person(db, "C")
-    await _add_member(db, enabled, p1)
-    await _add_member(db, enabled, p2)
-    await _add_member(db, disabled, p3)
+def _worker_lines(caplog) -> list[str]:
+    return [record.getMessage() for record in caplog.records
+            if record.name == "serversherpa.notifications.worker"]
+
+
+async def test_held_count_counts_every_held_email(db):
+    assert await held_count(db) == 0
+    a = await _person(db, "A")
+    b = await _person(db, "B")
+    await _hold(db, a)
+    await _hold(db, a, reason="inactive_day")
+    await _hold(db, b)
     await db.commit()
 
-    groups, members = await status_counts(db)
-    assert groups == 1
-    assert members == 2
+    assert await held_count(db) == 3
 
 
 async def test_run_once_logs_idle_status_line(db, caplog):
-    enabled = await _group(db, "On-call")
-    disabled = await _group(db, "Archived", enabled=False)
-    p1 = await _person(db, "A")
-    p2 = await _person(db, "B")
-    p3 = await _person(db, "C")
-    await _add_member(db, enabled, p1)
-    await _add_member(db, enabled, p2)
-    await _add_member(db, disabled, p3)
+    a = await _person(db, "A")
+    b = await _person(db, "B")
+    await _hold(db, a)
+    await _hold(db, a)
+    await _hold(db, b, reason="inactive_day")
     await db.commit()
 
     caplog.set_level(logging.INFO, logger="serversherpa.notifications.worker")
     await run_once(get_sessionmaker())
 
-    assert "1 enabled group" in caplog.text
-    assert "2 member(s)" in caplog.text
-    assert "email delivery off" in caplog.text
+    # one line, and it says nothing of groups or members: they no longer decide email
+    assert _worker_lines(caplog) == [
+        "idle — 3 email(s) waiting for a summary; email delivery off (SMTP not configured)"]
+
+
+async def test_run_once_idle_line_with_nothing_held(db, caplog):
+    caplog.set_level(logging.INFO, logger="serversherpa.notifications.worker")
+    await run_once(get_sessionmaker())
+
+    assert _worker_lines(caplog) == [
+        "idle — 0 email(s) waiting for a summary; email delivery off (SMTP not configured)"]
 
 
 async def test_run_forever_heartbeats_and_marks_stop(db, caplog):

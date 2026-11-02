@@ -4,7 +4,7 @@ import json
 import re
 import urllib.parse
 import uuid
-from datetime import date, datetime, time
+from datetime import date, datetime
 from ipaddress import IPv4Address
 from typing import Annotated, Any, Literal
 
@@ -1068,7 +1068,6 @@ class UserWorkerCard(BaseModel):
 class UserNotificationGroup(BaseModel):
     id: uuid.UUID
     name: str
-    channels: list[str]
     added_at: datetime
 
 
@@ -2919,16 +2918,10 @@ class TimeBulkRejectIn(BaseModel):
 
 
 class NotificationGroupSettings(BaseModel):
-    """Shared shape for the group-level notification settings. All fields
-    optional so it can be reused for PATCH (partial update)."""
-    channels: list[str] | None = None
-    quiet_start: time | None = None
-    quiet_end: time | None = None
-    timezone: str | None = None
-    active_days: list[str] | None = None
-    dnd_behavior: str | None = None
-    urgent_bypass: bool | None = None
-    # Event categories the group's settings apply to (notifications/kinds.py).
+    """Shared shape for the group's settings. A group carries no delivery settings
+    (a person's own switches and schedule decide email); what is left is the event
+    categories (notifications/kinds.py), kept but hidden. Optional so it can be
+    reused for PATCH (partial update)."""
     categories: list[str] | None = None
 
 
@@ -2949,13 +2942,6 @@ class NotificationGroupOut(BaseModel):
     id: uuid.UUID
     name: str
     description: str
-    channels: list[str]
-    quiet_start: time | None = None
-    quiet_end: time | None = None
-    timezone: str
-    active_days: list[str]
-    dnd_behavior: str
-    urgent_bypass: bool
     categories: list[str]
     enabled: bool
     member_count: int
@@ -2967,36 +2953,9 @@ class NotificationMemberAddIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class NotificationMemberOverrides(BaseModel):
-    """Raw per-member override columns — nulls preserved (None means
-    'inherit the group value'). Used both as the PATCH body (all fields
-    optional, and `model_fields_set` distinguishes absent from explicit
-    null) and embedded read-only in NotificationMemberOut."""
-    channels: list[str] | None = None
-    quiet_mode: str | None = None
-    quiet_start: time | None = None
-    quiet_end: time | None = None
-    timezone: str | None = None
-    active_days: list[str] | None = None
-    dnd_behavior: str | None = None
-    urgent_bypass: bool | None = None
-    model_config = ConfigDict(extra="forbid")
-
-
-class NotificationEffectiveSettings(BaseModel):
-    """Fully resolved settings (member override merged over group
-    default) — no Nones except the quiet hour times, which are legitimately
-    absent when there are no quiet hours in effect."""
-    channels: list[str]
-    quiet_start: time | None = None
-    quiet_end: time | None = None
-    timezone: str
-    active_days: list[str]
-    dnd_behavior: str
-    urgent_bypass: bool
-
-
 class NotificationMemberOut(BaseModel):
+    """A person on a group's list. What they can be reached on is the recipients
+    picker's business (NotificationRecipientOut), not the member's."""
     person_id: uuid.UUID
     display_name: str
     job_title: str | None
@@ -3004,12 +2963,6 @@ class NotificationMemberOut(BaseModel):
     email: str | None
     phone: str | None
     has_account: bool
-    can_email: bool
-    can_text: bool
-    can_push: bool
-    can_web: bool
-    overrides: NotificationMemberOverrides
-    effective: NotificationEffectiveSettings
     added_at: datetime
 
 
@@ -3257,20 +3210,9 @@ class MyNotificationGroupOut(BaseModel):
     id: uuid.UUID
     name: str
     description: str
-    channels: list[str]
-    quiet_start: time | None = None
-    quiet_end: time | None = None
-    timezone: str
-    active_days: list[str]
-    dnd_behavior: str
-    urgent_bypass: bool
     categories: list[str]
-    # The member's effective channels when a member, else the group's.
-    effective_channels: list[str]
     member_count: int
     is_member: bool
-    overrides: NotificationMemberOverrides | None = None
-    effective: NotificationEffectiveSettings | None = None
     pending_request: MyPendingRequestOut | None = None
 
 
