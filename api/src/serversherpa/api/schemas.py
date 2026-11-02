@@ -6,7 +6,7 @@ import urllib.parse
 import uuid
 from datetime import date, datetime
 from ipaddress import IPv4Address
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import (
     AfterValidator,
@@ -25,6 +25,9 @@ from pydantic import (
 from serversherpa.learning import languages as learning_languages
 from serversherpa.notifications.kinds import CATEGORY_KEYS
 from serversherpa.notifications.schedule import DAYS
+
+if TYPE_CHECKING:
+    from serversherpa.notifications.watches import WatchView
 
 
 def _lower(v: str) -> str:
@@ -3221,6 +3224,60 @@ class MyNotificationGroupOut(BaseModel):
     member_count: int
     is_member: bool
     pending_request: MyPendingRequestOut | None = None
+
+
+# ── watches (a person's own, and a notification group's) ──
+
+class WatchIn(BaseModel):
+    """Watch a thing (`thing` is initiative, site or truck, with its `id`), or events
+    everywhere (`thing` is "everything", with no id). `kinds` empty means every event that
+    applies to a thing; an Everything watch has to name its events."""
+    thing: str
+    id: uuid.UUID | None = None
+    kinds: list[str] = []
+    model_config = ConfigDict(extra="forbid")
+
+
+class WatchKindsIn(BaseModel):
+    kinds: list[str]
+    model_config = ConfigDict(extra="forbid")
+
+
+class WatchViaOut(BaseModel):
+    """Whose watch it is: the person's own (`you`), or a group's with its id and name."""
+    type: Literal["you", "group"]
+    id: uuid.UUID | None = None
+    name: str | None = None
+
+
+class WatchOut(BaseModel):
+    """A watch with what it is on: `thing` is initiative, site, truck or everything (which
+    has no id, name or link). `kinds` empty means every event that applies."""
+    id: uuid.UUID
+    thing: str
+    thing_id: uuid.UUID | None
+    thing_name: str | None
+    link: str | None
+    kinds: list[str]
+    via: WatchViaOut
+    created_at: datetime
+
+    @classmethod
+    def from_view(cls, view: "WatchView") -> "WatchOut":
+        group = view.group
+        return cls(
+            id=view.watch.id, thing=view.thing, thing_id=view.thing_id,
+            thing_name=view.thing_name, link=view.link, kinds=list(view.watch.kinds),
+            via=(WatchViaOut(type="you") if group is None
+                 else WatchViaOut(type="group", id=group.id, name=group.name)),
+            created_at=view.watch.created_at)
+
+
+class WatchStateOut(BaseModel):
+    """Whether the person watches a thing themselves, for the Watch button."""
+    watching: bool
+    watch_id: uuid.UUID | None
+    kinds: list[str]
 
 
 # ── status rules ─────────────────────────────────────────────────────
