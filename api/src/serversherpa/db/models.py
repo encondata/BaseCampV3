@@ -470,7 +470,9 @@ class NotificationGroup(Base):
     """A named list of people: a name, a description, Active or Paused (`enabled`),
     its members and their join/leave requests. A group decides nothing about
     delivery (migration 0112 dropped its channels, quiet hours, days and the rest):
-    a person's own switches and schedule do (notifications/email.py)."""
+    a person's own switches and schedule do (notifications/email.py). What it hears
+    about is its watches (NotificationWatch); migration 0113 dropped its hidden
+    event categories."""
 
     __tablename__ = "notification_groups"
 
@@ -479,10 +481,6 @@ class NotificationGroup(Base):
     name: Mapped[str] = mapped_column(CITEXT)
     description: Mapped[str] = mapped_column(server_default="")
     enabled: Mapped[bool] = mapped_column(server_default=text("true"))
-    # Event categories (notifications/kinds.py). Kept but hidden: the API still reads
-    # and writes them, no delivery decision reads them and nothing shows them.
-    categories: Mapped[list[str]] = mapped_column(
-        ARRAY(Text), server_default=text("'{}'::text[]"))
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("people.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
@@ -2050,6 +2048,100 @@ class NotificationHeld(Base):
         CheckConstraint("reason IN ('quiet_hours', 'inactive_day')",
                         name="ck_notification_held_reason"),
         Index("notification_held_person_idx", "person_id", "held_at"),
+    )
+
+
+# The things a watch can point at (migration 0113). At most one is set; none is an
+# Everything watch. The device and wiki columns are in place for the slices that make
+# those watchable; the API accepts initiatives, sites and trucks until then.
+_WATCH_THINGS = ("initiative_id", "site_id", "truck_id", "device_id",
+                 "wiki_space_id", "wiki_node_id")
+_WATCH_THING_COUNT = f"num_nonnulls({', '.join(_WATCH_THINGS)})"
+
+
+class NotificationWatch(Base):
+    """A person's, or a notification group's, subscription to one thing, or to chosen
+    event types everywhere (migration 0113). Exactly one of `person_id` and `group_id`,
+    and at most one thing column: none is an Everything watch, which must name its
+    `kinds`. On a thing, empty `kinds` means every type that applies to it. One row per
+    subscriber and thing (the unique index counts NULLs as equal, so a second Everything
+    watch collides). A deleted subscriber or thing takes its watches along; a deleted
+    creator only clears `created_by`."""
+
+    __tablename__ = "notification_watches"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    person_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="CASCADE"))
+    group_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("notification_groups.id", ondelete="CASCADE"))
+    initiative_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("initiatives.id", ondelete="CASCADE"))
+    site_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("sites.id", ondelete="CASCADE"))
+    truck_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("trucks.id", ondelete="CASCADE"))
+    device_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("devices.id", ondelete="CASCADE"))
+    wiki_space_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("wiki_spaces.id", ondelete="CASCADE"))
+    wiki_node_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="CASCADE"))
+    kinds: Mapped[list[str]] = mapped_column(ARRAY(Text), server_default=text("'{}'::text[]"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    __table_args__ = (
+        CheckConstraint("(person_id IS NULL) <> (group_id IS NULL)",
+                        name="ck_notification_watches_subscriber"),
+        CheckConstraint(f"{_WATCH_THING_COUNT} <= 1", name="ck_notification_watches_one_thing"),
+        CheckConstraint(f"{_WATCH_THING_COUNT} = 1 OR cardinality(kinds) > 0",
+                        name="ck_notification_watches_everything_kinds"),
+        Index("uq_notification_watches_target", "person_id", "group_id", *_WATCH_THINGS,
+              unique=True, postgresql_nulls_not_distinct=True),
+        Index("ix_notification_watches_group_id", "group_id"),
+        *(Index(f"ix_notification_watches_{column}", column,
+                postgresql_where=text(f"{column} IS NOT NULL"))
+          for column in _WATCH_THINGS),
+    )
+
+
+class NotificationEvent(Base):
+    """Something that happened, waiting to be turned into notifications (migration 0113).
+    notifications/events.announce() adds a row in the caller's transaction and never
+    commits, so an event can't outlive a rolled-back change; the notification worker's
+    sweep sends the rows still waiting (`sent_at` null), oldest first, and stamps
+    `sent_at`. The subject is what it is about; `reaches` lists the other things whose
+    watchers hear it, as `{type, id}` objects. `person_ids` and `group_ids` are the people
+    and groups the announcing code names, and `watchers` says whether watches apply.
+    `item` holds the title, line and link. The actor and the status rule clear when their
+    rows go, so an event outlives both."""
+
+    __tablename__ = "notification_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    kind: Mapped[str]
+    subject_type: Mapped[str]
+    subject_id: Mapped[uuid.UUID]
+    reaches: Mapped[list] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    person_ids: Mapped[list[uuid.UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), server_default=text("'{}'::uuid[]"))
+    group_ids: Mapped[list[uuid.UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), server_default=text("'{}'::uuid[]"))
+    watchers: Mapped[bool] = mapped_column(server_default=text("true"))
+    rule_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("status_rules.id", ondelete="SET NULL"))
+    item: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    sent_at: Mapped[datetime | None]
+
+    __table_args__ = (
+        Index("ix_notification_events_waiting", "id", postgresql_where=text("sent_at IS NULL")),
+        Index("ix_notification_events_sent_at", "sent_at"),
     )
 
 

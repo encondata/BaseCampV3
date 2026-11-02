@@ -2917,21 +2917,16 @@ class TimeBulkRejectIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class NotificationGroupSettings(BaseModel):
-    """Shared shape for the group's settings. A group carries no delivery settings
-    (a person's own switches and schedule decide email); what is left is the event
-    categories (notifications/kinds.py), kept but hidden. Optional so it can be
-    reused for PATCH (partial update)."""
-    categories: list[str] | None = None
-
-
-class NotificationGroupCreateIn(NotificationGroupSettings):
+class NotificationGroupCreateIn(BaseModel):
+    """A group is a name and a description. It carries no delivery settings (a person's
+    own switches and schedule decide email) and no categories (what it hears about is
+    its watches), so a body that still sends either is refused."""
     name: str
     description: str = ""
     model_config = ConfigDict(extra="forbid")
 
 
-class NotificationGroupPatchIn(NotificationGroupSettings):
+class NotificationGroupPatchIn(BaseModel):
     name: str | None = None
     description: str | None = None
     enabled: bool | None = None
@@ -2942,7 +2937,6 @@ class NotificationGroupOut(BaseModel):
     id: uuid.UUID
     name: str
     description: str
-    categories: list[str]
     enabled: bool
     member_count: int
     created_at: datetime
@@ -3213,7 +3207,6 @@ class MyNotificationGroupOut(BaseModel):
     id: uuid.UUID
     name: str
     description: str
-    categories: list[str]
     member_count: int
     is_member: bool
     pending_request: MyPendingRequestOut | None = None

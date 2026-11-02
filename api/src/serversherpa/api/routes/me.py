@@ -257,8 +257,7 @@ def _my_group_out(group: NotificationGroup, member_count: int, is_member: bool,
                   ) -> MyNotificationGroupOut:
     return MyNotificationGroupOut(
         id=group.id, name=group.name, description=group.description,
-        categories=group.categories, member_count=member_count,
-        is_member=is_member,
+        member_count=member_count, is_member=is_member,
         pending_request=(MyPendingRequestOut(
             id=pending.id, action=pending.action, note=pending.note,
             created_at=pending.created_at) if pending is not None else None))

@@ -52,7 +52,6 @@ const BASE: NotificationGroupDetail = {
   id: 'g1',
   name: 'Ops Alerts',
   description: 'Operational issues',
-  categories: ['approvals', 'security'],
   enabled: true,
   member_count: 5,
   created_at: '2026-01-01T00:00:00Z',
@@ -140,9 +139,6 @@ it('group page has no delivery settings', async () => {
   ]) {
     expect(screen.queryByText(label)).toBeNull();
   }
-  // The group's categories are kept by the API but shown nowhere.
-  expect(screen.queryByText('Approvals & requests')).toBeNull();
-  expect(screen.queryByText('Account security')).toBeNull();
   // The hero carries no channel chips either: only its status and member count.
   const title = screen.getByRole('heading', { name: 'Ops Alerts' });
   const row = title.closest('.idet-title-row') as HTMLElement;

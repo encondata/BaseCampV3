@@ -22,8 +22,7 @@ DELIVERY_VALUES = [
 ]
 DELIVERY_FIELDS = tuple(field for field, _ in DELIVERY_VALUES)
 
-GROUP_KEYS = {"id", "name", "description", "categories", "enabled", "member_count",
-              "created_at"}
+GROUP_KEYS = {"id", "name", "description", "enabled", "member_count", "created_at"}
 MEMBER_KEYS = {"person_id", "display_name", "job_title", "avatar_url", "email", "phone",
                "has_account", "added_at"}
 
@@ -53,7 +52,6 @@ async def test_create_group_defaults_echoed(client, db, seeded_user):
     body = resp.json()
     assert body["name"] == "On-call"
     assert body["description"] == ""
-    assert body["categories"] == []
     assert body["enabled"] is True
     assert body["member_count"] == 0
 
@@ -131,7 +129,7 @@ async def test_patch_explicit_null_non_nullable_field_rejected(
     resp = await client.post("/notifications/groups", headers=hdrs,
                              json={"name": "Null guard"})
     gid = resp.json()["id"]
-    for field in ("name", "description", "categories", "enabled"):
+    for field in ("name", "description", "enabled"):
         resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
                                   json={field: None})
         assert resp.status_code == 422, f"{field}: {resp.text}"
@@ -432,75 +430,53 @@ def test_capabilities_needs_the_sign_in_email_by_name():
     assert capabilities(person, False, account_email=None)["can_email"] is False
 
 
-# ── categories ───────────────────────────────────────────────────────
-
-async def test_create_group_categories_deduped_in_registry_order(
-        client, db, seeded_user):
-    hdrs = await login_admin(client, db, seeded_user)
-    resp = await client.post("/notifications/groups", headers=hdrs, json={
-        "name": "Cats", "categories": ["wiki", "reports", "wiki"]})
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["categories"] == ["reports", "wiki"]
-
-    resp = await client.get("/notifications/groups", headers=hdrs)
-    assert resp.json()[0]["categories"] == ["reports", "wiki"]
-    resp = await client.get(f"/notifications/groups/{resp.json()[0]['id']}",
-                            headers=hdrs)
-    assert resp.json()["categories"] == ["reports", "wiki"]
 
 
-async def test_create_group_categories_default_empty(client, db, seeded_user):
+# ── no categories ────────────────────────────────────────────────────
+# A group's hidden event categories went with migration 0113: watches give a group its
+# job (routes/watches), and an older client that still sends the field is refused.
+
+@pytest.mark.parametrize("value", [["wiki"], [], None])
+async def test_create_rejects_categories(client, db, seeded_user, value):
     hdrs = await login_admin(client, db, seeded_user)
     resp = await client.post("/notifications/groups", headers=hdrs,
-                             json={"name": "No cats"})
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["categories"] == []
+                             json={"name": "Ops", "categories": value})
+    assert resp.status_code == 422, resp.text
+    [error] = resp.json()["detail"]
+    assert (error["type"], error["loc"]) == ("extra_forbidden", ["body", "categories"])
+    # nothing was created
+    assert (await client.get("/notifications/groups", headers=hdrs)).json() == []
 
 
-async def test_patch_group_categories_and_audit(client, db, seeded_user):
-    hdrs = await login_admin(client, db, seeded_user)
-    resp = await client.post("/notifications/groups", headers=hdrs, json={
-        "name": "Patchy", "categories": ["wiki"]})
-    gid = resp.json()["id"]
-
-    resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
-                              json={"categories": ["security", "approvals"]})
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["categories"] == ["approvals", "security"]
-    row = await db.scalar(select(AuditLog).where(
-        AuditLog.entity_type == "notification_group",
-        AuditLog.action == "group.update"))
-    assert row is not None
-    assert row.changes["categories"] == {
-        "from": ["wiki"], "to": ["approvals", "security"]}
-
-    resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
-                              json={"categories": []})
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["categories"] == []
-
-
-async def test_bad_category_rejected(client, db, seeded_user):
-    hdrs = await login_admin(client, db, seeded_user)
-    resp = await client.post("/notifications/groups", headers=hdrs, json={
-        "name": "Bogus", "categories": ["bogus"]})
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "invalid_category"
-
-    resp = await client.post("/notifications/groups", headers=hdrs,
-                             json={"name": "Ok"})
-    gid = resp.json()["id"]
-    resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
-                              json={"categories": ["wiki", "bogus"]})
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "invalid_category"
-
-
-async def test_patch_explicit_null_categories_rejected(client, db, seeded_user):
+@pytest.mark.parametrize("value", [["wiki"], [], None])
+async def test_patch_rejects_categories(client, db, seeded_user, value):
     hdrs = await login_admin(client, db, seeded_user)
     resp = await client.post("/notifications/groups", headers=hdrs,
-                             json={"name": "Nully"})
+                             json={"name": "Ops"})
     gid = resp.json()["id"]
     resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
-                              json={"categories": None})
-    assert resp.status_code == 422
+                              json={"description": "changed", "categories": value})
+    assert resp.status_code == 422, resp.text
+    [error] = resp.json()["detail"]
+    assert (error["type"], error["loc"]) == ("extra_forbidden", ["body", "categories"])
+    # the rest of the patch was not applied either
+    assert (await client.get(f"/notifications/groups/{gid}",
+                             headers=hdrs)).json()["description"] == ""
+
+
+async def test_group_responses_have_no_categories(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    created = await client.post("/notifications/groups", headers=hdrs,
+                                json={"name": "Ops"})
+    assert created.status_code == 201, created.text
+    gid = created.json()["id"]
+    listed = await client.get("/notifications/groups", headers=hdrs)
+    detail = await client.get(f"/notifications/groups/{gid}", headers=hdrs)
+    patched = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
+                                 json={"description": "Pager rota"})
+    assert patched.status_code == 200, patched.text
+
+    shown = {"POST": created.json(), "GET list": listed.json()[0],
+             "GET one": detail.json(), "PATCH": patched.json()}
+    for label, body in shown.items():
+        assert "categories" not in body, label

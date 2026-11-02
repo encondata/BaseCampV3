@@ -19,8 +19,7 @@ from tests.test_access_roles_api import login_admin
 PW = "CorrectHorse9!"
 
 # what /auth/me/notification-groups returns for a group (MyNotificationGroupOut)
-MY_GROUP_KEYS = {"id", "name", "description", "categories", "member_count", "is_member",
-                 "pending_request"}
+MY_GROUP_KEYS = {"id", "name", "description", "member_count", "is_member", "pending_request"}
 
 
 async def _person(db, role=None, *, first="Terry", last="Tech", email=None,
@@ -471,21 +470,19 @@ async def test_worker_forbidden_on_notifications_requests(client, db, seeded_use
     assert resp.status_code == 403
 
 
-# ── categories in my groups ──────────────────────────────────────────
+# ── no categories in my groups ────────────────────────────────────────
 
-async def test_my_groups_include_categories(client, db, seeded_user):
-    """`categories` is kept but hidden: the API still reads it, so a member's and a
-    non-member's row both carry it."""
+async def test_my_groups_carry_no_categories(client, db, seeded_user):
+    """A group's hidden categories went with migration 0113: a member's row and a
+    non-member's row alike have none."""
     hdrs = await login_admin(client, db, seeded_user)
-    joined = NotificationGroup(name="Joined", categories=["reports", "wiki"])
-    other = NotificationGroup(name="Other", categories=["approvals"])
-    db.add_all([joined, other])
-    await db.commit()
+    joined = await _group(db, "Joined")
+    await _group(db, "Other")
     db.add(NotificationGroupMember(group_id=joined.id, person_id=seeded_user.id))
     await db.commit()
 
     resp = await client.get("/auth/me/notification-groups", headers=hdrs)
     assert resp.status_code == 200, resp.text
     by_name = {i["name"]: i for i in resp.json()}
-    assert by_name["Joined"]["categories"] == ["reports", "wiki"]
-    assert by_name["Other"]["categories"] == ["approvals"]
+    assert set(by_name) == {"Joined", "Other"}
+    assert all("categories" not in item for item in by_name.values())

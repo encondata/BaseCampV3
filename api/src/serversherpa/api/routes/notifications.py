@@ -2,7 +2,7 @@
 Paused), its members, and the join and leave requests an admin approves. A group
 decides nothing about delivery (a person's own switches and schedule do,
 notifications/email.py), so it has no channels, quiet hours or member overrides;
-its `categories` are kept and still read and written, but nothing shows them.
+what it hears about is its watches, and it carries no categories.
 This file also hosts the per-person in-app inbox routes (/inbox, mark-one-read,
 mark-all-read), the company notification settings (/settings: anyone signed in
 reads them, admins and above change them) and, for super admins and above, the
@@ -26,10 +26,9 @@ from serversherpa.api.schemas import (
     DeliveryCheckOut, DeliveryLogEntryOut, DeliveryLogPageOut,
     MembershipDecisionIn, MembershipRequestOut, NotificationGroupCreateIn,
     NotificationGroupDetailOut, NotificationGroupOut, NotificationGroupPatchIn,
-    NotificationGroupSettings, NotificationInboxItemOut, NotificationInboxOut,
-    NotificationKindOut, NotificationKindSettingOut, NotificationMemberAddIn,
-    NotificationMemberOut, NotificationRecipientOut, NotificationSettingsIn,
-    NotificationSettingsOut, SwitchPair,
+    NotificationInboxItemOut, NotificationInboxOut, NotificationKindOut,
+    NotificationKindSettingOut, NotificationMemberAddIn, NotificationMemberOut,
+    NotificationRecipientOut, NotificationSettingsIn, NotificationSettingsOut, SwitchPair,
 )
 from serversherpa.db.models import (
     EmailOutbox, Notification, NotificationGroup, NotificationGroupMember,
@@ -51,7 +50,7 @@ from serversherpa.services.storage import presign_get
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
-GROUP_FIELDS = ["name", "description", "categories", "enabled"]
+GROUP_FIELDS = ["name", "description", "enabled"]
 
 # Every group field is NOT NULL: an explicit null in a PATCH body must 422 here,
 # not IntegrityError at commit.
@@ -60,18 +59,6 @@ NON_NULLABLE_GROUP_FIELDS = frozenset(GROUP_FIELDS)
 
 def _err(status: int, code: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code})
-
-
-def validate_settings(body: NotificationGroupSettings) -> None:
-    """The one group setting that needs more than its type: every category must be
-    registered (notifications/kinds.py). Shared by group create and patch."""
-    if body.categories is not None and not set(body.categories) <= set(CATEGORY_KEYS):
-        raise _err(422, "invalid_category")
-
-
-def _normalize_categories(categories: list[str]) -> list[str]:
-    """De-duplicated, in registry (CATEGORY_KEYS) order."""
-    return [key for key in CATEGORY_KEYS if key in categories]
 
 
 async def _get_group(db: DbSession, group_id: uuid.UUID) -> NotificationGroup:
@@ -90,8 +77,7 @@ async def _member_count(db: DbSession, group_id: uuid.UUID) -> int:
 def _out(group: NotificationGroup, member_count: int) -> NotificationGroupOut:
     return NotificationGroupOut(
         id=group.id, name=group.name, description=group.description,
-        categories=group.categories, enabled=group.enabled,
-        member_count=member_count, created_at=group.created_at)
+        enabled=group.enabled, member_count=member_count, created_at=group.created_at)
 
 
 # ── members, recipients ────────────────────────────────────────────
@@ -155,16 +141,12 @@ async def create_group(
     db: DbSession,
     actor: AuthContext = require_permission("notifications", "add"),
 ) -> NotificationGroupOut:
-    validate_settings(body)
     exists = await db.scalar(select(NotificationGroup.id).where(
         NotificationGroup.name == body.name))
     if exists:
         raise _err(409, "group_exists")
 
-    data = body.model_dump(exclude_none=True)
-    if "categories" in data:
-        data["categories"] = _normalize_categories(data["categories"])
-    group = NotificationGroup(**data, created_by=actor.person.id)
+    group = NotificationGroup(**body.model_dump(), created_by=actor.person.id)
     db.add(group)
     await db.flush()
     initial = snapshot(group, GROUP_FIELDS)
@@ -184,14 +166,11 @@ async def patch_group(
     actor: AuthContext = require_permission("notifications", "change"),
 ) -> NotificationGroupOut:
     group = await _get_group(db, group_id)
-    validate_settings(body)
 
     data = body.model_dump(exclude_unset=True)
     if any(data[field] is None
            for field in NON_NULLABLE_GROUP_FIELDS & data.keys()):
         raise _err(422, "invalid")
-    if "categories" in data:
-        data["categories"] = _normalize_categories(data["categories"])
 
     if "name" in data:
         exists = await db.scalar(select(NotificationGroup.id).where(

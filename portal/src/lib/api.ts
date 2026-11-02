@@ -4756,14 +4756,13 @@ export async function testSpecLookup(): Promise<{ ok: boolean; latency_ms: numbe
 /* ── notification groups ─────────────────────────────────────────────
  * Mirrors api/src/serversherpa/api/schemas.py's Notification*Out shapes.
  * A group is a name, a description, Active/Paused and its members: it decides
- * nothing about what anyone gets, so it carries no delivery settings. Its
- * `categories` are kept by the API but shown nowhere. */
+ * nothing about what anyone gets, so it carries no delivery settings and no
+ * categories (the API refuses a body that sends either). */
 
 export interface NotificationGroup {
   id: string;
   name: string;
   description: string;
-  categories: string[];
   enabled: boolean;
   member_count: number;
   created_at: string;
@@ -4800,11 +4799,9 @@ export interface NotificationRecipient {
   can_web: boolean;
 }
 
-/** `categories` is what the API still accepts and keeps; no screen sends it. */
 export interface NotificationGroupCreateIn {
   name: string;
   description?: string;
-  categories?: string[];
 }
 
 /** All fields optional so a caller can send a partial patch. */
@@ -4812,7 +4809,6 @@ export interface NotificationGroupPatchIn {
   name?: string;
   description?: string;
   enabled?: boolean;
-  categories?: string[];
 }
 
 export async function listNotificationGroups(): Promise<NotificationGroup[]> {
@@ -4899,7 +4895,6 @@ export interface MyNotificationGroup {
   id: string;
   name: string;
   description: string;
-  categories: string[];
   member_count: number;
   is_member: boolean;
   pending_request: MyPendingRequest | null;

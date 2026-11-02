@@ -3,7 +3,9 @@ learning tables, the learning_admin role and its grants, the compliance
 report definition, the widened notification category (repairing a group
 that already uses it), the worker_certifications and email_outbox columns;
 the upgrade brings them all back with their indexes. Runs on a throwaway
-database (`<SS_TEST_DB>_m0109`) so the shared test DB stays at head."""
+database (`<SS_TEST_DB>_m0109`) so the shared test DB stays at head. It stops at 0112,
+the last revision that still has a group's categories: migration 0113 dropped the
+column, so the widened category check can only be read below it."""
 
 import os
 
@@ -62,7 +64,7 @@ def _state(conn) -> dict:
 
 
 def test_downgrade_removes_everything_and_upgrade_restores_it(throwaway_url):
-    _alembic(throwaway_url, "upgrade", "head")
+    _alembic(throwaway_url, "upgrade", "0112")
     sync = throwaway_url.set(drivername="postgresql").render_as_string(hide_password=False)
     with psycopg.connect(sync, autocommit=True) as conn:
         up = _state(conn)
@@ -78,6 +80,10 @@ def test_downgrade_removes_everything_and_upgrade_restores_it(throwaway_url):
                      (person,))
         conn.execute("INSERT INTO notification_groups (name, categories) "
                      "VALUES ('Learning', ARRAY['learning','wiki'])")
+        # the widened category check takes 'learning' and still refuses the rest
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute("INSERT INTO notification_groups (name, categories) "
+                         "VALUES ('Bogus', ARRAY['bogus'])")
         conn.execute("INSERT INTO learning_documents (title) VALUES ('Safety')")
 
     _alembic(throwaway_url, "downgrade", "0108")
@@ -93,6 +99,6 @@ def test_downgrade_removes_everything_and_upgrade_restores_it(throwaway_url):
             conn.execute("INSERT INTO notification_groups (name, categories) "
                          "VALUES ('Again', ARRAY['learning'])")
 
-    _alembic(throwaway_url, "upgrade", "head")
+    _alembic(throwaway_url, "upgrade", "0112")
     with psycopg.connect(sync, autocommit=True) as conn:
         assert _state(conn) == up

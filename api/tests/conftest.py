@@ -148,6 +148,7 @@ async def clean_db():
             "asset_model_aliases, asset_models, container_assets, "
             "log_entries, processes, "
             "report_runs, report_definitions, notifications, notification_held, "
+            "notification_watches, notification_events, "
             "initiative_links, initiative_people, initiatives, import_jobs, "
             "containers, pending_deletes, label_template_sites, "
             "label_templates, label_placeholders, label_vocab, "

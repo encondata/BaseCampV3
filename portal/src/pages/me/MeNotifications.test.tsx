@@ -505,20 +505,20 @@ it('an invalid schedule is never saved: removing every day asks for one and send
 
 // ── the groups lists ─────────────────────────────────────────────────────
 
-/** A group as the API answers: a name, a description, its (hidden) categories,
- *  its members and the viewer's own request. No delivery settings. */
+/** A group as the API answers: a name, a description, its members and the
+ *  viewer's own request. No delivery settings, no categories. */
 const G1: MyNotificationGroup = {
-  id: 'g1', name: 'Ops', description: 'Operations alerts', categories: ['approvals', 'wiki'],
+  id: 'g1', name: 'Ops', description: 'Operations alerts',
   member_count: 3, is_member: true, pending_request: null,
 };
 
 const G2: MyNotificationGroup = {
-  id: 'g2', name: 'Warehouse Alerts', description: 'Forklift and stock alerts', categories: ['learning'],
+  id: 'g2', name: 'Warehouse Alerts', description: 'Forklift and stock alerts',
   member_count: 5, is_member: false, pending_request: null,
 };
 
 const G3: MyNotificationGroup = {
-  id: 'g3', name: 'Fleet Updates', description: 'Truck status changes', categories: [],
+  id: 'g3', name: 'Fleet Updates', description: 'Truck status changes',
   member_count: 2, is_member: false, pending_request: null,
 };
 
@@ -551,9 +551,8 @@ it('a member group row shows its name, description, member count and no delivery
   expect(within(row).getByText('Operations alerts')).toBeTruthy();
   expect(within(row).getByText('3')).toBeTruthy();
   expect(within(row).getByText('—')).toBeTruthy();                       // no request waiting
-  // Nothing of the group's old delivery settings, categories or overrides is shown.
-  for (const text of ['Email', 'No email', 'Push', 'Customized',
-    'Approvals & requests', 'Wiki', 'None — inbox only']) {
+  // Nothing of the group's old delivery settings or overrides is shown.
+  for (const text of ['Email', 'No email', 'Push', 'Customized']) {
     expect(within(row).queryByText(text)).toBeNull();
   }
 });
