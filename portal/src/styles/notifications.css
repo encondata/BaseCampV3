@@ -11,7 +11,9 @@
    (its category picker and day headings); the System › Notifications
    Delivery log (its person link, row trail and Check delivery result); and
    the switch grid and schedule card (the state line under a category, the
-   schedule rows' wrapping and picker widths, the shaded summary line).
+   schedule rows' wrapping and picker widths, the shaded summary line); and
+   the System › Notifications › Defaults tab (its one-column stack, the
+   foot note and the Save row).
    ============================================================ */
 
 /* ── NotificationModal (components/notifications/NotificationModal.tsx) ──
@@ -305,24 +307,25 @@
  * category, how the schedule rows wrap and size their pickers, and the shaded
  * summary line. */
 
-/* The grid scrolls sideways only in a card narrower than its floor (about
- * 315px: a 360px-wide phone). Then it shows the slim themed bar, never the
- * browser's classic one — the Delivery log's tables, above, are the model. */
-.swgrid .data-table-scroll::-webkit-scrollbar { height: 12px; }
-.swgrid .data-table-scroll::-webkit-scrollbar-track { background: transparent; margin-inline: 16px; }
-.swgrid .data-table-scroll::-webkit-scrollbar-thumb {
+/* The grid (and the Defaults tab's critical list, which is a table of switches
+ * too) scrolls sideways only in a card narrower than its floor (the grid's is
+ * about 315px: a 360px-wide phone). Then it shows the slim themed bar, never
+ * the browser's classic one — the Delivery log's tables, above, are the model. */
+:is(.swgrid, .nd-crit) .data-table-scroll::-webkit-scrollbar { height: 12px; }
+:is(.swgrid, .nd-crit) .data-table-scroll::-webkit-scrollbar-track { background: transparent; margin-inline: 16px; }
+:is(.swgrid, .nd-crit) .data-table-scroll::-webkit-scrollbar-thumb {
   background-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent);
   border: 3px solid transparent;
   background-clip: padding-box;
   border-radius: 999px;
 }
-.swgrid .data-table-scroll::-webkit-scrollbar-thumb:hover {
+:is(.swgrid, .nd-crit) .data-table-scroll::-webkit-scrollbar-thumb:hover {
   background-color: color-mix(in srgb, var(--muted, #51606f) 65%, transparent);
 }
 /* Firefox has no ::-webkit-scrollbar; give it the slim, trackless bar. Only
    there: in Chromium, scrollbar-width/color would override the rules above. */
 @supports not selector(::-webkit-scrollbar) {
-  .swgrid .data-table-scroll {
+  :is(.swgrid, .nd-crit) .data-table-scroll {
     scrollbar-width: thin;
     scrollbar-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent) transparent;
   }
@@ -362,3 +365,30 @@
   color: var(--text-dark);
 }
 .sched-summary.warn { background: var(--c-red-bg); color: var(--c-red); }
+
+/* ── System › Notifications › Defaults
+ *    (components/notifications/NotificationDefaultsTab.tsx) ────────────────
+ * Two .set-section cards. They stack in one column (the settings stack would
+ * put them side by side, too narrow for the critical list). Each card ends in
+ * its Save row; the critical list has its foot note above that. The dividers
+ * above the note and the Save row are the borders of the table wrapper (the
+ * `.set-section .data-table-scroll` rule in settings.css) and of the note. */
+.set-stack.nd-one { grid-template-columns: minmax(0, 1fr); }
+.nd-note {
+  margin: 0;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--paper-line);
+  font-size: 12px;
+  font-weight: 300;
+  color: var(--text-mute);
+}
+/* The error sits beside Save, as in a dialog's footer. */
+.nd-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; padding: 12px 20px; }
+/* The critical list needs about 390px (480px at the largest list size); the
+ * category chip is the wide part. In a card narrower than that (a viewport under
+ * 540px) the Category column steps aside, so the switches stay in view instead
+ * of scrolling off to the right. Its <col> goes too: a column with no cells would
+ * still claim the Critical column's 104px. */
+@media (max-width: 540px) {
+  .nd-crit :is(col, th, td):nth-child(2) { display: none; }
+}
