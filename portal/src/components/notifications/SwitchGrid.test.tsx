@@ -318,3 +318,11 @@ it('is a table through DataTable, named for assistive tech', () => {
   person();
   expect(screen.getByRole('table', { name: 'Notification switches' })).toBeTruthy();
 });
+
+it('sits in .swgrid, the scope of its themed scrollbar: a card too narrow for it scrolls sideways', () => {
+  const { container } = render(
+    <SwitchGrid mode="person" defaults={DEFAULTS} emailEnabled onChange={() => {}} />);
+  const scroll = container.querySelector('.swgrid > .data-table-scroll');
+  expect(scroll).toBeTruthy();
+  expect(scroll?.querySelector('table[aria-label="Notification switches"]')).toBeTruthy();
+});

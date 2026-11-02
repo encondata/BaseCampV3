@@ -133,12 +133,14 @@ export default function SwitchGrid(props: Props) {
   });
 
   return (
-    <DataTable ariaLabel="Notification switches"
-               columns={[
-                 { key: 'category', label: 'Category' },
-                 { key: 'inbox', label: 'Inbox', align: 'center', width: '104px' },
-                 { key: 'email', label: 'Email', align: 'center', width: '104px' },
-               ]}
-               rows={rows} />
+    <div className="swgrid">
+      <DataTable ariaLabel="Notification switches"
+                 columns={[
+                   { key: 'category', label: 'Category' },
+                   { key: 'inbox', label: 'Inbox', align: 'center', width: '104px' },
+                   { key: 'email', label: 'Email', align: 'center', width: '104px' },
+                 ]}
+                 rows={rows} />
+    </div>
   );
 }

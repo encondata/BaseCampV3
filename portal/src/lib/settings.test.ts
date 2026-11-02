@@ -1,7 +1,19 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { DEFAULT_SCHEDULE } from './notificationSchedule';
 import { DEFAULT_PREFERENCES, NAV_MODES, applyPreferences, nextNavMode } from './settings';
+
+describe('DEFAULT_PREFERENCES notifications', () => {
+  it('starts with the chime, no switch of its own and the default schedule', () => {
+    // Every switch follows the company default, and nothing waits.
+    expect(DEFAULT_PREFERENCES.notif).toEqual({ sound: 'chime', switches: {}, schedule: DEFAULT_SCHEDULE });
+  });
+
+  it('keeps no per-category delivery choices', () => {
+    expect('categories' in DEFAULT_PREFERENCES.notif).toBe(false);
+  });
+});
 
 describe('applyPreferences list size', () => {
   beforeEach(() => {

@@ -217,6 +217,14 @@
 .me-groups .dir-head .page-hint { margin: 4px 0 0; }
 .me-groups .dir-toolbar { margin: 12px 0 10px; }
 
+/* /me › Notifications, "What you get": the card sits beside the schedule card,
+   so it can be narrow. The Sound row's control drops under its label rather than
+   squeezing the label and running past the card's edge, and the Preview button
+   drops under the sound choices in turn. */
+.me-get-card .set-row { flex-wrap: wrap; }
+.me-get-card .set-row .set-label { flex: 1 1 180px; min-width: 0; }
+.me-get-card .set-inline { flex-wrap: wrap; }
+
 .set-subrow { padding-left: 22px; }
 .set-inline { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
 .set-inline input {
@@ -230,11 +238,6 @@
 /* Notice line inside a .set-section (e.g. email-off hint on /me › Notifications). */
 .set-hint { margin: 0; padding: 12px 20px; border-bottom: 1px solid var(--paper-line); }
 .set-section .data-table-scroll { border-bottom: 1px solid var(--paper-line); }
-
-/* /me › Notifications delivery choice: "Inbox + Email" is dimmed and inert when
-   nothing could send the email (its title says why), and doesn't light up on hover. */
-.delivery-seg button:disabled { opacity: 0.45; cursor: default; }
-.delivery-seg button:disabled:hover { color: var(--text-mute); }
 
 /* ── System settings › Branding ───────────────────────────── */
 

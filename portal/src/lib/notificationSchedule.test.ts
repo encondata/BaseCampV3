@@ -106,6 +106,63 @@ describe('summaryLine — quiet hours', () => {
   });
 });
 
+describe('summaryLine — quiet hours of an hour or less', () => {
+  // The API holds mail for a summary only while that summary is still ahead:
+  // the summary goes out an hour before quiet hours end, so a window of an
+  // hour or less ends its quiet time before the summary could be sent, and
+  // nothing is ever held for it. The line says what happens: the same
+  // sentences as with no quiet hours.
+  const ALWAYS = 'No quiet hours and no days off, so email always goes out right away.';
+
+  it('05:30–06:00 (30 minutes) with Mon–Fri: only the days-off sentence', () => {
+    expect(summaryLine(schedule({ days: WORKWEEK, quiet_start: '05:30', quiet_end: '06:00' }))).toEqual({
+      text: `${DAYS_OFF} ${NEVER_WAIT}`, warn: false,
+    });
+  });
+
+  it('05:30–06:00 with every day: email always goes out right away', () => {
+    expect(summaryLine(schedule({ quiet_start: '05:30', quiet_end: '06:00' }))).toEqual({
+      text: ALWAYS, warn: false,
+    });
+  });
+
+  it('measures an overnight window across midnight: 23:30–00:20 is 50 minutes', () => {
+    expect(summaryLine(schedule({ quiet_start: '23:30', quiet_end: '00:20' })).text).toBe(ALWAYS);
+    expect(summaryLine(schedule({ days: WORKWEEK, quiet_start: '23:30', quiet_end: '00:20' })).text)
+      .toBe(`${DAYS_OFF} ${NEVER_WAIT}`);
+  });
+
+  it('a window starting at 12:00 AM is measured the same way: 00:00–00:30 is 30 minutes', () => {
+    expect(summaryLine(schedule({ quiet_start: '00:00', quiet_end: '00:30' })).text).toBe(ALWAYS);
+  });
+
+  it('exactly one hour holds nothing either (the summary time is the start itself)', () => {
+    expect(summaryLine(schedule({ quiet_start: '05:00', quiet_end: '06:00' })).text).toBe(ALWAYS);
+    expect(summaryLine(schedule({ quiet_start: '23:30', quiet_end: '00:30' })).text).toBe(ALWAYS);
+    expect(summaryLine(schedule({ days: WORKWEEK, quiet_start: '05:00', quiet_end: '06:00' })).text)
+      .toBe(`${DAYS_OFF} ${NEVER_WAIT}`);
+  });
+
+  it('a window just over an hour holds mail, so it keeps the quiet-hours sentence', () => {
+    expect(summaryLine(schedule({ quiet_start: '04:45', quiet_end: '06:00' })).text)
+      .toBe(`${SINGLE} ${NEVER_WAIT}`);
+    expect(summaryLine(schedule({ quiet_start: '23:00', quiet_end: '00:30' })).text)
+      .toBe(`Email that waits arrives as one summary at 11:30 PM CT, an hour before quiet hours end on a day you work. ${NEVER_WAIT}`);
+  });
+
+  it('still asks for both times first: a half-set or equal window is not a short one', () => {
+    expect(summaryLine(schedule({ quiet_start: '05:30', quiet_end: null })))
+      .toEqual({ text: 'Pick a start and end time.', warn: true });
+    expect(summaryLine(schedule({ quiet_start: '05:30', quiet_end: '05:30' })))
+      .toEqual({ text: 'Pick a start and end time.', warn: true });
+  });
+
+  it('no days still wins over a short window', () => {
+    expect(summaryLine(schedule({ days: [], quiet_start: '05:30', quiet_end: '06:00' })))
+      .toEqual({ text: 'Pick at least one day.', warn: true });
+  });
+});
+
 describe('summaryLine — no quiet hours', () => {
   it('Mon–Fri: email from days off waits for 11:00 PM the night before the next working day', () => {
     expect(summaryLine(schedule({ days: WORKWEEK }))).toEqual({

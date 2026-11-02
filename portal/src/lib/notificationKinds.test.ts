@@ -1,8 +1,7 @@
 import { expect, it } from 'vitest';
 
-import {
-  DELIVERY_CHOICES, NOTIFICATION_CATEGORIES, categoryLabel, categoryLabels, emailGroupsFor,
-} from './notificationKinds';
+import * as kinds from './notificationKinds';
+import { NOTIFICATION_CATEGORIES, categoryLabel, categoryLabels } from './notificationKinds';
 
 it('lists the five categories in spec order with their labels', () => {
   expect(NOTIFICATION_CATEGORIES.map(({ key, label }) => ({ key, label }))).toEqual([
@@ -14,44 +13,22 @@ it('lists the five categories in spec order with their labels', () => {
   ]);
 });
 
-it('every category says where its email permission comes from; only account security is "always"', () => {
-  // Mirrors CATEGORY_EMAIL_SOURCE in api/src/serversherpa/notifications/kinds.py.
-  for (const c of NOTIFICATION_CATEGORIES) {
-    expect(['groups', 'always', 'direct']).toContain(c.emailSource);
+it('a category is a key and a label only: no group decides its email any more', () => {
+  for (const category of NOTIFICATION_CATEGORIES) {
+    expect(Object.keys(category).sort()).toEqual(['key', 'label']);
   }
-  expect(NOTIFICATION_CATEGORIES.filter((c) => c.emailSource === 'always').map((c) => c.key))
-    .toEqual(['security']);
-  expect(NOTIFICATION_CATEGORIES.filter((c) => c.emailSource === 'groups').map((c) => c.key))
-    .toEqual(['approvals', 'reports', 'wiki', 'learning']);
 });
 
-it('offers the three personal choices with the exact labels', () => {
-  expect(DELIVERY_CHOICES).toEqual([
-    { key: 'email', label: 'Inbox + Email' },
-    { key: 'inbox', label: 'Inbox only' },
-    { key: 'off', label: 'Off' },
-  ]);
+it('keeps no per-person delivery choices and no lookup of the groups that email a category', () => {
+  // A person's choices are switches now (lib/notificationSwitches.ts).
+  expect('DELIVERY_CHOICES' in kinds).toBe(false);
+  expect('emailGroupsFor' in kinds).toBe(false);
 });
 
 it('maps keys to labels and drops unknown keys', () => {
   expect(categoryLabel('wiki')).toBe('Wiki');
+  expect(categoryLabel('bogus')).toBe('bogus');
   expect(categoryLabels(['security', 'approvals', 'bogus'])).toEqual([
     'Approvals & requests', 'Account security',
   ]);
-});
-
-it('emailGroupsFor keeps member groups that carry the category and email', () => {
-  const g = (id: string, categories: string[], effective: string[] | null, is_member = true) => ({
-    id, name: id, categories, is_member,
-    effective: effective && { channels: effective },
-    effective_channels: effective ?? [],
-  });
-  const groups = [
-    g('a', ['approvals'], ['email', 'web']),
-    g('b', ['approvals'], ['web']),
-    g('c', ['reports'], ['email']),
-    g('d', ['approvals'], ['email'], false),
-  ];
-  expect(emailGroupsFor('approvals', groups as never).map((x) => x.id)).toEqual(['a']);
-  expect(emailGroupsFor('wiki', groups as never)).toEqual([]);
 });

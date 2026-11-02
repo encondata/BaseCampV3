@@ -1,15 +1,25 @@
 // @vitest-environment jsdom
+/**
+ * /me › Notifications: the "What you get" switch grid (Inbox and Email per
+ * category, following the company defaults until the person changes a switch),
+ * the critical note, the Sound row, the "When email reaches you" schedule card,
+ * and the groups lists (Group, Members, Status — groups no longer decide what
+ * a person gets). Only the person's own choices are ever saved.
+ */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import { ApiError, type MyNotificationGroup, type UiPreferences } from '../../lib/api';
+import {
+  ApiError, type MyNotificationGroup, type NotificationKindSetting, type NotificationSettings,
+  type SwitchPair, type UiPreferences,
+} from '../../lib/api';
 import { LIST_FIT } from '../../lib/listTools';
 
 const auth = vi.hoisted(() => ({
   updatePreferences: vi.fn(async (_prefs: UiPreferences) => true),
-  // The person's saved choices; beforeEach resets them, tests change them.
-  categories: {} as UiPreferences['notif']['categories'],
+  // The person's saved notification preferences; beforeEach resets them, tests change them.
+  notif: undefined as unknown as UiPreferences['notif'],
 }));
 
 vi.mock('../../auth/AuthContext', () => ({
@@ -26,7 +36,7 @@ vi.mock('../../auth/AuthContext', () => ({
       nav_bg: 'default',
       nav_size: 'default',
       list_view: 'expanded',
-      notif: { sound: 'chime', categories: auth.categories },
+      notif: auth.notif,
       list_prefs: {},
     } satisfies UiPreferences,
     updatePreferences: auth.updatePreferences,
@@ -47,8 +57,8 @@ vi.mock('../../lib/systemStatusContext', () => ({
 }));
 
 const api = vi.hoisted(() => ({
+  getNotificationSettings: vi.fn(),
   listMyNotificationGroups: vi.fn(),
-  updateMyGroupOverrides: vi.fn(),
   requestGroupMembership: vi.fn(),
   cancelMembershipRequest: vi.fn(),
 }));
@@ -57,21 +67,33 @@ vi.mock('../../lib/api', async (importActual) => ({
   ...api,
 }));
 
-// OverrideEditorModal is the admin group-detail editor reused as-is; its
-// own behavior has its own coverage elsewhere. Here we only need to
-// confirm MeNotifications opens it with the right member and wires its
-// onSave hook to the self-service PATCH — a tiny stand-in exposing both.
-vi.mock('../../components/notifications/OverrideEditorModal', () => ({
-  default: ({ member, onSave }: {
-    member: { display_name: string };
-    onSave?: (body: Record<string, unknown>) => Promise<unknown>;
-  }) => (
-    <div>
-      <h3>Overrides — {member.display_name}</h3>
-      <button onClick={() => { void onSave?.({ urgent_bypass: true }); }}>mock-save</button>
-    </div>
-  ),
-}));
+const ON: SwitchPair = { inbox: true, email: true };
+
+const kind = (
+  key: string, label: string, category: NotificationKindSetting['category'],
+  over: Partial<NotificationKindSetting> = {},
+): NotificationKindSetting => ({
+  kind: key, label, category, email: true, owner_always: false, critical: false, locked: false, ...over,
+});
+
+/** What GET /notifications/settings answers: Reports email is off by default,
+ *  one kind an admin marked critical, and the two security kinds always are. */
+const SETTINGS: NotificationSettings = {
+  defaults: { approvals: ON, reports: { inbox: true, email: false }, wiki: ON, learning: ON },
+  critical_kinds: ['report_failed'],
+  kinds: [
+    kind('membership_request', 'Group membership request', 'approvals'),
+    kind('report_ready', 'Report ready', 'reports'),
+    kind('report_failed', 'Report failed', 'reports', { critical: true }),
+    kind('learning_quiz_locked', 'Quiz locked', 'learning', { email: false }),
+    kind('password_expiring', 'Password expiring', 'security',
+      { owner_always: true, critical: true, locked: true }),
+    kind('totp_enrolled', 'Two-factor authentication enrolled', 'security',
+      { owner_always: true, critical: true, locked: true }),
+  ],
+};
+
+const EVERY_DAY: UiPreferences['notif']['schedule']['days'] = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
 afterEach(() => {
   cleanup();
@@ -79,125 +101,417 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  Element.prototype.scrollIntoView = vi.fn();   // jsdom has none; ComboBox scrolls its active option
+  api.getNotificationSettings.mockReset();
   api.listMyNotificationGroups.mockReset();
-  api.updateMyGroupOverrides.mockReset();
   api.requestGroupMembership.mockReset();
   api.cancelMembershipRequest.mockReset();
-  auth.categories = { approvals: 'email', reports: 'inbox', wiki: 'email', learning: 'email', security: 'email' };
+  api.getNotificationSettings.mockResolvedValue(SETTINGS);
+  api.listMyNotificationGroups.mockResolvedValue([]);
+  auth.notif = {
+    sound: 'chime',
+    switches: {},
+    schedule: { timezone: null, days: [...EVERY_DAY], quiet_start: null, quiet_end: null },
+  };
   status.email_enabled = true;
   statusLoaded.value = true;
 });
 
 const { default: MeNotificationsPage } = await import('./MeNotifications');
-const { default: CategoryDelivery } = await import('./CategoryDelivery');
 
 // The page links to /notifications, so it renders inside a router like the real app.
 const MeNotifications = () => <MemoryRouter><MeNotificationsPage /></MemoryRouter>;
 
-const delivery = (label: string) => screen.getByRole('group', { name: `${label} delivery` });
+const sw = (channel: 'Inbox' | 'Email', category: string) =>
+  screen.getByRole('checkbox', { name: `${channel} for ${category}` }) as HTMLInputElement;
 
-const SECTION_COPY = 'Emails go to your contact email; account security notices go to your sign-in email. '
-  + 'Your groups decide which categories can email you and when — here you can turn them down.';
+/** The reason a switch gives for being off limits: the title of what wraps it. */
+const reason = (input: HTMLElement) => input.closest('[title]')?.getAttribute('title') ?? null;
 
-it('replaces the four old switches with a per-category delivery table', async () => {
-  api.listMyNotificationGroups.mockResolvedValueOnce([]);
+const GRID_CATEGORIES = ['Approvals & requests', 'Reports & labels', 'Wiki', 'Learning'];
+
+/** The grid is inert until the company defaults have arrived. */
+const loaded = () => waitFor(() => expect(sw('Inbox', 'Wiki').disabled).toBe(false));
+
+const HEAD_COPY = 'Emails go to your contact email; account security notices go to your sign-in email. '
+  + "Switches you haven't changed follow the company defaults.";
+const CRITICAL_NOTE = 'Critical notifications still follow these switches, but skip your quiet hours, '
+  + 'days off and the summary email. Your admins choose which are critical. '
+  + 'Right now: Report failed, Password expiring, Two-factor authentication enrolled.';
+const EMAIL_OFF_HINT = "Email isn't set up on this server yet — notifications stay in the inbox.";
+
+/** Everything the page sent to updatePreferences in its first save. */
+const firstSave = async () => {
+  await waitFor(() => expect(auth.updatePreferences).toHaveBeenCalledTimes(1));
+  return auth.updatePreferences.mock.calls[0][0];
+};
+
+// ── the "What you get" card ──────────────────────────────────────────────
+
+it('opens with the "What you get" head: the section copy, and the link to all notifications', async () => {
   render(<MeNotifications />);
-  for (const label of ['Critical incidents', 'Email alerts', 'Maintenance windows', 'Weekly digest']) {
-    expect(screen.queryByText(label)).toBeNull();
-  }
-  const table = screen.getByRole('table', { name: 'Notification delivery' });
-  for (const label of ['Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Account security']) {
-    expect(within(table).getByText(label)).toBeTruthy();
-  }
-  expect(screen.getByText(SECTION_COPY)).toBeTruthy();
+  await loaded();
+  const link = screen.getByRole('link', { name: 'View all notifications' });
+  expect(link.getAttribute('href')).toBe('/notifications');
+  expect(link.classList.contains('mini-btn')).toBe(true);
+  const head = link.closest('.set-head') as HTMLElement;
+  expect(within(head).getByRole('heading', { name: 'What you get', level: 3 })).toBeTruthy();
+  expect(within(head).getByText(HEAD_COPY)).toBeTruthy();
+  // The groups no longer decide anything, and the copy no longer says they do.
+  expect(screen.queryByText(/Your groups decide/)).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'Notifications', level: 3 })).toBeNull();
   expect(screen.queryByText('Appearance')).toBeNull();
 });
 
-it('while the groups load, each stored choice shows as the pressed segment and nothing is disabled', async () => {
-  api.listMyNotificationGroups.mockReturnValueOnce(new Promise(() => {}));   // never settles
+it('lists a switch grid, not the old delivery table, and loads the company defaults once', async () => {
   render(<MeNotifications />);
-  const pressed = (label: string) =>
-    within(delivery(label)).getAllByRole('button').filter((b) => b.getAttribute('aria-pressed') === 'true')
-      .map((b) => b.textContent);
-  expect(pressed('Approvals & requests')).toEqual(['Inbox + Email']);
-  expect(pressed('Reports & labels')).toEqual(['Inbox only']);
-  expect(within(delivery('Wiki')).getAllByRole('button').map((b) => b.textContent))
-    .toEqual(['Inbox + Email', 'Inbox only', 'Off']);
-  for (const label of ['Approvals & requests', 'Reports & labels', 'Wiki', 'Learning']) {
-    for (const b of within(delivery(label)).getAllByRole('button')) {
-      expect((b as HTMLButtonElement).disabled).toBe(false);
-      expect(b.hasAttribute('title')).toBe(false);
-    }
+  await loaded();
+  expect(api.getNotificationSettings).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole('table', { name: 'Notification delivery' })).toBeNull();
+  const grid = screen.getByRole('table', { name: 'Notification switches' });
+  for (const label of [...GRID_CATEGORIES, 'Account security']) {
+    expect(within(grid).getByText(label)).toBeTruthy();
   }
+  for (const label of ['Critical incidents', 'Email alerts', 'Maintenance windows', 'Weekly digest']) {
+    expect(screen.queryByText(label)).toBeNull();
+  }
+  expect(screen.queryByRole('group', { name: /delivery/ })).toBeNull();
 });
 
-it('choosing a delivery saves the merged notif.categories object', async () => {
-  api.listMyNotificationGroups.mockResolvedValueOnce([]);
+it('the grid follows the company defaults, and says every row does', async () => {
+  api.getNotificationSettings.mockResolvedValue({
+    ...SETTINGS,
+    defaults: {
+      approvals: ON, reports: { inbox: true, email: false },
+      wiki: { inbox: false, email: false }, learning: ON,
+    },
+  });
   render(<MeNotifications />);
-  fireEvent.click(within(delivery('Wiki')).getByRole('button', { name: 'Off' }));
-  await waitFor(() => expect(auth.updatePreferences).toHaveBeenCalledTimes(1));
-  const sent = auth.updatePreferences.mock.calls[0][0];
+  await waitFor(() => expect(sw('Inbox', 'Approvals & requests').disabled).toBe(false));
+
+  expect(sw('Inbox', 'Approvals & requests').checked).toBe(true);
+  expect(sw('Email', 'Approvals & requests').checked).toBe(true);
+  expect(sw('Inbox', 'Reports & labels').checked).toBe(true);
+  expect(sw('Email', 'Reports & labels').checked).toBe(false);
+  expect(sw('Inbox', 'Wiki').checked).toBe(false);
+  expect(sw('Email', 'Wiki').checked).toBe(false);
+  expect(reason(sw('Email', 'Wiki'))).toBe('Turn on Inbox to get email');
+  expect(screen.getAllByText('Company default')).toHaveLength(4);
+  expect(screen.queryByText('Your choice')).toBeNull();
+  expect(auth.updatePreferences).not.toHaveBeenCalled();   // looking changes nothing
+});
+
+it('the person\'s own values win over the defaults, and the row says "Your choice"', async () => {
+  auth.notif.switches = { reports: { email: true }, wiki: { inbox: false } };
+  render(<MeNotifications />);
+  await loaded();
+
+  expect(sw('Email', 'Reports & labels').checked).toBe(true);    // default off, theirs on
+  expect(sw('Inbox', 'Wiki').checked).toBe(false);               // default on, theirs off
+  expect(sw('Email', 'Wiki').checked).toBe(false);               // Email needs Inbox
+  const reports = screen.getByRole('row', { name: /Reports & labels/ });
+  expect(within(reports).getByText('Your choice')).toBeTruthy();
+  expect(within(screen.getByRole('row', { name: /Wiki/ })).getByText('Your choice')).toBeTruthy();
+  expect(screen.getAllByText('Company default')).toHaveLength(2);
+  expect(screen.getAllByRole('button', { name: 'Use company default' })).toHaveLength(2);
+});
+
+it('while the company defaults load, every switch is off limits and nothing is claimed', async () => {
+  api.getNotificationSettings.mockReturnValue(new Promise(() => {}));   // never settles
+  render(<MeNotifications />);
+  for (const label of GRID_CATEGORIES) {
+    for (const channel of ['Inbox', 'Email'] as const) {
+      expect(sw(channel, label).disabled).toBe(true);
+      expect(sw(channel, label).checked).toBe(false);
+    }
+  }
+  expect(screen.queryByText(/Right now:/)).toBeNull();
+  expect(screen.queryByText('Could not load notification settings.')).toBeNull();
+  await screen.findByText("You're not in any notification groups yet.");   // the groups are in
+});
+
+it('if the settings can\'t be loaded it says so, and leaves the grid off limits', async () => {
+  api.getNotificationSettings.mockRejectedValue(new ApiError(500, 'server_error'));
+  render(<MeNotifications />);
+  const error = await screen.findByText('Could not load notification settings.');
+  expect(error.tagName).toBe('P');
+  expect(error.classList.contains('pf-error')).toBe(true);
+  for (const label of GRID_CATEGORIES) {
+    expect(sw('Inbox', label).disabled).toBe(true);
+    expect(sw('Email', label).disabled).toBe(true);
+  }
+  expect(screen.queryByText(/Right now:/)).toBeNull();
+  // The rest of the page is still there.
+  expect(screen.getByRole('heading', { name: 'When email reaches you' })).toBeTruthy();
+  expect(screen.getByRole('radio', { name: 'Chime' })).toBeTruthy();
+});
+
+it('Account security shows "Always" twice and no switch', async () => {
+  render(<MeNotifications />);
+  await loaded();
+  const row = screen.getByRole('row', { name: /Account security/ });
+  expect(within(row).getAllByText('Always')).toHaveLength(2);
+  expect(within(row).queryByRole('checkbox')).toBeNull();
+});
+
+// ── saving: only the person's own choices go up ──────────────────────────
+
+it('flipping Wiki Email off saves switches.wiki = {email: false}, with everything else as it was', async () => {
+  render(<MeNotifications />);
+  await loaded();
+  fireEvent.click(sw('Email', 'Wiki'));
+
+  const sent = await firstSave();
   expect(sent.notif).toEqual({
     sound: 'chime',
-    categories: { approvals: 'email', reports: 'inbox', wiki: 'off', learning: 'email', security: 'email' },
+    switches: { wiki: { email: false } },
+    schedule: { timezone: null, days: EVERY_DAY, quiet_start: null, quiet_end: null },
   });
   expect(sent.accent).toBe('amber');
   await waitFor(() => expect(screen.getByText('saved')).toBeTruthy());
 });
 
-it('Account security shows "Always emailed" and no delivery control', async () => {
-  api.listMyNotificationGroups.mockResolvedValueOnce([]);
+it('after a save the row says "Your choice", and the company defaults are not fetched again', async () => {
+  // Like the real AuthContext: what is saved becomes the person's preferences.
+  auth.updatePreferences.mockImplementationOnce(async (prefs: UiPreferences) => {
+    auth.notif = prefs.notif;
+    return true;
+  });
   render(<MeNotifications />);
-  expect(screen.queryByRole('group', { name: 'Account security delivery' })).toBeNull();
-  const row = screen.getByText('Account security').closest('tr') as HTMLElement;
-  expect(within(row).getByText('Always emailed')).toBeTruthy();
+  await loaded();
+  fireEvent.click(sw('Email', 'Wiki'));
+
+  await waitFor(() => expect(within(screen.getByRole('row', { name: /Wiki/ })).getByText('Your choice')).toBeTruthy());
+  expect(sw('Email', 'Wiki').checked).toBe(false);
+  expect(screen.getAllByText('Company default')).toHaveLength(3);
+  expect(api.getNotificationSettings).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(screen.getByText('saved')).toBeTruthy());
 });
 
-it('Email from lists the member groups that carry the category and can email', async () => {
-  api.listMyNotificationGroups.mockResolvedValueOnce([
-    { ...G1, categories: ['approvals', 'reports'], effective_channels: ['email', 'push'] },
-    { ...G1, id: 'g9', name: 'Night Desk', categories: ['approvals'], effective_channels: ['web'] },
-    { ...G1, id: 'g8', name: 'Wiki Watch', categories: ['wiki'], effective_channels: ['email'], is_member: false },
-  ]);
+it('flipping Reports Email on saves {email: true}, because its default is off', async () => {
   render(<MeNotifications />);
-  const table = screen.getByRole('table', { name: 'Notification delivery' });
-  await waitFor(() => expect(within(within(table).getByText('Approvals & requests').closest('tr') as HTMLElement).getByText('Ops')).toBeTruthy());
-  const rowOf = (l: string) => within(table).getByText(l).closest('tr') as HTMLElement;
-  expect(within(rowOf('Approvals & requests')).queryByText('Night Desk')).toBeNull();
-  expect(within(rowOf('Reports & labels')).getByText('Ops')).toBeTruthy();
-  expect(within(rowOf('Wiki')).getByText('No group — inbox only')).toBeTruthy();
+  await loaded();
+  fireEvent.click(sw('Email', 'Reports & labels'));
+  expect((await firstSave()).notif.switches).toEqual({ reports: { email: true } });
 });
+
+it('flipping Wiki Inbox off saves {inbox: false}, and keeps an Email value already chosen', async () => {
+  auth.notif.switches = { wiki: { email: false } };
+  render(<MeNotifications />);
+  await loaded();
+  fireEvent.click(sw('Inbox', 'Wiki'));
+  expect((await firstSave()).notif.switches).toEqual({ wiki: { email: false, inbox: false } });
+});
+
+it('other categories\' own choices go up unchanged', async () => {
+  auth.notif.switches = { reports: { inbox: false }, learning: { email: false } };
+  render(<MeNotifications />);
+  await loaded();
+  fireEvent.click(sw('Email', 'Wiki'));
+  expect((await firstSave()).notif.switches).toEqual({
+    reports: { inbox: false }, learning: { email: false }, wiki: { email: false },
+  });
+});
+
+it('flipping a switch back to the default drops the key: absent means it follows the default', async () => {
+  auth.notif.switches = { wiki: { email: false }, reports: { inbox: false } };
+  render(<MeNotifications />);
+  await loaded();
+  fireEvent.click(sw('Email', 'Wiki'));   // off → on, which is the default
+  const saved = (await firstSave()).notif.switches;
+  expect(saved).toEqual({ reports: { inbox: false } });
+  expect('wiki' in saved).toBe(false);
+});
+
+it('"Use company default" removes the key', async () => {
+  auth.notif.switches = { wiki: { email: false }, reports: { inbox: false } };
+  render(<MeNotifications />);
+  await loaded();
+  const wiki = screen.getByRole('row', { name: /Wiki/ });
+  fireEvent.click(within(wiki).getByRole('button', { name: 'Use company default' }));
+  const saved = (await firstSave()).notif.switches;
+  expect(saved).toEqual({ reports: { inbox: false } });
+  expect('wiki' in saved).toBe(false);
+});
+
+it('"Use company default" on the only choice leaves no switches at all', async () => {
+  auth.notif.switches = { wiki: { inbox: false, email: false } };
+  render(<MeNotifications />);
+  await loaded();
+  fireEvent.click(screen.getByRole('button', { name: 'Use company default' }));
+  expect((await firstSave()).notif.switches).toEqual({});
+});
+
+// ── the critical note ────────────────────────────────────────────────────
+
+it('the critical note lists the critical kinds\' labels, in registry order', async () => {
+  render(<MeNotifications />);
+  await loaded();
+  const note = screen.getByText(CRITICAL_NOTE);
+  expect(note.tagName).toBe('P');
+  // It sits under the grid and above the Sound row.
+  const grid = screen.getByRole('table', { name: 'Notification switches' });
+  const sound = screen.getByText('Sound').closest('.set-row') as HTMLElement;
+  expect(grid.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(note.compareDocumentPosition(sound) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+it('the critical note follows what the admins have marked critical', async () => {
+  api.getNotificationSettings.mockResolvedValue({
+    ...SETTINGS,
+    critical_kinds: ['report_failed', 'report_ready'],
+    kinds: SETTINGS.kinds.map((k) => (k.kind === 'report_ready' ? { ...k, critical: true } : k)),
+  });
+  render(<MeNotifications />);
+  await loaded();
+  expect(screen.getByText(
+    CRITICAL_NOTE.replace('Report failed,', 'Report ready, Report failed,'))).toBeTruthy();
+});
+
+it('with no critical kinds the note still explains critical, and names none', async () => {
+  api.getNotificationSettings.mockResolvedValue({
+    ...SETTINGS, critical_kinds: [], kinds: SETTINGS.kinds.map((k) => ({ ...k, critical: false })),
+  });
+  render(<MeNotifications />);
+  await loaded();
+  expect(screen.getByText(
+    'Critical notifications still follow these switches, but skip your quiet hours, days off '
+    + 'and the summary email. Your admins choose which are critical.')).toBeTruthy();
+  expect(screen.queryByText(/Right now/)).toBeNull();
+});
+
+// ── email that can't be sent ─────────────────────────────────────────────
 
 it('shows the email-off hint only when the server has email off', async () => {
   status.email_enabled = false;
-  api.listMyNotificationGroups.mockResolvedValueOnce([]);
   const { unmount } = render(<MeNotifications />);
-  expect(screen.getByText("Email isn't set up on this server yet — notifications stay in the inbox.")).toBeTruthy();
+  await loaded();
+  expect(screen.getByText(EMAIL_OFF_HINT)).toBeTruthy();
   unmount();
   status.email_enabled = true;
-  api.listMyNotificationGroups.mockResolvedValueOnce([]);
   render(<MeNotifications />);
-  expect(screen.queryByText("Email isn't set up on this server yet — notifications stay in the inbox.")).toBeNull();
+  await loaded();
+  expect(screen.queryByText(EMAIL_OFF_HINT)).toBeNull();
 });
 
-it('Sound row saves the chosen sound and Preview plays the current one', async () => {
-  api.listMyNotificationGroups.mockResolvedValueOnce([]);
+it('with email off on the server, the Email column is disabled and says why; Inbox is not', async () => {
+  status.email_enabled = false;
   render(<MeNotifications />);
+  await loaded();
+  for (const label of GRID_CATEGORIES) {
+    expect(sw('Email', label).disabled).toBe(true);
+    expect(reason(sw('Email', label))).toBe("Email isn't set up on this server");
+    expect(sw('Inbox', label).disabled).toBe(false);
+  }
+  fireEvent.click(sw('Inbox', 'Wiki'));
+  expect((await firstSave()).notif.switches).toEqual({ wiki: { inbox: false } });
+});
+
+it('claims nothing about email until the server status lands, then says email is off', async () => {
+  // A hard refresh on /me: the status's defaults read "email off" until the
+  // first /system/status answer, which here has not landed yet.
+  statusLoaded.value = false;
+  status.email_enabled = false;
+  const { rerender } = render(<MeNotifications />);
+  await loaded();
+
+  expect(screen.queryByText(EMAIL_OFF_HINT)).toBeNull();
+  for (const label of GRID_CATEGORIES) {
+    expect(sw('Email', label).disabled).toBe(false);
+    expect(reason(sw('Email', label))).toBeNull();
+  }
+  expect(sw('Email', 'Wiki').checked).toBe(true);   // what they'd get, as is
+
+  statusLoaded.value = true;                        // it lands: email is off
+  rerender(<MeNotifications />);
+  expect(screen.getByText(EMAIL_OFF_HINT)).toBeTruthy();
+  for (const label of GRID_CATEGORIES) {
+    expect(sw('Email', label).disabled).toBe(true);
+    expect(reason(sw('Email', label))).toBe("Email isn't set up on this server");
+  }
+  expect(auth.updatePreferences).not.toHaveBeenCalled();
+});
+
+// ── Sound ────────────────────────────────────────────────────────────────
+
+it('Sound row saves the chosen sound and Preview plays the current one', async () => {
+  render(<MeNotifications />);
+  await loaded();
   const row = screen.getByText('Sound').closest('.set-row') as HTMLElement;
   expect(within(row).getByRole('radio', { name: 'Chime' }).getAttribute('aria-checked')).toBe('true');
   fireEvent.click(within(row).getByRole('radio', { name: 'Ping' }));
-  await waitFor(() => expect(auth.updatePreferences).toHaveBeenCalledTimes(1));
-  expect(auth.updatePreferences.mock.calls[0][0].notif.sound).toBe('ping');
+  const sent = await firstSave();
+  expect(sent.notif.sound).toBe('ping');
+  expect(sent.notif.switches).toEqual({});                 // the rest of notif goes up as it was
+  expect(sent.notif.schedule.days).toEqual(EVERY_DAY);
   fireEvent.click(within(row).getByRole('button', { name: 'Preview' }));
   expect(sounds.playNotificationSound).toHaveBeenCalledWith('chime'); // mock prefs still say chime
+  await waitFor(() => expect(screen.getByText('saved')).toBeTruthy());
 });
 
-const G1: MyNotificationGroup = {
-  id: 'g1', name: 'Ops', description: 'Operations alerts', channels: ['email', 'push'],
+// ── the schedule card ────────────────────────────────────────────────────
+
+it('shows the schedule card once, under the grid, with its own head', async () => {
+  render(<MeNotifications />);
+  await loaded();
+  expect(screen.getAllByRole('heading', { name: 'When email reaches you' })).toHaveLength(1);
+  expect(screen.getByText(
+    'Email that arrives during quiet hours or on a day off waits, then comes as one summary '
+    + 'an hour before your day starts. Your inbox in the portal still updates right away.')).toBeTruthy();
+  const stack = screen.getByRole('link', { name: 'View all notifications' }).closest('.set-stack');
+  expect(stack?.contains(screen.getByRole('heading', { name: 'When email reaches you' }))).toBe(true);
+});
+
+it('the schedule card shows the saved schedule', async () => {
+  auth.notif.schedule = {
+    timezone: 'America/Chicago', days: ['mon', 'tue', 'wed', 'thu', 'fri'],
+    quiet_start: '21:00', quiet_end: '06:00',
+  };
+  render(<MeNotifications />);
+  await loaded();
+  expect((screen.getByRole('combobox', { name: 'Timezone' }) as HTMLInputElement).value).toBe('America/Chicago');
+  expect(screen.getByRole('button', { name: 'Sat' }).getAttribute('aria-pressed')).toBe('false');
+  expect(screen.getByRole('button', { name: 'Mon' }).getAttribute('aria-pressed')).toBe('true');
+  expect((screen.getByRole('checkbox', { name: 'Quiet hours' }) as HTMLInputElement).checked).toBe(true);
+  expect((screen.getByRole('combobox', { name: 'Quiet hours start' }) as HTMLInputElement).value).toBe('9:00 PM');
+  expect(screen.getByRole('status').textContent).toContain('5:00 AM CT');
+});
+
+it('a schedule change saves notif.schedule, and keeps the sound and the switches', async () => {
+  auth.notif.switches = { wiki: { email: false } };
+  render(<MeNotifications />);
+  await loaded();
+  fireEvent.click(screen.getByRole('button', { name: 'Sat' }));
+
+  const sent = await firstSave();
+  expect(sent.notif).toEqual({
+    sound: 'chime',
+    switches: { wiki: { email: false } },
+    schedule: {
+      timezone: null, days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sun'], quiet_start: null, quiet_end: null,
+    },
+  });
+  await waitFor(() => expect(screen.getByText('saved')).toBeTruthy());
+});
+
+it('an invalid schedule is never saved: removing every day asks for one and sends nothing', async () => {
+  auth.notif.schedule = { ...auth.notif.schedule, days: ['mon'] };
+  render(<MeNotifications />);
+  await loaded();
+  fireEvent.click(screen.getByRole('button', { name: 'Mon' }));
+  expect(screen.getByRole('status').textContent).toBe('Pick at least one day.');
+  expect(auth.updatePreferences).not.toHaveBeenCalled();
+});
+
+// ── the groups lists ─────────────────────────────────────────────────────
+
+/** The API no longer sends a group's delivery settings, but the type still
+ *  declares them. The values are deliberately distinctive, so a list that
+ *  read them would show them. */
+const LEGACY = {
+  channels: ['email', 'push'], effective_channels: ['email', 'push'],
   quiet_start: '22:00:00', quiet_end: '07:00:00', timezone: 'America/New_York',
   active_days: ['mon', 'tue', 'wed', 'thu', 'fri'], dnd_behavior: 'defer', urgent_bypass: false,
-  member_count: 3, is_member: true,
-  categories: [], effective_channels: ['email', 'push'],
   overrides: {
     channels: null, quiet_mode: null, quiet_start: null, quiet_end: null,
     timezone: null, active_days: null, dnd_behavior: null, urgent_bypass: true,
@@ -207,116 +521,99 @@ const G1: MyNotificationGroup = {
     timezone: 'America/New_York', active_days: ['mon', 'tue', 'wed', 'thu', 'fri'],
     dnd_behavior: 'defer', urgent_bypass: true,
   },
-  pending_request: null,
+};
+
+const G1: MyNotificationGroup = {
+  ...LEGACY, id: 'g1', name: 'Ops', description: 'Operations alerts', categories: ['approvals', 'wiki'],
+  member_count: 3, is_member: true, pending_request: null,
 };
 
 const G2: MyNotificationGroup = {
-  id: 'g2', name: 'Warehouse Alerts', description: 'Forklift and stock alerts', channels: ['push'],
-  quiet_start: null, quiet_end: null, timezone: 'America/New_York',
-  active_days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'], dnd_behavior: 'skip', urgent_bypass: false,
-  member_count: 5, is_member: false, categories: [], effective_channels: [], overrides: null, effective: null, pending_request: null,
+  ...LEGACY, id: 'g2', name: 'Warehouse Alerts', description: 'Forklift and stock alerts', categories: ['learning'],
+  member_count: 5, is_member: false, overrides: null, effective: null, pending_request: null,
 };
 
 const G3: MyNotificationGroup = {
-  id: 'g3', name: 'Fleet Updates', description: 'Truck status changes', channels: ['email'],
-  quiet_start: null, quiet_end: null, timezone: 'America/New_York',
-  active_days: ['mon', 'tue', 'wed', 'thu', 'fri'], dnd_behavior: 'defer', urgent_bypass: false,
-  member_count: 2, is_member: false, categories: [], effective_channels: [], overrides: null, effective: null, pending_request: null,
+  ...LEGACY, id: 'g3', name: 'Fleet Updates', description: 'Truck status changes', categories: [],
+  member_count: 2, is_member: false, overrides: null, effective: null, pending_request: null,
 };
 
-it('renders a member group with channel chips, quiet-hours text, days, and a Customized tag', async () => {
-  api.listMyNotificationGroups.mockResolvedValueOnce([G1]);
-  render(<MeNotifications />);
+/** Standard-list rows keep their actions behind the "Actions ▾" menu:
+ * open the menu inside the named section, then pick an item. */
+const region = (name: string) => screen.getByRole('region', { name });
+const pickAction = (sectionName: string, item: string) => {
+  fireEvent.click(within(region(sectionName)).getByRole('button', { name: /Actions/ }));
+  fireEvent.click(screen.getByRole('menuitem', { name: item }));
+};
 
-  await waitFor(() => expect(screen.getByText('Ops')).toBeTruthy());
-  expect(screen.getByText('Operations alerts')).toBeTruthy();
-  expect(screen.getByText('Email')).toBeTruthy();
-  expect(screen.queryByText('Push')).toBeNull(); // stored, but nothing can send it
-  expect(screen.getByText('10:00 PM – 7:00 AM ET')).toBeTruthy();
-  expect(screen.getByText('Mon–Fri')).toBeTruthy();
-  expect(screen.getByText('Customized')).toBeTruthy();
+it('the hints say groups don\'t change what you get, and how to join one', async () => {
+  render(<MeNotifications />);
+  await loaded();
+  const mine = within(region('My groups'));
+  const joinable = within(region('Join a group'));
+  const myHint = mine.getByText("The notification groups you belong to. Groups don't change what you get.");
+  expect(myHint.classList.contains('page-hint')).toBe(true);
+  const joinHint = joinable.getByText('Search other notification groups and ask to join.');
+  expect(joinHint.classList.contains('page-hint')).toBe(true);
+  expect(screen.queryByText(/tune your own overrides/)).toBeNull();
 });
 
-it('both group lists have a Categories column, in registry order, or say inbox only', async () => {
-  api.listMyNotificationGroups.mockResolvedValueOnce([
-    { ...G1, categories: ['wiki', 'approvals'] },
-    { ...G2, categories: ['learning'] },
-    { ...G3, categories: [] },
-  ]);
-  render(<MeNotifications />);
-  await waitFor(() => expect(screen.getByText('Warehouse Alerts')).toBeTruthy());
-
-  const mine = within(screen.getByRole('region', { name: 'My groups' }));
-  const joinable = within(screen.getByRole('region', { name: 'Join a group' }));
-  // These headers are plain labels (the lists do not sort), so look for the text.
-  expect(mine.getByText('Categories')).toBeTruthy();
-  expect(joinable.getByText('Categories')).toBeTruthy();
-  const chipsOf = (list: ReturnType<typeof within>, text: string) =>
-    [...(list.getByText(text).closest('.chips') as HTMLElement).children].map((c) => c.textContent);
-  expect(chipsOf(mine, 'Wiki')).toEqual(['Approvals & requests', 'Wiki']);
-  expect(chipsOf(joinable, 'Learning')).toEqual(['Learning']);
-  expect(joinable.getByText('None — inbox only').className).toContain('c-slate');
-  expect(mine.getByText('Approvals & requests').title).toBe('Approvals & requests');   // full label on hover
-});
-
-it('a member row shows their effective channels, quiet hours and days, not the group defaults', async () => {
-  api.listMyNotificationGroups.mockResolvedValueOnce([{
-    ...G1,
-    // The group emails 22:00-07:00 Eastern on weekdays; this member has
-    // narrowed it to text only, with a window in Chicago.
-    effective: {
-      ...G1.effective!,
-      channels: ['text'], quiet_start: '21:00:00', quiet_end: '07:00:00',
-      timezone: 'America/Chicago', active_days: ['mon', 'tue', 'wed', 'thu', 'fri'],
-    },
-  }]);
-  render(<MeNotifications />);
-  await waitFor(() => expect(screen.getByText('Ops')).toBeTruthy());
-
-  const row = (screen.getByText('Ops').closest('.dir-row')) as HTMLElement;
-  expect(within(row).getByText('No email').className).toContain('c-slate');
-  expect(within(row).queryByText('Email')).toBeNull();
-  expect(within(row).getByText('9:00 PM – 7:00 AM CT')).toBeTruthy();
-  expect(within(row).queryByText('10:00 PM – 7:00 AM ET')).toBeNull();
-  expect(within(row).getByText('Mon–Fri')).toBeTruthy();
-});
-
-it('a joinable row shows the group\'s own channels, quiet hours and days, in the one format', async () => {
-  api.listMyNotificationGroups.mockResolvedValueOnce([
-    G2,
-    {
-      ...G3, quiet_start: '23:00:00', quiet_end: '06:30:00', timezone: 'America/Los_Angeles',
-      active_days: ['sat', 'sun'],
-    },
-  ]);
-  render(<MeNotifications />);
-  await waitFor(() => expect(screen.getByText('Warehouse Alerts')).toBeTruthy());
-
-  const rowFor = (name: string) => (screen.getByText(name).closest('.dir-row')) as HTMLElement;
-  // Warehouse Alerts: push only, no quiet hours, every day.
-  const warehouse = within(rowFor('Warehouse Alerts'));
-  expect(warehouse.getByText('No email')).toBeTruthy();
-  expect(warehouse.getByText('Daily')).toBeTruthy();
-  expect(warehouse.queryByText('Push')).toBeNull();
-  // Fleet Updates: emails, overnight Pacific window, weekends.
-  const fleet = within(rowFor('Fleet Updates'));
-  expect(fleet.getByText('Email')).toBeTruthy();
-  expect(fleet.getByText('11:00 PM – 6:30 AM PT')).toBeTruthy();
-  expect(fleet.getByText('Weekends')).toBeTruthy();
-});
-
-it('quiet hours and days stay on one line, with the full text on hover', async () => {
+it('a member group row shows its name, description, member count and no delivery settings', async () => {
   api.listMyNotificationGroups.mockResolvedValueOnce([G1]);
   render(<MeNotifications />);
   await waitFor(() => expect(screen.getByText('Ops')).toBeTruthy());
 
-  for (const text of ['10:00 PM – 7:00 AM ET', 'Mon–Fri']) {
-    const el = screen.getByText(text);
-    expect(el.classList.contains('cell-nowrap')).toBe(true);
-    expect(el.classList.contains('cell-line')).toBe(true);
-    expect(el.title).toBe(text);
-    expect(el.parentElement?.classList.contains('cell')).toBe(true); // .cell .cell-line is a descendant rule
+  const row = screen.getByText('Ops').closest('.dir-row') as HTMLElement;
+  expect(within(row).getByText('Operations alerts')).toBeTruthy();
+  expect(within(row).getByText('3')).toBeTruthy();
+  expect(within(row).getByText('—')).toBeTruthy();                       // no request waiting
+  // Nothing of the group's old delivery settings, categories or overrides is shown.
+  for (const text of ['Email', 'No email', 'Push', '10:00 PM – 7:00 AM ET', 'Mon–Fri', 'Customized',
+    'Approvals & requests', 'None — inbox only']) {
+    expect(within(row).queryByText(text)).toBeNull();
   }
+});
+
+it('both group lists have Group, Members and Status columns, and no Categories, Channels, Quiet hours or Days', async () => {
+  api.listMyNotificationGroups.mockResolvedValueOnce([G1, G2, G3]);
+  render(<MeNotifications />);
+  await waitFor(() => expect(screen.getByText('Warehouse Alerts')).toBeTruthy());
+
+  for (const name of ['My groups', 'Join a group']) {
+    const list = within(region(name));
+    const head = region(name).querySelector('.list-head') as HTMLElement;
+    const labels = [...head.querySelectorAll('.col-head')].map((h) => h.textContent?.trim());
+    expect(labels).toEqual(['Group', 'Members', 'Status', 'Actions']);
+    for (const gone of ['Categories', 'Channels', 'Quiet hours', 'Days']) {
+      expect(list.queryByText(gone)).toBeNull();
+    }
+  }
+});
+
+it('a group row has no "Edit overrides" action, only Leave', async () => {
+  api.listMyNotificationGroups.mockResolvedValueOnce([G1]);
+  render(<MeNotifications />);
+  await waitFor(() => expect(screen.getByText('Ops')).toBeTruthy());
+
+  fireEvent.click(within(region('My groups')).getByRole('button', { name: /Actions/ }));
+  expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Leave group']);
+  expect(screen.queryByRole('menuitem', { name: 'Edit overrides' })).toBeNull();
+  expect(screen.queryByText(/Overrides/)).toBeNull();
+});
+
+it('a joinable group row offers Ask to join, and shows no delivery settings either', async () => {
+  api.listMyNotificationGroups.mockResolvedValueOnce([G2]);
+  render(<MeNotifications />);
+  await waitFor(() => expect(screen.getByText('Warehouse Alerts')).toBeTruthy());
+
+  const row = screen.getByText('Warehouse Alerts').closest('.dir-row') as HTMLElement;
+  expect(within(row).getByText('Forklift and stock alerts')).toBeTruthy();
+  expect(within(row).getByText('5')).toBeTruthy();
+  for (const text of ['Email', 'No email', 'Push', 'Daily', 'Learning', '10:00 PM – 7:00 AM ET']) {
+    expect(within(row).queryByText(text)).toBeNull();
+  }
+  fireEvent.click(within(region('Join a group')).getByRole('button', { name: /Actions/ }));
+  expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Ask to join']);
 });
 
 it('My groups list: column floors, shared template + minimum, sideways-scroll card', async () => {
@@ -332,21 +629,18 @@ it('My groups list: column floors, shared template + minimum, sideways-scroll ca
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
-  // The Categories column sits right after Group in the measured grid.
-  const labels = [...head.querySelectorAll('.col-head')].map((h) => h.textContent?.trim());
-  expect(labels.slice(0, 3)).toEqual(['Group', 'Categories', 'Channels']);
-  // Floors that hold the longest values at the 1512px reference width.
-  expect(head.style.gridTemplateColumns).toContain(' minmax(156px, 1.5fr) ');   // "Approvals & requests"
-  expect(head.style.gridTemplateColumns).toContain(' minmax(168px, 1.2fr) ');   // "12:00 AM – 12:00 AM CT"
+  // Group, Members, Status: three tracks of floors, then the 88px Actions track.
+  const tracks = head.style.gridTemplateColumns.split(/\s(?=minmax|\d+px)/);
+  expect(tracks).toHaveLength(4);
+  expect(tracks[3]).toBe('88px');
+  // Floors that hold the longest values: a name with its description, and the
+  // longest request chip, "Leave requested" (the row's own header floor
+  // covers the count).
+  expect(head.style.gridTemplateColumns).toContain('minmax(200px, ');
+  expect(head.style.gridTemplateColumns).toContain(' minmax(140px, ');
+  // Every cell of the row lines up with a header cell.
+  expect(main.children).toHaveLength(head.children.length);
 });
-
-/** Standard-list rows keep their actions behind the "Actions ▾" menu:
- * open the menu inside the named section, then pick an item. */
-const region = (name: string) => screen.getByRole('region', { name });
-const pickAction = (sectionName: string, item: string) => {
-  fireEvent.click(within(region(sectionName)).getByRole('button', { name: /Actions/ }));
-  fireEvent.click(screen.getByRole('menuitem', { name: item }));
-};
 
 it('Leave opens the request modal, Send posts the leave request, and a pending leave shows Cancel', async () => {
   api.listMyNotificationGroups.mockResolvedValueOnce([G1]);
@@ -458,200 +752,10 @@ it('Join a group search filters non-member groups and Join posts an empty-note r
   await waitFor(() => expect(screen.getByText('Join requested')).toBeTruthy());
 });
 
-it('Edit overrides opens the override modal and wires onSave to updateMyGroupOverrides', async () => {
-  api.listMyNotificationGroups.mockResolvedValueOnce([G1]);
-  api.updateMyGroupOverrides.mockResolvedValueOnce({ ...G1 });
-  api.listMyNotificationGroups.mockResolvedValueOnce([G1]);
-
+it('a failed groups load says so, without touching the switch grid', async () => {
+  api.listMyNotificationGroups.mockRejectedValueOnce(new ApiError(500, 'server_error'));
   render(<MeNotifications />);
-  await waitFor(() => expect(screen.getByText('Ops')).toBeTruthy());
-
-  pickAction('My groups', 'Edit overrides');
-  expect(screen.getByText('Overrides — Ada Lovelace')).toBeTruthy();
-
-  fireEvent.click(screen.getByRole('button', { name: 'mock-save' }));
-  await waitFor(() => expect(api.updateMyGroupOverrides)
-    .toHaveBeenCalledWith('g1', { urgent_bypass: true }));
-});
-
-// ── the delivery table only offers email that can happen ─────────────────
-// What the control shows is what will really happen; the saved choice is
-// never rewritten by looking at the page.
-
-/** A group the person belongs to whose effective channels include email. */
-const emailing = (...categories: string[]): MyNotificationGroup => ({
-  ...G1, categories, effective_channels: ['email'],
-});
-const choiceButton = (label: string, name: string) =>
-  within(delivery(label)).getByRole('button', { name }) as HTMLButtonElement;
-const emailButton = (label: string) => choiceButton(label, 'Inbox + Email');
-const pressedOf = (label: string) =>
-  within(delivery(label)).getAllByRole('button').filter((b) => b.getAttribute('aria-pressed') === 'true')
-    .map((b) => b.textContent);
-const rowOf = (label: string) =>
-  within(screen.getByRole('table', { name: 'Notification delivery' })).getByText(label).closest('tr') as HTMLElement;
-const GROUP_SOURCED = ['Approvals & requests', 'Reports & labels', 'Wiki', 'Learning'];
-
-it('shows inbox only when no group emails the category', async () => {
-  auth.categories = { ...auth.categories, reports: 'email' };
-  api.listMyNotificationGroups.mockResolvedValueOnce([]);
-  render(<MeNotifications />);
-
-  await waitFor(() => expect(emailButton('Reports & labels').disabled).toBe(true));
-  expect(emailButton('Reports & labels').title).toBe('None of your groups email this category');
-  expect(emailButton('Reports & labels').getAttribute('aria-pressed')).toBe('false');
-  expect(choiceButton('Reports & labels', 'Inbox only').getAttribute('aria-pressed')).toBe('true');
-  expect(choiceButton('Reports & labels', 'Inbox only').disabled).toBe(false);
-  expect(within(rowOf('Reports & labels')).getByText('No group — inbox only')).toBeTruthy();
-  // Saved as Inbox + Email, and nothing can email them: all four read Inbox only.
-  for (const label of GROUP_SOURCED) expect(pressedOf(label)).toEqual(['Inbox only']);
-  expect(auth.updatePreferences).not.toHaveBeenCalled();   // looking changes nothing
-});
-
-it('turns email back on once a group emails it', () => {
-  const onChange = vi.fn();
-  const props = { categories: { ...auth.categories, reports: 'email' as const }, emailEnabled: true, onChange };
-  const { rerender } = render(<CategoryDelivery {...props} groups={[]} />);
-  expect(emailButton('Reports & labels').disabled).toBe(true);
-  expect(pressedOf('Reports & labels')).toEqual(['Inbox only']);
-
-  rerender(<CategoryDelivery {...props} groups={[emailing('reports')]} />);
-  expect(emailButton('Reports & labels').disabled).toBe(false);
-  expect(emailButton('Reports & labels').hasAttribute('title')).toBe(false);
-  expect(pressedOf('Reports & labels')).toEqual(['Inbox + Email']);
-  expect(within(rowOf('Reports & labels')).getByText('Ops')).toBeTruthy();   // the group, as a chip
-  expect(onChange).not.toHaveBeenCalled();
-});
-
-it('the same page shows Inbox + Email again once a reload finds a group that emails it, with no extra click', async () => {
-  auth.categories = { ...auth.categories, reports: 'email' };
-  api.listMyNotificationGroups.mockResolvedValueOnce([G2]);                 // in no group yet
-  api.requestGroupMembership.mockResolvedValueOnce({
-    id: 'req3', group_id: 'g2', group_name: 'Warehouse Alerts', person_id: 'ada1', person_name: 'Ada Lovelace',
-    action: 'join', status: 'pending', note: '', decided_by_name: null, decided_at: null,
-    decision_note: '', created_at: '2026-09-10T00:00:00Z',
-  });
-  // By the time the page reloads its groups, the join has been approved.
-  api.listMyNotificationGroups.mockResolvedValueOnce([
-    { ...emailing('reports'), id: 'g2', name: 'Warehouse Alerts' },
-  ]);
-  render(<MeNotifications />);
-  await waitFor(() => expect(emailButton('Reports & labels').disabled).toBe(true));
-  expect(pressedOf('Reports & labels')).toEqual(['Inbox only']);
-
-  pickAction('Join a group', 'Ask to join');
-  fireEvent.click(screen.getByRole('button', { name: 'Send request' }));
-
-  await waitFor(() => expect(emailButton('Reports & labels').disabled).toBe(false));
-  expect(pressedOf('Reports & labels')).toEqual(['Inbox + Email']);
-  expect(auth.updatePreferences).not.toHaveBeenCalled();                    // the saved choice was never touched
-});
-
-it('with email off on the server, every category reads inbox only and says why', async () => {
-  status.email_enabled = false;
-  api.listMyNotificationGroups.mockResolvedValueOnce([emailing('approvals', 'reports', 'wiki', 'learning')]);
-  render(<MeNotifications />);
-
-  await waitFor(() => expect(emailButton(GROUP_SOURCED[0]).disabled).toBe(true));
-  for (const label of GROUP_SOURCED) {
-    expect(emailButton(label).disabled).toBe(true);
-    expect(emailButton(label).title).toBe("Email isn't set up on this server");
-    expect(pressedOf(label)).toEqual(['Inbox only']);
-    const from = within(rowOf(label));
-    expect(from.getByText("Email isn't set up")).toBeTruthy();
-    expect(from.queryByText('Ops')).toBeNull();   // a group can't email what the server can't send
-  }
-  const security = within(rowOf('Account security'));
-  expect(security.getByText("Inbox only — email isn't set up")).toBeTruthy();
-  expect(security.queryByText('Always emailed')).toBeNull();
-  expect(auth.updatePreferences).not.toHaveBeenCalled();
-});
-
-it('claims nothing about email until the server status lands, then says email is off', async () => {
-  // A hard refresh on /me: the status's defaults read "email off" until the
-  // first /system/status answer, which here has not landed yet.
-  statusLoaded.value = false;
-  status.email_enabled = false;
-  api.listMyNotificationGroups.mockResolvedValue([]);
-  const { rerender } = render(<MeNotifications />);
-  await screen.findByText("You're not in any notification groups yet.");   // the groups are in
-
-  expect(screen.queryByText(/isn't set up/)).toBeNull();
-  for (const label of GROUP_SOURCED) {
-    for (const b of within(delivery(label)).getAllByRole('button')) {
-      expect((b as HTMLButtonElement).disabled).toBe(false);
-      expect(b.hasAttribute('title')).toBe(false);
-    }
-    expect(within(rowOf(label)).getByText('—')).toBeTruthy();         // Email from: not known yet
-    expect(within(rowOf(label)).queryByText('No group — inbox only')).toBeNull();
-  }
-  expect(pressedOf('Approvals & requests')).toEqual(['Inbox + Email']);   // the saved choice, as is
-  const security = () => [...rowOf('Account security').children].map((c) => c.textContent);
-  expect(security()).toEqual(['Account security', '—', '—']);
-
-  statusLoaded.value = true;                                          // it lands: email is off
-  rerender(<MeNotifications />);
-  expect(screen.getByText("Email isn't set up on this server yet — notifications stay in the inbox.")).toBeTruthy();
-  for (const label of GROUP_SOURCED) {
-    expect(emailButton(label).disabled).toBe(true);
-    expect(emailButton(label).title).toBe("Email isn't set up on this server");
-    expect(pressedOf(label)).toEqual(['Inbox only']);
-  }
-  expect(security()).toEqual(['Account security', "Inbox only — email isn't set up", '—']);
-  expect(auth.updatePreferences).not.toHaveBeenCalled();
-});
-
-it('keeps the saved choice: clicking Inbox only while it already shows as selected sends no update', async () => {
-  auth.categories = { ...auth.categories, wiki: 'email', learning: 'off' };
-  api.listMyNotificationGroups.mockResolvedValueOnce([]);
-  render(<MeNotifications />);
-  await waitFor(() => expect(emailButton('Wiki').disabled).toBe(true));
-
-  fireEvent.click(choiceButton('Wiki', 'Inbox only'));   // already the one shown as selected
-  fireEvent.click(emailButton('Wiki'));                  // disabled
-  expect(auth.updatePreferences).not.toHaveBeenCalled();
-  expect(screen.queryByText('saved')).toBeNull();
-  expect(pressedOf('Learning')).toEqual(['Off']);        // an Off choice is not relabeled
-
-  // A deliberate change still saves, and every other saved choice goes up as it was.
-  fireEvent.click(choiceButton('Wiki', 'Off'));
-  await waitFor(() => expect(auth.updatePreferences).toHaveBeenCalledTimes(1));
-  expect(auth.updatePreferences.mock.calls[0][0].notif.categories)
-    .toEqual({ approvals: 'email', reports: 'inbox', wiki: 'off', learning: 'off', security: 'email' });
-});
-
-it('links to all notifications from the section head, under the new copy', async () => {
-  api.listMyNotificationGroups.mockResolvedValueOnce([]);
-  render(<MeNotifications />);
-
-  const link = screen.getByRole('link', { name: 'View all notifications' });
-  expect(link.getAttribute('href')).toBe('/notifications');
-  expect(link.classList.contains('mini-btn')).toBe(true);
-  const head = link.closest('.set-head') as HTMLElement;
-  expect(within(head).getByRole('heading', { name: 'Notifications', level: 3 })).toBeTruthy();
-  expect(within(head).getByText(SECTION_COPY)).toBeTruthy();
-});
-
-it('a direct category needs no group: Inbox + Email stays enabled and pressed', () => {
-  const direct = [{ key: 'reports' as const, label: 'Reports & labels', emailSource: 'direct' as const }];
-  const categories = { ...auth.categories, reports: 'email' as const };
-  const { rerender } = render(
-    <CategoryDelivery categories={categories} groups={[]} emailEnabled categoryList={direct}
-                      onChange={() => {}} />,
-  );
-  expect(emailButton('Reports & labels').disabled).toBe(false);
-  expect(pressedOf('Reports & labels')).toEqual(['Inbox + Email']);
-  // No group is involved, so the column has none to name and makes no "No group" claim.
-  const from = within(rowOf('Reports & labels'));
-  expect(from.queryByText('No group — inbox only')).toBeNull();
-  expect(from.getByText('—')).toBeTruthy();
-
-  // It still needs a server that can send email.
-  rerender(
-    <CategoryDelivery categories={categories} groups={[]} emailEnabled={false} categoryList={direct}
-                      onChange={() => {}} />,
-  );
-  expect(emailButton('Reports & labels').disabled).toBe(true);
-  expect(emailButton('Reports & labels').title).toBe("Email isn't set up on this server");
-  expect(pressedOf('Reports & labels')).toEqual(['Inbox only']);
+  expect(await screen.findByText('Could not load notification groups.')).toBeTruthy();
+  await loaded();
+  expect(screen.queryByText('Could not load notification settings.')).toBeNull();
 });

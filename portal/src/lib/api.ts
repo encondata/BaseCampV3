@@ -53,14 +53,16 @@ export interface PersonOut {
 
 export type NotificationSound = 'none' | 'chime' | 'ping' | 'pop' | 'bell';
 
-/** How one notification category reaches the person: inbox + email, inbox
- *  only, or nothing. Mirrors notifications/kinds.py CATEGORIES. */
-export type DeliveryChoice = 'email' | 'inbox' | 'off';
+/** Mirrors notifications/kinds.py CATEGORIES. */
 export type NotificationCategory = 'approvals' | 'reports' | 'wiki' | 'learning' | 'security';
 
+/** What the person has chosen about notifications, on their account: the
+ *  in-app sound, their own switch values (only those; a category or a value
+ *  left out follows the company default) and when email may reach them. */
 export interface NotifPrefs {
   sound: NotificationSound; // in-app sound for new inbox items
-  categories: Record<NotificationCategory, DeliveryChoice>;
+  switches: NotifSwitches;
+  schedule: NotifSchedule;
 }
 
 export type NamedAccent = 'amber' | 'aqua' | 'blue' | 'violet' | 'pink' | 'green';
