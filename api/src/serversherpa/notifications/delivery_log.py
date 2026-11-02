@@ -26,7 +26,7 @@ logger = logging.getLogger("serversherpa.notifications.log")
 
 EVENTS: tuple[str, ...] = (
     "inbox_written", "inbox_suppressed",
-    "email_queued", "email_not_queued",
+    "email_queued", "email_not_queued", "email_held", "email_summarized",
     "email_sent", "email_skipped", "email_retry", "email_failed",
 )
 

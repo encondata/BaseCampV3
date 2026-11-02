@@ -529,7 +529,7 @@ async def test_counts_only_cover_notifications_actually_written(client, db):
     """Someone who turned wiki notifications off gets no row, so they are
     not counted as notified (to_person's bool, on_review_due's set)."""
     s = await _setup(client, db)
-    off = {"notif": {"categories": {"wiki": "off"}}}
+    off = {"notif": {"switches": {"wiki": {"inbox": False, "email": False}}}}
     account = await db.scalar(select(UserAccount).where(UserAccount.person_id == s["owner_id"]))
     account.ui_prefs = off
     await db.flush()

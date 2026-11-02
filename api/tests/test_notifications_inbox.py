@@ -155,7 +155,7 @@ async def test_notify_returns_none_when_the_category_is_off(db, seeded_user):
     from serversherpa.db.models import UserAccount
 
     account = await db.get(UserAccount, seeded_user.id)
-    account.ui_prefs = {"notif": {"categories": {"reports": "off"}}}
+    account.ui_prefs = {"notif": {"switches": {"reports": {"inbox": False, "email": False}}}}
     await db.commit()
     assert await notify(db, seeded_user.id, "report_ready", "Hidden") is None
     # other categories and unregistered kinds still land

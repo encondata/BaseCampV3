@@ -117,6 +117,16 @@ async def test_deleting_the_email_or_the_person_keeps_the_log_row(db):
     assert (row.person_id, row.outbox_id) == (None, None)
 
 
+def test_the_writer_knows_exactly_these_events():
+    """Held and summarized email (Phase 1) join the eight of Phase 0. The
+    table's CHECK (migration 0111) lists the same ten."""
+    assert EVENTS == (
+        "inbox_written", "inbox_suppressed",
+        "email_queued", "email_not_queued", "email_held", "email_summarized",
+        "email_sent", "email_skipped", "email_retry", "email_failed",
+    )
+
+
 async def test_the_table_accepts_every_event_and_channel_the_writer_allows(db):
     for event in EVENTS:
         for channel in LOG_CHANNELS:
@@ -129,6 +139,8 @@ async def test_the_table_accepts_every_event_and_channel_the_writer_allows(db):
     ("inbox_written", "text", True),           # room for later channels
     ("inbox_written", "push", True),
     ("inbox_written", "fax", False),
+    ("email_held", "email", True),             # Phase 1: held for the summary
+    ("email_summarized", "email", True),       # ... and sent in it
     ("nope", "inbox", False),
 ])
 async def test_the_table_checks_event_and_channel(db, event, channel, accepted):

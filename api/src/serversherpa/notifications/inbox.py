@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import Notification
+from serversherpa.notifications.company import load_company_settings
 from serversherpa.notifications.delivery_log import record
 from serversherpa.notifications.email import load_contact, maybe_email, personal_choice
 from serversherpa.notifications.kinds import kind_info
@@ -21,8 +22,9 @@ async def notify(db: AsyncSession, person_id: uuid.UUID, kind: str, title: str, 
                  payload: dict | None = None,
                  owner_notice: bool = False) -> Notification | None:
     """Write the inbox row and queue the email when the rules allow it.
-    Returns None (no inbox row) when the person turned this category off
-    (except for kinds that are never emailed). `owner_notice` marks the copy
+    Returns None (no inbox row) when the person's Inbox switch for this
+    category is off, their own or the company default they follow (except for
+    kinds that are never emailed). `owner_notice` marks the copy
     sent to the account owner about their own account (it can email
     regardless of group membership). Logs `inbox_written` or
     `inbox_suppressed`; the email decision logs its own."""
@@ -31,7 +33,7 @@ async def notify(db: AsyncSession, person_id: uuid.UUID, kind: str, title: str, 
     choice = "email"
     if info is not None and info.category != "security":
         contact = await load_contact(db, person_id)
-        choice = personal_choice(info, contact)
+        choice = personal_choice(info, contact, await load_company_settings(db))
         # A kind that is never emailed keeps its inbox row even when the
         # category is off: password_reset_request is the only way a
         # locked-out user reaches an admin when SMTP is off.

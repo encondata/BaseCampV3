@@ -31,6 +31,7 @@ from serversherpa.db.models import (
     UserAccount,
 )
 from serversherpa.mail.outbox import email_enabled, enqueue
+from serversherpa.notifications.company import CompanySettings, load_company_settings
 from serversherpa.notifications.delivery_log import record
 from serversherpa.notifications.email_rule import group_verdict
 from serversherpa.notifications.kinds import KindInfo, kind_info
@@ -119,13 +120,52 @@ async def load_contact(db: AsyncSession, person_id: uuid.UUID) -> Contact | None
                    active=archived_at is None and disabled_at is None)
 
 
-def personal_choice(info: KindInfo | None, contact: Contact | None) -> str:
-    """'email' | 'inbox' | 'off' for this recipient and kind. Security is
-    always 'email'; an unregistered kind, or a recipient with no account
-    prefs, is 'email' (unregistered kinds are never emailed anyway)."""
-    if info is None or info.category == "security" or contact is None:
-        return "email"
-    return contact.choice_prefs.notif.categories.get(info.category, "email")
+@dataclass(frozen=True)
+class EffectiveSwitches:
+    """The Inbox and Email switches a person actually has for one kind, and
+    where each value comes from: "default" (the company default, which the
+    person follows until they change it), "own" (the person set it, even to
+    the same value as the default) or "fixed" (account security, which nobody
+    switches off)."""
+    inbox: bool
+    email: bool
+    inbox_source: str
+    email_source: str
+
+
+def effective_switches(info: KindInfo | None, contact: Contact | None,
+                       company: CompanySettings) -> EffectiveSwitches:
+    """The recipient's switches for this kind: their own value where they set
+    one, else the company default. Email needs Inbox: it is on only when the
+    person's Email value (own, else default) is on and Inbox is on too. Account
+    security and a kind the registry does not list (inbox-only, never emailed)
+    are fixed on and on, answered before the defaults are consulted: they hold
+    no entry for either. A recipient with no contact has no values of their own."""
+    if info is None or info.category == "security":
+        return EffectiveSwitches(True, True, "fixed", "fixed")
+    default = company.defaults[info.category]
+    own = (contact.choice_prefs.notif.switches.get(info.category)
+           if contact is not None else None)
+    own_inbox = own.inbox if own is not None else None
+    own_email = own.email if own is not None else None
+    inbox = default.inbox if own_inbox is None else own_inbox
+    email = default.email if own_email is None else own_email
+    return EffectiveSwitches(
+        inbox=inbox, email=email and inbox,
+        inbox_source="default" if own_inbox is None else "own",
+        email_source="default" if own_email is None else "own")
+
+
+def personal_choice(info: KindInfo | None, contact: Contact | None,
+                    company: CompanySettings) -> str:
+    """'email' | 'inbox' | 'off' for this recipient and kind: the three states
+    the email decision still works in, read off effective_switches(). Inbox off
+    is 'off' (Email is off with it), Email off alone is 'inbox', both on is
+    'email'. Account security and unregistered kinds are always 'email'."""
+    switches = effective_switches(info, contact, company)
+    if not switches.inbox:
+        return "off"
+    return "email" if switches.email else "inbox"
 
 
 def _safe_timezone(s: dict) -> dict:
@@ -275,10 +315,11 @@ async def recheck_before_send(db: AsyncSession, row: EmailOutbox) -> str | None:
     code, or None when it still should. The delivery worker asks just before
     sending: a deferred email can wait hours, and meanwhile the person may have
     read or hidden the inbox row, an admin may have decided the approval, or
-    the person's choice or groups may have changed. The checks run in order
-    and the first that fails decides: notification_gone, resolved, hidden,
-    read, recipient_inactive, category_turned_down, no_email_group. Timing is
-    not re-computed. Reads only.
+    the person's switches, the company defaults or their groups may have
+    changed (`category_turned_down` reads the effective switches). The checks
+    run in order and the first that fails decides: notification_gone,
+    resolved, hidden, read, recipient_inactive, category_turned_down,
+    no_email_group. Timing is not re-computed. Reads only.
 
     `resolved` comes before `hidden` and `read` because deciding an approval
     marks every copy of it read: the log must name the decision, not a read
@@ -308,7 +349,7 @@ async def recheck_before_send(db: AsyncSession, row: EmailOutbox) -> str | None:
     contact = await load_contact(db, notification.person_id)
     if contact is None or not contact.active:
         return "recipient_inactive"
-    if personal_choice(info, contact) != "email":
+    if personal_choice(info, contact, await load_company_settings(db)) != "email":
         return "category_turned_down"
     groups = await _group_settings(db, notification.person_id, info.category)
     if not any("email" in (g["channels"] or ()) for g in groups):

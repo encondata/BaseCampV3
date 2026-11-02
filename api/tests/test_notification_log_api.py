@@ -87,7 +87,11 @@ async def _group(db, person, *, categories=("reports",), **over):
 
 
 def _prefs(**cats):
-    return {"notif": {"categories": cats}}
+    """ui_prefs of a person who chose, per category, "email" (follow the company
+    default: no entry), "inbox" (Email off) or "off" (Inbox and Email off)."""
+    own = {"inbox": {"email": False}, "off": {"inbox": False, "email": False}}
+    return {"notif": {"switches": {category: own[choice] for category, choice in cats.items()
+                                   if choice != "email"}}}
 
 
 def _quiet_now():

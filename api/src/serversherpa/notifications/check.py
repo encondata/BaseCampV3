@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.db.models import NotificationGroup, NotificationGroupMember, Person, UserAccount
 from serversherpa.db.ordering import natural
 from serversherpa.mail.outbox import email_enabled
+from serversherpa.notifications.company import load_company_settings
 from serversherpa.notifications.email import (
     _safe_timezone,
     decide_email,
@@ -38,7 +39,7 @@ async def check_delivery(db: AsyncSession, person_id: uuid.UUID, kind: str, *,
     has_account = await db.scalar(select(UserAccount.person_id).where(
         UserAccount.person_id == person_id)) is not None
     contact = await load_contact(db, person_id)
-    choice = personal_choice(info, contact)
+    choice = personal_choice(info, contact, await load_company_settings(db))
     owner_notice = info.owner_always and owner_copy is not False
     decision = await decide_email(db, person_id, info, owner_notice=owner_notice,
                                   choice=choice, contact=contact, now=now)

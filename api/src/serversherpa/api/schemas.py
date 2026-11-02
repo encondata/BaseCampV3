@@ -7,6 +7,7 @@ import uuid
 from datetime import date, datetime, time
 from ipaddress import IPv4Address
 from typing import Annotated, Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import (
     AfterValidator,
@@ -15,13 +16,16 @@ from pydantic import (
     ConfigDict,
     EmailStr,
     Field,
+    SerializerFunctionWrapHandler,
     StringConstraints,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
 from serversherpa.learning import languages as learning_languages
 from serversherpa.notifications.kinds import CATEGORY_KEYS
+from serversherpa.notifications.schedule import DAYS
 
 
 def _lower(v: str) -> str:
@@ -53,23 +57,101 @@ class PersonOut(BaseModel):
     avatar_url: str | None = None  # presigned; set by routes via with_avatar()
 
 
+# The categories a person sets their own switches for: all but account
+# security, which is always on (notifications/kinds.py CATEGORIES).
+_SWITCH_CATEGORIES: tuple[str, ...] = tuple(k for k in CATEGORY_KEYS if k != "security")
+
+# "HH:MM", or "HH:MM:SS" whose seconds are dropped
+_CLOCK = re.compile(r"(?P<hm>(?:[01]\d|2[0-3]):[0-5]\d)(?::[0-5]\d)?")
+
+
+class SwitchOverride(BaseModel):
+    """A person's own Inbox and Email values for one category. A value left
+    None follows the company default, and is left out of what is stored and
+    returned: the saved blob holds only what the person chose."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    inbox: bool | None = None
+    email: bool | None = None
+
+    @model_serializer(mode="wrap")
+    def _only_own_values(self, handler: SerializerFunctionWrapHandler):
+        return {k: v for k, v in handler(self).items() if v is not None}
+
+
+class NotifSchedule(BaseModel):
+    """When email may reach the person: their timezone (None: the company
+    reference zone), the days they work, and quiet hours as two local "HH:MM"
+    times, both or neither and different (the window may run past midnight).
+    A rejected value's message is its code: invalid_timezone, invalid_days or
+    invalid_quiet_hours."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    timezone: str | None = None
+    days: list[str] = Field(default_factory=lambda: list(DAYS))
+    quiet_start: str | None = None
+    quiet_end: str | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def _timezone_loads(cls, v: str | None) -> str | None:
+        if v is not None:
+            try:
+                ZoneInfo(v)
+            except (ZoneInfoNotFoundError, ValueError, OSError):
+                raise ValueError("invalid_timezone") from None
+        return v
+
+    @field_validator("days")
+    @classmethod
+    def _days_are_known_and_unique(cls, v: list[str]) -> list[str]:
+        """At least one day, none unknown or repeated; in week order."""
+        if not v or len(set(v)) != len(v) or not set(v) <= set(DAYS):
+            raise ValueError("invalid_days")
+        return [d for d in DAYS if d in v]
+
+    @field_validator("quiet_start", "quiet_end")
+    @classmethod
+    def _clock_time(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        match = _CLOCK.fullmatch(v)
+        if match is None:
+            raise ValueError("invalid_quiet_hours")
+        return match["hm"]
+
+    @model_validator(mode="after")
+    def _quiet_hours_are_a_window(self) -> "NotifSchedule":
+        if (self.quiet_start is None) != (self.quiet_end is None):
+            raise ValueError("invalid_quiet_hours")
+        if self.quiet_start is not None and self.quiet_start == self.quiet_end:
+            raise ValueError("invalid_quiet_hours")
+        return self
+
+
 class NotifPrefs(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    # Per-category delivery choice (notifications/kinds.py CATEGORIES):
-    # "email" = inbox + email, "inbox" = inbox only, "off" = nothing.
-    # Account security is always emailed whatever is stored here.
-    categories: dict[str, Literal["email", "inbox", "off"]] = Field(
-        default_factory=lambda: {k: "email" for k in CATEGORY_KEYS})
-
-    @field_validator("categories")
-    @classmethod
-    def _all_known_categories(cls, v: dict[str, str]) -> dict[str, str]:
-        """Drop unknown keys and fill missing ones with "email", so readers
-        always see exactly the registry's categories."""
-        return {k: v.get(k, "email") for k in CATEGORY_KEYS}
     # in-app sound played when a new inbox item arrives while the portal is open
     sound: Literal["none", "chime", "ping", "pop", "bell"] = "chime"
+    # The person's own Inbox and Email values per category (notifications/kinds.py
+    # CATEGORIES): only what they changed. A category with no entry, or a value left
+    # unset, follows the company default (notifications/company.py). Account security
+    # is always on, so it is never stored.
+    switches: dict[str, SwitchOverride] = Field(default_factory=dict)
+    # When email may reach them: timezone, working days, quiet hours.
+    schedule: NotifSchedule = Field(default_factory=NotifSchedule)
+
+    @field_validator("switches")
+    @classmethod
+    def _own_values_of_known_categories(
+            cls, v: dict[str, SwitchOverride]) -> dict[str, SwitchOverride]:
+        """Drop unknown categories, account security and entries that hold no
+        value; the rest in the registry's order."""
+        return {k: v[k] for k in _SWITCH_CATEGORIES
+                if k in v and (v[k].inbox is not None or v[k].email is not None)}
 
 
 NAMED_ACCENTS = {"amber", "aqua", "blue", "violet", "pink", "green"}

@@ -2036,6 +2036,35 @@ class NotificationLog(Base):
     process: Mapped[str | None]            # the writing process (db_logging name)
 
 
+class NotificationHeld(Base):
+    """One notification email held for its recipient's summary (migration 0111):
+    it is not rendered or queued until the summary goes out, so this row only
+    points at the inbox row. Deleted once handled, sent in the summary or dropped
+    with a logged reason; the history lives in notification_log. A person's
+    deletion takes their rows along, and a deleted notification leaves the row
+    with its link cleared so the summary can drop it with a reason. `held_at` is
+    set by the writer, not by the column: a transaction's now() is frozen (see
+    delivery_log.record)."""
+
+    __tablename__ = "notification_held"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    person_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"))
+    notification_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("notifications.id", ondelete="SET NULL"))
+    kind: Mapped[str]
+    category: Mapped[str]
+    reason: Mapped[str]                    # the schedule state that held it
+    held_at: Mapped[datetime]
+
+    __table_args__ = (
+        CheckConstraint("reason IN ('quiet_hours', 'inactive_day')",
+                        name="ck_notification_held_reason"),
+        Index("notification_held_person_idx", "person_id", "held_at"),
+    )
+
+
 class WikiSpace(Base):
     """A wiki space: a top-level, separately permissioned collection of
     pages and files (e.g. "Ops Guides"). `key` is the URL slug."""
