@@ -460,7 +460,7 @@
     - Result: one notification "Truck status changed (4)" with four body lines, oldest first, and link `/initiatives/{id}`.
     - With mixed initiatives, the link is `/logistics/trucks`.
   - `test_category_off_is_still_respected`: the person's Trucks Inbox switch is off → `inbox_suppressed` `category_off`, and its detail also carries `via`.
-  - `test_cap`: monkeypatch `MAX_RECIPIENTS` to 2 with 3 watchers. Two get it, and one warning line names the event.
+  - `test_cap`: monkeypatch `event_sweep.MAX_RECIPIENTS` (the sweep's own imported name) to 2 with 3 watchers. Two get it, and one warning line names the event.
   - `test_deleted_subject_is_dropped`: delete the initiative after announcing. The event is marked sent, with no notifications and no log rows.
   - `test_concurrent_sweeps_do_not_double_send` (Review Focus): two `run_events_once` calls under `asyncio.gather` → each watcher has exactly one notification.
   - `test_failed_event_stays_waiting`: monkeypatch `matching_routes` to raise for one event id. The other event goes out, and that one keeps `sent_at` null.
@@ -588,14 +588,16 @@
     - for Everything, "Everything".
   - Events: `eventsText`. Via: "You" or the group's name.
 - **`WatchEventsEditor`:**
-  - Props: `{ thing: WatchTarget; kinds: NotificationKindSetting[]; value: string[]; onChange: (v: string[]) => void }`, where `[]` means all.
-  - Unless the thing is `everything`, it shows a `Switch` labeled "All events", with the hint "Every event that applies to this." It is on when `value` is `[]`, and turning it off starts from no picks.
+  - Props: `{ thing: WatchTarget; kinds: NotificationKindSetting[]; all: boolean; picked: string[]; onChange: (next: { all: boolean; picked: string[] }) => void }`.
+  - "All" and "nothing picked yet" are different states, so they are separate props. The kinds to save are `all ? [] : picked`. For Everything, `all` is always false.
+  - Unless the thing is `everything`, it shows a `Switch` labeled "All events", with the hint "Every event that applies to this." Turning it off starts from no picks.
   - When All is off, or for Everything, it shows `kindsFor(thing)` grouped under their category labels in `NOTIFICATION_CATEGORIES` order. Each kind has a `Switch` named by its label.
+  - The modal opens with `all = kinds.length === 0` and `picked = kinds`, for an existing watch's `kinds`.
 - **`WatchEventsModal`:**
   - Props: `{ eyebrow: string; title: string; description: string; thing: WatchTarget; kinds: NotificationKindSetting[]; initial: string[]; saveLabel?: string; onSave: (kinds: string[]) => Promise<void>; onClose: () => void }`.
   - A `NotificationModal` around the editor.
   - Footer: Save (`btn-solid`, label `saveLabel ?? 'Save'`), Cancel (`mini-btn`) and `pf-error`.
-  - Save is disabled while nothing is picked: All is off with no kinds, or Everything has no kinds.
+  - Save is disabled while `!all && picked.length === 0`. That covers All turned off with nothing picked, and Everything with nothing picked.
   - A rejected save shows `watchErrorMessage` in `pf-error`, and the modal stays open.
 - **`WatchesSection`:**
   - Props: `{ kinds: NotificationKindSetting[] }`. On mount it calls `listMyWatches()`.
@@ -663,7 +665,7 @@
     - It is disabled until a thing is picked (when one is needed) and the events are valid.
     - It calls `createGroupWatch(group.id, {thing, id, kinds})`.
     - A rejected save shows `watchErrorMessage` in `pf-error`.
-  - **Switching kinds** clears the picked thing and resets the events to All. For Everything, it resets to no picks.
+  - **Switching kinds** clears the picked thing and resets the events to `all = true`. For Everything, it resets to `all = false` with no picks.
 - **NotificationGroupDetail:** it renders `<GroupWatchesPanel group={group} canChange={canChange} />` under `MembersPanel`.
 
 - [ ] **Step 1: Write the failing tests:**
