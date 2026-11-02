@@ -1,8 +1,8 @@
 # Notifications Phase 2 — watching, groups as audiences, operational notifications, and status rules that notify
 
-Date: 2026-11-02 · Branch: `notif-phase2`, stacked on `notif-phase1` (unmerged) · Status: **proposal**. Jimmy asked for it without the questions ("Just propose it", 2026-11-02). Nothing here is approved or built.
+Date: 2026-11-02 · Branch: `notif-phase2`, stacked on `notif-phase1` (unmerged) · Status: **approved**. Jimmy asked for it without the questions ("Just propose it", 2026-11-02) and approved it as proposed ("ok that looks ok. lets build it", 2026-11-02).
 
-Mockup: `.superpowers/brainstorm/57055-1793633305/content/phase2-screens.html` in the main checkout (git-ignored scratch). Where this document and the mockup differ, this document wins.
+Mockup: `.superpowers/brainstorm/2865-1793652529/content/phase2-screens.html` in the main checkout (git-ignored scratch). Where this document and the mockup differ, this document wins.
 
 ## Why
 
@@ -490,12 +490,12 @@ One branch, five slices, each landing working and tested:
 19. **Bulk-action notifications link to the result or the tool.** No job pages are added. Their titles are "{action} finished" and "{action} failed".
 20. **Check delivery gets no thing picker.**
 
-## Questions for Jimmy
+## Questions for Jimmy (settled)
 
 1. **Automatic watching.** The wiki watches what you create, edit or review for you. Should people on an initiative's People tab watch it automatically? Most workers can't open initiatives, so it would mostly reach staff and client users.
 2. **Back online.** Should people watching a device also hear when it comes back?
 
-Until Jimmy answers, both are planned as no. A yes to the first adds auto-watch when someone is added to an initiative's People tab, in slice 1. A yes to the second adds a "Device back online" type, in slice 2.
+Both were planned as no, and Jimmy approved the design as proposed (2026-11-02), so both are no: being on an initiative's People tab adds no watch, and there is no "Device back online" type.
 
 ## Left to the builder
 
