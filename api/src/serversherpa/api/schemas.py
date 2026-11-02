@@ -3112,7 +3112,9 @@ class NotificationKindOut(BaseModel):
     """One registered notification kind, for the Check delivery picker.
     `email` is whether it is ever emailed; `critical` whether it skips quiet
     hours, days off and the summary; `locked` whether that is fixed (account
-    security is always critical)."""
+    security is always critical). `watchable` is whether anyone can watch for
+    it, `reaches` the kinds of thing they can watch it on, and `everywhere`
+    whether an Everything watch may name it."""
 
     kind: str
     label: str
@@ -3121,6 +3123,9 @@ class NotificationKindOut(BaseModel):
     owner_always: bool
     critical: bool
     locked: bool
+    watchable: bool
+    everywhere: bool
+    reaches: list[str]
 
 
 class SwitchPair(BaseModel):
@@ -3134,7 +3139,10 @@ class NotificationKindSettingOut(BaseModel):
     """One registered kind in the company settings. `email` is whether it is
     ever emailed; `critical` whether it skips quiet hours, days off and the
     summary; `locked` whether that is fixed (account security is always
-    critical, and is not the admin's to change)."""
+    critical, and is not the admin's to change). `watchable` is whether anyone
+    can watch for it, `reaches` the kinds of thing they can watch it on (in the
+    order to show them), and `everywhere` whether an Everything watch may name
+    it."""
 
     kind: str
     label: str
@@ -3143,6 +3151,9 @@ class NotificationKindSettingOut(BaseModel):
     owner_always: bool
     critical: bool
     locked: bool
+    watchable: bool
+    everywhere: bool
+    reaches: list[str]
 
 
 class NotificationSettingsOut(BaseModel):

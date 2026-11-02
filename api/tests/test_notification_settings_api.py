@@ -18,7 +18,7 @@ from tests.test_sites_api import login
 from tests.test_status_values_write import _make
 
 SETTINGS = "/notifications/settings"
-CONFIGURABLE = ("approvals", "reports", "wiki", "learning")
+CONFIGURABLE = ("approvals", "reports", "wiki", "learning", "initiatives", "trucks")
 ON_ON = {"inbox": True, "email": True}
 
 
@@ -68,7 +68,17 @@ async def test_settings_out_of_the_box(client, seeded_user):
         assert (entry["label"], entry["category"], entry["email"], entry["owner_always"],
                 entry["locked"]) == (info.label, info.category, info.email,
                                      info.owner_always, info.category == "security")
+        assert (entry["watchable"], entry["everywhere"], entry["reaches"]) == (
+            info.watchable, info.everywhere, list(info.reaches))
     kinds = _by_kind(body)
+    # what a watch can follow: the two status changes, on the things they reach
+    flags = {kind: (entry["watchable"], entry["everywhere"], entry["reaches"])
+             for kind, entry in kinds.items()}
+    assert flags["truck_status_changed"] == (True, True, ["truck", "initiative", "site"])
+    assert flags["initiative_status_changed"] == (True, True, ["initiative", "site"])
+    assert [kind for kind, (watchable, _, _) in flags.items() if watchable] == [
+        "initiative_status_changed", "truck_status_changed"]
+    assert flags["report_ready"] == (False, False, [])
     assert (kinds["password_expiring"]["critical"], kinds["password_expiring"]["locked"]) \
         == (True, True)
     assert (kinds["report_ready"]["critical"], kinds["report_ready"]["locked"]) \
@@ -179,6 +189,19 @@ async def test_put_merges_defaults_per_category(client, db, seeded_user):
     assert len(await _audits(db)) == 2
 
 
+async def test_put_sets_defaults_for_initiatives_and_trucks(client, db, seeded_user):
+    """The two status categories are configurable like the rest."""
+    admin = await _admin(db, client)
+    resp = await _put(client, admin, defaults={"initiatives": {"inbox": True, "email": False},
+                                               "trucks": {"inbox": False, "email": False}})
+    assert resp.status_code == 200, resp.text
+    expected = {**{c: ON_ON for c in CONFIGURABLE}, "initiatives": {"inbox": True, "email": False},
+                "trucks": {"inbox": False, "email": False}}
+    assert resp.json()["defaults"] == expected
+    assert (await _get(client, admin))["defaults"] == expected
+    assert (await db.get(SystemConfig, "notifications")).data["defaults"] == expected
+
+
 async def test_put_waits_for_a_concurrent_save_and_keeps_both(client, db, seeded_user):
     """A partial save is read-merge-write. While another save holds the row (it
     has read it and not yet written) a second one waits, then merges onto what
@@ -200,7 +223,8 @@ async def test_put_waits_for_a_concurrent_save_and_keeps_both(client, db, seeded
     assert resp.status_code == 200, resp.text
     assert resp.json()["defaults"] == {
         "approvals": ON_ON, "reports": {"inbox": False, "email": False},
-        "wiki": {"inbox": True, "email": False}, "learning": ON_ON}
+        "wiki": {"inbox": True, "email": False}, "learning": ON_ON,
+        "initiatives": ON_ON, "trucks": ON_ON}
 
 
 async def test_put_rejects_bad_categories(client, db, seeded_user):
@@ -305,7 +329,7 @@ async def test_load_company_settings_out_of_the_box(db):
 
     company = await load_company_settings(db)
     assert CONFIGURABLE_CATEGORIES == CONFIGURABLE
-    # config_store cannot import company (a cycle), so it spells the four out too
+    # config_store cannot import company (a cycle), so it spells the six out too
     assert tuple(DEFAULTS["notifications"]["defaults"]) == CONFIGURABLE_CATEGORIES
     assert DEFAULTS["notifications"]["critical_kinds"] == []
     assert dict(company.defaults) == {c: Switches(True, True) for c in CONFIGURABLE}
@@ -336,7 +360,8 @@ async def test_load_company_settings_ignores_what_it_does_not_know(db):
     company = await load_company_settings(db)
     assert dict(company.defaults) == {
         "approvals": Switches(False, False), "reports": Switches(True, True),
-        "wiki": Switches(True, True), "learning": Switches(True, True)}
+        "wiki": Switches(True, True), "learning": Switches(True, True),
+        "initiatives": Switches(True, True), "trucks": Switches(True, True)}
     assert company.critical_kinds == frozenset({"report_failed"})
 
 

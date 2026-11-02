@@ -648,11 +648,14 @@ async def check_delivery(
 def _kind_flags(company: CompanySettings) -> list[dict]:
     """Every registered kind in registry order with its flags: whether it is
     ever emailed, whether it is critical (account security always; any other
-    kind once an admin marked it), and whether that is locked (security)."""
+    kind once an admin marked it), whether that is locked (security), and what
+    a watch can do with it (watchable, the things it reaches, everywhere)."""
     return [{"kind": kind, "label": info.label, "category": info.category,
              "email": info.email, "owner_always": info.owner_always,
              "critical": is_critical(kind, company),
-             "locked": info.category == SECURITY_CATEGORY}
+             "locked": info.category == SECURITY_CATEGORY,
+             "watchable": info.watchable, "everywhere": info.everywhere,
+             "reaches": list(info.reaches)}
             for kind, info in KINDS.items()]
 
 

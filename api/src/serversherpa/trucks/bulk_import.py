@@ -21,6 +21,7 @@ from serversherpa.db.models import (
 from serversherpa.db.ordering import natural
 from serversherpa.imports import bulk as core
 from serversherpa.imports.bulk import MAX_BYTES, MAX_ROWS, BulkImportError
+from serversherpa.notifications.status_changes import announce_truck_status_changed
 from serversherpa.services.audit import audit, snapshot
 from serversherpa.trucks.trip import apply_status_change, start_trip_if_needed
 
@@ -526,3 +527,7 @@ async def _apply_update(db: AsyncSession, actor_id: uuid.UUID, r: dict,
     truck.updated_at = datetime.now(UTC)
     audit(db, actor_id=actor_id, entity_type="truck",
           entity_id=str(truck.id), action="update", changes=changes)
+    if "status" in changes:
+        await announce_truck_status_changed(
+            db, truck, old=changes["status"]["from"], new=changes["status"]["to"],
+            actor_id=actor_id)

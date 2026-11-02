@@ -485,16 +485,26 @@ async def test_kinds_report_critical_and_locked(client, db):
     assert resp.json() == [
         {"kind": kind, "label": info.label, "category": info.category, "email": info.email,
          "owner_always": info.owner_always,
-         "critical": kind in always | {"report_failed"}, "locked": kind in always}
+         "critical": kind in always | {"report_failed"}, "locked": kind in always,
+         "watchable": info.watchable, "everywhere": info.everywhere,
+         "reaches": list(info.reaches)}
         for kind, info in KINDS.items()]
     assert [k for k in resp.json() if k["critical"]] == [
         {"kind": "report_failed", "label": "Report failed", "category": "reports",
-         "email": True, "owner_always": False, "critical": True, "locked": False},
+         "email": True, "owner_always": False, "critical": True, "locked": False,
+         "watchable": False, "everywhere": False, "reaches": []},
         {"kind": "password_expiring", "label": "Password expiring", "category": "security",
-         "email": True, "owner_always": True, "critical": True, "locked": True},
+         "email": True, "owner_always": True, "critical": True, "locked": True,
+         "watchable": False, "everywhere": False, "reaches": []},
         {"kind": "totp_enrolled", "label": "Two-factor authentication enrolled",
          "category": "security", "email": True, "owner_always": True, "critical": True,
-         "locked": True},
+         "locked": True, "watchable": False, "everywhere": False, "reaches": []},
+    ]
+    # the two status changes can be watched, on the things they reach
+    assert [(k["kind"], k["watchable"], k["everywhere"], k["reaches"])
+            for k in resp.json() if k["watchable"]] == [
+        ("initiative_status_changed", True, True, ["initiative", "site"]),
+        ("truck_status_changed", True, True, ["truck", "initiative", "site"]),
     ]
 
     admin = await _make(db, client, "admin", "admin@test.example.com")

@@ -39,13 +39,15 @@ from serversherpa.imports.parsing import (
 from serversherpa.learning import assign as learning_assign
 from serversherpa.learning import codes as learning_codes
 from serversherpa.learning.invites import send_markers as learning_send_markers
+from serversherpa.notifications.status_changes import announce_initiative_status_changed
 from serversherpa.people import team_bulk
 from serversherpa.racks.recheck import recheck_placement
 from serversherpa.scans.manual import record_status_edit, stamp_rule_failure
 from serversherpa.services import move_password as move_password_service
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.initiatives import (
-    SITE_FIELDS, code_taken, create_initiative_row, is_code_clash, next_color, ref_problem,
+    SITE_FIELDS, ancestor_ids, code_taken, create_initiative_row, is_code_clash, next_color,
+    ref_problem,
 )
 from serversherpa.services.initiatives import INITIATIVE_PALETTE  # noqa: F401  (tests import it from here)
 from serversherpa.services.storage import put_object
@@ -460,6 +462,11 @@ async def update_initiative(
         if "status" in changes \
                 and initiative.status in move_password_service.MOVE_LOGIN_BLOCKED_STATUSES:
             await move_password_service.revoke_move_sessions(db, initiative.id)
+        if "status" in changes:
+            # in this transaction: a save that fails below announces nothing
+            await announce_initiative_status_changed(
+                db, initiative, old=changes["status"]["from"], new=changes["status"]["to"],
+                actor_id=actor.person.id)
         # learning codes last through the initiative's last day
         if learning_codes.EXPIRY_FIELDS & changes.keys():
             await db.flush()
@@ -780,19 +787,6 @@ async def _link_exists(db: DbSession, parent_id: uuid.UUID,
         InitiativeLink.child_id == child_id)) is not None
 
 
-async def _ancestor_ids(db: DbSession, start: uuid.UUID) -> set[uuid.UUID]:
-    """Every initiative above `start` in the link graph (transitive)."""
-    seen: set[uuid.UUID] = set()
-    frontier = [start]
-    while frontier:
-        parents = list(await db.scalars(
-            select(InitiativeLink.parent_id)
-            .where(InitiativeLink.child_id.in_(frontier))))
-        frontier = [p for p in parents if p not in seen]
-        seen.update(frontier)
-    return seen
-
-
 @router.get("/{initiative_id}/links", response_model=InitiativeLinksOut)
 async def list_initiative_links(
     initiative_id: uuid.UUID,
@@ -842,7 +836,7 @@ async def add_initiative_link(
                        .limit(1)):
         raise _err(409, "already_has_parent")
     # cycle: the proposed child must not already be an ancestor of parent
-    if body.child_id in await _ancestor_ids(db, initiative_id):
+    if body.child_id in await ancestor_ids(db, initiative_id):
         raise _err(422, "circular_link")
     db.add(InitiativeLink(parent_id=initiative_id,
                           **body.model_dump(exclude_none=True)))

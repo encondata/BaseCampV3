@@ -16,9 +16,12 @@ def test_categories_order_and_labels():
         ("reports", "Reports & labels"),
         ("wiki", "Wiki"),
         ("learning", "Learning"),
+        ("initiatives", "Initiatives"),
+        ("trucks", "Trucks"),
         ("security", "Account security"),
     ]
-    assert CATEGORY_KEYS == ("approvals", "reports", "wiki", "learning", "security")
+    assert CATEGORY_KEYS == ("approvals", "reports", "wiki", "learning", "initiatives",
+                             "trucks", "security")
 
 
 def test_every_kind_has_a_known_category_and_a_label():
@@ -39,9 +42,15 @@ def test_kind_table_matches_the_spec():
         "wiki_export_failed": "wiki",
         "learning_complete": "learning", "learning_overdue": "learning",
         "learning_quiz_locked": "learning",
+        "initiative_status_changed": "initiatives", "truck_status_changed": "trucks",
         "password_expiring": "security", "totp_enrolled": "security",
     }
     assert {k: v.category for k, v in KINDS.items()} == expected
+    # registry order is the order the portal shows: the new kinds follow learning
+    assert list(KINDS)[-4:] == ["initiative_status_changed", "truck_status_changed",
+                                "password_expiring", "totp_enrolled"]
+    assert (KINDS["initiative_status_changed"].label, KINDS["truck_status_changed"].label) == (
+        "Initiative status changed", "Truck status changed")
 
 
 def test_flags_match_the_spec():
@@ -58,8 +67,29 @@ def test_flags_match_the_spec():
         "password_expiring": (False, True, True),
         "totp_enrolled": (True, True, True),
     }
+    # the two status kinds are emailed in full, to whoever hears them, like the defaults
+    for kind in ("initiative_status_changed", "truck_status_changed"):
+        assert (KINDS[kind].brief, KINDS[kind].email, KINDS[kind].owner_always) == (
+            False, True, False), kind
     # the urgent flag is gone: critical is company-set (notifications/company.py)
     assert not hasattr(default, "urgent")
+
+
+def test_reaches_and_everywhere():
+    """Which kinds a watch can follow, on what, and which an Everything watch may name:
+    exactly the two status changes."""
+    assert {kind: (info.reaches, info.everywhere) for kind, info in KINDS.items()
+            if info.reaches or info.everywhere} == {
+        "initiative_status_changed": (("initiative", "site"), True),
+        "truck_status_changed": (("truck", "initiative", "site"), True),
+    }
+    assert {kind for kind, info in KINDS.items() if info.watchable} == {
+        "initiative_status_changed", "truck_status_changed"}
+    assert KINDS["truck_status_changed"].watchable is True
+    assert KINDS["report_ready"].watchable is False
+    # the defaults: not watchable, not named by an Everything watch
+    default = KindInfo("approvals", "x")
+    assert (default.reaches, default.everywhere, default.watchable) == ((), False, False)
 
 
 def test_kind_info_unknown_is_none():
@@ -78,6 +108,8 @@ NOTIFY_CALL = re.compile(r"""\bnotify\(\s*[\w.]+\s*,\s*[\w.\[\]]+\s*,\s*["']([a-
 # wiki/notify.py and wiki/worker.py: kind="wiki_x" keyword arguments and wiki/worker.py `kind, event = "wiki_x", ...`
 WIKI_KIND = re.compile(r"""\bkind\s*=\s*["']([a-z_]+)["']|\bkind\s*,\s*event\s*=\s*["']([a-z_]+)["']""")
 KIND_CONST = re.compile(r"""^KIND\s*=\s*["']([a-z_]+)["']""", re.MULTILINE)
+# announce(db, "literal", ...) — the kind is the second positional argument
+ANNOUNCE_CALL = re.compile(r"""\bannounce\(\s*[\w.]+\s*,\s*["']([a-z_]+)["']""")
 # the modules that name their kind in a module-level KIND constant
 KIND_CONST_FILES = ("notifications/reset_requests.py", "notifications/password_reminders.py",
                     "learning/scheduler.py")
@@ -88,6 +120,7 @@ def _scan() -> set[str]:
     for path in SRC.rglob("*.py"):
         text = path.read_text()
         found.update(NOTIFY_CALL.findall(text))
+        found.update(ANNOUNCE_CALL.findall(text))
         if path.as_posix().endswith(KIND_CONST_FILES):
             found.update(KIND_CONST.findall(text))
         if path.as_posix().endswith(("wiki/notify.py", "wiki/worker.py")):
@@ -103,6 +136,6 @@ def test_every_notify_kind_in_the_codebase_is_registered():
     assert {"report_ready", "labels_failed", "membership_request", "router_approval",
             "totp_enrolled", "password_reset_request", "password_expiring",
             "wiki_comment", "wiki_export_ready", "learning_overdue", "learning_complete",
-            "learning_quiz_locked"} <= found
+            "learning_quiz_locked", "initiative_status_changed", "truck_status_changed"} <= found
     assert found == set(KINDS), (
         f"unregistered: {sorted(found - set(KINDS))}; never sent: {sorted(set(KINDS) - found)}")
