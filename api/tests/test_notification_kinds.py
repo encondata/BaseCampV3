@@ -5,9 +5,7 @@ silently inbox-only)."""
 import re
 from pathlib import Path
 
-from serversherpa.notifications.kinds import (
-    CATEGORIES, CATEGORY_EMAIL_SOURCE, CATEGORY_KEYS, KINDS, KindInfo, kind_info,
-)
+from serversherpa.notifications.kinds import CATEGORIES, CATEGORY_KEYS, KINDS, KindInfo, kind_info
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "serversherpa"
 
@@ -21,15 +19,6 @@ def test_categories_order_and_labels():
         ("security", "Account security"),
     ]
     assert CATEGORY_KEYS == ("approvals", "reports", "wiki", "learning", "security")
-
-
-def test_every_category_has_an_email_source():
-    assert set(CATEGORY_EMAIL_SOURCE) == set(CATEGORY_KEYS)
-    assert set(CATEGORY_EMAIL_SOURCE.values()) <= {"groups", "always", "direct"}
-    # account security is emailed whatever the groups say; the rest need a group
-    assert CATEGORY_EMAIL_SOURCE == {"approvals": "groups", "reports": "groups",
-                                     "wiki": "groups", "learning": "groups",
-                                     "security": "always"}
 
 
 def test_every_kind_has_a_known_category_and_a_label():
@@ -57,19 +46,20 @@ def test_kind_table_matches_the_spec():
 
 def test_flags_match_the_spec():
     default = KindInfo("approvals", "x")
-    assert (default.brief, default.email, default.owner_always, default.urgent) == (
-        False, True, False, False)
-    flagged = {k: (v.brief, v.email, v.owner_always, v.urgent) for k, v in KINDS.items()
-               if (v.brief, v.email, v.owner_always, v.urgent) != (False, True, False, False)}
+    assert (default.brief, default.email, default.owner_always) == (False, True, False)
+    flagged = {k: (v.brief, v.email, v.owner_always) for k, v in KINDS.items()
+               if (v.brief, v.email, v.owner_always) != (False, True, False)}
     assert flagged == {
-        "router_approval": (True, True, False, False),
-        "report_failed": (True, True, False, False),
-        "labels_failed": (True, True, False, False),
-        "password_reset_request": (False, False, False, False),
-        "learning_quiz_locked": (False, False, False, False),
-        "password_expiring": (False, True, True, True),
-        "totp_enrolled": (True, True, True, True),
+        "router_approval": (True, True, False),
+        "report_failed": (True, True, False),
+        "labels_failed": (True, True, False),
+        "password_reset_request": (False, False, False),
+        "learning_quiz_locked": (False, False, False),
+        "password_expiring": (False, True, True),
+        "totp_enrolled": (True, True, True),
     }
+    # the urgent flag is gone: critical is company-set (notifications/company.py)
+    assert not hasattr(default, "urgent")
 
 
 def test_kind_info_unknown_is_none():

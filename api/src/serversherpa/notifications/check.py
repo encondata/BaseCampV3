@@ -1,29 +1,36 @@
 """Check delivery: what would happen right now if one person got a
 notification of one registered kind, without writing anything. The email
 answer is decide_email(), the same decision maybe_email() acts on, so the
-tool and the sender cannot drift; the inbox answer is notify()'s rule.
+tool and the sender cannot drift; the inbox answer is notify()'s rule, read
+off the same effective switches. Beside them it shows the person's switches
+for the category and where each comes from, their schedule and its state
+right now, and whether the kind is critical.
 
-Spec: docs/superpowers/specs/2026-10-31-notifications-phase0-design.md (section 9)"""
+Spec: docs/superpowers/specs/2026-10-31-notifications-phase0-design.md (section 9) and
+docs/superpowers/specs/2026-11-01-notifications-phase1-design.md (section 7)"""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, time
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import NotificationGroup, NotificationGroupMember, Person, UserAccount
-from serversherpa.db.ordering import natural
+from serversherpa.db.models import Person, UserAccount
 from serversherpa.mail.outbox import email_enabled
-from serversherpa.notifications.company import load_company_settings
+from serversherpa.notifications.company import is_critical, load_company_settings
 from serversherpa.notifications.email import (
-    _safe_timezone,
+    contact_schedule,
     decide_email,
+    effective_switches,
     load_contact,
-    personal_choice,
 )
-from serversherpa.notifications.email_rule import group_verdict
-from serversherpa.notifications.kinds import CATEGORY_EMAIL_SOURCE, KINDS, KindInfo
-from serversherpa.notifications.settings import effective_settings
+from serversherpa.notifications.kinds import KINDS
+from serversherpa.notifications.schedule import DAYS, state_at
+
+
+def _clock(value: time | None) -> str | None:
+    """A quiet-hours bound as "HH:MM", as the preference stores it."""
+    return value.strftime("%H:%M") if value is not None else None
 
 
 async def check_delivery(db: AsyncSession, person_id: uuid.UUID, kind: str, *,
@@ -32,80 +39,56 @@ async def check_delivery(db: AsyncSession, person_id: uuid.UUID, kind: str, *,
     `kind` must be registered and the person must exist: the route answers
     422 and 404 before calling. For a kind the account owner always receives
     (owner_always), the owner's own copy is modeled unless `owner_copy` is
-    False, which asks for an admin's copy (that one goes through groups).
-    Reads only."""
+    False, which asks for an admin's copy (that one stays in the inbox).
+    `outcome` is now, held (until `summary_at`) or not_sent (`reason` says
+    why; for a held email, the schedule state that holds it). Reads only."""
     info = KINDS[kind]
     person = await db.get(Person, person_id)
     has_account = await db.scalar(select(UserAccount.person_id).where(
         UserAccount.person_id == person_id)) is not None
     contact = await load_contact(db, person_id)
-    choice = personal_choice(info, contact, await load_company_settings(db))
+    company = await load_company_settings(db)
+    switches = effective_switches(info, contact, company)
     owner_notice = info.owner_always and owner_copy is not False
     decision = await decide_email(db, person_id, info, owner_notice=owner_notice,
-                                  choice=choice, contact=contact, now=now)
-    if not decision.queue:
-        outcome = "not_sent"
+                                  contact=contact, company=company, now=now)
+    if decision.queue:
+        outcome = "now"
+    elif decision.hold:
+        outcome = "held"
     else:
-        outcome = "held" if decision.send_at > now else "now"
+        outcome = "not_sent"
+    schedule = contact_schedule(contact)
     return {
         "person_id": person_id,
         "person_name": person.display_name,
         "kind": kind,
         "kind_label": info.label,
         "category": info.category,
-        "email_source": CATEGORY_EMAIL_SOURCE[info.category],
         "owner_copy": owner_notice,
         "active": contact is not None and contact.active,
         "has_account": has_account,
-        "choice": choice,
-        # notify()'s rule: an off category drops the inbox row too, except
-        # for a kind that is never emailed
-        "inbox": "suppressed" if choice == "off" and info.email else "written",
+        # notify()'s rule: an Inbox switched off drops the inbox row too,
+        # except for a kind that is never emailed
+        "inbox": "suppressed" if not switches.inbox and info.email else "written",
+        "inbox_source": switches.inbox_source,
         "email_enabled": email_enabled(),
+        "critical": is_critical(kind, company),
+        "switches": {
+            "inbox": {"on": switches.inbox, "source": switches.inbox_source},
+            "email": {"on": switches.email, "source": switches.email_source},
+        },
+        "schedule": {
+            "timezone": schedule.zone.key,
+            "days": [day for day in DAYS if day in schedule.days],
+            "quiet_start": _clock(schedule.quiet_start),
+            "quiet_end": _clock(schedule.quiet_end),
+            "state": state_at(schedule, now),
+        },
         "outcome": outcome,
         "send_at": decision.send_at,
+        "summary_at": decision.summary_at,
         "reason": decision.reason,
         "address": decision.address,
         "address_source": decision.address_source,
-        "groups": await _groups(db, person_id, info, now),
     }
-
-
-async def _groups(db: AsyncSession, person_id: uuid.UUID, info: KindInfo,
-                  now: datetime) -> list[dict]:
-    """Every group the person is in, paused or not, by name: its effective
-    settings for them and its verdict on this kind right now. Only an enabled
-    group that covers the category is asked (email_rule.group_verdict, as
-    decide_email asks it); the others are `paused` or `not_subscribed`."""
-    rows = (await db.execute(
-        select(NotificationGroup, NotificationGroupMember)
-        .join(NotificationGroupMember,
-              NotificationGroupMember.group_id == NotificationGroup.id)
-        .where(NotificationGroupMember.person_id == person_id)
-        .order_by(natural(NotificationGroup.name), NotificationGroup.id))).all()
-    out = []
-    for group, member in rows:
-        # the timezone decide_email would use: a stored one that no longer
-        # resolves falls back to the house default
-        s = _safe_timezone(effective_settings(group, member))
-        subscribed = info.category in group.categories
-        if not group.enabled:
-            verdict, allowed_at = "paused", None
-        elif not subscribed:
-            verdict, allowed_at = "not_subscribed", None
-        else:
-            verdict, allowed_at = group_verdict(s, now, urgent=info.urgent)
-        out.append({
-            "group_id": group.id,
-            "name": group.name,
-            "enabled": group.enabled,
-            "subscribed": subscribed,
-            "email_channel": "email" in (s["channels"] or ()),
-            "verdict": verdict,
-            "allowed_at": allowed_at,
-            "quiet_start": s["quiet_start"],
-            "quiet_end": s["quiet_end"],
-            "timezone": s["timezone"],
-            "active_days": s["active_days"],
-        })
-    return out

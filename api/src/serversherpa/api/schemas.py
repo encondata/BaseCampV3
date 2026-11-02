@@ -3097,61 +3097,80 @@ class DeliveryLogPageOut(BaseModel):
     total: int
 
 
-class DeliveryCheckGroupOut(BaseModel):
-    """One group the person belongs to, with its effective settings for
-    them. `verdict` is the group's answer right now (open, quiet_hours,
-    inactive_day, urgent_bypass, no_email_channel) when it is enabled and
-    covers the category, else `paused` or `not_subscribed`; `allowed_at` is
-    the earliest it allows the email (null: never, or not asked)."""
+class DeliveryCheckSwitchOut(BaseModel):
+    """One of the person's switches for the category: whether it is on, and
+    where that comes from (`default`: the company default they follow; `own`:
+    they set it; `fixed`: account security, always on)."""
 
-    group_id: uuid.UUID
-    name: str
-    enabled: bool
-    subscribed: bool
-    email_channel: bool
-    verdict: str
-    allowed_at: datetime | None = None
-    quiet_start: time | None = None
-    quiet_end: time | None = None
+    on: bool
+    source: Literal["default", "own", "fixed"]
+
+
+class DeliveryCheckSwitchesOut(BaseModel):
+    """The person's Inbox and Email switches for the category. Email needs
+    Inbox: it is off whenever Inbox is."""
+
+    inbox: DeliveryCheckSwitchOut
+    email: DeliveryCheckSwitchOut
+
+
+class DeliveryCheckScheduleOut(BaseModel):
+    """The person's schedule as the decision reads it: the timezone (the
+    reference zone when they set none, or when theirs no longer loads), the
+    days they work in week order, quiet hours as "HH:MM" (both null: none),
+    and the state right now: open, in quiet hours, or a day off."""
+
     timezone: str
-    active_days: list[str]
+    days: list[str]
+    quiet_start: str | None = None
+    quiet_end: str | None = None
+    state: Literal["open", "quiet_hours", "inactive_day"]
 
 
 class DeliveryCheckOut(BaseModel):
     """What would happen right now if this person got a notification of this
-    kind. Nothing is written. `outcome` is the email's: sent now, held until
-    `send_at`, or not sent (`reason` says why; for a held email, why it
-    waits). `owner_copy` is the copy that was modeled."""
+    kind. Nothing is written. `inbox` is notify()'s answer, with the source of
+    the Inbox switch behind it. `outcome` is the email's: sent now (at
+    `send_at`), held for the person's summary (due `summary_at`), or not sent
+    (`reason` says why; for a held email, the schedule state that holds it).
+    `owner_copy` is the copy that was modeled; `critical` whether the kind
+    skips quiet hours, days off and the summary."""
 
     person_id: uuid.UUID
     person_name: str
     kind: str
     kind_label: str
     category: str
-    email_source: str
     owner_copy: bool
     active: bool
     has_account: bool
-    choice: str
     inbox: Literal["written", "suppressed"]
+    inbox_source: Literal["default", "own", "fixed"]
     email_enabled: bool
+    critical: bool
+    switches: DeliveryCheckSwitchesOut
+    schedule: DeliveryCheckScheduleOut
     outcome: Literal["now", "held", "not_sent"]
     send_at: datetime | None = None
+    summary_at: datetime | None = None
     reason: str | None = None
     address: str | None = None
     address_source: str | None = None
-    groups: list[DeliveryCheckGroupOut]
 
 
 class NotificationKindOut(BaseModel):
-    """One registered notification kind, for the Check delivery picker."""
+    """One registered notification kind, for the Check delivery picker.
+    `email` is whether it is ever emailed; `critical` whether it skips quiet
+    hours, days off and the summary; `locked` whether that is fixed (account
+    security is always critical)."""
 
     kind: str
     label: str
     category: str
     email: bool
     owner_always: bool
-    urgent: bool
+    critical: bool
+    locked: bool
 
 
 class SwitchPair(BaseModel):

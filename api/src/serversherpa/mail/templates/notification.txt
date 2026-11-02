@@ -6,4 +6,4 @@ Hi {{ name }},
 {% endif %}
 Open in ServerSherpa: {{ link }}
 
-{% if security %}This is a security notice about your account.{% else %}You get these emails through your notification groups. Change what you receive: {{ prefs_url }}{% endif %}
+{% if security %}This is a security notice about your account.{% else %}You get these emails from your notification settings. Change what you receive: {{ prefs_url }}{% endif %}

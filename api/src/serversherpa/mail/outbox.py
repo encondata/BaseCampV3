@@ -36,9 +36,10 @@ async def enqueue(db: AsyncSession, template: str, to: str, *,
     """`send_at` (aware) is the earliest delivery time; default now.
     `attachments` are inline parts for the HTML body: [{cid, filename,
     content_type, b64}] (see transport.build_message). `log_detail` adds to
-    the delivery-log row's detail (notification mail: deferral reason,
-    groups, address source) and, like that whole detail, must never carry
-    an email address or a message body."""
+    the delivery-log row's detail (notification mail: the address source,
+    and whether it went now as critical, as the owner's copy or after the
+    summary) and, like that whole detail, must never carry an email address
+    or a message body."""
     rendered = render(template, **ctx)
     now = _now()
     due = send_at or now

@@ -17,8 +17,6 @@ from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
     EmailOutbox,
     Notification,
-    NotificationGroup,
-    NotificationGroupMember,
     NotificationLog,
     Person,
     UserAccount,
@@ -29,8 +27,7 @@ from serversherpa.mail.delivery import (
 )
 from serversherpa.mail.transport import build_message
 from serversherpa.notifications.inbox import notify
-from serversherpa.notifications.kinds import kind_info
-from tests.test_notification_email import _group, _person, _prefs
+from tests.test_notification_email import _person, _prefs
 
 ADDRESS = "pat@test.example.com"
 
@@ -62,7 +59,7 @@ async def _get(row_id):
 
 async def _run(stmt):
     """One statement in its own session: a change made after the email was
-    queued (the person read the item, left the group, ...)."""
+    queued (the person read the item, turned the category down, ...)."""
     async with get_sessionmaker()() as s:
         await s.execute(stmt)
         await s.commit()
@@ -82,12 +79,11 @@ async def _notification_mail(db, kind="report_ready", *, person=None,
                              title="Move Report is ready", owner_notice=False,
                              payload=None, **person_kw):
     """Real notification mail: notify() writes the inbox row and queues the
-    email for a person whose group subscribes to the kind's category (an owner
-    notice needs no group). Returns the person, the inbox row, the outbox row.
-    Pass `person` to reuse one whose group already exists."""
+    email, sent now (the person's switches and schedule are the defaults:
+    everything on, never closed). Returns the person, the inbox row, the
+    outbox row. Pass `person` to reuse one."""
     if person is None:
         person = await _person(db, **person_kw)
-        await _group(db, person, categories=(kind_info(kind).category,))
     note = await notify(db, person.id, kind, title, body="NAP11 finished",
                         payload=payload, owner_notice=owner_notice)
     await db.commit()
@@ -97,16 +93,14 @@ async def _notification_mail(db, kind="report_ready", *, person=None,
 
 
 async def _deferred_notification_mail(db):
-    """Notification mail held for quiet hours: the group is quiet from an hour
-    ago until three hours from now (UTC, defer), so the email waits."""
-    now = datetime.now(UTC)
-    person = await _person(db)
-    await _group(db, person, timezone="UTC", dnd_behavior="defer",
-                 quiet_start=(now - timedelta(hours=1)).time(),
-                 quiet_end=(now + timedelta(hours=3)).time())
-    person, note, mail = await _notification_mail(db, person=person)
-    assert mail.next_attempt_at > now + timedelta(hours=2)
-    return person, note, mail
+    """Notification mail queued to wait three hours, as email queued before
+    Phase 1 (when group quiet hours deferred it in the outbox) still can be:
+    new email that has to wait is held for the summary instead."""
+    person, note, mail = await _notification_mail(db)
+    later = datetime.now(UTC) + timedelta(hours=3)
+    await _run(update(EmailOutbox).where(EmailOutbox.id == mail.id)
+               .values(next_attempt_at=later))
+    return person, note, await _get(mail.id)
 
 
 async def _assert_dropped(row_id, reason):
@@ -181,7 +175,7 @@ async def test_future_rows_wait(db, email_on):
 
 
 async def test_deferred_notification_email_waits_then_sends(db, email_on):
-    """A notification email queued with a future send_at (quiet hours) is
+    """A notification email queued with a future send_at (before Phase 1) is
     not claimed until that time passes, then goes out once."""
     _, _, row = await _deferred_notification_mail(db)
     send = FakeSend()
@@ -293,7 +287,7 @@ async def test_hidden_before_send_is_dropped(db, email_on, also_read):
 
 async def test_unread_visible_item_still_sends(db, email_on):
     """The re-check drops nothing it should not: an unread, visible item
-    whose person and group are unchanged goes out and is not marked skipped."""
+    whose person and switches are unchanged goes out and is not marked skipped."""
     _, _, mail = await _notification_mail(db)
     send = FakeSend()
     assert await deliver_once(get_sessionmaker(), send=send) == 1
@@ -304,7 +298,6 @@ async def test_unread_visible_item_still_sends(db, email_on):
 
 async def test_decided_approval_is_dropped(db, email_on):
     person = await _person(db)
-    await _group(db, person, categories=("approvals",))
     _, decided, decided_mail = await _notification_mail(
         db, "membership_request", person=person, title="Decided",
         payload={"state": "pending"})
@@ -356,64 +349,27 @@ async def test_resolved_is_any_state_but_pending_or_open(db, email_on, state, re
         await _assert_dropped(mail.id, reason)
 
 
-@pytest.mark.parametrize("choice", ["inbox", "off"])
-async def test_category_turned_down_since_is_dropped(db, email_on, choice):
-    person, _, mail = await _notification_mail(db, prefs=_prefs(reports="email"))
+async def test_recheck_drops_when_email_switched_off(db, email_on):
+    """A queued email, then the person turns their own Reports Email off: the
+    effective Email switch is off when it is due, so it is dropped."""
+    person, _, mail = await _notification_mail(db, prefs={})
     await _run(update(UserAccount).where(UserAccount.person_id == person.id)
-               .values(ui_prefs=_prefs(reports=choice)))
+               .values(ui_prefs={"notif": {"switches": {"reports": {"email": False}}}}))
     send = FakeSend()
     assert await deliver_once(get_sessionmaker(), send=send) == 1
     assert send.calls == []
     await _assert_dropped(mail.id, "category_turned_down")
 
 
-async def test_left_the_group_since_is_dropped(db, email_on):
-    person, _, mail = await _notification_mail(db)
-    await _run(delete(NotificationGroupMember)
-               .where(NotificationGroupMember.person_id == person.id))
+async def test_recheck_drops_when_inbox_switched_off(db, email_on):
+    """Email needs Inbox: turning the category off turns its email down too."""
+    person, _, mail = await _notification_mail(db, prefs=_prefs(reports="email"))
+    await _run(update(UserAccount).where(UserAccount.person_id == person.id)
+               .values(ui_prefs=_prefs(reports="off")))
     send = FakeSend()
     assert await deliver_once(get_sessionmaker(), send=send) == 1
     assert send.calls == []
-    await _assert_dropped(mail.id, "no_email_group")
-
-
-def _group_update(group, **values):
-    return update(NotificationGroup).where(NotificationGroup.id == group.id).values(**values)
-
-
-def _member_update(person, **values):
-    return (update(NotificationGroupMember)
-            .where(NotificationGroupMember.person_id == person.id).values(**values))
-
-
-@pytest.mark.parametrize("change", [
-    lambda g, p: _group_update(g, enabled=False),
-    lambda g, p: _group_update(g, channels=["web"]),
-    lambda g, p: _group_update(g, categories=[]),
-    lambda g, p: _member_update(p, channels=["web"]),
-], ids=["group-disabled", "group-lost-email", "group-unsubscribed", "member-override-lost-email"])
-async def test_group_that_no_longer_emails_drops_the_email(db, email_on, change):
-    person = await _person(db)
-    group = await _group(db, person)
-    _, _, mail = await _notification_mail(db, person=person)
-    await _run(change(group, person))
-    send = FakeSend()
-    assert await deliver_once(get_sessionmaker(), send=send) == 1
-    assert send.calls == []
-    await _assert_dropped(mail.id, "no_email_group")
-
-
-async def test_another_emailing_group_keeps_the_email(db, email_on):
-    """One group stopped emailing but the person is in a second subscribed
-    group that still does: the email goes."""
-    person = await _person(db)
-    first = await _group(db, person)
-    await _group(db, person)
-    _, _, mail = await _notification_mail(db, person=person)
-    await _run(_group_update(first, channels=["web"]))
-    send = FakeSend()
-    assert await deliver_once(get_sessionmaker(), send=send) == 1
-    assert len(send.calls) == 1 and (await _get(mail.id)).status == "sent"
+    await _assert_dropped(mail.id, "category_turned_down")
 
 
 async def test_disabled_recipient_is_dropped(db, email_on):
@@ -460,14 +416,33 @@ async def test_notification_mail_without_a_notification_is_dropped(db, email_on)
     await _assert_dropped(row.id, "notification_gone")
 
 
-@pytest.mark.parametrize("kind,owner_notice", [("password_expiring", True),
-                                               ("totp_enrolled", False)],
-                         ids=["owner-copy", "admin-copy"])
-async def test_security_mail_sends_even_when_read_or_hidden(db, email_on, kind, owner_notice):
+async def _queued_admin_copy(db):
+    """An admin's copy of totp_enrolled queued for email, as one queued before
+    Phase 1 still can be (admin copies are now inbox-only, never queued)."""
+    person = await _person(db)
+    note = Notification(person_id=person.id, kind="totp_enrolled",
+                        title="Person A enrolled two-factor authentication")
+    db.add(note)
+    await db.flush()
+    mail = await enqueue(db, "notification", ADDRESS, person_id=person.id,
+                         kind="totp_enrolled", notification_id=note.id, name="Pat",
+                         title=note.title, body="", link="https://p/people/users",
+                         security=False, prefs_url="https://p/me/notifications")
+    await db.commit()
+    return person, note, mail
+
+
+@pytest.mark.parametrize("copy", ["owner", "admin"], ids=["owner-copy", "admin-copy"])
+async def test_security_mail_sends_even_when_read_or_hidden(db, email_on, copy):
     """An account-security email goes out even when the person read or hid
     the inbox item the instant it arrived: whoever can read or hide the item
     must not be able to suppress the email."""
-    _, note, mail = await _notification_mail(db, kind, owner_notice=owner_notice)
+    if copy == "owner":
+        kind = "password_expiring"
+        _, note, mail = await _notification_mail(db, kind, owner_notice=True)
+    else:
+        kind = "totp_enrolled"
+        _, note, mail = await _queued_admin_copy(db)
     now = datetime.now(UTC)
     await _run(update(Notification).where(Notification.id == note.id)
                .values(read_at=now, dismissed_at=now))
@@ -494,8 +469,8 @@ async def test_template_mail_is_not_rechecked(db, email_on):
 
 
 async def test_unregistered_kind_is_not_rechecked(db, email_on):
-    """A kind the registry does not list has no category to turn down or
-    group to subscribe to; it is sent as queued."""
+    """A kind the registry does not list has no category to turn down; it is
+    sent as queued."""
     row = await enqueue(db, "notification", ADDRESS, kind="not_a_registered_kind", name="Pat",
                         title="Hello", body="", link="https://p/x", security=False,
                         prefs_url="https://p/me/notifications")
@@ -541,7 +516,6 @@ async def test_delivery_outcomes_are_logged(db, email_on, caplog):
     address, so it stays in last_error."""
     caplog.set_level(logging.DEBUG, logger="serversherpa")
     person = await _person(db)
-    await _group(db, person)
 
     person, note, ok = await _notification_mail(db, person=person)
     assert await deliver_once(get_sessionmaker(), send=FakeSend()) == 1

@@ -1,13 +1,11 @@
 """notifications/email.py effective_switches(): what a person's own Inbox and
-Email switches and the company defaults make of one notification kind, the
-three-state personal_choice() derived from it, and how notify(), the delivery
-check and the send-time re-check use the answer.
+Email switches and the company defaults make of one notification kind, and how
+notify(), the delivery check and the send-time re-check use the answer.
 
 Spec: docs/superpowers/specs/2026-11-01-notifications-phase1-design.md (section 1)"""
 
 from datetime import UTC, datetime
 
-import pytest
 from sqlalchemy import select
 
 from serversherpa.api.schemas import UiPreferences
@@ -32,7 +30,6 @@ from serversherpa.notifications.email import (
     EffectiveSwitches,
     effective_switches,
     load_contact,
-    personal_choice,
     recheck_before_send,
 )
 from serversherpa.notifications.inbox import notify
@@ -154,37 +151,6 @@ def test_every_category_but_security_has_a_company_default():
     assert set(kinds.CATEGORY_KEYS) - {"security"} == set(company.CONFIGURABLE_CATEGORIES)
 
 
-# ── personal_choice (the three states the email decision still works in) ──
-
-@pytest.mark.parametrize("own,expected", [
-    ({}, "email"),
-    ({"email": False}, "inbox"),
-    ({"inbox": False}, "off"),
-    ({"inbox": False, "email": True}, "off"),
-    ({"inbox": True, "email": False}, "inbox"),
-    ({"inbox": True, "email": True}, "email"),
-])
-def test_personal_choice_mapping(own, expected):
-    assert personal_choice(REPORT, _contact(reports=own), _company()) == expected
-
-
-@pytest.mark.parametrize("default,expected", [
-    (Switches(True, True), "email"),
-    (Switches(True, False), "inbox"),
-    (Switches(False, False), "off"),
-    (Switches(False, True), "off"),
-])
-def test_personal_choice_follows_the_company_default(default, expected):
-    assert personal_choice(REPORT, _contact(), _company(reports=default)) == expected
-    assert personal_choice(REPORT, None, _company(reports=default)) == expected
-
-
-def test_personal_choice_is_email_for_security_and_unregistered_kinds():
-    off = _company(**{c: Switches(False, False) for c in CONFIGURABLE_CATEGORIES})
-    assert personal_choice(SECURITY, _contact(), off) == "email"
-    assert personal_choice(None, _contact(), off) == "email"
-
-
 # ── the places that use it ──────────────────────────────────────────
 
 async def test_notify_suppresses_inbox_when_inbox_off(db, seeded_user):
@@ -222,17 +188,23 @@ async def test_notify_follows_the_company_default(db, seeded_user):
     assert await notify(db, seeded_user.id, "wiki_comment", "Shown too") is not None
 
 
-async def test_check_delivery_reports_the_choice_the_switches_make(db, seeded_user):
+async def test_check_delivery_reports_the_switches(db, seeded_user):
     await _set_company_defaults(db, wiki={"inbox": True, "email": False},
                                 reports={"inbox": False, "email": False})
     await db.commit()
 
     reports = await check_delivery(db, seeded_user.id, "report_ready", now=NOW)
-    assert (reports["choice"], reports["inbox"]) == ("off", "suppressed")
+    assert (reports["inbox"], reports["inbox_source"]) == ("suppressed", "default")
+    assert reports["switches"] == {"inbox": {"on": False, "source": "default"},
+                                   "email": {"on": False, "source": "default"}}
     wiki = await check_delivery(db, seeded_user.id, "wiki_comment", now=NOW)
-    assert (wiki["choice"], wiki["inbox"]) == ("inbox", "written")
+    assert wiki["inbox"] == "written"
+    assert wiki["switches"] == {"inbox": {"on": True, "source": "default"},
+                                "email": {"on": False, "source": "default"}}
     learning = await check_delivery(db, seeded_user.id, "learning_complete", now=NOW)
-    assert (learning["choice"], learning["inbox"]) == ("email", "written")
+    assert learning["inbox"] == "written"
+    assert learning["switches"] == {"inbox": {"on": True, "source": "default"},
+                                    "email": {"on": True, "source": "default"}}
 
 
 async def _queued_report_mail(db, person) -> EmailOutbox:

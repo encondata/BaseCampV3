@@ -289,9 +289,22 @@ async def test_forced_enrollment_leaves_an_inbox_notification(client, db, seeded
 
 
 async def test_forced_enrollment_emails_the_owner_copy(client, db, seeded_user, email_on):
-    """The owner's own totp_enrolled copy is an owner notice: it emails
-    without any notification group."""
-    from serversherpa.db.models import EmailOutbox
+    """The owner's own totp_enrolled copy is an owner notice: it emails at
+    once. The copy each user admin gets stays in their inbox, never emailed."""
+    from serversherpa.db.models import (
+        EmailOutbox,
+        Notification,
+        NotificationLog,
+        Person,
+        PersonRole,
+    )
+
+    admin = Person(first_name="Admin", last_name="A", email="admin@test.example.com")
+    db.add(admin)
+    await db.flush()
+    db.add(UserAccount(person_id=admin.id, email="admin@test.example.com", password_hash="x"))
+    db.add(PersonRole(person_id=admin.id, role="admin"))
+    await db.commit()
 
     await _security(db, two_factor_enabled=True, two_factor_required=True)
     login = await _login(client)
@@ -306,6 +319,15 @@ async def test_forced_enrollment_emails_the_owner_copy(client, db, seeded_user, 
     assert mails[0].to_address == "alice@test.example.com"
     assert "An authenticator app" not in mails[0].html_body     # brief kind: no body
     assert "An authenticator app" not in mails[0].text_body
+
+    # the admin's copy: in the inbox, not emailed, and the log says why
+    [copy] = await db.scalars(select(Notification).where(
+        Notification.person_id == admin.id, Notification.kind == "totp_enrolled"))
+    assert await db.scalar(select(EmailOutbox.id).where(
+        EmailOutbox.person_id == admin.id)) is None
+    [why] = await db.scalars(select(NotificationLog).where(
+        NotificationLog.person_id == admin.id, NotificationLog.event == "email_not_queued"))
+    assert (why.reason, why.notification_id) == ("admin_copy", copy.id)
 
 
 async def test_verify_challenge_cannot_enroll(client, db, seeded_user):

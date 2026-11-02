@@ -656,8 +656,15 @@ async def test_run_reminders_once_swallows_errors(db, seeded_user, caplog, monke
     assert "db is on fire" in caplog.text
 
 
-async def test_reminder_emails_the_owner_without_any_group(db, seeded_user, email_on):
-    from serversherpa.db.models import EmailOutbox
+async def test_reminder_emails_the_owner_at_once(db, seeded_user, email_on):
+    """An expiry reminder is the owner's own security notice: it is emailed
+    right away, even in the person's quiet hours, never held for a summary."""
+    from serversherpa.db.models import EmailOutbox, NotificationHeld
+    now = datetime.now(UTC)
+    quiet = {"timezone": "UTC", "quiet_start": f"{(now.hour - 1) % 24:02d}:00",
+             "quiet_end": f"{(now.hour + 3) % 24:02d}:00"}
+    await db.execute(update(UserAccount).where(UserAccount.person_id == seeded_user.id)
+                     .values(ui_prefs={"notif": {"schedule": quiet}}))
     await _with_days_left(db, seeded_user.id, 2)
     assert await _sweep(db) == 1
     mails = list(await db.scalars(select(EmailOutbox).where(
@@ -665,3 +672,5 @@ async def test_reminder_emails_the_owner_without_any_group(db, seeded_user, emai
     assert [m.kind for m in mails] == [KIND]
     assert mails[0].template == "notification"
     assert mails[0].subject == "Your password expires in 2 days"
+    assert mails[0].next_attempt_at <= datetime.now(UTC)
+    assert await db.scalar(select(NotificationHeld.id)) is None

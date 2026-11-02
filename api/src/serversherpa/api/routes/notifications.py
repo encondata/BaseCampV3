@@ -789,10 +789,12 @@ async def check_delivery(
     actor: AuthContext = require_permission("notifications", "view"),
 ) -> DeliveryCheckOut:
     """What would happen right now if this person got a notification of this
-    registered kind: the inbox row, the email's outcome and why, the address,
-    and each of the person's groups. Writes nothing. For a kind the account
-    owner always receives, `owner_copy=false` models an admin's copy instead
-    of the owner's. Super admin and above."""
+    registered kind: the inbox row, the email's outcome (now, held for their
+    summary, or not sent) and why, the address, their switches for the
+    category and where each comes from, their schedule, and whether the kind
+    is critical. Writes nothing. For a kind the account owner always receives,
+    `owner_copy=false` models an admin's copy instead of the owner's. Super
+    admin and above."""
     ensure_super_admin(actor)
     if kind not in KINDS:
         raise _err(422, "invalid_kind")
@@ -802,17 +804,28 @@ async def check_delivery(
         db, person_id, kind, owner_copy=owner_copy, now=datetime.now(UTC)))
 
 
+def _kind_flags(company: CompanySettings) -> list[dict]:
+    """Every registered kind in registry order with its flags: whether it is
+    ever emailed, whether it is critical (account security always; any other
+    kind once an admin marked it), and whether that is locked (security)."""
+    return [{"kind": kind, "label": info.label, "category": info.category,
+             "email": info.email, "owner_always": info.owner_always,
+             "critical": is_critical(kind, company),
+             "locked": info.category == SECURITY_CATEGORY}
+            for kind, info in KINDS.items()]
+
+
 @router.get("/kinds", response_model=list[NotificationKindOut])
 async def list_kinds(
+    db: DbSession,
     actor: AuthContext = require_permission("notifications", "view"),
 ) -> list[NotificationKindOut]:
     """The registered notification kinds in registry order, for Check
-    delivery's picker. Super admin and above."""
+    delivery's picker, each with whether it is critical and whether that is
+    locked. Super admin and above."""
     ensure_super_admin(actor)
-    return [NotificationKindOut(kind=kind, label=info.label, category=info.category,
-                                email=info.email, owner_always=info.owner_always,
-                                urgent=info.urgent)
-            for kind, info in KINDS.items()]
+    return [NotificationKindOut(**flags)
+            for flags in _kind_flags(await load_company_settings(db))]
 
 
 # ── company settings (anyone signed in reads; admin and above changes) ─────
@@ -833,11 +846,7 @@ def _settings_out(company: CompanySettings) -> NotificationSettingsOut:
     return NotificationSettingsOut(
         defaults={category: SwitchPair(**pair) for category, pair in stored["defaults"].items()},
         critical_kinds=stored["critical_kinds"],
-        kinds=[NotificationKindSettingOut(
-            kind=kind, label=info.label, category=info.category, email=info.email,
-            owner_always=info.owner_always, critical=is_critical(kind, company),
-            locked=info.category == SECURITY_CATEGORY)
-            for kind, info in KINDS.items()])
+        kinds=[NotificationKindSettingOut(**flags) for flags in _kind_flags(company)])
 
 
 @router.get("/settings", response_model=NotificationSettingsOut)
