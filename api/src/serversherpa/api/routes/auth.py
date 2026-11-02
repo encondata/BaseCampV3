@@ -5,6 +5,7 @@ ordinary API requests."""
 import logging
 from datetime import UTC, datetime
 from typing import Annotated, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Cookie, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -382,7 +383,15 @@ async def save_preferences(
     body: UiPreferences, user: CurrentUser, db: DbSession
 ) -> UiPreferences:
     """Persist UI preferences on the account, so every device the user
-    signs in on gets their normal display."""
+    signs in on gets their normal display. A notification schedule zone that
+    does not load is refused here (422 invalid_timezone, nothing saved): the
+    model itself must keep reading whatever is stored."""
+    zone = body.notif.schedule.timezone
+    if zone is not None:
+        try:
+            ZoneInfo(zone)
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            raise HTTPException(status_code=422, detail={"code": "invalid_timezone"}) from None
     before = user.account.ui_prefs or {}
     after = body.model_dump()
     user.account.ui_prefs = after

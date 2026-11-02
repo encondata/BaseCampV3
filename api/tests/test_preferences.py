@@ -1,7 +1,12 @@
 """UI preferences: defaults, persistence across logins, validation."""
 
+import logging
+
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import func, select
+
+from serversherpa.db.models import AuditLog, UserAccount
 
 LOGIN = {"email": "alice@test.example.com", "password": "CorrectHorse9!"}
 
@@ -203,8 +208,6 @@ async def _put(client, **notif):
 
 
 @pytest.mark.parametrize("schedule,code", [
-    ({"timezone": "Not/AZone"}, "invalid_timezone"),
-    ({"timezone": ""}, "invalid_timezone"),
     ({"days": []}, "invalid_days"),
     ({"days": ["mon", "funday"]}, "invalid_days"),
     ({"days": ["mon", "mon"]}, "invalid_days"),
@@ -219,6 +222,22 @@ async def test_invalid_schedule_is_rejected_with_its_code(client, seeded_user, s
     resp = await _put(client, schedule={**PREFS["notif"]["schedule"], **schedule})
     assert resp.status_code == 422
     assert any(code in error["msg"] for error in resp.json()["detail"]), resp.text
+
+
+@pytest.mark.parametrize("zone", ["Not/AZone", "", "../etc/passwd", "America"])
+async def test_an_unloadable_zone_is_refused_with_its_code_and_nothing_is_saved(
+        client, db, seeded_user, zone):
+    """The zone is checked where preferences are saved, not by the model (which
+    must keep reading whatever is stored): 422 {"code": "invalid_timezone"}."""
+    resp = await _put(client, schedule={**PREFS["notif"]["schedule"], "timezone": zone})
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == {"code": "invalid_timezone"}
+    # nothing was saved: neither the preferences nor an audit row
+    stored = await db.scalar(select(UserAccount.ui_prefs).where(
+        UserAccount.person_id == seeded_user.id))
+    assert stored == {}
+    assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+        AuditLog.action == "preferences.update")) == 0
 
 
 @pytest.mark.parametrize("schedule", [
@@ -250,6 +269,37 @@ async def test_an_overnight_window_and_an_unset_zone_are_accepted(client, seeded
     resp = await _put(client, schedule=schedule)
     assert resp.status_code == 200, resp.text
     assert resp.json()["notif"]["schedule"] == schedule
+
+
+async def test_stored_bad_zone_still_reads(client, db, seeded_user, caplog):
+    """A zone that stops loading after it was saved (a tz database that lost it)
+    must never break reading preferences: sign-in and /auth/me still answer with
+    what is stored, and the schedule falls back to the reference zone when it is
+    used (spec section 3)."""
+    from serversherpa.notifications.email import load_contact
+    from serversherpa.notifications.schedule import schedule_from_prefs
+
+    headers = {"Authorization": f"Bearer {(await _login(client))['access_token']}"}
+    stored = {"timezone": "Not/AZone", "days": ["mon"], "quiet_start": "21:00",
+              "quiet_end": "06:00"}
+    account = await db.get(UserAccount, seeded_user.id)
+    account.ui_prefs = {"notif": {"sound": "ping", "schedule": stored}}   # the PUT would refuse it
+    await db.commit()
+
+    me = await client.get("/auth/me", headers=headers)
+    assert me.status_code == 200, me.text
+    assert me.json()["preferences"]["notif"] == {
+        "sound": "ping", "switches": {}, "schedule": stored}
+    assert (await _login(client))["preferences"]["notif"]["schedule"] == stored
+
+    # the notification side reads it too, and the schedule falls back when it is used
+    contact = await load_contact(db, seeded_user.id)
+    assert contact.choice_prefs.notif.sound == "ping"          # not the defaults' "chime"
+    assert contact.choice_prefs.notif.schedule.timezone == "Not/AZone"
+    with caplog.at_level(logging.WARNING, logger="serversherpa.notifications.schedule"):
+        schedule = schedule_from_prefs(contact.choice_prefs.notif.schedule.model_dump())
+    assert schedule.zone.key == "America/New_York"
+    assert "Not/AZone" in caplog.text
 
 
 async def test_switches_drop_security_unknown_and_empty_entries(client, seeded_user):
@@ -343,10 +393,19 @@ def test_schedule_days_come_back_in_week_order(days, expected):
     assert NotifSchedule(days=days).days == expected
 
 
+@pytest.mark.parametrize("zone", ["Not/AZone", "", "../etc/passwd", "America"])
+def test_the_model_reads_any_zone_name(zone):
+    """The model never tries to load the zone: whatever is stored must parse, so
+    a zone that stops loading cannot break reading preferences. Saving refuses
+    it instead (the PUT route)."""
+    from serversherpa.api.schemas import NotifSchedule, UiPreferences
+
+    assert NotifSchedule(timezone=zone).timezone == zone
+    prefs = UiPreferences.model_validate({"notif": {"schedule": {"timezone": zone}}})
+    assert prefs.notif.schedule.timezone == zone
+
+
 @pytest.mark.parametrize("kwargs,code", [
-    ({"timezone": "Not/AZone"}, "invalid_timezone"),
-    ({"timezone": "../etc/passwd"}, "invalid_timezone"),
-    ({"timezone": "America"}, "invalid_timezone"),           # a directory, not a zone
     ({"days": []}, "invalid_days"),
     ({"days": ["Mon"]}, "invalid_days"),
     ({"days": ["mon", "mon"]}, "invalid_days"),

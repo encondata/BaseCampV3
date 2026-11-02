@@ -7,7 +7,6 @@ import uuid
 from datetime import date, datetime, time
 from ipaddress import IPv4Address
 from typing import Annotated, Any, Literal
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import (
     AfterValidator,
@@ -84,8 +83,14 @@ class NotifSchedule(BaseModel):
     """When email may reach the person: their timezone (None: the company
     reference zone), the days they work, and quiet hours as two local "HH:MM"
     times, both or neither and different (the window may run past midnight).
-    A rejected value's message is its code: invalid_timezone, invalid_days or
-    invalid_quiet_hours."""
+    A rejected value's message is its code: invalid_days or invalid_quiet_hours.
+
+    The timezone is any string here: the model never loads it, so a stored zone
+    that later stops loading cannot break reading preferences (login, /auth/me),
+    and schedule_from_prefs() falls back to the reference zone when it is used.
+    Saving is where the zone is checked (PUT /auth/me/preferences answers 422
+    invalid_timezone). Days and quiet hours cannot go stale after a valid save,
+    so the model checks those."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -93,16 +98,6 @@ class NotifSchedule(BaseModel):
     days: list[str] = Field(default_factory=lambda: list(DAYS))
     quiet_start: str | None = None
     quiet_end: str | None = None
-
-    @field_validator("timezone")
-    @classmethod
-    def _timezone_loads(cls, v: str | None) -> str | None:
-        if v is not None:
-            try:
-                ZoneInfo(v)
-            except (ZoneInfoNotFoundError, ValueError, OSError):
-                raise ValueError("invalid_timezone") from None
-        return v
 
     @field_validator("days")
     @classmethod

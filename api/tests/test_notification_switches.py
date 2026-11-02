@@ -260,6 +260,16 @@ async def test_recheck_before_send_follows_the_company_default(db, seeded_user):
     assert await recheck_before_send(db, mail) != "category_turned_down"
 
 
+async def test_an_unloadable_stored_zone_does_not_hide_the_persons_switches(db):
+    """A zone that stops loading only touches the schedule (which falls back to
+    the reference zone when used): the person's own switches still apply."""
+    person = await _person(db, prefs={"notif": {"switches": {"reports": {"inbox": False}},
+                                                "schedule": {"timezone": "Not/AZone"}}})
+    contact = await load_contact(db, person.id)
+    assert effective_switches(REPORT, contact, _company()) == EffectiveSwitches(
+        False, False, "own", "default")
+
+
 async def test_unreadable_stored_prefs_behave_as_defaults(db):
     """A stored blob that no longer parses (here an empty days list) must not
     stop notify(): the recipient follows the defaults."""
