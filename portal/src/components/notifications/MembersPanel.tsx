@@ -119,7 +119,8 @@ export default function MembersPanel({ group, canChange, reload }: {
       {group.members.length === 0 ? (
         <div className="dir-empty" style={{ marginTop: 12 }}>No members yet.</div>
       ) : (
-        <div style={{ marginTop: 12 }}>
+        // .ngd-members scopes the table's themed scrollbar (notifications.css)
+        <div className="ngd-members" style={{ marginTop: 12 }}>
         <DataTable
           ariaLabel="Members"
           className="ngd-members-table"

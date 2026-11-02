@@ -326,6 +326,16 @@ it('members table columns are Person and Contact without change permission', asy
   expect(screen.queryByPlaceholderText(/add a member/i)).toBeNull();
 });
 
+it('the members table sits in .ngd-members, the scope of its themed scrollbar: a card too narrow for it scrolls sideways', async () => {
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1] });
+  const { container } = renderPage();
+  await screen.findByText('Alice Tech');
+
+  const scroll = container.querySelector('.ngd-members > .data-table-scroll');
+  expect(scroll).toBeTruthy();
+  expect(scroll?.querySelector('table[aria-label="Members"]')).toBeTruthy();
+});
+
 it('a group with no members says "No members yet."', async () => {
   api.getNotificationGroup.mockResolvedValue({ ...BASE, member_count: 0, members: [] });
   renderPage();

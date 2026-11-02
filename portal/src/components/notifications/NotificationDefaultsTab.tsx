@@ -6,7 +6,9 @@
  * what the server last answered:
  *
  *  - "What people get by default": the Inbox / Email grid (SwitchGrid in
- *    defaults mode) on a draft. Save sends `{defaults}` and nothing else.
+ *    defaults mode) on a draft. Save sends `{defaults}` and nothing else, and
+ *    only the categories changed here: the server merges per category, so a
+ *    tab loaded before another admin's save leaves their change alone.
  *    Admins set the defaults whether or not the server can send email right
  *    now, so Email is never switched off here for that.
  *  - "Critical notifications": every kind that can be emailed, with a Critical
@@ -151,7 +153,10 @@ export default function NotificationDefaultsTab() {
     setError(null);
     try {
       if (card === 'defaults') {
-        const next = await updateNotificationSettings({ defaults: draft.defaults });
+        // Only the categories that differ from what was loaded or last saved.
+        const changed = Object.fromEntries(Object.entries(draft.defaults)
+          .filter(([category, pair]) => !samePair(pair, saved.defaults[category])));
+        const next = await updateNotificationSettings({ defaults: changed });
         setSaved((s) => s && { ...s, defaults: next.defaults, kinds: next.kinds });
         setDraft((d) => d && { ...d, defaults: next.defaults });
       } else {

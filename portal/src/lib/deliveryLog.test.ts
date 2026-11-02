@@ -264,6 +264,30 @@ describe('describeEntry', () => {
       .toBe('Category turned off');
   });
 
+  it('a switch that turned it down says whose it was: Company default or Their choice', () => {
+    const suppressed = (source: string) => describeEntry(entry({
+      event: 'inbox_suppressed', reason: 'category_off', notification_id: null, detail: { source },
+    }));
+    expect(suppressed('default')).toBe('Category turned off · Company default');
+    expect(suppressed('own')).toBe('Category turned off · Their choice');
+
+    const notEmailed = (reason: string, source: string) => describeEntry(entry({
+      event: 'email_not_queued', channel: 'email', reason, detail: { source },
+    }));
+    expect(notEmailed('category_off', 'own')).toBe('Category turned off · Their choice');
+    expect(notEmailed('category_inbox_only', 'default')).toBe('Category set to inbox only · Company default');
+    expect(notEmailed('category_inbox_only', 'own')).toBe('Category set to inbox only · Their choice');
+  });
+
+  it('a row without a source reads as its reason alone, as before', () => {
+    expect(describeEntry(entry({ event: 'inbox_suppressed', reason: 'category_off', notification_id: null })))
+      .toBe('Category turned off');
+    expect(describeEntry(entry({ event: 'email_not_queued', channel: 'email', reason: 'category_inbox_only' })))
+      .toBe('Category set to inbox only');
+    expect(describeEntry(entry({ event: 'email_not_queued', channel: 'email', reason: 'no_address' })))
+      .toBe('No email address');
+  });
+
   it('a held email dropped when its summary came reads as the reason it was dropped', () => {
     expect(describeEntry(entry({ event: 'email_skipped', channel: 'email', reason: 'category_turned_down' })))
       .toBe('Category turned down');

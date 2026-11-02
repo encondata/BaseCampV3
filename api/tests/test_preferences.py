@@ -224,7 +224,11 @@ async def test_invalid_schedule_is_rejected_with_its_code(client, seeded_user, s
     assert any(code in error["msg"] for error in resp.json()["detail"]), resp.text
 
 
-@pytest.mark.parametrize("zone", ["Not/AZone", "", "../etc/passwd", "America"])
+@pytest.mark.parametrize("zone", [
+    "Not/AZone", "", "../etc/passwd", "America",
+    # ZoneInfo recurses through this until RecursionError: still a 422, not a 500
+    pytest.param("A/" * 300 + "B", id="deeply-nested"),
+])
 async def test_an_unloadable_zone_is_refused_with_its_code_and_nothing_is_saved(
         client, db, seeded_user, zone):
     """The zone is checked where preferences are saved, not by the model (which
@@ -271,14 +275,16 @@ async def test_an_overnight_window_and_an_unset_zone_are_accepted(client, seeded
     assert resp.json()["notif"]["schedule"] == schedule
 
 
-async def test_stored_bad_zone_still_reads(client, db, seeded_user, caplog):
+async def test_stored_bad_zone_still_reads(client, db, seeded_user, caplog, monkeypatch):
     """A zone that stops loading after it was saved (a tz database that lost it)
     must never break reading preferences: sign-in and /auth/me still answer with
     what is stored, and the schedule falls back to the reference zone when it is
     used (spec section 3)."""
+    from serversherpa.notifications import schedule as schedule_module
     from serversherpa.notifications.email import load_contact
     from serversherpa.notifications.schedule import schedule_from_prefs
 
+    monkeypatch.setattr(schedule_module, "_warned_zones", set())   # nothing warned yet
     headers = {"Authorization": f"Bearer {(await _login(client))['access_token']}"}
     stored = {"timezone": "Not/AZone", "days": ["mon"], "quiet_start": "21:00",
               "quiet_end": "06:00"}
@@ -300,6 +306,56 @@ async def test_stored_bad_zone_still_reads(client, db, seeded_user, caplog):
         schedule = schedule_from_prefs(contact.choice_prefs.notif.schedule.model_dump())
     assert schedule.zone.key == "America/New_York"
     assert "Not/AZone" in caplog.text
+
+
+async def _store_prefs(db, seeded_user, prefs):
+    """Write ui_prefs straight to the account, as the PUT would now refuse them."""
+    account = await db.get(UserAccount, seeded_user.id)
+    account.ui_prefs = prefs
+    await db.commit()
+
+
+async def _stored_prefs(db, seeded_user):
+    return await db.scalar(select(UserAccount.ui_prefs).where(
+        UserAccount.person_id == seeded_user.id))
+
+
+async def test_a_stored_zone_that_stopped_loading_does_not_block_other_changes(
+        client, db, seeded_user):
+    """Only a changed zone is checked. A stored zone that has since stopped
+    loading comes back unchanged with every save, and an unrelated change
+    (here the theme) still saves."""
+    stored = _with_notif(schedule={**PREFS["notif"]["schedule"], "timezone": "Not/AZone"})
+    await _store_prefs(db, seeded_user, stored)
+
+    body = await _login(client)
+    headers = {"Authorization": f"Bearer {body['access_token']}"}
+    resp = await client.put("/auth/me/preferences", json={**stored, "theme": "light"},
+                            headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["theme"] == "light"
+    assert resp.json()["notif"]["schedule"]["timezone"] == "Not/AZone"
+    assert await _stored_prefs(db, seeded_user) == {**stored, "theme": "light"}
+
+
+@pytest.mark.parametrize("stored_zone", ["America/Chicago", "Not/AZone"])
+async def test_changing_to_a_zone_that_does_not_load_is_refused(
+        client, db, seeded_user, stored_zone):
+    """A zone that does not load is let through only unchanged: changing to one,
+    from a good zone or from another that stopped loading, answers 422 and
+    saves nothing."""
+    schedule = {**PREFS["notif"]["schedule"], "timezone": stored_zone}
+    stored = _with_notif(schedule=schedule)
+    await _store_prefs(db, seeded_user, stored)
+
+    body = await _login(client)
+    headers = {"Authorization": f"Bearer {body['access_token']}"}
+    changed = _with_notif(schedule={**schedule, "timezone": "Also/NotAZone"})
+    resp = await client.put("/auth/me/preferences", json={**changed, "theme": "light"},
+                            headers=headers)
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == {"code": "invalid_timezone"}
+    assert await _stored_prefs(db, seeded_user) == stored
 
 
 async def test_switches_drop_security_unknown_and_empty_entries(client, seeded_user):

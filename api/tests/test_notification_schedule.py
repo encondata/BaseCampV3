@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from serversherpa.notifications import schedule as schedule_module
 from serversherpa.notifications.schedule import (
     DAYS,
     HoldDecision,
@@ -18,6 +19,7 @@ from serversherpa.notifications.schedule import (
     schedule_from_prefs,
     state_at,
     summary_at,
+    zone_loads,
 )
 
 CHI = ZoneInfo("America/Chicago")
@@ -279,7 +281,8 @@ def test_spring_forward_quiet_end_in_the_gap_opens_after_the_gap():
 # ── reading the stored preference ──
 
 
-def test_bad_zone_falls_back(caplog):
+def test_bad_zone_falls_back(caplog, monkeypatch):
+    monkeypatch.setattr(schedule_module, "_warned_zones", set())   # nothing warned yet
     with caplog.at_level(logging.WARNING, logger="serversherpa.notifications.schedule"):
         s = schedule_from_prefs({"timezone": "Not/AZone"})
     assert s.zone.key == "America/New_York"
@@ -287,12 +290,39 @@ def test_bad_zone_falls_back(caplog):
     assert "Not/AZone" in caplog.text
 
 
-@pytest.mark.parametrize("name", ["../etc/passwd", "zone.tab", "America"])
+def test_a_bad_zone_is_warned_about_once_per_name(caplog, monkeypatch):
+    """The summary sweep reads the same stored zone every 60 s: one warning per
+    bad name, not one per read."""
+    monkeypatch.setattr(schedule_module, "_warned_zones", set())
+    with caplog.at_level(logging.WARNING, logger="serversherpa.notifications.schedule"):
+        for _ in range(2):
+            assert schedule_from_prefs({"timezone": "Not/AZone"}).zone.key == "America/New_York"
+        assert schedule_from_prefs({"timezone": "Also/NotAZone"}).zone.key == "America/New_York"
+    warned = [r.getMessage() for r in caplog.records
+              if r.name == "serversherpa.notifications.schedule" and r.levelno == logging.WARNING]
+    assert len(warned) == 2
+    assert "Not/AZone" in warned[0] and "Also/NotAZone" in warned[1]
+
+
+NESTED = "A/" * 300 + "B"   # ZoneInfo recurses through it until RecursionError
+
+
+@pytest.mark.parametrize("name", [
+    "../etc/passwd", "zone.tab", "America", pytest.param(NESTED, id="deeply-nested"),
+])
 def test_zone_names_zoneinfo_refuses_fall_back_too(name):
     # ZoneInfo raises a different error for each of these (ValueError for a
-    # path outside the zone database or a file that is not a zone, and a
-    # not-found error for a directory).
+    # path outside the zone database or a file that is not a zone, a
+    # not-found error for a directory, and RecursionError for a name nested
+    # that deep).
     assert schedule_from_prefs({"timezone": name}).zone.key == "America/New_York"
+
+
+def test_zone_loads():
+    assert zone_loads("America/Chicago")
+    assert zone_loads("UTC")
+    for name in ("Not/AZone", "", "../etc/passwd", "zone.tab", "America", NESTED):
+        assert not zone_loads(name), name
 
 
 def test_a_good_zone_is_used():

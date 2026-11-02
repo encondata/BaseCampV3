@@ -6504,6 +6504,9 @@ export type DeliveryLogEvent =
 /** One recorded decision with the names it points at. `event`, `channel`,
  *  `reason` and `category` are codes; one a newer API adds shows as itself.
  *  `detail` holds ids, codes and counts only (never an address or a body):
+ *  inbox_suppressed, and email_not_queued for category_off or
+ *  category_inbox_only → source (default / own: whether the switch that
+ *  turned it down follows the company default or is the person's own);
  *  email_queued → template, send_at, deferred, and for notification mail via
  *  (contact / login) plus critical, owner_copy and after_summary when true;
  *  for the summary email itself summary (true) and count; rows from before
@@ -6599,9 +6602,11 @@ export interface DeliveryCheckSchedule {
  *  `inbox_source` where the Inbox switch behind it comes from. `outcome` is
  *  the email's: sent now (`send_at`), held for the person's summary (due
  *  `summary_at`), or not sent; `reason` says why it is held or does not go.
- *  `owner_copy` is the copy that was modeled; `critical` is whether the TYPE
- *  skips quiet hours, days off and the summary (true for an admin copy that
- *  is not emailed, too). */
+ *  `after_summary` marks an email sent now only because it falls in the last
+ *  hour before the person is back online, when that morning's summary has
+ *  already gone. `owner_copy` is the copy that was modeled; `critical` is
+ *  whether the TYPE skips quiet hours, days off and the summary (true for an
+ *  admin copy that is not emailed, too). */
 export interface DeliveryCheck {
   person_id: string;
   person_name: string;
@@ -6618,6 +6623,7 @@ export interface DeliveryCheck {
   switches: { inbox: DeliveryCheckSwitch; email: DeliveryCheckSwitch };
   schedule: DeliveryCheckSchedule;
   outcome: 'now' | 'held' | 'not_sent';
+  after_summary: boolean;
   send_at: string | null;
   summary_at: string | null;
   reason: string | null;

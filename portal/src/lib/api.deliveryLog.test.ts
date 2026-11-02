@@ -108,8 +108,8 @@ it('checkDelivery returns the answer as sent: switches, schedule, critical and t
       timezone: 'America/Chicago', days: ['mon', 'tue'], quiet_start: '21:00', quiet_end: '07:00',
       state: 'quiet_hours',
     },
-    outcome: 'held', send_at: null, summary_at: '2026-11-02T12:00:00Z', reason: 'quiet_hours',
-    address: 'ada@example.com', address_source: 'contact',
+    outcome: 'held', after_summary: false, send_at: null, summary_at: '2026-11-02T12:00:00Z',
+    reason: 'quiet_hours', address: 'ada@example.com', address_source: 'contact',
   };
   mockFetch(json(answer));
   const check = await checkDelivery('p1', 'report_ready');

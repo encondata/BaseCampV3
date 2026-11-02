@@ -661,6 +661,20 @@ it('Leave opens the request modal, Send posts the leave request, and a pending l
   expect(screen.getByRole('menuitem', { name: 'Leave group' })).toBeTruthy();
 });
 
+it('a cancel on its way reads Canceling…', async () => {
+  api.listMyNotificationGroups.mockResolvedValueOnce([{
+    ...G1, pending_request: { id: 'req1', action: 'leave', note: '', created_at: '2026-09-10T00:00:00Z' },
+  }]);
+  api.cancelMembershipRequest.mockReturnValue(new Promise(() => {}));
+  render(<MeNotifications />);
+  await waitFor(() => expect(screen.getByText('Ops')).toBeTruthy());
+
+  pickAction('My groups', 'Cancel request');
+  await waitFor(() => expect(api.cancelMembershipRequest).toHaveBeenCalledWith('req1'));
+  fireEvent.click(within(region('My groups')).getByRole('button', { name: /Actions/ }));
+  expect(screen.getByRole('menuitem', { name: 'Canceling…' })).toBeTruthy();
+});
+
 it('the request modal wears the standard header, for Leave and for Join', async () => {
   api.listMyNotificationGroups.mockResolvedValueOnce([G1, G2]);
   render(<MeNotifications />);

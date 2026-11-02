@@ -77,7 +77,7 @@ export default function GroupsList({
     if (pending) {
       return [{
         key: 'cancel',
-        label: busyRequestIds[pending.id] ? 'Cancelling…' : 'Cancel request',
+        label: busyRequestIds[pending.id] ? 'Canceling…' : 'Cancel request',
         onSelect: () => { if (!busyRequestIds[pending.id]) onCancel(pending.id); },
       }];
     }

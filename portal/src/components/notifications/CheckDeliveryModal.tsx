@@ -22,7 +22,8 @@ import {
   type DeliveryCheck, type NotificationKindInfo, type NotificationRecipient,
 } from '../../lib/api';
 import {
-  ADDRESS_SOURCE_LABELS, reasonLabel, scheduleStateOf, shortWhen, switchSourceLabel,
+  ADDRESS_SOURCE_LABELS, AFTER_SUMMARY_LABEL, reasonLabel, scheduleStateOf, shortWhen,
+  switchSourceLabel,
 } from '../../lib/deliveryLog';
 import { categoryLabel } from '../../lib/notificationKinds';
 import { formatDays, formatQuietHours } from '../../lib/notifications';
@@ -76,7 +77,8 @@ function emailLine(r: DeliveryCheck): ReactNode {
       </>
     );
   }
-  return <>{chip}{to && ` ${to}`}</>;
+  // In the last hour before they are back online it goes now: that morning's summary has gone
+  return <>{chip}{to && ` ${to}`}{r.after_summary && ` · ${AFTER_SUMMARY_LABEL}`}</>;
 }
 
 /** "Inbox on (Company default) · Email off (Their choice)". Email needs Inbox:

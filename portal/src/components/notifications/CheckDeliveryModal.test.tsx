@@ -55,7 +55,7 @@ const check = (over: Partial<DeliveryCheck> = {}): DeliveryCheck => ({
   inbox: 'written', inbox_source: 'default', email_enabled: true, critical: false,
   switches: { inbox: { on: true, source: 'default' }, email: { on: true, source: 'default' } },
   schedule: { timezone: 'America/Chicago', days: WEEKDAYS, quiet_start: '21:00', quiet_end: '07:00', state: 'open' },
-  outcome: 'now', send_at: NOW, summary_at: null, reason: null,
+  outcome: 'now', after_summary: false, send_at: NOW, summary_at: null, reason: null,
   address: 'ada@example.com', address_source: 'contact', ...over,
 });
 
@@ -197,6 +197,19 @@ it('an email that goes now names the address and where it came from', async () =
   await ask(dialog, user);
   expect(line(dialog, 'Inbox')).toBe('In inbox · Company default');
   expect(line(dialog, 'Email')).toBe('Sends now to ada@example.com (contact email)');
+});
+
+it('an email that goes now in the last quiet hour says it goes after the summary', async () => {
+  const user = userEvent.setup();
+  api.checkDelivery.mockResolvedValue(check({
+    after_summary: true,
+    schedule: { timezone: 'America/Chicago', days: WEEKDAYS, quiet_start: '21:00', quiet_end: '07:00', state: 'quiet_hours' },
+  }));
+  const dialog = open();
+  await ask(dialog, user);
+  // the reason "Sends now" stands beside "In quiet hours"
+  expect(line(dialog, 'Email')).toBe('Sends now to ada@example.com (contact email) · after the summary');
+  expect(line(dialog, 'Their schedule')).toContain('now In quiet hours');
 });
 
 it('a held email says until the summary time, why, and where the summary goes', async () => {

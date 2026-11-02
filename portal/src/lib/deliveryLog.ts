@@ -152,22 +152,28 @@ function failure(detail: Record<string, unknown>): string | null {
   return parts.length ? parts.join(', ') : null;
 }
 
+/** An email sent now only because that morning's summary has already gone
+ *  (the last hour before the person is back online): a queued row's
+ *  `after_summary` flag, and Check delivery's `after_summary`. */
+export const AFTER_SUMMARY_LABEL = 'after the summary';
+
 /** What a queued email says besides "Due now", from its detail flags: why it
  *  did not wait for a summary. */
 const QUEUED_FLAGS: readonly (readonly [string, string])[] = [
   ['critical', 'critical'],
   ['owner_copy', "owner's copy"],
-  ['after_summary', 'after the summary'],
+  ['after_summary', AFTER_SUMMARY_LABEL],
 ];
 
 /** The one-line detail of a log row: when an email is due ("Due now · critical",
  *  "Summary email · 3 notifications"), why it waits for the summary ("Until
  *  Mon 7:00 AM · Quiet hours"), how a send went ("Attempt 2 failed (OSError) —
  *  retrying"), or the reason an inbox row or an email did not happen ("Already
- *  read in the portal"). A queued email from before Phase 1 that carries
- *  `deferred` keeps its older words ("Held until Mon 7:00 AM · Quiet hours ·
- *  Destination Side Ops Team"). Empty when there is nothing to add (an inbox
- *  row that was written, an email in a summary). */
+ *  read in the portal"), with whose switch it was when a switch turned it
+ *  down ("Category turned off · Their choice"). A queued email from before
+ *  Phase 1 that carries `deferred` keeps its older words ("Held until Mon
+ *  7:00 AM · Quiet hours · Destination Side Ops Team"). Empty when there is
+ *  nothing to add (an inbox row that was written, an email in a summary). */
 export function describeEntry(e: DeliveryLogEntry): string {
   const d = e.detail ?? {};
   switch (e.event) {
@@ -204,6 +210,14 @@ export function describeEntry(e: DeliveryLogEntry): string {
       const err = failure(d);
       const tries = attempts !== null ? ` after ${attempts} attempt${attempts === 1 ? '' : 's'}` : '';
       return `Gave up${tries}${err ? ` (${err})` : ''}`;
+    }
+    case 'inbox_suppressed':
+    case 'email_not_queued': {
+      // A switch that turned it down (category_off, category_inbox_only) logs
+      // where its value came from: the company default or the person's own.
+      const source = text(d.source);
+      return [e.reason ? reasonLabel(e.reason) : null, source ? switchSourceLabel(source) : null]
+        .filter(Boolean).join(' · ');
     }
     default:
       return e.reason ? reasonLabel(e.reason) : '';

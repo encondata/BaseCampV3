@@ -14,7 +14,8 @@ instant or closed, by a day off or by quiet hours (a day off wins). From that:
   before they are back online and that morning's summary has already gone.
 
 Every time it returns is an aware UTC datetime. ``None`` means nothing opens
-within the search horizon.
+within the search horizon. ``zone_loads`` says whether a zone name loads at
+all (saving preferences refuses a changed zone that does not).
 """
 
 import logging
@@ -50,13 +51,32 @@ class Schedule:
     quiet_end: time | None
 
 
+def zone_loads(name: str) -> bool:
+    """Whether ``name`` loads as a zone. ZoneInfo refuses a bad name in several
+    ways: not found, a path outside the zone database or a file that is not a
+    zone (ValueError), an unreadable file (OSError), and a name nested deep
+    enough to exhaust the recursion limit (RecursionError)."""
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError, RecursionError):
+        return False
+    return True
+
+
+# Zone names already warned about. The summary sweep reads the same stored
+# zone every 60 s, so each bad name is logged once per process, not per read.
+_warned_zones: set[str] = set()
+
+
 def _zone(name: str | None) -> ZoneInfo:
     """The named zone; the company reference zone when unset, or when a stored
-    name no longer loads (it must not crash a notification)."""
+    name no longer loads (it must not crash a notification). That fallback is
+    logged once per name."""
     if name:
-        try:
+        if zone_loads(name):
             return ZoneInfo(name)
-        except (ZoneInfoNotFoundError, ValueError, OSError):
+        if name not in _warned_zones:
+            _warned_zones.add(name)
             logger.warning("unknown notification timezone %r; using %s", name, DEFAULT_TIMEZONE)
     return ZoneInfo(DEFAULT_TIMEZONE)
 

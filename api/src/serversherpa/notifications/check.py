@@ -41,7 +41,10 @@ async def check_delivery(db: AsyncSession, person_id: uuid.UUID, kind: str, *,
     (owner_always), the owner's own copy is modeled unless `owner_copy` is
     False, which asks for an admin's copy (that one stays in the inbox).
     `outcome` is now, held (until `summary_at`) or not_sent (`reason` says
-    why; for a held email, the schedule state that holds it). Reads only."""
+    why; for a held email, the schedule state that holds it).
+    `after_summary` marks an email sent now only because it falls in the
+    last hour before the person is back online, when that morning's summary
+    has already gone. Reads only."""
     info = KINDS[kind]
     person = await db.get(Person, person_id)
     has_account = await db.scalar(select(UserAccount.person_id).where(
@@ -86,6 +89,7 @@ async def check_delivery(db: AsyncSession, person_id: uuid.UUID, kind: str, *,
             "state": state_at(schedule, now),
         },
         "outcome": outcome,
+        "after_summary": decision.after_summary,
         "send_at": decision.send_at,
         "summary_at": decision.summary_at,
         "reason": decision.reason,

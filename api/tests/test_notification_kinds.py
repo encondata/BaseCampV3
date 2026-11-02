@@ -67,6 +67,12 @@ def test_kind_info_unknown_is_none():
     assert kind_info("report_ready") is KINDS["report_ready"]
 
 
+def test_no_two_kinds_share_a_kind_info():
+    """Every kind's KindInfo is distinct, so a KindInfo names exactly one kind:
+    email._kind_name() looks a kind's name up from it."""
+    assert len(set(KINDS.values())) == len(KINDS)
+
+
 # notify(db, person, "literal", ...) — the kind is the third positional argument
 NOTIFY_CALL = re.compile(r"""\bnotify\(\s*[\w.]+\s*,\s*[\w.\[\]]+\s*,\s*["']([a-z_]+)["']""")
 # wiki/notify.py and wiki/worker.py: kind="wiki_x" keyword arguments and wiki/worker.py `kind, event = "wiki_x", ...`

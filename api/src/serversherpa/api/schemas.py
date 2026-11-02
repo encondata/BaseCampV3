@@ -3086,8 +3086,10 @@ class DeliveryCheckOut(BaseModel):
     the Inbox switch behind it. `outcome` is the email's: sent now (at
     `send_at`), held for the person's summary (due `summary_at`), or not sent
     (`reason` says why; for a held email, the schedule state that holds it).
-    `owner_copy` is the copy that was modeled; `critical` whether the kind
-    skips quiet hours, days off and the summary."""
+    `after_summary` marks an email sent now only because it falls in the last
+    hour before the person is back online, when that morning's summary has
+    already gone. `owner_copy` is the copy that was modeled; `critical`
+    whether the kind skips quiet hours, days off and the summary."""
 
     person_id: uuid.UUID
     person_name: str
@@ -3104,6 +3106,7 @@ class DeliveryCheckOut(BaseModel):
     switches: DeliveryCheckSwitchesOut
     schedule: DeliveryCheckScheduleOut
     outcome: Literal["now", "held", "not_sent"]
+    after_summary: bool
     send_at: datetime | None = None
     summary_at: datetime | None = None
     reason: str | None = None

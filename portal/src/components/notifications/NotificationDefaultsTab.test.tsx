@@ -3,8 +3,9 @@
  * NotificationDefaultsTab — System › Notifications › Defaults. Two cards, each
  * with its own Save: what people get by default (the Inbox / Email grid) and
  * which notifications are critical. A Save sends only its own card's part of
- * the settings, stays disabled until the card differs from what the server
- * last answered, and a failed save says why in a sentence.
+ * the settings (for the defaults, only the categories that changed), stays
+ * disabled until the card differs from what the server last answered, and a
+ * failed save says why in a sentence.
  */
 
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
@@ -213,7 +214,7 @@ it('flipping a switch back leaves Save disabled again, in both cards', async () 
   expect(saveIn(criticalCard()).disabled).toBe(true);
 });
 
-it('saving the defaults sends only `defaults`, the whole draft', async () => {
+it('saving the defaults sends only `defaults`, with only the categories that changed', async () => {
   const user = userEvent.setup();
   const answer = {
     ...structuredClone(SETTINGS),
@@ -228,9 +229,33 @@ it('saving the defaults sends only `defaults`, the whole draft', async () => {
   await waitFor(() => expect(api.updateNotificationSettings).toHaveBeenCalledTimes(1));
   const body = api.updateNotificationSettings.mock.calls[0][0];
   expect(Object.keys(body)).toEqual(['defaults']);
-  expect(body.defaults).toEqual({
-    approvals: ON, reports: { inbox: true, email: false }, wiki: { inbox: true, email: false }, learning: ON,
-  });
+  expect(body.defaults).toEqual({ wiki: { inbox: true, email: false } });
+});
+
+it('a category left alone is not sent, so a tab loaded before another admin\'s save keeps their change', async () => {
+  const user = userEvent.setup();
+  // Meanwhile another admin turned Learning Email off. The server merges per category.
+  const server = { ...SETTINGS.defaults, learning: { inbox: true, email: false } };
+  api.updateNotificationSettings.mockImplementation(async (body: { defaults?: Record<string, SwitchPair> }) => ({
+    ...structuredClone(SETTINGS), defaults: { ...server, ...body.defaults },
+  }));
+  await mount();
+  expect(gridSwitch('Email', 'Learning').checked).toBe(true);   // this tab still shows the old value
+
+  // Learning flipped and flipped back is left alone too
+  await user.click(gridSwitch('Email', 'Learning'));
+  await user.click(gridSwitch('Email', 'Learning'));
+  await user.click(gridSwitch('Email', 'Wiki'));
+  await user.click(saveIn(defaultsCard()));
+
+  await waitFor(() => expect(api.updateNotificationSettings).toHaveBeenCalledTimes(1));
+  const sent = api.updateNotificationSettings.mock.calls[0][0].defaults;
+  expect(Object.keys(sent)).toEqual(['wiki']);
+  expect(sent).not.toHaveProperty('learning');
+  // the answer carries the other admin's change, and the grid shows it
+  await waitFor(() => expect(gridSwitch('Email', 'Learning').checked).toBe(false));
+  expect(gridSwitch('Email', 'Wiki').checked).toBe(false);
+  expect(saveIn(defaultsCard()).disabled).toBe(true);
 });
 
 it('after the defaults save the grid shows what the server answered, and Save is disabled', async () => {

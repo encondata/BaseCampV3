@@ -97,6 +97,17 @@ def _quiet_now():
     return schedule, now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=2)
 
 
+def _last_quiet_hour_now():
+    """A schedule (in UTC) in the last hour of its quiet hours right now: the
+    window began two hours ago and ends in half an hour, so its summary time
+    (an hour before the end) has already passed, with ample margin for the
+    test to run before the window ends."""
+    now = datetime.now(UTC)
+    start, end = now - timedelta(hours=2), now + timedelta(minutes=30)
+    return {"timezone": "UTC", "quiet_start": start.strftime("%H:%M"),
+            "quiet_end": end.strftime("%H:%M")}
+
+
 async def _company(db, **data):
     """Save the company notification settings (defaults and/or critical kinds)."""
     db.add(SystemConfig(section="notifications", data=data))
@@ -284,7 +295,8 @@ async def _check(client, hdrs, person, kind="report_ready", **params):
 CHECK_KEYS = {
     "person_id", "person_name", "kind", "kind_label", "category", "owner_copy", "active",
     "has_account", "inbox", "inbox_source", "email_enabled", "critical", "switches",
-    "schedule", "outcome", "send_at", "summary_at", "reason", "address", "address_source",
+    "schedule", "outcome", "after_summary", "send_at", "summary_at", "reason", "address",
+    "address_source",
 }
 EVERY_DAY = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
@@ -316,7 +328,7 @@ async def test_check_outcomes(client, db, email_on):
 
     body = await _check(client, hdrs, open_person)
     assert set(body) == CHECK_KEYS
-    assert (body["outcome"], body["reason"]) == ("now", None)
+    assert (body["outcome"], body["reason"], body["after_summary"]) == ("now", None, False)
     assert (body["inbox"], body["inbox_source"]) == ("written", "default")
     assert (body["person_id"], body["person_name"]) == (str(open_person.id), "Olive Tester")
     assert (body["kind"], body["kind_label"], body["category"]) == (
@@ -357,13 +369,30 @@ async def test_check_held_shows_summary_time(client, db, email_on):
     await db.commit()
 
     body = await _check(client, hdrs, held)
-    assert (body["outcome"], body["reason"]) == ("held", "quiet_hours")
+    assert (body["outcome"], body["reason"], body["after_summary"]) == (
+        "held", "quiet_hours", False)
     assert datetime.fromisoformat(body["summary_at"]) == summary
     assert body["send_at"] is None
     assert (body["address"], body["address_source"]) == ("held@test.example.com", "contact")
     assert body["schedule"] == {"timezone": "UTC", "days": EVERY_DAY,
                                 "quiet_start": schedule["quiet_start"],
                                 "quiet_end": schedule["quiet_end"], "state": "quiet_hours"}
+
+
+async def test_check_last_quiet_hour_sends_now_after_the_summary(client, db, email_on):
+    """In the last hour before the person is back online, that morning's
+    summary has already gone: the email goes now, in quiet hours, and the
+    answer says it goes after the summary."""
+    hdrs = await _super_admin(db, client)
+    late = await _person(db, "Late", prefs={"notif": {"schedule": _last_quiet_hour_now()}})
+    await db.commit()
+
+    body = await _check(client, hdrs, late)
+    assert (body["outcome"], body["reason"], body["after_summary"]) == ("now", None, True)
+    assert body["schedule"]["state"] == "quiet_hours"
+    assert body["send_at"] is not None and body["summary_at"] is None
+    assert (body["address"], body["address_source"]) == ("late@test.example.com", "contact")
+    assert body["critical"] is False
 
 
 async def test_check_switch_sources(client, db, email_on):
@@ -427,6 +456,7 @@ async def test_check_critical_flag(client, db, email_on):
 
     body = await _check(client, hdrs, person, "report_failed")
     assert (body["critical"], body["outcome"], body["reason"]) == (True, "now", None)
+    assert body["after_summary"] is False     # it goes now because it is critical
     assert body["schedule"]["state"] == "quiet_hours"
     body = await _check(client, hdrs, person, "report_ready")
     assert (body["critical"], body["outcome"]) == (False, "held")

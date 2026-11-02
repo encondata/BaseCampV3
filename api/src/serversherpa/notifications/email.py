@@ -170,8 +170,9 @@ def contact_schedule(contact: Contact | None) -> Schedule:
 
 def _kind_name(info: KindInfo) -> str | None:
     """The registry key of a registered KindInfo, which does not carry its own
-    name (is_critical() and the company's critical list go by name)."""
-    return next((kind for kind, entry in KINDS.items() if entry == info), None)
+    name (is_critical() and the company's critical list go by name). Matched
+    by identity: every caller passes the registry's own object."""
+    return next((kind for kind, entry in KINDS.items() if entry is info), None)
 
 
 def _address(contact: Contact, owner_copy: bool) -> tuple[str | None, str | None]:
@@ -313,7 +314,7 @@ async def maybe_email(db: AsyncSession, notification: Notification, *,
 
 
 async def recheck_notification(db: AsyncSession, notification: Notification | None,
-                               info: KindInfo, contact: Contact | None,
+                               info: KindInfo | None, contact: Contact | None,
                                company: CompanySettings) -> str | None:
     """Why the email of a notification decided earlier should no longer go
     out, as a reason code, or None when it still should. Asked of a queued

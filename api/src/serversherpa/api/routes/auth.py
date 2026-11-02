@@ -5,7 +5,6 @@ ordinary API requests."""
 import logging
 from datetime import UTC, datetime
 from typing import Annotated, Literal
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Cookie, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +22,7 @@ from serversherpa.api.schemas import (
 )
 from serversherpa.config import get_settings
 from serversherpa.db.models import AuthSession, Initiative, UserAccount
+from serversherpa.notifications.schedule import zone_loads
 from serversherpa.services import auth as auth_service
 from serversherpa.services import password_reset
 from serversherpa.services import totp as totp_service
@@ -378,6 +378,16 @@ async def me(user: CurrentUser, db: DbSession) -> MeOut:
     )
 
 
+def _stored_zone(prefs: object) -> object:
+    """The notification schedule zone stored on the account, exactly as
+    stored (None when there is none)."""
+    for key in ("notif", "schedule", "timezone"):
+        if not isinstance(prefs, dict):
+            return None
+        prefs = prefs.get(key)
+    return prefs
+
+
 @router.put("/me/preferences", response_model=UiPreferences)
 async def save_preferences(
     body: UiPreferences, user: CurrentUser, db: DbSession
@@ -385,13 +395,13 @@ async def save_preferences(
     """Persist UI preferences on the account, so every device the user
     signs in on gets their normal display. A notification schedule zone that
     does not load is refused here (422 invalid_timezone, nothing saved): the
-    model itself must keep reading whatever is stored."""
+    model itself must keep reading whatever is stored. Only a changed zone is
+    checked: one already stored that has since stopped loading (a tz database
+    that lost it) is sent back with every save and must not block the rest of
+    the save."""
     zone = body.notif.schedule.timezone
-    if zone is not None:
-        try:
-            ZoneInfo(zone)
-        except (ZoneInfoNotFoundError, ValueError, OSError):
-            raise HTTPException(status_code=422, detail={"code": "invalid_timezone"}) from None
+    if zone is not None and zone != _stored_zone(user.account.ui_prefs) and not zone_loads(zone):
+        raise HTTPException(status_code=422, detail={"code": "invalid_timezone"})
     before = user.account.ui_prefs or {}
     after = body.model_dump()
     user.account.ui_prefs = after
