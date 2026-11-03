@@ -24,6 +24,29 @@ depends_on: str | Sequence[str] | None = None
 FULL = ("view", "add", "change", "delete")
 FULL_ROLES = ("developer", "founder", "super_admin", "admin")
 
+# The "Project plan" PDF (reports/project_plan): a system report definition,
+# seeded as 0090 seeds the Timesheet's. It has no definition-level options.
+DEFINITION_NAME = "Project plan"
+REPORT_TYPE = "project_plan"
+DEFAULT_OPTIONS = "{}"
+DEFINITION_DESCRIPTION = (
+    "An initiative's project plan as a PDF: the task table, then the Gantt chart "
+    "on pages of its own."
+)
+
+# Module-level so the test suite can run this exact statement (see 0054,
+# 0090 and tests/test_project_plan_report.py).
+INSERT_DEFINITION_SQL = (
+    "INSERT INTO report_definitions (name, description, report_type, options, is_system) "
+    # CAST(... AS jsonb), not `:options::jsonb` — see 0054.
+    "VALUES (:name, :description, :report_type, CAST(:options AS jsonb), true) "
+    "ON CONFLICT (name) WHERE archived_at IS NULL DO NOTHING"
+)
+
+DELETE_DEFINITION_SQL = (
+    "DELETE FROM report_definitions WHERE report_type = :report_type"
+)
+
 OLD_CATEGORIES = ("categories <@ ARRAY['approvals','reports','wiki','security',"
                   "'learning']::text[]")
 NEW_CATEGORIES = ("categories <@ ARRAY['approvals','reports','wiki','security',"
@@ -240,9 +263,18 @@ def upgrade() -> None:
                 "VALUES (:r, 'project_plans', :a) ON CONFLICT DO NOTHING"),
                 {"r": role, "a": action})
 
+    conn.execute(sa.text(INSERT_DEFINITION_SQL), {
+        "name": DEFINITION_NAME, "description": DEFINITION_DESCRIPTION,
+        "report_type": REPORT_TYPE, "options": DEFAULT_OPTIONS})
+
 
 def downgrade() -> None:
     conn = op.get_bind()
+    # its runs first (report_runs.definition_id doesn't cascade), then it
+    # and any copy of it: 0109's code has no project_plan report
+    conn.execute(sa.text("DELETE FROM report_runs WHERE report_type = :report_type"),
+                 {"report_type": REPORT_TYPE})
+    conn.execute(sa.text(DELETE_DEFINITION_SQL), {"report_type": REPORT_TYPE})
     conn.execute(sa.text("DELETE FROM role_permissions WHERE resource = 'project_plans'"))
 
     # rows already using the new category would block the narrower check

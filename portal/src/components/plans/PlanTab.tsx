@@ -76,6 +76,7 @@ import { selectCell, toggleRow } from '../../lib/plans/selection';
 import { settleSelection } from '../../lib/plans/viewRows';
 import { detectPlatform } from '../../lib/plans/shortcuts';
 import { RowActionsMenu } from '../hardware/RowActionsMenu';
+import GenerateReportModal from '../reports/GenerateReportModal';
 import Tip from '../Tip';
 import ColumnsModal from './ColumnsModal';
 import DeletePlanModal from './DeletePlanModal';
@@ -270,6 +271,7 @@ export default function PlanTab({ initiativeId, initiative }: {
   const [fullScreen, setFullScreen] = useState(false);
   const [dialog, setDialog] = useState<PlanDialog | null>(null);
   const closeDialog = useCallback(() => setDialog(null), []);
+  const toast = useToast();
 
   const ready = ctl.status === 'ready' && ctl.plan !== null;
   const isFull = fullScreen && ready;
@@ -529,6 +531,11 @@ export default function PlanTab({ initiativeId, initiative }: {
         <TemplatesModal permissions={ctl.plan.permissions} onClose={closeDialog} />
       )}
       {dialog?.kind === 'import' && <PlanImportModal ctl={ctl} initiativeId={initiativeId} onClose={closeDialog} />}
+      {dialog?.kind === 'exportPdf' && ctl.plan && (
+        <GenerateReportModal definition={dialog.definition} onClose={closeDialog} onToast={toast}
+                             initialInitiative={{ id: ctl.plan.initiative_id, name: ctl.plan.initiative_name }}
+                             projectPlan={{ plan: ctl.plan, initial: dialog.initial }} />
+      )}
 
       {/* the completion check, over any dialog it answers for */}
       {completion.dialog}

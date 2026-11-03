@@ -206,6 +206,22 @@ it('Timesheet shows its three defaults and no section switches, company or Files
   expect(screen.getByRole('checkbox', { name: /^Approved/ }).getAttribute('aria-checked')).toBe('false');
 });
 
+it('Project plan has no defaults of its own: Save sends only the name and description', async () => {
+  const user = userEvent.setup();
+  const plan: ReportDefinition = {
+    id: 'd-plan', name: 'Project plan', description: 'The plan as a PDF.', report_type: 'project_plan',
+    is_system: true, updated_at: '2026-10-28T10:00:00Z', options: {},
+  };
+  api.updateReportDefinition.mockResolvedValue(plan);
+  render(<EditDefinitionModal definition={plan} onClose={() => {}} onSaved={() => {}} />);
+  expect(screen.queryByText('Default sections')).toBeNull();
+  expect(screen.queryByText('Files')).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateReportDefinition).toHaveBeenCalledWith('d-plan', {
+    name: 'Project plan', description: 'The plan as a PDF.', options: {},
+  }));
+});
+
 it('Timesheet saves the edited defaults in canonical order', async () => {
   const user = userEvent.setup();
   api.updateReportDefinition.mockResolvedValue(TIMESHEET_DEF);

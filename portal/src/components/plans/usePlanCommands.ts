@@ -48,6 +48,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 
+import { ApiError, listReportDefinitions, type ReportDefinition } from '../../lib/api';
 import { useToast } from '../../lib/notificationsContext';
 import { exportPlan, type ExportFormat, type Op, type Plan, type PlanTask, type TaskMode } from '../../lib/plans/api';
 import type { ApplyResult } from '../../lib/plans/applyResult';
@@ -68,6 +69,7 @@ import {
 } from '../../lib/plans/paste';
 import { EMPTY_SELECTION, selectCell, type Selection } from '../../lib/plans/selection';
 import type { TaskInfoTab } from '../../lib/plans/taskInfo';
+import type { ProjectPlanInitial } from '../reports/ProjectPlanOptions';
 import { focusQuietly } from './quietFocus';
 import { SAID_ALREADY, type Completion } from './useCompletion';
 import type { PlanController, ThenOps } from './usePlan';
@@ -92,7 +94,9 @@ export type PlanDialog =
   | { kind: 'saveTemplate' }
   | { kind: 'templates' }
   /** More › Import…, or the empty state's Import from MS Project or Excel (no plan yet). */
-  | { kind: 'import' };
+  | { kind: 'import' }
+  /** More › Export ▸ PDF…: the Project plan report's Generate dialog, starting from this view. */
+  | { kind: 'exportPdf'; definition: ReportDefinition; initial: ProjectPlanInitial };
 
 /** The dialogs More opens by name. */
 export type MoreDialog = 'columns' | 'shortcuts' | 'clearBaseline' | 'updateProject' | 'settings' | 'deletePlan'
@@ -102,6 +106,13 @@ export const PASTE_LABEL = 'Paste';
 /** What an outline command says while the sheet is grouped. */
 export const GROUPED_SAID = `${OFF_NOTES.grouped}.`;
 export const BASELINE_SET = 'Baseline set: every task’s Start, Finish and Duration were copied.';
+/** A direct download (MS Project XML, Excel) on its way: the API builds it first. */
+export const PREPARING_EXPORT = 'Preparing export…';
+/** PDF… found no Project plan report (TimeManagement's words for the Timesheet's). */
+export const PDF_REPORT_MISSING = 'The Project plan report isn’t set up. Ask an administrator.';
+export const PDF_REPORTS_FAILED = 'Couldn’t load the reports. Try again.';
+/** The PDF is a report: without reports access there is none to make. */
+export const PDF_REPORTS_DENIED = 'You need permission to run reports to make a PDF.';
 /** A move into the tasks that move (a cut pasted into its own subtasks). */
 export const MOVE_INSIDE = 'Can’t move tasks into themselves.';
 /** How long Ctrl+V waits for the browser's paste event before asking
@@ -276,8 +287,12 @@ export interface PlanCommands {
   unlock(): void;
   open(kind: MoreDialog): void;
   /** More › Export: the plan as MS Project XML, or the sheet's visible
-   *  columns as an Excel workbook, downloaded under the API's file name. */
+   *  columns as an Excel workbook, downloaded under the API's file name;
+   *  one at a time (a click while one is on its way does nothing). */
   exportPlan(format: ExportFormat): void;
+  /** More › Export ▸ PDF…: the Project plan report's Generate dialog, its
+   *  choices starting from this view (visible columns, zoom, Display). */
+  exportPdf(): void;
   /** Focus back on the sheet (a toolbar click hands it back). */
   focusSheet(): void;
   /** For usePlanShortcuts. */
@@ -300,11 +315,15 @@ export function usePlanCommands({
   const scrollSeq = useRef(0);
 
   // what callbacks read after an await, and what keeps them one identity
-  const latest = useRef({ ctl, sheet, toast, prompt, openDialog, layout });
+  const latest = useRef({ ctl, sheet, toast, prompt, openDialog, layout, display, zoom });
   useLayoutEffect(() => {
-    latest.current = { ctl, sheet, toast, prompt, openDialog, layout };
+    latest.current = { ctl, sheet, toast, prompt, openDialog, layout, display, zoom };
   });
   const tempRef = useRef(0);
+  // an export on its way: a second click waits for it (MS Project XML and
+  // Excel download straight away; PDF… looks up its report first)
+  const exporting = useRef(false);
+  const findingPdf = useRef(false);
 
   // the cut waiting for its paste: the page's (`lastCut`), mirrored for drawing
   const [pendingCut, setPendingCutState] = useState<PendingCut | null>(() => lastCut);
@@ -847,10 +866,35 @@ export function usePlanCommands({
     // be read); Excel gets the sheet's visible columns
     const exportFile = (format: ExportFormat) => {
       const plan = latest.current.ctl.plan;
-      if (!plan) return;
+      if (!plan || exporting.current) return;
+      exporting.current = true;
+      latest.current.toast(PREPARING_EXPORT);
       const columns = format === 'xlsx' ? columnPrefsSnapshot().visible : undefined;
       void exportPlan(plan.id, format, columns, `${plan.initiative_name} - Project plan.${format}`)
-        .catch((err: unknown) => latest.current.toast(planErrorText(err)));
+        .catch((err: unknown) => latest.current.toast(planErrorText(err)))
+        .finally(() => { exporting.current = false; });
+    };
+    // PDF…: the Project plan report (found by its type, as the Timesheet
+    // screen finds the Timesheet's), starting from what this view shows;
+    // its dialog's progress step covers the run
+    const exportPdf = () => {
+      if (!latest.current.ctl.plan || findingPdf.current) return;
+      findingPdf.current = true;
+      void listReportDefinitions().then((defs) => {
+        const { ctl: c, display: shown, zoom: at, openDialog: open, toast: say } = latest.current;
+        const definition = defs.find((d) => d.report_type === 'project_plan');
+        if (!definition) {
+          say(PDF_REPORT_MISSING);
+          return;
+        }
+        if (!c.plan) return;
+        open({
+          kind: 'exportPdf', definition,
+          initial: { columns: columnPrefsSnapshot().visible, zoom: at, critical: shown.critical, baseline: shown.baseline },
+        });
+      }).catch((err: unknown) => latest.current.toast(
+        err instanceof ApiError && err.status === 403 ? PDF_REPORTS_DENIED : PDF_REPORTS_FAILED))
+        .finally(() => { findingPdf.current = false; });
     };
     // sent at once; only replacing one asks (the 409 says when it was set)
     const setBaseline = () => {
@@ -911,6 +955,7 @@ export function usePlanCommands({
       open: (kind: MoreDialog) =>
         latest.current.openDialog({ kind }),
       exportPlan: exportFile,
+      exportPdf,
       focusSheet,
     };
     const handlers: PlanShortcutHandlers = {

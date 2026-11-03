@@ -1,0 +1,125 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Project plan: {{ title }}</title>
+<style>
+  /* landscape, 10 mm (38px) margins at the top and sides; the bottom margin
+     holds Move Scan History's footer. gantt.py lays the Gantt pages out in
+     the same px, so its page count is exact. */
+  @page {
+    size: {{ page_size }} landscape;
+    margin: {{ margin_px }}px {{ margin_px }}px {{ footer_px }}px {{ margin_px }}px;
+    @top-left {
+      content: "{{ title|cssstr }}  \00B7  Project plan";
+      font: 7.5pt Helvetica, Arial, sans-serif; color: #666;
+    }
+    @bottom-left {
+      content: "Page " counter(page) " of " counter(pages);
+      font: 8pt Helvetica, Arial, sans-serif; color: #666;
+    }
+    @bottom-center {
+      content: "Generated: {{ stamp|cssstr }}  \00B7  Document Tracking ID: {{ tracking_id|cssstr }}";
+      font: 8pt Helvetica, Arial, sans-serif; color: #666;
+    }
+  }
+  /* the PDF417 tracking barcode, bottom right in the footer band: a fixed
+     element (WeasyPrint repeats it on every page) rather than Move Scan
+     History's @bottom-right image, which prints at the PNG's own size, too
+     tall for this 20 mm band */
+  .barcode { position: fixed; right: 0; bottom: -58px; width: 40mm; height: 11mm; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 9pt/1.3 Helvetica, Arial, sans-serif; color: #1b2129; }
+  .footer-rule { position: fixed; left: 0; right: 0; bottom: -4mm; border-top: 0.75pt solid #ccc; }
+
+  .title { margin: 0 0 4mm; }
+  .eyebrow { font-size: 7.5pt; letter-spacing: 0.6pt; text-transform: uppercase; color: #667085; }
+  h1 { font-size: 17pt; font-weight: bold; margin: 0.5mm 0 2.5mm; }
+  .facts { display: flex; flex-wrap: wrap; border-top: 0.75pt solid #1b2129; padding-top: 2mm; }
+  .fact { width: 50%; display: flex; font-size: 8.5pt; padding: 0.4mm 0; }
+  .fact.wide { width: 100%; }
+  .fact .k { width: 26mm; flex: none; color: #667085; }
+  .fact .v { flex: 1; }
+
+  table.tasks-table { border-collapse: collapse; table-layout: fixed; width: 100%; font-size: 8pt; }
+  thead { display: table-header-group; }        /* the header on every page */
+  tr { break-inside: avoid; }
+  th, td { padding: 3px 5px 3px 6px; text-align: left; vertical-align: top;
+           overflow-wrap: break-word; line-height: 1.25; }
+  th { font-weight: bold; border-bottom: 0.75pt solid #1b2129; white-space: nowrap;
+       overflow: hidden; text-overflow: ellipsis; }
+  td { border-bottom: 0.5pt solid #e4e8ee; }
+  th.num, td.num { text-align: right; }
+  td.nw { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  tr.sum td { font-weight: bold; }
+  td.empty { color: #667085; font-style: italic; }
+  .swatch { display: inline-block; width: 7px; height: 7px; margin-right: 3px; border-radius: 1px; }
+
+  .gantt { break-before: page; }
+  .gpage { height: auto; break-inside: avoid; }
+  .gpage + .gpage { break-before: page; }
+  .ghead { height: {{ head_px }}px; display: flex; justify-content: space-between; align-items: center;
+           font-size: 8.5pt; }
+  .ghead .what { font-weight: bold; }
+  .ghead .where { color: #667085; }
+  .gbody { display: flex; border: 0.75pt solid #d5dae1; width: {{ names_px + chart_px }}px; }
+  .gnames { width: {{ names_px }}px; flex: none; border-right: 0.75pt solid #d5dae1; overflow: hidden; }
+  .gnames-head { height: {{ 2 * tier_px }}px; display: flex; align-items: flex-end; background: #f4f6f8;
+                 border-bottom: 0.75pt solid #d5dae1; font-size: 7.5pt; font-weight: bold; color: #667085; }
+  .grow { height: {{ row_px }}px; display: flex; align-items: center; font-size: 7.5pt;
+          border-bottom: 1px solid #eef0f3; white-space: nowrap; overflow: hidden; }
+  .grow.sum { font-weight: bold; }
+  .gid { width: 30px; flex: none; padding-right: 6px; text-align: right; color: #667085; }
+  .gnames-head .gid, .gnames-head .gname { padding-bottom: 3px; }
+  .gname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 4px; }
+  .gcol { width: {{ chart_px }}px; flex: none; }
+  .gcol svg { display: block; }
+  .closing { font-style: italic; color: #667085; margin-top: 4mm; }
+</style>
+</head>
+<body>
+
+<div class="footer-rule"></div>
+<img class="barcode" src="{{ barcode_data_uri }}" alt="">
+
+<div class="title">
+  <div class="eyebrow">Project plan</div>
+  <h1>{{ title }}</h1>
+  <div class="facts">
+    {% for label, value in facts %}<div class="fact{% if loop.last %} wide{% endif %}"><span class="k">{{ label }}</span><span class="v">{{ value }}</span></div>{% endfor %}
+
+  </div>
+</div>
+
+<section class="tasks">
+<table class="tasks-table">
+  <colgroup>{% for h in table.heads %}<col style="width: {{ h.width }}%">{% endfor %}</colgroup>
+  <thead><tr>{% for h in table.heads %}<th{% if h.cls %} class="{{ h.cls }}"{% endif %}>{{ h.label }}</th>{% endfor %}</tr></thead>
+  <tbody>
+    {% for r in table.rows %}
+    <tr{% if r.summary %} class="sum"{% endif %} data-id="{{ r.id }}">{% for c in r.cells %}{% if c.key == "name" %}<td class="name" style="padding-left: {{ r.indent }}px">{{ c.text }}</td>{% elif c.swatch %}<td class="nw"><span class="swatch" style="background: {{ c.swatch }}"></span>{{ c.text }}</td>{% else %}<td{% if c.cls %} class="{{ c.cls }}"{% endif %}>{{ c.text }}</td>{% endif %}{% endfor %}</tr>
+    {% else %}
+    <tr><td class="empty" colspan="{{ table.heads|length }}">This plan has no tasks to print.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</section>
+
+<section class="gantt">
+{% for p in pages %}
+<div class="gpage">
+  <div class="ghead"><span class="what">Gantt chart{% if p.span %} · {{ p.span }}{% endif %}</span><span class="where">{{ p.rows }}{% if p.across %} · across {{ p.across }}{% endif %}</span></div>
+  <div class="gbody">
+    <div class="gnames">
+      <div class="gnames-head"><span class="gid">ID</span><span class="gname">Task Name</span></div>
+      {% for r in p.names %}<div class="grow{% if r.summary %} sum{% endif %}"><span class="gid">{{ r.id }}</span><span class="gname" style="padding-left: {{ r.indent }}px">{{ r.name }}</span></div>{% endfor %}
+
+    </div>
+    <div class="gcol">{{ p.scale }}{{ p.chart }}</div>
+  </div>
+</div>
+{% endfor %}
+</section>
+
+</body>
+</html>

@@ -23,6 +23,11 @@ export const RUN_ERROR_TEXT: Record<string, string> = {
   too_many_for_pdf: 'Too many entries for a PDF (over 5,000). Choose Excel or narrow the range.',
   time_view_required: 'You need permission to view time to run this report.',
   learning_view_required: 'You need permission to view learning to run this report.',
+  // the Project plan PDF: the run is refused, or the worker found no plan (or
+  // an unreadable calendar) when it came to build it
+  project_plans_view_required: 'You need permission to view project plans to run this report.',
+  plan_not_found: 'This initiative has no project plan yet.',
+  bad_calendar: 'This plan’s calendar can’t be read, so the PDF couldn’t be made. Check Plan settings › Calendar.',
 };
 export const runErrorText = (code: string): string => RUN_ERROR_TEXT[code] ?? code;
 

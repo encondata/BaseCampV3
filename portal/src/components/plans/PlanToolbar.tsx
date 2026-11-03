@@ -18,7 +18,7 @@
  * lib/plans/commandTips.
  *
  * Read-only people see Display (Gantt Layout included) and More (Export ›
- * MS Project XML / Excel, Columns…, Keyboard shortcuts) only. More's
+ * MS Project XML / Excel / PDF…, Columns…, Keyboard shortcuts) only. More's
  * template commands follow their own permissions: Save as template… `add`,
  * Templates… `change` or `delete`; Import… is `change`, off while the
  * schedule is locked. On a locked plan the buttons that change the schedule
@@ -130,7 +130,7 @@ export default function PlanToolbar({
     more.push({ key: 'templates', label: COMMAND_TIPS.templates.label, onSelect: () => cmd.open('templates') });
   }
   // a file's tasks go into the plan as a change (a new plan from a file is
-  // the empty state's); the exports are everyone's, one titled group (Print's PDF… joins it)
+  // the empty state's); the exports are everyone's, one titled group
   if (canChange) {
     more.push({ key: 'import', label: COMMAND_TIPS.importFile.label, onSelect: () => cmd.open('import'),
                 disabled: locked, hint: locked ? LOCKED_HINT : undefined });
@@ -140,6 +140,7 @@ export default function PlanToolbar({
     { key: 'export-xml', label: COMMAND_TIPS.exportXml.label, group: exportGroup, onSelect: () => cmd.exportPlan('xml') },
     { key: 'export-xlsx', label: COMMAND_TIPS.exportXlsx.label, group: exportGroup,
       onSelect: () => cmd.exportPlan('xlsx') },
+    { key: 'export-pdf', label: COMMAND_TIPS.exportPdf.label, group: exportGroup, onSelect: cmd.exportPdf },
   );
   more.push(
     { key: 'columns', label: 'Columns…', onSelect: () => cmd.open('columns') },

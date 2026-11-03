@@ -110,8 +110,8 @@ from serversherpa.plans.service import PlanState
 from serversherpa.reports.move_scan_history.xlsx import XLSX_MIME
 from serversherpa.reports.timesheet.xlsx import _as_text, _autofit, _bold_row, _Sheet
 
-__all__ = ["COLUMNS", "DEFAULT_COLUMNS", "XLSX_MIME", "column_keys", "export_xlsx",
-           "parse_csv", "parse_workbook", "parse_xlsx"]
+__all__ = ["COLUMNS", "DEFAULT_COLUMNS", "XLSX_MIME", "cell_value", "column_keys", "columns_of",
+           "export_xlsx", "parse_csv", "parse_workbook", "parse_xlsx", "unknown_columns"]
 
 # --- export -------------------------------------------------------------------------
 
@@ -158,12 +158,25 @@ def column_keys(text: str | None) -> list[str]:
     blank: the sheet's default set. ValueError for a key the sheet doesn't
     have."""
     if text is None or not text.strip():
+        return columns_of(None)
+    return columns_of([key for key in (part.strip() for part in text.split(",")) if key])
+
+
+def unknown_columns(keys: list[str]) -> list[str]:
+    """The keys the sheet has no column for (its icon column is one it has)."""
+    return [key for key in keys if key not in COLUMNS and key not in ICON_COLUMNS]
+
+
+def columns_of(keys: list[str] | None) -> list[str]:
+    """`column_keys` for a list of keys (the project plan PDF's `columns`
+    option): None is the sheet's default set. ValueError for a key the
+    sheet doesn't have."""
+    if keys is None:
         keys = list(DEFAULT_COLUMNS)
     else:
-        asked = [key for key in (part.strip() for part in text.split(",")) if key]
-        if any(key not in COLUMNS and key not in ICON_COLUMNS for key in asked):
+        if unknown_columns(keys):
             raise ValueError("not a column of the sheet")
-        keys = list(dict.fromkeys(key for key in asked if key in COLUMNS))
+        keys = list(dict.fromkeys(key for key in keys if key in COLUMNS))
     return [k for k in REQUIRED_COLUMNS if k not in keys] + keys
 
 
@@ -212,6 +225,14 @@ _VALUES: dict[str, Callable] = {
     "created": lambda t, r, units, zone: _instant(t.created_at, zone),
     "updated": lambda t, r, units, zone: _instant(t.updated_at, zone),
 }
+
+
+def cell_value(key: str, task: PlanTaskOut, row, units: Units, zone: ZoneInfo):
+    """One column's value for a task, as the export writes it: text, a
+    number, a floating datetime (dates and stamps, on the plan's clock) or
+    None; % Complete as a fraction (0.5 is 50%). The project plan PDF
+    formats these as the sheet shows them."""
+    return _VALUES[key](task, row, units, zone)
 
 
 def _fit(value):

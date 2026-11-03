@@ -55,9 +55,17 @@ vi.mock('../../lib/plans/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/plans/api')>()),
   ...api,
 }));
+// More › Export ▸ PDF…: the Project plan report's definition and its run
+const reportsApi = vi.hoisted(() => ({
+  listReportDefinitions: vi.fn(), createReportRun: vi.fn(), getReportRun: vi.fn(), listInitiatives: vi.fn(),
+}));
+vi.mock('../../lib/api', async (importActual) => ({
+  ...(await importActual<typeof import('../../lib/api')>()),
+  ...reportsApi,
+}));
 
 const { default: PlanTab } = await import('./PlanTab');
-const { BASELINE_SET } = await import('./usePlanCommands');
+const { BASELINE_SET, PDF_REPORT_MISSING, PDF_REPORTS_DENIED, PREPARING_EXPORT } = await import('./usePlanCommands');
 const { BASELINE_CLEARED, LOCK_DESCRIPTION } = await import('./PlanConfirmModals');
 const { PLAN_DELETED } = await import('./DeletePlanModal');
 
@@ -109,7 +117,7 @@ beforeEach(() => {
   for (const key of SIZES) {
     Object.defineProperty(HTMLElement.prototype, key, { configurable: true, get: () => (key.endsWith('Width') ? 1200 : 600) });
   }
-  for (const fn of [toast, ...Object.values(api)]) fn.mockReset();
+  for (const fn of [toast, ...Object.values(api), ...Object.values(reportsApi)]) fn.mockReset();
   localStorage.clear();
 });
 
@@ -290,6 +298,72 @@ describe('Update project, Plan settings, Delete plan', () => {
     api.exportPlan.mockRejectedValueOnce(new ApiError(404, 'plan_not_found', { code: 'plan_not_found' }));
     await more(user, 'MS Project XML');
     await waitFor(() => expect(toast).toHaveBeenCalledWith('This plan no longer exists, or you can’t see it.'));
+  });
+
+  it('a direct download says it is under way, and a second click meanwhile does nothing', async () => {
+    const user = await ready();
+    let finish: (name: string) => void = () => {};
+    api.exportPlan.mockImplementationOnce(() => new Promise<string>((resolve) => { finish = resolve; }));
+    await more(user, 'Excel');
+    expect(toast).toHaveBeenLastCalledWith(PREPARING_EXPORT);
+    await more(user, 'MS Project XML');
+    await more(user, 'Excel');
+    expect(api.exportPlan).toHaveBeenCalledTimes(1);
+    finish('NAP11 move - Project plan.xlsx');
+    await waitFor(() => expect(api.exportPlan).toHaveBeenCalledTimes(1));
+    api.exportPlan.mockResolvedValue('NAP11 move - Project plan.xml');
+    await waitFor(async () => {
+      await more(user, 'MS Project XML');
+      expect(api.exportPlan).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('More › Export ▸ PDF… opens the Project plan report on its options, for this plan', async () => {
+    const definition = {
+      id: 'd-plan', name: 'Project plan', description: 'The plan as a PDF.', report_type: 'project_plan',
+      is_system: true, updated_at: '2026-10-28T10:00:00Z', options: {},
+    };
+    reportsApi.listReportDefinitions.mockResolvedValue([
+      { ...definition, id: 'd-move', name: 'Move Report', report_type: 'move_report' }, definition,
+    ]);
+    reportsApi.createReportRun.mockResolvedValue({
+      id: 'r1', definition_id: 'd-plan', definition_name: 'Project plan', report_type: 'project_plan',
+      initiative_id: 'init-1', initiative_name: 'NAP11 move', options: {}, status: 'queued', error: null,
+      requested_by: 'p-me', requested_by_name: 'Jimmy Henderson', requested_rank: 60, notify: false,
+      filename: null, size_bytes: null, started_at: null, finished_at: null, created_at: '2026-11-03T12:00:00Z',
+    });
+    saveColumnPrefs({ visible: ['id', 'name', 'duration', 'finish'], widths: {} });
+    const user = await ready();
+    await user.click(tool('Critical Path'));
+    await more(user, 'PDF…');
+    expect(await screen.findByRole('heading', { name: 'Project plan' })).toBeTruthy();
+    // the plan's own initiative: no pick step, its plan already in hand
+    expect(screen.queryByText('Initiative')).toBeNull();
+    expect(reportsApi.listInitiatives).not.toHaveBeenCalled();
+    expect(screen.getByText('NAP11 move')).toBeTruthy();
+    expect(screen.getByText(/About \d+ pages/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Generate Report' }));
+    expect(reportsApi.createReportRun).toHaveBeenCalledWith({
+      definition_id: 'd-plan', initiative_id: 'init-1', notify: false,
+      options: {
+        columns: ['id', 'name', 'duration', 'finish'], zoom: 'days', paper: 'letter', include_completed: true,
+        show_critical: true, show_baseline: false,
+      },
+    });
+    const foot = document.querySelector('.rgm-card .modal-foot') as HTMLElement;
+    await user.click(within(foot).getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('heading', { name: 'Project plan' })).toBeNull();
+  });
+
+  it('PDF… without the Project plan report says it isn’t set up; without reports access, says so', async () => {
+    reportsApi.listReportDefinitions.mockResolvedValue([]);
+    const user = await ready();
+    await more(user, 'PDF…');
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(PDF_REPORT_MISSING));
+    expect(screen.queryByRole('heading', { name: 'Project plan' })).toBeNull();
+    reportsApi.listReportDefinitions.mockRejectedValueOnce(new ApiError(403, 'forbidden', { code: 'forbidden' }));
+    await more(user, 'PDF…');
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(PDF_REPORTS_DENIED));
   });
 
   it('More opens Update project and Plan settings', async () => {

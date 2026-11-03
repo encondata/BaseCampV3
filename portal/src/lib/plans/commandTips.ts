@@ -27,7 +27,7 @@ const MORE_PARTS: readonly (readonly ['change' | 'add' | 'templates' | 'always' 
   ['add', 'save the plan as a template'],
   ['templates', 'manage templates'],
   ['change', 'import tasks from a file'],
-  ['always', 'export the plan for MS Project or Excel'],
+  ['always', 'export the plan to MS Project, Excel or PDF'],
   ['always', 'choose the sheet’s columns'],
   ['always', 'see the keyboard shortcuts'],
   ['delete', 'delete the plan'],
@@ -140,12 +140,12 @@ export const COMMAND_TIPS = {
     desc: 'Keep this plan’s tasks, durations, links and calendar to start new plans from.',
   },
   templates: { label: 'Templates…', desc: 'Rename, describe or delete the saved plan templates.' },
-  // More's import (`change`, an unlocked schedule) and its Export group (`view`; Task 10's PDF… joins it)
+  // More's import (`change`, an unlocked schedule) and its Export group (`view`)
   importFile: {
     label: 'Import…',
     desc: 'Add tasks from an MS Project XML file, an Excel workbook or a CSV, after reviewing what each row does.',
   },
-  exportGroup: { label: 'Export', desc: 'Download the plan to open in MS Project or Excel.' },
+  exportGroup: { label: 'Export', desc: 'Download the plan to open in MS Project or Excel, or make a PDF of it.' },
   exportXml: {
     label: 'MS Project XML',
     desc: 'Download the plan as an XML file MS Project opens: its tasks, links, calendar and resources.',
@@ -153,6 +153,8 @@ export const COMMAND_TIPS = {
   exportXlsx: {
     label: 'Excel', desc: 'Download the sheet’s visible columns as an Excel workbook, the names indented by outline.',
   },
+  // the Project plan report's options (GenerateReportModal); the report worker makes the file
+  exportPdf: { label: 'PDF…', desc: 'Make a PDF of the task table and the Gantt chart on separate pages.' },
   // a template's menu in the Templates dialog (named for it: "Actions for <name>")
   templateActions: { label: 'Actions', desc: 'Rename the template, edit its description, or delete it.' },
   templateActionsDelete: { label: 'Actions', desc: 'Delete the template.' },

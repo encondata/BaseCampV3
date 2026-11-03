@@ -8,6 +8,9 @@
  * when it's ready" / Close, ending in Download or Try again. A Timesheet
  * skips the pick step (its job is an optional filter) and opens on options;
  * so does Learning compliance (the initiative is optional: blank = everyone).
+ * The Project plan PDF picks its initiative here from the Reports page, or
+ * skips the pick with `initialInitiative` (the plan's More › Export ▸ PDF…,
+ * which also hands `projectPlan`: the plan and its view's choices).
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
@@ -17,6 +20,7 @@ import {
   setReportRunNotify,
 } from '../../lib/api';
 import type { InitiativeItem, ReportDefinition, ReportRun } from '../../lib/api';
+import type { Plan } from '../../lib/plans/api';
 import {
   fmtDate, openPresigned, runErrorText, RUN_ERROR_TEXT, sortInitiativesForPicker,
 } from '../../lib/reports';
@@ -25,6 +29,7 @@ import ContainerLabelsOptions from './ContainerLabelsOptions';
 import LearningComplianceOptions from './LearningComplianceOptions';
 import MoveReportOptions from './MoveReportOptions';
 import MoveScanHistoryOptions from './MoveScanHistoryOptions';
+import ProjectPlanOptions, { type ProjectPlanInitial } from './ProjectPlanOptions';
 import { InitiativeSummary, PreviewCard, summaryFromInitiative } from './ReportOptionsLayout';
 import SiteMoveSurveyOptions from './SiteMoveSurveyOptions';
 import TimesheetOptions, { type TimesheetInitial } from './TimesheetOptions';
@@ -40,12 +45,19 @@ interface RunPayload {
   notify: boolean;
 }
 
-export default function GenerateReportModal({ definition, onClose, onToast, timesheetInitial }: {
+export default function GenerateReportModal({
+  definition, onClose, onToast, timesheetInitial, initialInitiative, projectPlan,
+}: {
   definition: ReportDefinition;
   onClose: () => void;
   onToast?: (message: string) => void;
   /** Timesheet only: prefilled filters (the Timesheet screen's own). */
   timesheetInitial?: Partial<TimesheetInitial>;
+  /** The initiative already chosen (the report is asked for from it): no pick step.
+   *  The Project plan PDF's only today; the other types' options take a whole InitiativeItem. */
+  initialInitiative?: { id: string; name: string };
+  /** Project plan only: the plan on screen and its view's columns, zoom and Display toggles. */
+  projectPlan?: { plan?: Plan | null; initial?: ProjectPlanInitial };
 }) {
   const { status: sys } = useSystemStatus();
   const isSurvey = definition.report_type === 'site_move_survey';
@@ -56,7 +68,10 @@ export default function GenerateReportModal({ definition, onClose, onToast, time
   const isTimesheet = definition.report_type === 'timesheet';
   // Learning compliance is the same: its initiative is an option, not a pick.
   const isLearning = definition.report_type === 'learning_compliance';
-  const skipsPick = isTimesheet || isLearning;
+  // the Project plan PDF from its plan: the plan's initiative, no pick
+  const isProjectPlan = definition.report_type === 'project_plan';
+  const planInitiative = isProjectPlan ? initialInitiative : undefined;
+  const skipsPick = isTimesheet || isLearning || !!planInitiative;
   const [step, setStep] = useState<Step>(skipsPick ? 'sections' : 'pick');
   const [initiatives, setInitiatives] = useState<InitiativeItem[] | null>(null);
   const [search, setSearch] = useState('');
@@ -95,6 +110,8 @@ export default function GenerateReportModal({ definition, onClose, onToast, time
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  // the Project plan's initiative: the one picked, else the one it was asked for from
+  const planTarget = picked ? { id: picked.id, name: picked.name } : planInitiative;
   const sorted = useMemo(() => sortInitiativesForPicker(initiatives ?? []), [initiatives]);
   const types = useMemo(() => {
     const m = new Map<string, string>();
@@ -302,6 +319,17 @@ export default function GenerateReportModal({ definition, onClose, onToast, time
           />
         )}
 
+        {step === 'sections' && isProjectPlan && planTarget && (
+          <ProjectPlanOptions
+            definition={definition}
+            initiative={planTarget}
+            plan={picked ? undefined : projectPlan?.plan}
+            initial={picked ? undefined : projectPlan?.initial}
+            onBack={skipsPick ? undefined : () => setStep('pick')}
+            onGenerate={(p) => void start(p)}
+          />
+        )}
+
         {step === 'sections' && isContainerLabels && (
           <ContainerLabelsOptions
             definition={definition}
@@ -311,7 +339,8 @@ export default function GenerateReportModal({ definition, onClose, onToast, time
           />
         )}
 
-        {step === 'sections' && !isSurvey && !isScanHistory && !isContainerLabels && !isTimesheet && !isLearning && (
+        {step === 'sections' && !isSurvey && !isScanHistory && !isContainerLabels && !isTimesheet && !isLearning
+          && !isProjectPlan && (
           <MoveReportOptions
             definition={definition}
             initiative={picked}
@@ -336,7 +365,7 @@ export default function GenerateReportModal({ definition, onClose, onToast, time
               {run?.status === 'completed' && (
                 <>
                   <div><b>{run.filename}</b></div>
-                  {run.initiative_id && !isTimesheet && !isLearning && (
+                  {run.initiative_id && !isTimesheet && !isLearning && !isProjectPlan && (
                     <div className="cell-sub">Also saved to the initiative&apos;s Files</div>
                   )}
                 </>

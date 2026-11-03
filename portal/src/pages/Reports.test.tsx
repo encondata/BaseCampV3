@@ -146,6 +146,31 @@ it('a Timesheet definition has no Generate without time:view (other rows keep it
   expect(screen.getByText('Generate')).toBeTruthy();
 });
 
+it('the Project plan definition: labeled by its type, Generate only with project_plans:view', async () => {
+  api.listReportDefinitions.mockResolvedValue([...DEFS, {
+    id: 'd-plan', name: 'Project plan', description: '', report_type: 'project_plan', options: {},
+    is_system: true, updated_at: '2026-10-28T10:00:00Z',
+  }]);
+  const menu = async () => {
+    const row = (await screen.findByText('Project plan', { selector: '.cell-primary' }))
+      .closest('.dir-row') as HTMLElement;
+    expect(within(row).queryByText('project_plan')).toBeNull();
+    expect(within(row).getAllByText('Project plan').length).toBeGreaterThan(1);    // name and type
+    return within(row).getByRole('button', { name: /actions/i });
+  };
+  const user = userEvent.setup();
+  auth.can = (r, a) => !(r === 'project_plans' && a === 'view');
+  renderPage();
+  await user.click(await menu());
+  expect(screen.queryByText('Generate')).toBeNull();
+  await user.keyboard('{Escape}');
+  cleanup();
+  auth.can = () => true;
+  renderPage();
+  await user.click(await menu());
+  expect(screen.getByText('Generate')).toBeTruthy();
+});
+
 it('clone calls the API and reloads', async () => {
   const user = userEvent.setup();
   api.cloneReportDefinition.mockResolvedValue({ ...DEFS[1], id: 'd3', name: 'Racks only (copy)' });

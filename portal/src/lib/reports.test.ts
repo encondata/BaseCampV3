@@ -2,8 +2,19 @@ import { describe, expect, it } from 'vitest';
 
 import type { InitiativeItem } from './api';
 import {
-  fmtDate, MOVE_REPORT_SECTIONS, sectionCount, sortInitiativesForPicker,
+  fmtDate, MOVE_REPORT_SECTIONS, runErrorText, sectionCount, sortInitiativesForPicker,
 } from './reports';
+
+describe('run error text', () => {
+  it('says each project plan refusal and failure in a sentence', () => {
+    expect(runErrorText('project_plans_view_required'))
+      .toBe('You need permission to view project plans to run this report.');
+    expect(runErrorText('plan_not_found')).toBe('This initiative has no project plan yet.');
+    expect(runErrorText('bad_calendar'))
+      .toBe('This plan’s calendar can’t be read, so the PDF couldn’t be made. Check Plan settings › Calendar.');
+    expect(runErrorText('something_new')).toBe('something_new');
+  });
+});
 
 const ini = (name: string, status: string, archived = false) => ({
   name, status, archived_at: archived ? '2026-01-01T00:00:00Z' : null,

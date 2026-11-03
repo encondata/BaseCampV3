@@ -84,6 +84,10 @@ def _state(conn) -> dict:
         "tables": tables,
         "indexes": indexes,
         "color": color and tuple(color),
+        # the "Project plan" PDF's system report definition
+        "definitions": [tuple(r) for r in conn.execute(
+            "SELECT name, report_type, options, is_system FROM report_definitions "
+            "WHERE report_type = 'project_plan'")],
         "grants": {role: {r[0] for r in conn.execute(
             "SELECT action FROM role_permissions "
             "WHERE role = %s AND resource = 'project_plans'", (role,))}
@@ -125,6 +129,7 @@ def test_downgrade_and_upgrade_again(throwaway_url):
         assert up["indexes"] == set(INDEXES)
         # a task's color: optional, lower-case #rrggbb
         assert up["color"] == ("text", "YES", "CHECK ((color ~ '^#[0-9a-f]{6}$'::text))")
+        assert up["definitions"] == [("Project plan", "project_plan", {}, True)]
         for role in GRANTED_ROLES:
             assert up["grants"][role] == FULL, role
         # nothing for staff or below, and the learning_admin role is untouched
@@ -145,6 +150,7 @@ def test_downgrade_and_upgrade_again(throwaway_url):
         assert down["tables"] == set()
         assert down["indexes"] == set()
         assert down["color"] is None
+        assert down["definitions"] == []
         assert all(grants == set() for grants in down["grants"].values())
         assert conn.execute(
             "SELECT categories FROM notification_groups WHERE name = 'Mixed'"

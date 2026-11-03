@@ -38,7 +38,7 @@ function commands(over: Partial<PlanCommands> = {}): PlanCommands {
     moveTasks: fn(),
     info: fn(), toggleCritical: fn(), toggleBaseline: fn(), zoomIn: fn(), zoomOut: fn(), fit: fn(), scrollToTask: fn(),
     collapse: fn(), expand: fn(), copy: vi.fn(() => true), cut: fn(), paste: fn(), lock: fn(), unlock: fn(), open: fn(),
-    focusSheet: fn(), color: fn(), exportPlan: fn(), handlers: {}, grouped: false, cutMarks: new Set(),
+    focusSheet: fn(), color: fn(), exportPlan: fn(), exportPdf: fn(), handlers: {}, grouped: false, cutMarks: new Set(),
     ...over,
   };
 }
@@ -115,7 +115,7 @@ describe('groups', () => {
     await user.click(screen.getByRole('button', { name: 'More' }));
     // a reader exports (`view`), but doesn't import
     expect(screen.getAllByRole('menuitem').map((m) => m.textContent))
-      .toEqual(['MS Project XML', 'Excel', 'Columns…', 'Keyboard shortcuts']);
+      .toEqual(['MS Project XML', 'Excel', 'PDF…', 'Columns…', 'Keyboard shortcuts']);
   });
 
   it('locked: Indent and the other schedule changes are off, saying why; progress still works', () => {
@@ -319,7 +319,7 @@ describe('hover tips', () => {
     const { unmount } = render(<Bar plan={makePlan()} cmd={commands()} />);
     expect(hoverTip(button('More')).desc).toBe(
       'Set or clear the baseline, update the project, lock the schedule, change plan settings, save the plan '
-      + 'as a template, manage templates, import tasks from a file, export the plan for MS Project or Excel, '
+      + 'as a template, manage templates, import tasks from a file, export the plan to MS Project, Excel or PDF, '
       + 'choose the sheet’s columns, see the keyboard shortcuts, or delete the plan.');
     expect(COMMAND_TIPS.more.desc).toBe(moreDesc({ view: true, add: true, change: true, delete: true }));
     unmount();
@@ -327,36 +327,36 @@ describe('hover tips', () => {
                                  cmd={commands()} />);
     expect(hoverTip(button('More')).desc).toBe(
       'Set or clear the baseline, update the project, lock the schedule, change plan settings, save the plan '
-      + 'as a template, manage templates, import tasks from a file, export the plan for MS Project or Excel, '
+      + 'as a template, manage templates, import tasks from a file, export the plan to MS Project, Excel or PDF, '
       + 'choose the sheet’s columns, or see the keyboard shortcuts.');
     noDelete.unmount();
     const reader = render(<Bar plan={makePlan({ permissions: { view: true, add: false, change: false, delete: false } })}
                                cmd={commands()} />);
     expect(hoverTip(button('More')).desc).toBe(
-      'Export the plan for MS Project or Excel, choose the sheet’s columns, or see the keyboard shortcuts.');
+      'Export the plan to MS Project, Excel or PDF, choose the sheet’s columns, or see the keyboard shortcuts.');
     reader.unmount();
     // a reader who may delete: the templates too (to delete them), the exports, the columns, the shortcuts and Delete plan
     render(<Bar plan={makePlan({ permissions: { view: true, add: false, change: false, delete: true } })}
                 cmd={commands()} />);
     expect(hoverTip(button('More')).desc).toBe(
-      'Manage templates, export the plan for MS Project or Excel, choose the sheet’s columns, see the keyboard '
+      'Manage templates, export the plan to MS Project, Excel or PDF, choose the sheet’s columns, see the keyboard '
       + 'shortcuts, or delete the plan.');
     vi.useRealTimers();
     fireEvent.click(button('More'));
     expect(screen.getAllByRole('menuitem').map((m) => m.textContent))
-      .toEqual(['Templates…', 'MS Project XML', 'Excel', 'Columns…', 'Keyboard shortcuts', 'Delete plan…']);
+      .toEqual(['Templates…', 'MS Project XML', 'Excel', 'PDF…', 'Columns…', 'Keyboard shortcuts', 'Delete plan…']);
   });
 
   it('Save as template needs add; Templates… needs change or delete', () => {
     render(<Bar plan={makePlan({ permissions: { view: true, add: true, change: false, delete: false } })}
                 cmd={commands()} />);
     expect(hoverTip(button('More')).desc).toBe(
-      'Save the plan as a template, export the plan for MS Project or Excel, choose the sheet’s columns, or see '
+      'Save the plan as a template, export the plan to MS Project, Excel or PDF, choose the sheet’s columns, or see '
       + 'the keyboard shortcuts.');
     vi.useRealTimers();
     fireEvent.click(button('More'));
     expect(screen.getAllByRole('menuitem').map((m) => m.textContent))
-      .toEqual(['Save as template…', 'MS Project XML', 'Excel', 'Columns…', 'Keyboard shortcuts']);
+      .toEqual(['Save as template…', 'MS Project XML', 'Excel', 'PDF…', 'Columns…', 'Keyboard shortcuts']);
   });
 
   it('the More trigger’s tip says what it holds, and goes once its menu opens', () => {
@@ -518,7 +518,7 @@ describe('More', () => {
     await user.click(screen.getByRole('button', { name: 'More' }));
     expect(screen.getAllByRole('menuitem').map((m) => m.firstChild?.textContent)).toEqual([
       'Set baseline…', 'Clear baseline…', 'Update project…', 'Lock schedule…', 'Plan settings…',
-      'Save as template…', 'Templates…', 'Import…', 'MS Project XML', 'Excel', 'Columns…', 'Keyboard shortcuts',
+      'Save as template…', 'Templates…', 'Import…', 'MS Project XML', 'Excel', 'PDF…', 'Columns…', 'Keyboard shortcuts',
       'Delete plan…',
     ]);
     const menu = document.querySelector('.pop-menu') as HTMLElement;
@@ -537,19 +537,32 @@ describe('More', () => {
     }
   });
 
-  it('Export: MS Project XML and Excel under one titled group, each downloading its file', async () => {
+  it('Export: MS Project XML, Excel and PDF… under one titled group', async () => {
     const user = userEvent.setup();
     const cmd = commands();
     render(<Bar plan={makePlan()} cmd={cmd} />);
     await user.click(screen.getByRole('button', { name: 'More' }));
     const group = screen.getByRole('group', { name: COMMAND_TIPS.exportGroup.label });
     expect(within(group).getAllByRole('menuitem').map((m) => m.textContent))
-      .toEqual([COMMAND_TIPS.exportXml.label, COMMAND_TIPS.exportXlsx.label]);
+      .toEqual([COMMAND_TIPS.exportXml.label, COMMAND_TIPS.exportXlsx.label, COMMAND_TIPS.exportPdf.label]);
     await user.click(within(group).getByRole('menuitem', { name: 'Excel' }));
     expect(cmd.exportPlan).toHaveBeenLastCalledWith('xlsx');
     await user.click(screen.getByRole('button', { name: 'More' }));
     await user.click(screen.getByRole('menuitem', { name: 'MS Project XML' }));
     expect(cmd.exportPlan).toHaveBeenLastCalledWith('xml');
+    // PDF… opens the report's options (the file comes from the report worker)
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    await user.click(screen.getByRole('menuitem', { name: 'PDF…' }));
+    expect(cmd.exportPdf).toHaveBeenCalledTimes(1);
+    expect(COMMAND_TIPS.exportPdf.desc).toBe('Make a PDF of the task table and the Gantt chart on separate pages.');
+  });
+
+  it('a read-only person still has Export › PDF…', async () => {
+    const user = userEvent.setup();
+    const cmd = commands();
+    render(<Bar plan={makePlan({ permissions: { view: true, add: false, change: false, delete: false } })} cmd={cmd} />);
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    expect(screen.getByRole('menuitem', { name: 'PDF…' })).toBeTruthy();
   });
 
   it('Import… needs change and an unlocked schedule; a locked plan still exports', async () => {
