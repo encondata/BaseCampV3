@@ -4,6 +4,8 @@ Date: 2026-11-02 · Branch: `notif-phase2`, stacked on `notif-phase1` (unmerged)
 
 Mockup: `.superpowers/brainstorm/2865-1793652529/content/phase2-screens.html` in the main checkout (git-ignored scratch). Where this document and the mockup differ, this document wins.
 
+Built 2026-11-03. See `2026-11-02-notifications-phase2-as-built.md` for what was built, where it differs from this design, every decision made during the build, and the open questions.
+
 ## Why
 
 Phase 0 made the notification screens honest and logged every decision. Phase 1 let each person decide what reaches them and when. One question is still answered only in code: **who hears about what.**
