@@ -126,6 +126,21 @@ it('renders a row and bar for a scheduled initiative', async () => {
   expect(bar?.getAttribute('title')).toContain('Scheduled');
 });
 
+it('labels a row the way the lists do: the name, then the client · site under it', async () => {
+  // directory.css styles `.cell-primary .pn b` (the name) and `.pn span`
+  // (the subtitle, mono and muted, on its own line); outside a
+  // `.cell-primary` the label fell back to a browser-blue link with the
+  // two run together
+  await renderPage([initiative()]);
+  const label = document.querySelector('.itl-row-label') as HTMLElement;
+  const pn = label.querySelector('.cell-primary > a.pn') as HTMLAnchorElement;
+  expect(pn).not.toBeNull();
+  expect(pn.getAttribute('href')).toBe('/initiatives/i1');
+  expect([...pn.children].map((el) => [el.tagName, el.textContent])).toEqual([
+    ['B', 'Denver DC migration'], ['SPAN', 'Acme · DC-East'],
+  ]);
+});
+
 it('lists an unscheduled initiative under the Unscheduled divider', async () => {
   await renderPage([
     initiative({ id: 'i2', name: 'Someday project', scheduled_start: null, scheduled_end: null }),

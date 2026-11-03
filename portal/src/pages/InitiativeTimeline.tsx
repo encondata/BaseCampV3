@@ -834,10 +834,14 @@ function TimelineRow({
             <span className="tree-count">{row.childCount}</span>
           </button>
         )}
-        <Link to={`/initiatives/${item.id}`} className="pn">
-          <b>{item.name}</b>
-          <span>{clientSiteLine(item)}</span>
-        </Link>
+        {/* The lists' name cell (directory.css `.cell-primary .pn`): the
+            name, then client · site under it, each trimmed to the column. */}
+        <div className="cell-primary">
+          <Link to={`/initiatives/${item.id}`} className="pn">
+            <b>{item.name}</b>
+            <span>{clientSiteLine(item)}</span>
+          </Link>
+        </div>
         {/* `role` survives on a depth-0 orphan whose parent is out of the
             actor's scope; the chip only makes sense under a parent. */}
         {row.role && row.depth > 0 && (

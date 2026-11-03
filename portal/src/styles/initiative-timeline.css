@@ -136,6 +136,14 @@
   gap: 8px;
   overflow: hidden;
 }
+/* The name cell is the lists' (`.cell-primary .pn` in directory.css sets
+   the name's and the subtitle's type and color); here it only takes the
+   label's remaining width. The label already indents by depth, so the
+   cell's own depth padding is dropped. */
+.itl-row-label .cell-primary {
+  flex: 1 1 auto;
+  padding-left: 0;
+}
 .itl-row-label .pn {
   display: block;
   min-width: 0;
