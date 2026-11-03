@@ -147,6 +147,8 @@ interface Options {
   rows: readonly string[];
   /** A row that takes no link (a filter's context row, a group's band). */
   inert?(key: string): boolean;
+  /** Link drags are on (default); off while grouped, where no links are drawn. */
+  links?: boolean;
   rowHeight: number;
   box: BarBox;
   tasksById: ReadonlyMap<string, PlanTask>;
@@ -330,6 +332,7 @@ export function useGanttDrag(o: Options): GanttDrag {
       ...bar, done: progressWidth(bar, task.percent_complete), milestone: task.is_milestone,
     }, access === 'progress');
     if (!canDrag(kind, task, access)) return;      // left to the lane: it selects the row
+    if (kind === 'link' && latest.current.links === false) return;
     e.preventDefault();
     const el = e.currentTarget;
     try {

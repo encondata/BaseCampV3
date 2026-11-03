@@ -46,7 +46,9 @@
  * a press on their lane selects nothing — and a group's band (`bands`) is a
  * shaded lane. A lane is keyed by its row's key, its task by
  * `taskOfRow`; a link is drawn only between rows keyed by its tasks' ids,
- * so a grouped chart draws none (a task can be on two rows).
+ * so a grouped chart draws none (a task can be on two rows), and takes no
+ * link drags either: its bars have no link handle (a link made there would
+ * show nowhere).
  *
  * Presses. The lanes let the pointer through: only the marks that do
  * something take it — a bar, a diamond, a summary's bracket, a link handle,
@@ -384,8 +386,11 @@ export default function PlanGantt({
     if (id) latest.current.onLinkClick?.(id);
   }, []);
   const onBarDouble = useCallback((task: PlanTask) => latest.current.onBarDoubleClick?.(task), []);
+  // grouped, no links are drawn, so none are made here either
+  const linking = bands.size === 0;
   const drag = useGanttDrag({
-    ctl, scale, zoom, rows, inert, rowHeight, box, tasksById, chartRef, barRef: chartBar, select: selectRow,
+    ctl, scale, zoom, rows, inert, links: linking, rowHeight, box, tasksById, chartRef, barRef: chartBar,
+    select: selectRow,
   });
 
   if (!plan || !scale) return null;
@@ -463,8 +468,8 @@ export default function PlanGantt({
             return (
               <Lane key={item.key} laneId={task ? key : 'blank'} task={task} y={item.start - SHEET_HEAD_PX}
                     scale={scale} win={win} box={box} display={display} selected={selected} context={dim}
-                    access={dim ? 'none' : drag.access} labels={taskLabels} onBarPointerDown={drag.onBarPointerDown}
-                    onBarDoubleClick={onBarDouble} />
+                    access={dim ? 'none' : drag.access} linking={linking} labels={taskLabels}
+                    onBarPointerDown={drag.onBarPointerDown} onBarDoubleClick={onBarDouble} />
             );
           })}
 
@@ -511,6 +516,8 @@ interface LaneProps extends BarHandlers {
   selected: boolean;
   /** A filter's context row: dimmed, its marks inert. */
   context: boolean;
+  /** Its bars have a link handle (not while grouped). */
+  linking: boolean;
   labels: boolean;
 }
 
@@ -573,10 +580,10 @@ const NAMES_GAP = 6;
 const DOT_MARK_H = 2 * MILESTONE_HALF;
 
 function TaskMarks({
-  task, rowKey, inert, scale, win, box, display, labels, access, onBarPointerDown, onBarDoubleClick,
+  task, rowKey, inert, linking, scale, win, box, display, labels, access, onBarPointerDown, onBarDoubleClick,
 }: BarHandlers & {
-  task: PlanTask; rowKey: string; inert: boolean; scale: Scale; win: Span; box: BarBox; display: GanttDisplay;
-  labels: boolean;
+  task: PlanTask; rowKey: string; inert: boolean; linking: boolean; scale: Scale; win: Span; box: BarBox;
+  display: GanttDisplay; labels: boolean;
 }) {
   const out: ReactNode[] = [];
   const critical = display.critical && task.is_critical && !task.is_summary;
@@ -590,7 +597,7 @@ function TaskMarks({
   // a context row's bar opens nothing (it is only there to place a match)
   const dbl = inert ? undefined : () => onBarDoubleClick(task);
   /** The link handle, right of the bar's end (window px): open plans only. */
-  const dot = (at: number, top: number, height: number) => (access === 'full'
+  const dot = (at: number, top: number, height: number) => (access === 'full' && linking
     ? <span key="dot" className="pln-link-dot" data-task-id={task.id} style={{ left: at, top, height }}
             onPointerDown={down} />
     : null);

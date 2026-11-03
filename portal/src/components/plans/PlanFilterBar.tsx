@@ -67,36 +67,37 @@ export default function PlanFilterBar({
 
   return (
     <div className="pln-filterbar" role="search" aria-label="Filter tasks">
-      <Tip label={filterTip.label} desc={filterTip.desc}>
-        <div className="pln-fbox">
-          <label className="pln-flabel" htmlFor={`${id}-filter`}>{filterTip.label}</label>
+      {/* each tip wraps its control itself, so the control carries the tip's aria-describedby */}
+      <div className="pln-fbox">
+        <label className="pln-flabel" htmlFor={`${id}-filter`}>{filterTip.label}</label>
+        <Tip label={filterTip.label} desc={filterTip.desc}>
           {/* open, the box is for typing: its placeholder still names the filter on now */}
           <ComboBox inputId={`${id}-filter`} options={FILTER_OPTIONS} value={view.filter}
                     placeholder={labelOf(FILTER_OPTIONS, view.filter)}
                     onChange={(v) => onChange({ filter: (v || 'all') as PlanFilter })} />
-        </div>
-      </Tip>
+        </Tip>
+      </div>
       {groupable && (
-        <Tip label={groupTip.label} desc={groupTip.desc}>
-          <div className="pln-fbox">
-            <label className="pln-flabel" htmlFor={`${id}-group`}>{groupTip.label}</label>
+        <div className="pln-fbox">
+          <label className="pln-flabel" htmlFor={`${id}-group`}>{groupTip.label}</label>
+          <Tip label={groupTip.label} desc={groupTip.desc}>
             <ComboBox inputId={`${id}-group`} options={GROUP_OPTIONS} value={view.group}
                       placeholder={labelOf(GROUP_OPTIONS, view.group)}
                       onChange={(v) => onChange({ group: (v || 'none') as PlanGroupBy })} />
-          </div>
-        </Tip>
+          </Tip>
+        </div>
       )}
       <div className="pln-ftools">
         {counts && <span className="result-count pln-fcount" aria-live="polite">{countText(counts)}</span>}
-        <Tip label={searchTip.label} keys={tipKeys('search', os)} desc={searchTip.desc}>
-          <div className="dir-search pln-search">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
-                 aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+        <div className="dir-search pln-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+               aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+          <Tip label={searchTip.label} keys={tipKeys('search', os)} desc={searchTip.desc}>
             <input ref={searchRef} value={view.search} placeholder="Search tasks…" aria-label="Search tasks"
                    spellCheck={false} autoComplete="off" onChange={(e) => onChange({ search: e.target.value })}
                    onKeyDown={onSearchKey} />
-          </div>
-        </Tip>
+          </Tip>
+        </div>
       </div>
     </div>
   );

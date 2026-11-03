@@ -107,6 +107,15 @@ describe('PlanFilterBar', () => {
     };
     const filter = tipOf(screen.getByRole('combobox', { name: 'Filter' }));
     expect(filter.text).toContain(COMMAND_TIPS.filter.desc);
+    // the description reaches the control itself (fix round 1)
+    for (const el of [screen.getByRole('combobox', { name: 'Filter' }), screen.getByRole('combobox', { name: 'Group by' }),
+      screen.getByRole('textbox', { name: 'Search tasks' })]) {
+      fireEvent.pointerEnter(el.closest('.tip-trigger')!);
+      act(() => { vi.advanceTimersByTime(TIP_DELAY_MS + 1); });
+      expect(el.getAttribute('aria-describedby'), el.getAttribute('aria-label') ?? '').toBe(
+        screen.getByRole('tooltip').id);
+      fireEvent.pointerLeave(el.closest('.tip-trigger')!);
+    }
     const group = tipOf(screen.getByRole('combobox', { name: 'Group by' }));
     expect(group.text).toContain(COMMAND_TIPS.groupBy.desc);
     const search = tipOf(screen.getByRole('textbox', { name: 'Search tasks' }));

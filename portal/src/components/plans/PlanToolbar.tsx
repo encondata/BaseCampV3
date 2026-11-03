@@ -23,8 +23,9 @@
  * (0–100%, Mark on Track, Notes) and Task color still work. A button that needs a
  * selection says so instead; with the chart Hidden, the chart-only commands
  * (Critical Path, Baseline, Zoom, Fit, Scroll to Task) say to show it;
- * while the sheet is grouped (the filter bar's Group by), Insert, Indent and
- * Outdent say "Turn off Group by to change the outline". Off
+ * while the sheet is grouped (the filter bar's Group by), Insert, Indent,
+ * Outdent, Link and Unlink say "Turn off Group by to change the outline"
+ * (no links are drawn then). Off
  * buttons are `aria-disabled`, not `disabled`, so they keep their tip and
  * their place in the arrow-key order (the ARIA toolbar pattern).
  *
@@ -81,7 +82,7 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform, layout
   /** Why a schedule change is off now, or null. */
   const structure = (need: 1 | 2 = 1) => (locked ? LOCKED_HINT
     : count < need ? (need === 2 ? SELECT_TWO_HINT : SELECT_HINT) : null);
-  /** Why an outline change (Indent, Outdent, Insert) is off now, or null. */
+  /** Why an outline or link change (Indent, Outdent, Insert, Unlink) is off now, or null. */
   const grouped = cmd.grouped ? OFF_NOTES.grouped : null;
   const outline = () => (locked ? LOCKED_HINT : grouped ?? structure());
   const adding = canAddTasks(plan) ? grouped : LOCKED_HINT;
@@ -141,8 +142,8 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform, layout
           {PERCENTS.map(([n, id]) => tool(id, () => cmd.percent(n), <Pie percent={n} />, { hint: progress }))}
           {tool('markOnTrack', cmd.markOnTrack, <Icon name="track" />, { hint: progress })}
           <span className="pln-tsep" aria-hidden="true" />
-          {tool('link', cmd.link, <Icon name="link" />, { hint: structure(2) })}
-          {tool('unlink', cmd.unlink, <Icon name="unlink" />, { hint: structure() })}
+          {tool('link', cmd.link, <Icon name="link" />, { hint: locked ? LOCKED_HINT : grouped ?? structure(2) })}
+          {tool('unlink', cmd.unlink, <Icon name="unlink" />, { hint: outline() })}
           <span className="pln-tsep" aria-hidden="true" />
           {tool('outdent', cmd.outdent, <Icon name="outdent" />, { hint: outline() })}
           {tool('indent', cmd.indent, <Icon name="indent" />, { hint: outline() })}

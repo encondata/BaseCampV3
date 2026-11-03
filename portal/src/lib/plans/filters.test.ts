@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { PlanTask } from './api';
 import {
-  DEFAULT_VIEW, PLAN_FILTERS, VIEW_PREFIX, bandKey, filterRows, groupRows, groupedRows, isBandRow, readView,
+  DEFAULT_VIEW, PLAN_FILTERS, VIEW_PREFIX, bandKey, filterCount, filterRows, groupRows, groupedRows, isBandRow, readView,
   rowKey, taskMatches, taskOfRow, writeView,
 } from './filters';
 import { makeTask } from './planFixtures';
@@ -68,10 +68,14 @@ describe('filterRows', () => {
     expect([...context]).toEqual(['s1']);
   });
 
-  it('late also counts a deadline before now (as the Status column does), and never a finished task', () => {
+  it('late is the Status column’s Late (the API’s task_status), whatever the dates say here', () => {
     const due = new Map(byId);
-    due.set('c', { ...byId.get('c')!, deadline: '2026-11-03T17:00' });
+    // the API says late (a missed deadline, say): late, though its finish is ahead
+    due.set('c', { ...byId.get('c')!, status: 'late' as const });
+    // finished before now but the API says complete: not late
     due.set('w', { ...byId.get('w')!, finish: '2026-11-02T17:00' });
+    // its finish has passed but the API hasn't said late: not late here either
+    due.set('b', { ...byId.get('b')!, finish: '2026-11-03T17:00' });
     expect(filterRows(order, due, 'late', '', ME, NOW).rows).toEqual(['s1', 'a', 's2', 's3', 'c']);
   });
 
@@ -122,6 +126,23 @@ describe('filterRows', () => {
       'all', 'incomplete', 'late', 'critical', 'milestones', 'due_week', 'mine', 'summary',
     ]);
     expect(PLAN_FILTERS[0].label).toBe('All Tasks');
+  });
+});
+
+describe('filterCount', () => {
+  it('counts the leaf tasks that match, the same grouped or not, of the plan’s leaf tasks', () => {
+    const late = filterRows(order, byId, 'late', '', ME, NOW);
+    expect(filterCount(late.rows, late.context, byId, 'late', false)).toEqual({ shown: 1, total: 5 });
+    expect(filterCount(late.rows, late.context, byId, 'late', true)).toEqual({ shown: 1, total: 5 });
+    // Due This Week matches summaries too: they aren't counted
+    const week = filterRows(order, byId, 'due_week', '', ME, NOW);
+    expect(filterCount(week.rows, week.context, byId, 'due_week', false)).toEqual({ shown: 4, total: 5 });
+  });
+
+  it('Summary Tasks counts summaries; grouped (leaves only) none of them show', () => {
+    const sums = filterRows(order, byId, 'summary', '', ME, NOW);
+    expect(filterCount(sums.rows, sums.context, byId, 'summary', false)).toEqual({ shown: 3, total: 3 });
+    expect(filterCount(sums.rows, sums.context, byId, 'summary', true)).toEqual({ shown: 0, total: 3 });
   });
 });
 

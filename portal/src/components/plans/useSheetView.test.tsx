@@ -66,7 +66,8 @@ describe('useSheetView', () => {
     // Prep places the match: a context row, open whatever the collapse said
     expect(result.current.rows).toEqual(['s1', 'a']);
     expect([...result.current.context]).toEqual(['s1']);
-    expect(result.current.counts).toEqual({ shown: 1, total: 3 });
+    // leaf tasks: Order crates of Order crates and Go live
+    expect(result.current.counts).toEqual({ shown: 1, total: 2 });
     expect(JSON.parse(localStorage.getItem('plans.view.plan-1')!)).toEqual(
       { filter: 'all', search: 'crates', group: 'none' });
     // a context row is never selected: a selection there is dropped

@@ -10,8 +10,9 @@
  *     plus their summary tasks as context rows — dimmed and inert, never
  *     selected — so the outline holds. A filter applies when it is picked
  *     (MS Project's way): the tasks it matched then stay, and so do tasks
- *     added since, until the filter, the search or the status date changes.
- *     So a task you just edited or added never disappears from under you.
+ *     added since, until the filter is picked again (the one on now too),
+ *     the search or the status date changes. So a task you just edited or
+ *     added never disappears from under you.
  *  2. Collapse composes with it: a collapsed summary's subtasks are out,
  *     unless the summary is a context row (it is only there to place a
  *     match, so it is always open — the initiatives tree's rule).
@@ -22,22 +23,29 @@
  *
  * The sheet and the chart select rows (`selection`, by row key: a task on
  * two rows can be picked on either); the commands work on tasks
- * (`forCommands`, by task id, its rows the tasks shown once each). A
- * selection whose rows a new filter or grouping hid is moved to the task's
- * row there, or dropped. While grouped the outline can't change: Insert,
- * Indent, Outdent and pasting new rows say "Turn off Group by to change
- * the outline".
+ * (`forCommands`, by task id, its rows the tasks shown once each; a paste
+ * while grouped walks the rows on screen from the active one). The
+ * mapping between the two is lib/plans/viewRows. A selection whose rows a
+ * new filter or grouping hid is moved to the task's row there, or
+ * dropped; one left on a grouped row when grouping goes is its task again.
+ * While grouped the outline and the links can't change: Insert, Indent,
+ * Outdent, Link, Unlink and pasting new rows say "Turn off Group by to
+ * change the outline". Scroll to Task scrolls to the row picked (a task's
+ * second copy, say), else to the task's first row.
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 
 import type { PlanTask } from '../../lib/plans/api';
 import { SHEET_HEAD_PX } from '../../lib/plans/columns';
 import {
-  DEFAULT_VIEW, groupRows, groupedRows, isBandRow, isFiltering, matchingIds, readView, taskOfRow, withContext,
-  writeView, type GroupBand, type PlanViewState,
+  DEFAULT_VIEW, filterCount, groupRows, groupedRows, isBandRow, isFiltering, matchingIds, readView, taskOfRow,
+  withContext, writeView, type GroupBand, type PlanViewState,
 } from '../../lib/plans/filters';
 import { ancestors, visibleRows } from '../../lib/plans/outline';
 import { EMPTY_SELECTION, selectCell, type Selection } from '../../lib/plans/selection';
+import {
+  firstRowsOf, pasteRowsFrom, taskRowsOf, taskSelection as asTasks, viewSelection,
+} from '../../lib/plans/viewRows';
 import type { PlanController } from './usePlan';
 import type { SheetState } from './usePlanCommands';
 
@@ -78,28 +86,6 @@ export interface SheetViewOptions {
   groupable?: boolean;
 }
 
-/** `sel` with every row it names that isn't one to select (`ok`) moved to
- *  its task's first row (`firstRow`), or dropped; `sel` itself when that
- *  changes nothing. */
-function settle(sel: Selection, ok: (key: string) => boolean, firstRow: (task: string) => string | null): Selection {
-  let changed = false;
-  const place = (key: string): string | null => {
-    if (ok(key)) return key;
-    changed = true;
-    const task = taskOfRow(key);
-    return task ? firstRow(task) : null;
-  };
-  const activeId = sel.active ? place(sel.active.id) : null;
-  const rows = new Set<string>();
-  for (const key of sel.rows) {
-    const at = place(key);
-    if (at) rows.add(at);
-  }
-  const anchor = sel.anchor === null ? null : place(sel.anchor);
-  if (!changed) return sel;
-  return { active: sel.active && activeId ? { id: activeId, col: sel.active.col } : null, rows, anchor };
-}
-
 /**
  * The Gantt view's shared state: the rows the sheet and the chart show,
  * collapse, the filter bar's view, the selection, and the `&task=` deep
@@ -128,8 +114,10 @@ export function useSheetView(ctl: PlanController, taskParam: string | null,
   // a filter applies when it is picked: what it matched then, and the tasks there were
   const nowS = plan ? plan.status_date ?? plan.now : '';
   const statusDate = plan?.status_date ?? null;
+  // every pick of a filter applies it afresh, the one on now too
+  const [applySeq, setApplySeq] = useState(0);
   const applyKey = filtering && planId
-    ? JSON.stringify([planId, view.filter, view.search.trim().toLowerCase(), me, statusDate]) : '';
+    ? JSON.stringify([planId, view.filter, view.search.trim().toLowerCase(), me, statusDate, applySeq]) : '';
   const [applied, setApplied] = useState<Applied | null>(null);
   let filter = applied;
   if (applyKey && applied?.key !== applyKey) {
@@ -168,16 +156,17 @@ export function useSheetView(ctl: PlanController, taskParam: string | null,
     const next = { ...now, ...change };
     latest.current = { ...latest.current, view: next };
     setPicked({ planId: id, view: next });
+    if (change.filter !== undefined) setApplySeq((n) => n + 1);
     writeView(id, next);
   }, []);
 
   // ── the rows ──
   const shown = useMemo(() => {
-    if (!filtering || !filter) return { rows: order, context: NO_KEYS as ReadonlySet<string>, matches: order.length };
+    if (!filtering || !filter) return { rows: order, context: NO_KEYS as ReadonlySet<string> };
     const kept = new Set(filter.matched);
     for (const id of order) if (!filter.known.has(id)) kept.add(id);
     const { rows, context } = withContext(order, tasksById, kept);
-    return { rows, context: context as ReadonlySet<string>, matches: rows.length - context.size };
+    return { rows, context: context as ReadonlySet<string> };
   }, [filtering, filter, order, tasksById]);
 
   const layout = useMemo(() => {
@@ -191,16 +180,10 @@ export function useSheetView(ctl: PlanController, taskParam: string | null,
   }, [grouped, shown, tasksById, view.group, collapsed]);
   const { rows, context, bands } = layout;
 
+  /** A row nobody selects: a context row, a band. */
+  const inert = useCallback((key: string) => isBandRow(key) || context.has(key), [context]);
   /** Each task's first row (grouped: the first band it is under). */
-  const firstRows = useMemo(() => {
-    const out = new Map<string, string>();
-    for (const key of rows) {
-      if (isBandRow(key) || context.has(key)) continue;
-      const task = taskOfRow(key);
-      if (task && !out.has(task)) out.set(task, key);
-    }
-    return out;
-  }, [rows, context]);
+  const firstRows = useMemo(() => firstRowsOf(rows, inert), [rows, inert]);
 
   // ── the selection: by row (the panes), and by task (the commands) ──
   // another plan (another initiative) starts with nothing selected
@@ -211,12 +194,8 @@ export function useSheetView(ctl: PlanController, taskParam: string | null,
     setSelection(EMPTY_SELECTION);
   }
   const shaped = grouped || filtering;
-  const selection = useMemo(() => {
-    if (!shaped) return picks;
-    const rowSet = new Set(rows);
-    const ok = (key: string) => (key === 'blank' ? !grouped : rowSet.has(key) && !isBandRow(key) && !context.has(key));
-    return settle(picks, ok, (task) => firstRows.get(task) ?? null);
-  }, [shaped, picks, rows, grouped, context, firstRows]);
+  const selection = useMemo(() => viewSelection(picks, { rows, inert, shaped, grouped, firstRows }),
+    [picks, rows, inert, shaped, grouped, firstRows]);
 
   const toggleCollapse = useCallback((id: string) => {
     const { collapsed: now, tasksById: byId } = latest.current;
@@ -273,16 +252,19 @@ export function useSheetView(ctl: PlanController, taskParam: string | null,
     setScrollTo(taskParam);
   }, [planId, taskParam, showTask, kept]);
 
-  // runs once the rows include the task, so the scroll box is tall enough
+  // runs once the rows include the task, so the scroll box is tall enough;
+  // to the row picked when it is the task's (a second copy), else its first
   useEffect(() => {
     if (!scrollTo) return;
-    const index = rows.indexOf(firstRows.get(scrollTo) ?? scrollTo);
+    const active = selection.active?.id ?? null;
+    const at = active !== null && taskOfRow(active) === scrollTo ? active : firstRows.get(scrollTo) ?? scrollTo;
+    const index = rows.indexOf(at);
     const box = scrollRef.current;
     if (index < 0 || !box) return;
     const below = Math.max(0, box.clientHeight - SHEET_HEAD_PX - rowHeight);
     box.scrollTop = Math.max(0, index * rowHeight - below / 2);
     setScrollTo(null);
-  }, [scrollTo, rows, firstRows, rowHeight, scrollRef]);
+  }, [scrollTo, rows, firstRows, rowHeight, scrollRef, selection]);
 
   /** Scrolls the task's row to the middle of the view (Scroll to task). */
   const reveal = useCallback((id: string) => setScrollTo(id), []);
@@ -295,27 +277,22 @@ export function useSheetView(ctl: PlanController, taskParam: string | null,
     setScrollTo(id);
   }, [showTask, kept]);
 
-  // the commands' view: tasks, each once, in the order shown
-  const taskRows = useMemo(() => (grouped || context.size ? [...firstRows.keys()] : rows),
+  // the commands' view: tasks, each once, in the order shown; a paste
+  // while grouped walks the rows on screen from the active one
+  const taskRows = useMemo(() => (grouped || context.size ? taskRowsOf(firstRows) : rows),
     [grouped, context, firstRows, rows]);
-  const taskSelection = useMemo((): Selection => {
-    if (!grouped) return selection;
-    const id = (key: string | null) => (key === null ? null : taskOfRow(key));
-    const activeId = selection.active ? id(selection.active.id) : null;
-    return {
-      active: selection.active && activeId ? { id: activeId, col: selection.active.col } : null,
-      rows: new Set([...selection.rows].map(id).filter((t): t is string => !!t)),
-      anchor: id(selection.anchor),
-    };
-  }, [grouped, selection]);
+  const taskSelection = useMemo(() => asTasks(selection), [selection]);
+  const activeKey = selection.active?.id ?? null;
+  const pasteRows = useMemo(() => (grouped ? pasteRowsFrom(rows, inert, activeKey) : taskRows),
+    [grouped, rows, inert, activeKey, taskRows]);
   const forCommands = useMemo<SheetState>(() => ({
-    rows: taskRows, collapsed, selection: taskSelection, select: setSelection, toggleCollapse, reveal, goTo, grouped,
-  }), [taskRows, collapsed, taskSelection, toggleCollapse, reveal, goTo, grouped]);
+    rows: taskRows, pasteRows, collapsed, selection: taskSelection, select: setSelection, toggleCollapse, reveal, goTo,
+    grouped,
+  }), [taskRows, pasteRows, collapsed, taskSelection, toggleCollapse, reveal, goTo, grouped]);
 
-  const counts = useMemo(() => {
-    if (!filtering) return null;
-    return { shown: grouped ? firstRows.size : shown.matches, total: tasks.length };
-  }, [filtering, grouped, firstRows, shown, tasks.length]);
+  const counts = useMemo(() => (filtering
+    ? filterCount(shown.rows, shown.context, tasksById, view.filter, grouped) : null),
+  [filtering, shown, tasksById, view.filter, grouped]);
 
   return {
     rows, context, bands, collapsed, toggleCollapse, selection, select: setSelection, reveal, goTo,

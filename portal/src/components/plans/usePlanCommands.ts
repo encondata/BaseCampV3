@@ -26,8 +26,10 @@
  *   once; Lock, Clear baseline and Delete plan ask first.
  * - The commands work on tasks: `sheet` is useSheetView's `forCommands`
  *   (the tasks shown, each once, and the selection by task). While the
- *   sheet is grouped (Group by) the outline can't change: Insert, Indent,
- *   Outdent and a paste that adds rows say so instead (OFF_NOTES.grouped).
+ *   sheet is grouped (Group by) the outline and the links can't change:
+ *   Insert, Indent, Outdent, Link, Unlink and a paste that adds rows say so
+ *   instead (OFF_NOTES.grouped). A cell paste while grouped fills the rows
+ *   on screen from the active one (`sheet.pasteRows`).
  * - Ctrl+F (⌘F) focuses the filter bar's search box (`searchBox`), its
  *   text selected; with no box the browser finds.
  */
@@ -145,8 +147,11 @@ export interface SheetState {
   reveal(id: string): void;
   /** Opens its summaries, selects the row and scrolls it into view. */
   goTo(id: string): void;
-  /** Grouped (Group by): the outline can't change. */
+  /** Grouped (Group by): the outline and the links can't change. */
   grouped?: boolean;
+  /** The tasks a cell paste fills, from the active one down (grouped: the
+   *  rows on screen, each task once); `rows` when absent. */
+  pasteRows?: string[];
 }
 
 interface Options {
@@ -514,7 +519,7 @@ export function usePlanCommands({
     }
     const grid = parseClipboard(text);
     if (!grid.length) return;
-    const cmd = opsForPaste(grid, view.selection.active, visibleColumns(), view.rows, ctx);
+    const cmd = opsForPaste(grid, view.selection.active, visibleColumns(), view.pasteRows ?? view.rows, ctx);
     // grouped, cells fill in; rows past the last would be new tasks
     if (view.grouped && 'ops' in cmd && cmd.ops.some((op) => op.op === 'add_task')) {
       latest.current.toast(GROUPED_SAID);
@@ -666,8 +671,9 @@ export function usePlanCommands({
       'add', selectNew, true);
     const indent = () => withPlan(indentSelected, 'Indent', 'schedule', undefined, true);
     const outdent = () => withPlan(outdentSelected, 'Outdent', 'schedule', undefined, true);
-    const link = () => withPlan(linkSelected, 'Link Tasks', 'schedule');
-    const unlink = () => withPlan(unlinkSelected, 'Unlink Tasks', 'schedule');
+    // grouped, no links are drawn: a link made then would show nowhere
+    const link = () => withPlan(linkSelected, 'Link Tasks', 'schedule', undefined, true);
+    const unlink = () => withPlan(unlinkSelected, 'Unlink Tasks', 'schedule', undefined, true);
 
     const actions = {
       undo,

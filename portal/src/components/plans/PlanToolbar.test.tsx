@@ -284,13 +284,15 @@ describe('hover tips', () => {
     }
   });
 
-  it('grouped (Group by): Insert, Indent and Outdent say to turn it off; the rest work, locked still wins', () => {
-    const { rerender } = render(<Bar plan={makePlan()} cmd={commands({ grouped: true })} />);
-    for (const name of ['Indent', 'Outdent', 'Insert Task', 'Insert Summary Task', 'Insert Milestone']) {
+  it('grouped (Group by): Insert, Indent, Outdent, Link and Unlink say to turn it off; the rest work, locked still wins', () => {
+    const two = [makeTask('a'), makeTask('b')];
+    const { rerender } = render(<Bar plan={makePlan()} cmd={commands({ grouped: true, selected: two })} />);
+    for (const name of ['Indent', 'Outdent', 'Insert Task', 'Insert Summary Task', 'Insert Milestone', 'Link Tasks',
+      'Unlink Tasks']) {
       expect(button(name).getAttribute('aria-disabled'), name).toBe('true');
       expect(hoverTip(button(name)).note, name).toBe('Turn off Group by to change the outline');
     }
-    for (const name of ['Unlink Tasks', '50% Complete', 'Information', 'Auto Schedule']) {
+    for (const name of ['50% Complete', 'Information', 'Auto Schedule']) {
       expect(hoverTip(button(name)).note, name).toBeNull();
     }
     rerender(<Bar plan={makePlan({ locked_at: '2026-10-27T12:00:00Z' })} cmd={commands({ grouped: true })} />);

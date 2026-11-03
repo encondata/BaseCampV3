@@ -118,3 +118,12 @@ it('the panes scroll up and down in one box, each sideways on its own, headers h
   expect(declarations('.pln-scale')).toMatch(/position:\s*sticky/);
   expect(declarations('.pln-scale')).toMatch(/height:\s*var\(--pln-head-h\)/);
 });
+
+it('a filter’s context row is dimmed the same in the sheet and the chart; the filter bar’s rules hold no guardrail word', () => {
+  const sheet = readFileSync(join(__dirname, 'plan-sheet.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const sheetRule = /\.pln-row\.pln-context\s*\{([^}]*)\}/.exec(sheet)?.[1] ?? '';
+  expect(sheetRule).toMatch(/opacity:\s*0\.55/);
+  expect(declarations('.pln-lane.pln-context > *')).toMatch(/opacity:\s*0\.55/);
+  // "trigger" holds the guardrail's `tr`: the count and the search are reached without it
+  expect(css).not.toMatch(/\.pln-ftools[^{]*tip-trigger/);
+});

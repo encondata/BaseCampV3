@@ -178,14 +178,15 @@
   white-space: nowrap;
 }
 .pln-ftools { display: flex; align-items: center; gap: 12px; min-width: 0; margin-left: auto; }
-.pln-ftools > .tip-trigger { min-width: 0; }
+.pln-ftools > * { min-width: 0; }
 .dir-search.pln-search { margin-left: 0; min-width: 0; }
 .dir-search.pln-search input { width: 260px; max-width: 100%; box-sizing: border-box; }
 .pln-fcount { white-space: nowrap; }
 @media (max-width: 720px) {
   .pln-ftools { margin-left: 0; flex: 1 1 100%; }
-  .pln-ftools > .tip-trigger { flex: 1 1 auto; }
   .dir-search.pln-search { flex: 1 1 auto; }
+  /* the input and the hover tip's wrapper around it */
+  .dir-search.pln-search > :not(svg),
   .dir-search.pln-search input { width: 100%; }
 }
 
@@ -483,7 +484,7 @@
 /* a filter's context row (a summary that places a match): its marks
    dimmed and deaf to the pointer, as the sheet's row is (the initiatives
    tree's rule) */
-.pln-lane.pln-context > * { opacity: 0.45; pointer-events: none; }
+.pln-lane.pln-context > * { opacity: 0.55; pointer-events: none; }
 /* Group by: a group's band, shaded as the sheet's band is */
 .pln-lane.pln-band-lane { --pln-lane-bg: var(--surface-2); background: var(--surface-2); }
 

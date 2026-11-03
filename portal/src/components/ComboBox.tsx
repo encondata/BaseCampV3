@@ -66,11 +66,13 @@ interface Props {
   portal?: boolean;                    // always portal the menu (it portals by itself inside a .modal-card)
   onSearch?: (text: string) => void;   // the caller filters `options` (server search)
   handle?: Ref<ComboBoxHandle>;        // focusQuietly()
+  'aria-describedby'?: string;         // on the input (a hover tip wrapped around the box names itself here)
 }
 
 export default function ComboBox({
   options, value, onChange, placeholder = 'Select…',
   onOpen, clearable = false, disabled = false, inputId, ariaLabel, portal = false, onSearch, handle,
+  'aria-describedby': describedBy,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
@@ -228,6 +230,7 @@ export default function ComboBox({
         role="combobox"
         aria-expanded={open}
         aria-label={ariaLabel}
+        aria-describedby={describedBy}
       />
       {clearable && value && !open ? (
         <button type="button" className="combo-caret" aria-label="Clear"

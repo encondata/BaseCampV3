@@ -186,7 +186,11 @@ describe('filters keep the outline, in the sheet and the chart', () => {
     expect(rowOf('s1').getAttribute('aria-selected')).toBe('false');
     fireEvent.mouseDown(rowOf('a').querySelector('[data-col="name"]')!, { button: 0 });
     expect(rowOf('a').getAttribute('aria-selected')).toBe('true');
-    expect(screen.getByText('1 of 7 tasks')).toBeTruthy();
+    // the count is of leaf tasks, the same grouped or not (fix round 1)
+    expect(screen.getByText('1 of 5 tasks')).toBeTruthy();
+    pick('Group by', 'Resource');
+    await waitFor(() => expect(sheetIds()).toEqual(['band:Jimmy Henderson', 'a']));
+    expect(screen.getByText('1 of 5 tasks')).toBeTruthy();
     // a link with an end filtered out isn't drawn
     expect(q('[data-link="ab"]')).toBeNull();
   });
@@ -222,6 +226,21 @@ describe('filters keep the outline, in the sheet and the chart', () => {
     expect(sheetIds()).toContain('a');
     // picked again: it applies afresh
     pick('Filter', 'All Tasks');
+    pick('Filter', 'Incomplete Tasks');
+    await waitFor(() => expect(sheetIds()).not.toContain('a'));
+  });
+
+  it('picking the filter that is on again applies it afresh (fix round 1)', async () => {
+    await ready();
+    pick('Filter', 'Incomplete Tasks');
+    await waitFor(() => expect(sheetIds()).toContain('a'));
+    fireEvent.mouseDown(rowOf('a').querySelector('[data-col="name"]')!, { button: 0 });
+    const done = { ...outlineTasks()[1], percent_complete: 100, status: 'complete' as const };
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ tasks: [done] }));
+    fireEvent.click(tool('100% Complete'));
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(rowOf('a').textContent).toContain('Order crates'));
+    expect(sheetIds()).toContain('a');
     pick('Filter', 'Incomplete Tasks');
     await waitFor(() => expect(sheetIds()).not.toContain('a'));
   });
@@ -330,15 +349,20 @@ describe('Group by', () => {
     pick('Group by', 'Status');
     await waitFor(() => expect(sheetIds()[0]).toBe('band:Late'));
     fireEvent.mouseDown(rowOf('a').querySelector('[data-col="name"]')!, { button: 0 });
-    for (const name of ['Insert Task', 'Insert Summary Task', 'Insert Milestone', 'Indent', 'Outdent']) {
+    for (const name of ['Insert Task', 'Insert Summary Task', 'Insert Milestone', 'Indent', 'Outdent', 'Link Tasks',
+      'Unlink Tasks']) {
       expect(tool(name).getAttribute('aria-disabled'), name).toBe('true');
     }
+    // no link handles on the bars: a link made now would have no line to show
+    expect(q('.pln-link-dot')).toBeNull();
     // their keys say so too
     grid().focus();
     fireEvent.keyDown(grid(), { key: 'Insert' });
     fireEvent.keyDown(grid(), { key: 'ArrowRight', altKey: true, shiftKey: true });
+    fireEvent.keyDown(grid(), { key: 'F2', ctrlKey: true });
+    fireEvent.keyDown(grid(), { key: 'F2', ctrlKey: true, shiftKey: true });
     expect(toast).toHaveBeenCalledWith(`${OFF_NOTES.grouped}.`);
-    expect(toast).toHaveBeenCalledTimes(2);
+    expect(toast).toHaveBeenCalledTimes(4);
     expect(api.postOps).not.toHaveBeenCalled();
     // progress still works on a grouped row
     api.postOps.mockResolvedValueOnce(makeOpsResult({ tasks: [] }));
@@ -388,6 +412,64 @@ describe('Group by', () => {
     const css = (await import('node:fs')).readFileSync(
       (await import('node:path')).join(__dirname, '../../styles/plan-sheet.css'), 'utf8');
     expect(css).toMatch(/\.pln-band-cell\s*\{[^}]*var\(--pln-pane-x/);
+  });
+
+  it('a grouped row picked, then No Group: its task stays selected and the commands see it (fix round 1)', async () => {
+    await ready();
+    pick('Group by', 'Resource');
+    await waitFor(() => expect(rowOf('b', 1)).toBeTruthy());
+    // Jimmy's Label racks: the second copy
+    fireEvent.mouseDown(rowOf('b', 1).querySelector('[data-col="name"]')!, { button: 0 });
+    pick('Group by', 'No Group');
+    await waitFor(() => expect(sheetIds()).toEqual(['s1', 'a', 'b', 's2', 'c', 'm', 'w', 'blank']));
+    expect(rowOf('b').getAttribute('aria-selected')).toBe('true');
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ tasks: [] }));
+    fireEvent.click(tool('75% Complete'));
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    expect(sent()).toEqual([{ op: 'set_percent', ids: ['b'], percent: 75 }]);
+    // and the keys go on from its row
+    grid().focus();
+    fireEvent.keyDown(grid(), { key: 'ArrowDown' });
+    expect(rowOf('s2').getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('a cell paste while grouped fills the rows on screen from the active one, each task once (fix round 1)', async () => {
+    await ready();
+    pick('Group by', 'Resource');
+    await waitFor(() => expect(rowOf('b', 1)).toBeTruthy());
+    // on screen: Dana: b, c · Jimmy: a, b · Unassigned: m, w — active on Jimmy's b, the second copy of b
+    fireEvent.mouseDown(rowOf('b', 1).querySelector('[data-col="name"]')!, { button: 0 });
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ tasks: [] }));
+    fireEvent.paste(grid(), { clipboardData: { getData: () => 'Label racks again\r\nGo live!\r\n' } });
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    const named = sent().filter((op): op is Extract<Op, { op: 'update_task' }> => op.op === 'update_task')
+      .map((op) => [op.id, op.fields.name]);
+    expect(named).toEqual([['b', 'Label racks again'], ['m', 'Go live!']]);
+    // from Jimmy's a: a, then b (shown under Jimmy next), not c
+    api.postOps.mockClear();
+    fireEvent.mouseDown(rowOf('a').querySelector('[data-col="name"]')!, { button: 0 });
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ tasks: [] }));
+    fireEvent.paste(grid(), { clipboardData: { getData: () => 'One\r\nTwo\r\n' } });
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    expect(sent().filter((op): op is Extract<Op, { op: 'update_task' }> => op.op === 'update_task')
+      .map((op) => [op.id, op.fields.name])).toEqual([['a', 'One'], ['b', 'Two']]);
+  });
+
+  it('Scroll to Task on a second copy scrolls to that row, not the first copy (fix round 1)', async () => {
+    await ready();
+    pick('Group by', 'Resource');
+    await waitFor(() => expect(rowOf('b', 1)).toBeTruthy());
+    const box = (q('.pln-pane-sheet') as HTMLElement).closest('.pln-panes') as HTMLElement;
+    let top = 0;
+    Object.defineProperty(box, 'scrollTop', { configurable: true, get: () => top, set: (v: number) => { top = v; } });
+    fireEvent.mouseDown(rowOf('b', 1).querySelector('[data-col="name"]')!, { button: 0 });
+    // a short box, so where the row lands shows
+    Object.defineProperty(box, 'clientHeight', { configurable: true, get: () => 100 });
+    top = 0;
+    fireEvent.keyDown(grid(), { key: 'F5', ctrlKey: true, shiftKey: true });
+    // Jimmy's b is the sixth row (index 5), the first copy the second (index 1): centered,
+    // index × 30 less (100 − 44 − 30) / 2
+    await waitFor(() => expect(top).toBe(5 * ROW - (100 - 44 - ROW) / 2));
   });
 
   it('switching grouping keeps the selected task selected', async () => {

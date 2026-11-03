@@ -6,15 +6,17 @@
  *   inert, the initiatives tree's rule — so a matching subtask keeps its
  *   place. A summary that matches is a result itself; its subtasks that
  *   don't match stay out.
- * - The filters: All Tasks; Incomplete Tasks (under 100%); Late Tasks (not
- *   finished, its finish — or its deadline, when earlier — before the
- *   plan's now: the API's own `task_status` rule, so the Status column says
- *   Late for the same tasks); Critical (leaf tasks on the critical path, as
- *   the chart draws them red); Milestones; Due This Week (not finished,
- *   finishing in the Monday-first week of the plan's now, the portal's
- *   week); Assigned to Me (the signed-in person among its resources);
- *   Summary Tasks. "Now" is the plan's: its status date when set, else its
- *   own clock — plan-local floating time, never the browser's.
+ * - The filters: All Tasks; Incomplete Tasks (under 100%); Late Tasks (the
+ *   task's status is Late: the API's `task_status`, the Status column's
+ *   word, read as given, never worked out again here); Critical (leaf
+ *   tasks on the critical path, as the chart draws them red); Milestones;
+ *   Due This Week (not finished, finishing in the Monday-first week of the
+ *   plan's now, the portal's week — "now" is the plan's: its status date
+ *   when set, else its own clock, plan-local floating time, never the
+ *   browser's); Assigned to Me (the signed-in person among its resources);
+ *   Summary Tasks.
+ * - The count (`filterCount`) is of leaf tasks — the same "N of M" grouped
+ *   or not — except under Summary Tasks, which counts summaries.
  * - The search matches the task's name, notes and resource names, ignoring
  *   case.
  * - Group by (`groupRows`) lists the leaf tasks under a band per resource
@@ -55,7 +57,7 @@ export const PLAN_GROUPS: readonly { value: PlanGroupBy; label: string }[] = [
   { value: 'status', label: 'Status' },
 ];
 
-type FilterTask = Pick<PlanTask, 'name' | 'notes' | 'assignees' | 'percent_complete' | 'finish' | 'deadline'
+type FilterTask = Pick<PlanTask, 'name' | 'notes' | 'assignees' | 'percent_complete' | 'finish' | 'status'
   | 'is_critical' | 'is_summary' | 'is_milestone'>;
 
 /** The Monday-first week `nowS` is in, as [start, end) ms. */
@@ -74,13 +76,7 @@ export function taskMatches(task: FilterTask, filter: PlanFilter, search: string
   let ok: boolean;
   switch (filter) {
     case 'incomplete': ok = !done; break;
-    case 'late': {
-      const finish = msOrNaN(task.finish);
-      const deadline = msOrNaN(task.deadline);
-      const due = Number.isNaN(deadline) || deadline >= finish ? finish : deadline;
-      ok = !done && due < toMs(nowS);
-      break;
-    }
+    case 'late': ok = task.status === 'late'; break;
     case 'critical': ok = task.is_critical && !task.is_summary; break;
     case 'milestones': ok = task.is_milestone; break;
     case 'due_week': {
@@ -137,6 +133,11 @@ export function withContext(
  * The rows a filter and a search leave, in outline order: the tasks that
  * match, plus their summary tasks as dimmed, inert context rows. With
  * nothing to filter by, `order` itself and no context.
+ *
+ * The composed reference, for the tests: the tab composes `matchingIds`
+ * (when a filter is picked) and `withContext` (on every render, with the
+ * tasks added since) itself, so a filter applies when it is picked
+ * (components/plans/useSheetView).
  */
 export function filterRows(
   order: readonly string[], tasksById: ReadonlyMap<string, FilterTask & Pick<PlanTask, 'parent_id'>>,
@@ -144,6 +145,27 @@ export function filterRows(
 ): { rows: string[]; context: Set<string> } {
   if (!isFiltering(filter, search)) return { rows: [...order], context: new Set() };
   return withContext(order, tasksById, matchingIds(order, tasksById, filter, search, me, nowS));
+}
+
+/**
+ * The filter bar's "N of M": the leaf tasks shown as matches (not context
+ * rows) of the plan's leaf tasks, the same grouped or not (grouping lists
+ * leaves). Summary Tasks counts summaries instead; grouped, none of them
+ * show.
+ */
+export function filterCount(
+  rows: readonly string[], context: ReadonlySet<string>, tasksById: ReadonlyMap<string, Pick<PlanTask, 'is_summary'>>,
+  filter: PlanFilter, grouped: boolean,
+): { shown: number; total: number } {
+  const summaries = filter === 'summary';
+  let total = 0;
+  for (const task of tasksById.values()) if (task.is_summary === summaries) total += 1;
+  if (summaries && grouped) return { shown: 0, total };
+  let shown = 0;
+  for (const id of rows) {
+    if (!context.has(id) && tasksById.get(id)?.is_summary === summaries) shown += 1;
+  }
+  return { shown, total };
 }
 
 // ── Group by ──
