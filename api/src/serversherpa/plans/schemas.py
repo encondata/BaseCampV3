@@ -449,6 +449,34 @@ class OpsOut(BaseModel):
     notices: list[dict[str, Any]]
 
 
+# --- imports (POST /plans/{id}/import, POST /initiatives/{id}/plan/import) ---------
+
+
+class ImportRowOut(BaseModel):
+    """One task of the imported file (plans/importer.py, ImportRow)."""
+
+    index: int                              # 1-based, in the file's order
+    name: str
+    action: Literal["create"]
+    problems: list[str]                     # what the import changed or skipped, and why
+    moved_days: float | None                # working days the plan's schedule moves it
+
+
+class ImportSummaryOut(BaseModel):
+    created: int
+    problems: int                           # every row's and the file's
+
+
+class PlanImportOut(BaseModel):
+    """The rows a dry run would create (or an apply created), the problems
+    about the whole file ("Kept this plan's calendar: ..."), and the
+    counts."""
+
+    rows: list[ImportRowOut]
+    problems: list[str]
+    summary: ImportSummaryOut
+
+
 # --- plan-level writes (PATCH /plans/{id}, lock, baseline, version) ----------------
 
 

@@ -30,6 +30,7 @@ dependencies = [
     "pillow>=11.3",            # ID badge images (labels/image_prep.py, imported lazily; never on the laptop edge)
     "nh3>=0.3",                # learning translation HTML sanitizer (learning/translate.py)
     "segno>=1.6",              # the learning completion email's time clock QR (learning/emails.py)
+    "defusedxml>=0.7",         # MS Project XML plan imports: no DTDs or entities (plans/mspdi.py)
 ]
 
 [project.optional-dependencies]

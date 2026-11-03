@@ -277,10 +277,12 @@ class BatchRun:
 
 
 async def run_batch(db: AsyncSession, plan: ProjectPlan, ops: Sequence,
-                    actor: AuthContext, *, changes: dict | None = None) -> BatchRun:
+                    actor: AuthContext, *, changes: dict | None = None,
+                    action: str = "plan_update") -> BatchRun:
     """Apply a batch to a plan the caller has locked and checked, bump its
-    version, audit it (with `changes` the caller made to the plan itself)
-    and answer what changed. The caller commits."""
+    version, audit it as `action` (with `changes` the caller made to the
+    plan itself; an import, plans/importer.py, is `plan_import`) and answer
+    what changed. The caller commits."""
     state = await load_state(db, plan)
     try:
         settings = await settings_of(db, plan)
@@ -293,7 +295,7 @@ async def run_batch(db: AsyncSession, plan: ProjectPlan, ops: Sequence,
     plan.version += 1
     plan.updated_by, plan.updated_at = actor.person.id, result.now
     audit(db, actor_id=actor.person.id, entity_type="project_plan", entity_id=str(plan.id),
-          action="plan_update",
+          action=action,
           changes={"ops": dict(Counter(op.op for op in ops)), **(changes or {})})
     await db.flush()
     try:

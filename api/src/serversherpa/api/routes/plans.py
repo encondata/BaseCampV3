@@ -6,21 +6,33 @@ Every route requires its `project_plans` action first, then resolves the
 initiative (or the plan) through the actor's initiatives scope, so an id
 the actor cannot see reads as 404, never 403."""
 
+import dataclasses
 import logging
 import uuid
 from datetime import UTC, date, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request, Response
 from sqlalchemy import Text, cast, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
+from serversherpa.db.models import Initiative
 from serversherpa.db.ordering import natural
-from serversherpa.plans import notices, ops, plan_writes, service, templates, timeline
+from serversherpa.plans import (
+    importer,
+    mspdi,
+    notices,
+    ops,
+    plan_writes,
+    service,
+    templates,
+    timeline,
+)
 from serversherpa.plans.calendar import CalendarError, WorkCalendar
-from serversherpa.plans.floating import format_floating, parse_floating
+from serversherpa.plans.floating import format_floating, parse_floating, plan_now
 from serversherpa.plans.models import PlanTask, PlanTemplate
 from serversherpa.plans.ops_progress import UpdateProjectOp
 from serversherpa.plans.schemas import (
@@ -28,6 +40,7 @@ from serversherpa.plans.schemas import (
     OpsIn,
     OpsOut,
     PlanCreateIn,
+    PlanImportOut,
     PlanOut,
     PlanPatchIn,
     PlanTemplateOut,
@@ -39,6 +52,7 @@ from serversherpa.plans.schemas import (
 )
 from serversherpa.plans.service import PlanState, err
 from serversherpa.services.audit import audit
+from serversherpa.services.storage import content_disposition
 
 router = APIRouter(tags=["plans"])
 logger = logging.getLogger("serversherpa.api.routes.plans")
@@ -105,12 +119,7 @@ async def create_plan(
         raise err(422, "bad_field", field="project_start") from None
     owner_id = body.owner_id
     if "owner_id" not in body.model_fields_set:
-        # not sent: the creator owns the plan when they could be named its
-        # owner (the same staff check); otherwise it has none — a default
-        # never refuses the plan. An explicit null still means no owner.
-        person_id = actor.person.id if actor.person is not None else None
-        owner_id = person_id if person_id is not None and await service.is_staff(
-            db, person_id) else None
+        owner_id = await _default_owner(db, actor)
     elif owner_id is not None and not await service.is_staff(db, owner_id):
         raise err(422, "bad_owner")
     try:
@@ -118,12 +127,27 @@ async def create_plan(
                                          owner_id=owner_id, template=template)
         await db.commit()
     except IntegrityError as exc:
-        # another create for this initiative won the race
-        if PLAN_UNIQUE not in str(getattr(exc, "orig", "")) and PLAN_UNIQUE not in str(exc):
-            raise
+        _plan_exists(exc)
         await db.rollback()
         raise err(409, "plan_exists") from None
     return await service.plan_out(db, await service.load_state(db, plan), actor)
+
+
+async def _default_owner(db: AsyncSession, actor: AuthContext) -> uuid.UUID | None:
+    """A new plan's owner when none is sent: the creator when they could be
+    named its owner (the same staff check); otherwise none — a default
+    never refuses the plan. (An explicit null still means no owner.)"""
+    person_id = actor.person.id if actor.person is not None else None
+    if person_id is not None and await service.is_staff(db, person_id):
+        return person_id
+    return None
+
+
+def _plan_exists(exc: IntegrityError) -> None:
+    """Re-raise `exc` unless it is another create for the same initiative
+    winning the race (the caller answers 409 `plan_exists`)."""
+    if PLAN_UNIQUE not in str(getattr(exc, "orig", "")) and PLAN_UNIQUE not in str(exc):
+        raise exc
 
 
 @router.delete("/initiatives/{initiative_id}/plan", status_code=204)
@@ -311,6 +335,198 @@ async def plan_version(
     change; every write bumps it."""
     plan = await service.plan_for_actor(db, plan_id, actor)
     return await plan_writes.version_out(db, plan)
+
+
+# --- import and export (plans/importer.py, plans/mspdi.py) --------------------------
+
+# room for the multipart form's boundaries and part headers around the file
+_FORM_OVERHEAD = 64 * 1024
+
+
+def _download_name(initiative: Initiative, suffix: str) -> str:
+    """`<code or name> - Project plan<suffix>`, with no path separator."""
+    label = (initiative.code or initiative.name or "Project").replace("/", "-").replace("\\", "-")
+    return f"{label} - Project plan{suffix}"
+
+
+@router.get("/plans/{plan_id}/export.xml")
+async def export_xml(
+    plan_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("project_plans", "view"),
+) -> Response:
+    """The plan as MS Project XML (MSPDI, plans/mspdi.py): its calendar,
+    tasks with outline, durations, links, constraints, deadlines and
+    progress, and the people and partners it assigns. Never task colors."""
+    plan = await service.plan_for_actor(db, plan_id, actor)
+    state = await service.load_state(db, plan)
+    initiative = await db.get(Initiative, plan.initiative_id)
+    try:
+        units = service.calendar_of(plan).units
+    except CalendarError as exc:
+        raise service.calendar_error(exc) from None
+    content = mspdi.export_xml(state, initiative.name, units,
+                               resource_names=await mspdi.resource_names(db, state))
+    return Response(content, media_type="application/xml", headers={
+        "Content-Disposition": content_disposition(_download_name(initiative, ".xml"))})
+
+
+class _TooLarge(Exception):
+    """The upload passed the cap while it was being read."""
+
+
+async def _import_upload(request: Request) -> tuple[str, bytes]:
+    """The multipart `file` of an import: (its filename, its bytes). The
+    20 MB cap (importer.MAX_FILE_BYTES) holds while the body is read: a
+    declared length past it (plus the form's own overhead) is refused
+    before anything is read, and the stream is counted as it arrives, so a
+    chunked body is cut off there too. 413 `file_too_large`; 422
+    `bad_file` {message} when there is no single `file`."""
+    cap = importer.MAX_FILE_BYTES + _FORM_OVERHEAD
+    too_large = err(413, "file_too_large", limit=importer.MAX_FILE_BYTES)
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isascii() and declared.isdigit() and (
+            len(declared) > len(str(cap)) or int(declared) > cap):
+        raise too_large
+    received = 0
+
+    async def receive():
+        nonlocal received
+        message = await request.receive()
+        if message["type"] == "http.request":
+            received += len(message.get("body", b""))
+            if received > cap:
+                raise _TooLarge
+        return message
+
+    try:
+        form = await Request(request.scope, receive).form(max_files=1, max_fields=8,
+                                                          max_part_size=1024)
+    except _TooLarge:
+        raise too_large from None
+    except StarletteHTTPException:
+        # Starlette's own form limits: more than one file, a malformed form
+        raise err(422, "bad_file", message="Send one file, as the form's `file`.") from None
+    try:
+        upload = form.get("file")
+        if upload is None or isinstance(upload, str):
+            raise err(422, "bad_file", message="No file was sent.")
+        content = await upload.read(importer.MAX_FILE_BYTES + 1)
+        if len(content) > importer.MAX_FILE_BYTES:
+            raise too_large
+        return upload.filename or "", content
+    finally:
+        await form.close()
+
+
+def _parse_upload(filename: str, content: bytes) -> importer.ParsedPlan:
+    """The uploaded file as a ParsedPlan: MS Project XML (the Excel
+    reader joins it by extension). A file it cannot read is answered as
+    its ImportFileError says."""
+    try:
+        return mspdi.parse_xml(content)
+    except importer.ImportFileError as exc:
+        raise err(exc.status, exc.code, **exc.extra) from None
+
+
+def _import_out(rows: list[importer.ImportRow], problems: list[str]) -> PlanImportOut:
+    return PlanImportOut(rows=[dataclasses.asdict(row) for row in rows], problems=problems,
+                         summary=importer.summary(rows, problems))
+
+
+@router.post("/plans/{plan_id}/import", response_model=PlanImportOut)
+async def import_into_plan(
+    plan_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    dry_run: bool = True,
+    mode: str = "append",
+    actor: AuthContext = require_permission("project_plans", "add"),
+) -> PlanImportOut:
+    """Import a file (multipart `file`) into the plan (plans/importer.py):
+    `mode=append` adds its tasks after the last task, `fill` fills an
+    empty plan and takes the file's calendar, project start and status
+    date (409
+    `plan_not_empty` on a plan with tasks). `dry_run=1` (the default)
+    answers the rows applying would create, with their problems and how
+    far the schedule moves each, and writes nothing; `dry_run=0` applies
+    them in one transaction (one ops batch: the version bumped, audited
+    `plan_import`). 409 `plan_locked` on a locked plan; the file's errors
+    are 413 `file_too_large`, 422 `bad_file` {message}, `too_many_rows`
+    {limit}; the engine's 422s (a link cycle) as on any batch."""
+    if mode not in importer.IMPORT_MODES:
+        raise err(422, "bad_field", field="mode")
+    # read before the plan row is locked: a slow upload holds no lock
+    parsed = _parse_upload(*await _import_upload(request))
+    plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
+    state = await service.load_state(db, plan)
+    if dry_run:
+        rows = await importer.preview(db, state, parsed, mode, actor)
+    else:
+        rows = await importer.apply(db, state, parsed, mode, actor)
+        await db.commit()
+    return _import_out(rows, importer.file_problems(parsed, mode))
+
+
+async def _new_plan_start(db: AsyncSession, initiative: Initiative,
+                          parsed: importer.ParsedPlan) -> datetime:
+    """A plan made from a file starts at the file's project start, else
+    its earliest task start, else today at the calendar's default start
+    in the plan's zone."""
+    if parsed.project_start is not None:
+        return parsed.project_start
+    starts = [task.start for task in parsed.tasks if task.start is not None]
+    if starts:
+        return min(starts)
+    try:
+        calendar = WorkCalendar.from_json(await service.new_plan_calendar(db, None))
+    except CalendarError as exc:
+        raise service.calendar_error(exc) from None
+    today = plan_now(await service.plan_zone(db, initiative)).date()
+    return datetime.combine(today, calendar.default_start)
+
+
+@router.post("/initiatives/{initiative_id}/plan/import", response_model=PlanImportOut)
+async def import_new_plan(
+    initiative_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    dry_run: bool = True,
+    actor: AuthContext = require_permission("project_plans", "add"),
+) -> PlanImportOut:
+    """Create the initiative's plan from a file (multipart `file`): made as
+    POST /initiatives/{id}/plan makes one (owner: the creator when staff),
+    starting at the file's project start, then filled from the file
+    (`fill` mode: its calendar too). `dry_run=1` (the default) answers the
+    rows and creates nothing; `dry_run=0` creates and fills the plan in one
+    transaction (audited `plan_create` and `plan_import`). 409
+    `plan_exists`; the file's errors as on POST /plans/{id}/import."""
+    initiative = await service.visible_initiative(db, initiative_id, actor)
+    parsed = _parse_upload(*await _import_upload(request))
+    if await service.plan_of_initiative(db, initiative_id) is not None:
+        raise err(409, "plan_exists")
+    start = await _new_plan_start(db, initiative, parsed)
+    owner_id = await _default_owner(db, actor)
+
+    async def create_and_fill() -> list[importer.ImportRow]:
+        plan = await service.create_plan(db, initiative, actor, project_start=start,
+                                         owner_id=owner_id)
+        return await importer.apply(db, await service.load_state(db, plan), parsed, "fill",
+                                    actor)
+
+    try:
+        if dry_run:
+            async with db.begin_nested() as savepoint:
+                rows = await create_and_fill()
+                await savepoint.rollback()
+        else:
+            rows = await create_and_fill()
+            await db.commit()
+    except IntegrityError as exc:
+        _plan_exists(exc)
+        await db.rollback()
+        raise err(409, "plan_exists") from None
+    return _import_out(rows, importer.file_problems(parsed, "fill"))
 
 
 # --- templates (plans/templates.py) -------------------------------------------------
