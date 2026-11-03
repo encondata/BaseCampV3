@@ -9,23 +9,30 @@ transaction:
 2. **Each event's recipients,** in a savepoint of its own. An event whose subject is gone is
    dropped: marked sent, and nothing else. The candidates come in route order: the people the
    code named ("direct", or "rule:<id>" for a status rule's), the members of the Active groups
-   it named ("group:<id>"), then the people its watches reach (watches.matching_routes). Only
-   the first MAX_RECIPIENTS are considered, as the wiki does. Then: never the actor unless the
-   code named them, active accounts only, and only people who can open the subject now
-   (notifications/access.py); someone dropped for access is logged `inbox_suppressed`
-   `no_access`. An event that fails stays waiting for the next sweep, logged once, and the
-   failure is counted against it, so an event that always fails drops behind newer ones
-   instead of holding them up. Nothing gives up on it. Nothing ages it forward either: however
-   long it has waited, it stays behind every event that has failed fewer times.
-3. **One notification per person per kind.** The items that reach one person become one
-   notification for each kind, written with notify(), so the person's switches, schedule,
-   summary and critical kinds apply as to any other. One item says what it says; several are
-   counted under the kind's label, a line each, oldest first (by event id: the claim order
-   only decides which events a sweep takes, so a retried event keeps its place), and link to
-   the initiative they all belong to, else to the list they all share (a device's), else to
-   the kind's list page.
-   The payload carries the event ids, the subjects and the routes (`via`) for the send-time
-   re-check, and the inbox log row the routes, the event ids and the groups' names.
+   it named ("group:<id>", and "rule:<id>" too when a status rule named the group), then the
+   people its watches reach (watches.matching_routes). Only the first MAX_RECIPIENTS are
+   considered, as the wiki does. Then: never the actor unless the code named them, active
+   accounts only, and only people who can open the subject now (notifications/access.py). A
+   status rule's notice is checked on what the rule matched instead, thing by thing: each
+   person hears of the matched things they can open, and only those count. Someone dropped for
+   access is logged `inbox_suppressed` `no_access`. An event that fails stays waiting for the
+   next sweep, logged once, and the failure is counted against it, so an event that always
+   fails drops behind newer ones instead of holding them up. Nothing gives up on it. Nothing
+   ages it forward either: however long it has waited, it stays behind every event that has
+   failed fewer times.
+3. **One notification per person per kind,** and for status rule notices per rule. The items
+   that reach one person become one notification for each, written with notify(), so the
+   person's switches, schedule, summary and critical kinds apply as to any other. One item says
+   what it says; several are counted under the kind's label, a line each, oldest first (by
+   event id: the claim order only decides which events a sweep takes, so a retried event keeps
+   its place), and link to the initiative they all belong to, else to the list they all share
+   (a device's), else to the kind's list page. A rule's notices are counted under the rule's
+   name instead, a line per initiative with its count and the matches with no initiative
+   counted on their own, and link to the rule's executions; so is one notice the person can
+   open only part of, since its text speaks for all of it.
+   The payload carries the event ids, the subjects (for a rule's notice, the matched things the
+   person can open) and the routes (`via`) for the send-time re-check, and the inbox log row the
+   routes, the event ids and the names of the groups and rules among the routes.
 4. **Finish:** every handled event is marked sent, and it all commits at once. A write that
    fails rolls the whole sweep back for the next tick (the worker logs it once).
 
@@ -38,8 +45,9 @@ Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (section 
 
 import logging
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Set as AbstractSet
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from itertools import islice
 
@@ -48,17 +56,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from serversherpa.access.resolver import resolve_access_many
 from serversherpa.db.models import (
+    Initiative,
     Notification,
     NotificationEvent,
     NotificationGroup,
     NotificationGroupMember,
+    StatusRule,
 )
-from serversherpa.notifications.access import active_ids, thing_exists, viewers
+from serversherpa.notifications.access import active_ids, thing_exists, viewers, visible_among
 from serversherpa.notifications.delivery_log import record
 from serversherpa.notifications.events import Thing
 from serversherpa.notifications.inbox import notify
 from serversherpa.notifications.kinds import kind_info
 from serversherpa.notifications.watches import matching_routes
+from serversherpa.status_rules.notify import rule_link
 from serversherpa.wiki.notify import MAX_RECIPIENTS
 
 logger = logging.getLogger("serversherpa.notifications.event_sweep")
@@ -68,7 +79,8 @@ EVENT_BATCH = 200
 # Where several items of one kind link when they don't all belong to one initiative and don't
 # share a list of their own. Device offline has none: its items carry their device's list, and
 # items from different lists (readers and routers, say) get no link. Status rule matched has
-# none either: a rule's notices link to the rule (status_rules/notify.py).
+# none either: a rule's notices link to the matched thing or to the rule's executions (plan
+# call 5), and only a deleted rule's, counted, link nowhere.
 LIST_PAGES: dict[str, str | None] = {"initiative_status_changed": "/initiatives",
                                      "truck_status_changed": "/logistics/trucks",
                                      "device_offline": None,
@@ -84,7 +96,10 @@ Routes = dict[uuid.UUID, set[str]]
 
 @dataclass(frozen=True)
 class Item:
-    """One handled event, as its notification tells it."""
+    """One handled event, as its notification tells it. A status rule's notice (status_rules/
+    notify.py) also names its rule and what the rule matched: the kind of thing and the ids. As
+    one person hears it, `matched_ids` are the ones they can open (`seen_by`), and `whole` says
+    whether that is every one."""
 
     event_id: int
     kind: str
@@ -94,20 +109,57 @@ class Item:
     link: str | None
     initiative_id: str | None
     list_link: str | None
+    rule_id: uuid.UUID | None = None
+    matched_type: str | None = None
+    matched_ids: tuple[uuid.UUID, ...] = ()
+    whole: bool = True
 
     @classmethod
     def from_event(cls, event: NotificationEvent) -> "Item":
-        """Raises for an item without a title, so that event fails on its own."""
+        """Raises for an item without a title, or a rule's notice whose ids are not ids, so
+        that event fails on its own (a rule's initiative is looked up by its id later, outside
+        the event's own try)."""
         item = event.item
+        matched_type = item.get("matched_type")
+        initiative_id = item.get("initiative_id")
+        if matched_type is not None and initiative_id is not None:
+            initiative_id = str(uuid.UUID(initiative_id))
         return cls(event.id, event.kind, Thing(event.subject_type, event.subject_id),
                    item["title"], item.get("line") or "", item.get("link"),
-                   item.get("initiative_id"), item.get("list_link"))
+                   initiative_id, item.get("list_link"),
+                   rule_id=event.rule_id if matched_type is not None else None,
+                   matched_type=matched_type,
+                   matched_ids=tuple(dict.fromkeys(uuid.UUID(raw)
+                                                   for raw in item.get("matched_ids") or ())))
+
+    def seen_by(self, visible: AbstractSet[uuid.UUID]) -> "Item":
+        """This rule's notice as told to someone who can open `visible`, the matched things
+        among `matched_ids` that they can (as visible_among gives them): the item itself when
+        that is all of them, else only those, in order, no longer whole."""
+        if len(visible) == len(self.matched_ids):
+            return self
+        return replace(self, matched_ids=tuple(thing_id for thing_id in self.matched_ids
+                                               if thing_id in visible), whole=False)
+
+    def about(self) -> Iterator[Thing]:
+        """What the item tells its person about, for the send-time re-check: its subject, or a
+        rule's matched things (the ones the person can open)."""
+        if self.matched_type is None:
+            yield self.subject
+        else:
+            for thing_id in self.matched_ids:
+                yield Thing(self.matched_type, thing_id)
+
+
+# The people who hear an event, each with the item as they hear it and the routes that reach
+# them.
+Heard = dict[uuid.UUID, tuple[Item, set[str]]]
 
 
 @dataclass
 class Batch:
-    """What reaches one person of one kind in a sweep: the items, oldest first, and every route
-    that brought them."""
+    """What reaches one person of one kind (of one rule, for a rule's notices) in a sweep: the
+    items as they hear them, oldest first, and every route that brought them."""
 
     items: list[Item] = field(default_factory=list)
     routes: set[str] = field(default_factory=set)
@@ -118,29 +170,33 @@ class Batch:
 async def candidates(db: AsyncSession, event: NotificationEvent) -> Routes:
     """Everyone the event may reach, in route order: the people the code named ("direct", or
     "rule:<id>" when a status rule named them), the members of the Active groups it named
-    ("group:<id>"), then the people its watches reach. Nobody is filtered out yet."""
+    ("group:<id>", and "rule:<id>" as well when a rule named the group: plan call 8), then the
+    people its watches reach. Nobody is filtered out yet."""
     routes: Routes = {}
     named = f"rule:{event.rule_id}" if event.rule_id is not None else "direct"
     for person_id in event.person_ids:
         routes.setdefault(person_id, set()).add(named)
     if event.group_ids:
+        by_rule = {named} if event.rule_id is not None else set()
         for group_id, person_id in await db.execute(
                 select(NotificationGroupMember.group_id, NotificationGroupMember.person_id)
                 .join(NotificationGroup, NotificationGroup.id == NotificationGroupMember.group_id)
                 .where(NotificationGroup.id.in_(event.group_ids),
                        NotificationGroup.enabled.is_(True))
                 .order_by(NotificationGroupMember.added_at, NotificationGroupMember.person_id)):
-            routes.setdefault(person_id, set()).add(f"group:{group_id}")
+            routes.setdefault(person_id, set()).update({f"group:{group_id}", *by_rule})
     for person_id, found in (await matching_routes(db, event)).items():
         routes.setdefault(person_id, set()).update(found)
     return routes
 
 
-async def _recipients(db: AsyncSession, event: NotificationEvent) -> Routes:
-    """The people who hear the event. Nobody when its subject is gone. Otherwise the first
-    MAX_RECIPIENTS candidates (a warning names an event that has more), less the actor unless
-    the code named them, anyone whose account is not in use, and anyone who can't open the
-    subject now: each of those last is logged `inbox_suppressed` `no_access`."""
+async def _recipients(db: AsyncSession, event: NotificationEvent, item: Item) -> Heard:
+    """The people who hear the event, each with the item as they hear it. Nobody when its
+    subject is gone. Otherwise the first MAX_RECIPIENTS candidates (a warning names an event
+    that has more), less the actor unless the code named them, anyone whose account is not in
+    use, and anyone who can't open the subject now, or for a status rule's notice any of the
+    things it matched: each of those last is logged `inbox_suppressed` `no_access`. Someone who
+    can open some of a rule's matched things hears of those (Item.seen_by)."""
     subject = Thing(event.subject_type, event.subject_id)
     if not await thing_exists(db, subject):
         return {}
@@ -153,38 +209,56 @@ async def _recipients(db: AsyncSession, event: NotificationEvent) -> Routes:
               if person_id != event.actor_id or person_id in event.person_ids]
     active = await active_ids(db, people)
     people = [person_id for person_id in people if person_id in active]
-    seen = await viewers(db, subject, people)
+    heard: Heard = {}
+    if item.matched_type is not None:
+        # A rule's notice is about what the rule matched: access is checked per matched thing
+        # (spec section 4), for everyone at once.
+        visible = await visible_among(db, item.matched_type, item.matched_ids, people)
+        for person_id in people:
+            if person_id in visible:
+                heard[person_id] = (item.seen_by(visible[person_id]), found[person_id])
+    else:
+        seen = await viewers(db, subject, people)
+        for person_id in people:
+            if person_id in seen:
+                heard[person_id] = (item, found[person_id])
     info = kind_info(event.kind)
     for person_id in people:
-        if person_id not in seen:
+        if person_id not in heard:
             record(db, "inbox_suppressed", channel="inbox", person_id=person_id,
                    kind=event.kind, category=info.category if info else None,
                    reason="no_access", detail={"events": [event.id]})
-    return {person_id: found[person_id] for person_id in people if person_id in seen}
+    return heard
 
 
-# ── one notification per person per kind ───────────────────────────
+# ── one notification per person per kind, or per rule ─────────────
 
-def _group_items(reached: Iterable[tuple[Item, Routes]]) -> dict[tuple[uuid.UUID, str], Batch]:
-    """The items each person hears of, by person and kind, oldest first, with every route that
-    brought them. Oldest is by event id, whatever order the events were claimed in: a retried
-    event is claimed after newer ones (it has failed more), but its line still comes first."""
-    batches: dict[tuple[uuid.UUID, str], Batch] = {}
+def _group_items(reached: Iterable[tuple[Item, Heard]],
+                 ) -> dict[tuple[uuid.UUID, str, uuid.UUID | None], Batch]:
+    """The items each person hears of, by person and kind, and for a status rule's notices by
+    rule as well (a deleted rule's go together), oldest first, with every route that brought
+    them. Oldest is by event id, whatever order the events were claimed in: a retried event is
+    claimed after newer ones (it has failed more), but its line still comes first."""
+    batches: dict[tuple[uuid.UUID, str, uuid.UUID | None], Batch] = {}
     for item, people in sorted(reached, key=lambda pair: pair[0].event_id):
-        for person_id, routes in people.items():
-            batch = batches.setdefault((person_id, item.kind), Batch())
-            batch.items.append(item)
+        for person_id, (told, routes) in people.items():
+            batch = batches.setdefault((person_id, item.kind, item.rule_id), Batch())
+            batch.items.append(told)
             batch.routes |= routes
     return batches
 
 
-def _compose(kind: str, items: Sequence[Item]) -> tuple[str, str, str | None]:
+def _compose(kind: str, items: Sequence[Item], names: Mapping[str, str],
+             initiatives: Mapping[str, str]) -> tuple[str, str, str | None]:
     """The title, body and link of one notification about these items, oldest first. One item
-    says what it says. Several are counted under the kind's label, a line each, and link to
-    the initiative they all belong to, else to the list they all share, else to the kind's
-    list page (none for some kinds)."""
-    if len(items) == 1:
+    the person hears all of says what it says. Several are counted under the kind's label, a
+    line each, and link to the initiative they all belong to, else to the list they all share,
+    else to the kind's list page (none for some kinds). A status rule's notices are counted
+    their own way (`_counted`)."""
+    if len(items) == 1 and items[0].whole:
         return items[0].title, items[0].line, items[0].link
+    if items[0].matched_type is not None:
+        return _counted(kind, items, names, initiatives)
     info = kind_info(kind)
     title = f"{info.label if info is not None else kind} ({len(items)})"
     body = "\n".join(f"{item.title} · {item.line}" if item.line else item.title
@@ -198,24 +272,80 @@ def _compose(kind: str, items: Sequence[Item]) -> tuple[str, str, str | None]:
     return title, body, LIST_PAGES.get(kind)
 
 
-async def _group_names(db: AsyncSession, routes: Iterable[str]) -> dict[str, str]:
-    """The name of each group among `routes`, by its route ("group:<id>")."""
-    ids = {uuid.UUID(route.removeprefix("group:")) for route in routes
-           if route.startswith("group:")}
+def _counted(kind: str, items: Sequence[Item], names: Mapping[str, str],
+             initiatives: Mapping[str, str]) -> tuple[str, str, str | None]:
+    """One rule's notices to one person, counted (plan call 7): "{rule} ({count})", a line per
+    initiative, "{initiative} · {count}", in the order they came, then the matches with no
+    initiative counted on a line of their own, and a link to the rule's executions (plan call
+    5). Only the matched things the person can open count. A rule deleted since it matched has
+    no name left to give: its notices are counted under the kind's label, with the kind's list
+    page (none)."""
+    per_initiative: dict[str, int] = {}
+    loose = 0
+    for item in items:
+        if item.initiative_id is None:
+            loose += len(item.matched_ids)
+        else:
+            per_initiative[item.initiative_id] = (per_initiative.get(item.initiative_id, 0)
+                                                  + len(item.matched_ids))
+    # an initiative deleted during the sweep has no name to give: its count stands alone
+    lines = [f"{initiatives[initiative_id]} · {count}" if initiative_id in initiatives
+             else str(count) for initiative_id, count in per_initiative.items()]
+    if loose:
+        lines.append(str(loose))
+    total = sum(per_initiative.values()) + loose
+    rule_id = items[0].rule_id
+    rule = names.get(f"rule:{rule_id}") if rule_id is not None else None
+    if rule is None:
+        info = kind_info(kind)
+        return (f"{info.label if info is not None else kind} ({total})", "\n".join(lines),
+                LIST_PAGES.get(kind))
+    return f"{rule} ({total})", "\n".join(lines), rule_link(rule_id)
+
+
+async def _names(db: AsyncSession, routes: Iterable[str],
+                 rule_ids: Iterable[uuid.UUID]) -> dict[str, str]:
+    """The name of each group and status rule among `routes` ("group:<id>", "rule:<id>"), and
+    of each rule in `rule_ids` (whose notices are counted under its name), by route."""
+    groups: set[uuid.UUID] = set()
+    rules = set(rule_ids)
+    for route in routes:
+        prefix, _, raw = route.partition(":")
+        if prefix == "group":
+            groups.add(uuid.UUID(raw))
+        elif prefix == "rule":
+            rules.add(uuid.UUID(raw))
+    names: dict[str, str] = {}
+    if groups:
+        names |= {f"group:{group_id}": name for group_id, name in await db.execute(
+            select(NotificationGroup.id, NotificationGroup.name)
+            .where(NotificationGroup.id.in_(groups)))}
+    if rules:
+        names |= {f"rule:{rule_id}": name for rule_id, name in await db.execute(
+            select(StatusRule.id, StatusRule.name).where(StatusRule.id.in_(rules)))}
+    return names
+
+
+async def _initiative_names(db: AsyncSession, batches: Iterable[Batch]) -> dict[str, str]:
+    """The names of the initiatives status rule notices belong to (their lines name them when
+    counted), by id as the items hold it."""
+    ids = {uuid.UUID(item.initiative_id) for batch in batches for item in batch.items
+           if item.matched_type is not None and item.initiative_id is not None}
     if not ids:
         return {}
-    return {f"group:{group_id}": name for group_id, name in await db.execute(
-        select(NotificationGroup.id, NotificationGroup.name).where(NotificationGroup.id.in_(ids)))}
+    return {str(initiative_id): name for initiative_id, name in await db.execute(
+        select(Initiative.id, Initiative.name).where(Initiative.id.in_(ids)))}
 
 
 async def _write(db: AsyncSession, person_id: uuid.UUID, kind: str, batch: Batch,
-                 names: Mapping[str, str]) -> bool:
-    """One person's notification of one kind; True when it was written (their Inbox switch for
-    the category may turn it down)."""
-    title, body, link = _compose(kind, batch.items)
+                 names: Mapping[str, str], initiatives: Mapping[str, str]) -> bool:
+    """One person's notification of one kind (or one rule); True when it was written (their
+    Inbox switch for the category may turn it down)."""
+    title, body, link = _compose(kind, batch.items, names, initiatives)
     via = sorted(batch.routes)
     events = [item.event_id for item in batch.items]
-    subjects = [thing.to_json() for thing in dict.fromkeys(item.subject for item in batch.items)]
+    subjects = [thing.to_json() for thing in dict.fromkeys(
+        thing for item in batch.items for thing in item.about())]
     row = await notify(db, person_id, kind, title, body=body, link=link,
                        payload={"events": events, "subjects": subjects, "via": via},
                        log_detail={"via": via, "events": events,
@@ -242,13 +372,13 @@ async def run_events_once(maker: async_sessionmaker, *, now: datetime | None = N
         if not events:      # nothing waiting, or another sweep holds it all
             return 0
         handled: list[NotificationEvent] = []
-        reached: list[tuple[Item, Routes]] = []
+        reached: list[tuple[Item, Heard]] = []
         for event in events:
             event_id = event.id
             try:
                 item = Item.from_event(event)
                 async with db.begin_nested():
-                    people = await _recipients(db, event)
+                    people = await _recipients(db, event, item)
             except Exception as exc:  # noqa: BLE001 — one event's failure must not stop the rest
                 if event_id not in _failing:
                     logger.warning("could not send notification event %s — retrying (%s)",
@@ -265,11 +395,13 @@ async def run_events_once(maker: async_sessionmaker, *, now: datetime | None = N
             reached.append((item, people))
 
         batches = _group_items(reached)
-        names = await _group_names(db, {route for batch in batches.values()
-                                        for route in batch.routes})
+        names = await _names(db, {route for batch in batches.values() for route in batch.routes},
+                             {rule_id for _person_id, _kind, rule_id in batches
+                              if rule_id is not None})
+        initiatives = await _initiative_names(db, batches.values())
         written = 0
-        for (person_id, kind), batch in batches.items():
-            if await _write(db, person_id, kind, batch, names):
+        for (person_id, kind, _rule_id), batch in batches.items():
+            if await _write(db, person_id, kind, batch, names, initiatives):
                 written += 1
         handled_ids = [event.id for event in handled]
         for event in handled:
@@ -282,10 +414,14 @@ async def run_events_once(maker: async_sessionmaker, *, now: datetime | None = N
 # ── the send-time re-check ──────────────────────────────────────────
 
 async def _opens_any(db: AsyncSession, person_id: uuid.UUID, subjects: Iterable[Thing]) -> bool:
-    """Whether the person can open at least one of these things now."""
-    access = await resolve_access_many(db, [person_id])
+    """Whether the person can open at least one of these things now. One visible_among per
+    kind of thing, however many there are: a rule's notice can list thousands."""
+    by_kind: dict[str, list[uuid.UUID]] = {}
     for subject in subjects:
-        if person_id in await viewers(db, subject, [person_id], access=access):
+        by_kind.setdefault(subject.type, []).append(subject.id)
+    access = await resolve_access_many(db, [person_id])
+    for thing_type, ids in by_kind.items():
+        if person_id in await visible_among(db, thing_type, ids, [person_id], access=access):
             return True
     return False
 
@@ -296,8 +432,9 @@ async def watch_recheck(db: AsyncSession, notification: Notification) -> str | N
     (email.recheck_notification) that only these notifications have; it runs once the person
     is known to be active, and before their Email switch:
 
-    - `no_access`: the person can open none of the notification's subjects now (an initiative,
-      site, truck or device that is gone has no viewers).
+    - `no_access`: the person can open none of the notification's subjects now: the things its
+      events are about, or for a status rule's notice the matched things the person could open
+      when it was written (a thing that is gone has no viewers).
     - `not_watching`: none of its events reaches the person any more. A route still holds when
       the code named them, they belong to an Active group the code named, or a watch matches
       (their own, or an Active group's they belong to): `candidates`, asked again now. So
