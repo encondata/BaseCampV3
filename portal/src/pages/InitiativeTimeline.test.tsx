@@ -333,6 +333,18 @@ it('a track’s note (no dates, or dates outside the range) is a sub line of the
   expect([typeOf(outside), typeOf(none)]).toEqual(['cell-sub in .cell', 'cell-sub in .cell']);
 });
 
+it('a bar’s name and the Unscheduled divider take the lists’ type too', async () => {
+  await renderPage([
+    initiative({ scheduled_start: '2026-09-01', scheduled_end: '2026-09-20' }),
+    initiative({ id: 'i9', name: 'Someday project', scheduled_start: null, scheduled_end: null }),
+  ]);
+  const label = document.querySelector('.itl-bar-label') as HTMLElement;
+  expect(label.textContent).toBe('Denver DC migration');
+  expect(typeOf(label)).toBe('cell-top in .cell');
+  const divider = screen.getByText('Unscheduled');
+  expect(typeOf(divider)).toBe('cell-top in .cell');
+});
+
 /* ── The 45-day scale and the month band above the day ruler ────────── */
 
 /** The Scale switch (Month / 45 days / Quarter / Year) is the last

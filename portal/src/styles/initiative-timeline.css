@@ -155,7 +155,10 @@
 }
 
 .itl-divider-row .itl-row-label { background: var(--surface-2); }
-.itl-divider { color: var(--text-mute); }
+/* Its text is `cell-top` (the label is a `.cell`), muted as a divider:
+   three classes, to win over directory.css's `.cell .cell-top` color
+   whichever order the two files load in. */
+.itl-divider-row .itl-divider .cell-top { color: var(--text-mute); }
 
 /* An ancestor a filter dragged along so a matched descendant keeps its
    place: scaffolding, not a result, so it is dimmed throughout. The dim
@@ -191,7 +194,10 @@
   border: 1px dashed var(--chip);
 }
 
-.itl-bar-label {
+/* The bar's name is `cell-top` inside the track's `.cell`: the lists'
+   size, white on the fill (three classes, to win over directory.css's
+   `.cell .cell-top` color whichever order the two files load in). */
+.itl-row-bars .itl-bar .itl-bar-label {
   color: #fff;
   white-space: nowrap;
   overflow: hidden;

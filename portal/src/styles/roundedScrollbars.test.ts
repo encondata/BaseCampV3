@@ -33,7 +33,6 @@ const SCAN_ROOTS = [
 const NOT_IN_A_DIALOG: Record<string, string> = {
   '.combo-menu': 'dropdown list, not a dialog surface (its menu floats over the page)',
   '.tb-results': 'top bar search results dropdown',
-  '.itl-scroll': 'initiatives timeline page',
   '.lbl-code': 'label builder code panel on a page',
   '.sys-log-body': 'process logs page',
   '.wiki-search-menu': 'wiki search dropdown',

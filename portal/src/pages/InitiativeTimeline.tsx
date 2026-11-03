@@ -786,7 +786,11 @@ function TimelineGrid({
 
         {bottom.length > 0 && (
           <div className="itl-row itl-divider-row">
-            <div className="itl-row-label itl-divider">Unscheduled</div>
+            {/* A `.cell`, so its cell-top takes the list tokens (see the
+                ruler), muted as a divider. */}
+            <div className="itl-row-label itl-divider cell">
+              <span className="cell-top">Unscheduled</span>
+            </div>
             <div className="itl-row-bars" style={{ width: rightWidth }} />
           </div>
         )}
@@ -867,8 +871,10 @@ function TimelineRow({
                  left: `${bar.left}%`, width: `${bar.width}%`,
                  '--chip': chipColor(item),
                } as CSSProperties}>
+            {/* The name: cell-top inside the track's `.cell`, white on
+                the fill. */}
             {(bar.width / 100) * rightWidth >= 80 && (
-              <span className="itl-bar-label">{item.name}</span>
+              <span className="cell-top itl-bar-label">{item.name}</span>
             )}
           </div>
         )}
