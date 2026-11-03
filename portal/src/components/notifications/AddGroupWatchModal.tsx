@@ -1,6 +1,6 @@
 /**
  * AddGroupWatchModal — "Add watch" on a notification group's page: point the
- * group at an initiative, a site or a truck, or at chosen events everywhere
+ * group at an initiative, a site, a truck or a device, or at chosen events everywhere
  * (Everything), and say which events its members hear about.
  *
  * A "Watch" strip picks what the group watches. Unless that is Everything, a
@@ -15,6 +15,10 @@
  * when the kind is chosen again. That notice is kept apart from a save's error: changing
  * the events leaves it up (the picker is still off), while choosing another kind takes
  * it away, and so does the list arriving after all. Below, the events editor.
+ *
+ * Only the devices people can watch are offered: the ones notifications check, which check
+ * in on their own (an RFID Station, a fixed reader, an approved router). Each shows its kind
+ * beside its name, and a search matches the kind too.
  *
  * Add watch is off until there is a thing (when one is needed) and the events can be
  * saved (WatchEventsEditor's `canSaveEvents`). Choosing another kind of thing starts
@@ -31,9 +35,12 @@
 import { useEffect, useId, useState } from 'react';
 
 import {
-  createGroupWatch, listInitiatives, listSites, listTrucks,
-  type NotificationGroupDetail, type NotificationKindSetting, type WatchTarget, type WatchThing,
+  createGroupWatch, listDevices, listInitiatives, listSites, listTrucks,
+  type DeviceItem, type NotificationGroupDetail, type NotificationKindSetting, type WatchTarget,
+  type WatchThing,
 } from '../../lib/api';
+import { routerDisplayName } from '../../lib/devices';
+import { isRfidStation } from '../../lib/kioskConfig';
 import { THING_LABELS, watchErrorMessage } from '../../lib/watches';
 import ComboBox, { type ComboOption } from '../ComboBox';
 import ChoiceField from './ChoiceField';
@@ -45,26 +52,43 @@ import '../../styles/directory.css';       // .mini-btn
 import '../../styles/profile.css';         // .pf-form, .btn-solid, .pf-error
 import '../../styles/notifications.css';   // .watch-add-body
 
-/** What the "Watch" strip can point a group at. A device is not one of them yet: a group
- *  watching one needs a picker that lists the devices people can watch. */
-type Pointable = Exclude<WatchTarget, 'device'>;
-
 /** What the "Watch" strip offers, in its order. */
-const TARGETS: { key: Pointable; label: string }[] = [
+const TARGETS: { key: WatchTarget; label: string }[] = [
   { key: 'initiative', label: THING_LABELS.initiative },
   { key: 'site', label: THING_LABELS.site },
   { key: 'truck', label: THING_LABELS.truck },
+  { key: 'device', label: THING_LABELS.device },
   { key: 'everything', label: THING_LABELS.everything },
 ];
+
+/** A thing a picker offers: its id and name, and the kind shown beside the name (a device's). */
+interface PickerItem { id: string; name: string; sub?: string }
+
+/** A device as the Device picker offers it, or null when people can't watch it. Only the devices
+ *  notifications check can be watched (the API's `covered`, services/device_online.py), the
+ *  ones that check in on their own: an RFID Station (a laptop kiosk set up as one), a fixed
+ *  reader, an approved router. The API refuses any other (422 `invalid_thing`). A router is
+ *  named as the Routers list names it. */
+function watchableDevice(d: DeviceItem): PickerItem | null {
+  if (d.device_type === 'kiosk') {
+    return isRfidStation(d) ? { id: d.id, name: d.name, sub: 'RFID Station' } : null;
+  }
+  if (d.device_type === 'fixed_reader') return { id: d.id, name: d.name, sub: 'Fixed Reader' };
+  if (d.device_type === 'router' && d.approval_state === 'approved') {
+    return { id: d.id, name: routerDisplayName(d.name), sub: 'Router' };
+  }
+  return null;
+}
 
 /** What searching a kind of thing needs: the picker's placeholder, what is told when its
  *  list can't be loaded, and the list it offers. Each list is the admin's own, so it holds
  *  only what they can see. A truck list leaves archived trucks out (`listTrucks` without
- *  its flag). */
-const PICKERS: Record<Exclude<WatchThing, 'device'>, {
+ *  its flag), and a device list holds only the devices that can be watched, in the order
+ *  the API gives them. */
+const PICKERS: Record<WatchThing, {
   placeholder: string;
   loadFailed: string;
-  load: () => Promise<{ id: string; name: string }[]>;
+  load: () => Promise<PickerItem[]>;
 }> = {
   initiative: {
     placeholder: 'Search initiatives…', loadFailed: 'Could not load the initiative list.',
@@ -77,6 +101,10 @@ const PICKERS: Record<Exclude<WatchThing, 'device'>, {
   truck: {
     placeholder: 'Search trucks…', loadFailed: 'Could not load the truck list.',
     load: () => listTrucks(),
+  },
+  device: {
+    placeholder: 'Search devices…', loadFailed: 'Could not load the device list.',
+    load: async () => (await listDevices()).flatMap((d) => watchableDevice(d) ?? []),
   },
 };
 
@@ -92,7 +120,7 @@ export default function AddGroupWatchModal({ group, kinds, onAdded, onClose }: {
   onClose: () => void;
 }) {
   const fieldId = useId();
-  const [thing, setThing] = useState<Pointable>('initiative');
+  const [thing, setThing] = useState<WatchTarget>('initiative');
   const [thingId, setThingId] = useState('');
   const [events, setEvents] = useState<WatchEvents>(() => freshEvents('initiative'));
   // Each kind's picker options, once its list has come in.
@@ -109,7 +137,9 @@ export default function AddGroupWatchModal({ group, kinds, onAdded, onClose }: {
     let chosen = true;
     PICKERS[thing].load()
       .then((items) => {
-        setChoices((all) => ({ ...all, [thing]: items.map((i) => ({ value: i.id, label: i.name })) }));
+        setChoices((all) => ({
+          ...all, [thing]: items.map((i) => ({ value: i.id, label: i.name, sub: i.sub })),
+        }));
       })
       .catch(() => { if (chosen) setLoadError(PICKERS[thing].loadFailed); });
     return () => { chosen = false; };
@@ -123,7 +153,7 @@ export default function AddGroupWatchModal({ group, kinds, onAdded, onClose }: {
   const listError = needsThing && !choices[thing] ? loadError : '';
   const shownError = error || listError;
 
-  const pickTarget = (next: Pointable) => {
+  const pickTarget = (next: WatchTarget) => {
     if (saving || next === thing) return;
     setThing(next);
     setThingId('');
