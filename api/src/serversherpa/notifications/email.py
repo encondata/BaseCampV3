@@ -13,7 +13,10 @@ obeys the switches. Notification groups play no part
 (docs/superpowers/specs/2026-10-31-notifications-phase0-design.md, section 9).
 `recheck_before_send()` is the other half: the delivery worker asks it, just
 before sending, whether a queued email is still wanted (same spec, section 4);
-`recheck_notification()` is the part of it the summary sweep shares."""
+`recheck_notification()` is the part of it the summary sweep shares. For a
+notification the event sweep wrote it also asks whether the person can still
+open what it is about and is still reached by a watch or a group
+(event_sweep.watch_recheck; phase 2 spec, section 4)."""
 
 import uuid
 from dataclasses import dataclass
@@ -320,12 +323,15 @@ async def recheck_notification(db: AsyncSession, notification: Notification | No
     out, as a reason code, or None when it still should. Asked of a queued
     email by the delivery worker (recheck_before_send) and of a held one by
     the summary sweep: meanwhile the person may have read or hidden the inbox
-    row, an admin may have decided the approval, or the person's switches or
-    the company defaults may have changed. The checks run in order and the
-    first that fails decides: notification_gone, resolved, hidden, read,
-    recipient_inactive, category_turned_down (the effective Email switch is
-    now off). `contact` is the recipient, loaded when None is passed. Timing
-    is not re-computed. Writes nothing.
+    row, an admin may have decided the approval, the person may have lost
+    access to what an event was about or stopped being reached by it, or the
+    person's switches or the company defaults may have changed. The checks run
+    in order and the first that fails decides: notification_gone, resolved,
+    hidden, read, recipient_inactive, no_access and not_watching (only a
+    notification the event sweep wrote can fail those two), then
+    category_turned_down (the effective Email switch is now off). `contact` is
+    the recipient, loaded when None is passed. Timing is not re-computed.
+    Writes nothing.
 
     `resolved` comes before `hidden` and `read` because deciding an approval
     marks every copy of it read: the log must name the decision, not a read
@@ -343,6 +349,11 @@ async def recheck_notification(db: AsyncSession, notification: Notification | No
         contact = await load_contact(db, notification.person_id)
     if contact is None or not contact.active:
         return "recipient_inactive"
+    # Imported here: the event sweep reaches notify(), which reaches this module.
+    from serversherpa.notifications.event_sweep import watch_recheck
+    reason = await watch_recheck(db, notification)
+    if reason is not None:
+        return reason
     if not effective_switches(info, contact, company).email:
         return "category_turned_down"
     return None

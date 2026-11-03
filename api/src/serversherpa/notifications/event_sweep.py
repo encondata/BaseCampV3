@@ -22,6 +22,11 @@ transaction:
 4. **Finish:** every handled event is marked sent, and it all commits at once. A write that
    fails rolls the whole sweep back for the next tick (the worker logs it once).
 
+The notification's email gets a second look just before it goes out (`watch_recheck`, asked by
+email.recheck_notification for a queued email and for a held one): can the person still open what
+it is about (`no_access`), and does any of its events still reach them (`not_watching`)? It asks
+`candidates`, the very function the sweep used, so the two cannot drift.
+
 Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (section 4)"""
 
 import logging
@@ -34,7 +39,13 @@ from itertools import islice
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from serversherpa.db.models import NotificationEvent, NotificationGroup, NotificationGroupMember
+from serversherpa.access.resolver import resolve_access_many
+from serversherpa.db.models import (
+    Notification,
+    NotificationEvent,
+    NotificationGroup,
+    NotificationGroupMember,
+)
 from serversherpa.notifications.access import active_ids, thing_exists, viewers
 from serversherpa.notifications.delivery_log import record
 from serversherpa.notifications.events import Thing
@@ -241,3 +252,50 @@ async def run_events_once(maker: async_sessionmaker, *, now: datetime | None = N
         await db.commit()
     _failing.difference_update(handled_ids)
     return written
+
+
+# ── the send-time re-check ──────────────────────────────────────────
+
+async def _opens_any(db: AsyncSession, person_id: uuid.UUID, subjects: Iterable[Thing]) -> bool:
+    """Whether the person can open at least one of these things now."""
+    access = await resolve_access_many(db, [person_id])
+    for subject in subjects:
+        if person_id in await viewers(db, subject, [person_id], access=access):
+            return True
+    return False
+
+
+async def watch_recheck(db: AsyncSession, notification: Notification) -> str | None:
+    """Why the email of a notification this sweep wrote should no longer go out, as a reason
+    code, or None when it still should. This is the part of the send-time re-check
+    (email.recheck_notification) that only these notifications have; it runs once the person
+    is known to be active, and before their Email switch:
+
+    - `no_access`: the person can open none of the notification's subjects now (an initiative,
+      site or truck that is gone has no viewers).
+    - `not_watching`: none of its events reaches the person any more. A route still holds when
+      the code named them, they belong to an Active group the code named, or a watch matches
+      (their own, or an Active group's they belong to): `candidates`, asked again now. So
+      deleting a watch, pausing a group and leaving one each end a route.
+
+    None, with nothing asked, for a notification that names no events (every other kind), and
+    when none of the events it names is stored any more (the Logging retention removes old
+    ones): there is nothing to check the person against. `payload.subjects` is de-duplicated,
+    so it does not line up with `payload.events`; the two are never paired by position. Reads
+    only."""
+    event_ids = notification.payload.get("events")
+    if not event_ids:
+        return None
+    events = list(await db.scalars(
+        select(NotificationEvent).where(NotificationEvent.id.in_(event_ids))
+        .order_by(NotificationEvent.id)))
+    if not events:
+        return None
+    person_id = notification.person_id
+    subjects = [Thing.from_json(raw) for raw in notification.payload.get("subjects") or ()]
+    if subjects and not await _opens_any(db, person_id, subjects):
+        return "no_access"
+    for event in events:
+        if person_id in await candidates(db, event):
+            return None
+    return "not_watching"

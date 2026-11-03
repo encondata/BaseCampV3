@@ -1,7 +1,8 @@
 """Watches. A person, or a notification group, watches an initiative, a site or a truck, or
 chosen kinds of event everywhere (an "Everything" watch): `NotificationWatch`, migration 0113.
 This module validates and stores them, lists what a person hears about, and works out which
-watches an event reaches (`matching_routes`, for the event sweep and the send-time re-check).
+watches an event reaches (`matching_routes`, for the event sweep and the send-time re-check) and
+which of a person's would hear a kind of event (`watches_hearing`, for Check delivery).
 
 A watch on a thing hears the events whose subject is that thing, or that reach it
 (`NotificationEvent.reaches`), so a watch on an initiative also hears its child initiatives.
@@ -260,11 +261,9 @@ async def _visible(db: AsyncSession, person_id: uuid.UUID, rows: Sequence[_Row])
             if (thing := thing_of(watch)) is None or thing in seen]
 
 
-async def person_watches(db: AsyncSession, person_id: uuid.UUID) -> list[WatchView]:
-    """What the person hears about by watches: their own, then those of the Active groups they
-    belong to (a Paused group delivers nothing, so lists nothing), each newest first. Only
-    things they can open now are listed, so no thing's name leaves through a group; the rest
-    stay stored and silent. Everything is always listed."""
+async def _person_rows(db: AsyncSession, person_id: uuid.UUID) -> list[_Row]:
+    """The watches that speak for the person: their own, then those of the Active groups they
+    belong to (a Paused group delivers nothing), each newest first. Access is not asked."""
     own = (await db.scalars(_newest_first(
         select(NotificationWatch).where(NotificationWatch.person_id == person_id)))).all()
     by_group = (await db.execute(_newest_first(
@@ -276,7 +275,40 @@ async def person_watches(db: AsyncSession, person_id: uuid.UUID) -> list[WatchVi
         .where(NotificationGroup.enabled.is_(True))))).all()
     rows: list[_Row] = [(watch, None) for watch in own]
     rows += [(watch, group) for watch, group in by_group]
-    return await _views(db, await _visible(db, person_id, rows))
+    return rows
+
+
+async def person_watches(db: AsyncSession, person_id: uuid.UUID) -> list[WatchView]:
+    """What the person hears about by watches: their own, then those of the Active groups they
+    belong to (a Paused group delivers nothing, so lists nothing), each newest first. Only
+    things they can open now are listed, so no thing's name leaves through a group; the rest
+    stay stored and silent. Everything is always listed."""
+    return await _views(db, await _visible(db, person_id, await _person_rows(db, person_id)))
+
+
+def _hears(watch: NotificationWatch, kind: str) -> bool:
+    """Whether the watch would hear an event of `kind`: it is on a kind of thing that event
+    reaches (or is an Everything watch and the kind may be watched everywhere), and its events
+    are empty (every one that applies) or name the kind."""
+    thing = thing_of(watch)
+    if thing is not None:
+        on = thing.type
+    elif _is_everything(watch):
+        on = EVERYTHING
+    else:                       # on a kind of thing THINGS does not take yet
+        return False
+    return kind in kinds_for(on) and (not watch.kinds or kind in watch.kinds)
+
+
+async def watches_hearing(db: AsyncSession, person_id: uuid.UUID, kind: str) -> list[WatchView]:
+    """The person's watches that would hear an event of `kind`: their own, then those of the
+    Active groups they belong to, each newest first. Check delivery asks this, so unlike
+    `person_watches` it does not ask about access: a watch on something the person can't open
+    is listed, though it delivers only the things they can open (the sweep decides, per
+    thing). `kind` is a registered kind; a kind nobody can watch hears nothing."""
+    rows = [(watch, group) for watch, group in await _person_rows(db, person_id)
+            if _hears(watch, kind)]
+    return await _views(db, rows)
 
 
 async def group_watches(db: AsyncSession, group_id: uuid.UUID) -> list[WatchView]:

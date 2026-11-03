@@ -3077,6 +3077,25 @@ class DeliveryCheckScheduleOut(BaseModel):
     state: Literal["open", "quiet_hours", "inactive_day"]
 
 
+class WatchViaOut(BaseModel):
+    """Whose watch it is: the person's own (`you`), or a group's with its id and name."""
+    type: Literal["you", "group"]
+    id: uuid.UUID | None = None
+    name: str | None = None
+
+
+class CheckWatchOut(BaseModel):
+    """A watch of the person that would hear the kind: `thing` is initiative, site, truck or
+    everything (which has no id or name), `kinds` the events it names (empty: every event that
+    applies) and `via` whose it is."""
+
+    thing: str
+    thing_id: uuid.UUID | None
+    thing_name: str | None
+    kinds: list[str]
+    via: WatchViaOut
+
+
 class DeliveryCheckOut(BaseModel):
     """What would happen right now if this person got a notification of this
     kind. Nothing is written. `inbox` is notify()'s answer, with the source of
@@ -3086,7 +3105,11 @@ class DeliveryCheckOut(BaseModel):
     `after_summary` marks an email sent now only because it falls in the last
     hour before the person is back online, when that morning's summary has
     already gone. `owner_copy` is the copy that was modeled; `critical`
-    whether the kind skips quiet hours, days off and the summary."""
+    whether the kind skips quiet hours, days off and the summary. `watches`
+    is null for a kind nobody can watch; for one anyone can, the person's
+    watches that would hear it (their own first, then their groups'). Access
+    is not asked: whether it reaches them for a particular thing also depends
+    on their access to that thing."""
 
     person_id: uuid.UUID
     person_name: str
@@ -3109,6 +3132,7 @@ class DeliveryCheckOut(BaseModel):
     reason: str | None = None
     address: str | None = None
     address_source: str | None = None
+    watches: list[CheckWatchOut] | None = None
 
 
 class NotificationKindOut(BaseModel):
@@ -3241,13 +3265,6 @@ class WatchIn(BaseModel):
 class WatchKindsIn(BaseModel):
     kinds: list[str]
     model_config = ConfigDict(extra="forbid")
-
-
-class WatchViaOut(BaseModel):
-    """Whose watch it is: the person's own (`you`), or a group's with its id and name."""
-    type: Literal["you", "group"]
-    id: uuid.UUID | None = None
-    name: str | None = None
 
 
 class WatchOut(BaseModel):
