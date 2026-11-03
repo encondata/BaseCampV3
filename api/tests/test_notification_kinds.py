@@ -18,9 +18,10 @@ def test_categories_order_and_labels():
         ("reports", "Reports & labels"),
         ("wiki", "Wiki"),
         ("learning", "Learning"),
+        ("plans", "Project plans"),
         ("security", "Account security"),
     ]
-    assert CATEGORY_KEYS == ("approvals", "reports", "wiki", "learning", "security")
+    assert CATEGORY_KEYS == ("approvals", "reports", "wiki", "learning", "plans", "security")
 
 
 def test_every_kind_has_a_known_category_and_a_label():
@@ -41,9 +42,17 @@ def test_kind_table_matches_the_spec():
         "wiki_export_failed": "wiki",
         "learning_complete": "learning", "learning_overdue": "learning",
         "learning_quiz_locked": "learning",
+        "plan_task_assigned": "plans", "plan_task_due": "plans",
+        "plan_task_overdue": "plans", "plan_overdue_digest": "plans",
         "password_expiring": "security", "totp_enrolled": "security",
     }
     assert {k: v.category for k, v in KINDS.items()} == expected
+    assert {k: v.label for k, v in KINDS.items() if v.category == "plans"} == {
+        "plan_task_assigned": "Assigned to a plan task",
+        "plan_task_due": "Plan task due",
+        "plan_task_overdue": "Plan task overdue",
+        "plan_overdue_digest": "Overdue plan tasks",
+    }
 
 
 def test_flags_match_the_spec():
@@ -58,6 +67,12 @@ def test_flags_match_the_spec():
         "labels_failed": (True, True, False, False),
         "password_reset_request": (False, False, False, False),
         "learning_quiz_locked": (False, False, False, False),
+        # reminders email the person directly through the mail outbox, never
+        # through a notification group's subscription
+        "plan_task_assigned": (False, False, False, False),
+        "plan_task_due": (False, False, False, False),
+        "plan_task_overdue": (False, False, False, False),
+        "plan_overdue_digest": (False, False, False, False),
         "password_expiring": (False, True, True, True),
         "totp_enrolled": (True, True, True, True),
     }
@@ -91,6 +106,13 @@ def _scan() -> set[str]:
     return found
 
 
+# Kinds registered ahead of the code that sends them. The plan reminder sweep
+# (plans/reminders.py) adds the notify() calls; delete this set when it lands
+# (the test below fails once a kind in it is actually sent, as a reminder).
+AWAITING_SENDER = {"plan_task_assigned", "plan_task_due", "plan_task_overdue",
+                   "plan_overdue_digest"}
+
+
 def test_every_notify_kind_in_the_codebase_is_registered():
     found = _scan()
     assert found, "scan found no notify() kinds; the regexes are stale"
@@ -99,5 +121,7 @@ def test_every_notify_kind_in_the_codebase_is_registered():
             "totp_enrolled", "password_reset_request", "password_expiring",
             "wiki_comment", "wiki_export_ready", "learning_overdue", "learning_complete",
             "learning_quiz_locked"} <= found
-    assert found == set(KINDS), (
-        f"unregistered: {sorted(found - set(KINDS))}; never sent: {sorted(set(KINDS) - found)}")
+    assert found <= set(KINDS), f"unregistered: {sorted(found - set(KINDS))}"
+    assert set(KINDS) - found == AWAITING_SENDER, (
+        f"never sent: {sorted(set(KINDS) - found - AWAITING_SENDER)}; "
+        f"now sent, drop from AWAITING_SENDER: {sorted(AWAITING_SENDER & found)}")

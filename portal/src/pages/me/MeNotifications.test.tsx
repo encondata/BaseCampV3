@@ -25,7 +25,7 @@ vi.mock('../../auth/AuthContext', () => ({
       list_view: 'expanded',
       notif: {
         sound: 'chime',
-        categories: { approvals: 'email', reports: 'inbox', wiki: 'email', learning: 'email', security: 'email' },
+        categories: { approvals: 'email', reports: 'inbox', wiki: 'email', learning: 'email', plans: 'email', security: 'email' },
       },
       list_prefs: {},
     } satisfies UiPreferences,
@@ -94,7 +94,7 @@ it('replaces the four old switches with a per-category delivery table', async ()
     expect(screen.queryByText(label)).toBeNull();
   }
   const table = screen.getByRole('table', { name: 'Notification delivery' });
-  for (const label of ['Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Account security']) {
+  for (const label of ['Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Project plans', 'Account security']) {
     expect(within(table).getByText(label)).toBeTruthy();
   }
   expect(screen.getByText(/Emails go to your contact email\. Your groups decide which categories can email you and when; here you can turn them down\./)).toBeTruthy();
@@ -113,6 +113,21 @@ it('shows each stored choice as the pressed segment', async () => {
     .toEqual(['Inbox + Email', 'Inbox only', 'Off']);
 });
 
+it('Project plans gets its own delivery control, Inbox + Email until the person changes it', async () => {
+  api.listMyNotificationGroups.mockResolvedValueOnce([]);
+  render(<MeNotifications />);
+  const control = delivery('Project plans');
+  expect(within(control).getAllByRole('button').map((b) => b.textContent))
+    .toEqual(['Inbox + Email', 'Inbox only', 'Off']);
+  expect(within(control).getAllByRole('button').filter((b) => b.getAttribute('aria-pressed') === 'true')
+    .map((b) => b.textContent)).toEqual(['Inbox + Email']);
+  fireEvent.click(within(control).getByRole('button', { name: 'Inbox only' }));
+  await waitFor(() => expect(auth.updatePreferences).toHaveBeenCalledTimes(1));
+  expect(auth.updatePreferences.mock.calls[0][0].notif.categories).toEqual({
+    approvals: 'email', reports: 'inbox', wiki: 'email', learning: 'email', plans: 'inbox', security: 'email',
+  });
+});
+
 it('choosing a delivery saves the merged notif.categories object', async () => {
   api.listMyNotificationGroups.mockResolvedValueOnce([]);
   render(<MeNotifications />);
@@ -121,7 +136,7 @@ it('choosing a delivery saves the merged notif.categories object', async () => {
   const sent = auth.updatePreferences.mock.calls[0][0];
   expect(sent.notif).toEqual({
     sound: 'chime',
-    categories: { approvals: 'email', reports: 'inbox', wiki: 'off', learning: 'email', security: 'email' },
+    categories: { approvals: 'email', reports: 'inbox', wiki: 'off', learning: 'email', plans: 'email', security: 'email' },
   });
   expect(sent.accent).toBe('amber');
   await waitFor(() => expect(screen.getByText('saved')).toBeTruthy());

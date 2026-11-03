@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class KindInfo:
-    category: str          # "approvals" | "reports" | "wiki" | "learning" | "security"
+    category: str          # "approvals" | "reports" | "wiki" | "learning" | "plans" | "security"
     label: str             # "Report ready"
     brief: bool = False    # email carries title + link only, never the body
     email: bool = True     # False = never emailed
@@ -24,6 +24,7 @@ CATEGORIES: dict[str, str] = {
     "reports": "Reports & labels",
     "wiki": "Wiki",
     "learning": "Learning",
+    "plans": "Project plans",
     "security": "Account security",
 }
 
@@ -53,6 +54,14 @@ KINDS: dict[str, KindInfo] = {
     "learning_overdue": KindInfo("learning", "Learning overdue"),
     # A worker used every quiz attempt; a lead follows up in person.
     "learning_quiz_locked": KindInfo("learning", "Quiz locked", email=False),
+    # Project plan reminders are personal and reach people with no portal
+    # login, so they email the person directly through the mail outbox
+    # (plans/reminders.py) instead of through a group's subscription;
+    # email=False keeps notify() from sending a second, group-driven copy.
+    "plan_task_assigned": KindInfo("plans", "Assigned to a plan task", email=False),
+    "plan_task_due": KindInfo("plans", "Plan task due", email=False),
+    "plan_task_overdue": KindInfo("plans", "Plan task overdue", email=False),
+    "plan_overdue_digest": KindInfo("plans", "Overdue plan tasks", email=False),
     "password_expiring": KindInfo("security", "Password expiring",
                                    owner_always=True, urgent=True),
     "totp_enrolled": KindInfo("security", "Two-factor authentication enrolled",

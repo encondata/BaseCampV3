@@ -9,7 +9,8 @@ PREFS = {
     "list_size": "default",
     "motion": False,
     "notif": {"categories": {"approvals": "email", "reports": "inbox", "wiki": "off",
-                             "learning": "email", "security": "email"}, "sound": "ping"},
+                             "learning": "email", "plans": "inbox", "security": "email"},
+              "sound": "ping"},
     "list_prefs": {
         "sites": {
             "visible": ["name", "status", "city"],
@@ -38,7 +39,8 @@ async def test_login_returns_default_preferences(client, seeded_user):
         "list_size": "default",
         "motion": True,
         "notif": {"categories": {"approvals": "email", "reports": "email",
-                                 "wiki": "email", "learning": "email", "security": "email"},
+                                 "wiki": "email", "learning": "email", "plans": "email",
+                                 "security": "email"},
                  "sound": "chime"},
         "list_prefs": {},
         "nav_mode": "expanded",
@@ -199,7 +201,7 @@ async def test_old_notif_blob_still_parses_and_defaults_categories():
     assert prefs.notif.sound == "pop"
     assert prefs.notif.categories == {
         "approvals": "email", "reports": "email", "wiki": "email", "learning": "email",
-        "security": "email"}
+        "plans": "email", "security": "email"}
     assert "critical" not in prefs.notif.model_dump()
 
 
@@ -209,7 +211,7 @@ async def test_partial_categories_fill_missing_and_drop_unknown():
     prefs = NotifPrefs.model_validate({"categories": {"wiki": "off", "bogus": "inbox"}})
     assert prefs.categories == {
         "approvals": "email", "reports": "email", "wiki": "off", "learning": "email",
-        "security": "email"}
+        "plans": "email", "security": "email"}
 
 
 async def test_default_notif_categories_are_all_email():
@@ -217,7 +219,45 @@ async def test_default_notif_categories_are_all_email():
 
     assert UiPreferences().notif.categories == {
         "approvals": "email", "reports": "email", "wiki": "email", "learning": "email",
-        "security": "email"}
+        "plans": "email", "security": "email"}
+
+
+async def test_a_stored_preference_without_plans_reads_plans_as_email(
+        client, db, seeded_user):
+    """Accounts saved before the Project plans category existed carry five
+    categories; they read the sixth as the default (inbox + email) and keep
+    every choice they made."""
+    from serversherpa.db.models import UserAccount
+
+    account = await db.get(UserAccount, seeded_user.id)
+    account.ui_prefs = {"notif": {"sound": "pop", "categories": {
+        "approvals": "inbox", "reports": "off", "wiki": "email", "learning": "inbox",
+        "security": "email"}}}
+    await db.commit()
+
+    body = await _login(client)
+    assert body["preferences"]["notif"] == {"sound": "pop", "categories": {
+        "approvals": "inbox", "reports": "off", "wiki": "email", "learning": "inbox",
+        "plans": "email", "security": "email"}}
+    me = await client.get("/auth/me", headers={
+        "Authorization": f"Bearer {body['access_token']}"})
+    assert me.json()["preferences"]["notif"]["categories"]["plans"] == "email"
+
+
+async def test_plans_choice_round_trips_and_rejects_nonsense(client, seeded_user):
+    body = await _login(client)
+    headers = {"Authorization": f"Bearer {body['access_token']}"}
+    notif = body["preferences"]["notif"]
+    resp = await client.put("/auth/me/preferences", headers=headers, json={
+        **body["preferences"], "notif": {**notif, "categories": {
+            **notif["categories"], "plans": "off"}}})
+    assert resp.status_code == 200
+    assert resp.json()["notif"]["categories"]["plans"] == "off"
+    assert (await _login(client))["preferences"]["notif"]["categories"]["plans"] == "off"
+
+    bad = await client.put("/auth/me/preferences", headers=headers, json={
+        **body["preferences"], "notif": {**notif, "categories": {"plans": "sms"}}})
+    assert bad.status_code == 422
 
 
 async def test_list_view_rejects_unknown_value(client, seeded_user):

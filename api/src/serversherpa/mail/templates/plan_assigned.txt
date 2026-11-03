@@ -1,0 +1,10 @@
+Hi {{ person_name }},
+
+{% if assigned_by %}{{ assigned_by }} assigned you{% else %}You were assigned{% endif %} {{ tasks|length }} task{{ "" if tasks|length == 1 else "s" }} in {{ initiative_name }}:
+{% for task in tasks %}
+- {{ task["name"] }}
+  Start {{ task["start_label"] }} · Finish {{ task["finish_label"] }}{% if task["deadline_label"] %} · Deadline {{ task["deadline_label"] }}{% endif %}
+{% endfor %}
+Open the plan:
+
+{{ link }}

@@ -4,13 +4,23 @@ import {
   DELIVERY_CHOICES, NOTIFICATION_CATEGORIES, categoryLabel, categoryLabels, emailGroupsFor,
 } from './notificationKinds';
 
-it('lists the five categories in spec order with their labels', () => {
+it('lists the six categories in spec order with their labels', () => {
   expect(NOTIFICATION_CATEGORIES).toEqual([
     { key: 'approvals', label: 'Approvals & requests' },
     { key: 'reports', label: 'Reports & labels' },
     { key: 'wiki', label: 'Wiki' },
     { key: 'learning', label: 'Learning' },
+    { key: 'plans', label: 'Project plans' },
     { key: 'security', label: 'Account security' },
+  ]);
+});
+
+it('puts Project plans before Account security (security stays last)', () => {
+  const keys = NOTIFICATION_CATEGORIES.map((c) => c.key);
+  expect(keys.indexOf('plans')).toBe(keys.indexOf('security') - 1);
+  expect(categoryLabel('plans')).toBe('Project plans');
+  expect(categoryLabels(['security', 'plans', 'wiki'])).toEqual([
+    'Wiki', 'Project plans', 'Account security',
   ]);
 });
 
