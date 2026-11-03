@@ -2,7 +2,8 @@
 Paused), its members, and the join and leave requests an admin approves. A group
 decides nothing about delivery (a person's own switches and schedule do,
 notifications/email.py), so it has no channels, quiet hours or member overrides;
-what it hears about is its watches, and it carries no categories.
+what it hears about is its watches (listed, added, changed and removed here, each change
+audited on the group), and it carries no categories.
 This file also hosts the per-person in-app inbox routes (/inbox, mark-one-read,
 mark-all-read), the company notification settings (/settings: anyone signed in
 reads them, admins and above change them) and, for super admins and above, the
@@ -29,11 +30,12 @@ from serversherpa.api.schemas import (
     NotificationInboxItemOut, NotificationInboxOut, NotificationKindOut,
     NotificationKindSettingOut, NotificationMemberAddIn, NotificationMemberOut,
     NotificationRecipientOut, NotificationSettingsIn, NotificationSettingsOut, SwitchPair,
+    WatchIn, WatchKindsIn, WatchOut,
 )
 from serversherpa.db.models import (
     EmailOutbox, Notification, NotificationGroup, NotificationGroupMember,
-    NotificationLog, NotificationMembershipRequest, Person, SystemConfig,
-    UserAccount,
+    NotificationLog, NotificationMembershipRequest, NotificationWatch, Person,
+    SystemConfig, UserAccount,
 )
 from serversherpa.db.ordering import natural
 from serversherpa.notifications import check as delivery_check
@@ -44,6 +46,9 @@ from serversherpa.notifications.company import (
 from serversherpa.notifications.delivery_log import EVENTS
 from serversherpa.notifications.kinds import CATEGORY_KEYS, KINDS, kind_info
 from serversherpa.notifications.requests import RequestError, decide_request
+from serversherpa.notifications.watches import (
+    EVERYTHING, WatchError, add_watch, clean_kinds, group_watches, thing_of, watch_view,
+)
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.storage import presign_get
@@ -265,6 +270,113 @@ async def remove_member(
           entity_id=str(group_id), action="member.remove",
           changes={"person_id": str(person_id)})
     await db.delete(member)
+    await db.commit()
+
+
+# ── a group's watches: what its members hear about ──────────────────
+# A group watches what a person can (notifications/watches.py), and every member of an
+# Active group hears it. notifications:view lists the watches, notifications:change edits
+# them, and each edit is audited on the group. A WatchError becomes the same {"code"}
+# answer as elsewhere here.
+
+def _watch_target(watch: NotificationWatch) -> dict:
+    """What a watch is on, as the audit records it: its kind of thing and the thing's id,
+    or "everything" with no id."""
+    thing = thing_of(watch)
+    if thing is None:
+        return {"thing": EVERYTHING, "thing_id": None}
+    return {"thing": thing.type, "thing_id": str(thing.id)}
+
+
+async def _get_watch(db: DbSession, group_id: uuid.UUID,
+                     watch_id: uuid.UUID) -> NotificationWatch:
+    """One of the group's watches. Another group's, a person's own or none is a 404."""
+    watch = await db.get(NotificationWatch, watch_id)
+    if watch is None or watch.group_id != group_id:
+        raise _err(404, "watch_not_found")
+    return watch
+
+
+@router.get("/groups/{group_id}/watches", response_model=list[WatchOut])
+async def list_group_watches(
+    group_id: uuid.UUID,
+    db: DbSession,
+    _actor: AuthContext = require_permission("notifications", "view"),
+) -> list[WatchOut]:
+    """Everything the group watches, newest first. Unlike /auth/me/watches this is not
+    narrowed to what the asker can open: only global roles hold a notifications permission,
+    and a global role is not row-scoped."""
+    await _get_group(db, group_id)          # 404 group_not_found
+    return [WatchOut.from_view(view) for view in await group_watches(db, group_id)]
+
+
+@router.post("/groups/{group_id}/watches", response_model=WatchOut, status_code=201)
+async def add_group_watch(
+    group_id: uuid.UUID,
+    body: WatchIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("notifications", "change"),
+) -> WatchOut:
+    """Point the group at a thing the admin can open, or at chosen events everywhere. One
+    watch per thing: adding again is a 409, and the events are changed on the watch that is
+    there."""
+    group = await _get_group(db, group_id)
+    try:
+        watch = await add_watch(
+            db, thing=body.thing, thing_id=body.id, kinds=body.kinds,
+            viewer_id=actor.person.id, viewer_access=actor.access,
+            created_by=actor.person.id, group_id=group_id)
+        view = await watch_view(db, watch, group=group)
+    except WatchError as e:
+        raise _err(e.status, e.code) from None
+    audit(db, actor_id=actor.person.id, entity_type="notification_group",
+          entity_id=str(group_id), action="watch.add",
+          changes={**_watch_target(watch), "kinds": list(watch.kinds)})
+    await db.commit()
+    return WatchOut.from_view(view)
+
+
+@router.patch("/groups/{group_id}/watches/{watch_id}", response_model=WatchOut)
+async def update_group_watch(
+    group_id: uuid.UUID,
+    watch_id: uuid.UUID,
+    body: WatchKindsIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("notifications", "change"),
+) -> WatchOut:
+    """Choose the events of one of the group's watches; none means every event that applies
+    to a thing (an Everything watch has to name some). Choosing the events it already has
+    changes nothing and is not audited."""
+    group = await _get_group(db, group_id)
+    watch = await _get_watch(db, group_id, watch_id)
+    thing = thing_of(watch)
+    before = list(watch.kinds)
+    try:
+        watch.kinds = clean_kinds(thing.type if thing is not None else EVERYTHING, body.kinds)
+        view = await watch_view(db, watch, group=group)
+    except WatchError as e:
+        raise _err(e.status, e.code) from None
+    if watch.kinds != before:
+        audit(db, actor_id=actor.person.id, entity_type="notification_group",
+              entity_id=str(group_id), action="watch.update",
+              changes={"kinds": {"from": before, "to": list(watch.kinds)}})
+    await db.commit()
+    return WatchOut.from_view(view)
+
+
+@router.delete("/groups/{group_id}/watches/{watch_id}", status_code=204)
+async def remove_group_watch(
+    group_id: uuid.UUID,
+    watch_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("notifications", "change"),
+) -> None:
+    """Stop the group watching this. Any watch of the group can go."""
+    await _get_group(db, group_id)          # 404 group_not_found
+    watch = await _get_watch(db, group_id, watch_id)
+    audit(db, actor_id=actor.person.id, entity_type="notification_group",
+          entity_id=str(group_id), action="watch.remove", changes=_watch_target(watch))
+    await db.delete(watch)
     await db.commit()
 
 
