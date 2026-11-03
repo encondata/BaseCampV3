@@ -77,6 +77,9 @@ _FIELDS = [
     ConditionField("scan.site_id", "Scan site", "site", "sites"),
     ConditionField("scan.source", "Scan source", "text"),
     ConditionField("scan.operator_id", "Scan operator", "uuid"),
+    # An off-move sighting runs only the rules that ask for it with
+    # "equals true" (engine.apply_rules); every other rule skips it.
+    ConditionField("scan.off_move", "Off-move sighting", "bool"),
     ConditionField("asset.status", "Asset status", "status", "status:asset"),
     ConditionField("asset.site_id", "Asset site", "site", "sites"),
     ConditionField("asset.client_id", "Asset client", "uuid"),
