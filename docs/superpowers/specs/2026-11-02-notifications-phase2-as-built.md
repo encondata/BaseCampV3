@@ -136,7 +136,13 @@ Migration numbering: `project-plans` also has a 0110, and `notif-phase1` is unme
 
 Each task had its own review, and each slice had a whole-slice review, one fix wave and a scoped re-review.
 
-Test runs are listed in the final report. The live check ran on a copy of the dev database at 0116 (API :8022, portal :5196). It covered:
+Test runs on the final code:
+- **API, whole suite:** 6,501 passed, 1 skipped and 3 failed, run at 3cc635f0. Later commits change no API code. The 3 failures are the label-image tests that fail only in a whole-suite run. `tests/test_site_move_survey_fixtures.py` was left out of the run: defusedxml 0.7.1 appeared in the shared environment on 2026-11-03 without being in any pyproject, and the file no longer loads under it. main has the same file.
+- **API, wiki group-watch tests:** 15 passed after the last fix, including its two new tests.
+- **Portal:** 410 files and 5,313 tests passed. The type check and the build are clean.
+- **Wiki web:** 836 tests passed. The type check is clean.
+
+The live check ran on a copy of the dev database at 0116 (API :8022, portal :5196). It covered:
 - Watch and Watching.
 - The group page: all six segments, the Wiki picker, and wiki rows with their absolute link and only "Remove".
 - /me rows: own and Via a group.
