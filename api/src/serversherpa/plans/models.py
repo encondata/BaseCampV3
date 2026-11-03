@@ -114,6 +114,12 @@ class PlanTask(Base):
     __table_args__ = (
         Index("plan_tasks_plan_position_idx", "plan_id", "position"),
         Index("plan_tasks_parent_idx", "parent_id"),
+        Index("plan_tasks_completed_by_idx", "completed_by",
+              postgresql_where=text("completed_by IS NOT NULL")),
+        Index("plan_tasks_created_by_idx", "created_by",
+              postgresql_where=text("created_by IS NOT NULL")),
+        Index("plan_tasks_updated_by_idx", "updated_by",
+              postgresql_where=text("updated_by IS NOT NULL")),
         Index("plan_tasks_open_deadline_idx", "deadline",
               postgresql_where=text("percent_complete < 100")),
     )
@@ -161,6 +167,8 @@ class PlanAssignment(Base):
         Index("plan_assignments_task_idx", "task_id"),
         Index("plan_assignments_person_idx", "person_id",
               postgresql_where=text("person_id IS NOT NULL")),
+        Index("plan_assignments_partner_idx", "partner_id",
+              postgresql_where=text("partner_id IS NOT NULL")),
     )
 
 

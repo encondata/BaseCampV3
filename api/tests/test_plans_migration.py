@@ -6,6 +6,7 @@ The rollback/upgrade round trip runs on a throwaway database
 tests use the regular test DB through the `db` fixture."""
 
 import os
+import re
 import uuid
 from datetime import datetime
 
@@ -26,7 +27,9 @@ INDEXES = ("plan_tasks_plan_position_idx", "plan_tasks_parent_idx",
            "plan_links_plan_idx", "plan_tasks_open_deadline_idx",
            "plan_assignments_task_person_uniq", "plan_assignments_task_partner_uniq",
            "plan_links_successor_idx", "plan_assignments_task_idx",
-           "plan_assignments_person_idx", "plan_reminder_log_person_idx")
+           "plan_assignments_person_idx", "plan_assignments_partner_idx",
+           "plan_reminder_log_person_idx", "plan_tasks_completed_by_idx",
+           "plan_tasks_created_by_idx", "plan_tasks_updated_by_idx")
 # what a cascading delete looks rows up by: the FK trigger's
 # `DELETE ... WHERE col = $1` can use neither a partial index nor one that
 # leads with another column. Index -> its columns (and predicate).
@@ -34,9 +37,19 @@ FK_INDEXES = {
     "plan_links_successor_idx": "(successor_id)",
     "plan_assignments_task_idx": "(task_id)",
     "plan_assignments_person_idx": "(person_id) WHERE (person_id IS NOT NULL)",
+    "plan_assignments_partner_idx": "(partner_id) WHERE (partner_id IS NOT NULL)",
     "plan_reminder_log_person_idx": "(person_id)",
+    # a person delete nulls these on every task they touched (ON DELETE SET NULL)
+    "plan_tasks_completed_by_idx": "(completed_by) WHERE (completed_by IS NOT NULL)",
+    "plan_tasks_created_by_idx": "(created_by) WHERE (created_by IS NOT NULL)",
+    "plan_tasks_updated_by_idx": "(updated_by) WHERE (updated_by IS NOT NULL)",
 }
-FULL ={"view", "add", "change", "delete"}
+# the per-row tables: every foreign key on them must lead an index a delete
+# (or a SET NULL) on the referenced row can use. project_plans and
+# plan_templates hold a row per initiative / template, so a scan is cheaper
+# than an index there and they are left out.
+PER_ROW_TABLES = ("plan_tasks", "plan_links", "plan_assignments", "plan_reminder_log")
+FULL = {"view", "add", "change", "delete"}
 GRANTED_ROLES = ("developer", "founder", "super_admin", "admin")
 
 
@@ -169,6 +182,34 @@ async def test_a_delete_finds_dependent_rows_by_index(db):
     assert set(rows) == set(FK_INDEXES)
     for name, columns in FK_INDEXES.items():
         assert rows[name].endswith(f"USING btree {columns}"), rows[name]
+
+
+async def test_every_per_row_foreign_key_leads_an_index(db):
+    """A guard for the next column: each FK on a per-row plan table has a
+    btree index leading with it (a partial `IS NOT NULL` one is fine, since
+    the FK trigger's `col = $1` implies it)."""
+    fks = (await db.execute(text(
+        "SELECT c.conrelid::regclass::text, a.attname "
+        "FROM pg_constraint c JOIN pg_attribute a "
+        "ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey) "
+        "WHERE c.contype = 'f' AND c.conrelid::regclass::text = ANY(:t)"),
+        {"t": list(PER_ROW_TABLES)})).all()
+    # 13 today: plan_id, parent_id and three person audit columns on
+    # plan_tasks; plan_id, predecessor_id, successor_id on plan_links;
+    # task_id, person_id, partner_id on plan_assignments; task_id, person_id
+    # on plan_reminder_log
+    assert len(fks) >= 13, sorted(fks)
+    defs = (await db.execute(text(
+        "SELECT tablename, indexdef FROM pg_indexes WHERE tablename = ANY(:t)"),
+        {"t": list(PER_ROW_TABLES)})).all()
+    missing = []
+    for table, column in fks:
+        lead = re.compile(rf"USING btree \({column}[,)]")
+        usable = re.compile(rf"WHERE \({column} IS NOT NULL\)$")
+        if not any(t == table and lead.search(d) and (" WHERE " not in d or usable.search(d))
+                   for t, d in defs):
+            missing.append((table, column))
+    assert not missing, f"foreign keys without a leading index: {missing}"
 
 
 async def _initiative(db):

@@ -119,6 +119,21 @@ DDL = (
     """,
     "CREATE INDEX plan_tasks_plan_position_idx ON plan_tasks (plan_id, position)",
     "CREATE INDEX plan_tasks_parent_idx ON plan_tasks (parent_id)",
+    # a person delete sets these to NULL on every task the person touched;
+    # without an index that is a scan of every plan's tasks per column.
+    # Partial: a null can never match the FK trigger's `col = $1`.
+    (
+        "CREATE INDEX plan_tasks_completed_by_idx "
+        "ON plan_tasks (completed_by) WHERE completed_by IS NOT NULL"
+    ),
+    (
+        "CREATE INDEX plan_tasks_created_by_idx "
+        "ON plan_tasks (created_by) WHERE created_by IS NOT NULL"
+    ),
+    (
+        "CREATE INDEX plan_tasks_updated_by_idx "
+        "ON plan_tasks (updated_by) WHERE updated_by IS NOT NULL"
+    ),
     # the reminder sweep only looks at tasks that are still open
     (
         "CREATE INDEX plan_tasks_open_deadline_idx ON plan_tasks (deadline) "
@@ -172,6 +187,11 @@ DDL = (
     (
         "CREATE INDEX plan_assignments_person_idx "
         "ON plan_assignments (person_id) WHERE person_id IS NOT NULL"
+    ),
+    # and the same for a partner delete, which cascades here
+    (
+        "CREATE INDEX plan_assignments_partner_idx "
+        "ON plan_assignments (partner_id) WHERE partner_id IS NOT NULL"
     ),
     # stage is `d<N>` / `due` / `overdue:<YYYY-MM-DD>`. Keying on due_at means
     # moving a due date re-arms its reminders.
