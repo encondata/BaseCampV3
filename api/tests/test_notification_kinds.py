@@ -19,10 +19,11 @@ def test_categories_order_and_labels():
         ("initiatives", "Initiatives"),
         ("trucks", "Trucks"),
         ("devices", "Devices"),
+        ("bulk_actions", "Bulk actions"),
         ("security", "Account security"),
     ]
     assert CATEGORY_KEYS == ("approvals", "reports", "wiki", "learning", "initiatives",
-                             "trucks", "devices", "security")
+                             "trucks", "devices", "bulk_actions", "security")
 
 
 def test_every_kind_has_a_known_category_and_a_label():
@@ -45,15 +46,19 @@ def test_kind_table_matches_the_spec():
         "learning_quiz_locked": "learning",
         "initiative_status_changed": "initiatives", "truck_status_changed": "trucks",
         "device_offline": "devices",
+        "bulk_action_finished": "bulk_actions", "bulk_action_failed": "bulk_actions",
         "password_expiring": "security", "totp_enrolled": "security",
     }
     assert {k: v.category for k, v in KINDS.items()} == expected
     # registry order is the order the portal shows: the new kinds follow learning
-    assert list(KINDS)[-5:] == ["initiative_status_changed", "truck_status_changed",
-                                "device_offline", "password_expiring", "totp_enrolled"]
+    assert list(KINDS)[-7:] == ["initiative_status_changed", "truck_status_changed",
+                                "device_offline", "bulk_action_finished", "bulk_action_failed",
+                                "password_expiring", "totp_enrolled"]
     assert (KINDS["initiative_status_changed"].label, KINDS["truck_status_changed"].label,
             KINDS["device_offline"].label) == (
         "Initiative status changed", "Truck status changed", "Device offline")
+    assert (KINDS["bulk_action_finished"].label, KINDS["bulk_action_failed"].label) == (
+        "Bulk action finished", "Bulk action failed")
 
 
 def test_flags_match_the_spec():
@@ -74,6 +79,11 @@ def test_flags_match_the_spec():
     for kind in ("initiative_status_changed", "truck_status_changed", "device_offline"):
         assert (KINDS[kind].brief, KINDS[kind].email, KINDS[kind].owner_always) == (
             False, True, False), kind
+    # so are the bulk action notices (the failed one carries no body, so there is nothing
+    # for a brief email to leave out)
+    for kind in ("bulk_action_finished", "bulk_action_failed"):
+        assert (KINDS[kind].brief, KINDS[kind].email, KINDS[kind].owner_always) == (
+            False, True, False), kind
     # the urgent flag is gone: critical is company-set (notifications/company.py)
     assert not hasattr(default, "urgent")
 
@@ -91,6 +101,10 @@ def test_reaches_and_everywhere():
         "initiative_status_changed", "truck_status_changed", "device_offline"}
     assert KINDS["truck_status_changed"].watchable is True
     assert KINDS["report_ready"].watchable is False
+    # sent straight to whoever started the job (imports/notices.py): nothing to watch
+    for kind in ("bulk_action_finished", "bulk_action_failed"):
+        assert (KINDS[kind].reaches, KINDS[kind].everywhere, KINDS[kind].watchable) == (
+            (), False, False), kind
     # the defaults: not watchable, not named by an Everything watch
     default = KindInfo("approvals", "x")
     assert (default.reaches, default.everywhere, default.watchable) == ((), False, False)
@@ -141,6 +155,6 @@ def test_every_notify_kind_in_the_codebase_is_registered():
             "totp_enrolled", "password_reset_request", "password_expiring",
             "wiki_comment", "wiki_export_ready", "learning_overdue", "learning_complete",
             "learning_quiz_locked", "initiative_status_changed", "truck_status_changed",
-            "device_offline"} <= found
+            "device_offline", "bulk_action_finished", "bulk_action_failed"} <= found
     assert found == set(KINDS), (
         f"unregistered: {sorted(found - set(KINDS))}; never sent: {sorted(set(KINDS) - found)}")

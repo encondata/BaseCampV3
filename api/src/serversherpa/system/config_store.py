@@ -87,7 +87,7 @@ DEFAULTS: dict[str, dict] = {
     "notifications": {
         "defaults": {category: {"inbox": True, "email": True}
                      for category in ("approvals", "reports", "wiki", "learning",
-                                      "initiatives", "trucks", "devices")},
+                                      "initiatives", "trucks", "devices", "bulk_actions")},
         "critical_kinds": [],
     },
 }

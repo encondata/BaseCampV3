@@ -36,6 +36,7 @@ CATEGORIES: dict[str, str] = {
     "initiatives": "Initiatives",
     "trucks": "Trucks",
     "devices": "Devices",
+    "bulk_actions": "Bulk actions",
     "security": "Account security",
 }
 
@@ -75,6 +76,12 @@ KINDS: dict[str, KindInfo] = {
     # stops checking in: it reaches the device's watchers, its site's and its move's.
     "device_offline": KindInfo("devices", "Device offline",
                                reaches=("device", "site", "initiative"), everywhere=True),
+    # Sent with notify() by the import worker (imports/notices.py) to the person who started
+    # a job that wrote data, when it finishes or fails. Not announced and not watchable: it
+    # reaches that one person, and the category's switches are the way out. The failed notice
+    # is title + link only, since the error text behind it is internal.
+    "bulk_action_finished": KindInfo("bulk_actions", "Bulk action finished"),
+    "bulk_action_failed": KindInfo("bulk_actions", "Bulk action failed"),
     "password_expiring": KindInfo("security", "Password expiring", owner_always=True),
     "totp_enrolled": KindInfo("security", "Two-factor authentication enrolled",
                                brief=True, owner_always=True),

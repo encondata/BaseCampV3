@@ -18,7 +18,8 @@ from tests.test_sites_api import login
 from tests.test_status_values_write import _make
 
 SETTINGS = "/notifications/settings"
-CONFIGURABLE = ("approvals", "reports", "wiki", "learning", "initiatives", "trucks", "devices")
+CONFIGURABLE = ("approvals", "reports", "wiki", "learning", "initiatives", "trucks", "devices",
+                "bulk_actions")
 ON_ON = {"inbox": True, "email": True}
 
 
@@ -81,6 +82,11 @@ async def test_settings_out_of_the_box(client, seeded_user):
     assert [kind for kind, (watchable, _, _) in flags.items() if watchable] == [
         "initiative_status_changed", "truck_status_changed", "device_offline"]
     assert flags["report_ready"] == (False, False, [])
+    # the bulk action notices go to whoever started the job: nobody watches for them
+    assert flags["bulk_action_finished"] == (False, False, [])
+    assert flags["bulk_action_failed"] == (False, False, [])
+    assert (kinds["bulk_action_finished"]["category"], kinds["bulk_action_failed"]["category"]) \
+        == ("bulk_actions", "bulk_actions")
     assert (kinds["password_expiring"]["critical"], kinds["password_expiring"]["locked"]) \
         == (True, True)
     assert (kinds["report_ready"]["critical"], kinds["report_ready"]["locked"]) \
@@ -206,6 +212,17 @@ async def test_put_sets_defaults_for_initiatives_trucks_and_devices(client, db, 
     assert (await db.get(SystemConfig, "notifications")).data["defaults"] == expected
 
 
+async def test_put_sets_the_bulk_actions_default(client, db, seeded_user):
+    """Bulk actions is configurable like the rest: on and on until an admin says otherwise."""
+    admin = await _admin(db, client)
+    assert (await _get(client, admin))["defaults"]["bulk_actions"] == ON_ON
+    resp = await _put(client, admin, defaults={"bulk_actions": {"inbox": True, "email": False}})
+    assert resp.status_code == 200, resp.text
+    expected = {**{c: ON_ON for c in CONFIGURABLE}, "bulk_actions": {"inbox": True, "email": False}}
+    assert resp.json()["defaults"] == expected
+    assert (await db.get(SystemConfig, "notifications")).data["defaults"] == expected
+
+
 async def test_put_waits_for_a_concurrent_save_and_keeps_both(client, db, seeded_user):
     """A partial save is read-merge-write. While another save holds the row (it
     has read it and not yet written) a second one waits, then merges onto what
@@ -228,7 +245,7 @@ async def test_put_waits_for_a_concurrent_save_and_keeps_both(client, db, seeded
     assert resp.json()["defaults"] == {
         "approvals": ON_ON, "reports": {"inbox": False, "email": False},
         "wiki": {"inbox": True, "email": False}, "learning": ON_ON,
-        "initiatives": ON_ON, "trucks": ON_ON, "devices": ON_ON}
+        "initiatives": ON_ON, "trucks": ON_ON, "devices": ON_ON, "bulk_actions": ON_ON}
 
 
 async def test_put_rejects_bad_categories(client, db, seeded_user):
@@ -333,7 +350,7 @@ async def test_load_company_settings_out_of_the_box(db):
 
     company = await load_company_settings(db)
     assert CONFIGURABLE_CATEGORIES == CONFIGURABLE
-    # config_store cannot import company (a cycle), so it spells the seven out too
+    # config_store cannot import company (a cycle), so it spells the eight out too
     assert tuple(DEFAULTS["notifications"]["defaults"]) == CONFIGURABLE_CATEGORIES
     assert DEFAULTS["notifications"]["critical_kinds"] == []
     assert dict(company.defaults) == {c: Switches(True, True) for c in CONFIGURABLE}
@@ -366,7 +383,7 @@ async def test_load_company_settings_ignores_what_it_does_not_know(db):
         "approvals": Switches(False, False), "reports": Switches(True, True),
         "wiki": Switches(True, True), "learning": Switches(True, True),
         "initiatives": Switches(True, True), "trucks": Switches(True, True),
-        "devices": Switches(True, True)}
+        "devices": Switches(True, True), "bulk_actions": Switches(True, True)}
     assert company.critical_kinds == frozenset({"report_failed"})
 
 

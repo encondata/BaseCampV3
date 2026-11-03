@@ -542,6 +542,17 @@ async def test_kinds_report_critical_and_locked(client, db):
         ("truck_status_changed", True, True, ["truck", "initiative", "site"]),
         ("device_offline", True, True, ["device", "site", "initiative"]),
     ]
+    # the bulk action notices: their own category, emailed in full, sent to one person and
+    # never watched for
+    by_kind = {k["kind"]: k for k in resp.json()}
+    assert by_kind["bulk_action_finished"] == {
+        "kind": "bulk_action_finished", "label": "Bulk action finished",
+        "category": "bulk_actions", "email": True, "owner_always": False, "critical": False,
+        "locked": False, "watchable": False, "everywhere": False, "reaches": []}
+    assert by_kind["bulk_action_failed"] == {
+        "kind": "bulk_action_failed", "label": "Bulk action failed",
+        "category": "bulk_actions", "email": True, "owner_always": False, "critical": False,
+        "locked": False, "watchable": False, "everywhere": False, "reaches": []}
 
     admin = await _make(db, client, "admin", "admin@test.example.com")
     resp = await client.get(KINDS_PATH, headers=admin)
