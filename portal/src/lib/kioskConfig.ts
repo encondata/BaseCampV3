@@ -295,7 +295,10 @@ export function valueText(v: unknown, sounds: { id: string; name: string }[] = [
   return String(v);
 }
 
-/** Kiosks check in every minute; three missed beats reads as offline. */
+/** Kiosks check in every minute; three missed beats reads as offline. The API's device
+ *  check announces a Device offline notice on the same rule, so this stays the API's
+ *  KIOSK_ONLINE (api/src/serversherpa/services/device_online.py); kioskConfig.test.ts
+ *  pins the number here, tests/test_device_online.py there. */
 export const KIOSK_ONLINE_MS = 3 * 60 * 1000;
 
 export function kioskOnline(lastSeen: string | null, nowMs: number = Date.now()): boolean {

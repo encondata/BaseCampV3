@@ -6,7 +6,7 @@ import {
   loginMethodLabel, registrationLabel, subTypeLabel, tokenExpiryState, vpnLabel,
   approvalLabel, bandLabel, routerClientTotal, routerInstallCommand,
   routerStatus, routerVpn, routerWifi, vpnChipClass, routerDisplayName,
-  stationLabel, stationTypeLabel,
+  stationLabel, stationTypeLabel, ROUTER_ONLINE_MS,
 } from './devices';
 
 const R: DeviceItem = {
@@ -233,6 +233,12 @@ describe('router helpers', () => {
     expect(approvalLabel(null)).toBe('—');
     expect(deviceCellText({ ...base, approval_state: 'pending', secret_mismatch: true }, 'approval'))
       .toBe('Pending · Secret changed');
+  });
+
+  it('pins the offline threshold at the API\'s four minutes', () => {
+    // The API's device check announces a Device offline notice on the same rule: ROUTER_ONLINE in
+    // api/src/serversherpa/services/device_online.py (tests/test_device_online.py pins that side).
+    expect(ROUTER_ONLINE_MS).toBe(4 * 60 * 1000);
   });
 
   it('online within 4 minutes, offline after, never without a check-in', () => {

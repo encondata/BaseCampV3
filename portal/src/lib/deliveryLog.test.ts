@@ -46,6 +46,8 @@ describe('labels', () => {
       // dropped before sending (or at summary time), plus SMTP off; not_watching is new in Phase 2
       'notification_gone', 'hidden', 'read', 'resolved', 'recipient_inactive',
       'category_turned_down', 'email_not_set_up', 'not_watching',
+      // a Device offline email dropped because every device in it is seen again (new in Phase 2)
+      'back_online',
       // the inbox row not written (no_access is new in Phase 2, and the re-check drops an email for it too)
       'category_off', 'no_access',
       // a notification not emailed (admin_copy is new in Phase 1)
@@ -73,6 +75,7 @@ describe('labels', () => {
     expect(REASON_LABELS.admin_copy).toBe('Admin copy — inbox only');
     expect(REASON_LABELS.no_access).toBe('No access');
     expect(REASON_LABELS.not_watching).toBe('Not watching any more');
+    expect(REASON_LABELS.back_online).toBe('Device back online');
   });
 
   it('names where a switch comes from and how the schedule stands right now', () => {

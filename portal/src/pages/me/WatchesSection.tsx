@@ -27,7 +27,7 @@ import {
   ApiError, createMyWatch, deleteMyWatch, listMyWatches, updateMyWatch,
   type NotificationKindSetting, type Watch,
 } from '../../lib/api';
-import { THING_LABELS, watchErrorMessage } from '../../lib/watches';
+import { THING_LABELS, isOutOfDate, watchErrorMessage } from '../../lib/watches';
 import '../../styles/directory.css';      // .badge-count, .mini-btn, the data table
 import '../../styles/profile.css';        // .pf-error
 import '../../styles/settings.css';       // .set-section, .set-head, .set-hint
@@ -37,10 +37,6 @@ const HINT = 'Things you watch and the ones your groups watch. '
   + 'What reaches you still follows your switches and schedule.';
 const EMPTY = "You aren't watching anything yet. Use Watch on a page to start.";
 const DIALOG_HINT = 'Pick the events you want to hear about.';
-
-/** The answers that mean the list on screen was out of date: the watch is already there
- *  (made elsewhere), or already gone. */
-const OUT_OF_DATE = new Set(['already_watching', 'watch_not_found']);
 
 /** The events dialog that is open: one of the rows' watches, or the person's
  *  Everything watch (which may not exist yet). */
@@ -115,7 +111,7 @@ export default function WatchesSection({ kinds }: { kinds: NotificationKindSetti
     try {
       await save();
     } catch (err) {
-      if (err instanceof ApiError && OUT_OF_DATE.has(err.code)) void load();
+      if (isOutOfDate(err)) void load();
       throw err;
     }
     setActionError('');

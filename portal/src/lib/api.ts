@@ -55,7 +55,7 @@ export type NotificationSound = 'none' | 'chime' | 'ping' | 'pop' | 'bell';
 
 /** Mirrors notifications/kinds.py CATEGORIES. */
 export type NotificationCategory =
-  'approvals' | 'reports' | 'wiki' | 'learning' | 'initiatives' | 'trucks' | 'security';
+  'approvals' | 'reports' | 'wiki' | 'learning' | 'initiatives' | 'trucks' | 'devices' | 'security';
 
 /** What the person has chosen about notifications, on their account: the
  *  in-app sound, their own switch values (only those; a category or a value
@@ -6757,14 +6757,16 @@ export async function updateNotificationSettings(
 /* ── watches: a person's own, and a notification group's ─────────────────
  * Mirrors api/src/serversherpa/api/schemas.py WatchIn, WatchKindsIn, WatchOut,
  * WatchStateOut, WatchViaOut and CheckWatchOut. A person (or a group) watches
- * an initiative, a site or a truck, or chosen events everywhere (an Everything
- * watch); `kinds` empty means every event that applies to the thing. Errors
- * carry `detail.code`: 409 `already_watching`; 404 `thing_not_found`,
- * `watch_not_found`, `group_not_found`; 422 `invalid_thing`, `invalid_kind`,
- * `kinds_required`; 423 `read_only_mode`. */
+ * an initiative, a site, a truck or a device, or chosen events everywhere (an
+ * Everything watch); `kinds` empty means every event that applies to the thing.
+ * Errors carry `detail.code`: 409 `already_watching`; 404 `thing_not_found`,
+ * `watch_not_found`, `group_not_found`; 422 `invalid_thing` (a device that is not
+ * covered too: a kiosk that is not an RFID Station, a router that is not
+ * approved), `invalid_kind`, `kinds_required`; 423 `read_only_mode`. */
 
-/** The things a watch can be on. */
-export type WatchThing = 'initiative' | 'site' | 'truck';
+/** The things a watch can be on. A device is an RFID Station kiosk, a fixed reader
+ *  or an approved router (the ones that check in on their own). */
+export type WatchThing = 'initiative' | 'site' | 'truck' | 'device';
 
 /** What a watch is on: a thing, or Everything (events anywhere, no thing). */
 export type WatchTarget = WatchThing | 'everything';

@@ -39,6 +39,7 @@ const SETTINGS: NotificationSettings = {
     learning: { inbox: true, email: true },
     initiatives: { inbox: true, email: true },
     trucks: { inbox: true, email: true },
+    devices: { inbox: true, email: true },
   },
   critical_kinds: ['report_failed'],
   kinds: [

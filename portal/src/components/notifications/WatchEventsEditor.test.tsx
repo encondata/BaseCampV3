@@ -199,6 +199,28 @@ it('shows only the All switch for a thing while the kinds are not loaded, and no
   expect(names()).toEqual([]);
 });
 
+// The registry's Device offline: it reaches devices, sites and initiatives, and an Everything watch may name it.
+const DEVICE_OFFLINE = kind('device_offline', 'Device offline', 'devices',
+  { watchable: true, everywhere: true, reaches: ['device', 'site', 'initiative'] });
+
+it('a device lists Device offline, under the Devices category label', () => {
+  setup({ thing: 'device', all: false, kinds: [...KINDS, DEVICE_OFFLINE] });
+
+  const groups = screen.getAllByRole('group');
+  expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['Devices']);
+  expect(within(groups[0]).getAllByRole('checkbox').map((c) => c.getAttribute('aria-label')))
+    .toEqual(['Device offline']);
+  expect(within(groups[0]).getByText('Devices').closest('.modal-section')).not.toBeNull();
+});
+
+it('Everything lists Device offline after Trucks, in the categories\' own order', () => {
+  setup({ thing: 'everything', all: false, kinds: [DEVICE_OFFLINE, ...KINDS] });
+
+  expect(screen.getAllByRole('group').map((g) => g.getAttribute('aria-label')))
+    .toEqual(['Initiatives', 'Trucks', 'Devices']);
+  expect(names()).toEqual(['Initiative status changed', 'Truck status changed', 'Device offline']);
+});
+
 it('uses house controls only: every checkbox is a Switch, and there is no select', () => {
   const { view } = setup({ all: false, picked: ['kind_a'] });
 

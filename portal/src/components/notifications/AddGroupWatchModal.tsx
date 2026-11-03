@@ -45,8 +45,12 @@ import '../../styles/directory.css';       // .mini-btn
 import '../../styles/profile.css';         // .pf-form, .btn-solid, .pf-error
 import '../../styles/notifications.css';   // .watch-add-body
 
+/** What the "Watch" strip can point a group at. A device is not one of them yet: a group
+ *  watching one needs a picker that lists the devices people can watch. */
+type Pointable = Exclude<WatchTarget, 'device'>;
+
 /** What the "Watch" strip offers, in its order. */
-const TARGETS: { key: WatchTarget; label: string }[] = [
+const TARGETS: { key: Pointable; label: string }[] = [
   { key: 'initiative', label: THING_LABELS.initiative },
   { key: 'site', label: THING_LABELS.site },
   { key: 'truck', label: THING_LABELS.truck },
@@ -57,7 +61,7 @@ const TARGETS: { key: WatchTarget; label: string }[] = [
  *  list can't be loaded, and the list it offers. Each list is the admin's own, so it holds
  *  only what they can see. A truck list leaves archived trucks out (`listTrucks` without
  *  its flag). */
-const PICKERS: Record<WatchThing, {
+const PICKERS: Record<Exclude<WatchThing, 'device'>, {
   placeholder: string;
   loadFailed: string;
   load: () => Promise<{ id: string; name: string }[]>;
@@ -88,7 +92,7 @@ export default function AddGroupWatchModal({ group, kinds, onAdded, onClose }: {
   onClose: () => void;
 }) {
   const fieldId = useId();
-  const [thing, setThing] = useState<WatchTarget>('initiative');
+  const [thing, setThing] = useState<Pointable>('initiative');
   const [thingId, setThingId] = useState('');
   const [events, setEvents] = useState<WatchEvents>(() => freshEvents('initiative'));
   // Each kind's picker options, once its list has come in.
@@ -119,7 +123,7 @@ export default function AddGroupWatchModal({ group, kinds, onAdded, onClose }: {
   const listError = needsThing && !choices[thing] ? loadError : '';
   const shownError = error || listError;
 
-  const pickTarget = (next: WatchTarget) => {
+  const pickTarget = (next: Pointable) => {
     if (saving || next === thing) return;
     setThing(next);
     setThingId('');

@@ -2,8 +2,9 @@
 /**
  * /hardware/routers — Routers device-fleet directory list. Covers what a
  * unit test can see: seeded rows sorted by name, the disabled "Register
- * router" affordance, Delete gating + confirm + reload round trip, and
- * the load-error banner. Full toolbar/column-menu/reorder/CSV behavior
+ * router" affordance, Delete gating + confirm + reload round trip, the
+ * load-error banner, and Watch / Stop watching in an approved router's row
+ * menu. Full toolbar/column-menu/reorder/CSV behavior
  * is exercised generically by lib/listTools.test.tsx and
  * lib/columnMenu.test.tsx — this file only covers Routers-specific wiring.
  */
@@ -13,7 +14,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { DeviceItem, UiPreferences } from '../lib/api';
+import type { DeviceItem, UiPreferences, Watch } from '../lib/api';
 import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => {
@@ -44,6 +45,9 @@ const api = vi.hoisted(() => ({
   listDeviceLeases: vi.fn(),
   approveRouter: vi.fn(),
   revokeRouter: vi.fn(),
+  listMyWatches: vi.fn(),
+  createMyWatch: vi.fn(),
+  deleteMyWatch: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -90,6 +94,13 @@ const DEVICES: DeviceItem[] = [
   },
 ];
 
+/** The person's own watch of the approved router (d1). */
+const WATCH_D1: Watch = {
+  id: 'w1', thing: 'device', thing_id: 'd1', thing_name: 'dock-router-1',
+  link: '/hardware/routers?focus=d1', kinds: [], via: { type: 'you', id: null, name: null },
+  created_at: '2026-11-02T12:00:00Z',
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   auth.can = () => true;
@@ -98,6 +109,9 @@ beforeEach(() => {
   api.listDeviceLeases.mockResolvedValue([]);
   api.approveRouter.mockResolvedValue(DEVICES[0]);
   api.revokeRouter.mockResolvedValue(DEVICES[0]);
+  api.listMyWatches.mockResolvedValue([]);
+  api.createMyWatch.mockResolvedValue(WATCH_D1);
+  api.deleteMyWatch.mockResolvedValue(undefined);
 });
 
 afterEach(cleanup);
@@ -141,11 +155,17 @@ it('renders seeded rows sorted by name asc with WAN/LAN IPs, MAC, serial, and hu
   expect(names).toEqual(['Dock Router 1', 'Zebra Router 2']);
 });
 
-it('hides the row Actions menu entirely without change/delete rights', async () => {
+it('without change/delete rights only an approved router has a row menu, and it holds only Watch', async () => {
   auth.can = () => false;
+  const user = userEvent.setup();
   renderRouters();
-  await screen.findByText('Dock Router 1');
-  expect(screen.queryByRole('button', { name: /Actions/ })).toBeNull();
+  const approved = (await screen.findByText('Dock Router 1')).closest('.dir-row') as HTMLElement;
+  const pending = screen.getByText('Zebra Router 2').closest('.dir-row') as HTMLElement;
+  expect(within(pending).queryByRole('button', { name: /Actions/ })).toBeNull();
+  expect(screen.getAllByRole('button', { name: /Actions/ })).toHaveLength(1);
+
+  await user.click(within(approved).getByRole('button', { name: /Actions/ }));
+  expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Watch']);
 });
 
 it('Delete from the row menu confirms, deletes and reloads', async () => {
@@ -534,4 +554,115 @@ it('exports the readable name plus a Hostname column', async () => {
   clickSpy.mockRestore();
   URL.createObjectURL = prevCreate;
   URL.revokeObjectURL = prevRevoke;
+});
+
+/* ── Watch / Stop watching in an approved router's row menu ─────────── */
+
+/** The labels of the open menu's items, in order. */
+const menuItems = () => screen.getAllByRole('menuitem').map((m) => m.textContent);
+
+it('an approved router\'s menu starts with Watch, then the actions it always had', async () => {
+  const user = userEvent.setup();
+  renderRouters();
+  const row = (await screen.findByText('Dock Router 1')).closest('.dir-row') as HTMLElement;
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  expect(menuItems()).toEqual(['Watch', 'Revoke', 'Delete']);
+  expect(api.listMyWatches).toHaveBeenCalledTimes(1);
+});
+
+it('a click on Watch watches that router on every event, and the menu then reads Stop watching', async () => {
+  api.listMyWatches.mockResolvedValueOnce([]).mockResolvedValue([WATCH_D1]);
+  const user = userEvent.setup();
+  renderRouters();
+  const row = (await screen.findByText('Dock Router 1')).closest('.dir-row') as HTMLElement;
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Watch' }));
+
+  await waitFor(() => expect(api.createMyWatch).toHaveBeenCalledWith(
+    { thing: 'device', id: 'd1', kinds: [] }));
+  expect(row.className).not.toContain('open');            // opening the menu is not a row click
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await waitFor(() => expect(menuItems()).toEqual(['Stop watching', 'Revoke', 'Delete']));
+});
+
+it('a router the person watches reads Stop watching first, and a click stops that watch', async () => {
+  api.listMyWatches.mockResolvedValueOnce([WATCH_D1]).mockResolvedValue([]);
+  const user = userEvent.setup();
+  renderRouters();
+  const row = (await screen.findByText('Dock Router 1')).closest('.dir-row') as HTMLElement;
+  await waitFor(() => expect(api.listMyWatches).toHaveBeenCalled());
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await waitFor(() => expect(menuItems()[0]).toBe('Stop watching'));
+  expect(menuItems()).toEqual(['Stop watching', 'Revoke', 'Delete']);
+  await user.click(screen.getByRole('menuitem', { name: 'Stop watching' }));
+
+  await waitFor(() => expect(api.deleteMyWatch).toHaveBeenCalledWith('w1'));
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await waitFor(() => expect(menuItems()[0]).toBe('Watch'));
+});
+
+it('a group\'s watch of the router does not read as the person\'s own', async () => {
+  // d1 is watched by a group only; d3 (the control) is watched by the person themselves
+  api.listDevices.mockResolvedValue([
+    DEVICES[1], { ...DEVICES[1], id: 'd3', name: 'old-router-3', serial: 'd3', mac: 'd3' }]);
+  api.listMyWatches.mockResolvedValue([
+    { ...WATCH_D1, id: 'w-group', via: { type: 'group', id: 'g1', name: 'Group A' } },
+    { ...WATCH_D1, id: 'w3', thing_id: 'd3', thing_name: 'old-router-3' },
+  ]);
+  const user = userEvent.setup();
+  renderRouters();
+  const own = (await screen.findByText('Old Router 3')).closest('.dir-row') as HTMLElement;
+  await user.click(within(own).getByRole('button', { name: /Actions/ }));
+  await waitFor(() => expect(menuItems()[0]).toBe('Stop watching'));     // the list has landed
+  await user.keyboard('{Escape}');
+
+  const grouped = screen.getByText('Dock Router 1').closest('.dir-row') as HTMLElement;
+  await user.click(within(grouped).getByRole('button', { name: /Actions/ }));
+  expect(menuItems()[0]).toBe('Watch');
+});
+
+it('a pending router\'s menu has no watch action, and neither has a revoked one', async () => {
+  api.listDevices.mockResolvedValue([
+    DEVICES[0],                                                    // d2, pending
+    { ...DEVICES[1], id: 'd3', name: 'old-router-3', serial: 'd3', mac: 'd3', approval_state: 'revoked' },
+  ]);
+  const user = userEvent.setup();
+  renderRouters();
+  const pending = (await screen.findByText('Zebra Router 2')).closest('.dir-row') as HTMLElement;
+  await user.click(within(pending).getByRole('button', { name: /Actions/ }));
+  expect(menuItems()).toEqual(['Approve', 'Delete']);
+  await user.keyboard('{Escape}');
+
+  const revoked = screen.getByText('Old Router 3').closest('.dir-row') as HTMLElement;
+  await user.click(within(revoked).getByRole('button', { name: /Actions/ }));
+  expect(menuItems()).toEqual(['Approve', 'Delete']);
+  expect(screen.queryByRole('menuitem', { name: /Watch|Stop watching/ })).toBeNull();
+});
+
+it('a router with no approval state (not an agent) has no watch action', async () => {
+  api.listDevices.mockResolvedValue([{ ...DEVICES[1], approval_state: null }]);
+  const user = userEvent.setup();
+  renderRouters();
+  const row = (await screen.findByText('Dock Router 1')).closest('.dir-row') as HTMLElement;
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  expect(menuItems()).toEqual(['Delete']);
+});
+
+it('the watch action is off while its change is on the way', async () => {
+  let finish!: () => void;
+  api.createMyWatch.mockReturnValue(new Promise((resolve) => { finish = () => resolve(WATCH_D1); }));
+  const user = userEvent.setup();
+  renderRouters();
+  const row = (await screen.findByText('Dock Router 1')).closest('.dir-row') as HTMLElement;
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Watch' }));
+
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  expect((screen.getByRole('menuitem', { name: 'Watch' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('menuitem', { name: 'Revoke' }) as HTMLButtonElement).disabled).toBe(false);
+
+  finish();
+  await waitFor(() => expect(
+    (screen.getByRole('menuitem', { name: /Watch|Stop watching/ }) as HTMLButtonElement).disabled,
+  ).toBe(false));
 });

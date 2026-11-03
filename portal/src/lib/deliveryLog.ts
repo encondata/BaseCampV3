@@ -10,7 +10,8 @@
  * Specs: docs/superpowers/specs/2026-10-31-notifications-phase0-design.md
  * (sections 4 and 9), 2026-11-01-notifications-phase1-design.md (section 7)
  * and 2026-11-02-notifications-phase2-design.md (section 8: the routes that
- * brought a notification, and the reasons no_access and not_watching).
+ * brought a notification, and the reasons no_access, not_watching and
+ * back_online).
  */
 
 import type { DeliveryLogEntry, DeliveryLogEvent } from './api';
@@ -73,6 +74,8 @@ export const REASON_LABELS: Record<string, string> = {
   category_turned_down: 'Category turned down',
   // none of the notification's events reaches the person any more (email_skipped)
   not_watching: 'Not watching any more',
+  // a Device offline email whose devices have all been seen again (email_skipped)
+  back_online: 'Device back online',
   // why an email is held for the summary (email_held)
   quiet_hours: 'Quiet hours',
   inactive_day: 'Not an active day',

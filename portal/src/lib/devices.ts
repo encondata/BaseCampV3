@@ -146,7 +146,11 @@ export function routerDisplayName(name: string): string {
   return words.length ? words.join(' ') : name;
 }
 
-/** About three missed reports at the 65 s default (plus up to 10 s jitter each). */
+/** About three missed reports at the 65 s default (plus up to 10 s jitter each). The
+ *  API's device check announces a Device offline notice on the same rule, so this stays
+ *  the API's ROUTER_ONLINE (api/src/serversherpa/services/device_online.py); devices.test.ts
+ *  pins the number here, tests/test_device_online.py there. A fixed reader's three minutes
+ *  (READER_STALE_AFTER there) is the API's alone: the Readers list takes its Offline from it. */
 export const ROUTER_ONLINE_MS = 4 * 60 * 1000;
 
 export function routerStatus(

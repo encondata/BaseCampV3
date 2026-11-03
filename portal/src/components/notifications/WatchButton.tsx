@@ -1,9 +1,10 @@
 /**
  * WatchButton — the Watch / Watching toggle in the header of an initiative, a
- * site or a truck page. It is the wiki's page watch button (wiki/web/src/
- * components/WatchButton.tsx) for the person's own watch: it reads whether they
- * watch the thing themselves (a group's watch of it does not count), renders
- * nothing until that is known, and a failure to read it counts as not watching.
+ * site, a truck or an RFID Station kiosk page. It is the wiki's page watch button
+ * (wiki/web/src/components/WatchButton.tsx) for the person's own watch: it reads
+ * whether they watch the thing themselves (a group's watch of it does not count),
+ * renders nothing until that is known, and a failure to read it counts as not
+ * watching.
  *
  * A click stops the watch they have, or starts one on every event that applies
  * to the thing; narrowing its events is done on /me, under "What you watch". The
@@ -20,14 +21,11 @@ import {
   ApiError, createMyWatch, deleteMyWatch, getWatchState, type WatchThing,
 } from '../../lib/api';
 import { useToast } from '../../lib/notificationsContext';
+import { isOutOfDate } from '../../lib/watches';
 import '../../styles/notifications.css';  // .watch-btn.on, and its size in a page header
 
 /** The toast for a failure the person can do nothing about (the wiki's sentence). */
 const FAILED = "Couldn't update your watch.";
-
-/** The answers that mean the button was out of date: the person already watches the
- *  thing (made elsewhere), or the watch they meant to stop is already gone. */
-const OUT_OF_DATE = new Set(['already_watching', 'watch_not_found']);
 
 interface State {
   watching: boolean;
@@ -70,7 +68,7 @@ export default function WatchButton({ thing, id }: { thing: WatchThing; id: stri
         if (shown.current === target) setState({ watching: true, watchId: watch.id });
       }
     } catch (err) {
-      if (err instanceof ApiError && OUT_OF_DATE.has(err.code)) {
+      if (isOutOfDate(err)) {
         // Made or ended somewhere else: show what is true now, and say nothing.
         try {
           if (shown.current === target) {

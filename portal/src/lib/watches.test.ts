@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ApiError, READ_ONLY_MESSAGE, type NotificationCategory, type NotificationKindSetting,
 } from './api';
-import { THING_LABELS, eventsText, kindsFor, watchErrorMessage } from './watches';
+import { THING_LABELS, eventsText, isOutOfDate, kindsFor, watchErrorMessage } from './watches';
 
 function kind(
   key: string, label: string, category: NotificationCategory,
@@ -27,6 +27,8 @@ const KINDS: NotificationKindSetting[] = [
     { watchable: true, everywhere: true, reaches: ['initiative', 'site'] }),
   kind('truck_status_changed', 'Truck status changed', 'trucks',
     { watchable: true, everywhere: true, reaches: ['truck', 'initiative', 'site'] }),
+  kind('device_offline', 'Device offline', 'devices',
+    { watchable: true, everywhere: true, reaches: ['device', 'site', 'initiative'] }),
   kind('kind_a', 'Kind A', 'initiatives',
     { watchable: true, everywhere: false, reaches: ['initiative'] }),
   kind('password_expiring', 'Password expiring', 'security', { owner_always: true, locked: true }),
@@ -35,9 +37,10 @@ const KINDS: NotificationKindSetting[] = [
 const labels = (list: NotificationKindSetting[]) => list.map((k) => k.label);
 
 describe('THING_LABELS', () => {
-  it('names the three things and Everything', () => {
+  it('names the four things and Everything', () => {
     expect(THING_LABELS).toEqual({
-      initiative: 'Initiative', site: 'Site', truck: 'Truck', everything: 'Everything',
+      initiative: 'Initiative', site: 'Site', truck: 'Truck', device: 'Device',
+      everything: 'Everything',
     });
   });
 });
@@ -47,26 +50,30 @@ describe('kindsFor', () => {
     expect(labels(kindsFor('truck', KINDS))).toEqual(['Truck status changed']);
   });
 
+  it('a device watch can name only Device offline', () => {
+    expect(labels(kindsFor('device', KINDS))).toEqual(['Device offline']);
+  });
+
   it('an initiative watch names every kind that reaches initiatives, in registry order', () => {
     expect(labels(kindsFor('initiative', KINDS))).toEqual([
-      'Initiative status changed', 'Truck status changed', 'Kind A',
+      'Initiative status changed', 'Truck status changed', 'Device offline', 'Kind A',
     ]);
   });
 
   it('a site watch names every kind that reaches sites', () => {
     expect(labels(kindsFor('site', KINDS))).toEqual([
-      'Initiative status changed', 'Truck status changed',
+      'Initiative status changed', 'Truck status changed', 'Device offline',
     ]);
   });
 
   it('an Everything watch names the kinds marked everywhere, not the ones that merely reach', () => {
     expect(labels(kindsFor('everything', KINDS))).toEqual([
-      'Initiative status changed', 'Truck status changed',
+      'Initiative status changed', 'Truck status changed', 'Device offline',
     ]);
   });
 
   it('never offers a kind nobody can watch for', () => {
-    for (const thing of ['initiative', 'site', 'truck', 'everything'] as const) {
+    for (const thing of ['initiative', 'site', 'truck', 'device', 'everything'] as const) {
       expect(kindsFor(thing, KINDS).map((k) => k.kind)).not.toContain('report_ready');
       expect(kindsFor(thing, KINDS).map((k) => k.kind)).not.toContain('password_expiring');
     }
@@ -108,6 +115,28 @@ describe('eventsText', () => {
     expect(eventsText(['retired_kind', 'truck_status_changed'], KINDS))
       .toBe('retired_kind, Truck status changed');
     expect(eventsText(['truck_status_changed'], [])).toBe('truck_status_changed');
+  });
+});
+
+describe('isOutOfDate', () => {
+  it.each([
+    [409, 'already_watching'], [404, 'watch_not_found'],
+  ])('a %i %s means the screen was out of date', (status, code) => {
+    expect(isOutOfDate(new ApiError(status, code))).toBe(true);
+  });
+
+  it.each([
+    [404, 'thing_not_found'], [404, 'group_not_found'], [422, 'invalid_thing'],
+    [422, 'invalid_kind'], [423, 'read_only_mode'], [403, 'forbidden'], [500, 'unknown_error'],
+  ])('a %i %s does not', (status, code) => {
+    expect(isOutOfDate(new ApiError(status, code))).toBe(false);
+  });
+
+  it('nothing that is not an API answer does (no connection, a bug)', () => {
+    expect(isOutOfDate(new Error('already_watching'))).toBe(false);
+    expect(isOutOfDate({ code: 'watch_not_found' })).toBe(false);
+    expect(isOutOfDate('already_watching')).toBe(false);
+    expect(isOutOfDate(undefined)).toBe(false);
   });
 });
 

@@ -2,8 +2,8 @@
  * Watches — the pure rules the watch screens share: what each kind of thing is
  * called, which events a watch on it can name (the portal side of
  * api/src/serversherpa/notifications/watches.py `kinds_for`), how a watch's
- * events read in a list, and what a failed watch call says. The calls
- * themselves are in lib/api.ts.
+ * events read in a list, what a failed watch call says, and which failures mean
+ * a screen was out of date. The calls themselves are in lib/api.ts.
  */
 
 import { ApiError, type NotificationKindSetting, type WatchTarget } from './api';
@@ -13,6 +13,7 @@ export const THING_LABELS: Record<WatchTarget, string> = {
   initiative: 'Initiative',
   site: 'Site',
   truck: 'Truck',
+  device: 'Device',
   everything: 'Everything',
 };
 
@@ -44,4 +45,14 @@ export function watchErrorMessage(err: unknown): string {
   if (err.code === 'already_watching') return "You're already watching this.";
   if (err.code === 'read_only_mode' && err.message) return err.message;
   return `Request failed (${err.code}).`;
+}
+
+const OUT_OF_DATE = new Set(['already_watching', 'watch_not_found']);
+
+/** Whether a failed watch call means the screen was out of date: the person already
+ *  watches the thing (made elsewhere: `already_watching`), or the watch they meant to
+ *  stop is already gone (`watch_not_found`). The screen reads its watches again and
+ *  shows what is true now, with nothing to report. */
+export function isOutOfDate(err: unknown): boolean {
+  return err instanceof ApiError && OUT_OF_DATE.has(err.code);
 }

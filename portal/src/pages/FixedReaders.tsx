@@ -7,13 +7,18 @@
  *  (usePersistentListState) + CSV export + virtualized rows.
  *
  *  Readers self-register via the device agent — there is no create flow
- *  here yet, hence the disabled "Register reader" affordance. Row action
- *  is Delete only, gated on can('scanning_hardware', 'delete'); unlike
- *  Routers there is no row expansion — the trailing track is a single
- *  90px Delete cell, no chevron. */
+ *  here yet, hence the disabled "Register reader" affordance. Row actions
+ *  live behind the shared RowActionsMenu, as on Routers: Watch / Stop watching
+ *  for everyone who can open the list (every fixed reader is watchable), then
+ *  Delete, gated on can('scanning_hardware', 'delete'). Unlike Routers there
+ *  is no row expansion — the trailing track is a single 90px actions cell,
+ *  no chevron. ?focus=<id> (the Device offline notification's link) scrolls
+ *  to that reader and marks its row (`open`, the highlighted row; with no
+ *  expansion that is all it does). */
 
 import { compareValues, naturalCompare } from '../lib/naturalSort';
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import {
@@ -34,6 +39,8 @@ import {
   visibleColumnsFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
+import { RowActionsMenu, type RowAction } from '../components/hardware/RowActionsMenu';
+import { useDeviceWatches } from '../components/hardware/useDeviceWatches';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';  /* .set-note */
@@ -91,11 +98,15 @@ export default function FixedReaders() {
   const { can, preferences } = useAuth();
   const canDelete = can('scanning_hardware', 'delete');
   const listGridScale = listScale(preferences?.list_size);
+  const { watching, toggle, busy } = useDeviceWatches();
 
   const [devices, setDevices] = useState<DeviceItem[] | null>(null);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [facets, setFacets] = useState<FacetState>({});
+  const [searchParams] = useSearchParams();
+  const focusId = searchParams.get('focus');
+  const scrolledRef = useRef<string | null>(null);
 
   const {
     visibleCols, setVisibleCols,
@@ -118,6 +129,18 @@ export default function FixedReaders() {
   };
 
   useEffect(() => { void load(); }, []);
+
+  // The Device offline notification links here with ?focus=<id>: bring that row into
+  // view once the list has it. The row is marked by the param itself (see below), and
+  // the scroll happens once, so a later reload does not pull the list back to it.
+  useEffect(() => {
+    if (!focusId || scrolledRef.current === focusId) return;
+    if (!devices?.some((d) => d.id === focusId)) return;
+    scrolledRef.current = focusId;
+    const esc = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(focusId) : focusId;
+    document.querySelector(`[data-device-id="${esc}"]`)
+      ?.scrollIntoView?.({ block: 'center' });
+  }, [focusId, devices]);
 
   const searchText = (d: DeviceItem) => deviceSearchText(d).toLowerCase();
   const haystack = useSearchHaystacks(devices, searchText);
@@ -191,6 +214,15 @@ export default function FixedReaders() {
       setError(msgFor(err));
     }
   };
+
+  const actionsFor = (d: DeviceItem): RowAction[] => [
+    {
+      key: 'watch', label: watching(d.id) ? 'Stop watching' : 'Watch',
+      disabled: busy(d.id), onSelect: () => void toggle(d.id),
+    },
+    ...(canDelete
+      ? [{ key: 'delete', label: 'Delete', destructive: true, onSelect: () => void remove(d) }] : []),
+  ];
 
   const cellFor = (d: DeviceItem, key: string) => {
     switch (key) {
@@ -303,18 +335,14 @@ export default function FixedReaders() {
 
           <VirtualRows rows={visible}
             renderRow={(d, vp) => (
-              <div key={d.id} className="dir-row" {...vp} style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+              <div key={d.id} data-device-id={d.id} className={`dir-row${d.id === focusId ? ' open' : ''}`}
+                   {...vp} style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
                 <div className="row-main" style={rowStyle}>
                   {shownCols.map((c) => (
                     <div className="cell" key={c.key}>{cellFor(d, c.key)}</div>
                   ))}
                   <div className="cell" style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                    {canDelete && (
-                      <button className="mini-btn danger"
-                              onClick={(e) => { e.stopPropagation(); void remove(d); }}>
-                        Delete
-                      </button>
-                    )}
+                    <RowActionsMenu actions={actionsFor(d)} />
                   </div>
                 </div>
               </div>
