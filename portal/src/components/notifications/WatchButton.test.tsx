@@ -5,6 +5,9 @@
  * does not count), renders nothing until that is known, and toggles their own watch.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -91,6 +94,36 @@ it('is the house ghost button with the eye, "Watch" and not pressed, when the pe
   expect(watch.disabled).toBe(false);
   expect(watch.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
   expect(watch.textContent).toBe('Watch');
+});
+
+/** The declarations of the rule in styles/`file` (comments left out) whose selector list holds
+ *  `selector`, by property. */
+function declarationsOf(file: string, selector: string): Record<string, string> {
+  const css = readFileSync(join(__dirname, '../../styles', file), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const [, selectors, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!selectors.split(',').some((s) => s.trim() === selector)) continue;
+    return Object.fromEntries(
+      body.split(';').map((d) => d.trim()).filter(Boolean)
+        .map((d) => [d.slice(0, d.indexOf(':')).trim(), d.slice(d.indexOf(':') + 1).trim()]));
+  }
+  throw new Error(`${file} has no rule for ${selector}`);
+}
+
+it('is the size of the buttons beside it in a page header: Edit (.btn-solid) and Import assets', () => {
+  // A 34px toolbar ghost would read smaller than its siblings. In the header's action row it takes
+  // the box metrics `.idet-header-actions .mini-btn` (Import assets) is given to match `.btn-solid`.
+  const initiativeAndSite = declarationsOf('notifications.css', '.idet-header-actions .watch-btn');
+  const truck = declarationsOf('notifications.css', '.truck-hero-actions .watch-btn');
+  const importAssets = declarationsOf('initiatives.css', '.idet-header-actions .mini-btn');
+  const edit = declarationsOf('profile.css', '.btn-solid');
+
+  expect(truck).toEqual(initiativeAndSite);
+  expect(initiativeAndSite.height).toBe('auto');
+  expect(importAssets.height).toBe('auto');
+  for (const property of ['padding', 'font-size', 'font-weight']) {
+    expect(initiativeAndSite[property], property).toBe(importAssets[property]);
+    expect(initiativeAndSite[property], property).toBe(edit[property]);
+  }
 });
 
 it('reads "Watching", pressed and amber (.on), when the person already watches it', async () => {
@@ -212,28 +245,140 @@ it('read-only maintenance toasts the error\'s own message', async () => {
   await user.click(await screen.findByRole('button', { name: 'Watch' }));
 
   await waitFor(() => expect(toast).toHaveBeenCalledWith(READ_ONLY_MESSAGE));
+  expect(toast).toHaveBeenCalledTimes(1);
   expect(button('Watch').getAttribute('aria-pressed')).toBe('false');
+  expect(api.getWatchState).toHaveBeenCalledTimes(1);          // only the first read: nothing to correct
 });
 
-it('already_watching toasts that, and leaves the button as it was', async () => {
+it('already_watching reads the state again and shows it, with no toast', async () => {
+  // The watch was made somewhere else after the page loaded: the button said "Watch".
+  api.getWatchState.mockResolvedValueOnce(NOT_WATCHING).mockResolvedValueOnce(WATCHING);
   api.createMyWatch.mockRejectedValue(new ApiError(409, 'already_watching'));
   const user = userEvent.setup();
   render(<WatchButton thing="truck" id={ID} />);
 
   await user.click(await screen.findByRole('button', { name: 'Watch' }));
 
-  await waitFor(() => expect(toast).toHaveBeenCalledWith("You're already watching this."));
-  expect(button('Watch').getAttribute('aria-pressed')).toBe('false');
+  const watching = await screen.findByRole('button', { name: 'Watching' }) as HTMLButtonElement;
+  expect(watching.getAttribute('aria-pressed')).toBe('true');
+  await waitFor(() => expect(watching.disabled).toBe(false));
+  expect(api.getWatchState.mock.calls).toEqual([['truck', ID], ['truck', ID]]);
+  expect(toast).not.toHaveBeenCalled();
+  // and the next click stops that watch, by the id the second read gave
+  await user.click(watching);
+  await waitFor(() => expect(api.deleteMyWatch).toHaveBeenCalledWith(WATCH_ID));
 });
 
-it('any other API error toasts the house fallback with its code', async () => {
+it('watch_not_found reads the state again and shows it, with no toast', async () => {
+  // The watch was ended somewhere else after the page loaded: the button said "Watching".
+  api.getWatchState.mockResolvedValueOnce(WATCHING).mockResolvedValueOnce(NOT_WATCHING);
+  api.deleteMyWatch.mockRejectedValue(new ApiError(404, 'watch_not_found'));
+  const user = userEvent.setup();
+  render(<WatchButton thing="site" id={ID} />);
+
+  await user.click(await screen.findByRole('button', { name: 'Watching' }));
+
+  const watch = await screen.findByRole('button', { name: 'Watch' }) as HTMLButtonElement;
+  expect(watch.getAttribute('aria-pressed')).toBe('false');
+  await waitFor(() => expect(watch.disabled).toBe(false));
+  expect(api.getWatchState.mock.calls).toEqual([['site', ID], ['site', ID]]);
+  expect(toast).not.toHaveBeenCalled();
+});
+
+it('stays disabled while the state is read again, and is enabled when it is shown', async () => {
+  const reread = deferred<WatchState>();
+  api.getWatchState.mockResolvedValueOnce(NOT_WATCHING).mockReturnValueOnce(reread.promise);
+  api.createMyWatch.mockRejectedValue(new ApiError(409, 'already_watching'));
+  const user = userEvent.setup();
+  render(<WatchButton thing="initiative" id={ID} />);
+  const watch = await screen.findByRole('button', { name: 'Watch' }) as HTMLButtonElement;
+
+  await user.click(watch);
+  await waitFor(() => expect(api.getWatchState).toHaveBeenCalledTimes(2));
+
+  expect(watch.disabled).toBe(true);
+  await user.click(watch);
+  expect(api.createMyWatch).toHaveBeenCalledTimes(1);
+  await act(async () => { reread.resolve(WATCHING); });
+  const watching = await screen.findByRole('button', { name: 'Watching' }) as HTMLButtonElement;
+  expect(watching.disabled).toBe(false);
+});
+
+it('a state that cannot be read again toasts the plain sentence and leaves the button as it was', async () => {
+  api.getWatchState.mockResolvedValueOnce(NOT_WATCHING).mockRejectedValueOnce(new Error('Failed to fetch'));
+  api.createMyWatch.mockRejectedValue(new ApiError(409, 'already_watching'));
+  const user = userEvent.setup();
+  render(<WatchButton thing="initiative" id={ID} />);
+
+  await user.click(await screen.findByRole('button', { name: 'Watch' }));
+
+  await waitFor(() => expect(toast).toHaveBeenCalledWith("Couldn't update your watch."));
+  expect(toast).toHaveBeenCalledTimes(1);
+  const watch = button('Watch');
+  expect(watch.getAttribute('aria-pressed')).toBe('false');
+  await waitFor(() => expect(watch.disabled).toBe(false));
+});
+
+it('drops the state it read again when the page has moved to another thing meanwhile', async () => {
+  const reread = deferred<WatchState>();
+  api.getWatchState.mockResolvedValueOnce(NOT_WATCHING).mockReturnValueOnce(reread.promise)
+    .mockResolvedValueOnce(NOT_WATCHING);
+  api.createMyWatch.mockRejectedValue(new ApiError(409, 'already_watching'));
+  const user = userEvent.setup();
+  const { rerender } = render(<WatchButton thing="initiative" id={ID} />);
+  await user.click(await screen.findByRole('button', { name: 'Watch' }));
+  await waitFor(() => expect(api.getWatchState).toHaveBeenCalledTimes(2));
+
+  rerender(<WatchButton thing="initiative" id={OTHER_ID} />);
+  const other = await screen.findByRole('button', { name: 'Watch' }) as HTMLButtonElement;
+  await act(async () => { reread.resolve(WATCHING); });     // the first thing's state, late
+
+  expect(other.getAttribute('aria-pressed')).toBe('false');
+  expect(other.disabled).toBe(false);
+  expect(screen.queryByRole('button', { name: 'Watching' })).toBeNull();
+  expect(toast).not.toHaveBeenCalled();
+});
+
+it('does not read the state of a thing the page has already left when its request is refused', async () => {
+  const pending = deferred<Watch>();
+  api.createMyWatch.mockReturnValue(pending.promise);
+  const user = userEvent.setup();
+  const { rerender } = render(<WatchButton thing="initiative" id={ID} />);
+  await user.click(await screen.findByRole('button', { name: 'Watch' }));
+
+  rerender(<WatchButton thing="initiative" id={OTHER_ID} />);
+  await screen.findByRole('button', { name: 'Watch' });
+  await act(async () => { pending.reject(new ApiError(409, 'already_watching')); });
+
+  // the first thing's read, then the other's: nothing more
+  expect(api.getWatchState.mock.calls).toEqual([['initiative', ID], ['initiative', OTHER_ID]]);
+  expect(toast).not.toHaveBeenCalled();
+});
+
+it('any other API error toasts the plain sentence, not its code', async () => {
   api.createMyWatch.mockRejectedValue(new ApiError(404, 'thing_not_found'));
   const user = userEvent.setup();
   render(<WatchButton thing="site" id={ID} />);
 
   await user.click(await screen.findByRole('button', { name: 'Watch' }));
 
-  await waitFor(() => expect(toast).toHaveBeenCalledWith('Request failed (thing_not_found).'));
+  await waitFor(() => expect(toast).toHaveBeenCalledWith("Couldn't update your watch."));
+  expect(toast).toHaveBeenCalledTimes(1);
+  expect(button('Watch').getAttribute('aria-pressed')).toBe('false');
+  expect(api.getWatchState).toHaveBeenCalledTimes(1);          // not a case for reading the state again
+});
+
+it('a refused delete other than watch_not_found toasts the plain sentence and keeps "Watching"', async () => {
+  api.getWatchState.mockResolvedValue(WATCHING);
+  api.deleteMyWatch.mockRejectedValue(new ApiError(500, 'server_error'));
+  const user = userEvent.setup();
+  render(<WatchButton thing="initiative" id={ID} />);
+
+  await user.click(await screen.findByRole('button', { name: 'Watching' }));
+
+  await waitFor(() => expect(toast).toHaveBeenCalledWith("Couldn't update your watch."));
+  expect(button('Watching').getAttribute('aria-pressed')).toBe('true');
+  expect(api.getWatchState).toHaveBeenCalledTimes(1);
 });
 
 it('reads the state again for another thing, and is gone until that is known', async () => {

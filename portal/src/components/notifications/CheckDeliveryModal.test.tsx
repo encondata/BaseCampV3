@@ -9,6 +9,9 @@
  * type someone can watch for, a Watching row lists the person's watches that
  * would hear it (the thing, its events, whose watch it is). Nothing is sent.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -398,6 +401,28 @@ it('a type someone can watch for lists the watches that would hear it: thing, ev
   const note = within(dialog).getByText(NOTE);
   expect(note.closest('section')?.getAttribute('aria-label')).toBe('Result');
   expect(note.previousElementSibling?.tagName).toBe('DL');
+});
+
+it('the note under the rows adds no margin of its own: the card spaces its children', async () => {
+  const user = userEvent.setup();
+  api.checkDelivery.mockResolvedValue(watchable([
+    { thing: 'initiative', thing_id: 'i1', thing_name: 'Initiative A', kinds: [], via: OWN },
+  ]));
+  const dialog = open();
+  await ask(dialog, user, /^Initiative status changed/);
+  const note = within(dialog).getByText(NOTE);
+
+  // .nm-hint carries a 6px top margin for a hint under a control. Here the card (.rgm-summary) is a
+  // flex column with its own gap, so a margin would double it. jsdom lays nothing out: ask the
+  // cascade of the real stylesheet.
+  const style = document.createElement('style');
+  style.textContent = readFileSync(join(__dirname, '../../styles/notifications.css'), 'utf8');
+  document.head.appendChild(style);
+  try {
+    expect(getComputedStyle(note).marginTop).toBe('0px');
+  } finally {
+    style.remove();
+  }
 });
 
 it('a site or a truck watch reads as its name, and a group watch as the group\'s name', async () => {

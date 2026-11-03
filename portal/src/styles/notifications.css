@@ -15,9 +15,10 @@
    under a category, the schedule rows' wrapping and picker widths, the shaded
    summary line); the System › Notifications › Defaults tab (its one-column
    stack, the foot note and the Save row); the Watch button of the
-   initiative, site and truck pages (its amber "on" state); and the watch
-   lists and the events editor (/me › "What you watch", the group page's
-   "What this group watches" and its Add watch dialog).
+   initiative, site and truck pages (its amber "on" state and its size beside
+   the header's other buttons); and the watch lists and the events editor
+   (/me › "What you watch", the group page's "What this group watches" and
+   its Add watch dialog).
    ============================================================ */
 
 /* ── NotificationModal (components/notifications/NotificationModal.tsx) ──
@@ -203,6 +204,10 @@
 .dlog-check > .nm-hint { margin: 0; }
 .dlog-check-result { transition: opacity 0.15s; }
 .dlog-check-result[aria-busy='true'] { opacity: 0.55; }
+/* The note under the result's rows (the access note under Watching) sits in the result card,
+ * whose children are spaced by its own gap (.rgm-summary, reports.css), so it takes no
+ * margin of its own. */
+.dlog-check-result .rgm-summary > .nm-hint { margin: 0; }
 
 /* The list card and the trail's table scroll sideways only below their
  * floors; then they show the slim themed bar, never the browser's classic
@@ -330,6 +335,17 @@
  * A .btn-ghost in the page header; once the person watches, it turns amber like
  * the wiki's own (.wiki-watch-btn.on). */
 .watch-btn.on { color: var(--amber); border-color: var(--amber); }
+/* In a header's action row it is the same size as its siblings (Edit, Import assets):
+ * a 34px toolbar ghost beside them would read smaller. These are the box metrics of
+ * `.idet-header-actions .mini-btn` (initiatives.css), which is sized to match .btn-solid
+ * (profile.css); the 1px border and corners stay the ghost's own. */
+.idet-header-actions .watch-btn,
+.truck-hero-actions .watch-btn {
+  height: auto;
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 600;
+}
 
 /* ── Watch lists and the events editor ───────────────────────────────────
  * /me › "What you watch" (pages/me/WatchesSection.tsx), a group's "What this

@@ -7,11 +7,12 @@
  * switches and where each comes from, their schedule and whether it is open
  * right now, and whether the type is critical. For a type someone can watch
  * for, a Watching row lists the person's watches that would hear it, a line
- * each (the thing, its events, whose watch it is), under a note that reaching
- * them for a particular thing also depends on their access to it. For a type
- * the account owner always gets, a segmented choice models the owner's own copy
- * or an admin's copy, which stays in the inbox. It asks as soon as both pickers
- * are set and again on every change. Nothing is sent or written.
+ * each (the thing, its events, whose watch it is), and a note under the rows
+ * says that reaching them for a particular thing also depends on their access
+ * to it. For a type the account owner always gets, a segmented choice models
+ * the owner's own copy or an admin's copy, which stays in the inbox. It asks as
+ * soon as both pickers are set and again on every change. Nothing is sent or
+ * written.
  *
  * "Critical type" describes the TYPE (it skips quiet hours, days off and the
  * summary), not this answer: an admin's copy of a security notice is critical

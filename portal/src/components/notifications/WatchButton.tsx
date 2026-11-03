@@ -7,15 +7,27 @@
  *
  * A click stops the watch they have, or starts one on every event that applies
  * to the thing; narrowing its events is done on /me, under "What you watch". The
- * button waits for the answer, and a failed call leaves it as it was, with a toast.
+ * button waits for the answer. A call the server refuses because the watch is
+ * already there or already gone (`already_watching`, `watch_not_found`) means the
+ * button was out of date: it reads the state again and shows the real one, with no
+ * toast. Any other failure leaves the button as it was, with a toast: the server's
+ * own message for read-only maintenance, else "Couldn't update your watch.".
  */
 
 import { useEffect, useRef, useState } from 'react';
 
-import { createMyWatch, deleteMyWatch, getWatchState, type WatchThing } from '../../lib/api';
+import {
+  ApiError, createMyWatch, deleteMyWatch, getWatchState, type WatchThing,
+} from '../../lib/api';
 import { useToast } from '../../lib/notificationsContext';
-import { watchErrorMessage } from '../../lib/watches';
-import '../../styles/notifications.css';  // .watch-btn.on
+import '../../styles/notifications.css';  // .watch-btn.on, and its size in a page header
+
+/** The toast for a failure the person can do nothing about (the wiki's sentence). */
+const FAILED = "Couldn't update your watch.";
+
+/** The answers that mean the button was out of date: the person already watches the
+ *  thing (made elsewhere), or the watch they meant to stop is already gone. */
+const OUT_OF_DATE = new Set(['already_watching', 'watch_not_found']);
 
 interface State {
   watching: boolean;
@@ -58,7 +70,19 @@ export default function WatchButton({ thing, id }: { thing: WatchThing; id: stri
         if (shown.current === target) setState({ watching: true, watchId: watch.id });
       }
     } catch (err) {
-      toast(watchErrorMessage(err));
+      if (err instanceof ApiError && OUT_OF_DATE.has(err.code)) {
+        // Made or ended somewhere else: show what is true now, and say nothing.
+        try {
+          if (shown.current === target) {
+            const now = await getWatchState(thing, id);
+            if (shown.current === target) setState({ watching: now.watching, watchId: now.watch_id });
+          }
+        } catch {
+          toast(FAILED);     // it can't be told which way it is: leave the button, and say so
+        }
+      } else {
+        toast(err instanceof ApiError && err.code === 'read_only_mode' ? err.message : FAILED);
+      }
     } finally {
       if (shown.current === target) setBusy(false);
     }
