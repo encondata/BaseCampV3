@@ -542,8 +542,8 @@ async def test_kinds_report_critical_and_locked(client, db):
         ("truck_status_changed", True, True, ["truck", "initiative", "site"]),
         ("device_offline", True, True, ["device", "site", "initiative"]),
     ]
-    # the bulk action notices: their own category, emailed in full, sent to one person and
-    # never watched for
+    # the bulk action notices: their own category, sent to one person and never watched for
+    # (the rows carry no brief flag: a failed notice is title + link only, see the kinds pin)
     by_kind = {k["kind"]: k for k in resp.json()}
     assert by_kind["bulk_action_finished"] == {
         "kind": "bulk_action_finished", "label": "Bulk action finished",

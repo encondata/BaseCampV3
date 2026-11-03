@@ -9,8 +9,9 @@ Nothing is sent for:
 - a job whose `created_by` is null: there is nobody to tell;
 - a job that was canceled: the person did that themselves.
 
-A From-To import that finishes with row errors is still "finished": the rows it could not
-take are listed on the initiative's assets.
+A From-To import that leaves rows out (rows with an error, rows whose make and model needs
+review) is still "finished", and its line says how many: nothing on the initiative lists the
+rows that were not imported, and the import page keeps no earlier results.
 
 Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (section 5)"""
 
@@ -45,29 +46,41 @@ FAILED_LINKS: dict[str, str] = {
 }
 
 # The only two statuses that end in a notice.
-ANNOUNCED = ("completed", "failed")
+NOTIFIED_STATUSES = ("completed", "failed")
 
 
 @dataclass(frozen=True)
 class JobDone:
     """How one job ended, as the worker read it back from the row once its final state was
-    committed. `initiative_id` is the row's: a move setup sets it only at the very end."""
+    committed. `initiative_id` is the row's: a move setup sets it only at the very end.
+    `rows_left_out` is a From-To import's count of rows it read but did not import
+    (`count_left_out`); the other jobs leave it 0."""
     job_id: uuid.UUID
     kind: str
     phase: str
     status: str
     created_by: uuid.UUID | None
     initiative_id: uuid.UUID | None
+    rows_left_out: int = 0
 
 
 def writes_data(kind: str, phase: str) -> bool:
     """Whether a job of this kind, claimed in this phase, changes data (and so ends in a
-    notice) rather than only checking a file. A bulk update and a move setup always do (their
-    previews run in the API request and are never claimed); a From-To import only in its
-    commit phase, which also leaves the move setup wizard's file checks out."""
-    if kind == "move_assets":
-        return phase == "commit"
-    return kind in ("asset_bulk_update", "move_setup")
+    notice) rather than only checking a file. Every job that writes data is claimed in phase
+    "commit": a bulk update's preview and a move setup's draft are never claimed until they are
+    queued as a commit, and a From-To import's validate pass (also the move setup wizard's file
+    check) writes nothing."""
+    return kind in ACTIONS and phase == "commit"
+
+
+def count_left_out(summary: dict | None) -> int:
+    """How many rows of a From-To import's file were read but not imported, from the summary
+    the worker stored on the job: the rows with an error plus the rows whose make and model
+    needs review. `ImportJob.error_count` holds only the first kind, so it is not the number
+    on its own. The import page calls these rows "skipped", and a move setup records them as
+    `assets_left_out`."""
+    summary = summary or {}
+    return int(summary.get("errors") or 0) + int(summary.get("review") or 0)
 
 
 def _link(template: str, initiative_id: uuid.UUID | None) -> str | None:
@@ -78,14 +91,24 @@ def _link(template: str, initiative_id: uuid.UUID | None) -> str | None:
     return None if initiative_id is None else template.format(id=initiative_id)
 
 
+def _finished_line(done: JobDone, initiative: Initiative | None) -> str:
+    """The initiative's name, and for a From-To import that left rows out, how many:
+    "Move 1 · 3 rows not imported". Plain name when nothing was left out."""
+    parts = [] if initiative is None else [initiative.name]
+    if done.kind == "move_assets" and done.rows_left_out > 0:
+        parts.append(f"{done.rows_left_out} row{'' if done.rows_left_out == 1 else 's'} "
+                     "not imported")
+    return " · ".join(parts)
+
+
 async def notify_job_done(db: AsyncSession, done: JobDone) -> None:
     """Tell the job's owner it finished or failed. Adds to `db` and never commits, like
     notify(): the caller commits.
 
-    Finished carries the initiative's name; failed is title and link only, since the error
-    behind it is internal."""
+    Finished carries the initiative's name (and a From-To import's rows left out); failed is
+    title and link only, since the error behind it is internal."""
     if (not writes_data(done.kind, done.phase) or done.created_by is None
-            or done.status not in ANNOUNCED):
+            or done.status not in NOTIFIED_STATUSES):
         return
     action = ACTIONS[done.kind]
     payload = {"job_id": str(done.job_id), "job_kind": done.kind}
@@ -93,7 +116,7 @@ async def notify_job_done(db: AsyncSession, done: JobDone) -> None:
         initiative = (await db.get(Initiative, done.initiative_id)
                       if done.initiative_id is not None else None)
         await notify(db, done.created_by, "bulk_action_finished", f"{action} finished",
-                     body=initiative.name if initiative is not None else "",
+                     body=_finished_line(done, initiative),
                      link=_link(FINISHED_LINKS[done.kind], done.initiative_id),
                      payload=payload)
     else:

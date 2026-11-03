@@ -11,7 +11,9 @@ update previews (jobs.sweep_stale).
 
 When a job that writes data ends, its owner is told (imports/notices.py). That happens last,
 in a session of its own, after the job's final state is committed, so a notice that cannot be
-written never changes how the job ended.
+written never changes how the job ended. A worker that stalls past `requeue_stale`'s window
+while another finishes the same job can notify twice (the re-run converges on the same data;
+the notice is its visible side).
 
 Shutdown story: no signal handling on purpose. Commit-phase work is
 committed every BATCH_SIZE rows and the update path is idempotent, so
@@ -35,7 +37,7 @@ from serversherpa.db.models import ImportJob
 from serversherpa.imports import move_setup
 from serversherpa.imports.jobs import claim_next, requeue_stale, sweep_stale
 from serversherpa.imports.move_assets import parse_row, run_import
-from serversherpa.imports.notices import JobDone, notify_job_done
+from serversherpa.imports.notices import JobDone, count_left_out, notify_job_done, writes_data
 from serversherpa.imports.parsing import ImportFileError, parse_upload
 from serversherpa.services.storage import get_object
 
@@ -176,22 +178,32 @@ async def _tell_the_owner(sessionmaker, job_id: uuid.UUID, kind: str, phase: str
                           created_by: uuid.UUID | None) -> None:
     """Best-effort, and always last: tell the person who started the job how it ended. The
     job's final state is already committed, so a failure here only costs the notice. It is
-    logged once, by the class of the error and never its text (a database error can carry
-    values), and the worker carries on."""
+    logged once, by the class of the error and where it happened, never its text (a database
+    error can carry values), and the worker carries on.
+
+    A job with nothing to say (a validate pass, or one nobody started) costs no session and
+    no read; notify_job_done makes the same checks."""
+    if created_by is None or not writes_data(kind, phase):
+        return
     try:
         async with sessionmaker() as nb:
             final = (await nb.execute(
-                select(ImportJob.status, ImportJob.initiative_id)
+                select(ImportJob.status, ImportJob.initiative_id, ImportJob.results["summary"])
                 .where(ImportJob.id == job_id))).first()
             if final is None:              # a move's jobs go with the move
                 return
-            status, initiative_id = final  # a move setup knows its move only at the end
-            await notify_job_done(
-                nb, JobDone(job_id, kind, phase, status, created_by, initiative_id))
+            # a move setup knows its move only at the end
+            status, initiative_id, summary = final
+            await notify_job_done(nb, JobDone(
+                job_id=job_id, kind=kind, phase=phase, status=status, created_by=created_by,
+                initiative_id=initiative_id, rows_left_out=count_left_out(summary)))
             await nb.commit()
-    except Exception as exc:  # noqa: BLE001 — the notice must never stop the worker
+    except Exception as exc:  # the notice must never stop the worker
+        # the traceback without the exception: the class is in the message, and its text can
+        # echo values (a database error carries the row it choked on)
         logger.warning("could not tell the owner how job %s ended (%s)",
-                       job_id, type(exc).__name__)
+                       job_id, type(exc).__name__,
+                       exc_info=(type(exc), None, exc.__traceback__))
 
 
 async def run_once(sessionmaker) -> bool:

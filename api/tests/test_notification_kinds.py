@@ -70,6 +70,7 @@ def test_flags_match_the_spec():
         "router_approval": (True, True, False),
         "report_failed": (True, True, False),
         "labels_failed": (True, True, False),
+        "bulk_action_failed": (True, True, False),
         "password_reset_request": (False, False, False),
         "learning_quiz_locked": (False, False, False),
         "password_expiring": (False, True, True),
@@ -79,11 +80,12 @@ def test_flags_match_the_spec():
     for kind in ("initiative_status_changed", "truck_status_changed", "device_offline"):
         assert (KINDS[kind].brief, KINDS[kind].email, KINDS[kind].owner_always) == (
             False, True, False), kind
-    # so are the bulk action notices (the failed one carries no body, so there is nothing
-    # for a brief email to leave out)
-    for kind in ("bulk_action_finished", "bulk_action_failed"):
-        assert (KINDS[kind].brief, KINDS[kind].email, KINDS[kind].owner_always) == (
-            False, True, False), kind
+    # so is the bulk action finished notice; the failed one is title + link only, like the
+    # other failure kinds (the error text behind it is internal), and the registry enforces it
+    assert (KINDS["bulk_action_finished"].brief, KINDS["bulk_action_finished"].email,
+            KINDS["bulk_action_finished"].owner_always) == (False, True, False)
+    assert (KINDS["bulk_action_failed"].brief, KINDS["bulk_action_failed"].email,
+            KINDS["bulk_action_failed"].owner_always) == (True, True, False)
     # the urgent flag is gone: critical is company-set (notifications/company.py)
     assert not hasattr(default, "urgent")
 

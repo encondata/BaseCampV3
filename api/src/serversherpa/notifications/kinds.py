@@ -79,9 +79,10 @@ KINDS: dict[str, KindInfo] = {
     # Sent with notify() by the import worker (imports/notices.py) to the person who started
     # a job that wrote data, when it finishes or fails. Not announced and not watchable: it
     # reaches that one person, and the category's switches are the way out. The failed notice
-    # is title + link only, since the error text behind it is internal.
+    # is title + link only (brief, enforced here like the other failure kinds), since the
+    # error text behind it is internal.
     "bulk_action_finished": KindInfo("bulk_actions", "Bulk action finished"),
-    "bulk_action_failed": KindInfo("bulk_actions", "Bulk action failed"),
+    "bulk_action_failed": KindInfo("bulk_actions", "Bulk action failed", brief=True),
     "password_expiring": KindInfo("security", "Password expiring", owner_always=True),
     "totp_enrolled": KindInfo("security", "Two-factor authentication enrolled",
                                brief=True, owner_always=True),
