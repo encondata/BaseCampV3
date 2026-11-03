@@ -51,7 +51,7 @@ const kind = (
 const SETTINGS: NotificationSettings = {
   defaults: {
     approvals: ON, reports: { inbox: true, email: false }, wiki: ON, learning: ON,
-    initiatives: ON, trucks: ON, devices: ON, bulk_actions: ON,
+    initiatives: ON, trucks: ON, devices: ON, status_rules: ON, bulk_actions: ON,
   },
   critical_kinds: ['report_failed'],
   kinds: [

@@ -221,6 +221,59 @@ it('Everything lists Device offline after Trucks, in the categories\' own order'
   expect(names()).toEqual(['Initiative status changed', 'Truck status changed', 'Device offline']);
 });
 
+// The registry's Status rule matched: it reaches initiatives and sites, and an Everything watch may not name it.
+const STATUS_RULE_MATCHED = kind('status_rule_matched', 'Status rule matched', 'status_rules',
+  { watchable: true, everywhere: false, reaches: ['initiative', 'site'] });
+
+it('an initiative and a site list Status rule matched after Devices, under the Status rules label', () => {
+  const kinds = [STATUS_RULE_MATCHED, ...KINDS, DEVICE_OFFLINE];
+  const { view } = setup({ thing: 'site', all: false, kinds });
+
+  const groups = screen.getAllByRole('group');
+  expect(groups.map((g) => g.getAttribute('aria-label')))
+    .toEqual(['Initiatives', 'Trucks', 'Devices', 'Status rules']);
+  expect(within(groups[3]).getAllByRole('checkbox').map((c) => c.getAttribute('aria-label')))
+    .toEqual(['Status rule matched']);
+  expect(within(groups[3]).getByText('Status rules').closest('.modal-section')).not.toBeNull();
+
+  view.unmount();
+  setup({ thing: 'initiative', all: false, kinds });
+  expect(screen.getAllByRole('group').map((g) => g.getAttribute('aria-label')))
+    .toEqual(['Initiatives', 'Trucks', 'Devices', 'Status rules']);
+  expect(checkbox('Status rule matched').checked).toBe(false);
+});
+
+it('a truck, a device and Everything never list Status rule matched', () => {
+  const kinds = [...KINDS, DEVICE_OFFLINE, STATUS_RULE_MATCHED];
+  const { view } = setup({ thing: 'truck', all: false, kinds });
+  expect(screen.queryByRole('checkbox', { name: 'Status rule matched' })).toBeNull();
+
+  view.unmount();
+  const second = setup({ thing: 'device', all: false, kinds });
+  expect(screen.queryByRole('checkbox', { name: 'Status rule matched' })).toBeNull();
+
+  // Everything names only the events marked everywhere; a rule's notice is about its own initiative.
+  second.view.unmount();
+  setup({ thing: 'everything', all: false, kinds });
+  expect(screen.queryByRole('checkbox', { name: 'Status rule matched' })).toBeNull();
+  expect(screen.getAllByRole('group').map((g) => g.getAttribute('aria-label')))
+    .toEqual(['Initiatives', 'Trucks', 'Devices']);
+});
+
+it('picking Status rule matched hands it over with the picks', async () => {
+  const user = userEvent.setup();
+  const { onChange } = setup({
+    thing: 'initiative', all: false, picked: ['initiative_status_changed'],
+    kinds: [...KINDS, STATUS_RULE_MATCHED],
+  });
+
+  await user.click(checkbox('Status rule matched'));
+
+  expect(onChange).toHaveBeenCalledWith({
+    all: false, picked: ['initiative_status_changed', 'status_rule_matched'],
+  });
+});
+
 it('uses house controls only: every checkbox is a Switch, and there is no select', () => {
   const { view } = setup({ all: false, picked: ['kind_a'] });
 

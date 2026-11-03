@@ -3,7 +3,7 @@ import { expect, it } from 'vitest';
 import * as kinds from './notificationKinds';
 import { NOTIFICATION_CATEGORIES, categoryLabel } from './notificationKinds';
 
-it('lists the nine categories in spec order with their labels', () => {
+it('lists the ten categories in spec order with their labels', () => {
   expect(NOTIFICATION_CATEGORIES.map(({ key, label }) => ({ key, label }))).toEqual([
     { key: 'approvals', label: 'Approvals & requests' },
     { key: 'reports', label: 'Reports & labels' },
@@ -12,6 +12,7 @@ it('lists the nine categories in spec order with their labels', () => {
     { key: 'initiatives', label: 'Initiatives' },
     { key: 'trucks', label: 'Trucks' },
     { key: 'devices', label: 'Devices' },
+    { key: 'status_rules', label: 'Status rules' },
     { key: 'bulk_actions', label: 'Bulk actions' },
     { key: 'security', label: 'Account security' },
   ]);
@@ -34,6 +35,7 @@ it('maps a key to its label, and an unknown key to itself', () => {
   expect(categoryLabel('initiatives')).toBe('Initiatives');
   expect(categoryLabel('trucks')).toBe('Trucks');
   expect(categoryLabel('devices')).toBe('Devices');
+  expect(categoryLabel('status_rules')).toBe('Status rules');
   expect(categoryLabel('bulk_actions')).toBe('Bulk actions');
   expect(categoryLabel('bogus')).toBe('bogus');
 });
