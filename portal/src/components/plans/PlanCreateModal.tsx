@@ -8,8 +8,9 @@
  * The template picker (a ComboBox of GET /plan-templates, each with its
  * task count and description) is required when the dialog opens from
  * "From a template" (Create stays off until the list is in, and a failed
- * load offers Try again) and optional from "Blank plan", where a list
- * that can't be loaded never stands in the way. From a template the plan
+ * load says “Couldn’t load templates.” beside Try again) and optional
+ * from "Blank plan", where a list that can't be loaded never stands in
+ * the way. From a template the plan
  * gets the template's tasks, links, settings and working week and hours,
  * every date moved to the project start, and the system calendar's
  * holidays; without one it is empty, on the system calendar.
@@ -27,7 +28,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { longDateOf } from '../../lib/format';
 import { useToast } from '../../lib/notificationsContext';
 import { listPlanTemplates, type PlanTemplate } from '../../lib/plans/api';
-import { planErrorDetail, planErrorText, isPlanChanged } from '../../lib/plans/errors';
+import { TEMPLATES_UNLOADED, planErrorDetail, planErrorText, isPlanChanged } from '../../lib/plans/errors';
 import { fromDateInput } from '../../lib/plans/floatingTime';
 import ComboBox, { type ComboOption } from '../ComboBox';
 import PlanModal from './PlanModal';
@@ -76,7 +77,7 @@ function optionOf(t: PlanTemplate): ComboOption {
   return { value: t.id, label: t.name, sub: t.description ? `${tasks} · ${t.description}` : tasks };
 }
 
-type Templates = { state: 'loading' } | { state: 'error'; message: string } | { state: 'ready'; list: PlanTemplate[] };
+type Templates = { state: 'loading' } | { state: 'error' } | { state: 'ready'; list: PlanTemplate[] };
 
 export default function PlanCreateModal({ ctl, initiative, fromTemplate = false, onClose }: {
   ctl: PlanController;
@@ -104,8 +105,8 @@ export default function PlanCreateModal({ ctl, initiative, fromTemplate = false,
     try {
       const list = await listPlanTemplates();
       if (alive.current) setTemplates({ state: 'ready', list });
-    } catch (err) {
-      if (alive.current) setTemplates({ state: 'error', message: planErrorText(err) });
+    } catch {
+      if (alive.current) setTemplates({ state: 'error' });
     }
   }, []);
   useEffect(() => { void loadTemplates(); }, [loadTemplates]);
@@ -196,7 +197,7 @@ export default function PlanCreateModal({ ctl, initiative, fromTemplate = false,
         )}
         {fromTemplate && templates.state === 'error' && (
           <div className="full pln-load-problem">
-            <p className="pf-error" role="alert">{templates.message}</p>
+            <p className="pf-error" role="alert">{TEMPLATES_UNLOADED}</p>
             <button type="button" className="mini-btn" onClick={() => void loadTemplates()}>Try again</button>
           </div>
         )}

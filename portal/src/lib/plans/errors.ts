@@ -68,6 +68,10 @@ export const PLAN_ERRORS: Record<string, string> = {
   constraint_cleared: 'The task became a summary task, so its constraint went back to As Soon As Possible.',
 };
 
+/** The template list failed to load (Templates…, New plan from a
+ *  template): said beside its Try again button, whatever the reason. */
+export const TEMPLATES_UNLOADED = 'Couldn’t load templates.';
+
 /** The fields a `bad_field` names, in MS Project's words. */
 const FIELD_LABELS: Record<string, string> = {
   name: 'Task Name',

@@ -15,7 +15,7 @@ from serversherpa.plans.models import ProjectPlan
 from tests.test_plans_api import dt
 from tests.test_plans_links import _assign
 from tests.test_plans_ops import _add, _by_id, _get, _ok, _ops
-from tests.test_plans_reminders import MOVE, _crew, _inbox, _mail, _world
+from tests.test_plans_reminders import MOVE, _crew, _inbox, _mail, _night_week, _world
 
 
 async def _assigned(db):
@@ -71,6 +71,21 @@ async def test_assignment_notice(client, db, monkeypatch):
     await _ok(client, hdrs, plan, body["inverse"])
     rows, mails = await _assigned(db)
     assert len(rows) == 2 and len(mails) == 2
+
+
+async def test_a_finish_at_midnight_is_labeled_the_day_its_work_ends(client, db, monkeypatch):
+    """A night task ending Thursday at 24:00 (stored Fri 00:00) reads
+    "Finish Thu", as the Calendar, Board and Timeline show it; a deadline
+    at 00:00 is a moment and keeps its own day."""
+    monkeypatch.setattr(notices, "plan_now", lambda zone: dt("2026-11-02 09:00"))
+    hdrs, move, plan = await _world(client, db)
+    worker = await _crew(db, move, "Wanda", account=True)
+    await _night_week(client, hdrs, plan)
+    ids = await _add(client, hdrs, plan, "Night move", duration="4d", deadline="2026-11-06T00:00")
+    await _ok(client, hdrs, plan, [_assign(ids["Night move"], ("person", worker.id))])
+    assert _by_id(await _get(client, hdrs, plan))[ids["Night move"]]["finish"] == "2026-11-06T00:00"
+    [_row], [mail] = await _assigned(db)
+    assert "Start Mon, Nov 2 · Finish Thu, Nov 5 · Deadline Fri, Nov 6" in mail.text_body
 
 
 async def test_notify_on_assign_off(client, db):

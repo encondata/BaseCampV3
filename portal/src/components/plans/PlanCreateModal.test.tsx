@@ -92,7 +92,7 @@ describe('from a template', () => {
     api.listPlanTemplates.mockRejectedValueOnce(new ApiError(500, 'unknown_error', { code: 'unknown_error' }));
     const { user, create } = open(true);
     const tryAgain = await screen.findByRole('button', { name: 'Try again' });
-    expect(screen.getByText('Something went wrong. Try again.')).not.toBeNull();
+    expect(screen.getByRole('alert').textContent).toBe('Couldn’t load templates.');
     const createButton = screen.getByRole('button', { name: 'Create plan' }) as HTMLButtonElement;
     expect(createButton.disabled).toBe(true);
     await user.click(tryAgain);

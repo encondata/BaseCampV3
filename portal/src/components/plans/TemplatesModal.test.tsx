@@ -93,11 +93,12 @@ describe('the list', () => {
     expect(screen.getByText(/Save as template…/)).not.toBeNull();
   });
 
-  it('a load failure shows the reason and Try again', async () => {
+  it('a load failure says the templates couldn’t be loaded, beside Try again', async () => {
     api.listPlanTemplates.mockRejectedValueOnce(new ApiError(403, 'forbidden', { code: 'forbidden' }));
     const onClose = vi.fn();
     render(<TemplatesModal permissions={ALL} onClose={onClose} />);
-    expect(await screen.findByText(PLAN_ERRORS.forbidden)).not.toBeNull();
+    expect((await screen.findByRole('alert')).textContent).toBe('Couldn’t load templates.');
+    expect(screen.queryByText(PLAN_ERRORS.forbidden)).toBeNull();
     api.listPlanTemplates.mockResolvedValueOnce([HALL]);
     await userEvent.setup().click(screen.getByRole('button', { name: 'Try again' }));
     expect(await screen.findByText('Hall move')).not.toBeNull();

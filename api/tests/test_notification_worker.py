@@ -151,7 +151,30 @@ async def test_learning_sweep_errors_do_not_kill_the_loop(db, monkeypatch, caplo
     assert caplog.text.count("could not run the learning sweep") == 1   # once per outage
 
 
+async def _until(check, seconds: float = 30) -> None:
+    """Wait for `check()` to hold, up to a generous deadline: never a fixed
+    sleep, so a loaded machine waits longer instead of failing."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + seconds
+    while not check():
+        assert loop.time() < deadline, "the worker loop never got there"
+        await asyncio.sleep(0.01)
+
+
+def _count_loops(monkeypatch, worker_mod) -> list:
+    """The worker loop's passes, counted: each delivers the outbox once."""
+    passes = []
+
+    async def deliver(maker):
+        passes.append(1)
+
+    monkeypatch.setattr(worker_mod, "deliver_once", deliver)
+    return passes
+
+
 async def test_run_forever_runs_the_plan_reminder_sweep(db, monkeypatch):
+    """Once on the first pass, then not again for a minute: counted in the
+    loop's own passes, not timed."""
     from serversherpa.notifications import worker as worker_mod
 
     calls = []
@@ -161,14 +184,15 @@ async def test_run_forever_runs_the_plan_reminder_sweep(db, monkeypatch):
         return {"reminders": 0, "digests": 0, "errors": 0}
 
     monkeypatch.setattr(worker_mod, "run_plan_reminders_once", fake_plans)
+    passes = _count_loops(monkeypatch, worker_mod)
     assert worker_mod.PLANS_INTERVAL_SECONDS == 60
-    task = asyncio.create_task(run_forever(poll_seconds=0.05))
+    task = asyncio.create_task(run_forever(poll_seconds=0.01))
     try:
-        await asyncio.sleep(0.3)
+        await _until(lambda: len(passes) >= 4)
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-    assert len(calls) == 1   # once on the first loop; the next is a minute away
+    assert len(calls) == 1   # once on the first pass; the next is a minute away
 
 
 async def test_plan_sweep_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
@@ -183,14 +207,13 @@ async def test_plan_sweep_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
     monkeypatch.setattr(worker_mod, "run_plan_reminders_once", boom)
     monkeypatch.setattr(worker_mod, "PLANS_INTERVAL_SECONDS", 0)
     caplog.set_level(logging.WARNING, logger="serversherpa.notifications.worker")
-    task = asyncio.create_task(run_forever(poll_seconds=0.05))
+    task = asyncio.create_task(run_forever(poll_seconds=0.01))
     try:
-        await asyncio.sleep(0.3)
+        await _until(lambda: len(calls) >= 3)
         assert not task.done()
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-    assert len(calls) >= 2
     assert caplog.text.count("could not run the plan reminder sweep") == 1   # once per outage
 
 

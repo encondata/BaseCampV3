@@ -519,7 +519,9 @@ def _cut(text: str) -> str:
 
 def _shared_strings(pkg: _Package, member: str | None) -> list[str]:
     """The shared strings table: each entry's text (its runs joined, its
-    phonetic hints left out, cut where an Excel cell ends)."""
+    phonetic hints left out, cut where an Excel cell ends). A blank entry
+    is held as "": a blank cell is skipped, never charged, so each cell
+    naming it must cost nothing to tell blank, not a scan of its spaces."""
     out: list[str] = []
     if member is None:
         return out
@@ -530,7 +532,8 @@ def _shared_strings(pkg: _Package, member: str | None) -> list[str]:
             if event == "start":
                 runs = _Runs()
             elif runs is not None:
-                out.append(runs.text())
+                text = runs.text()
+                out.append(text if text.strip() else "")
                 runs = None
         elif (event == "end" and runs is not None and path[-1] == "t"
               and (depth == 3 or (depth == 4 and path[2] == "r"))):
@@ -609,8 +612,7 @@ class _SheetReader:
     def no_header(self) -> str:
         return "The first sheet needs a header row with a Task Name (or Name) column."
 
-    def rows(self, keep: Callable[[int, object], bool]
-             ) -> Iterator[tuple[int, dict[int, object]]]:
+    def rows(self, keep: _Keep) -> Iterator[tuple[int, dict[int, object]]]:
         number = column = 0
         cells: dict[int, object] = {}
         kind = style = value = None
@@ -637,9 +639,15 @@ class _SheetReader:
                 decoded = self._decode(kind, style, value, inline)
                 if not _blank(decoded):
                     self.any_value = True
+                    # a shared string is stored once but is a whole cell of
+                    # text each time it is named: charged when a cell keeps
+                    # it, and before that while the header row is looked
+                    # for, when every cell is read as a possible column name
+                    charged = kind == "s" and keep.looking
+                    if charged:
+                        self.pkg.charge(len(decoded))
                     if keep(column, decoded):
-                        if kind == "s":
-                            # stored once, a whole cell of text each time it is named
+                        if kind == "s" and not charged:
                             self.pkg.charge(len(decoded))
                         cells[column] = decoded
                 inline = None
@@ -700,8 +708,7 @@ class _CsvReader:
             return NOT_COMMAS
         return "This CSV file needs a header row with a Task Name (or Name) column."
 
-    def rows(self, keep: Callable[[int, object], bool]
-             ) -> Iterator[tuple[int, dict[int, object]]]:
+    def rows(self, keep: _Keep) -> Iterator[tuple[int, dict[int, object]]]:
         reader = csv.reader(io.StringIO(self.text, newline=""))
         try:
             for number, record in enumerate(reader, 1):
@@ -805,6 +812,12 @@ class _Keep:
 
     def __init__(self) -> None:
         self.columns: set[int] | None = None
+
+    @property
+    def looking(self) -> bool:
+        """Still looking for the header row: each cell is read as a
+        possible column name (`_field`)."""
+        return self.columns is None
 
     def __call__(self, column: int, value) -> bool:
         if self.columns is None:

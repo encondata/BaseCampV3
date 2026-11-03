@@ -223,9 +223,13 @@ reminders at the right instant. Default = the initiative's zone
 - **`plan_assignments`** — `task_id` (FK cascade), `person_id` (nullable FK),
   `partner_id` (nullable FK); exactly one set; unique per task+resource.
 - **`plan_reminder_log`** — `task_id` (FK cascade), `person_id`, `stage`
-  (`d<N>` / `due` / `overdue:<YYYY-MM-DD>`), `due_at`, `sent_at`; unique
-  `(task_id, person_id, stage, due_at)`. Keying on `due_at` means moving a due
-  date re-arms its reminders.
+  (`d<N>` / `due` / `overdue` / `overdue:<YYYY-MM-DD>`, and the owner's
+  digest as `owner:<YYYY-MM-DD>`), `due_at`, `sent_at`; unique
+  `(task_id, person_id, stage, due_at)`. `due_at` holds the task's due
+  **day** (its plan-local 00:00), not the exact due moment, so a reminder
+  goes once per due day: moving the due date to another day re-arms its
+  reminders, while a new time the same day (or a recalc nudging a finish)
+  re-sends nothing (amendment 2026-11-03, under *Due dates and reminders*).
 - **`plan_templates`** — `id`, `name` (unique, CITEXT), `description`, `data`
   (jsonb: calendar, the settings overrides, tasks and links with times as
   minute offsets from project start), `created_by/at`, `updated_by/at`.
@@ -373,7 +377,13 @@ with the blockers. Both name each task (ID + name + reason
 - The **due moment** of a task = its deadline; when the setting *Remind on
   finish dates when there is no deadline* is on, tasks without a deadline use
   their finish. Default **off** (my call — avoids reminder floods on large
-  plans; due dates stay a deliberate act).
+  plans; due dates stay a deliberate act). The **due day** is a deadline's
+  own day (a deadline is a moment: 00:00 Friday is Friday), or the day a
+  finish's work ends — the day of its last working minute, the one
+  finish-day rule the Calendar, Board and Timeline use (`floating.last_day`,
+  the portal's `lastDay`): a night task ending at 24:00 Thursday is stored
+  as Friday 00:00 and is due Thursday. The assignment notice's Finish label
+  reads the same day.
 - Reminder **stages**, sent at the plan-local *send time*:
   `d<N>` for each offset N days before the due day, `due` on the due day, then
   `overdue` (cadence *daily* / *once* / *off*) while incomplete.
@@ -406,11 +416,18 @@ with the blockers. Both name each task (ID + name + reason
 - Sweep: `run_plan_reminders_once(maker)` in `plans/reminders.py`, called by
   the notification-worker loop next to `run_learning_once` (every 60 s). Copy
   the learning sweep's rules: of the stages whose time has passed, only the
-  **latest** is sent (no burst after downtime or a late edit); each stage goes
-  once per (task, person, due_at); reminders run whether or not the plan is
-  locked; nothing for completed tasks, nothing for archived or inactive initiatives
-  (`INACTIVE_STATUSES`), nothing when reminders are disabled. One initiative
-  per transaction; failures counted and logged once per outage.
+  **latest** is sent (no burst after downtime or a late edit), and only on
+  its own plan-local day — at the end of that day the next stage supersedes
+  it, so a task reopened at 01:00 waits for that day's stage at the send
+  time (the *once* overdue stage is the exception: it stays owed until it
+  goes); each stage goes once per (task, person, due day — see the
+  amendment below); reminders run whether or not the plan is locked;
+  nothing for completed tasks, nothing for archived or inactive initiatives
+  (`INACTIVE_STATUSES`), nothing when reminders are disabled. The owner's
+  overdue digest goes at most once a day and never before the send time:
+  a task that turns overdue after the day's digest went out waits for the
+  next day's, at the send time. One initiative per transaction; failures
+  counted and logged once per outage.
 - *Amendment 2026-11-03:* reminders are deduplicated per due **day**, not per exact due moment (`plan_reminder_log.due_at` stores the due day's plan-local 00:00): a new time on the same day, or a recalc nudging a finish, re-sends nothing; a move to another day re-arms them.
 - Notification kinds in `notifications/kinds.py`, new category `plans` →
   "Project plans" (mirror in `portal/src/lib/notificationKinds.ts` and the /me

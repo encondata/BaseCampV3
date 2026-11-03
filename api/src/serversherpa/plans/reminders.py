@@ -2,11 +2,15 @@
 (`run_plan_reminders_once`), and the stages it works from.
 
 A task's *due moment* is its deadline, or its finish when the plan's
-`use_finish_without_deadline` is on and it has no deadline. Its stages, at
-the plan-local send time (`stages_for`): `d<N>` N days before the due day
-for each offset, `due` on the due day (when `on_due_day`), then the overdue
-stages while the task is incomplete: `overdue:<YYYY-MM-DD>` each day from
-the day after (`daily`), only `overdue` that day (`once`), or none (`off`).
+`use_finish_without_deadline` is on and it has no deadline. Its *due day*
+(`due_day`) is a deadline's own day (a moment: 00:00 Friday is Friday), or
+the day a finish's work ends (`floating.last_day`, the one finish-day rule
+the Calendar, Board and Timeline use: a finish at 00:00 Friday is
+Thursday's end). Its stages, at the plan-local send time (`stages_for`):
+`d<N>` N days before the due day for each offset, `due` on the due day
+(when `on_due_day`), then the overdue stages while the task is incomplete:
+`overdue:<YYYY-MM-DD>` each day from the day after (`daily`), only
+`overdue` that day (`once`), or none (`off`).
 
 Each pass, for every plan whose initiative is live (not archived, not
 completed or cancelled) and whose reminders are enabled, locked or not:
@@ -20,11 +24,11 @@ completed or cancelled) and whose reminders are enabled, locked or not:
   it stays owed until it goes. Each goes once per (task, person, stage, due
   day): the `plan_reminder_log` row is inserted first (ON CONFLICT DO
   NOTHING RETURNING), so two sweeps can't both send it. Its `due_at` holds
-  the due day's start (plan-local 00:00), so moving a due date to another
-  day re-arms its reminders while a new time the same day (or a recalc
-  nudging a finish) sends nothing again. Only people get reminders (never
-  partners), and only those still among the plan's resources: an undo can
-  put back an assignee who has since left the initiative;
+  the due day's start (plan-local 00:00, `due_key`), so moving a due date
+  to another day re-arms its reminders while a new time the same day (or a
+  recalc nudging a finish) sends nothing again. Only people get reminders
+  (never partners), and only those still among the plan's resources: an
+  undo can put back an assignee who has since left the initiative;
 - with `overdue_to_owner`, the plan's owner (its creator when it has none)
   gets one `plan_overdue_digest` a day, never before the send time, listing
   the tasks that entered an overdue stage, logged per task as
@@ -52,7 +56,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.db.models import Initiative, Partner
 from serversherpa.learning.stats import INACTIVE_STATUSES
 from serversherpa.plans import notices
-from serversherpa.plans.floating import format_floating
+from serversherpa.plans.floating import format_floating, last_day
 from serversherpa.plans.models import PlanAssignment, PlanReminderLog, PlanTask, ProjectPlan
 from serversherpa.plans.service import person_names, resources_of
 from serversherpa.plans.settings import Reminders, effective, load_system
@@ -80,28 +84,41 @@ def _send_time(r: Reminders) -> time:
     return time(int(hour), int(minute))
 
 
-def stages_for(due_at: datetime, r: Reminders, now_local: datetime
+def due_day(task: PlanTask) -> date:
+    """The day a task is due: its deadline's own day (a deadline is a
+    moment, so 00:00 Friday is Friday), else the day its work ends
+    (`floating.last_day`: a finish at 00:00 Friday ends Thursday)."""
+    if task.deadline is not None:
+        return task.deadline.date()
+    return last_day(task.start if task.start is not None else task.finish, task.finish)
+
+
+def stages_for(due: date, r: Reminders, now_local: datetime
                ) -> list[tuple[str, datetime]]:
-    """A task's stages in time order, as (stage, plan-local send moment):
-    `d<N>` at (due day − N) for each offset, `due` on the due day when
-    `on_due_day`, then `overdue:<day>` for each day after the due day up to
-    `now_local`'s (`daily`), only `overdue` the day after (`once`), or none
-    (`off`). Pure: `due_at` and `now_local` are plan-local wall-clock times."""
+    """A task's stages in time order, as (stage, plan-local send moment),
+    for the due day `due`: `d<N>` at (due − N) for each offset, `due` on
+    the due day when `on_due_day`, then (`daily`) `overdue:<day>` for the
+    days after it up to `now_local`'s, only `overdue` the day after
+    (`once`), or none (`off`). Of the daily ones only yesterday's and
+    today's are built: a stage is sent only on its own day, so an older one
+    is never the latest passed (`latest_due_stage` answers as it would from
+    every day's), and a task long overdue costs two stages a sweep, not one
+    per day. Pure: `now_local` is a plan-local wall-clock time."""
     send = _send_time(r)
-    due_day = due_at.date()
 
     def at(day: date) -> datetime:
         return datetime.combine(day, send)
 
-    stages = [(f"d{n}", at(due_day - timedelta(days=n)))
+    stages = [(f"d{n}", at(due - timedelta(days=n)))
               for n in sorted(set(r.offsets_days), reverse=True)]
     if r.on_due_day:
-        stages.append(("due", at(due_day)))
+        stages.append(("due", at(due)))
     if r.overdue == "once":
-        stages.append((OVERDUE, at(due_day + timedelta(days=1))))
+        stages.append((OVERDUE, at(due + timedelta(days=1))))
     elif r.overdue == "daily":
-        day = due_day + timedelta(days=1)
-        while day <= now_local.date():
+        today = now_local.date()
+        day = max(due + timedelta(days=1), today - timedelta(days=1))
+        while day <= today:
             stages.append((f"{OVERDUE}:{day.isoformat()}", at(day)))
             day += timedelta(days=1)
     return stages
@@ -155,10 +172,11 @@ def _live(initiative: Initiative | None) -> bool:
 _Row = tuple[uuid.UUID, uuid.UUID, str, datetime]
 
 
-def due_key(due_at: datetime) -> datetime:
+def due_key(due: date) -> datetime:
     """What `plan_reminder_log.due_at` holds: the due day's start (plan-local
-    00:00), so reminders are deduplicated per due day, not per due moment."""
-    return datetime.combine(due_at.date(), time())
+    00:00), so reminders are deduplicated per due day (`due_day`), not per
+    due moment."""
+    return datetime.combine(due, time())
 
 
 async def _log_once(db: AsyncSession, task_id: uuid.UUID, person_id: uuid.UUID, stage: str,
@@ -217,11 +235,12 @@ async def _resource_names(db: AsyncSession, task_ids: list[uuid.UUID]
 
 
 async def _digest(db: AsyncSession, plan: ProjectPlan, initiative: Initiative,
-                  owner_id: uuid.UUID, tasks: list[tuple[PlanTask, datetime]],
+                  owner_id: uuid.UUID, tasks: list[tuple[PlanTask, date]],
                   r: Reminders, today: date) -> bool:
+    """The owner's digest of `tasks`, each with its due day."""
     names = await _resource_names(db, [task.id for task, _ in tasks])
-    rows = [{"name": task.name, "due_label": notices.long_day(due_at.date(), today),
-             "assignees": names.get(task.id, [])} for task, due_at in tasks]
+    rows = [{"name": task.name, "due_label": notices.long_day(due, today),
+             "assignees": names.get(task.id, [])} for task, due in tasks]
     count = len(rows)
     return await notices.send(
         db, owner_id, KIND_DIGEST, email=r.email_assignees,
@@ -251,38 +270,42 @@ async def _plan_one(db: AsyncSession, plan_id: uuid.UUID, now: datetime,
 
     # narrowed to the tasks some stage could be owed for: the earliest
     # stage is the largest offset before the due day; with no overdue
-    # stages, nothing is owed once the due day is over
+    # stages, nothing is owed once the due day is over. A finish at the
+    # horizon's 00:00 ends the day before (`due_day`), so it is kept: the
+    # filter may keep more than is owed, never less
     due_col = (func.coalesce(PlanTask.deadline, PlanTask.finish)
                if r.use_finish_without_deadline else PlanTask.deadline)
     horizon = datetime.combine(today + timedelta(days=max(r.offsets_days, default=0) + 1),
                                time())
     where = [PlanTask.plan_id == plan.id, PlanTask.percent_complete < 100,
-             due_col.is_not(None), due_col < horizon]
+             due_col.is_not(None), due_col <= horizon]
     if r.overdue == "off":
         where.append(due_col >= datetime.combine(today, time()))
     tasks = list(await db.scalars(
         select(PlanTask).where(*where).order_by(PlanTask.position, PlanTask.id)))
 
-    # task id -> (task, the real due moment, stage, the stage's moment)
-    owed: dict[uuid.UUID, tuple[PlanTask, datetime, str, datetime]] = {}
+    # task id -> (task, the real due moment, its due day, stage, the
+    # stage's moment)
+    owed: dict[uuid.UUID, tuple[PlanTask, datetime, date, str, datetime]] = {}
     for task in tasks:
         due_at = task.deadline if task.deadline is not None else task.finish
-        latest = latest_due_stage(stages_for(due_at, r, now_local), now_local)
+        due = due_day(task)
+        latest = latest_due_stage(stages_for(due, r, now_local), now_local)
         if latest is None:
             continue
         stage, at = latest
         if stage != OVERDUE and at.date() < today:
             continue            # superseded at the end of its own day
-        owed[task.id] = (task, due_at, stage, at)
+        owed[task.id] = (task, due_at, due, stage, at)
     if not owed:
         return 0, 0
 
     owner_id = plan.owner_id or plan.created_by
     owner_owed: list[_Row] = []
     if r.overdue_to_owner and owner_id is not None:
-        owner_owed = [(tid, owner_id, f"{OWNER}{at.date().isoformat()}", due_key(due_at))
-                      for tid, (_, due_at, stage, at) in owed.items() if _is_overdue(stage)]
-    done = await _logged(db, list(owed), {stage for _, _, stage, _ in owed.values()}
+        owner_owed = [(tid, owner_id, f"{OWNER}{at.date().isoformat()}", due_key(due))
+                      for tid, (_, _, due, stage, at) in owed.items() if _is_overdue(stage)]
+    done = await _logged(db, list(owed), {stage for _, _, _, stage, _ in owed.values()}
                          | {row[2] for row in owner_owed})
 
     # owed to assignees and not logged yet, in outline order; the plan's
@@ -295,7 +318,7 @@ async def _plan_one(db: AsyncSession, plan_id: uuid.UUID, now: datetime,
             .order_by(PlanAssignment.person_id))).all():
         assigned.setdefault(tid, []).append(pid)
     pending: list[_Row] = [row for row in (
-        (tid, pid, stage, due_key(due_at)) for tid, (_, due_at, stage, _) in owed.items()
+        (tid, pid, stage, due_key(due)) for tid, (_, _, due, stage, _) in owed.items()
         for pid in assigned.get(tid, [])) if row not in done]
     if pending:
         current = {res.id for res in await resources_of(db, initiative) if res.kind == "person"}
@@ -305,8 +328,8 @@ async def _plan_one(db: AsyncSession, plan_id: uuid.UUID, now: datetime,
     for task_id, person_id, stage, key in pending:
         if not await _log_once(db, task_id, person_id, stage, key, now):
             continue
-        task, due_at = owed[task_id][:2]
-        template_stage, due_label = message(stage, due_at.date(), today)
+        task, due_at, due = owed[task_id][:3]
+        template_stage, due_label = message(stage, due, today)
         title, body = reminder_text(template_stage, task.name, initiative.name, due_label)
         if await notices.send(
                 db, person_id, KIND_OVERDUE if template_stage == "overdue" else KIND_DUE,
@@ -327,10 +350,11 @@ async def _plan_one(db: AsyncSession, plan_id: uuid.UUID, now: datetime,
     midnight = datetime.combine(today, time(), tzinfo=zone)
     if await _digested_today(db, plan.id, owner_id, midnight):
         return sent, 0          # one digest a day: these wait for tomorrow's
-    newly: list[tuple[PlanTask, datetime]] = []
+    newly: list[tuple[PlanTask, date]] = []
     for task_id, person_id, stage, key in owner_owed:
         if await _log_once(db, task_id, person_id, stage, key, now):
-            newly.append(owed[task_id][:2])
+            task, _, due = owed[task_id][:3]
+            newly.append((task, due))
     if not newly:
         return sent, 0
     return sent, int(await _digest(db, plan, initiative, owner_id, newly, r, today))

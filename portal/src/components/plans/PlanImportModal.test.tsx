@@ -273,6 +273,39 @@ describe('importing', () => {
     expect(api.importPlanFile).not.toHaveBeenCalled();
   });
 
+  it('the review says how the file goes in: after the last task, or filling the empty plan', async () => {
+    await reviewed();
+    const sum = dialog().querySelector('.pln-import-sum');
+    expect(sum?.nextElementSibling?.textContent).toBe('Adds after the last task');
+    cleanup();
+    await reviewed(emptyPlan());
+    expect(within(dialog()).getByText('Fills this empty plan').className).toBe('pln-note');
+    expect(within(dialog()).queryByText('Adds after the last task')).toBeNull();
+  });
+
+  it('the review keeps the mode it previewed when the plan reloads under it, and applies that one', async () => {
+    const { user, ctl, view, file } = await reviewed(emptyPlan());
+    expect(api.importPlanFile).toHaveBeenLastCalledWith('p1', file, { dryRun: true, mode: 'fill' });
+    // someone adds a task meanwhile and the plan reloads: no longer empty
+    view.rerender(<PlanImportModal ctl={{ ...ctl, plan: withTasks() }} initiativeId="init-1" onClose={() => {}} />);
+    expect(within(dialog()).getByText('Fills this empty plan')).not.toBeNull();
+    api.importPlanFile.mockRejectedValueOnce(new ApiError(409, 'plan_changed', { code: 'plan_changed', version: 8 }));
+    await user.click(button('Import 3 tasks'));
+    expect(api.importPlanFile).toHaveBeenLastCalledWith('p1', file, { dryRun: false, mode: 'fill', baseVersion: 7 });
+    // reviewing again previews the plan as it is now
+    await within(dialog()).findByText(/review the file again/);
+    api.importPlanFile.mockResolvedValueOnce({ ...PREVIEW, version: 8 });
+    await user.click(button('Review again'));
+    expect(api.importPlanFile).toHaveBeenLastCalledWith('p1', file, { dryRun: true, mode: 'append' });
+    expect(await within(dialog()).findByText('Adds after the last task')).not.toBeNull();
+  });
+
+  it('a new plan’s review has no mode line: the file makes the plan', async () => {
+    await reviewed(null);
+    expect(within(dialog()).queryByText('Fills this empty plan')).toBeNull();
+    expect(within(dialog()).queryByText('Adds after the last task')).toBeNull();
+  });
+
   it('a new plan has no mode to choose, and says it takes the file’s calendar and start', () => {
     open(null);
     expect(within(dialog()).queryByRole('group', { name: 'How to import' })).toBeNull();

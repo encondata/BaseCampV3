@@ -11,7 +11,10 @@
  *    after its last one, and a new plan (none yet: the initiative's route,
  *    `project_plans:add`) always fills. Choosing the file runs the dry run;
  *    a file the API can't read stays here with its message.
- *  - Review: the summary ("18 tasks will be created · 3 problems"), the
+ *  - Review: the summary ("18 tasks will be created · 3 problems"), how
+ *    the file goes in ("Adds after the last task" / "Fills this empty
+ *    plan": the mode the dry run was run in, kept with it and sent with the
+ *    apply even if the plan reloads under the open review), the
  *    problems about the whole file, then a row per task (#, Task Name,
  *    Action, Problems, how far the plan's schedule moves it) as the house
  *    list (dir-list, column floors), windowed past VIRTUAL_THRESHOLD rows
@@ -67,6 +70,11 @@ const MODE_NOTES: Record<ImportMode | 'new', string> = {
   fill: 'The plan takes the file’s calendar, project start and status date, then its tasks.',
   new: 'The new plan takes the file’s calendar, project start and status date, then its tasks.',
 };
+/** Review's one line on how the previewed file goes into the plan. */
+const REVIEW_MODES: Record<ImportMode, string> = {
+  append: 'Adds after the last task',
+  fill: 'Fills this empty plan',
+};
 export const PLAN_CHANGED_SINCE = 'Someone else changed this plan after the review, so review the file again '
   + 'before importing.';
 
@@ -102,7 +110,9 @@ export default function PlanImportModal({ ctl, initiativeId, onClose }: {
 
   const [step, setStep] = useState<Step>('choose');
   const [file, setFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<PlanImport | null>(null);
+  /** The dry run's answer, with the mode it was run in: the apply sends
+   *  that mode, whatever the plan reloads to under the open review. */
+  const [preview, setPreview] = useState<(PlanImport & { mode: ImportMode }) | null>(null);
   const [result, setResult] = useState<PlanImport | null>(null);
   const [reading, setReading] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -115,7 +125,6 @@ export default function PlanImportModal({ ctl, initiativeId, onClose }: {
   /** The latest dry run: an earlier one answering late is dropped. */
   const runs = useRef(0);
 
-  // set again on every mount: StrictMode mounts, unmounts and mounts again
   // set again on every mount: StrictMode mounts, unmounts and mounts again
   useEffect(() => {
     alive.current = true;
@@ -149,13 +158,14 @@ export default function PlanImportModal({ ctl, initiativeId, onClose }: {
     }
     const run = ++runs.current;
     const current = () => alive.current && run === runs.current;
+    const sent = mode;
     setReading(true);
     try {
       const out = planId === null
         ? await importIntoNewPlan(initiativeId, f, { dryRun: true })
-        : await importPlanFile(planId, f, { dryRun: true, mode });
+        : await importPlanFile(planId, f, { dryRun: true, mode: sent });
       if (!current()) return;
-      setPreview(out);
+      setPreview({ ...out, mode: sent });
       setStep('review');
     } catch (err) {
       if (!current()) return;
@@ -185,7 +195,9 @@ export default function PlanImportModal({ ctl, initiativeId, onClose }: {
     try {
       const out = planId === null
         ? await importIntoNewPlan(initiativeId, file, { dryRun: false })
-        : await importPlanFile(planId, file, { dryRun: false, mode, baseVersion: preview.version ?? undefined });
+        : await importPlanFile(planId, file, {
+          dryRun: false, mode: preview.mode, baseVersion: preview.version ?? undefined,
+        });
       // the plan read again: its new tasks, version and an empty undo stack
       await ctl.reload();
       if (!alive.current) return;
@@ -267,6 +279,8 @@ export default function PlanImportModal({ ctl, initiativeId, onClose }: {
         <p className="pln-import-sum">
           <b>{tasksText(created)} will be created</b> · {problemsText(preview.summary.problems)}
         </p>
+        {/* the mode the review was run in (a new plan is always made from the file) */}
+        {planId !== null && <p className="pln-note">{REVIEW_MODES[preview.mode]}</p>}
         <FileProblems problems={preview.problems} />
         {preview.rows.length
           ? <ImportRows rows={preview.rows} done={false} />

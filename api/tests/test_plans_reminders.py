@@ -9,9 +9,10 @@ Reference week: plan timezone America/Chicago, send time 08:00, offsets
 [3, 1]; a deadline of Thu 2026-11-05 17:00 has stages d3 Mon 11-02 08:00,
 d1 Wed 11-04 08:00, due Thu 11-05 08:00, then overdue from Fri 11-06."""
 
+import copy
 import dataclasses
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -28,11 +29,12 @@ from serversherpa.db.models import (
 )
 from serversherpa.notifications.email import portal_link
 from serversherpa.plans import reminders
+from serversherpa.plans.calendar import STANDARD_CALENDAR
 from serversherpa.plans.models import PlanReminderLog, PlanTask
 from serversherpa.plans.settings import effective
 from tests.test_plans_api import _admin, _create, _initiative, _plan_row, dt
 from tests.test_plans_links import _assign
-from tests.test_plans_ops import _add, _ok, _update
+from tests.test_plans_ops import _add, _get, _ok, _update
 
 CHICAGO = ZoneInfo("America/Chicago")
 MOVE = "NAP11 Hall Migration"
@@ -90,6 +92,21 @@ async def _crew(db, move, first, *, email=True, account=False, choice=None, team
     return person
 
 
+async def _night_week(client, hdrs, plan) -> None:
+    """The plan on a night crew's week: Mon-Fri 20:00-24:00 (a 4-hour day),
+    from Mon 11-02 20:00. A night's work ends at 24:00, which is stored as
+    the next day's 00:00."""
+    nights = [["20:00", "24:00"]]
+    calendar = {**copy.deepcopy(STANDARD_CALENDAR), "hours_per_day": 4, "hours_per_week": 20,
+                "default_start": "20:00", "default_end": "23:00",
+                "week": {day: [] if day in ("sat", "sun") else copy.deepcopy(nights)
+                         for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")}}
+    version = (await _get(client, hdrs, plan))["version"]
+    resp = await client.patch(f"/plans/{plan['id']}", headers=hdrs, json={
+        "base_version": version, "calendar": calendar, "project_start": "2026-11-02T20:00"})
+    assert resp.status_code == 200, resp.text
+
+
 async def _task(client, hdrs, plan, name="Order crates", *people, deadline=DEADLINE) -> str:
     ids = await _add(client, hdrs, plan, name, deadline=deadline)
     if people:
@@ -135,39 +152,69 @@ def _task_link(move, task_id) -> str:
 
 # ── stages (pure) ────────────────────────────────────────────────────
 
+THU = date(2026, 11, 5)         # DEADLINE's day
+
 
 def test_stages_before_and_on_the_due_day():
-    stages = reminders.stages_for(dt("2026-11-05 17:00"), _r(), dt("2026-11-02 07:00"))
+    stages = reminders.stages_for(THU, _r(), dt("2026-11-02 07:00"))
     assert stages == [("d3", dt("2026-11-02 08:00")), ("d1", dt("2026-11-04 08:00")),
                       ("due", dt("2026-11-05 08:00"))]
 
 
-def test_daily_overdue_stages_run_up_to_today():
-    stages = reminders.stages_for(dt("2026-11-05 17:00"), _r(), dt("2026-11-07 10:00"))
+def test_daily_overdue_stages_are_only_the_last_two_days():
+    """Only yesterday's and today's overdue stages: with a stage sent only
+    on its own day, an older one is never the latest passed, so a task
+    years overdue costs two stages a sweep, not one per day."""
+    stages = reminders.stages_for(THU, _r(), dt("2026-11-07 10:00"))
     assert stages == [("d3", dt("2026-11-02 08:00")), ("d1", dt("2026-11-04 08:00")),
                       ("due", dt("2026-11-05 08:00")),
                       ("overdue:2026-11-06", dt("2026-11-06 08:00")),
                       ("overdue:2026-11-07", dt("2026-11-07 08:00"))]
+    stages = reminders.stages_for(THU, _r(), dt("2028-11-07 10:00"))
+    assert stages[3:] == [("overdue:2028-11-06", dt("2028-11-06 08:00")),
+                          ("overdue:2028-11-07", dt("2028-11-07 08:00"))]
+    # the day after the due day there is one; on the due day, none
+    assert [s for s, _ in reminders.stages_for(THU, _r(), dt("2026-11-06 07:00"))][3:] == [
+        "overdue:2026-11-06"]
+    assert [s for s, _ in reminders.stages_for(THU, _r(), dt("2026-11-05 23:59"))] == [
+        "d3", "d1", "due"]
+
+
+def test_the_latest_passed_stage_is_the_one_the_full_run_has():
+    """The two overdue stages kept give the same latest passed stage as
+    every day's stage would, at any moment."""
+    def every_day(now):
+        stages = reminders.stages_for(THU, _r(overdue="off"), now)
+        day = THU + timedelta(days=1)
+        while day <= now.date():
+            stages.append((f"overdue:{day.isoformat()}", datetime.combine(day, time(8))))
+            day += timedelta(days=1)
+        return stages
+
+    start = dt("2026-11-01 00:00")
+    for minutes in range(0, 20 * 24 * 60, 37):
+        now = start + timedelta(minutes=minutes)
+        assert (reminders.latest_due_stage(reminders.stages_for(THU, _r(), now), now)
+                == reminders.latest_due_stage(every_day(now), now)), now
 
 
 def test_once_overdue_is_one_stage_and_off_is_none():
     late = dt("2026-11-12 10:00")
-    once = reminders.stages_for(dt("2026-11-05 17:00"), _r(overdue="once"), late)
+    once = reminders.stages_for(THU, _r(overdue="once"), late)
     assert once[-1] == ("overdue", dt("2026-11-06 08:00"))
     assert [s for s, _ in once] == ["d3", "d1", "due", "overdue"]
-    off = reminders.stages_for(dt("2026-11-05 17:00"), _r(overdue="off"), late)
+    off = reminders.stages_for(THU, _r(overdue="off"), late)
     assert [s for s, _ in off] == ["d3", "d1", "due"]
 
 
 def test_no_due_day_stage_when_it_is_off_and_the_send_time_is_the_plans():
-    stages = reminders.stages_for(dt("2026-11-05 17:00"),
-                                  _r(on_due_day=False, offsets_days=(2,), send_time="06:30"),
+    stages = reminders.stages_for(THU, _r(on_due_day=False, offsets_days=(2,), send_time="06:30"),
                                   dt("2026-11-01 00:00"))
     assert stages == [("d2", dt("2026-11-03 06:30"))]
 
 
 def test_latest_due_stage():
-    stages = reminders.stages_for(dt("2026-11-05 17:00"), _r(), dt("2026-11-07 07:00"))
+    stages = reminders.stages_for(THU, _r(), dt("2026-11-07 07:00"))
     assert reminders.latest_due_stage(stages, dt("2026-11-02 07:59")) is None
     assert reminders.latest_due_stage(stages, dt("2026-11-04 09:00")) == (
         "d1", dt("2026-11-04 08:00"))
@@ -176,6 +223,25 @@ def test_latest_due_stage():
     # before today's send time the latest is still yesterday's
     assert reminders.latest_due_stage(stages, dt("2026-11-07 07:00")) == (
         "overdue:2026-11-06", dt("2026-11-06 08:00"))
+
+
+def _row(**fields) -> PlanTask:
+    return PlanTask(name="T", **fields)
+
+
+def test_the_due_day_is_a_deadlines_own_day_or_the_day_the_work_ends():
+    """A deadline is a moment: 00:00 Friday is Friday. A finish is the end
+    of the work: 00:00 Friday is Thursday's end (floating.last_day, the
+    day the Calendar, Board and Timeline show it ending)."""
+    night = {"start": dt("2026-11-05 20:00"), "finish": dt("2026-11-06 00:00")}
+    assert reminders.due_day(_row(**night)) == date(2026, 11, 5)
+    assert reminders.due_day(_row(**night, deadline=dt("2026-11-06 00:00"))) == date(2026, 11, 6)
+    assert reminders.due_day(_row(start=dt("2026-11-05 08:00"),
+                                  finish=dt("2026-11-05 17:00"))) == date(2026, 11, 5)
+    # a milestone at midnight is that day
+    assert reminders.due_day(_row(start=dt("2026-11-06 00:00"),
+                                  finish=dt("2026-11-06 00:00"))) == date(2026, 11, 6)
+    assert reminders.due_key(date(2026, 11, 5)) == dt("2026-11-05 00:00")
 
 
 # ── the sweep ────────────────────────────────────────────────────────
@@ -475,6 +541,63 @@ async def test_finish_used_only_when_the_setting_says(client, db, monkeypatch):
     assert await _sweep() == _counts(reminders=1)
     [log] = await _logs(db)
     assert (log.stage, log.due_at) == ("due", dt("2026-11-02 00:00"))
+
+
+async def test_a_finish_at_midnight_is_due_the_day_its_work_ends(client, db, monkeypatch):
+    """A night move's task ends Thursday at 24:00 (stored Fri 00:00): its
+    reminders call it due Thursday, as the Calendar, Board and Timeline
+    show it, and its log rows are keyed on Thursday."""
+    hdrs, move, plan = await _world(client, db, settings={"use_finish_without_deadline": True})
+    row = await _plan_row(db, move)
+    owner = await db.get(Person, row.owner_id)
+    worker = await _crew(db, move, "Wanda", account=True)
+    await _night_week(client, hdrs, plan)
+    ids = await _add(client, hdrs, plan, "Night move", duration="4d")
+    await _ok(client, hdrs, plan, [_assign(ids["Night move"], ("person", worker.id))])
+    [task] = (await _get(client, hdrs, plan))["tasks"]
+    assert (task["start"], task["finish"]) == ("2026-11-02T20:00", "2026-11-06T00:00")
+
+    # d3 the Monday before: the finish is the edge of the sweep's horizon
+    for day in ("2026-11-02", "2026-11-04", "2026-11-05"):
+        _clock(monkeypatch, f"{day} 08:00")
+        assert await _sweep() == _counts(reminders=1), day
+    _clock(monkeypatch, "2026-11-06 08:00")
+    assert await _sweep() == _counts(reminders=1, digests=1)
+    rows, mails = await _reminders(db)
+    assert [r.title for r in rows] == [
+        f"Due Thursday, November 5: Night move — {MOVE}",
+        f"Due Thursday, November 5: Night move — {MOVE}",
+        f"Due today: Night move — {MOVE}",
+        f"Overdue: Night move — {MOVE}"]
+    assert rows[-1].body == f"Night move in {MOVE} has been overdue since Thursday, November 5."
+    assert [m.subject for m in mails] == [r.title for r in rows]
+    # the payload keeps the real due moment
+    assert rows[0].payload["due_at"] == "2026-11-06T00:00"
+    assert [(log.stage, log.due_at) for log in await _logs(db) if log.person_id == worker.id] == [
+        ("d3", dt("2026-11-05 00:00")), ("d1", dt("2026-11-05 00:00")),
+        ("due", dt("2026-11-05 00:00")),
+        ("overdue:2026-11-06", dt("2026-11-05 00:00"))]
+    [digest] = await _mail(db, "plan_overdue_digest")
+    assert digest.person_id == owner.id
+    assert "Due Thursday, November 5 · Wanda Crew" in digest.text_body
+    # a later sweep the same day finds them all logged under Thursday
+    _clock(monkeypatch, "2026-11-06 09:00")
+    assert await _sweep() == _counts()
+
+
+async def test_a_deadline_at_midnight_is_its_own_day(client, db, monkeypatch):
+    """A deadline is a moment, not a span: one at 00:00 Friday is due
+    Friday, even with the finish rule on."""
+    hdrs, move, plan = await _world(client, db, settings={"use_finish_without_deadline": True})
+    worker = await _crew(db, move, "Wanda", account=True)
+    await _task(client, hdrs, plan, "Order crates", worker, deadline="2026-11-06T00:00")
+
+    _clock(monkeypatch, "2026-11-05 08:00")
+    assert await _sweep() == _counts(reminders=1)
+    [row], _ = await _reminders(db)
+    assert row.title == f"Due Friday, November 6: Order crates — {MOVE}"
+    [log] = await _logs(db)
+    assert (log.stage, log.due_at) == ("d1", dt("2026-11-06 00:00"))
 
 
 async def test_category_off(client, db, monkeypatch):

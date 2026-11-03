@@ -19,7 +19,7 @@ from defusedxml import ElementTree as ET
 from sqlalchemy import func, select
 
 from serversherpa.db.models import AuditLog, InitiativePerson, Person
-from serversherpa.plans import importer, mspdi
+from serversherpa.plans import excel, importer, mspdi
 from serversherpa.plans.models import PlanTask, ProjectPlan
 from tests.test_plans_api import _admin, _create, _initiative
 from tests.test_plans_links import _assign, _resources
@@ -1030,6 +1030,26 @@ async def test_parse_runs_off_the_event_loop(client, db, monkeypatch):
     assert seen["thread"] != threading.get_ident()
 
 
+async def test_export_runs_off_the_event_loop(client, db, monkeypatch):
+    """Built in a worker thread, as the Excel export is."""
+    import threading
+
+    hdrs, _move, plan, _pat_row = await _setup(client, db)
+    await _add(client, hdrs, plan, "Survey")
+    seen = {}
+    real = mspdi.export_xml
+
+    def spy(*args, **kwargs):
+        seen["thread"] = threading.get_ident()
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(mspdi, "export_xml", spy)
+    resp = await client.get(f"/plans/{plan['id']}/export.xml", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert b"<Name>Survey</Name>" in resp.content
+    assert seen["thread"] != threading.get_ident()
+
+
 async def test_apply_checks_base_version(client, db):
     """Apply takes the version the preview saw: another change since is 409
     `plan_changed` and nothing is written. A dry run ignores it."""
@@ -1091,6 +1111,30 @@ async def test_out_of_scope_is_not_found(client, db, monkeypatch):
     assert await _task_count(db, plan["id"]) == 0
     assert await db.scalar(select(ProjectPlan.id).where(
         ProjectPlan.initiative_id == fresh.id)) is None
+
+
+async def test_out_of_scope_is_not_found_before_the_file_is_parsed(client, db, monkeypatch):
+    """The plan's scope is checked first: a caller who can't see the plan
+    gets its 404 without the upload being parsed (seconds of CPU for a
+    20 MB file), and even an unreadable file is the 404, not bad_file."""
+    from serversherpa.db.models import Initiative
+    from serversherpa.plans import service
+
+    hdrs = await _admin(db, client)
+    hidden = await _initiative(db, name="Hidden")
+    plan = await _create(client, hdrs, hidden)
+    parsed = []
+    for module, name in ((mspdi, "parse_xml"), (excel, "parse_workbook"), (excel, "parse_csv")):
+        monkeypatch.setattr(module, name, lambda content, name=name: parsed.append(name))
+    monkeypatch.setattr(service, "scope_conditions",
+                        lambda resource, access, person_id: Initiative.id != hidden.id)
+    for content, filename in ((_sample(), "plan.xml"), (b"not a file", "plan.xlsx"),
+                              (b"Name\r\nA\r\n", "plan.csv")):
+        for dry_run in (True, False):
+            resp = await _import(client, hdrs, plan, content, filename=filename,
+                                 dry_run=dry_run, mode="append")
+            assert (resp.status_code, resp.json()["detail"]["code"]) == (404, "plan_not_found")
+    assert parsed == []
 
 
 async def test_a_failed_new_plan_apply_leaves_no_plan(client, db):

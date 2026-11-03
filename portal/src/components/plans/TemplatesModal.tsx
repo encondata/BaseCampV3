@@ -6,7 +6,8 @@
  * in place in the card and sent as one PATCH, and Delete…
  * (`project_plans:delete`), which asks first in a confirm on top
  * (PlanConfirmModals' DeleteTemplateModal). Someone without either sees
- * the list alone.
+ * the list alone. A list that fails to load says “Couldn’t load
+ * templates.” beside Try again.
  *
  * In an editor Enter saves the name (the description is a textarea: its
  * Save button saves), Escape cancels without closing the dialog, and an
@@ -25,7 +26,7 @@ import {
   type PlanTemplatePatch,
 } from '../../lib/plans/api';
 import { COMMAND_TIPS } from '../../lib/plans/commandTips';
-import { planErrorText } from '../../lib/plans/errors';
+import { TEMPLATES_UNLOADED, planErrorText } from '../../lib/plans/errors';
 import { RowActionsMenu, type RowAction } from '../hardware/RowActionsMenu';
 import Tip from '../Tip';
 import { DeleteTemplateModal } from './PlanConfirmModals';
@@ -37,7 +38,7 @@ import '../../styles/profile.css';   // .pf-form, .btn-solid
 export const TEMPLATE_DELETED = 'Template deleted.';
 
 type Field = 'name' | 'description';
-type Load = { state: 'loading' } | { state: 'error'; message: string } | { state: 'ready'; templates: PlanTemplate[] };
+type Load = { state: 'loading' } | { state: 'error' } | { state: 'ready'; templates: PlanTemplate[] };
 
 const byName = (list: PlanTemplate[]) => [...list].sort((a, b) => naturalCompare(a.name, b.name));
 
@@ -69,8 +70,8 @@ export default function TemplatesModal({ permissions, onClose }: {
     try {
       const templates = await listPlanTemplates();
       if (alive.current) setLoad({ state: 'ready', templates: byName(templates) });
-    } catch (err) {
-      if (alive.current) setLoad({ state: 'error', message: planErrorText(err) });
+    } catch {
+      if (alive.current) setLoad({ state: 'error' });
     }
   }, []);
   useEffect(() => { void fetchList(); }, [fetchList]);
@@ -109,7 +110,7 @@ export default function TemplatesModal({ permissions, onClose }: {
   } else if (load.state === 'error') {
     body = (
       <div className="pln-tmpl-problem">
-        <p className="pf-error" role="alert">{load.message}</p>
+        <p className="pf-error" role="alert">{TEMPLATES_UNLOADED}</p>
         <button type="button" className="mini-btn" onClick={() => void fetchList()}>Try again</button>
       </div>
     );

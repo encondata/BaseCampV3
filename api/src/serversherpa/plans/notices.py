@@ -34,7 +34,7 @@ from serversherpa.mail.outbox import enqueue
 from serversherpa.notifications.email import load_contact, personal_choice, portal_link
 from serversherpa.notifications.inbox import notify
 from serversherpa.notifications.kinds import kind_info
-from serversherpa.plans.floating import plan_now
+from serversherpa.plans.floating import last_day, plan_now
 from serversherpa.plans.service import PlanState
 from serversherpa.plans.settings import PlanSettings
 
@@ -136,7 +136,8 @@ async def assignment_notices(db: AsyncSession, state: PlanState,
     batch newly assigned (`OpResult.newly_assigned`: person -> task ids in
     outline order) about it, once for the whole batch: "You were assigned 2
     tasks in <initiative>", with each task's start, finish and deadline in
-    the email. Never the actor. Returns how many people were told."""
+    the email (the finish as the day its work ends, `floating.last_day`).
+    Never the actor. Returns how many people were told."""
     if not settings.reminders.notify_on_assign or not newly_assigned:
         return 0
     plan = state.plan
@@ -153,7 +154,9 @@ async def assignment_notices(db: AsyncSession, state: PlanState,
         rows = [{
             "name": task.name,
             "start_label": short_day(task.start.date(), today) if task.start else "—",
-            "finish_label": short_day(task.finish.date(), today) if task.finish else "—",
+            # the day the work ends (a finish at 00:00 is the day before's end)
+            "finish_label": (short_day(last_day(task.start or task.finish, task.finish), today)
+                             if task.finish else "—"),
             "deadline_label": (short_day(task.deadline.date(), today)
                                if task.deadline else None),
         } for task in tasks]

@@ -463,6 +463,34 @@ async def test_a_linked_summary_drives_its_subtasks(client, db):
         "B": ("2026-11-17T08:00", "asap")}
 
 
+async def test_a_summarys_dropped_link_does_not_drive_its_subtasks(client, db):
+    """A summary whose predecessor isn't in the file loses that link, and
+    with it the drive: its subtasks are unlinked, so a Start later than the
+    plan has them becomes Start No Earlier Than and none says its Start was
+    ignored."""
+    hdrs, _move, plan, _pat_row = await _setup(client, db)
+    content = _csv([
+        ["ID", "Task Name", "Duration", "Start", "Predecessors", "Outline Level"],
+        ["1", "A", "1d", "11/2/2026 8:00 AM", "", "1"],
+        ["2", "S", "", "11/9/2026 8:00 AM", "99", "1"],
+        ["3", "C", "1d", "11/9/2026 8:00 AM", "", "2"],
+        ["4", "D", "1d", "11/11/2026 8:00 AM", "", "2"],
+    ])
+    body = await _ok_import(client, hdrs, plan, content, filename="p.csv",
+                            content_type="text/csv", dry_run=False, mode="fill")
+    rows = _rows(body)
+    assert {name: row["problems"] for name, row in rows.items() if row["problems"]} == {
+        "S": ["Predecessor ID 99 isn't in the file; link skipped."]}
+    tasks = _tasks(await _get(client, hdrs, plan))
+    assert {n: (t["start"], t["constraint_type"], t["constraint_date"])
+            for n, t in tasks.items()} == {
+        "A": ("2026-11-02T08:00", "asap", None),
+        "S": ("2026-11-09T08:00", "asap", None),
+        "C": ("2026-11-09T08:00", "snet", "2026-11-09T08:00"),
+        "D": ("2026-11-11T08:00", "snet", "2026-11-11T08:00")}
+    assert tasks["S"]["predecessors"] == ""
+
+
 async def test_round_trip_keeps_a_linked_summarys_subtask_free(client, db):
     """Kickoff, then Permit held by a Start No Earlier Than, then summary
     Phase 3 after Permit, its subtask Inspect with no link of its own: the
@@ -1065,23 +1093,34 @@ def test_long_cells_stay_small(column, text):
 
 
 def test_resource_names_and_predecessors_do_linear_work():
-    """No quadratic step in a cell: a run of `[` (MS Project's units
-    suffix), thousands of distinct names, thousands of unreadable
-    predecessors (one problem for the cell, not one each)."""
-    import time
-
+    """Thousands of distinct names, thousands of unreadable predecessors
+    (one problem for the cell, not one each), a run of `[`."""
     names = ",".join(f"p{i}" for i in range(5_000))          # under one cell's 32,767
     rows = [["Task Name", "Resource Names", "Predecessors"]]
     rows += [[f"T{i}", "[" * 30_000, ",".join(["1x"] * 10_000)] for i in range(10)]
     rows += [["Wide", names + ",p1" * 200, "1,2"]]
-    started = time.perf_counter()
     parsed = excel.parse_csv(_csv(rows))
-    elapsed = time.perf_counter() - started
-    assert elapsed < 1.5, elapsed
     assert parsed.tasks[0].problems == [
         "Predecessors '1x' and 9999 more aren't readable; links skipped."]
     wide = parsed.tasks[-1]
     assert len(wide.resources) == 5_000 and wide.resources[1] == "p1"
+
+
+def test_a_run_of_brackets_is_read_in_linear_time():
+    """MS Project's units suffix (`Pat Lee[50%]`) is taken off without a
+    quadratic step: the regex it replaced spent ~0.35 s of CPU on one full
+    cell of `[`, so these 50 would be ~17 s, against ~10 ms now. Timed in
+    this thread's CPU time, not the wall clock, with a bound far from both,
+    so a loaded machine doesn't fail it and the old step still would."""
+    import time
+
+    content = _csv([["Task Name", "Resource Names"]]
+                   + [[f"T{i}", "[" * excel.MAX_CELL_TEXT] for i in range(50)])
+    started = time.thread_time()
+    parsed = excel.parse_csv(content)
+    spent = time.thread_time() - started
+    assert len(parsed.tasks) == 50
+    assert spent < 5, spent
 
 
 def test_cells_are_cut_at_excels_limit():
@@ -1121,6 +1160,56 @@ def test_shared_string_references_count_against_the_budget():
     with pytest.raises(excel.ImportFileError) as caught:
         excel.parse_workbook(content)
     assert caught.value.code == "bad_file" and "unpacks" in caught.value.extra["message"]
+
+
+def test_shared_strings_before_the_header_count_against_the_budget(monkeypatch):
+    """Until the header row is found every cell is read as a possible
+    column name, so a shared string named there is charged like a kept
+    one. The reviewer's probe: one 32,767-character string named by
+    100,000 cells above any header was ~3 s of CPU for a 156 KB upload;
+    now the budget stops it after a few hundred reads. Counted, not timed:
+    how many cells are read as a header name."""
+    reads = []
+    real = excel._field
+
+    def counted(value):
+        reads.append(1)
+        return real(value)
+
+    monkeypatch.setattr(excel, "_field", counted)
+
+    def book(rows_n: int, *, header: bool) -> bytes:
+        names = "".join(f'<c r="{col}{{n}}" t="s"><v>0</v></c>' for col in "ABCDEFGHIJ")
+        rows = "".join(f'<row r="{n}">{names.format(n=n)}</row>' for n in range(1, rows_n + 1))
+        if header:
+            n = rows_n + 1
+            rows += f'<row r="{n}"><c r="A{n}" t="s"><v>1</v></c></row>'
+            rows += f'<row r="{n + 1}">{_inline(f"A{n + 1}", "Survey")}</row>'
+        return _excel_style_package(
+            rows, [f"<si><t>{'a' * excel.MAX_CELL_TEXT}</t></si>", "<si><t>Task Name</t></si>"],
+            date1904=False)
+
+    content = book(2_000, header=False)                   # 20,000 cells, 655 MB named
+    assert len(content) < 200_000
+    with pytest.raises(excel.ImportFileError) as caught:
+        excel.parse_workbook(content)
+    assert caught.value.code == "bad_file" and "unpacks" in caught.value.extra["message"]
+    assert len(reads) <= excel.MAX_UNPACKED_BYTES // excel.MAX_CELL_TEXT + 1
+
+    # a blank shared string is never charged (a blank cell is skipped), so
+    # the table holds it as "": each cell naming it is skipped at once, not
+    # after reading 32,767 spaces
+    blank = _excel_style_package(
+        "", [f"<si><t>{' ' * excel.MAX_CELL_TEXT}</t></si>", "<si><t>Task Name</t></si>"],
+        date1904=False)
+    pkg = excel._Package(blank)
+    assert excel._shared_strings(pkg, pkg.find("xl/sharedStrings.xml")) == ["", "Task Name"]
+
+    # a few rows of text above the header (a title, a note) are still fine
+    reads.clear()
+    (task,) = excel.parse_workbook(book(3, header=True)).tasks
+    assert task.name == "Survey"
+    assert len(reads) == 32             # 30 cells above, the header's cell found then named
 
 
 def test_error_cells_are_problems():

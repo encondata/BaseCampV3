@@ -367,8 +367,11 @@ async def export_xml(
         units = service.calendar_of(plan).units
     except CalendarError as exc:
         raise service.calendar_error(exc) from None
-    content = mspdi.export_xml(state, initiative.name, units,
-                               resource_names=await mspdi.resource_names(db, state))
+    names = await mspdi.resource_names(db, state)
+    # built in a worker thread, as the Excel export is: a large plan is tens
+    # of thousands of elements, which the event loop must not wait out
+    content = await asyncio.to_thread(mspdi.export_xml, state, initiative.name, units,
+                                      resource_names=names)
     return Response(content, media_type="application/xml", headers={
         "Content-Disposition": content_disposition(_download_name(initiative, ".xml"))})
 
@@ -532,6 +535,9 @@ async def import_into_plan(
     the engine's 422s (a link cycle) as on any batch."""
     if mode not in importer.IMPORT_MODES:
         raise err(422, "bad_field", field="mode")
+    # the scope first: a plan the actor can't see is its 404 before the
+    # upload is read or parsed (seconds of CPU for a large file)
+    await service.plan_for_actor(db, plan_id, actor)
     # read before the plan row is locked: a slow upload holds no lock
     parsed = await _parse_upload(*await _import_upload(request))
     plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
