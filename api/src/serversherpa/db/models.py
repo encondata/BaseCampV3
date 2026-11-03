@@ -1241,6 +1241,11 @@ class Device(Base):
     personal_set_at: Mapped[datetime | None]
     personal_set_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("people.id", ondelete="SET NULL"))
+    # Device offline notice (migration 0114): when the notification worker's device check
+    # announced that this covered device stopped checking in (services/device_online.py says
+    # which are covered and when one is offline). Set with the announcement, so one outage
+    # is announced once, and cleared once the device is seen again. NULL = no notice out.
+    offline_notified_at: Mapped[datetime | None]
 
 
 class BiometricKey(Base):
@@ -2116,8 +2121,10 @@ class NotificationEvent(Base):
     `sent_at`. The subject is what it is about; `reaches` lists the other things whose
     watchers hear it, as `{type, id}` objects. `person_ids` and `group_ids` are the people
     and groups the announcing code names, and `watchers` says whether watches apply.
-    `item` holds the title, line and link. The actor and the status rule clear when their
-    rows go, so an event outlives both."""
+    `item` holds the title, line and link. `attempts` counts the sweeps that have failed on
+    the event (migration 0114), so the sweep can take the ones that failed least first and an
+    event that always fails can't block newer ones. The actor and the status rule clear when
+    their rows go, so an event outlives both."""
 
     __tablename__ = "notification_events"
 
@@ -2138,6 +2145,7 @@ class NotificationEvent(Base):
     item: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     sent_at: Mapped[datetime | None]
+    attempts: Mapped[int] = mapped_column(server_default=text("0"))
 
     __table_args__ = (
         Index("ix_notification_events_waiting", "id", postgresql_where=text("sent_at IS NULL")),

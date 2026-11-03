@@ -59,6 +59,8 @@ EVENT_COLUMNS = {
     "item": ("jsonb", "NO", "'{}'::jsonb"),
     "created_at": ("timestamptz", "NO", "now()"),
     "sent_at": ("timestamptz", "YES", None),
+    # added by 0114, which the shared test database has at head
+    "attempts": ("int4", "NO", "0"),
 }
 
 SUBSCRIBER_CHECK = "ck_notification_watches_subscriber"

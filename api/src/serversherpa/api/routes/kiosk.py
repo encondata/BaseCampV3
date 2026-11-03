@@ -93,6 +93,7 @@ from serversherpa.services import move_password as move_password_service
 from serversherpa.services import station_keys
 from serversherpa.services import timeclock
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.services.device_online import is_rfid_station
 from serversherpa.services.fixed_readers import apply_reader_report
 from serversherpa.services.kiosk_registration import (  # noqa: F401 (re-exported)
     REGISTRATION_SOON,
@@ -692,11 +693,6 @@ def is_station(device: Device) -> bool:
     Zebra or iOS kiosk (station_keys.station_sub_type_ok)."""
     return (station_keys.station_sub_type_ok(device)
             and device.station_type in station_keys.STATION_TYPES)
-
-
-def is_rfid_station(device: Device) -> bool:
-    """An RFID Station: a laptop kiosk set up with station type rfid."""
-    return device.sub_type == "laptop" and device.station_type == "rfid"
 
 
 async def allowed_scan_types(db: AsyncSession, device: Device) -> list[StatusValue]:
