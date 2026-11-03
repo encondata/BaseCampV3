@@ -22,7 +22,9 @@ class PlanCreateIn(BaseModel):
 
     project_start: str                      # YYYY-MM-DD (calendar default start) or a time
     owner_id: uuid.UUID | None = None
-    template_id: uuid.UUID | None = None    # accepted, unused until templates land (Plan C)
+    # a plan template (plans/templates.py): its calendar, settings, tasks
+    # and links, dates shifted to project_start; 404 `template_not_found`
+    template_id: uuid.UUID | None = None
 
 
 class InitiativeWindow(BaseModel):
@@ -526,6 +528,41 @@ class PlanVersionOut(BaseModel):
     version: int
     updated_at: datetime
     updated_by_name: str | None
+
+
+# --- plan templates (plans/templates.py) ---
+
+
+class PlanTemplateSaveIn(BaseModel):
+    """POST /plans/{plan_id}/save-as-template. `name`: 1-120 characters
+    once trimmed, unique ignoring case (409 `template_exists`);
+    `description`: up to 1,000, blank = none. 422 `bad_field` {field}."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str | None = None
+
+
+class PlanTemplatePatchIn(BaseModel):
+    """PATCH /plan-templates/{id}: only the fields that change, with the
+    save's rules; a null description clears it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    description: str | None = None
+
+
+class PlanTemplateOut(BaseModel):
+    """A template as GET /plan-templates lists it (never its data)."""
+
+    id: uuid.UUID
+    name: str
+    description: str | None
+    task_count: int
+    created_by_name: str | None
+    updated_at: datetime
 
 
 # --- the all-initiatives Timeline page (GET /plans/timeline, plans/timeline.py) ---

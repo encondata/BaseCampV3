@@ -75,7 +75,8 @@ import { keysBelongElsewhere, type PlanShortcutHandlers } from './usePlanShortcu
 
 /** The dialog the tab has open. */
 export type PlanDialog =
-  | { kind: 'create' }
+  /** New project plan: from Blank plan, or From a template (a template required). */
+  | { kind: 'create'; fromTemplate?: boolean }
   | { kind: 'columns' }
   | { kind: 'shortcuts' }
   | { kind: 'deleteTasks'; ops: Op[]; tasks: PlanTask[]; subtasks: number; next: Selection }
@@ -87,7 +88,13 @@ export type PlanDialog =
   | { kind: 'lock' }
   | { kind: 'updateProject' }
   | { kind: 'settings' }
-  | { kind: 'deletePlan' };
+  | { kind: 'deletePlan' }
+  | { kind: 'saveTemplate' }
+  | { kind: 'templates' };
+
+/** The dialogs More opens by name. */
+export type MoreDialog = 'columns' | 'shortcuts' | 'clearBaseline' | 'updateProject' | 'settings' | 'deletePlan'
+  | 'saveTemplate' | 'templates';
 
 export const PASTE_LABEL = 'Paste';
 /** What an outline command says while the sheet is grouped. */
@@ -265,7 +272,7 @@ export interface PlanCommands {
   paste(text: string): void;
   lock(): void;
   unlock(): void;
-  open(kind: 'columns' | 'shortcuts' | 'clearBaseline' | 'updateProject' | 'settings' | 'deletePlan'): void;
+  open(kind: MoreDialog): void;
   /** Focus back on the sheet (a toolbar click hands it back). */
   focusSheet(): void;
   /** For usePlanShortcuts. */
@@ -886,7 +893,7 @@ export function usePlanCommands({
       paste,
       lock: () => latest.current.openDialog({ kind: 'lock' }),
       unlock,
-      open: (kind: 'columns' | 'shortcuts' | 'clearBaseline' | 'updateProject' | 'settings' | 'deletePlan') =>
+      open: (kind: MoreDialog) =>
         latest.current.openDialog({ kind }),
       focusSheet,
     };

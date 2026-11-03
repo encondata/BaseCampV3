@@ -92,9 +92,11 @@ import PlanSettingsModal from './PlanSettingsModal';
 import PlanSheet from './PlanSheet';
 import PlanTimelineStrip from './PlanTimelineStrip';
 import PlanToolbar, { useRovingToolbar } from './PlanToolbar';
+import SaveTemplateModal from './SaveTemplateModal';
 import ShortcutsModal from './ShortcutsModal';
 import TaskDependencyModal from './TaskDependencyModal';
 import TaskInfoModal from './TaskInfoModal';
+import TemplatesModal from './TemplatesModal';
 import UpdateProjectModal from './UpdateProjectModal';
 import { CompletionContext, useCompletion } from './useCompletion';
 import { usePlan, type PlanController } from './usePlan';
@@ -225,6 +227,7 @@ function useInertOutside(ref: RefObject<HTMLElement | null>, on: boolean): void 
 /** The dialogs More opens (and Set baseline's replace question). */
 const MORE_DIALOGS: ReadonlySet<PlanDialog['kind']> = new Set<PlanDialog['kind']>([
   'columns', 'shortcuts', 'replaceBaseline', 'clearBaseline', 'lock', 'updateProject', 'settings', 'deletePlan',
+  'saveTemplate', 'templates',
 ]);
 
 /** A dialog from More that closes with no dialog under it hands focus back
@@ -392,7 +395,8 @@ export default function PlanTab({ initiativeId, initiative }: {
   } else if (ctl.status === 'none' || !ctl.plan) {
     body = (
       <PlanEmptyState canAdd={can('project_plans', 'add')}
-                      onBlank={() => setDialog({ kind: 'create' })} />
+                      onBlank={() => setDialog({ kind: 'create' })}
+                      onTemplate={() => setDialog({ kind: 'create', fromTemplate: true })} />
     );
   } else {
     const plan = ctl.plan;
@@ -495,7 +499,8 @@ export default function PlanTab({ initiativeId, initiative }: {
 
       {/* the dialogs host */}
       {dialog?.kind === 'create' && (
-        <PlanCreateModal ctl={ctl} initiative={initiative} onClose={closeDialog} />
+        <PlanCreateModal ctl={ctl} initiative={initiative} fromTemplate={dialog.fromTemplate}
+                         onClose={closeDialog} />
       )}
       {dialog?.kind === 'columns' && <ColumnsModal onClose={closeDialog} />}
       {dialog?.kind === 'shortcuts' && <ShortcutsModal onClose={closeDialog} />}
@@ -514,6 +519,12 @@ export default function PlanTab({ initiativeId, initiative }: {
       {dialog?.kind === 'settings' && <PlanSettingsModal ctl={ctl} onClose={closeDialog} />}
       {dialog?.kind === 'deletePlan' && (
         <DeletePlanModal ctl={ctl} initiativeName={initiative.name} onClose={closeDialog} />
+      )}
+      {dialog?.kind === 'saveTemplate' && ctl.plan && (
+        <SaveTemplateModal planId={ctl.plan.id} taskCount={ctl.plan.tasks.length} onClose={closeDialog} />
+      )}
+      {dialog?.kind === 'templates' && ctl.plan && (
+        <TemplatesModal permissions={ctl.plan.permissions} onClose={closeDialog} />
       )}
 
       {/* the completion check, over any dialog it answers for */}

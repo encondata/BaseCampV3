@@ -67,6 +67,14 @@ const CASES: [string, () => Promise<unknown>, string, string, unknown][] = [
     '/system/project-plans', { critical_slack_days: 0.5 }],
   ['getTimelineMilestones', () => P.getTimelineMilestones('2026-09-01', '2026-09-30'), 'GET',
     '/plans/timeline?from=2026-09-01&to=2026-09-30', undefined],
+  ['createPlan from a template', () => P.createPlan('i1', { project_start: '2026-11-09', template_id: 't 1' }),
+    'POST', '/initiatives/i1/plan', { project_start: '2026-11-09', template_id: 't 1' }],
+  ['listPlanTemplates', () => P.listPlanTemplates(), 'GET', '/plan-templates', undefined],
+  ['saveAsTemplate', () => P.saveAsTemplate('p 1', { name: 'Hall move', description: null }), 'POST',
+    '/plans/p%201/save-as-template', { name: 'Hall move', description: null }],
+  ['patchPlanTemplate', () => P.patchPlanTemplate('t/1', { name: 'Renamed' }), 'PATCH', '/plan-templates/t%2F1',
+    { name: 'Renamed' }],
+  ['deletePlanTemplate', () => P.deletePlanTemplate('t1'), 'DELETE', '/plan-templates/t1', undefined],
 ];
 
 describe('routes', () => {

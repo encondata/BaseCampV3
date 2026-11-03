@@ -25,6 +25,10 @@ export const PLAN_ERRORS: Record<string, string> = {
   bad_owner: 'The plan owner has to be a staff member.',
   bad_timezone: 'Choose a timezone from the list.',
   bad_restore: 'That change can’t be undone anymore, so reload the plan and try again.',
+  // templates
+  template_exists: 'A template with that name already exists, so choose another name.',
+  template_not_found: 'That template no longer exists, so choose another one.',
+  bad_template: 'This template can’t be used anymore, so save it again from a plan.',
   // the all-initiatives Timeline page's milestones (GET /plans/timeline)
   bad_range: 'The range ends before it starts.',
   // tasks and the outline

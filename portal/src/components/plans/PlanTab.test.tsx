@@ -42,6 +42,7 @@ const api = vi.hoisted(() => ({
   clearBaseline: vi.fn(),
   updateProject: vi.fn(),
   getPlanVersion: vi.fn(),
+  listPlanTemplates: vi.fn(),
 }));
 vi.mock('../../lib/plans/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/plans/api')>()),
@@ -114,6 +115,7 @@ const inertAround = (text: string) => screen.getByText(text).closest('[inert]') 
 
 beforeEach(() => {
   for (const fn of [toast, ...Object.values(api)]) fn.mockReset();
+  api.listPlanTemplates.mockResolvedValue([]);
   auth.plans = { view: true, add: true, change: true, delete: true };
   location = '';
 });
@@ -143,7 +145,7 @@ describe('loading and errors', () => {
 });
 
 describe('empty state', () => {
-  it('offers three ways to start; template and import wait for a later release', async () => {
+  it('offers three ways to start; import waits for a later release', async () => {
     api.getPlan.mockRejectedValueOnce(noPlan());
     renderTab();
     expect(await screen.findByText('No project plan yet')).not.toBeNull();
@@ -151,11 +153,32 @@ describe('empty state', () => {
     const template = screen.getByRole('button', { name: /^From a template/ });
     const imports = screen.getByRole('button', { name: /^Import from MS Project or Excel/ });
     expect(blank.hasAttribute('disabled')).toBe(false);
-    expect(template.hasAttribute('disabled')).toBe(true);
+    expect(template.hasAttribute('disabled')).toBe(false);
     expect(imports.hasAttribute('disabled')).toBe(true);
-    expect(within(template).getByText('Coming soon')).not.toBeNull();
+    expect(within(template).queryByText('Coming soon')).toBeNull();
     expect(within(imports).getByText('Coming soon')).not.toBeNull();
     expect(within(blank).queryByText('Coming soon')).toBeNull();
+  });
+
+  it('From a template opens the create dialog with a template required, and makes the plan from it', async () => {
+    const user = userEvent.setup();
+    api.getPlan.mockRejectedValueOnce(noPlan());
+    api.listPlanTemplates.mockResolvedValue([{
+      id: 't1', name: 'Hall move', description: null, task_count: 3, created_by_name: null,
+      updated_at: '2026-11-02T15:00:00Z',
+    }]);
+    renderTab();
+    await user.click(await screen.findByRole('button', { name: /^From a template/ }));
+    const dialog = screen.getByRole('dialog', { name: 'New plan from a template' });
+    fireEvent.change(within(dialog).getByLabelText('Project start'), { target: { value: '2026-11-09' } });
+    const picker = within(dialog).getByRole('combobox', { name: 'Template' }) as HTMLInputElement;
+    await waitFor(() => expect(picker.disabled).toBe(false));
+    await user.click(picker);
+    fireEvent.mouseDown(await screen.findByRole('button', { name: /^Hall move/ }));
+    api.createPlan.mockResolvedValueOnce(EMPTY_PLAN);
+    await user.click(within(dialog).getByRole('button', { name: 'Create plan' }));
+    expect(api.createPlan).toHaveBeenCalledWith('init-1', { project_start: '2026-11-09', template_id: 't1' });
+    expect(await screen.findByRole('toolbar', { name: 'Project plan' }, { timeout: 3000 })).not.toBeNull();
   });
 
   it('without project_plans:add shows the message only', async () => {

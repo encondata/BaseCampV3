@@ -14,7 +14,7 @@ import { useRef } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Plan } from '../../lib/plans/api';
-import { COMMAND_TIPS, OFF_NOTES } from '../../lib/plans/commandTips';
+import { COMMAND_TIPS, OFF_NOTES, moreDesc } from '../../lib/plans/commandTips';
 import type { GanttLayout } from '../../lib/plans/ganttView';
 import { makePlan, makeTask } from '../../lib/plans/planFixtures';
 import { planShortcutKeys } from '../../lib/plans/shortcuts';
@@ -315,28 +315,40 @@ describe('hover tips', () => {
 
   it('More’s sentence names what it holds, Delete plan only for those who may delete', () => {
     const { unmount } = render(<Bar plan={makePlan()} cmd={commands()} />);
-    expect(hoverTip(button('More')).desc).toBe(COMMAND_TIPS.more.desc);
-    expect(COMMAND_TIPS.more.desc).toMatch(/delete the plan\.$/);
+    expect(hoverTip(button('More')).desc).toBe(
+      'Set or clear the baseline, update the project, lock the schedule, change plan settings, save the plan '
+      + 'as a template, manage templates, choose the sheet’s columns, see the keyboard shortcuts, or delete the plan.');
+    expect(COMMAND_TIPS.more.desc).toBe(moreDesc({ view: true, add: true, change: true, delete: true }));
     unmount();
     const noDelete = render(<Bar plan={makePlan({ permissions: { view: true, add: true, change: true, delete: false } })}
                                  cmd={commands()} />);
-    expect(hoverTip(button('More')).desc).toBe(COMMAND_TIPS.moreNoDelete.desc);
-    expect(COMMAND_TIPS.moreNoDelete.desc).not.toMatch(/delete/i);
+    expect(hoverTip(button('More')).desc).toBe(moreDesc({ view: true, add: true, change: true, delete: false }));
+    expect(hoverTip(button('More')).desc).not.toMatch(/delete/i);
     noDelete.unmount();
     const reader = render(<Bar plan={makePlan({ permissions: { view: true, add: false, change: false, delete: false } })}
                                cmd={commands()} />);
-    expect(hoverTip(button('More')).desc).toBe(COMMAND_TIPS.moreReadOnly.desc);
+    expect(hoverTip(button('More')).desc).toBe('Choose the sheet’s columns, or see the keyboard shortcuts.');
     reader.unmount();
-    // a reader who may delete the plan: the columns, the shortcuts and Delete plan
+    // a reader who may delete: the templates too (to delete them), the columns, the shortcuts and Delete plan
     render(<Bar plan={makePlan({ permissions: { view: true, add: false, change: false, delete: true } })}
                 cmd={commands()} />);
-    expect(hoverTip(button('More')).desc).toBe(COMMAND_TIPS.moreReadOnlyDelete.desc);
-    expect(COMMAND_TIPS.moreReadOnlyDelete.desc).toBe(
-      'Choose the sheet’s columns, see the keyboard shortcuts, or delete the plan.');
+    expect(hoverTip(button('More')).desc).toBe(
+      'Manage templates, choose the sheet’s columns, see the keyboard shortcuts, or delete the plan.');
     vi.useRealTimers();
     fireEvent.click(button('More'));
     expect(screen.getAllByRole('menuitem').map((m) => m.textContent))
-      .toEqual(['Columns…', 'Keyboard shortcuts', 'Delete plan…']);
+      .toEqual(['Templates…', 'Columns…', 'Keyboard shortcuts', 'Delete plan…']);
+  });
+
+  it('Save as template needs add; Templates… needs change or delete', () => {
+    render(<Bar plan={makePlan({ permissions: { view: true, add: true, change: false, delete: false } })}
+                cmd={commands()} />);
+    expect(hoverTip(button('More')).desc).toBe(
+      'Save the plan as a template, choose the sheet’s columns, or see the keyboard shortcuts.');
+    vi.useRealTimers();
+    fireEvent.click(button('More'));
+    expect(screen.getAllByRole('menuitem').map((m) => m.textContent))
+      .toEqual(['Save as template…', 'Columns…', 'Keyboard shortcuts']);
   });
 
   it('the More trigger’s tip says what it holds, and goes once its menu opens', () => {
@@ -497,8 +509,8 @@ describe('More', () => {
     render(<Bar plan={makePlan({ baseline_set_at: '2026-10-20T10:00:00Z' })} cmd={cmd} />);
     await user.click(screen.getByRole('button', { name: 'More' }));
     expect(screen.getAllByRole('menuitem').map((m) => m.firstChild?.textContent)).toEqual([
-      'Set baseline…', 'Clear baseline…', 'Update project…', 'Lock schedule…', 'Plan settings…', 'Columns…',
-      'Keyboard shortcuts', 'Delete plan…',
+      'Set baseline…', 'Clear baseline…', 'Update project…', 'Lock schedule…', 'Plan settings…',
+      'Save as template…', 'Templates…', 'Columns…', 'Keyboard shortcuts', 'Delete plan…',
     ]);
     const menu = document.querySelector('.pop-menu') as HTMLElement;
     expect(Number(menu.style.zIndex)).toBeGreaterThan(60);
@@ -508,7 +520,8 @@ describe('More', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Lock schedule…' }));
     expect(cmd.lock).toHaveBeenCalled();
     for (const [item, kind] of [['Clear baseline…', 'clearBaseline'], ['Update project…', 'updateProject'],
-      ['Plan settings…', 'settings'], ['Delete plan…', 'deletePlan'], ['Columns…', 'columns']] as const) {
+      ['Plan settings…', 'settings'], ['Delete plan…', 'deletePlan'], ['Columns…', 'columns'],
+      ['Save as template…', 'saveTemplate'], ['Templates…', 'templates']] as const) {
       await user.click(screen.getByRole('button', { name: 'More' }));
       await user.click(screen.getByRole('menuitem', { name: item }));
       expect(cmd.open).toHaveBeenLastCalledWith(kind);

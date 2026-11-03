@@ -6,6 +6,8 @@
  *    an instant, read in the browser's zone like the lock banner's.
  *  - ClearBaselineModal: empties every task's baseline; can't be undone.
  *  - LockModal: "Only progress can be updated until someone unlocks it."
+ *  - DeleteTemplateModal: Templates › Delete…; plans already made from
+ *    the template keep their tasks.
  * A refusal stays in the dialog with its reason; someone else's change
  * (409 plan_changed) closes it quietly — usePlan reloaded and said so.
  */
@@ -118,5 +120,20 @@ export function LockModal({ ctl, onClose }: { ctl: PlanController; onClose(): vo
   return (
     <Confirm title="Lock the schedule?" description={LOCK_DESCRIPTION} action="Lock schedule" onClose={onClose}
              write={() => attempt(() => ctl.lock())} />
+  );
+}
+
+/** Templates › Delete…: asks once, over the Templates dialog. `remove`
+ *  deletes it and answers the refusal in words, or null once it's gone
+ *  (the Templates dialog drops its card and says so). */
+export function DeleteTemplateModal({ name, remove, onClose }: {
+  name: string;
+  remove(): Promise<string | null>;
+  onClose(): void;
+}) {
+  return (
+    <Confirm title={`Delete the template “${name}”?`} action="Delete template" danger onClose={onClose}
+             description="Plans already made from it keep their tasks. This can’t be undone."
+             write={remove} />
   );
 }

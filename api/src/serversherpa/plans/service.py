@@ -46,6 +46,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.learning.codes import initiative_site_id
 from serversherpa.learning.emails import ADDRESS_COLUMNS, listed_address
+from serversherpa.plans import templates
 from serversherpa.plans.calendar import STANDARD_CALENDAR, CalendarError, WorkCalendar
 from serversherpa.plans.durations import Duration, Units, format_duration, format_lag
 from serversherpa.plans.engine import (
@@ -59,7 +60,13 @@ from serversherpa.plans.engine import (
     schedule,
 )
 from serversherpa.plans.floating import format_floating, plan_now
-from serversherpa.plans.models import PlanAssignment, PlanLink, PlanTask, ProjectPlan
+from serversherpa.plans.models import (
+    PlanAssignment,
+    PlanLink,
+    PlanTask,
+    PlanTemplate,
+    ProjectPlan,
+)
 from serversherpa.plans.predecessors import PredSpec, format_predecessors
 from serversherpa.plans.schemas import (
     AssigneeOut,
@@ -407,18 +414,45 @@ async def plan_zone(db: AsyncSession, initiative: Initiative) -> str:
     return zone.key
 
 
+async def template_or_404(db: AsyncSession, template_id: uuid.UUID) -> PlanTemplate:
+    """The template, else 404 `template_not_found`. Templates are not tied
+    to an initiative: anyone with the `project_plans` action may use them."""
+    template = await db.get(PlanTemplate, template_id)
+    if template is None:
+        raise err(404, "template_not_found")
+    return template
+
+
+def template_data(template: PlanTemplate) -> dict:
+    """The template's data, checked (422 `bad_template` when this code
+    cannot apply it)."""
+    try:
+        templates.check(template.data)
+    except templates.TemplateError as exc:
+        raise err(422, exc.code) from None
+    return template.data
+
+
 async def create_plan(db: AsyncSession, initiative: Initiative, actor: AuthContext, *,
-                      project_start: datetime, owner_id: uuid.UUID | None) -> ProjectPlan:
-    """A new, empty plan for the initiative: the site's zone, its own copy
-    of the system calendar, no overrides, version 1. Flushed (so it has an
-    id) and audited (`plan_create`); the caller commits. A second plan for
-    the same initiative fails the flush on `project_plans_initiative_id_key`."""
+                      project_start: datetime, owner_id: uuid.UUID | None,
+                      template: PlanTemplate | None = None) -> ProjectPlan:
+    """A new plan for the initiative: the site's zone, version 1. Without a
+    template it is empty, with its own copy of the system calendar and no
+    overrides. From a template (plans/templates.py) it takes the
+    template's calendar and settings overrides and its tasks and links,
+    every date shifted to `project_start`, and is recalculated (422 with
+    the engine's or the calendar's code when it cannot be scheduled).
+    Flushed (so it has an id) and audited (`plan_create`, naming the
+    template); the caller commits. A second plan for the same initiative
+    fails the flush on `project_plans_initiative_id_key`."""
+    data = template_data(template) if template is not None else None
     plan = ProjectPlan(
         initiative_id=initiative.id,
         timezone=await plan_zone(db, initiative),
         project_start=project_start,
-        calendar=await system_calendar(db),
-        settings={},
+        calendar=(copy.deepcopy(data["calendar"]) if data is not None
+                  else await system_calendar(db)),
+        settings=copy.deepcopy(data.get("settings") or {}) if data is not None else {},
         owner_id=owner_id,
         version=1,
         created_by=actor.person.id,
@@ -426,12 +460,27 @@ async def create_plan(db: AsyncSession, initiative: Initiative, actor: AuthConte
     )
     db.add(plan)
     await db.flush()
+    changes = {"initiative_id": str(initiative.id),
+               "project_start": format_floating(project_start),
+               "timezone": plan.timezone,
+               "owner_id": str(owner_id) if owner_id is not None else None}
+    if data is not None:
+        try:
+            await templates.instantiate(db, plan, data)
+        except templates.TemplateError as exc:
+            raise err(422, exc.code) from None
+        state = await load_state(db, plan)
+        renumber(state)
+        try:
+            recalc(state, await settings_of(db, plan))
+        except ScheduleError as exc:
+            raise schedule_error(state, exc) from None
+        except CalendarError as exc:
+            raise calendar_error(exc) from None
+        changes |= {"template_id": str(template.id), "template_name": template.name,
+                    "tasks": len(state.tasks)}
     audit(db, actor_id=actor.person.id, entity_type="project_plan", entity_id=str(plan.id),
-          action="plan_create",
-          changes={"initiative_id": str(initiative.id),
-                   "project_start": format_floating(project_start),
-                   "timezone": plan.timezone,
-                   "owner_id": str(owner_id) if owner_id is not None else None})
+          action="plan_create", changes=changes)
     return plan
 
 

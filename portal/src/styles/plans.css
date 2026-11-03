@@ -224,6 +224,7 @@
 .pln-panes::-webkit-scrollbar,
 .pln-hbar::-webkit-scrollbar,
 .pln-colpick::-webkit-scrollbar,
+.pln-tmpls::-webkit-scrollbar,
 .pln-month-scroll::-webkit-scrollbar,
 .pln-board::-webkit-scrollbar,
 .pln-board-cards::-webkit-scrollbar { width: 12px; height: 12px; }
@@ -232,12 +233,14 @@
 .pln-hbar::-webkit-scrollbar-track,
 .pln-colpick::-webkit-scrollbar-track,
 .pln-colpick::-webkit-scrollbar-corner,
+.pln-tmpls::-webkit-scrollbar-track,
 .pln-month-scroll::-webkit-scrollbar-track,
 .pln-board::-webkit-scrollbar-track,
 .pln-board-cards::-webkit-scrollbar-track { background: transparent; }
 .pln-panes::-webkit-scrollbar-thumb,
 .pln-hbar::-webkit-scrollbar-thumb,
 .pln-colpick::-webkit-scrollbar-thumb,
+.pln-tmpls::-webkit-scrollbar-thumb,
 .pln-month-scroll::-webkit-scrollbar-thumb,
 .pln-board::-webkit-scrollbar-thumb,
 .pln-board-cards::-webkit-scrollbar-thumb {
@@ -249,6 +252,7 @@
 .pln-panes::-webkit-scrollbar-thumb:hover,
 .pln-hbar::-webkit-scrollbar-thumb:hover,
 .pln-colpick::-webkit-scrollbar-thumb:hover,
+.pln-tmpls::-webkit-scrollbar-thumb:hover,
 .pln-month-scroll::-webkit-scrollbar-thumb:hover,
 .pln-board::-webkit-scrollbar-thumb:hover,
 .pln-board-cards::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--text-mute) 65%, transparent); }
@@ -256,6 +260,7 @@
   .pln-panes,
   .pln-hbar,
   .pln-colpick,
+  .pln-tmpls,
   .pln-month-scroll,
   .pln-board,
   .pln-board-cards { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text-mute) 45%, transparent) transparent; }
@@ -1527,7 +1532,8 @@
 .pln-ti-panel { display: flex; flex-direction: column; gap: 12px; }
 .pln-ti-mode { display: flex; }
 .pln-ti-mode button:disabled { opacity: 0.55; cursor: not-allowed; }
-.pf-form textarea.pln-ti-notes {
+.pf-form textarea.pln-ti-notes,
+.pf-form textarea.pln-text-field {
   width: 100%;
   box-sizing: border-box;
   min-height: 220px;
@@ -1541,12 +1547,14 @@
   border-radius: 9px;
   outline: none;
 }
-.pf-form textarea.pln-ti-notes:focus {
+.pf-form textarea.pln-ti-notes:focus,
+.pf-form textarea.pln-text-field:focus {
   border-color: var(--amber);
   box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
   background: var(--surface);
 }
-.pf-form textarea.pln-ti-notes:disabled { opacity: 0.6; }
+.pf-form textarea.pln-ti-notes:disabled,
+.pf-form textarea.pln-text-field:disabled { opacity: 0.6; }
 /* the Predecessors grid: ID · Task Name · Type · Lag · remove */
 .pln-ti-preds {
   display: grid;
@@ -1700,3 +1708,58 @@
 
 .pln-update,
 .pln-delete-plan { width: min(520px, 86vw); }
+
+/* ── New project plan, Save as template, Templates… ─────────────── */
+
+/* at least the house dialog width; as wide as the card when its header
+   description runs longer, so the fields line up with it */
+.pln-create-form,
+.pln-template-form { min-width: min(520px, 86vw); width: 100%; box-sizing: border-box; }
+/* a description field: Task Information's Notes look, three lines tall */
+.pf-form textarea.pln-text-field { min-height: 76px; }
+
+/* the template cards scroll inside the dialog so Done stays in view */
+.pln-tmpls {
+  list-style: none;
+  margin: 0;
+  padding: 0 4px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(560px, 86vw);
+  max-height: min(56vh, 560px);
+  overflow-y: auto;
+}
+.pln-tmpl {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 8px 10px 14px;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.pln-tmpl-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.pln-tmpl-name { font-size: 14px; font-weight: 600; color: var(--text-dark); overflow-wrap: anywhere; }
+.pln-tmpl-desc { font-size: 13px; color: var(--text-dark); white-space: pre-wrap; overflow-wrap: anywhere; }
+.pln-tmpl-desc.none { color: var(--text-mute); font-style: italic; }
+/* an editor in a card: the field over its Save / Cancel */
+.pf-form.pln-tmpl-edit { gap: 8px; }
+.pln-tmpl-btns { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pln-tmpl-none,
+.pln-tmpl-problem { width: min(560px, 86vw); }
+.pln-tmpl-problem { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pln-tmpl-problem .pf-error { margin: 0; }
+/* the card's ⋯ Actions: the Board card menu's quiet button */
+.mini-btn.pln-tmpl-menu {
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  justify-content: center;
+  border-color: transparent;
+  background: transparent;
+  flex: none;
+}
+.mini-btn.pln-tmpl-menu:hover,
+.mini-btn.pln-tmpl-menu[aria-expanded='true'] { border-color: var(--paper-line); background: var(--surface-2); }
+.mini-btn.pln-tmpl-menu svg { width: 14px; height: 14px; }

@@ -18,7 +18,8 @@
  * lib/plans/commandTips.
  *
  * Read-only people see Display (Gantt Layout included) and More (Columns…,
- * Keyboard shortcuts) only. On a locked plan the buttons that change the schedule
+ * Keyboard shortcuts) only. More's template commands follow their own
+ * permissions: Save as template… `add`, Templates… `change` or `delete`. On a locked plan the buttons that change the schedule
  * stay reachable but off, their tip saying "Schedule is locked"; progress
  * (0–100%, Mark on Track, Notes) and Task color still work. A button that needs a
  * selection says so instead; with the chart Hidden, the chart-only commands
@@ -42,7 +43,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type Rea
 import type { Plan } from '../../lib/plans/api';
 import { sharedColor } from '../../lib/plans/commands';
 import {
-  COMMAND_TIPS, OFF_NOTES, redoDesc, tipKeys, undoDesc, type CommandTipId,
+  COMMAND_TIPS, OFF_NOTES, moreDesc, redoDesc, tipKeys, undoDesc, type CommandTipId,
 } from '../../lib/plans/commandTips';
 import { canAddTasks } from '../../lib/plans/editOps';
 import { ZOOMS } from '../../lib/plans/ganttGeometry';
@@ -117,6 +118,15 @@ export default function PlanToolbar({
       { key: 'settings', label: 'Plan settings…', onSelect: () => cmd.open('settings') },
     );
   }
+  // templates (spec Templates): saving one is `add` (it reads the plan, so
+  // a locked plan can be saved too); the Templates dialog renames and
+  // describes them (`change`) and deletes them (`delete`)
+  if (plan.permissions.add) {
+    more.push({ key: 'save-template', label: COMMAND_TIPS.saveTemplate.label, onSelect: () => cmd.open('saveTemplate') });
+  }
+  if (canChange || plan.permissions.delete) {
+    more.push({ key: 'templates', label: COMMAND_TIPS.templates.label, onSelect: () => cmd.open('templates') });
+  }
   more.push(
     { key: 'columns', label: 'Columns…', onSelect: () => cmd.open('columns') },
     { key: 'shortcuts', label: 'Keyboard shortcuts', onSelect: () => cmd.open('shortcuts') },
@@ -131,9 +141,8 @@ export default function PlanToolbar({
     <Tool key={id} label={COMMAND_TIPS[id].label} desc={o.desc ?? COMMAND_TIPS[id].desc} keys={tipKeys(id, os)}
           hint={o.hint ?? null} pressed={o.pressed} onRun={run} focusSheet={cmd.focusSheet}>{icon}</Tool>
   );
-  const canDelete = plan.permissions.delete;
-  const moreTip = COMMAND_TIPS[canChange ? (canDelete ? 'more' : 'moreNoDelete')
-    : (canDelete ? 'moreReadOnlyDelete' : 'moreReadOnly')];
+  // More's sentence names what this menu holds
+  const moreTip = { label: COMMAND_TIPS.more.label, desc: moreDesc(plan.permissions) };
 
   return (
     <>

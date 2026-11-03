@@ -43,6 +43,10 @@ const api = vi.hoisted(() => ({
   clearBaseline: vi.fn(),
   updateProject: vi.fn(),
   getPlanVersion: vi.fn(),
+  listPlanTemplates: vi.fn(),
+  saveAsTemplate: vi.fn(),
+  patchPlanTemplate: vi.fn(),
+  deletePlanTemplate: vi.fn(),
 }));
 vi.mock('../../lib/plans/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/plans/api')>()),
@@ -224,6 +228,26 @@ describe('Update project, Plan settings, Delete plan', () => {
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(grid()));
+  });
+
+  it('More opens Save as template (posting this plan) and Templates', async () => {
+    const user = await ready();
+    await more(user, 'Save as template…');
+    const save = await dialogNamed('Save as template');
+    await user.type(within(save).getByLabelText('Name'), 'Hall move');
+    api.saveAsTemplate.mockResolvedValueOnce({ id: 't1', name: 'Hall move' });
+    await user.click(within(save).getByRole('button', { name: 'Save template' }));
+    expect(api.saveAsTemplate).toHaveBeenCalledWith(plan3().id, { name: 'Hall move', description: null });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(toast).toHaveBeenCalledWith('Template “Hall move” saved.');
+
+    api.listPlanTemplates.mockResolvedValueOnce([{
+      id: 't1', name: 'Hall move', description: null, task_count: 3, created_by_name: 'Jimmy Henderson',
+      updated_at: '2026-11-02T15:00:00Z',
+    }]);
+    await more(user, 'Templates…');
+    const list = await dialogNamed('Templates');
+    expect(await within(list).findByText('Hall move')).not.toBeNull();
   });
 
   it('More opens Update project and Plan settings', async () => {

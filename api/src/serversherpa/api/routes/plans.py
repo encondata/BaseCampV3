@@ -8,19 +8,20 @@ the actor cannot see reads as 404, never 403."""
 
 import logging
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Query
-from sqlalchemy import func, select
+from sqlalchemy import Text, cast, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
-from serversherpa.plans import notices, ops, plan_writes, service, timeline
+from serversherpa.db.ordering import natural
+from serversherpa.plans import notices, ops, plan_writes, service, templates, timeline
 from serversherpa.plans.calendar import CalendarError, WorkCalendar
 from serversherpa.plans.floating import format_floating, parse_floating
-from serversherpa.plans.models import PlanTask
+from serversherpa.plans.models import PlanTask, PlanTemplate
 from serversherpa.plans.ops_progress import UpdateProjectOp
 from serversherpa.plans.schemas import (
     BaselineIn,
@@ -29,6 +30,9 @@ from serversherpa.plans.schemas import (
     PlanCreateIn,
     PlanOut,
     PlanPatchIn,
+    PlanTemplateOut,
+    PlanTemplatePatchIn,
+    PlanTemplateSaveIn,
     PlanTimelineOut,
     PlanVersionOut,
     UpdateProjectIn,
@@ -40,6 +44,7 @@ router = APIRouter(tags=["plans"])
 logger = logging.getLogger("serversherpa.api.routes.plans")
 
 PLAN_UNIQUE = "project_plans_initiative_id_key"
+TEMPLATE_UNIQUE = "plan_templates_name_key"
 
 
 @router.get("/plans/timeline", response_model=PlanTimelineOut)
@@ -78,12 +83,24 @@ async def create_plan(
     db: DbSession,
     actor: AuthContext = require_permission("project_plans", "add"),
 ) -> PlanOut:
+    """A new plan: empty on the system calendar, or from `template_id`
+    (404 `template_not_found`) with the template's tasks, links, calendar
+    and settings, its dates shifted to `project_start`."""
     initiative = await service.visible_initiative(db, initiative_id, actor)
     if await service.plan_of_initiative(db, initiative_id) is not None:
         raise err(409, "plan_exists")
-    # a date-only start begins at the calendar's default start, and the new
-    # plan's calendar is the system one
-    calendar = WorkCalendar.from_json(await service.system_calendar(db))
+    # a date-only start begins at the default start of the calendar the new
+    # plan gets: the template's, else the system one
+    template = None
+    if body.template_id is not None:
+        template = await service.template_or_404(db, body.template_id)
+        calendar_json = service.template_data(template)["calendar"]
+    else:
+        calendar_json = await service.system_calendar(db)
+    try:
+        calendar = WorkCalendar.from_json(calendar_json)
+    except CalendarError as exc:
+        raise service.calendar_error(exc) from None
     try:
         project_start = parse_floating(body.project_start,
                                        date_only_time=calendar.default_start)
@@ -99,10 +116,9 @@ async def create_plan(
             db, person_id) else None
     elif owner_id is not None and not await service.is_staff(db, owner_id):
         raise err(422, "bad_owner")
-    # body.template_id is accepted and unused until templates land (Plan C)
     try:
         plan = await service.create_plan(db, initiative, actor, project_start=project_start,
-                                         owner_id=owner_id)
+                                         owner_id=owner_id, template=template)
         await db.commit()
     except IntegrityError as exc:
         # another create for this initiative won the race
@@ -298,3 +314,155 @@ async def plan_version(
     change; every write bumps it."""
     plan = await service.plan_for_actor(db, plan_id, actor)
     return await plan_writes.version_out(db, plan)
+
+
+# --- templates (plans/templates.py) -------------------------------------------------
+
+
+def _template_name(text: str | None) -> str:
+    """A template name, trimmed: 1-120 characters, else 422 `bad_field`."""
+    name = (text or "").strip()
+    if not name or len(name) > templates.MAX_NAME:
+        raise err(422, "bad_field", field="name")
+    return name
+
+
+def _template_description(text: str | None) -> str | None:
+    """A description, trimmed (blank = none): up to 1,000 characters."""
+    description = (text or "").strip()
+    if len(description) > templates.MAX_DESCRIPTION:
+        raise err(422, "bad_field", field="description")
+    return description or None
+
+
+async def _name_taken(db: AsyncSession, name: str, but: uuid.UUID | None = None) -> bool:
+    """True when another template has `name`, ignoring case (CITEXT)."""
+    stmt = select(PlanTemplate.id).where(PlanTemplate.name == name)
+    if but is not None:
+        stmt = stmt.where(PlanTemplate.id != but)
+    return await db.scalar(stmt.limit(1)) is not None
+
+
+async def _templates_out(db: AsyncSession, template_id: uuid.UUID | None = None
+                         ) -> list[PlanTemplateOut]:
+    """Every template (or just `template_id`) by name, naturally sorted,
+    without its data: the task count is read in SQL."""
+    task_count = func.coalesce(func.jsonb_array_length(PlanTemplate.data["tasks"]), 0)
+    stmt = select(PlanTemplate.id, PlanTemplate.name, PlanTemplate.description,
+                  task_count.label("task_count"), PlanTemplate.created_by,
+                  PlanTemplate.updated_at)
+    if template_id is not None:
+        stmt = stmt.where(PlanTemplate.id == template_id)
+    rows = (await db.execute(
+        stmt.order_by(natural(cast(PlanTemplate.name, Text)), PlanTemplate.id))).all()
+    names = await service.person_names(db, [row.created_by for row in rows])
+    return [PlanTemplateOut(id=row.id, name=row.name, description=row.description,
+                            task_count=row.task_count,
+                            created_by_name=names.get(row.created_by),
+                            updated_at=row.updated_at)
+            for row in rows]
+
+
+async def _flush_template(db: AsyncSession) -> None:
+    """Flush a new or renamed template: another save or rename to the same
+    name at once trips the unique index, 409 `template_exists`."""
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        if TEMPLATE_UNIQUE not in str(getattr(exc, "orig", "")) and TEMPLATE_UNIQUE not in str(exc):
+            raise
+        await db.rollback()
+        raise err(409, "template_exists") from None
+
+
+@router.get("/plan-templates", response_model=list[PlanTemplateOut])
+async def list_templates(
+    db: DbSession,
+    actor: AuthContext = require_permission("project_plans", "view"),
+) -> list[PlanTemplateOut]:
+    """Every plan template, by name. Templates belong to no initiative."""
+    return await _templates_out(db)
+
+
+@router.post("/plans/{plan_id}/save-as-template", response_model=PlanTemplateOut,
+             status_code=201)
+async def save_as_template(
+    plan_id: uuid.UUID,
+    body: PlanTemplateSaveIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("project_plans", "add"),
+) -> PlanTemplateOut:
+    """Save the plan's structure as a new template (plans/templates.py,
+    snapshot): names, outline, durations, links, constraints, deadlines,
+    notes, colors, the calendar and the settings overrides, every date as
+    an offset from the project start; never assignees, progress or the
+    baseline. 409 `template_exists` when the name is taken (ignoring case)."""
+    plan = await service.plan_for_actor(db, plan_id, actor)
+    name = _template_name(body.name)
+    description = _template_description(body.description)
+    if await _name_taken(db, name):
+        raise err(409, "template_exists")
+    data = templates.snapshot(await service.load_state(db, plan))
+    now = datetime.now(UTC)
+    template = PlanTemplate(id=uuid.uuid4(), name=name, description=description, data=data,
+                            created_by=actor.person.id, updated_by=actor.person.id,
+                            created_at=now, updated_at=now)
+    db.add(template)
+    await _flush_template(db)
+    audit(db, actor_id=actor.person.id, entity_type="plan_template", entity_id=str(template.id),
+          action="plan_template_save",
+          changes={"plan_id": str(plan.id), "initiative_id": str(plan.initiative_id),
+                   "name": name, "tasks": len(data["tasks"]), "links": len(data["links"])})
+    out = (await _templates_out(db, template.id))[0]
+    await db.commit()
+    return out
+
+
+@router.patch("/plan-templates/{template_id}", response_model=PlanTemplateOut)
+async def patch_template(
+    template_id: uuid.UUID,
+    body: PlanTemplatePatchIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("project_plans", "change"),
+) -> PlanTemplateOut:
+    """Rename a template or change its description (PlanTemplatePatchIn);
+    audited `plan_template_update` with each field's from/to. A PATCH that
+    changes nothing writes nothing."""
+    template = await service.template_or_404(db, template_id)
+    sent = body.model_fields_set
+    new: dict = {}
+    if "name" in sent:
+        new["name"] = _template_name(body.name)
+    if "description" in sent:
+        new["description"] = _template_description(body.description)
+    changes = {key: {"from": getattr(template, key), "to": value}
+               for key, value in new.items() if getattr(template, key) != value}
+    if changes:
+        if "name" in changes and await _name_taken(db, new["name"], but=template.id):
+            raise err(409, "template_exists")
+        for key in changes:
+            setattr(template, key, new[key])
+        template.updated_at, template.updated_by = datetime.now(UTC), actor.person.id
+        await _flush_template(db)
+        audit(db, actor_id=actor.person.id, entity_type="plan_template",
+              entity_id=str(template.id), action="plan_template_update", changes=changes)
+    out = (await _templates_out(db, template.id))[0]
+    await db.commit()
+    return out
+
+
+@router.delete("/plan-templates/{template_id}", status_code=204)
+async def delete_template(
+    template_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("project_plans", "delete"),
+) -> None:
+    """Delete a template; plans made from it keep their tasks."""
+    template = await service.template_or_404(db, template_id)
+    tasks = template.data.get("tasks") if isinstance(template.data, dict) else None
+    audit(db, actor_id=actor.person.id, entity_type="plan_template", entity_id=str(template.id),
+          action="plan_template_delete",
+          changes={"name": template.name,
+                   "tasks": len(tasks) if isinstance(tasks, list) else 0})
+    await db.delete(template)
+    await db.commit()

@@ -128,13 +128,6 @@ async def test_bad_project_start(client, db):
         assert resp.json()["detail"]["field"] == "project_start"
 
 
-async def test_template_id_is_accepted_and_ignored(client, db):
-    hdrs = await _admin(db, client)
-    move = await _initiative(db)
-    body = await _create(client, hdrs, move, template_id=str(uuid4()))
-    assert body["tasks"] == []
-
-
 async def test_initiative_window(client, db):
     hdrs = await _admin(db, client)
     move = await _initiative(db, scheduled_start=_midnight(date(2026, 11, 2)),

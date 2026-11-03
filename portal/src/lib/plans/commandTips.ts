@@ -9,6 +9,7 @@
  *
  * American English, MS Project's vocabulary, one short sentence each.
  */
+import type { PlanPermissions } from './api';
 import { planShortcutKeys, type PlanShortcutId, type Platform } from './shortcuts';
 
 export interface CommandTip {
@@ -17,6 +18,27 @@ export interface CommandTip {
   /** What it does, in one plain sentence. */
   desc: string;
   shortcut?: PlanShortcutId;
+}
+
+/** More's menu in order: who has each part (`templates`: change or delete;
+ *  `always`: everyone who sees the plan) and what it lets them do. */
+const MORE_PARTS: readonly (readonly ['change' | 'add' | 'templates' | 'always' | 'delete', string])[] = [
+  ['change', 'set or clear the baseline, update the project, lock the schedule, change plan settings'],
+  ['add', 'save the plan as a template'],
+  ['templates', 'manage templates'],
+  ['always', 'choose the sheet’s columns'],
+  ['always', 'see the keyboard shortcuts'],
+  ['delete', 'delete the plan'],
+];
+
+/** More's sentence for these permissions: what its menu holds for them,
+ *  in menu order ("Choose the sheet’s columns, or see the keyboard
+ *  shortcuts."). PlanToolbar builds the menu by the same rules. */
+export function moreDesc(p: PlanPermissions): string {
+  const has = { change: p.change, add: p.add, templates: p.change || p.delete, always: true, delete: p.delete };
+  const parts = MORE_PARTS.filter(([need]) => has[need]).map(([, text]) => text);
+  const text = parts.length > 1 ? `${parts.slice(0, -1).join(', ')}, or ${parts[parts.length - 1]}` : parts[0];
+  return `${text.charAt(0).toUpperCase()}${text.slice(1)}.`;
 }
 
 export const COMMAND_TIPS = {
@@ -107,21 +129,19 @@ export const COMMAND_TIPS = {
   search: { label: 'Search', desc: 'Find tasks by name, notes or resource names.', shortcut: 'find' },
 
   // More, and what's around the toolbar
-  // More: what its menu holds for you
-  more: {
-    label: 'More',
-    desc: 'Set or clear the baseline, update the project, lock the schedule, change plan settings, choose '
-      + 'columns, see the shortcuts, or delete the plan.',
+  // More: what its menu holds with every permission (the tip itself is
+  // moreDesc(): only what this person's menu holds)
+  more: { label: 'More', desc: moreDesc({ view: true, add: true, change: true, delete: true }) },
+  // More's template commands (Save as template…: add; Templates…: change or delete)
+  saveTemplate: {
+    label: 'Save as template…',
+    desc: 'Keep this plan’s tasks, durations, links and calendar to start new plans from.',
   },
-  moreNoDelete: {
-    label: 'More',
-    desc: 'Set or clear the baseline, update the project, lock the schedule, change plan settings, choose '
-      + 'columns, or see the shortcuts.',
-  },
-  moreReadOnly: { label: 'More', desc: 'Choose the sheet’s columns, or see the keyboard shortcuts.' },
-  moreReadOnlyDelete: {
-    label: 'More', desc: 'Choose the sheet’s columns, see the keyboard shortcuts, or delete the plan.',
-  },
+  templates: { label: 'Templates…', desc: 'Rename, describe or delete the saved plan templates.' },
+  // a template's menu in the Templates dialog (named for it: "Actions for <name>")
+  templateActions: { label: 'Actions', desc: 'Rename the template, edit its description, or delete it.' },
+  templateActionsDelete: { label: 'Actions', desc: 'Delete the template.' },
+  templateActionsEdit: { label: 'Actions', desc: 'Rename the template, or edit its description.' },
   fullScreen: { label: 'Full screen', desc: 'Give the plan the whole window.' },
   exitFullScreen: {
     label: 'Exit full screen', desc: 'Show the portal’s menus and page header again.', shortcut: 'exitFullScreen',

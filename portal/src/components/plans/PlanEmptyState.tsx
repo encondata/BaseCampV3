@@ -1,8 +1,9 @@
 /**
  * An initiative with no plan yet: "No project plan yet" and, for
- * `project_plans:add` holders, the three ways to start as ChoiceCards.
- * Templates and import arrive in Plan C; until then their cards are shown
- * disabled with "Coming soon" (Plan C removes the hint and wires them).
+ * `project_plans:add` holders, the three ways to start as ChoiceCards:
+ * Blank plan and From a template open the create dialog (the second with
+ * a template required). Import arrives later in Plan C; until then its
+ * card is shown disabled with "Coming soon".
  */
 
 import { ChoiceCard } from '../reports/ReportOptionsLayout';
@@ -12,9 +13,10 @@ import '../../styles/plans.css';
 
 const COMING_SOON = 'Coming soon';
 
-export default function PlanEmptyState({ canAdd, onBlank }: {
+export default function PlanEmptyState({ canAdd, onBlank, onTemplate }: {
   canAdd: boolean;
   onBlank: () => void;
+  onTemplate: () => void;
 }) {
   return (
     <section className="init-panel pln-empty" aria-labelledby="pln-empty-title">
@@ -30,8 +32,7 @@ export default function PlanEmptyState({ canAdd, onBlank }: {
           <ChoiceCard variant="button" selected={false} onSelect={onBlank}
                       title="Blank plan"
                       description="Start from an empty schedule and add the tasks yourself." />
-          <ChoiceCard variant="button" selected={false} onSelect={() => undefined} disabled
-                      hint={COMING_SOON}
+          <ChoiceCard variant="button" selected={false} onSelect={onTemplate}
                       title="From a template"
                       description="Copy the tasks, durations and links of a saved plan." />
           <ChoiceCard variant="button" selected={false} onSelect={() => undefined} disabled

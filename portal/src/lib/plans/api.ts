@@ -206,7 +206,9 @@ export interface Plan {
 export interface PlanCreate {
   project_start: string;              // YYYY-MM-DD (calendar default start) or a plan time
   owner_id?: string | null;
-  template_id?: string | null;        // accepted, unused until templates land
+  /** A plan template: its tasks, links, calendar and settings, every date
+   *  moved to `project_start`; 404 `template_not_found`. */
+  template_id?: string | null;
 }
 
 /** PATCH /plans/{id} (PlanPatchIn): `base_version` and only the fields that
@@ -545,6 +547,46 @@ export const updateProject = (planId: string, body: UpdateProjectBody) =>
 /** What an open tab polls to notice someone else's change. */
 export const getPlanVersion = (planId: string) =>
   get<PlanVersion>(`/plans/${seg(planId)}/version`);
+
+// ── templates ────────────────────────────────────────────────────────
+
+/** A saved plan template as GET /plan-templates lists it (never its data). */
+export interface PlanTemplate {
+  id: string;
+  name: string;
+  description: string | null;
+  task_count: number;
+  created_by_name: string | null;
+  updated_at: string;                 // an instant
+}
+
+/** Save as template: a name (1-120 characters, unique ignoring case: 409
+ *  `template_exists`) and a description (up to 1,000; blank = none). */
+export interface PlanTemplateSave {
+  name: string;
+  description?: string | null;
+}
+
+/** Rename or describe a template: only the fields that change. */
+export interface PlanTemplatePatch {
+  name?: string;
+  description?: string | null;
+}
+
+/** Every template, by name (project_plans:view). */
+export const listPlanTemplates = () => get<PlanTemplate[]>('/plan-templates');
+
+/** The plan's structure as a new template (project_plans:add). */
+export const saveAsTemplate = (planId: string, body: PlanTemplateSave) =>
+  send<PlanTemplate>(`/plans/${seg(planId)}/save-as-template`, 'POST', body);
+
+/** project_plans:change; 409 `template_exists`, 404 `template_not_found`. */
+export const patchPlanTemplate = (templateId: string, patch: PlanTemplatePatch) =>
+  send<PlanTemplate>(`/plan-templates/${seg(templateId)}`, 'PATCH', patch);
+
+/** project_plans:delete; plans made from it keep their tasks. */
+export const deletePlanTemplate = (templateId: string) =>
+  send<void>(`/plan-templates/${seg(templateId)}`, 'DELETE');
 
 // ── system settings ──────────────────────────────────────────────────
 
