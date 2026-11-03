@@ -37,6 +37,13 @@ vi.mock('../lib/api', async (importActual) => ({
   ...api,
 }));
 
+// `can` above grants project_plans:view, so the page asks for its plan
+// milestones; none here (InitiativeTimeline.milestones.test.tsx covers them)
+vi.mock('../lib/plans/api', async (importActual) => ({
+  ...(await importActual<typeof import('../lib/plans/api')>()),
+  getTimelineMilestones: vi.fn().mockResolvedValue({ milestones: [], summaries: {} }),
+}));
+
 const { default: InitiativeTimeline } = await import('./InitiativeTimeline');
 
 function initiative(over: Partial<InitiativeItem> = {}): InitiativeItem {

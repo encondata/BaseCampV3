@@ -8,14 +8,16 @@ the actor cannot see reads as 404, never 403."""
 
 import logging
 import uuid
+from datetime import date
+from typing import Annotated
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
-from serversherpa.plans import notices, ops, plan_writes, service
+from serversherpa.plans import notices, ops, plan_writes, service, timeline
 from serversherpa.plans.calendar import CalendarError, WorkCalendar
 from serversherpa.plans.floating import format_floating, parse_floating
 from serversherpa.plans.models import PlanTask
@@ -27,6 +29,7 @@ from serversherpa.plans.schemas import (
     PlanCreateIn,
     PlanOut,
     PlanPatchIn,
+    PlanTimelineOut,
     PlanVersionOut,
     UpdateProjectIn,
 )
@@ -37,6 +40,22 @@ router = APIRouter(tags=["plans"])
 logger = logging.getLogger("serversherpa.api.routes.plans")
 
 PLAN_UNIQUE = "project_plans_initiative_id_key"
+
+
+@router.get("/plans/timeline", response_model=PlanTimelineOut)
+async def plans_timeline(
+    db: DbSession,
+    first: Annotated[date, Query(alias="from")],
+    last: Annotated[date, Query(alias="to")],
+    actor: AuthContext = require_permission("project_plans", "view"),
+) -> PlanTimelineOut:
+    """The all-initiatives Timeline page's plan overlay (plans/timeline.py):
+    the flagged tasks finishing `from`..`to` (days, both included) and each
+    visible plan's % complete and next flagged task. Scope-filtered like GET
+    /initiatives. 422 `bad_range` when `to` is before `from`."""
+    if last < first:
+        raise err(422, "bad_range")
+    return await timeline.timeline_out(db, actor, first, last)
 
 
 @router.get("/initiatives/{initiative_id}/plan", response_model=PlanOut)

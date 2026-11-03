@@ -25,6 +25,8 @@ export const PLAN_ERRORS: Record<string, string> = {
   bad_owner: 'The plan owner has to be a staff member.',
   bad_timezone: 'Choose a timezone from the list.',
   bad_restore: 'That change can’t be undone anymore, so reload the plan and try again.',
+  // the all-initiatives Timeline page's milestones (GET /plans/timeline)
+  bad_range: 'The range ends before it starts.',
   // tasks and the outline
   unknown_task: 'That task no longer exists, so reload the plan to see the latest.',
   summary_field: 'A summary task gets its dates, duration and % complete from its subtasks, so they can’t be edited.',

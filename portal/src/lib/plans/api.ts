@@ -556,3 +556,34 @@ export const getProjectPlanSettings = () => get<ProjectPlanSettings>('/system/pr
  *  duration over 10 years in the calendar's units). */
 export const putProjectPlanSettings = (patch: ProjectPlanSettingsPatch) =>
   send<ProjectPlanSettings>('/system/project-plans', 'PUT', patch);
+
+// ── the all-initiatives Timeline page ────────────────────────────────
+
+/** A task flagged Show on timeline, as a diamond on its initiative's row. */
+export interface TimelineMilestone {
+  initiative_id: string;
+  plan_id: string;
+  task_id: string;
+  name: string;
+  at: string;                         // its finish (floating)
+  complete: boolean;
+  late: boolean;                      // the plan tab's status (against its status date, else now)
+}
+
+/** One plan, for the initiative hover card's "Plan:" line. */
+export interface TimelineSummary {
+  percent_complete: number;           // the plan's top-level rollup
+  /** The earliest incomplete flagged task finishing on or after the plan's now. */
+  next: { name: string; at: string } | null;
+}
+
+export interface PlanTimeline {
+  milestones: TimelineMilestone[];
+  summaries: Record<string, TimelineSummary>;   // by initiative id
+}
+
+/** GET /plans/timeline (project_plans:view, scope-filtered like the
+ *  initiatives list): the flagged tasks whose finish day is `from`..`to`
+ *  (`YYYY-MM-DD`, both included) and every visible plan's summary. */
+export const getTimelineMilestones = (from: string, to: string) =>
+  get<PlanTimeline>(`/plans/timeline?from=${seg(from)}&to=${seg(to)}`);

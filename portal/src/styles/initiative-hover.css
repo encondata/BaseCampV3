@@ -73,3 +73,8 @@
 }
 
 .ihv-route { color: var(--amber-soft, #ffc06b); }
+
+/* A plan milestone's state (the timeline page's diamonds). The card is
+   always dark and outside the shell, so the dark palette's values. */
+.ihv-done { color: #3ddc84; }
+.ihv-late { color: #ff5d6c; }

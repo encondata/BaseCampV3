@@ -221,6 +221,27 @@
 
 .itl-no-dates { padding-left: 6px; color: var(--text-mute); }
 
+/* A plan task flagged Show on timeline (the Milestones toggle): a diamond
+   on the middle of its finish day, centered on the bar's line (the bar is
+   12px down and 20px tall). A link to the task in the plan. Over the bars
+   and the today line, under the sticky name column (z-index 2) when the
+   track scrolls beneath it. Green once complete, red when late. */
+.itl-milestone {
+  position: absolute;
+  top: 15px;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  transform: rotate(45deg);
+  border-radius: 2px;
+  background: var(--text-dark);
+  border: 2px solid var(--surface);
+  z-index: 1;
+}
+.itl-milestone.complete { background: var(--c-green); }
+.itl-milestone.late { background: var(--c-red); }
+.itl-milestone:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 /* ── month calendar ───────────────────────────────────────────────────
  * Six week rows, each a seven-column grid of day cells with a second
  * grid — `.itl-week-bars` — stacked on the same seven tracks above it.
@@ -297,6 +318,19 @@
 }
 .itl-span .dot { flex: 0 0 auto; }
 .itl-span-name { overflow: hidden; text-overflow: ellipsis; }
+
+/* A plan milestone on its day: a diamond chip as wide as its name (never
+   wider than the day), in its initiative's color. */
+.itl-milestone-chip { justify-self: start; max-width: calc(100% - 6px); }
+.itl-milestone-diamond {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  background: currentColor;
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+.itl-milestone-chip.complete .itl-milestone-diamond { background: var(--c-green); }
+.itl-milestone-chip.late .itl-milestone-diamond { background: var(--c-red); }
 
 /* A run reaching past the week keeps a square edge on that side, so the
    bar reads as carrying on into the next row rather than ending. */

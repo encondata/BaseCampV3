@@ -65,6 +65,8 @@ const CASES: [string, () => Promise<unknown>, string, string, unknown][] = [
   ['getProjectPlanSettings', () => P.getProjectPlanSettings(), 'GET', '/system/project-plans', undefined],
   ['putProjectPlanSettings', () => P.putProjectPlanSettings({ critical_slack_days: 0.5 }), 'PUT',
     '/system/project-plans', { critical_slack_days: 0.5 }],
+  ['getTimelineMilestones', () => P.getTimelineMilestones('2026-09-01', '2026-09-30'), 'GET',
+    '/plans/timeline?from=2026-09-01&to=2026-09-30', undefined],
 ];
 
 describe('routes', () => {

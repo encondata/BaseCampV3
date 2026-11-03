@@ -515,6 +515,17 @@ class _Progress:
         return (2 * self.percent + self.leaves) // (2 * self.leaves)
 
 
+def rollup_percent(*, weighted: int, duration: int, percent: int, leaves: int) -> int:
+    """A summary's % complete from sums over its leaf descendants (each
+    leaf's percent * duration, duration, percent, and the leaf count): the
+    rollup's own rule, for a caller that sums stored rows instead of
+    scheduling them (plans/timeline.py, a plan's top-level %). 0 with no
+    leaves."""
+    if leaves <= 0:
+        return 0
+    return _Progress(weighted, duration, percent, leaves).rounded()
+
+
 class _ForwardPass(_Clock):
     def __init__(self, calendar: WorkCalendar, project_start: datetime,
                  settings: EngineSettings):

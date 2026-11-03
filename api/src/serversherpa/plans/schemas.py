@@ -528,6 +528,38 @@ class PlanVersionOut(BaseModel):
     updated_by_name: str | None
 
 
+# --- the all-initiatives Timeline page (GET /plans/timeline, plans/timeline.py) ---
+
+
+class TimelineMilestoneOut(BaseModel):
+    """A task flagged Show on timeline, as a diamond on its initiative's row."""
+
+    initiative_id: uuid.UUID
+    plan_id: uuid.UUID
+    task_id: uuid.UUID
+    name: str
+    at: str                                 # its finish, floating
+    complete: bool
+    late: bool
+
+
+class TimelineNextOut(BaseModel):
+    name: str
+    at: str                                 # its finish, floating
+
+
+class TimelineSummaryOut(BaseModel):
+    """One plan, for the initiative hover card's "Plan:" line."""
+
+    percent_complete: int
+    next: TimelineNextOut | None
+
+
+class PlanTimelineOut(BaseModel):
+    milestones: list[TimelineMilestoneOut]
+    summaries: dict[uuid.UUID, TimelineSummaryOut]   # by initiative id
+
+
 # --- settings (plan overrides, and the system section) -----------------------------
 #
 # One set of rules for both: a plan override is checked exactly like the

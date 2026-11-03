@@ -170,6 +170,22 @@ it('leaves the move line off for a project, even with sites on the record', () =
   expect(card()!.textContent).not.toContain('Sunnyvale HQ → Denver DC');
 });
 
+it('adds the plan line when the initiative has a plan summary', () => {
+  render(
+    <InitiativeHoverCard item={initiative()} planLine="Plan: 42% complete · next: Move day Nov 14">
+      <a className="itl-span" href="/initiatives/i1">Denver DC migration</a>
+    </InitiativeHoverCard>,
+  );
+  hover(document.querySelector('.ihv-wrap') as HTMLElement);
+  const lines = [...card()!.querySelectorAll('.ihv-line')].map((el) => el.textContent);
+  expect(lines).toContain('Plan: 42% complete · next: Move day Nov 14');
+});
+
+it('has no plan line without a plan summary', () => {
+  hover(renderBar(initiative()));
+  expect(card()!.textContent).not.toContain('Plan:');
+});
+
 it('takes the card away on mouse leave', () => {
   const wrap = renderBar(initiative());
   hover(wrap);
