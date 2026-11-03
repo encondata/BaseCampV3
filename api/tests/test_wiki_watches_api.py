@@ -1,11 +1,19 @@
 """HTTP tests for the wiki watches API (Phase 2 Task 2): `GET /wiki/watches`,
 `PUT /wiki/watches`, `DELETE /wiki/watches/{id}` and
-`GET /wiki/nodes/{id}/watch`."""
+`GET /wiki/nodes/{id}/watch`. The watches are rows of `notification_watches` (migration
+0116): a person's own, on a library (`wiki_space_id`) or a folder or page
+(`wiki_node_id`)."""
 import uuid
 
 from sqlalchemy import func, select
 
-from serversherpa.db.models import AuditLog, Client, WikiWatch
+from serversherpa.db.models import (
+    AuditLog,
+    Client,
+    Initiative,
+    NotificationGroup,
+    NotificationWatch,
+)
 from tests.wiki_helpers import _create, _put_grants, _setup, login_as, publish_via_db
 
 
@@ -113,8 +121,8 @@ async def test_list_hides_watches_the_caller_can_no_longer_see(client, db):
     ])
     assert await _list(client, s["viewer"]) == []
     # the rows stay: access may come back
-    count = await db.scalar(select(func.count()).select_from(WikiWatch).where(
-        WikiWatch.person_id == s["viewer_id"]))
+    count = await db.scalar(select(func.count()).select_from(NotificationWatch).where(
+        NotificationWatch.person_id == s["viewer_id"]))
     assert count == 2
 
 
@@ -152,3 +160,53 @@ async def test_watch_state_reports_how_a_node_is_watched(client, db):
 
     outsider = await _outsider(client, db)
     await _state(client, outsider, page["id"], expect=404)
+
+
+# ── the shared table (migration 0116) ───────────────────────────────
+
+
+async def test_a_watch_is_stored_as_the_persons_own_row_naming_no_events(client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Guides")
+    await _put(client, s["viewer"], node_id=folder["id"])
+    await _put(client, s["viewer"], space_id=s["space"]["id"])
+
+    rows = (await db.scalars(select(NotificationWatch).where(
+        NotificationWatch.person_id == s["viewer_id"]))).all()
+    assert {(r.wiki_node_id, r.wiki_space_id) for r in rows} == {
+        (uuid.UUID(folder["id"]), None), (None, uuid.UUID(s["space"]["id"]))}
+    # hears every update and comment (no events named), and the viewer made it themselves
+    for row in rows:
+        assert (row.group_id, row.kinds, row.created_by) == (None, [], s["viewer_id"])
+        assert (row.initiative_id, row.site_id, row.truck_id, row.device_id) == (None,) * 4
+
+
+async def test_the_wiki_sees_only_its_own_watches_in_the_shared_table(client, db):
+    """`notification_watches` also holds watches on other things and groups' watches: the
+    wiki's list and state don't show them, and its unwatch can't remove them."""
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Guides")
+    mine = await _put(client, s["viewer"], node_id=folder["id"])
+    initiative = Initiative(name="Initiative A", initiative_type="move")
+    group = NotificationGroup(name="Group A")
+    db.add_all([initiative, group])
+    await db.flush()
+    elsewhere = NotificationWatch(person_id=s["viewer_id"], initiative_id=initiative.id)
+    groups = NotificationWatch(group_id=group.id, wiki_node_id=uuid.UUID(folder["id"]))
+    db.add_all([elsewhere, groups])
+    await db.flush()
+    elsewhere_id, groups_id = elsewhere.id, groups.id
+    await db.commit()
+
+    assert [w["id"] for w in await _list(client, s["viewer"])] == [mine["id"]]
+    # the editor watches nothing, whatever a group watches: the wiki's state is the person's own
+    assert await _list(client, s["editor"]) == []
+    assert await _state(client, s["editor"], folder["id"]) == {
+        "watching": False, "via": None, "watch_id": None}
+
+    for watch_id in (elsewhere_id, groups_id):
+        resp = await client.delete(f"/wiki/watches/{watch_id}", headers=s["viewer"])
+        assert resp.status_code == 404, resp.text
+    # (the owner's own watch on the folder they created is there too)
+    kept = set((await db.scalars(select(NotificationWatch.id))).all())
+    assert {elsewhere_id, groups_id, uuid.UUID(mine["id"])} <= kept

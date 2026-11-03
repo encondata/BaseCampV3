@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
+    NotificationWatch,
     Person,
     UserAccount,
     WikiComment,
@@ -46,7 +47,6 @@ from serversherpa.db.models import (
     WikiPageVersion,
     WikiReview,
     WikiSpace,
-    WikiWatch,
 )
 from serversherpa.notifications.inbox import notify
 from serversherpa.wiki.permissions import AccessIndex, level_rank, principals_for_people
@@ -126,16 +126,21 @@ async def recipients_who_can_view(db: AsyncSession, node: WikiNode,
 
 
 # ── watches ─────────────────────────────────────────────────────────
+# A watch is a row of `notification_watches` (migration 0116) on a library
+# (`wiki_space_id`) or a folder or page (`wiki_node_id`); the people watching
+# are the rows' `person_id`.
 
 
 async def _watchers(db: AsyncSession, space_id: uuid.UUID,
                     node_ids: Iterable[uuid.UUID]) -> set[uuid.UUID]:
+    """The people with a watch on the space or on any of `node_ids`."""
     node_ids = list(node_ids)
-    targets = [WikiWatch.space_id == space_id]
+    targets = [NotificationWatch.wiki_space_id == space_id]
     if node_ids:
-        targets.append(WikiWatch.node_id.in_(node_ids))
+        targets.append(NotificationWatch.wiki_node_id.in_(node_ids))
     return set((await db.scalars(
-        select(WikiWatch.person_id).where(or_(*targets)))).all())
+        select(NotificationWatch.person_id)
+        .where(NotificationWatch.person_id.is_not(None), or_(*targets)))).all())
 
 
 async def watchers_for(db: AsyncSession, node: WikiNode) -> set[uuid.UUID]:
@@ -146,8 +151,8 @@ async def watchers_for(db: AsyncSession, node: WikiNode) -> set[uuid.UUID]:
 
 async def auto_watch(db: AsyncSession, person_id: uuid.UUID, node_id: uuid.UUID) -> None:
     """Watch `node_id` for `person_id` unless they already do."""
-    await db.execute(insert(WikiWatch)
-                     .values(person_id=person_id, node_id=node_id)
+    await db.execute(insert(NotificationWatch)
+                     .values(person_id=person_id, wiki_node_id=node_id, created_by=person_id)
                      .on_conflict_do_nothing())
 
 

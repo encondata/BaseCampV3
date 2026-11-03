@@ -154,7 +154,7 @@ async def clean_db():
             "label_templates, label_placeholders, label_vocab, "
             "wiki_share_links, wiki_help_links, wiki_page_views, "
             "wiki_search_log, "
-            "wiki_reviews, wiki_watches, wiki_templates, wiki_comments, "
+            "wiki_reviews, wiki_templates, wiki_comments, "
             "wiki_jobs, wiki_favorites, wiki_grants, wiki_page_assets, "
             "wiki_file_versions, wiki_files, wiki_page_versions, wiki_pages, "
             "wiki_nodes, wiki_spaces CASCADE"))

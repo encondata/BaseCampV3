@@ -14,13 +14,14 @@ from serversherpa.config import get_settings
 from serversherpa.db.models import (
     Client,
     Notification,
+    NotificationGroup,
+    NotificationWatch,
     Person,
     UserAccount,
     WikiComment,
     WikiNode,
     WikiPage,
     WikiReview,
-    WikiWatch,
 )
 from serversherpa.services import storage
 from serversherpa.wiki import notify
@@ -137,9 +138,9 @@ async def test_publish_auto_watches_the_publisher(client, db):
     page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
     await publish_via_api(client, s["editor"], page["id"])
 
-    rows = (await db.scalars(select(WikiWatch).where(
-        WikiWatch.person_id == s["editor_id"]))).all()
-    assert [r.node_id for r in rows] == [uuid.UUID(page["id"])]
+    rows = (await db.scalars(select(NotificationWatch).where(
+        NotificationWatch.person_id == s["editor_id"]))).all()
+    assert [r.wiki_node_id for r in rows] == [uuid.UUID(page["id"])]
 
 
 async def test_ancestor_and_space_watchers_are_notified_once_each(client, db):
@@ -229,8 +230,8 @@ async def test_creating_pages_and_folders_auto_watches_the_creator(client, db):
     folder = await _create(client, s["editor"], s["space"], "Guides")
     page = await _create(client, s["editor"], s["space"], "Runbook", kind="page")
 
-    watched = set((await db.scalars(select(WikiWatch.node_id).where(
-        WikiWatch.person_id == s["editor_id"]))).all())
+    watched = set((await db.scalars(select(NotificationWatch.wiki_node_id).where(
+        NotificationWatch.person_id == s["editor_id"]))).all())
     assert watched == {uuid.UUID(folder["id"]), uuid.UUID(page["id"])}
 
 
@@ -284,8 +285,8 @@ async def test_upload_complete_announces_the_file_without_auto_watching(
     assert [(n.title, n.link) for n in got] == [
         (f"{await _name(db, s['editor_id'])} added rack.png to {s['space']['name']}",
          _link(node["id"]))]
-    assert (await db.scalar(select(func.count()).select_from(WikiWatch).where(
-        WikiWatch.person_id == s["editor_id"]))) == 0
+    assert (await db.scalar(select(func.count()).select_from(NotificationWatch).where(
+        NotificationWatch.person_id == s["editor_id"]))) == 0
 
 
 # ── service ─────────────────────────────────────────────────────────
@@ -298,9 +299,21 @@ async def test_auto_watch_is_idempotent(client, db):
     await notify.auto_watch(db, s["viewer_id"], node_id)
     await notify.auto_watch(db, s["viewer_id"], node_id)
     await db.commit()
-    count = await db.scalar(select(func.count()).select_from(WikiWatch).where(
-        WikiWatch.person_id == s["viewer_id"], WikiWatch.node_id == node_id))
+    count = await db.scalar(select(func.count()).select_from(NotificationWatch).where(
+        NotificationWatch.person_id == s["viewer_id"],
+        NotificationWatch.wiki_node_id == node_id))
     assert count == 1
+
+
+async def test_auto_watch_stores_the_persons_own_row_naming_no_events(client, db):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    await notify.auto_watch(db, s["viewer_id"], uuid.UUID(page["id"]))
+    await db.commit()
+    row = (await db.scalars(select(NotificationWatch).where(
+        NotificationWatch.person_id == s["viewer_id"]))).one()
+    assert (row.wiki_node_id, row.wiki_space_id, row.group_id, row.kinds, row.created_by) == (
+        uuid.UUID(page["id"]), None, None, [], s["viewer_id"])
 
 
 async def test_watchers_for_covers_the_node_its_ancestors_and_its_space(client, db):
@@ -316,6 +329,23 @@ async def test_watchers_for_covers_the_node_its_ancestors_and_its_space(client, 
 
     got = await notify.watchers_for(db, await _node(db, page["id"]))
     assert got == {s["owner_id"], s["viewer_id"], s["editor_id"]}
+
+
+async def test_watchers_for_is_people_never_a_groups_row(client, db):
+    """A group's watch on the folder is a row with no person in it: it adds no one to the
+    people who watch (and never a None)."""
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Guides")
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page",
+                         parent=folder)
+    group = NotificationGroup(name="Group A")
+    db.add(group)
+    await db.flush()
+    db.add(NotificationWatch(group_id=group.id, wiki_node_id=uuid.UUID(folder["id"])))
+    await db.commit()
+
+    got = await notify.watchers_for(db, await _node(db, page["id"]))
+    assert got == {s["owner_id"]}          # the owner auto-watched what they created
 
 
 async def test_recipients_who_can_view_filters_and_caps(client, db, monkeypatch, caplog):

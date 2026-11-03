@@ -1,7 +1,10 @@
-"""Wiki Phase 2 schema (migration 0075) — comments, templates, watches,
-and reviews exist with the right constraints; the four builtin templates
-seed correctly; and the widened `wiki_page_versions.kind`/`wiki_jobs.kind`
-checks accept 'submitted'/'reminders'.
+"""Wiki Phase 2 schema (migration 0075) — comments, templates and reviews
+exist with the right constraints; the four builtin templates seed
+correctly; and the widened `wiki_page_versions.kind`/`wiki_jobs.kind`
+checks accept 'submitted'/'reminders'. 0075's watches table moved into
+the shared `notification_watches` in migration 0116 (its own test is
+test_migration_0116_wiki_watches_join.py); a wiki watch there keeps the
+one-target and one-per-person rules, checked in the watches section below.
 
 `wiki_templates` is truncated by `clean_db` before every test (see
 conftest.py), so the migration's own seed rows never survive to a test on
@@ -17,6 +20,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from serversherpa.db.models import (
+    NotificationWatch,
     Person,
     WikiComment,
     WikiJob,
@@ -25,14 +29,13 @@ from serversherpa.db.models import (
     WikiReview,
     WikiSpace,
     WikiTemplate,
-    WikiWatch,
 )
 from tests.wiki_helpers import seed_builtin_templates
 
 API_DIR = Path(__file__).resolve().parents[1]
 MIGRATION_PATH = API_DIR / "migrations" / "versions" / "0075_wiki_collab.py"
 
-WIKI_PHASE2_TABLES = ("wiki_comments", "wiki_templates", "wiki_watches", "wiki_reviews")
+WIKI_PHASE2_TABLES = ("wiki_comments", "wiki_templates", "wiki_reviews")
 BUILTIN_TEMPLATE_NAMES = ("SOP", "How-to guide", "Troubleshooting", "Meeting notes")
 
 
@@ -126,8 +129,7 @@ async def test_builtin_template_icons_are_glyphs_not_words(db):
 
 
 async def test_phase2_supporting_indexes_exist(db):
-    for name in ("wiki_watches_node_idx", "wiki_watches_space_idx",
-                 "wiki_reviews_version_idx", "wiki_reviews_node_idx"):
+    for name in ("wiki_reviews_version_idx", "wiki_reviews_node_idx"):
         assert await db.scalar(text(f"SELECT to_regclass('{name}')")) is not None, name
 
 
@@ -159,6 +161,9 @@ async def test_template_name_unique_per_space_case_insensitively(db):
 
 
 # ── watches ──────────────────────────────────────────────────────────
+# A person's watch on a library (`wiki_space_id`) or on a folder or page (`wiki_node_id`) is a
+# row of the shared notification_watches since migration 0116. The rules these two tests pin
+# are that table's own checks and unique index.
 
 
 async def test_watch_requires_exactly_one_target(db):
@@ -174,21 +179,22 @@ async def test_watch_requires_exactly_one_target(db):
     space_id, node_id, person_id = space.id, node.id, person.id
     await db.commit()
 
-    # neither space_id nor node_id
-    db.add(WikiWatch(person_id=person_id))
+    # neither wiki_space_id nor wiki_node_id: no thing at all is an Everything watch, which has
+    # to name its events (a wiki watch names none)
+    db.add(NotificationWatch(person_id=person_id))
     with pytest.raises(IntegrityError):
         await db.commit()
     await db.rollback()
 
     # both
-    db.add(WikiWatch(person_id=person_id, space_id=space_id, node_id=node_id))
+    db.add(NotificationWatch(person_id=person_id, wiki_space_id=space_id, wiki_node_id=node_id))
     with pytest.raises(IntegrityError):
         await db.commit()
     await db.rollback()
 
     # exactly one of each is fine, and a person may watch both a space and a node
-    db.add(WikiWatch(person_id=person_id, space_id=space_id))
-    db.add(WikiWatch(person_id=person_id, node_id=node_id))
+    db.add(NotificationWatch(person_id=person_id, wiki_space_id=space_id))
+    db.add(NotificationWatch(person_id=person_id, wiki_node_id=node_id))
     await db.commit()
 
 
@@ -200,10 +206,10 @@ async def test_watch_is_unique_per_person_and_target(db):
     await db.flush()
     space_id, person_id = space.id, person.id
 
-    db.add(WikiWatch(person_id=person_id, space_id=space_id))
+    db.add(NotificationWatch(person_id=person_id, wiki_space_id=space_id))
     await db.commit()
 
-    db.add(WikiWatch(person_id=person_id, space_id=space_id))
+    db.add(NotificationWatch(person_id=person_id, wiki_space_id=space_id))
     with pytest.raises(IntegrityError):
         await db.commit()
     await db.rollback()

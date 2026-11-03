@@ -2072,8 +2072,10 @@ class NotificationHeld(Base):
 
 
 # The things a watch can point at (migration 0113). At most one is set; none is an
-# Everything watch. The wiki columns are in place for the slice that makes those
-# watchable; the API accepts initiatives, sites, trucks and devices until then.
+# Everything watch. The wiki columns hold the wiki's own watches, a person's on a library,
+# folder or page, which the wiki's routes and fan-out read and write (migration 0116 moved
+# them in from wiki_watches); the watch API accepts initiatives, sites, trucks and devices
+# until groups and /me take the wiki ones too.
 _WATCH_THINGS = ("initiative_id", "site_id", "truck_id", "device_id",
                  "wiki_space_id", "wiki_node_id")
 _WATCH_THING_COUNT = f"num_nonnulls({', '.join(_WATCH_THINGS)})"
@@ -2493,27 +2495,6 @@ class WikiTemplate(Base):
     __table_args__ = (
         CheckConstraint("char_length(name) BETWEEN 1 AND 120",
                         name="wiki_templates_name_length_check"),
-    )
-
-
-class WikiWatch(Base):
-    """A person's subscription to a space or a node (exactly one of the
-    two) — the source of `wiki_update`/`wiki_comment` notification fan-out."""
-    __tablename__ = "wiki_watches"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        primary_key=True, server_default=text("gen_random_uuid()"))
-    person_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("people.id", ondelete="CASCADE"))
-    space_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("wiki_spaces.id", ondelete="CASCADE"))
-    node_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("wiki_nodes.id", ondelete="CASCADE"))
-    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
-
-    __table_args__ = (
-        CheckConstraint("(space_id IS NULL) <> (node_id IS NULL)",
-                        name="wiki_watches_target_check"),
     )
 
 
