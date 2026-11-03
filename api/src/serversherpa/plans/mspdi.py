@@ -80,6 +80,9 @@ MAX_ROWS = MAX_RESTORE_ROWS          # tasks, links, resources, assignments: the
 MAX_DEPTH = 32
 # whole-minute intervals that do not overlap: a day cannot hold more
 MAX_DAY_INTERVALS = 1440
+# ended elements cut off their parent at a time while streaming (a batch
+# size, not a limit: each cut is one short list move)
+DROP_EVERY = 512
 MISSING_RESOURCE = "-65535"           # MS Project's "no resource" placeholder
 # a calendar's exception days in all (each one dated exception of the plan's
 # calendar): the most a stored calendar holds (calendar.MAX_EXCEPTIONS)
@@ -512,9 +515,15 @@ def _local(tag) -> str:
 
 
 def _read(content: bytes) -> _Reader:
+    """The file's records, streamed. Each element is cleared once it ends
+    and cut off its parent soon after: the parser hands its events over in
+    batches, so when an element ends its parent may already hold the
+    siblings after it. The ended children are always the parent's first
+    ones, and are cut off together every DROP_EVERY ends."""
     reader = _Reader()
     path: list[str] = []
     elements: list[ET.Element] = []
+    ended: list[int] = []                   # per open element: its children that ended
     try:
         for event, element in DET.iterparse(io.BytesIO(content), events=("start", "end"),
                                             forbid_dtd=True):
@@ -525,16 +534,19 @@ def _read(content: bytes) -> _Reader:
                     raise _bad_file("This file is nested too deeply to be an MS Project file.")
                 path.append(_local(element.tag))
                 elements.append(element)
+                ended.append(0)
                 reader.start(tuple(path))
                 continue
             reader.end(tuple(path), element.text)
             path.pop()
             elements.pop()
-            if elements:
-                parent = elements[-1]
-                if len(parent) and parent[-1] is element:
-                    del parent[-1]
+            ended.pop()
             element.clear()
+            if elements:
+                ended[-1] += 1
+                if ended[-1] >= DROP_EVERY:
+                    del elements[-1][:ended[-1]]
+                    ended[-1] = 0
     except ImportFileError:
         raise
     except DefusedXmlException:

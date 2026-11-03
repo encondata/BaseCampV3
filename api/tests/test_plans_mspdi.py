@@ -1110,3 +1110,21 @@ async def test_a_failed_new_plan_apply_leaves_no_plan(client, db):
     assert await db.scalar(select(ProjectPlan.id).where(
         ProjectPlan.initiative_id == move.id)) is None
     assert await _imports_audited(db) == []
+
+
+def test_reading_holds_no_element_once_read():
+    """The parser hands its events over in batches, so when an element
+    ends its parent already holds the siblings after it: every element is
+    still dropped once read. 300,000 empty records cost under 8 MB."""
+    import tracemalloc
+
+    content = (f'<Project xmlns="{NS[1:-1]}"><Name>Big</Name>'.encode()
+               + b"<Extra/>" * 300_000 + b"</Project>")
+    tracemalloc.start()
+    try:
+        parsed = mspdi.parse_xml(content)
+        _size, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert parsed.name == "Big" and parsed.tasks == []
+    assert peak < 8 * 1024 * 1024, peak
