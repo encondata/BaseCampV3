@@ -6503,6 +6503,11 @@ export type DeliveryLogEvent =
  *  inbox_suppressed, and email_not_queued for category_off or
  *  category_inbox_only → source (default / own: whether the switch that
  *  turned it down follows the company default or is the person's own);
+ *  inbox_written, and inbox_suppressed for category_off, from the event sweep
+ *  → via (the routes that reached the person: a sorted list of watch, direct,
+ *  group:<id> and rule:<id>; a string on email_queued), events (the event ids)
+ *  and names (the groups' and rules' names, by route); inbox_suppressed for
+ *  no_access → events;
  *  email_queued → template, send_at, deferred, and for notification mail via
  *  (contact / login) plus critical, owner_copy and after_summary when true;
  *  for the summary email itself summary (true) and count; rows from before
