@@ -151,6 +151,63 @@ async def test_learning_sweep_errors_do_not_kill_the_loop(db, monkeypatch, caplo
     assert caplog.text.count("could not run the learning sweep") == 1   # once per outage
 
 
+async def test_run_forever_runs_the_plan_reminder_sweep(db, monkeypatch):
+    from serversherpa.notifications import worker as worker_mod
+
+    calls = []
+
+    async def fake_plans(maker):
+        calls.append(maker)
+        return {"reminders": 0, "digests": 0, "errors": 0}
+
+    monkeypatch.setattr(worker_mod, "run_plan_reminders_once", fake_plans)
+    assert worker_mod.PLANS_INTERVAL_SECONDS == 60
+    task = asyncio.create_task(run_forever(poll_seconds=0.05))
+    try:
+        await asyncio.sleep(0.3)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert len(calls) == 1   # once on the first loop; the next is a minute away
+
+
+async def test_plan_sweep_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
+    from serversherpa.notifications import worker as worker_mod
+
+    calls = []
+
+    async def boom(maker):
+        calls.append(1)
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(worker_mod, "run_plan_reminders_once", boom)
+    monkeypatch.setattr(worker_mod, "PLANS_INTERVAL_SECONDS", 0)
+    caplog.set_level(logging.WARNING, logger="serversherpa.notifications.worker")
+    task = asyncio.create_task(run_forever(poll_seconds=0.05))
+    try:
+        await asyncio.sleep(0.3)
+        assert not task.done()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert len(calls) >= 2
+    assert caplog.text.count("could not run the plan reminder sweep") == 1   # once per outage
+
+
+async def test_run_plans_logs_what_it_sent(monkeypatch, caplog):
+    from serversherpa.notifications import worker as worker_mod
+
+    async def sent(maker):
+        return {"reminders": 3, "digests": 1, "errors": 0}
+
+    monkeypatch.setattr(worker_mod, "run_plan_reminders_once", sent)
+    caplog.set_level(logging.INFO, logger="serversherpa.notifications.worker")
+    state = {"failed": True}
+    await worker_mod.run_plans(object(), state)
+    assert state == {"failed": False}
+    assert "plans: 3 reminder(s), 1 overdue digest(s)" in caplog.text
+
+
 async def test_run_forever_delivers_the_outbox(db, monkeypatch):
     from serversherpa.notifications import worker as worker_mod
 

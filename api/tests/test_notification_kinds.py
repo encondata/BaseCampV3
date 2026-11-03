@@ -87,10 +87,10 @@ def test_kind_info_unknown_is_none():
 NOTIFY_CALL = re.compile(r"""\bnotify\(\s*[\w.]+\s*,\s*[\w.\[\]]+\s*,\s*["']([a-z_]+)["']""")
 # wiki/notify.py and wiki/worker.py: kind="wiki_x" keyword arguments and wiki/worker.py `kind, event = "wiki_x", ...`
 WIKI_KIND = re.compile(r"""\bkind\s*=\s*["']([a-z_]+)["']|\bkind\s*,\s*event\s*=\s*["']([a-z_]+)["']""")
-KIND_CONST = re.compile(r"""^KIND\s*=\s*["']([a-z_]+)["']""", re.MULTILINE)
-# the modules that name their kind in a module-level KIND constant
+KIND_CONST = re.compile(r"""^KIND(?:_[A-Z]+)?\s*=\s*["']([a-z_]+)["']""", re.MULTILINE)
+# the modules that name their kinds in module-level KIND / KIND_<X> constants
 KIND_CONST_FILES = ("notifications/reset_requests.py", "notifications/password_reminders.py",
-                    "learning/scheduler.py")
+                    "learning/scheduler.py", "plans/reminders.py", "plans/notices.py")
 
 
 def _scan() -> set[str]:
@@ -106,13 +106,6 @@ def _scan() -> set[str]:
     return found
 
 
-# Kinds registered ahead of the code that sends them. The plan reminder sweep
-# (plans/reminders.py) adds the notify() calls; delete this set when it lands
-# (the test below fails once a kind in it is actually sent, as a reminder).
-AWAITING_SENDER = {"plan_task_assigned", "plan_task_due", "plan_task_overdue",
-                   "plan_overdue_digest"}
-
-
 def test_every_notify_kind_in_the_codebase_is_registered():
     found = _scan()
     assert found, "scan found no notify() kinds; the regexes are stale"
@@ -121,7 +114,5 @@ def test_every_notify_kind_in_the_codebase_is_registered():
             "totp_enrolled", "password_reset_request", "password_expiring",
             "wiki_comment", "wiki_export_ready", "learning_overdue", "learning_complete",
             "learning_quiz_locked"} <= found
-    assert found <= set(KINDS), f"unregistered: {sorted(found - set(KINDS))}"
-    assert set(KINDS) - found == AWAITING_SENDER, (
-        f"never sent: {sorted(set(KINDS) - found - AWAITING_SENDER)}; "
-        f"now sent, drop from AWAITING_SENDER: {sorted(AWAITING_SENDER & found)}")
+    assert found == set(KINDS), (
+        f"unregistered: {sorted(found - set(KINDS))}; never sent: {sorted(set(KINDS) - found)}")

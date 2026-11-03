@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
-from serversherpa.plans import ops, plan_writes, service
+from serversherpa.plans import notices, ops, plan_writes, service
 from serversherpa.plans.calendar import CalendarError, WorkCalendar
 from serversherpa.plans.floating import format_floating, parse_floating
 from serversherpa.plans.models import PlanTask
@@ -120,7 +120,9 @@ async def post_ops(
 ) -> OpsOut:
     """One atomic batch of edits (plans/ops.py). Every restore op must carry
     the server's signature for this plan; anything but a progress-only
-    batch needs an unlocked plan and `base_version` equal to its version."""
+    batch needs an unlocked plan and `base_version` equal to its version.
+    People the batch newly assigned are told in the same transaction
+    (plans/notices.py), so a failed batch tells nobody."""
     plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
     ops.check_restores(plan.id, body.ops)
     if not ops.is_progress_only(body.ops):
@@ -128,9 +130,10 @@ async def post_ops(
             raise err(409, "plan_locked")
         if body.base_version != plan.version:
             raise err(409, "plan_changed", version=plan.version)
-    out = await ops.run_batch(db, plan, body.ops, actor)
+    run = await ops.run_batch(db, plan, body.ops, actor)
+    await notices.assignment_notices(db, run.state, run.newly_assigned, actor, run.settings)
     await db.commit()
-    return out
+    return run.out
 
 
 @router.post("/plans/{plan_id}/update-project", response_model=OpsOut)
@@ -161,11 +164,11 @@ async def update_project(
         except ValueError:
             raise err(422, "bad_field", field=name) from None
     plan.status_date = moments["status_date"]
-    out = await ops.run_batch(
+    run = await ops.run_batch(
         db, plan, [UpdateProjectOp(through=moments["complete_through"], confirm=body.confirm)],
         actor, changes={name: format_floating(value) for name, value in moments.items()})
     await db.commit()
-    return out
+    return run.out
 
 
 async def _answer(db: DbSession, state: PlanState, actor: AuthContext) -> PlanOut:

@@ -27,7 +27,8 @@ A batch (`apply_ops`):
 
 `run_batch` adds the rest of a write: loading the plan, mapping engine
 errors to 422s, bumping the version, the audit row, the deferred parent
-check, the response.
+check, the response; it also hands back who was newly assigned, which the
+ops route tells (plans/notices.py) before it commits.
 
 Concurrency (spec API): a batch made only of progress edits
 (`is_progress_only`: `set_percent`, `complete`, `mark_on_track`, an
@@ -265,8 +266,18 @@ def _newly_assigned(b: Batch, before: dict[uuid.UUID, set[uuid.UUID]]
     return out
 
 
+@dataclass
+class BatchRun:
+    """What `run_batch` answers: the response, and what the caller still
+    acts on before it commits (the assignment notices, plans/notices.py)."""
+    out: OpsOut
+    state: PlanState
+    settings: PlanSettings
+    newly_assigned: dict[uuid.UUID, list[uuid.UUID]]
+
+
 async def run_batch(db: AsyncSession, plan: ProjectPlan, ops: Sequence,
-                    actor: AuthContext, *, changes: dict | None = None) -> OpsOut:
+                    actor: AuthContext, *, changes: dict | None = None) -> BatchRun:
     """Apply a batch to a plan the caller has locked and checked, bump its
     version, audit it (with `changes` the caller made to the plan itself)
     and answer what changed. The caller commits."""
@@ -292,7 +303,7 @@ async def run_batch(db: AsyncSession, plan: ProjectPlan, ops: Sequence,
         await db.execute(text(f"SET CONSTRAINTS {PARENT_FK} IMMEDIATE"))
     except IntegrityError:
         raise err(422, "bad_field", field="parent_id") from None
-    return OpsOut(
+    out = OpsOut(
         version=plan.version,
         tasks=await tasks_out(db, state, result.changed_tasks),
         links=links_out(state, sorted(result.changed_links, key=str)),
@@ -303,3 +314,5 @@ async def run_batch(db: AsyncSession, plan: ProjectPlan, ops: Sequence,
         inverse=result.inverse,
         notices=result.notices,
     )
+    return BatchRun(out=out, state=state, settings=settings,
+                    newly_assigned=result.newly_assigned)
