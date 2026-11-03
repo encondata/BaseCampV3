@@ -671,6 +671,18 @@ describe('copy and paste', () => {
     await waitFor(() => expect(document.querySelector('.pln-cut')).toBeNull());
   });
 
+  it('a cut pasted on its own row (the active cell still there): the marks go, nothing is sent, nothing said', async () => {
+    const user = await ready();
+    const text = await cutRow(user, 'Pack');
+    expect(rowOf('Pack').classList.contains('pln-cut')).toBe(true);
+    // the active cell is still Pack's ID (Excel: a cut pasted where it is)
+    fireEvent.paste(grid(), { clipboardData: { getData: () => text } });
+    await waitFor(() => expect(rowOf('Pack').classList.contains('pln-cut')).toBe(false));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(api.postOps).not.toHaveBeenCalled();
+    expect(toast).not.toHaveBeenCalled();
+  });
+
   it('a cut pasted into its own subtasks says so and sends nothing', async () => {
     const tasks = [
       makeTask('s', { display_id: 1, is_summary: true, name: 'Prep' }),

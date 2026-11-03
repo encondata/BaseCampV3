@@ -476,6 +476,71 @@ describe('the &task= deep link (a reminder email’s)', () => {
     await waitFor(() => expect(sheetBox().scrollTop).toBeGreaterThan(0));
     await waitFor(() => expect(rowOf('t36').getAttribute('aria-selected')).toBe('true'));
   });
+
+  it('Below: the chart, on its own scroller and mounted a render later, scrolls to the bar too', async () => {
+    localStorage.setItem(LAYOUT_KEY, 'below');
+    const plan = plan40();
+    api.getPlan.mockResolvedValue(plan);
+    renderTab('/initiatives/init-1?tab=plan&task=t36');
+    await findSheet();
+    expect(scrollers()).toHaveLength(2);
+    const start = Math.max(0, fitScrollLeft(scaleFor(plan), plan.project_start) - LABEL_MAX_PX);
+    const target = taskScrollLeft(scaleFor(plan), plan.tasks[36]) as number;
+    expect(target - start).toBeGreaterThan(400);
+    await waitFor(() => expect(chartBar().scrollLeft).toBeCloseTo(target));
+    // the sheet's scroller brings the row; the chart's follows it there
+    await waitFor(() => expect(sheetBox().scrollTop).toBeGreaterThan(0));
+    act(() => { sheetBox().dispatchEvent(new Event('scroll')); });
+    expect(chartBox().scrollTop).toBe(sheetBox().scrollTop);
+    await waitFor(() => expect(rowOf('t36').getAttribute('aria-selected')).toBe('true'));
+  });
+
+  it('Below: a chart whose rows are drawn after the sheet scrolled to the link comes level once they are', async () => {
+    // a browser clamps scrollTop to what a box holds: the chart's box holds
+    // nothing until its rows are drawn (`chartRoom`), so its first level write is lost
+    let chartRoom = 0;
+    const tops = new WeakMap<HTMLElement, number>();
+    Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
+      configurable: true,
+      get(this: HTMLElement) { return tops.get(this) ?? 0; },
+      set(this: HTMLElement, v: number) {
+        tops.set(this, this.classList.contains('pln-panes-chart') ? Math.min(Math.max(0, v), chartRoom) : v);
+      },
+    });
+    // which observers watch what: only those on the chart's content are fired below
+    const watching: { cb: () => void; els: Set<Element> }[] = [];
+    vi.stubGlobal('ResizeObserver', class {
+      private readonly me: { cb: () => void; els: Set<Element> };
+      constructor(cb: () => void) {
+        this.me = { cb, els: new Set() };
+        watching.push(this.me);
+      }
+      observe(el: Element) { this.me.els.add(el); }
+      unobserve(el: Element) { this.me.els.delete(el); }
+      disconnect() { this.me.els.clear(); }
+    });
+    const chartRowsResized = () => {
+      const rows = chartBox().querySelector(':scope > .pln-split');
+      for (const w of watching) if (rows && w.els.has(rows)) w.cb();
+    };
+    try {
+      localStorage.setItem(LAYOUT_KEY, 'below');
+      api.getPlan.mockResolvedValue(plan40());
+      renderTab('/initiatives/init-1?tab=plan&task=t36');
+      await findSheet();
+      await waitFor(() => expect(sheetBox().scrollTop).toBeGreaterThan(0));
+      // the browser's scroll event for the sheet: the chart can't follow yet
+      act(() => { sheetBox().dispatchEvent(new Event('scroll')); });
+      expect(chartBox().scrollTop).toBe(0);
+      // its rows drawn, its content grows: it comes level with the sheet
+      chartRoom = 10_000;
+      act(() => { chartRowsResized(); });
+      expect(chartBox().scrollTop).toBe(sheetBox().scrollTop);
+    } finally {
+      vi.unstubAllGlobals();
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollTop;
+    }
+  });
 });
 
 describe('Below: the chart on its own scroller', () => {

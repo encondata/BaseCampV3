@@ -25,8 +25,9 @@
  *   and nothing asks. Pasted back into the same plan while the cut waits,
  *   it is a move (one `move_tasks` batch right above the active row, where
  *   a paste of copies goes; one undo step): the tasks keep their ids,
- *   links, progress and baseline. Into its own subtasks it is refused
- *   (MOVE_INSIDE). Escape, a new Copy or Cut, a delete or move of a cut
+ *   links, progress and baseline. Pasted with the active cell still on a
+ *   cut task it does nothing but end the cut (Excel's); into its own
+ *   subtasks it is refused (MOVE_INSIDE). Escape, a new Copy or Cut, a delete or move of a cut
  *   task (or a change of its summary) and a reload end the cut; a paste
  *   then pastes copies. Pasted into another plan it pastes copies, leaves
  *   the originals and says so (PASTED_COPIES). A cut of one cell is a copy.
@@ -619,6 +620,11 @@ export function usePlanCommands({
     }
     const active = view.selection.active;
     const at = active && active.id !== 'blank' && plan.tasks.some((t) => t.id === active.id) ? active.id : null;
+    // pasted where it is (the active cell still on a cut task): the cut ends, nothing moves, nothing is said
+    if (at !== null && pending.tops.includes(at)) {
+      setPendingCut(null);
+      return;
+    }
     const place: MovePlace = at !== null ? { beforeId: at } : { beforeId: null, parentId: ctx.appendParentId };
     const op = moveOp(plan, pending.tops, place);
     if (op === 'inside') {

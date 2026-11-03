@@ -19,11 +19,19 @@
  *   move FIRST and lets go of the hold after (the sheet editor's rule).
  * - The drop line shows between rows where a drop would land (dropGap /
  *   dropPlace / moveOp): not inside what moves, not above a context row,
- *   not where the tasks already are. Below the last row is the end of the
- *   plan. Near the scroller's top (under the sticky header) or bottom
- *   edge the sheet scrolls, faster the closer the pointer.
- * - Esc calls it off, as do a lost capture, the window losing focus and
- *   the page going hidden: nothing is sent and the hold goes.
+ *   not where the tasks already are, and not outside the sheet's scroll
+ *   box (`scrollRef`), where letting go calls the drag off, like Esc.
+ *   Below the last row (inside the box) is the end of the plan. In a band
+ *   inside the box along its top (under the sticky header) and bottom
+ *   edges the sheet scrolls, faster the closer the pointer to the edge.
+ * - A long drag scrolls the pressed row out of the window, and the
+ *   virtualizer unmounts it: the capture goes with its cell (Chromium
+ *   says so with a lostpointercapture at the document). The drag goes on:
+ *   the capture moves to the rows' box (`bodyRef`), which stays, and the
+ *   window listeners follow the pointer either way.
+ * - Esc calls it off, as do a capture lost while its element is still
+ *   there (the browser took it), the window losing focus and the page
+ *   going hidden: nothing is sent and the hold goes.
  * - Off (`on` false: no grab cursor) while the plan is locked or grouped,
  *   and for someone who may not change it. Locked or grouped, a press
  *   that becomes a drag says why ("Schedule is locked", the grouped note)
@@ -90,6 +98,7 @@ interface Press {
   access: Access;
   downX: number;
   downY: number;
+  lastX: number;
   lastY: number;
   live: boolean;
   /** A click on this row, once let go, selects it alone. */
@@ -145,12 +154,24 @@ export function useRowDrag(o: Options): RowDrag {
     setGap(null);
   }, []);
 
-  /** Where the pointer at `clientY` puts the drop: the line, and the place it sends. */
-  const follow = useCallback((p: Press, clientY: number) => {
+  /** The sheet's scroll box on screen, or null (none yet). */
+  const boxRect = (): DOMRect | null => latest.current.scrollRef.current?.getBoundingClientRect() ?? null;
+  const inside = (rect: DOMRect | null, x: number, y: number) =>
+    !rect || (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom);
+
+  /** Where the pointer puts the drop: the line, and the place it sends.
+   *  Outside the sheet's scroll box: nowhere (letting go there calls it off). */
+  const follow = useCallback((p: Press, clientX: number, clientY: number) => {
     const { ctl, rows, context, rowHeight, bodyRef } = latest.current;
     const plan = ctl.plan;
+    p.lastX = clientX;
     p.lastY = clientY;
     if (!plan) return;
+    if (!inside(boxRect(), clientX, clientY)) {
+      p.place = null;
+      setGap(null);
+      return;
+    }
     const top = bodyRef.current?.getBoundingClientRect().top ?? 0;
     const at = dropGap(clientY - top, rowHeight, rows.length);
     const place = dropPlace(at, rows, (key) => context.has(key));
@@ -159,16 +180,17 @@ export function useRowDrag(o: Options): RowDrag {
     setGap(p.place ? at : null);
   }, []);
 
-  /** Near the scroller's top (under the sticky header) or bottom edge, the
-   *  sheet scrolls while the pointer stays there, and the drop follows. */
-  const edgeScroll = useCallback((p: Press, clientY: number) => {
-    const { scrollRef, rowHeight } = latest.current;
-    const box = scrollRef.current;
-    if (!box) return;
-    const rect = box.getBoundingClientRect();
+  /** In a band inside the scroll box along its top (under the sticky
+   *  header) and bottom edges, the sheet scrolls while the pointer stays
+   *  there, and the drop follows. Outside the box it doesn't. */
+  const edgeScroll = useCallback((p: Press, clientX: number, clientY: number) => {
+    const { rowHeight } = latest.current;
+    const rect = boxRect();
+    if (!rect) return;
     const high = rect.top + SHEET_HEAD_PX + EDGE_PX - clientY;
     const low = clientY - (rect.bottom - EDGE_PX);
-    p.speed = high > 0 ? -edgeStep(high, rowHeight) : low > 0 ? edgeStep(low, rowHeight) : 0;
+    p.speed = !inside(rect, clientX, clientY) ? 0
+      : high > 0 ? -edgeStep(high, rowHeight) : low > 0 ? edgeStep(low, rowHeight) : 0;
     if (!p.speed) {
       stopScroll(p);
       return;
@@ -182,7 +204,7 @@ export function useRowDrag(o: Options): RowDrag {
       }
       const before = el.scrollTop;
       el.scrollTop = Math.max(0, before + p.speed);
-      if (el.scrollTop !== before) follow(p, p.lastY);
+      if (el.scrollTop !== before) follow(p, p.lastX, p.lastY);
     }, EDGE_TICK_MS);
   }, [follow]);
 
@@ -227,8 +249,8 @@ export function useRowDrag(o: Options): RowDrag {
         p.release = now.ctl.beginEditing(ROW_DRAG_OWNER);
         p.el.style.cursor = 'grabbing';
       }
-      follow(p, ev.clientY);
-      edgeScroll(p, ev.clientY);
+      follow(p, ev.clientX, ev.clientY);
+      edgeScroll(p, ev.clientX, ev.clientY);
     };
     const onUp = (ev: PointerEvent) => {
       const p = press.current;
@@ -239,7 +261,8 @@ export function useRowDrag(o: Options): RowDrag {
         if (p.selectOnRelease) latest.current.onSelect(selectCell(p.key, 'id'));
         return;
       }
-      follow(p, ev.clientY);
+      // outside the scroll box `place` is null: letting go there calls it off
+      follow(p, ev.clientX, ev.clientY);
       const { tops, place } = p;
       // send first, then let go of the hold (see the header)
       if (place) latest.current.onMove?.(tops, place);
@@ -248,6 +271,25 @@ export function useRowDrag(o: Options): RowDrag {
     const onCancel = (ev: PointerEvent) => {
       const p = press.current;
       if (p && ev.pointerId === p.pointerId) end(p);
+    };
+    // the capture lost because its cell left the page (the virtualizer
+    // unmounted the pressed row on a long scroll): not a cancel. It moves
+    // to the rows' box, which stays; any other loss calls the drag off
+    const onLost = (ev: PointerEvent) => {
+      const p = press.current;
+      if (!p || ev.pointerId !== p.pointerId) return;
+      const body = latest.current.bodyRef.current;
+      if (p.el.isConnected || !body?.isConnected) {
+        end(p);
+        return;
+      }
+      p.el = body;
+      try {
+        body.setPointerCapture(p.pointerId);
+      } catch {
+        // no capture to take: the window listeners still follow the pointer
+      }
+      if (p.live) body.style.cursor = 'grabbing';
     };
     const onKey = (ev: KeyboardEvent) => {
       const p = press.current;
@@ -267,19 +309,20 @@ export function useRowDrag(o: Options): RowDrag {
     window.addEventListener('pointermove', onMoveEvent);
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', onCancel);
-    window.addEventListener('lostpointercapture', onCancel);
+    window.addEventListener('lostpointercapture', onLost);
     window.addEventListener('keydown', onKey, true);
     window.addEventListener('blur', onLeave);
     document.addEventListener('visibilitychange', onVisibility);
 
     press.current = {
-      pointerId: e.pointerId, el, key, access, downX: e.clientX, downY: e.clientY, lastY: e.clientY,
+      pointerId: e.pointerId, el, key, access, downX: e.clientX, downY: e.clientY, lastX: e.clientX,
+      lastY: e.clientY,
       live: false, selectOnRelease: false, tops: [], place: null, release: null, timer: null, speed: 0,
       detach: () => {
         window.removeEventListener('pointermove', onMoveEvent);
         window.removeEventListener('pointerup', onUp);
         window.removeEventListener('pointercancel', onCancel);
-        window.removeEventListener('lostpointercapture', onCancel);
+        window.removeEventListener('lostpointercapture', onLost);
         window.removeEventListener('keydown', onKey, true);
         window.removeEventListener('blur', onLeave);
         document.removeEventListener('visibilitychange', onVisibility);

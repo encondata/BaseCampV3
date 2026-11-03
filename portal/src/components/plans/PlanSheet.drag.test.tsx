@@ -248,6 +248,87 @@ describe('dragging a row by its ID', () => {
   });
 });
 
+describe('long drags and leaving the sheet (residual fixes)', () => {
+  /** 80 one-day tasks, t0 … t79, top level. */
+  const longPlan = () => makePlan({
+    tasks: Array.from({ length: 80 }, (_, i) => makeTask(`t${i}`, {
+      display_id: i + 1, wbs: String(i + 1), position: i, name: `Step ${i + 1}`,
+    })),
+  });
+  const scrollBox = () => grid().closest('.pln-panes') as HTMLElement;
+  const longRow = (id: string) => within(grid()).queryAllByRole('row').find((r) => r.getAttribute('data-task') === id);
+
+  it('survives its pressed row leaving the window (the virtualizer unmounts it): the drop still lands', async () => {
+    await ready(longPlan());
+    const el = press('t0', mid(0));
+    moveTo(el, 300);                    // live, and away from the edge bands
+    expect(dropLine()).not.toBeNull();
+    // the sheet scrolls far down: row t0 is out of the window and its cells unmount
+    act(() => {
+      scrollBox().scrollTop = 1500;
+      scrollBox().dispatchEvent(new Event('scroll'));
+    });
+    await waitFor(() => expect(longRow('t0')).toBeUndefined());
+    expect(el.isConnected).toBe(false);
+    // Chromium answers a captured element's removal with lostpointercapture at the document
+    fireEvent.lostPointerCapture(document, { pointerId: 1 });
+    expect(dropLine()).not.toBeNull();
+    api.postOps.mockResolvedValueOnce(makeOpsResult());
+    fireEvent.pointerMove(document, { pointerId: 1, clientX: 22, clientY: gap(15), buttons: 1 });
+    fireEvent.pointerUp(document, { pointerId: 1, clientX: 22, clientY: gap(15) });
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    expect(sent()).toEqual([{ op: 'move_tasks', ids: ['t0'], before_id: 't15' }]);
+  });
+
+  it('a lost capture while its element is still there (the browser took it) still calls the drag off', async () => {
+    await ready();
+    const el = press('a', mid(3));
+    moveTo(el, gap(1));
+    expect(dropLine()).not.toBeNull();
+    fireEvent.lostPointerCapture(el, { pointerId: 1 });
+    expect(dropLine()).toBeNull();
+    release(el, gap(1));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(api.postOps).not.toHaveBeenCalled();
+  });
+
+  it('a release outside the sheet’s scroll box calls it off, like Escape: no line out there, nothing sent', async () => {
+    await ready();
+    const el = press('a', mid(3));
+    moveTo(el, gap(1));
+    expect(dropLine()).not.toBeNull();
+    // below the box (600px tall here), then right of it (1200px wide)
+    moveTo(el, 700);
+    expect(dropLine()).toBeNull();
+    fireEvent.pointerMove(el, { pointerId: 1, clientX: 1300, clientY: gap(1), buttons: 1 });
+    expect(dropLine()).toBeNull();
+    // back over the sheet: the line again
+    moveTo(el, gap(1));
+    expect(dropLine()).not.toBeNull();
+    // let go outside
+    fireEvent.pointerMove(el, { pointerId: 1, clientX: 22, clientY: 720, buttons: 1 });
+    fireEvent.pointerUp(el, { pointerId: 1, clientX: 22, clientY: 720 });
+    expect(dropLine()).toBeNull();
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(api.postOps).not.toHaveBeenCalled();
+  });
+
+  it('the edge band sits inside the box: near its bottom edge the sheet scrolls; outside the box it doesn’t', async () => {
+    await ready(longPlan());
+    const el = press('t2', mid(2));
+    moveTo(el, 300);
+    moveTo(el, 590);                    // inside the box, in its bottom band
+    await waitFor(() => expect(scrollBox().scrollTop).toBeGreaterThan(0));
+    moveTo(el, 650);                    // outside: no scroll, no line
+    const at = scrollBox().scrollTop;
+    await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
+    expect(scrollBox().scrollTop).toBe(at);
+    expect(dropLine()).toBeNull();
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    release(el, 650);
+  });
+});
+
 describe('when the drag is off', () => {
   it('a locked plan: no grab, and a drag says the schedule is locked and sends nothing', async () => {
     await ready(outlinePlan({ locked_at: '2026-10-27T12:00:00Z' }));

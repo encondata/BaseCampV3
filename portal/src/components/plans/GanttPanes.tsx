@@ -182,7 +182,10 @@ function useSplitBelow(ref: RefObject<HTMLElement | null>, on: boolean) {
  * A write that changes nothing isn't made, so it leaves no echo to wait
  * for. The chart comes in at the sheet's row. Returns the end pads that
  * let both scroll as far as each other (ganttView `endPads`), measured
- * again as the boxes change size; a change of pads levels the chart again.
+ * again as the boxes change size; a change of pads, a box resized and the
+ * chart's rows drawn or changed level the chart again (its rows can come a
+ * render after the sheet scrolled to a `&task=` link, when its box couldn't
+ * take the first write).
  */
 function useLevelScroll(sheetRef: RefObject<HTMLElement | null>, chartEl: HTMLElement | null,
   on: boolean): { sheet: number; chart: number } {
@@ -221,9 +224,18 @@ function useLevelScroll(sheetRef: RefObject<HTMLElement | null>, chartEl: HTMLEl
     level.current();
     sheet.addEventListener('scroll', onSheet, { passive: true });
     chart.addEventListener('scroll', onChart, { passive: true });
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    // the boxes changing size, and the chart's rows drawn or changed: a
+    // write the chart's box couldn't take yet (clamped while its rows were
+    // still to come: the sheet scrolled to a `&task=` link on its first
+    // render) lands now, so the two come level
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
+      measure();
+      level.current();
+    });
     observer?.observe(sheet);
     observer?.observe(chart);
+    const chartRows = chart.firstElementChild;
+    if (chartRows) observer?.observe(chartRows);
     return () => {
       sheet.removeEventListener('scroll', onSheet);
       chart.removeEventListener('scroll', onChart);
