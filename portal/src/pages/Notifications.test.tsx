@@ -103,7 +103,7 @@ const SETTINGS: NotificationSettings = {
     approvals: { inbox: true, email: true }, reports: { inbox: true, email: false },
     wiki: { inbox: true, email: true }, learning: { inbox: true, email: true },
     initiatives: { inbox: true, email: true }, trucks: { inbox: true, email: true },
-    devices: { inbox: true, email: true },
+    devices: { inbox: true, email: true }, bulk_actions: { inbox: true, email: true },
   },
   critical_kinds: [],
   kinds: [

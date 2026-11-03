@@ -13,9 +13,9 @@ import {
 const ON = { inbox: true, email: true };
 
 describe('CONFIGURABLE', () => {
-  it('is the seven categories that have switches, in registry order', () => {
+  it('is the eight categories that have switches, in registry order', () => {
     expect(CONFIGURABLE).toEqual([
-      'approvals', 'reports', 'wiki', 'learning', 'initiatives', 'trucks', 'devices',
+      'approvals', 'reports', 'wiki', 'learning', 'initiatives', 'trucks', 'devices', 'bulk_actions',
     ]);
   });
 
@@ -26,7 +26,7 @@ describe('CONFIGURABLE', () => {
 });
 
 describe('CATEGORY_DESCRIPTIONS', () => {
-  it('has the eight row descriptions of the design, word for word', () => {
+  it('has the nine row descriptions of the design, word for word', () => {
     expect(CATEGORY_DESCRIPTIONS).toEqual({
       approvals: 'Group membership requests and decisions, routers waiting for approval',
       reports: 'Reports and label runs, ready or failed',
@@ -35,6 +35,7 @@ describe('CATEGORY_DESCRIPTIONS', () => {
       initiatives: 'Initiative status changes',
       trucks: 'Truck status changes',
       devices: 'Devices going offline',
+      bulk_actions: 'Background bulk actions, finished or failed',
       security: 'Password expiring and two-factor notices about your own account',
     });
   });

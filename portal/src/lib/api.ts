@@ -55,7 +55,8 @@ export type NotificationSound = 'none' | 'chime' | 'ping' | 'pop' | 'bell';
 
 /** Mirrors notifications/kinds.py CATEGORIES. */
 export type NotificationCategory =
-  'approvals' | 'reports' | 'wiki' | 'learning' | 'initiatives' | 'trucks' | 'devices' | 'security';
+  'approvals' | 'reports' | 'wiki' | 'learning' | 'initiatives' | 'trucks' | 'devices'
+  | 'bulk_actions' | 'security';
 
 /** What the person has chosen about notifications, on their account: the
  *  in-app sound, their own switch values (only those; a category or a value

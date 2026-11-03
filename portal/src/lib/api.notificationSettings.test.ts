@@ -40,6 +40,7 @@ const SETTINGS: NotificationSettings = {
     initiatives: { inbox: true, email: true },
     trucks: { inbox: true, email: true },
     devices: { inbox: true, email: true },
+    bulk_actions: { inbox: true, email: true },
   },
   critical_kinds: ['report_failed'],
   kinds: [

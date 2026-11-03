@@ -85,7 +85,7 @@ const kind = (
 const SETTINGS: NotificationSettings = {
   defaults: {
     approvals: ON, reports: { inbox: true, email: false }, wiki: ON, learning: ON,
-    initiatives: ON, trucks: ON, devices: ON,
+    initiatives: ON, trucks: ON, devices: ON, bulk_actions: ON,
   },
   critical_kinds: ['report_failed'],
   kinds: [
@@ -139,6 +139,7 @@ const reason = (input: HTMLElement) => input.closest('[title]')?.getAttribute('t
 
 const GRID_CATEGORIES = [
   'Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Initiatives', 'Trucks', 'Devices',
+  'Bulk actions',
 ];
 
 /** The grid is inert until the company defaults have arrived. */
@@ -195,6 +196,7 @@ it('the grid follows the company defaults, and says every row does', async () =>
     defaults: {
       approvals: ON, reports: { inbox: true, email: false },
       wiki: { inbox: false, email: false }, learning: ON, initiatives: ON, trucks: ON, devices: ON,
+      bulk_actions: ON,
     },
   });
   render(<MeNotifications />);
@@ -207,7 +209,7 @@ it('the grid follows the company defaults, and says every row does', async () =>
   expect(sw('Inbox', 'Wiki').checked).toBe(false);
   expect(sw('Email', 'Wiki').checked).toBe(false);
   expect(reason(sw('Email', 'Wiki'))).toBe('Turn on Inbox to get email');
-  expect(screen.getAllByText('Company default')).toHaveLength(7);
+  expect(screen.getAllByText('Company default')).toHaveLength(8);
   expect(screen.queryByText('Your choice')).toBeNull();
   expect(auth.updatePreferences).not.toHaveBeenCalled();   // looking changes nothing
 });
@@ -223,7 +225,7 @@ it('the person\'s own values win over the defaults, and the row says "Your choic
   const reports = screen.getByRole('row', { name: /Reports & labels/ });
   expect(within(reports).getByText('Your choice')).toBeTruthy();
   expect(within(screen.getByRole('row', { name: /Wiki/ })).getByText('Your choice')).toBeTruthy();
-  expect(screen.getAllByText('Company default')).toHaveLength(5);
+  expect(screen.getAllByText('Company default')).toHaveLength(6);
   expect(screen.getAllByRole('button', { name: 'Use company default' })).toHaveLength(2);
 });
 
@@ -294,7 +296,7 @@ it('after a save the row says "Your choice", and the company defaults are not fe
 
   await waitFor(() => expect(within(screen.getByRole('row', { name: /Wiki/ })).getByText('Your choice')).toBeTruthy());
   expect(sw('Email', 'Wiki').checked).toBe(false);
-  expect(screen.getAllByText('Company default')).toHaveLength(6);
+  expect(screen.getAllByText('Company default')).toHaveLength(7);
   expect(api.getNotificationSettings).toHaveBeenCalledTimes(1);
   await waitFor(() => expect(screen.getByText('saved')).toBeTruthy());
 });

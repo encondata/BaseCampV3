@@ -21,7 +21,7 @@ export type SwitchChannel = 'inbox' | 'email';
 /** The categories that have switches, in registry order. Account security is
  *  always on and has none. */
 export const CONFIGURABLE: NotificationCategory[] = [
-  'approvals', 'reports', 'wiki', 'learning', 'initiatives', 'trucks', 'devices',
+  'approvals', 'reports', 'wiki', 'learning', 'initiatives', 'trucks', 'devices', 'bulk_actions',
 ];
 
 /** What each category carries — only the kinds that exist today (the design,
@@ -34,6 +34,7 @@ export const CATEGORY_DESCRIPTIONS: Record<NotificationCategory, string> = {
   initiatives: 'Initiative status changes',
   trucks: 'Truck status changes',
   devices: 'Devices going offline',
+  bulk_actions: 'Background bulk actions, finished or failed',
   security: 'Password expiring and two-factor notices about your own account',
 };
 
