@@ -14,8 +14,10 @@
    delivery result); and the switch grid and schedule card (the state line
    under a category, the schedule rows' wrapping and picker widths, the shaded
    summary line); the System › Notifications › Defaults tab (its one-column
-   stack, the foot note and the Save row); and the Watch button of the
-   initiative, site and truck pages (its amber "on" state).
+   stack, the foot note and the Save row); the Watch button of the
+   initiative, site and truck pages (its amber "on" state); and the watch
+   lists and the events editor (/me › "What you watch", the group page's
+   "What this group watches").
    ============================================================ */
 
 /* ── NotificationModal (components/notifications/NotificationModal.tsx) ──
@@ -112,8 +114,9 @@
 
 /* Holds a single RowActionsMenu trigger, right-aligned in its 88px
    column — the gap and wrap the old two/three-button strip needed went
-   with the strip. */
-.ngd-row-actions {
+   with the strip. The watch tables' Actions cell is the same holder. */
+.ngd-row-actions,
+.watch-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -237,25 +240,25 @@
  * schedule rows wrap and size their pickers, and the shaded summary line. */
 
 /* The grid (and the Defaults tab's critical list, which is a table of switches
- * too, and a group page's Members table) scrolls sideways only in a card
- * narrower than its floor (the grid's is about 315px: a 360px-wide phone).
- * Then it shows the slim themed bar, never the browser's classic one — the
- * Delivery log's list and trail, above, are the model. */
-:is(.swgrid, .nd-crit, .ngd-members) .data-table-scroll::-webkit-scrollbar { height: 12px; }
-:is(.swgrid, .nd-crit, .ngd-members) .data-table-scroll::-webkit-scrollbar-track { background: transparent; margin-inline: 16px; }
-:is(.swgrid, .nd-crit, .ngd-members) .data-table-scroll::-webkit-scrollbar-thumb {
+ * too, a group page's Members table, and the watch tables) scrolls sideways only
+ * in a card narrower than its floor (the grid's is about 315px: a 360px-wide
+ * phone). Then it shows the slim themed bar, never the browser's classic one —
+ * the Delivery log's list and trail, above, are the model. */
+:is(.swgrid, .nd-crit, .ngd-members, .watch-table) .data-table-scroll::-webkit-scrollbar { height: 12px; }
+:is(.swgrid, .nd-crit, .ngd-members, .watch-table) .data-table-scroll::-webkit-scrollbar-track { background: transparent; margin-inline: 16px; }
+:is(.swgrid, .nd-crit, .ngd-members, .watch-table) .data-table-scroll::-webkit-scrollbar-thumb {
   background-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent);
   border: 3px solid transparent;
   background-clip: padding-box;
   border-radius: 999px;
 }
-:is(.swgrid, .nd-crit, .ngd-members) .data-table-scroll::-webkit-scrollbar-thumb:hover {
+:is(.swgrid, .nd-crit, .ngd-members, .watch-table) .data-table-scroll::-webkit-scrollbar-thumb:hover {
   background-color: color-mix(in srgb, var(--muted, #51606f) 65%, transparent);
 }
 /* Firefox has no ::-webkit-scrollbar; give it the slim, trackless bar. Only
    there: in Chromium, scrollbar-width/color would override the rules above. */
 @supports not selector(::-webkit-scrollbar) {
-  :is(.swgrid, .nd-crit, .ngd-members) .data-table-scroll {
+  :is(.swgrid, .nd-crit, .ngd-members, .watch-table) .data-table-scroll {
     scrollbar-width: thin;
     scrollbar-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent) transparent;
   }
@@ -327,3 +330,30 @@
  * A .btn-ghost in the page header; once the person watches, it turns amber like
  * the wiki's own (.wiki-watch-btn.on). */
 .watch-btn.on { color: var(--amber); border-color: var(--amber); }
+
+/* ── Watch lists and the events editor ───────────────────────────────────
+ * /me › "What you watch" (pages/me/WatchesSection.tsx), a group's "What this
+ * group watches", and the events they are chosen in (WatchesTable.tsx,
+ * WatchEventsEditor.tsx, WatchEventsModal.tsx). The tables are DataTables and the
+ * editor's rows the report options' switch rows, so their type comes from
+ * directory.css; this adds only layout and the in-row link color. */
+
+/* The card sits under the settings stack, whose cards are 18px apart. */
+.me-watch-card { margin-top: 18px; }
+/* The count badge beside the title, as in the groups lists' headings. */
+.me-watch-card .set-head h3 { display: flex; align-items: center; gap: 10px; }
+
+/* The Watching cell: the thing's name, then its kind as a chip. The name
+ * links to the thing's page, in the in-row link look of .idet-people-list. */
+.watch-thing { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+.watch-table a.cell-top { color: var(--c-blue); text-decoration: none; }
+.watch-table a.cell-top:hover { text-decoration: underline; }
+
+/* Floors for the two wide columns, scaled with the list size: below them the
+ * table scrolls sideways (DataTable's wrapper) instead of squeezing a name and
+ * its chip, or the events, into slivers. */
+.watch-table td:first-child { min-width: calc(220px * var(--list-scale, 1)); }
+.watch-table td:nth-child(2) { min-width: calc(200px * var(--list-scale, 1)); }
+
+/* The editor: the "All events" row, then a group of switches per category. */
+.watch-editor { display: flex; flex-direction: column; gap: 16px; }

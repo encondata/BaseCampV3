@@ -10,7 +10,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
-import type { BiometricKey, PersonDetail, TotpStatus, TrustedBrowser, UiPreferences } from '../lib/api';
+import type { BiometricKey, PersonDetail, TotpStatus, TrustedBrowser, UiPreferences, Watch } from '../lib/api';
 
 type TB = TrustedBrowser;
 
@@ -34,9 +34,10 @@ const api = vi.hoisted(() => ({
   forgetAllMyTrustedBrowsers: vi.fn(async () => {}),
   listMyBiometricKeys: vi.fn(async (): Promise<BiometricKey[]> => []),
   forgetMyBiometricKey: vi.fn(async () => {}),
-  // MeNotifications (the Notifications tab) loads the person's groups and the
-  // company notification settings on mount
+  // MeNotifications (the Notifications tab) loads the person's groups, their
+  // watches and the company notification settings on mount
   listMyNotificationGroups: vi.fn(async () => []),
+  listMyWatches: vi.fn(async (): Promise<Watch[]> => []),
   getNotificationSettings: vi.fn(async () => ({
     defaults: {
       approvals: { inbox: true, email: true }, reports: { inbox: true, email: true },
@@ -67,6 +68,11 @@ const PROFILE: PersonDetail = {
   avatar_key: null,
   avatar_url: null,
   password_updated_at: null,
+};
+
+const WATCH: Watch = {
+  id: 'w1', thing: 'initiative', thing_id: 'i1', thing_name: 'Initiative A', link: '/initiatives/i1',
+  kinds: [], via: { type: 'you', id: null, name: null }, created_at: '2026-11-02T12:00:00Z',
 };
 
 api.getProfileRequest.mockImplementation(async () => PROFILE);
@@ -111,6 +117,7 @@ afterEach(() => {
   api.getMyActivityRequest.mockImplementation(async () => []);
   api.listMyTrustedBrowsers.mockImplementation(async () => ({ trust_days: 7, browsers: [] }));
   api.listMyBiometricKeys.mockImplementation(async () => []);
+  api.listMyWatches.mockImplementation(async () => []);
   auth.totp = { enrolled: false, enrolled_at: null, required: false, backup_codes_remaining: 0 };
 });
 
@@ -199,6 +206,31 @@ it('/me/notifications shows the Notifications section only', async () => {
   expect(screen.queryByText('Appearance')).toBeNull();
   expect(screen.queryByRole('heading', { name: 'Profile', level: 3 })).toBeNull();
   expect(screen.getByRole('tab', { name: 'Notifications' }).getAttribute('aria-selected')).toBe('true');
+});
+
+it('/me/notifications lists What you watch under the schedule card', async () => {
+  api.listMyWatches.mockImplementation(async () => [WATCH]);
+  renderAt('/me/notifications');
+
+  const watching = await screen.findByRole('region', { name: 'What you watch' });
+  expect(await within(watching).findByText('Initiative A')).toBeTruthy();
+  expect(within(watching).getByText('All events')).toBeTruthy();
+  const schedule = screen.getByRole('heading', { name: 'When email reaches you', level: 3 });
+  expect(schedule.compareDocumentPosition(watching) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(api.listMyWatches).toHaveBeenCalledTimes(1);
+});
+
+it('the Profile and Preferences tabs neither show nor load What you watch', async () => {
+  renderAt('/me');
+  await waitFor(() => expect(screen.getByRole('heading', { name: 'Profile', level: 3 })).toBeTruthy());
+  expect(screen.queryByRole('region', { name: 'What you watch' })).toBeNull();
+
+  cleanup();
+  renderAt('/me/preferences');
+  await waitFor(() => expect(screen.getByText('Appearance')).toBeTruthy());
+  expect(screen.queryByRole('region', { name: 'What you watch' })).toBeNull();
+
+  expect(api.listMyWatches).not.toHaveBeenCalled();
 });
 
 it('clicking the Preferences tab navigates to /me/preferences', async () => {
