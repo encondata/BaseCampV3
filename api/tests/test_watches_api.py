@@ -1,8 +1,9 @@
 """Your own watches: GET and POST /auth/me/watches, GET /auth/me/watches/state and
 PATCH and DELETE /auth/me/watches/{id}. A watch is on an initiative, a site, a truck or a device
-(tests/test_device_watches.py covers what is special about devices), or on chosen events
-everywhere (an Everything watch). /me lists the person's own watches and those of the Active
-groups they belong to, for the things they can open right now.
+(tests/test_device_watches.py covers what is special about devices), a wiki library, folder or
+page (tests/test_wiki_watch_groups.py), or on chosen events everywhere (an Everything watch).
+/me lists the person's own watches and those of the Active groups they belong to, for the things
+they can open right now.
 
 Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (sections 1, 2 and 10)"""
 
@@ -155,12 +156,12 @@ async def test_watch_and_unwatch_an_initiative(client, db):
     assert await _count(db) == 0
 
 
-@pytest.mark.parametrize(("thing", "name", "link"), [
-    ("initiative", "Initiative A", "/initiatives/{id}"),
-    ("site", "Site A", "/sites/{id}"),
-    ("truck", "Truck A", "/logistics/trucks/{id}"),
+@pytest.mark.parametrize(("thing", "name", "label", "link"), [
+    ("initiative", "Initiative A", "Initiative", "/initiatives/{id}"),
+    ("site", "Site A", "Site", "/sites/{id}"),
+    ("truck", "Truck A", "Truck", "/logistics/trucks/{id}"),
 ])
-async def test_each_thing_has_its_name_and_page(client, db, thing, name, link):
+async def test_each_thing_has_its_name_and_page(client, db, thing, name, label, link):
     me = await _login(db, client, "A")
     initiative, site, truck = await _things(db)
     row = {"initiative": initiative, "site": site, "truck": truck}[thing]
@@ -168,6 +169,8 @@ async def test_each_thing_has_its_name_and_page(client, db, thing, name, link):
     resp = await _post(client, me, thing, row.id)
     assert resp.status_code == 201, resp.text
     assert (resp.json()["thing"], resp.json()["thing_name"]) == (thing, name)
+    # what the portal calls its kind (a wiki thing's depends on the row: a folder or a page)
+    assert resp.json()["thing_label"] == label
     assert resp.json()["link"] == link.format(id=row.id)
 
 
@@ -217,8 +220,8 @@ async def test_everything(client, db):
     resp = await _post(client, me, EVERYTHING, kinds=[INITIATIVE_CHANGED])
     assert resp.status_code == 201, resp.text
     body = resp.json()
-    assert (body["thing"], body["thing_id"], body["thing_name"], body["link"]) == (
-        "everything", None, None, None)
+    assert (body["thing"], body["thing_id"], body["thing_name"], body["thing_label"],
+            body["link"]) == ("everything", None, None, None, None)
     assert body["kinds"] == [INITIATIVE_CHANGED]
     assert body["via"]["type"] == "you"
 
@@ -241,14 +244,14 @@ async def test_errors(client, db):
     initiative, site, truck = await _things(db)
     ghost = uuid.uuid4()
 
-    # something that is not a thing to watch, now or until its slice
-    for thing in ("bogus", "wiki_node", ""):
+    # something that is not a thing to watch
+    for thing in ("bogus", "wiki", ""):
         resp = await _post(client, me, thing, ghost)
         assert (resp.status_code, _code(resp)) == (422, "invalid_thing"), thing
     # Everything has no id; every other thing needs one
     resp = await _post(client, me, EVERYTHING, initiative.id, kinds=[INITIATIVE_CHANGED])
     assert (resp.status_code, _code(resp)) == (422, "invalid_thing")
-    for thing in ("initiative", "site", "truck", "device"):
+    for thing in ("initiative", "site", "truck", "device", "wiki_space", "wiki_node"):
         resp = await _post(client, me, thing)
         assert (resp.status_code, _code(resp)) == (422, "invalid_thing"), thing
         resp = await _post(client, me, thing, ghost)
@@ -326,7 +329,7 @@ async def test_state_counts_only_my_own_watch(client, db):
     assert (state.status_code, state.json()["watching"]) == (200, False)
 
 
-@pytest.mark.parametrize("thing", ["bogus", "wiki_node", EVERYTHING, ""])
+@pytest.mark.parametrize("thing", ["bogus", "wiki", EVERYTHING, ""])
 async def test_state_of_an_unknown_thing_is_refused(client, db, thing):
     me = await _login(db, client, "A")
     resp = await _state(client, me, thing, uuid.uuid4())

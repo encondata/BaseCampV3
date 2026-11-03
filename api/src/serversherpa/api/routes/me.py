@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.api.deps import CurrentUser, DbSession, raise_if_reused, require_password_length
 from serversherpa.api.routes.auth import TRUST_COOKIE, clear_trust_cookie
 from serversherpa.api.routes.notifications import _request_out
+from serversherpa.api.routes.wiki.watches import audit_unwatch as audit_wiki_unwatch
+from serversherpa.api.routes.wiki.watches import audit_watch as audit_wiki_watch
 from serversherpa.api.schemas import (
     BiometricKeyOut,
     ChangePasswordIn,
@@ -46,6 +48,7 @@ from serversherpa.notifications.access import viewers
 from serversherpa.notifications.requests import RequestError, cancel_request, create_request
 from serversherpa.notifications.watches import (
     EVERYTHING,
+    WIKI_THINGS,
     WatchError,
     add_watch,
     clean_kinds,
@@ -389,10 +392,18 @@ async def my_watch_state(
     return WatchStateOut(watching=True, watch_id=watch.id, kinds=list(watch.kinds))
 
 
+def _on_the_wiki(watch: NotificationWatch) -> bool:
+    """A watch on a wiki library, folder or page: the wiki's own as well, which the wiki
+    audits (api/routes/wiki/watches.py)."""
+    thing = thing_of(watch)
+    return thing is not None and thing.type in WIKI_THINGS
+
+
 @router.post("/watches", response_model=WatchOut, status_code=201)
 async def create_my_watch(body: WatchIn, user: CurrentUser, db: DbSession) -> WatchOut:
     """Watch a thing I can open, or chosen events everywhere. One watch each: watching again
-    is a 409, and the events are changed on the watch that is there."""
+    is a 409, and the events are changed on the watch that is there. A wiki watch is recorded
+    as the wiki records its own."""
     try:
         watch = await add_watch(
             db, thing=body.thing, thing_id=body.id, kinds=body.kinds,
@@ -401,6 +412,8 @@ async def create_my_watch(body: WatchIn, user: CurrentUser, db: DbSession) -> Wa
         view = await watch_view(db, watch)
     except WatchError as err:
         raise _watch_http(err) from None
+    if _on_the_wiki(watch):
+        audit_wiki_watch(db, actor_id=user.person.id, watch=watch)
     await db.commit()
     return WatchOut.from_view(view)
 
@@ -409,7 +422,8 @@ async def create_my_watch(body: WatchIn, user: CurrentUser, db: DbSession) -> Wa
 async def update_my_watch(
     watch_id: uuid.UUID, body: WatchKindsIn, user: CurrentUser, db: DbSession,
 ) -> WatchOut:
-    """Choose the events of one of my watches; none means every event that applies."""
+    """Choose the events of one of my watches; none means every event that applies. A wiki
+    watch names none (it hears every page update and comment): any is 422 `invalid_kind`."""
     watch = await _my_watch(db, watch_id, user.person.id)
     thing = thing_of(watch)
     # A watch on something I can't open stays stored but out of sight, as in the list: its
@@ -428,6 +442,12 @@ async def update_my_watch(
 
 @router.delete("/watches/{watch_id}", status_code=204)
 async def delete_my_watch(watch_id: uuid.UUID, user: CurrentUser, db: DbSession) -> None:
-    """Stop watching. Any watch of mine can go, whether or not I can still open its thing."""
-    await db.delete(await _my_watch(db, watch_id, user.person.id))
+    """Stop watching. Any watch of mine can go, whether or not I can still open its thing. A
+    wiki watch's end is recorded as the wiki records its own (`wiki_watch` `unwatch`), so the
+    wiki's history stays whole whichever page stopped it; watches on portal things go
+    unaudited."""
+    watch = await _my_watch(db, watch_id, user.person.id)
+    if _on_the_wiki(watch):
+        audit_wiki_unwatch(db, actor_id=user.person.id, watch=watch)
+    await db.delete(watch)
     await db.commit()

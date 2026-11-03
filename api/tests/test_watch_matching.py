@@ -302,14 +302,14 @@ async def test_the_people_come_in_a_fixed_order(db):
 
 # ── events as the app announces them ────────────────────────────────
 
-async def test_a_thing_in_reaches_that_cannot_be_watched_yet_is_ignored(db):
+async def test_a_thing_in_reaches_that_nobody_can_watch_is_ignored(db):
     person, = await _people(db, "A")
     initiative = await _initiative(db, "Initiative A")
     site = await _site(db, "Site A")
     await _watch(db, person, _on(site, "site"))
 
     event = await _event(db, INITIATIVE_CHANGED, _on(initiative),
-                         Thing("wiki_node", uuid.uuid4()), _on(site, "site"))
+                         Thing("asset", uuid.uuid4()), _on(site, "site"))
     assert await matching_routes(db, event) == {person.id: {"watch"}}
 
 
@@ -408,9 +408,10 @@ def test_everything_must_name_its_events():
 
 
 def test_the_thing_columns_are_every_column_the_table_has():
-    """An Everything watch is one with none of them set, so the list has to name them all,
-    the wiki columns the API does not take yet included."""
+    """An Everything watch is one with none of them set, so the list has to name them all, and
+    each names a kind of thing a watch can be on (the wiki's two included)."""
     foreign = {column.name for column in NotificationWatch.__table__.columns
                if column.foreign_keys}
     assert set(_THING_COLUMNS) == foreign - {"person_id", "group_id", "created_by"}
-    assert {spec.column for spec in THINGS.values()} <= set(_THING_COLUMNS)
+    assert {spec.column for spec in THINGS.values()} == set(_THING_COLUMNS)
+    assert {"wiki_space", "wiki_node"} <= set(THINGS)

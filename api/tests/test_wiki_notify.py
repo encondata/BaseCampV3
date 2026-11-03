@@ -328,12 +328,16 @@ async def test_watchers_for_covers_the_node_its_ancestors_and_its_space(client, 
     await _watch(client, other_watcher_h, node=other)
 
     got = await notify.watchers_for(db, await _node(db, page["id"]))
-    assert got == {s["owner_id"], s["viewer_id"], s["editor_id"]}
+    # each by their own watch (a group's members come with the group's route:
+    # tests/test_wiki_watch_groups.py)
+    assert got == {s["owner_id"]: {"watch"}, s["viewer_id"]: {"watch"},
+                   s["editor_id"]: {"watch"}}
 
 
 async def test_watchers_for_is_people_never_a_groups_row(client, db):
-    """A group's watch on the folder is a row with no person in it: it adds no one to the
-    people who watch (and never a None)."""
+    """A group's watch on the folder is a row with no person in it: it reaches the group's
+    members, and a group with none adds no one to the people who watch (never a None, never
+    the group's own id)."""
     s = await _setup(client, db)
     folder = await _create(client, s["owner"], s["space"], "Guides")
     page = await _create(client, s["owner"], s["space"], "Runbook", kind="page",
@@ -345,7 +349,8 @@ async def test_watchers_for_is_people_never_a_groups_row(client, db):
     await db.commit()
 
     got = await notify.watchers_for(db, await _node(db, page["id"]))
-    assert got == {s["owner_id"]}          # the owner auto-watched what they created
+    # the owner auto-watched what they created; the group has no members
+    assert got == {s["owner_id"]: {"watch"}}
 
 
 async def test_recipients_who_can_view_filters_and_caps(client, db, monkeypatch, caplog):

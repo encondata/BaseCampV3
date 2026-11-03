@@ -12,6 +12,7 @@ from serversherpa.db.models import (
     Client,
     Initiative,
     NotificationGroup,
+    NotificationGroupMember,
     NotificationWatch,
 )
 from tests.wiki_helpers import _create, _put_grants, _setup, login_as, publish_via_db
@@ -183,7 +184,8 @@ async def test_a_watch_is_stored_as_the_persons_own_row_naming_no_events(client,
 
 async def test_the_wiki_sees_only_its_own_watches_in_the_shared_table(client, db):
     """`notification_watches` also holds watches on other things and groups' watches: the
-    wiki's list and state don't show them, and its unwatch can't remove them."""
+    wiki's list and state don't show them, even to a member of a group watching the very
+    folder (that group's watch shows on /me instead), and its unwatch can't remove them."""
     s = await _setup(client, db)
     folder = await _create(client, s["owner"], s["space"], "Guides")
     mine = await _put(client, s["viewer"], node_id=folder["id"])
@@ -193,16 +195,20 @@ async def test_the_wiki_sees_only_its_own_watches_in_the_shared_table(client, db
     await db.flush()
     elsewhere = NotificationWatch(person_id=s["viewer_id"], initiative_id=initiative.id)
     groups = NotificationWatch(group_id=group.id, wiki_node_id=uuid.UUID(folder["id"]))
-    db.add_all([elsewhere, groups])
+    db.add_all([elsewhere, groups,
+                NotificationGroupMember(group_id=group.id, person_id=s["editor_id"])])
     await db.flush()
     elsewhere_id, groups_id = elsewhere.id, groups.id
     await db.commit()
 
     assert [w["id"] for w in await _list(client, s["viewer"])] == [mine["id"]]
-    # the editor watches nothing, whatever a group watches: the wiki's state is the person's own
+    # the editor watches nothing themself, though their group watches the folder: the wiki's
+    # list and state are the person's own
     assert await _list(client, s["editor"]) == []
     assert await _state(client, s["editor"], folder["id"]) == {
         "watching": False, "via": None, "watch_id": None}
+    resp = await client.get("/auth/me/watches", headers=s["editor"])
+    assert [(w["id"], w["via"]["type"]) for w in resp.json()] == [(str(groups_id), "group")]
 
     for watch_id in (elsewhere_id, groups_id):
         resp = await client.delete(f"/wiki/watches/{watch_id}", headers=s["viewer"])

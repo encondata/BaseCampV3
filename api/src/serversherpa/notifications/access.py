@@ -1,14 +1,16 @@
 """Who can see a thing. The notification worker has to say, for people other than the one
 making a request, whether each of them can open an initiative, a site, a truck, a device, an
-asset, a container or a worker, and the answer must be the one that thing's own page gives:
-`_get_initiative` for an initiative (api/routes/initiatives.py), `get_site` and `get_truck` for
-a site and a truck, the device lists and kiosk page (api/routes/devices.py, `scanning_hardware`
-view) for a device, `get_asset` (api/routes/assets.py) and `get_container`
-(api/routes/containers.py) for an asset and a container, and `get_worker`
-(api/routes/workers.py) for a person, whose page is a worker's. A watch on something a person
-can't open stays silent, an Everything watch never carries one client's work to another
-client's user, and a status rule's notice tells each person only of the matched things they
-can open.
+asset, a container, a worker or a wiki library, folder or page, and the answer must be the one
+that thing's own page gives: `_get_initiative` for an initiative (api/routes/initiatives.py),
+`get_site` and `get_truck` for a site and a truck, the device lists and kiosk page
+(api/routes/devices.py, `scanning_hardware` view) for a device, `get_asset`
+(api/routes/assets.py) and `get_container` (api/routes/containers.py) for an asset and a
+container, `get_worker` (api/routes/workers.py) for a person, whose page is a worker's, and the
+wiki's own rule (wiki/permissions.py) for the wiki: `GET /wiki/spaces/{key}` for a library, and
+for a folder or page the rule the wiki's watch routes, tree and fan-out share
+(`viewable_nodes`). A watch on something a person can't open stays silent, an Everything watch
+never carries one client's work to another client's user, and a status rule's notice tells each
+person only of the matched things they can open.
 
 `visible_among` makes that decision for many people and many things of one kind at once, in a
 fixed number of queries per person however many things there are (a rule's notice can be about
@@ -16,7 +18,8 @@ thousands); `viewers` asks it about one thing. Neither checks that an account is
 `active_ids` as well, the wiki's rule for who is still a person to tell (wiki/notify.py).
 `thing_exists` says whether the row is still there.
 
-Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (Anti-goals and section 4)"""
+Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (Anti-goals and sections 4
+and 7)"""
 
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
@@ -41,9 +44,17 @@ from serversherpa.db.models import (
     Site,
     Truck,
     UserAccount,
+    WikiNode,
+    WikiSpace,
     WorkerProfile,
 )
 from serversherpa.notifications.events import Thing
+from serversherpa.wiki.permissions import (
+    AccessIndex,
+    principal_from_access,
+    principals_for_people,
+    viewable_nodes,
+)
 
 
 @dataclass(frozen=True)
@@ -52,12 +63,15 @@ class _Page:
     opens it, and for a resource with row scope the column the page probes its scope condition
     through (`scope_conditions` for the resource, on that column's table). None means the
     resource is global-only: only a global person can hold its permission, so there is no row
-    scope to probe. A worker's page also needs the person to hold the worker role."""
+    scope to probe. A worker's page also needs the person to hold the worker role. A wiki
+    thing's page is decided by the wiki's own rule instead (`_wiki_visible`): its resource's
+    `view` is only where that rule starts."""
 
     model: type[Any]
     resource: str
     scope: InstrumentedAttribute[uuid.UUID] | None = None
     worker: bool = False
+    wiki: bool = False
 
 
 _PAGES: dict[str, _Page] = {
@@ -71,6 +85,11 @@ _PAGES: dict[str, _Page] = {
     # GET /workers/{id}: `_require_worker`, then `_check_worker_scope`, the probe on the
     # worker's profile (a partner's people see the workers it supplies, a worker sees themself)
     "person": _Page(Person, "workers", WorkerProfile.person_id, worker=True),
+    # GET /wiki/spaces/{key}: a level on the library
+    "wiki_space": _Page(WikiSpace, "wiki", wiki=True),
+    # the wiki's watch routes (GET /wiki/nodes/{id}/watch, PUT /wiki/watches), its tree and its
+    # fan-out: `viewable_nodes`
+    "wiki_node": _Page(WikiNode, "wiki", wiki=True),
 }
 
 # The kinds of thing `viewers` and `visible_among` can answer for.
@@ -121,10 +140,53 @@ async def active_ids(db: AsyncSession, person_ids: Iterable[uuid.UUID]) -> set[u
 
 async def thing_exists(db: AsyncSession, thing: Thing) -> bool:
     """Whether the row is there now. An archived row counts: its page still opens (a device
-    is never archived, only deleted). Raises ValueError for a kind of thing outside
-    VIEWABLE_THINGS."""
+    is never archived, only deleted). So does a wiki folder or page in the trash, which can be
+    restored, though it opens for nobody meanwhile. Raises ValueError for a kind of thing
+    outside VIEWABLE_THINGS."""
     model = _page(thing.type).model
     return await db.scalar(select(model.id).where(model.id == thing.id)) is not None
+
+
+async def _wiki_visible(db: AsyncSession, thing_type: str, ids: Sequence[uuid.UUID],
+                        people: Sequence[uuid.UUID],
+                        access: Mapping[uuid.UUID, AccessInfo] | None,
+                        ) -> dict[uuid.UUID, frozenset[uuid.UUID]]:
+    """`visible_among` for a wiki library (`wiki_space`) or folder or page (`wiki_node`), by the
+    wiki's own rule (wiki/permissions.py): everyone's Principal, then an AccessIndex each. A
+    library opens to whoever has a level on it (`levels_for_spaces`, as GET /wiki/spaces/{key});
+    a folder or page to whoever `viewable_nodes` shows it to: not in the trash, a level of view
+    or more, and for someone with view alone, a page that has been published.
+
+    The cost doesn't grow with the number of things: one query for the rows, one batch for
+    everyone's Principal (one query a person when `access` is given), each library's grants
+    loaded once for all the indexes, and a look at which pages were published for each person
+    who only reads some of them."""
+    if thing_type == "wiki_space":
+        rows: list[Any] = list(await db.scalars(
+            select(WikiSpace.id).where(_among(WikiSpace.id, ids))))
+    else:
+        rows = list(await db.scalars(select(WikiNode).where(_among(WikiNode.id, ids))))
+    if not rows:
+        return {}
+    if access is None:
+        principals = await principals_for_people(db, people)
+    else:
+        principals = {person_id: await principal_from_access(db, person_id, access[person_id])
+                      for person_id in people if person_id in access}
+    spaces: dict = {}                   # one load of each library, shared by every index
+    out: dict[uuid.UUID, frozenset[uuid.UUID]] = {}
+    for person_id, principal in principals.items():
+        ix = AccessIndex(db, principal, spaces=spaces)
+        if thing_type == "wiki_space":
+            levels = await ix.levels_for_spaces(rows)
+            theirs = frozenset(space_id for space_id, level in levels.items()
+                               if level is not None)
+        else:
+            shown, _levels = await viewable_nodes(db, ix, rows)
+            theirs = frozenset(node.id for node in shown)
+        if theirs:
+            out[person_id] = theirs
+    return out
 
 
 async def visible_among(db: AsyncSession, thing_type: str, ids: Iterable[uuid.UUID],
@@ -139,7 +201,8 @@ async def visible_among(db: AsyncSession, thing_type: str, ids: Iterable[uuid.UU
     be in their row scope: a client's user sees that client's initiatives and assets only, a
     partner's people the workers it supplies, and a worker themself. Sites, trucks, devices and
     containers are global-only, so no row scope applies. A person's page is a worker's: it opens
-    only while they hold the worker role. A thing whose row is gone opens for nobody.
+    only while they hold the worker role. A wiki library, folder or page is the wiki's own to
+    decide (`_wiki_visible`). A thing whose row is gone opens for nobody.
 
     The cost doesn't grow with the number of things: one query finds the ones whose page can
     open at all, one batch resolves everyone's access, and only a person with row scope costs one
@@ -152,6 +215,8 @@ async def visible_among(db: AsyncSession, thing_type: str, ids: Iterable[uuid.UU
     people = list(dict.fromkeys(person_ids))
     if not things or not people:
         return {}
+    if page.wiki:
+        return await _wiki_visible(db, thing_type, things, people, access)
     present = frozenset(await db.scalars(_openable(page, things)))
     if not present:
         return {}

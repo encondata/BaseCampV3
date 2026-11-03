@@ -1,20 +1,24 @@
-"""Watches. A person, or a notification group, watches an initiative, a site, a truck or a
-device, or chosen kinds of event everywhere (an "Everything" watch): `NotificationWatch`,
-migration 0113. This module validates and stores them, lists what a person hears about, and works
-out which watches an event reaches (`matching_routes`, for the event sweep and the send-time
-re-check) and which of a person's would hear a kind of event (`watches_hearing`, for Check
-delivery).
+"""Watches. A person, or a notification group, watches an initiative, a site, a truck, a
+device or a wiki library, folder or page, or chosen kinds of event everywhere (an "Everything"
+watch): `NotificationWatch`, migrations 0113 and 0116. This module validates and stores them,
+lists what a person hears about, and works out which watches an event reaches
+(`matching_routes`, for the event sweep and the send-time re-check), which of a person's would
+hear a kind of event (`watches_hearing`, for Check delivery) and who watches a set of things at
+all (`routes_watching`, for the wiki's own fan-out).
 
 A watch on a thing hears the events whose subject is that thing, or that reach it
 (`NotificationEvent.reaches`), so a watch on an initiative also hears its child initiatives.
-An Everything watch names its events, and only a kind marked `everywhere` can be named. Access
-is not stored: a watch whose owner can't open its thing stays in place and is neither listed
-nor delivered until they can again. Only the devices notifications check can be watched
-(services/device_online.py `covered`).
+An Everything watch names its events, and only a kind marked `everywhere` can be named. A wiki
+watch names none: no kind of event reaches a wiki thing, and the wiki's fan-out (wiki/notify.py)
+tells its watchers of every page update and comment, as it always has. Access is not stored: a
+watch whose owner can't open its thing stays in place and is neither listed nor delivered until
+they can again. Only the devices notifications check can be watched (services/device_online.py
+`covered`), and no wiki folder or page in the trash.
 
 Like notify() and announce(), nothing here commits: the routes do.
 
-Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (sections 1, 2, 4 and 10)"""
+Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (sections 1, 2, 4, 7 and
+10)"""
 
 import uuid
 from collections import defaultdict
@@ -22,11 +26,12 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import ColumnElement, and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.access.resolver import AccessInfo, resolve_access_many
+from serversherpa.config import get_settings
 from serversherpa.db.models import (
     Device,
     Initiative,
@@ -36,8 +41,10 @@ from serversherpa.db.models import (
     NotificationWatch,
     Site,
     Truck,
+    WikiNode,
+    WikiSpace,
 )
-from serversherpa.notifications.access import viewers
+from serversherpa.notifications.access import viewers, visible_among
 from serversherpa.notifications.events import Thing
 from serversherpa.notifications.kinds import KINDS
 from serversherpa.services.device_online import covered, device_link, display_name
@@ -61,7 +68,9 @@ class ThingSpec[Row]:
     and what it is called (for a device, both depend on what kind of device it is: a router is
     named as on the Routers page). `can_watch` is for a kind of which only some rows can be
     watched: it says whether this row can. None means every row can. It is not
-    `KindInfo.watchable`, which says whether a kind of event can be watched for."""
+    `KindInfo.watchable`, which says whether a kind of event can be watched for. `row_label` is
+    for a kind whose rows the portal calls by different names (a wiki folder or page): what it
+    calls this row. None means `label`."""
 
     column: str
     model: type[Row]
@@ -69,11 +78,26 @@ class ThingSpec[Row]:
     link: Callable[[Row], str]
     can_watch: Callable[[Row], bool] | None = None
     name: Callable[[Row], str] = _stored_name
+    row_label: Callable[[Row], str] | None = None
+
+    def label_of(self, row: Row) -> str:
+        """What the portal calls this row's kind, as the chip beside its name says it."""
+        return self.row_label(row) if self.row_label is not None else self.label
 
 
-# The things the API takes a watch on. The wiki columns exist (see _THING_COLUMNS) for the slice
-# that makes those watchable, and join this table then. A device can be watched only while
-# notifications check it (an RFID Station, a fixed reader or an approved router).
+def _in_the_wiki(path: str) -> str:
+    """The absolute URL of a page of the wiki, which is an app of its own (`wiki_origin`), as
+    the wiki's notices link to it (wiki/notify.py `node_link`)."""
+    return f"{get_settings().wiki_origin.rstrip('/')}{path}"
+
+
+def _node_label(row: WikiNode) -> str:
+    return "Wiki folder" if row.kind == "folder" else "Wiki page"
+
+
+# The things the API takes a watch on. A device can be watched only while notifications check it
+# (an RFID Station, a fixed reader or an approved router); a wiki folder or page only while it
+# is out of the trash.
 THINGS: Mapping[str, ThingSpec[Any]] = {
     "initiative": ThingSpec("initiative_id", Initiative, "Initiative",
                             lambda row: f"/initiatives/{row.id}"),
@@ -81,12 +105,20 @@ THINGS: Mapping[str, ThingSpec[Any]] = {
     "truck": ThingSpec("truck_id", Truck, "Truck", lambda row: f"/logistics/trucks/{row.id}"),
     "device": ThingSpec("device_id", Device, "Device", device_link, can_watch=covered,
                         name=display_name),
+    "wiki_space": ThingSpec("wiki_space_id", WikiSpace, "Wiki library",
+                            lambda row: _in_the_wiki(f"/library/{row.key}")),
+    "wiki_node": ThingSpec("wiki_node_id", WikiNode, "Wiki page",
+                           lambda row: _in_the_wiki(f"/n/{row.id}"),
+                           can_watch=lambda row: row.deleted_at is None,
+                           name=lambda row: row.title, row_label=_node_label),
 }
 
-# Every column of a watch that names a thing. An Everything watch has none of them set, so this
-# list has to hold them all, the ones THINGS does not take yet (the wiki's) included.
-_THING_COLUMNS = ("initiative_id", "site_id", "truck_id", "device_id",
-                  "wiki_space_id", "wiki_node_id")
+# The wiki's two kinds of thing: their watches are the wiki's own as well (api/routes/wiki).
+WIKI_THINGS = frozenset({"wiki_space", "wiki_node"})
+
+# Every column of a watch that names a thing: an Everything watch has none of them set. THINGS
+# takes every one the table has (tests/test_watch_matching.py holds the two lists together).
+_THING_COLUMNS = tuple(spec.column for spec in THINGS.values())
 
 
 class WatchError(Exception):
@@ -123,17 +155,12 @@ def clean_kinds(thing: str, kinds: Sequence[str]) -> list[str]:
 
 
 def thing_of(watch: NotificationWatch) -> Thing | None:
-    """What the watch is on, or None for an Everything watch (or one on a kind of thing
-    THINGS does not take yet)."""
+    """What the watch is on, or None for an Everything watch."""
     for name, spec in THINGS.items():
         thing_id = getattr(watch, spec.column)
         if thing_id is not None:
             return Thing(name, thing_id)
     return None
-
-
-def _is_everything(watch: NotificationWatch) -> bool:
-    return all(getattr(watch, column) is None for column in _THING_COLUMNS)
 
 
 # ── adding one ──────────────────────────────────────────────────────
@@ -216,9 +243,10 @@ async def add_watch(db: AsyncSession, *, thing: str, thing_id: uuid.UUID | None,
 
 @dataclass(frozen=True)
 class WatchView:
-    """A watch as it is shown: what it is on, by name, and whose it is. `thing` is
-    "everything" for an Everything watch, which has no id, name or link. `group` is the group
-    it belongs to, None for a person's own."""
+    """A watch as it is shown: what it is on, by name and kind, and whose it is. `thing` is
+    "everything" for an Everything watch, which has no id, name, kind or link. `link` is the
+    thing's page in the portal, or for a wiki thing its absolute URL in the wiki. `group` is the
+    group it belongs to, None for a person's own."""
 
     watch: NotificationWatch
     thing: str
@@ -226,6 +254,7 @@ class WatchView:
     thing_name: str | None
     link: str | None
     group: NotificationGroup | None
+    thing_label: str | None = None
 
 
 _Row = tuple[NotificationWatch, NotificationGroup | None]
@@ -249,20 +278,18 @@ async def _loaded(db: AsyncSession, things: Iterable[Thing]) -> dict[Thing, Any]
 
 
 async def _views(db: AsyncSession, rows: Sequence[_Row]) -> list[WatchView]:
-    """A view of each watch, in order. One on a thing that is gone, or on a kind of thing this
-    module does not take yet, is left out."""
+    """A view of each watch, in order. One on a thing that is gone is left out."""
     found = await _loaded(db, [thing for watch, _ in rows
                                if (thing := thing_of(watch)) is not None])
     views = []
     for watch, group in rows:
         thing = thing_of(watch)
         if thing is None:
-            if _is_everything(watch):
-                views.append(WatchView(watch, EVERYTHING, None, None, None, group))
+            views.append(WatchView(watch, EVERYTHING, None, None, None, group))
         elif thing in found:
             row, spec = found[thing], THINGS[thing.type]
             views.append(WatchView(watch, thing.type, thing.id, spec.name(row), spec.link(row),
-                                   group))
+                                   group, spec.label_of(row)))
     return views
 
 
@@ -278,13 +305,21 @@ async def watch_view(db: AsyncSession, watch: NotificationWatch, *,
 
 async def _visible(db: AsyncSession, person_id: uuid.UUID, rows: Sequence[_Row]) -> list[_Row]:
     """The rows whose thing the person can open now, by the rule the thing's own page uses
-    (notifications/access.py). Everything has no thing to open and stays."""
-    things = {thing for watch, _ in rows if (thing := thing_of(watch)) is not None}
-    if not things:
+    (notifications/access.py), asked once per kind of thing however many there are (the wiki
+    watches what its people create, so they can have many). Everything has no thing to open and
+    stays."""
+    ids: dict[str, list[uuid.UUID]] = defaultdict(list)
+    for watch, _group in rows:
+        if (thing := thing_of(watch)) is not None:
+            ids[thing.type].append(thing.id)
+    if not ids:
         return list(rows)
     access = await resolve_access_many(db, [person_id])
-    seen = {thing for thing in things
-            if person_id in await viewers(db, thing, [person_id], access=access)}
+    seen: set[Thing] = set()
+    for thing_type, thing_ids in ids.items():
+        theirs = (await visible_among(db, thing_type, thing_ids, [person_id],
+                                      access=access)).get(person_id, frozenset())
+        seen.update(Thing(thing_type, thing_id) for thing_id in theirs)
     return [(watch, group) for watch, group in rows
             if (thing := thing_of(watch)) is None or thing in seen]
 
@@ -317,14 +352,10 @@ async def person_watches(db: AsyncSession, person_id: uuid.UUID) -> list[WatchVi
 def _hears(watch: NotificationWatch, kind: str) -> bool:
     """Whether the watch would hear an event of `kind`: it is on a kind of thing that event
     reaches (or is an Everything watch and the kind may be watched everywhere), and its events
-    are empty (every one that applies) or name the kind."""
+    are empty (every one that applies) or name the kind. No kind reaches a wiki thing, so a
+    wiki watch hears none of them: the wiki's own fan-out decides who hears of a page."""
     thing = thing_of(watch)
-    if thing is not None:
-        on = thing.type
-    elif _is_everything(watch):
-        on = EVERYTHING
-    else:                       # on a kind of thing THINGS does not take yet
-        return False
+    on = thing.type if thing is not None else EVERYTHING
     return kind in kinds_for(on) and (not watch.kinds or kind in watch.kinds)
 
 
@@ -364,40 +395,27 @@ async def own_watch_on(db: AsyncSession, person_id: uuid.UUID, thing: str,
 
 # ── whom an event reaches ───────────────────────────────────────────
 
-async def matching_routes(db: AsyncSession, event: NotificationEvent) -> dict[uuid.UUID, set[str]]:
-    """The people the event's watches reach, and by which routes: "watch" for a watch of
-    their own, "group:<id>" for each Active group they belong to whose watch matches. A Paused
-    group's watch gives nothing, and none do when the event says `watchers` is off.
-
-    A watch matches when its kinds are empty (every event that applies) or hold the event's
-    kind, and its thing is the event's subject or one of the things it reaches; an Everything
-    watch also matches when the kind is `everywhere`. Whether the people are still active,
-    can open the thing or are the actor is for the sweep to decide.
-
-    The result is in a fixed order, for the sweep's cap: people with a watch of their own
-    first, oldest watch first, then the members of the matching groups, longest-standing first."""
-    if not event.watchers:
-        return {}
+def _on_any(things: Iterable[Thing]) -> list[ColumnElement[bool]]:
+    """A condition per kind of thing among `things`: a watch on one of them. A kind of thing
+    nobody can watch gives none."""
     ids: dict[str, list[uuid.UUID]] = defaultdict(list)
-    for thing in (Thing(event.subject_type, event.subject_id),
-                  *(Thing.from_json(raw) for raw in event.reaches)):
+    for thing in things:
         spec = THINGS.get(thing.type)
-        if spec is not None:             # a kind of thing nobody can watch yet reaches no one
+        if spec is not None:
             ids[spec.column].append(thing.id)
-    targets = [getattr(NotificationWatch, column).in_(thing_ids)
-               for column, thing_ids in ids.items()]
-    info = KINDS.get(event.kind)
-    if info is not None and info.everywhere:
-        targets.append(and_(*(getattr(NotificationWatch, column).is_(None)
-                              for column in _THING_COLUMNS)))
-    if not targets:
-        return {}
+    return [getattr(NotificationWatch, column).in_(thing_ids)
+            for column, thing_ids in ids.items()]
 
+
+async def _reached(db: AsyncSession, *where: ColumnElement[bool]) -> dict[uuid.UUID, set[str]]:
+    """The people the watches matching `where` reach, and by which routes: "watch" for a watch
+    of their own, "group:<id>" for each Active group they belong to whose watch matches (a
+    Paused group's watch gives nothing). In a fixed order, for a cap: people with a watch of
+    their own first, oldest watch first, then the members of the matching groups,
+    longest-standing first."""
     found = (await db.execute(
         select(NotificationWatch.person_id, NotificationWatch.group_id)
-        .where(or_(*targets),
-               or_(func.cardinality(NotificationWatch.kinds) == 0,
-                   NotificationWatch.kinds.contains([event.kind])))
+        .where(*where)
         .order_by(NotificationWatch.created_at, NotificationWatch.id))).all()
     routes: dict[uuid.UUID, set[str]] = {}
     for person_id, _group_id in found:
@@ -413,3 +431,41 @@ async def matching_routes(db: AsyncSession, event: NotificationEvent) -> dict[uu
                 .order_by(NotificationGroupMember.added_at, NotificationGroupMember.person_id)):
             routes.setdefault(person_id, set()).add(f"group:{group_id}")
     return routes
+
+
+async def matching_routes(db: AsyncSession, event: NotificationEvent) -> dict[uuid.UUID, set[str]]:
+    """The people the event's watches reach, and by which routes: "watch" for a watch of
+    their own, "group:<id>" for each Active group they belong to whose watch matches. A Paused
+    group's watch gives nothing, and none do when the event says `watchers` is off.
+
+    A watch matches when its kinds are empty (every event that applies) or hold the event's
+    kind, and its thing is the event's subject or one of the things it reaches; an Everything
+    watch also matches when the kind is `everywhere`. Whether the people are still active,
+    can open the thing or are the actor is for the sweep to decide.
+
+    The result is in a fixed order, for the sweep's cap: people with a watch of their own
+    first, oldest watch first, then the members of the matching groups, longest-standing first."""
+    if not event.watchers:
+        return {}
+    targets = _on_any([Thing(event.subject_type, event.subject_id),
+                       *(Thing.from_json(raw) for raw in event.reaches)])
+    info = KINDS.get(event.kind)
+    if info is not None and info.everywhere:
+        targets.append(and_(*(getattr(NotificationWatch, column).is_(None)
+                              for column in _THING_COLUMNS)))
+    if not targets:
+        return {}
+    return await _reached(db, or_(*targets),
+                          or_(func.cardinality(NotificationWatch.kinds) == 0,
+                              NotificationWatch.kinds.contains([event.kind])))
+
+
+async def routes_watching(db: AsyncSession, things: Iterable[Thing]) -> dict[uuid.UUID, set[str]]:
+    """The people who watch any of `things`, whatever events their watches name, and by which
+    routes, in `matching_routes`' order: for a fan-out that decides for itself what its watches
+    hear, the wiki's (wiki/notify.py), whose watches name none. Whether the people are still
+    active, can see the things or are the actor is for that fan-out to decide."""
+    targets = _on_any(things)
+    if not targets:
+        return {}
+    return await _reached(db, or_(*targets))

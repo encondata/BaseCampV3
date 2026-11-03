@@ -3253,9 +3253,10 @@ class MyNotificationGroupOut(BaseModel):
 # ── watches (a person's own, and a notification group's) ──
 
 class WatchIn(BaseModel):
-    """Watch a thing (`thing` is initiative, site, truck or device, with its `id`), or events
-    everywhere (`thing` is "everything", with no id). `kinds` empty means every event that
-    applies to a thing; an Everything watch has to name its events."""
+    """Watch a thing (`thing` is initiative, site, truck, device, wiki_space or wiki_node, with
+    its `id`), or events everywhere (`thing` is "everything", with no id). `kinds` empty means
+    every event that applies to a thing; an Everything watch has to name its events, and a wiki
+    watch can name none (it hears every page update and comment)."""
     thing: str
     id: uuid.UUID | None = None
     kinds: list[str] = []
@@ -3268,12 +3269,17 @@ class WatchKindsIn(BaseModel):
 
 
 class WatchOut(BaseModel):
-    """A watch with what it is on: `thing` is initiative, site, truck, device or everything
-    (which has no id, name or link). `kinds` empty means every event that applies."""
+    """A watch with what it is on: `thing` is initiative, site, truck, device, wiki_space,
+    wiki_node or everything (which has no id, name, label or link). `thing_label` is what the
+    portal calls the thing's kind ("Wiki folder" or "Wiki page" for a wiki node, by its row), and
+    `link` its page: a portal path, or for a wiki thing the absolute URL of its page in the wiki.
+    `kinds` empty means every event that applies (for a wiki thing, every page update and
+    comment)."""
     id: uuid.UUID
     thing: str
     thing_id: uuid.UUID | None
     thing_name: str | None
+    thing_label: str | None
     link: str | None
     kinds: list[str]
     via: WatchViaOut
@@ -3284,7 +3290,8 @@ class WatchOut(BaseModel):
         group = view.group
         return cls(
             id=view.watch.id, thing=view.thing, thing_id=view.thing_id,
-            thing_name=view.thing_name, link=view.link, kinds=list(view.watch.kinds),
+            thing_name=view.thing_name, thing_label=view.thing_label, link=view.link,
+            kinds=list(view.watch.kinds),
             via=(WatchViaOut(type="you") if group is None
                  else WatchViaOut(type="group", id=group.id, name=group.name)),
             created_at=view.watch.created_at)

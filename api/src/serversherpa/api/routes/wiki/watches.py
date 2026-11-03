@@ -12,6 +12,9 @@ watches, and none of those is the wiki's to list, answer for or remove.
   idempotent (the existing watch comes back).
 - `DELETE /watches/{id}` — unwatch; only my own (anyone else's is a 404).
 - `GET /nodes/{id}/watch` — whether I watch a node, and through what.
+
+Watching and unwatching are audited (`wiki_watch`, `watch` / `unwatch`),
+and so is either done from /me (api/routes/me.py), with the same helpers.
 """
 from __future__ import annotations
 
@@ -20,6 +23,7 @@ import uuid
 from fastapi import APIRouter, Response
 from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.routes.wiki.deps import WikiContext, visible_nodes
 from serversherpa.api.routes.wiki.errors import not_found
@@ -36,10 +40,27 @@ from serversherpa.wiki.permissions import require_node_level, require_space_leve
 
 router = APIRouter()
 
+# A watch on a library, a folder or a page, not on anything else: the one
+# test the list and unwatch share.
+ON_THE_WIKI = or_(NotificationWatch.wiki_space_id.is_not(None),
+                  NotificationWatch.wiki_node_id.is_not(None))
 
-def _is_wiki(watch: NotificationWatch) -> bool:
-    """A watch on a library, a folder or a page (not on anything else)."""
-    return watch.wiki_space_id is not None or watch.wiki_node_id is not None
+
+def audit_watch(db: AsyncSession, *, actor_id: uuid.UUID, watch: NotificationWatch) -> None:
+    """The wiki's record of a watch started, as `PUT /watches` writes it:
+    the folder or page it is on, or the library."""
+    audit(db, actor_id=actor_id, entity_type="wiki_watch", entity_id=str(watch.id),
+          action="watch",
+          changes=({"node_id": str(watch.wiki_node_id)} if watch.wiki_node_id is not None
+                   else {"space_id": str(watch.wiki_space_id)}))
+
+
+def audit_unwatch(db: AsyncSession, *, actor_id: uuid.UUID, watch: NotificationWatch) -> None:
+    """The wiki's record of a watch stopped, whichever page stopped it."""
+    audit(db, actor_id=actor_id, entity_type="wiki_watch", entity_id=str(watch.id),
+          action="unwatch", changes={
+              "node_id": str(watch.wiki_node_id) if watch.wiki_node_id else None,
+              "space_id": str(watch.wiki_space_id) if watch.wiki_space_id else None})
 
 
 def _out(watch: NotificationWatch, node: WikiNode | None, space: WikiSpace | None) -> WatchOut:
@@ -64,9 +85,7 @@ async def _viewable_node(ctx: WikiContext, node_id: uuid.UUID) -> WikiNode:
 async def list_watches(ctx: WikiContext) -> list[WatchOut]:
     watches = (await ctx.db.scalars(
         select(NotificationWatch)
-        .where(NotificationWatch.person_id == ctx.principal.person_id,
-               or_(NotificationWatch.wiki_space_id.is_not(None),
-                   NotificationWatch.wiki_node_id.is_not(None)))
+        .where(NotificationWatch.person_id == ctx.principal.person_id, ON_THE_WIKI)
         .order_by(NotificationWatch.created_at.desc(), NotificationWatch.id)
     )).all()
     node_ids = [w.wiki_node_id for w in watches if w.wiki_node_id is not None]
@@ -99,13 +118,11 @@ async def watch(body: WatchIn, ctx: WikiContext) -> WatchOut:
         node = await _viewable_node(ctx, body.node_id)
         space = await ctx.db.get(WikiSpace, node.space_id)
         target = {"wiki_node_id": node.id}
-        changes = {"node_id": str(node.id)}
         match = NotificationWatch.wiki_node_id == node.id
     else:
         space = await require_space_level(
             ctx.ix, await ctx.db.get(WikiSpace, body.space_id), "view")
         target = {"wiki_space_id": space.id}
-        changes = {"space_id": str(space.id)}
         match = NotificationWatch.wiki_space_id == space.id
 
     me = ctx.principal.person_id
@@ -113,25 +130,22 @@ async def watch(body: WatchIn, ctx: WikiContext) -> WatchOut:
     new_id = await ctx.db.scalar(
         insert(NotificationWatch).values(person_id=me, created_by=me, **target)
         .on_conflict_do_nothing().returning(NotificationWatch.id))
-    if new_id is not None:
-        audit(ctx.db, actor_id=me, entity_type="wiki_watch", entity_id=str(new_id),
-              action="watch", changes=changes)
-        await ctx.db.commit()
     row = await ctx.db.scalar(
         select(NotificationWatch).where(NotificationWatch.person_id == me, match))
+    if new_id is not None:
+        audit_watch(ctx.db, actor_id=me, watch=row)
+        await ctx.db.commit()
     return _out(row, node, space)
 
 
 @router.delete("/watches/{watch_id}", status_code=204)
 async def unwatch(watch_id: uuid.UUID, ctx: WikiContext) -> Response:
     me = ctx.principal.person_id
-    row = await ctx.db.get(NotificationWatch, watch_id)
-    if row is None or row.person_id != me or not _is_wiki(row):
+    row = await ctx.db.scalar(select(NotificationWatch).where(
+        NotificationWatch.id == watch_id, NotificationWatch.person_id == me, ON_THE_WIKI))
+    if row is None:
         raise not_found()
-    audit(ctx.db, actor_id=me, entity_type="wiki_watch", entity_id=str(row.id),
-          action="unwatch", changes={
-              "node_id": str(row.wiki_node_id) if row.wiki_node_id else None,
-              "space_id": str(row.wiki_space_id) if row.wiki_space_id else None})
+    audit_unwatch(ctx.db, actor_id=me, watch=row)
     await ctx.db.delete(row)
     await ctx.db.commit()
     return Response(status_code=204)

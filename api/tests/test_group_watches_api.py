@@ -1,8 +1,8 @@
 """A group's watches: GET and POST /notifications/groups/{id}/watches, and PATCH and DELETE
 /notifications/groups/{id}/watches/{watch_id}. An admin points a notification group at an
 initiative, a site, a truck or a device (tests/test_device_watches.py covers what is special about
-devices), or at chosen events everywhere, and every member of an Active group hears what the
-group watches. `notifications:view` lists a group's watches, `notifications:change` adds,
+devices), a wiki library, folder or page (tests/test_wiki_watch_groups.py), or at chosen events
+everywhere, and every member of an Active group hears what the group watches. `notifications:view` lists a group's watches, `notifications:change` adds,
 changes and removes them, and each of those is audited on the group.
 
 The rules of a watch (what can be watched, which events fit, who can open the thing) are the
@@ -302,13 +302,16 @@ async def test_errors(client, db):
     # the watches module's other answers come through as they do for a person's own watch
     refused = [
         ({"thing": "bogus", "id": str(ghost)}, 422, "invalid_thing"),
-        ({"thing": "wiki_node", "id": str(ghost)}, 422, "invalid_thing"),
+        ({"thing": "wiki", "id": str(ghost)}, 422, "invalid_thing"),
         ({"thing": "truck"}, 422, "invalid_thing"),
         ({"thing": "device"}, 422, "invalid_thing"),
+        ({"thing": "wiki_node"}, 422, "invalid_thing"),
         ({"thing": EVERYTHING, "id": str(site.id), "kinds": [INITIATIVE_CHANGED]},
          422, "invalid_thing"),
         ({"thing": "truck", "id": str(ghost)}, 404, "thing_not_found"),
         ({"thing": "device", "id": str(ghost)}, 404, "thing_not_found"),
+        ({"thing": "wiki_space", "id": str(ghost)}, 404, "thing_not_found"),
+        ({"thing": "wiki_node", "id": str(ghost)}, 404, "thing_not_found"),
         ({"thing": "truck", "id": str(truck.id), "kinds": [INITIATIVE_CHANGED]},
          422, "invalid_kind"),
         ({"thing": EVERYTHING, "kinds": ["report_ready"]}, 422, "invalid_kind"),
