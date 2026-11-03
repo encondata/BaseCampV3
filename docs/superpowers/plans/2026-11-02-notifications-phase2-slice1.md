@@ -378,7 +378,7 @@
     - the Task 4 codes otherwise.
   - Audit (`services/audit.audit`) on each write: `entity_type="notification_group"`, `entity_id=str(group_id)`.
     - `watch.add` with `changes={"thing", "thing_id", "kinds"}`;
-    - `watch.update` with `changes={"kinds": {"from", "to"}}`;
+    - `watch.update` with `changes={"thing", "thing_id", "kinds": {"from", "to"}}` (ruling during Task 5's review: an audit row must name the watch it changed);
     - `watch.remove` with `changes={"thing", "thing_id"}`.
 
 - [ ] **Step 1: Write the failing tests:**
