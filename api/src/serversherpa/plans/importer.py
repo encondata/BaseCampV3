@@ -283,10 +283,17 @@ def dated(task: ParsedTask, name: str, calendar: WorkCalendar) -> datetime | Non
 
 def resolve_dates(parsed: ParsedPlan, calendar: WorkCalendar) -> None:
     """Give every day-alone date of the file the calendar's default time
-    (`dated`), once."""
+    (`dated`), once. A milestone's day-alone Finish on its Start's day is
+    its Start, so the milestone stays zero-length."""
     for task in parsed.tasks:
-        for name in task.date_only:
-            setattr(task, name, dated(task, name, calendar))
+        if not task.date_only:
+            continue
+        start, finish = dated(task, "start", calendar), dated(task, "finish", calendar)
+        if (task.is_milestone and "finish" in task.date_only and start is not None
+                and task.finish is not None and task.finish.date() == start.date()):
+            finish = start
+        task.start, task.finish = start, finish
+        task.deadline = dated(task, "deadline", calendar)
         task.date_only = set()
 
 
@@ -626,14 +633,26 @@ class _Build:
 
     # --- after the recalc ---
 
+    def driven(self) -> set[int]:
+        """The tasks a kept link schedules: one leads into the task, or
+        into a summary above it (a summary's link drives its subtasks, as
+        in MS Project). Parents come before their subtasks."""
+        out: set[int] = set()
+        for i, parent in enumerate(self.parents):
+            if i in self.linked or (parent is not None and parent in out):
+                out.add(i)
+        return out
+
     def settle_starts(self, state: PlanState, settings: PlanSettings, problems: int) -> dict:
         """The file's Start on each auto leaf whose Start is soft (a
-        sheet's), once the plan is scheduled: a task no kept link leads into
-        takes it as Start No Earlier Than when it is later than where the
-        plan schedules the task (then the plan is scheduled again); a linked
-        task the links put elsewhere says so (START_IGNORED). Runs inside
-        the import's batch (ops.run_batch `settle`); answers the audit's
-        changes to `problems` and the constraints it added."""
+        sheet's), once the plan is scheduled: a task no kept link drives
+        (`driven`) takes it as Start No Earlier Than when it is later than
+        where the plan schedules the task (then the plan is scheduled
+        again); a driven task its links put elsewhere says so
+        (START_IGNORED). Runs inside the import's batch (ops.run_batch
+        `settle`); answers the audit's changes to `problems` and the
+        constraints it added."""
+        driven = self.driven()
         soft = []
         for i, task in enumerate(self.parsed.tasks):
             row = state.tasks.get(self.ids[i])
@@ -642,14 +661,14 @@ class _Build:
                 soft.append((i, task, row))
         pinned = 0
         for i, task, row in soft:
-            if i not in self.linked and row.start is not None and task.start > row.start:
+            if i not in driven and row.start is not None and task.start > row.start:
                 row.constraint_type, row.constraint_date = "snet", task.start
                 pinned += 1
         if pinned:
             recalc(state, settings)
         added = 0
         for i, task, row in soft:
-            if i in self.linked and row.start != task.start:
+            if i in driven and row.start != task.start:
                 self.rows[i].problems.append(START_IGNORED)
                 added += 1
         out: dict = {}

@@ -287,7 +287,13 @@ async def run_batch(db: AsyncSession, plan: ProjectPlan, ops: Sequence,
     what changed. The caller commits. `settle`, when given, runs on the
     scheduled plan before the version and the audit (an import keeps a
     sheet's Start as a constraint only where the schedule needs it); what
-    it answers is merged into the audit's changes."""
+    it answers is merged into the audit's changes.
+
+    Warning: `settle` runs after the batch's OpResult is built, so what it
+    changes is not in `changed_tasks`, gets no updated_at/updated_by stamp,
+    is not in the answer's `tasks` and is not undone by its `inverse`.
+    Only a caller that ignores those (an import: every task is new, and
+    its answer is the import's own rows) may use it."""
     state = await load_state(db, plan)
     try:
         settings = await settings_of(db, plan)

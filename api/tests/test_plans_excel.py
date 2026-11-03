@@ -436,6 +436,60 @@ async def test_start_rule(client, db):
     assert audit.changes["problems"] == 2
 
 
+async def test_a_linked_summary_drives_its_subtasks(client, db):
+    """A task under a summary with a kept link counts as linked (the
+    summary's link drives it, as in MS Project): its Start never becomes a
+    constraint, and says so only when the schedule moves it. Here the file
+    is two weeks after the plan's start: A is held there by a Start No
+    Earlier Than, S follows A, and S's subtask C needs nothing of its own."""
+    hdrs, _move, plan, _pat_row = await _setup(client, db)
+    content = _csv([
+        ["ID", "Task Name", "Duration", "Start", "Predecessors", "Outline Level"],
+        ["1", "A", "1d", "11/16/2026 8:00 AM", "", "1"],
+        ["2", "S", "", "11/17/2026 8:00 AM", "1", "1"],
+        ["3", "C", "1d", "11/17/2026 8:00 AM", "", "2"],
+        ["4", "D", "1d", "11/20/2026 8:00 AM", "", "2"],
+        ["5", "B", "1d", "11/17/2026 8:00 AM", "1", "1"],
+    ])
+    body = await _ok_import(client, hdrs, plan, content, filename="p.csv",
+                            content_type="text/csv", dry_run=False, mode="fill")
+    rows = _rows(body)
+    assert {name: row["problems"] for name, row in rows.items() if row["problems"]} == {
+        "D": [START_IGNORED]}               # its summary's link puts it on 11/17
+    tasks = _tasks(await _get(client, hdrs, plan))
+    assert {n: (t["start"], t["constraint_type"]) for n, t in tasks.items()} == {
+        "A": ("2026-11-16T08:00", "snet"), "S": ("2026-11-17T08:00", "asap"),
+        "C": ("2026-11-17T08:00", "asap"), "D": ("2026-11-17T08:00", "asap"),
+        "B": ("2026-11-17T08:00", "asap")}
+
+
+async def test_round_trip_keeps_a_linked_summarys_subtask_free(client, db):
+    """Kickoff, then Permit held by a Start No Earlier Than, then summary
+    Phase 3 after Permit, its subtask Inspect with no link of its own: the
+    export re-imports with Inspect still As Soon As Possible."""
+    hdrs = await _admin(db, client)
+    move = await _initiative(db, name="Source")
+    plan = await _create(client, hdrs, move)
+    ids = await _add(client, hdrs, plan, "Kickoff", "Permit", "Phase 3", "Inspect")
+    await _ok(client, hdrs, plan, [{"op": "indent", "ids": [ids["Inspect"]]}])
+    await _ok(client, hdrs, plan, [
+        _update(ids["Permit"], constraint_type="snet", constraint_date="2026-12-01T08:00"),
+        _update(ids["Phase 3"], predecessors="2"),
+    ])
+    source = await _get(client, hdrs, plan)
+    resp = await client.get(f"/plans/{plan['id']}/export.xlsx", headers=hdrs)
+    other = await _initiative(db, name="Copy")
+    resp = await _post(client, hdrs, f"/initiatives/{other.id}/plan/import", resp.content,
+                       dry_run=False)
+    assert resp.status_code == 200, resp.text
+    assert all(row["problems"] == [] for row in resp.json()["rows"]), resp.json()["rows"]
+    got = (await client.get(f"/initiatives/{other.id}/plan", headers=hdrs)).json()
+    fields = ("name", "start", "finish", "constraint_type", "constraint_date", "predecessors")
+    assert ([{k: t[k] for k in fields} for t in got["tasks"]]
+            == [{k: t[k] for k in fields} for t in source["tasks"]])
+    assert _tasks(got)["Inspect"]["constraint_type"] == "asap"
+
+
 async def test_dates_without_a_time_take_the_plans_default_times(client, db):
     """A day alone is that day at the plan calendar's default start (Start)
     or end (Finish, Deadline); a plan made from the file takes the system
@@ -473,13 +527,52 @@ async def test_text_dates_without_a_time(client, db):
     hdrs, _move, plan, _pat_row = await _setup(client, db)
     content = _xlsx([["Name", "Start", "Deadline"],
                      ["A", datetime(2026, 11, 3), datetime(2026, 11, 6)],
-                     ["B", "2026-11-04", "12/31/26 5:30 PM"]])
+                     ["B", "2026-11-04", "12/31/26 5:30 PM"]],
+                    formats={(2, 2): "m/d/yyyy", (2, 3): "m/d/yyyy"})
     await _ok_import(client, hdrs, plan, content, dry_run=False, mode="fill")
     tasks = _tasks(await _get(client, hdrs, plan))
     assert tasks["A"]["constraint_date"] == "2026-11-03T08:00"
     assert tasks["A"]["deadline"] == "2026-11-06T17:00"
     assert tasks["B"]["constraint_date"] == "2026-11-04T08:00"
     assert tasks["B"]["deadline"] == "2026-12-31T17:30"
+
+
+def test_midnight_is_a_day_alone_only_in_a_date_format():
+    """An Excel date at exactly midnight is a day alone when its cell's
+    format shows no time (the importer gives it the plan's default time);
+    in a date-and-time format it is midnight, as shown."""
+    content = _xlsx([["Name", "Start", "Deadline"],
+                     ["Day", datetime(2026, 11, 4), datetime(2026, 11, 6)],
+                     ["Clock", datetime(2026, 11, 4), datetime(2026, 11, 6)],
+                     ["Afternoon", datetime(2026, 11, 4, 13, 0), None]],
+                    formats={(2, 2): "m/d/yyyy", (2, 3): "ddd m/d/yy",
+                             (3, 2): "m/d/yyyy h:mm", (3, 3): "ddd m/d/yy h:mm AM/PM",
+                             (4, 2): "m/d/yyyy"})
+    day, clock, afternoon = excel.parse_workbook(content).tasks
+    assert day.date_only == {"start", "deadline"}
+    assert (clock.date_only, clock.start, clock.deadline) == (
+        set(), datetime(2026, 11, 4, 0, 0), datetime(2026, 11, 6, 0, 0))
+    assert (afternoon.date_only, afternoon.start) == (set(), datetime(2026, 11, 4, 13, 0))
+
+
+async def test_manual_milestone_on_a_day_alone_stays_zero_length(client, db):
+    """A manual milestone whose Start and Finish are the same day alone: its
+    Finish takes its resolved Start, so it stays a zero-length milestone."""
+    hdrs, _move, plan, _pat_row = await _setup(client, db)
+    content = _csv([
+        ["Task Name", "Task Mode", "Milestone", "Duration", "Start", "Finish"],
+        ["MS manual", "Manually Scheduled", "Yes", "0 days", "11/3/2026", "11/3/2026"],
+        ["Day manual", "Manually Scheduled", "No", "1 day", "11/3/2026", "11/3/2026"],
+    ])
+    body = await _ok_import(client, hdrs, plan, content, filename="p.csv",
+                            content_type="text/csv", dry_run=False, mode="fill")
+    assert all(row["problems"] == [] for row in body["rows"]), body["rows"]
+    tasks = _tasks(await _get(client, hdrs, plan))
+    milestone, day = tasks["MS manual"], tasks["Day manual"]
+    assert (milestone["start"], milestone["finish"], milestone["duration_minutes"],
+            milestone["is_milestone"]) == ("2026-11-03T08:00", "2026-11-03T08:00", 0, True)
+    assert (day["start"], day["finish"], day["duration_text"]) == (
+        "2026-11-03T08:00", "2026-11-03T17:00", "1 day")
 
 
 async def test_percent_cells(client, db):
@@ -999,6 +1092,35 @@ def test_cells_are_cut_at_excels_limit():
                           + '</row><row r="2">' + _inline("A2", "A") + _inline("B2", long)
                           + "</row>")
     assert len(excel.parse_workbook(content).tasks[0].notes) == excel.MAX_CELL_TEXT
+    # a number cell whose value isn't a finite number reads as its text: cut too
+    for value in (long, "1" * 40_000):
+        content = _with_sheet('<row r="1">' + _inline("A1", "Name") + _inline("B1", "Notes")
+                              + '</row><row r="2">' + _inline("A2", "A")
+                              + f'<c r="B2"><v>{value}</v></c></row>')
+        assert len(excel.parse_workbook(content).tasks[0].notes) == excel.MAX_CELL_TEXT
+
+
+def test_shared_string_references_count_against_the_budget():
+    """A shared string is stored once but each cell naming it is a whole
+    cell of text to the import: every reference the reader hands out is
+    charged to the package's unpacked-bytes budget, so a workbook yields no
+    more text than a CSV at the cap."""
+    def book(rows_n: int) -> bytes:
+        rows = ('<row r="1">' + _inline("A1", "Task Name") + _inline("B1", "Notes") + "</row>"
+                + "".join(f'<row r="{n}"><c r="A{n}" t="s"><v>0</v></c>'
+                          f'<c r="B{n}" t="s"><v>0</v></c></row>'
+                          for n in range(2, rows_n + 2)))
+        return _excel_style_package(rows, [f"<si><t>{'n' * excel.MAX_CELL_TEXT}</t></si>"],
+                                    date1904=False)
+
+    parsed = excel.parse_workbook(book(100))                 # 6.5 MB of text: fine
+    assert len(parsed.tasks) == 100
+    assert len(parsed.tasks[0].notes) == excel.MAX_CELL_TEXT
+    content = book(400)                                     # 26 MB of text
+    assert len(content) < 50_000
+    with pytest.raises(excel.ImportFileError) as caught:
+        excel.parse_workbook(content)
+    assert caught.value.code == "bad_file" and "unpacks" in caught.value.extra["message"]
 
 
 def test_error_cells_are_problems():

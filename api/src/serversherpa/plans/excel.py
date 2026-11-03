@@ -29,7 +29,8 @@ Color (what the export writes). Other columns are ignored.
   (`ParsedTask.soft_start`): the importer settles it against the plan's
   schedule (Start No Earlier Than only where the task would start earlier;
   a problem only where the links move it). A manual task keeps its Start
-  and Finish. A day alone (or an Excel date at midnight) is flagged in
+  and Finish. A day alone (typed with no time, or an Excel date at
+  midnight in a cell whose format shows no time) is flagged in
   `ParsedTask.date_only`: the importer gives it the plan calendar's
   default start (Start) or end (Finish, Deadline) time.
 - Resource Names are matched by the importer (by name or email, never
@@ -48,7 +49,10 @@ Excel's two (stored, deflated) is refused before anything is read
 the directory claims); so is a package whose members' declared sizes add
 up past MAX_UNPACKED_BYTES (the 20 MB an import file may be: a workbook is
 never more to read than a CSV at the cap). Every byte read after that is
-charged to that one budget, however many relationships name a member.
+charged to that one budget, however many relationships name a member, and
+so is the text of every shared-string reference the sheet hands out (a
+string stored once can be named by every row): a workbook yields no more
+text than a CSV at the cap.
 Only the parts the import needs are streamed, each element dropped once
 read: the relationships to find the first worksheet, its shared strings,
 the number format of each cell style, and the sheet itself, keeping only
@@ -75,7 +79,7 @@ import defusedxml.ElementTree as DET
 from defusedxml import DefusedXmlException
 from openpyxl import Workbook
 from openpyxl.styles import Alignment
-from openpyxl.styles.numbers import BUILTIN_FORMATS, is_date_format
+from openpyxl.styles.numbers import BUILTIN_FORMATS, is_datetime
 from openpyxl.utils.cell import column_index_from_string
 from openpyxl.utils.datetime import MAC_EPOCH, WINDOWS_EPOCH, from_excel
 
@@ -514,8 +518,12 @@ def _shared_strings(pkg: _Package, member: str | None) -> list[str]:
 
 
 def _format_kind(code: str) -> str | None:
-    if is_date_format(code):
-        return "date"
+    """A number format as the import reads its cells: "day" (a date shown
+    without a time), "datetime" (one shown with a time, or a time),
+    "percent", or None."""
+    shown = is_datetime(code)
+    if shown is not None:
+        return "day" if shown == "date" else "datetime"
     return "percent" if "%" in code else None
 
 
@@ -524,7 +532,7 @@ _BUILTIN_KINDS = {fid: _format_kind(code) for fid, code in BUILTIN_FORMATS.items
 
 def _style_kinds(pkg: _Package, member: str | None) -> list[str | None]:
     """Each cell style's (cellXfs entry's) number format as what the import
-    cares about: "date", "percent" or None."""
+    cares about (_format_kind)."""
     if member is None:
         return []
     custom: dict[int, str | None] = {}
@@ -555,6 +563,11 @@ def _column(ref: str | None, previous: int) -> int:
 
 class _ErrorCell(str):
     """A formula's error value (#N/A, #REF!): a problem, never text."""
+
+
+class _DayCell(datetime):
+    """An Excel date in a cell whose format shows no time: at midnight it
+    is a day alone."""
 
 
 class _SheetReader:
@@ -604,6 +617,9 @@ class _SheetReader:
                 if not _blank(decoded):
                     self.any_value = True
                     if keep(column, decoded):
+                        if kind == "s":
+                            # stored once, a whole cell of text each time it is named
+                            self.pkg.charge(len(decoded))
                         cells[column] = decoded
                 inline = None
             elif depth == 3 and tag == "row":
@@ -627,17 +643,19 @@ class _SheetReader:
         try:
             number = float(value)
         except ValueError:
-            return value
+            return _cut(value)
         if not math.isfinite(number):
-            return value
+            return _cut(value)
         index = _int(style)
         fmt = self.kinds[index] if index is not None and 0 <= index < len(self.kinds) else None
-        if fmt == "date":
+        if fmt in ("day", "datetime"):
             try:
                 moment = from_excel(number, self.epoch)
             except (OverflowError, ValueError):
                 return number
-            return moment if isinstance(moment, datetime) else number
+            if not isinstance(moment, datetime):
+                return number
+            return _DayCell.combine(moment.date(), moment.time()) if fmt == "day" else moment
         return _Percent(number) if fmt == "percent" else number
 
 
@@ -997,7 +1015,7 @@ class _Table:
             return None
         if isinstance(raw, datetime):
             moment = _to_minute(raw)
-            if moment.time() == time(0, 0):
+            if isinstance(raw, _DayCell) and moment.time() == time(0, 0):
                 date_only.add(field)
             return moment
         if isinstance(raw, str):
