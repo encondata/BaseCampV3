@@ -4987,7 +4987,11 @@ export interface StatusRuleIn {
 export interface SchemaOption { value: string; label: string; color?: string }
 export interface RuleSchemaOperator { key: string; label: string; needs_value: boolean }
 export interface RuleSchemaField { key: string; label: string; type: string; options?: SchemaOption[] }
-export interface RuleSchemaParam { name: string; type: string; options?: (string | SchemaOption)[] }
+/** What an action's parameter holds. `status` is one of the vocabulary's keys and `choice` one of
+ *  a few strings (both carry `options`), `bool` a yes/no, and `people` and `groups` lists of
+ *  person ids and notification group ids (the Send a notification action's). */
+export type RuleParamType = 'status' | 'choice' | 'bool' | 'people' | 'groups';
+export interface RuleSchemaParam { name: string; type: RuleParamType; options?: (string | SchemaOption)[] }
 export interface RuleSchemaAction { key: string; label: string; params: RuleSchemaParam[] }
 export interface StatusRuleSchema {
   trigger_statuses: SchemaOption[]; match_types: SchemaOption[];

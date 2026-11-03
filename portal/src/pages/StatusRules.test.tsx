@@ -12,8 +12,10 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type {
-  StatusRule, StatusRuleExecStat, StatusRuleExecution, StatusRuleSchema, UiPreferences,
+import {
+  ApiError,
+  type NotificationGroup, type NotificationRecipient, type StatusRule, type StatusRuleExecStat,
+  type StatusRuleExecution, type StatusRuleSchema, type UiPreferences,
 } from '../lib/api';
 import { LIST_FIT } from '../lib/listTools';
 
@@ -49,6 +51,8 @@ const api = vi.hoisted(() => ({
   toggleStatusRule: vi.fn(),
   createStatusRule: vi.fn(),
   deleteStatusRule: vi.fn(),
+  listNotificationRecipients: vi.fn(),
+  listNotificationGroups: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -67,9 +71,25 @@ const SCHEMA: StatusRuleSchema = {
   ],
   operators: [{ key: 'eq', label: 'is', needs_value: true }],
   condition_fields: [{ key: 'site', label: 'Site', type: 'string' }],
-  actions: [{ key: 'notify', label: 'Notify', params: [] }],
+  actions: [{
+    key: 'notify', label: 'Send a notification',
+    params: [
+      { name: 'people', type: 'people' },
+      { name: 'groups', type: 'groups' },
+      { name: 'watchers', type: 'bool' },
+    ],
+  }],
   sites: [],
 };
+
+const PEOPLE: NotificationRecipient[] = [{
+  person_id: 'p1', display_name: 'Person A', job_title: null, avatar_url: null, email: null,
+  phone: null, has_account: true, can_email: true, can_text: false, can_push: true, can_web: true,
+}];
+const GROUPS: NotificationGroup[] = [{
+  id: 'g1', name: 'Group A', description: '', enabled: true, member_count: 2,
+  created_at: '2026-01-01T00:00:00Z',
+}];
 
 const RULES: StatusRule[] = [
   {
@@ -108,6 +128,9 @@ beforeEach(() => {
   api.getStatusRuleSchema.mockResolvedValue(SCHEMA);
   api.getStatusRuleExecStats.mockResolvedValue(STATS);
   api.toggleStatusRule.mockResolvedValue(RULES[0]);
+  api.listNotificationRecipients.mockResolvedValue(PEOPLE);
+  api.listNotificationGroups.mockResolvedValue(GROUPS);
+  Element.prototype.scrollIntoView = vi.fn();   // jsdom has none; ComboBox scrolls its active option
 });
 
 afterEach(cleanup);
@@ -263,6 +286,70 @@ it('rule row: Actions → Edit opens the rule editor modal', async () => {
   await user.click(screen.getByRole('menuitem', { name: 'Edit' }));
 
   expect(await screen.findByRole('heading', { name: /edit — high priority/i })).not.toBeNull();
+});
+
+// ── the Send a notification action in the list ──────────────────────
+
+const NOTIFY_RULE: StatusRule = {
+  ...RULES[0], id: 'r3', name: 'Tells people',
+  actions: [
+    { action_type: 'notify', params: { people: ['p1'], groups: ['g1'], watchers: true } },
+  ],
+};
+
+/** The Actions cell of a rule's row, found by its tooltip (the summary): its text is the count. */
+const actionsCell = (name: string, title: string) =>
+  (screen.getByText(name).closest('.dir-row') as HTMLElement).querySelector(`[title^="${title}"]`);
+
+it('rule list: a Send a notification action reads "Notify Person A, Group A and watchers" in its tooltip', async () => {
+  api.listStatusRules.mockResolvedValue([NOTIFY_RULE]);
+  render(<StatusRules />);
+  await screen.findByText('Tells people');
+
+  await waitFor(() => expect(actionsCell('Tells people', 'Notify')?.getAttribute('title'))
+    .toBe('Notify Person A, Group A and watchers'));
+  expect(api.listNotificationRecipients).toHaveBeenCalledTimes(1);
+  expect(api.listNotificationGroups).toHaveBeenCalledTimes(1);
+  // the cell itself still shows the count
+  expect(actionsCell('Tells people', 'Notify')?.textContent).toBe('1');
+});
+
+it('rule list: the tooltip names the ids when the lists cannot be had (they need notification permissions)', async () => {
+  api.listStatusRules.mockResolvedValue([NOTIFY_RULE]);
+  api.listNotificationRecipients.mockRejectedValue(new ApiError(403, 'forbidden'));
+  api.listNotificationGroups.mockRejectedValue(new ApiError(403, 'forbidden'));
+  render(<StatusRules />);
+  await screen.findByText('Tells people');
+  await waitFor(() => expect(api.listNotificationRecipients).toHaveBeenCalledTimes(1));
+
+  expect(actionsCell('Tells people', 'Notify')?.getAttribute('title')).toBe('Notify p1, g1 and watchers');
+  // and the list is not blanked out by it
+  expect(screen.queryByText(/Couldn.t load status rules/i)).toBeNull();
+});
+
+it('rule list: the notification lists are asked for only when some rule notifies', async () => {
+  render(<StatusRules />);
+  await screen.findByText('High priority');
+
+  expect(api.listNotificationRecipients).not.toHaveBeenCalled();
+  expect(api.listNotificationGroups).not.toHaveBeenCalled();
+  expect(actionsCell('High priority', 'No actions')).not.toBeNull();
+});
+
+it('rule list: Edit on a rule that notifies shows its people and groups by name', async () => {
+  const user = userEvent.setup();
+  api.listStatusRules.mockResolvedValue([NOTIFY_RULE]);
+  render(<StatusRules />);
+  await screen.findByText('Tells people');
+
+  await openRuleMenu(user, 'Tells people');
+  await user.click(screen.getByRole('menuitem', { name: 'Edit' }));
+
+  expect(await screen.findByRole('button', { name: 'Remove Person A' })).not.toBeNull();
+  expect(screen.getByRole('button', { name: 'Remove Group A' })).not.toBeNull();
+  expect((screen.getByRole('checkbox', { name: 'Also people watching the initiative or site' }) as HTMLInputElement).checked)
+    .toBe(true);
+  expect(document.querySelectorAll('select')).toHaveLength(0);
 });
 
 it('rule row: Actions → Duplicate posts a disabled copy and reloads', async () => {

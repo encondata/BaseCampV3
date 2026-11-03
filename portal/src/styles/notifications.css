@@ -53,8 +53,8 @@
 
 /* A native <select> in a .pf-form takes the inputs' field look (profile.css
  * styles `.pf-form input` only). Not the notification dialogs' (they use the
- * house ComboBox): DeviceEditModal, SiteEditModal, SurveyForm, the status
- * rules' RuleEditorModal and others put a <select> in a .pf-form. */
+ * house ComboBox): DeviceEditModal, SiteEditModal, SurveyForm and others put
+ * a <select> in a .pf-form. */
 .pf-form select {
   width: 100%;
   box-sizing: border-box;
