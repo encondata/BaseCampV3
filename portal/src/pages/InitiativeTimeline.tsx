@@ -749,7 +749,11 @@ function TimelineGrid({
       <div className="itl-inner" style={{ width: 260 + rightWidth }}>
         <div className="itl-header-row">
           <div className="itl-corner" />
-          <div className="itl-ruler" style={{ width: rightWidth }}>
+          {/* A `.cell`, like the track beneath it: directory.css sizes the
+              golden classes (the band's cell-top, the ticks' mono) from the
+              list tokens only inside one, so the ruler reads at the row
+              labels' scale and follows the List text size preference. */}
+          <div className="itl-ruler cell" style={{ width: rightWidth }}>
             {bands.length > 0 && (
               <div className="itl-band">
                 {bands.map((b, idx) => (
@@ -765,7 +769,7 @@ function TimelineGrid({
             <div className="itl-ticks"
                  style={{ '--tick-w': `${rightWidth / ticks.length}px` } as CSSProperties}>
               {ticks.map((t, idx) => (
-                <span key={idx} className="itl-tick"
+                <span key={idx} className="mono itl-tick"
                       style={{ left: `${pctForDate(t.at, range) ?? 0}%` }}>
                   {t.label}
                 </span>
@@ -849,9 +853,11 @@ function TimelineRow({
         )}
       </div>
       {/* `noted`: no bar here, so the track shows a note at its start ("No
-          dates yet", "Scheduled outside this range") and its diamonds drop
-          below the note rather than sitting on it. */}
-      <div className={`itl-row-bars${bar ? '' : ' noted'}`} style={{ width: rightWidth }}>
+          dates yet", "Scheduled outside this range"), its diamonds drop
+          below the note rather than sitting on it, and the real-dates bar
+          drops below the diamonds. The track is a `.cell` so the note's
+          cell-sub takes the list tokens (see the ruler). */}
+      <div className={`itl-row-bars cell${bar ? '' : ' noted'}`} style={{ width: rightWidth }}>
         {kind !== 'none' && todayPct !== null && (
           <div className="itl-today-line" style={{ left: `${todayPct}%` }} />
         )}
@@ -890,7 +896,7 @@ function TimelineRow({
           <MilestoneDiamond key={mark.milestones[0].task_id} mark={mark} />
         ))}
         {kind === 'none' && (
-          <span className="cell-top itl-no-dates">No dates yet</span>
+          <span className="cell-sub itl-no-dates">No dates yet</span>
         )}
         {/* Dated, but the span sits before or after the visible range: say
             so rather than leaving an unexplained empty track. The row is
@@ -898,7 +904,7 @@ function TimelineRow({
             plan milestone of its own is (a milestone-only row: the text
             stays at the track's start, the diamonds on their days). */}
         {kind !== 'none' && !bar && (
-          <span className="cell-top itl-no-dates">Scheduled outside this range</span>
+          <span className="cell-sub itl-no-dates">Scheduled outside this range</span>
         )}
       </div>
     </div>

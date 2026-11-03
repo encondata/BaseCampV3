@@ -2,7 +2,11 @@
  * Initiatives › Timeline — layout only. Typography (font-size/family/
  * weight/line-height) is never set here: every label reuses an existing
  * golden class from directory.css (`.pn`, `cell-top`, `cell-sub`, `mono`,
- * `chip`) or plain inherited text, per the listTypography guardrail.
+ * `chip`) or plain inherited text, per the listTypography guardrail. The
+ * golden text classes take their `--list-fs-*` sizes only inside a
+ * `.cell`, so the ruler (`.itl-ruler`) and each bar track
+ * (`.itl-row-bars`) carry `cell` too: the band's `cell-top`, the ticks'
+ * `mono` and a track's `cell-sub` note then read at the row labels' scale.
  * Sizing uses `height`/`width`, never `min-height`, for the same reason.
  */
 
@@ -75,7 +79,8 @@
 /* One segment per calendar month the range covers, placed by its own
    left/width percentage of the range. `overflow: hidden` so a month with
    only a few days in view clips its name instead of painting it over the
-   neighboring month. */
+   neighboring month. Its text is `cell-top` (the darker tier, over the
+   muted ticks, as the plan's Gantt timescale has it). */
 .itl-band-seg {
   position: absolute;
   top: 0;
@@ -85,7 +90,6 @@
   align-items: center;
   padding-left: 6px;
   border-left: 1px solid var(--paper-line);
-  color: var(--text-mute);
   white-space: nowrap;
   overflow: hidden;
 }
@@ -95,6 +99,7 @@
   height: 34px;
 }
 
+/* Its text is `mono` (muted, the lists' mono size). */
 .itl-tick {
   position: absolute;
   top: 0;
@@ -103,7 +108,6 @@
   align-items: center;
   padding-left: 4px;
   border-left: 1px solid var(--paper-line);
-  color: var(--text-mute);
   white-space: nowrap;
   /* One tick's slot, set per scale by the page. A label that wants more is
      trimmed here; without the cap it printed over the following tick, which
@@ -227,7 +231,8 @@
   z-index: 2;
 }
 
-.itl-no-dates { padding-left: 6px; color: var(--text-mute); }
+/* a track's note: `cell-sub` (muted, the lists' sub size) */
+.itl-no-dates { padding-left: 6px; }
 
 /* A plan task flagged Show on timeline (the Milestones toggle): a diamond
    on the middle of its finish day, centered on the bar's line (the bar is
@@ -253,8 +258,12 @@
    the diamond says there's more than one (its card lists them). */
 .itl-milestone.cluster { box-shadow: 0 0 0 1.5px var(--text-dark); }
 /* A track with no bar shows a one-line note at its top ("Scheduled outside
-   this range"): its diamonds sit just below the note, not on it. */
+   this range"): its diamonds sit just below the note, not on it, and the
+   real-dates bar (no bar above it to sit under) drops to the track's foot,
+   below the diamonds (a 14px diamond turned 45° reaches 22-42px; the bar
+   is 44-50px of the 52px track). */
 .itl-row-bars.noted .itl-milestone { top: 25px; }
+.itl-row-bars.noted .itl-real-bar { top: 44px; }
 
 /* ── month calendar ───────────────────────────────────────────────────
  * Six week rows, each a seven-column grid of day cells with a second
