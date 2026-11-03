@@ -10,6 +10,7 @@ import { Link, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import CollapsePanel from '../components/CollapsePanel';
 import NotesFilesPanel from '../components/NotesFilesPanel';
+import WatchButton from '../components/notifications/WatchButton';
 import RawSurveyList from '../components/sites/RawSurveyList';
 import SiteEditModal from '../components/sites/SiteEditModal';
 import SiteSurveyList from '../components/sites/SiteSurveyList';
@@ -99,11 +100,13 @@ export default function SiteDetail() {
             {[site.type_label, site.status_label].filter(Boolean).join(' · ') || '—'}
           </p>
         </div>
-        {canChange && (
-          <div className="idet-header-actions">
+        <div className="idet-header-actions">
+          {/* Watching is for everyone who can open the page, so it sits outside the gate. */}
+          <WatchButton thing="site" id={site.id} />
+          {canChange && (
             <button className="btn-solid" onClick={() => setEditing(true)}>Edit</button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       <div className="init-panel">

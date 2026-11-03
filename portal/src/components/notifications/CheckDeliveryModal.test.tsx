@@ -36,9 +36,9 @@ const TUESDAY_7AM = new Date(2026, 10, 3, 7, 0, 0).toISOString();
 const NOW = new Date().toISOString();
 
 const KINDS: NotificationKindInfo[] = [
-  { kind: 'report_ready', label: 'Report ready', category: 'reports', email: true, owner_always: false, critical: false, locked: false },
-  { kind: 'password_expiring', label: 'Password expiring', category: 'security', email: true, owner_always: true, critical: true, locked: true },
-  { kind: 'password_reset_request', label: 'Password reset request', category: 'approvals', email: false, owner_always: false, critical: false, locked: false },
+  { kind: 'report_ready', label: 'Report ready', category: 'reports', email: true, owner_always: false, critical: false, locked: false, watchable: false, everywhere: false, reaches: [] },
+  { kind: 'password_expiring', label: 'Password expiring', category: 'security', email: true, owner_always: true, critical: true, locked: true, watchable: false, everywhere: false, reaches: [] },
+  { kind: 'password_reset_request', label: 'Password reset request', category: 'approvals', email: false, owner_always: false, critical: false, locked: false, watchable: false, everywhere: false, reaches: [] },
 ];
 
 const person = (person_id: string, display_name: string, job_title: string | null = null): NotificationRecipient => ({
@@ -56,7 +56,7 @@ const check = (over: Partial<DeliveryCheck> = {}): DeliveryCheck => ({
   switches: { inbox: { on: true, source: 'default' }, email: { on: true, source: 'default' } },
   schedule: { timezone: 'America/Chicago', days: WEEKDAYS, quiet_start: '21:00', quiet_end: '07:00', state: 'open' },
   outcome: 'now', after_summary: false, send_at: NOW, summary_at: null, reason: null,
-  address: 'ada@example.com', address_source: 'contact', ...over,
+  address: 'ada@example.com', address_source: 'contact', watches: null, ...over,
 });
 
 /** What the API answers for an email that is not sent: no address, no time. */

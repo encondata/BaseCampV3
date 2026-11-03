@@ -14,6 +14,8 @@ export const NOTIFICATION_CATEGORIES: { key: NotificationCategory; label: string
   { key: 'reports', label: 'Reports & labels' },
   { key: 'wiki', label: 'Wiki' },
   { key: 'learning', label: 'Learning' },
+  { key: 'initiatives', label: 'Initiatives' },
+  { key: 'trucks', label: 'Trucks' },
   { key: 'security', label: 'Account security' },
 ];
 

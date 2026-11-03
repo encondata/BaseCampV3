@@ -13,8 +13,9 @@
    System › Notifications Delivery log (its person link, row trail and Check
    delivery result); and the switch grid and schedule card (the state line
    under a category, the schedule rows' wrapping and picker widths, the shaded
-   summary line); and the System › Notifications › Defaults tab (its one-column
-   stack, the foot note and the Save row).
+   summary line); the System › Notifications › Defaults tab (its one-column
+   stack, the foot note and the Save row); and the Watch button of the
+   initiative, site and truck pages (its amber "on" state).
    ============================================================ */
 
 /* ── NotificationModal (components/notifications/NotificationModal.tsx) ──
@@ -321,3 +322,8 @@
 @media (max-width: 540px) {
   .nd-crit :is(col, th, td):nth-child(2) { display: none; }
 }
+
+/* ── The Watch button (components/notifications/WatchButton.tsx) ─────────
+ * A .btn-ghost in the page header; once the person watches, it turns amber like
+ * the wiki's own (.wiki-watch-btn.on). */
+.watch-btn.on { color: var(--amber); border-color: var(--amber); }

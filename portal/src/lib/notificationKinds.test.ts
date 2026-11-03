@@ -3,12 +3,14 @@ import { expect, it } from 'vitest';
 import * as kinds from './notificationKinds';
 import { NOTIFICATION_CATEGORIES, categoryLabel } from './notificationKinds';
 
-it('lists the five categories in spec order with their labels', () => {
+it('lists the seven categories in spec order with their labels', () => {
   expect(NOTIFICATION_CATEGORIES.map(({ key, label }) => ({ key, label }))).toEqual([
     { key: 'approvals', label: 'Approvals & requests' },
     { key: 'reports', label: 'Reports & labels' },
     { key: 'wiki', label: 'Wiki' },
     { key: 'learning', label: 'Learning' },
+    { key: 'initiatives', label: 'Initiatives' },
+    { key: 'trucks', label: 'Trucks' },
     { key: 'security', label: 'Account security' },
   ]);
 });
@@ -27,5 +29,7 @@ it('keeps no per-person delivery choices and no lookup of the groups that email 
 
 it('maps a key to its label, and an unknown key to itself', () => {
   expect(categoryLabel('wiki')).toBe('Wiki');
+  expect(categoryLabel('initiatives')).toBe('Initiatives');
+  expect(categoryLabel('trucks')).toBe('Trucks');
   expect(categoryLabel('bogus')).toBe('bogus');
 });

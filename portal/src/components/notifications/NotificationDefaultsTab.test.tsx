@@ -41,14 +41,18 @@ const kind = (
   key: string, label: string, category: NotificationKindSetting['category'],
   over: Partial<NotificationKindSetting> = {},
 ): NotificationKindSetting => ({
-  kind: key, label, category, email: true, owner_always: false, critical: false, locked: false, ...over,
+  kind: key, label, category, email: true, owner_always: false, critical: false, locked: false,
+  watchable: false, everywhere: false, reaches: [], ...over,
 });
 
 /** What GET /notifications/settings answers: Reports email is off by default,
  *  Report failed is marked critical, the two security kinds are critical and
  *  locked, and two kinds are never emailed. */
 const SETTINGS: NotificationSettings = {
-  defaults: { approvals: ON, reports: { inbox: true, email: false }, wiki: ON, learning: ON },
+  defaults: {
+    approvals: ON, reports: { inbox: true, email: false }, wiki: ON, learning: ON,
+    initiatives: ON, trucks: ON,
+  },
   critical_kinds: ['report_failed'],
   kinds: [
     kind('membership_request', 'Group membership request', 'approvals'),

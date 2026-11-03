@@ -80,6 +80,8 @@ const api = vi.hoisted(() => ({
   removeInitiativeLink: vi.fn(),
   updateInitiativeLink: vi.fn(),
   recheckInitiativePlacement: vi.fn(),
+  getWatchState: vi.fn(),            // the header's Watch button
+  createMyWatch: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -181,6 +183,7 @@ beforeEach(() => {
   api.listAttachments.mockResolvedValue([]);
   api.removeInitiativeAsset.mockResolvedValue(undefined);
   api.removeInitiativePerson.mockResolvedValue(undefined);
+  api.getWatchState.mockResolvedValue({ watching: false, watch_id: null, kinds: [] });
   learning.getInitiativeLearning.mockResolvedValue({
     stats: { invited: 0, opened: 0, in_progress: 0, complete: 0, overdue: 0 },
     schedule: {
@@ -216,6 +219,50 @@ const assetRow = async () =>
 
 const personRow = async () =>
   (await screen.findByText('Ada Lovelace')).closest('.dir-row') as HTMLElement;
+
+/* ── header: Watch, Import assets, Edit ──────────────────────────── */
+
+const headerActions = async () =>
+  (await screen.findByRole('heading', { name: 'NAP11 Hall Migration' }))
+    .closest('.idet-header')!.querySelector('.idet-header-actions') as HTMLElement;
+
+const actionNames = (actions: HTMLElement) => [...actions.children].map((el) => el.textContent);
+
+it('header: Watch comes first, then Import assets and Edit, for someone who can change it', async () => {
+  renderPage();
+  const actions = await headerActions();
+  await within(actions).findByRole('button', { name: 'Watch' });
+
+  expect(actionNames(actions)).toEqual(['Watch', 'Import assets', 'Edit']);
+  expect(api.getWatchState).toHaveBeenCalledWith('initiative', 'i1');
+});
+
+it('header: Watch still shows without change permission, and Edit and Import assets do not', async () => {
+  auth.can = (resource, action) => !(resource === 'initiatives' && action === 'change');
+  renderPage();
+  const actions = await headerActions();
+  await within(actions).findByRole('button', { name: 'Watch' });
+
+  expect(actionNames(actions)).toEqual(['Watch']);
+  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+  expect(screen.queryByRole('link', { name: 'Import assets' })).toBeNull();
+});
+
+it('header: a click on Watch watches this initiative', async () => {
+  const user = userEvent.setup();
+  api.createMyWatch.mockResolvedValue({
+    id: 'w1', thing: 'initiative', thing_id: 'i1', thing_name: 'NAP11 Hall Migration',
+    link: '/initiatives/i1', kinds: [], via: { type: 'you' }, created_at: '2026-11-02T12:00:00Z',
+  });
+  renderPage();
+  const actions = await headerActions();
+
+  await user.click(await within(actions).findByRole('button', { name: 'Watch' }));
+
+  await waitFor(() => expect(api.createMyWatch)
+    .toHaveBeenCalledWith({ thing: 'initiative', id: 'i1', kinds: [] }));
+  expect(await within(actions).findByRole('button', { name: 'Watching' })).not.toBeNull();
+});
 
 /* ── assets list ─────────────────────────────────────────────────── */
 

@@ -25,6 +25,7 @@ import InlineTextField from '../components/InlineTextField';
 import InitiativeLearningTab from '../components/learning/InitiativeLearningTab';
 import { useLearningAccess } from '../components/learning/useLearningAccess';
 import NotesFilesPanel from '../components/NotesFilesPanel';
+import WatchButton from '../components/notifications/WatchButton';
 import ScanHistoryTable from '../components/scans/ScanHistoryTable';
 import {
   ApiError,
@@ -715,19 +716,21 @@ export default function InitiativeDetail() {
             <p className="page-hint idet-desc">{initiative.description}</p>
           )}
         </div>
-        {canChange && (
-          <div className="idet-header-actions">
-            {isMove && (
-              <Link className="mini-btn"
-                    to={`/initiatives/${initiative.id}/import-assets`}>
-                Import assets
-              </Link>
-            )}
+        <div className="idet-header-actions">
+          {/* Watching is for everyone who can open the page, so it sits outside the gate. */}
+          <WatchButton thing="initiative" id={initiative.id} />
+          {canChange && isMove && (
+            <Link className="mini-btn"
+                  to={`/initiatives/${initiative.id}/import-assets`}>
+              Import assets
+            </Link>
+          )}
+          {canChange && (
             <button className="btn-solid" onClick={() => setEditing(true)}>
               Edit
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       <div className="sysconf-tabbar idet-tabbar" role="tablist">

@@ -37,13 +37,15 @@ const SETTINGS: NotificationSettings = {
     reports: { inbox: true, email: false },
     wiki: { inbox: true, email: true },
     learning: { inbox: true, email: true },
+    initiatives: { inbox: true, email: true },
+    trucks: { inbox: true, email: true },
   },
   critical_kinds: ['report_failed'],
   kinds: [
     { kind: 'report_failed', label: 'Report failed', category: 'reports', email: true,
-      owner_always: false, critical: true, locked: false },
+      owner_always: false, critical: true, locked: false, watchable: false, everywhere: false, reaches: [] },
     { kind: 'password_expiring', label: 'Password expiring', category: 'security', email: true,
-      owner_always: true, critical: true, locked: true },
+      owner_always: true, critical: true, locked: true, watchable: false, everywhere: false, reaches: [] },
   ],
 };
 
