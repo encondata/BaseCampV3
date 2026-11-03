@@ -98,9 +98,9 @@ const plan40 = (over: Partial<Plan> = {}) => makePlan({
   tasks: tasks40(), project_finish: '2026-11-21T17:00', ...over,
 });
 
-function renderTab() {
+function renderTab(path = '/initiatives/init-1?tab=plan') {
   return render(
-    <MemoryRouter initialEntries={['/initiatives/init-1?tab=plan']}>
+    <MemoryRouter initialEntries={[path]}>
       <Routes>
         <Route path="/initiatives/:id" element={<PlanTab initiativeId="init-1" initiative={INITIATIVE} />} />
       </Routes>
@@ -459,6 +459,22 @@ describe('switching layouts', () => {
     choose('Below');
     expect(root.classList.contains('pln-fullscreen')).toBe(true);
     expect(scrollers()).toHaveLength(2);
+  });
+});
+
+describe('the &task= deep link (a reminder email’s)', () => {
+  it('selects the task and scrolls both panes to it: its row in the sheet, its bar in the chart', async () => {
+    const plan = plan40();
+    api.getPlan.mockResolvedValue(plan);
+    renderTab('/initiatives/init-1?tab=plan&task=t36');
+    await findSheet();
+    const start = fitScrollLeft(scaleFor(plan), plan.project_start);
+    const target = taskScrollLeft(scaleFor(plan), plan.tasks[36]) as number;
+    // the bar is well right of where the chart opens
+    expect(target - start).toBeGreaterThan(400);
+    await waitFor(() => expect(chartBar().scrollLeft).toBeCloseTo(target));
+    await waitFor(() => expect(sheetBox().scrollTop).toBeGreaterThan(0));
+    await waitFor(() => expect(rowOf('t36').getAttribute('aria-selected')).toBe('true'));
   });
 });
 

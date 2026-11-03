@@ -337,7 +337,8 @@ export default function PlanSettingsModal({ ctl, onClose }: { ctl: PlanControlle
           </div>
 
           <div hidden={section !== 'reminders'}>
-            <div className="pln-set-items">
+            {/* a .pf-form: the native time field's house (global constraint) */}
+            <div className="pf-form pln-set-items">
               {REMINDER_KEYS.map((key) => {
                 const field = form.reminders[key];
                 return (

@@ -13,7 +13,11 @@
  * Whenever the plan on screen is replaced by someone else's change (that
  * reload, a poll's reload, a write whose answer skipped another's), the
  * edits still queued were asked for against the state that is gone: they
- * are dropped unsent, with one toast (`superseded` below).
+ * are dropped unsent, with one toast (`superseded` below) — except a
+ * progress-only batch (`isProgressOnly`: % complete, actuals, notes,
+ * color), which the API takes without a version match: it goes against
+ * the reloaded plan (a task deleted meanwhile answers 422 `unknown_task`,
+ * said as any refusal), so progress never collides (spec 5a).
  *
  * The version poll (every 30 s while the page is visible) reloads at once
  * when the version moved past ours, unless someone holds editing
@@ -31,6 +35,7 @@ import {
   deletePlan,
   getPlan,
   getPlanVersion,
+  isProgressOnly,
   lockPlan,
   patchPlan,
   postOps,
@@ -487,7 +492,8 @@ export function usePlan(initiativeId: string): PlanController {
       session, enqueue, fetchPlan, probe, deferredRefresh,
 
       apply: (ops: Op[], label: string, opts: ApplyOptions = {}) => enqueue(async (ctx) => {
-        if (ctx.superseded()) {
+        // progress never collides: it goes against the reloaded plan
+        if (ctx.superseded() && !isProgressOnly(ops)) {
           dropped();
           return PLAN_CHANGED;
         }

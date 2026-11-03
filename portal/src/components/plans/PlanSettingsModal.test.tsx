@@ -119,6 +119,17 @@ describe('Plan settings', () => {
     await waitFor(() => expect(patch).toHaveBeenCalledWith({ settings: { reminders: { send_time: '07:30' } } }));
   });
 
+  it('Reminders: the native time field sits inside a .pf-form (house rule for native date and time inputs)', async () => {
+    const { user } = open(plan());
+    await user.click(section('Reminders'));
+    await user.click(within(dialog()).getByRole('checkbox', { name: 'Send time: use system default (8:00 AM)' }));
+    const time = within(dialog()).getByLabelText('Send time') as HTMLInputElement;
+    expect(time.type).toBe('time');
+    expect(time.closest('.pf-form')).not.toBeNull();
+    // the section keeps its look: the items still stack as cards
+    expect(time.closest('.pf-form')?.classList.contains('pln-set-items')).toBe(true);
+  });
+
   it('Calendar: an exception added goes in the whole calendar', async () => {
     const { patch, user } = open(plan());
     await user.click(section('Calendar'));

@@ -495,4 +495,49 @@ describe('the keyboard (the menu-button pattern)', () => {
     expect(fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Tab', shiftKey: true })).toBe(true);
     expect(screen.queryByRole('menu')).toBeNull();
   });
+
+  it('Tab or Shift+Tab out of a mouse-opened menu’s trigger closes the menu', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <button type="button">Before</button>
+        <RowActionsMenu actions={withDisabled()} />
+        <button type="button">After</button>
+      </>,
+    );
+    await user.click(trigger());
+    expect(document.activeElement).toBe(trigger());
+    expect(screen.getByRole('menu')).toBeTruthy();
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'After' }));
+    expect(screen.queryByRole('menu')).toBeNull();
+
+    await user.click(trigger());
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Before' }));
+    expect(screen.queryByRole('menu')).toBeNull();
+
+    // focus going into the menu (the arrows from the trigger) keeps it open
+    await user.click(trigger());
+    await user.keyboard('{ArrowDown}');
+    expect(focused()).toBe('Edit');
+    expect(screen.getByRole('menu')).toBeTruthy();
+  });
+
+  it('Alt, Ctrl or ⌘ with an arrow is not the menu’s: focus stays put; Shift+Tab still closes', async () => {
+    const user = userEvent.setup();
+    render(<RowActionsMenu actions={withDisabled()} />);
+    act(() => { trigger().focus(); });
+    await user.keyboard('{Enter}');
+    expect(focused()).toBe('Edit');
+    for (const mod of [{ ctrlKey: true }, { altKey: true }, { metaKey: true }]) {
+      const item = document.activeElement as HTMLElement;
+      expect(fireEvent.keyDown(item, { key: 'ArrowDown', ...mod }), JSON.stringify(mod)).toBe(true);
+      expect(focused(), JSON.stringify(mod)).toBe('Edit');
+      fireEvent.keyDown(item, { key: 'End', ...mod });
+      expect(focused(), JSON.stringify(mod)).toBe('Edit');
+    }
+    expect(fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Tab', shiftKey: true })).toBe(true);
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
 });

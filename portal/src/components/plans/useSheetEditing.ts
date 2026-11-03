@@ -254,8 +254,10 @@ export function useSheetEditing(o: Options): SheetEditing {
         return;
       }
       if (result.kind !== 'error') {
-        close(refocus);
+        // the check takes its hold first, then the cell lets go of its own:
+        // they overlap, so a refresh that waited can't slip in between
         ask(result, () => latest.current.ctl.apply(edit.ops, label, { confirm: true }));
+        close(refocus);
         return;
       }
       if (result.code === 'plan_changed' || result.code === 'gone' || !now.plan) {

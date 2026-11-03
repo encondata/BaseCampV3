@@ -3,7 +3,8 @@
  * the chart show, which summaries are collapsed (per plan in localStorage
  * `plans.collapsed.<planId>`), the filter bar's view (per plan in
  * `plans.view.<planId>`, lib/plans/filters), the selection, and the
- * `&task=` deep link (handled once per plan and task id).
+ * `&task=` deep link (handled once per plan and task id: its row selected
+ * and scrolled into view here, its bar in the chart by `onLinked`).
  *
  * The rows, in order:
  *  1. The filter and the search (lib/plans/filters): the tasks that match,
@@ -84,6 +85,9 @@ export interface SheetViewOptions {
   me?: string;
   /** Group by applies (the Gantt view). */
   groupable?: boolean;
+  /** The `&task=` deep link was handled for this task (the tab scrolls the
+   *  chart to its bar). */
+  onLinked?(taskId: string): void;
 }
 
 /**
@@ -93,7 +97,11 @@ export interface SheetViewOptions {
  */
 export function useSheetView(ctl: PlanController, taskParam: string | null,
   scrollRef: RefObject<HTMLDivElement | null>, rowHeight: number, options: SheetViewOptions = {}) {
-  const { me = '', groupable = true } = options;
+  const { me = '', groupable = true, onLinked } = options;
+  const linkedTo = useRef(onLinked);
+  useLayoutEffect(() => {
+    linkedTo.current = onLinked;
+  });
   const plan = ctl.plan;
   const planId = plan?.id ?? null;
   const tasks = plan?.tasks ?? NO_TASKS;
@@ -250,6 +258,7 @@ export function useSheetView(ctl: PlanController, taskParam: string | null,
     // the task's id: the selection moves it to its row once the rows have it
     setSelection(selectCell(taskParam, 'name'));
     setScrollTo(taskParam);
+    linkedTo.current?.(taskParam);
   }, [planId, taskParam, showTask, kept]);
 
   // runs once the rows include the task, so the scroll box is tall enough;

@@ -89,6 +89,9 @@ describe('PlanFilterBar', () => {
     expect(screen.getByText('7 of 25 tasks')).toBeTruthy();
     expect(countText({ shown: 0, total: 25 })).toBe('No tasks match');
     expect(countText({ shown: 1, total: 1 })).toBe('1 of 1 task');
+    // only summaries matched: on screen ungrouped, hidden by Group by
+    expect(countText({ shown: 0, total: 25, onlySummaries: 'shown' })).toBe('Only summary tasks match');
+    expect(countText({ shown: 0, total: 3, onlySummaries: 'grouped' })).toBe('Turn off Group by to see summary tasks.');
     cleanup();
     setup();
     expect(document.querySelector('.pln-fcount')).toBeNull();

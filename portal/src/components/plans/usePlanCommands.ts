@@ -248,6 +248,8 @@ export interface PlanCommands {
   info(tab?: TaskInfoTab): void;
   /** Selects the task and scrolls it into view in the sheet and the chart. */
   goToTask(id: string): void;
+  /** Scrolls the chart sideways to the task's bar (the `&task=` deep link's). */
+  scrollChartTo(id: string): void;
   setBaseline(): void;
   toggleCritical(): void;
   toggleBaseline(): void;
@@ -398,8 +400,10 @@ export function usePlanCommands({
   /** A command on the selection, for the plan on screen. `need`: what it
    *  changes — progress (any plan the person may change), the schedule
    *  (not while locked), or new tasks (adding allowed too); `outline`: it
-   *  changes the outline (not while grouped). False when it can't run at
-   *  all here (a reader's key goes on to the browser). */
+   *  changes the outline or the links (not while grouped: Insert, Indent,
+   *  Outdent, and Link and Unlink, whose lines grouping doesn't draw).
+   *  False when it can't run at all here (a reader's key goes on to the
+   *  browser). */
   const withPlan = useCallback((build: (sel: Selection, ctx: PasteContext) => Command, label: string,
     need: 'progress' | 'schedule' | 'add',
     after?: (cmd: CommandOps, ids: Readonly<Record<string, string>>) => void, outline = false): boolean => {
@@ -803,11 +807,14 @@ export function usePlanCommands({
     // Go to task: the row selected and in view in the sheet, the bar in
     // the chart, focus on the sheet — unless a dialog is still open over it
     // (Task Information, whose completion check this came from)
+    const scrollChartTo = (id: string) => {
+      scrollSeq.current += 1;
+      setChartScroll({ seq: scrollSeq.current, to: 'task', taskId: id });
+    };
     const goToTask = (id: string) => {
       const { sheet: view } = latest.current;
       view.goTo(id);
-      scrollSeq.current += 1;
-      setChartScroll({ seq: scrollSeq.current, to: 'task', taskId: id });
+      scrollChartTo(id);
       if (!document.querySelector('.modal-scrim')) focusSheet();
     };
     const undo = () => { void latest.current.ctl.undo(); };
@@ -858,6 +865,7 @@ export function usePlanCommands({
       moveTasks,
       info: (tab?: TaskInfoTab) => { info(tab); },
       goToTask,
+      scrollChartTo,
       setBaseline,
       toggleCritical: () => setDisplay((d) => ({ ...d, critical: !d.critical })),
       toggleBaseline: () => setDisplay((d) => ({ ...d, baseline: !d.baseline })),

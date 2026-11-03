@@ -1140,6 +1140,48 @@ describe('writes queued behind someone else’s change', () => {
     expect(result.current.plan?.version).toBe(9);
   });
 
+  it('a progress-only batch queued behind a plan_changed is still sent, against the reloaded plan', async () => {
+    const { result } = await loaded();
+    const first = deferred<OpsResult>();
+    api.postOps.mockImplementationOnce(() => first.promise);
+    api.getPlan.mockResolvedValueOnce(makePlan({ version: 9 }));
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 10 }));
+    const progress: Op[] = [{ op: 'set_percent', ids: ['a'], percent: 100 }];
+    let one!: Promise<ApplyResult>;
+    let two!: Promise<ApplyResult>;
+    act(() => {
+      one = result.current.apply(rename, 'Rename');
+      two = result.current.apply(progress, '100% Complete');   // clicked as the conflict came back
+    });
+    first.reject(apiError(409, { code: 'plan_changed', version: 9 }));
+    const [r1, r2] = await call(() => Promise.all([one, two]));
+    expect(r1).toEqual(CHANGED);
+    // progress never collides: it goes, at the reloaded version
+    expect(r2.ok).toBe(true);
+    expect(api.postOps).toHaveBeenCalledTimes(2);
+    expect(api.postOps.mock.calls[1]).toEqual(['plan-1', 9, progress]);
+    expect(toast).toHaveBeenCalledTimes(1);                // the reload's, nothing more
+    expect(result.current.plan?.version).toBe(10);
+    expect(result.current.undoLabel).toBe('100% Complete');
+  });
+
+  it('a progress-only batch on a task someone deleted meanwhile answers its 422 as usual', async () => {
+    const { result } = await loaded();
+    const first = deferred<OpsResult>();
+    api.postOps.mockImplementationOnce(() => first.promise);
+    api.getPlan.mockResolvedValueOnce(makePlan({ version: 9, tasks: flatTasks(['b', 'c']) }));
+    api.postOps.mockRejectedValueOnce(new ApiError(422, 'unknown_task', { code: 'unknown_task', task_id: 'a' }));
+    let two!: Promise<ApplyResult>;
+    act(() => {
+      void result.current.apply(rename, 'Rename');
+      two = result.current.apply([{ op: 'set_percent', ids: ['a'], percent: 50 }], '50% Complete');
+    });
+    first.reject(apiError(409, { code: 'plan_changed', version: 9 }));
+    const r2 = await call(() => two);
+    expect(api.postOps).toHaveBeenCalledTimes(2);
+    expect(r2).toMatchObject({ ok: false, kind: 'error', code: 'unknown_task' });
+  });
+
   it('an undo, a redo and a patch queued behind it neither post nor reload again', async () => {
     const { result } = await loaded();
     api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 6 }));

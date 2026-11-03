@@ -147,24 +147,44 @@ export function filterRows(
   return withContext(order, tasksById, matchingIds(order, tasksById, filter, search, me, nowS));
 }
 
+/** The filter bar's count (`filterCount`). */
+export interface FilterCount {
+  /** The leaf tasks shown as matches (Summary Tasks: the summaries). */
+  shown: number;
+  /** The plan's leaf tasks (Summary Tasks: its summaries). */
+  total: number;
+  /** No leaf task matched but summaries did: on screen (`shown`), or
+   *  hidden by Group by, which lists leaves only (`grouped`). The count
+   *  then says so rather than "No tasks match". */
+  onlySummaries?: 'shown' | 'grouped';
+}
+
 /**
  * The filter bar's "N of M": the leaf tasks shown as matches (not context
  * rows) of the plan's leaf tasks, the same grouped or not (grouping lists
  * leaves). Summary Tasks counts summaries instead; grouped, none of them
- * show.
+ * show. When only summaries matched, `onlySummaries` says where they are.
  */
 export function filterCount(
   rows: readonly string[], context: ReadonlySet<string>, tasksById: ReadonlyMap<string, Pick<PlanTask, 'is_summary'>>,
   filter: PlanFilter, grouped: boolean,
-): { shown: number; total: number } {
+): FilterCount {
   const summaries = filter === 'summary';
   let total = 0;
   for (const task of tasksById.values()) if (task.is_summary === summaries) total += 1;
-  if (summaries && grouped) return { shown: 0, total };
   let shown = 0;
+  let others = 0;          // matched summaries, when the count is of leaves
   for (const id of rows) {
-    if (!context.has(id) && tasksById.get(id)?.is_summary === summaries) shown += 1;
+    const task = context.has(id) ? undefined : tasksById.get(id);
+    if (!task) continue;
+    if (task.is_summary === summaries) shown += 1;
+    else if (task.is_summary) others += 1;
   }
+  if (summaries) {
+    if (!grouped) return { shown, total };
+    return shown ? { shown: 0, total, onlySummaries: 'grouped' } : { shown: 0, total };
+  }
+  if (!shown && others) return { shown, total, onlySummaries: grouped ? 'grouped' : 'shown' };
   return { shown, total };
 }
 

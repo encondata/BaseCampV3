@@ -138,6 +138,36 @@ describe('useCompletion', () => {
     await expect(answered!).resolves.toEqual(OK);
   });
 
+  it('ask holds editing at once, before the dialog draws, and lets go once it is answered', async () => {
+    const user = userEvent.setup();
+    const { ctl, release } = fakeCtl();
+    render(<Host ctl={ctl} />);
+    act(() => {
+      void completion.ask(CONFIRM, vi.fn(async () => OK));
+      // the same tick: a hold let go right after this (the cell's) finds this one there
+      expect(ctl.beginEditing).toHaveBeenCalledWith('completion-check');
+    });
+    expect(release).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('every stop waiting holds editing until it is answered; the tab going away lets go of all', async () => {
+    const user = userEvent.setup();
+    const { ctl, release } = fakeCtl();
+    const view = render(<Host ctl={ctl} />);
+    act(() => {
+      void completion.ask(CONFIRM, vi.fn(async () => OK));
+      void completion.ask(BLOCKED, vi.fn(async () => OK));
+    });
+    expect(ctl.beginEditing).toHaveBeenCalledTimes(2);
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole('dialog', { name: 'Can’t complete yet' })).toBeTruthy();
+    view.unmount();
+    expect(release).toHaveBeenCalledTimes(2);
+  });
+
   it('a resend that throws is said, and leaves the dialog usable: Complete is on again', async () => {
     const user = userEvent.setup();
     const { ctl } = fakeCtl();

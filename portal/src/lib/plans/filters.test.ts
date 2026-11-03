@@ -139,10 +139,22 @@ describe('filterCount', () => {
     expect(filterCount(week.rows, week.context, byId, 'due_week', false)).toEqual({ shown: 4, total: 5 });
   });
 
-  it('Summary Tasks counts summaries; grouped (leaves only) none of them show', () => {
+  it('Summary Tasks counts summaries; grouped (leaves only) none of them show, and it says why', () => {
     const sums = filterRows(order, byId, 'summary', '', ME, NOW);
     expect(filterCount(sums.rows, sums.context, byId, 'summary', false)).toEqual({ shown: 3, total: 3 });
-    expect(filterCount(sums.rows, sums.context, byId, 'summary', true)).toEqual({ shown: 0, total: 3 });
+    expect(filterCount(sums.rows, sums.context, byId, 'summary', true))
+      .toEqual({ shown: 0, total: 3, onlySummaries: 'grouped' });
+  });
+
+  it('a search that matches only a summary: the row shows, so the count doesn’t say none match', () => {
+    const move = filterRows(order, byId, 'all', 'move day', ME, NOW);
+    expect(move.rows).toEqual(['s2']);
+    expect(filterCount(move.rows, move.context, byId, 'all', false)).toEqual({ shown: 0, total: 5, onlySummaries: 'shown' });
+    // grouped, the summary isn't on screen: Group by is why
+    expect(filterCount(move.rows, move.context, byId, 'all', true)).toEqual({ shown: 0, total: 5, onlySummaries: 'grouped' });
+    // nothing at all: none
+    const none = filterRows(order, byId, 'all', 'zebra', ME, NOW);
+    expect(filterCount(none.rows, none.context, byId, 'all', false)).toEqual({ shown: 0, total: 5 });
   });
 });
 

@@ -20,8 +20,11 @@
  *  (wrapping), Home/End go to the ends, Enter or Space picks one (focus
  *  then goes back to the trigger, unless the pick moved it somewhere
  *  itself), Escape closes it with focus back on the trigger, and Tab
- *  closes it, focus moving on from the trigger as Tab would. The items
- *  take no tab stop of their own (tabIndex -1, focus moved by the keys).
+ *  closes it, focus moving on from the trigger as Tab would. Alt, Ctrl
+ *  or ⌘ with a key there is not the menu's. Focus leaving the trigger for
+ *  anywhere but the menu (Tab or Shift+Tab out of a mouse-opened menu)
+ *  closes it. The items take no tab stop of their own (tabIndex -1, focus
+ *  moved by the keys).
  *
  *  Optional, for a toolbar's menu button: an `icon` trigger (named by
  *  `label`) in place of "label ▾", with its own `triggerClassName`; items
@@ -29,7 +32,10 @@
  *  current one); and `returnFocus`, which puts focus back on the trigger
  *  after a mouse pick too. */
 
-import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import {
+  useEffect, useId, useRef, useState, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from 'react';
 import { createPortal } from 'react-dom';
 
 import '../../styles/column-menu.css';
@@ -201,7 +207,19 @@ export function RowActionsMenu({
     else openMenu(where);
   };
 
+  // Tab or Shift+Tab out of a mouse-opened menu's trigger: focus went on
+  // to something else, so the menu goes. Focus into the menu (the arrows)
+  // keeps it; a blur to nothing (a click on the page, another window) is
+  // the outside-mousedown handler's to judge.
+  const onTriggerBlur = (e: ReactFocusEvent<HTMLButtonElement>) => {
+    const next = e.relatedTarget as Node | null;
+    if (!open || !next || menuRef.current?.contains(next) || triggerRef.current?.contains(next)) return;
+    setOpen(false);
+  };
+
   const onMenuKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    // a modifier with a key is not the menu's (Shift+Tab still closes)
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
     if (e.key === 'Tab') {
       // close, and let the browser's Tab go on from the trigger
       setOpen(false);
@@ -229,7 +247,7 @@ export function RowActionsMenu({
     <div className="row-actions" ref={triggerRef} style={{ position: 'relative' }}>
       <button type="button" className={triggerClassName ?? 'mini-btn'} aria-haspopup="menu" ref={buttonRef}
               aria-expanded={open} aria-describedby={describedBy} aria-label={icon ? name : undefined}
-              onKeyDown={onTriggerKey}
+              onKeyDown={onTriggerKey} onBlur={onTriggerBlur}
               onClick={(e) => {
                 e.stopPropagation();
                 // Enter or Space (a click with no pointer: detail 0) opens on

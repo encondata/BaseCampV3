@@ -17,9 +17,11 @@
  *   answer takes the dialog's place.
  * - `blocked` names the tasks in the way, each with Go to task (`onGoTo`
  *   selects it and scrolls it into view in the sheet and the chart).
- * - The dialog stays until it is answered (no timeout); while it is open
- *   it holds editing, so a refresh that finds someone else's change waits.
- *   Stops that arrive meanwhile wait their turn behind it.
+ * - The dialog stays until it is answered (no timeout). Each stop holds
+ *   editing from the moment `ask` takes it (in the same tick, so a hold
+ *   let go right after — the cell editor's — overlaps it) until it is
+ *   answered, so a refresh that finds someone else's change waits. Stops
+ *   that arrive meanwhile wait their turn behind it, holding too.
  *
  * `ask` answers once the dialog closes: the resend's answer when Complete
  * went through or failed, null when it closed unanswered (Cancel, Close,
@@ -90,6 +92,8 @@ interface Waiting {
   resend: Resend;
   lead?: string;
   resolve(result: ApplyResult | null): void;
+  /** Lets go of its editing hold. */
+  release(): void;
 }
 
 export function useCompletion(ctl: PlanController, opts: { onGoTo?(taskId: string): void } = {}): Completion {
@@ -102,15 +106,27 @@ export function useCompletion(ctl: PlanController, opts: { onGoTo?(taskId: strin
     latest.current = { ctl, toast, onGoTo: opts.onGoTo, waiting };
   });
 
-  // the tab going away answers whatever still waits
+  // what waits now, as `ask` and `finish` change it (state lags a render)
+  const queued = useRef<Waiting[]>([]);
+
+  // the tab going away answers whatever still waits, and lets go of its holds
   useEffect(() => () => {
-    for (const w of latest.current.waiting) w.resolve(null);
+    for (const w of queued.current) {
+      w.release();
+      w.resolve(null);
+    }
+    queued.current = [];
   }, []);
 
+  // the hold is taken here, at once: a caller that lets go of its own hold
+  // right after (the cell editor) never leaves a gap for a refresh
   const ask = useCallback<CompletionAsk>((stop, resend, o = {}) => new Promise((resolve) => {
     seq.current += 1;
     const id = seq.current;
-    setWaiting((list) => [...list, { id, stop, resend, lead: o.lead, resolve }]);
+    const release = latest.current.ctl.beginEditing(HOLD_OWNER);
+    const w: Waiting = { id, stop, resend, lead: o.lead, resolve, release };
+    queued.current = [...queued.current, w];
+    setWaiting((list) => [...list, w]);
   }), []);
 
   /** What a resend (or any write) answered, said: notices, a refusal. */
@@ -147,14 +163,11 @@ export function useCompletion(ctl: PlanController, opts: { onGoTo?(taskId: strin
 
   const current = waiting[0] ?? null;
 
-  // a refresh waits while the dialog is open
-  const { beginEditing } = ctl;
-  const currentId = current?.id ?? null;
-  useEffect(() => (currentId === null ? undefined : beginEditing(HOLD_OWNER)), [currentId, beginEditing]);
-
   const finish = useCallback((w: Waiting, result: ApplyResult | null) => {
+    queued.current = queued.current.filter((x) => x.id !== w.id);
     setWaiting((list) => list.filter((x) => x.id !== w.id));
     setBusy(false);
+    w.release();
     w.resolve(result);
   }, []);
 

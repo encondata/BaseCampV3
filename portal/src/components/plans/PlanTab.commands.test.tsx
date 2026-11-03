@@ -299,8 +299,7 @@ describe('copy and paste', () => {
     fireEvent.copy(clip, { clipboardData: { setData } });
     // Excel's CRLF rows (a textarea's own value reads them as LF)
     expect(setData).toHaveBeenCalledWith('text/plain', clip.value.replace(/\n/g, '\r\n'));
-    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-    expect(document.activeElement).toBe(grid());
+    await waitFor(() => expect(document.activeElement).toBe(grid()));
     expect(clip.value).toBe('');
 
     // paste: into the field, whose paste event brings the text; nothing typed lands there
@@ -761,8 +760,7 @@ describe('copy and paste', () => {
     expect(document.activeElement).toBe(clip);
     expect(clip.hidden).toBe(false);
     expect(screen.getByRole('textbox', { name: 'Clipboard' })).toBe(clip);
-    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-    expect(document.activeElement).toBe(grid());
+    await waitFor(() => expect(document.activeElement).toBe(grid()));
     expect(clip.hidden).toBe(true);
   });
 

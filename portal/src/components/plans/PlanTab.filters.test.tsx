@@ -275,6 +275,24 @@ describe('search', () => {
     expect(q('.pln-fcount')).toBeNull();
   });
 
+  it('a search that matches only a summary shows it and doesn’t say none match; grouped, it says why', async () => {
+    await ready();
+    fireEvent.change(search(), { target: { value: 'move day' } });
+    await waitFor(() => expect(sheetIds()).toEqual(['s2', 'blank']));
+    expect(q('.pln-fcount')?.textContent).toBe('Only summary tasks match');
+    pick('Group by', 'Resource');
+    await waitFor(() => expect(sheetIds()).toEqual([]));
+    expect(q('.pln-fcount')?.textContent).toBe('Turn off Group by to see summary tasks.');
+    // Summary Tasks while grouped: the same
+    fireEvent.change(search(), { target: { value: '' } });
+    pick('Filter', 'Summary Tasks');
+    await waitFor(() => expect(q('.pln-fcount')?.textContent).toBe('Turn off Group by to see summary tasks.'));
+    // nothing matches at all: none
+    fireEvent.change(search(), { target: { value: 'zebra' } });
+    pick('Filter', 'All Tasks');
+    await waitFor(() => expect(q('.pln-fcount')?.textContent).toBe('No tasks match'));
+  });
+
   it('Ctrl+F from inside the plan focuses the search box; outside it the browser keeps its find', async () => {
     await ready();
     grid().focus();

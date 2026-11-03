@@ -16,7 +16,7 @@ import { useId, type KeyboardEvent, type RefObject } from 'react';
 import ComboBox from '../ComboBox';
 import { COMMAND_TIPS, tipKeys } from '../../lib/plans/commandTips';
 import {
-  PLAN_FILTERS, PLAN_GROUPS, type PlanFilter, type PlanGroupBy, type PlanViewState,
+  PLAN_FILTERS, PLAN_GROUPS, type FilterCount, type PlanFilter, type PlanGroupBy, type PlanViewState,
 } from '../../lib/plans/filters';
 import { detectPlatform, type Platform } from '../../lib/plans/shortcuts';
 import Tip from '../Tip';
@@ -33,7 +33,7 @@ export interface PlanFilterBarProps {
   groupable: boolean;
   searchRef: RefObject<HTMLInputElement>;
   /** The tasks that match and the plan's, while a filter or search is on. */
-  counts: { shown: number; total: number } | null;
+  counts: FilterCount | null;
   /** Enter in the search box: to the first match. */
   onSearchEnter?(): void;
   /** Escape in a clear search box: back to the sheet. */
@@ -41,8 +41,11 @@ export interface PlanFilterBarProps {
   platform?: Platform;
 }
 
-/** "7 of 25 tasks", or that none match. */
-export function countText(counts: { shown: number; total: number }): string {
+/** "7 of 25 tasks"; that only summaries match (shown, or hidden by Group
+ *  by); or that none match. */
+export function countText(counts: FilterCount): string {
+  if (counts.onlySummaries === 'grouped') return 'Turn off Group by to see summary tasks.';
+  if (counts.onlySummaries === 'shown') return 'Only summary tasks match';
   if (!counts.shown) return 'No tasks match';
   return `${counts.shown.toLocaleString()} of ${counts.total.toLocaleString()} task${counts.total === 1 ? '' : 's'}`;
 }

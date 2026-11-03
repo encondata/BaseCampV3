@@ -35,7 +35,8 @@
  * by default; only Gantt exists until Plan C, so anything else reads as
  * Gantt) and `&task=<id>` (reminder emails link to it): once the plan
  * loads, that task's collapsed summaries open, its row is selected and
- * scrolled into view; an id the plan doesn't have is ignored.
+ * scrolled into view, and the chart scrolls to its bar; an id the plan
+ * doesn't have is ignored.
  *
  * Full screen fills the viewport above the portal chrome, which goes
  * inert meanwhile (Tab stays in the plan); Escape leaves it unless a
@@ -222,8 +223,11 @@ export default function PlanTab({ initiativeId, initiative }: {
   const clipRef = useRef<HTMLTextAreaElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const rowHeight = Math.round(SHEET_ROW_PX * listScale(preferences?.list_size));
+  // the deep link's bar in the chart: the commands' (they come after the view)
+  const linkedRef = useRef<(taskId: string) => void>(() => {});
+  const onLinked = useCallback((taskId: string) => linkedRef.current(taskId), []);
   const sheet = useSheetView(ctl, searchParams.get('task'), scrollRef, rowHeight, {
-    me: person?.id ?? '', groupable: view === 'gantt',
+    me: person?.id ?? '', groupable: view === 'gantt', onLinked,
   });
   // the completion check's Go to task: the commands' (they come after it)
   const goToRef = useRef<(taskId: string) => void>(() => {});
@@ -235,6 +239,7 @@ export default function PlanTab({ initiativeId, initiative }: {
   });
   useLayoutEffect(() => {
     goToRef.current = commands.goToTask;
+    linkedRef.current = commands.scrollChartTo;
   });
   usePlanShortcuts(commands.handlers, { root: rootRef, enabled: ready && view === 'gantt' });
   useRovingToolbar(toolbarRef, ready);
