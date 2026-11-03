@@ -43,11 +43,13 @@ describe('labels', () => {
 
   it('names every reason code the API writes, in words', () => {
     const codes = [
-      // dropped before sending (or at summary time), plus SMTP off
+      // dropped before sending (or at summary time), plus SMTP off; not_watching is new in Phase 2
       'notification_gone', 'hidden', 'read', 'resolved', 'recipient_inactive',
-      'category_turned_down', 'email_not_set_up',
-      // the inbox row not written
-      'category_off',
+      'category_turned_down', 'email_not_set_up', 'not_watching',
+      // a Device offline email dropped because every device in it is seen again (new in Phase 2)
+      'back_online',
+      // the inbox row not written (no_access is new in Phase 2, and the re-check drops an email for it too)
+      'category_off', 'no_access',
       // a notification not emailed (admin_copy is new in Phase 1)
       'unregistered_kind', 'kind_not_emailed', 'category_inbox_only', 'no_address', 'admin_copy',
       // why an email is held for the summary
@@ -71,6 +73,9 @@ describe('labels', () => {
     expect(REASON_LABELS.inactive_day).toBe('Not an active day');
     expect(REASON_LABELS.email_not_set_up).toBe("Email isn't set up");
     expect(REASON_LABELS.admin_copy).toBe('Admin copy — inbox only');
+    expect(REASON_LABELS.no_access).toBe('No access');
+    expect(REASON_LABELS.not_watching).toBe('Not watching any more');
+    expect(REASON_LABELS.back_online).toBe('Device back online');
   });
 
   it('names where a switch comes from and how the schedule stands right now', () => {
@@ -309,6 +314,119 @@ describe('describeEntry', () => {
 
   it('an inbox row that was written has nothing more to say', () => {
     expect(describeEntry(entry({ event: 'inbox_written' }))).toBe('');
+  });
+
+  // The event sweep logs the routes that brought a notification (detail.via, a list, sorted by the
+  // API), the event ids and the groups' names by route. detail.via on a QUEUED email is a string
+  // (where the address came from), so the routes belong to the two inbox events alone.
+  describe('the routes of an inbox row', () => {
+    const written = (via: unknown, names: unknown = {}) => describeEntry(entry({
+      event: 'inbox_written', detail: { via, events: [7], names },
+    }));
+
+    it('says what brought it: their own watch, a group\'s watch, a rule, or being named', () => {
+      expect(written(['watch', 'group:g1'], { 'group:g1': 'Group A' }))
+        .toBe('Watching · their own, Watching · Group A');
+      expect(written(['watch'])).toBe('Watching · their own');
+      expect(written(['group:g1'], { 'group:g1': 'Group A' })).toBe('Watching · Group A');
+      expect(written(['rule:r1'], { 'rule:r1': 'Rule A' })).toBe('Rule · Rule A');
+      expect(written(['direct'])).toBe('Named');
+    });
+
+    it('lists every route, joined with commas: their own watch, then groups\', then rules\', then being named', () => {
+      // the API logs them sorted by code, so "direct" comes first and "watch" last
+      expect(written(
+        ['direct', 'group:g1', 'group:g2', 'rule:r1', 'watch'],
+        { 'group:g1': 'Group A', 'group:g2': 'Group B', 'rule:r1': 'Rule A' },
+      )).toBe('Watching · their own, Watching · Group A, Watching · Group B, Rule · Rule A, Named');
+    });
+
+    it('keeps the API\'s order among routes of one kind, not an order of the names', () => {
+      expect(written(
+        ['group:g1', 'group:g2', 'rule:r1', 'rule:r2'],
+        { 'group:g1': 'Group B', 'group:g2': 'Group A', 'rule:r1': 'Rule B', 'rule:r2': 'Rule A' },
+      )).toBe('Watching · Group B, Watching · Group A, Rule · Rule B, Rule · Rule A');
+      // routes out of their usual order are put in it by kind alone
+      expect(written(['rule:r1', 'group:g1', 'direct', 'watch'], { 'group:g1': 'Group A', 'rule:r1': 'Rule A' }))
+        .toBe('Watching · their own, Watching · Group A, Rule · Rule A, Named');
+    });
+
+    it('does not change the list it is given', () => {
+      const via = ['direct', 'watch'];
+      written(via);
+      expect(via).toEqual(['direct', 'watch']);
+    });
+
+    it('a group or rule whose name was not logged reads as "Watching" or "Rule" alone', () => {
+      expect(written(['group:g1'])).toBe('Watching');
+      expect(written(['rule:r1'])).toBe('Rule');
+      // the name of another route is not borrowed, and an empty or odd name counts as none
+      expect(written(['group:g1'], { 'group:g2': 'Group B' })).toBe('Watching');
+      expect(written(['group:g1'], { 'group:g1': '' })).toBe('Watching');
+      expect(written(['rule:r1'], { 'rule:r1': 7 })).toBe('Rule');
+    });
+
+    it('shows a route it does not know as the route itself, after the ones it does', () => {
+      expect(written(['device:d1'])).toBe('device:d1');
+      expect(written(['watch', 'device:d1'])).toBe('Watching · their own, device:d1');
+      expect(written(['device:d1', 'direct', 'watch'])).toBe('Watching · their own, Named, device:d1');
+      expect(written(['constructor'])).toBe('constructor');   // never an Object.prototype member
+    });
+
+    it('says nothing when no routes were logged, whatever else the detail holds', () => {
+      expect(written([])).toBe('');
+      expect(written(undefined)).toBe('');
+      expect(written('watch')).toBe('');                // a string is an address source, not a list of routes
+      expect(written([7, null, ''])).toBe('');          // only text entries are routes
+      expect(describeEntry(entry({ event: 'inbox_written', detail: { events: [7] } }))).toBe('');
+      expect(written(['watch'], 'oops')).toBe('Watching · their own');   // names that are not a map are none
+      expect(written(['group:g1'], ['Group A'])).toBe('Watching');
+    });
+
+    it('is added to why a category switch kept the row out of the inbox, after whose switch it was', () => {
+      const suppressed = (detail: Record<string, unknown>) => describeEntry(entry({
+        event: 'inbox_suppressed', reason: 'category_off', notification_id: null, detail,
+      }));
+      expect(suppressed({ source: 'own', via: ['watch'], events: [7], names: {} }))
+        .toBe('Category turned off · Their choice · Watching · their own');
+      expect(suppressed({ source: 'default', via: ['group:g1', 'rule:r1'], events: [7],
+        names: { 'group:g1': 'Group A', 'rule:r1': 'Rule A' } }))
+        .toBe('Category turned off · Company default · Watching · Group A, Rule · Rule A');
+      // a row logged without routes reads as before
+      expect(suppressed({ source: 'own' })).toBe('Category turned off · Their choice');
+    });
+
+    it('a candidate dropped for access reads as No access; it has no routes, only its events', () => {
+      expect(describeEntry(entry({
+        event: 'inbox_suppressed', reason: 'no_access', notification_id: null, detail: { events: [7] },
+      }))).toBe('No access');
+    });
+
+    it('is read from an inbox row only: on any other event, via keeps the meaning it had', () => {
+      // a queued email: via is where the address came from
+      expect(describeEntry(entry({
+        event: 'email_queued', channel: 'email',
+        detail: { template: 'notification', send_at: MONDAY_7AM, deferred: false, via: 'login' },
+      }))).toBe('Due now');
+      // a list under any other event is not read as routes
+      expect(describeEntry(entry({
+        event: 'email_queued', channel: 'email',
+        detail: { template: 'notification', send_at: MONDAY_7AM, deferred: false, via: ['watch'] },
+      }))).toBe('Due now');
+      expect(describeEntry(entry({
+        event: 'email_not_queued', channel: 'email', reason: 'no_address', detail: { via: ['watch'] },
+      }))).toBe('No email address');
+      expect(describeEntry(entry({
+        event: 'email_sent', channel: 'email', detail: { attempt: 1, via: ['watch'] },
+      }))).toBe('Sent on attempt 1');
+    });
+  });
+
+  it('an email the send-time re-check dropped reads as the reason: no access, or not watching', () => {
+    expect(describeEntry(entry({ event: 'email_skipped', channel: 'email', reason: 'no_access' })))
+      .toBe('No access');
+    expect(describeEntry(entry({ event: 'email_skipped', channel: 'email', reason: 'not_watching' })))
+      .toBe('Not watching any more');
   });
 });
 

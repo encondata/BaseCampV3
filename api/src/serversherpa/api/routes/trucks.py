@@ -22,6 +22,7 @@ from serversherpa.db.models import (
     TruckContainer, TruckEvent, TruckUpdate,
 )
 from serversherpa.db.ordering import natural
+from serversherpa.notifications.status_changes import announce_truck_status_changed
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.trucks import bulk_import as bulk
 from serversherpa.trucks.bulk_create import TRUCK_FIELDS
@@ -603,6 +604,10 @@ async def update_truck(
         truck.updated_at = datetime.now(UTC)
         audit(db, actor_id=actor.person.id, entity_type="truck",
               entity_id=str(truck_id), action="update", changes=changes)
+        if "status" in changes:
+            await announce_truck_status_changed(
+                db, truck, old=changes["status"]["from"], new=changes["status"]["to"],
+                actor_id=actor.person.id)
     await db.commit()
     return await _detail(db, truck)
 

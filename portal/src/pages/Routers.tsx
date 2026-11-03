@@ -9,8 +9,10 @@
  *  Routers self-register through the GL.iNet agent (router_agent/) and
  *  stay Pending — reports held — until approved here or from the inbox.
  *  "How to add a router" shows the one-line installer. Row actions
- *  (Approve / Revoke / Delete) live behind the shared RowActionsMenu;
- *  ?focus=<id> (the approval notification's link) opens that row.
+ *  (Watch / Stop watching, Approve / Dismiss warning / Revoke / Delete) live
+ *  behind the shared RowActionsMenu; only an approved router can be watched (a
+ *  pending or revoked one reports nothing, so it can't go quiet).
+ *  ?focus=<id> (the approval and Device offline notifications' link) opens that row.
  *  Names show readable (routerDisplayName: csg_router_kit_19 → CSG Router Kit 19);
  *  the stored name stays the hostname, shown on hover and in the CSV's Hostname column. */
 
@@ -39,7 +41,8 @@ import {
 import { VirtualRows } from '../lib/virtualRows';
 import AddRouterModal from '../components/hardware/AddRouterModal';
 import RouterDetail from '../components/hardware/RouterDetail';
-import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
+import { RowActionsMenu, type RowAction } from '../components/hardware/RowActionsMenu';
+import { useDeviceWatches } from '../components/hardware/useDeviceWatches';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';  /* .set-note */
@@ -99,6 +102,7 @@ export default function Routers() {
   const canDelete = can('scanning_hardware', 'delete');
   const canChange = can('scanning_hardware', 'change');
   const listGridScale = listScale(preferences?.list_size);
+  const { watching, toggle, busy } = useDeviceWatches();
 
   const [devices, setDevices] = useState<DeviceItem[] | null>(null);
   const [error, setError] = useState('');
@@ -131,18 +135,6 @@ export default function Routers() {
   };
 
   useEffect(() => { void load(); }, []);
-
-  // The approval notification links here with ?focus=<id>: open that row
-  // once the list has it, and bring it into view.
-  useEffect(() => {
-    if (!focusId || focusedRef.current === focusId) return;
-    if (!devices?.some((d) => d.id === focusId)) return;
-    focusedRef.current = focusId;
-    setOpenId(focusId);
-    const esc = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(focusId) : focusId;
-    document.querySelector(`[data-device-id="${esc}"]`)
-      ?.scrollIntoView?.({ block: 'center' });
-  }, [focusId, devices]);
 
   const searchText = (d: DeviceItem) =>
     `${routerDisplayName(d.name)} ${deviceSearchText(d)}`.toLowerCase();
@@ -193,6 +185,20 @@ export default function Routers() {
       return compareValues(va, vb) * sortDir;
     });
   }, [devices, facets, filters, query, sortKey, sortDir, haystack]);
+
+  // The approval and Device offline notifications link here with ?focus=<id>: open that
+  // row and bring it into view, once. It waits until the row is on the page, not just in
+  // the list: a row a filter hides (one saved with the list, say) is opened once the
+  // filter is cleared.
+  useEffect(() => {
+    if (!focusId || focusedRef.current === focusId) return;
+    const esc = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(focusId) : focusId;
+    const row = document.querySelector(`[data-device-id="${esc}"]`);
+    if (!row) return;
+    focusedRef.current = focusId;
+    setOpenId(focusId);
+    row.scrollIntoView?.({ block: 'center' });
+  }, [focusId, visible]);
 
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);
@@ -249,9 +255,14 @@ export default function Routers() {
     void act(() => revokeRouter(d.id), 'revoke');
   };
 
-  const actionsFor = (d: DeviceItem) => {
+  const actionsFor = (d: DeviceItem): RowAction[] => {
     const agent = d.approval_state != null;
     return [
+      ...(d.approval_state === 'approved'
+        ? [{
+          key: 'watch', label: watching(d.id) ? 'Stop watching' : 'Watch',
+          disabled: busy(d.id), onSelect: () => void toggle(d.id),
+        }] : []),
       ...(canChange && agent && d.approval_state !== 'approved'
         ? [{ key: 'approve', label: 'Approve', onSelect: () => approve(d) }] : []),
       ...(canChange && d.approval_state === 'approved' && d.secret_mismatch

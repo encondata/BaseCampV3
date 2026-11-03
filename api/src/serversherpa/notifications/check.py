@@ -4,7 +4,8 @@ answer is decide_email(), the same decision maybe_email() acts on, so the
 tool and the sender cannot drift; the inbox answer is notify()'s rule, read
 off the same effective switches. Beside them it shows the person's switches
 for the category and where each comes from, their schedule and its state
-right now, and whether the kind is critical.
+right now, whether the kind is critical, and for a kind anyone can watch the
+watches of the person that would hear it.
 
 Spec: docs/superpowers/specs/2026-10-31-notifications-phase0-design.md (section 9) and
 docs/superpowers/specs/2026-11-01-notifications-phase1-design.md (section 7)"""
@@ -26,11 +27,23 @@ from serversherpa.notifications.email import (
 )
 from serversherpa.notifications.kinds import KINDS
 from serversherpa.notifications.schedule import DAYS, state_at
+from serversherpa.notifications.watches import WatchView, watches_hearing
 
 
 def _clock(value: time | None) -> str | None:
     """A quiet-hours bound as "HH:MM", as the preference stores it."""
     return value.strftime("%H:%M") if value is not None else None
+
+
+def _watch_entry(view: WatchView) -> dict:
+    """A watch as Check delivery lists it: what it is on (`thing` is "everything" for an
+    Everything watch, which has no id or name), the events it names (empty: every one that
+    applies) and whose it is: `you` for the person's own, else the group."""
+    group = view.group
+    via = ({"type": "you", "id": None, "name": None} if group is None
+           else {"type": "group", "id": group.id, "name": group.name})
+    return {"thing": view.thing, "thing_id": view.thing_id, "thing_name": view.thing_name,
+            "kinds": list(view.watch.kinds), "via": via}
 
 
 async def check_delivery(db: AsyncSession, person_id: uuid.UUID, kind: str, *,
@@ -44,7 +57,9 @@ async def check_delivery(db: AsyncSession, person_id: uuid.UUID, kind: str, *,
     why; for a held email, the schedule state that holds it).
     `after_summary` marks an email sent now only because it falls in the
     last hour before the person is back online, when that morning's summary
-    has already gone. Reads only."""
+    has already gone. `watches` is None for a kind nobody can watch; for one
+    anyone can, every watch of the person that would hear it, whether or not
+    they can open its thing (watches.watches_hearing). Reads only."""
     info = KINDS[kind]
     person = await db.get(Person, person_id)
     has_account = await db.scalar(select(UserAccount.person_id).where(
@@ -62,6 +77,8 @@ async def check_delivery(db: AsyncSession, person_id: uuid.UUID, kind: str, *,
     else:
         outcome = "not_sent"
     schedule = contact_schedule(contact)
+    watches = ([_watch_entry(view) for view in await watches_hearing(db, person_id, kind)]
+               if info.watchable else None)
     return {
         "person_id": person_id,
         "person_name": person.display_name,
@@ -95,4 +112,5 @@ async def check_delivery(db: AsyncSession, person_id: uuid.UUID, kind: str, *,
         "reason": decision.reason,
         "address": decision.address,
         "address_source": decision.address_source,
+        "watches": watches,
     }

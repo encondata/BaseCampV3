@@ -33,6 +33,7 @@ from serversherpa.db.models import (
 from serversherpa.db.ordering import natural, natural_key
 from serversherpa.services import biometric, kiosk_config, station_keys
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.services.device_online import is_offline
 from serversherpa.services.kiosk_config import ConfigError
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.router_agent import resolve_router_copies
@@ -97,22 +98,16 @@ def _device_query():
             .outerjoin(Approver, Approver.id == Device.approved_by))
 
 
-# A fixed reader whose last_seen_at is older than this shows Offline.
-READER_STALE_AFTER = timedelta(minutes=3)
-
-
 def reader_status_for(d: Device, now: datetime) -> str | None:
     """reading / standby / offline for a fixed reader; None for any other
-    device type. `now` is passed in so the boundary is testable."""
+    device type. `now` is passed in so the boundary is testable. Offline is
+    the shared rule (services/device_online.py): quiet for more than the
+    reader threshold, or reported unreachable by the laptop. A reader that
+    has never checked in shows Offline too."""
     if d.device_type != "fixed_reader":
         return None
-    seen = d.last_seen_at
-    if seen is not None and seen.tzinfo is None:
-        seen = seen.replace(tzinfo=UTC)
-    if seen is None or now - seen > READER_STALE_AFTER:
-        return "offline"
-    if (d.raw_info or {}).get("reachable") is False:
-        # the laptop could not reach the reader: Offline at once
+    offline = is_offline(d, now)
+    if offline is None or offline:
         return "offline"
     return "reading" if (d.raw_info or {}).get("reading") is True \
         else "standby"

@@ -2,9 +2,10 @@
 and from here through `notifications.inbox.notify` (spec §7).
 
 Each event picks its candidates (watchers of the node, its ancestors
-and its space; thread participants; mentioned people; approvers; the
-page owner), then `recipients_who_can_view` narrows them to the people
-who can see the node right now:
+and its space, and the members of the Active notification groups that
+watch any of them; thread participants; mentioned people; approvers;
+the page owner), then `recipients_who_can_view` narrows them to the
+people who can see the node right now:
 
 - never the actor;
 - only people with an active account (not disabled, person not archived);
@@ -13,31 +14,49 @@ who can see the node right now:
   only have view on, only once it has been published (the tree's own
   rule: a reader never sees a never-published page) — all candidates
   resolved in one batch, with one shared load of the space's grants;
-- each person once per event.
+- each person once per event, however many routes reach them.
+
+Someone with an active account who is left out because they can't see
+the node (nobody can see one in the trash) is logged in the Delivery
+log, `inbox_suppressed` `no_access`, with the routes that brought them,
+as the event sweep logs each candidate it drops for access. The actor,
+someone told by a mention instead (an event's `skip`), someone without
+an active account and anyone past the cap (MAX_RECIPIENTS, a warning in
+the process log) are not logged.
 
 Watches whose owner lost access stay in place (access may come back);
-they simply stop producing notifications.
+they simply stop producing notifications. Access is asked again before
+a notice's queued or held email goes out (`access_recheck`, in the
+send-time re-check): a person who can't open the node by then isn't
+emailed about it.
 
 The link is the absolute wiki URL of the node (`<wiki_origin>/n/<id>`,
 plus `#comment-<id>` for a comment), so the portal's inbox opens it on
-the wiki. `payload` is `{"node_id", "space_key", "event"}`. An event
-about something that isn't a node goes through `to_person` instead (one
-recipient, any wiki path). Like
-`inbox.notify`, nothing here commits — the caller's transaction does.
+the wiki. `payload` is `{"node_id", "space_key", "event"}`. A notice a
+watch brought logs, on its inbox row in the Delivery log, the routes
+that reached its person (`via`: `watch` for their own, `group:<id>` for
+a group's) and the groups' names (`names`), as the event sweep's do. An
+event about something that isn't a node goes through `to_person`
+instead (one recipient, any wiki path). Like `inbox.notify`, nothing
+here commits — the caller's transaction does.
 """
 from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from collections.abc import Set as AbstractSet
 from typing import Literal
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
+    Notification,
+    NotificationGroup,
+    NotificationWatch,
     Person,
     UserAccount,
     WikiComment,
@@ -46,9 +65,13 @@ from serversherpa.db.models import (
     WikiPageVersion,
     WikiReview,
     WikiSpace,
-    WikiWatch,
 )
+from serversherpa.notifications import access as watch_access
+from serversherpa.notifications.delivery_log import record
+from serversherpa.notifications.events import Thing
 from serversherpa.notifications.inbox import notify
+from serversherpa.notifications.kinds import kind_info
+from serversherpa.notifications.watches import routes_watching
 from serversherpa.wiki.permissions import AccessIndex, level_rank, principals_for_people
 
 log = logging.getLogger(__name__)
@@ -84,20 +107,20 @@ async def _can_see(ix: AccessIndex, node: WikiNode, published: bool) -> bool:
     return not (level == "view" and not published)
 
 
-async def _viewers(db: AsyncSession, node: WikiNode,
-                   person_ids: Iterable[uuid.UUID | None]) -> dict[uuid.UUID, AccessIndex]:
+async def _viewers(db: AsyncSession, node: WikiNode, person_ids: Iterable[uuid.UUID | None],
+                   ) -> tuple[dict[uuid.UUID, AccessIndex], list[uuid.UUID]]:
     """The candidates who can see `node` now, each with the AccessIndex
     that decided it (reusable for their view of other nodes in the same
-    space). At most MAX_RECIPIENTS candidates are evaluated."""
-    if node.deleted_at is not None:
-        return {}
+    space), and those with an active account who can't, in the order they
+    came (all of them for a node in the trash). At most MAX_RECIPIENTS
+    candidates are evaluated."""
     ids = list(dict.fromkeys(pid for pid in person_ids if pid is not None))
     if len(ids) > MAX_RECIPIENTS:
         log.warning("wiki notification for node %s capped at %d of %d candidates",
                     node.id, MAX_RECIPIENTS, len(ids))
         ids = ids[:MAX_RECIPIENTS]
     if not ids:
-        return {}
+        return {}, []
     active = set((await db.scalars(
         select(UserAccount.person_id)
         .join(Person, Person.id == UserAccount.person_id)
@@ -105,49 +128,98 @@ async def _viewers(db: AsyncSession, node: WikiNode,
                UserAccount.disabled_at.is_(None),
                Person.archived_at.is_(None))
     )).all())
-    published = await _is_published(db, node)
-    # one batch for everyone's access, and the space's grants loaded once
-    # for all their indexes: a fixed number of queries per event
-    principals = await principals_for_people(db, [pid for pid in ids if pid in active])
-    spaces: dict = {}
+    people = [pid for pid in ids if pid in active]
     out: dict[uuid.UUID, AccessIndex] = {}
-    for pid, principal in principals.items():
-        ix = AccessIndex(db, principal, spaces=spaces)
-        if await _can_see(ix, node, published):
-            out[pid] = ix
-    return out
+    if node.deleted_at is None and people:
+        published = await _is_published(db, node)
+        # one batch for everyone's access, and the space's grants loaded once
+        # for all their indexes: a fixed number of queries per event
+        principals = await principals_for_people(db, people)
+        spaces: dict = {}
+        for pid, principal in principals.items():
+            ix = AccessIndex(db, principal, spaces=spaces)
+            if await _can_see(ix, node, published):
+                out[pid] = ix
+    return out, [pid for pid in people if pid not in out]
 
 
 async def recipients_who_can_view(db: AsyncSession, node: WikiNode,
                                   person_ids: Iterable[uuid.UUID]) -> set[uuid.UUID]:
     """The people among `person_ids` with an active account who can see
     `node` right now (see the module docstring)."""
-    return set(await _viewers(db, node, person_ids))
+    viewers, _ = await _viewers(db, node, person_ids)
+    return set(viewers)
 
 
 # ── watches ─────────────────────────────────────────────────────────
+# A watch is a row of `notification_watches` (migration 0116) on a library
+# (`wiki_space_id`) or a folder or page (`wiki_node_id`), a person's own
+# (`person_id`) or a notification group's (`group_id`), whose members hear
+# it while the group is Active. It names no events: it hears every page
+# update and comment.
+
+# who a watch brought, and by which routes ("watch", "group:<id>")
+Routes = Mapping[uuid.UUID, AbstractSet[str]]
 
 
 async def _watchers(db: AsyncSession, space_id: uuid.UUID,
-                    node_ids: Iterable[uuid.UUID]) -> set[uuid.UUID]:
-    node_ids = list(node_ids)
-    targets = [WikiWatch.space_id == space_id]
-    if node_ids:
-        targets.append(WikiWatch.node_id.in_(node_ids))
-    return set((await db.scalars(
-        select(WikiWatch.person_id).where(or_(*targets)))).all())
+                    node_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, set[str]]:
+    """The people with a watch on the space or on any of `node_ids`, and the
+    members of the Active groups with one, each with the routes that reach
+    them: "watch" for a watch of their own, "group:<id>" for each such
+    group they belong to. People with a watch of their own come first,
+    oldest watch first, then the groups' members, longest-standing first:
+    the order the cap keeps (`_viewers`)."""
+    return await routes_watching(db, [Thing("wiki_space", space_id),
+                                      *(Thing("wiki_node", node_id) for node_id in node_ids)])
 
 
-async def watchers_for(db: AsyncSession, node: WikiNode) -> set[uuid.UUID]:
-    """Everyone watching the node, one of its ancestors, or its space —
-    before any visibility check."""
+async def watchers_for(db: AsyncSession, node: WikiNode) -> dict[uuid.UUID, set[str]]:
+    """Everyone watching the node, one of its ancestors, or its space, by
+    their own watch or a group's, with their routes (`_watchers`) — before
+    any visibility check."""
     return await _watchers(db, node.space_id, [*(node.path or []), node.id])
+
+
+async def _logged(db: AsyncSession, routes: Routes | None,
+                  person_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, dict]:
+    """What the Delivery log records with the notice of each of `person_ids`
+    that a watch brought: the routes (`via`, sorted) and the names of the
+    groups among them (`names`, by route), exactly as the event sweep logs
+    them. Nothing for someone no watch brought (a thread participant, say)."""
+    via = {pid: sorted(routes[pid]) for pid in person_ids
+           if routes is not None and routes.get(pid)}
+    group_ids = {uuid.UUID(route.removeprefix("group:"))
+                 for found in via.values() for route in found if route.startswith("group:")}
+    names: dict[str, str] = {}
+    if group_ids:
+        names = {f"group:{group_id}": name for group_id, name in await db.execute(
+            select(NotificationGroup.id, NotificationGroup.name)
+            .where(NotificationGroup.id.in_(group_ids)))}
+    return {pid: {"via": found, "names": {route: names[route] for route in found
+                                          if route in names}}
+            for pid, found in via.items()}
+
+
+def _kept_out(db: AsyncSession, kind: str, person_ids: Iterable[uuid.UUID],
+              logged: Mapping[uuid.UUID, dict]) -> None:
+    """Log that the `kind` notice was kept out of the inbox of each of
+    `person_ids`, people with an active account who can't see its node:
+    `inbox_suppressed` `no_access`, as the event sweep logs each candidate
+    it drops for access, with what `logged` (`_logged`) records of the
+    routes that brought them, and nothing more for someone no watch brought
+    (a thread participant, a mentioned person)."""
+    info = kind_info(kind)
+    for pid in person_ids:
+        record(db, "inbox_suppressed", channel="inbox", person_id=pid, kind=kind,
+               category=info.category if info else None, reason="no_access",
+               detail=logged.get(pid))
 
 
 async def auto_watch(db: AsyncSession, person_id: uuid.UUID, node_id: uuid.UUID) -> None:
     """Watch `node_id` for `person_id` unless they already do."""
-    await db.execute(insert(WikiWatch)
-                     .values(person_id=person_id, node_id=node_id)
+    await db.execute(insert(NotificationWatch)
+                     .values(person_id=person_id, wiki_node_id=node_id, created_by=person_id)
                      .on_conflict_do_nothing())
 
 
@@ -166,9 +238,12 @@ async def _space_key(db: AsyncSession, node: WikiNode) -> str:
 async def _deliver(db: AsyncSession, node: WikiNode, person_ids: Iterable[uuid.UUID], *,
                    kind: str, title: str, body: str, event: str,
                    link_suffix: str = "", space_key: str | None = None,
+                   logged: Mapping[uuid.UUID, dict] | None = None,
                    ) -> set[uuid.UUID]:
     """Write one notification per person; returns who actually got one
-    (`notify()` writes nothing for someone who turned the category off)."""
+    (`notify()` writes nothing for someone who turned the category off).
+    `logged` is what the Delivery log records with each person's inbox
+    row, for the people a watch brought (`_logged`)."""
     person_ids = list(person_ids)
     if not person_ids:
         return set()
@@ -179,7 +254,8 @@ async def _deliver(db: AsyncSession, node: WikiNode, person_ids: Iterable[uuid.U
         row = await notify(db, pid, kind, title, body=body,
                            link=node_link(node.id, link_suffix),
                            payload={"node_id": str(node.id), "space_key": space_key,
-                                    "event": event})
+                                    "event": event},
+                           log_detail=(logged or {}).get(pid))
         if row is not None:
             delivered.add(pid)
     return delivered
@@ -187,14 +263,19 @@ async def _deliver(db: AsyncSession, node: WikiNode, person_ids: Iterable[uuid.U
 
 async def _send(db: AsyncSession, node: WikiNode, candidates: Iterable[uuid.UUID], *,
                 actor_id: uuid.UUID | None, kind: str, title: str, body: str = "",
-                event: str, link_suffix: str = "") -> set[uuid.UUID]:
+                event: str, link_suffix: str = "",
+                routes: Routes | None = None) -> set[uuid.UUID]:
     """Notify the candidates who may receive it (not the actor, can view
     the node); returns who actually was (not someone who turned wiki
-    notifications off)."""
-    recipients = await recipients_who_can_view(
+    notifications off). A candidate with an active account who can't view
+    it is logged as kept out (`_kept_out`). `routes` says which of them a
+    watch brought, and how (`watchers_for`), for the Delivery log."""
+    recipients, blind = await _viewers(
         db, node, (pid for pid in candidates if pid != actor_id))
+    logged = await _logged(db, routes, [*recipients, *blind])
+    _kept_out(db, kind, blind, logged)
     return await _deliver(db, node, recipients, kind=kind, title=title, body=body,
-                          event=event, link_suffix=link_suffix)
+                          event=event, link_suffix=link_suffix, logged=logged)
 
 
 # ── events ──────────────────────────────────────────────────────────
@@ -207,9 +288,11 @@ async def on_published(db: AsyncSession, node: WikiNode, *, actor_id: uuid.UUID 
     already got a mention for this version (`pages.publish` returns
     them) — a mentioned watcher gets only the mention."""
     actor = await _actor_name(db, actor_id)
-    await _send(db, node, await watchers_for(db, node) - set(skip), actor_id=actor_id,
+    routes = await watchers_for(db, node)
+    skipped = set(skip)
+    await _send(db, node, [pid for pid in routes if pid not in skipped], actor_id=actor_id,
                 kind="wiki_update", title=f"{actor} published {node.title}",
-                body=version.note or "", event="published")
+                body=version.note or "", event="published", routes=routes)
 
 
 async def on_created(db: AsyncSession, node: WikiNode, *,
@@ -217,10 +300,12 @@ async def on_created(db: AsyncSession, node: WikiNode, *,
     """A node was created (or copied, or uploaded) under a watched folder
     or space: `wiki_update` to watchers of its ancestors and its space.
     The title names the parent — or the space, for someone who can't
-    see the parent."""
-    candidates = await _watchers(db, node.space_id, node.path or [])
-    candidates.discard(actor_id)
-    viewers = await _viewers(db, node, candidates)
+    see the parent. A watcher who can't see the node is logged as kept
+    out (`_kept_out`)."""
+    routes = await _watchers(db, node.space_id, node.path or [])
+    viewers, blind = await _viewers(db, node, [pid for pid in routes if pid != actor_id])
+    logged = await _logged(db, routes, [*viewers, *blind])
+    _kept_out(db, "wiki_update", blind, logged)
     if not viewers:
         return
     actor = await _actor_name(db, actor_id)
@@ -234,30 +319,33 @@ async def on_created(db: AsyncSession, node: WikiNode, *,
             where = parent.title
         await _deliver(db, node, [pid], kind="wiki_update",
                        title=f"{actor} added {node.title} to {where}", body="",
-                       event="created", space_key=space_key)
+                       event="created", space_key=space_key, logged=logged)
 
 
 async def on_comment(db: AsyncSession, node: WikiNode, comment: WikiComment, *,
                      actor_id: uuid.UUID | None, skip: Iterable[uuid.UUID] = ()) -> None:
-    """A comment was posted: `wiki_comment` to the page's watchers and the
-    authors of earlier comments in its thread. `skip` is who already got
-    a mention for it (`on_mentions`) — a mentioned watcher gets only the
-    mention."""
-    participants = set((await db.scalars(
+    """A comment was posted: `wiki_comment` to the authors of earlier
+    comments in its thread and the page's watchers, in that order for the
+    cap: as the event sweep puts the people its code names first, a large
+    watching group never pushes the people in the thread out. `skip` is
+    who already got a mention for it (`on_mentions`) — a mentioned watcher
+    gets only the mention."""
+    participants = (await db.scalars(
         select(WikiComment.author_id).distinct()
         .where(WikiComment.thread_id == comment.thread_id,
                WikiComment.id != comment.id,
                WikiComment.author_id.is_not(None))
-    )).all())
+    )).all()
     skipped = set(skip)
-    candidates = (await watchers_for(db, node) | participants) - skipped
+    routes = await watchers_for(db, node)
+    candidates = [pid for pid in dict.fromkeys([*participants, *routes]) if pid not in skipped]
     actor = await _actor_name(db, actor_id)
     text = str((comment.body or {}).get("text", ""))
     body = text if len(text) <= COMMENT_PREVIEW_CHARS \
         else text[:COMMENT_PREVIEW_CHARS - 1].rstrip() + "…"
     await _send(db, node, candidates, actor_id=actor_id, kind="wiki_comment",
                 title=f"{actor} commented on {node.title}", body=body,
-                event="comment", link_suffix=f"#comment-{comment.id}")
+                event="comment", link_suffix=f"#comment-{comment.id}", routes=routes)
 
 
 async def on_mentions(db: AsyncSession, node: WikiNode, person_ids: Iterable[uuid.UUID], *,
@@ -301,8 +389,10 @@ async def on_review_decided(db: AsyncSession, node: WikiNode, review: WikiReview
     publish is announced by this — callers don't also call
     `on_published` for it, and pass as `skip` who `pages.publish` already
     mentioned: they get no `wiki_update` (the requester still gets the
-    decision). Raises ValueError for a review that isn't approved or
-    rejected."""
+    decision). A requester or watcher who can't see the page is logged as
+    kept out (`_kept_out`); a reader who hears nothing of a rejection is
+    not, since they can see it. Raises ValueError for a review that isn't
+    approved or rejected."""
     verb = _DECISION_VERBS.get(review.status)
     if verb is None:
         raise ValueError(f"review {review.id} is {review.status!r}, not decided")
@@ -313,18 +403,22 @@ async def on_review_decided(db: AsyncSession, node: WikiNode, review: WikiReview
     told = await _send(db, node, requester, actor_id=actor_id,
                        kind="wiki_review_decision", title=title, body=note,
                        event="review_decided")
-    watchers = await watchers_for(db, node) - told - set(requester) - set(skip)
-    watchers.discard(actor_id)
+    routes = await watchers_for(db, node)
+    excluded = {*told, *requester, *skip, actor_id}
+    watchers = [person_id for person_id in routes if person_id not in excluded]
     editors: list[uuid.UUID] = []
     readers: list[uuid.UUID] = []
-    for pid, ix in (await _viewers(db, node, watchers)).items():
+    viewers, blind = await _viewers(db, node, watchers)
+    for pid, ix in viewers.items():
         is_editor = level_rank(await ix.level_for_node(node)) >= level_rank("edit")
         (editors if is_editor else readers).append(pid)
+    logged = await _logged(db, routes, [*editors, *readers, *blind])
+    _kept_out(db, "wiki_update", blind, logged)
     await _deliver(db, node, editors, kind="wiki_update", title=title, body=note,
-                   event="review_decided")
+                   event="review_decided", logged=logged)
     if review.status == "approved":
         await _deliver(db, node, readers, kind="wiki_update", title=title, body="",
-                       event="review_decided")
+                       event="review_decided", logged=logged)
 
 
 async def on_review_due(db: AsyncSession, node: WikiNode, *,
@@ -357,3 +451,30 @@ async def to_person(db: AsyncSession, person_id: uuid.UUID, *, kind: str, title:
                        link=f"{get_settings().wiki_origin.rstrip('/')}{path}",
                        payload={**(payload or {}), "event": event})
     return row is not None
+
+
+# ── the send-time re-check ──────────────────────────────────────────
+
+
+async def access_recheck(db: AsyncSession, notification: Notification) -> str | None:
+    """The wiki's part of the re-check of a notice's email just before it
+    goes out (email.recheck_notification, for a queued email and for a
+    held one): `no_access` when the notice is about a node (its
+    `payload.node_id`) that its person can't open now, by the wiki's own
+    rule as the watch lists judge it (notifications/access.py `viewers`):
+    a node in the trash or gone, a private one that isn't theirs, one
+    their grants no longer reach, or a page they only read that isn't
+    published. None for any other notice, and for a wiki notice about no
+    node (an export's, sent with `to_person`). Never `not_watching`: most
+    wiki notices aren't a watch's (a mention, a review), and none carries
+    its routes. Reads only."""
+    info = kind_info(notification.kind)
+    raw = (notification.payload or {}).get("node_id")
+    if info is None or info.category != "wiki" or raw is None:
+        return None
+    try:
+        node_id = uuid.UUID(str(raw))
+    except ValueError:              # not a node this module wrote: nothing to judge
+        return None
+    seen = await watch_access.viewers(db, Thing("wiki_node", node_id), [notification.person_id])
+    return None if notification.person_id in seen else "no_access"

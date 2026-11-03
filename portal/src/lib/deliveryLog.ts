@@ -8,7 +8,10 @@
  * newer API) shows as itself.
  *
  * Specs: docs/superpowers/specs/2026-10-31-notifications-phase0-design.md
- * (sections 4 and 9) and 2026-11-01-notifications-phase1-design.md (section 7).
+ * (sections 4 and 9), 2026-11-01-notifications-phase1-design.md (section 7)
+ * and 2026-11-02-notifications-phase2-design.md (section 8: the routes that
+ * brought a notification, and the reasons no_access, not_watching and
+ * back_online).
  */
 
 import type { DeliveryLogEntry, DeliveryLogEvent } from './api';
@@ -51,6 +54,10 @@ const isEvent = (code: string): code is DeliveryLogEvent => Object.hasOwn(EVENT_
 export const REASON_LABELS: Record<string, string> = {
   // the inbox row was not written (inbox_suppressed)
   category_off: 'Category turned off',
+  // the person can't open what the event is about: the event sweep keeps the
+  // inbox row out (inbox_suppressed) and the send-time re-check drops the email
+  // (email_skipped)
+  no_access: 'No access',
   // the notification was not emailed (email_not_queued)
   email_not_set_up: "Email isn't set up",
   unregistered_kind: 'Not a registered notification type',
@@ -65,6 +72,10 @@ export const REASON_LABELS: Record<string, string> = {
   read: 'Already read in the portal',
   resolved: 'Already decided',
   category_turned_down: 'Category turned down',
+  // none of the notification's events reaches the person any more (email_skipped)
+  not_watching: 'Not watching any more',
+  // a Device offline email whose devices have all been seen again (email_skipped)
+  back_online: 'Device back online',
   // why an email is held for the summary (email_held)
   quiet_hours: 'Quiet hours',
   inactive_day: 'Not an active day',
@@ -143,6 +154,49 @@ const text = (v: unknown): string | null => (typeof v === 'string' && v !== '' ?
 const count = (v: unknown): number | null => (typeof v === 'number' ? v : null);
 const names = (v: unknown): string[] =>
   (Array.isArray(v) ? v.filter((n): n is string => typeof n === 'string' && n !== '') : []);
+const isMap = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** One route that brought a notification to the person, in words: "Watching ·
+ *  their own", "Watching · Group A" (a group's watch), "Rule · Rule A" (a
+ *  status rule that named them) or "Named" (the code that announced it named
+ *  them). A group or rule whose name was not logged reads as "Watching" or
+ *  "Rule" alone, and a route this file does not know (a newer API) as itself. */
+function routeText(route: string, routeNames: Record<string, unknown>): string {
+  if (route === 'watch') return 'Watching · their own';
+  if (route === 'direct') return 'Named';
+  const name = text(own(routeNames, route));
+  if (route.startsWith('group:')) return name ? `Watching · ${name}` : 'Watching';
+  if (route.startsWith('rule:')) return name ? `Rule · ${name}` : 'Rule';
+  return route;
+}
+
+/** Where a route reads among the others: the person's own watch first, then
+ *  groups', then rules', then being named; a route this file does not know
+ *  (a newer API) comes last. */
+function routeRank(route: string): number {
+  if (route === 'watch') return 0;
+  if (route.startsWith('group:')) return 1;
+  if (route.startsWith('rule:')) return 2;
+  if (route === 'direct') return 3;
+  return 4;
+}
+
+/** The routes of an inbox row, joined with ", ": `detail.via`, a list of
+ *  "watch", "direct", "group:<id>" and "rule:<id>", with `detail.names` giving
+ *  the groups' and rules' names by route. They read the person's own watch
+ *  first, then groups', then rules', then being named, and within one kind in
+ *  the order the API logged them (the API sorts them by code, which would put
+ *  "Named" ahead of the person's own watch). Empty when none was logged. Only
+ *  inbox rows carry this list (the event sweep's, and the wiki's for a notice
+ *  a watch brought): on a queued email `via` is a string (where the address
+ *  came from), so ask for it of the two inbox events alone. */
+function routesText(d: Record<string, unknown>): string {
+  const routeNames = isMap(d.names) ? d.names : {};
+  // names() builds a new list, and the sort is stable: the API's order holds within a rank.
+  return names(d.via).sort((a, b) => routeRank(a) - routeRank(b))
+    .map((route) => routeText(route, routeNames)).join(', ');
+}
 
 /** "OSError" or "SMTPResponseException, SMTP 452": the failure's class and code. */
 function failure(detail: Record<string, unknown>): string | null {
@@ -170,13 +224,18 @@ const QUEUED_FLAGS: readonly (readonly [string, string])[] = [
  *  Mon 7:00 AM · Quiet hours"), how a send went ("Attempt 2 failed (OSError) —
  *  retrying"), or the reason an inbox row or an email did not happen ("Already
  *  read in the portal"), with whose switch it was when a switch turned it
- *  down ("Category turned off · Their choice"). A queued email from before
+ *  down ("Category turned off · Their choice"). An inbox row the event sweep
+ *  wrote says what brought it ("Watching · their own, Watching · Group A"),
+ *  and one it kept out says that after its reason ("Category turned off ·
+ *  Their choice · Watching · their own"). A queued email from before
  *  Phase 1 that carries `deferred` keeps its older words ("Held until Mon
  *  7:00 AM · Quiet hours · Destination Side Ops Team"). Empty when there is
- *  nothing to add (an inbox row that was written, an email in a summary). */
+ *  nothing to add (an inbox row that logged no routes, an email in a summary). */
 export function describeEntry(e: DeliveryLogEntry): string {
   const d = e.detail ?? {};
   switch (e.event) {
+    case 'inbox_written':
+      return routesText(d) || (e.reason ? reasonLabel(e.reason) : '');
     case 'email_held': {
       const until = text(d.summary_at);
       return [until ? `Until ${shortWhen(until)}` : null, e.reason ? reasonLabel(e.reason) : null]
@@ -216,8 +275,11 @@ export function describeEntry(e: DeliveryLogEntry): string {
       // A switch that turned it down (category_off, category_inbox_only) logs
       // where its value came from: the company default or the person's own.
       const source = text(d.source);
-      return [e.reason ? reasonLabel(e.reason) : null, source ? switchSourceLabel(source) : null]
-        .filter(Boolean).join(' · ');
+      // An inbox row the event sweep or the wiki kept out also logs what would have brought it.
+      const routes = e.event === 'inbox_suppressed' ? routesText(d) : '';
+      return [
+        e.reason ? reasonLabel(e.reason) : null, source ? switchSourceLabel(source) : null, routes,
+      ].filter(Boolean).join(' · ');
     }
     default:
       return e.reason ? reasonLabel(e.reason) : '';

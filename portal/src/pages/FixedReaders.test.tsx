@@ -2,8 +2,9 @@
 /**
  * /hardware/fixed-readers — Fixed Readers device-fleet directory list.
  * Covers what a unit test can see: seeded rows sorted by name, the
- * disabled "Register reader" affordance, Delete gating + confirm +
- * reload round trip, and the load-error banner. Full toolbar/column-menu/
+ * disabled "Register reader" affordance, the row menu (Watch / Stop
+ * watching, then Delete gated + confirm + reload round trip), ?focus=<id>
+ * marking its row, and the load-error banner. Full toolbar/column-menu/
  * reorder/CSV behavior is exercised generically by lib/listTools.test.tsx
  * and lib/columnMenu.test.tsx — this file only covers FixedReaders-
  * specific wiring. Unlike Routers, there is no row expansion here.
@@ -11,14 +12,20 @@
 
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { DeviceItem, UiPreferences } from '../lib/api';
+import type { DeviceItem, UiPreferences, Watch } from '../lib/api';
 import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => {
-  const state: { can: (resource: string, action: string) => boolean } = {
+  const state: {
+    can: (resource: string, action: string) => boolean;
+    /** The saved list layouts (preferences.list_prefs) the page opens with. */
+    listPrefs: Record<string, unknown>;
+  } = {
     can: () => true,
+    listPrefs: {},
   };
   return state;
 });
@@ -32,7 +39,7 @@ vi.mock('../auth/AuthContext', () => ({
     preferences: {
       accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default', motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default', list_view: 'expanded',
       notif: { sound: 'chime', switches: {}, schedule: { timezone: null, days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'], quiet_start: null, quiet_end: null } },
-      list_prefs: {},
+      list_prefs: auth.listPrefs,
     } satisfies UiPreferences,
     updatePreferences,
   }),
@@ -41,6 +48,9 @@ vi.mock('../auth/AuthContext', () => ({
 const api = vi.hoisted(() => ({
   listDevices: vi.fn(),
   deleteDevice: vi.fn(),
+  listMyWatches: vi.fn(),
+  createMyWatch: vi.fn(),
+  deleteMyWatch: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -87,19 +97,39 @@ const DEVICES: DeviceItem[] = [
   },
 ];
 
+/** The person's own watch of the reader d1. */
+const WATCH_D1: Watch = {
+  id: 'w1', thing: 'device', thing_id: 'd1', thing_name: 'dock-reader-1',
+  link: '/hardware/fixed-readers?focus=d1', kinds: [], via: { type: 'you', id: null, name: null },
+  created_at: '2026-11-02T12:00:00Z',
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
+  // jsdom has no scrollIntoView; ?focus= scrolls its row into view
+  Element.prototype.scrollIntoView = vi.fn();
   auth.can = () => true;
+  auth.listPrefs = {};
   api.listDevices.mockResolvedValue(DEVICES);
   api.deleteDevice.mockResolvedValue(undefined);
+  api.listMyWatches.mockResolvedValue([]);
+  api.createMyWatch.mockResolvedValue(WATCH_D1);
+  api.deleteMyWatch.mockResolvedValue(undefined);
 });
 
 afterEach(cleanup);
 
 const { default: FixedReaders } = await import('./FixedReaders');
 
+function renderReaders(entry = '/hardware/fixed-readers') {
+  return render(<MemoryRouter initialEntries={[entry]}><FixedReaders /></MemoryRouter>);
+}
+
+/** The labels of the open menu's items, in order. */
+const menuItems = () => screen.getAllByRole('menuitem').map((m) => m.textContent);
+
 it('renders seeded rows sorted by name asc with model, MAC, IP, uptime, tags, antennas, connection tag, and scan-status chip', async () => {
-  render(<FixedReaders />);
+  renderReaders();
 
   expect(await screen.findByText('dock-reader-1')).not.toBeNull();
   expect(screen.getByText('zebra-reader-2')).not.toBeNull();
@@ -124,7 +154,7 @@ it('renders seeded rows sorted by name asc with model, MAC, IP, uptime, tags, an
 });
 
 it('shows the Register reader button, present but disabled', async () => {
-  render(<FixedReaders />);
+  renderReaders();
   await screen.findByText('dock-reader-1');
 
   const btn = screen.getByRole('button', { name: /Register reader/i }) as HTMLButtonElement;
@@ -132,22 +162,73 @@ it('shows the Register reader button, present but disabled', async () => {
   expect(btn.disabled).toBe(true);
 });
 
-it('hides Delete when can(scanning_hardware, delete) is false', async () => {
+it('hides Delete when can(scanning_hardware, delete) is false: the row menu holds only Watch', async () => {
   auth.can = () => false;
-  render(<FixedReaders />);
+  const user = userEvent.setup();
+  renderReaders();
+  await screen.findByText('dock-reader-1');
+  expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();      // no bare button any more
+  const row = screen.getByText('dock-reader-1').closest('.dir-row') as HTMLElement;
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  expect(menuItems()).toEqual(['Watch']);
+});
+
+it('each row has one Actions menu, holding Watch and then Delete, in place of the bare Delete button', async () => {
+  const user = userEvent.setup();
+  renderReaders();
   await screen.findByText('dock-reader-1');
   expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+  expect(screen.getAllByRole('button', { name: /Actions/ })).toHaveLength(2);
+
+  const row = screen.getByText('dock-reader-1').closest('.dir-row') as HTMLElement;
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  expect(menuItems()).toEqual(['Watch', 'Delete']);
+  expect(screen.getByRole('menuitem', { name: 'Delete' }).className).toContain('danger');
+  expect(api.listMyWatches).toHaveBeenCalledTimes(1);
+});
+
+it('a click on Watch watches that reader on every event, and the menu then reads Stop watching', async () => {
+  api.listMyWatches.mockResolvedValueOnce([]).mockResolvedValue([WATCH_D1]);
+  const user = userEvent.setup();
+  renderReaders();
+  const row = (await screen.findByText('dock-reader-1')).closest('.dir-row') as HTMLElement;
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Watch' }));
+
+  await waitFor(() => expect(api.createMyWatch).toHaveBeenCalledWith(
+    { thing: 'device', id: 'd1', kinds: [] }));
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await waitFor(() => expect(menuItems()).toEqual(['Stop watching', 'Delete']));
+  // only the reader that was watched changed
+  const other = screen.getByText('zebra-reader-2').closest('.dir-row') as HTMLElement;
+  await user.click(within(other).getByRole('button', { name: /Actions/ }));
+  expect(menuItems()).toEqual(['Watch', 'Delete']);
+});
+
+it('a reader the person watches reads Stop watching first, and a click stops that watch', async () => {
+  api.listMyWatches.mockResolvedValueOnce([WATCH_D1]).mockResolvedValue([]);
+  const user = userEvent.setup();
+  renderReaders();
+  const row = (await screen.findByText('dock-reader-1')).closest('.dir-row') as HTMLElement;
+  await waitFor(() => expect(api.listMyWatches).toHaveBeenCalled());
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await waitFor(() => expect(menuItems()).toEqual(['Stop watching', 'Delete']));
+  await user.click(screen.getByRole('menuitem', { name: 'Stop watching' }));
+
+  await waitFor(() => expect(api.deleteMyWatch).toHaveBeenCalledWith('w1'));
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await waitFor(() => expect(menuItems()[0]).toBe('Watch'));
 });
 
 it('clicking Delete + confirm calls deleteDevice and reloads', async () => {
   const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
   const user = userEvent.setup();
-  render(<FixedReaders />);
+  renderReaders();
   await screen.findByText('dock-reader-1');
 
   const row = screen.getByText('dock-reader-1').closest('.dir-row') as HTMLElement;
-  const deleteBtn = within(row).getByRole('button', { name: 'Delete' });
-  await user.click(deleteBtn);
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Delete' }));
 
   expect(confirmSpy).toHaveBeenCalledWith('Delete "dock-reader-1"? This cannot be undone.');
   await waitFor(() => expect(api.deleteDevice).toHaveBeenCalledWith('d1'));
@@ -159,12 +240,12 @@ it('clicking Delete + confirm calls deleteDevice and reloads', async () => {
 it('clicking Delete without confirm does not call deleteDevice', async () => {
   const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
   const user = userEvent.setup();
-  render(<FixedReaders />);
+  renderReaders();
   await screen.findByText('dock-reader-1');
 
   const row = screen.getByText('dock-reader-1').closest('.dir-row') as HTMLElement;
-  const deleteBtn = within(row).getByRole('button', { name: 'Delete' });
-  await user.click(deleteBtn);
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Delete' }));
 
   expect(confirmSpy).toHaveBeenCalled();
   expect(api.deleteDevice).not.toHaveBeenCalled();
@@ -174,13 +255,13 @@ it('clicking Delete without confirm does not call deleteDevice', async () => {
 
 it('shows the load-error banner when listDevices rejects', async () => {
   api.listDevices.mockRejectedValue(new Error('boom'));
-  render(<FixedReaders />);
+  renderReaders();
 
   expect(await screen.findByText(/Couldn.t load fixed readers/i)).not.toBeNull();
 });
 
 it('fixed readers list: column floors, shared template + minimum, sideways-scroll card', async () => {
-  render(<FixedReaders />);
+  renderReaders();
   const row = (await screen.findByText('dock-reader-1')).closest('.dir-row') as HTMLElement;
   const card = row.closest('.dir-list') as HTMLElement;
   expect(card.classList.contains('list-scroll')).toBe(true);
@@ -206,7 +287,7 @@ const OFFLINE_READER: DeviceItem = {
 
 it('shows Make and a Status chip, and antennas over antennas_total', async () => {
   api.listDevices.mockResolvedValue([KIOSK_READER, ...DEVICES]);
-  render(<FixedReaders />);
+  renderReaders();
   const row = (await screen.findByText('kiosk-reader-3')).closest('.dir-row') as HTMLElement;
   expect(within(row).getByText('Zebra')).not.toBeNull();
   const chip = within(row).getByText('Reading');
@@ -219,7 +300,7 @@ it('shows Make and a Status chip, and antennas over antennas_total', async () =>
 it('renders Standby slate and Offline red chips', async () => {
   api.listDevices.mockResolvedValue([
     { ...KIOSK_READER, reader_status: 'standby' }, OFFLINE_READER]);
-  render(<FixedReaders />);
+  renderReaders();
   await screen.findByText('old-reader-4');
   expect(screen.getByText('Standby').className).toContain('c-slate');
   expect(screen.getByText('Offline').className).toContain('c-red');
@@ -228,7 +309,7 @@ it('renders Standby slate and Offline red chips', async () => {
 it('Status facet filters to Offline', async () => {
   api.listDevices.mockResolvedValue([KIOSK_READER, OFFLINE_READER]);
   const user = userEvent.setup();
-  render(<FixedReaders />);
+  renderReaders();
   await screen.findByText('old-reader-4');
   await user.click(screen.getByRole('button', { name: /Filter/i }));
   const menu = document.querySelector('.pop-menu') as HTMLElement;
@@ -243,7 +324,7 @@ it('CSV export includes Make and Status columns', async () => {
   const lt = await import('../lib/listTools');
   const spy = vi.spyOn(lt, 'exportCsv').mockImplementation(() => {});
   const user = userEvent.setup();
-  render(<FixedReaders />);
+  renderReaders();
   await screen.findByText('kiosk-reader-3');
   await user.click(screen.getByRole('button', { name: /Export/i }));
   const [, cols, rows] = spy.mock.calls[0] as [string, [string, (d: DeviceItem) => string][], DeviceItem[]];
@@ -255,7 +336,7 @@ it('CSV export includes Make and Status columns', async () => {
 
 it('Uptime and Connection are off by default but listed in the Columns menu', async () => {
   const user = userEvent.setup();
-  render(<FixedReaders />);
+  renderReaders();
   const row = (await screen.findByText('dock-reader-1')).closest('.dir-row') as HTMLElement;
   expect(within(row).queryByText('12d 0h')).toBeNull();
   expect(within(row).queryByText('API')).toBeNull();
@@ -263,4 +344,77 @@ it('Uptime and Connection are off by default but listed in the Columns menu', as
   const menu = document.querySelector('.pop-menu') as HTMLElement;
   expect(within(menu).getByText('Uptime', { selector: '.pop-item' })).not.toBeNull();
   expect(within(menu).getByText('Connection', { selector: '.pop-item' })).not.toBeNull();
+});
+
+/* ── ?focus=<id>: a Device offline notification opens the list on that row ── */
+
+it('every row carries its device id', async () => {
+  renderReaders();
+  const row = (await screen.findByText('dock-reader-1')).closest('.dir-row') as HTMLElement;
+  expect(row.getAttribute('data-device-id')).toBe('d1');
+  expect((screen.getByText('zebra-reader-2').closest('.dir-row') as HTMLElement)
+    .getAttribute('data-device-id')).toBe('d2');
+});
+
+it('?focus=<id> marks that row and scrolls it into view', async () => {
+  renderReaders('/hardware/fixed-readers?focus=d2');
+  const marked = (await screen.findByText('zebra-reader-2')).closest('.dir-row') as HTMLElement;
+  await waitFor(() => expect(marked.className).toContain('open'));
+  expect((screen.getByText('dock-reader-1').closest('.dir-row') as HTMLElement).className)
+    .not.toContain('open');
+
+  const scroll = Element.prototype.scrollIntoView as ReturnType<typeof vi.fn>;
+  await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+  expect(scroll.mock.contexts[0]).toBe(marked);
+  expect(scroll).toHaveBeenCalledWith({ block: 'center' });
+});
+
+it('with no ?focus, or one for a reader that is not in the list, no row is marked or scrolled to', async () => {
+  renderReaders();
+  await screen.findByText('dock-reader-1');
+  expect(document.querySelector('.dir-row.open')).toBeNull();
+  cleanup();
+
+  renderReaders('/hardware/fixed-readers?focus=gone');
+  await screen.findByText('dock-reader-1');
+  expect(document.querySelector('.dir-row.open')).toBeNull();
+  expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+});
+
+it('?focus applies once: a later reload keeps the mark and does not scroll again', async () => {
+  const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  api.listDevices.mockImplementation(async () => DEVICES.map((d) => ({ ...d })));   // new array per load
+  const user = userEvent.setup();
+  renderReaders('/hardware/fixed-readers?focus=d2');
+  await screen.findByText('zebra-reader-2');
+  await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(1));
+
+  // deleting the other reader reloads the list
+  const other = screen.getByText('dock-reader-1').closest('.dir-row') as HTMLElement;
+  await user.click(within(other).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Delete' }));
+  await waitFor(() => expect(api.listDevices).toHaveBeenCalledTimes(2));
+  await new Promise((r) => setTimeout(r, 20));
+
+  expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(1);
+  expect((screen.getByText('zebra-reader-2').closest('.dir-row') as HTMLElement).className)
+    .toContain('open');
+  confirmSpy.mockRestore();
+});
+
+it('?focus on a row a saved filter hides scrolls to it once the filter is cleared', async () => {
+  // the list opens with a saved Name filter that leaves only dock-reader-1
+  auth.listPrefs = { 'hardware-fixed-readers': { filters: { name: { text: 'dock' } } } };
+  const user = userEvent.setup();
+  renderReaders('/hardware/fixed-readers?focus=d2');
+  await screen.findByText('dock-reader-1');
+  expect(screen.queryByText('zebra-reader-2')).toBeNull();
+  const scroll = Element.prototype.scrollIntoView as ReturnType<typeof vi.fn>;
+  expect(scroll).not.toHaveBeenCalled();
+
+  await user.click(screen.getByRole('button', { name: /1 filter active/ }));
+  const marked = (await screen.findByText('zebra-reader-2')).closest('.dir-row') as HTMLElement;
+  await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+  expect(scroll.mock.contexts[0]).toBe(marked);
+  expect(marked.className).toContain('open');
 });

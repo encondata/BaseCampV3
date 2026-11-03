@@ -127,7 +127,8 @@ export function approvalLabel(state: string | null | undefined): string {
   return '—';
 }
 
-/** Words a router hostname spells in capitals ("csg" → "CSG"). */
+/** Words a router hostname spells in capitals ("csg" → "CSG"). The API keeps
+ *  the same list (ROUTER_ACRONYMS in api/src/serversherpa/services/device_online.py). */
 export const ROUTER_ACRONYMS: readonly string[] = [
   'csg', 'gl', 'vpn', 'lte', 'nap', 'dc', 'ups', 'lan', 'wan', 'ap',
 ];
@@ -136,7 +137,11 @@ export const ROUTER_ACRONYMS: readonly string[] = [
  *  `csg_router_kit_19` → "CSG Router Kit 19". Display only — the stored
  *  name stays the real hostname. Acronyms in ROUTER_ACRONYMS go to
  *  capitals; a word with any digit in it (19, MT3000) is kept as typed;
- *  every other word gets a capital first letter. */
+ *  every other word gets a capital first letter. The API names routers the
+ *  same way in a Device offline notice and in a watch's name (display_name in
+ *  api/src/serversherpa/services/device_online.py), so the inbox, /me, a
+ *  group's page and Check delivery read as this list does; devices.test.ts
+ *  pins the names here, tests/test_device_online.py there. */
 export function routerDisplayName(name: string): string {
   const words = name.split(/[\s_.-]+/).filter(Boolean).map((w) => {
     if (ROUTER_ACRONYMS.includes(w.toLowerCase())) return w.toUpperCase();
@@ -146,7 +151,11 @@ export function routerDisplayName(name: string): string {
   return words.length ? words.join(' ') : name;
 }
 
-/** About three missed reports at the 65 s default (plus up to 10 s jitter each). */
+/** About three missed reports at the 65 s default (plus up to 10 s jitter each). The
+ *  API's device check announces a Device offline notice on the same rule, so this stays
+ *  the API's ROUTER_ONLINE (api/src/serversherpa/services/device_online.py); devices.test.ts
+ *  pins the number here, tests/test_device_online.py there. A fixed reader's three minutes
+ *  (READER_STALE_AFTER there) is the API's alone: the Readers list takes its Offline from it. */
 export const ROUTER_ONLINE_MS = 4 * 60 * 1000;
 
 export function routerStatus(

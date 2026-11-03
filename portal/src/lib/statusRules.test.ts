@@ -23,9 +23,24 @@ const SCHEMA: StatusRuleSchema = {
         { value: 'rfid_4_into_cage', label: 'Into cage' }] }],
     },
     { key: 'touch_container_audit', label: 'Record container audit touch', params: [] },
+    {
+      key: 'notify', label: 'Send a notification',
+      params: [
+        { name: 'people', type: 'people' },
+        { name: 'groups', type: 'groups' },
+        { name: 'watchers', type: 'bool' },
+      ],
+    },
   ],
   sites: [],
 };
+
+/** What the editor's People and Groups pickers loaded: the names behind the ids. */
+const NAMES = {
+  people: [{ value: 'p1', label: 'Person A' }, { value: 'p2', label: 'Person B' }],
+  groups: [{ value: 'g1', label: 'Group A' }],
+};
+const notify = (params: Record<string, unknown>) => ({ action_type: 'notify', params });
 
 describe('summarizeCondition', () => {
   it('joins field label, operator, value', () => {
@@ -50,6 +65,60 @@ describe('summarizeAction', () => {
     expect(summarizeAction(
       { action_type: 'touch_container_audit', params: {} },
       SCHEMA)).toBe('Record container audit touch');
+  });
+
+  describe('Send a notification', () => {
+    it('reads "Notify" and the people, the groups and the watchers, by name', () => {
+      expect(summarizeAction(
+        notify({ people: ['p1'], groups: ['g1'], watchers: true }), SCHEMA, NAMES,
+      )).toBe('Notify Person A, Group A and watchers');
+    });
+
+    it('joins two parts with "and", and three or more with commas and a last "and"', () => {
+      expect(summarizeAction(
+        notify({ people: ['p1', 'p2'], groups: [], watchers: false }), SCHEMA, NAMES,
+      )).toBe('Notify Person A and Person B');
+      expect(summarizeAction(
+        notify({ people: ['p1', 'p2'], groups: ['g1'], watchers: false }), SCHEMA, NAMES,
+      )).toBe('Notify Person A, Person B and Group A');
+    });
+
+    it('names a single part on its own', () => {
+      expect(summarizeAction(
+        notify({ people: [], groups: ['g1'], watchers: false }), SCHEMA, NAMES,
+      )).toBe('Notify Group A');
+      expect(summarizeAction(
+        notify({ people: [], groups: [], watchers: true }), SCHEMA, NAMES,
+      )).toBe('Notify watchers');
+    });
+
+    it('falls back to the id for a person or group that is not in the loaded options', () => {
+      expect(summarizeAction(
+        notify({ people: ['p1', 'gone'], groups: ['g9'], watchers: true }), SCHEMA, NAMES,
+      )).toBe('Notify Person A, gone, g9 and watchers');
+    });
+
+    it('reads the ids when no names are loaded at all', () => {
+      expect(summarizeAction(
+        notify({ people: ['p1'], groups: ['g1'], watchers: true }), SCHEMA,
+      )).toBe('Notify p1, g1 and watchers');
+      expect(summarizeAction(
+        notify({ people: ['p1'], groups: ['g1'], watchers: false }), SCHEMA, {},
+      )).toBe('Notify p1 and g1');
+    });
+
+    it('leaves a list that is not a list of ids out, and reads a notice to nobody as the bare label', () => {
+      expect(summarizeAction(
+        notify({ people: 'p1', groups: [3, null], watchers: 'yes' }), SCHEMA, NAMES,
+      )).toBe('Send a notification');
+      expect(summarizeAction(notify({}), SCHEMA, NAMES)).toBe('Send a notification');
+    });
+
+    it('does not turn a list into one comma-joined string of ids', () => {
+      const text = summarizeAction(
+        notify({ people: ['p1', 'p2'], groups: [], watchers: false }), SCHEMA);
+      expect(text).not.toContain('p1,p2');
+    });
   });
 });
 

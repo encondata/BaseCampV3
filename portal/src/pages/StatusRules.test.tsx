@@ -3,21 +3,25 @@
  * /admin/status-rules — page shell + Rules tab. Covers what a unit test
  * can see: schema-resolved trigger chip labels, priority sort, the add
  * button's permission gate, the enabled switch's toggle+reload round
- * trip, and the load-error banner. The editor modal itself (create/edit,
+ * trip, and the load-error banner; and the tab bar: the tab and the rule
+ * the Executions tab lists live in the URL (?tab=executions&rule=<id>), and
+ * follow it when it moves. The editor modal itself (create/edit,
  * schema-driven condition/action builder) is covered in
  * components/statusRules/RuleEditorModal.test.tsx.
  */
 
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render as rtlRender, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ReactElement } from 'react';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type {
-  StatusRule, StatusRuleExecStat, StatusRuleExecution, StatusRuleSchema, UiPreferences,
+import {
+  ApiError,
+  type NotificationGroup, type NotificationRecipient, type StatusRule, type StatusRuleExecStat,
+  type StatusRuleExecution, type StatusRuleSchema, type UiPreferences,
 } from '../lib/api';
 import { LIST_FIT } from '../lib/listTools';
-
-vi.mock('react-router-dom', () => ({ useNavigate: () => vi.fn() }));
 
 const auth = vi.hoisted(() => {
   const state: { can: (resource: string, action: string) => boolean } = {
@@ -49,6 +53,8 @@ const api = vi.hoisted(() => ({
   toggleStatusRule: vi.fn(),
   createStatusRule: vi.fn(),
   deleteStatusRule: vi.fn(),
+  listNotificationRecipients: vi.fn(),
+  listNotificationGroups: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -67,9 +73,25 @@ const SCHEMA: StatusRuleSchema = {
   ],
   operators: [{ key: 'eq', label: 'is', needs_value: true }],
   condition_fields: [{ key: 'site', label: 'Site', type: 'string' }],
-  actions: [{ key: 'notify', label: 'Notify', params: [] }],
+  actions: [{
+    key: 'notify', label: 'Send a notification',
+    params: [
+      { name: 'people', type: 'people' },
+      { name: 'groups', type: 'groups' },
+      { name: 'watchers', type: 'bool' },
+    ],
+  }],
   sites: [],
 };
+
+const PEOPLE: NotificationRecipient[] = [{
+  person_id: 'p1', display_name: 'Person A', job_title: null, avatar_url: null, email: null,
+  phone: null, has_account: true, can_email: true, can_text: false, can_push: true, can_web: true,
+}];
+const GROUPS: NotificationGroup[] = [{
+  id: 'g1', name: 'Group A', description: '', enabled: true, member_count: 2,
+  created_at: '2026-01-01T00:00:00Z',
+}];
 
 const RULES: StatusRule[] = [
   {
@@ -100,14 +122,36 @@ const EXECUTIONS: StatusRuleExecution[] = [
   },
 ];
 
+/** Where the page opens: the router's starting URL (?tab=executions&rule=r2, say). */
+const at = { url: '/admin/status-rules' };
+
+/** The current ?query, so a test can see what the page wrote. */
+function SearchProbe() {
+  return <output data-testid="search">{useLocation().search}</output>;
+}
+
+/** A link elsewhere in the app (a notice in the inbox): it moves the router while the page is open. */
+function GoTo({ to, label }: { to: string; label: string }) {
+  const navigate = useNavigate();
+  return <button type="button" onClick={() => navigate(to)}>{label}</button>;
+}
+
+/** Every render sits in a router (the page reads ?tab= and ?rule=). */
+const render = (ui: ReactElement) => rtlRender(
+  <MemoryRouter initialEntries={[at.url]}>{ui}<SearchProbe /></MemoryRouter>);
+
 beforeEach(() => {
   vi.clearAllMocks();
+  at.url = '/admin/status-rules';
   auth.can = () => true;
   api.listStatusRules.mockResolvedValue(RULES);
   api.listStatusRuleExecutions.mockResolvedValue(EXECUTIONS);
   api.getStatusRuleSchema.mockResolvedValue(SCHEMA);
   api.getStatusRuleExecStats.mockResolvedValue(STATS);
   api.toggleStatusRule.mockResolvedValue(RULES[0]);
+  api.listNotificationRecipients.mockResolvedValue(PEOPLE);
+  api.listNotificationGroups.mockResolvedValue(GROUPS);
+  Element.prototype.scrollIntoView = vi.fn();   // jsdom has none; ComboBox scrolls its active option
 });
 
 afterEach(cleanup);
@@ -265,6 +309,95 @@ it('rule row: Actions → Edit opens the rule editor modal', async () => {
   expect(await screen.findByRole('heading', { name: /edit — high priority/i })).not.toBeNull();
 });
 
+// ── the Send a notification action in the list ──────────────────────
+
+const NOTIFY_RULE: StatusRule = {
+  ...RULES[0], id: 'r3', name: 'Tells people',
+  actions: [
+    { action_type: 'notify', params: { people: ['p1'], groups: ['g1'], watchers: true } },
+  ],
+};
+
+/** The Actions cell of a rule's row, found by its tooltip (the summary): its text is the count. */
+const actionsCell = (name: string, title: string) =>
+  (screen.getByText(name).closest('.dir-row') as HTMLElement).querySelector(`[title^="${title}"]`);
+
+it('rule list: a Send a notification action reads "Notify Person A, Group A and watchers" in its tooltip', async () => {
+  api.listStatusRules.mockResolvedValue([NOTIFY_RULE]);
+  render(<StatusRules />);
+  await screen.findByText('Tells people');
+
+  await waitFor(() => expect(actionsCell('Tells people', 'Notify')?.getAttribute('title'))
+    .toBe('Notify Person A, Group A and watchers'));
+  expect(api.listNotificationRecipients).toHaveBeenCalledTimes(1);
+  expect(api.listNotificationGroups).toHaveBeenCalledTimes(1);
+  // the cell itself still shows the count
+  expect(actionsCell('Tells people', 'Notify')?.textContent).toBe('1');
+});
+
+it('rule list: the tooltip names the ids when the lists cannot be had (they need notification permissions)', async () => {
+  api.listStatusRules.mockResolvedValue([NOTIFY_RULE]);
+  api.listNotificationRecipients.mockRejectedValue(new ApiError(403, 'forbidden'));
+  api.listNotificationGroups.mockRejectedValue(new ApiError(403, 'forbidden'));
+  render(<StatusRules />);
+  await screen.findByText('Tells people');
+  await waitFor(() => expect(api.listNotificationRecipients).toHaveBeenCalledTimes(1));
+
+  expect(actionsCell('Tells people', 'Notify')?.getAttribute('title')).toBe('Notify p1, g1 and watchers');
+  // and the list is not blanked out by it
+  expect(screen.queryByText(/Couldn.t load status rules/i)).toBeNull();
+});
+
+it('rule list: a viewer without notification permissions makes no list calls, and the tooltip names the ids', async () => {
+  auth.can = (resource) => resource === 'status_rules';
+  api.listStatusRules.mockResolvedValue([NOTIFY_RULE]);
+  render(<StatusRules />);
+  await screen.findByText('Tells people');
+
+  expect(actionsCell('Tells people', 'Notify')?.getAttribute('title')).toBe('Notify p1, g1 and watchers');
+  expect(api.listNotificationRecipients).not.toHaveBeenCalled();
+  expect(api.listNotificationGroups).not.toHaveBeenCalled();
+  expect(screen.queryByText(/Couldn.t load status rules/i)).toBeNull();
+});
+
+it('rule list: each list is asked for by its own permission, the people by notifications:change and the groups by notifications:view', async () => {
+  auth.can = (resource, action) => resource === 'status_rules'
+    || (resource === 'notifications' && action === 'view');
+  api.listStatusRules.mockResolvedValue([NOTIFY_RULE]);
+  render(<StatusRules />);
+  await screen.findByText('Tells people');
+
+  await waitFor(() => expect(actionsCell('Tells people', 'Notify')?.getAttribute('title'))
+    .toBe('Notify p1, Group A and watchers'));
+  expect(api.listNotificationGroups).toHaveBeenCalledTimes(1);
+  expect(api.listNotificationRecipients).not.toHaveBeenCalled();
+});
+
+it('rule list: the notification lists are asked for only when some rule notifies', async () => {
+  render(<StatusRules />);
+  await screen.findByText('High priority');
+
+  expect(api.listNotificationRecipients).not.toHaveBeenCalled();
+  expect(api.listNotificationGroups).not.toHaveBeenCalled();
+  expect(actionsCell('High priority', 'No actions')).not.toBeNull();
+});
+
+it('rule list: Edit on a rule that notifies shows its people and groups by name', async () => {
+  const user = userEvent.setup();
+  api.listStatusRules.mockResolvedValue([NOTIFY_RULE]);
+  render(<StatusRules />);
+  await screen.findByText('Tells people');
+
+  await openRuleMenu(user, 'Tells people');
+  await user.click(screen.getByRole('menuitem', { name: 'Edit' }));
+
+  expect(await screen.findByRole('button', { name: 'Remove Person A' })).not.toBeNull();
+  expect(screen.getByRole('button', { name: 'Remove Group A' })).not.toBeNull();
+  expect((screen.getByRole('checkbox', { name: 'Also people watching the initiative or site' }) as HTMLInputElement).checked)
+    .toBe(true);
+  expect(document.querySelectorAll('select')).toHaveLength(0);
+});
+
 it('rule row: Actions → Duplicate posts a disabled copy and reloads', async () => {
   const user = userEvent.setup();
   api.createStatusRule.mockResolvedValue(RULES[0]);
@@ -386,4 +519,200 @@ it('executions list: column floors, shared template + minimum, sideways-scroll c
   // Fit: default columns ≤ LIST_FIT.page (1172px — .portal-page at a 1512px
   // window, nav expanded; ExecutionsTab has no trailing track).
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
+});
+
+// ── the URL: ?tab=executions&rule=<id> ──────────────────────────────
+// A grouped rule notice links to /admin/status-rules?tab=executions&rule=<rule id>. The tab
+// and the rule the Executions tab lists are the URL's, and follow it when it moves.
+
+const EXEC_R2: StatusRuleExecution = {
+  ...EXECUTIONS[0], id: 2, rule_id: 'r2', rule_name: 'Low priority', scanned_value: 'DEF456',
+};
+
+/** The API filters by rule: r1's run, r2's run, or both. */
+function serveExecutions() {
+  api.listStatusRuleExecutions.mockImplementation(({ ruleId }: { ruleId?: string }) =>
+    Promise.resolve([EXECUTIONS[0], EXEC_R2].filter((e) => ruleId === undefined || e.rule_id === ruleId)));
+}
+
+const tab = (name: string) => screen.getByRole('tab', { name });
+const ruleFilter = () => screen.getByRole('combobox', { name: 'Filter by rule' }) as HTMLInputElement;
+const search = () => screen.getByTestId('search').textContent;
+const badge = () => document.querySelector('.badge-count')?.textContent;
+
+async function pickRule(user: ReturnType<typeof userEvent.setup>, name: string) {
+  await user.click(ruleFilter());
+  await user.click(await screen.findByRole('button', { name }));
+}
+
+it('?tab=executions&rule= opens the Executions tab on that rule\'s executions', async () => {
+  serveExecutions();
+  at.url = '/admin/status-rules?tab=executions&rule=r2';
+  render(<StatusRules />);
+
+  expect(tab('Executions').getAttribute('aria-selected')).toBe('true');
+  expect(tab('Rules').getAttribute('aria-selected')).toBe('false');
+  expect(await screen.findByText('DEF456')).not.toBeNull();
+  expect(screen.queryByText('ABC123')).toBeNull();
+  // asked for once, and for that rule only
+  expect(api.listStatusRuleExecutions).toHaveBeenCalledTimes(1);
+  expect(api.listStatusRuleExecutions).toHaveBeenCalledWith({ ruleId: 'r2', limit: 100 });
+  expect(ruleFilter().value).toBe('Low priority');
+  expect(search()).toBe('?tab=executions&rule=r2');   // opening it rewrites nothing
+});
+
+it('?tab=executions opens the Executions tab on every rule\'s executions', async () => {
+  serveExecutions();
+  at.url = '/admin/status-rules?tab=executions';
+  render(<StatusRules />);
+
+  expect(await screen.findByText('ABC123')).not.toBeNull();
+  expect(screen.getByText('DEF456')).not.toBeNull();
+  expect(api.listStatusRuleExecutions).toHaveBeenCalledWith({ limit: 100 });
+  expect(ruleFilter().value).toBe('All rules');
+});
+
+it('?rule= without ?tab=executions is just the Rules tab', async () => {
+  at.url = '/admin/status-rules?rule=r2';
+  render(<StatusRules />);
+
+  expect(await screen.findByText('High priority')).not.toBeNull();
+  expect(tab('Rules').getAttribute('aria-selected')).toBe('true');
+  expect(api.listStatusRuleExecutions).not.toHaveBeenCalled();
+});
+
+it('the tabs keep the choice in ?tab=, and Rules, the default, leaves it out', async () => {
+  const user = userEvent.setup();
+  render(<StatusRules />);
+  await screen.findByText('High priority');
+  expect(search()).toBe('');
+
+  await user.click(tab('Executions'));
+  expect(search()).toBe('?tab=executions');
+  expect(tab('Executions').getAttribute('aria-selected')).toBe('true');
+  expect(await screen.findByText('ABC123')).not.toBeNull();
+
+  await user.click(tab('Rules'));
+  expect(search()).toBe('');
+  expect(tab('Rules').getAttribute('aria-selected')).toBe('true');
+  expect(await screen.findByText('Low priority')).not.toBeNull();
+});
+
+it('picking a rule keeps it in ?rule=, and All rules takes it out', async () => {
+  serveExecutions();
+  at.url = '/admin/status-rules?tab=executions';
+  const user = userEvent.setup();
+  render(<StatusRules />);
+  await screen.findByText('DEF456');
+
+  await pickRule(user, 'Low priority');
+  expect(search()).toBe('?tab=executions&rule=r2');
+  await waitFor(() => expect(screen.queryByText('ABC123')).toBeNull());
+  expect(api.listStatusRuleExecutions).toHaveBeenLastCalledWith({ ruleId: 'r2', limit: 100 });
+  expect(ruleFilter().value).toBe('Low priority');
+
+  await pickRule(user, 'All rules');
+  expect(search()).toBe('?tab=executions');
+  expect(await screen.findByText('ABC123')).not.toBeNull();
+  expect(api.listStatusRuleExecutions).toHaveBeenLastCalledWith({ limit: 100 });
+  expect(ruleFilter().value).toBe('All rules');
+});
+
+it('leaving Executions forgets the rule: Rules and back lists every rule\'s runs', async () => {
+  serveExecutions();
+  at.url = '/admin/status-rules?tab=executions&rule=r2';
+  const user = userEvent.setup();
+  render(<StatusRules />);
+  await screen.findByText('DEF456');
+
+  await user.click(tab('Rules'));
+  expect(search()).toBe('');
+  await screen.findByText('High priority');
+
+  await user.click(tab('Executions'));
+  expect(search()).toBe('?tab=executions');
+  expect(await screen.findByText('ABC123')).not.toBeNull();
+  expect(screen.getByText('DEF456')).not.toBeNull();
+  expect(ruleFilter().value).toBe('All rules');
+});
+
+it('clicking the tab already open changes nothing, rule included', async () => {
+  serveExecutions();
+  at.url = '/admin/status-rules?tab=executions&rule=r2';
+  const user = userEvent.setup();
+  render(<StatusRules />);
+  await screen.findByText('DEF456');
+
+  await user.click(tab('Executions'));
+  expect(search()).toBe('?tab=executions&rule=r2');
+  expect(ruleFilter().value).toBe('Low priority');
+  expect(api.listStatusRuleExecutions).toHaveBeenCalledTimes(1);
+});
+
+it('follows the URL when a link moves it under the open page', async () => {
+  serveExecutions();
+  const user = userEvent.setup();
+  render(<>
+    <StatusRules />
+    <GoTo to="/admin/status-rules?tab=executions&rule=r1" label="to r1" />
+    <GoTo to="/admin/status-rules?tab=executions&rule=r2" label="to r2" />
+    <GoTo to="/admin/status-rules" label="to rules" />
+  </>);
+  await screen.findByText('High priority');
+  expect(tab('Rules').getAttribute('aria-selected')).toBe('true');
+
+  await user.click(screen.getByRole('button', { name: 'to r1' }));
+  expect(tab('Executions').getAttribute('aria-selected')).toBe('true');
+  expect(await screen.findByText('ABC123')).not.toBeNull();
+  expect(screen.queryByText('DEF456')).toBeNull();
+  expect(ruleFilter().value).toBe('High priority');
+  expect(api.listStatusRuleExecutions).toHaveBeenLastCalledWith({ ruleId: 'r1', limit: 100 });
+
+  await user.click(screen.getByRole('button', { name: 'to r2' }));
+  expect(await screen.findByText('DEF456')).not.toBeNull();
+  await waitFor(() => expect(screen.queryByText('ABC123')).toBeNull());
+  expect(ruleFilter().value).toBe('Low priority');
+  expect(api.listStatusRuleExecutions).toHaveBeenLastCalledWith({ ruleId: 'r2', limit: 100 });
+
+  await user.click(screen.getByRole('button', { name: 'to rules' }));
+  expect(tab('Rules').getAttribute('aria-selected')).toBe('true');
+  expect(await screen.findByText('Low priority')).not.toBeNull();
+  expect(screen.queryByRole('combobox', { name: 'Filter by rule' })).toBeNull();
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
+it('the header count is the count of the tab on show: "…" until its own arrives', async () => {
+  at.url = '/admin/status-rules?tab=executions';
+  const user = userEvent.setup();
+  render(<StatusRules />);
+  await screen.findByText('ABC123');
+  await waitFor(() => expect(badge()).toBe('1'));   // one execution
+
+  const rules = deferred<StatusRule[]>();
+  api.listStatusRules.mockReturnValueOnce(rules.promise);
+  await user.click(tab('Rules'));
+  expect(badge()).toBe('…');                        // not the executions' 1 while the rules are on their way
+  rules.resolve(RULES);
+  await waitFor(() => expect(badge()).toBe('2'));   // two rules
+});
+
+it('a count that arrives from the tab left behind is not shown on the new one', async () => {
+  at.url = '/admin/status-rules?tab=executions';
+  const executions = deferred<StatusRuleExecution[]>();
+  api.listStatusRuleExecutions.mockReturnValueOnce(executions.promise);
+  const user = userEvent.setup();
+  render(<StatusRules />);
+  await waitFor(() => expect(api.listStatusRuleExecutions).toHaveBeenCalled());
+
+  await user.click(tab('Rules'));
+  await waitFor(() => expect(badge()).toBe('2'));   // two rules
+
+  await act(async () => { executions.resolve(EXECUTIONS); });   // the left-behind tab's answer, late
+  expect(api.listStatusRuleExecutions).toHaveBeenCalledTimes(1);
+  expect(badge()).toBe('2');
 });

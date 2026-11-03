@@ -6,7 +6,9 @@
  *
  * Anyone with scanning_hardware view sees the page. Editing (settings,
  * Reset, scan type, sound upload, the personal device) needs super admin (rank 80+) AND
- * scanning_hardware change; the API enforces the same gate.
+ * scanning_hardware change; the API enforces the same gate. Watching is for everyone who
+ * can open the page, but only an RFID Station has the button: it is the one kind of kiosk
+ * that is checked for going offline (the API refuses a watch on any other).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -17,6 +19,7 @@ import KioskHistoryTab from '../../components/hardware/kiosk/KioskHistoryTab';
 import KioskOverviewTab, { statusChip } from '../../components/hardware/kiosk/KioskOverviewTab';
 import KioskSettingsTab from '../../components/hardware/kiosk/KioskSettingsTab';
 import KioskSetupTab from '../../components/hardware/kiosk/KioskSetupTab';
+import WatchButton from '../../components/notifications/WatchButton';
 import { SUPER_ADMIN_RANK } from '../../lib/access';
 import {
   ApiError, getDevice, getDeviceConfigHistory, listKioskSounds, listStatusValues,
@@ -24,7 +27,7 @@ import {
 } from '../../lib/api';
 import { stationTypeLabel } from '../../lib/devices';
 import { fullDateTime } from '../../lib/format';
-import { agoText, syncLine } from '../../lib/kioskConfig';
+import { agoText, isRfidStation, syncLine } from '../../lib/kioskConfig';
 import '../../styles/directory.css';
 import '../../styles/profile.css';
 import '../../styles/settings.css';
@@ -183,6 +186,11 @@ export default function KioskDetail() {
             <span data-testid="kiosk-sync-line">settings sync: <b>{syncLine(detail)}</b></span>
           </p>
         </div>
+        {isRfidStation(detail) && (
+          <div className="idet-header-actions">
+            <WatchButton thing="device" id={detail.id} />
+          </div>
+        )}
       </div>
 
       <div className="segmented me-tabs" role="tablist" aria-label="Kiosk details">

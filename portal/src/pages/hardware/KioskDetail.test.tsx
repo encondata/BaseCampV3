@@ -4,7 +4,8 @@
  * mocked GET /devices/{id}, the rank-80 edit gate, that an edit PUTs the
  * whole document with only that section changed (unknown sections kept), a
  * 422 shown beside its field, the three sync-line states, the scan type
- * picker, and the History list's column floors.
+ * picker, the History list's column floors, and the Watch button, which only
+ * an RFID Station has.
  */
 
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
@@ -54,6 +55,9 @@ const api = vi.hoisted(() => ({
   forgetDeviceBiometric: vi.fn(),
   listUsers: vi.fn(),
   listPersonalCandidates: vi.fn(),
+  getWatchState: vi.fn(),
+  createMyWatch: vi.fn(),
+  deleteMyWatch: vi.fn(),
 }));
 
 vi.mock('../../lib/api', async (importActual) => ({
@@ -130,6 +134,7 @@ beforeEach(() => {
   ]);
   api.putDeviceConfig.mockImplementation(async (_id: string, config: Record<string, unknown>) =>
     detail({ config, config_version: 4, sync_state: 'pending' }));
+  api.getWatchState.mockResolvedValue({ watching: false, watch_id: null, kinds: [] });
 });
 
 afterEach(cleanup);
@@ -694,4 +699,66 @@ it('a biometric session reads "Fingerprint" on Overview', async () => {
   renderAt('/hardware/kiosks/k1');
   await screen.findByRole('heading', { name: /Kiosk 97F0/ });
   expect(screen.getByText('Fingerprint')).not.toBeNull();
+});
+
+/* ── header: Watch (RFID Stations only) ────────────────────────────── */
+
+/** The header's action row, or null when the header has none. */
+const headerActions = (): HTMLElement | null =>
+  screen.getByRole('heading', { name: /Kiosk 97F0/ }).closest('.idet-header')!
+    .querySelector('.idet-header-actions');
+
+it('an RFID Station has a Watch button in its header, and a click watches the device', async () => {
+  const user = userEvent.setup();
+  api.createMyWatch.mockResolvedValue({
+    id: 'w1', thing: 'device', thing_id: 'k1', thing_name: 'Kiosk 97F0',
+    link: '/hardware/kiosks/k1', kinds: [], via: { type: 'you' }, created_at: '2026-11-02T12:00:00Z',
+  });
+  renderAt('/hardware/kiosks/k1');
+  await screen.findByRole('heading', { name: /Kiosk 97F0/ });
+  const actions = headerActions()!;
+  expect(actions).not.toBeNull();
+  const watch = await within(actions).findByRole('button', { name: 'Watch' });
+  expect(api.getWatchState).toHaveBeenCalledWith('device', 'k1');
+  expect([...actions.children].map((el) => el.textContent)).toEqual(['Watch']);
+
+  await user.click(watch);
+
+  await waitFor(() => expect(api.createMyWatch).toHaveBeenCalledWith(
+    { thing: 'device', id: 'k1', kinds: [] }));
+  expect(await within(actions).findByRole('button', { name: 'Watching' })).not.toBeNull();
+});
+
+it('the Watch button shows for everyone who can open the page, not only those who can edit', async () => {
+  auth.maxRank = 40;
+  auth.can = (_r, a) => a === 'view';
+  renderAt('/hardware/kiosks/k1');
+  await screen.findByRole('heading', { name: /Kiosk 97F0/ });
+  expect(await within(headerActions()!).findByRole('button', { name: 'Watch' })).not.toBeNull();
+});
+
+it('the Watch button is on every tab of the page, since it is in the header', async () => {
+  renderAt('/hardware/kiosks/k1/history');
+  await screen.findByRole('heading', { name: /Kiosk 97F0/ });
+  expect(await within(headerActions()!).findByRole('button', { name: 'Watch' })).not.toBeNull();
+});
+
+it.each([
+  ['an Android kiosk', { sub_type: 'android', station_type: null }],
+  ['an iOS kiosk', { sub_type: 'ios', station_type: null }],
+  ['a web kiosk', { sub_type: 'web', station_type: null }],
+  ['a Label Station', { station_type: 'label' }],
+  ['a Time Clock', { station_type: 'timeclock' }],
+] as [string, Partial<DeviceDetail>][])('%s has no Watch button, since nothing can be heard about it', async (_name, over) => {
+  const base = detail();
+  api.getDevice.mockResolvedValue(detail({
+    rfid_reader: null, ...over, setup: { ...base.setup, station_type: over.station_type ?? null },
+  }));
+  renderAt('/hardware/kiosks/k1');
+  await screen.findByRole('heading', { name: /Kiosk 97F0/ });
+  await new Promise((r) => setTimeout(r, 20));      // a button that is going to show has by now
+  expect(screen.queryByRole('button', { name: 'Watch' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Watching' })).toBeNull();
+  expect(headerActions()).toBeNull();
+  expect(api.getWatchState).not.toHaveBeenCalled();
 });

@@ -1,36 +1,10 @@
-"""Migration 0092: notification_groups.categories and the email_outbox
-kind / notification_id tracing columns."""
+"""Migration 0092: the email_outbox kind / notification_id tracing columns.
 
-import uuid
+The migration's other half, `notification_groups.categories` and its CHECK, is gone at
+head (migration 0113 dropped it); test_migration_0113_watches_events.py covers the
+column and the CHECK coming back on a rollback."""
 
-import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError
-
-
-async def _group(db, categories=None):
-    if categories is None:
-        return await db.scalar(text(
-            "INSERT INTO notification_groups (name) VALUES (:n) RETURNING id"),
-            {"n": f"g-{uuid.uuid4()}"})
-    return await db.scalar(text(
-        "INSERT INTO notification_groups (name, categories) VALUES (:n, :c) RETURNING id"),
-        {"n": f"g-{uuid.uuid4()}", "c": categories})
-
-
-async def test_categories_default_to_empty(db):
-    gid = await _group(db)
-    assert await db.scalar(text(
-        "SELECT categories FROM notification_groups WHERE id=:i"), {"i": gid}) == []
-
-
-async def test_categories_accept_the_four_and_reject_others(db):
-    gid = await _group(db, ["approvals", "reports", "wiki", "security"])
-    assert await db.scalar(text(
-        "SELECT cardinality(categories) FROM notification_groups WHERE id=:i"), {"i": gid}) == 4
-    with pytest.raises(DBAPIError):
-        await _group(db, ["bogus"])
-    await db.rollback()
 
 
 async def test_outbox_columns_exist_and_are_nullable(db):

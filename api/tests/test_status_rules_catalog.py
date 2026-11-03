@@ -44,6 +44,22 @@ def test_validate_condition_rejects_unknown_field_and_operator():
     assert validate_condition("scan.device_id", "equals", "x") is None
 
 
+def test_a_yes_no_field_is_nullable_when_its_column_is():
+    """The rule editor offers the empty checks (is null / is not null) on a yes/no field only if
+    it can be empty, so each says so as its column does: the asset's has_rails is `bool | None`
+    (a V2 import leaves it NULL), the off-move flag is never empty. A yes/no field added later
+    has to say the same."""
+    models = {"scan": ProcessedScan, "asset": Asset, "container": Container, "person": Person,
+              "initiative": Initiative, "initiative_asset": InitiativeAsset}
+    yes_no = {key: field for key, field in CONDITION_FIELDS.items() if field.type == "bool"}
+    assert {"scan.off_move", "asset.has_rails"} <= set(yes_no)
+    for key, field in yes_no.items():
+        entity, _, column = key.partition(".")
+        assert field.nullable is models[entity].__table__.c[column].nullable, key
+    assert CONDITION_FIELDS["asset.has_rails"].nullable is True
+    assert CONDITION_FIELDS["scan.off_move"].nullable is False
+
+
 def test_validate_action_rejects_bad_params():
     assert validate_action("no_such_action", {}) == "unknown_action"
     assert validate_action("set_asset_status", {}) == "missing_param"

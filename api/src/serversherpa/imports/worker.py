@@ -9,6 +9,12 @@ imports/move_setup.apply_job in one transaction). Every hour the loop also
 sweeps stale drafts, their orphaned file checks, and abandoned bulk asset
 update previews (jobs.sweep_stale).
 
+When a job that writes data ends, its owner is told (imports/notices.py). That happens last,
+in a session of its own, after the job's final state is committed, so a notice that cannot be
+written never changes how the job ended. A worker that stalls past `requeue_stale`'s window
+while another finishes the same job can notify twice (the re-run converges on the same data;
+the notice is its visible side).
+
 Shutdown story: no signal handling on purpose. Commit-phase work is
 committed every BATCH_SIZE rows and the update path is idempotent, so
 killing the worker mid-job loses at most one uncommitted batch; the job
@@ -18,9 +24,10 @@ requeue_stale, and the re-run converges on the same result."""
 import asyncio
 import logging
 import time
+import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.assets.bulk_update import KIND as ASSET_BULK_UPDATE
@@ -30,6 +37,7 @@ from serversherpa.db.models import ImportJob
 from serversherpa.imports import move_setup
 from serversherpa.imports.jobs import claim_next, requeue_stale, sweep_stale
 from serversherpa.imports.move_assets import parse_row, run_import
+from serversherpa.imports.notices import JobDone, count_left_out, notify_job_done, writes_data
 from serversherpa.imports.parsing import ImportFileError, parse_upload
 from serversherpa.services.storage import get_object
 
@@ -166,6 +174,38 @@ async def process_job(db: AsyncSession, job: ImportJob) -> None:
     await db.commit()
 
 
+async def _tell_the_owner(sessionmaker, job_id: uuid.UUID, kind: str, phase: str,
+                          created_by: uuid.UUID | None) -> None:
+    """Best-effort, and always last: tell the person who started the job how it ended. The
+    job's final state is already committed, so a failure here only costs the notice. It is
+    logged once, by the class of the error and where it happened, never its text (a database
+    error can carry values), and the worker carries on.
+
+    A job with nothing to say (a validate pass, or one nobody started) costs no session and
+    no read; notify_job_done makes the same checks."""
+    if created_by is None or not writes_data(kind, phase):
+        return
+    try:
+        async with sessionmaker() as nb:
+            final = (await nb.execute(
+                select(ImportJob.status, ImportJob.initiative_id, ImportJob.results["summary"])
+                .where(ImportJob.id == job_id))).first()
+            if final is None:              # a move's jobs go with the move
+                return
+            # a move setup knows its move only at the end
+            status, initiative_id, summary = final
+            await notify_job_done(nb, JobDone(
+                job_id=job_id, kind=kind, phase=phase, status=status, created_by=created_by,
+                initiative_id=initiative_id, rows_left_out=count_left_out(summary)))
+            await nb.commit()
+    except Exception as exc:  # the notice must never stop the worker
+        # the traceback without the exception: the class is in the message, and its text can
+        # echo values (a database error carries the row it choked on)
+        logger.warning("could not tell the owner how job %s ended (%s)",
+                       job_id, type(exc).__name__,
+                       exc_info=(type(exc), None, exc.__traceback__))
+
+
 async def run_once(sessionmaker) -> bool:
     """Claim and process at most one job. False when the queue is empty."""
     from serversherpa.system.db_logging import install
@@ -175,13 +215,14 @@ async def run_once(sessionmaker) -> bool:
         job = await claim_next(db)
         if job is None:
             return False
-        kind = job.kind                  # read now: a rollback below expires the row
+        # read now: a rollback below expires the row
+        job_id, kind, phase, created_by = job.id, job.kind, job.phase, job.created_by
         logger.info("claimed job %s (%s phase=%s)",
-                    job.id, job.filename, job.phase)
+                    job_id, job.filename, phase)
         try:
             await process_job(db, job)
         except Exception as exc:                       # job must terminate
-            logger.exception("job %s failed in worker: %s", job.id, exc)
+            logger.exception("job %s failed in worker: %s", job_id, exc)
             await db.rollback()
             if kind == move_setup.KIND:
                 # the draft stays editable: payload kept, a sentence code
@@ -192,7 +233,8 @@ async def run_once(sessionmaker) -> bool:
                 job.payload = None       # the parsed file is never read again
             await db.commit()
         logger.info("job %s finished status=%s rows=%s",
-                    job.id, job.status, job.processed_rows)
+                    job_id, job.status, job.processed_rows)
+        await _tell_the_owner(sessionmaker, job_id, kind, phase, created_by)
         return True
 
 

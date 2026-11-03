@@ -13,8 +13,11 @@ import {
 const ON = { inbox: true, email: true };
 
 describe('CONFIGURABLE', () => {
-  it('is the four categories that have switches, in registry order', () => {
-    expect(CONFIGURABLE).toEqual(['approvals', 'reports', 'wiki', 'learning']);
+  it('is the nine categories that have switches, in registry order', () => {
+    expect(CONFIGURABLE).toEqual([
+      'approvals', 'reports', 'wiki', 'learning', 'initiatives', 'trucks', 'devices', 'status_rules',
+      'bulk_actions',
+    ]);
   });
 
   it('leaves out only Account security, which is always on', () => {
@@ -24,12 +27,17 @@ describe('CONFIGURABLE', () => {
 });
 
 describe('CATEGORY_DESCRIPTIONS', () => {
-  it('has the five row descriptions of the design, word for word', () => {
+  it('has the ten row descriptions of the design, word for word', () => {
     expect(CATEGORY_DESCRIPTIONS).toEqual({
       approvals: 'Group membership requests and decisions, routers waiting for approval',
       reports: 'Reports and label runs, ready or failed',
       wiki: 'Page updates, comments, mentions, reviews and exports',
       learning: 'Learning completed or overdue, quizzes locked',
+      initiatives: 'Initiative status changes',
+      trucks: 'Truck status changes',
+      devices: 'Devices going offline',
+      status_rules: 'Notifications from status rules',
+      bulk_actions: 'Background bulk actions, finished or failed',
       security: 'Password expiring and two-factor notices about your own account',
     });
   });

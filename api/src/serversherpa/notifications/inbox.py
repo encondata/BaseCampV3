@@ -20,7 +20,8 @@ from serversherpa.notifications.kinds import kind_info
 async def notify(db: AsyncSession, person_id: uuid.UUID, kind: str, title: str, *,
                  body: str = "", link: str | None = None,
                  payload: dict | None = None,
-                 owner_notice: bool = False) -> Notification | None:
+                 owner_notice: bool = False,
+                 log_detail: dict | None = None) -> Notification | None:
     """Write the inbox row and email it (now, or held for the person's
     summary) when the rules allow it. Returns None (no inbox row) when the
     person's Inbox switch for this category is off, their own or the company
@@ -28,7 +29,10 @@ async def notify(db: AsyncSession, person_id: uuid.UUID, kind: str, title: str, 
     `owner_notice` marks the copy sent to the account owner about their own
     account: it is emailed at once, whatever their schedule, while anyone
     else's copy of an account-security notice stays in their inbox. Logs
-    `inbox_written` or `inbox_suppressed`; the email decision logs its own."""
+    `inbox_written` or `inbox_suppressed`; the email decision logs its own.
+    `log_detail` adds to the detail of that inbox row (the event sweep's
+    routes, events and group names): ids and codes, never an address or a
+    body."""
     info = kind_info(kind)
     # Loaded once for both decisions, the inbox row's and the email's.
     contact = await load_contact(db, person_id)
@@ -40,7 +44,7 @@ async def notify(db: AsyncSession, person_id: uuid.UUID, kind: str, title: str, 
     if not switches.inbox and info is not None and info.email:
         record(db, "inbox_suppressed", channel="inbox", person_id=person_id,
                kind=kind, category=info.category, reason="category_off",
-               detail={"source": switches.inbox_source})
+               detail={"source": switches.inbox_source, **(log_detail or {})})
         return None
     # created_at is set here rather than left to the column's `now()`
     # server_default: several notify() calls commonly land in the same
@@ -54,7 +58,7 @@ async def notify(db: AsyncSession, person_id: uuid.UUID, kind: str, title: str, 
     await db.flush()
     record(db, "inbox_written", channel="inbox", person_id=person_id,
            notification_id=row.id, kind=kind,
-           category=info.category if info else None)
+           category=info.category if info else None, detail=log_detail)
     await maybe_email(db, row, info=info, owner_notice=owner_notice,
                       contact=contact, company=company)
     return row

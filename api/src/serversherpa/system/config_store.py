@@ -86,7 +86,9 @@ DEFAULTS: dict[str, dict] = {
     # always critical in code and are never stored here.
     "notifications": {
         "defaults": {category: {"inbox": True, "email": True}
-                     for category in ("approvals", "reports", "wiki", "learning")},
+                     for category in ("approvals", "reports", "wiki", "learning",
+                                      "initiatives", "trucks", "devices", "status_rules",
+                                      "bulk_actions")},
         "critical_kinds": [],
     },
 }

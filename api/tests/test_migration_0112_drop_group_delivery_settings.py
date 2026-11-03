@@ -4,8 +4,10 @@ CHECKs that guarded them; `categories` and its own CHECK stay. Rolling back puts
 columns back with their 0033/0034 defaults and the CHECKs; the values that were dropped
 are not restored.
 
-The shape at head is read on the shared test database. The upgrade and the rollback run
-on a throwaway database (`<SS_TEST_DB>_m0112`) so the shared one stays at head.
+The shape at head is read on the shared test database; migration 0113 has since dropped
+`categories` and its CHECK too, which is the one difference from the shape 0112 left. The
+upgrade and the rollback run on a throwaway database (`<SS_TEST_DB>_m0112`) so the shared
+one stays at head.
 
 Spec: docs/superpowers/specs/2026-11-01-notifications-phase1-design.md (sections 6 and 8)"""
 
@@ -28,6 +30,9 @@ GROUP_KEPT = {"id", "name", "description", "enabled", "categories", "created_by"
               "created_at", "updated_at"}
 MEMBER_KEPT = {"group_id", "person_id", "added_by", "added_at"}
 KEPT_CHECKS = ["ck_notification_groups_categories"]
+
+# what is left of a group at head: 0113 dropped `categories` and its CHECK
+GROUP_AT_HEAD = GROUP_KEPT - {"categories"}
 
 # what goes (and what the rollback restores)
 GROUP_DELIVERY = ("channels", "quiet_start", "quiet_end", "timezone", "active_days",
@@ -102,20 +107,20 @@ async def _checks(db, table) -> list[str]:
 
 
 async def test_groups_keep_only_their_own_columns(db):
-    assert await _columns(db, "notification_groups") == GROUP_KEPT
+    assert await _columns(db, "notification_groups") == GROUP_AT_HEAD
 
 
 async def test_members_keep_only_who_and_when(db):
     assert await _columns(db, "notification_group_members") == MEMBER_KEPT
 
 
-async def test_only_the_categories_check_remains(db):
-    assert await _checks(db, "notification_groups") == KEPT_CHECKS
+async def test_no_check_remains(db):
+    assert await _checks(db, "notification_groups") == []
     assert await _checks(db, "notification_group_members") == []
 
 
 def test_the_models_mirror_the_tables():
-    assert {c.name for c in NotificationGroup.__table__.columns} == GROUP_KEPT
+    assert {c.name for c in NotificationGroup.__table__.columns} == GROUP_AT_HEAD
     assert {c.name for c in NotificationGroupMember.__table__.columns} == MEMBER_KEPT
 
 

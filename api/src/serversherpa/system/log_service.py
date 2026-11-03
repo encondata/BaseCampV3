@@ -58,6 +58,11 @@ async def enforce_retention(db: AsyncSession) -> dict:
         text("DELETE FROM notification_log WHERE at < :cutoff"),
         {"cutoff": cutoff})
     deleted += result.rowcount or 0
+    # So does a sent notification event; one still waiting stays.
+    result = await db.execute(
+        text("DELETE FROM notification_events WHERE sent_at < :cutoff"),
+        {"cutoff": cutoff})
+    deleted += result.rowcount or 0
     await db.commit()
     if deleted:
         logger.info("retention deleted %d log rows", deleted)

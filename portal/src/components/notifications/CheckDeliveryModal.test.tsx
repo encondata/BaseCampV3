@@ -5,15 +5,19 @@
  * copy), and GET /notifications/check explains what would happen right now —
  * the inbox, the email (now / held until the summary / not sent, and why, and
  * where to), the person's switches and where each comes from, their schedule
- * and whether it is open right now, and whether the type is critical.
- * Nothing is sent.
+ * and whether it is open right now, and whether the type is critical. For a
+ * type someone can watch for, a Watching row lists the person's watches that
+ * would hear it (the thing, its events, whose watch it is). Nothing is sent.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import {
-  ApiError, type DeliveryCheck, type NotificationKindInfo, type NotificationRecipient,
+  ApiError, type CheckWatch, type DeliveryCheck, type NotificationKindInfo, type NotificationRecipient,
 } from '../../lib/api';
 import { formatQuietHours } from '../../lib/notifications';
 
@@ -36,9 +40,11 @@ const TUESDAY_7AM = new Date(2026, 10, 3, 7, 0, 0).toISOString();
 const NOW = new Date().toISOString();
 
 const KINDS: NotificationKindInfo[] = [
-  { kind: 'report_ready', label: 'Report ready', category: 'reports', email: true, owner_always: false, critical: false, locked: false },
-  { kind: 'password_expiring', label: 'Password expiring', category: 'security', email: true, owner_always: true, critical: true, locked: true },
-  { kind: 'password_reset_request', label: 'Password reset request', category: 'approvals', email: false, owner_always: false, critical: false, locked: false },
+  { kind: 'report_ready', label: 'Report ready', category: 'reports', email: true, owner_always: false, critical: false, locked: false, watchable: false, everywhere: false, reaches: [] },
+  { kind: 'password_expiring', label: 'Password expiring', category: 'security', email: true, owner_always: true, critical: true, locked: true, watchable: false, everywhere: false, reaches: [] },
+  { kind: 'password_reset_request', label: 'Password reset request', category: 'approvals', email: false, owner_always: false, critical: false, locked: false, watchable: false, everywhere: false, reaches: [] },
+  { kind: 'initiative_status_changed', label: 'Initiative status changed', category: 'initiatives', email: true, owner_always: false, critical: false, locked: false, watchable: true, everywhere: true, reaches: ['initiative', 'site'] },
+  { kind: 'truck_status_changed', label: 'Truck status changed', category: 'trucks', email: true, owner_always: false, critical: false, locked: false, watchable: true, everywhere: true, reaches: ['truck', 'initiative', 'site'] },
 ];
 
 const person = (person_id: string, display_name: string, job_title: string | null = null): NotificationRecipient => ({
@@ -56,7 +62,7 @@ const check = (over: Partial<DeliveryCheck> = {}): DeliveryCheck => ({
   switches: { inbox: { on: true, source: 'default' }, email: { on: true, source: 'default' } },
   schedule: { timezone: 'America/Chicago', days: WEEKDAYS, quiet_start: '21:00', quiet_end: '07:00', state: 'open' },
   outcome: 'now', after_summary: false, send_at: NOW, summary_at: null, reason: null,
-  address: 'ada@example.com', address_source: 'contact', ...over,
+  address: 'ada@example.com', address_source: 'contact', watches: null, ...over,
 });
 
 /** What the API answers for an email that is not sent: no address, no time. */
@@ -70,6 +76,15 @@ const held = (over: Partial<DeliveryCheck> = {}): DeliveryCheck => check({
   schedule: { timezone: 'America/Chicago', days: WEEKDAYS, quiet_start: '21:00', quiet_end: '07:00', state: 'quiet_hours' },
   ...over,
 });
+
+/** What it answers for a type someone can watch for: the person's watches that would hear it. */
+const watchable = (watches: CheckWatch[], over: Partial<DeliveryCheck> = {}): DeliveryCheck => check({
+  kind: 'initiative_status_changed', kind_label: 'Initiative status changed', category: 'initiatives',
+  watches, ...over,
+});
+const OWN: CheckWatch['via'] = { type: 'you', id: null, name: null };
+const GROUP_A: CheckWatch['via'] = { type: 'group', id: 'g1', name: 'Group A' };
+const NOTE = 'Whether it reaches them for a particular thing also depends on their access to it.';
 
 const onClose = vi.fn();
 
@@ -102,6 +117,11 @@ async function ask(dialog: HTMLElement, user: ReturnType<typeof userEvent.setup>
 /** The text of a result line (`dd`) by its label (`dt`). */
 const line = (dialog: HTMLElement, label: string) =>
   within(dialog).getByText(label, { selector: 'dt' }).nextElementSibling?.textContent ?? '';
+
+/** The lines inside a result row (`dd`) by its label, one element each. */
+const linesOf = (dialog: HTMLElement, label: string) =>
+  [...(within(dialog).getByText(label, { selector: 'dt' }).nextElementSibling?.children ?? [])]
+    .map((el) => el.textContent);
 
 it('carries the standard header: eyebrow, title and description', () => {
   const dialog = open();
@@ -357,6 +377,109 @@ it('Critical type says No for a type that waits, and Yes for one that skips quie
   api.checkDelivery.mockResolvedValue(check({ critical: true }));
   await pick(user, 'Notification type', /^Password reset request/);   // asks again
   await waitFor(() => expect(line(dialog, 'Critical type')).toBe('Yes — skips quiet hours and the summary'));
+});
+
+it('a type someone can watch for lists the watches that would hear it: thing, events and whose', async () => {
+  const user = userEvent.setup();
+  api.checkDelivery.mockResolvedValue(watchable([
+    { thing: 'initiative', thing_id: 'i1', thing_name: 'Initiative A', kinds: [], via: OWN },
+    {
+      thing: 'everything', thing_id: null, thing_name: null,
+      kinds: ['initiative_status_changed', 'truck_status_changed'], via: GROUP_A,
+    },
+  ]));
+  const dialog = open();
+  await ask(dialog, user, /^Initiative status changed/);
+  expect([...dialog.querySelectorAll('dl.kv dt')].map((dt) => dt.textContent))
+    .toEqual(['Inbox', 'Email', 'Their switches', 'Their schedule', 'Critical type', 'Watching']);
+  // one line per watch: the thing's name (or Everything), its events by label (or All events), whose it is
+  expect(linesOf(dialog, 'Watching')).toEqual([
+    'Initiative A · All events · Their own',
+    'Everything · Initiative status changed, Truck status changed · Group A',
+  ]);
+  // the note sits in the same card, under the rows
+  const note = within(dialog).getByText(NOTE);
+  expect(note.closest('section')?.getAttribute('aria-label')).toBe('Result');
+  expect(note.previousElementSibling?.tagName).toBe('DL');
+});
+
+it('the note under the rows adds no margin of its own: the card spaces its children', async () => {
+  const user = userEvent.setup();
+  api.checkDelivery.mockResolvedValue(watchable([
+    { thing: 'initiative', thing_id: 'i1', thing_name: 'Initiative A', kinds: [], via: OWN },
+  ]));
+  const dialog = open();
+  await ask(dialog, user, /^Initiative status changed/);
+  const note = within(dialog).getByText(NOTE);
+
+  // .nm-hint carries a 6px top margin for a hint under a control. Here the card (.rgm-summary) is a
+  // flex column with its own gap, so a margin would double it. jsdom lays nothing out: ask the
+  // cascade of the real stylesheet.
+  const style = document.createElement('style');
+  style.textContent = readFileSync(join(__dirname, '../../styles/notifications.css'), 'utf8');
+  document.head.appendChild(style);
+  try {
+    expect(getComputedStyle(note).marginTop).toBe('0px');
+  } finally {
+    style.remove();
+  }
+});
+
+it('a site or a truck watch reads as its name, and a group watch as the group\'s name', async () => {
+  const user = userEvent.setup();
+  api.checkDelivery.mockResolvedValue(watchable([
+    { thing: 'truck', thing_id: 't1', thing_name: 'Truck A', kinds: ['truck_status_changed'], via: OWN },
+    { thing: 'site', thing_id: 's1', thing_name: 'Site A', kinds: [], via: { type: 'group', id: 'g2', name: 'Group B' } },
+  ], { kind: 'truck_status_changed', kind_label: 'Truck status changed', category: 'trucks' }));
+  const dialog = open();
+  await ask(dialog, user, /^Truck status changed/);
+  expect(linesOf(dialog, 'Watching')).toEqual([
+    'Truck A · Truck status changed · Their own',
+    'Site A · All events · Group B',
+  ]);
+});
+
+it('a type with watchers but none for this person says nothing hears it, and still carries the note', async () => {
+  const user = userEvent.setup();
+  api.checkDelivery.mockResolvedValue(watchable([]));
+  const dialog = open();
+  await ask(dialog, user, /^Initiative status changed/);
+  expect(line(dialog, 'Watching')).toBe('Nothing that hears this type');
+  expect(within(dialog).getByText(NOTE)).toBeTruthy();
+});
+
+it('a name that is missing reads as a dash, never as Everything', async () => {
+  const user = userEvent.setup();
+  api.checkDelivery.mockResolvedValue(watchable([
+    { thing: 'site', thing_id: 's1', thing_name: null, kinds: [], via: OWN },
+    { thing: 'initiative', thing_id: 'i1', thing_name: 'Initiative A', kinds: [], via: { type: 'group', id: 'g1', name: null } },
+  ]));
+  const dialog = open();
+  await ask(dialog, user, /^Initiative status changed/);
+  expect(linesOf(dialog, 'Watching')).toEqual([
+    '— · All events · Their own',
+    'Initiative A · All events · —',
+  ]);
+});
+
+it('a type nobody can watch for has no Watching row and no note, and the row goes with the next answer', async () => {
+  const user = userEvent.setup();
+  const dialog = open();
+  await ask(dialog, user);                       // Report ready: watches is null
+  expect(within(dialog).queryByText('Watching', { selector: 'dt' })).toBeNull();
+  expect(within(dialog).queryByText(NOTE)).toBeNull();
+
+  api.checkDelivery.mockResolvedValue(watchable([
+    { thing: 'initiative', thing_id: 'i1', thing_name: 'Initiative A', kinds: [], via: OWN },
+  ]));
+  await pick(user, 'Notification type', /^Initiative status changed/);
+  await waitFor(() => expect(line(dialog, 'Watching')).toBe('Initiative A · All events · Their own'));
+  expect(within(dialog).getByText(NOTE)).toBeTruthy();
+
+  api.checkDelivery.mockResolvedValue(check());
+  await pick(user, 'Notification type', /^Report ready/);
+  await waitFor(() => expect(within(dialog).queryByText('Watching', { selector: 'dt' })).toBeNull());
+  expect(within(dialog).queryByText(NOTE)).toBeNull();
 });
 
 it('has no Groups table, no group note, and nothing that names a group', async () => {

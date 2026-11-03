@@ -1,11 +1,18 @@
 """log-service: retention per config mode + the web probe."""
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
 from sqlalchemy import func, select
 
-from serversherpa.db.models import LogEntry, NotificationLog, SystemConfig, SystemProcess
+from serversherpa.db.models import (
+    LogEntry,
+    NotificationEvent,
+    NotificationLog,
+    SystemConfig,
+    SystemProcess,
+)
 from serversherpa.system import log_service
 
 
@@ -72,6 +79,30 @@ async def test_retention_deletes_old_notification_log_rows(db):
     assert result["deleted"] >= 2
     kept = (await db.scalars(select(NotificationLog.kind))).all()
     assert kept == ["fresh"]
+
+
+async def test_retention_deletes_old_sent_notification_events(db):
+    # A sent event ages out on the same cutoff; one still waiting stays,
+    # however long it has waited.
+    await _set_logging(db, local_max_age_days=7)
+    now = datetime.now(UTC)
+
+    def event(title, *, created_at, sent_at):
+        return NotificationEvent(kind="initiative_status_changed", subject_type="initiative",
+                                 subject_id=uuid.uuid4(), item={"title": title},
+                                 created_at=created_at, sent_at=sent_at)
+
+    db.add_all([
+        event("old", created_at=now - timedelta(days=10), sent_at=now - timedelta(days=10)),
+        event("waiting", created_at=now - timedelta(days=10), sent_at=None),
+        event("fresh", created_at=now - timedelta(days=10), sent_at=now - timedelta(days=1)),
+    ])
+    await db.commit()
+    result = await log_service.enforce_retention(db)
+    assert result["deleted"] >= 1
+    kept = (await db.scalars(select(NotificationEvent.item["title"].astext)
+                             .order_by(NotificationEvent.id))).all()
+    assert kept == ["waiting", "fresh"]
 
 
 async def test_remote_mode_uses_buffer_cap(db):

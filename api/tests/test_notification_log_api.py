@@ -20,11 +20,16 @@ from serversherpa.api.deps import AuthContext, ensure_super_admin
 from serversherpa.db.models import (
     EmailOutbox,
     Notification,
+    NotificationGroup,
+    NotificationGroupMember,
     NotificationLog,
+    NotificationWatch,
     PermissionOverride,
     Person,
     Role,
+    Site,
     SystemConfig,
+    Truck,
     UserAccount,
 )
 from serversherpa.notifications.check import check_delivery
@@ -296,7 +301,7 @@ CHECK_KEYS = {
     "person_id", "person_name", "kind", "kind_label", "category", "owner_copy", "active",
     "has_account", "inbox", "inbox_source", "email_enabled", "critical", "switches",
     "schedule", "outcome", "after_summary", "send_at", "summary_at", "reason", "address",
-    "address_source",
+    "address_source", "watches",
 }
 EVERY_DAY = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
@@ -341,6 +346,7 @@ async def test_check_outcomes(client, db, email_on):
                                 "email": {"on": True, "source": "default"}}
     assert body["schedule"] == {"timezone": "America/New_York", "days": EVERY_DAY,
                                 "quiet_start": None, "quiet_end": None, "state": "open"}
+    assert body["watches"] is None                  # nobody can watch for Report ready
 
     body = await _check(client, hdrs, off)
     assert (body["inbox"], body["inbox_source"]) == ("suppressed", "own")
@@ -360,6 +366,35 @@ async def test_check_outcomes(client, db, email_on):
     resp = await client.get(CHECK, params={"person_id": str(uuid4()), "kind": "report_ready"},
                             headers=hdrs)
     assert resp.status_code == 404 and resp.json()["detail"]["code"] == "person_not_found"
+
+
+async def test_check_lists_the_watches_that_would_hear_a_watchable_kind(client, db, email_on):
+    """For Truck status changed: the person's own watch and their group's, each with what it
+    is on, the events it names and whose it is. Pat has no role, so can't open either thing:
+    Check delivery lists the watches all the same."""
+    hdrs = await _super_admin(db, client)
+    pat = await _person(db, "Pat", prefs={})
+    group = NotificationGroup(name="Group A")
+    site, truck = Site(name="Site A"), Truck(name="Truck A")
+    db.add_all([group, site, truck])
+    await db.flush()
+    db.add_all([NotificationGroupMember(group_id=group.id, person_id=pat.id),
+                NotificationWatch(person_id=pat.id, truck_id=truck.id,
+                                  kinds=["truck_status_changed"]),
+                NotificationWatch(group_id=group.id, site_id=site.id)])
+    await db.commit()
+    before = await _counts(db)
+
+    body = await _check(client, hdrs, pat, "truck_status_changed")
+    assert body["watches"] == [
+        {"thing": "truck", "thing_id": str(truck.id), "thing_name": "Truck A",
+         "kinds": ["truck_status_changed"], "via": {"type": "you", "id": None, "name": None}},
+        {"thing": "site", "thing_id": str(site.id), "thing_name": "Site A", "kinds": [],
+         "via": {"type": "group", "id": str(group.id), "name": "Group A"}},
+    ]
+    # a kind nobody can watch: null, not an empty list
+    assert (await _check(client, hdrs, pat))["watches"] is None
+    assert await _counts(db) == before
 
 
 async def test_check_held_shows_summary_time(client, db, email_on):
@@ -485,17 +520,41 @@ async def test_kinds_report_critical_and_locked(client, db):
     assert resp.json() == [
         {"kind": kind, "label": info.label, "category": info.category, "email": info.email,
          "owner_always": info.owner_always,
-         "critical": kind in always | {"report_failed"}, "locked": kind in always}
+         "critical": kind in always | {"report_failed"}, "locked": kind in always,
+         "watchable": info.watchable, "everywhere": info.everywhere,
+         "reaches": list(info.reaches)}
         for kind, info in KINDS.items()]
     assert [k for k in resp.json() if k["critical"]] == [
         {"kind": "report_failed", "label": "Report failed", "category": "reports",
-         "email": True, "owner_always": False, "critical": True, "locked": False},
+         "email": True, "owner_always": False, "critical": True, "locked": False,
+         "watchable": False, "everywhere": False, "reaches": []},
         {"kind": "password_expiring", "label": "Password expiring", "category": "security",
-         "email": True, "owner_always": True, "critical": True, "locked": True},
+         "email": True, "owner_always": True, "critical": True, "locked": True,
+         "watchable": False, "everywhere": False, "reaches": []},
         {"kind": "totp_enrolled", "label": "Two-factor authentication enrolled",
          "category": "security", "email": True, "owner_always": True, "critical": True,
-         "locked": True},
+         "locked": True, "watchable": False, "everywhere": False, "reaches": []},
     ]
+    # the two status changes, Device offline and Status rule matched can be watched, on the
+    # things they reach (a rule's notice never everywhere)
+    assert [(k["kind"], k["watchable"], k["everywhere"], k["reaches"])
+            for k in resp.json() if k["watchable"]] == [
+        ("initiative_status_changed", True, True, ["initiative", "site"]),
+        ("truck_status_changed", True, True, ["truck", "initiative", "site"]),
+        ("device_offline", True, True, ["device", "site", "initiative"]),
+        ("status_rule_matched", True, False, ["initiative", "site"]),
+    ]
+    # the bulk action notices: their own category, sent to one person and never watched for
+    # (the rows carry no brief flag: a failed notice is title + link only, see the kinds pin)
+    by_kind = {k["kind"]: k for k in resp.json()}
+    assert by_kind["bulk_action_finished"] == {
+        "kind": "bulk_action_finished", "label": "Bulk action finished",
+        "category": "bulk_actions", "email": True, "owner_always": False, "critical": False,
+        "locked": False, "watchable": False, "everywhere": False, "reaches": []}
+    assert by_kind["bulk_action_failed"] == {
+        "kind": "bulk_action_failed", "label": "Bulk action failed",
+        "category": "bulk_actions", "email": True, "owner_always": False, "critical": False,
+        "locked": False, "watchable": False, "everywhere": False, "reaches": []}
 
     admin = await _make(db, client, "admin", "admin@test.example.com")
     resp = await client.get(KINDS_PATH, headers=admin)

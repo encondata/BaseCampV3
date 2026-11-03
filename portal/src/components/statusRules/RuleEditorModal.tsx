@@ -3,9 +3,26 @@
  * Everything the form can offer (trigger statuses, match types,
  * operators, condition fields, actions + their params) comes from the
  * `schema` prop (Task 9's /status-rules/schema payload) — nothing is
- * fetched here, so the modal can never drift from the engine's
+ * fetched here for those, so the modal can never drift from the engine's
  * vocabulary. `rule === null` creates via createStatusRule; otherwise
  * saves via updateStatusRule(rule.id, …).
+ *
+ * Every dropdown is the house ComboBox (type to filter); a yes/no value
+ * reads Yes / No and is stored as "true" / "false" (a condition) or true /
+ * false (an action's parameter). A new condition on a yes/no field starts
+ * at "true". A yes/no field offers the operator "equals": Yes / No already
+ * says either way, and another operator can build a rule that never fires
+ * (an off-move sighting runs only the rules that say "equals Yes"). One that
+ * can be empty (Asset has rails) also offers the two empty checks, is null
+ * and is not null, the only way to ask for "unknown" or "known". A stored
+ * condition that has any other operator keeps it, its operator box reading
+ * blank until another is picked.
+ *
+ * The Send a notification action's parameters are People and Groups
+ * (ChipPickers over the notification recipients and groups, asked for once
+ * the rule has such an action) and a Switch for the people watching what the
+ * rule matched. A rule has one such action, so once it has one no other
+ * action row offers it. A refused save says why through the 422's `reason`.
  *
  * Follows the modal-scrim/modal-card/modal-head/modal-body/modal-foot
  * skeleton from pages/Notifications.tsx's NewGroupModal (lines
@@ -16,15 +33,20 @@
  * (defaulting to true for a new rule).
  */
 
-import { useState, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 
 import {
   ApiError, createStatusRule, updateStatusRule,
-  type RuleSchemaAction, type RuleSchemaParam, type SchemaOption,
-  type StatusRule, type StatusRuleAction, type StatusRuleCondition,
+  type RuleSchemaAction, type RuleSchemaField, type RuleSchemaOperator, type RuleSchemaParam,
+  type SchemaOption, type StatusRule, type StatusRuleAction, type StatusRuleCondition,
   type StatusRuleIn, type StatusRuleSchema,
 } from '../../lib/api';
+import { NOTIFY_ACTION } from '../../lib/statusRules';
+import ChipPicker from '../ChipPicker';
+import ComboBox, { type ComboOption } from '../ComboBox';
+import { Switch } from '../Switch';
 import '../../styles/status-rules.css';
+import { useNotifyTargets, type NotifyTargets } from './useNotifyTargets';
 
 interface Props {
   schema: StatusRuleSchema;
@@ -42,10 +64,33 @@ const ERRORS: Record<string, string> = {
   rule_not_found: 'This rule no longer exists — it may have been deleted.',
 };
 
-const msgFor = (err: unknown): string =>
-  err instanceof ApiError
-    ? (ERRORS[err.code] ?? `Request failed (${err.code}).`)
-    : 'Network error — nothing was saved.';
+/** Why a bad_action was refused (the 422's `reason`), for the reasons that have words of their own. */
+const ACTION_REASONS = new Map([
+  ['notify_no_recipients', 'Pick people, groups or watchers.'],
+  ['unknown_person', 'A chosen person no longer exists.'],
+  ['unknown_group', 'A chosen group no longer exists.'],
+]);
+
+/** A bad_action says why in `detail.reason` (its code is the same for every action fault). */
+function reasonOf(err: ApiError): string | null {
+  const detail = err.detail;
+  if (typeof detail !== 'object' || detail === null) return null;
+  const reason = (detail as { reason?: unknown }).reason;
+  return typeof reason === 'string' ? reason : null;
+}
+
+const msgFor = (err: unknown): string => {
+  if (!(err instanceof ApiError)) return 'Network error — nothing was saved.';
+  if (err.code === 'bad_action') {
+    const reason = reasonOf(err);
+    const words = reason === null ? undefined : ACTION_REASONS.get(reason);
+    if (words) return words;
+    // A second Send a notification: the editor never offers one, so this is a safety net,
+    // told in the house fallback words.
+    if (reason === 'notify_twice') return `Request failed (${reason}).`;
+  }
+  return ERRORS[err.code] ?? `Request failed (${err.code}).`;
+};
 
 function optionValue(o: string | SchemaOption): string {
   return typeof o === 'string' ? o : o.value;
@@ -54,7 +99,34 @@ function optText(o: string | SchemaOption): string {
   return typeof o === 'string' ? o : o.label;
 }
 
+const comboOptions = (options: (string | SchemaOption)[] | undefined): ComboOption[] =>
+  (options ?? []).map((o) => ({ value: optionValue(o), label: optText(o) }));
+
+/** A yes/no, stored as "true" / "false" (a condition's value) or true / false (a parameter). */
+const YES_NO: ComboOption[] = [
+  { value: 'true', label: 'Yes' },
+  { value: 'false', label: 'No' },
+];
+
+const WATCHERS = 'watchers';
+
+/** What an action's parameter is called where it isn't just its name. */
+const PARAM_LABELS: Record<string, string> = {
+  people: 'People',
+  groups: 'Groups',
+  [WATCHERS]: 'Also people watching the initiative or site',
+};
+
+/** The parameters that don't fit the action's line (lists of people and groups, and the
+ *  watchers switch) go in a block under it. */
+const isListParam = (p: RuleSchemaParam) => p.type === 'people' || p.type === 'groups';
+const isSwitchParam = (p: RuleSchemaParam) => p.type === 'bool' && p.name === WATCHERS;
+
+const idsOf = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+
 function defaultParamValue(p: RuleSchemaParam): unknown {
+  if (isListParam(p)) return [];
   if (p.type === 'bool') return false;
   if (p.options && p.options.length > 0) return optionValue(p.options[0]);
   return '';
@@ -65,79 +137,132 @@ function defaultParams(action: RuleSchemaAction | undefined): Record<string, unk
   return Object.fromEntries(action.params.map((p) => [p.name, defaultParamValue(p)]));
 }
 
-function defaultCondition(schema: StatusRuleSchema): StatusRuleCondition {
-  const field = schema.condition_fields[0];
-  const operator = schema.operators.find((o) => o.needs_value) ?? schema.operators[0];
-  return { field: field?.key ?? '', operator: operator?.key ?? '', value: '' };
+/** What a condition's value starts at: nothing for an operator that takes none, "true" for a
+ *  yes/no field (so an untouched one saves what it shows), else empty. */
+function startValue(
+  field: RuleSchemaField | undefined, operator: RuleSchemaOperator | undefined,
+): string | null {
+  if (operator?.needs_value === false) return null;
+  return field?.type === 'bool' ? 'true' : '';
 }
 
-function defaultAction(schema: StatusRuleSchema): StatusRuleAction {
-  const def = schema.actions[0];
+/** The operator every yes/no field offers: Yes / No already says either way, and another one
+ *  (not equals, ...) only gives a second way to say it, or builds a rule that never fires: the
+ *  engine runs an off-move sighting just for a rule that says "equals Yes". */
+const BOOL_OPERATOR = 'equals';
+
+/** The operators a condition on this field offers. A yes/no field offers "equals", and one that
+ *  can also be empty (`nullable`: Asset has rails) the operators that take no value as well,
+ *  is null and is not null: only they can ask for "unknown" or "known". Any other field offers
+ *  every operator. */
+const operatorsFor = (
+  schema: StatusRuleSchema, field: RuleSchemaField | undefined,
+): RuleSchemaOperator[] => {
+  if (field?.type !== 'bool') return schema.operators;
+  const canBeEmpty = field.nullable === true;
+  return schema.operators.filter(
+    (o) => o.key === BOOL_OPERATOR || (canBeEmpty && o.needs_value === false),
+  );
+};
+
+const operatorChoices = (operators: RuleSchemaOperator[]): ComboOption[] =>
+  operators.map((o) => ({ value: o.key, label: o.label }));
+
+function defaultCondition(schema: StatusRuleSchema): StatusRuleCondition {
+  const field = schema.condition_fields[0];
+  const operator = operatorsFor(schema, field).find((o) => o.needs_value) ?? schema.operators[0];
+  return {
+    field: field?.key ?? '', operator: operator?.key ?? '', value: startValue(field, operator),
+  };
+}
+
+/** The actions a rule may still add: a rule has one Send a notification, so once it has it,
+ *  that isn't offered. */
+const offerable = (schema: StatusRuleSchema, hasNotify: boolean): RuleSchemaAction[] =>
+  schema.actions.filter((a) => !(hasNotify && a.key === NOTIFY_ACTION));
+
+/** A new action starts on the first one the rule may still add. */
+function defaultAction(schema: StatusRuleSchema, hasNotify: boolean): StatusRuleAction {
+  const def = offerable(schema, hasNotify)[0];
   return { action_type: def?.key ?? '', params: defaultParams(def) };
 }
 
-function ValueControl({ fieldType, fieldOptions, operatorKey, schema, value, label, onChange }: {
+function ValueControl({
+  fieldType, fieldOptions, operatorKey, schema, value, label, disabled, onChange,
+}: {
   fieldType: string | undefined;
   fieldOptions: SchemaOption[] | undefined;
   operatorKey: string;
   schema: StatusRuleSchema;
   value: string | null;
   label: string;
+  disabled: boolean;
   onChange: (v: string | null) => void;
 }) {
   const operator = schema.operators.find((o) => o.key === operatorKey);
   if (operator?.needs_value === false) return null;
   if (fieldOptions) {
     return (
-      <select aria-label={label} value={value ?? ''} onChange={(e) => onChange(e.target.value)}>
-        <option value="">Select…</option>
-        {fieldOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
+      <ComboBox options={comboOptions(fieldOptions)} value={value ?? ''} onChange={onChange}
+                disabled={disabled} ariaLabel={label} />
     );
   }
   if (fieldType === 'bool') {
     return (
-      <select aria-label={label} value={value ?? 'true'} onChange={(e) => onChange(e.target.value)}>
-        <option value="true">True</option>
-        <option value="false">False</option>
-      </select>
+      <ComboBox options={YES_NO} value={value ?? ''} onChange={onChange}
+                disabled={disabled} ariaLabel={label} />
     );
   }
   if (fieldType === 'number') {
     return (
-      <input aria-label={label} type="number" value={value ?? ''}
+      <input aria-label={label} type="number" value={value ?? ''} disabled={disabled}
              onChange={(e) => onChange(e.target.value)} />
     );
   }
   return (
-    <input aria-label={label} type="text" value={value ?? ''}
+    <input aria-label={label} type="text" value={value ?? ''} disabled={disabled}
            onChange={(e) => onChange(e.target.value)} />
   );
 }
 
-function ParamControl({ param, value, label, onChange }: {
+function ParamControl({ param, value, label, disabled, targets, onChange }: {
   param: RuleSchemaParam;
   value: unknown;
   label: string;
+  disabled: boolean;
+  targets: NotifyTargets;
   onChange: (v: unknown) => void;
 }) {
+  if (isListParam(param)) {
+    const people = param.type === 'people';
+    const list = people ? targets.people : targets.groups;
+    return (
+      <>
+        {/* Off until its list is in, so it never offers "No matches." for a list that is on
+            its way. A list that failed leaves it on: a chip can still come off. */}
+        <ChipPicker options={list.options} selected={idsOf(value)} onChange={onChange}
+                    disabled={disabled || list.status === 'loading'} ariaLabel={label}
+                    placeholder={people ? 'Search people…' : 'Search groups…'} />
+        {list.status === 'failed' && (
+          <span className="pf-error" role="alert">
+            {people ? 'Could not load the recipient list.' : 'Could not load the group list.'}
+          </span>
+        )}
+      </>
+    );
+  }
+  if (isSwitchParam(param)) {
+    return <Switch checked={value === true} onChange={onChange} disabled={disabled} label={label} />;
+  }
   if (param.type === 'bool') {
     return (
-      <select aria-label={label} value={value ? 'true' : 'false'}
-              onChange={(e) => onChange(e.target.value === 'true')}>
-        <option value="true">True</option>
-        <option value="false">False</option>
-      </select>
+      <ComboBox options={YES_NO} value={value ? 'true' : 'false'}
+                onChange={(v) => onChange(v === 'true')} disabled={disabled} ariaLabel={label} />
     );
   }
   return (
-    <select aria-label={label} value={String(value ?? '')}
-            onChange={(e) => onChange(e.target.value)}>
-      <option value="">Select…</option>
-      {(param.options ?? []).map((o) => (
-        <option key={optionValue(o)} value={optionValue(o)}>{optText(o)}</option>
-      ))}
-    </select>
+    <ComboBox options={comboOptions(param.options)} value={String(value ?? '')}
+              onChange={onChange} disabled={disabled} ariaLabel={label} />
   );
 }
 
@@ -158,6 +283,19 @@ export default function RuleEditorModal({ schema, rule, onClose, onSaved }: Prop
   const canSave = name.trim() !== '' && triggerStatus !== '' && triggerMatchType !== ''
     && actions.length > 0;
 
+  // One Send a notification per rule, and its people and groups are asked for only once
+  // the rule has one.
+  const hasNotify = actions.some((a) => a.action_type === NOTIFY_ACTION);
+  const targets = useNotifyTargets(hasNotify);
+  const canAddAction = offerable(schema, hasNotify).length > 0;
+
+  const triggerOptions = useMemo<ComboOption[]>(
+    () => schema.trigger_statuses.map((o) => ({ value: o.value, label: o.label })), [schema]);
+  const matchOptions = useMemo<ComboOption[]>(
+    () => schema.match_types.map((o) => ({ value: o.value, label: o.label })), [schema]);
+  const fieldOptions = useMemo<ComboOption[]>(
+    () => schema.condition_fields.map((f) => ({ value: f.key, label: f.label })), [schema]);
+
   const fieldFor = (key: string) => schema.condition_fields.find((f) => f.key === key);
   const actionDefFor = (key: string) => schema.actions.find((a) => a.key === key);
 
@@ -167,18 +305,29 @@ export default function RuleEditorModal({ schema, rule, onClose, onSaved }: Prop
   const addCondition = () => setConditions((cs) => [...cs, defaultCondition(schema)]);
   const removeCondition = (i: number) => setConditions((cs) => cs.filter((_, idx) => idx !== i));
 
+  // Picking what a dropdown already holds changes nothing (a native select said nothing then,
+  // the ComboBox says it again): the value, or the parameters, stay.
   const onFieldChange = (i: number, fieldKey: string) => {
     const condition = conditions[i];
-    const op = schema.operators.find((o) => o.key === condition?.operator);
-    updateCondition(i, { field: fieldKey, value: op?.needs_value === false ? null : '' });
+    if (!condition || condition.field === fieldKey) return;
+    const next = fieldFor(fieldKey);
+    // Every yes/no field offers "equals" (and not every operator): a condition moved onto
+    // one takes it.
+    const operatorKey = next?.type === 'bool' ? BOOL_OPERATOR : condition.operator;
+    const op = schema.operators.find((o) => o.key === operatorKey);
+    updateCondition(i, { field: fieldKey, operator: operatorKey, value: startValue(next, op) });
   };
 
   const onOperatorChange = (i: number, opKey: string) => {
+    const condition = conditions[i];
+    if (!condition || condition.operator === opKey) return;
     const op = schema.operators.find((o) => o.key === opKey);
-    updateCondition(i, { operator: opKey, value: op?.needs_value === false ? null : '' });
+    updateCondition(i, { operator: opKey, value: startValue(fieldFor(condition.field), op) });
   };
 
-  const addAction = () => setActions((as) => [...as, defaultAction(schema)]);
+  const addAction = () => setActions((as) => [
+    ...as, defaultAction(schema, as.some((a) => a.action_type === NOTIFY_ACTION)),
+  ]);
   const removeAction = (i: number) => setActions((as) => as.filter((_, idx) => idx !== i));
   const moveAction = (i: number, dir: -1 | 1) => setActions((as) => {
     const j = i + dir;
@@ -189,6 +338,7 @@ export default function RuleEditorModal({ schema, rule, onClose, onSaved }: Prop
   });
 
   const onActionTypeChange = (i: number, key: string) => {
+    if (actions[i]?.action_type === key) return;
     const def = actionDefFor(key);
     setActions((as) => as.map((a, idx) => (idx === i
       ? { action_type: key, params: defaultParams(def) } : a)));
@@ -257,13 +407,9 @@ export default function RuleEditorModal({ schema, rule, onClose, onSaved }: Prop
             <div className="modal-section">Trigger</div>
             <div className="pf-form">
               <div><label>When a scan with status</label>
-                <select aria-label="When a scan with status" value={triggerStatus} disabled={saving}
-                        onChange={(e) => setTriggerStatus(e.target.value)}>
-                  <option value="">Select a status…</option>
-                  {schema.trigger_statuses.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
+                <ComboBox options={triggerOptions} value={triggerStatus} onChange={setTriggerStatus}
+                          disabled={saving} ariaLabel="When a scan with status"
+                          placeholder="Select a status…" />
                 {triggerPreview && (
                   <div className="chips" style={{ marginTop: 8 }}>
                     <span className="chip custom" style={{ '--chip': triggerPreview.color } as never}>
@@ -273,13 +419,9 @@ export default function RuleEditorModal({ schema, rule, onClose, onSaved }: Prop
                 )}
               </div>
               <div><label>matches a</label>
-                <select aria-label="matches a" value={triggerMatchType} disabled={saving}
-                        onChange={(e) => setTriggerMatchType(e.target.value)}>
-                  <option value="">Select a match type…</option>
-                  {schema.match_types.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select></div>
+                <ComboBox options={matchOptions} value={triggerMatchType}
+                          onChange={setTriggerMatchType} disabled={saving} ariaLabel="matches a"
+                          placeholder="Select a match type…" /></div>
             </div>
 
             <div className="modal-section">
@@ -295,24 +437,19 @@ export default function RuleEditorModal({ schema, rule, onClose, onSaved }: Prop
                   gridTemplateColumns: 'repeat(4, 1fr) auto', alignItems: 'end', marginBottom: 10,
                 }}>
                   <div><label>Field</label>
-                    <select aria-label={`Condition ${i + 1} field`} value={c.field} disabled={saving}
-                            onChange={(e) => onFieldChange(i, e.target.value)}>
-                      {schema.condition_fields.map((f) => (
-                        <option key={f.key} value={f.key}>{f.label}</option>
-                      ))}
-                    </select></div>
+                    <ComboBox options={fieldOptions} value={c.field} disabled={saving}
+                              ariaLabel={`Condition ${i + 1} field`}
+                              onChange={(v) => onFieldChange(i, v)} /></div>
                   <div><label>Operator</label>
-                    <select aria-label={`Condition ${i + 1} operator`} value={c.operator} disabled={saving}
-                            onChange={(e) => onOperatorChange(i, e.target.value)}>
-                      {schema.operators.map((o) => (
-                        <option key={o.key} value={o.key}>{o.label}</option>
-                      ))}
-                    </select></div>
+                    <ComboBox options={operatorChoices(operatorsFor(schema, field))}
+                              value={c.operator} disabled={saving}
+                              ariaLabel={`Condition ${i + 1} operator`}
+                              onChange={(v) => onOperatorChange(i, v)} /></div>
                   <div><label>Value</label>
                     <ValueControl
                       fieldType={field?.type} fieldOptions={field?.options}
                       operatorKey={c.operator} schema={schema} value={c.value}
-                      label={`Condition ${i + 1} value`}
+                      label={`Condition ${i + 1} value`} disabled={saving}
                       onChange={(v) => updateCondition(i, { value: v })}
                     /></div>
                   <div />
@@ -334,49 +471,80 @@ export default function RuleEditorModal({ schema, rule, onClose, onSaved }: Prop
             )}
             {actions.map((a, i) => {
               const def = actionDefFor(a.action_type);
+              const params = def?.params ?? [];
+              const lineParams = params.filter((p) => !isListParam(p) && !isSwitchParam(p));
+              const lists = params.filter(isListParam);
+              const switches = params.filter(isSwitchParam);
+              const boxed = lists.length + switches.length > 0;
+              // Another row's Send a notification is the only reason to leave one out; a row
+              // always lists the type it has.
+              const otherNotify = actions.some((x, j) => j !== i && x.action_type === NOTIFY_ACTION);
+              const typeOptions = schema.actions
+                .filter((ad) => ad.key === a.action_type || !(otherNotify && ad.key === NOTIFY_ACTION))
+                .map((ad) => ({ value: ad.key, label: ad.label }));
+              const control = (p: RuleSchemaParam, label: string) => (
+                <ParamControl
+                  param={p} value={a.params[p.name]} label={label} disabled={saving}
+                  targets={targets} onChange={(v) => setActionParam(i, p.name, v)}
+                />
+              );
               return (
-                <div key={i} className="pf-form" style={{
-                  // One column per rendered cell: type select, each param,
-                  // then the three buttons — so no cell ever wraps.
-                  gridTemplateColumns:
-                    `minmax(240px, 2fr)${' minmax(150px, 1fr)'.repeat(def?.params.length ?? 0)} auto auto auto`,
-                  alignItems: 'end', marginBottom: 10,
-                }}>
-                  <div><label>Action</label>
-                    <select aria-label={`Action ${i + 1} type`} value={a.action_type} disabled={saving}
-                            onChange={(e) => onActionTypeChange(i, e.target.value)}>
-                      {schema.actions.map((ad) => (
-                        <option key={ad.key} value={ad.key}>{ad.label}</option>
+                <div key={i} className={`rule-action${boxed ? ' rule-action-boxed' : ''}`}>
+                  <div className="pf-form" style={{
+                    // One column per rendered cell: type picker, each small param,
+                    // then the three buttons — so no cell ever wraps.
+                    gridTemplateColumns:
+                      `minmax(240px, 2fr)${' minmax(150px, 1fr)'.repeat(lineParams.length)} auto auto auto`,
+                    alignItems: 'end',
+                  }}>
+                    <div><label>Action</label>
+                      <ComboBox options={typeOptions} value={a.action_type} disabled={saving}
+                                ariaLabel={`Action ${i + 1} type`}
+                                onChange={(v) => onActionTypeChange(i, v)} /></div>
+                    {lineParams.map((p) => (
+                      <div key={p.name}><label>{PARAM_LABELS[p.name] ?? p.name}</label>
+                        {control(p, `Action ${i + 1} ${p.name}`)}</div>
+                    ))}
+                    <div>
+                      <button type="button" className="mini-btn" disabled={saving || i === 0}
+                              aria-label={`Move action ${i + 1} up`}
+                              onClick={() => moveAction(i, -1)}>↑</button>
+                    </div>
+                    <div>
+                      <button type="button" className="mini-btn"
+                              disabled={saving || i === actions.length - 1}
+                              aria-label={`Move action ${i + 1} down`}
+                              onClick={() => moveAction(i, 1)}>↓</button>
+                    </div>
+                    <div>
+                      <button type="button" className="mini-btn" disabled={saving}
+                              aria-label={`Remove action ${i + 1}`}
+                              onClick={() => removeAction(i)}>✕</button>
+                    </div>
+                  </div>
+                  {boxed && (
+                    <div className="rule-action-more">
+                      {lists.length > 0 && (
+                        <div className="pf-form">
+                          {lists.map((p) => (
+                            <div key={p.name}><label>{PARAM_LABELS[p.name] ?? p.name}</label>
+                              {control(p, `Action ${i + 1} ${p.name}`)}</div>
+                          ))}
+                        </div>
+                      )}
+                      {switches.map((p) => (
+                        <div key={p.name} className="rule-action-switch">
+                          <span>{PARAM_LABELS[p.name] ?? p.name}</span>
+                          {control(p, PARAM_LABELS[p.name] ?? p.name)}
+                        </div>
                       ))}
-                    </select></div>
-                  {def?.params.map((p) => (
-                    <div key={p.name}><label>{p.name}</label>
-                      <ParamControl
-                        param={p} value={a.params[p.name]}
-                        label={`Action ${i + 1} ${p.name}`}
-                        onChange={(v) => setActionParam(i, p.name, v)}
-                      /></div>
-                  ))}
-                  <div>
-                    <button type="button" className="mini-btn" disabled={saving || i === 0}
-                            aria-label={`Move action ${i + 1} up`}
-                            onClick={() => moveAction(i, -1)}>↑</button>
-                  </div>
-                  <div>
-                    <button type="button" className="mini-btn"
-                            disabled={saving || i === actions.length - 1}
-                            aria-label={`Move action ${i + 1} down`}
-                            onClick={() => moveAction(i, 1)}>↓</button>
-                  </div>
-                  <div>
-                    <button type="button" className="mini-btn" disabled={saving}
-                            aria-label={`Remove action ${i + 1}`}
-                            onClick={() => removeAction(i)}>✕</button>
-                  </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
-            <button type="button" className="mini-btn" disabled={saving} onClick={addAction}>
+            <button type="button" className="mini-btn" disabled={saving || !canAddAction}
+                    onClick={addAction}>
               Add action
             </button>
 

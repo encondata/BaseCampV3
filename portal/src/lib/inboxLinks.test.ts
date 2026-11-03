@@ -21,8 +21,30 @@ describe('resolveInboxLink', () => {
       { kind: 'app', to: '/reports?run=r1#top' });
   });
 
+  it('takes no link on the portal origin whose path starts with another slash: "<origin>//host" goes home, as "//host" does', () => {
+    for (const path of ['//evil.example/x', '//evil.example/x?a=1#top', '/\\evil.example/x']) {
+      expect(resolveInboxLink(`${window.location.origin}${path}`)).toEqual({ kind: 'app', to: '/' });
+    }
+  });
+
   it('keeps a malformed absolute link in the app', () => {
     expect(resolveInboxLink('http://')).toEqual({ kind: 'app', to: '/' });
     expect(resolveInboxLink('https://exa mple.com/n/1')).toEqual({ kind: 'app', to: '/' });
+  });
+
+  it('opens no other kind of link: another scheme, a protocol-relative one or none at all goes home, as a malformed one does', () => {
+    for (const link of ['javascript:alert(1)', 'data:text/html,x', '//evil.example/x', '']) {
+      expect(resolveInboxLink(link)).toEqual({ kind: 'app', to: '/' });
+    }
+    for (const link of ['JavaScript:void(0)', 'vbscript:msgbox(1)', 'reports']) {
+      expect(resolveInboxLink(link)).toEqual({ kind: 'app', to: '/' });
+    }
+  });
+
+  it('takes no path a browser reads as another host\'s: a backslash, tab or newline after the slash', () => {
+    for (const link of ['/\\evil.example/x', '/\t/evil.example/x', '/\n/evil.example/x', '/\r/evil.example/x']) {
+      expect(resolveInboxLink(link)).toEqual({ kind: 'app', to: '/' });
+    }
+    expect(resolveInboxLink('/n/a\\b')).toEqual({ kind: 'app', to: '/n/a\\b' });
   });
 });

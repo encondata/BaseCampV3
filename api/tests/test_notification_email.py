@@ -136,10 +136,10 @@ async def test_emails_without_any_group(db, email_on, clock):
 
 
 async def test_groups_play_no_part(db, email_on):
-    """Being in a group changes nothing: a paused group that does not cover the
-    category neither blocks the email nor adds one."""
+    """Being in a group changes nothing: a paused group neither blocks the email
+    nor adds one."""
     p = await _person(db)
-    group = NotificationGroup(name="Group A", categories=["wiki"], enabled=False)
+    group = NotificationGroup(name="Group A", enabled=False)
     db.add(group)
     await db.flush()
     db.add(NotificationGroupMember(group_id=group.id, person_id=p.id))

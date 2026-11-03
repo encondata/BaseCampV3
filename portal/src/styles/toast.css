@@ -109,6 +109,9 @@
 .notif-title { font-size: var(--list-fs-primary); color: var(--text-dark); display: flex; align-items: center; gap: 8px; }
 .notif-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
 .notif-body, .notif-time { font-size: var(--list-fs-sub); color: var(--text-mute); }
+/* A notification about several items puts one on each line of its body (the event sweep joins
+   them with "\n", and the email keeps the breaks); without this they run together. */
+.notif-body { white-space: pre-line; }
 .notif-actions { flex: none; display: flex; gap: 4px; opacity: 0; transition: opacity 120ms; }
 .notif-row:hover .notif-actions, .notif-row:focus-within .notif-actions { opacity: 1; }
 @media (hover: none) { .notif-actions { opacity: 1; } }

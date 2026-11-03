@@ -70,6 +70,11 @@
     "reason": "not list content: header action button override (comment notes it is scoped to this header row only, not a list row)"
   },
   {
+    "file": "styles/notifications.css",
+    "selector": ".idet-header-actions .watch-btn, .truck-hero-actions .watch-btn",
+    "reason": "not list content: header action button override, the box of the .idet-header-actions .mini-btn entry above so the Watch button is a same-size sibling of Edit and Import assets (scoped to a page header's action row, not a list row)"
+  },
+  {
     "file": "styles/initiatives.css",
     "selector": ".imp-report-headline",
     "reason": "not list content: report section headline"

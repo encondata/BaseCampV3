@@ -3,8 +3,9 @@
  * /me › Notifications: the "What you get" switch grid (Inbox and Email per
  * category, following the company defaults until the person changes a switch),
  * the critical note, the Sound row, the "When email reaches you" schedule card,
- * and the groups lists (Group, Members, Status — groups no longer decide what
- * a person gets). Only the person's own choices are ever saved.
+ * the "What you watch" section under it, and the groups lists (Group, Members,
+ * Status — groups no longer decide what a person gets). Only the person's own
+ * choices are ever saved.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -12,7 +13,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import {
   ApiError, type MyNotificationGroup, type NotificationKindSetting, type NotificationSettings,
-  type SwitchPair, type UiPreferences,
+  type SwitchPair, type UiPreferences, type Watch,
 } from '../../lib/api';
 import { LIST_FIT } from '../../lib/listTools';
 
@@ -61,6 +62,8 @@ const api = vi.hoisted(() => ({
   listMyNotificationGroups: vi.fn(),
   requestGroupMembership: vi.fn(),
   cancelMembershipRequest: vi.fn(),
+  // "What you watch" loads the person's watches on mount
+  listMyWatches: vi.fn(),
 }));
 vi.mock('../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/api')>()),
@@ -73,13 +76,17 @@ const kind = (
   key: string, label: string, category: NotificationKindSetting['category'],
   over: Partial<NotificationKindSetting> = {},
 ): NotificationKindSetting => ({
-  kind: key, label, category, email: true, owner_always: false, critical: false, locked: false, ...over,
+  kind: key, label, category, email: true, owner_always: false, critical: false, locked: false,
+  watchable: false, everywhere: false, reaches: [], ...over,
 });
 
 /** What GET /notifications/settings answers: Reports email is off by default,
  *  one kind an admin marked critical, and the two security kinds always are. */
 const SETTINGS: NotificationSettings = {
-  defaults: { approvals: ON, reports: { inbox: true, email: false }, wiki: ON, learning: ON },
+  defaults: {
+    approvals: ON, reports: { inbox: true, email: false }, wiki: ON, learning: ON,
+    initiatives: ON, trucks: ON, devices: ON, status_rules: ON, bulk_actions: ON,
+  },
   critical_kinds: ['report_failed'],
   kinds: [
     kind('membership_request', 'Group membership request', 'approvals'),
@@ -106,8 +113,10 @@ beforeEach(() => {
   api.listMyNotificationGroups.mockReset();
   api.requestGroupMembership.mockReset();
   api.cancelMembershipRequest.mockReset();
+  api.listMyWatches.mockReset();
   api.getNotificationSettings.mockResolvedValue(SETTINGS);
   api.listMyNotificationGroups.mockResolvedValue([]);
+  api.listMyWatches.mockResolvedValue([]);
   auth.notif = {
     sound: 'chime',
     switches: {},
@@ -128,7 +137,10 @@ const sw = (channel: 'Inbox' | 'Email', category: string) =>
 /** The reason a switch gives for being off limits: the title of what wraps it. */
 const reason = (input: HTMLElement) => input.closest('[title]')?.getAttribute('title') ?? null;
 
-const GRID_CATEGORIES = ['Approvals & requests', 'Reports & labels', 'Wiki', 'Learning'];
+const GRID_CATEGORIES = [
+  'Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Initiatives', 'Trucks', 'Devices',
+  'Status rules', 'Bulk actions',
+];
 
 /** The grid is inert until the company defaults have arrived. */
 const loaded = () => waitFor(() => expect(sw('Inbox', 'Wiki').disabled).toBe(false));
@@ -183,7 +195,8 @@ it('the grid follows the company defaults, and says every row does', async () =>
     ...SETTINGS,
     defaults: {
       approvals: ON, reports: { inbox: true, email: false },
-      wiki: { inbox: false, email: false }, learning: ON,
+      wiki: { inbox: false, email: false }, learning: ON, initiatives: ON, trucks: ON, devices: ON,
+      status_rules: ON, bulk_actions: ON,
     },
   });
   render(<MeNotifications />);
@@ -196,7 +209,7 @@ it('the grid follows the company defaults, and says every row does', async () =>
   expect(sw('Inbox', 'Wiki').checked).toBe(false);
   expect(sw('Email', 'Wiki').checked).toBe(false);
   expect(reason(sw('Email', 'Wiki'))).toBe('Turn on Inbox to get email');
-  expect(screen.getAllByText('Company default')).toHaveLength(4);
+  expect(screen.getAllByText('Company default')).toHaveLength(9);
   expect(screen.queryByText('Your choice')).toBeNull();
   expect(auth.updatePreferences).not.toHaveBeenCalled();   // looking changes nothing
 });
@@ -212,7 +225,7 @@ it('the person\'s own values win over the defaults, and the row says "Your choic
   const reports = screen.getByRole('row', { name: /Reports & labels/ });
   expect(within(reports).getByText('Your choice')).toBeTruthy();
   expect(within(screen.getByRole('row', { name: /Wiki/ })).getByText('Your choice')).toBeTruthy();
-  expect(screen.getAllByText('Company default')).toHaveLength(2);
+  expect(screen.getAllByText('Company default')).toHaveLength(7);
   expect(screen.getAllByRole('button', { name: 'Use company default' })).toHaveLength(2);
 });
 
@@ -283,7 +296,7 @@ it('after a save the row says "Your choice", and the company defaults are not fe
 
   await waitFor(() => expect(within(screen.getByRole('row', { name: /Wiki/ })).getByText('Your choice')).toBeTruthy());
   expect(sw('Email', 'Wiki').checked).toBe(false);
-  expect(screen.getAllByText('Company default')).toHaveLength(3);
+  expect(screen.getAllByText('Company default')).toHaveLength(8);
   expect(api.getNotificationSettings).toHaveBeenCalledTimes(1);
   await waitFor(() => expect(screen.getByText('saved')).toBeTruthy());
 });
@@ -505,20 +518,20 @@ it('an invalid schedule is never saved: removing every day asks for one and send
 
 // ── the groups lists ─────────────────────────────────────────────────────
 
-/** A group as the API answers: a name, a description, its (hidden) categories,
- *  its members and the viewer's own request. No delivery settings. */
+/** A group as the API answers: a name, a description, its members and the
+ *  viewer's own request. No delivery settings, no categories. */
 const G1: MyNotificationGroup = {
-  id: 'g1', name: 'Ops', description: 'Operations alerts', categories: ['approvals', 'wiki'],
+  id: 'g1', name: 'Ops', description: 'Operations alerts',
   member_count: 3, is_member: true, pending_request: null,
 };
 
 const G2: MyNotificationGroup = {
-  id: 'g2', name: 'Warehouse Alerts', description: 'Forklift and stock alerts', categories: ['learning'],
+  id: 'g2', name: 'Warehouse Alerts', description: 'Forklift and stock alerts',
   member_count: 5, is_member: false, pending_request: null,
 };
 
 const G3: MyNotificationGroup = {
-  id: 'g3', name: 'Fleet Updates', description: 'Truck status changes', categories: [],
+  id: 'g3', name: 'Fleet Updates', description: 'Truck status changes',
   member_count: 2, is_member: false, pending_request: null,
 };
 
@@ -530,13 +543,14 @@ const pickAction = (sectionName: string, item: string) => {
   fireEvent.click(screen.getByRole('menuitem', { name: item }));
 };
 
-it('the hints say groups don\'t change what you get, and how to join one', async () => {
+it('the hints say which groups are yours, and how to join one', async () => {
   render(<MeNotifications />);
   await loaded();
   const mine = within(region('My groups'));
   const joinable = within(region('Join a group'));
-  const myHint = mine.getByText("The notification groups you belong to. Groups don't change what you get.");
+  const myHint = mine.getByText('The notification groups you belong to.');
   expect(myHint.classList.contains('page-hint')).toBe(true);
+  expect(screen.queryByText(/Groups don't change what you get/)).toBeNull();
   const joinHint = joinable.getByText('Search other notification groups and ask to join.');
   expect(joinHint.classList.contains('page-hint')).toBe(true);
   expect(screen.queryByText(/tune your own overrides/)).toBeNull();
@@ -551,9 +565,8 @@ it('a member group row shows its name, description, member count and no delivery
   expect(within(row).getByText('Operations alerts')).toBeTruthy();
   expect(within(row).getByText('3')).toBeTruthy();
   expect(within(row).getByText('—')).toBeTruthy();                       // no request waiting
-  // Nothing of the group's old delivery settings, categories or overrides is shown.
-  for (const text of ['Email', 'No email', 'Push', 'Customized',
-    'Approvals & requests', 'Wiki', 'None — inbox only']) {
+  // Nothing of the group's old delivery settings or overrides is shown.
+  for (const text of ['Email', 'No email', 'Push', 'Customized']) {
     expect(within(row).queryByText(text)).toBeNull();
   }
 });
@@ -756,4 +769,67 @@ it('a failed groups load says so, without touching the switch grid', async () =>
   expect(await screen.findByText('Could not load notification groups.')).toBeTruthy();
   await loaded();
   expect(screen.queryByText('Could not load notification settings.')).toBeNull();
+});
+
+// ── what you watch ───────────────────────────────────────────────────────
+
+const TRUCK_KIND = kind('truck_status_changed', 'Truck status changed', 'trucks',
+  { watchable: true, everywhere: true, reaches: ['truck', 'initiative', 'site'] });
+
+const WATCH: Watch = {
+  id: 'w1', thing: 'initiative', thing_id: 'i1', thing_name: 'Initiative A', link: '/initiatives/i1',
+  kinds: ['truck_status_changed'], via: { type: 'you', id: null, name: null },
+  created_at: '2026-11-02T12:00:00Z',
+};
+
+it('renders "What you watch" after the schedule card and before "My groups", outside the card stack', async () => {
+  render(<MeNotifications />);
+  await loaded();
+  const watching = await screen.findByRole('region', { name: 'What you watch' });
+
+  const schedule = screen.getByRole('heading', { name: 'When email reaches you' });
+  const groups = region('My groups');
+  expect(schedule.compareDocumentPosition(watching) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(watching.compareDocumentPosition(groups) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // It is the stack's next sibling, and the groups' previous one: not inside either.
+  const stack = screen.getByRole('link', { name: 'View all notifications' }).closest('.set-stack') as HTMLElement;
+  expect(stack.contains(watching)).toBe(false);
+  expect(stack.nextElementSibling).toBe(watching);
+  expect(watching.nextElementSibling).toBe(groups);
+  expect(watching.classList.contains('me-watch-card')).toBe(true);
+});
+
+it('loads the person\'s watches once and names their events by the company settings\' kinds', async () => {
+  api.listMyWatches.mockResolvedValue([WATCH]);
+  api.getNotificationSettings.mockResolvedValue({ ...SETTINGS, kinds: [...SETTINGS.kinds, TRUCK_KIND] });
+  render(<MeNotifications />);
+  const watching = await screen.findByRole('region', { name: 'What you watch' });
+
+  expect(await within(watching).findByText('Initiative A')).toBeTruthy();
+  expect(await within(watching).findByText('Truck status changed')).toBeTruthy();
+  expect(within(watching).queryByText('truck_status_changed')).toBeNull();
+  expect(api.listMyWatches).toHaveBeenCalledTimes(1);
+});
+
+it('still lists the watches when the company settings can\'t be loaded, and the settings error stays the page\'s', async () => {
+  api.listMyWatches.mockResolvedValue([WATCH]);
+  api.getNotificationSettings.mockRejectedValue(new ApiError(500, 'server_error'));
+  render(<MeNotifications />);
+
+  await screen.findByText('Could not load notification settings.');
+  const watching = screen.getByRole('region', { name: 'What you watch' });
+  expect(await within(watching).findByText('Initiative A')).toBeTruthy();
+  expect(within(watching).getByText('truck_status_changed')).toBeTruthy();   // no label to give it
+});
+
+it('a failed watches load says so, without touching the switch grid or the groups', async () => {
+  api.listMyWatches.mockRejectedValue(new ApiError(500, 'server_error'));
+  api.listMyNotificationGroups.mockResolvedValue([G1]);
+  render(<MeNotifications />);
+
+  expect(await screen.findByText('Could not load your watches.')).toBeTruthy();
+  await loaded();
+  expect(screen.getByText('Ops')).toBeTruthy();
+  expect(screen.queryByText('Could not load notification settings.')).toBeNull();
+  expect(screen.queryByText('Could not load notification groups.')).toBeNull();
 });

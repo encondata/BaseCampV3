@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { DeviceConfigHistoryItem } from './api';
 import {
-  DEFAULT_CONFIG, applicableSections, configFor, labelStationOf, sectionSource, soundLabel, syncLine, withSection,
+  DEFAULT_CONFIG, KIOSK_ONLINE_MS, applicableSections, configFor, kioskOnline, labelStationOf,
+  sectionSource, soundLabel, syncLine, withSection,
 } from './kioskConfig';
 
 const NOW = Date.parse('2026-10-17T12:00:00Z');
@@ -115,5 +116,21 @@ describe('label_station', () => {
   it('is not an editable section', () => {
     expect(applicableSections({ sub_type: 'laptop', station_type: 'label' }))
       .not.toContain('label_station' as never);
+  });
+});
+
+describe('kioskOnline', () => {
+  // The API's device check announces a Device offline notice on the same rule, so the portal's
+  // number must stay the API's: KIOSK_ONLINE in api/src/serversherpa/services/device_online.py
+  // (tests/test_device_online.py pins that side).
+  it('pins the offline threshold at the API\'s three minutes', () => {
+    expect(KIOSK_ONLINE_MS).toBe(3 * 60 * 1000);
+  });
+
+  it('is online while the last check-in is at most three minutes old, offline after', () => {
+    const now = Date.parse('2026-10-17T12:00:00Z');
+    expect(kioskOnline('2026-10-17T11:57:00Z', now)).toBe(true);     // exactly 3 minutes
+    expect(kioskOnline('2026-10-17T11:56:59Z', now)).toBe(false);
+    expect(kioskOnline(null, now)).toBe(false);
   });
 });

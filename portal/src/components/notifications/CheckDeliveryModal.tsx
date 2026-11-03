@@ -5,10 +5,14 @@
  * whether the email goes now, is held for the person's summary (until when,
  * and why) or does not go (and why), the address it would go to, the person's
  * switches and where each comes from, their schedule and whether it is open
- * right now, and whether the type is critical. For a type the account owner
- * always gets, a segmented choice models the owner's own copy or an admin's
- * copy, which stays in the inbox. It asks as soon as both pickers are set and
- * again on every change. Nothing is sent or written.
+ * right now, and whether the type is critical. For a type someone can watch
+ * for, a Watching row lists the person's watches that would hear it, a line
+ * each (the thing, its events, whose watch it is), and a note under the rows
+ * says that reaching them for a particular thing also depends on their access
+ * to it. For a type the account owner always gets, a segmented choice models
+ * the owner's own copy or an admin's copy, which stays in the inbox. It asks as
+ * soon as both pickers are set and again on every change. Nothing is sent or
+ * written.
  *
  * "Critical type" describes the TYPE (it skips quiet hours, days off and the
  * summary), not this answer: an admin's copy of a security notice is critical
@@ -19,7 +23,7 @@ import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 
 import {
   ApiError, checkDelivery, listNotificationKinds, listNotificationRecipients,
-  type DeliveryCheck, type NotificationKindInfo, type NotificationRecipient,
+  type CheckWatch, type DeliveryCheck, type NotificationKindInfo, type NotificationRecipient,
 } from '../../lib/api';
 import {
   ADDRESS_SOURCE_LABELS, AFTER_SUMMARY_LABEL, reasonLabel, scheduleStateOf, shortWhen,
@@ -27,6 +31,7 @@ import {
 } from '../../lib/deliveryLog';
 import { categoryLabel } from '../../lib/notificationKinds';
 import { formatDays, formatQuietHours } from '../../lib/notifications';
+import { THING_LABELS, eventsText } from '../../lib/watches';
 import ComboBox, { type ComboOption } from '../ComboBox';
 import ChoiceField from './ChoiceField';
 import NotificationModal from './NotificationModal';
@@ -106,6 +111,24 @@ function scheduleLine(r: DeliveryCheck): ReactNode {
     </>
   );
 }
+
+const NO_WATCHES = 'Nothing that hears this type';
+const ACCESS_NOTE = 'Whether it reaches them for a particular thing also depends on their access to it.';
+
+/** One watch of the person that would hear the type: "Initiative A · All events ·
+ *  Their own", "Everything · Truck status changed · Group A". The thing is its
+ *  name (Everything for an Everything watch), the events are their labels (or
+ *  All events), and the last part is whose watch it is: theirs, or a group's
+ *  name. A name the API left out reads as a dash, as in the watch lists. */
+function watchLine(watch: CheckWatch, kinds: NotificationKindInfo[]): string {
+  const thing = watch.thing === 'everything' ? THING_LABELS.everything : (watch.thing_name ?? '—');
+  const via = watch.via.type === 'group' ? (watch.via.name ?? '—') : 'Their own';
+  return `${thing} · ${eventsText(watch.kinds, kinds)} · ${via}`;
+}
+
+/** A person has one watch of their own on a thing, and so has each group. */
+const watchKey = (w: CheckWatch): string =>
+  `${w.via.type}:${w.via.id ?? ''}:${w.thing}:${w.thing_id ?? ''}`;
 
 export default function CheckDeliveryModal({ onClose }: { onClose: () => void }) {
   const personFieldId = useId();
@@ -212,7 +235,20 @@ export default function CheckDeliveryModal({ onClose }: { onClose: () => void })
                 <dd>{scheduleLine(result)}</dd>
                 <dt>Critical type</dt>
                 <dd>{result.critical ? 'Yes — skips quiet hours and the summary' : 'No'}</dd>
+                {result.watches && (
+                  <>
+                    <dt>Watching</dt>
+                    <dd>
+                      {result.watches.length === 0
+                        ? NO_WATCHES
+                        : result.watches.map((w) => (
+                          <div key={watchKey(w)}>{watchLine(w, kinds ?? [])}</div>
+                        ))}
+                    </dd>
+                  </>
+                )}
               </dl>
+              {result.watches && <p className="cell-sub nm-hint">{ACCESS_NOTE}</p>}
             </section>
           </div>
         )}

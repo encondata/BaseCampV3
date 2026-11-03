@@ -5,10 +5,13 @@ payload — nothing else may define operators, fields, or actions.
 
 Actions are real Python with validated params — never dynamic
 table/field identifiers (V2's injection surface). apply() mutates ORM
-objects already in the caller's session and never commits; an action
-whose required context is missing returns applied=False with a reason
-instead of failing the scan."""
+objects already in the caller's session and never commits (the Notify
+action instead records when it notified and leaves its notice for the
+commit to announce, status_rules/notify.py); an action whose required
+context is missing returns applied=False with a reason instead of
+failing the scan."""
 
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -16,6 +19,7 @@ from typing import Any, Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from serversherpa.status_rules import notify
 from serversherpa.status_rules.context import Context
 
 # ── operators ────────────────────────────────────────────────────────
@@ -68,6 +72,11 @@ class ConditionField:
     label: str
     type: str                       # text | status | site | bool | number | uuid
     options_source: str | None = None   # 'status:<record_type>' | 'sites'
+    # For a yes/no field: whether its column can be empty (NULL), so that "unknown" is a third
+    # state beside Yes and No. The rule editor then also offers the empty checks (is null /
+    # is not null); a yes/no field that is never empty offers "equals" alone. Other kinds of
+    # field offer every operator whatever this says.
+    nullable: bool = False
 
 
 _FIELDS = [
@@ -77,10 +86,14 @@ _FIELDS = [
     ConditionField("scan.site_id", "Scan site", "site", "sites"),
     ConditionField("scan.source", "Scan source", "text"),
     ConditionField("scan.operator_id", "Scan operator", "uuid"),
+    # An off-move sighting runs only the rules that ask for it with
+    # "equals true" (engine.apply_rules); every other rule skips it.
+    ConditionField("scan.off_move", "Off-move sighting", "bool"),
     ConditionField("asset.status", "Asset status", "status", "status:asset"),
     ConditionField("asset.site_id", "Asset site", "site", "sites"),
     ConditionField("asset.client_id", "Asset client", "uuid"),
-    ConditionField("asset.has_rails", "Asset has rails", "bool"),
+    # `bool | None` (a V2 import leaves it NULL): only is null / is not null ask for "unknown".
+    ConditionField("asset.has_rails", "Asset has rails", "bool", nullable=True),
     ConditionField("container.status", "Container status", "status",
                    "status:container"),
     ConditionField("container.site_id", "Container site", "site", "sites"),
@@ -123,7 +136,7 @@ class ActionOutcome:
 @dataclass(frozen=True)
 class ParamField:
     name: str
-    type: str                        # status | choice | bool
+    type: str                        # status | choice | bool | people | groups
     options: tuple[str, ...] = ()    # for choice
     options_source: str | None = None  # for status params: 'status:<type>'
 
@@ -308,11 +321,33 @@ _ACTION_LIST = [
     ActionDef("set_asset_location_from_container",
               "Set asset location from its container", (),
               _set_asset_location_from_container),
+    # Last: the rule editor starts a new action on the first one. `people` and
+    # `groups` are lists of person and notification group ids.
+    ActionDef("notify", "Send a notification",
+              (ParamField("people", "people"), ParamField("groups", "groups"),
+               ParamField("watchers", "bool")),
+              notify.apply),
 ]
 ACTIONS: dict[str, ActionDef] = {a.key: a for a in _ACTION_LIST}
 
 
+def _ids(value: Any) -> bool:
+    """A people or groups param: a list of id strings, each spelled the way str(UUID) writes
+    it (lowercase, hyphenated: the portal's pickers and summaries match ids as strings), and
+    none named twice."""
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        return False
+    try:
+        spelled_alike = all(str(uuid.UUID(v)) == v for v in value)
+    except ValueError:
+        return False
+    return spelled_alike and len(set(value)) == len(value)
+
+
 def validate_action(action_type: str, params: dict) -> str | None:
+    """Why these params don't fit the action, as a reason code, or None.
+    Whether the people and groups a Notify action names exist is for the
+    route to check (it has the database)."""
     action = ACTIONS.get(action_type)
     if action is None:
         return "unknown_action"
@@ -325,5 +360,12 @@ def validate_action(action_type: str, params: dict) -> str | None:
             return "bad_param"
         if p.type == "status" and not isinstance(params[p.name], str):
             return "bad_param"
-    extra = set(params) - {p.name for p in action.params}
-    return "bad_param" if extra else None
+        if p.type in ("people", "groups") and not _ids(params[p.name]):
+            return "bad_param"
+    if set(params) - {p.name for p in action.params}:
+        return "bad_param"
+    # a notification has to go to someone
+    if action_type == "notify" and not (
+            params["people"] or params["groups"] or params["watchers"]):
+        return "notify_no_recipients"
+    return None

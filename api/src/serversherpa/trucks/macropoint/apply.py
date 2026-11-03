@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import Initiative, StatusValue, Truck, TruckEvent, TruckUpdate
 from serversherpa.db.ordering import natural, natural_key
+from serversherpa.notifications.status_changes import announce_truck_status_changed
 from serversherpa.services.audit import audit
 from serversherpa.trucks.location import format_location
 from serversherpa.trucks.macropoint.parse import (
@@ -305,6 +306,9 @@ async def apply_messages(db: AsyncSession, actor_id: uuid.UUID,
                       action="update", changes={
                           "status": {"from": old, "to": to},
                           "source": {"from": None, "to": "MacroPoint"}})
+                # a message can be hours old: the notice carries its own time
+                await announce_truck_status_changed(
+                    db, truck, old=old, new=to, actor_id=actor_id, at=m.recorded_at)
                 row["status_change"] = f"{labels.get(old, old)} → {labels.get(to, to)}"
             add(**row, result="added")
         if counts["location"] or counts["trip_event"]:

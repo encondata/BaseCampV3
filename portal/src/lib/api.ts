@@ -54,7 +54,9 @@ export interface PersonOut {
 export type NotificationSound = 'none' | 'chime' | 'ping' | 'pop' | 'bell';
 
 /** Mirrors notifications/kinds.py CATEGORIES. */
-export type NotificationCategory = 'approvals' | 'reports' | 'wiki' | 'learning' | 'security';
+export type NotificationCategory =
+  'approvals' | 'reports' | 'wiki' | 'learning' | 'initiatives' | 'trucks' | 'devices'
+  | 'status_rules' | 'bulk_actions' | 'security';
 
 /** What the person has chosen about notifications, on their account: the
  *  in-app sound, their own switch values (only those; a category or a value
@@ -3917,7 +3919,7 @@ export async function listWorkerOptions(): Promise<WorkerOption[]> {
 
 /* ── god mode (developer easter egg) ─────────────────────────────── */
 
-/** Returns the nav colour on success, or null when refused. A refusal is
+/** Returns the nav color on success, or null when refused. A refusal is
  *  indistinguishable from a wrong word by design — the caller must not
  *  surface it, or it becomes the signal the 404 exists to avoid. */
 export async function unlockGodMode(word: string): Promise<string | null> {
@@ -4756,14 +4758,13 @@ export async function testSpecLookup(): Promise<{ ok: boolean; latency_ms: numbe
 /* ── notification groups ─────────────────────────────────────────────
  * Mirrors api/src/serversherpa/api/schemas.py's Notification*Out shapes.
  * A group is a name, a description, Active/Paused and its members: it decides
- * nothing about what anyone gets, so it carries no delivery settings. Its
- * `categories` are kept by the API but shown nowhere. */
+ * nothing about what anyone gets, so it carries no delivery settings and no
+ * categories (the API refuses a body that sends either). */
 
 export interface NotificationGroup {
   id: string;
   name: string;
   description: string;
-  categories: string[];
   enabled: boolean;
   member_count: number;
   created_at: string;
@@ -4800,11 +4801,9 @@ export interface NotificationRecipient {
   can_web: boolean;
 }
 
-/** `categories` is what the API still accepts and keeps; no screen sends it. */
 export interface NotificationGroupCreateIn {
   name: string;
   description?: string;
-  categories?: string[];
 }
 
 /** All fields optional so a caller can send a partial patch. */
@@ -4812,7 +4811,6 @@ export interface NotificationGroupPatchIn {
   name?: string;
   description?: string;
   enabled?: boolean;
-  categories?: string[];
 }
 
 export async function listNotificationGroups(): Promise<NotificationGroup[]> {
@@ -4899,7 +4897,6 @@ export interface MyNotificationGroup {
   id: string;
   name: string;
   description: string;
-  categories: string[];
   member_count: number;
   is_member: boolean;
   pending_request: MyPendingRequest | null;
@@ -4989,8 +4986,16 @@ export interface StatusRuleIn {
 }
 export interface SchemaOption { value: string; label: string; color?: string }
 export interface RuleSchemaOperator { key: string; label: string; needs_value: boolean }
-export interface RuleSchemaField { key: string; label: string; type: string; options?: SchemaOption[] }
-export interface RuleSchemaParam { name: string; type: string; options?: (string | SchemaOption)[] }
+/** `nullable`: a yes/no field whose value can also be empty (unknown), so is null / is not null
+ *  mean something on it. Absent reads as false (older payloads). */
+export interface RuleSchemaField {
+  key: string; label: string; type: string; options?: SchemaOption[]; nullable?: boolean;
+}
+/** What an action's parameter holds. `status` is one of the vocabulary's keys and `choice` one of
+ *  a few strings (both carry `options`), `bool` a yes/no, and `people` and `groups` lists of
+ *  person ids and notification group ids (the Send a notification action's). */
+export type RuleParamType = 'status' | 'choice' | 'bool' | 'people' | 'groups';
+export interface RuleSchemaParam { name: string; type: RuleParamType; options?: (string | SchemaOption)[] }
 export interface RuleSchemaAction { key: string; label: string; params: RuleSchemaParam[] }
 export interface StatusRuleSchema {
   trigger_statuses: SchemaOption[]; match_types: SchemaOption[];
@@ -6507,6 +6512,11 @@ export type DeliveryLogEvent =
  *  inbox_suppressed, and email_not_queued for category_off or
  *  category_inbox_only → source (default / own: whether the switch that
  *  turned it down follows the company default or is the person's own);
+ *  inbox_written, and inbox_suppressed for category_off, from the event sweep
+ *  → via (the routes that reached the person: a sorted list of watch, direct,
+ *  group:<id> and rule:<id>; a string on email_queued), events (the event ids)
+ *  and names (the groups' and rules' names, by route); inbox_suppressed for
+ *  no_access → events;
  *  email_queued → template, send_at, deferred, and for notification mail via
  *  (contact / login) plus critical, owner_copy and after_summary when true;
  *  for the summary email itself summary (true) and count; rows from before
@@ -6629,12 +6639,19 @@ export interface DeliveryCheck {
   reason: string | null;
   address: string | null;
   address_source: 'contact' | 'login' | null;
+  /** Null for a kind nobody can watch for; otherwise the person's watches that
+   *  would hear it, their own first, then their groups'. Access is not asked:
+   *  whether it reaches them for a particular thing also depends on their
+   *  access to that thing. */
+  watches: CheckWatch[] | null;
 }
 
 /** One registered notification kind, for Check delivery's picker. `email` is
  *  whether it is ever emailed; `critical` whether it skips quiet hours, days
  *  off and the summary; `locked` whether that is fixed (account security is
- *  always critical). */
+ *  always critical). `watchable` is whether anyone can watch for it, `reaches`
+ *  the kinds of thing they can watch it on, and `everywhere` whether an
+ *  Everything watch may name it. */
 export interface NotificationKindInfo {
   kind: string;
   label: string;
@@ -6643,6 +6660,9 @@ export interface NotificationKindInfo {
   owner_always: boolean;
   critical: boolean;
   locked: boolean;
+  watchable: boolean;
+  everywhere: boolean;
+  reaches: string[];
 }
 
 /** The registered kinds in registry order (GET /notifications/kinds). */
@@ -6693,7 +6713,10 @@ export interface NotifSchedule {
 
 /** One registered kind in the company settings. `email` is whether it is ever
  *  emailed; `critical` whether it skips quiet hours, days off and the summary;
- *  `locked` whether that is fixed (account security is always critical). */
+ *  `locked` whether that is fixed (account security is always critical).
+ *  `watchable` is whether anyone can watch for it, `reaches` the kinds of thing
+ *  they can watch it on (in the order to show them), and `everywhere` whether
+ *  an Everything watch may name it. */
 export interface NotificationKindSetting {
   kind: string;
   label: string;
@@ -6702,6 +6725,9 @@ export interface NotificationKindSetting {
   owner_always: boolean;
   critical: boolean;
   locked: boolean;
+  watchable: boolean;
+  everywhere: boolean;
+  reaches: string[];
 }
 
 /** The company notification settings. `defaults` holds each configurable
@@ -6733,6 +6759,204 @@ export async function updateNotificationSettings(
   const resp = await apiFetch('/notifications/settings', {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/* ── watches: a person's own, and a notification group's ─────────────────
+ * Mirrors api/src/serversherpa/api/schemas.py WatchIn, WatchKindsIn, WatchOut,
+ * WatchStateOut, WatchViaOut and CheckWatchOut. A person (or a group) watches
+ * an initiative, a site, a truck, a device, or a library, folder or page of the
+ * wiki, or chosen events everywhere (an Everything watch); `kinds` empty means
+ * every event that applies to the thing (for a wiki thing, every page update and
+ * comment: it names none).
+ * Errors carry `detail.code`: 409 `already_watching`; 404 `thing_not_found`,
+ * `watch_not_found`, `group_not_found`; 422 `invalid_thing` (a device that is not
+ * covered too: a kiosk that is not an RFID Station, a router that is not
+ * approved), `invalid_kind` (any events named for a wiki thing too),
+ * `kinds_required`; 423 `read_only_mode`. */
+
+/** What the wiki's things are called in a watch: a library (`wiki_space`), or a
+ *  folder or page of one (`wiki_node`). */
+export type WikiThing = 'wiki_space' | 'wiki_node';
+
+/** The things a watch can be on. A device is an RFID Station kiosk, a fixed reader
+ *  or an approved router (the ones that check in on their own). */
+export type WatchThing = 'initiative' | 'site' | 'truck' | 'device' | WikiThing;
+
+/** What a watch is on: a thing, or Everything (events anywhere, no thing). */
+export type WatchTarget = WatchThing | 'everything';
+
+/** A watch with what it is on. `thing_id`, `thing_name`, `thing_label` and `link`
+ *  are null for Everything. `thing_label` is what the portal calls the thing's
+ *  kind, as its chip says it ("Wiki folder" or "Wiki page" for a wiki node, by
+ *  its row); the API sends it for every watch, and a row without one is called by
+ *  the portal's own label for its `thing`. `link` is the thing's page: a path in
+ *  the portal, or for a wiki thing the absolute URL of its page in the wiki (an
+ *  app of its own). `kinds` empty means every event that applies. `via` is whose
+ *  watch it is: the person's own (`you`), or a group's with its id and name. */
+export interface Watch {
+  id: string;
+  thing: WatchTarget;
+  thing_id: string | null;
+  thing_name: string | null;
+  thing_label?: string | null;
+  link: string | null;
+  kinds: string[];
+  via: { type: 'you' | 'group'; id?: string | null; name?: string | null };
+  created_at: string;
+}
+
+/** Whether the person watches a thing themselves (a group's watch of it does
+ *  not count), for the Watch button. */
+export interface WatchState {
+  watching: boolean;
+  watch_id: string | null;
+  kinds: string[];
+}
+
+/** Watch a thing (`id` is its id), or events everywhere (`thing` is
+ *  "everything", `id` null, and `kinds` has to name some). */
+export interface WatchIn {
+  thing: WatchTarget;
+  id: string | null;
+  kinds: string[];
+}
+
+/** A watch of the person that would hear a kind (Check delivery): `thing_id`
+ *  and `thing_name` are null for Everything, `kinds` the events it names
+ *  (empty: every event that applies) and `via` whose it is. */
+export interface CheckWatch {
+  thing: WatchTarget;
+  thing_id: string | null;
+  thing_name: string | null;
+  kinds: string[];
+  via: Watch['via'];
+}
+
+/** The person's own watches, then those of the Active groups they belong to
+ *  (GET /auth/me/watches). Only things they can open now are listed. */
+export async function listMyWatches(): Promise<Watch[]> {
+  const resp = await apiFetch('/auth/me/watches');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Whether the person watches this thing themselves (GET /auth/me/watches/state). */
+export async function getWatchState(thing: WatchThing, id: string): Promise<WatchState> {
+  const qs = new URLSearchParams({ thing, id });
+  const resp = await apiFetch(`/auth/me/watches/state?${qs.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Watch something (POST /auth/me/watches). One watch each: 409 `already_watching`
+ *  when there is one, and its events are changed with `updateMyWatch`. */
+export async function createMyWatch(body: WatchIn): Promise<Watch> {
+  const resp = await apiFetch('/auth/me/watches', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Choose the events of one of the person's watches (PATCH /auth/me/watches/{id});
+ *  none means every event that applies (an Everything watch has to name some). */
+export async function updateMyWatch(id: string, kinds: string[]): Promise<Watch> {
+  const resp = await apiFetch(`/auth/me/watches/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kinds }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Stop watching (DELETE /auth/me/watches/{id}). */
+export async function deleteMyWatch(id: string): Promise<void> {
+  const resp = await apiFetch(`/auth/me/watches/${id}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+/** Everything a notification group watches, newest first
+ *  (GET /notifications/groups/{id}/watches). */
+export async function listGroupWatches(groupId: string): Promise<Watch[]> {
+  const resp = await apiFetch(`/notifications/groups/${groupId}/watches`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Point a group at a thing, or at events everywhere
+ *  (POST /notifications/groups/{id}/watches). 409 `already_watching`. */
+export async function createGroupWatch(groupId: string, body: WatchIn): Promise<Watch> {
+  const resp = await apiFetch(`/notifications/groups/${groupId}/watches`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Choose the events of one of a group's watches
+ *  (PATCH /notifications/groups/{id}/watches/{watchId}). */
+export async function updateGroupWatch(
+  groupId: string, watchId: string, kinds: string[],
+): Promise<Watch> {
+  const resp = await apiFetch(`/notifications/groups/${groupId}/watches/${watchId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kinds }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Stop the group watching this (DELETE /notifications/groups/{id}/watches/{watchId}). */
+export async function deleteGroupWatch(groupId: string, watchId: string): Promise<void> {
+  const resp = await apiFetch(`/notifications/groups/${groupId}/watches/${watchId}`, {
+    method: 'DELETE',
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+/* ── the wiki, for the group watch picker ────────────────────────────────
+ * The wiki's API (api/src/serversherpa/api/routes/wiki) is on the same API and
+ * takes the portal's session; every /wiki route needs `wiki:view` (403 without
+ * it). The "Add watch" picker reads two of its answers: the libraries and a
+ * search. */
+
+/** A wiki library, from GET /wiki/spaces (the wiki's SpaceOut): the libraries the
+ *  person can open, archived ones left out, by name. The picker reads only these
+ *  fields; the wiki sends more. */
+export interface WikiSpace {
+  id: string;
+  key: string;
+  name: string;
+}
+
+export type WikiNodeKind = 'folder' | 'page' | 'file';
+
+/** A hit of GET /wiki/search (the wiki's SearchHit): the node, and the titles of
+ *  the folders above it that the person can open, root first (`breadcrumbs`; the
+ *  library's own name is `node.space_name`). `snippet_html` is the wiki's
+ *  server-escaped markup with `<mark>` in it; the portal never renders it. */
+export interface WikiSearchHit {
+  node: { id: string; kind: WikiNodeKind; title: string; space_key: string; space_name: string };
+  snippet_html: string;
+  breadcrumbs: string[];
+}
+
+/** The wiki's libraries that the person can open (GET /wiki/spaces), by name. */
+export async function listWikiSpaces(): Promise<WikiSpace[]> {
+  const resp = await apiFetch('/wiki/spaces');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Search the wiki's folders or pages (GET /wiki/search), the best `limit` hits of
+ *  one `kind`. It is a search as the person types, so it is never logged: `log=false`
+ *  keeps half-typed words out of the wiki's search analytics, as its own top bar's
+ *  live results do. The wiki takes 1-200 characters (else 422 `bad_query`). */
+export async function searchWiki(
+  q: string, kind: 'folder' | 'page', limit: number,
+): Promise<WikiSearchHit[]> {
+  const qs = new URLSearchParams({ q, kind, limit: String(limit), log: 'false' });
+  const resp = await apiFetch(`/wiki/search?${qs.toString()}`);
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

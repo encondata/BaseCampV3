@@ -2,13 +2,15 @@
  * NotificationGroupDetail — the Full Details page for one notification
  * group (/system/notifications/:groupId). Hero mirrors InitiativeDetail's
  * idet-header (back-link, title row with status/summary chips, header
- * actions). A group is a name, a description, Active/Paused and its members:
- * it decides nothing about what anyone gets, so the page has no delivery
- * settings, only the hero and the Members panel. Renaming is delegated to
- * components/notifications/EditGroupModal to keep this file under the house
+ * actions). A group is a name, a description, Active/Paused, its members and
+ * what it watches: it decides nothing about how anyone is reached, so the page
+ * has no delivery settings, only the hero and two panels. Renaming is delegated
+ * to components/notifications/EditGroupModal to keep this file under the house
  * ~500-line split threshold. The Members panel (add/remove) is similarly
  * delegated to components/notifications/MembersPanel.tsx, which reuses this
- * page's `load()` as its `reload()` contract.
+ * page's `load()` as its `reload()` contract. "What this group watches" under it
+ * (components/notifications/GroupWatchesPanel.tsx) loads its own list: the
+ * group's watches are not part of the group the page loads.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -16,6 +18,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import EditGroupModal from '../components/notifications/EditGroupModal';
+import GroupWatchesPanel from '../components/notifications/GroupWatchesPanel';
 import MembersPanel from '../components/notifications/MembersPanel';
 import {
   ApiError, deleteNotificationGroup, getNotificationGroup, updateNotificationGroup,
@@ -179,6 +182,8 @@ export default function NotificationGroupDetailPage() {
       </div>
 
       <MembersPanel group={group} canChange={canChange} reload={load} />
+
+      <GroupWatchesPanel group={group} canChange={canChange} />
 
       {editingGroup && (
         <EditGroupModal

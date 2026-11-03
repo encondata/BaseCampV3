@@ -84,8 +84,11 @@ async def process_raw_scan(maker, raw_id: int) -> str:
                 if (asset.last_seen_at is None
                         or asset.last_seen_at < raw.scanned_at):
                     asset.last_seen_at = raw.scanned_at
-            if not raw.off_move:    # an off-move scan is only a sighting
-                await apply_rules(db, processed)
+            # An off-move scan is only a sighting: the engine runs just the
+            # rules that ask for one, in the station's move
+            # (raw.initiative_id; any other scan ignores it).
+            await apply_rules(db, processed,
+                              off_move_initiative_id=raw.initiative_id)
             await db.delete(raw)
             await db.commit()
             return "matched"

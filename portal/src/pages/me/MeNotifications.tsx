@@ -11,6 +11,9 @@
  * made critical, then the Sound row. "When email reaches you" is the schedule
  * card beside it.
  *
+ * "What you watch" is the section under them: the things the person and their
+ * groups watch (WatchesSection), named by the same company settings.
+ *
  * The groups lists come last. Groups only list their members: they decide
  * nothing about what a person gets, so a member can ask to join or leave one
  * (a request an admin approves or rejects from the inbox popover) and that is
@@ -35,6 +38,7 @@ import { NOTIFICATION_SOUNDS, playNotificationSound } from '../../lib/notificati
 import GroupsList from './GroupsList';
 import SaveHint from './SaveHint';
 import { usePreferenceSave } from './usePreferenceSave';
+import WatchesSection from './WatchesSection';
 import '../../styles/directory.css';
 import '../../styles/settings.css';
 
@@ -179,10 +183,12 @@ export default function MeNotifications() {
           onChange={(schedule) => update({ notif: { ...preferences.notif, schedule } })} />
       </div>
 
+      <WatchesSection kinds={settings?.kinds ?? []} />
+
       <GroupsList
         kind="member"
         title="My groups"
-        hint="The notification groups you belong to. Groups don't change what you get."
+        hint="The notification groups you belong to."
         groups={myGroups}
         loaded={groups !== null}
         busyRequestIds={cancelBusy}

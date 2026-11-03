@@ -1,5 +1,6 @@
 """The single registry of notification kinds. Every kind `notify()` is
-called with is listed here with its category and email flags; a kind that
+called with, and every kind `announce()` (notifications/events.py) raises
+an event of, is listed here with its category and email flags; a kind that
 is not listed stays inbox-only (never emailed). The portal mirrors the
 categories in portal/src/lib/notificationKinds.ts.
 
@@ -10,11 +11,20 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class KindInfo:
-    category: str          # "approvals" | "reports" | "wiki" | "learning" | "security"
+    category: str          # a key of CATEGORIES
     label: str             # "Report ready"
     brief: bool = False    # email carries title + link only, never the body
     email: bool = True     # False = never emailed
     owner_always: bool = False  # owner copies always email (decision 3)
+    # The kinds of thing whose watchers hear this one, in the order the portal lists
+    # them ("initiative", "site", "truck"). Empty = nobody can watch for it.
+    reaches: tuple[str, ...] = ()
+    # Whether an Everything watch may name this kind (it needs no thing to point at).
+    everywhere: bool = False
+
+    @property
+    def watchable(self) -> bool:
+        return bool(self.reaches)
 
 
 # Ordered: the order here is the order the portal shows.
@@ -23,6 +33,11 @@ CATEGORIES: dict[str, str] = {
     "reports": "Reports & labels",
     "wiki": "Wiki",
     "learning": "Learning",
+    "initiatives": "Initiatives",
+    "trucks": "Trucks",
+    "devices": "Devices",
+    "status_rules": "Status rules",
+    "bulk_actions": "Bulk actions",
     "security": "Account security",
 }
 
@@ -52,6 +67,30 @@ KINDS: dict[str, KindInfo] = {
     "learning_overdue": KindInfo("learning", "Learning overdue"),
     # A worker used every quiz attempt; a lead follows up in person.
     "learning_quiz_locked": KindInfo("learning", "Quiz locked", email=False),
+    # Announced (notifications/events.py), not sent with notify(): a status change
+    # reaches everyone watching the thing, or the things above and around it.
+    "initiative_status_changed": KindInfo("initiatives", "Initiative status changed",
+                                          reaches=("initiative", "site"), everywhere=True),
+    "truck_status_changed": KindInfo("trucks", "Truck status changed",
+                                     reaches=("truck", "initiative", "site"), everywhere=True),
+    # Announced by the device check (notifications/device_check.py) when a covered device
+    # stops checking in: it reaches the device's watchers, its site's and its move's.
+    "device_offline": KindInfo("devices", "Device offline",
+                               reaches=("device", "site", "initiative"), everywhere=True),
+    # Announced by a status rule's Notify action (status_rules/notify.py): one event per rule
+    # and initiative in a transaction (a match with no initiative is one of its own). It
+    # reaches the people and groups the rule names and, with the rule's "watchers" on, the
+    # watchers of its initiative (and the ones above it) and of the scan's site. Never
+    # everywhere: a rule's notice is about its own initiative.
+    "status_rule_matched": KindInfo("status_rules", "Status rule matched",
+                                    reaches=("initiative", "site")),
+    # Sent with notify() by the import worker (imports/notices.py) to the person who started
+    # a job that wrote data, when it finishes or fails. Not announced and not watchable: it
+    # reaches that one person, and the category's switches are the way out. The failed notice
+    # is title + link only (brief, enforced here like the other failure kinds), since the
+    # error text behind it is internal.
+    "bulk_action_finished": KindInfo("bulk_actions", "Bulk action finished"),
+    "bulk_action_failed": KindInfo("bulk_actions", "Bulk action failed", brief=True),
     "password_expiring": KindInfo("security", "Password expiring", owner_always=True),
     "totp_enrolled": KindInfo("security", "Two-factor authentication enrolled",
                                brief=True, owner_always=True),

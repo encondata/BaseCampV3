@@ -12,6 +12,7 @@ import { Link, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import DataTable from '../components/DataTable';
 import NotesFilesPanel from '../components/NotesFilesPanel';
+import WatchButton from '../components/notifications/WatchButton';
 import StatusHover from '../components/StatusHover';
 import TruckEditModal from '../components/trucks/TruckEditModal';
 import TrucksMap from '../components/trucks/TrucksMap';
@@ -282,11 +283,13 @@ export default function TruckDetail() {
               <span className="mono">Seal {truck.seal_id ?? '—'}</span>
             </div>
           </div>
-          {canWrite && (
-            <div className="truck-hero-actions">
+          <div className="truck-hero-actions">
+            {/* Watching is for everyone who can open the page, so it sits outside the gate. */}
+            <WatchButton thing="truck" id={truck.id} />
+            {canWrite && (
               <button className="btn-solid" onClick={() => setEditing(true)}>Edit</button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
 

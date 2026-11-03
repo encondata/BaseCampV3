@@ -1,10 +1,15 @@
 /** Executions tab — per-fire status-rule execution log. Read-only: a
  *  rule-filtered, paged history of every time the scan matcher evaluated
  *  a rule, whether its conditions matched, which actions fired (or were
- *  skipped), and any error. Ordering and paging are server-driven — this
- *  tab renders whatever page `listStatusRuleExecutions` returns. */
+ *  skipped, and why), and any error. Ordering and paging are server-driven —
+ *  this tab renders whatever page `listStatusRuleExecutions` returns.
+ *
+ *  The rule filter (the house ComboBox) is the page's to hold, since the page
+ *  keeps it in the URL: `ruleId` is the rule listed ('' = every rule's) and
+ *  a pick is handed to `onRuleChange`. The first page is fetched again
+ *  whenever `ruleId` changes, a pick or a link moving the URL. */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useAuth } from '../../auth/AuthContext';
 import {
@@ -12,6 +17,8 @@ import {
   type StatusRule, type StatusRuleExecution,
 } from '../../lib/api';
 import { ColHead, listGridStyle, listScale, titleFor, type ColumnDef } from '../../lib/listTools';
+import ComboBox, { type ComboOption } from '../ComboBox';
+import '../../styles/status-rules.css';
 
 const PAGE = 100;
 
@@ -45,28 +52,49 @@ function actionsSummary(applied: StatusRuleExecution['actions_applied']): string
   return skipped > 0 ? `${appliedCount} applied · skipped ${skipped}` : `${appliedCount} applied`;
 }
 
-export default function ExecutionsTab({ onCount }: {
+/** Why an action was not applied, for the reasons that have words of their own; any other
+ *  reason shows as the engine's code. */
+const REASON_LABELS = new Map([
+  ['notified_within_hour', 'Notified within the hour'],
+]);
+
+/** The actions cell's tooltip: what each action did, as the engine recorded it, with the
+ *  reasons that have words of their own in those words. */
+function actionsTooltip(applied: StatusRuleExecution['actions_applied']): string {
+  return JSON.stringify(
+    applied.map((a) => (a.reason === undefined
+      ? a : { ...a, reason: REASON_LABELS.get(a.reason) ?? a.reason })),
+    null, 2,
+  );
+}
+
+export default function ExecutionsTab({ onCount, ruleId, onRuleChange }: {
   onCount: (n: number | null) => void;
+  /** The rule whose executions are listed; '' lists every rule's. */
+  ruleId: string;
+  onRuleChange: (ruleId: string) => void;
 }) {
   const { preferences } = useAuth();
   const listGridScale = listScale(preferences?.list_size);
   const [rules, setRules] = useState<StatusRule[] | null>(null);
   const [rows, setRows] = useState<StatusRuleExecution[]>([]);
-  const [filter, setFilter] = useState('');
   const [done, setDone] = useState(true);
   const [error, setError] = useState('');
   const [loadingMore, setLoadingMore] = useState(false);
-  // Bumped on every initial load / filter change / load-more so a slow,
-  // superseded response can be detected and ignored (see ProcessLogs'
+  // Bumped on every first-page load (a new rule included) / load-more so a
+  // slow, superseded response can be detected and ignored (see ProcessLogs'
   // `alive` flag for the effect-cleanup equivalent of this guard).
   const seq = useRef(0);
 
+  // The first page of the chosen rule's executions, again whenever the rule changes. The rules
+  // (the filter's options) come once, with the first page.
   useEffect(() => {
     const mySeq = ++seq.current;
     (async () => {
       try {
         const [r, execs] = await Promise.all([
-          listStatusRules(), listStatusRuleExecutions({ limit: PAGE }),
+          rules ?? listStatusRules(),
+          listStatusRuleExecutions({ ruleId: ruleId || undefined, limit: PAGE }),
         ]);
         if (mySeq !== seq.current) return;
         setRules(r);
@@ -81,24 +109,12 @@ export default function ExecutionsTab({ onCount }: {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [ruleId]);
 
-  const applyFilter = async (value: string) => {
-    setFilter(value);
-    const mySeq = ++seq.current;
-    try {
-      const execs = await listStatusRuleExecutions({ ruleId: value || undefined, limit: PAGE });
-      if (mySeq !== seq.current) return;
-      setRows(execs);
-      setDone(execs.length < PAGE);
-      setError('');
-      onCount(execs.length);
-    } catch (err) {
-      if (mySeq !== seq.current) return;
-      setError(msgFor(err));
-      onCount(null);
-    }
-  };
+  const ruleOptions = useMemo<ComboOption[]>(() => [
+    { value: '', label: 'All rules' },
+    ...(rules ?? []).map((r) => ({ value: r.id, label: r.name })),
+  ], [rules]);
 
   const grid = listGridStyle(COLUMNS, [], undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
@@ -109,7 +125,7 @@ export default function ExecutionsTab({ onCount }: {
     const mySeq = ++seq.current;
     try {
       const execs = await listStatusRuleExecutions({
-        ruleId: filter || undefined, limit: PAGE, offset: rows.length,
+        ruleId: ruleId || undefined, limit: PAGE, offset: rows.length,
       });
       if (mySeq !== seq.current) return;
       setRows((prev) => [...prev, ...execs]);
@@ -128,13 +144,12 @@ export default function ExecutionsTab({ onCount }: {
     <>
       <div className="dir-toolbar">
         <div className="toolbar-right">
-          <select aria-label="Filter by rule" value={filter}
-                  onChange={(e) => void applyFilter(e.target.value)}>
-            <option value="">All rules</option>
-            {rules?.map((r) => (
-              <option key={r.id} value={r.id}>{r.name}</option>
-            ))}
-          </select>
+          {rules && (
+            <div className="exec-rule-filter">
+              <ComboBox ariaLabel="Filter by rule" options={ruleOptions} value={ruleId}
+                        onChange={onRuleChange} />
+            </div>
+          )}
           <span className="result-count">{rows.length} executions</span>
         </div>
       </div>
@@ -159,7 +174,7 @@ export default function ExecutionsTab({ onCount }: {
 
           {rows.map((exec) => {
             const result = resultChip(exec);
-            const actionsTitle = JSON.stringify(exec.actions_applied, null, 2);
+            const actionsTitle = actionsTooltip(exec.actions_applied);
             const time = new Date(exec.executed_at).toLocaleString();
             const scanValue = exec.scanned_value ?? '—';
             const scanStatus = exec.scan_status ?? '—';

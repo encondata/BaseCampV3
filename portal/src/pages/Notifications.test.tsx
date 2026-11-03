@@ -75,17 +75,16 @@ vi.mock('../lib/api', async (importActual) => ({
   ...api,
 }));
 
-/* A group is a name, a description, Active/Paused and its members. The API
- * still returns its (hidden) categories: the list must show none of them. */
+/* A group is a name, a description, Active/Paused and its members. */
 const GROUPS: NotificationGroup[] = [
   {
     id: 'g1', name: 'Ops Alerts', description: 'Operational issues',
-    categories: ['approvals'], enabled: true, member_count: 5,
+    enabled: true, member_count: 5,
     created_at: '2026-01-01T00:00:00Z',
   },
   {
     id: 'g2', name: 'Weekend Oncall', description: '',
-    categories: [], enabled: false, member_count: 0,
+    enabled: false, member_count: 0,
     created_at: '2026-02-01T00:00:00Z',
   },
 ];
@@ -103,13 +102,16 @@ const SETTINGS: NotificationSettings = {
   defaults: {
     approvals: { inbox: true, email: true }, reports: { inbox: true, email: false },
     wiki: { inbox: true, email: true }, learning: { inbox: true, email: true },
+    initiatives: { inbox: true, email: true }, trucks: { inbox: true, email: true },
+    devices: { inbox: true, email: true }, status_rules: { inbox: true, email: true },
+    bulk_actions: { inbox: true, email: true },
   },
   critical_kinds: [],
   kinds: [
     { kind: 'report_ready', label: 'Report ready', category: 'reports', email: true,
-      owner_always: false, critical: false, locked: false },
+      owner_always: false, critical: false, locked: false, watchable: false, everywhere: false, reaches: [] },
     { kind: 'password_expiring', label: 'Password expiring', category: 'security', email: true,
-      owner_always: true, critical: true, locked: true },
+      owner_always: true, critical: true, locked: true, watchable: false, everywhere: false, reaches: [] },
   ],
 };
 
@@ -483,12 +485,9 @@ it('the columns are Name, Description, Members and Status: none of the delivery 
     .toEqual(['Name', 'Description', 'Members', 'Status', 'Created']);
 });
 
-it('a group row shows its name, description, members and status, and not its categories', async () => {
+it('a group row shows its name, description, members and status, and no chips', async () => {
   render(<Notifications />);
   const row = await rowOf('Ops Alerts');
-  // GROUPS[0] still carries categories (the API keeps them), but nothing shows them
-  expect(within(row).queryByText('Approvals & requests')).toBeNull();
-  expect(within(row).queryByText('None — inbox only')).toBeNull();
   expect(row.querySelector('.chips')).toBeNull();
   // what is left: name, description, members, status
   expect(row.textContent).toContain('Operational issues');
@@ -526,11 +525,11 @@ it('the Status filter keeps the enabled or the paused groups', async () => {
   expect(rowNames()).toEqual(['Ops Alerts']);
 });
 
-it('search matches the name, the description and the status, and not the categories', async () => {
+it('search matches the name, the description and the status', async () => {
   const user = userEvent.setup();
   api.listNotificationGroups.mockResolvedValue([
-    group({ id: 'g3', name: 'Group A', description: 'Description A', categories: ['wiki'], enabled: true }),
-    group({ id: 'g4', name: 'Group B', description: 'Description B', categories: ['learning'], enabled: false }),
+    group({ id: 'g3', name: 'Group A', description: 'Description A', enabled: true }),
+    group({ id: 'g4', name: 'Group B', description: 'Description B', enabled: false }),
   ]);
   render(<Notifications />);
   await screen.findByText('Group A');
@@ -543,13 +542,11 @@ it('search matches the name, the description and the status, and not the categor
   await user.type(box, 'paused');
   expect(rowNames()).toEqual(['Group B']);
 
-  // a group's categories are kept by the API but are not shown, so not searched either
-  for (const hidden of ['wiki', 'learning']) {
-    await user.clear(box);
-    await user.type(box, hidden);
-    expect(rowNames()).toEqual([]);
-    expect(screen.getByText('No matches')).not.toBeNull();
-  }
+  // a term in none of the three
+  await user.clear(box);
+  await user.type(box, 'Group C');
+  expect(rowNames()).toEqual([]);
+  expect(screen.getByText('No matches')).not.toBeNull();
 });
 
 it('exports ID, Name, Description, Members, Status and Created, and nothing of delivery', async () => {

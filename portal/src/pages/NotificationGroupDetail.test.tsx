@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 /**
- * Notification group detail page — hero (status/pause/edit/delete) and the
- * Members panel with its row menu. A group is a member list: it carries no
- * delivery settings, so the page shows none and a member row has nothing to
- * edit but its place on the list. Mocking style mirrors Notifications.test.tsx
+ * Notification group detail page — hero (status/pause/edit/delete), the
+ * Members panel with its row menu and, under it, "What this group watches". A
+ * group is a member list that watches things: it carries no delivery
+ * settings, so the page shows none and a member row has nothing to edit but
+ * its place on the list. Mocking style mirrors Notifications.test.tsx
  * (hoisted mocks for react-router-dom / AuthContext / lib/api).
  */
 
@@ -14,6 +15,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import {
   ApiError, type NotificationGroupDetail, type NotificationMember, type NotificationRecipient,
+  type NotificationSettings, type Watch,
 } from '../lib/api';
 
 const state = vi.hoisted(() => ({ groupId: 'g1' }));
@@ -41,6 +43,8 @@ const api = vi.hoisted(() => ({
   addNotificationMember: vi.fn(),
   removeNotificationMember: vi.fn(),
   listNotificationRecipients: vi.fn(),
+  listGroupWatches: vi.fn(),
+  getNotificationSettings: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -52,7 +56,6 @@ const BASE: NotificationGroupDetail = {
   id: 'g1',
   name: 'Ops Alerts',
   description: 'Operational issues',
-  categories: ['approvals', 'security'],
   enabled: true,
   member_count: 5,
   created_at: '2026-01-01T00:00:00Z',
@@ -94,6 +97,24 @@ const RECIPIENTS: NotificationRecipient[] = [
   },
 ];
 
+const SITE_ID = '22222222-2222-4222-8222-222222222222';
+
+const SETTINGS: NotificationSettings = {
+  defaults: {},
+  critical_kinds: [],
+  kinds: [{
+    kind: 'initiative_status_changed', label: 'Initiative status changed', category: 'initiatives',
+    email: true, owner_always: false, critical: false, locked: false,
+    watchable: true, everywhere: true, reaches: ['initiative', 'site'],
+  }],
+};
+
+const SITE_WATCH: Watch = {
+  id: 'w-site', thing: 'site', thing_id: SITE_ID, thing_name: 'Site A', link: `/sites/${SITE_ID}`,
+  kinds: ['initiative_status_changed'], via: { type: 'group', id: 'g1', name: 'Ops Alerts' },
+  created_at: '2026-11-02T11:00:00Z',
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   Element.prototype.scrollIntoView = vi.fn();   // jsdom has none; ComboBox scrolls its active option
@@ -101,6 +122,8 @@ beforeEach(() => {
   state.groupId = 'g1';
   api.getNotificationGroup.mockResolvedValue(BASE);
   api.listNotificationRecipients.mockResolvedValue([]);
+  api.listGroupWatches.mockResolvedValue([]);
+  api.getNotificationSettings.mockResolvedValue(SETTINGS);
 });
 
 afterEach(cleanup);
@@ -140,9 +163,6 @@ it('group page has no delivery settings', async () => {
   ]) {
     expect(screen.queryByText(label)).toBeNull();
   }
-  // The group's categories are kept by the API but shown nowhere.
-  expect(screen.queryByText('Approvals & requests')).toBeNull();
-  expect(screen.queryByText('Account security')).toBeNull();
   // The hero carries no channel chips either: only its status and member count.
   const title = screen.getByRole('heading', { name: 'Ops Alerts' });
   const row = title.closest('.idet-title-row') as HTMLElement;
@@ -418,6 +438,82 @@ it('retries the recipients fetch after a failed attempt on reopen', async () => 
 
   expect(await screen.findByText('Carol New')).not.toBeNull();
   expect(api.listNotificationRecipients).toHaveBeenCalledTimes(2);
+});
+
+// ── the "What this group watches" panel ─────────────────────────────
+
+it('"What this group watches" is the card under Members, with the group\'s watches', async () => {
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1] });
+  api.listGroupWatches.mockResolvedValue([SITE_WATCH]);
+  const { container } = renderPage();
+  await screen.findByText('Site A');
+
+  const panels = [...container.querySelectorAll('.idet-header ~ .init-panel')];
+  expect(panels.map((p) => p.querySelector('.eyebrow-sm')?.textContent))
+    .toEqual(['Members — 5', 'What this group watches — 1']);
+  const watches = panels[1] as HTMLElement;
+  expect(within(watches).getByRole('link', { name: 'Site A' }).getAttribute('href')).toBe(`/sites/${SITE_ID}`);
+  expect(within(watches).getByText('Initiative status changed')).not.toBeNull();
+  expect(api.listGroupWatches).toHaveBeenCalledTimes(1);
+  expect(api.listGroupWatches).toHaveBeenCalledWith('g1');
+  expect(api.getNotificationSettings).toHaveBeenCalledTimes(1);
+});
+
+it('a group that watches nothing says so under Members', async () => {
+  renderPage();
+
+  expect(await screen.findByText("This group isn't watching anything yet.")).not.toBeNull();
+  expect(screen.getByText('What this group watches — 0')).not.toBeNull();
+});
+
+it('with change permission the panel offers Add watch and a row menu with Choose events… and Remove', async () => {
+  const user = userEvent.setup();
+  api.listGroupWatches.mockResolvedValue([SITE_WATCH]);
+  renderPage();
+  await screen.findByText('Site A');
+
+  expect(screen.getByRole('button', { name: 'Add watch' })).not.toBeNull();
+  const table = screen.getByRole('table', { name: 'Watches' });
+  expect(within(table).getAllByRole('columnheader').map((h) => h.textContent))
+    .toEqual(['Watching', 'Events', 'Actions']);
+  await user.click(within(within(table).getByRole('row', { name: /site a/i }))
+    .getByRole('button', { name: /Actions/ }));
+  expect(screen.getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Choose events…', 'Remove']);
+});
+
+it('without change permission the panel is the list alone: no Add watch, no Actions', async () => {
+  auth.can = (resource, action) => resource === 'notifications' && action === 'view';
+  api.listGroupWatches.mockResolvedValue([SITE_WATCH]);
+  renderPage();
+  await screen.findByText('Site A');
+
+  expect(screen.queryByRole('button', { name: 'Add watch' })).toBeNull();
+  const table = screen.getByRole('table', { name: 'Watches' });
+  expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Watching', 'Events']);
+  expect(within(table).queryByRole('button', { name: /Actions/ })).toBeNull();
+});
+
+it('reloading the group (Pause, adding a member) does not ask for its watches again', async () => {
+  const user = userEvent.setup();
+  api.updateNotificationGroup.mockResolvedValue({ ...BASE, enabled: false });
+  api.listGroupWatches.mockResolvedValue([SITE_WATCH]);
+  renderPage();
+  await screen.findByText('Site A');
+
+  await user.click(screen.getByRole('button', { name: /^pause$/i }));
+  await waitFor(() => expect(api.getNotificationGroup).toHaveBeenCalledTimes(2));
+
+  expect(api.listGroupWatches).toHaveBeenCalledTimes(1);
+  expect(screen.getByText('Site A')).not.toBeNull();
+});
+
+it('a group that can\'t be found shows no watches panel and asks for none', async () => {
+  api.getNotificationGroup.mockRejectedValue(new ApiError(404, 'not_found'));
+  renderPage();
+
+  expect(await screen.findByText('Group not found')).not.toBeNull();
+  expect(screen.queryByText(/what this group watches/i)).toBeNull();
+  expect(api.listGroupWatches).not.toHaveBeenCalled();
 });
 
 // ── the member row's Actions menu ───────────────────────────────────

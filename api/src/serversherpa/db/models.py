@@ -470,7 +470,9 @@ class NotificationGroup(Base):
     """A named list of people: a name, a description, Active or Paused (`enabled`),
     its members and their join/leave requests. A group decides nothing about
     delivery (migration 0112 dropped its channels, quiet hours, days and the rest):
-    a person's own switches and schedule do (notifications/email.py)."""
+    a person's own switches and schedule do (notifications/email.py). What it hears
+    about is its watches (NotificationWatch); migration 0113 dropped its hidden
+    event categories."""
 
     __tablename__ = "notification_groups"
 
@@ -479,10 +481,6 @@ class NotificationGroup(Base):
     name: Mapped[str] = mapped_column(CITEXT)
     description: Mapped[str] = mapped_column(server_default="")
     enabled: Mapped[bool] = mapped_column(server_default=text("true"))
-    # Event categories (notifications/kinds.py). Kept but hidden: the API still reads
-    # and writes them, no delivery decision reads them and nothing shows them.
-    categories: Mapped[list[str]] = mapped_column(
-        ARRAY(Text), server_default=text("'{}'::text[]"))
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("people.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
@@ -1009,7 +1007,9 @@ class RawScan(Base):
         ForeignKey("initiatives.id", ondelete="SET NULL"),
         comment="the move this scan belongs to (the kiosk's current move)")
     # RFID sightings of an asset from another of the client's moves
-    # (migration 0098): recorded, but the scan worker applies no status.
+    # (migration 0098): recorded, and the scan worker runs only the status
+    # rules that ask for sightings (an "Off-move sighting equals true"
+    # condition).
     off_move: Mapped[bool] = mapped_column(server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
@@ -1139,6 +1139,21 @@ class StatusRuleExecution(Base):
     duration_ms: Mapped[int] = mapped_column(server_default="0")
 
 
+class StatusRuleNotified(Base):
+    """When a status rule's Notify action last told anyone about a matched thing (an asset,
+    container or person), migration 0115. The action (status_rules/notify.py) notifies about
+    the same thing again only an hour later, and checks and sets this row in one upsert. The
+    thing is not a foreign key; deleting the rule deletes its rows."""
+
+    __tablename__ = "status_rule_notified"
+
+    rule_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("status_rules.id", ondelete="CASCADE"), primary_key=True)
+    subject_type: Mapped[str] = mapped_column(primary_key=True)
+    subject_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    notified_at: Mapped[datetime]
+
+
 class Device(Base):
     """One row per piece of scanning hardware; device_type discriminates
     (initiatives-style unification). wan_ip/lan_ip/uptime_seconds are
@@ -1243,6 +1258,11 @@ class Device(Base):
     personal_set_at: Mapped[datetime | None]
     personal_set_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("people.id", ondelete="SET NULL"))
+    # Device offline notice (migration 0114): when the notification worker's device check
+    # announced that this covered device stopped checking in (services/device_online.py says
+    # which are covered and when one is offline). Set with the announcement, so one outage
+    # is announced once, and cleared once the device is seen again. NULL = no notice out.
+    offline_notified_at: Mapped[datetime | None]
 
 
 class BiometricKey(Base):
@@ -2053,6 +2073,105 @@ class NotificationHeld(Base):
     )
 
 
+# The things a watch can point at (migration 0113). At most one is set; none is an
+# Everything watch. The wiki columns hold the wiki's own watches, a person's on a library,
+# folder or page, which the wiki's routes and fan-out read and write (migration 0116 moved
+# them in from wiki_watches); the watch API accepts initiatives, sites, trucks and devices
+# until groups and /me take the wiki ones too.
+_WATCH_THINGS = ("initiative_id", "site_id", "truck_id", "device_id",
+                 "wiki_space_id", "wiki_node_id")
+_WATCH_THING_COUNT = f"num_nonnulls({', '.join(_WATCH_THINGS)})"
+
+
+class NotificationWatch(Base):
+    """A person's, or a notification group's, subscription to one thing, or to chosen
+    event types everywhere (migration 0113). Exactly one of `person_id` and `group_id`,
+    and at most one thing column: none is an Everything watch, which must name its
+    `kinds`. On a thing, empty `kinds` means every type that applies to it. One row per
+    subscriber and thing (the unique index counts NULLs as equal, so a second Everything
+    watch collides). A deleted subscriber or thing takes its watches along; a deleted
+    creator only clears `created_by`."""
+
+    __tablename__ = "notification_watches"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    person_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="CASCADE"))
+    group_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("notification_groups.id", ondelete="CASCADE"))
+    initiative_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("initiatives.id", ondelete="CASCADE"))
+    site_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("sites.id", ondelete="CASCADE"))
+    truck_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("trucks.id", ondelete="CASCADE"))
+    device_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("devices.id", ondelete="CASCADE"))
+    wiki_space_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("wiki_spaces.id", ondelete="CASCADE"))
+    wiki_node_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="CASCADE"))
+    kinds: Mapped[list[str]] = mapped_column(ARRAY(Text), server_default=text("'{}'::text[]"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    __table_args__ = (
+        CheckConstraint("(person_id IS NULL) <> (group_id IS NULL)",
+                        name="ck_notification_watches_subscriber"),
+        CheckConstraint(f"{_WATCH_THING_COUNT} <= 1", name="ck_notification_watches_one_thing"),
+        CheckConstraint(f"{_WATCH_THING_COUNT} = 1 OR cardinality(kinds) > 0",
+                        name="ck_notification_watches_everything_kinds"),
+        Index("uq_notification_watches_target", "person_id", "group_id", *_WATCH_THINGS,
+              unique=True, postgresql_nulls_not_distinct=True),
+        Index("ix_notification_watches_group_id", "group_id"),
+        *(Index(f"ix_notification_watches_{column}", column,
+                postgresql_where=text(f"{column} IS NOT NULL"))
+          for column in _WATCH_THINGS),
+    )
+
+
+class NotificationEvent(Base):
+    """Something that happened, waiting to be turned into notifications (migration 0113).
+    notifications/events.announce() adds a row in the caller's transaction and never
+    commits, so an event can't outlive a rolled-back change; the notification worker's
+    sweep sends the rows still waiting (`sent_at` null), oldest first, and stamps
+    `sent_at`. The subject is what it is about; `reaches` lists the other things whose
+    watchers hear it, as `{type, id}` objects. `person_ids` and `group_ids` are the people
+    and groups the announcing code names, and `watchers` says whether watches apply.
+    `item` holds the title, line and link. `attempts` counts the sweeps that have failed on
+    the event (migration 0114), so the sweep can take the ones that failed least first and an
+    event that always fails can't block newer ones. The actor and the status rule clear when
+    their rows go, so an event outlives both."""
+
+    __tablename__ = "notification_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    kind: Mapped[str]
+    subject_type: Mapped[str]
+    subject_id: Mapped[uuid.UUID]
+    reaches: Mapped[list] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    person_ids: Mapped[list[uuid.UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), server_default=text("'{}'::uuid[]"))
+    group_ids: Mapped[list[uuid.UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), server_default=text("'{}'::uuid[]"))
+    watchers: Mapped[bool] = mapped_column(server_default=text("true"))
+    rule_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("status_rules.id", ondelete="SET NULL"))
+    item: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    sent_at: Mapped[datetime | None]
+    attempts: Mapped[int] = mapped_column(server_default=text("0"))
+
+    __table_args__ = (
+        Index("ix_notification_events_waiting", "id", postgresql_where=text("sent_at IS NULL")),
+        Index("ix_notification_events_sent_at", "sent_at"),
+    )
+
+
 class WikiSpace(Base):
     """A wiki space: a top-level, separately permissioned collection of
     pages and files (e.g. "Ops Guides"). `key` is the URL slug."""
@@ -2378,27 +2497,6 @@ class WikiTemplate(Base):
     __table_args__ = (
         CheckConstraint("char_length(name) BETWEEN 1 AND 120",
                         name="wiki_templates_name_length_check"),
-    )
-
-
-class WikiWatch(Base):
-    """A person's subscription to a space or a node (exactly one of the
-    two) — the source of `wiki_update`/`wiki_comment` notification fan-out."""
-    __tablename__ = "wiki_watches"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        primary_key=True, server_default=text("gen_random_uuid()"))
-    person_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("people.id", ondelete="CASCADE"))
-    space_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("wiki_spaces.id", ondelete="CASCADE"))
-    node_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("wiki_nodes.id", ondelete="CASCADE"))
-    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
-
-    __table_args__ = (
-        CheckConstraint("(space_id IS NULL) <> (node_id IS NULL)",
-                        name="wiki_watches_target_check"),
     )
 
 

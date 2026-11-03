@@ -2,7 +2,8 @@
 Paused), its members, and the join and leave requests an admin approves. A group
 decides nothing about delivery (a person's own switches and schedule do,
 notifications/email.py), so it has no channels, quiet hours or member overrides;
-its `categories` are kept and still read and written, but nothing shows them.
+what it hears about is its watches (listed, added, changed and removed here, each change
+audited on the group), and it carries no categories.
 This file also hosts the per-person in-app inbox routes (/inbox, mark-one-read,
 mark-all-read), the company notification settings (/settings: anyone signed in
 reads them, admins and above change them) and, for super admins and above, the
@@ -26,15 +27,15 @@ from serversherpa.api.schemas import (
     DeliveryCheckOut, DeliveryLogEntryOut, DeliveryLogPageOut,
     MembershipDecisionIn, MembershipRequestOut, NotificationGroupCreateIn,
     NotificationGroupDetailOut, NotificationGroupOut, NotificationGroupPatchIn,
-    NotificationGroupSettings, NotificationInboxItemOut, NotificationInboxOut,
-    NotificationKindOut, NotificationKindSettingOut, NotificationMemberAddIn,
-    NotificationMemberOut, NotificationRecipientOut, NotificationSettingsIn,
-    NotificationSettingsOut, SwitchPair,
+    NotificationInboxItemOut, NotificationInboxOut, NotificationKindOut,
+    NotificationKindSettingOut, NotificationMemberAddIn, NotificationMemberOut,
+    NotificationRecipientOut, NotificationSettingsIn, NotificationSettingsOut, SwitchPair,
+    WatchIn, WatchKindsIn, WatchOut,
 )
 from serversherpa.db.models import (
     EmailOutbox, Notification, NotificationGroup, NotificationGroupMember,
-    NotificationLog, NotificationMembershipRequest, Person, SystemConfig,
-    UserAccount,
+    NotificationLog, NotificationMembershipRequest, NotificationWatch, Person,
+    SystemConfig, UserAccount,
 )
 from serversherpa.db.ordering import natural
 from serversherpa.notifications import check as delivery_check
@@ -45,13 +46,16 @@ from serversherpa.notifications.company import (
 from serversherpa.notifications.delivery_log import EVENTS
 from serversherpa.notifications.kinds import CATEGORY_KEYS, KINDS, kind_info
 from serversherpa.notifications.requests import RequestError, decide_request
+from serversherpa.notifications.watches import (
+    EVERYTHING, WatchError, add_watch, can_open, clean_kinds, group_watches, thing_of, watch_view,
+)
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.storage import presign_get
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
-GROUP_FIELDS = ["name", "description", "categories", "enabled"]
+GROUP_FIELDS = ["name", "description", "enabled"]
 
 # Every group field is NOT NULL: an explicit null in a PATCH body must 422 here,
 # not IntegrityError at commit.
@@ -60,18 +64,6 @@ NON_NULLABLE_GROUP_FIELDS = frozenset(GROUP_FIELDS)
 
 def _err(status: int, code: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code})
-
-
-def validate_settings(body: NotificationGroupSettings) -> None:
-    """The one group setting that needs more than its type: every category must be
-    registered (notifications/kinds.py). Shared by group create and patch."""
-    if body.categories is not None and not set(body.categories) <= set(CATEGORY_KEYS):
-        raise _err(422, "invalid_category")
-
-
-def _normalize_categories(categories: list[str]) -> list[str]:
-    """De-duplicated, in registry (CATEGORY_KEYS) order."""
-    return [key for key in CATEGORY_KEYS if key in categories]
 
 
 async def _get_group(db: DbSession, group_id: uuid.UUID) -> NotificationGroup:
@@ -90,8 +82,7 @@ async def _member_count(db: DbSession, group_id: uuid.UUID) -> int:
 def _out(group: NotificationGroup, member_count: int) -> NotificationGroupOut:
     return NotificationGroupOut(
         id=group.id, name=group.name, description=group.description,
-        categories=group.categories, enabled=group.enabled,
-        member_count=member_count, created_at=group.created_at)
+        enabled=group.enabled, member_count=member_count, created_at=group.created_at)
 
 
 # ── members, recipients ────────────────────────────────────────────
@@ -155,16 +146,12 @@ async def create_group(
     db: DbSession,
     actor: AuthContext = require_permission("notifications", "add"),
 ) -> NotificationGroupOut:
-    validate_settings(body)
     exists = await db.scalar(select(NotificationGroup.id).where(
         NotificationGroup.name == body.name))
     if exists:
         raise _err(409, "group_exists")
 
-    data = body.model_dump(exclude_none=True)
-    if "categories" in data:
-        data["categories"] = _normalize_categories(data["categories"])
-    group = NotificationGroup(**data, created_by=actor.person.id)
+    group = NotificationGroup(**body.model_dump(), created_by=actor.person.id)
     db.add(group)
     await db.flush()
     initial = snapshot(group, GROUP_FIELDS)
@@ -184,14 +171,11 @@ async def patch_group(
     actor: AuthContext = require_permission("notifications", "change"),
 ) -> NotificationGroupOut:
     group = await _get_group(db, group_id)
-    validate_settings(body)
 
     data = body.model_dump(exclude_unset=True)
     if any(data[field] is None
            for field in NON_NULLABLE_GROUP_FIELDS & data.keys()):
         raise _err(422, "invalid")
-    if "categories" in data:
-        data["categories"] = _normalize_categories(data["categories"])
 
     if "name" in data:
         exists = await db.scalar(select(NotificationGroup.id).where(
@@ -286,6 +270,120 @@ async def remove_member(
           entity_id=str(group_id), action="member.remove",
           changes={"person_id": str(person_id)})
     await db.delete(member)
+    await db.commit()
+
+
+# ── a group's watches: what its members hear about ──────────────────
+# A group watches what a person can (notifications/watches.py), and every member of an
+# Active group hears it. notifications:view lists the watches, notifications:change edits
+# them, and each edit is audited on the group. A WatchError becomes the same {"code"}
+# answer as elsewhere here.
+
+def _watch_target(watch: NotificationWatch) -> dict:
+    """What a watch is on, as the audit records it: its kind of thing and the thing's id,
+    or "everything" with no id."""
+    thing = thing_of(watch)
+    if thing is None:
+        return {"thing": EVERYTHING, "thing_id": None}
+    return {"thing": thing.type, "thing_id": str(thing.id)}
+
+
+async def _get_watch(db: DbSession, group_id: uuid.UUID, watch_id: uuid.UUID,
+                     asker_id: uuid.UUID) -> NotificationWatch:
+    """One of the group's watches whose thing the asker can open now, as the list shows them
+    (`can_open`). Another group's, a person's own, one on something the asker can't open, or
+    none is the same 404, so the answer says nothing of the thing."""
+    watch = await db.get(NotificationWatch, watch_id)
+    if watch is None or watch.group_id != group_id or not await can_open(db, asker_id, watch):
+        raise _err(404, "watch_not_found")
+    return watch
+
+
+@router.get("/groups/{group_id}/watches", response_model=list[WatchOut])
+async def list_group_watches(
+    group_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("notifications", "view"),
+) -> list[WatchOut]:
+    """What the group watches, newest first: the watches whose thing the asker can open now,
+    as /auth/me/watches lists them. A global role is not row-scoped, but the wiki's grants and
+    private items still hide things from it, so a watch on one it can't see is left out, name
+    and all."""
+    await _get_group(db, group_id)          # 404 group_not_found
+    return [WatchOut.from_view(view)
+            for view in await group_watches(db, group_id, actor.person.id)]
+
+
+@router.post("/groups/{group_id}/watches", response_model=WatchOut, status_code=201)
+async def add_group_watch(
+    group_id: uuid.UUID,
+    body: WatchIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("notifications", "change"),
+) -> WatchOut:
+    """Point the group at a thing the admin can open, or at chosen events everywhere. One
+    watch per thing: adding again is a 409, and the events are changed on the watch that is
+    there."""
+    group = await _get_group(db, group_id)
+    try:
+        watch = await add_watch(
+            db, thing=body.thing, thing_id=body.id, kinds=body.kinds,
+            viewer_id=actor.person.id, viewer_access=actor.access,
+            created_by=actor.person.id, group_id=group_id)
+        view = await watch_view(db, watch, group=group)
+    except WatchError as e:
+        raise _err(e.status, e.code) from None
+    audit(db, actor_id=actor.person.id, entity_type="notification_group",
+          entity_id=str(group_id), action="watch.add",
+          changes={**_watch_target(watch), "kinds": list(watch.kinds)})
+    await db.commit()
+    return WatchOut.from_view(view)
+
+
+@router.patch("/groups/{group_id}/watches/{watch_id}", response_model=WatchOut)
+async def update_group_watch(
+    group_id: uuid.UUID,
+    watch_id: uuid.UUID,
+    body: WatchKindsIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("notifications", "change"),
+) -> WatchOut:
+    """Choose the events of one of the group's watches; none means every event that applies
+    to a thing (an Everything watch has to name some). Choosing the events it already has
+    changes nothing and is not audited. A watch on something the asker can't open is not
+    found, as in the list."""
+    group = await _get_group(db, group_id)
+    watch = await _get_watch(db, group_id, watch_id, actor.person.id)
+    thing = thing_of(watch)
+    before = list(watch.kinds)
+    try:
+        watch.kinds = clean_kinds(thing.type if thing is not None else EVERYTHING, body.kinds)
+        view = await watch_view(db, watch, group=group)
+    except WatchError as e:
+        raise _err(e.status, e.code) from None
+    if watch.kinds != before:
+        audit(db, actor_id=actor.person.id, entity_type="notification_group",
+              entity_id=str(group_id), action="watch.update",
+              changes={**_watch_target(watch),
+                       "kinds": {"from": before, "to": list(watch.kinds)}})
+    await db.commit()
+    return WatchOut.from_view(view)
+
+
+@router.delete("/groups/{group_id}/watches/{watch_id}", status_code=204)
+async def remove_group_watch(
+    group_id: uuid.UUID,
+    watch_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("notifications", "change"),
+) -> None:
+    """Stop the group watching this. Any watch of the group the asker can open can go; one
+    on something they can't open is not found, as in the list."""
+    await _get_group(db, group_id)          # 404 group_not_found
+    watch = await _get_watch(db, group_id, watch_id, actor.person.id)
+    audit(db, actor_id=actor.person.id, entity_type="notification_group",
+          entity_id=str(group_id), action="watch.remove", changes=_watch_target(watch))
+    await db.delete(watch)
     await db.commit()
 
 
@@ -669,11 +767,14 @@ async def check_delivery(
 def _kind_flags(company: CompanySettings) -> list[dict]:
     """Every registered kind in registry order with its flags: whether it is
     ever emailed, whether it is critical (account security always; any other
-    kind once an admin marked it), and whether that is locked (security)."""
+    kind once an admin marked it), whether that is locked (security), and what
+    a watch can do with it (watchable, the things it reaches, everywhere)."""
     return [{"kind": kind, "label": info.label, "category": info.category,
              "email": info.email, "owner_always": info.owner_always,
              "critical": is_critical(kind, company),
-             "locked": info.category == SECURITY_CATEGORY}
+             "locked": info.category == SECURITY_CATEGORY,
+             "watchable": info.watchable, "everywhere": info.everywhere,
+             "reaches": list(info.reaches)}
             for kind, info in KINDS.items()]
 
 

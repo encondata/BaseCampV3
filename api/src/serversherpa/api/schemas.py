@@ -6,7 +6,7 @@ import urllib.parse
 import uuid
 from datetime import date, datetime
 from ipaddress import IPv4Address
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import (
     AfterValidator,
@@ -25,6 +25,9 @@ from pydantic import (
 from serversherpa.learning import languages as learning_languages
 from serversherpa.notifications.kinds import CATEGORY_KEYS
 from serversherpa.notifications.schedule import DAYS
+
+if TYPE_CHECKING:
+    from serversherpa.notifications.watches import WatchView
 
 
 def _lower(v: str) -> str:
@@ -2917,21 +2920,16 @@ class TimeBulkRejectIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class NotificationGroupSettings(BaseModel):
-    """Shared shape for the group's settings. A group carries no delivery settings
-    (a person's own switches and schedule decide email); what is left is the event
-    categories (notifications/kinds.py), kept but hidden. Optional so it can be
-    reused for PATCH (partial update)."""
-    categories: list[str] | None = None
-
-
-class NotificationGroupCreateIn(NotificationGroupSettings):
+class NotificationGroupCreateIn(BaseModel):
+    """A group is a name and a description. It carries no delivery settings (a person's
+    own switches and schedule decide email) and no categories (what it hears about is
+    its watches), so a body that still sends either is refused."""
     name: str
     description: str = ""
     model_config = ConfigDict(extra="forbid")
 
 
-class NotificationGroupPatchIn(NotificationGroupSettings):
+class NotificationGroupPatchIn(BaseModel):
     name: str | None = None
     description: str | None = None
     enabled: bool | None = None
@@ -2942,7 +2940,6 @@ class NotificationGroupOut(BaseModel):
     id: uuid.UUID
     name: str
     description: str
-    categories: list[str]
     enabled: bool
     member_count: int
     created_at: datetime
@@ -3080,6 +3077,25 @@ class DeliveryCheckScheduleOut(BaseModel):
     state: Literal["open", "quiet_hours", "inactive_day"]
 
 
+class WatchViaOut(BaseModel):
+    """Whose watch it is: the person's own (`you`), or a group's with its id and name."""
+    type: Literal["you", "group"]
+    id: uuid.UUID | None = None
+    name: str | None = None
+
+
+class CheckWatchOut(BaseModel):
+    """A watch of the person that would hear the kind: `thing` is initiative, site, truck, device
+    or everything (which has no id or name), `kinds` the events it names (empty: every event that
+    applies) and `via` whose it is."""
+
+    thing: str
+    thing_id: uuid.UUID | None
+    thing_name: str | None
+    kinds: list[str]
+    via: WatchViaOut
+
+
 class DeliveryCheckOut(BaseModel):
     """What would happen right now if this person got a notification of this
     kind. Nothing is written. `inbox` is notify()'s answer, with the source of
@@ -3089,7 +3105,11 @@ class DeliveryCheckOut(BaseModel):
     `after_summary` marks an email sent now only because it falls in the last
     hour before the person is back online, when that morning's summary has
     already gone. `owner_copy` is the copy that was modeled; `critical`
-    whether the kind skips quiet hours, days off and the summary."""
+    whether the kind skips quiet hours, days off and the summary. `watches`
+    is null for a kind nobody can watch; for one anyone can, the person's
+    watches that would hear it (their own first, then their groups'). Access
+    is not asked: whether it reaches them for a particular thing also depends
+    on their access to that thing."""
 
     person_id: uuid.UUID
     person_name: str
@@ -3112,13 +3132,16 @@ class DeliveryCheckOut(BaseModel):
     reason: str | None = None
     address: str | None = None
     address_source: str | None = None
+    watches: list[CheckWatchOut] | None = None
 
 
 class NotificationKindOut(BaseModel):
     """One registered notification kind, for the Check delivery picker.
     `email` is whether it is ever emailed; `critical` whether it skips quiet
     hours, days off and the summary; `locked` whether that is fixed (account
-    security is always critical)."""
+    security is always critical). `watchable` is whether anyone can watch for
+    it, `reaches` the kinds of thing they can watch it on, and `everywhere`
+    whether an Everything watch may name it."""
 
     kind: str
     label: str
@@ -3127,6 +3150,9 @@ class NotificationKindOut(BaseModel):
     owner_always: bool
     critical: bool
     locked: bool
+    watchable: bool
+    everywhere: bool
+    reaches: list[str]
 
 
 class SwitchPair(BaseModel):
@@ -3140,7 +3166,10 @@ class NotificationKindSettingOut(BaseModel):
     """One registered kind in the company settings. `email` is whether it is
     ever emailed; `critical` whether it skips quiet hours, days off and the
     summary; `locked` whether that is fixed (account security is always
-    critical, and is not the admin's to change)."""
+    critical, and is not the admin's to change). `watchable` is whether anyone
+    can watch for it, `reaches` the kinds of thing they can watch it on (in the
+    order to show them), and `everywhere` whether an Everything watch may name
+    it."""
 
     kind: str
     label: str
@@ -3149,6 +3178,9 @@ class NotificationKindSettingOut(BaseModel):
     owner_always: bool
     critical: bool
     locked: bool
+    watchable: bool
+    everywhere: bool
+    reaches: list[str]
 
 
 class NotificationSettingsOut(BaseModel):
@@ -3213,10 +3245,63 @@ class MyNotificationGroupOut(BaseModel):
     id: uuid.UUID
     name: str
     description: str
-    categories: list[str]
     member_count: int
     is_member: bool
     pending_request: MyPendingRequestOut | None = None
+
+
+# ── watches (a person's own, and a notification group's) ──
+
+class WatchIn(BaseModel):
+    """Watch a thing (`thing` is initiative, site, truck, device, wiki_space or wiki_node, with
+    its `id`), or events everywhere (`thing` is "everything", with no id). `kinds` empty means
+    every event that applies to a thing; an Everything watch has to name its events, and a wiki
+    watch can name none (it hears every page update and comment)."""
+    thing: str
+    id: uuid.UUID | None = None
+    kinds: list[str] = []
+    model_config = ConfigDict(extra="forbid")
+
+
+class WatchKindsIn(BaseModel):
+    kinds: list[str]
+    model_config = ConfigDict(extra="forbid")
+
+
+class WatchOut(BaseModel):
+    """A watch with what it is on: `thing` is initiative, site, truck, device, wiki_space,
+    wiki_node or everything (which has no id, name, label or link). `thing_label` is what the
+    portal calls the thing's kind ("Wiki folder" or "Wiki page" for a wiki node, by its row), and
+    `link` its page: a portal path, or for a wiki thing the absolute URL of its page in the wiki.
+    `kinds` empty means every event that applies (for a wiki thing, every page update and
+    comment)."""
+    id: uuid.UUID
+    thing: str
+    thing_id: uuid.UUID | None
+    thing_name: str | None
+    thing_label: str | None
+    link: str | None
+    kinds: list[str]
+    via: WatchViaOut
+    created_at: datetime
+
+    @classmethod
+    def from_view(cls, view: "WatchView") -> "WatchOut":
+        group = view.group
+        return cls(
+            id=view.watch.id, thing=view.thing, thing_id=view.thing_id,
+            thing_name=view.thing_name, thing_label=view.thing_label, link=view.link,
+            kinds=list(view.watch.kinds),
+            via=(WatchViaOut(type="you") if group is None
+                 else WatchViaOut(type="group", id=group.id, name=group.name)),
+            created_at=view.watch.created_at)
+
+
+class WatchStateOut(BaseModel):
+    """Whether the person watches a thing themselves, for the Watch button."""
+    watching: bool
+    watch_id: uuid.UUID | None
+    kinds: list[str]
 
 
 # ── status rules ─────────────────────────────────────────────────────

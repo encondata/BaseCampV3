@@ -1,14 +1,16 @@
 """Initiative creation rules shared by POST /initiatives and Bulk Actions ›
 Create a move in steps (its draft routes validate with ref_problem; the
 import worker creates the move with create_initiative_row inside the job's
-own transaction). Pure of HTTP: a problem comes back as (code, extra)."""
+own transaction). It also reads the link graph (ancestor_ids), for the link
+cycle check and for the status-change notices. Pure of HTTP: a problem comes
+back as (code, extra)."""
 
 import uuid
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import Client, Initiative, Partner, Site, StatusValue
+from serversherpa.db.models import Client, Initiative, InitiativeLink, Partner, Site, StatusValue
 from serversherpa.services.audit import audit, snapshot
 
 PARTNER_FIELDS = (
@@ -120,3 +122,16 @@ async def create_initiative_row(db: AsyncSession, data: dict,
     audit(db, actor_id=actor_id, entity_type="initiative",
           entity_id=str(initiative.id), action="create", changes=changes)
     return initiative
+
+
+async def ancestor_ids(db: AsyncSession, start: uuid.UUID) -> set[uuid.UUID]:
+    """Every initiative above `start` in the link graph (transitive)."""
+    seen: set[uuid.UUID] = set()
+    frontier = [start]
+    while frontier:
+        parents = list(await db.scalars(
+            select(InitiativeLink.parent_id)
+            .where(InitiativeLink.child_id.in_(frontier))))
+        frontier = [p for p in parents if p not in seen]
+        seen.update(frontier)
+    return seen

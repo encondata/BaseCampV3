@@ -10,11 +10,18 @@ anchor so a manual status edit on that row can run through the same
 rule engine as a scan, without the context resolving to whichever
 initiative happens to be "in progress".
 
+An off-move sighting (an RFID read of an asset from another of the
+client's moves) runs only the rules that ask for it with an "Off-move
+sighting equals true" condition; every other rule skips it. Its
+initiative is the station's move, passed in by the scan worker — never
+the in-progress guess.
+
 The rule cache is per-process with a 60s TTL — API writes land within
 one TTL without any cross-process signal (same posture as V2)."""
 
 import logging
 import time
+import uuid
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -69,14 +76,28 @@ async def _load_rules(db: AsyncSession, trigger_status: str,
     return rules
 
 
+def _asks_for_off_move(rule: dict) -> bool:
+    """True when the rule carries an "Off-move sighting equals true"
+    condition — the only way a rule opts in to running for a sighting.
+    Any other condition on the field (equals false, not equals, ...)
+    leaves the rule skipping sightings, as every rule did before."""
+    return any(field == "scan.off_move" and op == "equals"
+               and str(value).lower() == "true"
+               for field, op, value in rule["conditions"])
+
+
 async def _build_context(db: AsyncSession, scan: ProcessedScan, *,
-                         initiative_asset: InitiativeAsset | None = None
+                         initiative_asset: InitiativeAsset | None = None,
+                         off_move_initiative_id: uuid.UUID | None = None
                          ) -> Context:
     """Build the rule-evaluation context for one scan. If
     `initiative_asset` is given (a manual status edit on that row), the
     context is anchored to it directly and the in-progress-initiative
     lookup is skipped — the caller's row wins even if it isn't the
-    "active" initiative."""
+    "active" initiative. An off-move sighting is neither: the asset
+    belongs to some other move, so its initiative is the station's
+    (`off_move_initiative_id`, None when the sighting named none) and the
+    in-progress guess is never made."""
     ctx = Context(scan=scan)
     if scan.match_type == "asset":
         ctx.asset = await db.get(Asset, scan.asset_id)
@@ -88,6 +109,14 @@ async def _build_context(db: AsyncSession, scan: ProcessedScan, *,
             .join(ContainerAsset,
                   ContainerAsset.container_id == Container.id)
             .where(ContainerAsset.asset_id == scan.asset_id))
+    elif scan.match_type == "container":
+        ctx.container = await db.get(Container, scan.container_id)
+    elif scan.match_type == "person":
+        ctx.person = await db.get(Person, scan.person_id)
+    if scan.off_move:
+        if off_move_initiative_id is not None:
+            ctx.initiative = await db.get(Initiative, off_move_initiative_id)
+    elif scan.match_type == "asset":
         if initiative_asset is not None:
             # A manual edit is anchored to the initiative being edited —
             # never re-resolved to "the in-progress one".
@@ -108,29 +137,39 @@ async def _build_context(db: AsyncSession, scan: ProcessedScan, *,
                 .limit(1))).first()
             if pair is not None:
                 ctx.initiative_asset, ctx.initiative = pair
-    elif scan.match_type == "container":
-        ctx.container = await db.get(Container, scan.container_id)
-    elif scan.match_type == "person":
-        ctx.person = await db.get(Person, scan.person_id)
     return ctx
 
 
 async def apply_rules(db: AsyncSession, scan: ProcessedScan, *,
-                      initiative_asset: InitiativeAsset | None = None
+                      initiative_asset: InitiativeAsset | None = None,
+                      off_move_initiative_id: uuid.UUID | None = None
                       ) -> int:
     """Evaluate and apply all enabled rules for this scan's
     (status, match_type). Pass `initiative_asset` to anchor the rule
     context to a specific initiative-asset row (a manual status edit)
     instead of re-resolving the in-progress initiative — the worker's
-    normal scan path leaves this unset."""
+    normal scan path leaves this unset.
+
+    An off-move sighting (`scan.off_move`) runs only the rules that ask
+    for it (an "Off-move sighting equals true" condition); every other
+    rule skips it and writes no execution, so rules written before
+    sightings could run rules behave exactly as before. Its context's
+    initiative is `off_move_initiative_id` — the move the station
+    uploaded it for. Any other scan ignores that argument."""
     if scan.status is None:
         return 0
     rules = await _load_rules(db, scan.status, scan.match_type)
+    if scan.off_move:
+        rules = [r for r in rules if _asks_for_off_move(r)]
     if not rules:
         return 0
-    ctx = await _build_context(db, scan, initiative_asset=initiative_asset)
+    ctx = await _build_context(db, scan, initiative_asset=initiative_asset,
+                               off_move_initiative_id=off_move_initiative_id)
     for rule in rules:
         started = time.monotonic()
+        # Name the rule for its actions. Set on every pass, so a rule's
+        # actions never see the rule before it.
+        ctx.rule_id, ctx.rule_name = rule["id"], rule["name"]
         met = all(evaluate_condition(ctx.get(f), op, v)
                   for f, op, v in rule["conditions"])
         applied: list[dict] = []

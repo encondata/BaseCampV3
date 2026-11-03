@@ -2,8 +2,9 @@
 validated against the code-side catalog at save time (the same catalog
 the worker executes — one source of truth); status-typed action params
 are additionally checked against the vocabulary here, where we have a
-DB. PUT replaces children wholesale: child ids are not stable and
-nothing may reference them. All writes audit through services.audit."""
+DB, and so are the people and notification groups a Notify action names.
+PUT replaces children wholesale: child ids are not stable and nothing may
+reference them. All writes audit through services.audit."""
 
 import uuid
 from datetime import UTC, datetime
@@ -18,8 +19,8 @@ from serversherpa.api.schemas import (
     StatusRulePatch,
 )
 from serversherpa.db.models import (
-    ProcessedScan, Site, StatusRule, StatusRuleAction, StatusRuleCondition,
-    StatusRuleExecution, StatusValue,
+    NotificationGroup, Person, ProcessedScan, Site, StatusRule, StatusRuleAction,
+    StatusRuleCondition, StatusRuleExecution, StatusValue,
 )
 from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit
@@ -54,6 +55,21 @@ async def _vocab_keys(db: DbSession, record_type: str) -> set[str]:
         StatusValue.record_type == record_type))).all())
 
 
+# The param types that name rows: the table each names, and the reason when
+# one of the names is not there. A group deleted later just drops out.
+_NAMED = {"people": (Person, "unknown_person"),
+          "groups": (NotificationGroup, "unknown_group")}
+
+
+async def _all_exist(db: DbSession, model, ids: list[str]) -> bool:
+    """Whether every id (validated id strings) is a row of `model`."""
+    wanted = {uuid.UUID(value) for value in ids}
+    if not wanted:
+        return True
+    found = set(await db.scalars(select(model.id).where(model.id.in_(wanted))))
+    return found == wanted
+
+
 async def _validate(db: DbSession, body: StatusRuleIn) -> None:
     if body.trigger_status not in await _vocab_keys(db, "asset"):
         raise _err(422, "bad_trigger", field="trigger_status")
@@ -63,11 +79,19 @@ async def _validate(db: DbSession, body: StatusRuleIn) -> None:
         code = validate_condition(c.field, c.operator, c.value)
         if code:
             raise _err(422, "bad_condition", index=i, reason=code)
+    notifies = False
     for i, a in enumerate(body.actions):
+        # One Notify action per rule: its repeat guard is per rule and thing, so a second
+        # one would never be heard.
+        if a.action_type == "notify":
+            if notifies:
+                raise _err(422, "bad_action", index=i, reason="notify_twice")
+            notifies = True
         code = validate_action(a.action_type, a.params)
         if code:
             raise _err(422, "bad_action", index=i, reason=code)
-        # status-typed params must be real vocabulary keys.
+        # status-typed params must be real vocabulary keys, and the people
+        # and groups a param names must exist.
         action = ACTIONS[a.action_type]
         for p in action.params:
             if p.type == "status":
@@ -75,6 +99,10 @@ async def _validate(db: DbSession, body: StatusRuleIn) -> None:
                 if a.params[p.name] not in await _vocab_keys(db, record_type):
                     raise _err(422, "bad_action", index=i,
                                reason="unknown_status_key")
+            elif p.type in _NAMED:
+                model, reason = _NAMED[p.type]
+                if not await _all_exist(db, model, a.params[p.name]):
+                    raise _err(422, "bad_action", index=i, reason=reason)
 
 
 def _children(body: StatusRuleIn) -> tuple[list, list]:
@@ -164,7 +192,7 @@ async def rule_schema(
                        "needs_value": k not in ("is_null", "is_not_null")}
                       for k in OPERATORS],
         "condition_fields": [
-            {"key": f.key, "label": f.label, "type": f.type,
+            {"key": f.key, "label": f.label, "type": f.type, "nullable": f.nullable,
              **({"options": options_for(f.options_source)}
                 if f.options_source else {})}
             for f in CONDITION_FIELDS.values()],

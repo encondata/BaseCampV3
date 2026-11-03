@@ -1,17 +1,21 @@
-"""Self-service endpoints: my profile (view/edit), my active sessions, and my
-notification groups (the list to join from, and join/leave requests)."""
+"""Self-service endpoints: my profile (view/edit), my active sessions, my
+notification groups (the list to join from, and join/leave requests) and my
+watches (what I hear about because I watch it, or my groups do)."""
 
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Cookie, HTTPException, Response
+from fastapi import APIRouter, Cookie, HTTPException, Query, Response
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.deps import CurrentUser, DbSession, raise_if_reused, require_password_length
 from serversherpa.api.routes.auth import TRUST_COOKIE, clear_trust_cookie
 from serversherpa.api.routes.notifications import _request_out
+from serversherpa.api.routes.wiki.watches import audit_unwatch as audit_wiki_unwatch
+from serversherpa.api.routes.wiki.watches import audit_watch as audit_wiki_watch
 from serversherpa.api.schemas import (
     BiometricKeyOut,
     ChangePasswordIn,
@@ -25,6 +29,10 @@ from serversherpa.api.schemas import (
     PersonDetail,
     ProfileUpdateIn,
     SessionItem,
+    WatchIn,
+    WatchKindsIn,
+    WatchOut,
+    WatchStateOut,
 )
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
@@ -32,10 +40,23 @@ from serversherpa.db.models import (
     NotificationGroup,
     NotificationGroupMember,
     NotificationMembershipRequest,
+    NotificationWatch,
     TrustedDevice,
 )
 from serversherpa.db.ordering import natural
 from serversherpa.notifications.requests import RequestError, cancel_request, create_request
+from serversherpa.notifications.watches import (
+    EVERYTHING,
+    WIKI_THINGS,
+    WatchError,
+    add_watch,
+    can_open,
+    clean_kinds,
+    own_watch_on,
+    person_watches,
+    thing_of,
+    watch_view,
+)
 from serversherpa.security.passwords import verify_password
 from serversherpa.services import biometric
 from serversherpa.services import totp as totp_service
@@ -257,8 +278,7 @@ def _my_group_out(group: NotificationGroup, member_count: int, is_member: bool,
                   ) -> MyNotificationGroupOut:
     return MyNotificationGroupOut(
         id=group.id, name=group.name, description=group.description,
-        categories=group.categories, member_count=member_count,
-        is_member=is_member,
+        member_count=member_count, is_member=is_member,
         pending_request=(MyPendingRequestOut(
             id=pending.id, action=pending.action, note=pending.note,
             created_at=pending.created_at) if pending is not None else None))
@@ -328,4 +348,105 @@ async def cancel_my_request(
         await cancel_request(db, request_id=request_id, person_id=user.person.id)
     except RequestError as e:
         raise HTTPException(status_code=e.status, detail={"code": e.code}) from None
+    await db.commit()
+
+
+# ── watches: what I hear about because I watch it, or my groups do ───
+# Anyone signed in can watch what they can open. The rules live in
+# notifications/watches.py; a WatchError becomes the same {"code"} answer
+# as elsewhere here.
+
+def _watch_http(err: WatchError) -> HTTPException:
+    return HTTPException(status_code=err.status, detail={"code": err.code})
+
+
+async def _my_watch(db: AsyncSession, watch_id: uuid.UUID,
+                    person_id: uuid.UUID) -> NotificationWatch:
+    """One of my own watches. Anyone else's (or none) is a 404."""
+    watch = await db.get(NotificationWatch, watch_id)
+    if watch is None or watch.person_id != person_id:
+        raise HTTPException(status_code=404, detail={"code": "watch_not_found"})
+    return watch
+
+
+@router.get("/watches", response_model=list[WatchOut])
+async def list_my_watches(user: CurrentUser, db: DbSession) -> list[WatchOut]:
+    """My own watches, then those of the Active groups I belong to, each newest first.
+    Only things I can open now are listed; the rest stay stored and silent."""
+    return [WatchOut.from_view(view) for view in await person_watches(db, user.person.id)]
+
+
+@router.get("/watches/state", response_model=WatchStateOut)
+async def my_watch_state(
+    thing: str, thing_id: Annotated[uuid.UUID, Query(alias="id")],
+    user: CurrentUser, db: DbSession,
+) -> WatchStateOut:
+    """Whether I watch this thing myself, for the Watch button. A group's watch of it
+    doesn't count."""
+    try:
+        watch = await own_watch_on(db, user.person.id, thing, thing_id)
+    except WatchError as err:
+        raise _watch_http(err) from None
+    if watch is None:
+        return WatchStateOut(watching=False, watch_id=None, kinds=[])
+    return WatchStateOut(watching=True, watch_id=watch.id, kinds=list(watch.kinds))
+
+
+def _on_the_wiki(watch: NotificationWatch) -> bool:
+    """A watch on a wiki library, folder or page: the wiki's own as well, which the wiki
+    audits (api/routes/wiki/watches.py)."""
+    thing = thing_of(watch)
+    return thing is not None and thing.type in WIKI_THINGS
+
+
+@router.post("/watches", response_model=WatchOut, status_code=201)
+async def create_my_watch(body: WatchIn, user: CurrentUser, db: DbSession) -> WatchOut:
+    """Watch a thing I can open, or chosen events everywhere. One watch each: watching again
+    is a 409, and the events are changed on the watch that is there. A wiki watch is recorded
+    as the wiki records its own."""
+    try:
+        watch = await add_watch(
+            db, thing=body.thing, thing_id=body.id, kinds=body.kinds,
+            viewer_id=user.person.id, viewer_access=user.access,
+            created_by=user.person.id, person_id=user.person.id)
+        view = await watch_view(db, watch)
+    except WatchError as err:
+        raise _watch_http(err) from None
+    if _on_the_wiki(watch):
+        audit_wiki_watch(db, actor_id=user.person.id, watch=watch)
+    await db.commit()
+    return WatchOut.from_view(view)
+
+
+@router.patch("/watches/{watch_id}", response_model=WatchOut)
+async def update_my_watch(
+    watch_id: uuid.UUID, body: WatchKindsIn, user: CurrentUser, db: DbSession,
+) -> WatchOut:
+    """Choose the events of one of my watches; none means every event that applies. A wiki
+    watch names none (it hears every page update and comment): any is 422 `invalid_kind`."""
+    watch = await _my_watch(db, watch_id, user.person.id)
+    # A watch on something I can't open stays stored but out of sight, as in the list: its
+    # answer would carry the thing's name.
+    if not await can_open(db, user.person.id, watch):
+        raise HTTPException(status_code=404, detail={"code": "watch_not_found"})
+    thing = thing_of(watch)
+    try:
+        watch.kinds = clean_kinds(thing.type if thing is not None else EVERYTHING, body.kinds)
+        view = await watch_view(db, watch)
+    except WatchError as err:
+        raise _watch_http(err) from None
+    await db.commit()
+    return WatchOut.from_view(view)
+
+
+@router.delete("/watches/{watch_id}", status_code=204)
+async def delete_my_watch(watch_id: uuid.UUID, user: CurrentUser, db: DbSession) -> None:
+    """Stop watching. Any watch of mine can go, whether or not I can still open its thing. A
+    wiki watch's end is recorded as the wiki records its own (`wiki_watch` `unwatch`), so the
+    wiki's history stays whole whichever page stopped it; watches on portal things go
+    unaudited."""
+    watch = await _my_watch(db, watch_id, user.person.id)
+    if _on_the_wiki(watch):
+        audit_wiki_unwatch(db, actor_id=user.person.id, watch=watch)
+    await db.delete(watch)
     await db.commit()

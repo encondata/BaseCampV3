@@ -30,11 +30,46 @@ export function summarizeCondition(
   return parts.join(' ');
 }
 
+/** The key of the Send a notification action. A rule has at most one. */
+export const NOTIFY_ACTION = 'notify';
+
+/** The names behind the ids a Send a notification action holds, as far as the caller has loaded
+ *  them (the editor's People and Groups options). An id with no name here reads as itself. */
+export interface ActionNames {
+  people?: Pick<SchemaOption, 'value' | 'label'>[];
+  groups?: Pick<SchemaOption, 'value' | 'label'>[];
+}
+
+/** "A", "A and B", "A, B and C". */
+function joinWords(parts: string[]): string {
+  return parts.length < 2
+    ? parts.join('')
+    : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+}
+
+/** "Notify Person A, Group A and watchers": the people, then the groups, by name, then the
+ *  watchers. An action that notifies nobody (the API refuses to save one) reads as its label. */
+function summarizeNotify(
+  a: StatusRuleAction, label: string, names: ActionNames,
+): string {
+  const named = (raw: unknown, options: ActionNames['people']): string[] =>
+    (Array.isArray(raw) ? raw : [])
+      .filter((id): id is string => typeof id === 'string')
+      .map((id) => optionLabel(options, id));
+  const parts = [
+    ...named(a.params.people, names.people),
+    ...named(a.params.groups, names.groups),
+  ];
+  if (a.params.watchers === true) parts.push('watchers');
+  return parts.length ? `Notify ${joinWords(parts)}` : label;
+}
+
 export function summarizeAction(
-  a: StatusRuleAction, schema: StatusRuleSchema,
+  a: StatusRuleAction, schema: StatusRuleSchema, names: ActionNames = {},
 ): string {
   const def = schema.actions.find((d) => d.key === a.action_type);
   if (!def) return a.action_type;
+  if (a.action_type === NOTIFY_ACTION) return summarizeNotify(a, def.label, names);
   const values = def.params.map((p) => {
     const raw = a.params[p.name];
     return optionLabel(p.options, String(raw));

@@ -35,11 +35,12 @@ import {
   type ColumnDef, type FacetGroup, type FacetState,
 } from '../../lib/listTools';
 import {
-  ruleCellText, ruleSearchText, ruleSortValue, summarizeAction,
-  type RuleRowContext,
+  NOTIFY_ACTION, ruleCellText, ruleSearchText, ruleSortValue, summarizeAction,
+  type ActionNames, type RuleRowContext,
 } from '../../lib/statusRules';
 import { VirtualRows } from '../../lib/virtualRows';
 import RuleEditorModal from './RuleEditorModal';
+import { useNotifyTargets } from './useNotifyTargets';
 
 // Name | Trigger status | Match type | Priority | Conditions | Actions |
 // Runs | Updated (hidden by default) | Enabled — trailing Edit/Duplicate/
@@ -119,6 +120,19 @@ export default function RulesTab({ onCount }: {
     () => new Map(stats.map((s) => [s.rule_id, s])), [stats],
   );
   const ctx = useMemo<RuleRowContext>(() => ({ schema, stats: statsMap }), [schema, statsMap]);
+
+  // A Send a notification action's summary names its people and groups, so their names are
+  // asked for once some rule has one. Names that can't be had (they need notification
+  // permissions the rules' viewer may lack) leave the ids in the summary.
+  const anyNotify = useMemo(
+    () => (rules ?? []).some((r) => r.actions.some((a) => a.action_type === NOTIFY_ACTION)),
+    [rules],
+  );
+  const targets = useNotifyTargets(anyNotify);
+  const actionNames = useMemo<ActionNames>(
+    () => ({ people: targets.people.options, groups: targets.groups.options }),
+    [targets],
+  );
 
   const cellText: CellText<StatusRule> = useCallback(
     (r, key) => ruleCellText(r, key, ctx), [ctx],
@@ -264,7 +278,7 @@ export default function RulesTab({ onCount }: {
         </span>;
       case 'actions': {
         const title = schema
-          ? (rule.actions.map((a) => summarizeAction(a, schema)).join('\n') || 'No actions')
+          ? (rule.actions.map((a) => summarizeAction(a, schema, actionNames)).join('\n') || 'No actions')
           : undefined;
         return <span className="cell-line" title={title}>{cellText(rule, 'actions')}</span>;
       }

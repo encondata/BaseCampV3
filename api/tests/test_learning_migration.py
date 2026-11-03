@@ -1,12 +1,13 @@
 """Migration 0109: the learning portal's tables, the learning_admin role and
-its grants, the widened notification category check, and the manager
-helper (learning:<action> OR global wiki:delete)."""
+its grants, and the manager helper (learning:<action> OR global wiki:delete).
+Its widened notification category check is read in test_migration_0109_learning_portal.py,
+on a database at 0112: migration 0113 dropped the column at head."""
 
 import uuid
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.exc import IntegrityError
 
 TABLES = (
     "learning_documents", "learning_document_versions", "learning_translations",
@@ -161,19 +162,6 @@ async def test_learning_admin_role_and_grants(db):
         "SELECT action FROM role_permissions "
         "WHERE role = 'learning_admin' AND resource = 'wiki'"))).all()}
     assert wiki == {"view"}
-
-
-async def test_notification_category_learning_allowed(db):
-    gid = await db.scalar(text(
-        "INSERT INTO notification_groups (name, categories) "
-        "VALUES (:n, ARRAY['learning','wiki']) RETURNING id"), {"n": f"g-{uuid.uuid4()}"})
-    assert gid is not None
-    await db.commit()
-    with pytest.raises(DBAPIError):
-        await db.execute(text(
-            "INSERT INTO notification_groups (name, categories) "
-            "VALUES (:n, ARRAY['bogus'])"), {"n": f"g-{uuid.uuid4()}"})
-    await db.rollback()
 
 
 async def _access_for(db, role):

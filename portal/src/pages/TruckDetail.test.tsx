@@ -44,6 +44,7 @@ const api = vi.hoisted(() => ({
   listTruckEvents: vi.fn(),
   addTruckUpdate: vi.fn(),
   clearTruckUpdates: vi.fn(),
+  getWatchState: vi.fn(),            // the hero's Watch button
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -88,6 +89,7 @@ beforeEach(() => {
   api.getTruck.mockResolvedValue(TRUCK);
   api.listTruckUpdates.mockResolvedValue(UPDATES);
   api.listTruckEvents.mockResolvedValue([]);
+  api.getWatchState.mockResolvedValue({ watching: false, watch_id: null, kinds: [] });
 });
 
 afterEach(cleanup);
@@ -237,4 +239,38 @@ it('links each container to the Containers page with ?open=', async () => {
   renderPage();
   const link = await screen.findByRole('link', { name: 'Container A' });
   expect(link.getAttribute('href')).toBe('/logistics/containers?open=c1');
+});
+
+const heroActions = async () =>
+  (await screen.findByText('Truck One')).closest('.profile-id')!
+    .querySelector('.truck-hero-actions') as HTMLElement;
+
+const actionNames = (actions: HTMLElement) => [...actions.children].map((el) => el.textContent);
+
+it('hero: Watch comes first, then Edit, for someone who can change trucks', async () => {
+  renderPage();
+  const actions = await heroActions();
+  await within(actions).findByRole('button', { name: 'Watch' });
+
+  expect(actionNames(actions)).toEqual(['Watch', 'Edit']);
+  expect(api.getWatchState).toHaveBeenCalledWith('truck', 't1');
+});
+
+it('hero: Watch still shows without change permission, and Edit does not', async () => {
+  auth.can = (resource, action) => !(resource === 'trucks' && action === 'change');
+  renderPage();
+  const actions = await heroActions();
+  await within(actions).findByRole('button', { name: 'Watch' });
+
+  expect(actionNames(actions)).toEqual(['Watch']);
+  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+});
+
+it('hero: Watching shows for a truck the person already watches', async () => {
+  api.getWatchState.mockResolvedValue({ watching: true, watch_id: 'w1', kinds: [] });
+  renderPage();
+  const actions = await heroActions();
+
+  const watching = await within(actions).findByRole('button', { name: 'Watching' });
+  expect(watching.getAttribute('aria-pressed')).toBe('true');
 });

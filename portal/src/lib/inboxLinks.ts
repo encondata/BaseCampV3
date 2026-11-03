@@ -1,29 +1,43 @@
-/** Where an inbox item's link goes when it's opened from the portal. The
- *  portal's own items carry relative paths ("/reports?tab=history"),
- *  which open in-app; other apps that share the inbox (the wiki) send
- *  absolute http(s) URLs, which leave the portal (same tab) when they
- *  point at another origin — never through the router, which would read
- *  them as portal paths. An absolute URL on the portal's own origin
- *  stays in the app, as does a malformed absolute link (to the portal's
- *  home page). The wiki follows the same rule (wiki/web/src/lib/inboxLinks.ts):
- *  keep the two in step. */
+/** Where an inbox item's link goes when it's opened from the portal. Only
+ *  two kinds of link are opened. The portal's own items carry its paths, a
+ *  single slash and then the rest ("/reports?tab=history"), which open
+ *  in-app. Other apps that share the inbox (the wiki) send absolute http(s)
+ *  URLs, which leave the portal (same tab) when they point at another
+ *  origin — never through the router, which would read them as portal
+ *  paths — and stay in the app on the portal's own origin. Anything else
+ *  falls back to the portal's home page: a malformed absolute URL
+ *  ("http://"), another scheme ("javascript:", "data:", "vbscript:"), a
+ *  protocol-relative "//host" (or "/\host", which browsers read the same
+ *  way), whether bare or after the portal's own origin ("<origin>//host"),
+ *  or no link at all — so a link never runs, and never leaves for
+ *  somewhere unchecked. The wiki follows the same rule
+ *  (wiki/web/src/lib/inboxLinks.ts): keep the two in step. */
 
 export type InboxTarget = { kind: 'app'; to: string } | { kind: 'external'; href: string };
 
 const HTTP_URL = /^https?:\/\//i;
 
+/** A path: a slash and then anything but a second slash, a backslash, or the
+ *  tab or newline a browser drops before reading a URL ("/\t/host" is "//host"). */
+const PATH = /^\/(?![/\\\t\n\r])/;
+
+/** Where a link that is no link we open goes: the app's home page. */
+const home = (): InboxTarget => ({ kind: 'app', to: '/' });
+
 export function resolveInboxLink(link: string): InboxTarget {
-  if (!HTTP_URL.test(link)) return { kind: 'app', to: link };
+  if (!HTTP_URL.test(link)) return PATH.test(link) ? { kind: 'app', to: link } : home();
   let url: URL;
   try {
     url = new URL(link);
   } catch {
-    // "http://" and the like: not a URL we can open — stay in the app
-    return { kind: 'app', to: '/' };
+    // "http://" and the like: not a URL we can open
+    return home();
   }
-  return url.origin === window.location.origin
-    ? { kind: 'app', to: `${url.pathname}${url.search}${url.hash}` }
-    : { kind: 'external', href: url.href };
+  if (url.origin !== window.location.origin) return { kind: 'external', href: url.href };
+  // a URL on our own origin can still carry another host's path: the pathname of
+  // "<origin>//evil.example/x" is "//evil.example/x", which the router reads as that host's
+  const to = `${url.pathname}${url.search}${url.hash}`;
+  return PATH.test(to) ? { kind: 'app', to } : home();
 }
 
 /** Leaves the portal for `href` (its own function so tests can stub it). */
