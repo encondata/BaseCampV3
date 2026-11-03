@@ -156,6 +156,46 @@ describe('System settings › Project plans', () => {
     expect(api.putProjectPlanSettings).not.toHaveBeenCalled();
   });
 
+  it('a change that can’t be saved says what to fix next to Save, and “Go to it” brings that field up', async () => {
+    const user = renderPage();
+    await loaded();
+    expect(document.querySelector('.pln-sys-fix')).toBeNull();
+    await user.clear(input('Default duration'));
+    await user.type(input('Default duration'), 'abc');
+    const actions = document.querySelector('.pln-sys-actions') as HTMLElement;
+    const note = within(actions).getByText('Fix “Default duration” above.');
+    expect(note.closest('.page-hint')).not.toBeNull();
+    const scrolled = vi.mocked(Element.prototype.scrollIntoView);
+    scrolled.mockClear();
+    await user.click(within(actions).getByRole('button', { name: 'Go to it' }));
+    expect(document.activeElement).toBe(input('Default duration'));
+    expect(scrolled.mock.contexts[0]).toBe(input('Default duration'));
+    // fixed: the note goes
+    await user.clear(input('Default duration'));
+    await user.type(input('Default duration'), '2d');
+    expect(document.querySelector('.pln-sys-fix')).toBeNull();
+  });
+
+  it('“Go to it” reaches a calendar field and the reminder days too', async () => {
+    const user = renderPage();
+    await loaded();
+    await user.clear(input('Hours per day'));
+    await user.type(input('Hours per day'), '25');
+    const actions = document.querySelector('.pln-sys-actions') as HTMLElement;
+    expect(within(actions).getByText('Fix “Hours per day” above.')).toBeTruthy();
+    expect(input('Hours per day').getAttribute('aria-invalid')).toBe('true');
+    await user.click(within(actions).getByRole('button', { name: 'Go to it' }));
+    expect(document.activeElement).toBe(input('Hours per day'));
+
+    await user.clear(input('Hours per day'));
+    await user.type(input('Hours per day'), '8');
+    await user.click(screen.getByRole('button', { name: 'Remove 3 days before' }));
+    await user.click(screen.getByRole('button', { name: 'Remove 1 day before' }));
+    expect(within(actions).getByText('Fix “Days before due” above.')).toBeTruthy();
+    await user.click(within(actions).getByRole('button', { name: 'Go to it' }));
+    expect(document.activeElement).toBe(screen.getByRole('combobox', { name: 'Add a reminder day' }));
+  });
+
   it('critical slack takes a fraction of a day', async () => {
     const user = renderPage();
     await loaded();

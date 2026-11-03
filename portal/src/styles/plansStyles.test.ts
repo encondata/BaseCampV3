@@ -127,3 +127,19 @@ it('a filter’s context row is dimmed the same in the sheet and the chart; the 
   // "trigger" holds the guardrail's `tr`: the count and the search are reached without it
   expect(css).not.toMatch(/\.pln-ftools[^{]*tip-trigger/);
 });
+
+it('System settings › Project plans: the cards are capped so a control sits near its label, and a line wraps its control under the label when both don’t fit', () => {
+  const max = /max-width:\s*(\d+)px/.exec(declarations('.pln-sys') ?? '');
+  expect(Number(max?.[1])).toBeGreaterThanOrEqual(880);   // the calendar's week and exceptions need it
+  expect(Number(max?.[1])).toBeLessThanOrEqual(1040);
+  expect(declarations('.pln-sys-line')).toMatch(/flex-wrap:\s*wrap/);
+  // the name gives way (its hint wraps) before the control has to drop under it
+  expect(declarations('.pln-sys-line > .set-label')).toMatch(/flex:\s*1 1 \d+px/);
+  expect(declarations('.pln-sys-line > .set-label')).toMatch(/min-width:\s*0/);
+  // the calendar's five unit fields go three to a line when its card is narrow (their captions stay on one line)
+  expect(declarations('.pln-sys-cal')).toMatch(/container-type:\s*inline-size/);
+  expect(css).toMatch(/@container\s*\(max-width:\s*\d+px\)\s*\{\s*\.pln-sys-cal \.pln-cal-units\s*\{\s*grid-template-columns:\s*repeat\(3,/);
+  // a segmented choice wraps its own buttons on a narrow screen rather than scrolling sideways
+  expect(declarations('.pln-set-choice')).toMatch(/flex-wrap:\s*wrap/);
+  expect(declarations('.pln-sys-control')).toMatch(/max-width:\s*100%/);
+});

@@ -15,9 +15,12 @@
  * exactly what GET /system/project-plans returns, checks the draft with
  * Plan settings' rules, and PUTs only the keys that changed (a changed group
  * or calendar whole). Save + Discard; a refusal stays by Save with its
- * reason. Read-only without settings:change (the Settings page says so).
+ * reason. While a change can't be saved, a note by Save names the first
+ * field to fix ("Fix “Default duration” above.") with "Go to it", which
+ * brings the first `aria-invalid` field into view and focuses it.
+ * Read-only without settings:change (the Settings page says so).
  */
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import ChipPicker from '../../components/ChipPicker';
 import CalendarEditor from '../../components/plans/CalendarEditor';
@@ -32,7 +35,8 @@ import {
   COMPLETION_HINTS, MAX_OFFSETS, OVERDUE_CADENCES, PREDECESSOR_RULES, REMINDER_HINTS, SUBTASK_RULES, TASK_MODES,
 } from '../../lib/plans/settingsForm';
 import {
-  OFFSET_OPTIONS, evaluate, isDirty, isValid, offsetDays, toDraft, type ReminderDraft, type SystemSettingsDraft,
+  OFFSET_OPTIONS, evaluate, fixHint, isDirty, isValid, offsetDays, toDraft, type ReminderDraft,
+  type SystemSettingsDraft,
 } from '../../lib/plans/systemSettings';
 import '../../styles/directory.css';   // .segmented, .mini-btn
 import '../../styles/plans.css';       // .pln-set-choice, CalendarEditor, .pln-sys-*
@@ -48,7 +52,7 @@ function Setting({ id, label, hint, error, children }: {
   id: string; label: string; hint?: string; error?: string; children: ReactNode;
 }) {
   return (
-    <div className="set-row">
+    <div className="set-row pln-sys-line">
       <div className="set-label">
         <b id={`${id}-label`}>{label}</b>
         {hint && <span id={`${id}-hint`}>{hint}</span>}
@@ -79,6 +83,7 @@ export default function ProjectPlanSettings({ canChange }: { canChange: boolean 
   const [failed, setFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const formRef = useRef<HTMLFormElement>(null);
 
   const load = useCallback(() => {
     setFailed(false);
@@ -110,6 +115,16 @@ export default function ProjectPlanSettings({ canChange }: { canChange: boolean 
   const dirty = isDirty(result);
   const valid = isValid(result);
   const errors = result.errors;
+  const fix = fixHint(errors, draft);
+
+  /** The first field an error is about, into view and focused (the fields
+   *  are in the order fixHint counts them). */
+  const jumpToError = () => {
+    const field = formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]');
+    if (!field) return;
+    field.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+    field.focus({ preventScroll: true });
+  };
 
   const set = (patch: Partial<SystemSettingsDraft>) => {
     setDraft((d) => d && { ...d, ...patch });
@@ -156,7 +171,7 @@ export default function ProjectPlanSettings({ canChange }: { canChange: boolean 
   const offsetOptions = full ? OFFSET_OPTIONS.filter((o) => picked.includes(o.value)) : OFFSET_OPTIONS;
 
   return (
-    <form className="pln-sys" noValidate onSubmit={(e) => { e.preventDefault(); void save(); }}>
+    <form className="pln-sys" ref={formRef} noValidate onSubmit={(e) => { e.preventDefault(); void save(); }}>
       <Card id="pps-scheduling" title="Scheduling"
             hint={<p>How plans schedule unless they set their own. A change reschedules the plans that use it.</p>}>
         <div className="pf-form pln-sys-body">
@@ -190,7 +205,7 @@ export default function ProjectPlanSettings({ canChange }: { canChange: boolean 
       </Card>
 
       <Card id="pps-calendar" title="Default calendar" hint={<p className="page-hint">{CALENDAR_HINT}</p>}>
-        <div className="pln-sys-pad">
+        <div className="pln-sys-pad pln-sys-cal">
           <CalendarEditor value={draft.calendar} errors={errors} disabled={locked}
                           onChange={(calendar) => set({ calendar })} />
         </div>
@@ -221,6 +236,7 @@ export default function ProjectPlanSettings({ canChange }: { canChange: boolean 
                    hint={`Up to ${MAX_OFFSETS} days before a task is due.`} error={errors['reminders.offsets_days']}>
             <div className="pln-sys-picker" role="group" aria-labelledby="pps-offsets-label">
               <ChipPicker options={offsetOptions} selected={picked} disabled={locked}
+                          invalid={!!errors['reminders.offsets_days']}
                           onChange={(v) => setReminder('offsets_days', offsetDays(v).map(String))}
                           ariaLabel="Add a reminder day" placeholder="Add a day…"
                           note={full ? `${MAX_OFFSETS} days is the most.` : undefined} />
@@ -253,6 +269,12 @@ export default function ProjectPlanSettings({ canChange }: { canChange: boolean 
           </button>
           {dirty && (
             <button type="button" className="mini-btn" disabled={saving} onClick={discard}>Discard</button>
+          )}
+          {dirty && fix && (
+            <p className="page-hint pln-sys-fix">
+              {fix}{' '}
+              <button type="button" className="link-plain" onClick={jumpToError}>Go to it</button>
+            </p>
           )}
           {error && <span className="pf-error" role="alert">{error}</span>}
         </div>

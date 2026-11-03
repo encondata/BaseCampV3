@@ -1257,8 +1257,29 @@
 /* ── System settings › Project plans (pages/settings/ProjectPlanSettings) ── */
 
 /* the form takes the settings grid's whole width: its cards stack, and the
-   calendar needs the room */
-.pln-sys { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+   calendar needs the room; capped, so a line's control sits near its name */
+.pln-sys {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+  max-width: 960px;
+}
+/* a line's control drops under its name when both don't fit; the name gives
+   way first (its hint wraps) */
+.pln-sys-line { flex-wrap: wrap; }
+.pln-sys-line > .set-label { flex: 1 1 200px; min-width: 0; }
+/* the calendar's five unit fields go three to a line in a narrow card, so
+   "Default start time" keeps its caption on one line (two below 520px, as
+   the editor does on a small screen) */
+.pln-sys-cal { container-type: inline-size; }
+@container (max-width: 820px) {
+  .pln-sys-cal .pln-cal-units { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@container (max-width: 520px) {
+  .pln-sys-cal .pln-cal-units { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 /* a card's settings are a .pf-form (the native time field's house) laid out
    as the System settings lines, not as its two-column grid */
 .pf-form.pln-sys-body { display: block; }
@@ -1273,6 +1294,8 @@
 .pln-sys input:disabled:not([type="checkbox"]) { opacity: 0.6; cursor: not-allowed; }
 .pln-sys-failed { display: flex; align-items: center; gap: 12px; color: var(--text-mute); }
 .pln-sys-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* "Fix “Default duration” above. Go to it", beside Save */
+.pln-sys .pln-sys-actions .pln-sys-fix { margin: 0; font-size: 13px; }
 
 /* ── Update project, Delete plan ────────────────────────────────── */
 

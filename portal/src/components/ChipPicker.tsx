@@ -40,6 +40,8 @@ export interface ChipPickerProps {
   note?: ReactNode;
   /** The ComboBox's accessible name. */
   ariaLabel?: string;
+  /** aria-invalid on the box (a form's error is about the picks). */
+  invalid?: boolean;
 }
 
 /** Where focus goes after a chip is removed: a value's ×, or the box. */
@@ -47,6 +49,7 @@ type FocusTarget = { kind: 'chip'; value: string } | { kind: 'box' };
 
 export default function ChipPicker({
   options, selected, onChange, disabled = false, placeholder = 'Add…', clearAll = false, note, ariaLabel,
+  invalid = false,
 }: ChipPickerProps) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const removeRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -107,7 +110,7 @@ export default function ChipPicker({
       )}
       {note ? <p className="page-hint chip-picker-note">{note}</p> : null}
       <ComboBox options={remaining} value="" disabled={disabled} placeholder={placeholder} ariaLabel={ariaLabel}
-        handle={combo}
+        handle={combo} invalid={invalid}
         onChange={(v) => {
           if (!v) return;
           onChange([...selected, v]);

@@ -67,12 +67,13 @@ interface Props {
   onSearch?: (text: string) => void;   // the caller filters `options` (server search)
   handle?: Ref<ComboBoxHandle>;        // focusQuietly()
   'aria-describedby'?: string;         // on the input (a hover tip wrapped around the box names itself here)
+  invalid?: boolean;                   // aria-invalid on the input (a form's error is about it)
 }
 
 export default function ComboBox({
   options, value, onChange, placeholder = 'Select…',
   onOpen, clearable = false, disabled = false, inputId, ariaLabel, portal = false, onSearch, handle,
-  'aria-describedby': describedBy,
+  'aria-describedby': describedBy, invalid = false,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
@@ -231,6 +232,7 @@ export default function ComboBox({
         aria-expanded={open}
         aria-label={ariaLabel}
         aria-describedby={describedBy}
+        aria-invalid={invalid || undefined}
       />
       {clearable && value && !open ? (
         <button type="button" className="combo-caret" aria-label="Clear"

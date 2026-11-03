@@ -6,7 +6,8 @@
  * default start and end times, and the exceptions: a date, a name, and a
  * Nonworking switch or the hours worked that day (moves often run on
  * weekends). The form is lib/plans/settingsForm's; its checks show by the
- * line they are about. A CSS grid, not a table.
+ * line they are about, and mark that line's fields `aria-invalid` (System
+ * settings › Project plans jumps to the first). A CSS grid, not a table.
  */
 import { useRef } from 'react';
 
@@ -18,10 +19,11 @@ import { Switch } from '../Switch';
 
 const STANDARD_HOURS: RangeForm[] = [{ start: '08:00', end: '12:00' }, { start: '13:00', end: '17:00' }];
 
-function Hours({ label, ranges, disabled, onChange }: {
+function Hours({ label, ranges, disabled, invalid, onChange }: {
   label: string;
   ranges: RangeForm[];
   disabled: boolean;
+  invalid: boolean;
   onChange(next: RangeForm[]): void;
 }) {
   const put = (i: number, patch: Partial<RangeForm>) => onChange(ranges.map((r, at) => (at === i ? { ...r, ...patch } : r)));
@@ -32,11 +34,11 @@ function Hours({ label, ranges, disabled, onChange }: {
           {/* the text keyboard: iOS's number pad has no colon */}
           <input type="text" className="pln-cal-time" inputMode="text" maxLength={5} placeholder="HH:MM"
                  aria-label={`${label} hours ${i + 1} start`} value={r.start} disabled={disabled}
-                 onChange={(e) => put(i, { start: e.target.value })} />
+                 aria-invalid={invalid || undefined} onChange={(e) => put(i, { start: e.target.value })} />
           <span aria-hidden="true">–</span>
           <input type="text" className="pln-cal-time" inputMode="text" maxLength={5} placeholder="HH:MM"
                  aria-label={`${label} hours ${i + 1} end`} value={r.end} disabled={disabled}
-                 onChange={(e) => put(i, { end: e.target.value })} />
+                 aria-invalid={invalid || undefined} onChange={(e) => put(i, { end: e.target.value })} />
           {ranges.length > 1 && (
             <button type="button" className="mini-btn pln-icon-btn" aria-label={`Remove ${label} hours ${i + 1}`}
                     title="Remove these hours" disabled={disabled}
@@ -87,7 +89,7 @@ export default function CalendarEditor({ value, onChange, errors, disabled }: {
     <div>
       <label htmlFor={`pln-cal-${key}`}>{label}</label>
       <input id={`pln-cal-${key}`} type="number" min={0} max={max} step="any" value={value[key]} disabled={disabled}
-             onChange={(e) => set({ [key]: e.target.value })} />
+             aria-invalid={!!errors[`calendar.${key}`] || undefined} onChange={(e) => set({ [key]: e.target.value })} />
       <Err text={errors[`calendar.${key}`]} />
     </div>
   );
@@ -104,10 +106,12 @@ export default function CalendarEditor({ value, onChange, errors, disabled }: {
               <div key={key} className="pln-cal-day">
                 <span className="pln-cal-dayname">{label}</span>
                 <Switch checked={day.working} label={`${label} working`} disabled={disabled}
+                        invalid={!!errors['calendar.week']}
                         onChange={(on) => setDay(key, on && !day.ranges.length
                           ? { working: true, ranges: usualHours() } : { working: on })} />
                 {day.working
-                  ? <Hours label={label} ranges={day.ranges} disabled={disabled} onChange={(ranges) => setDay(key, { ranges })} />
+                  ? <Hours label={label} ranges={day.ranges} disabled={disabled}
+                           invalid={!!errors[`calendar.week.${key}`]} onChange={(ranges) => setDay(key, { ranges })} />
                   : <span className="pln-cal-off">Nonworking</span>}
                 {errors[`calendar.week.${key}`] && (
                   <p className="pf-error pln-cal-error pln-cal-day-error" role="alert">{errors[`calendar.week.${key}`]}</p>
@@ -127,11 +131,13 @@ export default function CalendarEditor({ value, onChange, errors, disabled }: {
           <div>
             <label htmlFor="pln-cal-default-start">Default start time</label>
             <input id="pln-cal-default-start" type="time" value={value.defaultStart} disabled={disabled}
+                   aria-invalid={!!errors['calendar.defaults'] || undefined}
                    onChange={(e) => set({ defaultStart: e.target.value })} />
           </div>
           <div>
             <label htmlFor="pln-cal-default-end">Default end time</label>
             <input id="pln-cal-default-end" type="time" value={value.defaultEnd} disabled={disabled}
+                   aria-invalid={!!errors['calendar.defaults'] || undefined}
                    onChange={(e) => set({ defaultEnd: e.target.value })} />
           </div>
         </div>
@@ -150,9 +156,10 @@ export default function CalendarEditor({ value, onChange, errors, disabled }: {
               return (
                 <div key={e.key} className="pln-cal-exc" role="group" aria-label={`Exception ${n}`}>
                   <input type="date" aria-label={`Exception ${n} date`} value={e.date} disabled={disabled}
+                         aria-invalid={!!err || undefined}
                          onChange={(ev) => setException(e.key, { date: ev.target.value })} />
                   <input type="text" aria-label={`Exception ${n} name`} placeholder="Name (Thanksgiving, Move weekend)"
-                         value={e.name} maxLength={120} disabled={disabled}
+                         value={e.name} maxLength={120} disabled={disabled} aria-invalid={!!err || undefined}
                          onChange={(ev) => setException(e.key, { name: ev.target.value })} />
                   <span className="pln-cal-exc-kind">
                     <Switch checked={!e.working} label={`Exception ${n} nonworking`} disabled={disabled}
@@ -163,7 +170,7 @@ export default function CalendarEditor({ value, onChange, errors, disabled }: {
                     <span>Nonworking</span>
                   </span>
                   {e.working
-                    ? <Hours label={`Exception ${n}`} ranges={e.ranges} disabled={disabled}
+                    ? <Hours label={`Exception ${n}`} ranges={e.ranges} disabled={disabled} invalid={!!err}
                              onChange={(ranges) => setException(e.key, { ranges })} />
                     : <span />}
                   <button type="button" className="mini-btn pln-icon-btn" aria-label={`Remove exception ${n}`}
