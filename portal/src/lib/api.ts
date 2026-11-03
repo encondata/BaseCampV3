@@ -4986,7 +4986,11 @@ export interface StatusRuleIn {
 }
 export interface SchemaOption { value: string; label: string; color?: string }
 export interface RuleSchemaOperator { key: string; label: string; needs_value: boolean }
-export interface RuleSchemaField { key: string; label: string; type: string; options?: SchemaOption[] }
+/** `nullable`: a yes/no field whose value can also be empty (unknown), so is null / is not null
+ *  mean something on it. Absent reads as false (older payloads). */
+export interface RuleSchemaField {
+  key: string; label: string; type: string; options?: SchemaOption[]; nullable?: boolean;
+}
 /** What an action's parameter holds. `status` is one of the vocabulary's keys and `choice` one of
  *  a few strings (both carry `options`), `bool` a yes/no, and `people` and `groups` lists of
  *  person ids and notification group ids (the Send a notification action's). */

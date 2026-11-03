@@ -8,7 +8,8 @@
  *
  * Controls: every dropdown is the house ComboBox (no native <select>); a
  * yes/no value reads Yes / No and a new one starts at "true". A yes/no field
- * offers only the operator "equals" (a stored one with another keeps it). The
+ * offers the operator "equals", and one that can be empty (Asset has rails)
+ * the two empty checks too (a stored condition with any other keeps it). The
  * Send a notification action's People and Groups are ChipPickers and its
  * watchers a Switch; a rule has one such action, so no other row offers it.
  * Their lists are asked for only by a viewer who may have them.
@@ -66,6 +67,7 @@ const SCHEMA: StatusRuleSchema = {
     { key: 'equals', label: 'equals', needs_value: true },
     { key: 'not_equals', label: 'not equals', needs_value: true },
     { key: 'is_null', label: 'is null', needs_value: false },
+    { key: 'is_not_null', label: 'is not null', needs_value: false },
   ],
   condition_fields: [
     {
@@ -73,7 +75,9 @@ const SCHEMA: StatusRuleSchema = {
       options: [{ value: 'good', label: 'Good' }, { value: 'bad', label: 'Bad' }],
     },
     { key: 'scan.device_id', label: 'Scan device', type: 'text' },
-    { key: 'scan.off_move', label: 'Off-move sighting', type: 'bool' },
+    // the two yes/no fields, as the API sends them: one is never empty, one can be
+    { key: 'scan.off_move', label: 'Off-move sighting', type: 'bool', nullable: false },
+    { key: 'asset.has_rails', label: 'Asset has rails', type: 'bool', nullable: true },
   ],
   actions: [
     {
@@ -388,8 +392,9 @@ it('shows no select on an edit of a rule either, and offers every option of a dr
   expect(await offered(user, 'When a scan with status')).toEqual(['In Transit', 'Delivered']);
   expect(await offered(user, 'matches a')).toEqual(['Exact', 'Fuzzy']);
   expect(await offered(user, 'Condition 1 field'))
-    .toEqual(['Asset status', 'Scan device', 'Off-move sighting']);
-  expect(await offered(user, 'Condition 1 operator')).toEqual(['equals', 'not equals', 'is null']);
+    .toEqual(['Asset status', 'Scan device', 'Off-move sighting', 'Asset has rails']);
+  expect(await offered(user, 'Condition 1 operator'))
+    .toEqual(['equals', 'not equals', 'is null', 'is not null']);
   expect(await offered(user, 'Condition 1 value')).toEqual(['Good', 'Bad']);
   expect(await offered(user, 'Action 1 type')).toEqual([
     'Set asset status', 'Mark move asset side verified', 'Send a notification',
@@ -543,25 +548,26 @@ it('a new condition on a yes/no field starts at "true": untouched, it saves true
   }));
 });
 
-it('a yes/no value starts at "true" again when a stored operator that takes none gives way to equals', async () => {
-  const user = userEvent.setup();
-  renderEdit({
-    ...RULE, conditions: [{ field: 'scan.off_move', operator: 'is_null', value: null }],
-  });
-  expect(screen.queryByRole('combobox', { name: 'Condition 1 value' })).toBeNull();
+it.each(['scan.off_move', 'asset.has_rails'])(
+  'a yes/no value starts at "true" again when a stored operator that takes none (on %s) gives way to equals',
+  async (field) => {
+    const user = userEvent.setup();
+    renderEdit({ ...RULE, conditions: [{ field, operator: 'is_null', value: null }] });
+    expect(screen.queryByRole('combobox', { name: 'Condition 1 value' })).toBeNull();
 
-  await pick(user, 'Condition 1 operator', 'equals');
+    await pick(user, 'Condition 1 operator', 'equals');
 
-  expect(combobox('Condition 1 value').value).toBe('Yes');
-});
+    expect(combobox('Condition 1 value').value).toBe('Yes');
+  },
+);
 
-// ── a yes/no field offers only "equals" ──────────────────────────────
+// ── a yes/no field offers "equals", and the empty checks only if it can be empty ─────────
 
-it('a yes/no field offers only the operator "equals"; every other field offers them all', async () => {
+it('a yes/no field that is never empty offers only the operator "equals"; every other field offers them all', async () => {
   const user = userEvent.setup();
   renderCreate();
   await user.click(screen.getByRole('button', { name: 'Add condition' }));
-  const everyOperator = ['equals', 'not equals', 'is null'];
+  const everyOperator = ['equals', 'not equals', 'is null', 'is not null'];
 
   // Asset status (a status field) is the first field
   expect(await offered(user, 'Condition 1 operator')).toEqual(everyOperator);
@@ -569,6 +575,32 @@ it('a yes/no field offers only the operator "equals"; every other field offers t
   expect(await offered(user, 'Condition 1 operator')).toEqual(['equals']);
   await pick(user, 'Condition 1 field', 'Scan device');
   expect(await offered(user, 'Condition 1 operator')).toEqual(everyOperator);
+});
+
+it('a yes/no field that can be empty (Asset has rails) offers "equals" and the two empty checks, and no others', async () => {
+  const user = userEvent.setup();
+  renderCreate();
+  await user.click(screen.getByRole('button', { name: 'Add condition' }));
+
+  await pick(user, 'Condition 1 field', 'Asset has rails');
+
+  expect(await offered(user, 'Condition 1 operator')).toEqual(['equals', 'is null', 'is not null']);
+});
+
+it('a yes/no field that does not say whether it can be empty offers only "equals" (an older payload)', async () => {
+  const user = userEvent.setup();
+  const [status, device] = SCHEMA.condition_fields;
+  renderCreate({
+    ...SCHEMA,
+    condition_fields: [
+      status, device, { key: 'scan.off_move', label: 'Off-move sighting', type: 'bool' },
+    ],
+  });
+  await user.click(screen.getByRole('button', { name: 'Add condition' }));
+
+  await pick(user, 'Condition 1 field', 'Off-move sighting');
+
+  expect(await offered(user, 'Condition 1 operator')).toEqual(['equals']);
 });
 
 it('a condition moved onto a yes/no field takes "equals" and starts at Yes, whatever operator it had', async () => {
@@ -600,22 +632,71 @@ it('a condition moved onto a yes/no field takes "equals" and starts at Yes, what
   }));
 });
 
-it('a new condition starts on "equals" when the first field is a yes/no one', async () => {
+it('a condition moved onto a yes/no field that can be empty takes "equals" too, though it offers the empty checks', async () => {
   const user = userEvent.setup();
-  const [status, device, offMove] = SCHEMA.condition_fields;
-  const [equals, notEquals, isNull] = SCHEMA.operators;
-  renderCreate({
-    ...SCHEMA,
-    condition_fields: [offMove, status, device],
-    operators: [notEquals, equals, isNull],        // the first one that takes a value isn't "equals"
-  });
-
+  renderCreate();
   await user.click(screen.getByRole('button', { name: 'Add condition' }));
+  await pick(user, 'Condition 1 field', 'Scan device');
+  await pick(user, 'Condition 1 operator', 'is not null');
+  expect(screen.queryByLabelText('Condition 1 value')).toBeNull();
 
-  expect(combobox('Condition 1 field').value).toBe('Off-move sighting');
+  await pick(user, 'Condition 1 field', 'Asset has rails');
+
   expect(combobox('Condition 1 operator').value).toBe('equals');
   expect(combobox('Condition 1 value').value).toBe('Yes');
 });
+
+it('Asset has rails can be asked about as unknown or known: the empty checks save with no value', async () => {
+  const user = userEvent.setup();
+  api.createStatusRule.mockResolvedValue({ ...RULE, id: 'new-1' });
+  renderCreate();
+  await fillBasics(user);
+  await user.click(screen.getByRole('button', { name: 'Add condition' }));
+  await pick(user, 'Condition 1 field', 'Asset has rails');
+  await user.click(screen.getByRole('button', { name: 'Add condition' }));
+  await pick(user, 'Condition 2 field', 'Asset has rails');
+
+  await pick(user, 'Condition 1 operator', 'is null');
+  await pick(user, 'Condition 2 operator', 'is not null');
+  expect(screen.queryByLabelText('Condition 1 value')).toBeNull();
+  expect(screen.queryByLabelText('Condition 2 value')).toBeNull();
+  // and back to a Yes / No question: the value starts at Yes again
+  await pick(user, 'Condition 2 operator', 'equals');
+  expect(combobox('Condition 2 value').value).toBe('Yes');
+  await pick(user, 'Condition 2 value', 'No');
+
+  await user.click(screen.getByRole('button', { name: 'Add action' }));
+  await createRule(user);
+  await waitFor(() => expect(api.createStatusRule).toHaveBeenCalledTimes(1));
+  expect(api.createStatusRule).toHaveBeenCalledWith(body({
+    conditions: [
+      { field: 'asset.has_rails', operator: 'is_null', value: null },
+      { field: 'asset.has_rails', operator: 'equals', value: 'false' },
+    ],
+    actions: [{ action_type: 'set_asset_status', params: { status: 'good' } }],
+  }));
+});
+
+it.each(['Off-move sighting', 'Asset has rails'])(
+  'a new condition starts on "equals" when the first field is a yes/no one (%s)',
+  async (label) => {
+    const user = userEvent.setup();
+    const [status, device, ...yesNo] = SCHEMA.condition_fields;
+    const first = yesNo.find((f) => f.label === label)!;
+    const [equals, notEquals, isNull] = SCHEMA.operators;
+    renderCreate({
+      ...SCHEMA,
+      condition_fields: [first, status, device],
+      operators: [isNull, notEquals, equals],      // the first one that takes a value isn't "equals"
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Add condition' }));
+
+    expect(combobox('Condition 1 field').value).toBe(label);
+    expect(combobox('Condition 1 operator').value).toBe('equals');
+    expect(combobox('Condition 1 value').value).toBe('Yes');
+  },
+);
 
 it('a stored condition on a yes/no field with another operator keeps it: the box reads blank and a save sends it as stored', async () => {
   const user = userEvent.setup();
@@ -631,6 +712,23 @@ it('a stored condition on a yes/no field with another operator keeps it: the box
   await user.click(screen.getByRole('button', { name: 'Save' }));
   await waitFor(() => expect(api.updateStatusRule).toHaveBeenCalledTimes(1));
   expect(api.updateStatusRule.mock.calls[0][1].conditions).toEqual([stored]);
+});
+
+it('on Asset has rails a stored empty check reads as itself, and a stored "not equals" reads blank; both save as stored', async () => {
+  const user = userEvent.setup();
+  api.updateStatusRule.mockResolvedValue(RULE);
+  const empty = { field: 'asset.has_rails', operator: 'is_null', value: null };
+  const other = { field: 'asset.has_rails', operator: 'not_equals', value: 'true' };
+  renderEdit({ ...RULE, conditions: [empty, other] });
+
+  expect(combobox('Condition 1 operator').value).toBe('is null');
+  expect(screen.queryByLabelText('Condition 1 value')).toBeNull();
+  expect(combobox('Condition 2 operator').value).toBe('');
+  expect(combobox('Condition 2 value').value).toBe('Yes');
+
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateStatusRule).toHaveBeenCalledTimes(1));
+  expect(api.updateStatusRule.mock.calls[0][1].conditions).toEqual([empty, other]);
 });
 
 it('a field with choices starts empty, and a text field too: only a yes/no field starts at a value', async () => {

@@ -192,7 +192,7 @@ async def rule_schema(
                        "needs_value": k not in ("is_null", "is_not_null")}
                       for k in OPERATORS],
         "condition_fields": [
-            {"key": f.key, "label": f.label, "type": f.type,
+            {"key": f.key, "label": f.label, "type": f.type, "nullable": f.nullable,
              **({"options": options_for(f.options_source)}
                 if f.options_source else {})}
             for f in CONDITION_FIELDS.values()],

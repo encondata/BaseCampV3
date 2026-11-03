@@ -10,10 +10,12 @@
  * Every dropdown is the house ComboBox (type to filter); a yes/no value
  * reads Yes / No and is stored as "true" / "false" (a condition) or true /
  * false (an action's parameter). A new condition on a yes/no field starts
- * at "true". A yes/no field offers only the operator "equals": Yes / No
- * already says either way, and another operator can build a rule that never
- * fires (an off-move sighting runs only the rules that say "equals Yes"). A
- * stored condition that has another one keeps it, its operator box reading
+ * at "true". A yes/no field offers the operator "equals": Yes / No already
+ * says either way, and another operator can build a rule that never fires
+ * (an off-move sighting runs only the rules that say "equals Yes"). One that
+ * can be empty (Asset has rails) also offers the two empty checks, is null
+ * and is not null, the only way to ask for "unknown" or "known". A stored
+ * condition that has any other operator keeps it, its operator box reading
  * blank until another is picked.
  *
  * The Send a notification action's parameters are People and Groups
@@ -144,16 +146,24 @@ function startValue(
   return field?.type === 'bool' ? 'true' : '';
 }
 
-/** The one operator a yes/no field offers: Yes / No already says either way, and another one
+/** The operator every yes/no field offers: Yes / No already says either way, and another one
  *  (not equals, ...) only gives a second way to say it, or builds a rule that never fires: the
  *  engine runs an off-move sighting just for a rule that says "equals Yes". */
 const BOOL_OPERATOR = 'equals';
 
-/** The operators a condition on this field offers. */
+/** The operators a condition on this field offers. A yes/no field offers "equals", and one that
+ *  can also be empty (`nullable`: Asset has rails) the operators that take no value as well,
+ *  is null and is not null: only they can ask for "unknown" or "known". Any other field offers
+ *  every operator. */
 const operatorsFor = (
   schema: StatusRuleSchema, field: RuleSchemaField | undefined,
-): RuleSchemaOperator[] => (field?.type === 'bool'
-  ? schema.operators.filter((o) => o.key === BOOL_OPERATOR) : schema.operators);
+): RuleSchemaOperator[] => {
+  if (field?.type !== 'bool') return schema.operators;
+  const canBeEmpty = field.nullable === true;
+  return schema.operators.filter(
+    (o) => o.key === BOOL_OPERATOR || (canBeEmpty && o.needs_value === false),
+  );
+};
 
 const operatorChoices = (operators: RuleSchemaOperator[]): ComboOption[] =>
   operators.map((o) => ({ value: o.key, label: o.label }));
@@ -301,7 +311,8 @@ export default function RuleEditorModal({ schema, rule, onClose, onSaved }: Prop
     const condition = conditions[i];
     if (!condition || condition.field === fieldKey) return;
     const next = fieldFor(fieldKey);
-    // A yes/no field offers only "equals", so a condition moved onto one takes it.
+    // Every yes/no field offers "equals" (and not every operator): a condition moved onto
+    // one takes it.
     const operatorKey = next?.type === 'bool' ? BOOL_OPERATOR : condition.operator;
     const op = schema.operators.find((o) => o.key === operatorKey);
     updateCondition(i, { field: fieldKey, operator: operatorKey, value: startValue(next, op) });

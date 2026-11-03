@@ -72,6 +72,11 @@ class ConditionField:
     label: str
     type: str                       # text | status | site | bool | number | uuid
     options_source: str | None = None   # 'status:<record_type>' | 'sites'
+    # For a yes/no field: whether its column can be empty (NULL), so that "unknown" is a third
+    # state beside Yes and No. The rule editor then also offers the empty checks (is null /
+    # is not null); a yes/no field that is never empty offers "equals" alone. Other kinds of
+    # field offer every operator whatever this says.
+    nullable: bool = False
 
 
 _FIELDS = [
@@ -87,7 +92,8 @@ _FIELDS = [
     ConditionField("asset.status", "Asset status", "status", "status:asset"),
     ConditionField("asset.site_id", "Asset site", "site", "sites"),
     ConditionField("asset.client_id", "Asset client", "uuid"),
-    ConditionField("asset.has_rails", "Asset has rails", "bool"),
+    # `bool | None` (a V2 import leaves it NULL): only is null / is not null ask for "unknown".
+    ConditionField("asset.has_rails", "Asset has rails", "bool", nullable=True),
     ConditionField("container.status", "Container status", "status",
                    "status:container"),
     ConditionField("container.site_id", "Container site", "site", "sites"),

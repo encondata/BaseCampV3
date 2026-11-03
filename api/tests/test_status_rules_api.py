@@ -9,7 +9,7 @@ from serversherpa.db.models import (
     AuditLog, Asset, ProcessedScan, StatusRule, StatusRuleExecution,
 )
 from serversherpa.status_rules import engine
-from serversherpa.status_rules.catalog import ACTIONS, OPERATORS
+from serversherpa.status_rules.catalog import ACTIONS, CONDITION_FIELDS, OPERATORS
 from tests.test_access_roles_api import login_admin
 from tests.test_notification_groups_api import login_staff
 
@@ -231,6 +231,18 @@ async def test_schema_endpoint_shape(client, db, seeded_user):
 
     assert {o["key"] for o in data["operators"]} == set(OPERATORS)
     assert len(data["operators"]) == 9
+
+    # Every condition field says whether it can be empty, as a real boolean. Of the yes/no
+    # fields only the asset's has_rails can (its column is nullable): the rule editor offers
+    # the empty checks there and "equals" alone on the off-move flag.
+    fields = {f["key"]: f for f in data["condition_fields"]}
+    assert set(fields) == set(CONDITION_FIELDS)
+    assert all(isinstance(f["nullable"], bool) for f in fields.values())
+    assert (fields["asset.has_rails"]["type"], fields["asset.has_rails"]["nullable"]) == (
+        "bool", True)
+    assert (fields["scan.off_move"]["type"], fields["scan.off_move"]["nullable"]) == (
+        "bool", False)
+    assert [key for key, f in fields.items() if f["nullable"]] == ["asset.has_rails"]
 
     for action in data["actions"]:
         catalog_action = ACTIONS[action["key"]]
