@@ -3,9 +3,11 @@
 outbox (mail/delivery.py); once an hour it runs the password-expiry
 reminder sweep (notifications/password_reminders.py); every minute the
 learning sweep (learning/scheduler.py: scheduled invites, reminders,
-overdue notices) and the summary sweep (notifications/summary.py: email
-held for a person's quiet hours or day off goes out as one summary); once
-a day it refreshes Google's Android attestation revocation list
+overdue notices), the event sweep (notifications/event_sweep.py: announced
+events become notifications for the people they reach) and then the
+summary sweep (notifications/summary.py: email held for a person's quiet
+hours or day off goes out as one summary); once a day it refreshes
+Google's Android attestation revocation list
 (security/attestation_status.py, retried hourly after a failure); every 15
 minutes it logs a status line (how much email is held for a summary, and
 whether email delivery is on). A person's schedule is applied when a
@@ -23,6 +25,7 @@ from serversherpa.db.models import NotificationHeld
 from serversherpa.learning.scheduler import run_learning_once
 from serversherpa.mail import email_enabled
 from serversherpa.mail.delivery import deliver_once
+from serversherpa.notifications.event_sweep import run_events_once
 from serversherpa.notifications.password_reminders import run_reminders_once
 from serversherpa.notifications.summary import run_summaries_once
 from serversherpa.security import attestation_status
@@ -31,6 +34,7 @@ logger = logging.getLogger("serversherpa.notifications.worker")
 IDLE_LOG_SECONDS = 900   # one INFO status line every 15 min
 REMINDER_INTERVAL_SECONDS = 3600
 LEARNING_INTERVAL_SECONDS = 60
+EVENTS_INTERVAL_SECONDS = 60
 SUMMARY_INTERVAL_SECONDS = 60
 ATTESTATION_STATUS_INTERVAL_SECONDS = 86_400
 ATTESTATION_STATUS_RETRY_SECONDS = 3600
@@ -84,6 +88,23 @@ async def run_learning(maker, state: dict) -> None:
                     out["invites"], out["reminders"], out["overdue"])
 
 
+async def run_events(maker, state: dict) -> None:
+    """One event sweep; a failure is logged once per outage, never raised
+    (each event's own failure is already logged inside)."""
+    try:
+        written = await run_events_once(maker)
+        state["failed"] = False
+    except Exception as exc:  # noqa: BLE001 — the loop must never stop
+        # the class only: the text of a DB error can carry SQL parameters
+        if not state["failed"]:
+            logger.warning("could not run the event sweep — retrying (%s)",
+                           type(exc).__name__)
+        state["failed"] = True
+        return
+    if written:
+        logger.info("wrote %d notification(s) from events", written)
+
+
 async def run_summaries(maker, state: dict) -> None:
     """One summary sweep; a failure is logged once per outage, never raised
     (each person's own failure is already logged inside)."""
@@ -112,12 +133,13 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
     check_state = {}
     deliver_state = {"failed": False}
     learning_state = {"failed": False}
+    events_state = {"failed": False}
     summary_state = {"failed": False}
     heartbeat = start_heartbeat("notification-worker", "worker",
                                 meta_fn=lambda: dict(pause_state))
 
     logger.info("notification worker online — email outbox every %.0fs, hourly "
-                "password expiry reminders, learning and summary sweeps every minute, "
+                "password expiry reminders, learning, event and summary sweeps every minute, "
                 "daily attestation revocation list",
                 poll_seconds)
 
@@ -128,6 +150,7 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
         last_log = time.monotonic() - IDLE_LOG_SECONDS
         last_reminders = time.monotonic() - REMINDER_INTERVAL_SECONDS
         last_learning = time.monotonic() - LEARNING_INTERVAL_SECONDS
+        last_events = time.monotonic() - EVENTS_INTERVAL_SECONDS
         last_summaries = time.monotonic() - SUMMARY_INTERVAL_SECONDS
         last_attestation = time.monotonic() - ATTESTATION_STATUS_INTERVAL_SECONDS
         while True:
@@ -160,6 +183,10 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
             if now - last_learning >= LEARNING_INTERVAL_SECONDS:
                 await run_learning(maker, learning_state)
                 last_learning = now
+            # before the summaries, so an email it holds can join a summary due now
+            if now - last_events >= EVENTS_INTERVAL_SECONDS:
+                await run_events(maker, events_state)
+                last_events = now
             if now - last_summaries >= SUMMARY_INTERVAL_SECONDS:
                 await run_summaries(maker, summary_state)
                 last_summaries = now

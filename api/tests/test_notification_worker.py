@@ -169,6 +169,54 @@ async def test_summary_sweep_errors_do_not_kill_the_loop(db, monkeypatch, caplog
     assert caplog.text.count("could not run the summary sweep") == 1   # once per outage
 
 
+async def test_run_forever_runs_the_event_sweep_before_the_summaries(db, monkeypatch, caplog):
+    from serversherpa.notifications import worker as worker_mod
+
+    calls = []
+
+    async def fake_events(maker):
+        calls.append("events")
+        return 3
+
+    async def fake_summaries(maker):
+        calls.append("summaries")
+        return 0
+
+    monkeypatch.setattr(worker_mod, "run_events_once", fake_events)
+    monkeypatch.setattr(worker_mod, "run_summaries_once", fake_summaries)
+    caplog.set_level(logging.INFO, logger="serversherpa.notifications.worker")
+    task = asyncio.create_task(run_forever(poll_seconds=0.05))
+    try:
+        await asyncio.sleep(0.3)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    # once each on the first loop, the events first; the next are a minute away
+    assert calls == ["events", "summaries"]
+    assert "wrote 3 notification(s) from events" in caplog.text
+
+
+async def test_event_sweep_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
+    from serversherpa.notifications import worker as worker_mod
+
+    async def boom(maker):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(worker_mod, "run_events_once", boom)
+    monkeypatch.setattr(worker_mod, "EVENTS_INTERVAL_SECONDS", 0)
+    caplog.set_level(logging.WARNING, logger="serversherpa.notifications.worker")
+    task = asyncio.create_task(run_forever(poll_seconds=0.05))
+    try:
+        await asyncio.sleep(0.3)
+        assert not task.done()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert caplog.text.count("could not run the event sweep") == 1   # once per outage
+    assert "RuntimeError" in caplog.text
+    assert "db down" not in caplog.text          # the class only, never the text
+
+
 async def test_learning_sweep_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
     from serversherpa.notifications import worker as worker_mod
 
@@ -229,10 +277,11 @@ async def test_delivery_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
     assert caplog.text.count("could not deliver the email outbox") == 1   # once per outage
 
 
-def test_cli_once_runs_the_status_pass_the_summary_sweep_and_one_delivery_pass(monkeypatch):
-    """`notification-worker --once` sends the summaries that are due, then
-    delivers due mail, so a summary queued by the sweep goes out in the same
-    run (CLI surface only: the passes themselves are faked)."""
+def test_cli_once_runs_the_status_pass_the_sweeps_and_one_delivery_pass(monkeypatch):
+    """`notification-worker --once` turns waiting events into notifications,
+    sends the summaries that are due, then delivers due mail, so what the
+    sweeps queue goes out in the same run (CLI surface only: the passes
+    themselves are faked)."""
     from typer.testing import CliRunner
 
     from serversherpa import cli
@@ -244,6 +293,10 @@ def test_cli_once_runs_the_status_pass_the_summary_sweep_and_one_delivery_pass(m
 
     async def fake_status(maker):
         calls.append("status")
+
+    async def fake_events(maker):
+        calls.append("events")
+        return 4
 
     async def fake_summaries(maker):
         calls.append("summaries")
@@ -258,11 +311,13 @@ def test_cli_once_runs_the_status_pass_the_summary_sweep_and_one_delivery_pass(m
 
     monkeypatch.setattr(engine_mod, "get_sessionmaker", lambda: object())
     monkeypatch.setattr(worker_mod, "run_once", fake_status)
+    monkeypatch.setattr(worker_mod, "run_events_once", fake_events)
     monkeypatch.setattr(worker_mod, "run_summaries_once", fake_summaries)
     monkeypatch.setattr(delivery, "deliver_once", fake_deliver)
     monkeypatch.setattr(cli, "dispose_engine", no_dispose)
     result = CliRunner().invoke(cli.app, ["notification-worker", "--once"])
     assert result.exit_code == 0, result.output
-    assert calls == ["status", "summaries", "deliver"]
+    assert calls == ["status", "events", "summaries", "deliver"]
+    assert "wrote 4 notification(s) from events" in result.output
     assert "queued 2 summary email(s)" in result.output
     assert "processed 3 queued email(s)" in result.output
