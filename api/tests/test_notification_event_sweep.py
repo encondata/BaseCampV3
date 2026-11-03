@@ -35,6 +35,7 @@ from serversherpa.db.models import (
 from serversherpa.notifications import event_sweep
 from serversherpa.notifications.event_sweep import run_events_once
 from serversherpa.notifications.events import EventItem, Thing, announce
+from serversherpa.notifications.kinds import KINDS
 from serversherpa.notifications.status_changes import (
     announce_initiative_status_changed,
     announce_truck_status_changed,
@@ -431,6 +432,14 @@ async def test_burst_groups_into_one_notification(db):
         latest = (await _notifications(person))[-1]
         assert (latest.title, latest.link) == ("Truck C: Active → In Transit",
                                                f"/logistics/trucks/{trucks[2].id}")
+
+
+def test_every_watchable_kind_has_a_list_page():
+    """Several items of one kind that don't all belong to one initiative link to the kind's
+    list page (`_compose`): a watchable kind without one would send such a burst nowhere."""
+    watchable = {kind for kind, info in KINDS.items() if info.watchable}
+    assert watchable                      # the registry still has kinds someone can watch for
+    assert watchable <= set(event_sweep.LIST_PAGES)
 
 
 async def test_category_off_is_still_respected(db):

@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 import pytest
 
 from serversherpa.access.resolver import AccessInfo, resolve_access_many
+from serversherpa.access.resources import REGISTRY
 from serversherpa.db.models import (
     Client,
     Initiative,
@@ -205,6 +206,15 @@ async def test_thing_exists(db, kind):
 
 def test_viewable_things():
     assert VIEWABLE_THINGS == ("initiative", "site", "truck")
+
+
+@pytest.mark.parametrize("resource", ["sites", "trucks"])
+def test_sites_and_trucks_stay_global_only(resource):
+    """`viewers` asks only for `sites:view` or `trucks:view` and applies no row scope to either,
+    because only a global person can hold them. Opening one of these resources to a client's or a
+    partner's users would make `viewers` let in people the page turns away, so widening it has
+    to fail here first."""
+    assert REGISTRY[resource].visible_to == frozenset({"global"})
 
 
 @pytest.mark.parametrize("kind", ["everything", "device", "wiki", ""])

@@ -173,6 +173,7 @@ async def test_run_forever_runs_the_event_sweep_before_the_summaries(db, monkeyp
     from serversherpa.notifications import worker as worker_mod
 
     calls = []
+    summaries_ran = asyncio.Event()
 
     async def fake_events(maker):
         calls.append("events")
@@ -180,6 +181,7 @@ async def test_run_forever_runs_the_event_sweep_before_the_summaries(db, monkeyp
 
     async def fake_summaries(maker):
         calls.append("summaries")
+        summaries_ran.set()
         return 0
 
     monkeypatch.setattr(worker_mod, "run_events_once", fake_events)
@@ -187,6 +189,11 @@ async def test_run_forever_runs_the_event_sweep_before_the_summaries(db, monkeyp
     caplog.set_level(logging.INFO, logger="serversherpa.notifications.worker")
     task = asyncio.create_task(run_forever(poll_seconds=0.05))
     try:
+        # The first loop does other work (the outbox, the reminder and learning sweeps) before
+        # the two under test, and how long that takes depends on the machine: wait until the
+        # summaries have run, with a limit only to end a hang, rather than for a fixed time.
+        await asyncio.wait_for(summaries_ran.wait(), timeout=60)
+        # Then let several more polls go by: neither sweep is due again for a minute.
         await asyncio.sleep(0.3)
     finally:
         task.cancel()
