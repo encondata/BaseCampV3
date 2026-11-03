@@ -5,8 +5,9 @@
  * every row is this group's.
  *
  * People who can change notifications get "Add watch" (AddGroupWatchModal) and,
- * on each row, "Choose events…" (WatchEventsModal, saved with PATCH) and "Remove".
- * Everyone else reads the list. Every change reads the list again, so the panel
+ * on each row, "Choose events…" (WatchEventsModal, saved with PATCH) and "Remove"; a
+ * wiki row (a library, folder or page) has only "Remove", since a wiki watch names no
+ * events. Everyone else reads the list. Every change reads the list again, so the panel
  * shows what the server says; a Remove that finds the watch already gone is as good
  * as removed. The error a failed Remove leaves stays until a later Remove, or an
  * add or an events save that goes through, clears it. The company settings' `kinds`
@@ -26,7 +27,7 @@ import {
   ApiError, deleteGroupWatch, getNotificationSettings, listGroupWatches, updateGroupWatch,
   type NotificationGroupDetail, type NotificationKindSetting, type Watch,
 } from '../../lib/api';
-import { THING_LABELS, watchErrorMessage } from '../../lib/watches';
+import { THING_LABELS, isWikiWatch, watchErrorMessage } from '../../lib/watches';
 import type { RowAction } from '../hardware/RowActionsMenu';
 import AddGroupWatchModal from './AddGroupWatchModal';
 import WatchEventsModal from './WatchEventsModal';
@@ -103,16 +104,22 @@ function PanelFor({ group, canChange }: { group: NotificationGroupDetail; canCha
     setRemoving((r) => ({ ...r, [watch.id]: false }));
   };
 
-  const actionsFor = (watch: Watch): RowAction[] => (!canChange ? [] : [
-    {
-      key: 'choose', label: 'Choose events…', disabled: removing[watch.id],
-      onSelect: () => setDialog({ kind: 'choose', watch }),
-    },
-    {
+  const actionsFor = (watch: Watch): RowAction[] => {
+    if (!canChange) return [];
+    const removeWatch: RowAction = {
       key: 'remove', label: 'Remove', destructive: true, disabled: removing[watch.id],
       onSelect: () => void remove(watch),
-    },
-  ]);
+    };
+    // The wiki has no event choice: its rows can only be removed.
+    if (isWikiWatch(watch)) return [removeWatch];
+    return [
+      {
+        key: 'choose', label: 'Choose events…', disabled: removing[watch.id],
+        onSelect: () => setDialog({ kind: 'choose', watch }),
+      },
+      removeWatch,
+    ];
+  };
 
   const chosen = dialog?.kind === 'choose' ? dialog.watch : null;
 

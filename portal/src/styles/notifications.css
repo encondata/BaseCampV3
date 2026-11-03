@@ -375,5 +375,8 @@
 .watch-editor { display: flex; flex-direction: column; gap: 16px; }
 
 /* The group page's Add watch dialog: the "Watch" strip and the thing's picker,
- * then the events editor, at the editor's own rhythm. */
+ * then the events editor, at the editor's own rhythm. A wiki watch names no
+ * events, so a note stands in the editor's place; the body's gap spaces it, so
+ * it takes none of the hint's own top margin. */
 .watch-add-body { display: flex; flex-direction: column; gap: 16px; }
+.watch-add-body > .nm-hint { margin: 0; }

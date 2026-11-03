@@ -29,6 +29,10 @@ const { default: WatchesSection } = await import('./WatchesSection');
 const INI_ID = '11111111-1111-4111-8111-111111111111';
 const SITE_ID = '22222222-2222-4222-8222-222222222222';
 const GROUP_ID = '44444444-4444-4444-8444-444444444444';
+const LIBRARY_ID = '66666666-6666-4666-8666-666666666666';
+const FOLDER_ID = '77777777-7777-4777-8777-777777777777';
+const PAGE_ID = '88888888-8888-4888-8888-888888888888';
+const WIKI = 'https://wiki.example.com';
 
 const kind = (
   key: string, label: string, category: NotificationKindSetting['category'],
@@ -64,6 +68,24 @@ const ownEverything: Watch = {
   kinds: ['truck_status_changed'], via: YOU, created_at: '2026-11-02T09:00:00Z',
 };
 const groupEverything: Watch = { ...ownEverything, id: 'w-gall', via: GROUP_A };
+
+// The wiki's things as the API lists them: its own label for the kind, an absolute URL in the wiki,
+// and no events named (a wiki watch hears every page update and comment).
+const ownLibrary: Watch = {
+  id: 'w-library', thing: 'wiki_space', thing_id: LIBRARY_ID, thing_name: 'Library A',
+  thing_label: 'Wiki library', link: `${WIKI}/library/library-a`, kinds: [], via: YOU,
+  created_at: '2026-11-02T08:00:00Z',
+};
+const ownFolder: Watch = {
+  id: 'w-folder', thing: 'wiki_node', thing_id: FOLDER_ID, thing_name: 'Folder A',
+  thing_label: 'Wiki folder', link: `${WIKI}/n/${FOLDER_ID}`, kinds: [], via: YOU,
+  created_at: '2026-11-02T07:00:00Z',
+};
+const groupPage: Watch = {
+  id: 'w-page', thing: 'wiki_node', thing_id: PAGE_ID, thing_name: 'Page A',
+  thing_label: 'Wiki page', link: `${WIKI}/n/${PAGE_ID}`, kinds: [], via: GROUP_A,
+  created_at: '2026-11-02T06:00:00Z',
+};
 
 const HINT = 'Things you watch and the ones your groups watch. '
   + 'What reaches you still follows your switches and schedule.';
@@ -209,6 +231,78 @@ it('a group row: the thing, the narrowed events\' labels, the group\'s name, and
   expect(within(row).getByText('Initiative status changed, Truck status changed')).toBeTruthy();
   expect(within(row).getByText('Group A')).toBeTruthy();
   expect(within(row).queryByRole('button', { name: /Actions/ })).toBeNull();
+  expect(screen.queryByRole('button', { name: /Actions/ })).toBeNull();
+});
+
+// ── wiki rows ───────────────────────────────────────────────────────────
+
+it('a wiki row: the name linked to its page in the wiki, the label chip the API sends, All events, You', async () => {
+  api.listMyWatches.mockResolvedValue([ownLibrary, ownFolder]);
+  renderSection();
+  await screen.findByText('Library A');
+
+  expect(screen.getByRole('link', { name: 'Library A' }).getAttribute('href'))
+    .toBe(`${WIKI}/library/library-a`);
+  expect(screen.getByRole('link', { name: 'Folder A' }).getAttribute('href'))
+    .toBe(`${WIKI}/n/${FOLDER_ID}`);
+  const library = rowOf('Library A');
+  expect(within(library).getByText('Wiki library').classList.contains('chip')).toBe(true);
+  expect(within(library).getByText('All events')).toBeTruthy();
+  expect(within(library).getByText('You')).toBeTruthy();
+  expect(within(rowOf('Folder A')).getByText('Wiki folder').classList.contains('chip')).toBe(true);
+});
+
+it('a wiki row is counted with the rest', async () => {
+  api.listMyWatches.mockResolvedValue([ownInitiative, ownLibrary, groupPage]);
+  renderSection();
+  await screen.findByText('Library A');
+
+  expect(document.querySelector('.badge-count')?.textContent).toBe('3');
+});
+
+it('an own wiki row\'s menu is only "Stop watching": the wiki has no event choice', async () => {
+  const user = userEvent.setup();
+  api.listMyWatches.mockResolvedValue([ownLibrary, ownFolder, ownInitiative]);
+  renderSection();
+  await screen.findByText('Library A');
+
+  for (const name of ['Library A', 'Folder A']) {
+    await user.click(within(rowOf(name)).getByRole('button', { name: /Actions/ }));
+    expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Stop watching']);
+    expect(screen.getByRole('menuitem', { name: 'Stop watching' }).className).toContain('danger');
+    await user.keyboard('{Escape}');
+  }
+
+  // another kind of row keeps both
+  await user.click(within(rowOf('Initiative A')).getByRole('button', { name: /Actions/ }));
+  expect(screen.getAllByRole('menuitem').map((m) => m.textContent))
+    .toEqual(['Choose events…', 'Stop watching']);
+});
+
+it('"Stop watching" on a wiki row deletes that watch, then loads the list again', async () => {
+  const user = userEvent.setup();
+  api.listMyWatches.mockResolvedValueOnce([ownLibrary, ownInitiative]).mockResolvedValueOnce([ownInitiative]);
+  renderSection();
+  await screen.findByText('Library A');
+
+  await pickAction(user, 'Library A', 'Stop watching');
+
+  expect(api.deleteMyWatch).toHaveBeenCalledTimes(1);
+  expect(api.deleteMyWatch).toHaveBeenCalledWith('w-library');
+  await waitFor(() => expect(screen.queryByText('Library A')).toBeNull());
+  expect(api.listMyWatches).toHaveBeenCalledTimes(2);
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('a group\'s wiki row says which group, and has no actions', async () => {
+  api.listMyWatches.mockResolvedValue([groupPage]);
+  renderSection();
+  await screen.findByText('Page A');
+
+  const row = rowOf('Page A');
+  expect(within(row).getByText('Group A')).toBeTruthy();
+  expect(within(row).getByText('Wiki page')).toBeTruthy();
   expect(screen.queryByRole('button', { name: /Actions/ })).toBeNull();
 });
 

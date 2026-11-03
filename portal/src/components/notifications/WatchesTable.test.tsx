@@ -6,7 +6,7 @@
  */
 
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import type { NotificationKindSetting, Watch } from '../../lib/api';
@@ -18,6 +18,10 @@ const SITE_ID = '22222222-2222-4222-8222-222222222222';
 const TRUCK_ID = '33333333-3333-4333-8333-333333333333';
 const GROUP_ID = '44444444-4444-4444-8444-444444444444';
 const DEVICE_ID = '55555555-5555-4555-8555-555555555555';
+const LIBRARY_ID = '66666666-6666-4666-8666-666666666666';
+const FOLDER_ID = '77777777-7777-4777-8777-777777777777';
+const PAGE_ID = '88888888-8888-4888-8888-888888888888';
+const WIKI = 'https://wiki.example.com';
 
 const kind = (
   key: string, label: string, category: NotificationKindSetting['category'],
@@ -53,6 +57,24 @@ const truck: Watch = {
 const everything: Watch = {
   id: 'w-all', thing: 'everything', thing_id: null, thing_name: null, link: null,
   kinds: ['truck_status_changed'], via: YOU, created_at: '2026-11-02T09:00:00Z',
+};
+
+// A wiki watch as the API lists it: the wiki's own label for the kind of thing, its absolute URL
+// in the wiki (an app of its own), and no events named (it hears every update and comment).
+const wikiLibrary: Watch = {
+  id: 'w-library', thing: 'wiki_space', thing_id: LIBRARY_ID, thing_name: 'Library A',
+  thing_label: 'Wiki library', link: `${WIKI}/library/library-a`, kinds: [], via: YOU,
+  created_at: '2026-11-02T08:00:00Z',
+};
+const wikiFolder: Watch = {
+  id: 'w-folder', thing: 'wiki_node', thing_id: FOLDER_ID, thing_name: 'Folder A',
+  thing_label: 'Wiki folder', link: `${WIKI}/n/${FOLDER_ID}`, kinds: [],
+  via: { type: 'group', id: GROUP_ID, name: 'Group A' }, created_at: '2026-11-02T07:00:00Z',
+};
+const wikiPage: Watch = {
+  id: 'w-page', thing: 'wiki_node', thing_id: PAGE_ID, thing_name: 'Page A',
+  thing_label: 'Wiki page', link: `${WIKI}/n/${PAGE_ID}`, kinds: [], via: YOU,
+  created_at: '2026-11-02T06:00:00Z',
 };
 
 const EMPTY = 'Nothing watched here.';
@@ -153,6 +175,93 @@ it('shows a device as its name, linked to its list opened on its row, with a Dev
     .toBe(`/hardware/fixed-readers?focus=${DEVICE_ID}`);
   expect(within(row('Device A')).getByText('Device').className).toBe('chip tag');
   expect(cells(row('Device A'))[1].textContent).toBe('All events');
+});
+
+// ── wiki rows ───────────────────────────────────────────────────────────
+
+it('a wiki row\'s chip is the label the API sends: Wiki library, Wiki folder or Wiki page', () => {
+  setup({ watches: [wikiLibrary, wikiFolder, wikiPage] });
+
+  expect(within(row('Library A')).getByText('Wiki library').className).toBe('chip tag');
+  expect(within(row('Folder A')).getByText('Wiki folder').className).toBe('chip tag');
+  expect(within(row('Page A')).getByText('Wiki page').className).toBe('chip tag');
+});
+
+it('a row the API sent no label for falls back to the portal\'s own, wiki rows included', () => {
+  setup({
+    watches: [
+      { ...initiative, thing_label: null },
+      { ...wikiLibrary, thing_label: undefined },
+      { ...wikiPage, thing_label: null },
+    ],
+  });
+
+  expect(within(row('Initiative A')).getByText('Initiative')).toBeTruthy();
+  expect(within(row('Library A')).getByText('Wiki library')).toBeTruthy();
+  expect(within(row('Page A')).getByText('Wiki page')).toBeTruthy();
+});
+
+it('the API\'s label wins over the portal\'s own, so a folder is not "Wiki page"', () => {
+  setup({ watches: [wikiFolder] });
+
+  expect(within(row('Folder A')).getByText('Wiki folder')).toBeTruthy();
+  expect(within(row('Folder A')).queryByText('Wiki page')).toBeNull();
+});
+
+it('a wiki row\'s name links to its absolute wiki URL, as a plain link in the same tab', () => {
+  setup({ watches: [wikiLibrary, wikiFolder, wikiPage] });
+
+  const library = screen.getByRole('link', { name: 'Library A' });
+  expect(library.tagName).toBe('A');
+  expect(library.getAttribute('href')).toBe(`${WIKI}/library/library-a`);
+  expect(screen.getByRole('link', { name: 'Folder A' }).getAttribute('href'))
+    .toBe(`${WIKI}/n/${FOLDER_ID}`);
+  expect(screen.getByRole('link', { name: 'Page A' }).getAttribute('href'))
+    .toBe(`${WIKI}/n/${PAGE_ID}`);
+  for (const link of screen.getAllByRole('link')) {
+    expect(link.className).toBe('cell-top');
+    expect(link.hasAttribute('target')).toBe(false);   // same tab, as the portal's other links into the wiki
+    expect(link.hasAttribute('rel')).toBe(false);
+  }
+});
+
+it('an absolute link is a plain anchor, not a router Link: it needs no router', () => {
+  // A router Link outside a router throws, so rendering with none shows it is not one
+  render(<WatchesTable watches={[wikiPage]} kinds={KINDS} showVia actionsFor={() => []} emptyText={EMPTY} />);
+
+  expect(screen.getByRole('link', { name: 'Page A' }).getAttribute('href')).toBe(`${WIKI}/n/${PAGE_ID}`);
+});
+
+it('a relative link stays a router Link: clicking it moves the router, not the page', () => {
+  function Here() {
+    return <p data-testid="here">{useLocation().pathname}</p>;
+  }
+  render(
+    <MemoryRouter>
+      <Here />
+      <WatchesTable watches={[initiative]} kinds={KINDS} showVia={false} actionsFor={() => []}
+                    emptyText={EMPTY} />
+    </MemoryRouter>,
+  );
+
+  fireEvent.click(screen.getByRole('link', { name: 'Initiative A' }));
+
+  expect(screen.getByTestId('here').textContent).toBe(`/initiatives/${INI_ID}`);
+});
+
+it('a wiki row hears every update and comment: Events reads "All events"', () => {
+  setup({ watches: [wikiLibrary, wikiFolder, wikiPage] });
+
+  for (const name of ['Library A', 'Folder A', 'Page A']) {
+    expect(cells(row(name))[1].textContent).toBe('All events');
+  }
+});
+
+it('a wiki row names who watches it, as any row does', () => {
+  setup({ watches: [wikiLibrary, wikiFolder] });
+
+  expect(cells(row('Library A'))[2].textContent).toBe('You');
+  expect(cells(row('Folder A'))[2].textContent).toBe('Group A');
 });
 
 it('shows Everything as plain "Everything": no link, no chip', () => {

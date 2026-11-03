@@ -7,16 +7,33 @@
  * lib/api.ts.
  */
 
-import { ApiError, type NotificationKindSetting, type WatchTarget } from './api';
+import { ApiError, type NotificationKindSetting, type Watch, type WatchTarget } from './api';
 
-/** What the portal calls each thing a watch can be on. */
+/** What the portal calls each thing a watch can be on. A wiki node is a folder or a
+ *  page (`wikiNodeLabel`); this is the page's, for a row the API sent no label for. */
 export const THING_LABELS: Record<WatchTarget, string> = {
   initiative: 'Initiative',
   site: 'Site',
   truck: 'Truck',
   device: 'Device',
+  wiki_space: 'Wiki library',
+  wiki_node: 'Wiki page',
   everything: 'Everything',
 };
+
+/** What a wiki node is called by its kind: "Wiki folder" for a folder, else "Wiki page"
+ *  (the API's own rule for its `thing_label`: a library has its own label, and a file is
+ *  a page). The line under a node the Wiki picker found says it, as the chip on its watch
+ *  row does. */
+export function wikiNodeLabel(kind: string): string {
+  return kind === 'folder' ? 'Wiki folder' : THING_LABELS.wiki_node;
+}
+
+/** Whether a watch is on a wiki library, folder or page. The wiki has no event choice (a
+ *  wiki watch hears every page update and comment), so such a row can only be stopped. */
+export function isWikiWatch(watch: Pick<Watch, 'thing'>): boolean {
+  return watch.thing === 'wiki_space' || watch.thing === 'wiki_node';
+}
 
 /** The kinds of event a watch on `thing` can name, in the order `kinds` has
  *  them (the registry's): those marked `everywhere` for an Everything watch,

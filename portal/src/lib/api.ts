@@ -6766,29 +6766,41 @@ export async function updateNotificationSettings(
 /* ── watches: a person's own, and a notification group's ─────────────────
  * Mirrors api/src/serversherpa/api/schemas.py WatchIn, WatchKindsIn, WatchOut,
  * WatchStateOut, WatchViaOut and CheckWatchOut. A person (or a group) watches
- * an initiative, a site, a truck or a device, or chosen events everywhere (an
- * Everything watch); `kinds` empty means every event that applies to the thing.
+ * an initiative, a site, a truck, a device, or a library, folder or page of the
+ * wiki, or chosen events everywhere (an Everything watch); `kinds` empty means
+ * every event that applies to the thing (for a wiki thing, every page update and
+ * comment: it names none).
  * Errors carry `detail.code`: 409 `already_watching`; 404 `thing_not_found`,
  * `watch_not_found`, `group_not_found`; 422 `invalid_thing` (a device that is not
  * covered too: a kiosk that is not an RFID Station, a router that is not
- * approved), `invalid_kind`, `kinds_required`; 423 `read_only_mode`. */
+ * approved), `invalid_kind` (any events named for a wiki thing too),
+ * `kinds_required`; 423 `read_only_mode`. */
+
+/** What the wiki's things are called in a watch: a library (`wiki_space`), or a
+ *  folder or page of one (`wiki_node`). */
+export type WikiThing = 'wiki_space' | 'wiki_node';
 
 /** The things a watch can be on. A device is an RFID Station kiosk, a fixed reader
  *  or an approved router (the ones that check in on their own). */
-export type WatchThing = 'initiative' | 'site' | 'truck' | 'device';
+export type WatchThing = 'initiative' | 'site' | 'truck' | 'device' | WikiThing;
 
 /** What a watch is on: a thing, or Everything (events anywhere, no thing). */
 export type WatchTarget = WatchThing | 'everything';
 
-/** A watch with what it is on. `thing_id`, `thing_name` and `link` (the path
- *  of the thing's page) are null for Everything. `kinds` empty means every
- *  event that applies. `via` is whose watch it is: the person's own (`you`),
- *  or a group's with its id and name. */
+/** A watch with what it is on. `thing_id`, `thing_name`, `thing_label` and `link`
+ *  are null for Everything. `thing_label` is what the portal calls the thing's
+ *  kind, as its chip says it ("Wiki folder" or "Wiki page" for a wiki node, by
+ *  its row); the API sends it for every watch, and a row without one is called by
+ *  the portal's own label for its `thing`. `link` is the thing's page: a path in
+ *  the portal, or for a wiki thing the absolute URL of its page in the wiki (an
+ *  app of its own). `kinds` empty means every event that applies. `via` is whose
+ *  watch it is: the person's own (`you`), or a group's with its id and name. */
 export interface Watch {
   id: string;
   thing: WatchTarget;
   thing_id: string | null;
   thing_name: string | null;
+  thing_label?: string | null;
   link: string | null;
   kinds: string[];
   via: { type: 'you' | 'group'; id?: string | null; name?: string | null };
@@ -6900,4 +6912,51 @@ export async function deleteGroupWatch(groupId: string, watchId: string): Promis
     method: 'DELETE',
   });
   if (!resp.ok) throw await errorFrom(resp);
+}
+
+/* ── the wiki, for the group watch picker ────────────────────────────────
+ * The wiki's API (api/src/serversherpa/api/routes/wiki) is on the same API and
+ * takes the portal's session; every /wiki route needs `wiki:view` (403 without
+ * it). The "Add watch" picker reads two of its answers: the libraries and a
+ * search. */
+
+/** A wiki library, from GET /wiki/spaces (the wiki's SpaceOut): the libraries the
+ *  person can open, archived ones left out, by name. The picker reads only these
+ *  fields; the wiki sends more. */
+export interface WikiSpace {
+  id: string;
+  key: string;
+  name: string;
+}
+
+export type WikiNodeKind = 'folder' | 'page' | 'file';
+
+/** A hit of GET /wiki/search (the wiki's SearchHit): the node, and the titles of
+ *  the folders above it that the person can open, root first (`breadcrumbs`; the
+ *  library's own name is `node.space_name`). `snippet_html` is the wiki's
+ *  server-escaped markup with `<mark>` in it; the portal never renders it. */
+export interface WikiSearchHit {
+  node: { id: string; kind: WikiNodeKind; title: string; space_key: string; space_name: string };
+  snippet_html: string;
+  breadcrumbs: string[];
+}
+
+/** The wiki's libraries that the person can open (GET /wiki/spaces), by name. */
+export async function listWikiSpaces(): Promise<WikiSpace[]> {
+  const resp = await apiFetch('/wiki/spaces');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Search the wiki's folders or pages (GET /wiki/search), the best `limit` hits of
+ *  one `kind`. It is a search as the person types, so it is never logged: `log=false`
+ *  keeps half-typed words out of the wiki's search analytics, as its own top bar's
+ *  live results do. The wiki takes 1-200 characters (else 422 `bad_query`). */
+export async function searchWiki(
+  q: string, kind: 'folder' | 'page', limit: number,
+): Promise<WikiSearchHit[]> {
+  const qs = new URLSearchParams({ q, kind, limit: String(limit), log: 'false' });
+  const resp = await apiFetch(`/wiki/search?${qs.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
 }

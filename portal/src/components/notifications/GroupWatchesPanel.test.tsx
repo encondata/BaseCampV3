@@ -25,6 +25,8 @@ const api = vi.hoisted(() => ({
   listInitiatives: vi.fn(),
   listSites: vi.fn(),
   listTrucks: vi.fn(),
+  listWikiSpaces: vi.fn(),
+  searchWiki: vi.fn(),
 }));
 vi.mock('../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/api')>()),
@@ -35,6 +37,10 @@ const { default: GroupWatchesPanel } = await import('./GroupWatchesPanel');
 
 const INI_ID = '11111111-1111-4111-8111-111111111111';
 const SITE_ID = '22222222-2222-4222-8222-222222222222';
+const LIBRARY_ID = '66666666-6666-4666-8666-666666666666';
+const FOLDER_ID = '77777777-7777-4777-8777-777777777777';
+const PAGE_ID = '88888888-8888-4888-8888-888888888888';
+const WIKI = 'https://wiki.example.com';
 
 const GROUP: NotificationGroupDetail = {
   id: 'g1', name: 'Group A', description: '', enabled: true, member_count: 0,
@@ -75,6 +81,23 @@ const everything: Watch = {
   id: 'w-all', thing: 'everything', thing_id: null, thing_name: null, link: null,
   kinds: ['truck_status_changed'], via: VIA, created_at: '2026-11-02T09:00:00Z',
 };
+// The wiki's things as the API lists them: its own label for the kind, an absolute URL in the wiki,
+// and no events named (a wiki watch hears every page update and comment).
+const wikiLibrary: Watch = {
+  id: 'w-library', thing: 'wiki_space', thing_id: LIBRARY_ID, thing_name: 'Library A',
+  thing_label: 'Wiki library', link: `${WIKI}/library/library-a`, kinds: [], via: VIA,
+  created_at: '2026-11-02T08:00:00Z',
+};
+const wikiFolder: Watch = {
+  id: 'w-folder', thing: 'wiki_node', thing_id: FOLDER_ID, thing_name: 'Folder A',
+  thing_label: 'Wiki folder', link: `${WIKI}/n/${FOLDER_ID}`, kinds: [], via: VIA,
+  created_at: '2026-11-02T07:00:00Z',
+};
+const wikiPage: Watch = {
+  id: 'w-page', thing: 'wiki_node', thing_id: PAGE_ID, thing_name: 'Page A',
+  thing_label: 'Wiki page', link: `${WIKI}/n/${PAGE_ID}`, kinds: [], via: VIA,
+  created_at: '2026-11-02T06:00:00Z',
+};
 
 const EMPTY = "This group isn't watching anything yet.";
 const LOAD_FAILED = "Could not load this group's watches.";
@@ -98,6 +121,8 @@ beforeEach(() => {
   api.listInitiatives.mockResolvedValue([{ id: INI_ID, name: 'Initiative A' }]);
   api.listSites.mockResolvedValue([{ id: SITE_ID, name: 'Site A' }]);
   api.listTrucks.mockResolvedValue([]);
+  api.listWikiSpaces.mockResolvedValue([{ id: LIBRARY_ID, key: 'library-a', name: 'Library A' }]);
+  api.searchWiki.mockResolvedValue([]);
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
@@ -228,6 +253,26 @@ it('an Everything row reads "Everything", with the events it names', async () =>
   expect(cells(row)[1].textContent).toBe('Truck status changed');
 });
 
+it('a wiki row: the name linked to its page in the wiki, the label chip the API sends, and All events', async () => {
+  api.listGroupWatches.mockResolvedValue([wikiLibrary, wikiFolder, wikiPage]);
+  renderPanel();
+  await screen.findByText('Library A');
+
+  expect(screen.getByRole('link', { name: 'Library A' }).getAttribute('href'))
+    .toBe(`${WIKI}/library/library-a`);
+  expect(screen.getByRole('link', { name: 'Folder A' }).getAttribute('href'))
+    .toBe(`${WIKI}/n/${FOLDER_ID}`);
+  expect(screen.getByRole('link', { name: 'Page A' }).getAttribute('href'))
+    .toBe(`${WIKI}/n/${PAGE_ID}`);
+  expect(within(rowOf('Library A')).getByText('Wiki library').classList.contains('chip')).toBe(true);
+  expect(within(rowOf('Folder A')).getByText('Wiki folder').classList.contains('chip')).toBe(true);
+  expect(within(rowOf('Page A')).getByText('Wiki page').classList.contains('chip')).toBe(true);
+  for (const name of ['Library A', 'Folder A', 'Page A']) {
+    expect(cells(rowOf(name))[1].textContent).toBe('All events');
+  }
+  expect(headers()).toEqual(['Watching', 'Events', 'Actions']);
+});
+
 it('keeps the order the API gives (newest first)', async () => {
   api.listGroupWatches.mockResolvedValue([site, everything, initiative]);
   renderPanel();
@@ -323,6 +368,50 @@ it('a row\'s menu offers "Choose events…" and "Remove" (destructive)', async (
   expect(items.map((i) => i.textContent)).toEqual(['Choose events…', 'Remove']);
   expect(items[1].className).toContain('danger');
   expect(items[0].className).not.toContain('danger');
+});
+
+it('a wiki row\'s menu is only "Remove" (destructive): the wiki has no event choice', async () => {
+  const user = userEvent.setup();
+  api.listGroupWatches.mockResolvedValue([wikiLibrary, wikiFolder, wikiPage, site]);
+  renderPanel();
+  await screen.findByText('Library A');
+
+  for (const name of ['Library A', 'Folder A', 'Page A']) {
+    await user.click(within(rowOf(name)).getByRole('button', { name: /Actions/ }));
+    const items = screen.getAllByRole('menuitem');
+    expect(items.map((i) => i.textContent)).toEqual(['Remove']);
+    expect(items[0].className).toContain('danger');
+    await user.keyboard('{Escape}');
+  }
+
+  // another kind of row keeps both
+  await user.click(within(rowOf('Site A')).getByRole('button', { name: /Actions/ }));
+  expect(screen.getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Choose events…', 'Remove']);
+});
+
+it('Remove on a wiki row stops the group watching it, then the list is read again', async () => {
+  const user = userEvent.setup();
+  api.listGroupWatches.mockResolvedValueOnce([wikiFolder, initiative]).mockResolvedValue([initiative]);
+  renderPanel();
+  await screen.findByText('Folder A');
+
+  await pickAction(user, 'Folder A', 'Remove');
+
+  await waitFor(() => expect(api.deleteGroupWatch).toHaveBeenCalledTimes(1));
+  expect(api.deleteGroupWatch).toHaveBeenCalledWith('g1', 'w-folder');
+  await waitFor(() => expect(screen.queryByText('Folder A')).toBeNull());
+  expect(api.listGroupWatches).toHaveBeenCalledTimes(2);
+  expect(screen.getByText('What this group watches — 1')).toBeTruthy();
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+it('without change permission a wiki row has no actions either', async () => {
+  api.listGroupWatches.mockResolvedValue([wikiPage]);
+  renderPanel(GROUP, false);
+  await screen.findByText('Page A');
+
+  expect(screen.queryByRole('button', { name: /Actions/ })).toBeNull();
+  expect(screen.getByRole('link', { name: 'Page A' })).toBeTruthy();
 });
 
 it('Remove stops the group watching it: deleteGroupWatch(groupId, watchId), then the list is read again', async () => {
@@ -617,6 +706,27 @@ it('adding a watch closes the dialog, reads the list again and shows the new row
     'g1', { thing: 'site', id: SITE_ID, kinds: [] }));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   expect(await screen.findByRole('link', { name: 'Site A' })).toBeTruthy();
+  expect(api.listGroupWatches).toHaveBeenCalledTimes(2);
+  expect(screen.getByText('What this group watches — 1')).toBeTruthy();
+});
+
+it('adding a wiki library from the dialog saves it as a wiki_space watch, then the list is read again', async () => {
+  const user = userEvent.setup();
+  api.listGroupWatches.mockResolvedValueOnce([]).mockResolvedValue([wikiLibrary]);
+  renderPanel();
+  await screen.findByText(EMPTY);
+  await user.click(screen.getByRole('button', { name: 'Add watch' }));
+  const dialog = screen.getByRole('dialog', { name: 'Add watch' });
+
+  await user.click(within(dialog).getByRole('button', { name: 'Wiki' }));
+  await openPicker(user, dialog, 'Wiki');
+  await user.click(await screen.findByText('Library A', { selector: '.kbar-item' }));
+  await user.click(within(dialog).getByRole('button', { name: 'Add watch' }));
+
+  await waitFor(() => expect(api.createGroupWatch).toHaveBeenCalledWith(
+    'g1', { thing: 'wiki_space', id: LIBRARY_ID, kinds: [] }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(await screen.findByRole('link', { name: 'Library A' })).toBeTruthy();
   expect(api.listGroupWatches).toHaveBeenCalledTimes(2);
   expect(screen.getByText('What this group watches — 1')).toBeTruthy();
 });

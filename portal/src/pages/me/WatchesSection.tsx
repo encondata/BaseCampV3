@@ -5,7 +5,8 @@
  * their switches and schedule; a watch only decides what they can hear about.
  *
  * Their own rows can have their events chosen ("Choose events…", a dialog that
- * saves with PATCH /auth/me/watches/{id}) or be stopped. The head's button watches
+ * saves with PATCH /auth/me/watches/{id}) or be stopped; a wiki row (a library, folder
+ * or page) can only be stopped, since a wiki watch names no events. The head's button watches
  * chosen events everywhere (an Everything watch), or edits them once the person
  * has one. A change that goes through loads the list again; so does a stop, however it
  * ends, and a save the server refuses because the list was out of date (the watch is
@@ -27,7 +28,7 @@ import {
   ApiError, createMyWatch, deleteMyWatch, listMyWatches, updateMyWatch,
   type NotificationKindSetting, type Watch,
 } from '../../lib/api';
-import { THING_LABELS, isOutOfDate, watchErrorMessage } from '../../lib/watches';
+import { THING_LABELS, isOutOfDate, isWikiWatch, watchErrorMessage } from '../../lib/watches';
 import '../../styles/directory.css';      // .badge-count, .mini-btn, the data table
 import '../../styles/profile.css';        // .pf-error
 import '../../styles/settings.css';       // .set-section, .set-head, .set-hint
@@ -92,16 +93,22 @@ export default function WatchesSection({ kinds }: { kinds: NotificationKindSetti
     if (mounted.current) setStopping((s) => ({ ...s, [watch.id]: false }));
   };
 
-  const actionsFor = (watch: Watch): RowAction[] => (watch.via.type !== 'you' ? [] : [
-    {
-      key: 'choose', label: 'Choose events…', disabled: stopping[watch.id],
-      onSelect: () => setDialog({ kind: 'row', watch }),
-    },
-    {
+  const actionsFor = (watch: Watch): RowAction[] => {
+    if (watch.via.type !== 'you') return [];
+    const stopWatching: RowAction = {
       key: 'stop', label: 'Stop watching', destructive: true, disabled: stopping[watch.id],
       onSelect: () => void stop(watch),
-    },
-  ]);
+    };
+    // The wiki has no event choice: its rows can only be stopped.
+    if (isWikiWatch(watch)) return [stopWatching];
+    return [
+      {
+        key: 'choose', label: 'Choose events…', disabled: stopping[watch.id],
+        onSelect: () => setDialog({ kind: 'row', watch }),
+      },
+      stopWatching,
+    ];
+  };
 
   /** Runs a dialog's save. When it goes through the list is loaded again and the last
    *  stop's error goes. When the server refuses it because the list was out of date (the

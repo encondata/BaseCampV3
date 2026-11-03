@@ -9,7 +9,8 @@ import {
   ApiError, READ_ONLY_MESSAGE, type NotificationCategory, type NotificationKindSetting,
 } from './api';
 import {
-  THING_LABELS, eventsText, isOutOfDate, kindsFor, watchErrorMessage, watchToggleMessage,
+  THING_LABELS, eventsText, isOutOfDate, isWikiWatch, kindsFor, watchErrorMessage, watchToggleMessage,
+  wikiNodeLabel,
 } from './watches';
 
 function kind(
@@ -40,11 +41,35 @@ const KINDS: NotificationKindSetting[] = [
 const labels = (list: NotificationKindSetting[]) => list.map((k) => k.label);
 
 describe('THING_LABELS', () => {
-  it('names the four things and Everything', () => {
+  it('names the four things, the wiki\'s two (a library, and a node as a page) and Everything', () => {
     expect(THING_LABELS).toEqual({
       initiative: 'Initiative', site: 'Site', truck: 'Truck', device: 'Device',
-      everything: 'Everything',
+      wiki_space: 'Wiki library', wiki_node: 'Wiki page', everything: 'Everything',
     });
+  });
+});
+
+describe('wikiNodeLabel', () => {
+  it('calls a folder "Wiki folder" and a page "Wiki page", as the API labels a wiki node by its row', () => {
+    expect(wikiNodeLabel('folder')).toBe('Wiki folder');
+    expect(wikiNodeLabel('page')).toBe('Wiki page');
+  });
+
+  it('calls any other node (a file) what a wiki node is called by default, "Wiki page"', () => {
+    expect(wikiNodeLabel('file')).toBe(THING_LABELS.wiki_node);
+  });
+});
+
+describe('isWikiWatch', () => {
+  it('is true for a watch on a wiki library, folder or page', () => {
+    expect(isWikiWatch({ thing: 'wiki_space' })).toBe(true);
+    expect(isWikiWatch({ thing: 'wiki_node' })).toBe(true);
+  });
+
+  it('is false for every other watch', () => {
+    for (const thing of ['initiative', 'site', 'truck', 'device', 'everything'] as const) {
+      expect(isWikiWatch({ thing })).toBe(false);
+    }
   });
 });
 
@@ -73,6 +98,11 @@ describe('kindsFor', () => {
     expect(labels(kindsFor('everything', KINDS))).toEqual([
       'Initiative status changed', 'Truck status changed', 'Device offline',
     ]);
+  });
+
+  it('a wiki watch can name no event: nothing in the registry reaches a library, folder or page', () => {
+    expect(kindsFor('wiki_space', KINDS)).toEqual([]);
+    expect(kindsFor('wiki_node', KINDS)).toEqual([]);
   });
 
   it('never offers a kind nobody can watch for', () => {

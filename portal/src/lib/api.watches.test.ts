@@ -8,8 +8,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
   ApiError, READ_ONLY_MESSAGE,
   createGroupWatch, createMyWatch, deleteGroupWatch, deleteMyWatch, getWatchState,
-  listGroupWatches, listMyWatches, updateGroupWatch, updateMyWatch,
-  type Watch, type WatchState,
+  listGroupWatches, listMyWatches, listWikiSpaces, searchWiki, updateGroupWatch, updateMyWatch,
+  type Watch, type WatchState, type WikiSearchHit, type WikiSpace,
 } from './api';
 
 const SESSION = {
@@ -173,6 +173,99 @@ it('deleteGroupWatch: DELETE /notifications/groups/{id}/watches/{watchId}, nothi
   const [url, init] = calls()[0];
   expect(new URL(url).pathname).toBe(`/notifications/groups/${GROUP_ID}/watches/${WATCH_ID}`);
   expect(init.method).toBe('DELETE');
+});
+
+// ── wiki things ──────────────────────────────────────────────────────
+
+const WIKI_WATCH: Watch = {
+  id: WATCH_ID, thing: 'wiki_node', thing_id: THING_ID, thing_name: 'Page A',
+  thing_label: 'Wiki page', link: `https://wiki.example.com/n/${THING_ID}`, kinds: [],
+  via: { type: 'group', id: GROUP_ID, name: 'Group A' }, created_at: '2026-11-02T12:00:00Z',
+};
+
+it('a wiki watch comes back as the API sends it: its label, and an absolute link', async () => {
+  mockFetch(json([WIKI_WATCH]));
+  const [watch] = await listMyWatches();
+
+  expect(watch.thing).toBe('wiki_node');
+  expect(watch.thing_label).toBe('Wiki page');
+  expect(watch.link).toBe(`https://wiki.example.com/n/${THING_ID}`);
+  expect(watch.kinds).toEqual([]);
+});
+
+it('createGroupWatch: a wiki library or node goes out as {thing, id, kinds: []}', async () => {
+  const calls = mockFetch(json(WIKI_WATCH, 201));
+  await createGroupWatch(GROUP_ID, { thing: 'wiki_space', id: THING_ID, kinds: [] });
+  await createGroupWatch(GROUP_ID, { thing: 'wiki_node', id: THING_ID, kinds: [] });
+
+  expect(calls().map(([, init]) => JSON.parse(init.body as string))).toEqual([
+    { thing: 'wiki_space', id: THING_ID, kinds: [] },
+    { thing: 'wiki_node', id: THING_ID, kinds: [] },
+  ]);
+});
+
+const SPACE: WikiSpace = { id: THING_ID, key: 'library-a', name: 'Library A' };
+
+it('listWikiSpaces: GET /wiki/spaces with no query, the libraries as given', async () => {
+  const calls = mockFetch(json([SPACE]));
+  expect(await listWikiSpaces()).toEqual([SPACE]);
+
+  expect(calls()).toHaveLength(1);
+  const [url, init] = calls()[0];
+  expect(new URL(url).pathname).toBe('/wiki/spaces');
+  expect(new URL(url).search).toBe('');
+  expect(init.method ?? 'GET').toBe('GET');
+  expect(init.body).toBeUndefined();
+  expect(headersOf(init).Authorization).toBe('Bearer tok');
+});
+
+const HIT: WikiSearchHit = {
+  node: { id: THING_ID, kind: 'page', title: 'Page A', space_key: 'library-a', space_name: 'Library A' },
+  snippet_html: 'a <mark>Page</mark>', breadcrumbs: ['Folder A'],
+};
+
+it('searchWiki: GET /wiki/search with the text, the kind, the limit and log=false, the hits as given', async () => {
+  const calls = mockFetch(json([HIT]));
+  expect(await searchWiki('Page', 'page', 5)).toEqual([HIT]);
+
+  const [url, init] = calls()[0];
+  const parsed = new URL(url);
+  expect(parsed.pathname).toBe('/wiki/search');
+  expect(parsed.searchParams.get('q')).toBe('Page');
+  expect(parsed.searchParams.get('kind')).toBe('page');
+  expect(parsed.searchParams.get('limit')).toBe('5');
+  expect([...parsed.searchParams.keys()].sort()).toEqual(['kind', 'limit', 'log', 'q']);
+  expect(init.method ?? 'GET').toBe('GET');
+  expect(init.body).toBeUndefined();
+});
+
+it('searchWiki never logs: it searches as the person types, so every call sends log=false', async () => {
+  const calls = mockFetch(json([]));
+  await searchWiki('a', 'folder', 8);
+  await searchWiki('ab', 'page', 20);
+
+  expect(calls().map(([url]) => new URL(url).searchParams.get('log'))).toEqual(['false', 'false']);
+});
+
+it('searchWiki sends the text as one encoded value, whatever is in it', async () => {
+  const calls = mockFetch(json([]));
+  await searchWiki('a&kind=file b/c?#', 'folder', 8);
+
+  const parsed = new URL(calls()[0][0]);
+  expect(parsed.searchParams.get('q')).toBe('a&kind=file b/c?#');
+  expect(parsed.searchParams.get('kind')).toBe('folder');
+  expect([...parsed.searchParams.keys()].sort()).toEqual(['kind', 'limit', 'log', 'q']);
+});
+
+it.each([
+  ['listWikiSpaces', 403, 'forbidden', () => listWikiSpaces()],
+  ['searchWiki', 403, 'forbidden', () => searchWiki('a', 'page', 8)],
+  ['searchWiki', 422, 'bad_query', () => searchWiki('a', 'page', 8)],
+])('%s: a %i %s is an ApiError that carries the status and code', async (_name, status, code, call) => {
+  mockFetch(json({ detail: { code } }, status));
+  const err = await call().catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(ApiError);
+  expect(err).toMatchObject({ status, code });
 });
 
 // ── failures ─────────────────────────────────────────────────────────
