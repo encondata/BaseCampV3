@@ -2,8 +2,9 @@
  * Watches — the pure rules the watch screens share: what each kind of thing is
  * called, which events a watch on it can name (the portal side of
  * api/src/serversherpa/notifications/watches.py `kinds_for`), how a watch's
- * events read in a list, what a failed watch call says, and which failures mean
- * a screen was out of date. The calls themselves are in lib/api.ts.
+ * events read in a list, what a failed watch call or Watch toggle says, and
+ * which failures mean a screen was out of date. The calls themselves are in
+ * lib/api.ts.
  */
 
 import { ApiError, type NotificationKindSetting, type WatchTarget } from './api';
@@ -36,15 +37,28 @@ export function eventsText(kinds: string[], all: NotificationKindSetting[]): str
   return kinds.map((kind) => labels.get(kind) ?? kind).join(', ');
 }
 
+/** The plain sentence for a watch that could not be changed (the wiki's). */
+const WATCH_FAILED = "Couldn't update your watch.";
+
 /** What a failed watch call says (a toast, or a dialog's error line):
  *  `already_watching` has its own sentence, read-only maintenance says its
  *  own, any other answer of the API is the house fallback with its code, and
  *  anything else (no connection, a bug) is the plain one. */
 export function watchErrorMessage(err: unknown): string {
-  if (!(err instanceof ApiError)) return "Couldn't update your watch.";
+  if (!(err instanceof ApiError)) return WATCH_FAILED;
   if (err.code === 'already_watching') return "You're already watching this.";
   if (err.code === 'read_only_mode' && err.message) return err.message;
   return `Request failed (${err.code}).`;
+}
+
+/** What a failed Watch / Stop watching toggle says in its toast: the Watch
+ *  button's and the device row menus' (useDeviceWatches) one sentence. Read-only
+ *  maintenance says the server's own message; anything else is the plain
+ *  sentence, with no code. With no error (the state could not be read again
+ *  after an out-of-date click), the plain sentence too. */
+export function watchToggleMessage(err?: unknown): string {
+  if (err instanceof ApiError && err.code === 'read_only_mode' && err.message) return err.message;
+  return WATCH_FAILED;
 }
 
 const OUT_OF_DATE = new Set(['already_watching', 'watch_not_found']);

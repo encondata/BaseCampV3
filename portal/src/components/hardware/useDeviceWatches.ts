@@ -14,21 +14,18 @@
  * its events is done on /me, under "What you watch"), then reads the list again. A change the
  * server refuses because the menu was out of date (the watch is already there, or already
  * gone: `isOutOfDate`) reads the list again and shows what is true now, with no toast. Any
- * other failure leaves the menu as it was, with a toast: the server's own message for
- * read-only maintenance, else "Couldn't update your watch." (the Watch button's words).
- * A toggle is one at a time per device; `busy` says one is on its way.
+ * other failure leaves the menu as it was, with the Watch button's toast (lib/watches.ts
+ * `watchToggleMessage`): the server's own message for read-only maintenance, else "Couldn't
+ * update your watch.". A toggle is one at a time per device; `busy` says one is on its way.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
-  ApiError, createMyWatch, deleteMyWatch, listMyWatches, type Watch,
+  createMyWatch, deleteMyWatch, listMyWatches, type Watch,
 } from '../../lib/api';
 import { useToast } from '../../lib/notificationsContext';
-import { isOutOfDate } from '../../lib/watches';
-
-/** The toast for a failure the person can do nothing about (the Watch button's sentence). */
-const FAILED = "Couldn't update your watch.";
+import { isOutOfDate, watchToggleMessage } from '../../lib/watches';
 
 export interface DeviceWatches {
   /** Whether the person watches this device themselves. */
@@ -103,11 +100,11 @@ export function useDeviceWatches(): DeviceWatches {
         }
       } catch (err) {
         if (!isOutOfDate(err)) {
-          toast(err instanceof ApiError && err.code === 'read_only_mode' ? err.message : FAILED);
+          toast(watchToggleMessage(err));
           return;       // nothing changed, so there is nothing to read again
         }
         // Made or ended somewhere else: show what is true now, and say nothing.
-        if (!(await read())) toast(FAILED);     // it can't be told which way it is: leave the menu, and say so
+        if (!(await read())) toast(watchToggleMessage());     // it can't be told which way it is: leave the menu, and say so
         return;
       }
       // What is true now. A list that can't be read leaves the change as it was just made.

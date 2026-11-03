@@ -19,8 +19,13 @@ import type { DeviceItem, UiPreferences, Watch } from '../lib/api';
 import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => {
-  const state: { can: (resource: string, action: string) => boolean } = {
+  const state: {
+    can: (resource: string, action: string) => boolean;
+    /** The saved list layouts (preferences.list_prefs) the page opens with. */
+    listPrefs: Record<string, unknown>;
+  } = {
     can: () => true,
+    listPrefs: {},
   };
   return state;
 });
@@ -34,7 +39,7 @@ vi.mock('../auth/AuthContext', () => ({
     preferences: {
       accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default', motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default', list_view: 'expanded',
       notif: { sound: 'chime', switches: {}, schedule: { timezone: null, days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'], quiet_start: null, quiet_end: null } },
-      list_prefs: {},
+      list_prefs: auth.listPrefs,
     } satisfies UiPreferences,
     updatePreferences,
   }),
@@ -104,6 +109,7 @@ beforeEach(() => {
   // jsdom has no scrollIntoView; ?focus= scrolls its row into view
   Element.prototype.scrollIntoView = vi.fn();
   auth.can = () => true;
+  auth.listPrefs = {};
   api.listDevices.mockResolvedValue(DEVICES);
   api.deleteDevice.mockResolvedValue(undefined);
   api.listMyWatches.mockResolvedValue([]);
@@ -394,4 +400,21 @@ it('?focus applies once: a later reload keeps the mark and does not scroll again
   expect((screen.getByText('zebra-reader-2').closest('.dir-row') as HTMLElement).className)
     .toContain('open');
   confirmSpy.mockRestore();
+});
+
+it('?focus on a row a saved filter hides scrolls to it once the filter is cleared', async () => {
+  // the list opens with a saved Name filter that leaves only dock-reader-1
+  auth.listPrefs = { 'hardware-fixed-readers': { filters: { name: { text: 'dock' } } } };
+  const user = userEvent.setup();
+  renderReaders('/hardware/fixed-readers?focus=d2');
+  await screen.findByText('dock-reader-1');
+  expect(screen.queryByText('zebra-reader-2')).toBeNull();
+  const scroll = Element.prototype.scrollIntoView as ReturnType<typeof vi.fn>;
+  expect(scroll).not.toHaveBeenCalled();
+
+  await user.click(screen.getByRole('button', { name: /1 filter active/ }));
+  const marked = (await screen.findByText('zebra-reader-2')).closest('.dir-row') as HTMLElement;
+  await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+  expect(scroll.mock.contexts[0]).toBe(marked);
+  expect(marked.className).toContain('open');
 });

@@ -11,21 +11,19 @@
  * button waits for the answer. A call the server refuses because the watch is
  * already there or already gone (`already_watching`, `watch_not_found`) means the
  * button was out of date: it reads the state again and shows the real one, with no
- * toast. Any other failure leaves the button as it was, with a toast: the server's
- * own message for read-only maintenance, else "Couldn't update your watch.".
+ * toast. Any other failure leaves the button as it was, with a toast
+ * (lib/watches.ts `watchToggleMessage`): the server's own message for read-only
+ * maintenance, else "Couldn't update your watch.".
  */
 
 import { useEffect, useRef, useState } from 'react';
 
 import {
-  ApiError, createMyWatch, deleteMyWatch, getWatchState, type WatchThing,
+  createMyWatch, deleteMyWatch, getWatchState, type WatchThing,
 } from '../../lib/api';
 import { useToast } from '../../lib/notificationsContext';
-import { isOutOfDate } from '../../lib/watches';
+import { isOutOfDate, watchToggleMessage } from '../../lib/watches';
 import '../../styles/notifications.css';  // .watch-btn.on, and its size in a page header
-
-/** The toast for a failure the person can do nothing about (the wiki's sentence). */
-const FAILED = "Couldn't update your watch.";
 
 interface State {
   watching: boolean;
@@ -76,10 +74,10 @@ export default function WatchButton({ thing, id }: { thing: WatchThing; id: stri
             if (shown.current === target) setState({ watching: now.watching, watchId: now.watch_id });
           }
         } catch {
-          toast(FAILED);     // it can't be told which way it is: leave the button, and say so
+          toast(watchToggleMessage());   // it can't be told which way it is: leave the button, and say so
         }
       } else {
-        toast(err instanceof ApiError && err.code === 'read_only_mode' ? err.message : FAILED);
+        toast(watchToggleMessage(err));
       }
     } finally {
       if (shown.current === target) setBusy(false);

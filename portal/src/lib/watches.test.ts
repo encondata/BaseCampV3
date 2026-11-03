@@ -1,13 +1,16 @@
 /**
  * The pure rules behind watches: which events a watch on a thing can name (the
- * API's kinds_for), how a watch's events read, and what a failed watch call says.
+ * API's kinds_for), how a watch's events read, and what a failed watch call or
+ * Watch toggle says.
  */
 import { describe, expect, it } from 'vitest';
 
 import {
   ApiError, READ_ONLY_MESSAGE, type NotificationCategory, type NotificationKindSetting,
 } from './api';
-import { THING_LABELS, eventsText, isOutOfDate, kindsFor, watchErrorMessage } from './watches';
+import {
+  THING_LABELS, eventsText, isOutOfDate, kindsFor, watchErrorMessage, watchToggleMessage,
+} from './watches';
 
 function kind(
   key: string, label: string, category: NotificationCategory,
@@ -165,5 +168,29 @@ describe('watchErrorMessage', () => {
     expect(watchErrorMessage(new TypeError('x'))).toBe("Couldn't update your watch.");
     expect(watchErrorMessage('nope')).toBe("Couldn't update your watch.");
     expect(watchErrorMessage(undefined)).toBe("Couldn't update your watch.");
+  });
+});
+
+describe('watchToggleMessage', () => {
+  it('read-only maintenance says the server\'s own sentence', () => {
+    expect(watchToggleMessage(new ApiError(423, 'read_only_mode', undefined, READ_ONLY_MESSAGE)))
+      .toBe(READ_ONLY_MESSAGE);
+    expect(watchToggleMessage(new ApiError(423, 'read_only_mode', undefined, 'Cutover')))
+      .toBe('Cutover');
+  });
+
+  it.each([
+    [409, 'already_watching'], [404, 'watch_not_found'], [404, 'thing_not_found'],
+    [422, 'invalid_thing'], [403, 'forbidden'], [500, 'unknown_error'],
+  ])('any other %i %s is the plain sentence, with no code', (status, code) => {
+    expect(watchToggleMessage(new ApiError(status, code))).toBe("Couldn't update your watch.");
+  });
+
+  it('so is anything that is not an API answer, and no error at all', () => {
+    expect(watchToggleMessage(new Error('Failed to fetch'))).toBe("Couldn't update your watch.");
+    expect(watchToggleMessage({ code: 'read_only_mode', message: 'Cutover' }))
+      .toBe("Couldn't update your watch.");
+    expect(watchToggleMessage(undefined)).toBe("Couldn't update your watch.");
+    expect(watchToggleMessage()).toBe("Couldn't update your watch.");
   });
 });

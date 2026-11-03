@@ -6,7 +6,7 @@ import {
   loginMethodLabel, registrationLabel, subTypeLabel, tokenExpiryState, vpnLabel,
   approvalLabel, bandLabel, routerClientTotal, routerInstallCommand,
   routerStatus, routerVpn, routerWifi, vpnChipClass, routerDisplayName,
-  stationLabel, stationTypeLabel, ROUTER_ONLINE_MS,
+  stationLabel, stationTypeLabel, ROUTER_ACRONYMS, ROUTER_ONLINE_MS,
 } from './devices';
 
 const R: DeviceItem = {
@@ -300,6 +300,15 @@ describe('routerDisplayName', () => {
   it('returns the input when nothing readable is left', () => {
     expect(routerDisplayName('')).toBe('');
     expect(routerDisplayName('__--')).toBe('__--');
+  });
+
+  it('names routers as the API does', () => {
+    // The API's Device offline notices and watch names use the same rule: display_name in
+    // api/src/serversherpa/services/device_online.py (tests/test_device_online.py pins that side).
+    expect(routerDisplayName('csg_router_kit_19')).toBe('CSG Router Kit 19');
+    // an acronym, and a word with a digit in it, kept as typed
+    expect(routerDisplayName('GL-MT3000')).toBe('GL MT3000');
+    expect(ROUTER_ACRONYMS).toEqual(['csg', 'gl', 'vpn', 'lte', 'nap', 'dc', 'ups', 'lan', 'wan', 'ap']);
   });
 });
 

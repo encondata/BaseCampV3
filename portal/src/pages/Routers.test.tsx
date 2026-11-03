@@ -18,8 +18,13 @@ import type { DeviceItem, UiPreferences, Watch } from '../lib/api';
 import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => {
-  const state: { can: (resource: string, action: string) => boolean } = {
+  const state: {
+    can: (resource: string, action: string) => boolean;
+    /** The saved list layouts (preferences.list_prefs) the page opens with. */
+    listPrefs: Record<string, unknown>;
+  } = {
     can: () => true,
+    listPrefs: {},
   };
   return state;
 });
@@ -33,7 +38,7 @@ vi.mock('../auth/AuthContext', () => ({
     preferences: {
       accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default', motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default', list_view: 'expanded',
       notif: { sound: 'chime', switches: {}, schedule: { timezone: null, days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'], quiet_start: null, quiet_end: null } },
-      list_prefs: {},
+      list_prefs: auth.listPrefs,
     } satisfies UiPreferences,
     updatePreferences,
   }),
@@ -103,7 +108,10 @@ const WATCH_D1: Watch = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // jsdom has no scrollIntoView; ?focus= scrolls its row into view
+  Element.prototype.scrollIntoView = vi.fn();
   auth.can = () => true;
+  auth.listPrefs = {};
   api.listDevices.mockResolvedValue(DEVICES);
   api.deleteDevice.mockResolvedValue(undefined);
   api.listDeviceLeases.mockResolvedValue([]);
@@ -434,6 +442,24 @@ it('?focus applies once: a later reload does not re-open a collapsed row', async
   await new Promise((r) => setTimeout(r, 20));
   expect(screen.queryByText(held)).toBeNull();
   confirmSpy.mockRestore();
+});
+
+it('?focus on a row a saved filter hides opens it once the filter is cleared', async () => {
+  // the list opens with a saved Name filter that leaves only Dock Router 1
+  auth.listPrefs = { 'hardware-routers': { filters: { name: { text: 'dock' } } } };
+  const user = userEvent.setup();
+  renderRouters('/hardware/routers?focus=d2');
+  await screen.findByText('Dock Router 1');
+  expect(screen.queryByText('Zebra Router 2')).toBeNull();
+  const scroll = Element.prototype.scrollIntoView as ReturnType<typeof vi.fn>;
+  expect(scroll).not.toHaveBeenCalled();
+
+  await user.click(screen.getByRole('button', { name: /1 filter active/ }));
+  expect(await screen.findByText('Reports are held until this router is approved.')).toBeTruthy();
+  const row = screen.getByText('Zebra Router 2').closest('.dir-row') as HTMLElement;
+  expect(row.className).toContain('open');
+  expect(scroll).toHaveBeenCalledTimes(1);
+  expect(scroll.mock.contexts[0]).toBe(row);
 });
 
 /** A router fixture with a given hostname. */

@@ -136,18 +136,6 @@ export default function Routers() {
 
   useEffect(() => { void load(); }, []);
 
-  // The approval notification links here with ?focus=<id>: open that row
-  // once the list has it, and bring it into view.
-  useEffect(() => {
-    if (!focusId || focusedRef.current === focusId) return;
-    if (!devices?.some((d) => d.id === focusId)) return;
-    focusedRef.current = focusId;
-    setOpenId(focusId);
-    const esc = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(focusId) : focusId;
-    document.querySelector(`[data-device-id="${esc}"]`)
-      ?.scrollIntoView?.({ block: 'center' });
-  }, [focusId, devices]);
-
   const searchText = (d: DeviceItem) =>
     `${routerDisplayName(d.name)} ${deviceSearchText(d)}`.toLowerCase();
   const haystack = useSearchHaystacks(devices, searchText);
@@ -197,6 +185,20 @@ export default function Routers() {
       return compareValues(va, vb) * sortDir;
     });
   }, [devices, facets, filters, query, sortKey, sortDir, haystack]);
+
+  // The approval and Device offline notifications link here with ?focus=<id>: open that
+  // row and bring it into view, once. It waits until the row is on the page, not just in
+  // the list: a row a filter hides (one saved with the list, say) is opened once the
+  // filter is cleared.
+  useEffect(() => {
+    if (!focusId || focusedRef.current === focusId) return;
+    const esc = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(focusId) : focusId;
+    const row = document.querySelector(`[data-device-id="${esc}"]`);
+    if (!row) return;
+    focusedRef.current = focusId;
+    setOpenId(focusId);
+    row.scrollIntoView?.({ block: 'center' });
+  }, [focusId, visible]);
 
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);

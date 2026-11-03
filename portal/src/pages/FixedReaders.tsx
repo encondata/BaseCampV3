@@ -130,18 +130,6 @@ export default function FixedReaders() {
 
   useEffect(() => { void load(); }, []);
 
-  // The Device offline notification links here with ?focus=<id>: bring that row into
-  // view once the list has it. The row is marked by the param itself (see below), and
-  // the scroll happens once, so a later reload does not pull the list back to it.
-  useEffect(() => {
-    if (!focusId || scrolledRef.current === focusId) return;
-    if (!devices?.some((d) => d.id === focusId)) return;
-    scrolledRef.current = focusId;
-    const esc = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(focusId) : focusId;
-    document.querySelector(`[data-device-id="${esc}"]`)
-      ?.scrollIntoView?.({ block: 'center' });
-  }, [focusId, devices]);
-
   const searchText = (d: DeviceItem) => deviceSearchText(d).toLowerCase();
   const haystack = useSearchHaystacks(devices, searchText);
 
@@ -194,6 +182,20 @@ export default function FixedReaders() {
       return compareValues(va, vb) * sortDir;
     });
   }, [devices, facets, filters, query, sortKey, sortDir, haystack]);
+
+  // The Device offline notification links here with ?focus=<id>: bring that row into
+  // view. The row is marked by the param itself (see below), and the scroll happens once,
+  // so a later reload does not pull the list back to it. It waits until the row is on the
+  // page, not just in the list: a row a filter hides (one saved with the list, say) is
+  // scrolled to once the filter is cleared.
+  useEffect(() => {
+    if (!focusId || scrolledRef.current === focusId) return;
+    const esc = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(focusId) : focusId;
+    const row = document.querySelector(`[data-device-id="${esc}"]`);
+    if (!row) return;
+    scrolledRef.current = focusId;
+    row.scrollIntoView?.({ block: 'center' });
+  }, [focusId, visible]);
 
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);
