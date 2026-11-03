@@ -18,7 +18,6 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import select, text
-from weasyprint import HTML
 
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
@@ -482,6 +481,10 @@ async def test_a_year_at_days_tiles_across_pages_with_page_footers(client, db):
     est = gantt.estimate_pages(13, printed.start, printed.finish, "days", "letter")
     assert len(windows) == est.across >= 2
     assert 'content: "Page " counter(page) " of " counter(pages)' in html
+    # imported here, not at the top: importing WeasyPrint sets PIL's
+    # LOAD_TRUNCATED_IMAGES for the whole process, and a collection-time
+    # import made the label-image tests' corrupt pictures load silently
+    from weasyprint import HTML
     pages = HTML(string=html, url_fetcher=data_fetcher()).render().pages
     assert len(pages) == est.table + est.gantt
 
