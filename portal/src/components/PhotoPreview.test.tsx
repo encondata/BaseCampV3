@@ -48,18 +48,39 @@ function stubRect(el: Element, r: Partial<DOMRect>) {
   vi.spyOn(el, 'getBoundingClientRect').mockReturnValue(full);
 }
 
-it('renders its children unchanged, and never a preview, without a photo', () => {
+it('never shows a preview without a photo, but still renders the same wrapper', () => {
   for (const src of [null, undefined, '']) {
     const { container, unmount } = shell(
       <PhotoPreview src={src} name="Ada Lovelace">{avatar()}</PhotoPreview>);
-    expect(container.querySelector('.pp-wrap')).toBeNull();
-    expect(container.querySelector('[data-testid="av"]')!.parentElement)
-      .toBe(container.querySelector('.portal-shell'));
+    const wrap = container.querySelector('.pp-wrap')!;
+    expect(wrap).not.toBeNull();
+    expect(container.querySelector('[data-testid="av"]')!.parentElement).toBe(wrap);
     hover(container.querySelector('[data-testid="av"]')!);
     act(() => { vi.advanceTimersByTime(PREVIEW_DELAY_MS * 2); });
     expect(card()).toBeNull();
     unmount();
   }
+});
+
+it('keeps the same avatar DOM node when the photo appears (focus survives)', () => {
+  const ui = (src: string | null) => (
+    <div className="portal-shell">
+      <PhotoPreview src={src} name="Ada Lovelace">
+        <button data-testid="av">AL</button>
+      </PhotoPreview>
+    </div>);
+  const { getByTestId, container, rerender } = render(ui(null));
+  const before = getByTestId('av');
+  const wrapBefore = container.querySelector('.pp-wrap');
+  before.focus();
+  expect(document.activeElement).toBe(before);
+  rerender(ui(SRC));
+  expect(getByTestId('av')).toBe(before);
+  expect(container.querySelector('.pp-wrap')).toBe(wrapBefore);
+  expect(document.activeElement).toBe(before);
+  hover(before);
+  act(() => { vi.advanceTimersByTime(PREVIEW_DELAY_MS); });
+  expect(card()).not.toBeNull();
 });
 
 it('opens after 300 ms, not before', () => {
@@ -160,6 +181,18 @@ it('ignores other keys', () => {
 it('closes when the avatar unmounts', () => {
   const { unmount } = open();
   unmount();
+  expect(card()).toBeNull();
+});
+
+it('cancels a pending open when the photo goes away before the delay', () => {
+  const ui = (src: string | null) => (
+    <div className="portal-shell">
+      <PhotoPreview src={src} name="Ada Lovelace">{avatar()}</PhotoPreview></div>);
+  const { getByTestId, rerender } = render(ui(SRC));
+  hover(getByTestId('av'));
+  act(() => { vi.advanceTimersByTime(100); });
+  rerender(ui(null));
+  act(() => { vi.advanceTimersByTime(PREVIEW_DELAY_MS * 2); });
   expect(card()).toBeNull();
 });
 

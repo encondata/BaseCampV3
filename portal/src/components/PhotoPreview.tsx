@@ -7,8 +7,11 @@
  *
  *   <PhotoPreview src={p.avatar_url} name={p.name}>{avatar}</PhotoPreview>
  *
- * With no `src` (an initials avatar) it renders its children unchanged —
- * no wrapper element at all — so call sites can wrap unconditionally.
+ * With no `src` (an initials avatar) it still renders the same
+ * `span.pp-wrap` around the children but attaches no hover handlers and
+ * never opens a card, so call sites can wrap unconditionally and the
+ * avatar keeps its DOM node (and keyboard focus) when a photo appears,
+ * for example after a first upload.
  *
  * Mechanics follow the portal's other hover cards:
  *  - the wrapper is `display: contents` (styles/photo-preview.css), so it
@@ -73,13 +76,6 @@ export default function PhotoPreview({ src, name, children }: {
   name: string;
   children: ReactNode;
 }) {
-  if (!src) return <>{children}</>;
-  return <Preview src={src} name={name}>{children}</Preview>;
-}
-
-function Preview({ src, name, children }: {
-  src: string; name: string; children: ReactNode;
-}) {
   const wrapRef = useRef<HTMLSpanElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<number | null>(null);
@@ -117,9 +113,15 @@ function Preview({ src, name, children }: {
   };
 
   const onEnter = () => {
+    if (!src) return;
     clearTimer();
     timerRef.current = window.setTimeout(show, PREVIEW_DELAY_MS);
   };
+
+  // The photo going away (or never being there) closes any open card.
+  useEffect(() => {
+    if (!src) close();
+  }, [src, close]);
 
   // Once the card is laid out, replace the estimate with its measured
   // size (the caption row can differ from the estimate) before the
@@ -148,9 +150,10 @@ function Preview({ src, name, children }: {
 
   return (
     <span ref={wrapRef} className="pp-wrap"
-          onMouseEnter={onEnter} onMouseLeave={close}>
+          onMouseEnter={src ? onEnter : undefined}
+          onMouseLeave={src ? close : undefined}>
       {children}
-      {open && pos && createPortal(
+      {src && open && pos && createPortal(
         <div ref={cardRef} className="pp-card" role="tooltip"
              style={{ left: pos.left, top: pos.top }}>
           <img className="pp-img" src={src} alt="" />
