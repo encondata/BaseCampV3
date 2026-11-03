@@ -131,6 +131,15 @@ it('shows a thing as its name, linked to its page, with its kind as a chip', () 
   expect(within(row('Truck A')).getByText('Truck').classList.contains('chip')).toBe(true);
 });
 
+it('draws a thing\'s kind as the neutral tag chip, as a category is in the Delivery log', () => {
+  setup();
+
+  // `chip tag` and nothing else: the kind is not a status, so it takes no color class
+  expect(within(row('Initiative A')).getByText('Initiative').className).toBe('chip tag');
+  expect(within(row('Site A')).getByText('Site').className).toBe('chip tag');
+  expect(within(row('Truck A')).getByText('Truck').className).toBe('chip tag');
+});
+
 it('shows Everything as plain "Everything": no link, no chip', () => {
   setup();
 

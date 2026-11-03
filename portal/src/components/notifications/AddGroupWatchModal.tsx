@@ -10,9 +10,11 @@
  * life of the dialog, so a list that lands after another kind was chosen is still
  * there when its kind is chosen again. The picker is off until its list is in (so it
  * never offers "No matches." for a list that is only on its way). A list that fails
- * to load is told beside the buttons (unless another kind has been chosen since),
- * leaves the picker off, and is asked for again when the kind is chosen again.
- * Below, the events editor.
+ * to load is told beside the buttons ("Could not load the site list."; not at all if
+ * another kind has been chosen since), leaves the picker off, and is asked for again
+ * when the kind is chosen again. That notice is kept apart from a save's error: changing
+ * the events leaves it up (the picker is still off), while choosing another kind takes
+ * it away, and so does the list arriving after all. Below, the events editor.
  *
  * Add watch is off until there is a thing (when one is needed) and the events can be
  * saved (WatchEventsEditor's `canSaveEvents`). Choosing another kind of thing starts
@@ -51,16 +53,27 @@ const TARGETS: { key: WatchTarget; label: string }[] = [
   { key: 'everything', label: THING_LABELS.everything },
 ];
 
-/** What searching a kind of thing needs: the picker's placeholder, and the list it
- *  offers. Each list is the admin's own, so it holds only what they can see. A
- *  truck list leaves archived trucks out (`listTrucks` without its flag). */
+/** What searching a kind of thing needs: the picker's placeholder, what is told when its
+ *  list can't be loaded, and the list it offers. Each list is the admin's own, so it holds
+ *  only what they can see. A truck list leaves archived trucks out (`listTrucks` without
+ *  its flag). */
 const PICKERS: Record<WatchThing, {
   placeholder: string;
+  loadFailed: string;
   load: () => Promise<{ id: string; name: string }[]>;
 }> = {
-  initiative: { placeholder: 'Search initiatives…', load: () => listInitiatives() },
-  site: { placeholder: 'Search sites…', load: () => listSites() },
-  truck: { placeholder: 'Search trucks…', load: () => listTrucks() },
+  initiative: {
+    placeholder: 'Search initiatives…', loadFailed: 'Could not load the initiative list.',
+    load: () => listInitiatives(),
+  },
+  site: {
+    placeholder: 'Search sites…', loadFailed: 'Could not load the site list.',
+    load: () => listSites(),
+  },
+  truck: {
+    placeholder: 'Search trucks…', loadFailed: 'Could not load the truck list.',
+    load: () => listTrucks(),
+  },
 };
 
 /** The events a kind of watch starts with: every event, or (Everything) none picked. */
@@ -81,7 +94,9 @@ export default function AddGroupWatchModal({ group, kinds, onAdded, onClose }: {
   // Each kind's picker options, once its list has come in.
   const [choices, setChoices] = useState<Partial<Record<WatchThing, ComboOption[]>>>({});
   const [saving, setSaving] = useState(false);
+  // A save's error, and (apart from it) the notice of a list that did not load.
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
 
   // Ask for the chosen kind's list unless it is in. A list is kept under its own kind
   // whenever it lands; a failure is told only while that kind is still the chosen one.
@@ -92,7 +107,7 @@ export default function AddGroupWatchModal({ group, kinds, onAdded, onClose }: {
       .then((items) => {
         setChoices((all) => ({ ...all, [thing]: items.map((i) => ({ value: i.id, label: i.name })) }));
       })
-      .catch((err: unknown) => { if (chosen) setError(watchErrorMessage(err)); });
+      .catch(() => { if (chosen) setLoadError(PICKERS[thing].loadFailed); });
     return () => { chosen = false; };
     // `choices` only says whether the list is in: its arrival must not ask again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -100,6 +115,9 @@ export default function AddGroupWatchModal({ group, kinds, onAdded, onClose }: {
 
   const needsThing = thing !== 'everything';
   const canSave = (!needsThing || thingId !== '') && canSaveEvents(events);
+  // The notice is the chosen kind's, and only for as long as its list is not in.
+  const listError = needsThing && !choices[thing] ? loadError : '';
+  const shownError = error || listError;
 
   const pickTarget = (next: WatchTarget) => {
     if (saving || next === thing) return;
@@ -107,6 +125,7 @@ export default function AddGroupWatchModal({ group, kinds, onAdded, onClose }: {
     setThingId('');
     setEvents(freshEvents(next));
     setError('');
+    setLoadError('');
   };
 
   const pickThing = (id: string) => {
@@ -150,7 +169,7 @@ export default function AddGroupWatchModal({ group, kinds, onAdded, onClose }: {
           <button className="mini-btn" type="button" onClick={onClose} disabled={saving}>
             Cancel
           </button>
-          {error && <span className="pf-error" role="alert">{error}</span>}
+          {shownError && <span className="pf-error" role="alert">{shownError}</span>}
         </>
       )}>
       <div className="watch-add-body">

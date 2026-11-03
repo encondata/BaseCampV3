@@ -7,11 +7,15 @@
  * Their own rows can have their events chosen ("Choose events…", a dialog that
  * saves with PATCH /auth/me/watches/{id}) or be stopped. The head's button watches
  * chosen events everywhere (an Everything watch), or edits them once the person
- * has one. Every change loads the list again, so the section shows what the server
- * says. `kinds` is the company settings' registry, which names the events; until it
- * arrives an event reads as its own code.
+ * has one. A change that goes through loads the list again; so does a stop, however it
+ * ends, and a save the server refuses because the list was out of date (the watch is
+ * already there, or already gone; the dialog still says why), so the section shows
+ * what the server says. The error a failed stop leaves stays until the next stop, or a
+ * save that goes through, clears it. `kinds` is the company settings' registry, which
+ * names the events; until it arrives an event reads as its own code.
  *
- * Until the first answer lands the list says nothing, not even that it is empty.
+ * Until the first answer lands the list says nothing, not even that it is empty, and
+ * the count beside the title waits for it too.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -33,6 +37,10 @@ const HINT = 'Things you watch and the ones your groups watch. '
   + 'What reaches you still follows your switches and schedule.';
 const EMPTY = "You aren't watching anything yet. Use Watch on a page to start.";
 const DIALOG_HINT = 'Pick the events you want to hear about.';
+
+/** The answers that mean the list on screen was out of date: the watch is already there
+ *  (made elsewhere), or already gone. */
+const OUT_OF_DATE = new Set(['already_watching', 'watch_not_found']);
 
 /** The events dialog that is open: one of the rows' watches, or the person's
  *  Everything watch (which may not exist yet). */
@@ -99,6 +107,21 @@ export default function WatchesSection({ kinds }: { kinds: NotificationKindSetti
     },
   ]);
 
+  /** Runs a dialog's save. When it goes through the list is loaded again and the last
+   *  stop's error goes. When the server refuses it because the list was out of date (the
+   *  watch is already there, or already gone) the list is loaded again too, and the
+   *  dialog still shows why (the error goes on to it). */
+  const saved = async (save: () => Promise<unknown>): Promise<void> => {
+    try {
+      await save();
+    } catch (err) {
+      if (err instanceof ApiError && OUT_OF_DATE.has(err.code)) void load();
+      throw err;
+    }
+    setActionError('');
+    void load();
+  };
+
   /** The open dialog's props. The everywhere dialog saves to the person's Everything
    *  watch as the list has it when they press Save: a change if there is one, else a
    *  new one. */
@@ -107,11 +130,9 @@ export default function WatchesSection({ kinds }: { kinds: NotificationKindSetti
       return {
         key: 'everywhere', title: THING_LABELS.everything, thing: 'everything' as const,
         initial: everywhere?.kinds ?? [],
-        onSave: async (picked: string[]) => {
-          if (everywhere) await updateMyWatch(everywhere.id, picked);
-          else await createMyWatch({ thing: 'everything', id: null, kinds: picked });
-          void load();
-        },
+        onSave: (picked: string[]) => saved(() => (everywhere
+          ? updateMyWatch(everywhere.id, picked)
+          : createMyWatch({ thing: 'everything', id: null, kinds: picked }))),
       };
     }
     const { watch } = current;
@@ -120,10 +141,7 @@ export default function WatchesSection({ kinds }: { kinds: NotificationKindSetti
       title: watch.thing === 'everything'
         ? THING_LABELS.everything : (watch.thing_name ?? THING_LABELS[watch.thing]),
       thing: watch.thing, initial: watch.kinds,
-      onSave: async (picked: string[]) => {
-        await updateMyWatch(watch.id, picked);
-        void load();
-      },
+      onSave: (picked: string[]) => saved(() => updateMyWatch(watch.id, picked)),
     };
   };
 
@@ -134,7 +152,9 @@ export default function WatchesSection({ kinds }: { kinds: NotificationKindSetti
       <section className="set-section me-watch-card" aria-label="What you watch">
         <div className="set-head set-head-actions">
           <div>
-            <h3>What you watch <span className="badge-count">{watches?.length ?? 0}</span></h3>
+            <h3>
+              What you watch{watches !== null && <>{' '}<span className="badge-count">{watches.length}</span></>}
+            </h3>
             <p>{HINT}</p>
           </div>
           <button type="button" className="mini-btn" onClick={() => setDialog({ kind: 'everywhere' })}>

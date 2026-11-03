@@ -632,15 +632,17 @@ it('Cancel and the × close it without adding anything', async () => {
 
 // ── the lists that do not load ──────────────────────────────────────────
 
-it('a list that does not load says why beside the buttons, and loads again when the kind is chosen again', async () => {
+it('a list that does not load says so beside the buttons, and loads again when the kind is chosen again', async () => {
   const user = userEvent.setup();
   api.listSites.mockRejectedValueOnce(new ApiError(403, 'forbidden'));
   open();
 
   await user.click(segment('Site'));
   const error = await screen.findByRole('alert');
-  expect(error.textContent).toBe('Request failed (forbidden).');
+  expect(error.textContent).toBe('Could not load the site list.');
+  expect(error.tagName).toBe('SPAN');
   expect(error.classList.contains('pf-error')).toBe(true);
+  expect(footer().contains(error)).toBe(true);
   expect(save().disabled).toBe(true);
 
   await user.click(segment('Truck'));
@@ -651,6 +653,79 @@ it('a list that does not load says why beside the buttons, and loads again when 
   await openPicker(user, 'Site');
   expect(await screen.findByRole('button', { name: 'Site A' })).toBeTruthy();
   expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it.each([
+  ['Initiative', 'listInitiatives', 'Could not load the initiative list.'],
+  ['Site', 'listSites', 'Could not load the site list.'],
+  ['Truck', 'listTrucks', 'Could not load the truck list.'],
+] as const)('%s: a list that does not load says so in its own sentence, whatever the failure was', async (kind, call, copy) => {
+  const user = userEvent.setup();
+  api[call].mockRejectedValue(new Error('Failed to fetch'));
+  open();
+  if (kind !== 'Initiative') await user.click(segment(kind));
+
+  expect((await screen.findByRole('alert')).textContent).toBe(copy);
+  expect(combobox(kind).disabled).toBe(true);
+  expect(save().disabled).toBe(true);
+});
+
+it('a list that does not load says the same for an error of the API: its code is not told', async () => {
+  api.listInitiatives.mockRejectedValue(new ApiError(500, 'boom'));
+  open();
+
+  expect((await screen.findByRole('alert')).textContent).toBe('Could not load the initiative list.');
+});
+
+it('the notice of a list that did not load stays while the events are changed, and the picker stays off', async () => {
+  const user = userEvent.setup();
+  api.listSites.mockRejectedValue(new ApiError(500, 'boom'));
+  open();
+  await user.click(segment('Site'));
+  await screen.findByRole('alert');
+
+  await user.click(checkbox('All events'));
+  expect(screen.getByRole('alert').textContent).toBe('Could not load the site list.');
+  await user.click(checkbox('Truck status changed'));
+  expect(screen.getByRole('alert').textContent).toBe('Could not load the site list.');
+  await user.click(checkbox('Truck status changed'));
+  await user.click(checkbox('All events'));
+
+  expect(screen.getByRole('alert').textContent).toBe('Could not load the site list.');
+  expect(combobox('Site').disabled).toBe(true);
+  expect(save().disabled).toBe(true);
+});
+
+it('the notice of a list that did not load goes when another kind is chosen, Everything included', async () => {
+  const user = userEvent.setup();
+  api.listSites.mockRejectedValue(new ApiError(500, 'boom'));
+  open();
+  await user.click(segment('Site'));
+  await screen.findByRole('alert');
+
+  await user.click(segment('Everything'));
+
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('the notice goes when the list arrives after all (an earlier request, answering late)', async () => {
+  const user = userEvent.setup();
+  const slow = deferred<unknown>();
+  api.listSites.mockReturnValueOnce(slow.promise).mockRejectedValueOnce(new ApiError(500, 'boom'));
+  open();
+
+  await user.click(segment('Site'));          // the first request, still out
+  await user.click(segment('Truck'));
+  await user.click(segment('Site'));          // asks again: this one fails
+  expect((await screen.findByRole('alert')).textContent).toBe('Could not load the site list.');
+  expect(combobox('Site').disabled).toBe(true);
+
+  await act(async () => { slow.resolve(SITES); });
+
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(combobox('Site').disabled).toBe(false);
+  await user.click(combobox('Site'));
+  expect(await screen.findByRole('button', { name: 'Site A' })).toBeTruthy();
 });
 
 it('the picker is off while its list is on its way, and on once it is in', async () => {

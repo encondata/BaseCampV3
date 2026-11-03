@@ -145,15 +145,28 @@ it('counts every row it lists: its own and its groups\'', async () => {
   expect(document.querySelector('.badge-count')?.textContent).toBe('3');
 });
 
-it('says nothing about the list, not even that it is empty, until the watches are in', async () => {
-  api.listMyWatches.mockReturnValue(new Promise(() => {}));   // never settles
+it('says nothing about the list, not even that it is empty or how many, until the watches are in', async () => {
+  const pending = deferred<Watch[]>();
+  api.listMyWatches.mockReturnValue(pending.promise);
   renderSection();
-  await loaded();
+  const section = await loaded();
 
   expect(screen.queryByText(EMPTY)).toBeNull();
   expect(screen.queryByRole('table')).toBeNull();
-  expect(document.querySelector('.badge-count')?.textContent).toBe('0');
+  expect(document.querySelector('.badge-count')).toBeNull();
+  expect(within(section).getByRole('heading', { name: 'What you watch' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Watch events everywhere…' })).toBeTruthy();
+
+  await act(async () => { pending.resolve([ownInitiative]); });
+  expect(document.querySelector('.badge-count')?.textContent).toBe('1');
+});
+
+it('draws no count when the watches could not be loaded', async () => {
+  api.listMyWatches.mockRejectedValue(new ApiError(500, 'server_error'));
+  renderSection();
+  await screen.findByText('Could not load your watches.');
+
+  expect(document.querySelector('.badge-count')).toBeNull();
 });
 
 it('shows the empty state\'s copy when the person watches nothing', async () => {
@@ -409,10 +422,10 @@ it('Cancel leaves the dialog without saving or loading again', async () => {
   expect(api.listMyWatches).toHaveBeenCalledTimes(1);
 });
 
-it('a refused save stays in the dialog with its error, and the list is not loaded again', async () => {
+it('a save for a watch that is already gone stays in the dialog with its error, and the list is loaded again', async () => {
   const user = userEvent.setup();
   api.updateMyWatch.mockRejectedValue(new ApiError(404, 'watch_not_found'));
-  api.listMyWatches.mockResolvedValue([ownInitiative]);
+  api.listMyWatches.mockResolvedValueOnce([ownInitiative]).mockResolvedValue([]);
   renderSection();
   await screen.findByText('Initiative A');
 
@@ -421,7 +434,10 @@ it('a refused save stays in the dialog with its error, and the list is not loade
 
   const dialog = screen.getByRole('dialog');
   expect((await within(dialog).findByRole('alert')).textContent).toBe('Request failed (watch_not_found).');
-  expect(api.listMyWatches).toHaveBeenCalledTimes(1);
+  // the section behind it now shows what is true: the watch is gone
+  expect(await screen.findByText(EMPTY)).toBeTruthy();
+  expect(api.listMyWatches).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole('dialog')).toBe(dialog);
 });
 
 it('an own Everything row has the same two actions, and its dialog is titled "Everything"', async () => {
@@ -535,9 +551,11 @@ it('a group\'s Everything watch does not turn the button into Edit', async () =>
   expect(screen.queryByRole('button', { name: 'Edit events everywhere…' })).toBeNull();
 });
 
-it('a watch already there shows "You\'re already watching this." in the everywhere dialog', async () => {
+it('a watch already there shows "You\'re already watching this." in the everywhere dialog, and the list is loaded again', async () => {
   const user = userEvent.setup();
+  // made somewhere else since the list was loaded: the second answer has it
   api.createMyWatch.mockRejectedValue(new ApiError(409, 'already_watching'));
+  api.listMyWatches.mockResolvedValueOnce([]).mockResolvedValue([ownEverything]);
   renderSection();
   await screen.findByText(EMPTY);
 
@@ -548,6 +566,112 @@ it('a watch already there shows "You\'re already watching this." in the everywhe
 
   expect((await within(dialog).findByRole('alert')).textContent).toBe("You're already watching this.");
   expect(screen.getByRole('dialog', { name: 'Everything' })).toBeTruthy();
+  // the section behind the dialog shows the watch that is there, and its button says Edit
+  expect(await screen.findByRole('button', { name: 'Edit events everywhere…' })).toBeTruthy();
+  expect(screen.queryByText(EMPTY)).toBeNull();
+  expect(api.listMyWatches).toHaveBeenCalledTimes(2);
+});
+
+it('an Everything watch that is already gone is told in the dialog, and the list is loaded again', async () => {
+  const user = userEvent.setup();
+  api.updateMyWatch.mockRejectedValue(new ApiError(404, 'watch_not_found'));
+  api.listMyWatches.mockResolvedValueOnce([ownEverything]).mockResolvedValue([]);
+  renderSection();
+
+  await user.click(await screen.findByRole('button', { name: 'Edit events everywhere…' }));
+  const dialog = screen.getByRole('dialog', { name: 'Everything' });
+  await user.click(within(dialog).getByRole('checkbox', { name: 'Initiative status changed' }));
+  await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+  expect((await within(dialog).findByRole('alert')).textContent).toBe('Request failed (watch_not_found).');
+  expect(await screen.findByRole('button', { name: 'Watch events everywhere…' })).toBeTruthy();
+  expect(api.listMyWatches).toHaveBeenCalledTimes(2);
+});
+
+it('any other refused save leaves the list alone: it is not loaded again', async () => {
+  const user = userEvent.setup();
+  api.updateMyWatch.mockRejectedValue(new ApiError(422, 'invalid_kind'));
+  api.listMyWatches.mockResolvedValue([ownInitiative]);
+  renderSection();
+  await screen.findByText('Initiative A');
+
+  await pickAction(user, 'Initiative A', 'Choose events…');
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Save' }));
+
+  expect((await within(screen.getByRole('dialog')).findByRole('alert')).textContent)
+    .toBe('Request failed (invalid_kind).');
+  expect(api.listMyWatches).toHaveBeenCalledTimes(1);
+});
+
+it('a save refused by read-only maintenance says so in the dialog and leaves the list alone', async () => {
+  const user = userEvent.setup();
+  api.updateMyWatch.mockRejectedValue(
+    new ApiError(423, 'read_only_mode', { code: 'read_only_mode' }, READ_ONLY_MESSAGE));
+  api.listMyWatches.mockResolvedValue([ownInitiative]);
+  renderSection();
+  await screen.findByText('Initiative A');
+
+  await pickAction(user, 'Initiative A', 'Choose events…');
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Save' }));
+
+  expect((await within(screen.getByRole('dialog')).findByRole('alert')).textContent).toBe(READ_ONLY_MESSAGE);
+  expect(api.listMyWatches).toHaveBeenCalledTimes(1);
+});
+
+it('a stop error goes when a later events save goes through', async () => {
+  const user = userEvent.setup();
+  api.deleteMyWatch.mockRejectedValue(new ApiError(500, 'server_error'));
+  api.listMyWatches.mockResolvedValue([ownInitiative]);
+  renderSection();
+  await screen.findByText('Initiative A');
+  await pickAction(user, 'Initiative A', 'Stop watching');
+  expect((await screen.findByRole('alert')).textContent).toBe('Request failed (server_error).');
+
+  await pickAction(user, 'Initiative A', 'Choose events…');
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Save' }));
+
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(api.updateMyWatch).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('a stop error goes when a later Everything save goes through', async () => {
+  const user = userEvent.setup();
+  api.deleteMyWatch.mockRejectedValue(new ApiError(500, 'server_error'));
+  api.listMyWatches.mockResolvedValue([ownInitiative]);
+  renderSection();
+  await screen.findByText('Initiative A');
+  await pickAction(user, 'Initiative A', 'Stop watching');
+  expect((await screen.findByRole('alert')).textContent).toBe('Request failed (server_error).');
+
+  await user.click(screen.getByRole('button', { name: 'Watch events everywhere…' }));
+  const dialog = screen.getByRole('dialog', { name: 'Everything' });
+  await user.click(within(dialog).getByRole('checkbox', { name: 'Truck status changed' }));
+  await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(api.createMyWatch).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('a stop error stays when a save is refused', async () => {
+  const user = userEvent.setup();
+  api.deleteMyWatch.mockRejectedValue(new ApiError(500, 'server_error'));
+  api.updateMyWatch.mockRejectedValue(new ApiError(422, 'invalid_kind'));
+  api.listMyWatches.mockResolvedValue([ownInitiative]);
+  renderSection();
+  await screen.findByText('Initiative A');
+  await pickAction(user, 'Initiative A', 'Stop watching');
+  await screen.findByRole('alert');
+
+  await pickAction(user, 'Initiative A', 'Choose events…');
+  const dialog = screen.getByRole('dialog');
+  await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+  await within(dialog).findByRole('alert');
+
+  // the stop's own line is still under the head, outside the dialog
+  const section = screen.getByRole('region', { name: 'What you watch' });
+  expect(within(section).getByText('Request failed (server_error).')).toBeTruthy();
 });
 
 it('says the watches could not be loaded, and lists nothing, when the call fails', async () => {

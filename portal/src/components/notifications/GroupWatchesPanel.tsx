@@ -8,9 +8,12 @@
  * on each row, "Choose events…" (WatchEventsModal, saved with PATCH) and "Remove".
  * Everyone else reads the list. Every change reads the list again, so the panel
  * shows what the server says; a Remove that finds the watch already gone is as good
- * as removed. The company settings' `kinds` name the events; until they have
- * answered the list is not shown (so no event flashes as its code), and if they
- * can't be loaded the events read as their codes.
+ * as removed. The error a failed Remove leaves stays until a later Remove, or an
+ * add or an events save that goes through, clears it. The company settings' `kinds`
+ * name the events; until they have answered the list is not shown (so no event
+ * flashes as its code), and if they can't be loaded the panel says the watches could
+ * not be loaded, as it does for the list itself, and shows no list: events are never
+ * listed as their codes.
  *
  * Until the first answer lands the panel says nothing about the list: no count and
  * not even that it is empty. Only the newest list call counts (an older answer
@@ -51,8 +54,9 @@ function PanelFor({ group, canChange }: { group: NotificationGroupDetail; canCha
   const groupId = group.id;
   // null until the first answer; a failed reload keeps the list that is there.
   const [watches, setWatches] = useState<Watch[] | null>(null);
-  // null until the company settings have answered (or failed: then none).
+  // null until the company settings have answered, and for good if they failed.
   const [kinds, setKinds] = useState<NotificationKindSetting[] | null>(null);
+  const [kindsFailed, setKindsFailed] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [actionError, setActionError] = useState('');
   const [removing, setRemoving] = useState<Record<string, boolean>>({});
@@ -80,7 +84,7 @@ function PanelFor({ group, canChange }: { group: NotificationGroupDetail; canCha
     let alive = true;
     getNotificationSettings()
       .then((settings) => { if (alive) setKinds(settings.kinds); })
-      .catch(() => { if (alive) setKinds([]); });
+      .catch(() => { if (alive) setKindsFailed(true); });
     return () => { alive = false; };
   }, []);
 
@@ -125,7 +129,7 @@ function PanelFor({ group, canChange }: { group: NotificationGroupDetail; canCha
             </button>
           )}
         </div>
-        {loadFailed && <p className="pf-error">{LOAD_FAILED}</p>}
+        {(loadFailed || kindsFailed) && <p className="pf-error">{LOAD_FAILED}</p>}
         {actionError && <p className="pf-error" role="alert">{actionError}</p>}
         {watches && kinds && (
           <WatchesTable watches={watches} kinds={kinds} showVia={false} actionsFor={actionsFor}
@@ -136,7 +140,7 @@ function PanelFor({ group, canChange }: { group: NotificationGroupDetail; canCha
       {dialog?.kind === 'add' && (
         <AddGroupWatchModal
           group={group} kinds={kinds ?? []}
-          onAdded={() => { setDialog(null); void load(); }}
+          onAdded={() => { setDialog(null); setActionError(''); void load(); }}
           onClose={() => setDialog(null)} />
       )}
 
@@ -150,6 +154,7 @@ function PanelFor({ group, canChange }: { group: NotificationGroupDetail; canCha
           onSave={async (picked) => {
             try {
               await updateGroupWatch(groupId, chosen.id, picked);
+              setActionError('');
             } finally {
               void load();     // changed or refused, show what is true now
             }

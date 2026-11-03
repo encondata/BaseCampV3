@@ -252,14 +252,39 @@ it('waits for the company settings so the events read as labels at once, not as 
   expect(cells(rowOf('Site A'))[1].textContent).toBe('Initiative status changed, Truck status changed');
 });
 
-it('still lists the watches when the company settings can\'t be loaded: the events read as their codes', async () => {
+it('says the watches could not be loaded, and lists none, when the company settings can\'t be: no event reads as its code', async () => {
   api.getNotificationSettings.mockRejectedValue(new ApiError(500, 'boom'));
   api.listGroupWatches.mockResolvedValue([site]);
   renderPanel();
-  await screen.findByText('Site A');
 
-  expect(cells(rowOf('Site A'))[1].textContent).toBe('initiative_status_changed, truck_status_changed');
+  const error = await screen.findByText(LOAD_FAILED);
+  expect(error.tagName).toBe('P');
+  expect(error.classList.contains('pf-error')).toBe(true);
+  await waitFor(() => expect(api.listGroupWatches).toHaveBeenCalledTimes(1));
+  expect(screen.queryByRole('table')).toBeNull();
+  expect(screen.queryByText('Site A')).toBeNull();
+  expect(screen.queryByText(/initiative_status_changed/)).toBeNull();
+  expect(screen.queryByText(EMPTY)).toBeNull();
+});
+
+it('says it once when the list and the company settings both fail', async () => {
+  api.getNotificationSettings.mockRejectedValue(new ApiError(500, 'boom'));
+  api.listGroupWatches.mockRejectedValue(new ApiError(500, 'boom'));
+  renderPanel();
+
+  await screen.findByText(LOAD_FAILED);
+  await waitFor(() => expect(api.listGroupWatches).toHaveBeenCalledTimes(1));
+  expect(screen.getAllByText(LOAD_FAILED)).toHaveLength(1);
+});
+
+it('says nothing of a failure while the company settings are still on their way', async () => {
+  api.getNotificationSettings.mockReturnValue(new Promise(() => {}));   // never settles
+  api.listGroupWatches.mockResolvedValue([site]);
+  const { container } = renderPanel();
+  await waitFor(() => expect(eyebrow(container)).toBe('What this group watches — 1'));
+
   expect(screen.queryByText(LOAD_FAILED)).toBeNull();
+  expect(screen.queryByRole('table')).toBeNull();
 });
 
 // ── read only ───────────────────────────────────────────────────────────
@@ -385,6 +410,62 @@ it('the next Remove clears the last one\'s error', async () => {
 
   await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
   expect(api.deleteGroupWatch).toHaveBeenCalledTimes(2);
+});
+
+it('the last Remove\'s error goes when an events save goes through', async () => {
+  const user = userEvent.setup();
+  api.deleteGroupWatch.mockRejectedValue(new ApiError(403, 'forbidden'));
+  api.listGroupWatches.mockResolvedValue([site]);
+  renderPanel();
+  await screen.findByText('Site A');
+  await pickAction(user, 'Site A', 'Remove');
+  expect((await screen.findByRole('alert')).textContent).toBe('Request failed (forbidden).');
+
+  await pickAction(user, 'Site A', 'Choose events…');
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Save' }));
+
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(api.updateGroupWatch).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('the last Remove\'s error goes when a watch is added', async () => {
+  const user = userEvent.setup();
+  api.deleteGroupWatch.mockRejectedValue(new ApiError(403, 'forbidden'));
+  api.listGroupWatches.mockResolvedValue([site]);
+  renderPanel();
+  await screen.findByText('Site A');
+  await pickAction(user, 'Site A', 'Remove');
+  expect((await screen.findByRole('alert')).textContent).toBe('Request failed (forbidden).');
+
+  await user.click(screen.getByRole('button', { name: 'Add watch' }));
+  const dialog = screen.getByRole('dialog', { name: 'Add watch' });
+  await openPicker(user, dialog, 'Initiative');
+  await user.click(await screen.findByRole('button', { name: 'Initiative A' }));
+  await user.click(within(dialog).getByRole('button', { name: 'Add watch' }));
+
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(api.createGroupWatch).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('the last Remove\'s error stays when an events save is refused', async () => {
+  const user = userEvent.setup();
+  api.deleteGroupWatch.mockRejectedValue(new ApiError(403, 'forbidden'));
+  api.updateGroupWatch.mockRejectedValue(new ApiError(422, 'invalid_kind'));
+  api.listGroupWatches.mockResolvedValue([site]);
+  renderPanel();
+  await screen.findByText('Site A');
+  await pickAction(user, 'Site A', 'Remove');
+  await screen.findByRole('alert');
+
+  await pickAction(user, 'Site A', 'Choose events…');
+  const dialog = screen.getByRole('dialog');
+  await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+  await within(dialog).findByRole('alert');
+
+  // the Remove's own line is still in the panel, outside the dialog
+  expect(screen.getByText('Request failed (forbidden).')).toBeTruthy();
 });
 
 it('both of a row\'s actions are off while its Remove is on its way, and come back after', async () => {
