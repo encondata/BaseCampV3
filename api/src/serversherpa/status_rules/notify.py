@@ -20,8 +20,9 @@ The action sends nothing itself. Each match goes through three steps:
    rule's executions.
 
 Nothing outlives a rollback. The guard rows go with the transaction, and so do the batches: a
-savepoint that rolls back takes back the matches added inside it, and the end of the
-transaction (a commit, a rollback, or a close with neither) drops whatever is left.
+savepoint that rolls back (or that a failed flush rolled back) takes back the matches added
+inside it, and the end of the transaction (a commit, a rollback, or a close with neither) drops
+whatever is left.
 
 Soft states (no rule in the context, the matched thing missing, nobody to tell) are not
 applied, with a reason; they never raise, since a raise rolls back the whole scan, an off-move
@@ -53,7 +54,7 @@ if TYPE_CHECKING:
 # from the last notice, so a repeat inside the hour doesn't extend it.
 REPEAT_WINDOW = timedelta(hours=1)
 
-# The session `info` keys: the transaction's batches, and how far each batch had got when an
+# The session `info` keys: the transaction's batches, and how far each batch had got when each
 # open savepoint began.
 NOTICES = "rule_notices"
 MARKS = "rule_notice_marks"
@@ -211,27 +212,26 @@ def _announce(session: Session, batch: _Batch) -> None:
 # Registered once, at import, on the sync Session class an AsyncSession wraps. Every session
 # in the process passes through them; only one holding batches is changed.
 
+# A savepoint keeps a mark, how far each batch had got when it began, until it is released.
+# One that ends still holding its mark did not keep its work: it rolled back, or a failed flush
+# rolled it back and its exit only closed it (SQLAlchemy fires no rollback event for that
+# savepoint then), so it takes back the matches added inside it.
+
 @event.listens_for(Session, "after_transaction_create")
 def _mark_savepoint(session: Session, transaction: SessionTransaction) -> None:
-    """A savepoint begins: remember how far each batch had got, for its rollback."""
-    if transaction.nested and session.info.get(NOTICES):
+    """A savepoint begins: remember how far each batch had got (nothing yet, when there is no
+    batch)."""
+    if transaction.nested:
         session.info.setdefault(MARKS, {})[transaction] = {
-            key: len(batch.ids) for key, batch in session.info[NOTICES].items()}
+            key: len(batch.ids) for key, batch in session.info.get(NOTICES, {}).items()}
 
 
-@event.listens_for(Session, "after_soft_rollback")
-def _undo_savepoint(session: Session, previous_transaction: SessionTransaction) -> None:
-    """A savepoint rolled back: the matches added inside it go, the ones before it stay. A
-    savepoint begun with no batch has no mark, and takes them all."""
-    if not previous_transaction.nested:
-        return
-    mark = session.info.get(MARKS, {}).pop(previous_transaction, {})
-    batches = session.info.get(NOTICES, {})
-    for key in list(batches):
-        if mark.get(key):
-            del batches[key].ids[mark[key]:]
-        else:
-            del batches[key]
+@event.listens_for(Session, "after_commit")
+def _keep_savepoint(session: Session) -> None:
+    """A savepoint is released (it is still the innermost one here): its matches stay, so it
+    lets go of its mark."""
+    if session.in_nested_transaction():
+        session.info.get(MARKS, {}).pop(session.get_nested_transaction(), None)
 
 
 @event.listens_for(Session, "before_commit")
@@ -246,10 +246,22 @@ def _announce_batches(session: Session) -> None:
 
 
 @event.listens_for(Session, "after_transaction_end")
-def _drop_batches(session: Session, transaction: SessionTransaction) -> None:
-    """The transaction is over, committed, rolled back or closed: nothing it collected
-    outlives it. (A rollback ends it here too, whether the caller asked for it or a failed
-    flush did and the caller then closed the session.)"""
+def _end_transaction(session: Session, transaction: SessionTransaction) -> None:
+    """The transaction is over. The real one, committed, rolled back or closed: nothing it
+    collected outlives it. A savepoint still holding its mark: the matches added inside it
+    go, the ones before it stay, and a batch it began goes whole."""
     if transaction.parent is None:
         session.info.pop(NOTICES, None)
         session.info.pop(MARKS, None)
+        return
+    if not transaction.nested:
+        return
+    mark = session.info.get(MARKS, {}).pop(transaction, None)
+    if mark is None:                     # released
+        return
+    batches = session.info.get(NOTICES, {})
+    for key in list(batches):
+        if mark.get(key):
+            del batches[key].ids[mark[key]:]
+        else:
+            del batches[key]

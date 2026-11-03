@@ -79,7 +79,14 @@ async def _validate(db: DbSession, body: StatusRuleIn) -> None:
         code = validate_condition(c.field, c.operator, c.value)
         if code:
             raise _err(422, "bad_condition", index=i, reason=code)
+    notifies = False
     for i, a in enumerate(body.actions):
+        # One Notify action per rule: its repeat guard is per rule and thing, so a second
+        # one would never be heard.
+        if a.action_type == "notify":
+            if notifies:
+                raise _err(422, "bad_action", index=i, reason="notify_twice")
+            notifies = True
         code = validate_action(a.action_type, a.params)
         if code:
             raise _err(422, "bad_action", index=i, reason=code)

@@ -23,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import event as sa_event
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 
 from serversherpa.db.engine import get_engine, get_sessionmaker
 from serversherpa.db.models import (
@@ -247,8 +248,10 @@ async def test_validation(client, db, seeded_user):
     # not ids at all
     await rejected(_body({"people": ["Person B"]}), "bad_param")
     # the index is the action's
-    await rejected(_body({"people": [str(person)]}, {"groups": [str(uuid.uuid4())]}),
-                   "unknown_group", index=1)
+    second = _body({"groups": [str(uuid.uuid4())]})
+    second["actions"].insert(0, {"action_type": "set_asset_status",
+                                 "params": {"status": "in_container"}})
+    await rejected(second, "unknown_group", index=1)
     assert await db.scalar(select(func.count()).select_from(StatusRule)) == 0
 
     # a valid save round-trips
@@ -272,6 +275,40 @@ async def test_validation(client, db, seeded_user):
     assert resp.status_code == 200, resp.text
     assert resp.json()["actions"][0]["params"] == {"people": [], "groups": [str(group)],
                                                    "watchers": False}
+
+
+async def test_one_notify_per_rule(client, db, seeded_user):
+    """A rule has one Notify action: the repeat guard is per rule and thing, so a second one
+    would never be heard. The second is refused, at its own index, on create and replace."""
+    hdrs = await login_admin(client, db, seeded_user)
+    person, group = await _named(db)
+    twice = _body({"people": [str(person)]}, {"groups": [str(group)]})
+    resp = await client.post("/status-rules", headers=hdrs, json=twice)
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "bad_action", "index": 1, "reason": "notify_twice"}
+    # wherever the second one is, and whatever its params
+    between = _body({"watchers": True}, {})
+    between["actions"].insert(1, {"action_type": "set_asset_status",
+                                  "params": {"status": "in_container"}})
+    resp = await client.post("/status-rules", headers=hdrs, json=between)
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "bad_action", "index": 2, "reason": "notify_twice"}
+    assert await db.scalar(select(func.count()).select_from(StatusRule)) == 0
+
+    # one Notify beside other actions is fine
+    once = _body({"watchers": True})
+    once["actions"].insert(0, {"action_type": "set_asset_status",
+                               "params": {"status": "in_container"}})
+    resp = await client.post("/status-rules", headers=hdrs, json=once)
+    assert resp.status_code == 201, resp.text
+    rule_id = resp.json()["id"]
+
+    # replacing checks the same, and a rejected replace changes nothing
+    resp = await client.put(f"/status-rules/{rule_id}", headers=hdrs, json=twice)
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "bad_action", "index": 1, "reason": "notify_twice"}
+    resp = await client.get(f"/status-rules/{rule_id}", headers=hdrs)
+    assert [a["action_type"] for a in resp.json()["actions"]] == ["set_asset_status", "notify"]
 
 
 async def test_the_schema_offers_notify(client, db, seeded_user):
@@ -718,6 +755,67 @@ async def test_a_savepoint_takes_back_only_its_own_matches(db):
         3, [str(s.asset), str(released), str(late)])
     assert {thing for r, _kind, thing, _at in await _guards() if r == rule} == {
         s.asset, released, late}
+
+
+async def _duplicate_asset_id(db, asset_id) -> None:
+    """Flush an asset that reuses another's Asset ID: the INSERT fails, and SQLAlchemy rolls
+    the nearest savepoint back and leaves it inactive (the savepoint's own exit then closes
+    it rather than rolling it back)."""
+    taken = await db.scalar(select(Asset.legacy_id).where(Asset.id == asset_id))
+    db.add(Asset(legacy_id=taken, serial_number="SN-DUPLICATE"))
+    await db.flush()
+
+
+async def test_a_savepoint_a_failed_flush_rolled_back_takes_its_match_back(db):
+    """The match made inside the savepoint goes with it, guard row and all; the one before
+    it is announced."""
+    s = await _scene(db)
+    [inside] = await _on_roster(db, s.initiative, "SN-B")
+    rule = await _add_rule(db, "Rule A", _notify(watchers=True))
+
+    await _match(db, asset=s.asset)
+    with pytest.raises(IntegrityError):
+        async with db.begin_nested():
+            await _match(db, asset=inside)
+            await _duplicate_asset_id(db, s.asset)
+    await db.commit()
+
+    [event] = await _events()
+    assert (event.item["count"], event.item["matched_ids"]) == (1, [str(s.asset)])
+    assert [thing for r, _kind, thing, _at in await _guards() if r == rule] == [s.asset]
+    # its notice never went out, so the thing it took back notifies on its next match
+    await _match(db, asset=inside)
+    await db.commit()
+    assert (await _events())[-1].item["matched_ids"] == [str(inside)]
+
+
+async def test_a_failed_flush_takes_back_only_its_own_savepoint(db):
+    """Two levels: the inner savepoint's flush fails, the outer one is released. The inner
+    one takes back its match on the batch and the batch it began; the rest is announced."""
+    s = await _scene(db)
+    other = Initiative(name="Initiative C", initiative_type="move", status="in_progress")
+    db.add(other)
+    await db.commit()
+    outer, inner, after = await _on_roster(db, s.initiative, "SN-B", "SN-C", "SN-D")
+    [elsewhere] = await _on_roster(db, other.id, "SN-E")
+    rule = await _add_rule(db, "Rule A", _notify(watchers=True))
+
+    await _match(db, asset=s.asset)
+    async with db.begin_nested():
+        await _match(db, asset=outer)
+        with pytest.raises(IntegrityError):
+            async with db.begin_nested():
+                await _match(db, asset=inner)           # on the batch begun before
+                await _match(db, asset=elsewhere)       # a batch begun inside
+                await _duplicate_asset_id(db, s.asset)
+        await _match(db, asset=after)
+    await db.commit()
+
+    [event] = await _events()
+    assert (event.subject_id, event.item["matched_ids"]) == (
+        s.initiative, [str(s.asset), str(outer), str(after)])
+    assert {thing for r, _kind, thing, _at in await _guards() if r == rule} == {
+        s.asset, outer, after}
 
 
 # ── soft states ─────────────────────────────────────────────────────
