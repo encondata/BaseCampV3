@@ -17,7 +17,7 @@
    stack, the foot note and the Save row); the Watch button of the
    initiative, site and truck pages (its amber "on" state); and the watch
    lists and the events editor (/me › "What you watch", the group page's
-   "What this group watches").
+   "What this group watches" and its Add watch dialog).
    ============================================================ */
 
 /* ── NotificationModal (components/notifications/NotificationModal.tsx) ──
@@ -357,3 +357,7 @@
 
 /* The editor: the "All events" row, then a group of switches per category. */
 .watch-editor { display: flex; flex-direction: column; gap: 16px; }
+
+/* The group page's Add watch dialog: the "Watch" strip and the thing's picker,
+ * then the events editor, at the editor's own rhythm. */
+.watch-add-body { display: flex; flex-direction: column; gap: 16px; }

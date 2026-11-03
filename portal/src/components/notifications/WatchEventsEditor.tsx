@@ -4,7 +4,8 @@
  *
  * A watch names its events, or names none and hears every event that applies to
  * its thing. "All events" and "nothing picked yet" are different states, so they
- * are separate props, and the kinds to save are `all ? [] : picked`. The editor
+ * are separate props, and the kinds to save are `all ? [] : picked`
+ * (`kindsToSave`, with `canSaveEvents` for the Save gate). The editor
  * keeps no state: it shows what it is given and hands every change over as the
  * next `{ all, picked }`.
  *
@@ -30,6 +31,18 @@ import '../../styles/notifications.css';  // .watch-editor
 export interface WatchEvents {
   all: boolean;
   picked: string[];
+}
+
+/** Whether these events can be saved: every event, or at least one named. Both
+ *  dialogs that use the editor (WatchEventsModal, AddGroupWatchModal) gate their
+ *  Save on it. */
+export function canSaveEvents(events: WatchEvents): boolean {
+  return events.all || events.picked.length > 0;
+}
+
+/** The kinds a save sends: none for every event, else the picks. */
+export function kindsToSave(events: WatchEvents): string[] {
+  return events.all ? [] : events.picked;
 }
 
 export default function WatchEventsEditor({ thing, kinds, all, picked, onChange }: {

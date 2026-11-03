@@ -19,7 +19,7 @@ import { useState } from 'react';
 import type { NotificationKindSetting, WatchTarget } from '../../lib/api';
 import { watchErrorMessage } from '../../lib/watches';
 import NotificationModal from './NotificationModal';
-import WatchEventsEditor, { type WatchEvents } from './WatchEventsEditor';
+import WatchEventsEditor, { canSaveEvents, kindsToSave, type WatchEvents } from './WatchEventsEditor';
 import '../../styles/directory.css';   // .mini-btn
 import '../../styles/profile.css';     // .btn-solid, .pf-error
 
@@ -46,7 +46,7 @@ export default function WatchEventsModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const canSave = events.all || events.picked.length > 0;
+  const canSave = canSaveEvents(events);
 
   const change = (next: WatchEvents) => {
     setEvents(next);
@@ -58,7 +58,7 @@ export default function WatchEventsModal({
     setSaving(true);
     setError('');
     try {
-      await onSave(events.all ? [] : events.picked);
+      await onSave(kindsToSave(events));
       onClose();
     } catch (err) {
       setError(watchErrorMessage(err));

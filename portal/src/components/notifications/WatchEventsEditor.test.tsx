@@ -10,7 +10,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import type { NotificationKindSetting, WatchTarget } from '../../lib/api';
-import WatchEventsEditor from './WatchEventsEditor';
+import WatchEventsEditor, { canSaveEvents, kindsToSave } from './WatchEventsEditor';
 
 const kind = (
   key: string, label: string, category: NotificationKindSetting['category'],
@@ -206,4 +206,20 @@ it('uses house controls only: every checkbox is a Switch, and there is no select
   expect(boxes.length).toBe(4);
   for (const box of boxes) expect(box.closest('label.switch')).not.toBeNull();
   expect(view.container.querySelector('select')).toBeNull();
+});
+
+// ── the two rules both events dialogs share ─────────────────────────────
+
+it('events can be saved when All events is on or at least one event is picked', () => {
+  expect(canSaveEvents({ all: true, picked: [] })).toBe(true);
+  expect(canSaveEvents({ all: false, picked: ['kind_a'] })).toBe(true);
+  expect(canSaveEvents({ all: false, picked: [] })).toBe(false);
+});
+
+it('a save sends no kinds for All events, and the picks otherwise', () => {
+  expect(kindsToSave({ all: true, picked: [] })).toEqual([]);
+  expect(kindsToSave({ all: false, picked: ['initiative_status_changed', 'kind_a'] }))
+    .toEqual(['initiative_status_changed', 'kind_a']);
+  // All means none are named, whatever a stale pick says.
+  expect(kindsToSave({ all: true, picked: ['kind_a'] })).toEqual([]);
 });
