@@ -359,7 +359,8 @@ async def update_group_watch(
     if watch.kinds != before:
         audit(db, actor_id=actor.person.id, entity_type="notification_group",
               entity_id=str(group_id), action="watch.update",
-              changes={"kinds": {"from": before, "to": list(watch.kinds)}})
+              changes={**_watch_target(watch),
+                       "kinds": {"from": before, "to": list(watch.kinds)}})
     await db.commit()
     return WatchOut.from_view(view)
 

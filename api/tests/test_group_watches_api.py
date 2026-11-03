@@ -124,7 +124,9 @@ async def test_admin_adds_and_removes_a_group_watch(client, db):
     assert await _kinds(db, watch_id) == [TRUCK_CHANGED]
     (updated,) = await _audits(db, group, "watch.update")
     assert (updated.actor_person_id, updated.entity_id) == (admin.id, str(group.id))
-    assert updated.changes == {"kinds": {"from": [], "to": [TRUCK_CHANGED]}}
+    # the row names the watch it changed, as the add and remove rows do
+    assert updated.changes == {"thing": "site", "thing_id": str(site.id),
+                               "kinds": {"from": [], "to": [TRUCK_CHANGED]}}
     assert [row["kinds"] for row in (await client.get(
         _url(group.id), headers=admin.headers)).json()] == [[TRUCK_CHANGED]]
 
@@ -152,14 +154,15 @@ async def test_an_everything_watch(client, db):
         EVERYTHING, None, None, None)
     assert body["kinds"] == [INITIATIVE_CHANGED]
     assert body["via"] == {"type": "group", "id": str(group.id), "name": "Group A"}
-    # it has no thing to name, so the audit row names none
+    # it has no thing to name, so each of its audit rows says "everything" with no id
     (added,) = await _audits(db, group, "watch.add")
     assert added.changes == {"thing": EVERYTHING, "thing_id": None, "kinds": [INITIATIVE_CHANGED]}
 
     resp = await _patch(client, admin, group.id, body["id"], [TRUCK_CHANGED, INITIATIVE_CHANGED])
     assert (resp.status_code, resp.json()["kinds"]) == (200, [INITIATIVE_CHANGED, TRUCK_CHANGED])
     (updated,) = await _audits(db, group, "watch.update")
-    assert updated.changes == {"kinds": {"from": [INITIATIVE_CHANGED],
+    assert updated.changes == {"thing": EVERYTHING, "thing_id": None,
+                               "kinds": {"from": [INITIATIVE_CHANGED],
                                          "to": [INITIATIVE_CHANGED, TRUCK_CHANGED]}}
 
     assert (await _delete(client, admin, group.id, body["id"])).status_code == 204
@@ -182,7 +185,8 @@ async def test_choosing_the_same_events_again_writes_no_audit(client, db):
     resp = await _patch(client, admin, group.id, watch["id"], [])
     assert (resp.status_code, resp.json()["kinds"]) == (200, [])
     (updated,) = await _audits(db, group, "watch.update")
-    assert updated.changes == {"kinds": {"from": [TRUCK_CHANGED], "to": []}}
+    assert updated.changes == {"thing": "site", "thing_id": str(site.id),
+                               "kinds": {"from": [TRUCK_CHANGED], "to": []}}
 
 
 async def test_a_paused_group_can_still_be_edited(client, db):
