@@ -17,6 +17,7 @@ import {
 } from '../../lib/api';
 import { avatarGradient, initials } from '../../lib/format';
 import MatrixTable from './MatrixTable';
+import PhotoPreview from '../PhotoPreview';
 
 type Draft = Record<string, Partial<Record<Action, boolean>>>;
 
@@ -134,10 +135,12 @@ export default function OverrideEditor({
       <div className="modal-card override-modal">
         <div className="modal-head">
           <div className="ov-head">
-            <span className="av-sm"
-                  style={{ background: member.avatar_url ? 'var(--surface-2)' : avatarGradient(member.display_name) }}>
-              {member.avatar_url ? <img src={member.avatar_url} alt="" /> : initials(member.display_name)}
-            </span>
+            <PhotoPreview src={member.avatar_url} name={member.display_name}>
+              <span className="av-sm"
+                    style={{ background: member.avatar_url ? 'var(--surface-2)' : avatarGradient(member.display_name) }}>
+                {member.avatar_url ? <img src={member.avatar_url} alt="" /> : initials(member.display_name)}
+              </span>
+            </PhotoPreview>
             <div>
               <h3>Overrides — {member.display_name}</h3>
               <span className="ov-sub">{member.roles.join(', ') || 'no roles'}</span>

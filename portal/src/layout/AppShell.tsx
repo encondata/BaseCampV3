@@ -21,6 +21,7 @@ import { applyPreferences, nextNavMode, type NavMode } from '../lib/settings';
 import { TopbarProvider, useTopbar } from '../lib/topbar';
 import NavPanel from './NavPanel';
 import { NAV_SECTIONS, type NavSection } from './navSections';
+import PhotoPreview from '../components/PhotoPreview';
 import '../styles/portal-theme.css';
 import '../styles/chrome.css';
 
@@ -43,9 +44,11 @@ function initials(name: string | undefined): string {
 
 function ChipAvatar({ name, url }: { name?: string; url?: string | null }) {
   return (
-    <div className="user-avatar">
-      {url ? <img src={url} alt="" /> : initials(name)}
-    </div>
+    <PhotoPreview src={url} name={name ?? ''}>
+      <div className="user-avatar">
+        {url ? <img src={url} alt="" /> : initials(name)}
+      </div>
+    </PhotoPreview>
   );
 }
 

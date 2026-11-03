@@ -4,6 +4,10 @@
  * editable, clicking opens a file picker, validates, uploads through
  * the attachments API, and reports the new attachment to the caller.
  * Reused anywhere an image attaches to a record.
+ *
+ * A person's photo also gets the hover preview (PhotoPreview): a larger,
+ * uncropped copy after a short hover. Client and partner logos do not —
+ * `entityType` decides — so a logo never pops a "photo" card.
  */
 
 import { useRef, useState } from 'react';
@@ -11,6 +15,7 @@ import { useRef, useState } from 'react';
 import { uploadAttachmentRequest, type AttachmentOut } from '../lib/api';
 import { avatarGradient, initials } from '../lib/format';
 import ImageCropModal from './ImageCropModal';
+import PhotoPreview from './PhotoPreview';
 import '../styles/avatar-upload.css';
 
 const ACCEPTED = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
@@ -76,34 +81,38 @@ export default function AvatarUpload({
 
   return (
     <div className="avatar-up-wrap">
-      <button
-        type="button"
-        className={`avatar-up ${editable ? 'editable' : ''}`}
-        style={{
-          width: size, height: size, borderRadius: radius,
-          fontSize: size * 0.33,
-          background: url ? 'var(--surface-2, #f5f7fa)' : avatarGradient(name),
-        }}
-        onClick={pick}
-        disabled={!editable || busy}
-        aria-label={url ? 'Change photo' : 'Add photo'}
-        title={editable ? (url ? 'Change photo' : 'Add photo') : undefined}
-      >
-        {url
-          ? <img src={url} alt={name} />
-          : <span className="avatar-ini">{initials(name)}</span>}
-        {editable && !busy && (
-          <span className="avatar-hover">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
-                 strokeLinecap="round" strokeLinejoin="round">
-              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-              <circle cx="12" cy="13" r="4" />
-            </svg>
-            {url ? 'Change' : 'Add photo'}
-          </span>
-        )}
-        {busy && <span className="avatar-busy" />}
-      </button>
+      <PhotoPreview src={entityType === 'person' ? url : null} name={name}>
+        <span className="avatar-up-hit">
+          <button
+            type="button"
+            className={`avatar-up ${editable ? 'editable' : ''}`}
+            style={{
+              width: size, height: size, borderRadius: radius,
+              fontSize: size * 0.33,
+              background: url ? 'var(--surface-2, #f5f7fa)' : avatarGradient(name),
+            }}
+            onClick={pick}
+            disabled={!editable || busy}
+            aria-label={url ? 'Change photo' : 'Add photo'}
+            title={editable ? (url ? 'Change photo' : 'Add photo') : undefined}
+          >
+            {url
+              ? <img src={url} alt={name} />
+              : <span className="avatar-ini">{initials(name)}</span>}
+            {editable && !busy && (
+              <span className="avatar-hover">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
+                     strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                  <circle cx="12" cy="13" r="4" />
+                </svg>
+                {url ? 'Change' : 'Add photo'}
+              </span>
+            )}
+            {busy && <span className="avatar-busy" />}
+          </button>
+        </span>
+      </PhotoPreview>
       <input
         ref={inputRef}
         type="file"

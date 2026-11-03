@@ -87,8 +87,8 @@ it('shows the whole image at 240 px with the name underneath', () => {
     .replace(/\/\*[\s\S]*?\*\//g, '');
   const imgRule = css.slice(css.indexOf('.pp-img'), css.indexOf('}', css.indexOf('.pp-img')));
   expect(imgRule).toMatch(/object-fit:\s*contain/);
-  expect(imgRule).toMatch(/max-width:\s*240px/);
-  expect(imgRule).toMatch(/max-height:\s*240px/);
+  expect(imgRule).toMatch(/\bwidth:\s*240px/);
+  expect(imgRule).toMatch(/\bheight:\s*240px/);
   expect(imgRule).toMatch(/border-radius:\s*9px/);
   expect(css).toMatch(/\.pp-card\s*\{[^}]*pointer-events:\s*none/);
   expect(css).toMatch(/\.pp-card\s*\{[^}]*border-radius:\s*14px/);

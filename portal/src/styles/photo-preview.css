@@ -1,10 +1,9 @@
 /* PhotoPreview — the larger photo that follows a hover on a person's
    avatar (components/PhotoPreview.tsx).
 
-   Class prefix: `pp-`, kept clear of the list-ish trigger words so
-   listTypography.test.ts treats this as a popover, not a list: the
-   caption sets its own type here, the same way status-hover.css and
-   initiative-hover.css do. */
+   This is a tooltip, not list content: the caption sets its own type
+   here, the same way status-hover.css and initiative-hover.css do.
+   Class prefix: `pp-`. */
 
 /* The wrapped avatar is laid out by its parent (a flex or grid item, an
    inline element in a name cell). A wrapper with a box of its own would
@@ -18,7 +17,7 @@
    their dark-theme values) resolve exactly as they do for `.pop-menu`. */
 .pp-card {
   position: fixed;   /* left/top are the card's own top-left */
-  z-index: 1200;     /* above list rows, below modals' scrim (2000s) */
+  z-index: 1200;     /* above list rows and above modals (the modal scrim is 80 in chrome.css), so a photo hovered inside a dialog still shows */
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -31,11 +30,11 @@
   pointer-events: none;
 }
 
-/* The whole stored image, never cropped to the avatar's shape. */
+/* The whole stored image, never cropped to the avatar's shape. The box
+   is a fixed 240 x 240 so the card's size is known before the image
+   loads; contain letterboxes a non-square photo inside it. */
 .pp-img {
   display: block;
-  max-width: 240px;
-  max-height: 240px;
   width: 240px;
   height: 240px;
   object-fit: contain;
@@ -48,7 +47,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--font-display);
   font-size: 12px;
   font-weight: 400;
   line-height: 1.4;

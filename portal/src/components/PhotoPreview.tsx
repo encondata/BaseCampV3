@@ -2,8 +2,8 @@
  * PhotoPreview — wraps a person's avatar and, after a 300 ms hover, shows
  * a larger copy of their photo with their name underneath. The inline
  * avatar is a small circle or rounded square that crops the photo; the
- * preview shows the whole stored image (`object-fit: contain`, 240 px
- * max) so nothing is cut off.
+ * preview shows the whole stored image (`object-fit: contain` in a
+ * fixed 240 px box) so nothing is cut off.
  *
  *   <PhotoPreview src={p.avatar_url} name={p.name}>{avatar}</PhotoPreview>
  *
@@ -121,8 +121,9 @@ function Preview({ src, name, children }: {
     timerRef.current = window.setTimeout(show, PREVIEW_DELAY_MS);
   };
 
-  // Once the card is laid out, replace the estimate with its real size
-  // (a small image makes a smaller card) before the browser paints.
+  // Once the card is laid out, replace the estimate with its measured
+  // size (the caption row can differ from the estimate) before the
+  // browser paints.
   useLayoutEffect(() => {
     if (!open) return;
     const card = cardRef.current;

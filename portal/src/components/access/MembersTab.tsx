@@ -22,6 +22,7 @@ import {
 import { useToast } from '../../lib/notificationsContext';
 import CopyAccessModal from './CopyAccessModal';
 import OverrideEditor from './OverrideEditor';
+import PhotoPreview from '../PhotoPreview';
 
 interface Props {
   summary: AccessSummary;
@@ -277,10 +278,12 @@ export default function MembersTab({ summary, canEdit, maxRank, onChanged }: Pro
             <div key={m.person_id} className="dir-row" style={{ minWidth: rowStyle.minWidth }}>
               <div className="row-main" style={rowStyle}>
                 <div className="cell cell-primary">
-                  <div className="dir-avatar"
-                       style={{ background: m.avatar_url ? 'var(--surface-2)' : avatarGradient(m.display_name) }}>
-                    {m.avatar_url ? <img src={m.avatar_url} alt="" /> : initials(m.display_name)}
-                  </div>
+                  <PhotoPreview src={m.avatar_url} name={m.display_name}>
+                    <div className="dir-avatar"
+                         style={{ background: m.avatar_url ? 'var(--surface-2)' : avatarGradient(m.display_name) }}>
+                      {m.avatar_url ? <img src={m.avatar_url} alt="" /> : initials(m.display_name)}
+                    </div>
+                  </PhotoPreview>
                   <div className="pn">
                     <b>{m.display_name} {isSelf && <span className="chip tag">you</span>}</b>
                     <span>{m.login_email ?? '—'}</span>

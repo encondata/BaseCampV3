@@ -50,6 +50,7 @@ import { naturalCompare } from '../lib/sites';
 import '../styles/directory.css';
 import '../styles/profile.css';   /* .pf-form, .btn-solid */
 import '../styles/settings.css';  /* .set-note */
+import PhotoPreview from '../components/PhotoPreview';
 
 const PILLS = [
   { key: 'all', label: 'Everyone' },
@@ -563,12 +564,14 @@ export default function Users() {
               <div className="row-main" style={rowStyle}
                    onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : u.person_id); }}>
                 <div className="cell cell-primary">
-                  <div className="dir-avatar"
-                       style={{ background: u.avatar_url ? 'var(--surface-2)' : avatarGradient(u.display_name) }}>
-                    {u.avatar_url
-                      ? <img src={u.avatar_url} alt="" />
-                      : initials(u.display_name)}
-                  </div>
+                  <PhotoPreview src={u.avatar_url} name={u.display_name}>
+                    <div className="dir-avatar"
+                         style={{ background: u.avatar_url ? 'var(--surface-2)' : avatarGradient(u.display_name) }}>
+                      {u.avatar_url
+                        ? <img src={u.avatar_url} alt="" />
+                        : initials(u.display_name)}
+                    </div>
+                  </PhotoPreview>
                   <div className="pn">
                     <b>{u.display_name}</b>
                     <span>{u.login_email ?? u.contact_email ?? '—'}</span>

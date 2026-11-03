@@ -57,6 +57,7 @@ import {
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
+import PhotoPreview from '../components/PhotoPreview';
 
 export interface OrgConfig {
   kind: 'client' | 'partner';
@@ -877,12 +878,14 @@ function SuppliedWorkersModal({ workers, onClose, onPick }: {
           {visible.map((w) => (
             <button className="supplied-modal-row" key={w.person_id}
                     onClick={() => onPick(w.person_id)}>
-              <div className="dir-avatar sm" style={{
-                borderRadius: 9,
-                background: w.avatar_url ? 'var(--surface-2)' : avatarGradient(w.display_name),
-              }}>
-                {w.avatar_url ? <img src={w.avatar_url} alt="" /> : initials(w.display_name)}
-              </div>
+              <PhotoPreview src={w.avatar_url} name={w.display_name}>
+                <div className="dir-avatar sm" style={{
+                  borderRadius: 9,
+                  background: w.avatar_url ? 'var(--surface-2)' : avatarGradient(w.display_name),
+                }}>
+                  {w.avatar_url ? <img src={w.avatar_url} alt="" /> : initials(w.display_name)}
+                </div>
+              </PhotoPreview>
               <div className="session-main cell">
                 <div className="cell-top"><b>{w.display_name}</b></div>
                 <div className="cell-sub">{[w.trade, w.level].filter(Boolean).join(' · ') || 'no profile'}</div>
@@ -961,12 +964,14 @@ function ContactsPanel({ cfg, orgId, contacts, canManage, onChanged }: {
       )}
       {contacts?.map((c) => (
         <div className="session-item" key={c.person_id} style={{ flexWrap: 'wrap', alignItems: 'flex-start' }}>
-          <div className="dir-avatar sm" style={{
-            borderRadius: 9,
-            background: c.avatar_url ? 'var(--surface-2)' : avatarGradient(c.display_name),
-          }}>
-            {c.avatar_url ? <img src={c.avatar_url} alt="" /> : initials(c.display_name)}
-          </div>
+          <PhotoPreview src={c.avatar_url} name={c.display_name}>
+            <div className="dir-avatar sm" style={{
+              borderRadius: 9,
+              background: c.avatar_url ? 'var(--surface-2)' : avatarGradient(c.display_name),
+            }}>
+              {c.avatar_url ? <img src={c.avatar_url} alt="" /> : initials(c.display_name)}
+            </div>
+          </PhotoPreview>
           <div className="session-main cell">
             <div className="cell-top"><b>{c.display_name}</b></div>
             <div className="mono">{[c.email, c.phone].filter(Boolean).join(' · ') || '—'}</div>

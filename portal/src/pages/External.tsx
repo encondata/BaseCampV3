@@ -78,6 +78,7 @@ import { USER_ERRORS } from '../lib/users';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
+import PhotoPreview from '../components/PhotoPreview';
 
 interface OrgRef { id: string; name: string; kind: OrgKind }
 
@@ -463,10 +464,12 @@ export default function External() {
               <div className="row-main" style={rowStyle}
                    onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : p.person_id); }}>
                 <div className="cell cell-primary">
-                  <div className="dir-avatar"
-                       style={{ background: p.avatar_url ? 'var(--surface-2)' : avatarGradient(p.display_name) }}>
-                    {p.avatar_url ? <img src={p.avatar_url} alt="" /> : initials(p.display_name)}
-                  </div>
+                  <PhotoPreview src={p.avatar_url} name={p.display_name}>
+                    <div className="dir-avatar"
+                         style={{ background: p.avatar_url ? 'var(--surface-2)' : avatarGradient(p.display_name) }}>
+                      {p.avatar_url ? <img src={p.avatar_url} alt="" /> : initials(p.display_name)}
+                    </div>
+                  </PhotoPreview>
                   <div className="pn">
                     <b>{p.display_name}</b>
                     <span>{p.email ?? p.phone ?? '—'}</span>

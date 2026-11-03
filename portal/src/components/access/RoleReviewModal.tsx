@@ -11,6 +11,7 @@ import {
   type AccessResourceOut, type AccessRole, type MatrixPreviewOut,
 } from '../../lib/api';
 import { avatarGradient, initials } from '../../lib/format';
+import PhotoPreview from '../PhotoPreview';
 
 type Matrix = Record<string, Record<string, boolean>>;
 
@@ -98,9 +99,11 @@ export default function RoleReviewModal({ role, matrix, resources, onBack, onCon
                       <div key={m.person_id} className="rr-member">
                         <button type="button" className="rr-member-head" aria-expanded={isOpen}
                                 onClick={() => setOpen((s) => { const n = new Set(s); if (n.has(m.person_id)) n.delete(m.person_id); else n.add(m.person_id); return n; })}>
-                          <span className="dir-avatar" style={{ background: m.avatar_url ? 'var(--surface-2)' : avatarGradient(m.display_name) }}>
-                            {m.avatar_url ? <img src={m.avatar_url} alt="" /> : initials(m.display_name)}
-                          </span>
+                          <PhotoPreview src={m.avatar_url} name={m.display_name}>
+                            <span className="dir-avatar" style={{ background: m.avatar_url ? 'var(--surface-2)' : avatarGradient(m.display_name) }}>
+                              {m.avatar_url ? <img src={m.avatar_url} alt="" /> : initials(m.display_name)}
+                            </span>
+                          </PhotoPreview>
                           <span className="rr-name">{m.display_name}</span>
                           <span className="rr-rank">{rankLabel(m.max_rank)}</span>
                           <span className={`rr-count ${m.flips.length ? 'on' : ''}`}>
