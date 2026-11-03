@@ -38,7 +38,7 @@ function commands(over: Partial<PlanCommands> = {}): PlanCommands {
     moveTasks: fn(),
     info: fn(), toggleCritical: fn(), toggleBaseline: fn(), zoomIn: fn(), zoomOut: fn(), fit: fn(), scrollToTask: fn(),
     collapse: fn(), expand: fn(), copy: vi.fn(() => true), cut: fn(), paste: fn(), lock: fn(), unlock: fn(), open: fn(),
-    focusSheet: fn(), color: fn(), handlers: {}, grouped: false,
+    focusSheet: fn(), color: fn(), handlers: {}, grouped: false, cutMarks: new Set(),
     ...over,
   };
 }

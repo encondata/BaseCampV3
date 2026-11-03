@@ -22,7 +22,8 @@
  * row, Shift extends from the anchor and Ctrl/⌘ toggles. A summary's
  * chevron asks the tab to collapse or expand it. A row number dragged
  * moves the row with its subtasks, or the selection it is part of
- * (useRowDrag; `onMoveTasks` sends it), the drop line marking where.
+ * (useRowDrag; `onMoveTasks` sends it), the drop line marking where. Rows
+ * a cut marked (`cut`, waiting for their paste) wear a dashed outline.
  *
  * Editing is a spreadsheet's (lib/plans/sheetKeys): the grid takes focus
  * and keeps the active cell as `aria-activedescendant`; arrows, Enter and
@@ -87,6 +88,8 @@ export interface PlanSheetProps {
   onOpenInfo?(taskId: string): void;
   /** Grouped (Group by): the outline can't change, so rows don't drag. */
   grouped?: boolean;
+  /** The tasks a cut marked, waiting for their paste (a dashed outline). */
+  cut?: ReadonlySet<string>;
   /** Moves the tasks a row drag let go of (usePlanCommands `moveTasks`);
    *  without it rows don't drag. */
   onMoveTasks?(ids: string[], place: MovePlace): void;
@@ -109,7 +112,7 @@ const alignClass = (col: PlanColumn) => (col.align === 'start' ? '' : ` pln-${co
 
 export default function PlanSheet({
   ctl, rows, context = NO_KEYS, bands = NO_BANDS, collapsed, rowHeight, scrollRef, sideScrollRef, selection, onSelect,
-  onToggleCollapse, blankRow, onOpenInfo, grouped = false, onMoveTasks,
+  onToggleCollapse, blankRow, onOpenInfo, grouped = false, cut = NO_KEYS, onMoveTasks,
 }: PlanSheetProps) {
   const plan = ctl.plan;
   const prefs = useSyncExternalStore(subscribeColumnPrefs, columnPrefsSnapshot);
@@ -367,7 +370,7 @@ export default function PlanSheet({
           return (
             <SheetRow key={key} rowKey={key} task={task} index={item.index} y={y} columns={columns} ctx={ctx}
                       level={bands.size ? GROUPED_LEVEL : task.outline_level}
-                      idBase={idBase} inert={context.has(key)} collapsed={collapsed.has(task.id)}
+                      idBase={idBase} inert={context.has(key)} collapsed={collapsed.has(task.id)} cut={cut.has(task.id)}
                       selected={selection.rows.has(key)} activeCol={active?.id === key ? active.col : null}
                       onCellDown={onCellDown} onCellOpen={onCellOpen} onToggleCollapse={onToggleCollapse}
                       onIdPointerDown={onIdPointerDown} />
@@ -404,6 +407,8 @@ interface SheetRowProps extends RowEvents {
   task: PlanTask;
   /** A filter's context row: dimmed and inert. */
   inert: boolean;
+  /** A cut marked it: waiting for its paste. */
+  cut: boolean;
   /** The Task Name's indent: the outline level, or one in from a group's band. */
   level: number;
   index: number;
@@ -420,12 +425,13 @@ interface SheetRowProps extends RowEvents {
 
 /** One task's row; redraws only when its task object, place or state changes. */
 const SheetRow = memo(function SheetRow({
-  rowKey, task, index, y, columns, ctx, inert, level, collapsed, selected, activeCol, idBase, onCellDown, onCellOpen,
-  onToggleCollapse, onIdPointerDown,
+  rowKey, task, index, y, columns, ctx, inert, cut, level, collapsed, selected, activeCol, idBase, onCellDown,
+  onCellOpen, onToggleCollapse, onIdPointerDown,
 }: SheetRowProps) {
   return (
     <div role="row" aria-rowindex={index + 2} aria-selected={selected} aria-disabled={inert || undefined}
-         data-task={task.id} className={`pln-row${task.is_summary ? ' pln-summary' : ''}${inert ? ' pln-context' : ''}`}
+         data-task={task.id}
+         className={`pln-row${task.is_summary ? ' pln-summary' : ''}${inert ? ' pln-context' : ''}${cut ? ' pln-cut' : ''}`}
          style={{ transform: `translateY(${y}px)` }}>
       {columns.map((col, i) => (
         <div key={col.key} id={`${idBase}-${rowKey}-${col.key}`} role="gridcell" aria-colindex={i + 1}

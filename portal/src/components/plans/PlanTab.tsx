@@ -348,7 +348,7 @@ export default function PlanTab({ initiativeId, initiative }: {
                                      scrollRef={scrollRef} sideScrollRef={sheetSideRef} selection={sheet.selection}
                                      onSelect={sheet.select} onToggleCollapse={sheet.toggleCollapse}
                                      blankRow={blankRow} onOpenInfo={openTaskInfoById} grouped={sheet.grouped}
-                                     onMoveTasks={commands.moveTasks} />
+                                     cut={commands.cutMarks} onMoveTasks={commands.moveTasks} />
                         )}
                         chart={(slot) => (
                           <PlanGantt ctl={ctl} rows={sheet.rows} context={sheet.context} bands={sheet.bands}

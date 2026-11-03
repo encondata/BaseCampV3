@@ -576,31 +576,134 @@ describe('copy and paste', () => {
     expect(sent(1)).toEqual([{ op: 'add_link', predecessor_id: 'n1', successor_id: 'n2', link_type: 'FS' }]);
   });
 
-  it('Cut copies and deletes once; a cut from the browser’s Edit menu deletes once too', async () => {
+  it('Cut marks the rows and copies: nothing is deleted and nothing asks; Edit › Cut marks too', async () => {
     const user = await ready();
     await user.click(cellOf('Pack', 'id'));
-    api.postOps.mockResolvedValue(makeOpsResult({ deleted_tasks: ['b'], order: ['a', 'c'] }));
     fireEvent.keyDown(grid(), { key: 'x', ctrlKey: true });
     const clip = document.querySelector('.pln-clip') as HTMLTextAreaElement;
     expect(document.activeElement).toBe(clip);
     const setData = vi.fn();
     fireEvent.cut(clip, { clipboardData: { setData } });            // the browser's own cut, after the key
     expect(setData).toHaveBeenCalledWith('text/plain', expect.stringContaining('\tPack\t'));
-    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
-    expect(sent()).toEqual([{ op: 'delete_tasks', ids: ['b'] }]);
-    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
-    expect(api.postOps).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(rowOf('Pack').classList.contains('pln-cut')).toBe(true));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    // the 20 ms negative wait: a delete would post on the write queue's next turn
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(api.postOps).not.toHaveBeenCalled();
 
-    // Edit › Cut: no key, just the event on the sheet
+    // Edit › Cut: no key, just the event on the sheet; it marks its rows instead
     await user.click(cellOf('Go live', 'id'));
     const menuData = vi.fn();
     const cut = fireEvent.cut(grid(), { clipboardData: { setData: menuData } });
     expect(cut).toBe(false);
     expect(menuData).toHaveBeenCalledWith('text/plain', expect.stringContaining('\tGo live\t'));
+    await waitFor(() => expect(rowOf('Go live').classList.contains('pln-cut')).toBe(true));
+    expect(rowOf('Pack').classList.contains('pln-cut')).toBe(false);
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(api.postOps).not.toHaveBeenCalled();
+  });
+
+  /** Cuts a row by its ID (⌘X), as the browser's own cut follows the key. */
+  async function cutRow(user: Awaited<ReturnType<typeof ready>>, name: string): Promise<string> {
+    await user.click(cellOf(name, 'id'));
+    fireEvent.keyDown(grid(), { key: 'x', ctrlKey: true });
+    const text = clipboard.writeText.mock.calls.at(-1)![0] as string;
+    await waitFor(() => expect(document.activeElement).toBe(grid()));
+    return text;
+  }
+
+  it('a cut pasted in the same plan moves the task: one move_tasks, its outside link and 50% kept, one Undo', async () => {
+    // Pack: 50% done, a successor of Survey (a link from outside the cut)
+    const tasks = tasks3().map((t) => (t.id === 'b' ? { ...t, percent_complete: 50, status: 'in_progress' as const } : t));
+    const user = await ready(plan3({ tasks }));
+    const text = await cutRow(user, 'Pack');
+    await user.click(cellOf('Survey', 'name'));
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ order: ['b', 'a', 'c'], inverse: [makeRestore('moved')] }));
+    fireEvent.paste(grid(), { clipboardData: { getData: () => text.replace(/\r\n/g, '\n') } });
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    // the task itself moves: its id, link and progress go with it (no copy, no delete)
+    expect(sent()).toEqual([{ op: 'move_tasks', ids: ['b'], before_id: 'a' }]);
+    expect(sent().some((op) => op.op === 'add_task' || op.op === 'delete_tasks')).toBe(false);
+    await waitFor(() => expect(cellOf('Pack', 'id').textContent).toBe('1'));
+    expect(cellOf('Pack', 'percent').textContent).toBe('50%');
+    expect(cellOf('Pack', 'predecessors').textContent).toBe('2');
+    expect(rowOf('Pack').classList.contains('pln-cut')).toBe(false);
+    expect(cellOf('Pack', 'name').getAttribute('aria-selected')).toBe('true');
+    // one step, Paste
+    expect(tipOf(tool('Undo'))).toBe('Take back your last change: Paste. (Ctrl+Z)');
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 7, order: ['a', 'b', 'c'] }));
+    await user.click(tool('Undo'));
     await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(2));
-    expect(sent(1)).toEqual([{ op: 'delete_tasks', ids: ['c'] }]);
-    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
-    expect(api.postOps).toHaveBeenCalledTimes(2);
+    expect(sent(1)).toEqual([makeRestore('moved')]);
+    // spent: the same text pasted again is copies
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 8 }));
+    await user.click(cellOf('Go live', 'name'));
+    fireEvent.paste(grid(), { clipboardData: { getData: () => text } });
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(3));
+    expect(sent(2)[0]).toMatchObject({ op: 'add_task', name: 'Pack', before_id: 'c' });
+  });
+
+  it('Escape takes the cut marks away; a paste then adds copies', async () => {
+    const user = await ready();
+    const text = await cutRow(user, 'Pack');
+    expect(rowOf('Pack').classList.contains('pln-cut')).toBe(true);
+    fireEvent.keyDown(grid(), { key: 'Escape' });
+    await waitFor(() => expect(rowOf('Pack').classList.contains('pln-cut')).toBe(false));
+    api.postOps.mockResolvedValueOnce(makeOpsResult());
+    await user.click(cellOf('Survey', 'name'));
+    fireEvent.paste(grid(), { clipboardData: { getData: () => text } });
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    expect(sent()).toEqual([{ op: 'add_task', temp_id: expect.any(String), before_id: 'a', name: 'Pack', duration: '1d' }]);
+  });
+
+  it('a new Copy, or a delete of the cut task, ends the cut', async () => {
+    const user = await ready();
+    await cutRow(user, 'Pack');
+    await user.click(cellOf('Go live', 'name'));
+    fireEvent.keyDown(grid(), { key: 'c', ctrlKey: true });
+    await waitFor(() => expect(rowOf('Pack').classList.contains('pln-cut')).toBe(false));
+
+    await cutRow(user, 'Go live');
+    expect(rowOf('Go live').classList.contains('pln-cut')).toBe(true);
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ deleted_tasks: ['c'], order: ['a', 'b'] }));
+    fireEvent.keyDown(grid(), { key: 'Delete' });
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    expect(sent()).toEqual([{ op: 'delete_tasks', ids: ['c'] }]);
+    await waitFor(() => expect(document.querySelector('.pln-cut')).toBeNull());
+  });
+
+  it('a cut pasted into its own subtasks says so and sends nothing', async () => {
+    const tasks = [
+      makeTask('s', { display_id: 1, is_summary: true, name: 'Prep' }),
+      makeTask('k', { display_id: 2, wbs: '1.1', outline_level: 2, parent_id: 's', name: 'Crates' }),
+      makeTask('z', { display_id: 3, wbs: '2', position: 1, name: 'Go live' }),
+    ];
+    const user = await ready(makePlan({ tasks }));
+    const text = await cutRow(user, 'Prep');
+    expect(rowOf('Crates').classList.contains('pln-cut')).toBe(true);
+    await user.click(cellOf('Crates', 'name'));
+    fireEvent.paste(grid(), { clipboardData: { getData: () => text } });
+    expect(toast).toHaveBeenCalledWith('Can’t move tasks into themselves.');
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(api.postOps).not.toHaveBeenCalled();
+  });
+
+  it('a cut pasted into another plan pastes copies and leaves the originals, and says so', async () => {
+    const user = await ready();
+    const text = await cutRow(user, 'Pack');
+    cleanup();
+    // another initiative's plan, in the same page
+    const other = makePlan({ id: 'plan-2', tasks: flatTasks(['x', 'y']).map((t, i) => ({ ...t, name: `Other ${i + 1}` })) });
+    const again = await ready(other);
+    await again.click(cellOf('Other 2', 'name'));
+    api.postOps.mockImplementationOnce(async (_plan: string, _v: number, ops: Op[]) => makeOpsResult({
+      temp_ids: { [(ops[0] as AddTaskOp).temp_id!]: 'n1' },
+    }));
+    fireEvent.paste(grid(), { clipboardData: { getData: () => text } });
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    expect(api.postOps.mock.calls[0][0]).toBe('plan-2');
+    expect(sent()).toEqual([{ op: 'add_task', temp_id: expect.any(String), before_id: 'y', name: 'Pack', duration: '1d' }]);
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('Pasted copies — cut tasks only move within one plan.'));
   });
 
   /** Selects the lock banner's text. A drag across it also takes focus

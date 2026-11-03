@@ -122,6 +122,10 @@ export interface PlanController {
   /** `beginEditing` for one default owner: true holds, false lets go. */
   setEditing(on: boolean): void;
   staleBy: string | null;            // "Plan updated by <name>" while a refresh waits
+  /** How many times the plan on screen was read whole (its load and every
+   *  reload): what was on screen was replaced whenever this changes (a cut
+   *  waiting for its paste ends then). */
+  loads: number;
 }
 
 /** Load failures that mean the plan is out of reach, not a passing glitch:
@@ -175,6 +179,7 @@ export function usePlan(initiativeId: string): PlanController {
   const [pending, setPending] = useState(0);
   const [steps, setSteps] = useState<Steps>(NO_STEPS);
   const [staleBy, setStaleBy] = useState<string | null>(null);
+  const [loads, setLoads] = useState(0);
 
   // what the queued jobs read and write: they run one at a time, each after
   // the one before it finished, so the refs always hold the latest answer
@@ -253,6 +258,7 @@ export function usePlan(initiativeId: string): PlanController {
         const plan = await getPlan(initiativeId);
         if (!alive()) return false;
         show(planView(plan));
+        setLoads((n) => n + 1);
         setStatus('ready');
         setError('');
         return true;
@@ -665,5 +671,6 @@ export function usePlan(initiativeId: string): PlanController {
     beginEditing,
     setEditing,
     staleBy,
-  }), [status, view, error, pending, steps, staleBy, actions, beginEditing, setEditing]);
+    loads,
+  }), [status, view, error, pending, steps, staleBy, loads, actions, beginEditing, setEditing]);
 }

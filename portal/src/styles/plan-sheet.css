@@ -124,6 +124,9 @@
 .pln-row[aria-selected="true"] .pln-idcell { background: rgba(var(--accent-rgb), 0.16); }
 /* a row drags by its ID (useRowDrag) where the plan may change */
 .pln-sheet[data-row-drag] .pln-row:not(.pln-context):not(.pln-blank) > .pln-idcell { cursor: grab; }
+/* a cut waiting for its paste: Excel's marching ants, held still (a
+   dashed outline inside each cut row, over its cells) */
+.pln-row.pln-cut { outline: 2px dashed var(--accent); outline-offset: -2px; }
 /* where a row drag would land: the house drop mark (2px of the accent),
    across the row between two rows, over the cells */
 .pln-drop-line {

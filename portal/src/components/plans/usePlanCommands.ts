@@ -19,7 +19,17 @@
  *   carries the text with no permission prompt; navigator.clipboard is the
  *   fallback when no event comes. Focus is back on the sheet at once.
  *   Pasting the sheet's own copy re-creates the tasks; anything else fills
- *   cells (lib/plans/paste). Cut is copy, then Delete.
+ *   cells (lib/plans/paste).
+ * - Cut of whole tasks copies them and marks their rows (`cutMarks`, a
+ *   dashed outline: Excel's marching ants, held still); nothing is deleted
+ *   and nothing asks. Pasted back into the same plan while the cut waits,
+ *   it is a move (one `move_tasks` batch right above the active row, where
+ *   a paste of copies goes; one undo step): the tasks keep their ids,
+ *   links, progress and baseline. Into its own subtasks it is refused
+ *   (MOVE_INSIDE). Escape, a new Copy or Cut, a delete or move of a cut
+ *   task (or a change of its summary) and a reload end the cut; a paste
+ *   then pastes copies. Pasted into another plan it pastes copies, leaves
+ *   the originals and says so (PASTED_COPIES). A cut of one cell is a copy.
  * - Dialogs open through PlanTab's host (`openDialog`). Set baseline
  *   sends at once; the dialog only asks when it would replace one
  *   (`replaceBaseline`, from the 409 `baseline_exists`). Unlock goes at
@@ -88,9 +98,32 @@ export const MOVE_INSIDE = 'Can’t move tasks into themselves.';
  *  navigator.clipboard instead. */
 const PASTE_WAIT_MS = 120;
 
+/** What a paste of copies of cut tasks into another plan says. */
+export const PASTED_COPIES = 'Pasted copies — cut tasks only move within one plan.';
+
 /** The last copy of whole tasks, kept for the page's life: a paste of the
  *  same text into any plan re-creates them. A copy of one cell clears it. */
 let lastCopy: PlanCopy | null = null;
+
+/** A cut of whole tasks waiting for its paste (see the header). */
+interface PendingCut {
+  planId: string;
+  /** The copy the cut made: the cut waits only while it is `lastCopy`. */
+  copy: PlanCopy;
+  /** The top-most cut tasks, in outline order: what a paste moves. */
+  tops: string[];
+  /** Every cut task, the tops' subtasks too: the rows marked. */
+  all: string[];
+  /** Each cut task's summary when it was cut: a move ends the cut. */
+  parents: Readonly<Record<string, string | null>>;
+  /** The plan's load count when it was cut (PlanController `loads`): a reload ends it. */
+  loads: number;
+}
+
+/** The cut waiting for its paste, kept with `lastCopy` for the page's life. */
+let lastCut: PendingCut | null = null;
+
+const NO_MARKS: ReadonlySet<string> = new Set();
 
 /** How a command words a second batch that didn't go in. */
 interface PartWords {
@@ -190,6 +223,8 @@ export interface PlanCommands {
   chartScroll: ChartScroll | null;
   /** The sheet is grouped: Insert, Indent and Outdent are off. */
   grouped: boolean;
+  /** The tasks a cut marked, while it waits for its paste in this plan. */
+  cutMarks: ReadonlySet<string>;
 
   undo(): void;
   redo(): void;
@@ -255,6 +290,18 @@ export function usePlanCommands({
     latest.current = { ctl, sheet, toast, prompt, openDialog, layout };
   });
   const tempRef = useRef(0);
+
+  // the cut waiting for its paste: the page's (`lastCut`), mirrored for drawing
+  const [pendingCut, setPendingCutState] = useState<PendingCut | null>(() => lastCut);
+  const setPendingCut = useCallback((next: PendingCut | null) => {
+    lastCut = next;
+    setPendingCutState(next);
+  }, []);
+  /** The cut waiting in the plan on screen, if any. */
+  const cutHere = useCallback((): PendingCut | null => {
+    const plan = latest.current.ctl.plan;
+    return lastCut && lastCut.copy === lastCopy && plan && lastCut.planId === plan.id ? lastCut : null;
+  }, []);
 
   // focus back on the sheet without it taking that for a Tab into it (with
   // nothing selected that would select the first row and scroll up to it)
@@ -443,8 +490,14 @@ export function usePlanCommands({
       return;
     }
     if (!op) return;
+    // a cut task moved by hand: the cut is over
+    const cut = cutHere();
+    if (cut) {
+      const moved = new Set(tops.flatMap((id) => [id, ...descendants(id, plan.tasks)]));
+      if (cut.all.some((id) => moved.has(id))) setPendingCut(null);
+    }
     void run({ ops: [op] }, tops.length > 1 ? 'Move Rows' : 'Move Row');
-  }, [run]);
+  }, [run, cutHere, setPendingCut]);
 
   // ── the clipboard ──
   /**
@@ -513,26 +566,66 @@ export function usePlanCommands({
     void navigator.clipboard?.writeText?.(text).catch(() => undefined);
   }, [toClip, backToSheet]);
 
+  /** The copy just made (`lastCopy`) becomes a cut waiting for its paste:
+   *  its rows are marked. */
+  const markCut = useCallback(() => {
+    const plan = latest.current.ctl.plan;
+    const made = lastCopy;
+    if (!plan || !made) return;
+    const all = made.tasks.map((t) => t.key);
+    const byId = new Map(plan.tasks.map((t) => [t.id, t]));
+    setPendingCut({
+      planId: plan.id, copy: made, tops: moveTops(all, plan), all,
+      parents: Object.fromEntries(all.map((id) => [id, byId.get(id)?.parent_id ?? null])),
+      loads: latest.current.ctl.loads,
+    });
+  }, [setPendingCut]);
+
   /** Copy; false (the browser's own copy) when there is nothing of the
-   *  sheet's to copy, or the person selected text on the page. */
+   *  sheet's to copy, or the person selected text on the page. A copy ends
+   *  a cut waiting for its paste. */
   const copy = useCallback((): boolean => {
     if (textSelected()) return false;
     const made = makeCopy();
     if (!made) return false;
+    setPendingCut(null);
     writeClipboard(made.text, false);
     return true;
-  }, [makeCopy, writeClipboard]);
+  }, [makeCopy, writeClipboard, setPendingCut]);
 
-  /** Copy, then Delete the tasks; a cut of one cell, or a reader's, is a copy. */
+  /** Copy, and mark the tasks cut (a paste in this plan moves them); a cut
+   *  of one cell, or a reader's, is a copy. */
   const cut = useCallback((): boolean => {
     if (textSelected()) return false;
     if (!latest.current.ctl.plan?.permissions.change) return copy();
     const made = makeCopy();
     if (!made) return false;
     writeClipboard(made.text, made.tasks);
-    if (made.tasks) deleteTasks();
+    if (made.tasks) markCut(); else setPendingCut(null);
     return true;
-  }, [copy, deleteTasks, makeCopy, writeClipboard]);
+  }, [copy, makeCopy, writeClipboard, markCut, setPendingCut]);
+
+  /** A cut pasted back into its plan: the tasks themselves move, right
+   *  above the active row (at the end from the blank row), in one batch. */
+  const pasteMove = useCallback((pending: PendingCut, plan: Plan, ctx: PasteContext) => {
+    const { sheet: view, toast: say } = latest.current;
+    if (plan.locked_at) {
+      say(PLAN_ERRORS.plan_locked);
+      return;
+    }
+    const active = view.selection.active;
+    const at = active && active.id !== 'blank' && plan.tasks.some((t) => t.id === active.id) ? active.id : null;
+    const place: MovePlace = at !== null ? { beforeId: at } : { beforeId: null, parentId: ctx.appendParentId };
+    const op = moveOp(plan, pending.tops, place);
+    if (op === 'inside') {
+      say(MOVE_INSIDE);
+      return;
+    }
+    setPendingCut(null);
+    if (!op) return;                    // they are there already
+    const first = pending.tops[0];
+    void run({ ops: [op] }, PASTE_LABEL, () => latest.current.sheet.select(selectCell(first, 'name')));
+  }, [run, setPendingCut]);
 
   const paste = useCallback((text: string) => {
     const { ctl: now, sheet: view } = latest.current;
@@ -545,8 +638,18 @@ export function usePlanCommands({
         latest.current.toast(GROUPED_SAID);
         return;
       }
+      // a cut: moved within its plan; copies anywhere else (and the cut is spent)
+      const pending = lastCut && lastCut.copy === lastCopy ? lastCut : null;
+      if (pending && pending.planId === plan.id) {
+        pasteMove(pending, plan, ctx);
+        return;
+      }
+      if (pending) setPendingCut(null);
       const cmd = opsForInternalPaste(lastCopy, view.selection, ctx);
-      void run(cmd, PASTE_LABEL, 'ops' in cmd ? (ids) => selectNew(cmd, ids) : undefined);
+      void run(cmd, PASTE_LABEL, 'ops' in cmd ? (ids) => {
+        selectNew(cmd, ids);
+        if (pending) latest.current.toast(PASTED_COPIES);
+      } : undefined);
       return;
     }
     const grid = parseClipboard(text);
@@ -558,7 +661,7 @@ export function usePlanCommands({
       return;
     }
     void run(cmd, PASTE_LABEL, undefined, PASTE_WORDS);
-  }, [contextOf, run, selectNew]);
+  }, [contextOf, run, selectNew, pasteMove, setPendingCut]);
 
   // the browser's own clipboard events: on the hidden field after a
   // shortcut, or on the sheet (a browser's Edit menu)
@@ -583,8 +686,10 @@ export function usePlanCommands({
       if (text === undefined || !e.clipboardData) return;
       e.clipboardData.setData('text/plain', text);
       e.preventDefault();
-      // a cut from the browser's own menu (the shortcut deleted already)
-      if (e.type === 'cut' && made?.tasks && latest.current.ctl.plan?.permissions.change) deleteTasks();
+      // the browser's own menu (the shortcut marked or ended the cut already)
+      if (!made) return;
+      if (e.type === 'cut' && made.tasks && latest.current.ctl.plan?.permissions.change) markCut();
+      else setPendingCut(null);
     };
     const onPaste = (e: ClipboardEvent) => {
       if (!ours(e.target)) return;
@@ -603,7 +708,32 @@ export function usePlanCommands({
       el.removeEventListener('cut', onCopy);
       el.removeEventListener('paste', onPaste);
     };
-  }, [root, clip, makeCopy, paste, deleteTasks, backToSheet]);
+  }, [root, clip, makeCopy, paste, markCut, setPendingCut, backToSheet]);
+
+  // Escape ends a cut waiting for its paste (Excel's), before full screen hears it
+  useEffect(() => {
+    const el = root.current;
+    if (!el) return undefined;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || keysBelongElsewhere(e.target) || !cutHere()) return;
+      e.preventDefault();
+      setPendingCut(null);
+    };
+    el.addEventListener('keydown', onKey);
+    return () => el.removeEventListener('keydown', onKey);
+  }, [root, cutHere, setPendingCut]);
+
+  // a cut task deleted or moved (its summary changed), or the plan read
+  // again (someone else's change): the cut is over
+  const { plan: planNow, loads } = ctl;
+  useEffect(() => {
+    const pending = pendingCut;
+    if (!pending || !planNow || pending.planId !== planNow.id) return;
+    const byId = new Map(planNow.tasks.map((t) => [t.id, t]));
+    const stale = pending.copy !== lastCopy || pending.loads !== loads
+      || pending.all.some((id) => !byId.has(id) || (byId.get(id)?.parent_id ?? null) !== pending.parents[id]);
+    if (stale) setPendingCut(null);
+  }, [pendingCut, planNow, loads, setPendingCut]);
 
   /** Ctrl+V: the keystroke pastes into the hidden field, whose paste event
    *  brings the text. Should none come, ask the browser's clipboard API. */
@@ -779,8 +909,11 @@ export function usePlanCommands({
     setZoom, searchBox]);
 
   const grouped = !!sheet.grouped;
-  return useMemo(() => ({ ...commands, selected, mode, onTimeline, display, zoom, chartScroll, grouped }),
-    [commands, selected, mode, onTimeline, display, zoom, chartScroll, grouped]);
+  const planId = plan?.id ?? null;
+  const cutMarks = useMemo(() => (pendingCut && pendingCut.planId === planId ? new Set(pendingCut.all) : NO_MARKS),
+    [pendingCut, planId]);
+  return useMemo(() => ({ ...commands, selected, mode, onTimeline, display, zoom, chartScroll, grouped, cutMarks }),
+    [commands, selected, mode, onTimeline, display, zoom, chartScroll, grouped, cutMarks]);
 }
 
 /** The Gantt's zoom for the plan on screen: kept per plan in this browser
