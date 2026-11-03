@@ -182,12 +182,16 @@ export default function PlanCalendar({ plan, rows, context, selected, onSelect, 
 
   // Escape closes the open week and keeps the key (as RowActionsMenu does):
   // heard first, in the capture phase, so full screen stays. A dialog or a
-  // menu over the calendar has the key first
+  // menu over the calendar has the key first, and so has a field being typed
+  // in (the filter bar's search box clears itself on Escape)
   useEffect(() => {
     if (!expanded) return undefined;
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return;
       if (document.querySelector('.modal-scrim, [role="menu"]')) return;
+      const target = e.target as Element | null;
+      if (target && typeof target.closest === 'function'
+        && target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
       e.preventDefault();
       closeWeek();
     };

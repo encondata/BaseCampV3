@@ -149,7 +149,12 @@ function hoverTip(el: HTMLElement) {
 
 /** Picks an option of the filter bar's Filter. */
 function pickFilter(label: string) {
-  const input = screen.getByRole('combobox', { name: 'Filter' });
+  pickOption('Filter', label);
+}
+
+/** Picks an option of one of the filter bar's ComboBoxes. */
+function pickOption(box: 'Filter' | 'Group by', label: string) {
+  const input = screen.getByRole('combobox', { name: box });
   fireEvent.focus(input);
   const item = [...document.querySelectorAll<HTMLElement>('.combo-menu .kbar-item')].find((i) => i.textContent === label);
   if (!item) throw new Error(`no option ${label}`);
@@ -528,5 +533,32 @@ describe('the Timeline strip in the view area', () => {
     const splitter = screen.getByRole('separator', { name: 'Resize the task sheet' });
     // the view's 600px less the strip's 100, less the splitter (6) and the chart's least (120)
     await waitFor(() => expect(splitter.getAttribute('aria-valuemax')).toBe('374'));
+  });
+});
+
+describe('a selection across the views', () => {
+  it('a grouped Gantt selection survives the Board and back, and shows selected on the Board', async () => {
+    await loaded();
+    const grid = await findSheet();
+    pickOption('Group by', 'Status');
+    await waitFor(() => expect(sheetRow(grid, 'b')).toBeTruthy());
+    fireEvent.mouseDown(sheetRow(grid, 'b')?.querySelector('[data-col="name"]') as HTMLElement, { button: 0 });
+    expect(sheetRow(grid, 'b')?.getAttribute('aria-selected')).toBe('true');
+    chooseView('Board');
+    await waitFor(() => expect(boardCard('In progress', 'Label racks').classList.contains('on')).toBe(true));
+    expect(tool('Information').getAttribute('aria-disabled')).toBeNull();
+    chooseView('Gantt');
+    const again = await findSheet();
+    await waitFor(() => expect(sheetRow(again, 'b')?.getAttribute('aria-selected')).toBe('true'));
+  });
+
+  it('a deep link to a summary, opened on the Board, leaves nothing selected; to a task, selects its card', async () => {
+    await loaded(viewsPlan(), '/initiatives/init-1?tab=plan&view=board&task=s1');
+    await act(async () => { await new Promise((r) => { setTimeout(r, 50); }); });
+    expect(tool('Information').getAttribute('aria-disabled')).toBe('true');
+    expect(document.querySelectorAll('.pln-card.on')).toHaveLength(0);
+    cleanup();
+    await loaded(viewsPlan(), '/initiatives/init-1?tab=plan&view=board&task=b');
+    await waitFor(() => expect(boardCard('In progress', 'Label racks').classList.contains('on')).toBe(true));
   });
 });

@@ -322,7 +322,11 @@ export default function PlanTab({ initiativeId, initiative }: {
   // outside the Gantt, the tasks the view draws: leaf tasks the filter keeps
   // (the Calendar, those with a start); the selection is settled to them, so
   // the toolbar's commands act on what is on screen (a summary picked in the
-  // Gantt doesn't ride along into the Board)
+  // Gantt doesn't ride along into the Board). A grouped row's key (a Gantt
+  // grouped by Resource or Status) is settled to its task when the view draws
+  // it, and back in the grouped Gantt the task is on its first row again
+  // (viewSelection). Settled again whenever the selection changes too: a
+  // deep link or Go to task can pick a summary without the plan changing
   const planTasks = ctl.plan?.tasks;
   const drawn = useMemo(() => {
     if (gantt || !planTasks) return null;
@@ -332,9 +336,12 @@ export default function PlanTab({ initiativeId, initiative }: {
       return !!task && !task.is_summary && !contextRows.has(id) && (view !== 'calendar' || !!task.start);
     }));
   }, [gantt, planTasks, shownRows, contextRows, view]);
+  const { selection: picked } = sheet;
   useLayoutEffect(() => {
-    if (drawn) selectRows((sel) => settleSelection(sel, (key) => drawn.has(key), () => null));
-  }, [drawn, selectRows]);
+    if (drawn) {
+      selectRows((sel) => settleSelection(sel, (key) => drawn.has(key), (task) => (drawn.has(task) ? task : null)));
+    }
+  }, [drawn, picked, selectRows]);
   // the search box's Enter: the first match the view draws selected, the sheet focused
   const toFirstMatch = useCallback(() => {
     const first = shownRows.find((key) => !contextRows.has(key) && !bandRows.has(key) && (!drawn || drawn.has(key)));

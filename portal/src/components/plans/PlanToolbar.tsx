@@ -339,7 +339,7 @@ function stops(bar: HTMLElement): HTMLElement[] {
  * One tab stop for `ref`'s toolbar (role="toolbar"): the button last
  * focused there (the first at the start) is the stop; ←/→ move between the
  * buttons, wrapping, and Home/End go to the ends. Keys with a modifier,
- * and keys an open menu or the view switcher's own widgets took, pass.
+ * and keys an open menu took (the view switcher's and Gantt Layout's included), pass.
  */
 export function useRovingToolbar(ref: RefObject<HTMLElement | null>, active = true): void {
   const current = useRef<HTMLElement | null>(null);

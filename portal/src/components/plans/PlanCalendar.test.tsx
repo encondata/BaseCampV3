@@ -177,6 +177,25 @@ function busyPlan(): Plan {
 const BUSY_ROWS = ['t0', 't1', 't2', 't3', 't4', 'm'];
 
 describe('a busy week', () => {
+  it('Escape in a text field is the field’s: the open week stays, and so does focus', async () => {
+    const user = userEvent.setup();
+    renderCalendar(busyPlan(), { rows: BUSY_ROWS });
+    await user.click(screen.getByRole('button', { name: '+2 more on Nov 2' }));
+    const field = document.createElement('input');
+    field.type = 'search';
+    document.body.appendChild(field);
+    try {
+      field.focus();
+      const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      act(() => { field.dispatchEvent(esc); });
+      expect(esc.defaultPrevented).toBe(false);
+      expect(screen.getByRole('button', { name: 'Show less' })).toBeTruthy();
+      expect(document.activeElement).toBe(field);
+    } finally {
+      field.remove();
+    }
+  });
+
   it('a milestone never folds into "+N more": it takes the first lane of its day', () => {
     renderCalendar(busyPlan(), { rows: BUSY_ROWS });
     const [chip] = segments('m');
