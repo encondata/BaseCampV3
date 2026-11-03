@@ -23,6 +23,7 @@ from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.db.models import Initiative
 from serversherpa.db.ordering import natural
 from serversherpa.plans import (
+    excel,
     importer,
     mspdi,
     notices,
@@ -338,7 +339,7 @@ async def plan_version(
     return await plan_writes.version_out(db, plan)
 
 
-# --- import and export (plans/importer.py, plans/mspdi.py) --------------------------
+# --- import and export (plans/importer.py, plans/mspdi.py, plans/excel.py) ----------
 
 # room for the multipart form's boundaries and part headers around the file
 _FORM_OVERHEAD = 64 * 1024
@@ -372,16 +373,44 @@ async def export_xml(
         "Content-Disposition": content_disposition(_download_name(initiative, ".xml"))})
 
 
+@router.get("/plans/{plan_id}/export.xlsx")
+async def export_xlsx(
+    plan_id: uuid.UUID,
+    db: DbSession,
+    columns: str | None = None,
+    actor: AuthContext = require_permission("project_plans", "view"),
+) -> Response:
+    """The plan's sheet as an Excel workbook (plans/excel.py): `columns` is
+    the sheet's visible column keys (`id,name,duration,...`; unknown ones
+    are skipped, ID and Task Name are always there; none means the sheet's
+    default set), then Outline Level, and Color when a task has one. Built
+    in a worker thread: a large plan takes a second or two."""
+    plan = await service.plan_for_actor(db, plan_id, actor)
+    state = await service.load_state(db, plan)
+    initiative = await db.get(Initiative, plan.initiative_id)
+    try:
+        units = service.calendar_of(plan).units
+    except CalendarError as exc:
+        raise service.calendar_error(exc) from None
+    settings = await service.settings_of(db, plan)
+    outline = await service.tasks_out(db, state)
+    content = await asyncio.to_thread(excel.export_xlsx, state, outline, units,
+                                      excel.column_keys(columns),
+                                      show_times=settings.show_times)
+    return Response(content, media_type=excel.XLSX_MIME, headers={
+        "Content-Disposition": content_disposition(_download_name(initiative, ".xlsx"))})
+
+
 class _TooLarge(Exception):
     """The upload passed the cap while it was being read."""
 
 
-async def _import_upload(request: Request) -> tuple[str, bytes]:
-    """The multipart `file` of an import: (its filename, its bytes). The
-    20 MB cap (importer.MAX_FILE_BYTES) holds while the body is read: a
-    declared length past it (plus the form's own overhead) is refused
-    before anything is read, and the stream is counted as it arrives, so a
-    chunked body is cut off there too. 413 `file_too_large`; 422
+async def _import_upload(request: Request) -> tuple[str, str, bytes]:
+    """The multipart `file` of an import: (its filename, its content type,
+    its bytes). The 20 MB cap (importer.MAX_FILE_BYTES) holds while the
+    body is read: a declared length past it (plus the form's own overhead)
+    is refused before anything is read, and the stream is counted as it
+    arrives, so a chunked body is cut off there too. 413 `file_too_large`; 422
     `bad_file` {message} when there is no single `file`."""
     cap = importer.MAX_FILE_BYTES + _FORM_OVERHEAD
     too_large = err(413, "file_too_large", limit=importer.MAX_FILE_BYTES)
@@ -415,25 +444,59 @@ async def _import_upload(request: Request) -> tuple[str, bytes]:
         content = await upload.read(importer.MAX_FILE_BYTES + 1)
         if len(content) > importer.MAX_FILE_BYTES:
             raise too_large
-        return upload.filename or "", content
+        return upload.filename or "", upload.content_type or "", content
     finally:
         await form.close()
 
 
-async def _parse_upload(filename: str, content: bytes) -> importer.ParsedPlan:
-    """The uploaded file as a ParsedPlan: MS Project XML (the Excel
-    reader joins it by extension), parsed in a worker thread (a 20 MB file
-    takes seconds, which the event loop must not wait out). A file it
-    cannot read is answered as its ImportFileError says."""
+# what an upload is, by its extension, else by its content type
+_FILE_KINDS = {".xml": "xml", ".xlsx": "xlsx", ".csv": "csv"}
+_MEDIA_KINDS = {"application/xml": "xml", "text/xml": "xml", excel.XLSX_MIME: "xlsx",
+                "text/csv": "csv", "application/csv": "csv",
+                "text/comma-separated-values": "csv"}
+_REFUSED_FILES = {
+    ".xls": "Excel 97-2003 workbooks (.xls) can't be read, so save it as an Excel "
+            "Workbook (.xlsx) first.",
+    ".mpp": "MS Project files (.mpp) can't be read directly, so save it from MS Project "
+            "as XML first.",
+}
+_CHOOSE_FILE = "Choose an MS Project XML (.xml), Excel workbook (.xlsx) or CSV (.csv) file."
+
+
+def _file_kind(filename: str, content_type: str) -> str:
+    """"xml", "xlsx" or "csv" by the file's extension, else by its content
+    type (a browser may send a .csv as application/vnd.ms-excel); 422
+    `bad_file` {message} for anything else."""
+    name = filename.strip().lower()
+    suffix = name[name.rfind("."):] if "." in name else ""
+    if suffix in _FILE_KINDS:
+        return _FILE_KINDS[suffix]
+    if suffix in _REFUSED_FILES:
+        raise err(422, "bad_file", message=_REFUSED_FILES[suffix])
+    kind = _MEDIA_KINDS.get(content_type.partition(";")[0].strip().lower())
+    if kind is None:
+        raise err(422, "bad_file", message=_CHOOSE_FILE)
+    return kind
+
+
+async def _parse_upload(filename: str, content_type: str, content: bytes
+                        ) -> importer.ParsedPlan:
+    """The uploaded file as a ParsedPlan: MS Project XML (plans/mspdi.py),
+    an Excel workbook or a CSV (plans/excel.py), parsed in a worker thread
+    (a 20 MB file takes seconds, which the event loop must not wait out).
+    A file it cannot read is answered as its ImportFileError says."""
+    kind = _file_kind(filename, content_type)
+    parse = {"xml": mspdi.parse_xml, "xlsx": excel.parse_workbook, "csv": excel.parse_csv}[kind]
     try:
-        return await asyncio.to_thread(mspdi.parse_xml, content)
+        return await asyncio.to_thread(parse, content)
     except importer.ImportFileError as exc:
         raise err(exc.status, exc.code, **exc.extra) from None
 
 
-def _import_out(rows: list[importer.ImportRow], problems: list[str]) -> PlanImportOut:
+def _import_out(rows: list[importer.ImportRow], problems: list[str],
+                version: int | None) -> PlanImportOut:
     return PlanImportOut(rows=[dataclasses.asdict(row) for row in rows], problems=problems,
-                         summary=importer.summary(rows, problems))
+                         summary=importer.summary(rows, problems), version=version)
 
 
 @router.post("/plans/{plan_id}/import", response_model=PlanImportOut)
@@ -446,21 +509,23 @@ async def import_into_plan(
     base_version: int | None = None,
     actor: AuthContext = require_permission("project_plans", "change"),
 ) -> PlanImportOut:
-    """Import a file (multipart `file`) into the plan (plans/importer.py):
+    """Import a file (multipart `file`: MS Project XML, an Excel .xlsx or a
+    CSV, by extension or content type) into the plan (plans/importer.py):
     a change to an existing plan, so `project_plans:change` like every
     other plan write (creating a plan from a file is an add). `mode=append`
     adds its tasks after the last task, `fill` fills an empty plan and
     takes the file's calendar, project start and status date (409
     `plan_not_empty` on a plan with tasks). `dry_run=1` (the default)
     answers the rows applying would create, with their problems and how
-    far the schedule moves each, and writes nothing; `dry_run=0` applies
-    them in one transaction (one ops batch: the version bumped, audited
-    `plan_import`). An apply sent with `base_version` (the version the
-    preview saw) is 409 `plan_changed` {version} when the plan has changed
-    since; a dry run ignores it. 409 `plan_locked` on a locked plan; the
-    file's errors are 413 `file_too_large`, 422 `bad_file` {message},
-    `too_many_rows` {limit}; the engine's 422s (a link cycle, a task below
-    the outline cap) as on any batch."""
+    far the schedule moves each, and the version it saw, and writes
+    nothing; `dry_run=0` applies them in one transaction (one ops batch:
+    the version bumped, audited `plan_import`) and answers the new
+    version. An apply sent with `base_version` (the version the preview
+    saw) is 409 `plan_changed` {version} when the plan has changed since; a
+    dry run ignores it. 409 `plan_locked` on a locked plan; the file's
+    errors are 413 `file_too_large`, 422 `bad_file` {message} (one this
+    can't read, or isn't one of the three kinds), `too_many_rows` {limit};
+    the engine's 422s (a link cycle) as on any batch."""
     if mode not in importer.IMPORT_MODES:
         raise err(422, "bad_field", field="mode")
     # read before the plan row is locked: a slow upload holds no lock
@@ -470,11 +535,14 @@ async def import_into_plan(
         raise err(409, "plan_changed", version=plan.version)
     state = await service.load_state(db, plan)
     if dry_run:
+        # read now: the preview's rolled-back savepoint expires the plan row
+        version = plan.version
         rows = await importer.preview(db, state, parsed, mode, actor)
     else:
         rows = await importer.apply(db, state, parsed, mode, actor)
+        version = plan.version
         await db.commit()
-    return _import_out(rows, importer.file_problems(parsed, mode))
+    return _import_out(rows, importer.file_problems(parsed, mode), version)
 
 
 async def _new_plan_start(db: AsyncSession, initiative: Initiative,
@@ -507,8 +575,9 @@ async def import_new_plan(
     POST /initiatives/{id}/plan makes one (owner: the creator when staff),
     starting at the file's project start, then filled from the file
     (`fill` mode: its calendar too). `dry_run=1` (the default) answers the
-    rows and creates nothing; `dry_run=0` creates and fills the plan in one
-    transaction (audited `plan_create` and `plan_import`). 409
+    rows and creates nothing (its `version` is null: there is no plan yet);
+    `dry_run=0` creates and fills the plan in one transaction (audited
+    `plan_create` and `plan_import`) and answers its version. 409
     `plan_exists`; the file's errors as on POST /plans/{id}/import."""
     initiative = await service.visible_initiative(db, initiative_id, actor)
     parsed = await _parse_upload(*await _import_upload(request))
@@ -517,25 +586,27 @@ async def import_new_plan(
     start = await _new_plan_start(db, initiative, parsed)
     owner_id = await _default_owner(db, actor)
 
-    async def create_and_fill() -> list[importer.ImportRow]:
+    async def create_and_fill() -> tuple[list[importer.ImportRow], int]:
         plan = await service.create_plan(db, initiative, actor, project_start=start,
                                          owner_id=owner_id)
-        return await importer.apply(db, await service.load_state(db, plan), parsed, "fill",
+        rows = await importer.apply(db, await service.load_state(db, plan), parsed, "fill",
                                     actor)
+        return rows, plan.version
 
     try:
         if dry_run:
             async with db.begin_nested() as savepoint:
-                rows = await create_and_fill()
+                rows, _version = await create_and_fill()
                 await savepoint.rollback()
+            version = None
         else:
-            rows = await create_and_fill()
+            rows, version = await create_and_fill()
             await db.commit()
     except IntegrityError as exc:
         _plan_exists(exc)
         await db.rollback()
         raise err(409, "plan_exists") from None
-    return _import_out(rows, importer.file_problems(parsed, "fill"))
+    return _import_out(rows, importer.file_problems(parsed, "fill"), version)
 
 
 # --- templates (plans/templates.py) -------------------------------------------------

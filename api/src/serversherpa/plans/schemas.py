@@ -470,11 +470,15 @@ class ImportSummaryOut(BaseModel):
 class PlanImportOut(BaseModel):
     """The rows a dry run would create (or an apply created), the problems
     about the whole file ("Kept this plan's calendar: ..."), and the
-    counts."""
+    counts. `version` is the plan's version: on a dry run the one the
+    preview saw (send it back as the apply's `base_version`), after an
+    apply the plan's new one; null on a dry run of a new plan, which
+    doesn't exist yet."""
 
     rows: list[ImportRowOut]
     problems: list[str]
     summary: ImportSummaryOut
+    version: int | None = None
 
 
 # --- plan-level writes (PATCH /plans/{id}, lock, baseline, version) ----------------

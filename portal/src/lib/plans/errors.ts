@@ -29,7 +29,7 @@ export const PLAN_ERRORS: Record<string, string> = {
   template_exists: 'A template with that name already exists, so choose another name.',
   template_not_found: 'That template no longer exists, so choose another one.',
   bad_template: 'This template can’t be used anymore, so save it again from a plan.',
-  // importing a file (MS Project XML)
+  // importing a file (MS Project XML, an Excel workbook or a CSV); bad_file shows its own message
   bad_file: 'This file can’t be read as a project plan.',
   file_too_large: 'The file is larger than 20 MB, the most an import takes.',
   too_many_rows: 'The file has more than 20,000 tasks, links or assignments, the most one import takes.',
