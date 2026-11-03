@@ -19,6 +19,8 @@ from serversherpa.db.models import (
     Person,
     Site,
     Truck,
+    WikiNode,
+    WikiSpace,
 )
 from serversherpa.notifications.events import EventItem, Thing, announce
 from serversherpa.notifications.status_changes import (
@@ -311,6 +313,35 @@ async def test_a_thing_in_reaches_that_nobody_can_watch_is_ignored(db):
     event = await _event(db, INITIATIVE_CHANGED, _on(initiative),
                          Thing("asset", uuid.uuid4()), _on(site, "site"))
     assert await matching_routes(db, event) == {person.id: {"watch"}}
+
+
+async def test_a_wiki_thing_matches_no_watch_whatever_the_event(db):
+    """A wiki library, folder or page is the wiki's own fan-out's to tell (wiki/notify.py): no
+    kind of event can be watched for on one, so an event that reaches one, or is about one,
+    reaches none of its watchers here, by a watch of their own or a group's, though their
+    watches name no events. The other things the event reaches still match."""
+    on_library, on_folder, member, on_site = await _people(db, "A", "B", "C", "D")
+    group = await _group(db, "Group A", [member])
+    space = WikiSpace(key=f"library-{uuid.uuid4().hex[:8]}", name="Library A")
+    db.add(space)
+    await db.flush()
+    folder = WikiNode(space_id=space.id, kind="folder", title="Folder A")
+    db.add(folder)
+    await db.commit()
+    library, node = Thing("wiki_space", space.id), Thing("wiki_node", folder.id)
+    initiative = await _initiative(db, "Initiative A")
+    site = await _site(db, "Site A")
+    await _watch(db, on_library, library)
+    await _watch(db, on_folder, node)
+    await _watch(db, group, node)
+    await _watch(db, on_site, _on(site, "site"))
+
+    event = await _event(db, INITIATIVE_CHANGED, _on(initiative), library, node,
+                         _on(site, "site"))
+    assert await matching_routes(db, event) == {on_site.id: {"watch"}}
+
+    event = await _event(db, "wiki_update", node, library)
+    assert await matching_routes(db, event) == {}
 
 
 async def test_a_device_watch_matches_the_devices_event(db):

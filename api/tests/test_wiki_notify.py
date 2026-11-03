@@ -780,6 +780,32 @@ async def test_a_wiki_export_email_is_never_rechecked_for_access(client, db, ema
     assert await _recheck(mail) is None
 
 
+class _NoDatabase:
+    """A session the code must not use: any query through it fails the test."""
+
+    def __getattr__(self, name):
+        raise AssertionError(f"the database was asked ({name})")
+
+
+@pytest.mark.parametrize(("kind", "payload"), [
+    pytest.param("wiki_update", {"space_key": "alpha", "event": "published"}, id="no node_id"),
+    pytest.param("wiki_update", {"node_id": "junk"}, id="junk"),
+    pytest.param("wiki_update", {"node_id": ""}, id="empty"),
+    pytest.param("wiki_update", {"node_id": None}, id="None"),
+    pytest.param("wiki_update", {"node_id": 42}, id="an int"),
+    pytest.param("not_a_kind", {"node_id": str(uuid.uuid4())}, id="an unlisted kind"),
+    pytest.param("initiative_status_changed", {"node_id": str(uuid.uuid4())},
+                 id="a kind outside the wiki"),
+])
+async def test_the_wiki_check_asks_nothing_of_a_notice_that_names_no_node(kind, payload):
+    """A notice whose payload names no node, or something that isn't a node's id, or whose
+    kind isn't one of the wiki's, has nothing for the wiki to judge: None, and the database
+    is never asked."""
+    notification = Notification(person_id=uuid.uuid4(), kind=kind, title="Title",
+                                payload=payload)
+    assert await notify.access_recheck(_NoDatabase(), notification) is None
+
+
 async def test_the_wiki_check_comes_where_no_access_does(client, db, email_on):
     """The first reason that applies decides, and the wiki's check is no access: an inactive
     person comes before it, the Email switch after it."""

@@ -86,8 +86,8 @@ EVENT_BATCH = 200
 # share a list of their own. Device offline has none: its items carry their device's list, and
 # items from different lists (readers and routers, say) get no link. Status rule matched has
 # none either: a rule's notices link to the matched thing or to the rule's executions (plan
-# call 5, the latter for people who can open Status rules), and only a deleted rule's, counted,
-# and a counted one for someone who can't open that page link nowhere.
+# call 5, the latter for people who can open Status rules). A deleted rule's counted notice,
+# and a counted notice for someone who can't open Status rules, link nowhere.
 LIST_PAGES: dict[str, str | None] = {"initiative_status_changed": "/initiatives",
                                      "truck_status_changed": "/logistics/trucks",
                                      "device_offline": None,

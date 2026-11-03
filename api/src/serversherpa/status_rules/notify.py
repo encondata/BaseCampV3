@@ -17,7 +17,7 @@ The action sends nothing itself. Each match goes through three steps:
    announces each batch as one `status_rule_matched` event (notifications/events.announce)
    with its final count, so a 15,000-row bulk update writes one event, once. One match says
    "{rule}: {thing}" and links to the thing; several say "{rule} ({count})" and link to the
-   rule's executions.
+   rule's executions only for people who can open Status rules (anyone else's links nowhere).
 
 Nothing outlives a rollback. The guard rows go with the transaction, and so do the batches: a
 savepoint that rolls back (or that a failed flush rolled back) takes back the matches added

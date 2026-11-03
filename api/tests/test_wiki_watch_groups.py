@@ -3,8 +3,9 @@ watches a wiki library, folder or page from the group page (`thing` "wiki_space"
 "wiki_node", naming no events: a wiki watch hears every page update and comment), and the
 wiki's own fan-out (wiki/notify.py, still in the request) reaches the members of its Active
 groups beside the people watching, through the wiki's own access rule, logging each person's
-routes as the event sweep does. /me lists the wiki watches a person can see now, their own and
-their groups', each linking to the wiki.
+routes as the event sweep does, and logging as the sweep does each person it leaves out because
+they can't see the page (`no_access`). /me lists the wiki watches a person can see now, their
+own and their groups', each linking to the wiki.
 
 The wiki's own Watch button, Watching page and state endpoint still show only the person's own
 watches (tests/test_wiki_watches_api.py), and who can see a library, folder or page is pinned
@@ -149,6 +150,21 @@ async def _routes(db, person_id) -> list[dict]:
         select(NotificationLog).where(NotificationLog.person_id == person_id,
                                       NotificationLog.event == "inbox_written")
         .order_by(NotificationLog.id))]
+
+
+async def _log(db, person_id) -> list[tuple]:
+    """Every Delivery log row written for the person, oldest first: what happened, on which
+    channel, of what kind and category, why, and with what detail."""
+    return [(row.event, row.channel, row.kind, row.category, row.reason, row.detail)
+            for row in await db.scalars(
+                select(NotificationLog).where(NotificationLog.person_id == person_id)
+                .order_by(NotificationLog.id))]
+
+
+def _kept_out(kind, detail) -> tuple:
+    """The Delivery log row of a wiki notice kept out of someone's inbox because they can't
+    see its page, as `_log` gives it."""
+    return ("inbox_suppressed", "inbox", kind, "wiki", "no_access", detail)
 
 
 async def _list(client, headers) -> list[dict]:
@@ -353,6 +369,112 @@ async def test_thread_participants_come_first_for_the_cap(client, db, monkeypatc
     told = {person_id for person_id in (first, second, s["owner_id"], *members)
             if await _inbox(db, person_id)}
     assert told == {first, second}
+
+
+# ── who the fan-out leaves out ──────────────────────────────────────
+
+
+async def test_a_watcher_who_cant_see_the_page_is_logged_no_access(client, db):
+    """Someone a watch brought who can't see the page gets no notice, and the Delivery log
+    says so, as the event sweep logs each candidate it drops for access: one row,
+    `inbox_suppressed` `no_access`, of the notice's kind, with the routes that brought them and
+    the groups' names, as a notice that went in logs them. A member who can see the page has
+    the notice and no such row. Nobody left out for another reason is logged: a member with no
+    login, the actor."""
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    _, member = await login_as(client, db)          # reads the page (below)
+    _, blind = await login_as(client, db)           # doesn't
+    no_login = Person(first_name="Person", last_name="Without a login")
+    db.add(no_login)
+    await db.commit()
+    group = await _group(db, "Group A", member, blind, no_login.id, s["editor_id"])
+    await _group_watch(db, group, node=page)
+    await _watch(client, s["viewer"], space=s["space"])      # a watch of the viewer's own
+    # the page keeps readers of its own: neither `blind` nor the viewer is one
+    await _only(client, s["owner"], page, [
+        _grant(s["owner_id"], "manage"), _grant(s["editor_id"], "edit"), _grant(member, "view")])
+
+    await publish_via_api(client, s["editor"], page["id"])
+
+    route = f"group:{group.id}"
+    assert await _log(db, blind) == [
+        _kept_out("wiki_update", {"via": [route], "names": {route: "Group A"}})]
+    assert await _log(db, s["viewer_id"]) == [
+        _kept_out("wiki_update", {"via": ["watch"], "names": {}})]
+    assert await _inbox(db, blind) == []
+    assert await _inbox(db, s["viewer_id"]) == []
+    # the member who can see it: the notice, logged with its route, and no row kept out
+    assert [n.kind for n in await _inbox(db, member)] == ["wiki_update"]
+    assert [(event, reason, detail) for event, channel, _kind, _category, reason, detail
+            in await _log(db, member) if channel == "inbox"] == [
+        ("inbox_written", None, {"via": [route], "names": {route: "Group A"}})]
+    # no login, and the actor: nothing at all
+    assert await _log(db, no_login.id) == []
+    assert await _log(db, s["editor_id"]) == []
+
+
+async def test_a_thread_participant_or_a_mentioned_person_who_cant_see_the_page_is_logged_too(
+        client, db):
+    """The fan-out logs everyone it leaves out because they can't see the page, not only those
+    a watch brought: an earlier author in a comment's thread, a person mentioned in the page.
+    No watch brought them, so their row names no route. A watcher told by a mention instead of
+    the comment's notice gets no row for the comment, and the actor none at all."""
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    _, participant = await login_as(client, db)     # doesn't read the page (below)
+    mentioned_h, mentioned = await login_as(client, db)      # does
+    _, outsider = await _outsider(client, db)       # can't see the library at all
+    await _only(client, s["owner"], page, [
+        _grant(s["owner_id"], "manage"), _grant(s["editor_id"], "edit"),
+        _grant(s["viewer_id"], "view"), _grant(mentioned, "view")])
+    await publish_via_db(db, page["id"])
+    await _watch(client, mentioned_h, node=page)
+    node = await _node(db, page["id"])
+    thread_id = uuid.uuid4()
+    db.add(WikiComment(id=thread_id, node_id=node.id, thread_id=thread_id,
+                       body={"text": "first", "mentions": []}, author_id=participant))
+    await db.flush()
+    reply = WikiComment(node_id=node.id, thread_id=thread_id, parent_id=thread_id,
+                        body={"text": "Looks good", "mentions": []}, author_id=s["viewer_id"])
+    db.add(reply)
+    await db.flush()
+
+    await notify.on_comment(db, node, reply, actor_id=s["viewer_id"], skip=[mentioned])
+    await notify.on_mentions(db, node, [outsider, mentioned, s["editor_id"]],
+                             actor_id=s["editor_id"], context="page")
+    await db.commit()
+
+    assert await _log(db, participant) == [_kept_out("wiki_comment", {})]
+    assert await _log(db, outsider) == [_kept_out("wiki_mention", {})]
+    assert [(event, kind) for event, channel, kind, *_rest in await _log(db, mentioned)
+            if channel == "inbox"] == [("inbox_written", "wiki_mention")]
+    assert await _log(db, s["editor_id"]) == []
+
+
+async def test_nobody_can_see_a_page_in_the_trash_so_each_watcher_is_logged_no_access(
+        client, db):
+    """A page in the trash opens for nobody, as the send-time re-check judges it: should the
+    fan-out be asked about one, each of its watchers with an active account is logged as kept
+    out, with their routes."""
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    version_id = (await publish_via_db(db, page["id"])).id
+    group = await _group(db, "Group A", s["viewer_id"])
+    route = f"group:{group.id}"
+    await _group_watch(db, group, node=page)                 # the owner watches it too
+    await _trash(client, s["owner"], page)
+    node = await _node(db, page["id"])
+    assert node.deleted_at is not None
+
+    await notify.on_published(db, node, actor_id=None,
+                              version=await db.get(WikiPageVersion, version_id))
+    await db.commit()
+
+    assert await _log(db, s["viewer_id"]) == [
+        _kept_out("wiki_update", {"via": [route], "names": {route: "Group A"}})]
+    assert await _log(db, s["owner_id"]) == [
+        _kept_out("wiki_update", {"via": ["watch"], "names": {}})]
 
 
 # ── /me ─────────────────────────────────────────────────────────────

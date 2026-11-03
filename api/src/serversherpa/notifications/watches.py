@@ -9,11 +9,11 @@ all (`routes_watching`, for the wiki's own fan-out).
 A watch on a thing hears the events whose subject is that thing, or that reach it
 (`NotificationEvent.reaches`), so a watch on an initiative also hears its child initiatives.
 An Everything watch names its events, and only a kind marked `everywhere` can be named. A wiki
-watch names none: no kind of event reaches a wiki thing, and the wiki's fan-out (wiki/notify.py)
-tells its watchers of every page update and comment, as it always has. Access is not stored: a
-watch whose owner can't open its thing stays in place and is neither listed nor delivered until
-they can again. Only the devices notifications check can be watched (services/device_online.py
-`covered`), and no wiki folder or page in the trash.
+watch names none: no kind of event reaches a wiki thing, so no event matches one, and the wiki's
+fan-out (wiki/notify.py) tells its watchers of every page update and comment, as it always has.
+Access is not stored: a watch whose owner can't open its thing stays in place and is neither
+listed nor delivered until they can again. Only the devices notifications check can be watched
+(services/device_online.py `covered`), and no wiki folder or page in the trash.
 
 Like notify() and announce(), nothing here commits: the routes do.
 
@@ -451,15 +451,19 @@ async def matching_routes(db: AsyncSession, event: NotificationEvent) -> dict[uu
 
     A watch matches when its kinds are empty (every event that applies) or hold the event's
     kind, and its thing is the event's subject or one of the things it reaches; an Everything
-    watch also matches when the kind is `everywhere`. Whether the people are still active,
-    can open the thing or are the actor is for the sweep to decide.
+    watch also matches when the kind is `everywhere`. A thing of a kind no event can be watched
+    for (`kinds_for` names none: a wiki library, folder or page) matches no watch, whatever the
+    event: its watchers hear through the wiki's own fan-out (wiki/notify.py), never through the
+    sweep as well. Whether the people are still active, can open the thing or are the actor is
+    for the sweep to decide.
 
     The result is in a fixed order, for the sweep's cap: people with a watch of their own
     first, oldest watch first, then the members of the matching groups, longest-standing first."""
     if not event.watchers:
         return {}
-    targets = _on_any([Thing(event.subject_type, event.subject_id),
-                       *(Thing.from_json(raw) for raw in event.reaches)])
+    things = [Thing(event.subject_type, event.subject_id),
+              *(Thing.from_json(raw) for raw in event.reaches)]
+    targets = _on_any([thing for thing in things if kinds_for(thing.type)])
     info = KINDS.get(event.kind)
     if info is not None and info.everywhere:
         targets.append(and_(*(getattr(NotificationWatch, column).is_(None)
