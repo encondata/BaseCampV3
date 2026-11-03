@@ -47,7 +47,8 @@ class EventItem:
 
     A status rule's notice (status_rules/notify.py) also says what the rule matched: the
     kind of thing (`matched_type`: "asset", "container" or "person") and their ids, one
-    or many."""
+    or many, and the site the match was read at (`site_id`, the scan's), so the sweep can
+    name the initiative and the site only to the people who can open them."""
 
     title: str
     line: str = ""
@@ -57,10 +58,11 @@ class EventItem:
     list_link: str | None = None
     matched_type: str | None = None
     matched_ids: tuple[uuid.UUID, ...] = ()
+    site_id: uuid.UUID | None = None
 
     def to_json(self) -> dict:
         """The stored form: every key, ids and times as strings. A rule's notice adds
-        `count`, `matched_type` and `matched_ids`; no other item has them."""
+        `count`, `matched_type`, `matched_ids` and `site_id`; no other item has them."""
         stored = {"title": self.title, "line": self.line, "link": self.link,
                   "initiative_id": (str(self.initiative_id)
                                     if self.initiative_id is not None else None),
@@ -68,7 +70,8 @@ class EventItem:
                   "list_link": self.list_link}
         if self.matched_type is not None:
             stored |= {"count": len(self.matched_ids), "matched_type": self.matched_type,
-                       "matched_ids": [str(thing_id) for thing_id in self.matched_ids]}
+                       "matched_ids": [str(thing_id) for thing_id in self.matched_ids],
+                       "site_id": str(self.site_id) if self.site_id is not None else None}
         return stored
 
 

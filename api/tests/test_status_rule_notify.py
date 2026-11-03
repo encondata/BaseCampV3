@@ -344,7 +344,7 @@ async def test_one_match_is_one_event(db, watchers):
         "title": "Rule A: SN-A", "line": "Initiative A · Site A",
         "link": f"/assets?open={s.asset}", "initiative_id": str(s.initiative), "at": None,
         "list_link": None, "count": 1, "matched_type": "asset",
-        "matched_ids": [str(s.asset)]}
+        "matched_ids": [str(s.asset)], "site_id": str(s.site)}
     # the initiative's parent and the scan's site, only when watchers is on
     assert event.reaches == ([_ref("initiative", s.parent), _ref("site", s.site)]
                              if watchers else [])
@@ -385,7 +385,7 @@ async def test_a_match_with_no_initiative_is_about_the_thing(db):
         "title": "Rule C: Container A", "line": "Site A",
         "link": f"/logistics/containers?open={crate.id}", "initiative_id": None, "at": None,
         "list_link": None, "count": 1, "matched_type": "container",
-        "matched_ids": [str(crate.id)]}
+        "matched_ids": [str(crate.id)], "site_id": str(site.id)}
     assert container.reaches == [_ref("site", site.id)]
 
     badge = events[by_badge]
@@ -527,7 +527,7 @@ async def test_bulk_update_is_one_event(db, monkeypatch):
         "title": "Rule A (500)", "line": "Initiative A · 500",
         "link": f"/admin/status-rules?tab=executions&rule={rule}",
         "initiative_id": str(s.initiative), "at": None, "list_link": None, "count": 500,
-        "matched_type": "asset", "matched_ids": [str(a.id) for a in assets]}
+        "matched_type": "asset", "matched_ids": [str(a.id) for a in assets], "site_id": None}
     # the person who ran the job; a manual edit has no site, so the initiative's parent only
     assert (event.actor_id, event.person_ids, event.watchers) == (me.id, [person], True)
     assert event.reaches == [_ref("initiative", s.parent)]

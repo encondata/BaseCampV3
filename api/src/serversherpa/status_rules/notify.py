@@ -99,6 +99,7 @@ class _Batch:
     title: str                      # for one match: "{rule}: {thing}"
     line: str                       # for one match: "{initiative} · {scan site}"
     link: str                       # for one match: the thing's page
+    site_id: uuid.UUID | None       # the scan's site, which the sweep names only to its viewers
     reaches: list[Thing]
     actor_id: uuid.UUID | None
     person_ids: list[uuid.UUID]
@@ -187,7 +188,8 @@ async def _first_match(db: AsyncSession, ctx: Context, about: Thing, kind: str, 
         initiative_id=initiative_id, initiative_name=initiative_name,
         title=f"{ctx.rule_name}: {_name(kind, thing)}",
         line=_joined(initiative_name, site.name if site is not None else None),
-        link=_PAGES[kind].format(thing.id), reaches=reaches, actor_id=ctx.scan.operator_id,
+        link=_PAGES[kind].format(thing.id), site_id=site_id, reaches=reaches,
+        actor_id=ctx.scan.operator_id,
         person_ids=person_ids, group_ids=group_ids, watchers=watchers)
 
 
@@ -203,7 +205,8 @@ def _announce(session: Session, batch: _Batch) -> None:
         link = rule_link(batch.rule_id)
     announce(session, "status_rule_matched", subject=batch.subject,
              item=EventItem(title, line, link, initiative_id=batch.initiative_id,
-                            matched_type=batch.matched_type, matched_ids=tuple(batch.ids)),
+                            matched_type=batch.matched_type, matched_ids=tuple(batch.ids),
+                            site_id=batch.site_id),
              reaches=batch.reaches, actor_id=batch.actor_id, person_ids=batch.person_ids,
              group_ids=batch.group_ids, watchers=batch.watchers, rule_id=batch.rule_id)
 

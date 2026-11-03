@@ -18,6 +18,7 @@ from dataclasses import dataclass
 import pytest
 from sqlalchemy import delete, update
 
+from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
     Asset,
     Client,
@@ -36,10 +37,12 @@ from serversherpa.db.models import (
     UserAccount,
     WorkerProfile,
 )
+from serversherpa.imports.worker import run_once
 from serversherpa.notifications import event_sweep
 from serversherpa.notifications.events import Thing
 from serversherpa.status_rules.engine import invalidate_cache
 from serversherpa.status_rules.notify import rule_link
+from tests.test_asset_bulk_update_apply import fresh_job, mk_job, mk_person
 from tests.test_mail_delivery import _run
 from tests.test_notification_event_sweep import (
     _attempts,
@@ -121,6 +124,16 @@ async def _vendor_admin(db, name, partner) -> Person:
     return person
 
 
+async def _denied(db, name, *resources) -> Person:
+    """Person `name`, staff with an account in use, denied `view` on each of `resources`.
+    Committed."""
+    person = await _person(db, name)
+    db.add_all(PermissionOverride(person_id=person.id, resource=resource, action="view",
+                                  allow=False) for resource in resources)
+    await db.commit()
+    return person
+
+
 def _ref(kind, thing_id) -> dict:
     return {"type": kind, "id": str(thing_id)}
 
@@ -166,7 +179,8 @@ async def test_rule_notice_reaches_named_people_groups_and_watchers(db):
         [note] = await _notifications(person)
         assert (note.kind, note.title, note.body, note.link) == (
             RULE_MATCHED, "Rule A: SN-A", "Initiative A · Site A", f"/assets?open={asset}")
-        assert note.payload == {"events": [event.id], "subjects": [_ref("asset", asset)],
+        assert note.payload == {"events": [event.id],
+                                "subjects": [_ref("initiative", w.initiative)],
                                 "via": routes}, person.last_name
     assert await _notifications(paused_member) == []
     names = {by_rule: "Rule A", by_group: "Group A", by_site: "Group C"}
@@ -224,9 +238,9 @@ async def test_the_actor_is_not_notified(db):
 async def test_access_per_matched_thing(db):
     """Review Focus: three assets of Client A's move match one rule in one transaction, and
     Client A owns two of them. Client A's user, watching the move, hears of those two, counted;
-    staff watching it hear of all three, as the event tells it. A person the rule names who can
-    open none of them is dropped, logged `no_access`. A notification's subjects are the matched
-    things that person can see, for the send-time re-check."""
+    staff watching it hear of all three. A person the rule names who can open none of them is
+    dropped, logged `no_access`. A notification's subjects are its events' (the move): the
+    send-time re-check reads the matched things from the events."""
     client_a, client_b = await _clients(db)
     w = await _world(db, client_id=client_a.id)
     [first] = await _roster(db, w.initiative, "SN-A", client_id=client_a.id)
@@ -249,12 +263,11 @@ async def test_access_per_matched_thing(db):
     assert (some.kind, some.title, some.body, some.link) == (
         RULE_MATCHED, "Rule A (2)", "Initiative A · 2", rule_link(rule))
     assert some.payload == {"events": [event.id],
-                            "subjects": [_ref("asset", first), _ref("asset", last)],
-                            "via": ["watch"]}
+                            "subjects": [_ref("initiative", w.initiative)], "via": ["watch"]}
     [every] = await _notifications(staff)
     assert (every.title, every.body, every.link) == (
         "Rule A (3)", "Initiative A · 3", rule_link(rule))
-    assert every.payload["subjects"] == [_ref("asset", asset) for asset in (first, other, last)]
+    assert every.payload["subjects"] == [_ref("initiative", w.initiative)]
 
     assert await _notifications(outsider) == []
     [dropped] = await _log("inbox_suppressed")
@@ -281,7 +294,75 @@ async def test_one_seen_of_a_batch_is_counted_too(db):
     [note] = await _notifications(viewer)
     assert (note.title, note.body, note.link) == ("Rule A (1)", "Initiative A · 1",
                                                   rule_link(rule))
-    assert note.payload["subjects"] == [_ref("asset", mine)]
+    assert note.payload["subjects"] == [_ref("initiative", w.initiative)]
+
+
+async def test_one_match_names_only_what_its_person_can_open(db):
+    """Controller ruling: each person's text names the initiative and the scan's site only if
+    they can open it. One match's line leaves a hidden part out, with its joiner; the matched
+    thing's own name, the rule's and the link stay. Client A's user, who can't open sites, reads
+    the move alone; someone denied initiatives reads the site alone; on another client's move,
+    Client A's user reads neither."""
+    client_a, client_b = await _clients(db)
+    w = await _world(db, client_id=client_a.id)
+    [asset] = await _roster(db, w.initiative, "SN-A", client_id=client_a.id)
+    viewer = await _person(db, "B", role="client_viewer", client_id=client_a.id)
+    staff = await _person(db, "C")
+    no_sites = await _denied(db, "D", "sites")
+    no_initiatives = await _denied(db, "E", "initiatives")
+    await _add_rule(db, "Rule A", _notify(people=[viewer.id, staff.id, no_sites.id,
+                                                  no_initiatives.id]))
+    await _match(db, asset=asset, site=w.site)
+    await db.commit()
+
+    assert await _sweep() == 4
+    for person, line in ((viewer, "Initiative A"), (staff, "Initiative A · Site A"),
+                         (no_sites, "Initiative A"), (no_initiatives, "Site A")):
+        [note] = await _notifications(person)
+        assert (note.title, note.body, note.link) == (
+            "Rule A: SN-A", line, f"/assets?open={asset}"), person.last_name
+
+    # an asset Client A owns, on Client B's move
+    theirs = Initiative(name="Initiative C", initiative_type="move", status="in_progress",
+                        client_id=client_b.id)
+    db.add(theirs)
+    await db.commit()
+    [lent] = await _roster(db, theirs.id, "SN-C", client_id=client_a.id)
+    await _match(db, asset=lent, site=w.site)
+    await db.commit()
+    assert await _sweep() == 4
+    latest = (await _notifications(viewer))[-1]
+    assert (latest.title, latest.body, latest.link) == ("Rule A: SN-C", "",
+                                                        f"/assets?open={lent}")
+
+
+async def test_a_hidden_initiative_is_counted_bare(db):
+    """Controller ruling: counted, an initiative its person can't open gives its count alone.
+    Client B's move holds an asset Client A owns and one of Client B's own. Client A's user hears
+    of theirs with the bare count, Client B's user of their own by the move's name, and staff
+    denied initiatives of both, with the count alone."""
+    client_a, client_b = await _clients(db)
+    w = await _world(db, client_id=client_b.id)
+    [lent] = await _roster(db, w.initiative, "SN-A", client_id=client_a.id)
+    [own] = await _roster(db, w.initiative, "SN-B", client_id=client_b.id)
+    viewer_a = await _person(db, "B", role="client_viewer", client_id=client_a.id)
+    viewer_b = await _person(db, "C", role="client_viewer", client_id=client_b.id)
+    staff = await _person(db, "D")
+    no_initiatives = await _denied(db, "E", "initiatives")
+    rule = await _add_rule(db, "Rule A", _notify(people=[viewer_a.id, viewer_b.id, staff.id,
+                                                         no_initiatives.id]))
+    for asset in (lent, own):               # one transaction: one event of two
+        await _match(db, asset=asset, site=w.site)
+    await db.commit()
+
+    assert await _sweep() == 4
+    for person, title, body in ((viewer_a, "Rule A (1)", "1"),
+                                (viewer_b, "Rule A (1)", "Initiative A · 1"),
+                                (staff, "Rule A (2)", "Initiative A · 2"),
+                                (no_initiatives, "Rule A (2)", "2")):
+        [note] = await _notifications(person)
+        assert (note.title, note.body, note.link) == (title, body, rule_link(rule)), \
+            person.last_name
 
 
 async def test_a_badge_notice_is_checked_on_the_worker(db):
@@ -350,7 +431,7 @@ async def test_grouped_per_rule(db):
     for note, rule in zip(notes, (rule_a, rule_b), strict=True):
         assert note.payload == {
             "events": by_rule[rule],
-            "subjects": [_ref("asset", asset) for asset in (first, second, elsewhere)],
+            "subjects": [_ref("initiative", w.initiative), _ref("initiative", other.id)],
             "via": [f"rule:{rule}"]}
     assert [entry.detail["names"] for entry in await _log("inbox_written")] == [
         {f"rule:{rule_a}": "Rule A"}, {f"rule:{rule_b}": "Rule B"}]
@@ -375,8 +456,10 @@ async def test_matches_with_no_initiative_are_counted_alone(db):
     [note] = await _notifications(person)
     assert (note.title, note.body, note.link) == ("Rule C (3)", "Initiative A · 1\n2",
                                                   rule_link(rule))
-    assert note.payload["subjects"] == [_ref("container", container.id)
-                                        for container in (loose[0], on_a_move, loose[1])]
+    # the events' subjects: each loose container, and the move of the one on it
+    assert note.payload["subjects"] == [_ref("container", loose[0].id),
+                                        _ref("initiative", w.initiative),
+                                        _ref("container", loose[1].id)]
 
     last = Container(name="Container D")
     db.add(last)
@@ -428,7 +511,8 @@ async def test_a_malformed_rule_notice_fails_on_its_own(db, monkeypatch):
     broken = [NotificationEvent(kind=RULE_MATCHED, subject_type="initiative",
                                 subject_id=w.initiative, person_ids=[person.id], rule_id=rule,
                                 item={**good.item, **fields})
-              for fields in ({"matched_ids": ["SN-A"]}, {"initiative_id": "Initiative A"})]
+              for fields in ({"matched_ids": ["SN-A"]}, {"initiative_id": "Initiative A"},
+                             {"site_id": "Site A"})]
     db.add_all(broken)
     await db.commit()
 
@@ -471,6 +555,43 @@ async def test_the_send_time_recheck_judges_the_matched_things(db, email_on):
     assert await _recheck(mail) == "not_watching"
 
 
+async def test_a_big_batch_keeps_its_payload_small(db, email_on):
+    """Controller ruling: a 500-row bulk update's notice lists its event's subject, not the 500
+    matched things, and the send-time re-check reads those from the event. Once the person can
+    open none of them, the email is dropped `no_access`, though the move is still theirs to
+    open."""
+    w = await _world(db)
+    assets = [Asset(serial_number=f"SN-{i}", status="active") for i in range(500)]
+    db.add_all(assets)
+    await db.flush()                    # the Asset IDs come from their sequence
+    db.add_all([InitiativeAsset(initiative_id=w.initiative, asset_id=asset.id,
+                                status="loaded_in_system") for asset in assets])
+    await db.commit()
+    person = await _person(db, "B")
+    rule = await _add_rule(db, "Rule A", _notify(people=[person.id]), status="racked")
+    body = "asset_id,status\n" + "".join(f"{asset.legacy_id},racked\n" for asset in assets)
+    job_id = await mk_job(db, await mk_person(db), body, options={"approve_all": True})
+    assert await run_once(get_sessionmaker()) is True
+    assert (await fresh_job(job_id)).status == "completed"
+    [event] = await _events()
+    assert event.item["count"] == 500
+
+    assert await _sweep() == 1
+    [note] = await _notifications(person)
+    assert (note.title, note.body, note.link) == (
+        "Rule A (500)", "Initiative A · 500", rule_link(rule))
+    assert note.payload == {"events": [event.id], "subjects": [_ref("initiative", w.initiative)],
+                            "via": [f"rule:{rule}"]}
+    assert len(note.payload["subjects"]) == len(note.payload["events"])
+    mail = await _mail_of(person)
+    assert await _recheck(mail) is None
+
+    db.add(PermissionOverride(person_id=person.id, resource="assets", action="view",
+                              allow=False))
+    await db.commit()
+    assert await _recheck(mail) == "no_access"
+
+
 async def test_the_recheck_asks_every_kind_of_thing(db, email_on):
     """Deleted rules' notices go together whatever each matched, so one notification can list an
     asset and a container. Its email goes while the person can open either."""
@@ -493,7 +614,8 @@ async def test_the_recheck_asks_every_kind_of_thing(db, email_on):
     assert await _sweep() == 1
     [note] = await _notifications(person)
     assert (note.title, note.body) == ("Status rule matched (2)", "Initiative A · 1\n1")
-    assert note.payload["subjects"] == [_ref("asset", asset), _ref("container", container.id)]
+    assert note.payload["subjects"] == [_ref("initiative", w.initiative),
+                                        _ref("container", container.id)]
     mail = await _mail_of(person)
     assert await _recheck(mail) is None
 

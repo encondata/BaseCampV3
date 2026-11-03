@@ -178,12 +178,17 @@ def test_thing_and_item_json():
         "title": "T", "line": "L", "link": "/x", "initiative_id": str(initiative_id),
         "at": "2026-11-02T20:04:00+00:00", "list_link": "/y"}
 
-    # a status rule's notice also says what it matched: the kind of thing, how many, which
-    first, second = uuid.uuid4(), uuid.uuid4()
+    # a status rule's notice also says what it matched: the kind of thing, how many, which,
+    # and the site the match was read at
+    first, second, site_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     assert EventItem("T", matched_type="asset", matched_ids=(first, second)).to_json() == {
         "title": "T", "line": "", "link": None, "initiative_id": None, "at": None,
         "list_link": None, "count": 2, "matched_type": "asset",
-        "matched_ids": [str(first), str(second)]}
+        "matched_ids": [str(first), str(second)], "site_id": None}
+    assert EventItem("T", matched_type="person", matched_ids=(first,),
+                     site_id=site_id).to_json()["site_id"] == str(site_id)
+    # no other item has the key
+    assert "site_id" not in EventItem("T", initiative_id=initiative_id).to_json()
 
 
 @pytest.mark.parametrize("at,expected", [
