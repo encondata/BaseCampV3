@@ -154,9 +154,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
-    await logoutRequest();
-    setState(ANON);
-    exitGodMode();
+    // signed out here even when the server can't be reached (offline):
+    // logoutRequest has already dropped the local tokens
+    try {
+      await logoutRequest();
+    } finally {
+      setState(ANON);
+      exitGodMode();
+    }
   }, [exitGodMode]);
 
   const hasRole = useCallback(

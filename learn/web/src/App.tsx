@@ -1,17 +1,20 @@
 /** Routes. `/` is the sign-in (code or account), `/start` the invite
- *  link; everything else needs a learn session or an account: `/training`, a
- *  document (`/training/:id`) and its quiz, `/history` (what was signed)
- *  and `/done`. A 401 from
- *  any signed-in call comes back to `/` through the router. */
+ *  link; everything else needs a learn session or an account and sits in
+ *  the shell: `/home` (the landing page), `/training`, a document
+ *  (`/training/:id`) and its quiz, `/history` (what was signed) and
+ *  `/done`. A 401 from any signed-in call comes back to `/` through the
+ *  router. */
 import { lazy, Suspense, useEffect, type ReactNode } from 'react';
 import { Navigate, Route, Routes, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '@portal/auth/AuthContext';
 
+import LearnShell from './layout/LearnShell';
 import { getOfferedLanguages } from './lib/api';
 import { setOffered } from './lib/i18n';
 import { getToken, setSignedOutHandler } from './lib/session';
 import History from './pages/History';
+import Home from './pages/Home';
 import Quiz from './pages/Quiz';
 import Reader from './pages/Reader';
 import SignIn from './pages/SignIn';
@@ -40,11 +43,14 @@ export default function App() {
     <Routes>
       <Route path="/" element={<SignIn />} />
       <Route path="/start" element={<Start />} />
-      <Route path="/training" element={<RequireLearner><Training /></RequireLearner>} />
-      <Route path="/training/:id" element={<RequireLearner><Reader /></RequireLearner>} />
-      <Route path="/training/:id/quiz" element={<RequireLearner><Quiz /></RequireLearner>} />
-      <Route path="/history" element={<RequireLearner><History /></RequireLearner>} />
-      <Route path="/done" element={<RequireLearner><Suspense fallback={null}><Done /></Suspense></RequireLearner>} />
+      <Route element={<RequireLearner><LearnShell /></RequireLearner>}>
+        <Route path="/home" element={<Home />} />
+        <Route path="/training" element={<Training />} />
+        <Route path="/training/:id" element={<Reader />} />
+        <Route path="/training/:id/quiz" element={<Quiz />} />
+        <Route path="/history" element={<History />} />
+        <Route path="/done" element={<Suspense fallback={null}><Done /></Suspense>} />
+      </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

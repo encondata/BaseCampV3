@@ -98,6 +98,27 @@ describe('Training', () => {
     expect(new Headers(init.headers).get('Authorization')).toBe('Learn tok');
   });
 
+  it('opens with the portal page head: eyebrow, title, and the greeting as the hint', async () => {
+    api(GROUPS);
+    const { container } = renderTraining();
+    const hint = await screen.findByText('Hi Kenji');
+    expect(hint.className).toContain('page-hint');
+    expect(container.querySelector('.eyebrow')?.textContent).toBe('Learning');
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('My training');
+    expect(container.querySelector('.portal-page')).not.toBeNull();
+    // the shell's top bar owns the brand and the language menu
+    expect(container.querySelector('.learn-top')).toBeNull();
+    expect(container.querySelector('.learn-langs')).toBeNull();
+  });
+
+  it('greets without a name in the hint when there is none', async () => {
+    sessionStorage.clear();
+    setToken('tok', LATER, '');
+    api(GROUPS);
+    renderTraining();
+    expect(await screen.findByText('Hi')).toBeTruthy();
+  });
+
   it('shows the general set under its own heading, without a due date when there is none', async () => {
     api({
       groups: [{ initiative: null, due_on: null, items: [item({ assignment_id: 'g-1', title: 'Safety' })] }],
@@ -111,8 +132,12 @@ describe('Training', () => {
   it('says so when nothing is assigned', async () => {
     api({ groups: [], complete: false, badge_uid: null });
     renderTraining();
-    expect(await screen.findByText("You're all caught up.")).toBeTruthy();
+    const title = await screen.findByText("You're all caught up.");
     expect(screen.queryByRole('link', { name: /^Continue/ })).toBeNull();
+    // an intentional empty state in a card, not a bare line
+    expect(title.closest('.learn-empty')).not.toBeNull();
+    expect(title.closest('.dash-panel')).not.toBeNull();
+    expect(screen.getByText('New training shows up here as soon as it is assigned to you.')).toBeTruthy();
   });
 
   it('offers the time clock code once everything is signed', async () => {

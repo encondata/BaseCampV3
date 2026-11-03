@@ -20,7 +20,7 @@ function renderAt(hash: string) {
     <MemoryRouter initialEntries={[{ pathname: '/start', hash }]}>
       <Routes>
         <Route path="/start" element={<><Start /><Where /></>} />
-        <Route path="/training" element={<><p>training page</p><Where /></>} />
+        <Route path="/home" element={<><p>home page</p><Where /></>} />
         <Route path="/" element={<p>sign-in page</p>} />
       </Routes>
     </MemoryRouter>,
@@ -31,15 +31,15 @@ beforeEach(() => { sessionStorage.clear(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('Start (the invite link)', () => {
-  it('signs in with the link token, drops it from the address and opens the training', async () => {
+  it('signs in with the link token, drops it from the address and opens Home', async () => {
     const fetchMock = vi.fn().mockResolvedValue(json(200, {
       token: 'learn-tok', expires_at: new Date(Date.now() + 3_600_000).toISOString(),
       person: { first_name: 'Kenji' },
     }));
     vi.stubGlobal('fetch', fetchMock);
     renderAt('#t=link-abc_123');
-    expect(await screen.findByText('training page')).toBeTruthy();
-    expect(screen.getByTestId('where').textContent).toBe('/training');
+    expect(await screen.findByText('home page')).toBeTruthy();
+    expect(screen.getByTestId('where').textContent).toBe('/home');
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('http://localhost:8000/learn/auth/link');
     expect(JSON.parse(String(init.body))).toEqual({ token: 'link-abc_123' });
@@ -87,7 +87,7 @@ describe('Start (the invite link)', () => {
     })));
     localStorage.clear();
     renderAt('#t=link-secret-123');
-    expect(await screen.findByText('training page')).toBeTruthy();
+    expect(await screen.findByText('home page')).toBeTruthy();
     expect(getToken()).toBe('learn-tok-secret');
     const everything = JSON.stringify(Object.fromEntries(
       Array.from({ length: localStorage.length }, (_, i) => [localStorage.key(i), localStorage.getItem(localStorage.key(i)!)])));

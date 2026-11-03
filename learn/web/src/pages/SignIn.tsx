@@ -5,7 +5,7 @@
  *  it, "Sign in with an account" swaps in the portal's own sign-in page
  *  (an account bearer works on /learn/* too), then the language links.
  *
- *  Someone already signed in either way goes straight to their training. */
+ *  Someone already signed in either way goes straight to Home. */
 import { lazy, Suspense, useState, type FormEvent } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 
@@ -35,7 +35,7 @@ export default function SignIn() {
   const [error, setError] = useState<MessageKey | null>(null);
   const [busy, setBusy] = useState(false);
 
-  if (getToken() || status === 'authed') return <Navigate to="/training" replace />;
+  if (getToken() || status === 'authed') return <Navigate to="/home" replace />;
   // the account session is still being restored: show nothing rather than
   // flash the form at someone who is about to be sent on
   if (status === 'loading') return null;
@@ -60,7 +60,7 @@ export default function SignIn() {
     try {
       const session = await signInWithCode(code, lastName);
       setToken(session.token, session.expires_at, session.person.first_name);
-      navigate('/training', { replace: true });
+      navigate('/home', { replace: true });
     } catch (err) {
       setError(errorKey(err));
       setBusy(false);

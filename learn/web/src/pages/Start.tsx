@@ -2,7 +2,7 @@
  *  the fragment (never sent to a server or kept in logs) and comes out of
  *  the address at once, before the sign-in call answers, so it never
  *  lingers in history or a shared screenshot. Then it is traded for a learn
- *  session and the worker lands on their training. */
+ *  session and the worker lands on Home. */
 import { useEffect, useRef, useState } from 'react';
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 
@@ -42,7 +42,7 @@ export default function Start() {
     signInWithLink(token)
       .then((session) => {
         setToken(session.token, session.expires_at, session.person.first_name);
-        navigate('/training', { replace: true });
+        navigate('/home', { replace: true });
       })
       .catch((err: unknown) => {
         // the token is already out of the address, so "try again" is a

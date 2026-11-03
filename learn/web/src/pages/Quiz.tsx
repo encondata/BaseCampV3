@@ -152,7 +152,7 @@ function QuizPage({ id }: { id: string }) {
   const title = useLoad(() => titleOf(id), [id]);
 
   return (
-    <main className="learn-page learn-reader">
+    <div className="learn-page learn-reader">
       {result ? (
         <Result id={id} result={result} onRetry={() => { setResult(null); setRound((n) => n + 1); }} />
       ) : questions.data && questions.data.length > 0 ? (
@@ -162,7 +162,7 @@ function QuizPage({ id }: { id: string }) {
       ) : (
         <LoadState error={questions.error} onRetry={questions.reload} />
       )}
-    </main>
+    </div>
   );
 }
 

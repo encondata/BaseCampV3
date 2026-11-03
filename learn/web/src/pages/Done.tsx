@@ -10,7 +10,8 @@ import { qrDataUrl } from '@portal/lib/qr';
 
 import LoadState from '../components/LoadState';
 import { t, useLang } from '../lib/i18n';
-import { getFirstName } from '../lib/session';
+import { learnerName } from '../lib/learner';
+import { getToken } from '../lib/session';
 import { getTraining } from '../lib/training';
 import { useLoad } from '../lib/useLoad';
 
@@ -27,14 +28,15 @@ export default function Done() {
   }, [uid]);
 
   if (data && !uid) return <Navigate to="/training" replace />;
-  const first = getFirstName() || person?.first_name || '';
+  // a learn token wins over an account, as it does for every call
+  const { first } = learnerName(getToken() ? null : person);
   // the documents they signed (a finished initiative that is over drops out
   // of the list, so this can be 0: then there is no count to show)
   const total = data?.groups.reduce(
     (n, g) => n + g.items.filter((i) => i.status === 'signed').length, 0) ?? 0;
 
   return (
-    <main className="learn-page learn-done">
+    <div className="learn-page learn-done">
       {!data ? <LoadState error={error} onRetry={reload} /> : (
         <>
           <div className="learn-badge ok big" aria-hidden="true">✓</div>
@@ -50,6 +52,6 @@ export default function Done() {
           <Link className="learn-link" to="/training">{t('done.back')}</Link>
         </>
       )}
-    </main>
+    </div>
   );
 }

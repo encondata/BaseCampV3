@@ -27,7 +27,7 @@ function renderSignIn() {
     <MemoryRouter initialEntries={['/']}>
       <Routes>
         <Route path="/" element={<SignIn />} />
-        <Route path="/training" element={<p>training page</p>} />
+        <Route path="/home" element={<p>home page</p>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -86,7 +86,7 @@ describe('SignIn', () => {
     expect(code()).toBe('0119');
   });
 
-  it('posts the normalized code and last name, keeps the token and opens the training', async () => {
+  it('posts the normalized code and last name, keeps the token and opens Home', async () => {
     const fetchMock = vi.fn().mockResolvedValue(json(200, {
       token: 'learn-tok', expires_at: new Date(Date.now() + 3_600_000).toISOString(),
       person: { first_name: 'Kenji' },
@@ -98,7 +98,7 @@ describe('SignIn', () => {
     await user.paste('k7q-m2x');
     await user.type(screen.getByLabelText('Last name'), '  Watanabe ');
     await user.click(screen.getByRole('button', { name: 'Continue' }));
-    expect(await screen.findByText('training page')).toBeTruthy();
+    expect(await screen.findByText('home page')).toBeTruthy();
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('http://localhost:8000/learn/auth/code');
     expect(init.method).toBe('POST');
@@ -133,7 +133,7 @@ describe('SignIn', () => {
     await user.click(screen.getByRole('button', { name: 'Continue' }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(message));
     expect(getToken()).toBeNull();
-    expect(screen.queryByText('training page')).toBeNull();
+    expect(screen.queryByText('home page')).toBeNull();
   });
 
   it('says so when the server cannot be reached', async () => {

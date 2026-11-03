@@ -29,6 +29,7 @@ import { errorKey } from '../lib/errors';
 import { mmss, signedDay } from '../lib/format';
 import { isUuid } from '../lib/ids';
 import { getLang, isRtl, t, useLang } from '../lib/i18n';
+import { useMarkSigned } from '../lib/learner';
 import { getAssignment, getTraining, signAssignment, type AssignmentRead } from '../lib/training';
 import { useLoad } from '../lib/useLoad';
 
@@ -51,6 +52,7 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
   changed: boolean; onVersionChanged: () => void;
 }) {
   const navigate = useNavigate();
+  const markSigned = useMarkSigned();
   const from = (useLocation().state as { from?: string } | null)?.from;
   // signed: read-only, so none of the sign-off gating below applies
   const review = !!doc.signed_at;
@@ -130,6 +132,8 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
         scrolled_to_end: scrolled,
         version_no: doc.version_no,
       });
+      // the list shows it signed at once; the shell's reload on leaving confirms it
+      markSigned(id, out.signed_at, out.complete);
       navigate(out.complete ? '/done' : '/training', { replace: true });
     } catch (err) {
       setBusy(false);
@@ -154,7 +158,7 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
   };
 
   const rtl = isRtl(doc.language);
-  const back = from === '/history' ? '/history' : '/training';
+  const back = from === '/history' || from === '/home' ? from : '/training';
   return (
     <>
       <div className="learn-readhead">
@@ -240,14 +244,14 @@ function ReaderPage({ id }: { id: string }) {
   // a newer version was published while the worker read the last one
   const [changed, setChanged] = useState(false);
   return (
-    <main className="learn-page learn-reader">
+    <div className="learn-page learn-reader">
       {changed && <p className="learn-banner" role="status">{t('reader.versionChanged')}</p>}
       {doc.data
         ? <ReaderBody key={`${id}:${doc.data.language}:${doc.data.version_no}`} id={id} doc={doc.data}
                       place={place.data} changed={changed}
                       onVersionChanged={() => { setChanged(true); doc.reload(); }} />
         : <LoadState error={doc.error} onRetry={doc.reload} />}
-    </main>
+    </div>
   );
 }
 

@@ -69,15 +69,18 @@ body { background: #FFF9F2; }
 .login-shell.login-light .learn-start-msg { margin: 14px 0 0; font-size: 16px; line-height: 1.5 }
 .login-shell.login-light .learn-start-btn { margin-block-start: 22px; text-decoration: none }
 
-/* ---------- signed-in pages and the error screen ---------- */
-.learn-page, .learn-crash {
+/* ---------- the error screen, and the eyebrow the worker screens share ---------- */
+.learn-crash {
   max-inline-size: 640px; margin: 0 auto; padding: 24px 16px;
   color: #0F172A; font-family: 'Geologica', -apple-system, BlinkMacSystemFont, sans-serif;
 }
-.learn-page .eyebrow, .learn-crash .eyebrow {
+.learn-crash .eyebrow, .learn-page .eyebrow, .portal-page .learn-list-body .eyebrow {
   font-family: 'Fragment Mono', monospace; font-size: 12px; letter-spacing: .12em;
   text-transform: uppercase; color: #64748B;
 }
+/* a group's name in the list is a quiet label, not the portal's page-head eyebrow */
+.portal-page .learn-list-body .eyebrow { display: block }
+.portal-page .learn-list-body .eyebrow::after { content: none }
 .learn-crash pre { white-space: pre-wrap; font-size: 12px; color: #64748B }
 .learn-crash button {
   padding: 10px 18px; border: 0; border-radius: 10px; cursor: pointer;
@@ -85,13 +88,19 @@ body { background: #FFF9F2; }
 }
 
 /* ---------- training list, reader, quiz and done (worker screens) ---------- */
-.learn-page {
+.learn-page, .learn-home, .learn-list {
   --l-ink: #0F172A; --l-mute: #64748B; --l-line: #E2E8F0; --l-orange: #FF6A00;
   --l-orange-bg: #FFF1E3; --l-green: #15803D; --l-green-bg: #E6F6EC; --l-red: #B91C1C;
-  display: flex; flex-direction: column; gap: 12px; min-block-size: 100dvh;
 }
-.learn-top { display: flex; align-items: center; gap: 8px; font-weight: 500; font-size: 14px }
-.learn-mark { inline-size: 24px; block-size: 24px; border-radius: 8px; background: var(--l-orange) }
+/* Training and History: the portal page head, then the list held to a
+   readable width (the page itself takes the full window like Home) */
+.learn-list-body { display: flex; flex-direction: column; gap: 12px; max-inline-size: 760px; margin-block-start: 18px }
+/* the document, quiz and done screens: their own header, centered in the shell's main column */
+.learn-page {
+  display: flex; flex-direction: column; gap: 12px;
+  max-inline-size: 760px; margin-inline: auto; padding: 24px 16px;
+  color: var(--l-ink); font-family: 'Geologica', -apple-system, BlinkMacSystemFont, sans-serif;
+}
 .learn-hi { margin: 0; font-size: 22px; font-weight: 500; letter-spacing: -.01em }
 .learn-sub { margin: 0; font-size: 13px; color: var(--l-mute); line-height: 1.5 }
 .learn-note { margin: 12px 0; color: var(--l-mute); font-size: 14px }
@@ -134,16 +143,6 @@ body { background: #FFF9F2; }
   border: 0; background: transparent; padding: 0 8px; cursor: pointer; font: inherit; font-size: 13px;
   color: #B45309; text-decoration: none; align-self: center;
 }
-.learn-page .learn-langs {
-  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
-  gap: 6px 14px; margin-block-start: 14px; color: var(--l-mute); font-size: 14px;
-}
-.learn-page .learn-langs svg { inline-size: 16px; block-size: 16px; flex: none }
-.learn-page .learn-langs button {
-  border: 0; background: transparent; padding: 2px 0; cursor: pointer; font: inherit; color: inherit;
-  border-block-end: 1px solid transparent;
-}
-.learn-page .learn-langs button.on { color: var(--l-ink); border-block-end-color: var(--l-orange) }
 
 /* reader and quiz */
 .learn-readhead { display: flex; align-items: center; gap: 10px }
@@ -206,3 +205,73 @@ body { background: #FFF9F2; }
   inline-size: 180px; block-size: 180px; padding: 12px; box-sizing: content-box; background: #fff;
   border: 1px solid var(--l-line); border-radius: 14px; image-rendering: pixelated;
 }
+
+/* ---------- the signed-in shell (the portal's NavPanel, topbar and main column) ---------- */
+/* no search box to push them over: the actions sit at the far end */
+.learn-shell .topbar .tb-actions { margin-inline-start: auto }
+.learn-lang-menu { min-inline-size: 180px }
+/* the portal's account menu holds only buttons; Back to portal is a link */
+.learn-shell .portal-nav a.um-item { text-decoration: none }
+
+/* the main column scrolls with a slim themed bar, never the browser default */
+.learn-shell .portal-main::-webkit-scrollbar { inline-size: 10px; block-size: 10px }
+.learn-shell .portal-main::-webkit-scrollbar-track,
+.learn-shell .portal-main::-webkit-scrollbar-corner { background: transparent }
+.learn-shell .portal-main::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--text-mute) 35%, transparent);
+  border: 3px solid transparent; background-clip: padding-box; border-radius: 999px;
+}
+.learn-shell .portal-main::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--text-mute) 60%, transparent) }
+@supports not selector(::-webkit-scrollbar) {
+  .learn-shell .portal-main { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text-mute) 35%, transparent) transparent }
+}
+
+/* right to left: the nav docks on the right (the grid follows dir), so its
+   edge line, active marker, chevrons, overlay and menus mirror */
+[dir='rtl'] .learn-shell .portal-nav { border-right: 0; border-left: 1px solid var(--nav-line, var(--ink-line)) }
+[dir='rtl'] .learn-shell .portal-nav .nav-item a.active::before { left: auto; right: -16px; border-radius: 3px 0 0 3px }
+[dir='rtl'] .learn-shell .portal-nav .nav-sec:not(.open) .nav-sec-head svg { transform: scaleX(-1) }
+[dir='rtl'] .learn-shell :is(.user-chip, .um-item, .pop-item) { text-align: start }
+[dir='rtl'] .learn-shell a.um-item svg { transform: scaleX(-1) }
+[dir='rtl'] .learn-shell .portal-main-col::before { left: auto; right: 0 }
+[dir='rtl'] .learn-shell .portal-nav.overlay { left: auto; right: 0; animation-name: learn-nav-overlay-in-rtl }
+@keyframes learn-nav-overlay-in-rtl { from { transform: translateX(100%) } to { transform: translateX(0) } }
+[dir='rtl'] .learn-shell .topbar .pop-menu { right: auto; left: 0 }
+@media (max-width: 900px) {
+  [dir='rtl'] .learn-shell .portal-nav.docked { border-left-width: 0 }
+}
+
+/* ---------- Home (the portal's dashboard idiom) ---------- */
+/* the two lists sit side by side down to the portal's mobile breakpoint, not the dashboard's 1160px */
+.learn-home .dash-span-6 { grid-column: span 6 }
+.learn-home .dash-span-12 { grid-column: span 12 }
+@media (max-width: 900px) {
+  .learn-home .dash-span-6 { grid-column: span 12 }
+}
+/* a 375px phone keeps the three tiles in one row: tighter, smaller, sub lines wrapping */
+@media (max-width: 600px) {
+  .learn-home .dash-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px }
+  .learn-home .dash-kpi { padding-block: 12px 10px; padding-inline: 10px; gap: 2px }
+  .learn-home .dash-kpi-label { letter-spacing: .08em; overflow-wrap: anywhere }
+  .learn-home .dash-kpi-value { font-size: 22px }
+  .learn-home .dash-kpi-sub { min-block-size: 0; font-size: 11px; line-height: 1.35; overflow-wrap: anywhere }
+}
+.learn-home .dash-panel-head { align-items: center }
+.learn-home .dash-panel-title { margin: 0; font-weight: 400 }
+.learn-home .learn-continue { margin-block-start: 14px }
+.learn-home .learn-note { margin: 0 }
+.learn-clock { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap }
+.learn-clock p { margin: 0; font-size: 14px; color: var(--text-dark); flex: 1 1 260px }
+.learn-clock .learn-cta { inline-size: auto; padding-inline: 22px; flex: none }
+/* an empty panel: a quiet icon, a title line and a hint, centered */
+.learn-empty {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; padding: 22px 12px; text-align: center;
+}
+.learn-empty-icon {
+  inline-size: 44px; block-size: 44px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--l-orange-bg); color: var(--l-orange); margin-block-end: 6px;
+}
+.learn-empty-icon svg { inline-size: 22px; block-size: 22px }
+.learn-empty .dash-panel-empty { padding: 0; font-size: 14px; font-weight: 500; color: var(--text-dark) }
+.learn-empty-hint { margin: 0; max-inline-size: 34ch; font-size: 12.5px; line-height: 1.5; color: var(--text-mute) }

@@ -21,7 +21,9 @@ const row = (n: number, over: Record<string, unknown> = {}) => ({
 });
 
 function renderHistory(items: unknown[]) {
-  const fetchMock = vi.fn().mockResolvedValue(json(200, items));
+  // outside the shell the page loads its own copy of both lists
+  const fetchMock = vi.fn(async (url: string) => json(200, url.endsWith('/learn/history')
+    ? items : { groups: [], complete: false, badge_uid: null }));
   vi.stubGlobal('fetch', fetchMock);
   render(
     <MemoryRouter initialEntries={['/history']}>
@@ -54,18 +56,26 @@ describe('History', () => {
     // a null initiative is the general set; no "updated" tag when nothing newer
     expect(within(rows[1]).getByText(/^Signed Nov [34] · v1 · General training$/)).toBeTruthy();
     expect(within(rows[1]).getByRole('link').getAttribute('href')).toBe('/training/h-2');
-    expect(String(fetchMock.mock.calls[0][0])).toBe('http://localhost:8000/learn/history');
+    expect(fetchMock.mock.calls.map(([u]) => String(u))).toContain('http://localhost:8000/learn/history');
   });
 
   it('says so when nothing is signed yet', async () => {
     renderHistory([]);
-    expect(await screen.findByText('Nothing signed yet.')).toBeTruthy();
+    const title = await screen.findByText('Nothing signed yet.');
+    expect(title.closest('.learn-empty')).not.toBeNull();
+    expect(title.closest('.dash-panel')).not.toBeNull();
+    expect(screen.getByText('Every document you sign stays here so you can reopen it any time.')).toBeTruthy();
     expect(screen.queryByRole('listitem')).toBeNull();
   });
 
-  it('links back to the training list', async () => {
+  it('opens with the portal page head and no back-arrow header of its own', async () => {
     renderHistory([row(1)]);
     await screen.findByText('Doc 1');
-    expect(screen.getByRole('link', { name: 'Back' }).getAttribute('href')).toBe('/training');
+    const h1 = screen.getByRole('heading', { level: 1 });
+    expect(h1.textContent).toBe('Completed training');
+    expect(h1.className).toContain('page-title');
+    expect(document.querySelector('.eyebrow')?.textContent).toBe('Learning');
+    expect(document.querySelector('.portal-page')).not.toBeNull();
+    expect(screen.queryByRole('link', { name: 'Back' })).toBeNull();
   });
 });
