@@ -12,6 +12,7 @@ Email is off unless a test turns it on, and nothing is ever sent.
 Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (sections 4, 6 and 8)
 Plan: docs/superpowers/plans/2026-11-03-notifications-phase2-slice4.md (Task 3; calls 5, 7, 8)"""
 
+import json
 import uuid
 from dataclasses import dataclass
 
@@ -237,10 +238,11 @@ async def test_the_actor_is_not_notified(db):
 
 async def test_access_per_matched_thing(db):
     """Review Focus: three assets of Client A's move match one rule in one transaction, and
-    Client A owns two of them. Client A's user, watching the move, hears of those two, counted;
-    staff watching it hear of all three. A person the rule names who can open none of them is
-    dropped, logged `no_access`. A notification's subjects are its events' (the move): the
-    send-time re-check reads the matched things from the events."""
+    Client A owns two of them. Client A's user, watching the move, hears of those two, counted
+    and with no link (they can't open Status rules); staff watching it hear of all three, linked
+    to the rule's executions. A person the rule names who can open none of them is dropped,
+    logged `no_access`. A notification's subjects are its events' (the move): the send-time
+    re-check reads the matched things from the events."""
     client_a, client_b = await _clients(db)
     w = await _world(db, client_id=client_a.id)
     [first] = await _roster(db, w.initiative, "SN-A", client_id=client_a.id)
@@ -261,7 +263,7 @@ async def test_access_per_matched_thing(db):
     assert await _sweep() == 2
     [some] = await _notifications(viewer)
     assert (some.kind, some.title, some.body, some.link) == (
-        RULE_MATCHED, "Rule A (2)", "Initiative A · 2", rule_link(rule))
+        RULE_MATCHED, "Rule A (2)", "Initiative A · 2", None)
     assert some.payload == {"events": [event.id],
                             "subjects": [_ref("initiative", w.initiative)], "via": ["watch"]}
     [every] = await _notifications(staff)
@@ -285,15 +287,14 @@ async def test_one_seen_of_a_batch_is_counted_too(db):
     theirs = await _roster(db, w.initiative, "SN-B", "SN-C", client_id=client_b.id)
     viewer = await _person(db, "B", role="client_viewer", client_id=client_a.id)
     await _watch(db, viewer, _on(w.initiative))
-    rule = await _add_rule(db, "Rule A", _notify(watchers=True))
+    await _add_rule(db, "Rule A", _notify(watchers=True))
     for asset in (*theirs, mine):
         await _match(db, asset=asset, site=w.site)
     await db.commit()
 
     assert await _sweep() == 1
     [note] = await _notifications(viewer)
-    assert (note.title, note.body, note.link) == ("Rule A (1)", "Initiative A · 1",
-                                                  rule_link(rule))
+    assert (note.title, note.body, note.link) == ("Rule A (1)", "Initiative A · 1", None)
     assert note.payload["subjects"] == [_ref("initiative", w.initiative)]
 
 
@@ -337,10 +338,12 @@ async def test_one_match_names_only_what_its_person_can_open(db):
 
 
 async def test_a_hidden_initiative_is_counted_bare(db):
-    """Controller ruling: counted, an initiative its person can't open gives its count alone.
-    Client B's move holds an asset Client A owns and one of Client B's own. Client A's user hears
-    of theirs with the bare count, Client B's user of their own by the move's name, and staff
-    denied initiatives of both, with the count alone."""
+    """Controller ruling: counted, an initiative its person can't open gives its count alone,
+    and its id is no more in the payload's subjects than its name is in the text. Client B's
+    move holds an asset Client A owns and one of Client B's own. Client A's user hears of
+    theirs with the bare count, Client B's user of their own by the move's name, and staff
+    denied initiatives of both, with the count alone. (Only staff can open the rule's
+    executions, so only they are linked to them.)"""
     client_a, client_b = await _clients(db)
     w = await _world(db, client_id=client_b.id)
     [lent] = await _roster(db, w.initiative, "SN-A", client_id=client_a.id)
@@ -356,12 +359,53 @@ async def test_a_hidden_initiative_is_counted_bare(db):
     await db.commit()
 
     assert await _sweep() == 4
-    for person, title, body in ((viewer_a, "Rule A (1)", "1"),
-                                (viewer_b, "Rule A (1)", "Initiative A · 1"),
-                                (staff, "Rule A (2)", "Initiative A · 2"),
-                                (no_initiatives, "Rule A (2)", "2")):
+    move = [_ref("initiative", w.initiative)]
+    for person, title, body, link, subjects in (
+            (viewer_a, "Rule A (1)", "1", None, []),
+            (viewer_b, "Rule A (1)", "Initiative A · 1", None, move),
+            (staff, "Rule A (2)", "Initiative A · 2", rule_link(rule), move),
+            (no_initiatives, "Rule A (2)", "2", rule_link(rule), [])):
         [note] = await _notifications(person)
-        assert (note.title, note.body, note.link) == (title, body, rule_link(rule)), \
+        assert (note.title, note.body, note.link) == (title, body, link), person.last_name
+        assert note.payload["subjects"] == subjects, person.last_name
+        if not subjects:                    # the move is named nowhere they can read
+            assert str(w.initiative) not in json.dumps(note.payload), person.last_name
+
+
+async def test_a_counted_notice_links_only_people_who_can_open_status_rules(db):
+    """Controller ruling: the link to a rule's executions goes to a person only if they can open
+    the Status rules page, which is global-only. An admin, and staff, hear two matches counted and
+    linked to the rule's executions; Client A's user, who watches the move, and staff denied the
+    page, hear them counted with no link. One match links to the matched thing, which each of
+    them can open."""
+    client_a, _client_b = await _clients(db)
+    w = await _world(db, client_id=client_a.id)
+    first, second, third = await _roster(db, w.initiative, "SN-A", "SN-B", "SN-C",
+                                         client_id=client_a.id)
+    admin = await _person(db, "B", role="admin")
+    staff = await _person(db, "C")
+    no_page = await _denied(db, "D", "status_rules")
+    viewer = await _person(db, "E", role="client_viewer", client_id=client_a.id)
+    await _watch(db, viewer, _on(w.initiative))
+    rule = await _add_rule(db, "Rule A", _notify(people=[admin.id, staff.id, no_page.id],
+                                                 watchers=True))
+    for asset in (first, second):           # one transaction: one event of two
+        await _match(db, asset=asset, site=w.site)
+    await db.commit()
+
+    assert await _sweep() == 4
+    for person, link in ((admin, rule_link(rule)), (staff, rule_link(rule)),
+                         (no_page, None), (viewer, None)):
+        [note] = await _notifications(person)
+        assert (note.title, note.body, note.link) == ("Rule A (2)", "Initiative A · 2", link), \
+            person.last_name
+
+    await _match(db, asset=third, site=w.site)
+    await db.commit()
+    assert await _sweep() == 4
+    for person in (admin, staff, no_page, viewer):
+        latest = (await _notifications(person))[-1]
+        assert (latest.title, latest.link) == ("Rule A: SN-C", f"/assets?open={third}"), \
             person.last_name
 
 
@@ -474,8 +518,10 @@ async def test_matches_with_no_initiative_are_counted_alone(db):
 
 async def test_a_rule_deleted_before_the_sweep(db):
     """A rule deleted after it matched: its events lose their rule but still reach the people
-    it named (by "direct": there is no rule to name), counted under the kind's label with no
-    link when there are several, and no rule name goes in the log."""
+    it named (by "direct": there is no rule to name), and no rule name goes in the log. When
+    there are several of them they are counted under the kind's label, with no link: the rule
+    has no name left to count them under and no executions to link to. One alone is told as it
+    was written (the next test)."""
     w = await _world(db)
     first, second = await _roster(db, w.initiative, "SN-A", "SN-B")
     person = await _person(db, "B")
@@ -493,6 +539,33 @@ async def test_a_rule_deleted_before_the_sweep(db):
     assert (note.kind, note.title, note.body, note.link) == (
         RULE_MATCHED, "Status rule matched (2)", "Initiative A · 2", None)
     assert note.payload["via"] == ["direct"]
+    [written] = await _log("inbox_written")
+    assert written.detail["names"] == {}
+
+
+async def test_a_deleted_rules_single_match_keeps_its_text(db):
+    """A rule deleted after it matched once: that one match is told as it was written, with the
+    rule's name in its title, the move and the site in its line, and a link to the matched thing,
+    though the rule is gone. It reaches the person the rule named by "direct", and no rule name
+    goes in the log."""
+    w = await _world(db)
+    [asset] = await _roster(db, w.initiative, "SN-A")
+    person = await _person(db, "B")
+    rule = await _add_rule(db, "Rule A", _notify(people=[person.id]))
+    await _match(db, asset=asset, site=w.site)
+    await db.commit()
+    await db.delete(await db.get(StatusRule, rule))
+    await db.commit()
+    invalidate_cache()
+    [event] = await _events()
+    assert event.rule_id is None
+
+    assert await _sweep() == 1
+    [note] = await _notifications(person)
+    assert (note.kind, note.title, note.body, note.link) == (
+        RULE_MATCHED, "Rule A: SN-A", "Initiative A · Site A", f"/assets?open={asset}")
+    assert note.payload == {"events": [event.id], "subjects": [_ref("initiative", w.initiative)],
+                            "via": ["direct"]}
     [written] = await _log("inbox_written")
     assert written.detail["names"] == {}
 

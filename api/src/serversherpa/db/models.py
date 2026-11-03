@@ -1007,7 +1007,9 @@ class RawScan(Base):
         ForeignKey("initiatives.id", ondelete="SET NULL"),
         comment="the move this scan belongs to (the kiosk's current move)")
     # RFID sightings of an asset from another of the client's moves
-    # (migration 0098): recorded, but the scan worker applies no status.
+    # (migration 0098): recorded, and the scan worker runs only the status
+    # rules that ask for sightings (an "Off-move sighting equals true"
+    # condition).
     off_move: Mapped[bool] = mapped_column(server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 

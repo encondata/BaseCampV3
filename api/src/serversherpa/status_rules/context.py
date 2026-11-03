@@ -1,5 +1,8 @@
 """Evaluation context for one processed scan: the scan row plus the
-matched entity and (asset matches only) the active-initiative pair.
+matched entity and the initiative it acts in: for an asset match the
+active-initiative pair (initiative_asset and initiative); for an off-move
+sighting, of an asset, a container or a person, the move the station
+uploaded it for (initiative alone, None when it named none).
 For asset matches, container is the asset's containing container; for
 container matches, it is the matched container.
 Dotted keys resolve leniently — a missing entity yields None so

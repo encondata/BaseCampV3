@@ -217,8 +217,8 @@ def _announce(session: Session, batch: _Batch) -> None:
 
 # A savepoint keeps a mark, how far each batch had got when it began, until it is released.
 # One that ends still holding its mark did not keep its work: it rolled back, or a failed flush
-# rolled it back and its exit only closed it (SQLAlchemy fires no rollback event for that
-# savepoint then), so it takes back the matches added inside it.
+# rolled it back and its exit only closed it (the session's after_rollback fires for that, but
+# after_soft_rollback never names the savepoint), so it takes back the matches added inside it.
 
 @event.listens_for(Session, "after_transaction_create")
 def _mark_savepoint(session: Session, transaction: SessionTransaction) -> None:

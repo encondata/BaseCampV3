@@ -213,6 +213,23 @@ def test_validate_action_for_notify():
         == "bad_param"
 
 
+def test_validate_action_takes_ids_spelled_one_way_and_named_once():
+    """Ids are spelled as str(UUID) writes them, and a list names each once: the portal's
+    pickers and summaries match ids as strings, so another spelling of an id would read as one
+    that is gone (and could be picked again), and the same id twice would be two chips."""
+    one, two = "3f2b8c1e-7d4a-4e5f-9a6b-1c2d3e4f5a6b", "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
+    ok = {"people": [one, two], "groups": [two], "watchers": False}
+    assert validate_action("notify", ok) is None
+    spellings = [one.upper(), one.replace("-", ""), f"{{{one}}}", f"urn:uuid:{one}"]
+    for bad in (*([spelling] for spelling in spellings), [one, spellings[0]],
+                [one, one], [one, two, one], [one, one, two]):
+        assert validate_action("notify", {**ok, "people": bad}) == "bad_param", bad
+        assert validate_action("notify", {**ok, "groups": bad}) == "bad_param", bad
+    # one that is no id at all stays a bad param, in a list of good ones as on its own
+    assert validate_action("notify", {**ok, "people": [one, "x"]}) == "bad_param"
+    assert validate_action("notify", {**ok, "people": [one, one.upper()[:-1]]}) == "bad_param"
+
+
 # ── saving a rule ───────────────────────────────────────────────────
 
 def _body(*params: dict, name="Rule A") -> dict:

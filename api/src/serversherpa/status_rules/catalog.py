@@ -326,15 +326,16 @@ ACTIONS: dict[str, ActionDef] = {a.key: a for a in _ACTION_LIST}
 
 
 def _ids(value: Any) -> bool:
-    """A people or groups param: a list of id strings."""
+    """A people or groups param: a list of id strings, each spelled the way str(UUID) writes
+    it (lowercase, hyphenated: the portal's pickers and summaries match ids as strings), and
+    none named twice."""
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         return False
     try:
-        for v in value:
-            uuid.UUID(v)
+        spelled_alike = all(str(uuid.UUID(v)) == v for v in value)
     except ValueError:
         return False
-    return True
+    return spelled_alike and len(set(value)) == len(value)
 
 
 def validate_action(action_type: str, params: dict) -> str | None:

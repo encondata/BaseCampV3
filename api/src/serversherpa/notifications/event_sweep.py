@@ -30,9 +30,12 @@ transaction:
    name instead, a line per initiative with its count and the matches with no initiative
    counted on their own, and link to the rule's executions; so is one notice the person can
    open only part of, since its text speaks for all of it. A rule's text is written for its
-   person: it names an initiative or a site only when they can open it.
+   person: it names an initiative or a site only when they can open it, and it links to the
+   rule's executions only when they can open the Status rules page (a global-only one), else
+   to nothing.
    The payload carries the event ids, the events' subjects and the routes (`via`) for the
-   send-time re-check (a rule's matched ids stay on its events, so the payload stays small),
+   send-time re-check (a rule's matched ids stay on its events, so the payload stays small,
+   and an initiative its person can't open is left out of the subjects, as of the text),
    and the inbox log row the routes, the event ids and the names of the groups and rules among
    the routes.
 4. **Finish:** every handled event is marked sent, and it all commits at once. A write that
@@ -83,7 +86,8 @@ EVENT_BATCH = 200
 # share a list of their own. Device offline has none: its items carry their device's list, and
 # items from different lists (readers and routers, say) get no link. Status rule matched has
 # none either: a rule's notices link to the matched thing or to the rule's executions (plan
-# call 5), and only a deleted rule's, counted, link nowhere.
+# call 5, the latter for people who can open Status rules), and only a deleted rule's, counted,
+# and a counted one for someone who can't open that page link nowhere.
 LIST_PAGES: dict[str, str | None] = {"initiative_status_changed": "/initiatives",
                                      "truck_status_changed": "/logistics/trucks",
                                      "device_offline": None,
@@ -152,12 +156,15 @@ class Item:
 
 @dataclass(frozen=True)
 class Shown:
-    """What one person's status rule notices may name: the initiatives and sites among theirs
-    that the person can open, each by name, by id as the items hold it (controller ruling: a
-    notice never names a thing its person can't open)."""
+    """What one person's status rule notices may name and link: the initiatives and sites among
+    theirs that the person can open, each by name, by id as the items hold it (controller
+    ruling: a notice never names a thing its person can't open), and whether they can open the
+    Status rules page (`rules`), where a counted notice links to its rule's executions. The
+    page is global-only, so a client's user, say, cannot."""
 
     initiatives: Mapping[str, str] = field(default_factory=dict)
     sites: Mapping[str, str] = field(default_factory=dict)
+    rules: bool = False
 
 
 # The people who hear an event, each with the item as they hear it and the routes that reach
@@ -263,7 +270,7 @@ def _compose(kind: str, items: Sequence[Item], names: Mapping[str, str],
     says what it says. Several are counted under the kind's label, a line each, and link to the
     initiative they all belong to, else to the list they all share, else to the kind's list
     page (none for some kinds). A status rule's notices are told their own way (`_rule_text`),
-    naming only what `shown` lets this person see."""
+    naming and linking only what `shown` lets this person open."""
     if items[0].matched_type is not None:
         return _rule_text(kind, items, names, shown)
     if len(items) == 1:
@@ -288,12 +295,13 @@ def _rule_text(kind: str, items: Sequence[Item], names: Mapping[str, str],
 
     One match they can open says "{rule}: {thing}" as the event holds it, with a line of the
     initiative and the scan's site, a hidden one left out with its joiner, and links to the
-    thing (plan call 5). Anything else is counted: "{rule} ({count})", a line per initiative,
-    "{initiative} · {count}" or the count alone when the initiative is hidden, in the order they
-    came, then the matches with no initiative counted on a line of their own, linked to the
-    rule's executions. Only the matched things the person can open count. A rule deleted since
-    it matched has no name left to give: its notices are counted under the kind's label, with
-    the kind's list page (none)."""
+    thing (plan call 5), which they can open. Anything else is counted: "{rule} ({count})", a
+    line per initiative, "{initiative} · {count}" or the count alone when the initiative is
+    hidden, in the order they came, then the matches with no initiative counted on a line of
+    their own, linked to the rule's executions when `shown` says the person can open Status
+    rules (controller ruling), else to nothing. Only the matched things the person can open
+    count. A rule deleted since it matched has no name left to give: its notices are counted
+    under the kind's label, with the kind's list page (none)."""
     if len(items) == 1 and items[0].whole and len(items[0].matched_ids) == 1:
         item = items[0]
         where = (shown.initiatives.get(item.initiative_id) if item.initiative_id else None,
@@ -319,7 +327,7 @@ def _rule_text(kind: str, items: Sequence[Item], names: Mapping[str, str],
         info = kind_info(kind)
         return (f"{info.label if info is not None else kind} ({total})", "\n".join(lines),
                 LIST_PAGES.get(kind))
-    return f"{rule} ({total})", "\n".join(lines), rule_link(rule_id)
+    return f"{rule} ({total})", "\n".join(lines), rule_link(rule_id) if shown.rules else None
 
 
 async def _names(db: AsyncSession, routes: Iterable[str],
@@ -349,9 +357,10 @@ async def _shown(db: AsyncSession, batches: Mapping[tuple[uuid.UUID, str, uuid.U
                                                     Batch]) -> dict[uuid.UUID, Shown]:
     """For each person with status rule notices in the sweep, the initiatives and scan sites
     their notices name that they can open now, by name: a notice never names a thing its person
-    can't open (controller ruling). Asked for everyone at once: a query per kind of thing, the
-    names, one batch of access, and a probe more only for a person with row scope (a client's
-    user, for initiatives; sites have none)."""
+    can't open (controller ruling). Also whether they can open the Status rules page, from the
+    same access, for the link of a counted notice. Asked for everyone at once: a query per kind
+    of thing, the names, one batch of access, and a probe more only for a person with row scope
+    (a client's user, for initiatives; sites have none)."""
     wanted: dict[uuid.UUID, list[Item]] = {}
     for (person_id, _kind, _rule_id), batch in batches.items():
         for item in batch.items:
@@ -368,7 +377,8 @@ async def _shown(db: AsyncSession, batches: Mapping[tuple[uuid.UUID, str, uuid.U
         db, "site", Site,
         {person_id: {item.site_id for item in items} for person_id, items in wanted.items()},
         access)
-    return {person_id: Shown(initiatives.get(person_id, {}), sites.get(person_id, {}))
+    return {person_id: Shown(initiatives.get(person_id, {}), sites.get(person_id, {}),
+                             rules=access[person_id].can("status_rules", "view"))
             for person_id in wanted}
 
 
@@ -395,11 +405,17 @@ async def _write(db: AsyncSession, person_id: uuid.UUID, kind: str, batch: Batch
     """One person's notification of one kind (or one rule); True when it was written (their
     Inbox switch for the category may turn it down). The payload's subjects are the events'
     (for a rule's notice its initiative, or the thing when there is none): the matched ids stay
-    on the events, where the send-time re-check reads them, so the payload stays small."""
+    on the events, where the send-time re-check reads them, so the payload stays small. A rule's
+    notice keeps an initiative among them only if its person can open it, as it names it in the
+    text only then; its other subjects are matched things, which they can open by construction
+    (they hear only of those)."""
     title, body, link = _compose(kind, batch.items, names, shown)
     via = sorted(batch.routes)
     events = [item.event_id for item in batch.items]
-    subjects = [thing.to_json() for thing in dict.fromkeys(item.subject for item in batch.items)]
+    rule_notice = batch.items[0].matched_type is not None
+    subjects = [thing.to_json() for thing in dict.fromkeys(item.subject for item in batch.items)
+                if not rule_notice or thing.type != "initiative"
+                or str(thing.id) in shown.initiatives]
     row = await notify(db, person_id, kind, title, body=body, link=link,
                        payload={"events": events, "subjects": subjects, "via": via},
                        log_detail={"via": via, "events": events,
