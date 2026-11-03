@@ -2,20 +2,28 @@
 Phase 2 Task 2): who a page/folder/space event reaches — watchers of the
 node, its ancestors and its space, never the actor, never someone who
 can't view the node when it's sent, once each — the notification's
-shape (title, absolute link, payload), auto-watching, and the routes
-that emit the events (create, copy, upload complete, publish)."""
+shape (title, absolute link, payload), auto-watching, the routes
+that emit the events (create, copy, upload complete, publish), and the
+send-time re-check of a wiki notice's email (`access_recheck`)."""
 import logging
 import uuid
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 
 from serversherpa.config import get_settings
+from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
     Client,
+    EmailOutbox,
     Notification,
     NotificationGroup,
+    NotificationHeld,
+    NotificationLog,
     NotificationWatch,
+    PermissionOverride,
     Person,
     UserAccount,
     WikiComment,
@@ -23,8 +31,14 @@ from serversherpa.db.models import (
     WikiPage,
     WikiReview,
 )
+from serversherpa.mail import outbox as outbox_mod
+from serversherpa.mail.delivery import deliver_once
+from serversherpa.notifications import email as email_mod
+from serversherpa.notifications.email import recheck_before_send
+from serversherpa.notifications.summary import run_summaries_once
 from serversherpa.services import storage
 from serversherpa.wiki import notify
+from tests.test_mail_delivery import FakeSend, _assert_dropped, _run
 from tests.wiki_helpers import (
     _create,
     _put_grants,
@@ -576,3 +590,214 @@ async def test_counts_only_cover_notifications_actually_written(client, db):
     assert await notify.to_person(db, s["owner_id"], kind="wiki_update", title="Export",
                                   path="/exports/abc", event="export_ready") is False
     assert await _inbox(db, s["owner_id"]) == []
+
+
+# ── the send-time re-check ──────────────────────────────────────────
+# A wiki notice's email, queued or held for a summary, is asked again just before it goes out
+# (email.recheck_notification): can its person still open the page it is about, by the wiki's
+# own rule? What changes meanwhile is done through the wiki's own routes, and the re-check is
+# asked in a session of its own, as the delivery worker and the summary sweep ask it. Nothing
+# is ever sent to a real server.
+
+CHICAGO = ZoneInfo("America/Chicago")
+# Quiet hours from 9:00 PM to 6:00 AM, every day: an email written at EVENING is held for the
+# summary, which is due an hour before they end.
+QUIET = {"notif": {"schedule": {"timezone": "America/Chicago",
+                                "quiet_start": "21:00", "quiet_end": "06:00"}}}
+EVENING = datetime(2026, 11, 2, 22, 0, tzinfo=CHICAGO)
+MORNING = datetime(2026, 11, 3, 5, 0, tzinfo=CHICAGO)
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """Set the instant an email is decided (email._now) and queued (outbox._now)."""
+    def set_to(instant: datetime) -> datetime:
+        monkeypatch.setattr(email_mod, "_now", lambda: instant)
+        monkeypatch.setattr(outbox_mod, "_now", lambda: instant)
+        return instant
+    return set_to
+
+
+async def _mail_of(person_id) -> EmailOutbox:
+    """The one email queued for the person."""
+    async with get_sessionmaker()() as session:
+        return await session.scalar(select(EmailOutbox)
+                                    .where(EmailOutbox.person_id == person_id))
+
+
+async def _recheck(mail) -> str | None:
+    """What the delivery worker asks just before it sends: in a session of its own."""
+    async with get_sessionmaker()() as session:
+        return await recheck_before_send(session, mail)
+
+
+async def _held() -> list[NotificationHeld]:
+    async with get_sessionmaker()() as session:
+        return list(await session.scalars(select(NotificationHeld)
+                                          .order_by(NotificationHeld.id)))
+
+
+async def _published_again(client, db, s, *readers) -> dict:
+    """Runbook, made and so watched by the owner, published, and watched by each of `readers`
+    (their headers), is published again by the editor: each of its watchers gets a
+    wiki_update. Returns the page."""
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    await publish_via_db(db, page["id"])
+    for headers in readers:
+        await _watch(client, headers, node=page)
+    await _set_draft(client, s["editor"], page["id"], "v2")
+    await publish_via_api(client, s["editor"], page["id"])
+    return page
+
+
+def _named_only(s, *readers) -> list[dict]:
+    """The library's grants without `internal`: its manager, its editor and `readers`, who read
+    it by name."""
+    return [{"principal_type": "person", "principal_id": str(s["owner_id"]), "level": "manage"},
+            {"principal_type": "person", "principal_id": str(s["editor_id"]), "level": "edit"},
+            *({"principal_type": "person", "principal_id": str(person_id), "level": "view"}
+              for person_id in readers)]
+
+
+async def test_a_queued_wiki_email_is_dropped_once_the_page_is_private(client, db, email_on):
+    """Once its author makes the page private, a reader's queued email of it is dropped
+    `no_access`, and the author's goes out. Not watching the page any more drops nothing: a
+    wiki notice carries no route, and most aren't a watch's."""
+    s = await _setup(client, db)
+    page = await _published_again(client, db, s, s["viewer"])
+    reader, author = await _mail_of(s["viewer_id"]), await _mail_of(s["owner_id"])
+    assert (reader.kind, author.kind) == ("wiki_update", "wiki_update")
+    assert await _recheck(reader) is None
+
+    await _run(delete(NotificationWatch).where(NotificationWatch.person_id == s["viewer_id"]))
+    assert await _recheck(reader) is None
+
+    resp = await client.patch(f"/wiki/nodes/{page['id']}/privacy", headers=s["owner"],
+                              json={"is_private": True})
+    assert resp.status_code == 200, resp.text
+    assert await _recheck(reader) == "no_access"
+    assert await _recheck(author) is None
+
+    send = FakeSend()
+    assert await deliver_once(get_sessionmaker(), send=send) == 2
+    assert [call["to"] for call in send.calls] == [author.to_address]
+    log = await _assert_dropped(reader.id, "no_access")
+    assert (log.person_id, log.notification_id, log.kind, log.category) == (
+        s["viewer_id"], reader.notification_id, "wiki_update", "wiki")
+
+
+async def test_a_queued_wiki_email_is_dropped_once_its_reader_loses_their_level(
+        client, db, email_on):
+    """A reader who loses their level on the page (the library stops letting all staff read
+    it) has their queued email of it dropped `no_access`; a reader the library still names gets
+    theirs."""
+    s = await _setup(client, db)
+    keeper_h, keeper = await login_as(client, db)
+    await _published_again(client, db, s, s["viewer"], keeper_h)
+    lost, kept = await _mail_of(s["viewer_id"]), await _mail_of(keeper)
+    owners = await _mail_of(s["owner_id"])
+
+    await _put_grants(client, s["owner"], s["space"], _named_only(s, keeper))
+    assert await _recheck(lost) == "no_access"
+    assert await _recheck(kept) is None
+
+    send = FakeSend()
+    assert await deliver_once(get_sessionmaker(), send=send) == 3
+    assert sorted(call["to"] for call in send.calls) == sorted(
+        [kept.to_address, owners.to_address])
+    await _assert_dropped(lost.id, "no_access")
+
+
+async def test_a_queued_wiki_email_of_a_page_in_the_trash_or_gone_is_dropped(
+        client, db, email_on):
+    """A page in the trash opens for nobody, so its emails are dropped `no_access` meanwhile,
+    and go again once it is restored; a page deleted for good opens for nobody either."""
+    s = await _setup(client, db)
+    page = await _published_again(client, db, s, s["viewer"])
+    mails = [await _mail_of(s["viewer_id"]), await _mail_of(s["owner_id"])]
+
+    async def trash() -> str:
+        resp = await client.delete(f"/wiki/nodes/{page['id']}", headers=s["owner"])
+        assert resp.status_code == 200, resp.text
+        return resp.json()["batch_id"]
+
+    batch_id = await trash()
+    assert [await _recheck(mail) for mail in mails] == ["no_access", "no_access"]
+    resp = await client.post(f"/wiki/trash/{batch_id}/restore", headers=s["owner"])
+    assert resp.status_code == 200, resp.text
+    assert [await _recheck(mail) for mail in mails] == [None, None]
+
+    batch_id = await trash()
+    resp = await client.delete(f"/wiki/trash/{batch_id}", headers=s["owner"])
+    assert resp.status_code == 204, resp.text
+    assert await db.scalar(select(WikiNode.id).where(WikiNode.id == uuid.UUID(page["id"]))) \
+        is None
+    assert [await _recheck(mail) for mail in mails] == ["no_access", "no_access"]
+
+
+async def test_a_held_wiki_email_is_dropped_from_the_summary_when_its_reader_cant_see_it(
+        client, db, email_on, clock):
+    """An email held for the summary is asked the same when the summary is due: the reader who
+    lost their level on the page is dropped from it `no_access`, and the reader the library
+    still names gets their summary."""
+    s = await _setup(client, db)
+    keeper_h, keeper = await login_as(client, db)
+    await _run(update(UserAccount)
+               .where(UserAccount.person_id.in_([s["viewer_id"], keeper])).values(ui_prefs=QUIET))
+    clock(EVENING)
+    await _published_again(client, db, s, s["viewer"], keeper_h)
+    held = {row.person_id: row for row in await _held()}
+    assert set(held) == {s["viewer_id"], keeper}
+
+    await _put_grants(client, s["owner"], s["space"], _named_only(s, keeper))
+    clock(MORNING)
+    assert await run_summaries_once(get_sessionmaker(), now=MORNING) == 1      # the keeper's
+    assert await _held() == []
+    async with get_sessionmaker()() as session:
+        dropped = list(await session.scalars(select(NotificationLog).where(
+            NotificationLog.event == "email_skipped")))
+        summaries = list(await session.scalars(select(EmailOutbox).where(
+            EmailOutbox.template == "notification_summary")))
+    assert [(row.person_id, row.notification_id, row.kind, row.reason) for row in dropped] == [
+        (s["viewer_id"], held[s["viewer_id"]].notification_id, "wiki_update", "no_access")]
+    assert [summary.person_id for summary in summaries] == [keeper]
+
+
+async def test_a_wiki_export_email_is_never_rechecked_for_access(client, db, email_on):
+    """An export's notice is about no page (its payload names the job, not a node), so the
+    re-check asks nothing of the wiki for it: its email goes even to someone who can't read the
+    wiki at all any more."""
+    _, person = await login_as(client, db)
+    assert await notify.to_person(db, person, kind="wiki_export_ready",
+                                  title="Your export is ready", path="/exports/abc",
+                                  event="export_ready", payload={"job_id": "abc"})
+    await db.commit()
+    mail = await _mail_of(person)
+    assert mail.kind == "wiki_export_ready"
+
+    db.add(PermissionOverride(person_id=person, resource="wiki", action="view", allow=False))
+    await db.commit()
+    assert await _recheck(mail) is None
+
+
+async def test_the_wiki_check_comes_where_no_access_does(client, db, email_on):
+    """The first reason that applies decides, and the wiki's check is no access: an inactive
+    person comes before it, the Email switch after it."""
+    s = await _setup(client, db)
+    await _published_again(client, db, s, s["viewer"])
+    mail = await _mail_of(s["viewer_id"])
+    await _put_grants(client, s["owner"], s["space"], _named_only(s))
+    await _run(update(UserAccount).where(UserAccount.person_id == s["viewer_id"])
+               .values(ui_prefs={"notif": {"switches": {"wiki": {"email": False}}}}))
+    await _run(update(Person).where(Person.id == s["viewer_id"])
+               .values(archived_at=datetime.now(UTC)))
+
+    assert await _recheck(mail) == "recipient_inactive"
+    await _run(update(Person).where(Person.id == s["viewer_id"]).values(archived_at=None))
+    assert await _recheck(mail) == "no_access"
+    await _put_grants(client, s["owner"], s["space"], [
+        *_named_only(s), {"principal_type": "internal", "level": "view"}])
+    assert await _recheck(mail) == "category_turned_down"
+    await _run(update(UserAccount).where(UserAccount.person_id == s["viewer_id"])
+               .values(ui_prefs={}))
+    assert await _recheck(mail) is None

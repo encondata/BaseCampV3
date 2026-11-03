@@ -324,6 +324,13 @@ async def _visible(db: AsyncSession, person_id: uuid.UUID, rows: Sequence[_Row])
             if (thing := thing_of(watch)) is None or thing in seen]
 
 
+async def can_open(db: AsyncSession, person_id: uuid.UUID, watch: NotificationWatch) -> bool:
+    """Whether the person can open the watch's thing now, by the rule the lists go by
+    (`_visible`); an Everything watch has no thing to open, so always. The routes that change
+    or remove one watch answer by it, so they and the lists can't drift."""
+    return bool(await _visible(db, person_id, [(watch, None)]))
+
+
 async def _person_rows(db: AsyncSession, person_id: uuid.UUID) -> list[_Row]:
     """The watches that speak for the person: their own, then those of the Active groups they
     belong to (a Paused group delivers nothing), each newest first. Access is not asked."""

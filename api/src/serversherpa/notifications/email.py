@@ -16,8 +16,11 @@ before sending, whether a queued email is still wanted (same spec, section 4);
 `recheck_notification()` is the part of it the summary sweep shares. For a
 notification the event sweep wrote it also asks whether the person can still
 open what it is about and is still reached by a watch or a group
-(event_sweep.watch_recheck; phase 2 spec, section 4). A Device offline email is also dropped once
-every device in it has been seen again (`back_online`; same spec, section 5)."""
+(event_sweep.watch_recheck; phase 2 spec, section 4), and for a wiki notice
+about a page, folder or file whether they can still open it, by the wiki's own
+rule (wiki/notify.access_recheck). A Device offline email is also dropped
+once every device in it has been seen again (`back_online`; same spec,
+section 5)."""
 
 import uuid
 from dataclasses import dataclass
@@ -346,10 +349,11 @@ async def recheck_notification(db: AsyncSession, notification: Notification | No
     person's switches or the company defaults may have changed. The checks run
     in order and the first that fails decides: notification_gone, resolved,
     back_online (Device offline only), hidden, read, recipient_inactive,
-    no_access and not_watching (only a notification the event sweep wrote can
-    fail those two), then category_turned_down (the effective Email switch is
-    now off). `contact` is the recipient, loaded when None is passed. Timing
-    is not re-computed. Writes nothing.
+    no_access (a notification the event sweep wrote, or a wiki notice about a
+    page, folder or file: wiki/notify.access_recheck) and not_watching (the
+    event sweep's only), then category_turned_down (the effective Email switch
+    is now off). `contact` is the recipient, loaded when None is passed.
+    Timing is not re-computed. Writes nothing.
 
     `resolved` comes before `hidden` and `read` because deciding an approval
     marks every copy of it read: the log must name the decision, not a read
@@ -370,9 +374,10 @@ async def recheck_notification(db: AsyncSession, notification: Notification | No
         contact = await load_contact(db, notification.person_id)
     if contact is None or not contact.active:
         return "recipient_inactive"
-    # Imported here: the event sweep reaches notify(), which reaches this module.
+    # Imported here: the event sweep and the wiki reach notify(), which reaches this module.
     from serversherpa.notifications.event_sweep import watch_recheck
-    reason = await watch_recheck(db, notification)
+    from serversherpa.wiki.notify import access_recheck
+    reason = await watch_recheck(db, notification) or await access_recheck(db, notification)
     if reason is not None:
         return reason
     if not effective_switches(info, contact, company).email:

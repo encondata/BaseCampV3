@@ -44,13 +44,13 @@ from serversherpa.db.models import (
     TrustedDevice,
 )
 from serversherpa.db.ordering import natural
-from serversherpa.notifications.access import viewers
 from serversherpa.notifications.requests import RequestError, cancel_request, create_request
 from serversherpa.notifications.watches import (
     EVERYTHING,
     WIKI_THINGS,
     WatchError,
     add_watch,
+    can_open,
     clean_kinds,
     own_watch_on,
     person_watches,
@@ -425,12 +425,11 @@ async def update_my_watch(
     """Choose the events of one of my watches; none means every event that applies. A wiki
     watch names none (it hears every page update and comment): any is 422 `invalid_kind`."""
     watch = await _my_watch(db, watch_id, user.person.id)
-    thing = thing_of(watch)
     # A watch on something I can't open stays stored but out of sight, as in the list: its
     # answer would carry the thing's name.
-    if thing is not None and user.person.id not in await viewers(
-            db, thing, [user.person.id], access={user.person.id: user.access}):
+    if not await can_open(db, user.person.id, watch):
         raise HTTPException(status_code=404, detail={"code": "watch_not_found"})
+    thing = thing_of(watch)
     try:
         watch.kinds = clean_kinds(thing.type if thing is not None else EVERYTHING, body.kinds)
         view = await watch_view(db, watch)

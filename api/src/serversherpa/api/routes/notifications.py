@@ -47,7 +47,7 @@ from serversherpa.notifications.delivery_log import EVENTS
 from serversherpa.notifications.kinds import CATEGORY_KEYS, KINDS, kind_info
 from serversherpa.notifications.requests import RequestError, decide_request
 from serversherpa.notifications.watches import (
-    EVERYTHING, WatchError, add_watch, clean_kinds, group_watches, thing_of, watch_view,
+    EVERYTHING, WatchError, add_watch, can_open, clean_kinds, group_watches, thing_of, watch_view,
 )
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
@@ -288,11 +288,13 @@ def _watch_target(watch: NotificationWatch) -> dict:
     return {"thing": thing.type, "thing_id": str(thing.id)}
 
 
-async def _get_watch(db: DbSession, group_id: uuid.UUID,
-                     watch_id: uuid.UUID) -> NotificationWatch:
-    """One of the group's watches. Another group's, a person's own or none is a 404."""
+async def _get_watch(db: DbSession, group_id: uuid.UUID, watch_id: uuid.UUID,
+                     asker_id: uuid.UUID) -> NotificationWatch:
+    """One of the group's watches whose thing the asker can open now, as the list shows them
+    (`can_open`). Another group's, a person's own, one on something the asker can't open, or
+    none is the same 404, so the answer says nothing of the thing."""
     watch = await db.get(NotificationWatch, watch_id)
-    if watch is None or watch.group_id != group_id:
+    if watch is None or watch.group_id != group_id or not await can_open(db, asker_id, watch):
         raise _err(404, "watch_not_found")
     return watch
 
@@ -348,9 +350,10 @@ async def update_group_watch(
 ) -> WatchOut:
     """Choose the events of one of the group's watches; none means every event that applies
     to a thing (an Everything watch has to name some). Choosing the events it already has
-    changes nothing and is not audited."""
+    changes nothing and is not audited. A watch on something the asker can't open is not
+    found, as in the list."""
     group = await _get_group(db, group_id)
-    watch = await _get_watch(db, group_id, watch_id)
+    watch = await _get_watch(db, group_id, watch_id, actor.person.id)
     thing = thing_of(watch)
     before = list(watch.kinds)
     try:
@@ -374,9 +377,10 @@ async def remove_group_watch(
     db: DbSession,
     actor: AuthContext = require_permission("notifications", "change"),
 ) -> None:
-    """Stop the group watching this. Any watch of the group can go."""
+    """Stop the group watching this. Any watch of the group the asker can open can go; one
+    on something they can't open is not found, as in the list."""
     await _get_group(db, group_id)          # 404 group_not_found
-    watch = await _get_watch(db, group_id, watch_id)
+    watch = await _get_watch(db, group_id, watch_id, actor.person.id)
     audit(db, actor_id=actor.person.id, entity_type="notification_group",
           entity_id=str(group_id), action="watch.remove", changes=_watch_target(watch))
     await db.delete(watch)

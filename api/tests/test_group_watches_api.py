@@ -2,8 +2,10 @@
 /notifications/groups/{id}/watches/{watch_id}. An admin points a notification group at an
 initiative, a site, a truck or a device (tests/test_device_watches.py covers what is special about
 devices), a wiki library, folder or page (tests/test_wiki_watch_groups.py), or at chosen events
-everywhere, and every member of an Active group hears what the group watches. `notifications:view` lists a group's watches, `notifications:change` adds,
-changes and removes them, and each of those is audited on the group.
+everywhere, and every member of an Active group hears what the group watches.
+`notifications:view` lists a group's watches, `notifications:change` adds, changes and removes
+them, and each of those is audited on the group. The list, and changing or removing one, go
+only as far as what the person asking can open.
 
 The rules of a watch (what can be watched, which events fit, who can open the thing) are the
 watches module's and are tested in test_watches_api.py; these tests cover the routes.
@@ -249,6 +251,33 @@ async def test_the_list_shows_only_what_the_asker_can_open(client, db):
     assert sorted(row["thing"] for row in resp.json()) == [EVERYTHING, "truck"]
     assert "Site A" not in resp.text
     assert await _count(db) == 3
+
+
+async def test_a_watch_the_asker_cannot_open_is_not_found_to_change_or_remove(client, db):
+    """Changing or removing a group's watch answers as the list does: an admin denied sites gets
+    404 `watch_not_found` for the group's site watch, to change and to remove (the answer for a
+    watch that isn't there), and nothing changes or is audited. Another admin can do both."""
+    admin = await _login(db, client, "A", "admin")
+    blind = await _login(db, client, "B", "admin")
+    db.add(PermissionOverride(person_id=blind.id, resource="sites", action="view", allow=False))
+    await db.commit()
+    _initiative, site, _truck = await _things(db)
+    group = await _group(db, "Group A")
+    await _group_watch(db, group, "site", site.id)
+    watch_id = await _watch_id(db, group)
+
+    resp = await _patch(client, blind, group.id, watch_id, [TRUCK_CHANGED])
+    assert (resp.status_code, _code(resp)) == (404, "watch_not_found")
+    assert "Site A" not in resp.text
+    resp = await _delete(client, blind, group.id, watch_id)
+    assert (resp.status_code, _code(resp)) == (404, "watch_not_found")
+    assert await _kinds(db, watch_id) == []
+    assert not await _any_audit(db)
+
+    resp = await _patch(client, admin, group.id, watch_id, [TRUCK_CHANGED])
+    assert (resp.status_code, resp.json()["kinds"]) == (200, [TRUCK_CHANGED])
+    assert (await _delete(client, admin, group.id, watch_id)).status_code == 204
+    assert await _kinds(db, watch_id) is None
 
 
 # ── who may ─────────────────────────────────────────────────────────

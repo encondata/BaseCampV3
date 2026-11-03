@@ -327,6 +327,34 @@ async def test_watchers_come_in_a_fixed_order_and_the_cap_keeps_the_first(
     assert told == [first, second, s["owner_id"]]
 
 
+async def test_thread_participants_come_first_for_the_cap(client, db, monkeypatch):
+    """A comment's notice goes to the thread's earlier authors before the page's watchers, as
+    the event sweep puts the people its code names before those its watches reach: a large
+    watching group never pushes the people in the thread out of the cap."""
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    await publish_via_db(db, page["id"])
+    first, second, *members = [(await login_as(client, db))[1] for _ in range(5)]
+    group = await _group(db, "Group A", *members)
+    await _group_watch(db, group, node=page)              # the owner watches it too
+    node = await _node(db, page["id"])
+    thread_id = uuid.uuid4()
+    db.add(WikiComment(id=thread_id, node_id=node.id, thread_id=thread_id,
+                       body={"text": "first", "mentions": []}, author_id=first))
+    await db.flush()
+    reply = WikiComment(node_id=node.id, thread_id=thread_id, parent_id=thread_id,
+                        body={"text": "Looks good", "mentions": []}, author_id=s["viewer_id"])
+    db.add_all([WikiComment(node_id=node.id, thread_id=thread_id, parent_id=thread_id,
+                            body={"text": "second", "mentions": []}, author_id=second), reply])
+    await db.flush()
+
+    monkeypatch.setattr(notify, "MAX_RECIPIENTS", 2)
+    await notify.on_comment(db, node, reply, actor_id=s["viewer_id"])
+    told = {person_id for person_id in (first, second, s["owner_id"], *members)
+            if await _inbox(db, person_id)}
+    assert told == {first, second}
+
+
 # ── /me ─────────────────────────────────────────────────────────────
 
 
@@ -480,7 +508,8 @@ async def test_group_watches_a_library_and_a_page(client, db):
                                   _wiki(f"/library/{space['key']}"), [], via)]
     added = {"library": library}
     for key, node, label in (("page", page, "Wiki page"), ("folder", folder, "Wiki folder")):
-        resp = await client.post(url, headers=admin_h, json={"thing": "wiki_node", "id": node["id"]})
+        resp = await client.post(url, headers=admin_h,
+                                 json={"thing": "wiki_node", "id": node["id"]})
         assert resp.status_code == 201, resp.text
         added[key] = resp.json()
         assert _shown([added[key]]) == [("wiki_node", node["id"], node["title"], label,
@@ -508,11 +537,13 @@ async def test_group_watches_a_library_and_a_page(client, db):
 
     # what the admin can't see is not found, and its title doesn't come back
     for node in (secret, retired):
-        resp = await client.post(url, headers=admin_h, json={"thing": "wiki_node", "id": node["id"]})
+        resp = await client.post(url, headers=admin_h,
+                                 json={"thing": "wiki_node", "id": node["id"]})
         assert (resp.status_code, _code(resp)) == (404, "thing_not_found"), node["title"]
         assert node["title"] not in resp.text
     for thing in ("wiki_space", "wiki_node"):
-        resp = await client.post(url, headers=admin_h, json={"thing": thing, "id": str(uuid.uuid4())})
+        resp = await client.post(url, headers=admin_h,
+                                 json={"thing": thing, "id": str(uuid.uuid4())})
         assert (resp.status_code, _code(resp)) == (404, "thing_not_found"), thing
     # one watch per thing
     resp = await client.post(url, headers=admin_h, json={"thing": "wiki_node", "id": page["id"]})
@@ -573,6 +604,39 @@ async def test_the_group_page_lists_only_the_wiki_watches_the_asker_can_see(clie
     assert rows == [ids["retired"], ids["library"]]
     assert await db.scalar(select(func.count()).select_from(NotificationWatch).where(
         NotificationWatch.group_id == group.id)) == 3
+
+
+async def test_a_groups_watch_the_asker_cant_see_cant_be_changed_or_removed(client, db):
+    """Changing or removing a group's watch answers as its list does: a wiki administrator
+    with `notifications:change` who can't see someone else's private page gets 404
+    `watch_not_found` for the group's watch on it, to change and to remove, and nothing changes
+    or is audited. A developer, who can see the page, can do both."""
+    admin_h, _admin = await login_as(client, db, roles=("admin",))
+    developer_h, developer = await login_as(client, db, roles=("developer",))
+    s = await _setup(client, db)
+    secret = await _create(client, s["editor"], s["space"], "Secret plans", kind="page")
+    await _make_private(client, s["editor"], secret)      # its author is the editor
+    group = await _group(db, "Group A")
+    group_id = group.id
+    watch_id = await _group_watch(db, group, node=secret)
+    url = f"/notifications/groups/{group_id}/watches/{watch_id}"
+
+    for resp in (await client.patch(url, headers=admin_h, json={"kinds": []}),
+                 await client.delete(url, headers=admin_h)):
+        assert (resp.status_code, _code(resp)) == (404, "watch_not_found")
+        assert "Secret plans" not in resp.text
+    assert await db.scalar(select(func.count()).select_from(NotificationWatch).where(
+        NotificationWatch.id == watch_id)) == 1
+    assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+        AuditLog.entity_type == "notification_group",
+        AuditLog.entity_id == str(group_id))) == 0
+
+    resp = await client.patch(url, headers=developer_h, json={"kinds": []})
+    assert (resp.status_code, resp.json()["thing_name"]) == (200, "Secret plans")
+    assert (await client.delete(url, headers=developer_h)).status_code == 204
+    (removed,) = await _audits(db, "notification_group", group_id, "watch.remove")
+    assert (removed.actor_person_id, removed.changes) == (
+        developer, {"thing": "wiki_node", "thing_id": secret["id"]})
 
 
 # ── Check delivery ──────────────────────────────────────────────────

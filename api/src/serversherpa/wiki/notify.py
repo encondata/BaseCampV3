@@ -17,7 +17,10 @@ people who can see the node right now:
 - each person once per event, however many routes reach them.
 
 Watches whose owner lost access stay in place (access may come back);
-they simply stop producing notifications.
+they simply stop producing notifications. Access is asked again before
+a notice's queued or held email goes out (`access_recheck`, in the
+send-time re-check): a person who can't open the node by then isn't
+emailed about it.
 
 The link is the absolute wiki URL of the node (`<wiki_origin>/n/<id>`,
 plus `#comment-<id>` for a comment), so the portal's inbox opens it on
@@ -43,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
+    Notification,
     NotificationGroup,
     NotificationWatch,
     Person,
@@ -54,8 +58,10 @@ from serversherpa.db.models import (
     WikiReview,
     WikiSpace,
 )
+from serversherpa.notifications import access as watch_access
 from serversherpa.notifications.events import Thing
 from serversherpa.notifications.inbox import notify
+from serversherpa.notifications.kinds import kind_info
 from serversherpa.notifications.watches import routes_watching
 from serversherpa.wiki.permissions import AccessIndex, level_rank, principals_for_people
 
@@ -287,10 +293,12 @@ async def on_created(db: AsyncSession, node: WikiNode, *,
 
 async def on_comment(db: AsyncSession, node: WikiNode, comment: WikiComment, *,
                      actor_id: uuid.UUID | None, skip: Iterable[uuid.UUID] = ()) -> None:
-    """A comment was posted: `wiki_comment` to the page's watchers and the
-    authors of earlier comments in its thread. `skip` is who already got
-    a mention for it (`on_mentions`) — a mentioned watcher gets only the
-    mention."""
+    """A comment was posted: `wiki_comment` to the authors of earlier
+    comments in its thread and the page's watchers, in that order for the
+    cap: as the event sweep puts the people its code names first, a large
+    watching group never pushes the people in the thread out. `skip` is
+    who already got a mention for it (`on_mentions`) — a mentioned watcher
+    gets only the mention."""
     participants = (await db.scalars(
         select(WikiComment.author_id).distinct()
         .where(WikiComment.thread_id == comment.thread_id,
@@ -299,7 +307,7 @@ async def on_comment(db: AsyncSession, node: WikiNode, comment: WikiComment, *,
     )).all()
     skipped = set(skip)
     routes = await watchers_for(db, node)
-    candidates = [pid for pid in dict.fromkeys([*routes, *participants]) if pid not in skipped]
+    candidates = [pid for pid in dict.fromkeys([*participants, *routes]) if pid not in skipped]
     actor = await _actor_name(db, actor_id)
     text = str((comment.body or {}).get("text", ""))
     body = text if len(text) <= COMMENT_PREVIEW_CHARS \
@@ -408,3 +416,30 @@ async def to_person(db: AsyncSession, person_id: uuid.UUID, *, kind: str, title:
                        link=f"{get_settings().wiki_origin.rstrip('/')}{path}",
                        payload={**(payload or {}), "event": event})
     return row is not None
+
+
+# ── the send-time re-check ──────────────────────────────────────────
+
+
+async def access_recheck(db: AsyncSession, notification: Notification) -> str | None:
+    """The wiki's part of the re-check of a notice's email just before it
+    goes out (email.recheck_notification, for a queued email and for a
+    held one): `no_access` when the notice is about a node (its
+    `payload.node_id`) that its person can't open now, by the wiki's own
+    rule as the watch lists judge it (notifications/access.py `viewers`):
+    a node in the trash or gone, a private one that isn't theirs, one
+    their grants no longer reach, or a page they only read that isn't
+    published. None for any other notice, and for a wiki notice about no
+    node (an export's, sent with `to_person`). Never `not_watching`: most
+    wiki notices aren't a watch's (a mention, a review), and none carries
+    its routes. Reads only."""
+    info = kind_info(notification.kind)
+    raw = (notification.payload or {}).get("node_id")
+    if info is None or info.category != "wiki" or raw is None:
+        return None
+    try:
+        node_id = uuid.UUID(str(raw))
+    except ValueError:              # not a node this module wrote: nothing to judge
+        return None
+    seen = await watch_access.viewers(db, Thing("wiki_node", node_id), [notification.person_id])
+    return None if notification.person_id in seen else "no_access"
