@@ -18,6 +18,7 @@ import json
 import sys
 import zipfile
 from pathlib import Path
+from xml.etree.ElementTree import Element
 
 try:
     import defusedxml.ElementTree as ET
@@ -137,7 +138,7 @@ def test_standards_docx_fixture_exists():
         "run scripts/rebuild_transportation_standards.py to (re)generate this fixture")
 
 
-def _document_paragraphs(docx_bytes: bytes) -> list[ET.Element]:
+def _document_paragraphs(docx_bytes: bytes) -> list[Element]:
     zf = zipfile.ZipFile(io.BytesIO(docx_bytes))
     root = ET.fromstring(zf.read("word/document.xml"))
     return list(root.iter(f"{W_NS}p"))
