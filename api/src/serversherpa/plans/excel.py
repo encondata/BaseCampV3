@@ -640,6 +640,8 @@ class _SheetReader:
                 # the shared table holds a blank entry as "", so a shared
                 # cell is told blank in one step: stripping it would scan a
                 # long entry's spaces again for every cell naming it
+                # (blank entries as "": pinned by tests/test_plans_excel.py's
+                # test_shared_strings_before_the_header_count_against_the_budget)
                 blank = (decoded is None or decoded == "") if kind == "s" else _blank(decoded)
                 if not blank:
                     self.any_value = True

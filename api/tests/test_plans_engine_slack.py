@@ -157,11 +157,17 @@ def test_perf_2000_tasks():
     links = [L(leaves[i], leaves[j]) for i, j in sorted(pairs)]
     numbered = [replace(task, position=index) for index, task in enumerate(tasks)]
 
-    began = time.perf_counter()
+    # CPU time of this thread (schedule() is synchronous and runs here), so a
+    # loaded machine can't fail it. It guards the spec's budget for a plan
+    # this size (2,000 tasks / 3,000 links in < 200 ms): about 35 ms today,
+    # and the bound is 5x the budget (about 28x today), so what blows the
+    # budget still fails: a calendar walked day by day, or a pass over the
+    # whole plan repeated for each task (2,200 x ~35 ms is over a minute)
+    began = time.thread_time()
     out = schedule(numbered, links, CAL, PROJECT_START, EngineSettings())
-    took = time.perf_counter() - began
+    took = time.thread_time() - began
 
-    print(f"\nschedule(): {len(tasks)} tasks, {len(links)} links in {took * 1000:.0f} ms")
+    print(f"\nschedule(): {len(tasks)} tasks, {len(links)} links in {took * 1000:.0f} ms CPU")
     assert len(out) == 2200
     assert all(o.total_slack is not None and o.late_start is not None for o in out.values())
     assert any(o.is_critical for o in out.values())

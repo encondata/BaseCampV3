@@ -37,10 +37,12 @@ async def _add_member(db, group, person):
     await db.flush()
 
 
-async def _until(check, seconds: float = 30) -> None:
+async def _until(check, task: asyncio.Task, seconds: float = 30) -> None:
     """Wait for `check()` (plain or async) to hold, up to a generous
     deadline: never a fixed sleep, so a loaded machine waits longer instead
-    of failing."""
+    of failing. `task` is the worker loop: if it has died, the wait fails at
+    once with its exception (which the test's cancel-and-gather would
+    otherwise swallow)."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + seconds
     while True:
@@ -49,6 +51,9 @@ async def _until(check, seconds: float = 30) -> None:
             held = await held
         if held:
             return
+        if task.done():
+            task.result()               # raises the loop's own exception
+            raise AssertionError("the worker loop stopped")
         assert loop.time() < deadline, "the worker loop never got there"
         await asyncio.sleep(0.01)
 
@@ -62,6 +67,28 @@ def _count_loops(monkeypatch, worker_mod) -> list:
 
     monkeypatch.setattr(worker_mod, "deliver_once", deliver)
     return passes
+
+
+async def test_until_fails_at_once_with_the_dead_loops_own_error():
+    """A worker loop that died (a bad patch, say) fails the wait at once with
+    its own exception, not after the deadline with a generic message."""
+    async def crash():
+        raise RuntimeError("bad patch")
+
+    task = asyncio.create_task(crash())
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    with pytest.raises(RuntimeError, match="^bad patch$"):
+        await _until(lambda: False, task)
+    assert loop.time() - started < 5
+
+    # one that stopped without an error says so
+    async def quits():
+        return None
+
+    task = asyncio.create_task(quits())
+    with pytest.raises(AssertionError, match="the worker loop stopped"):
+        await _until(lambda: False, task)
 
 
 async def test_status_counts_excludes_disabled_groups(db):
@@ -104,8 +131,8 @@ async def test_run_forever_heartbeats_and_marks_stop(db, caplog):
     task = asyncio.create_task(run_forever(poll_seconds=0.05))
     try:
         idle = "email delivery off (SMTP not configured)"
-        await _until(lambda: idle in caplog.text)
-        await _until(lambda: db.get(SystemProcess, "notification-worker"))
+        await _until(lambda: idle in caplog.text, task)
+        await _until(lambda: db.get(SystemProcess, "notification-worker"), task)
         row = await db.get(SystemProcess, "notification-worker")
         assert row is not None
         assert row.kind == "worker"
@@ -137,7 +164,7 @@ async def test_run_forever_runs_the_reminder_sweep(db, caplog, monkeypatch):
     passes = _count_loops(monkeypatch, worker_mod)
     task = asyncio.create_task(run_forever(poll_seconds=0.01))
     try:
-        await _until(lambda: len(passes) >= 4)
+        await _until(lambda: len(passes) >= 4, task)
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -157,7 +184,7 @@ async def test_run_forever_runs_the_learning_sweep(db, monkeypatch):
     passes = _count_loops(monkeypatch, worker_mod)
     task = asyncio.create_task(run_forever(poll_seconds=0.01))
     try:
-        await _until(lambda: len(passes) >= 4)
+        await _until(lambda: len(passes) >= 4, task)
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -178,7 +205,7 @@ async def test_learning_sweep_errors_do_not_kill_the_loop(db, monkeypatch, caplo
     caplog.set_level(logging.WARNING, logger="serversherpa.notifications.worker")
     task = asyncio.create_task(run_forever(poll_seconds=0.01))
     try:
-        await _until(lambda: len(calls) >= 3)
+        await _until(lambda: len(calls) >= 3, task)
         assert not task.done()
     finally:
         task.cancel()
@@ -202,7 +229,7 @@ async def test_run_forever_runs_the_plan_reminder_sweep(db, monkeypatch):
     assert worker_mod.PLANS_INTERVAL_SECONDS == 60
     task = asyncio.create_task(run_forever(poll_seconds=0.01))
     try:
-        await _until(lambda: len(passes) >= 4)
+        await _until(lambda: len(passes) >= 4, task)
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -223,7 +250,7 @@ async def test_plan_sweep_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
     caplog.set_level(logging.WARNING, logger="serversherpa.notifications.worker")
     task = asyncio.create_task(run_forever(poll_seconds=0.01))
     try:
-        await _until(lambda: len(calls) >= 3)
+        await _until(lambda: len(calls) >= 3, task)
         assert not task.done()
     finally:
         task.cancel()
@@ -257,7 +284,8 @@ async def test_run_forever_delivers_the_outbox(db, monkeypatch):
     monkeypatch.setattr(worker_mod, "deliver_once", fake_deliver)
     task = asyncio.create_task(run_forever(poll_seconds=0.01))
     try:
-        await _until(lambda: len(calls) >= 2)
+        # the wait is the check: a 2nd delivery inside it is every poll, not hourly
+        await _until(lambda: len(calls) >= 2, task)
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -277,7 +305,8 @@ async def test_delivery_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
     caplog.set_level(logging.WARNING, logger="serversherpa.notifications.worker")
     task = asyncio.create_task(run_forever(poll_seconds=0.01))
     try:
-        await _until(lambda: len(calls) >= 2)
+        # the wait is the check: a 2nd try inside it is every poll, not hourly
+        await _until(lambda: len(calls) >= 2, task)
         assert not task.done()
     finally:
         task.cancel()
