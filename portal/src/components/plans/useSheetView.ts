@@ -18,7 +18,8 @@
  *     unless the summary is a context row (it is only there to place a
  *     match, so it is always open — the initiatives tree's rule). Collapse
  *     is the sheet's: the Calendar and the Board (`collapsible` off) show
- *     every task the filter keeps.
+ *     every task the filter keeps, and back in the Gantt a task picked there
+ *     under a collapsed summary has its summaries opened and is scrolled to.
  *  3. Group by (the Gantt view only): the leaf tasks under a band per
  *     resource or status, a task with two resources under both. Grouped
  *     rows have keys of their own (filters `rowKey`, `bandKey`); ungrouped
@@ -290,6 +291,24 @@ export function useSheetView(ctl: PlanController, taskParam: string | null,
     setSelection(selectCell(id, 'name'));
     setScrollTo(id);
   }, [showTask, kept]);
+
+  // back to the sheet (collapse applies again) with a task picked in the
+  // Calendar or the Board under a collapsed summary: its summaries open and
+  // its row scrolls into view, so the selection isn't lost from sight
+  const pickedNow = useRef(picks);
+  useLayoutEffect(() => {
+    pickedNow.current = picks;
+  }, [picks]);
+  const wasCollapsible = useRef(collapsible);
+  useEffect(() => {
+    const was = wasCollapsible.current;
+    wasCollapsible.current = collapsible;
+    if (!collapsible || was) return;
+    const active = pickedNow.current.active?.id;
+    const { collapsed: shut, tasksById: byId } = latest.current;
+    if (!active || active === 'blank' || !ancestors(active, byId).some((up) => shut.has(up))) return;
+    if (showTask(active, kept)) setScrollTo(active);
+  }, [collapsible, showTask, kept]);
 
   // the commands' view: tasks, each once, in the order shown; a paste
   // while grouped walks the rows on screen from the active one

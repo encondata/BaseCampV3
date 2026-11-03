@@ -7,7 +7,7 @@
  * it), a double-click opens Task Information. Days are the plan's own
  * (floating times), and "today" is the plan's now, not the browser's.
  */
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -143,6 +143,14 @@ describe('PlanCalendar', () => {
     expect(part.style.gridColumn).toBe('2 / span 2');
   });
 
+  it('a finish at midnight names the day before in the bar’s name too', () => {
+    const p = plan({
+      tasks: [makeTask('n', { name: 'Night shift', start: '2026-11-03T20:00', finish: '2026-11-05T00:00' })],
+    });
+    renderCalendar(p, { rows: ['n'] });
+    expect(segments('n')[0].getAttribute('aria-label')).toBe('Night shift, Nov 3–4');
+  });
+
   it('a selected task in another month brings its month into view', () => {
     const { rerender, onSelect, onOpenInfo } = renderCalendar(plan(), { rows: ['s1', 'x', 'm', 'a', 'w'] });
     const p = plan({
@@ -154,5 +162,58 @@ describe('PlanCalendar', () => {
     );
     expect(screen.getByRole('heading', { name: 'January 2027' })).toBeTruthy();
     expect(segments('j')).toHaveLength(1);
+  });
+});
+
+/** A busy week: five Mon–Fri tasks (lanes enough to fold) and a milestone on Wed Nov 4. */
+function busyPlan(): Plan {
+  const week = Array.from({ length: 5 }, (_, i) => makeTask(`t${i}`, {
+    name: `Crew ${i + 1}`, start: '2026-11-02T08:00', finish: '2026-11-06T17:00',
+  }));
+  const milestone = makeTask('m', { name: 'Go live', is_milestone: true, start: '2026-11-04T17:00',
+    finish: '2026-11-04T17:00' });
+  return plan({ tasks: [...week, milestone] });
+}
+const BUSY_ROWS = ['t0', 't1', 't2', 't3', 't4', 'm'];
+
+describe('a busy week', () => {
+  it('a milestone never folds into "+N more": it takes the first lane of its day', () => {
+    renderCalendar(busyPlan(), { rows: BUSY_ROWS });
+    const [chip] = segments('m');
+    expect(chip).toBeTruthy();
+    expect(chip.style.gridRow).toBe('1');
+    expect(chip.style.gridColumn).toBe('3 / span 1');
+    // the bars that don't fit fold, the milestone is never one of them
+    expect(screen.getByRole('button', { name: '+2 more on Nov 4' })).toBeTruthy();
+  });
+
+  it('"+N more" names its day and says it is collapsed; focus goes to Show less and back', async () => {
+    const user = userEvent.setup();
+    renderCalendar(busyPlan(), { rows: BUSY_ROWS });
+    const more = screen.getByRole('button', { name: '+2 more on Nov 4' });
+    expect(more.textContent).toBe('+2 more');
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+    await user.click(more);
+    const less = screen.getByRole('button', { name: 'Show less' });
+    expect(document.activeElement).toBe(less);
+    expect(less.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.queryByRole('button', { name: /more on/ })).toBeNull();
+    await user.click(less);
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '+2 more on Nov 4' }));
+  });
+
+  it('Escape closes the open week, takes the key (full screen stays) and puts focus back', async () => {
+    const user = userEvent.setup();
+    renderCalendar(busyPlan(), { rows: BUSY_ROWS });
+    await user.click(screen.getByRole('button', { name: '+2 more on Nov 2' }));
+    const later = vi.fn();
+    document.addEventListener('keydown', later);
+    const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    act(() => { (document.activeElement ?? document.body).dispatchEvent(esc); });
+    document.removeEventListener('keydown', later);
+    expect(esc.defaultPrevented).toBe(true);
+    expect((later.mock.calls[0][0] as KeyboardEvent).defaultPrevented).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Show less' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '+2 more on Nov 2' }));
   });
 });

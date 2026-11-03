@@ -719,7 +719,8 @@ describe('hover tips on the tab’s own commands', () => {
       expect(tip.desc, name).toBeTruthy();
       expect(b.hasAttribute('title'), name).toBe(false);
     }
-    expect(hoverTip(button('Gantt')).desc).toBe(COMMAND_TIPS.viewGantt.desc);
+    // the view switcher: named by the view on, its tip saying what the menu does
+    expect(hoverTip(button('Gantt')).desc).toBe(COMMAND_TIPS.view.desc);
     expect(hoverTip(button('Unlock')).desc).toBe(COMMAND_TIPS.unlock.desc);
     // a locked plan: the schedule commands say why they're off
     expect(hoverTip(button('Indent')).note).toBe('Schedule is locked');

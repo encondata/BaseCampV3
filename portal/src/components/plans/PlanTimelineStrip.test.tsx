@@ -123,6 +123,24 @@ describe('PlanTimelineStrip', () => {
     expect(today?.style.left).toBe('20%');
   });
 
+  it('the ends name the band’s own span: a timeline task outside the project widens it, and the labels follow', () => {
+    renderStrip(plan([
+      bar('a', 'Survey', '03T08:00', '05T08:00'),
+      makeTask('e', { name: 'Early walk', start: '2026-10-29T08:00', finish: '2026-10-30T17:00', show_on_timeline: true }),
+      makeTask('z', { name: 'Late audit', start: '2026-11-16T08:00', finish: '2026-11-19T00:00', show_on_timeline: true }),
+    ]));
+    const strip = document.querySelector<HTMLElement>('.pln-strip') as HTMLElement;
+    expect(within(strip).getByText('Start').nextElementSibling?.textContent).toBe('Thu 10/29/26');
+    // a finish at midnight ends the day before
+    expect(within(strip).getByText('Finish').nextElementSibling?.textContent).toBe('Wed 11/18/26');
+  });
+
+  it('a bar’s name gives its days, a finish at midnight ending the day before', () => {
+    renderStrip(plan([makeTask('n', { name: 'Night shift', start: '2026-11-03T20:00', finish: '2026-11-05T00:00',
+      show_on_timeline: true })]));
+    expect(items()[0].getAttribute('aria-label')).toBe('Night shift, Nov 3–4');
+  });
+
   it('no today marker when the plan’s now is outside the span', () => {
     renderStrip(plan([bar('a', 'Survey', '03T08:00', '05T08:00')], { now: '2026-12-01T08:00' }));
     expect(document.querySelector('.pln-strip-today')).toBeNull();

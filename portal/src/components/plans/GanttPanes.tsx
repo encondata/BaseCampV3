@@ -61,12 +61,14 @@ export interface ChartSlot {
   onLeftMoment(planId: string, ms: number): void;
 }
 
-export default function GanttPanes({ layout, on, viewRef, scrollRef, sheetSideRef, sheet, chart }: {
+export default function GanttPanes({ layout, on, viewRef, reserve = 0, scrollRef, sheetSideRef, sheet, chart }: {
   layout: GanttLayout;
   /** The plan is on screen (the boxes exist). */
   on: boolean;
   /** The view area: Below's split is a share of its height. */
   viewRef: RefObject<HTMLElement | null>;
+  /** Px at the top of the view area that aren't the panes' (the Timeline strip). */
+  reserve?: number;
   /** The sheet's vertical scroll box: the shared one (Beside, Hidden) or its own (Below). */
   scrollRef: RefObject<HTMLDivElement>;
   /** The sheet's sideways scrollbar. */
@@ -82,7 +84,7 @@ export default function GanttPanes({ layout, on, viewRef, scrollRef, sheetSideRe
   const [chartBox, setChartBox] = useState<HTMLDivElement | null>(null);
   const chartRef = useMemo(() => ({ current: chartBox }), [chartBox]);
   const split = useSplit(scrollRef, on && beside);
-  const stack = useSplitBelow(viewRef, on && below);
+  const stack = useSplitBelow(viewRef, on && below, reserve);
   const pads = useLevelScroll(scrollRef, chartBox, on && below);
   const startTop = useCallback(() => scrollRef.current?.scrollTop ?? 0, [scrollRef]);
   // the chart's place in time, kept across its remounts (and Hidden)
@@ -152,9 +154,11 @@ function useSplit(ref: RefObject<HTMLElement | null>, on: boolean) {
 }
 
 /** Below's splitter: the sheet's height in px, within what the view area
- *  (`ref`, measured while `on`) leaves the chart (`plans.split.below.v1`). */
-function useSplitBelow(ref: RefObject<HTMLElement | null>, on: boolean) {
-  const [viewH, setViewH] = useState(0);
+ *  (`ref`, measured while `on`, less `reserve` at its top) leaves the chart
+ *  (`plans.split.below.v1`). */
+function useSplitBelow(ref: RefObject<HTMLElement | null>, on: boolean, reserve = 0) {
+  const [measured, setViewH] = useState(0);
+  const viewH = measured > 0 ? Math.max(1, measured - reserve) : 0;
   const [stored, setStored] = useState<number | null>(readSplitBelow);
   useLayoutEffect(() => {
     const el = ref.current;

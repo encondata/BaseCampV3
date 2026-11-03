@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   dayOf, formatCell, formatDay, formatDayRange, formatDayTime, formatShortDay, fromDateInput, fromInstant, fromMs,
-  toDateInput, toDateTimeInput, toMs,
+  lastDay, toDateInput, toDateTimeInput, toMs,
 } from './floatingTime';
 
 describe('toMs / fromMs', () => {
@@ -153,5 +153,19 @@ describe('fromInstant', () => {
     expect(fromInstant('2026-11-04T15:30:00Z', 'Mars/Olympus_Mons')).toBe('2026-11-04T15:30');
     expect(fromInstant('not a time', 'America/Chicago')).toBe('');
     expect(fromInstant(null, 'America/Chicago')).toBe('');
+  });
+});
+
+describe('lastDay', () => {
+  it('is the day of the last working minute: a finish at midnight ends the day before', () => {
+    expect(lastDay('2026-11-03T08:00', '2026-11-04T17:00')).toBe('2026-11-04');
+    expect(lastDay('2026-11-03T20:00', '2026-11-05T00:00')).toBe('2026-11-04');
+    expect(lastDay('2026-11-03T08:00', '2026-11-03T08:01')).toBe('2026-11-03');
+  });
+
+  it('a milestone, a finish not after the start, or none: the start’s day', () => {
+    expect(lastDay('2026-11-06T17:00', '2026-11-06T17:00')).toBe('2026-11-06');
+    expect(lastDay('2026-11-06T17:00', '2026-11-05T17:00')).toBe('2026-11-06');
+    expect(lastDay('2026-11-06T17:00', null)).toBe('2026-11-06');
   });
 });

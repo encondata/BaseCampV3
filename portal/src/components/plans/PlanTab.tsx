@@ -4,7 +4,10 @@
  * and the open dialog, and lays out three slots:
  *
  *  - the toolbar slot: `.pln-toolbar` (role="toolbar", one tab stop, ←/→
- *    between its buttons) holds the view switcher at the left,
+ *    between its buttons) holds the view switcher at the left (one menu
+ *    button named by the view on, "Gantt ▾": spec amendment 2026-11-03, so
+ *    the toolbar keeps to one line at 1512px with the nav open; Full screen
+ *    is an icon button for the same reason),
  *    PlanToolbar's groups in `.pln-tools` and Full screen at the right;
  *    beside it, outside the toolbar, the initiative's name in full screen
  *    and the "Plan updated by…" status. The commands, the MS Project
@@ -18,7 +21,8 @@
  *    same row; or the sheet alone), each pane with its own sideways scroll
  *    (SidePane: the design is in Splitter.tsx), with the Timeline strip
  *    (PlanTimelineStrip, Display › Timeline strip, kept per plan in
- *    localStorage `plans.strip.<planId>`) above the area when it is on; the
+ *    localStorage `plans.strip.<planId>`) as the area's top band when it is
+ *    on (the area keeps its floor, and the page never scrolls for it); the
  *    Calendar (PlanCalendar) and the Board (PlanBoard) take the whole area.
  *    All three show the filter bar's tasks (Group by is the Gantt's alone,
  *    and so is collapse) and share the selection: a task picked in the
@@ -69,7 +73,9 @@ import { canAddTasks } from '../../lib/plans/editOps';
 import { isPlanChanged, planErrorText } from '../../lib/plans/errors';
 import { readStrip, writeStrip } from '../../lib/plans/ganttView';
 import { selectCell, toggleRow } from '../../lib/plans/selection';
+import { settleSelection } from '../../lib/plans/viewRows';
 import { detectPlatform } from '../../lib/plans/shortcuts';
+import { RowActionsMenu } from '../hardware/RowActionsMenu';
 import Tip from '../Tip';
 import ColumnsModal from './ColumnsModal';
 import DeletePlanModal from './DeletePlanModal';
@@ -130,10 +136,22 @@ function usePlanStrip(planId: string | null): [boolean, () => void] {
 /** The keys that work in every view: none of them needs the sheet. */
 const VIEW_KEYS = ['undo', 'redo', 'info', 'find', 'help'] as const;
 
-/** The keyboard map for the view: the whole of it in the Gantt, VIEW_KEYS elsewhere. */
-function keysFor(handlers: PlanShortcutHandlers, gantt: boolean): PlanShortcutHandlers {
+/** The keyboard map for the view: the whole of it in the Gantt, VIEW_KEYS
+ *  elsewhere, where Task Information (Shift+F2) opens the focused bar's or
+ *  card's task (`focusedTask`) ahead of the selection. */
+function keysFor(handlers: PlanShortcutHandlers, gantt: boolean,
+  focusedTask: () => string | null, open: (taskId: string) => void): PlanShortcutHandlers {
   if (gantt) return handlers;
-  return Object.fromEntries(VIEW_KEYS.filter((k) => handlers[k]).map((k) => [k, handlers[k]]));
+  const keys: PlanShortcutHandlers = Object.fromEntries(
+    VIEW_KEYS.filter((k) => handlers[k]).map((k) => [k, handlers[k]]));
+  const info = handlers.info;
+  keys.info = (e) => {
+    const id = focusedTask();
+    if (!id) return info ? info(e) : false;
+    open(id);
+    return true;
+  };
+  return keys;
 }
 
 /** The view area never gets shorter than this. */
@@ -280,8 +298,6 @@ export default function PlanTab({ initiativeId, initiative }: {
     goToRef.current = commands.goToTask;
     linkedRef.current = commands.scrollChartTo;
   });
-  const keys = useMemo(() => keysFor(commands.handlers, gantt), [commands.handlers, gantt]);
-  usePlanShortcuts(keys, { root: rootRef, enabled: ready });
   useRovingToolbar(toolbarRef, ready);
   const { scheduled_start: scheduledStart, scheduled_end: scheduledEnd } = initiative;
   const scheduled = useMemo(() => ({ start: scheduledStart, end: scheduledEnd }), [scheduledStart, scheduledEnd]);
@@ -293,19 +309,46 @@ export default function PlanTab({ initiativeId, initiative }: {
   const openLink = useCallback((linkId: string) => setDialog({ kind: 'dependency', linkId }), []);
   const openTaskInfo = useCallback((task: PlanTask) => setDialog({ kind: 'taskInfo', taskId: task.id }), []);
   const openTaskInfoById = useCallback((taskId: string) => setDialog({ kind: 'taskInfo', taskId }), []);
-  // the search box's Enter: the first match selected, the sheet focused
+  // the task of the bar or card with focus, in the tab
+  const focusedTask = useCallback((): string | null => {
+    const el = document.activeElement;
+    if (!(el instanceof Element) || !rootRef.current?.contains(el)) return null;
+    return el.closest('[data-task-id]')?.getAttribute('data-task-id') ?? null;
+  }, []);
+  const keys = useMemo(() => keysFor(commands.handlers, gantt, focusedTask, openTaskInfoById),
+    [commands.handlers, gantt, focusedTask, openTaskInfoById]);
+  usePlanShortcuts(keys, { root: rootRef, enabled: ready });
   const { rows: shownRows, context: contextRows, bands: bandRows, select: selectRows } = sheet;
+  // outside the Gantt, the tasks the view draws: leaf tasks the filter keeps
+  // (the Calendar, those with a start); the selection is settled to them, so
+  // the toolbar's commands act on what is on screen (a summary picked in the
+  // Gantt doesn't ride along into the Board)
+  const planTasks = ctl.plan?.tasks;
+  const drawn = useMemo(() => {
+    if (gantt || !planTasks) return null;
+    const byId = new Map(planTasks.map((t) => [t.id, t]));
+    return new Set(shownRows.filter((id) => {
+      const task = byId.get(id);
+      return !!task && !task.is_summary && !contextRows.has(id) && (view !== 'calendar' || !!task.start);
+    }));
+  }, [gantt, planTasks, shownRows, contextRows, view]);
+  useLayoutEffect(() => {
+    if (drawn) selectRows((sel) => settleSelection(sel, (key) => drawn.has(key), () => null));
+  }, [drawn, selectRows]);
+  // the search box's Enter: the first match the view draws selected, the sheet focused
   const toFirstMatch = useCallback(() => {
-    const first = shownRows.find((key) => !contextRows.has(key) && !bandRows.has(key));
+    const first = shownRows.find((key) => !contextRows.has(key) && !bandRows.has(key) && (!drawn || drawn.has(key)));
     if (first) selectRows(selectCell(first, 'name'));
     focusSheet();
-  }, [shownRows, contextRows, bandRows, selectRows, focusSheet]);
+  }, [shownRows, contextRows, bandRows, drawn, selectRows, focusSheet]);
   // the Calendar's and the Board's pick: the sheet's selection (Ctrl or ⌘ adds to it)
   const pickTask = useCallback((id: string, additive: boolean) => {
+    if (drawn && !drawn.has(id)) return;
     selectRows(additive ? (sel) => toggleRow(sel, id, 'name') : selectCell(id, 'name'));
-  }, [selectRows]);
+  }, [drawn, selectRows]);
   const selectedIds = useMemo(() => new Set(commands.selected.map((t) => t.id)), [commands.selected]);
   const [strip, toggleStrip] = usePlanStrip(ctl.plan?.id ?? null);
+  const [stripHeight, setStripHeight] = useState(0);
 
   const selectView = (next: PlanViewKey) => {
     setSearchParams((prev) => {
@@ -347,6 +390,7 @@ export default function PlanTab({ initiativeId, initiative }: {
   } else {
     const plan = ctl.plan;
     const screenTip = COMMAND_TIPS[isFull ? 'exitFullScreen' : 'fullScreen'];
+    const viewTip = PLAN_VIEWS.find((v) => v.key === view)?.tip ?? 'viewGantt';
     // grouped, the outline can't change: no new-task row
     const blankRow = canAddTasks(plan) && !sheet.grouped;
     body = (
@@ -358,17 +402,16 @@ export default function PlanTab({ initiativeId, initiative }: {
           {/* the page header is covered in full screen: whose plan this is */}
           {isFull && <h2 className="pln-fs-name">{initiative.name}</h2>}
           <div className="pln-toolbar" role="toolbar" aria-label="Project plan" ref={toolbarRef}>
-            <div className="pln-tgroup">
-              <div className="segmented pln-views" role="group" aria-label="View">
-                {PLAN_VIEWS.map((v) => (
-                  <Tip key={v.key} label={COMMAND_TIPS[v.tip].label} desc={COMMAND_TIPS[v.tip].desc}>
-                    <button type="button" aria-pressed={view === v.key}
-                            className={view === v.key ? 'on' : ''} onClick={() => selectView(v.key)}>
-                      {COMMAND_TIPS[v.tip].label}
-                    </button>
-                  </Tip>
-                ))}
-              </div>
+            {/* the view switcher: one compact menu button named by the view on
+                ("Gantt ▾"), its items the views, the current one checked */}
+            <div className="pln-tgroup pln-views" role="group" aria-label="View">
+              <Tip label={COMMAND_TIPS[viewTip].label} desc={COMMAND_TIPS.view.desc}>
+                <RowActionsMenu label={COMMAND_TIPS[viewTip].label} triggerClassName="mini-btn pln-tview" returnFocus
+                                actions={PLAN_VIEWS.map((v) => ({
+                                  key: v.key, label: COMMAND_TIPS[v.tip].label, hint: COMMAND_TIPS[v.tip].desc,
+                                  checked: view === v.key, onSelect: () => selectView(v.key),
+                                }))} />
+              </Tip>
               <span className="pln-tgroup-label" aria-hidden="true">View</span>
             </div>
             <div className="pln-tools">
@@ -377,9 +420,11 @@ export default function PlanTab({ initiativeId, initiative }: {
             </div>
             <Tip label={screenTip.label} desc={screenTip.desc}
                  keys={isFull ? tipKeys('exitFullScreen', detectPlatform()) : null}>
-              <button type="button" className="mini-btn pln-screen-btn" onClick={() => setFullScreen((on) => !on)}>
+              {/* an icon, named by its tip's label: with the view switcher a
+                  dropdown, the toolbar keeps to one line at 1512px, nav open */}
+              <button type="button" className="mini-btn pln-screen-btn" aria-label={screenTip.label}
+                      onClick={() => setFullScreen((on) => !on)}>
                 <FullScreenIcon exit={isFull} />
-                {screenTip.label}
               </button>
             </Tip>
           </div>
@@ -389,15 +434,14 @@ export default function PlanTab({ initiativeId, initiative }: {
         <PlanFilterBar view={sheet.view} onChange={sheet.setView} groupable={gantt} searchRef={searchRef}
                        counts={sheet.counts} onSearchEnter={toFirstMatch} onLeave={focusSheet} />
 
-        {/* the Timeline strip, above the Gantt view */}
-        {gantt && strip && (
-          <PlanTimelineStrip plan={plan} selected={selectedIds} onSelect={commands.goToTask}
-                             onOpenInfo={openTaskInfoById} />
-        )}
-
         {/* the view area */}
         <div className="pln-view" data-view={view} data-layout={layout} ref={viewRef}
              style={viewHeight === null ? undefined : { height: viewHeight }}>
+          {/* the Timeline strip: the Gantt view's top band */}
+          {gantt && strip && (
+            <PlanTimelineStrip plan={plan} selected={selectedIds} onSelect={commands.goToTask}
+                               onOpenInfo={openTaskInfoById} onHeight={setStripHeight} />
+          )}
           {view === 'calendar' && (
             <PlanCalendar plan={plan} rows={sheet.rows} context={sheet.context} selected={selectedIds}
                           onSelect={pickTask} onOpenInfo={openTaskInfoById} />
@@ -407,7 +451,8 @@ export default function PlanTab({ initiativeId, initiative }: {
                        onSelect={pickTask} onOpenInfo={openTaskInfoById} completion={completion} />
           )}
           {gantt && (
-            <GanttPanes layout={layout} on={ready} viewRef={viewRef} scrollRef={scrollRef} sheetSideRef={sheetSideRef}
+            <GanttPanes layout={layout} on={ready} viewRef={viewRef} reserve={strip ? stripHeight : 0}
+                        scrollRef={scrollRef} sheetSideRef={sheetSideRef}
                         sheet={(
                           <PlanSheet ctl={ctl} rows={sheet.rows} context={sheet.context} bands={sheet.bands}
                                      collapsed={sheet.collapsed} rowHeight={rowHeight}

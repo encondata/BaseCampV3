@@ -3,14 +3,23 @@
  * band above the Gantt view, toggled by Display › Timeline strip and kept
  * per plan in this browser (`plans.strip.<planId>`, PlanTab). It shows:
  *
- * - the project's span, its Start and Finish named at the ends;
+ * - the project's span, the band's first and last days named at its ends
+ *   (Start, Finish; a timeline task outside the project widens the band,
+ *   and the names follow it; the last day is that of the last working
+ *   minute, floatingTime `lastDay`, as every day label in these views);
  * - a today marker at the plan's now (plan-local, never the browser's);
  * - every task flagged Show on timeline (Properties › Add to Timeline, Task
  *   Information): milestones as diamonds with their name and date over the
  *   band (a label that would run into the one before it takes a second
  *   row), other tasks (summaries too) as bars with their names, stacked
  *   into at most three lanes — a bar that finds no free lane takes the one
- *   that frees up first.
+ *   that frees up first; a bar is never narrower than 24px, and the
+ *   selected one sits over any it overlaps.
+ *
+ * It is the view area's top band (MS Project's Timeline pane is part of the
+ * view) and compact (18px rows on a 20px pitch): it takes its height from
+ * the area, which keeps its floor, so the page never scrolls for it; it
+ * reports that height (`onHeight`) for Below's splitter.
  *
  * The band is the project's span from end to end, so every place on it is
  * a share of that span (floating times through lib/plans/floatingTime). The
@@ -22,7 +31,7 @@
 import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import type { Plan, PlanTask } from '../../lib/plans/api';
-import { formatDay, formatDayRange, formatShortDay, toMs } from '../../lib/plans/floatingTime';
+import { formatDay, formatDayRange, formatShortDay, fromMs, lastDay, toMs } from '../../lib/plans/floatingTime';
 import { MS_PER_DAY } from '../../lib/plans/ganttGeometry';
 import { GanttHover } from './GanttHoverCard';
 
@@ -58,6 +67,8 @@ export interface PlanTimelineStripProps {
   onSelect(id: string): void;
   /** A double-click (Task Information). */
   onOpenInfo(id: string): void;
+  /** Its height in px as it changes, 0 once it goes (the panes under it share the rest). */
+  onHeight?(px: number): void;
 }
 
 interface StripBar { task: PlanTask; left: number; width: number; lane: number }
@@ -69,6 +80,10 @@ interface StripLayout {
   lanes: number;
   /** The plan's now as a share of the band, or null off it. */
   today: number | null;
+  /** The band's own span, for its end labels: its first day and the day its
+   *  work ends (a timeline task outside the project widens it). */
+  firstDay: string;
+  endDay: string;
 }
 
 /** A share in percent, rounded so a style reads cleanly. */
@@ -88,6 +103,8 @@ function stripLayout(plan: Pick<Plan, 'tasks' | 'project_start' | 'project_finis
     from = Math.min(from, startOf(t));
     to = Math.max(to, finishOf(t));
   }
+  const firstDay = fromMs(from);
+  const endDay = lastDay(firstDay, fromMs(to));
   if (!(to > from)) to = from + MS_PER_DAY;
   const at = (ms: number) => share(((ms - from) / (to - from)) * 100);
 
@@ -108,16 +125,34 @@ function stripLayout(plan: Pick<Plan, 'tasks' | 'project_start' | 'project_finis
   }
   const now = toMs(plan.now);
   const today = now >= from && now <= to ? at(now) : null;
-  return { bars, marks, lanes: Math.max(1, ends.length), today };
+  return { bars, marks, lanes: Math.max(1, ends.length), today, firstDay, endDay };
 }
 
-export default function PlanTimelineStrip({ plan, selected, onSelect, onOpenInfo }: PlanTimelineStripProps) {
+export default function PlanTimelineStrip({ plan, selected, onSelect, onOpenInfo, onHeight }: PlanTimelineStripProps) {
   const { tasks, project_start: start, project_finish: finish, now } = plan;
   const layout = useMemo(() => stripLayout({ tasks, project_start: start, project_finish: finish, now }),
     [tasks, start, finish, now]);
   const tasksById = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
   const bandRef = useRef<HTMLDivElement>(null);
   const marksRef = useRef<HTMLDivElement>(null);
+  const stripRef = useRef<HTMLElement>(null);
+  const tellHeight = useRef(onHeight);
+  useLayoutEffect(() => {
+    tellHeight.current = onHeight;
+  });
+  // its height for the panes under it: now, as it changes, and 0 when it goes
+  useLayoutEffect(() => {
+    const el = stripRef.current;
+    if (!el) return undefined;
+    const tell = () => tellHeight.current?.(el.offsetHeight);
+    tell();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(tell);
+    observer?.observe(el);
+    return () => {
+      observer?.disconnect();
+      tellHeight.current?.(0);
+    };
+  }, []);
   const noScroll = useRef<HTMLElement>(null);
   const empty = !layout.bars.length && !layout.marks.length;
 
@@ -150,10 +185,10 @@ export default function PlanTimelineStrip({ plan, selected, onSelect, onOpenInfo
   });
 
   return (
-    <section className="pln-strip" aria-label="Timeline" data-lanes={layout.lanes}>
+    <section className="pln-strip" aria-label="Timeline" data-lanes={layout.lanes} ref={stripRef}>
       <div className="pln-strip-end">
         <span className="pln-strip-cap">Start</span>
-        <span className="pln-strip-date">{formatDay(start)}</span>
+        <span className="pln-strip-date">{formatDay(layout.firstDay)}</span>
       </div>
 
       <div className="pln-strip-band" ref={bandRef}
@@ -184,7 +219,7 @@ export default function PlanTimelineStrip({ plan, selected, onSelect, onOpenInfo
             const name = task.name || 'Untitled task';
             return (
               <button key={task.id} type="button" data-task-id={task.id} data-lane={lane} aria-pressed={on}
-                      aria-label={`${name}, ${formatDayRange(task.start, task.finish)}`}
+                      aria-label={`${name}, ${formatDayRange(task.start, lastDay(task.start as string, task.finish))}`}
                       className={`chip custom pln-strip-bar${on ? ' on' : ''}`}
                       style={{
                         left: `${left}%`, width: `${width}%`, '--lane': lane,
@@ -211,7 +246,7 @@ export default function PlanTimelineStrip({ plan, selected, onSelect, onOpenInfo
 
       <div className="pln-strip-end pln-strip-finish">
         <span className="pln-strip-cap">Finish</span>
-        <span className="pln-strip-date">{formatDay(finish ?? start)}</span>
+        <span className="pln-strip-date">{formatDay(layout.endDay)}</span>
       </div>
 
       <GanttHover chartRef={bandRef} scrollRef={noScroll} barRef={noScroll} tasksById={tasksById} plan={plan} />

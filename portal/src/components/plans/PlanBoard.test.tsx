@@ -8,13 +8,28 @@
  * card's actions menu does the same from the keyboard. Read-only people
  * (no `change`) can't move cards; a locked plan still takes progress.
  */
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Plan, PlanTask } from '../../lib/plans/api';
 import { makePlan, makeTask } from '../../lib/plans/planFixtures';
-import PlanBoard from './PlanBoard';
+
+// each card draws one actions menu, named for its task: its renders count the card's
+const menus = vi.hoisted(() => ({ renders: {} as Record<string, number> }));
+vi.mock('../hardware/RowActionsMenu', async (importActual) => {
+  const actual = await importActual<typeof import('../hardware/RowActionsMenu')>();
+  return {
+    ...actual,
+    RowActionsMenu: (props: Parameters<typeof actual.RowActionsMenu>[0]) => {
+      const name = props.label ?? '';
+      menus.renders[name] = (menus.renders[name] ?? 0) + 1;
+      return actual.RowActionsMenu(props);
+    },
+  };
+});
+
+const { default: PlanBoard } = await import('./PlanBoard');
 
 afterEach(cleanup);
 
@@ -165,5 +180,135 @@ describe('PlanBoard', () => {
   it('an empty column says so', () => {
     renderBoard(plan(), { rows: ['b', 'd'] });
     expect(within(column('Complete')).getByText('No tasks')).toBeTruthy();
+  });
+});
+
+describe('a move from the keyboard', () => {
+  it('focus follows the card to its new column, a polite note says so, and the next key is the board’s', async () => {
+    const user = userEvent.setup();
+    const p = plan();
+    const moved = plan({ tasks: p.tasks.map((t) => (t.id === 'a' ? { ...t, percent_complete: 100, status: 'complete' } : t)) });
+    const rows = p.tasks.map((t) => t.id);
+    const props = { context: new Set<string>(), selected: new Set<string>(), onSelect: vi.fn(), onOpenInfo: vi.fn() };
+    let redraw: (next: Plan) => void = () => {};
+    // the plan merges before the write answers (usePlan's order)
+    const run = vi.fn(async () => { redraw(moved); });
+    const completion = { run };
+    const view = render(<PlanBoard plan={p} rows={rows} completion={completion} {...props} />);
+    redraw = (next) => view.rerender(<PlanBoard plan={next} rows={rows} completion={completion} {...props} />);
+    await user.click(within(card('Wrap racks')).getByRole('button', { name: 'Actions for Wrap racks' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Move to Complete' }));
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Actions for Wrap racks'));
+    expect(within(column('Complete')).getByRole('group', { name: 'Wrap racks' }).contains(document.activeElement)).toBe(true);
+    expect(screen.getByRole('status').textContent).toBe('Moved Wrap racks to Complete');
+  });
+
+  it('a move that didn’t happen (stopped, refused) leaves no focus waiting for later', async () => {
+    const user = userEvent.setup();
+    const p = plan();
+    const rows = p.tasks.map((t) => t.id);
+    const props = { context: new Set<string>(), selected: new Set<string>(), onSelect: vi.fn(), onOpenInfo: vi.fn() };
+    const completion = { run: vi.fn(async () => {}) };
+    const view = render(<PlanBoard plan={p} rows={rows} completion={completion} {...props} />);
+    await user.click(within(card('Wrap racks')).getByRole('button', { name: 'Actions for Wrap racks' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Move to Complete' }));
+    await act(async () => {});
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.focus();
+    // later the task completes some other way: focus stays where the person is
+    const later = plan({ tasks: p.tasks.map((t) => (t.id === 'a' ? { ...t, percent_complete: 100 } : t)) });
+    view.rerender(<PlanBoard plan={later} rows={rows} completion={completion} {...props} />);
+    expect(document.activeElement).toBe(outside);
+    expect(screen.getByRole('status').textContent).toBe('');
+    outside.remove();
+  });
+});
+
+describe('a selection click redraws only the cards it changes', () => {
+  it('picking a card redraws it alone; picking another redraws the two', () => {
+    const p = plan();
+    const rows = p.tasks.map((t) => t.id);
+    const fixed = {
+      plan: p, rows, context: new Set<string>(), onSelect: vi.fn(), onOpenInfo: vi.fn(), completion: { run: vi.fn() },
+    };
+    const view = render(<PlanBoard {...fixed} selected={new Set()} />);
+    // which cards drew (a card's menu may draw more than once for one card render)
+    const drawn = () => Object.keys(menus.renders).sort();
+    menus.renders = {};
+    view.rerender(<PlanBoard {...fixed} selected={new Set(['a'])} />);
+    expect(drawn()).toEqual(['Actions for Wrap racks']);
+    menus.renders = {};
+    view.rerender(<PlanBoard {...fixed} selected={new Set(['d'])} />);
+    expect(drawn()).toEqual(['Actions for Move day', 'Actions for Wrap racks']);
+    // the board drawn again with the same selection redraws no card
+    menus.renders = {};
+    view.rerender(<PlanBoard {...fixed} selected={new Set(['d'])} />);
+    expect(drawn()).toEqual([]);
+  });
+});
+
+describe('the cards’ details', () => {
+  it('a finish at midnight shows the day before', () => {
+    renderBoard(plan({ tasks: [makeTask('n', { name: 'Night shift', start: '2026-11-03T20:00', finish: '2026-11-05T00:00' })] }));
+    expect(within(card('Night shift')).getByText('Tue 11/3/26 → Wed 11/4/26')).toBeTruthy();
+  });
+
+  it('a drag carries the task under its own type, never as text', () => {
+    renderBoard();
+    const setData = vi.fn();
+    fireEvent.dragStart(card('Wrap racks'), { dataTransfer: { setData, effectAllowed: 'all', dropEffect: 'none' } });
+    expect(setData).toHaveBeenCalledWith('application/x-plan-task', 'a');
+    expect(setData.mock.calls.some(([type]) => type === 'text/plain')).toBe(false);
+  });
+});
+
+describe('a milestone on the Board', () => {
+  const withMilestone = () => plan({
+    tasks: [...tasks(), makeTask('m', { name: 'Go live', is_milestone: true, start: '2026-11-06T17:00',
+      finish: '2026-11-06T17:00' })],
+  });
+
+  it('moves only between Not started and Complete: its menu, and the columns it can land in', async () => {
+    const user = userEvent.setup();
+    const { run } = renderBoard(withMilestone());
+    await user.click(within(card('Go live')).getByRole('button', { name: 'Actions for Go live' }));
+    expect(screen.getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Move to Complete', 'Task Information…']);
+    await user.keyboard('{Escape}');
+    fireEvent.dragStart(card('Go live'));
+    fireEvent.dragOver(column('In progress'));
+    expect(column('In progress').classList.contains('on')).toBe(false);
+    fireEvent.drop(column('In progress'));
+    expect(run).not.toHaveBeenCalled();
+    fireEvent.dragStart(card('Go live'));
+    fireEvent.drop(column('Complete'));
+    expect(run).toHaveBeenCalledWith([{ op: 'set_percent', ids: ['m'], percent: 100 }], 'Move to Complete');
+  });
+});
+
+describe('a card picked elsewhere', () => {
+  it('scrolls into view within its column, never the page', () => {
+    const p = plan();
+    const rows = p.tasks.map((t) => t.id);
+    const fixed = {
+      plan: p, rows, context: new Set<string>(), onSelect: vi.fn(), onOpenInfo: vi.fn(), completion: { run: vi.fn() },
+    };
+    const intoView = vi.fn();
+    const had = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = intoView;
+    try {
+      const view = render(<PlanBoard {...fixed} selected={new Set()} />);
+      const box = column('Not started').querySelector('.pln-board-cards') as HTMLElement;
+      const target = card('Move day');
+      const rect = (top: number, bottom: number) => ({ top, bottom, left: 0, right: 200, width: 200,
+        height: bottom - top, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
+      box.getBoundingClientRect = () => rect(100, 300);
+      target.getBoundingClientRect = () => rect(600, 690);
+      view.rerender(<PlanBoard {...fixed} selected={new Set(['d'])} />);
+      expect(box.scrollTop).toBe(390);
+      expect(intoView).not.toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = had;
+    }
   });
 });

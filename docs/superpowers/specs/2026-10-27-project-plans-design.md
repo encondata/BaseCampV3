@@ -129,6 +129,11 @@ the template picker when relevant.
 
 **Views** (a `.segmented` switcher at the left of the toolbar):
 
+- *Amendment 2026-11-03:* the switcher is one compact dropdown at the left of
+  the toolbar showing the current view ("Gantt ▾"), its menu the three views
+  with the current one checked (the Gantt Layout control's pattern), so the
+  toolbar keeps to one line at 1512px with the nav open.
+
 1. **Gantt** (default) — task sheet on the left, bar chart on the right, a
    draggable splitter between them, rows aligned and scrolled together.
    Optional **Timeline** strip above (MS Project's Timeline view): a single

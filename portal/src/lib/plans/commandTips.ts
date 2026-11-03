@@ -20,7 +20,8 @@ export interface CommandTip {
 }
 
 export const COMMAND_TIPS = {
-  // the view switcher
+  // the view switcher: one menu button named by the view on, these its items
+  view: { label: 'View', desc: 'Choose how to see the plan: the Gantt, a month Calendar or the Board.' },
   viewGantt: { label: 'Gantt', desc: 'Show the task sheet with its Gantt chart.' },
   viewCalendar: { label: 'Calendar', desc: 'Show the tasks on a month calendar.' },
   viewBoard: {

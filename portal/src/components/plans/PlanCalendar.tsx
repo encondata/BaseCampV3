@@ -6,7 +6,12 @@
  * it covers, a segment per week row it reaches, square-ended where it
  * carries on into the next row. A milestone is a diamond chip on its day.
  * A week shows four lanes; the rest fold into "+N more" on the days they
- * cross, one click from showing every lane.
+ * cross ("+3 more on Nov 9"), one click from showing every lane (focus goes
+ * to Show less, and back to "+N more" when the week closes; Escape closes
+ * it and keeps the key, so full screen stays). The lanes are packed here
+ * again, milestones first: a milestone takes the top lane of its day and
+ * never folds away (lib/timeline's packing is the all-initiatives
+ * calendar's and stays as it is).
  *
  * Days are the plan's own: a task's floating Start and Finish read as their
  * day strings (lib/plans/floatingTime; a finish at midnight ends the day
@@ -17,18 +22,20 @@
  * bar on the month shown brings its month into view.
  *
  * A click on a bar selects its task (the sheet's selection, shared by every
- * view); Ctrl or ⌘ adds it to the selection. A double-click, or Shift+F2 on
- * a bar, opens Task Information. Hovering a bar shows the Gantt's hover card.
+ * view); Ctrl or ⌘ adds it to the selection. A double-click opens Task
+ * Information, and so does Shift+F2 on a focused bar (PlanTab's key). A bar's
+ * name gives its days, ending on the day of its last working minute
+ * (floatingTime `lastDay`). Hovering a bar shows the Gantt's hover card.
  */
 import {
-  useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent,
+  useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent,
 } from 'react';
 
 import type { Plan, PlanTask } from '../../lib/plans/api';
 import { COMMAND_TIPS } from '../../lib/plans/commandTips';
-import { dayOf, formatDayRange, fromMs, toMs } from '../../lib/plans/floatingTime';
+import { dayOf, formatDayRange, lastDay, toMs } from '../../lib/plans/floatingTime';
 import {
-  calendarWeeks, monthGrid, parseApiDay, type CalendarSegment, type TimelineItem,
+  calendarWeeks, monthGrid, parseApiDay, type CalendarSegment, type CalendarWeek, type TimelineItem,
 } from '../../lib/timeline';
 import Tip from '../Tip';
 import { GanttHover } from './GanttHoverCard';
@@ -36,6 +43,7 @@ import { GanttHover } from './GanttHoverCard';
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October',
   'November', 'December'];
+const MONTHS_SHORT = MONTHS.map((m) => m.slice(0, 3));
 /** Lanes a week shows before the rest fold into "+N more" (the all-initiatives calendar's). */
 const MAX_LANES = 4;
 
@@ -58,12 +66,29 @@ export interface PlanCalendarProps {
   onOpenInfo(id: string): void;
 }
 
-/** The day of a task's last working minute: a finish at midnight is the
- *  day before; a milestone (or a finish not after the start) is its start's day. */
-function lastDay(start: string, finish: string | null): string {
-  const from = toMs(start);
-  const to = finish ? toMs(finish) : Number.NaN;
-  return to > from ? dayOf(fromMs(to - 60_000)) : dayOf(start);
+/** A week's lanes packed again, milestones first (by day), then the other
+ *  bars in calendarWeeks' order (earliest, then longest): each takes the
+ *  lowest lane free on every day it covers, so a milestone is at the top of
+ *  its day. */
+function milestonesFirst(week: CalendarWeek<CalendarTask>): CalendarWeek<CalendarTask> {
+  const isMilestone = (seg: CalendarSegment<CalendarTask>) => seg.item.task.is_milestone;
+  const order = [
+    ...week.segments.filter(isMilestone).sort((a, b) => a.startCol - b.startCol),
+    ...week.segments.filter((seg) => !isMilestone(seg)),
+  ];
+  const taken: boolean[][] = [];
+  const free = (lane: number, seg: CalendarSegment<CalendarTask>) => {
+    for (let col = seg.startCol; col < seg.startCol + seg.span; col += 1) if (taken[lane]?.[col]) return false;
+    return true;
+  };
+  const segments = order.map((seg) => {
+    let lane = 0;
+    while (!free(lane, seg)) lane += 1;
+    taken[lane] ??= [];
+    for (let col = seg.startCol; col < seg.startCol + seg.span; col += 1) taken[lane][col] = true;
+    return { ...seg, lane };
+  });
+  return { ...week, segments, laneCount: taken.length };
 }
 
 /** A plan day (`YYYY-MM-DD…`) as a local Date of the same digits (lib/timeline's dates). */
@@ -105,11 +130,34 @@ export default function PlanCalendar({ plan, rows, context, selected, onSelect, 
   }, [rows, context, tasksById]);
 
   const cells = useMemo(() => monthGrid(anchor), [anchor]);
-  const weeks = useMemo(() => calendarWeeks(items, cells), [items, cells]);
+  const weeks = useMemo(() => calendarWeeks(items, cells).map(milestonesFirst), [items, cells]);
   const today = dayOf(plan.now);
+
+  // the open week's focus: Show less as it opens, its "+N more" (the day
+  // `back` names) again as it closes
+  const back = useRef<string | null>(null);
+  const toLess = useRef(false);
+  const openWeek = useCallback((week: string, day: string) => {
+    back.current = day;
+    toLess.current = true;
+    setExpanded(week);
+  }, []);
+  const closeWeek = useCallback(() => setExpanded(null), []);
+  useLayoutEffect(() => {
+    const body = monthRef.current;
+    if (!body) return;
+    if (expanded && toLess.current) {
+      toLess.current = false;
+      body.querySelector<HTMLElement>('.pln-month-week.open .pln-month-less')?.focus();
+    } else if (!expanded && back.current) {
+      body.querySelector<HTMLElement>(`.pln-month-more[data-day="${back.current}"]`)?.focus();
+      back.current = null;
+    }
+  }, [expanded]);
 
   // a month step swaps the grid out from under the open week, and starts at its top
   useEffect(() => {
+    back.current = null;
     setExpanded(null);
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [anchor]);
@@ -132,14 +180,20 @@ export default function PlanCalendar({ plan, rows, context, selected, onSelect, 
     if (picked.length && !shown) setAnchor(firstOfMonth(parseApiDay(picked[0].scheduled_start as string)));
   }, [selectedKey]);
 
+  // Escape closes the open week and keeps the key (as RowActionsMenu does):
+  // heard first, in the capture phase, so full screen stays. A dialog or a
+  // menu over the calendar has the key first
   useEffect(() => {
     if (!expanded) return undefined;
     const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape' && !e.defaultPrevented) setExpanded(null);
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      if (document.querySelector('.modal-scrim, [role="menu"]')) return;
+      e.preventDefault();
+      closeWeek();
     };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [expanded]);
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [expanded, closeWeek]);
 
   const step = (months: number) => setAnchor((a) => new Date(a.getFullYear(), a.getMonth() + months, 1));
   const tips = { prev: COMMAND_TIPS.calPrev, today: COMMAND_TIPS.calToday, next: COMMAND_TIPS.calNext };
@@ -172,7 +226,10 @@ export default function PlanCalendar({ plan, rows, context, selected, onSelect, 
           {weeks.map((week) => {
             const key = isoDay(week.days[0].date);
             const open = expanded === key;
-            const cap = open ? week.laneCount : MAX_LANES;
+            // a milestone is never folded away: the lanes shown reach the lowest one
+            const milestoneLanes = Math.max(0, ...week.segments.filter((seg) => seg.item.task.is_milestone)
+              .map((seg) => seg.lane + 1));
+            const cap = open ? week.laneCount : Math.max(MAX_LANES, milestoneLanes);
             const shown = week.segments.filter((s) => s.lane < cap);
             const hidden = week.segments.filter((s) => s.lane >= cap);
             // a day's "+N more" counts the bars crossing it that the cap dropped
@@ -187,10 +244,10 @@ export default function PlanCalendar({ plan, rows, context, selected, onSelect, 
                     <div key={day} className={`cell pln-month-day${cell.inMonth ? '' : ' muted'}${day === today ? ' today' : ''}`}>
                       <span className="mono pln-month-daynum">{cell.date.getDate()}</span>
                       {more > 0 && (
-                        <button type="button" className="pln-month-more" onClick={() => setExpanded(key)}
-                                aria-label={`Show all tasks for the week of ${MONTHS[week.days[0].date.getMonth()]} `
-                                  + `${week.days[0].date.getDate()}`}>
-                          +{more} more
+                        <button type="button" className="pln-month-more" data-day={day} aria-expanded={false}
+                                aria-label={`+${more} more on ${MONTHS_SHORT[cell.date.getMonth()]} ${cell.date.getDate()}`}
+                                onClick={() => openWeek(key, day)}>
+                          {`+${more} more`}
                         </button>
                       )}
                     </div>
@@ -205,7 +262,7 @@ export default function PlanCalendar({ plan, rows, context, selected, onSelect, 
                 </div>
 
                 {open && (
-                  <button type="button" className="pln-month-less" onClick={() => setExpanded(null)}>Show less</button>
+                  <button type="button" className="pln-month-less" aria-expanded onClick={closeWeek}>Show less</button>
                 )}
               </div>
             );
@@ -230,13 +287,6 @@ function Segment({ seg, on, onSelect, onOpenInfo }: {
   const { task } = seg.item;
   const name = task.name || 'Untitled task';
   const click = (e: MouseEvent<HTMLButtonElement>) => onSelect(task.id, e.ctrlKey || e.metaKey);
-  // Shift+F2 is the tab's Task Information for the selection; with none, the bar's own
-  const key = (e: KeyboardEvent<HTMLButtonElement>) => {
-    if (e.key === 'F2' && e.shiftKey && !e.defaultPrevented) {
-      e.preventDefault();
-      onOpenInfo(task.id);
-    }
-  };
   const classes = ['chip', 'custom', 'pln-month-span'];
   if (task.is_milestone) classes.push('pln-month-milestone');
   if (seg.continuesBefore) classes.push('cont-before');
@@ -244,13 +294,13 @@ function Segment({ seg, on, onSelect, onOpenInfo }: {
   if (on) classes.push('on');
   return (
     <button type="button" className={classes.join(' ')} data-task-id={task.id} aria-pressed={on}
-            aria-label={`${name}, ${formatDayRange(task.start, task.finish)}`}
+            aria-label={`${name}, ${formatDayRange(task.start, task.start ? lastDay(task.start, task.finish) : null)}`}
             style={{
               gridColumn: `${seg.startCol + 1} / span ${seg.span}`,
               gridRow: seg.lane + 1,
               '--chip': task.color ?? 'var(--accent)',
             } as CSSProperties}
-            onClick={click} onDoubleClick={() => onOpenInfo(task.id)} onKeyDown={key}>
+            onClick={click} onDoubleClick={() => onOpenInfo(task.id)}>
       {task.is_milestone
         ? <span className="pln-month-diamond" aria-hidden="true" />
         : <span className="dot" aria-hidden="true" />}

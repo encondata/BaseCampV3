@@ -283,13 +283,18 @@ describe('lock banner', () => {
 });
 
 describe('views', () => {
-  it('shows the Gantt view by default; the switcher offers Gantt, Calendar and Board', async () => {
+  it('shows the Gantt view by default; the switcher is one dropdown offering Gantt, Calendar and Board', async () => {
     api.getPlan.mockResolvedValueOnce(makePlan());
     const { container } = renderTab();
     const views = await screen.findByRole('group', { name: 'View' }, { timeout: 3000 });
-    const buttons = within(views).getAllByRole('button');
-    expect(buttons.map((b) => b.textContent)).toEqual(['Gantt', 'Calendar', 'Board']);
-    expect(buttons[0].getAttribute('aria-pressed')).toBe('true');
+    const [trigger, ...others] = within(views).getAllByRole('button');
+    expect(others).toHaveLength(0);
+    expect(trigger.getAttribute('aria-haspopup')).toBe('menu');
+    expect(trigger.textContent).toBe('Gantt ▾');
+    fireEvent.click(trigger);
+    const items = screen.getAllByRole('menuitemradio');
+    expect(items.map((i) => i.getAttribute('aria-label'))).toEqual(['Gantt', 'Calendar', 'Board']);
+    expect(items[0].getAttribute('aria-checked')).toBe('true');
     expect(container.querySelector('.pln-view')?.getAttribute('data-view')).toBe('gantt');
   });
 
@@ -310,6 +315,9 @@ describe('full screen', () => {
     const button = await screen.findByRole('button', { name: 'Full screen' }, { timeout: 3000 });
     expect(root(container).classList.contains('pln-fullscreen')).toBe(false);
     expect(button.hasAttribute('aria-pressed')).toBe(false);     // the label alone says which
+    // an icon button (the toolbar keeps to one line at 1512px), named by its label and its tip
+    expect(button.getAttribute('aria-label')).toBe('Full screen');
+    expect(button.textContent).toBe('');
     expect(screen.queryByRole('heading', { name: INITIATIVE.name })).toBeNull();
     await user.click(button);
     expect(root(container).classList.contains('pln-fullscreen')).toBe(true);
@@ -349,7 +357,7 @@ describe('full screen', () => {
       expect(inertAround(text), text).toBe(true);
     }
     expect(inertAround('Undo delete')).toBe(false);            // toasts keep their actions
-    expect(inertAround('Exit full screen')).toBe(false);
+    expect(screen.getByRole('button', { name: 'Exit full screen' }).closest('[inert]')).toBeNull();
     expect(screen.getByRole('toolbar', { name: 'Project plan' }).closest('[inert]')).toBeNull();
 
     await user.keyboard('{Escape}');

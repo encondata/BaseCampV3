@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { PlanTask } from './api';
-import { BOARD_COLUMNS, boardCards, columnOf, pathLabel, percentForColumn } from './board';
+import { BOARD_COLUMNS, boardCards, columnOf, columnsFor, pathLabel, percentForColumn } from './board';
 import { makeTask } from './planFixtures';
 
 /**
@@ -90,5 +90,12 @@ describe('boardCards', () => {
     expect(cards.in_progress.map((c) => c.task.id)).toEqual(['a']);
     expect(cards.not_started).toEqual([]);
     expect(cards.complete).toEqual([]);
+  });
+});
+
+describe('columnsFor', () => {
+  it('a milestone is done or not: Not started and Complete only; other tasks, all three', () => {
+    expect(columnsFor(makeTask('m', { is_milestone: true }))).toEqual(['not_started', 'complete']);
+    expect(columnsFor(makeTask('t'))).toEqual(['not_started', 'in_progress', 'complete']);
   });
 });

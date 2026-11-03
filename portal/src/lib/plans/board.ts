@@ -7,7 +7,8 @@
  *   badge on the card, not a column.
  * - A drop into a column sets 0 / 50 / 100 (`percentForColumn`); the
  *   toolbar's setPercent builds the op, and 100 goes through the completion
- *   rules like every other 100%.
+ *   rules like every other 100%. A milestone moves between Not started and
+ *   Complete only (`columnsFor`).
  * - The cards are the leaf tasks among the rows the filter bar shows, in
  *   outline order; a summary is no card of its own, only the path on its
  *   subtasks' cards ("Prep › Crating", the top summary first).
@@ -35,6 +36,12 @@ export interface BoardCard {
 export function columnOf(task: Pick<PlanTask, 'percent_complete'>): BoardColumn {
   if (task.percent_complete >= 100) return 'complete';
   return task.percent_complete > 0 ? 'in_progress' : 'not_started';
+}
+
+/** The columns a task can be moved to: a milestone is done or not (MS
+ *  Project's 0% or 100%), so it skips In progress; every other task, all three. */
+export function columnsFor(task: Pick<PlanTask, 'is_milestone'>): readonly BoardColumn[] {
+  return task.is_milestone ? ['not_started', 'complete'] : ['not_started', 'in_progress', 'complete'];
 }
 
 /** The % Complete a drop into `column` sets. */

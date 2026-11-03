@@ -100,6 +100,17 @@ export function dayOf(s: string): string {
   return s.slice(0, 10);
 }
 
+/** The day a task's work ends, `YYYY-MM-DD`: the day of its last working
+ *  minute, so a finish at midnight ends the day before (Thu 00:00 is
+ *  Wednesday's end). A milestone, a finish not after the start, or none at
+ *  all: the start's own day. One rule for every day label the Calendar, the
+ *  Board and the Timeline strip give a task. */
+export function lastDay(start: string, finish: string | null | undefined): string {
+  const from = toMs(start);
+  const to = finish ? toMs(finish) : Number.NaN;
+  return to > from ? dayOf(fromMs(to - 60_000)) : dayOf(start);
+}
+
 /** The value for an `<input type="date">`; '' for none. */
 export function toDateInput(s: string | null | undefined): string {
   return s ? dayOf(s) : '';

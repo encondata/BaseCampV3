@@ -120,6 +120,20 @@ const q = (sel: string) => document.querySelector<HTMLElement>(sel);
 const toolbar = () => screen.getByRole('toolbar', { name: 'Project plan' });
 const tool = (name: string) => within(toolbar()).getByRole('button', { name });
 const views = () => screen.getByRole('group', { name: 'View' });
+const viewButton = () => within(views()).getByRole('button');
+/** A button's accessible name: its aria-label, else its text less what is aria-hidden (the ▾). */
+function nameOf(el: HTMLElement): string {
+  const label = el.getAttribute('aria-label');
+  if (label !== null) return label;
+  const copy = el.cloneNode(true) as HTMLElement;
+  copy.querySelectorAll('[aria-hidden="true"]').forEach((n) => n.remove());
+  return (copy.textContent ?? '').trim();
+}
+/** Picks a view from the switcher's menu. */
+function chooseView(name: 'Gantt' | 'Calendar' | 'Board') {
+  fireEvent.click(viewButton());
+  fireEvent.click(screen.getByRole('menuitemradio', { name }));
+}
 const sent = (call = 0): Op[] => api.postOps.mock.calls[call]?.[2];
 const column = (name: string) => screen.getByRole('region', { name });
 const cardNames = (col: string) => within(column(col)).queryAllByRole('group').map((g) => g.getAttribute('aria-label'));
@@ -170,27 +184,44 @@ afterEach(() => {
 });
 
 describe('the view switcher', () => {
-  it('offers Gantt, Calendar and Board, each with its tip; a pick is ?view=', async () => {
+  it('one compact dropdown names the view on; its menu offers the three, the current one checked', async () => {
     await loaded();
     await findSheet();
-    const buttons = within(views()).getAllByRole('button');
-    expect(buttons.map((b) => b.textContent)).toEqual(['Gantt', 'Calendar', 'Board']);
-    expect(buttons[0].getAttribute('aria-pressed')).toBe('true');
-    fireEvent.click(buttons[1]);
+    // the group holds one menu button, named by the view on now (its ▾ is decoration)
+    const trigger = viewButton();
+    expect(within(views()).getAllByRole('button')).toHaveLength(1);
+    expect(trigger.getAttribute('aria-haspopup')).toBe('menu');
+    expect(nameOf(trigger)).toBe('Gantt');
+    fireEvent.click(trigger);
+    const items = screen.getAllByRole('menuitemradio');
+    expect(items.map((i) => i.getAttribute('aria-label'))).toEqual(['Gantt', 'Calendar', 'Board']);
+    expect(items.map((i) => i.getAttribute('aria-checked'))).toEqual(['true', 'false', 'false']);
+    fireEvent.click(items[1]);
     expect(location).toContain('view=calendar');
     expect(q('.pln-view')?.getAttribute('data-view')).toBe('calendar');
-    expect(within(views()).getByRole('button', { name: 'Calendar' }).getAttribute('aria-pressed')).toBe('true');
+    expect(nameOf(viewButton())).toBe('Calendar');
     expect(screen.queryByRole('grid', { name: 'Task sheet' })).toBeNull();
     expect(q('.pln-gantt')).toBeNull();
     expect(screen.getByRole('heading', { name: 'November 2026' })).toBeTruthy();
-    fireEvent.click(within(views()).getByRole('button', { name: 'Board' }));
+    chooseView('Board');
     expect(location).toContain('view=board');
+    expect(nameOf(viewButton())).toBe('Board');
     expect(cardNames('Not started')).toEqual(['Order crates', 'Go live']);
-    fireEvent.click(within(views()).getByRole('button', { name: 'Gantt' }));
+    chooseView('Gantt');
     expect(location).not.toContain('view=');
     await findSheet();
-    expect(COMMAND_TIPS.viewCalendar.label).toBe('Calendar');
-    expect(COMMAND_TIPS.viewBoard.label).toBe('Board');
+  });
+
+  it('the switcher’s tip names the view on and says what the menu does', async () => {
+    await loaded(viewsPlan(), '/initiatives/init-1?tab=plan&view=board');
+    vi.useFakeTimers();
+    const trigger = viewButton();
+    fireEvent.pointerEnter(trigger);
+    act(() => { vi.advanceTimersByTime(TIP_DELAY_MS); });
+    const tip = screen.getByRole('tooltip');
+    expect(tip.querySelector('.tip-label')?.textContent).toBe('Board');
+    expect(tip.querySelector('.tip-desc')?.textContent).toBe(COMMAND_TIPS.view.desc);
+    fireEvent.pointerLeave(trigger);
   });
 
   it('?view=board opens on the Board', async () => {
@@ -209,7 +240,7 @@ describe('the filter bar in the Calendar and the Board', () => {
     await waitFor(() => expect(cardNames('Not started')).toEqual(['Order crates']));
     expect(cardNames('In progress')).toEqual([]);
     expect(cardNames('Complete')).toEqual([]);
-    fireEvent.click(within(views()).getByRole('button', { name: 'Calendar' }));
+    chooseView('Calendar');
     expect(document.querySelectorAll('[data-task-id="a"]').length).toBe(1);
     expect(document.querySelectorAll('[data-task-id="b"]').length).toBe(0);
     expect(document.querySelectorAll('[data-task-id="m"]').length).toBe(0);
@@ -242,9 +273,9 @@ describe('the chart-only commands outside the Gantt', () => {
       expect(screen.queryByRole('menu')).toBeNull();
       // the rest still works: Undo/Redo, 0–100%, Information…
       expect(tool('Information').getAttribute('aria-disabled')).toBe('true');   // nothing selected yet
-      fireEvent.click(within(views()).getByRole('button', { name: 'Board' }));
+      chooseView('Board');
       expect(tool('Fit Project').getAttribute('aria-disabled')).toBe('true');
-      fireEvent.click(within(views()).getByRole('button', { name: 'Gantt' }));
+      chooseView('Gantt');
       await findSheet();
       expect(tool('Fit Project').getAttribute('aria-disabled')).toBeNull();
       expect(tool('Timeline strip').getAttribute('aria-disabled')).toBeNull();
@@ -314,7 +345,7 @@ describe('the Board’s moves', () => {
     await loaded(viewsPlan(), '/initiatives/init-1?tab=plan&view=board');
     fireEvent.click(within(column('In progress')).getByRole('group', { name: 'Label racks' }));
     expect(tool('Information').getAttribute('aria-disabled')).toBeNull();
-    fireEvent.click(within(views()).getByRole('button', { name: 'Gantt' }));
+    chooseView('Gantt');
     const grid = await findSheet();
     const row = within(grid).getAllByRole('row').find((r) => r.getAttribute('data-task') === 'b');
     expect(row?.getAttribute('aria-selected')).toBe('true');
@@ -337,13 +368,13 @@ describe('the Timeline strip', () => {
     expect(q('.pln-strip')).not.toBeNull();
     expect(tool('Timeline strip').getAttribute('aria-pressed')).toBe('true');
     expect(localStorage.getItem('plans.strip.plan-1')).toBe('1');
-    // above the view area
-    const strip = q('.pln-strip') as HTMLElement;
-    expect(strip.compareDocumentPosition(q('.pln-view') as HTMLElement) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // the view area's top band, above the sheet and the chart: it takes its
+    // height from the area (which keeps its floor), so the page never scrolls
+    expect(q('.pln-view')?.firstElementChild?.classList.contains('pln-strip')).toBe(true);
     // the Calendar has no strip
-    fireEvent.click(within(views()).getByRole('button', { name: 'Calendar' }));
+    chooseView('Calendar');
     expect(q('.pln-strip')).toBeNull();
-    fireEvent.click(within(views()).getByRole('button', { name: 'Gantt' }));
+    chooseView('Gantt');
     expect(q('.pln-strip')).not.toBeNull();
     fireEvent.click(tool('Timeline strip'));
     expect(q('.pln-strip')).toBeNull();
@@ -374,5 +405,128 @@ describe('the Timeline strip', () => {
       get.mockRestore();
       set.mockRestore();
     }
+  });
+});
+
+const boardCard = (col: string, name: string) => within(column(col)).getByRole('group', { name });
+const boardNote = () => document.querySelector<HTMLElement>('.pln-board [role="status"]');
+const sheetRow = (grid: HTMLElement, id: string) =>
+  within(grid).getAllByRole('row').find((r) => r.getAttribute('data-task') === id);
+
+describe('a Board move from the keyboard', () => {
+  it('focus follows the card to its new column, a note says so, and Ctrl+Z right away undoes it', async () => {
+    await loaded(viewsPlan(), '/initiatives/init-1?tab=plan&view=board');
+    api.postOps.mockResolvedValueOnce(makeOpsResult({
+      version: 6, tasks: [{ ...tasks()[2], percent_complete: 100, status: 'complete' }], inverse: [makeRestore('b')],
+    }));
+    fireEvent.click(within(boardCard('In progress', 'Label racks')).getByRole('button', { name: 'Actions for Label racks' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move to Complete' }));
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Actions for Label racks'));
+    expect(column('Complete').contains(document.activeElement)).toBe(true);
+    expect(boardNote()?.textContent).toBe('Moved Label racks to Complete');
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 7, tasks: [tasks()[2]], inverse: [makeRestore('r')] }));
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'z', ctrlKey: true });
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(2));
+    expect(sent(1)).toEqual([makeRestore('b')]);
+    await waitFor(() => expect(cardNames('In progress')).toEqual(['Label racks']));
+  });
+});
+
+describe('outside the Gantt the selection is what the view draws', () => {
+  it('switching to the Board drops a summary from the selection and keeps the tasks it draws', async () => {
+    await loaded();
+    const grid = await findSheet();
+    fireEvent.mouseDown(sheetRow(grid, 's1')?.querySelector('[data-col="name"]') as HTMLElement, { button: 0 });
+    expect(tool('Information').getAttribute('aria-disabled')).toBeNull();
+    chooseView('Board');
+    await waitFor(() => expect(tool('Information').getAttribute('aria-disabled')).toBe('true'));
+    // a summary and a task: the task stays
+    chooseView('Gantt');
+    const again = await findSheet();
+    fireEvent.mouseDown(sheetRow(again, 's1')?.querySelector('[data-col="id"]') as HTMLElement, { button: 0 });
+    fireEvent.mouseDown(sheetRow(again, 'b')?.querySelector('[data-col="id"]') as HTMLElement,
+      { button: 0, ctrlKey: true });
+    chooseView('Board');
+    await waitFor(() => expect(boardCard('In progress', 'Label racks').classList.contains('on')).toBe(true));
+    // 100% would complete a selected summary too: only the drawn task goes
+    api.postOps.mockResolvedValueOnce(makeOpsResult());
+    fireEvent.click(tool('100% Complete'));
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    expect(sent(0)).toEqual([{ op: 'set_percent', ids: ['b'], percent: 100 }]);
+  });
+
+  it('Enter in the search box picks the first task the Board draws, never a summary', async () => {
+    await loaded(viewsPlan(), '/initiatives/init-1?tab=plan&view=board');
+    const box = screen.getByRole('textbox', { name: 'Search tasks' });
+    fireEvent.change(box, { target: { value: 'r' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(boardCard('Not started', 'Order crates').classList.contains('on')).toBe(true));
+    expect(document.querySelectorAll('.pln-card.on')).toHaveLength(1);
+  });
+
+  it('Shift+F2 opens the focused card’s or bar’s task, ahead of the selection', async () => {
+    await loaded(viewsPlan(), '/initiatives/init-1?tab=plan&view=board');
+    fireEvent.click(boardCard('Complete', 'Wrap up'));
+    const name = within(boardCard('In progress', 'Label racks')).getByRole('button', { name: 'Label racks' });
+    name.focus();
+    fireEvent.keyDown(name, { key: 'F2', shiftKey: true });
+    const dialog = await screen.findByRole('dialog', { name: /Task Information/ });
+    expect(within(dialog).getByDisplayValue('Label racks')).toBeTruthy();
+    fireEvent.click(within(dialog).getAllByRole('button', { name: /Close|Cancel/ })[0]);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    chooseView('Calendar');
+    const bar = document.querySelector<HTMLElement>('[data-task-id="a"]') as HTMLElement;
+    bar.focus();
+    fireEvent.keyDown(bar, { key: 'F2', shiftKey: true });
+    const info = await screen.findByRole('dialog', { name: /Task Information/ });
+    expect(within(info).getByDisplayValue('Order crates')).toBeTruthy();
+  });
+
+  it('back in the Gantt, the picked task’s collapsed summary opens to show it', async () => {
+    localStorage.setItem('plans.collapsed.plan-1', JSON.stringify(['s1']));
+    await loaded(viewsPlan(), '/initiatives/init-1?tab=plan&view=board');
+    fireEvent.click(boardCard('In progress', 'Label racks'));
+    chooseView('Gantt');
+    const grid = await findSheet();
+    await waitFor(() => expect(sheetRow(grid, 'b')?.getAttribute('aria-selected')).toBe('true'));
+    expect(JSON.parse(localStorage.getItem('plans.collapsed.plan-1') ?? '[]')).toEqual([]);
+  });
+});
+
+describe('Escape in full screen', () => {
+  it('closing an open Calendar week takes the Escape; the next one leaves full screen', async () => {
+    const crews = Array.from({ length: 5 }, (_, i) => makeTask(`c${i}`, {
+      display_id: 6 + i, wbs: String(4 + i), position: 3 + i, name: `Crew ${i + 1}`,
+      start: '2026-11-02T08:00', finish: '2026-11-06T17:00',
+    }));
+    await loaded(viewsPlan({ tasks: [...tasks(), ...crews] }), '/initiatives/init-1?tab=plan&view=calendar');
+    fireEvent.click(screen.getByRole('button', { name: 'Full screen' }));
+    const tab = q('.pln-tab') as HTMLElement;
+    expect(tab.classList.contains('pln-fullscreen')).toBe(true);
+    fireEvent.click(screen.getAllByRole('button', { name: /more on Nov 2/ })[0]);
+    const less = screen.getByRole('button', { name: 'Show less' });
+    fireEvent.keyDown(less, { key: 'Escape' });
+    expect(screen.queryByRole('button', { name: 'Show less' })).toBeNull();
+    expect(tab.classList.contains('pln-fullscreen')).toBe(true);
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
+    expect(tab.classList.contains('pln-fullscreen')).toBe(false);
+  });
+});
+
+describe('the Timeline strip in the view area', () => {
+  it('Below: the sheet’s splitter leaves the strip’s height out of what it shares', async () => {
+    localStorage.setItem('plans.strip.plan-1', '1');
+    // the strip is 100px tall; every other box 600
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) { return this.classList.contains('pln-strip') ? 100 : 600; },
+    });
+    await loaded();
+    await findSheet();
+    fireEvent.click(tool('Gantt Layout'));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Below' }));
+    const splitter = screen.getByRole('separator', { name: 'Resize the task sheet' });
+    // the view's 600px less the strip's 100, less the splitter (6) and the chart's least (120)
+    await waitFor(() => expect(splitter.getAttribute('aria-valuemax')).toBe('374'));
   });
 });
