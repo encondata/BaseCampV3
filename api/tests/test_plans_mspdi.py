@@ -227,10 +227,11 @@ async def _rich_plan(client, db):
     """A plan built through ops with every input field an MS Project file
     carries: summaries (one with an SNET), working and elapsed durations in
     hours, days and weeks, a manual task, a milestone and a flagged
-    milestone with a duration, FS/SS/FF/SF links with a lag, a lead and an
-    elapsed lag, SNET/FNLT/MSO/FNET constraints, a deadline, notes with
-    markup characters, progress, a person and a partner, and a calendar
-    with a holiday and a short working Saturday."""
+    milestone with a duration, FS/SS/FF/SF links with a lag, a lead, an
+    elapsed lag and week and month lags, links into and out of summaries,
+    SNET/FNLT/MSO/FNET constraints, a deadline, notes with markup
+    characters, progress, a person and a partner, a status date, and a
+    calendar with a holiday and a short working Saturday."""
     hdrs = await _admin(db, client)
     move = await _initiative(db, name="Source move")
     worker, shipper = await _resources(db, move)
@@ -260,6 +261,11 @@ async def _rich_plan(client, db):
         {"op": "indent", "ids": [ids["Survey"], pack, ids["Freight"], ids["Walkthrough"]]},
         {"op": "indent", "ids": [ids["Call"], ids["Build"], ids["Go live"], ids["Signoff"]]},
     ])
+    # progress first: Signoff can't be completed once Phase 2 follows Phase 1
+    await _ok(client, hdrs, plan, [
+        {"op": "set_percent", "ids": [ids["Survey"]], "percent": 50},
+        {"op": "set_percent", "ids": [ids["Signoff"]], "percent": 100},
+    ])
     await _ok(client, hdrs, plan, [
         _update(ids["Phase 1"], constraint_type="snet", constraint_date="2026-11-03T08:00"),
         _update(pack, predecessors="2SS-4h", deadline="2026-11-06T17:00",
@@ -270,11 +276,11 @@ async def _rich_plan(client, db):
         _update(ids["Build"], predecessors="7SF", constraint_type="mso",
                 constraint_date="2026-11-16T08:00"),
         _update(ids["Go live"], predecessors="8"),
-        _update(ids["Wrap up"], constraint_type="fnet", constraint_date="2026-12-04T17:00"),
+        _update(ids["Phase 2"], predecessors="1FS+1w"),          # summary to summary
+        _update(ids["Wrap up"], predecessors="6SS+1mo", constraint_type="fnet",
+                constraint_date="2026-12-04T17:00"),
         _assign(ids["Survey"], ("person", worker.id), ("partner", shipper.id)),
         _assign(ids["Phase 2"], ("person", worker.id)),
-        {"op": "set_percent", "ids": [ids["Survey"]], "percent": 50},
-        {"op": "set_percent", "ids": [ids["Signoff"]], "percent": 100},
     ])
     return hdrs, move, plan, worker, shipper
 
@@ -325,7 +331,9 @@ async def test_round_trip(client, db):
     assert got["calendar"] == source["calendar"]
     assert _comparable_tasks(got) == _comparable_tasks(source)
     assert _comparable_links(got) == _comparable_links(source)
-    assert len(got["links"]) == len(source["links"]) == 5
+    assert len(got["links"]) == len(source["links"]) == 7
+    units = {(lk["link_type"], lk["lag_unit"]) for lk in got["links"]}
+    assert {("FS", "w"), ("SS", "mo")} <= units
 
 
 # ── export ──────────────────────────────────────────────────────────
@@ -853,3 +861,252 @@ def test_mspdi_times_are_wall_clock():
                         mspdi.format_time(datetime(2026, 11, 2, 8, 0)))
     with pytest.raises(ValueError):
         mspdi.format_time(datetime(2026, 11, 2, 8, 0, tzinfo=UTC))
+
+
+# ── fix round 1 ─────────────────────────────────────────────────────
+
+
+def _with_calendar_entries(entries: str) -> bytes:
+    """The sample with `entries` (an Exceptions element, or nothing) in
+    place of its Exceptions."""
+    text = _sample().decode()
+    start = text.index("      <Exceptions>")
+    end = text.index("</Exceptions>") + len("</Exceptions>")
+    return (text[:start] + entries + text[end:]).encode()
+
+
+def _period(first: str, last: str) -> str:
+    return (f"<TimePeriod><FromDate>{first}T00:00:00</FromDate>"
+            f"<ToDate>{last}T23:59:00</ToDate></TimePeriod>")
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["exceptions", "daytype-0"])
+def test_exception_days_are_budgeted(monkeypatch, legacy):
+    """S1: each exception is under the cap but together they pass it. The
+    total is checked before a day is expanded, in both the Exceptions list
+    and Project 2003's DayType 0 weekdays: no list past the cap is built."""
+    expanded: list[int] = []
+    real = mspdi._Build._expand
+
+    def spy(first, days, hours, name):
+        expanded.append(days)
+        return real(first, days, hours, name)
+
+    monkeypatch.setattr(mspdi._Build, "_expand", staticmethod(spy))
+    # three periods of 15,000 days: each under 20,000, together 45,000
+    periods = [("2000-01-01", "2041-01-25"), ("2050-01-01", "2091-01-25"),
+               ("2100-01-01", "2141-01-25")]
+    if legacy:
+        entries = "".join(
+            f"<WeekDay><DayType>0</DayType><DayWorking>0</DayWorking>{_period(a, b)}</WeekDay>"
+            for a, b in periods)
+        content = _edit(_with_calendar_entries(""), "<WeekDays>", "<WeekDays>" + entries)
+    else:
+        content = _with_calendar_entries("<Exceptions>" + "".join(
+            f"<Exception>{_period(a, b)}<Type>1</Type><DayWorking>0</DayWorking></Exception>"
+            for a, b in periods) + "</Exceptions>")
+    parsed = mspdi.parse_xml(content)
+    assert parsed.calendar is None
+    assert parsed.calendar_note == "it has too many exceptions"
+    assert sum(expanded) <= mspdi.MAX_EXCEPTION_DAYS, expanded
+    assert len(parsed.tasks) == 8                     # the tasks still import
+
+
+def test_exception_days_up_to_the_cap(monkeypatch):
+    monkeypatch.setattr(mspdi, "MAX_EXCEPTION_DAYS", 10)
+    two = "".join(f"<Exception>{_period(a, b)}<Type>1</Type><DayWorking>0</DayWorking>"
+                  "</Exception>" for a, b in (("2026-12-01", "2026-12-05"),
+                                              ("2026-12-10", "2026-12-14")))
+    parsed = mspdi.parse_xml(_with_calendar_entries(f"<Exceptions>{two}</Exceptions>"))
+    assert len(parsed.calendar["exceptions"]) == 10        # at the cap: kept
+    three = two + ("<Exception>" + _period("2026-12-20", "2026-12-20")
+                   + "<Type>1</Type><DayWorking>0</DayWorking></Exception>")
+    parsed = mspdi.parse_xml(_with_calendar_entries(f"<Exceptions>{three}</Exceptions>"))
+    assert parsed.calendar is None and parsed.calendar_note == "it has too many exceptions"
+
+
+async def _plans_role(db, client, *actions):
+    """A login whose only role grants `project_plans` `actions`."""
+    from serversherpa.db.models import PersonRole, Role, RolePermission
+    from tests.test_assets_api import make_login
+
+    name = f"plans_{'_'.join(actions)}"
+    db.add(Role(name=name, description="test-only", scope_anchor="global"))
+    await db.flush()
+    for action in actions:
+        db.add(RolePermission(role=name, resource="project_plans", action=action))
+    person = Person(first_name="Role", last_name=name)
+    db.add(person)
+    await db.flush()
+    db.add(PersonRole(person_id=person.id, role=name))
+    await db.commit()
+    return await make_login(db, client, person, f"{name}@test.example.com")
+
+
+async def test_existing_plan_import_needs_change(client, db):
+    """S2: importing into an existing plan is a change to it; creating a
+    plan from a file is an add."""
+    admin = await _admin(db, client)
+    move = await _initiative(db)
+    plan = await _create(client, admin, move)
+    other = await _initiative(db, name="Other")
+    adder = await _plans_role(db, client, "view", "add")
+    resp = await _import(client, adder, plan, _sample(), dry_run=True)
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["code"] == "forbidden"
+    resp = await _post(client, adder, f"/initiatives/{other.id}/plan/import", _sample(),
+                       dry_run=True)
+    assert resp.status_code == 200, resp.text
+
+    changer = await _plans_role(db, client, "view", "change")
+    resp = await _import(client, changer, plan, _sample(), dry_run=True)
+    assert resp.status_code == 200, resp.text
+    resp = await _post(client, changer, f"/initiatives/{other.id}/plan/import", _sample(),
+                       dry_run=True)
+    assert resp.status_code == 403, resp.text
+
+
+def test_moved_minutes_match_work_between():
+    """The one-sweep `moved_minutes` answers exactly what work_between
+    answers for each (file start, scheduled start), on a calendar with
+    exceptions, either way round, on and off working time."""
+    import random
+    from datetime import timedelta
+
+    from serversherpa.plans.calendar import STANDARD_CALENDAR, WorkCalendar, clean_calendar
+
+    rng = random.Random(7)
+    exceptions = [{"date": f"2026-11-{day:02d}", "name": None,
+                   "hours": [] if day % 3 else [["09:00", "13:00"]]}
+                  for day in range(2, 29, 2)]
+    calendar = WorkCalendar.from_json(clean_calendar({**STANDARD_CALENDAR,
+                                                      "exceptions": exceptions}))
+    base = datetime(2026, 10, 26, 0, 0)
+
+    def moment():
+        return base + timedelta(minutes=rng.randrange(0, 60 * 24 * 60, 30))
+
+    pairs = [(moment(), moment()) for _ in range(300)]
+    pairs += [(pairs[0][0], pairs[0][0]), (pairs[1][1], pairs[1][0])]
+    assert importer.moved_minutes(calendar, pairs) == [
+        calendar.work_between(a, b) for a, b in pairs]
+
+
+async def test_outline_deeper_than_ten_is_clamped(client, db):
+    """A task past MAX_OUTLINE_LEVEL (10, Project for the web's limit) is
+    placed at level 10 with a problem, like a jump of two levels."""
+    hdrs, _move, plan, _pat_row = await _setup(client, db)
+    tasks = "".join(f"<Task><UID>{n}</UID><Name>L{n}</Name><OutlineLevel>{n}</OutlineLevel>"
+                    "<Duration>PT8H0M0S</Duration></Task>" for n in range(1, 13))
+    content = (f'<Project xmlns="http://schemas.microsoft.com/project">'
+               f"<StartDate>2026-11-02T08:00:00</StartDate><Tasks>{tasks}</Tasks></Project>"
+               ).encode()
+    body = await _ok_import(client, hdrs, plan, content, dry_run=False, mode="fill")
+    rows = _rows(body)
+    assert rows["L11"]["problems"] == [
+        "Outline level 11 is deeper than 10; placed at level 10."]
+    assert rows["L12"]["problems"] == [
+        "Outline level 12 is deeper than 10; placed at level 10."]
+    assert all(not rows[f"L{n}"]["problems"] for n in range(1, 11))
+    got = _tasks(await _get(client, hdrs, plan))
+    assert got["L10"]["outline_level"] == 10
+    assert got["L11"]["outline_level"] == got["L12"]["outline_level"] == 10
+    assert got["L11"]["parent_id"] == got["L12"]["parent_id"] == got["L9"]["id"]
+
+
+async def test_parse_runs_off_the_event_loop(client, db, monkeypatch):
+    import threading
+
+    hdrs, _move, plan, _pat_row = await _setup(client, db)
+    seen = {}
+    real = mspdi.parse_xml
+
+    def spy(content):
+        seen["thread"] = threading.get_ident()
+        return real(content)
+
+    monkeypatch.setattr(mspdi, "parse_xml", spy)
+    await _ok_import(client, hdrs, plan, _sample(), dry_run=True, mode="fill")
+    assert seen["thread"] != threading.get_ident()
+
+
+async def test_apply_checks_base_version(client, db):
+    """Apply takes the version the preview saw: another change since is 409
+    `plan_changed` and nothing is written. A dry run ignores it."""
+    hdrs, _move, plan, _pat_row = await _setup(client, db)
+    stale = plan["version"]
+    await _add(client, hdrs, plan, "Someone else's task")
+    current = (await _get(client, hdrs, plan))["version"]
+    resp = await _import(client, hdrs, plan, _sample(), dry_run=False, base_version=stale)
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == {"code": "plan_changed", "version": current}
+    assert await _task_count(db, plan["id"]) == 1
+    await _ok_import(client, hdrs, plan, _sample(), dry_run=True, base_version=stale)
+    await _ok_import(client, hdrs, plan, _sample(), dry_run=False, base_version=current)
+    assert await _task_count(db, plan["id"]) == 9
+
+
+async def test_outline_level_zero_and_links_to_the_project_summary(client, db):
+    """Level 0 is the project summary (UID 0) only: another task at level 0
+    is imported at the top level with a problem. A link from UID 0 names
+    the project summary, which isn't imported."""
+    hdrs, _move, plan, _pat_row = await _setup(client, db)
+    content = _edit(_sample(), "<OutlineNumber>1</OutlineNumber>\n      "
+                               "<OutlineLevel>1</OutlineLevel>",
+                    "<OutlineNumber>1</OutlineNumber>\n      <OutlineLevel>0</OutlineLevel>")
+    content = _edit(content, "<PredecessorUID>7</PredecessorUID>",
+                    "<PredecessorUID>0</PredecessorUID>")
+    body = await _ok_import(client, hdrs, plan, content, dry_run=False, mode="fill")
+    rows = _rows(body)
+    assert rows["Phase 1 - Prep"]["problems"] == [
+        "Outline level 0 is the project summary task's; placed at the top level."]
+    (problem,) = rows["Go live"]["problems"]
+    assert "project summary task" in problem and "isn't in the file" not in problem
+    got = _tasks(await _get(client, hdrs, plan))
+    assert got["Phase 1 - Prep"]["outline_level"] == 1
+    assert got["Go live"]["predecessors"] == ""
+
+
+async def test_out_of_scope_is_not_found(client, db, monkeypatch):
+    """A plan or initiative outside the actor's initiatives scope is 404 on
+    every route, never 403."""
+    from serversherpa.db.models import Initiative
+    from serversherpa.plans import service
+
+    hdrs = await _admin(db, client)
+    hidden = await _initiative(db, name="Hidden")
+    plan = await _create(client, hdrs, hidden)
+    fresh = await _initiative(db, name="Hidden too")
+    monkeypatch.setattr(service, "scope_conditions",
+                        lambda resource, access, person_id:
+                        Initiative.id.not_in([hidden.id, fresh.id]))
+    resp = await client.get(f"/plans/{plan['id']}/export.xml", headers=hdrs)
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (404, "plan_not_found")
+    resp = await _import(client, hdrs, plan, _sample(), dry_run=False, mode="fill")
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (404, "plan_not_found")
+    resp = await _post(client, hdrs, f"/initiatives/{fresh.id}/plan/import", _sample(),
+                       dry_run=False)
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (404, "initiative_not_found")
+    monkeypatch.undo()
+    assert await _task_count(db, plan["id"]) == 0
+    assert await db.scalar(select(ProjectPlan.id).where(
+        ProjectPlan.initiative_id == fresh.id)) is None
+
+
+async def test_a_failed_new_plan_apply_leaves_no_plan(client, db):
+    """dry_run=0 on the new-plan route that fails after the plan is made (a
+    link cycle) rolls the plan back too."""
+    hdrs = await _admin(db, client)
+    move = await _initiative(db)
+    content = _edit(_sample(), "<Notes>Walk both halls &amp; count racks.</Notes>",
+                    "<Notes>Walk both halls &amp; count racks.</Notes>\n"
+                    "      <PredecessorLink><PredecessorUID>3</PredecessorUID><Type>1</Type>"
+                    "<LinkLag>0</LinkLag><LagFormat>7</LagFormat></PredecessorLink>")
+    resp = await _post(client, hdrs, f"/initiatives/{move.id}/plan/import", content,
+                       dry_run=False)
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "link_cycle"
+    assert (await client.get(f"/initiatives/{move.id}/plan", headers=hdrs)).status_code == 404
+    assert await db.scalar(select(ProjectPlan.id).where(
+        ProjectPlan.initiative_id == move.id)) is None
+    assert await _imports_audited(db) == []

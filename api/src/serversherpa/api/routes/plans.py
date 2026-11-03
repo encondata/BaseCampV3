@@ -6,6 +6,7 @@ Every route requires its `project_plans` action first, then resolves the
 initiative (or the plan) through the actor's initiatives scope, so an id
 the actor cannot see reads as 404, never 403."""
 
+import asyncio
 import dataclasses
 import logging
 import uuid
@@ -419,12 +420,13 @@ async def _import_upload(request: Request) -> tuple[str, bytes]:
         await form.close()
 
 
-def _parse_upload(filename: str, content: bytes) -> importer.ParsedPlan:
+async def _parse_upload(filename: str, content: bytes) -> importer.ParsedPlan:
     """The uploaded file as a ParsedPlan: MS Project XML (the Excel
-    reader joins it by extension). A file it cannot read is answered as
-    its ImportFileError says."""
+    reader joins it by extension), parsed in a worker thread (a 20 MB file
+    takes seconds, which the event loop must not wait out). A file it
+    cannot read is answered as its ImportFileError says."""
     try:
-        return mspdi.parse_xml(content)
+        return await asyncio.to_thread(mspdi.parse_xml, content)
     except importer.ImportFileError as exc:
         raise err(exc.status, exc.code, **exc.extra) from None
 
@@ -441,24 +443,31 @@ async def import_into_plan(
     db: DbSession,
     dry_run: bool = True,
     mode: str = "append",
-    actor: AuthContext = require_permission("project_plans", "add"),
+    base_version: int | None = None,
+    actor: AuthContext = require_permission("project_plans", "change"),
 ) -> PlanImportOut:
     """Import a file (multipart `file`) into the plan (plans/importer.py):
-    `mode=append` adds its tasks after the last task, `fill` fills an
-    empty plan and takes the file's calendar, project start and status
-    date (409
+    a change to an existing plan, so `project_plans:change` like every
+    other plan write (creating a plan from a file is an add). `mode=append`
+    adds its tasks after the last task, `fill` fills an empty plan and
+    takes the file's calendar, project start and status date (409
     `plan_not_empty` on a plan with tasks). `dry_run=1` (the default)
     answers the rows applying would create, with their problems and how
     far the schedule moves each, and writes nothing; `dry_run=0` applies
     them in one transaction (one ops batch: the version bumped, audited
-    `plan_import`). 409 `plan_locked` on a locked plan; the file's errors
-    are 413 `file_too_large`, 422 `bad_file` {message}, `too_many_rows`
-    {limit}; the engine's 422s (a link cycle) as on any batch."""
+    `plan_import`). An apply sent with `base_version` (the version the
+    preview saw) is 409 `plan_changed` {version} when the plan has changed
+    since; a dry run ignores it. 409 `plan_locked` on a locked plan; the
+    file's errors are 413 `file_too_large`, 422 `bad_file` {message},
+    `too_many_rows` {limit}; the engine's 422s (a link cycle, a task below
+    the outline cap) as on any batch."""
     if mode not in importer.IMPORT_MODES:
         raise err(422, "bad_field", field="mode")
     # read before the plan row is locked: a slow upload holds no lock
-    parsed = _parse_upload(*await _import_upload(request))
+    parsed = await _parse_upload(*await _import_upload(request))
     plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
+    if not dry_run and base_version is not None and base_version != plan.version:
+        raise err(409, "plan_changed", version=plan.version)
     state = await service.load_state(db, plan)
     if dry_run:
         rows = await importer.preview(db, state, parsed, mode, actor)
@@ -502,7 +511,7 @@ async def import_new_plan(
     transaction (audited `plan_create` and `plan_import`). 409
     `plan_exists`; the file's errors as on POST /plans/{id}/import."""
     initiative = await service.visible_initiative(db, initiative_id, actor)
-    parsed = _parse_upload(*await _import_upload(request))
+    parsed = await _parse_upload(*await _import_upload(request))
     if await service.plan_of_initiative(db, initiative_id) is not None:
         raise err(409, "plan_exists")
     start = await _new_plan_start(db, initiative, parsed)

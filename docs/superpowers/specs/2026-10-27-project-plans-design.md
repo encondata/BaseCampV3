@@ -106,8 +106,9 @@ changing the initiative's own scheduled dates from the plan.
   pinned-resource tests need the new id too). Every plan route also checks the
   actor can see the initiative (`scope_conditions("initiatives", …)`) — 404
   otherwise, never 403, so a hidden initiative's existence isn't confirmed.
-- Actions: `view` = see the tab and plans; `add` = create a plan, save a
-  template, import; `change` = edit tasks, progress, settings, lock, baseline;
+- Actions: `view` = see the tab and plans, export; `add` = create a plan
+  (blank, from a template or from a file), save a template; `change` = edit
+  tasks, progress, settings, lock, baseline, import into an existing plan;
   `delete` = delete a plan or a template.
 
 ## The tab at a glance
@@ -607,7 +608,16 @@ replacing a non-empty plan is not offered — delete the plan first).
 - **Export**: MS Project XML (round-trips through our own importer — test it)
   and Excel (.xlsx of the visible columns plus Outline Level, names indented).
   Both built in the API (openpyxl + lxml/ElementTree); downloads named
-  `<initiative code or name> - Project plan.<ext>`.
+  `<initiative code or name> - Project plan.<ext>`. MSPDI's `DaysPerMonth`
+  is a whole number, so a calendar with a fractional days per month exports
+  rounded (a round trip comes back with the rounded value).
+- **Outline depth**: a plan is at most 10 outline levels deep
+  (`MAX_OUTLINE_LEVEL`, Microsoft's limit for Project for the web and Project
+  Operations; desktop Project allows 65,535). Add, indent and move refuse to
+  go deeper (422 `outline_too_deep`); an import places a deeper task at level
+  10 with a problem; a template nested deeper is `bad_template`.
+- **Concurrency**: an apply into an existing plan may send `base_version`
+  (the version its preview saw); a plan changed since is 409 `plan_changed`.
 - **Print…**: options for columns (current / default), date range (project /
   custom), and timescale; opens a print window (the rack-diagram print-window
   pattern) with the sheet + Gantt, landscape, header repeated per page, fit to
@@ -682,8 +692,9 @@ New router `api/routes/plans.py` (+ `plans/` service package: `engine.py`,
 - `POST /plans/{id}/baseline` / `DELETE /plans/{id}/baseline`.
 - `POST /plans/{id}/lock` / `DELETE /plans/{id}/lock`.
 - `DELETE /initiatives/{id}/plan`.
-- `POST /plans/{id}/import?dry_run=1` (multipart; `mode=append|fill`) and
-  `POST /initiatives/{id}/plan/import` (create from file).
+- `POST /plans/{id}/import?dry_run=1` (multipart; `mode=append|fill`,
+  optional `base_version` on apply; `change`) and
+  `POST /initiatives/{id}/plan/import` (create from file; `add`).
 - `GET /plans/{id}/export.xml`, `GET /plans/{id}/export.xlsx`.
 - `GET /plan-templates`, `POST /plans/{id}/save-as-template`,
   `PATCH /plan-templates/{id}`, `DELETE /plan-templates/{id}`.

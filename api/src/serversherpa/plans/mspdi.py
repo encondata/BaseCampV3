@@ -34,15 +34,19 @@ refused (422 `bad_file`), as is a file over MAX_BYTES (413
 `file_too_large`), one nested deeper than MAX_DEPTH, and one holding more
 than MAX_ROWS tasks, links, resources or assignments (422 `too_many_rows`).
 Every element is dropped from the tree once read, so a large file (MS
-Project's timephased data) is never held whole. A value that cannot be
-read is a problem on its task with a fallback, never a failure."""
+Project's timephased data) is never held whole, and a calendar's exception
+days are counted before any is built (MAX_EXCEPTION_DAYS in all). A value
+that cannot be read is a problem on its task with a fallback, never a
+failure. The project summary task (UID 0) is never imported: a link from
+it is a problem that says so, and another task at outline level 0 is
+imported at the top level."""
 
 from __future__ import annotations
 
 import io
 import re
 import uuid
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from fractions import Fraction
 from xml.etree import ElementTree as ET  # builds the export only; uploads use defusedxml
 
@@ -52,7 +56,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import Partner
-from serversherpa.plans.calendar import DAY_KEYS, WorkCalendar
+from serversherpa.plans.calendar import DAY_KEYS, MAX_EXCEPTIONS, WorkCalendar
 from serversherpa.plans.durations import Duration, Units
 from serversherpa.plans.floating import parse_floating
 from serversherpa.plans.importer import (
@@ -77,6 +81,11 @@ MAX_DEPTH = 32
 # whole-minute intervals that do not overlap: a day cannot hold more
 MAX_DAY_INTERVALS = 1440
 MISSING_RESOURCE = "-65535"           # MS Project's "no resource" placeholder
+# a calendar's exception days in all (each one dated exception of the plan's
+# calendar): the most a stored calendar holds (calendar.MAX_EXCEPTIONS)
+MAX_EXCEPTION_DAYS = MAX_EXCEPTIONS
+TOO_MANY_EXCEPTIONS = "it has too many exceptions"
+PROJECT_SUMMARY_UID = "0"             # MS Project's project summary task
 
 # DurationFormat / LagFormat <-> (unit, elapsed)
 FORMATS = {3: ("m", False), 4: ("m", True), 5: ("h", False), 6: ("h", True),
@@ -645,6 +654,7 @@ class _Build:
 
     def assignments(self, tasks: dict[str, ParsedTask],
                     resources: dict[str, ParsedResource]) -> None:
+        assigned: set[tuple[int, str]] = set()      # (task, resource): no list scans
         for raw in self.r.assignments:
             task = tasks.get((raw.get("TaskUID") or "").strip())
             resource_uid = (raw.get("ResourceUID") or "").strip()
@@ -653,7 +663,8 @@ class _Build:
             if resource_uid not in resources:
                 task.problems.append(f"An assignment names resource UID {_shown(resource_uid)}, "
                                      "which isn't in the file; skipped.")
-            elif resource_uid not in task.resources:
+            elif (id(task), resource_uid) not in assigned:
+                assigned.add((id(task), resource_uid))
                 task.resources.append(resource_uid)
 
     # --- tasks ---
@@ -669,10 +680,15 @@ class _Build:
             uid = (raw.get("UID") or "").strip()
             level_text = raw.get("OutlineLevel")
             level = _int(level_text)
-            if level == 0 or (level_text is None and uid == "0"):
-                continue                    # the project summary task
+            blank_level = level_text is None or not level_text.strip()
+            if uid == PROJECT_SUMMARY_UID and (level == 0 or blank_level):
+                continue                    # the project summary task: never imported
             problems: list[str] = []
-            if level is None or level < 0:
+            if level == 0:
+                problems.append("Outline level 0 is the project summary task's; "
+                                "placed at the top level.")
+                level = 1
+            elif level is None or level < 0:
                 if level_text is not None and level_text.strip():
                     problems.append(f"Outline level {_shown(level_text)!r} isn't a number; "
                                     "kept at the level of the task above.")
@@ -693,7 +709,24 @@ class _Build:
             plan.links.extend(self.links(raw, key, units, problems))
         if blank:
             self.problems.append(f"Skipped {blank} blank row{'s' if blank != 1 else ''}.")
+        if PROJECT_SUMMARY_UID not in keys:
+            plan.links = self._without_summary_links(plan.links, keys)
         return keys
+
+    @staticmethod
+    def _without_summary_links(links: list[ParsedLink], keys: dict[str, ParsedTask]
+                               ) -> list[ParsedLink]:
+        """The links but those from the project summary task (UID 0), which
+        is never imported: each is a problem on its task that says so."""
+        kept = []
+        for link in links:
+            if link.predecessor == PROJECT_SUMMARY_UID:
+                keys[link.successor].problems.append(
+                    "The link from UID 0 is from the project summary task, which isn't "
+                    "imported; skipped.")
+            else:
+                kept.append(link)
+        return kept
 
     def task(self, raw: dict, key: str, level: int, units: Units,
              problems: list[str]) -> ParsedTask:
@@ -812,7 +845,8 @@ class _Build:
             for day in found["days"]:
                 code = _int(day.get("DayType"))
                 if code == 0:               # Project 2003's dated exception
-                    exceptions.extend(self._exception_days(day))
+                    if not self._add_days(exceptions, day):
+                        return None, TOO_MANY_EXCEPTIONS
                 elif code in DAY_OF_TYPE:
                     if DAY_OF_TYPE[code] in week:
                         return None, "a weekday is listed twice"
@@ -823,9 +857,8 @@ class _Build:
                 if _int(item.get("Type")) not in (None, 1) or \
                         _int(item.get("Period")) not in (None, 1):
                     return None, "it has recurring exceptions"
-                exceptions.extend(self._exception_days(item))
-                if len(exceptions) > MAX_RESTORE_ROWS:
-                    return None, "it has too many exceptions"
+                if not self._add_days(exceptions, item):
+                    return None, TOO_MANY_EXCEPTIONS
         except ValueError as exc:
             return None, str(exc)
         if len(week) != len(DAY_KEYS):
@@ -856,8 +889,21 @@ class _Build:
                  for t in day["times"]]
         return times or [list(pair) for pair in _STANDARD_DAY]
 
-    def _exception_days(self, item: dict) -> list[dict]:
-        """One exception per day of the item's time period."""
+    def _add_days(self, exceptions: list[dict], item: dict) -> bool:
+        """Add one exception per day of the item's time period; False,
+        adding nothing, when that would take the calendar past
+        MAX_EXCEPTION_DAYS. The total is checked before a day is built, so
+        periods each under the cap never build a list past it together."""
+        first, days = self._span(item)
+        if len(exceptions) + days > MAX_EXCEPTION_DAYS:
+            return False
+        name = " ".join((item.get("Name") or "").split()) or None
+        exceptions.extend(self._expand(first, days, self._hours(item), name))
+        return True
+
+    @staticmethod
+    def _span(item: dict) -> tuple[date, int]:
+        """The first day of the item's time period, and how many days."""
         try:
             first = parse_time(item.get("FromDate") or "")
             last = parse_time(item.get("ToDate") or "")
@@ -869,10 +915,10 @@ class _Build:
         days = (end - first.date()).days + 1
         if days < 1:
             raise ValueError("an exception ends before it starts")
-        if days > MAX_RESTORE_ROWS:
-            raise ValueError("it has too many exceptions")
-        hours = self._hours(item)
-        name = " ".join((item.get("Name") or "").split()) or None
-        return [{"date": (first.date() + timedelta(days=n)).isoformat(), "name": name,
-                 "hours": hours} for n in range(days)]
+        return first.date(), days
+
+    @staticmethod
+    def _expand(first: date, days: int, hours: list, name: str | None) -> list[dict]:
+        return [{"date": (first + timedelta(days=n)).isoformat(), "name": name, "hours": hours}
+                for n in range(days)]
 

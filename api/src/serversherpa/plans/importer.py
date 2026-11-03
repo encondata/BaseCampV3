@@ -20,7 +20,8 @@ The parsed shape (what a parser hands over):
 
 `apply` (`mode`: `fill` an empty plan, or `append` after its last task):
 - Outline from `outline_level`: a jump of more than one level makes the
-  task a subtask of the task above, with a problem.
+  task a subtask of the task above, and a task below MAX_OUTLINE_LEVEL (10)
+  is placed at level 10, each with a problem.
 - A link naming a task the file doesn't have, a task twice, the task
   itself, its own summary or subtask, or a finish (FF/SF) link into a
   summary is skipped with a problem; so is a lag past the 10-year cap.
@@ -82,7 +83,7 @@ from serversherpa.plans.engine import (
     SUMMARY_LINK_TYPES,
 )
 from serversherpa.plans.floating import format_floating
-from serversherpa.plans.limits import MAX_RESTORE_ROWS
+from serversherpa.plans.limits import MAX_OUTLINE_LEVEL, MAX_RESTORE_ROWS
 from serversherpa.plans.ops_inverse import sign_restore
 from serversherpa.plans.schemas import ResourceOut, RestoreOp
 from serversherpa.plans.service import (
@@ -315,6 +316,24 @@ def rescale(d: Duration, source: Units | None, target: Units) -> Duration:
     return Duration(-minutes if d.minutes < 0 else minutes, d.unit, d.elapsed)
 
 
+def moved_minutes(calendar: WorkCalendar, pairs: list[tuple[datetime, datetime]]
+                  ) -> list[int]:
+    """`calendar.work_between(a, b)` for each (a, b), in one sweep: the
+    working minutes from the earliest moment to each moment, summed once
+    across the sorted moments, then subtracted. Working time over
+    whole-minute intervals adds up exactly, so this answers what each call
+    would, without walking the calendar once per task (which costs tasks
+    times exception days when the file sets the starts)."""
+    offset: dict[datetime, int] = {}
+    total, previous = 0, None
+    for moment in sorted({moment for pair in pairs for moment in pair}):
+        if previous is not None:
+            total += calendar.work_between(previous, moment)
+        offset[moment] = total
+        previous = moment
+    return [offset[b] - offset[a] for a, b in pairs]
+
+
 def _when(moment: datetime | None) -> str | None:
     return format_floating(moment)
 
@@ -362,17 +381,21 @@ class _Build:
         stack: list[tuple[int, int]] = []       # (level, index) of the open ancestors
         previous = 0
         for i, task in enumerate(tasks):
-            level = max(task.outline_level, 1)
-            if level > previous + 1:
-                if previous == 0:
-                    self.rows[i].problems.append(
-                        f"Outline level {task.outline_level} has no task above it; "
-                        "placed at the top level.")
-                else:
-                    self.rows[i].problems.append(
-                        f"Outline level jumps from {previous} to {task.outline_level}; "
-                        "made a subtask of the task above.")
-                level = previous + 1
+            wanted = max(task.outline_level, 1)
+            level = min(wanted, previous + 1)
+            if level > MAX_OUTLINE_LEVEL:
+                self.rows[i].problems.append(
+                    f"Outline level {task.outline_level} is deeper than {MAX_OUTLINE_LEVEL}; "
+                    f"placed at level {MAX_OUTLINE_LEVEL}.")
+                level = MAX_OUTLINE_LEVEL
+            elif wanted > level and previous == 0:
+                self.rows[i].problems.append(
+                    f"Outline level {task.outline_level} has no task above it; "
+                    "placed at the top level.")
+            elif wanted > level:
+                self.rows[i].problems.append(
+                    f"Outline level jumps from {previous} to {task.outline_level}; "
+                    "made a subtask of the task above.")
             while stack and stack[-1][0] >= level:
                 stack.pop()
             parent = stack[-1][1] if stack else None
@@ -564,15 +587,19 @@ class _Build:
         """`moved_days` on each auto task the plan schedules more than one
         working day from the file's start (signed working days)."""
         per_day = calendar.units.minutes_per_day
+        measured, pairs = [], []
         for i, task in enumerate(self.parsed.tasks):
             row = state.tasks.get(self.ids[i])
             if (i in self.summaries or task.start is None or row is None
                     or row.mode != "auto" or row.start is None):
                 continue
-            try:
-                minutes = calendar.work_between(task.start, row.start)
-            except CalendarError:
-                continue
+            measured.append(i)
+            pairs.append((task.start, row.start))
+        try:
+            moved = moved_minutes(calendar, pairs)
+        except (CalendarError, OverflowError):
+            return                          # a date past what the calendar can reach
+        for i, minutes in zip(measured, moved, strict=True):
             if abs(minutes) > per_day:
                 self.rows[i].moved_days = round(minutes / per_day, 2)
 

@@ -567,6 +567,58 @@ async def test_move_tasks(client, db):
                      422, "cannot_move")
 
 
+async def _chain(client, hdrs, plan, depth: int) -> list[str]:
+    """Tasks L1 > L2 > ... > L<depth>, each the subtask of the one before."""
+    ids: list[str] = []
+    for level in range(1, depth + 1):
+        op = {"op": "add_task", "temp_id": "t", "name": f"L{level}"}
+        if ids:
+            op["parent_id"] = ids[-1]
+        ids.append((await _ok(client, hdrs, plan, [op]))["temp_ids"]["t"])
+    return ids
+
+
+async def test_outline_depth_is_capped(client, db):
+    """MAX_OUTLINE_LEVEL (10): add, indent and move refuse to put a task
+    below level 10 (422 `outline_too_deep`, nothing written); outdent never
+    deepens anything."""
+    from serversherpa.plans.limits import MAX_OUTLINE_LEVEL
+
+    assert MAX_OUTLINE_LEVEL == 10
+    hdrs, _move, plan = await _setup(client, db)
+    chain = await _chain(client, hdrs, plan, 10)
+    level9, level10 = chain[8], chain[9]
+
+    # add: a subtask of the level-10 task, or a sibling inserted before it
+    detail = await _fails(client, hdrs, plan, [
+        {"op": "add_task", "name": "X", "parent_id": level10}], 422, "outline_too_deep")
+    assert detail["limit"] == 10
+    await _ok(client, hdrs, plan, [{"op": "add_task", "name": "Sib", "before_id": level10}])
+
+    # indent: a level-10 task under the level-10 sibling above it
+    body = await _get(client, hdrs, plan)
+    after = {t["name"]: t["id"] for t in body["tasks"]}
+    await _fails(client, hdrs, plan, [{"op": "indent", "ids": [level10]}],
+                 422, "outline_too_deep")
+
+    # move: a two-level subtree under level 9 would end at level 11
+    top = await _add(client, hdrs, plan, "Top")
+    child = (await _ok(client, hdrs, plan, [{"op": "add_task", "temp_id": "c", "name": "Child",
+                                            "parent_id": top["Top"]}]))["temp_ids"]["c"]
+    await _fails(client, hdrs, plan, [{"op": "move_tasks", "ids": [top["Top"]],
+                                       "parent_id": level9}], 422, "outline_too_deep")
+    await _fails(client, hdrs, plan, [{"op": "move_tasks", "ids": [top["Top"]],
+                                       "before_id": level10}], 422, "outline_too_deep")
+    await _ok(client, hdrs, plan, [{"op": "move_tasks", "ids": [top["Top"]],
+                                    "parent_id": chain[7]}])         # Top 9, Child 10
+    levels = {t["id"]: t["outline_level"] for t in (await _get(client, hdrs, plan))["tasks"]}
+    assert (levels[top["Top"]], levels[child]) == (9, 10)
+    assert levels[after["Sib"]] == 10 and max(levels.values()) == 10
+
+    # outdent is always allowed
+    await _ok(client, hdrs, plan, [{"op": "outdent", "ids": [level10]}])
+
+
 async def test_new_summary_drops_its_constraint(client, db):
     hdrs, _move, plan = await _setup(client, db)
     ids = await _add(client, hdrs, plan, "A", "B")

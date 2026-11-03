@@ -22,6 +22,9 @@ Editing rules (spec "Editing rules that touch the engine"):
 - A summary's duration, dates, % complete and actuals are derived and
   cannot be typed (422 `summary_field`); a % of 100 completes it instead
   (plans/ops_progress.py).
+- No add, move or indent puts a task below MAX_OUTLINE_LEVEL (10): 422
+  `outline_too_deep` {task_id, limit} (plans/limits.py). Outdent never
+  deepens a task, and a plan already deeper keeps its rows.
 - A task that gains its first subtask (add, move, indent, outdent) keeps
   only an ASAP or SNET constraint: any other is reset to ASAP with a
   `constraint_cleared` notice. A finish link (FF/SF) into it is left for
@@ -47,6 +50,7 @@ from serversherpa.plans.durations import (
 )
 from serversherpa.plans.engine import CONSTRAINT_TYPES, MODES, SUMMARY_CONSTRAINT_TYPES
 from serversherpa.plans.floating import parse_floating
+from serversherpa.plans.limits import MAX_OUTLINE_LEVEL
 from serversherpa.plans.models import PlanLink, PlanTask
 from serversherpa.plans.schemas import (
     AddTaskOp,
@@ -240,6 +244,33 @@ class Batch:
         self.db.add(task)
         self.state.tasks[task_id] = task
         return task
+
+
+def _level(b: Batch, task_id: uuid.UUID) -> int:
+    """The task's outline level in the batch's outline (1 at the top)."""
+    return 1 + sum(1 for _ in b.outline.ancestors(task_id))
+
+
+def _height(b: Batch, task_id: uuid.UUID) -> int:
+    """How many levels the task and its subtasks span (1 with none)."""
+    deepest, stack = 1, [(task_id, 1)]
+    while stack:
+        tid, depth = stack.pop()
+        deepest = max(deepest, depth)
+        stack.extend((kid, depth + 1) for kid in b.outline.kids.get(tid, []))
+    return deepest
+
+
+def too_deep(task_id: uuid.UUID) -> HTTPException:
+    return err(422, "outline_too_deep", task_id=str(task_id), limit=MAX_OUTLINE_LEVEL)
+
+
+def check_depth(b: Batch, task_id: uuid.UUID, parent: uuid.UUID | None) -> None:
+    """422 `outline_too_deep` when the task, with its subtasks, placed
+    under `parent` would put a task below MAX_OUTLINE_LEVEL."""
+    above = 0 if parent is None else _level(b, parent)
+    if above + _height(b, task_id) > MAX_OUTLINE_LEVEL:
+        raise too_deep(task_id)
 
 
 def place(b: Batch, task_id: uuid.UUID, parent: uuid.UUID | None,
@@ -520,6 +551,8 @@ async def add_task(b: Batch, op: AddTaskOp) -> None:
             b.task(parent)
     if op.temp_id is not None and op.temp_id in b.temp_ids:
         raise bad_field("temp_id")
+    if parent is not None and _level(b, parent) >= MAX_OUTLINE_LEVEL:
+        raise too_deep(parent)
 
     mode = b.settings.default_task_mode
     task = b.new_task(uuid.uuid4(), parent_id=parent, name=op.name,
@@ -559,6 +592,8 @@ async def move_tasks(b: Batch, op: MoveTasksOp) -> None:
     if target is not None and any(b.outline.is_within(target, m) for m in moving):
         raise err(422, "cannot_move", task_id=str(target))
     for tid in moving:
+        check_depth(b, tid, parent)
+    for tid in moving:
         b.outline.detach(tid)
     index = None
     if op.before_id is not None:
@@ -575,6 +610,7 @@ async def indent(b: Batch, op: IndentOp) -> None:
         if i == 0:
             raise err(422, "cannot_indent", task_id=str(tid))
         above = siblings[i - 1]
+        check_depth(b, tid, above)
         b.outline.detach(tid)
         place(b, tid, above)
 

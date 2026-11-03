@@ -25,9 +25,10 @@ from a template takes the system calendar's exceptions (`plan_calendar`).
 
 `check` and `instantiate` refuse data they can't apply (TemplateError,
 `bad_template`) before anything is added: a parent must be a task listed
-before it (so no parent loop can be written), link types and units are the
-ones the tables take, a pair is linked once, and there are at most
-MAX_RESTORE_ROWS tasks and links. The caller recalculates
+before it (so no parent loop can be written) and no task sits below
+MAX_OUTLINE_LEVEL, link types and units are the ones the tables take, a
+pair is linked once, and there are at most MAX_RESTORE_ROWS tasks and
+links. The caller recalculates
 (plans/service.py, create_plan)."""
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.plans.calendar import WorkCalendar
 from serversherpa.plans.durations import UNITS, Units, max_minutes
 from serversherpa.plans.engine import CONSTRAINT_TYPES, LINK_TYPES, MODES
-from serversherpa.plans.limits import MAX_RESTORE_ROWS
+from serversherpa.plans.limits import MAX_OUTLINE_LEVEL, MAX_RESTORE_ROWS
 from serversherpa.plans.models import PlanLink, PlanTask, ProjectPlan
 
 if TYPE_CHECKING:
@@ -206,6 +207,7 @@ def _rows(plan: ProjectPlan, data: dict, units: Units
     now = datetime.now(UTC)
     by = plan.created_by
     ids: dict[str, uuid.UUID] = {}
+    levels: dict[str, int] = {}
     tasks: list[PlanTask] = []
     for position, item in enumerate(data["tasks"]):
         key = str(item["key"])
@@ -215,6 +217,9 @@ def _rows(plan: ProjectPlan, data: dict, units: Units
         # a parent is listed before its subtasks (outline order): no loops
         if parent is not None and str(parent) not in ids:
             raise TemplateError("a parent is not a task listed before it")
+        levels[key] = 1 if parent is None else levels[str(parent)] + 1
+        if levels[key] > MAX_OUTLINE_LEVEL:
+            raise TemplateError(f"a task is deeper than {MAX_OUTLINE_LEVEL} outline levels")
         duration = _whole(item["duration_minutes"], "a duration")
         if not 0 <= duration <= max_minutes(units, bool(item["elapsed"])):
             raise TemplateError("a duration is negative or over the cap")

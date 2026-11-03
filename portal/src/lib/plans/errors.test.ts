@@ -115,6 +115,16 @@ describe('planErrorText', () => {
       .toBe(`${PLAN_ERRORS.bad_calendar} Calendar.week is missing mon.`);
   });
 
+  it('says what is wrong with an imported file, in the API’s own words when it has them', () => {
+    expect(planErrorText(apiError(422, {
+      code: 'bad_file', message: 'This file declares a DTD or entities, which aren’t allowed.',
+    }))).toBe('This file declares a DTD or entities, which aren’t allowed.');
+    expect(planErrorText(apiError(422, { code: 'bad_file' }))).toBe(PLAN_ERRORS.bad_file);
+    for (const code of ['file_too_large', 'too_many_rows', 'plan_not_empty', 'outline_too_deep']) {
+      expect(planErrorText(apiError(422, { code })), code).toBe(PLAN_ERRORS[code]);
+    }
+  });
+
   it('falls back to apiErrorText for everything else', () => {
     expect(planErrorText(apiError(409, { code: 'plan_locked' }))).toBe(PLAN_ERRORS.plan_locked);
     expect(planErrorText(apiError(403, { code: 'forbidden' }))).toBe(PLAN_ERRORS.forbidden);

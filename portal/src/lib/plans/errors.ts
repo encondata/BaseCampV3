@@ -29,6 +29,11 @@ export const PLAN_ERRORS: Record<string, string> = {
   template_exists: 'A template with that name already exists, so choose another name.',
   template_not_found: 'That template no longer exists, so choose another one.',
   bad_template: 'This template can’t be used anymore, so save it again from a plan.',
+  // importing a file (MS Project XML)
+  bad_file: 'This file can’t be read as a project plan.',
+  file_too_large: 'The file is larger than 20 MB, the most an import takes.',
+  too_many_rows: 'The file has more than 20,000 tasks, links or assignments, the most one import takes.',
+  plan_not_empty: 'This plan already has tasks, so add the file’s tasks after them instead.',
   // the all-initiatives Timeline page's milestones (GET /plans/timeline)
   bad_range: 'The range ends before it starts.',
   // tasks and the outline
@@ -37,6 +42,7 @@ export const PLAN_ERRORS: Record<string, string> = {
   cannot_indent: 'A task can only be indented under a task right above it at the same level.',
   cannot_outdent: 'That task is already at the top level.',
   cannot_move: 'A task can’t be moved into its own subtasks.',
+  outline_too_deep: 'A plan can have at most 10 outline levels, so that task can’t go any deeper.',
   bad_field: 'One of the values isn’t valid, so check it and try again.',
   bad_duration: 'Enter a duration like 5d, 4h or 3ed, up to 10 years.',
   // links
@@ -231,6 +237,8 @@ export function planErrorText(err: unknown): string {
       return PLAN_ERRORS.bad_duration;
     case 'bad_predecessor':
       return detail.message ? sentence(detail.message) : PLAN_ERRORS.bad_predecessor;
+    case 'bad_file':
+      return detail.message ? sentence(detail.message) : PLAN_ERRORS.bad_file;
     case 'bad_calendar':
     case 'no_working_time':
       return detail.message

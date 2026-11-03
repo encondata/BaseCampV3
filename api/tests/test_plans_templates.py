@@ -324,6 +324,28 @@ async def test_template_this_code_cannot_apply(client, db):
             raise AssertionError(name) from exc
 
 
+async def test_a_template_deeper_than_ten_levels_is_refused(client, db):
+    """A snapshot nested past MAX_OUTLINE_LEVEL (a corrupt one: plans can't
+    get there) is `bad_template`; ten levels is fine."""
+    hdrs, row, good = await _broken(client, db)
+    base = good["tasks"][0]
+
+    def chain(depth):
+        tasks = [{**base, "key": str(n), "parent_key": str(n - 1) if n > 1 else None,
+                  "name": f"L{n}"} for n in range(1, depth + 1)]
+        return {**good, "tasks": tasks, "links": []}
+
+    row.data = chain(11)
+    await db.commit()
+    await _refused_from(client, db, hdrs, row.id)
+    row.data = chain(10)
+    await db.commit()
+    move = await _initiative(db, name="Deep")
+    body = await _create(client, hdrs, move, project_start="2026-11-09",
+                         template_id=str(row.id))
+    assert max(t["outline_level"] for t in body["tasks"]) == 10
+
+
 async def test_a_link_loop_in_a_template_is_the_engines_refusal(client, db):
     """A -> B and B -> A gets past the data checks; the engine refuses it
     with its own code, still a 422 with no plan made."""
