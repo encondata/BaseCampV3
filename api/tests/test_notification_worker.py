@@ -5,10 +5,18 @@ writing through its own session."""
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import func, select
 
 from serversherpa.db.engine import get_sessionmaker
-from serversherpa.db.models import NotificationHeld, Person, SystemProcess
+from serversherpa.db.models import (
+    Device,
+    NotificationEvent,
+    NotificationHeld,
+    Person,
+    SystemProcess,
+)
 from serversherpa.notifications.worker import held_count, run_forever, run_once
 
 
@@ -41,6 +49,28 @@ async def _until(condition) -> None:
             await asyncio.sleep(0.02)
 
     await asyncio.wait_for(poll(), timeout=60)
+
+
+def _count_polls(monkeypatch) -> list[int]:
+    """Count the loop's polls: each one begins by asking whether the workers are paused, which
+    they never are here."""
+    from serversherpa.system import admin_config
+
+    polls: list[int] = []
+
+    async def never_paused(maker, state):
+        polls.append(1)
+        return False
+
+    monkeypatch.setattr(admin_config, "poll_workers_paused", never_paused)
+    return polls
+
+
+async def _more_polls(polls: list[int], count: int = 5) -> None:
+    """Wait until `count` more polls have begun, so every poll before the last of them ran in
+    full: what is due only once a minute must not have run again in them."""
+    start = len(polls)
+    await _until(lambda: len(polls) >= start + count)
 
 
 async def test_held_count_counts_every_held_email(db):
@@ -149,10 +179,12 @@ async def test_run_forever_runs_the_summary_sweep(db, monkeypatch, caplog):
         return 2
 
     monkeypatch.setattr(worker_mod, "run_summaries_once", fake_summaries)
+    polls = _count_polls(monkeypatch)
     caplog.set_level(logging.INFO, logger="serversherpa.notifications.worker")
     task = asyncio.create_task(run_forever(poll_seconds=0.05))
     try:
-        await asyncio.sleep(0.3)
+        await _until(lambda: calls)          # the first loop runs it
+        await _more_polls(polls)             # and the polls after it don't
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -163,7 +195,10 @@ async def test_run_forever_runs_the_summary_sweep(db, monkeypatch, caplog):
 async def test_summary_sweep_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
     from serversherpa.notifications import worker as worker_mod
 
+    calls = []
+
     async def boom(maker):
+        calls.append(1)
         raise RuntimeError("db down")
 
     monkeypatch.setattr(worker_mod, "run_summaries_once", boom)
@@ -171,11 +206,12 @@ async def test_summary_sweep_errors_do_not_kill_the_loop(db, monkeypatch, caplog
     caplog.set_level(logging.WARNING, logger="serversherpa.notifications.worker")
     task = asyncio.create_task(run_forever(poll_seconds=0.05))
     try:
-        await asyncio.sleep(0.3)
+        await _until(lambda: len(calls) >= 2)
         assert not task.done()
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+    assert len(calls) >= 2
     assert caplog.text.count("could not run the summary sweep") == 1   # once per outage
 
 
@@ -224,7 +260,10 @@ async def test_run_forever_runs_the_device_check_then_the_event_sweep_then_the_s
 async def test_device_check_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
     from serversherpa.notifications import worker as worker_mod
 
+    calls = []
+
     async def boom(maker, *, now=None, state=None):
+        calls.append(1)
         raise RuntimeError("db down")
 
     monkeypatch.setattr(worker_mod, "run_device_check_once", boom)
@@ -232,11 +271,12 @@ async def test_device_check_errors_do_not_kill_the_loop(db, monkeypatch, caplog)
     caplog.set_level(logging.WARNING, logger="serversherpa.notifications.worker")
     task = asyncio.create_task(run_forever(poll_seconds=0.05))
     try:
-        await asyncio.sleep(0.3)
+        await _until(lambda: len(calls) >= 2)
         assert not task.done()
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+    assert len(calls) >= 2
     assert caplog.text.count("could not run the device check") == 1   # once per outage
     assert "RuntimeError" in caplog.text
     assert "db down" not in caplog.text          # the class only, never the text
@@ -280,10 +320,57 @@ async def test_a_paused_loop_keeps_the_device_check_quiet(db, monkeypatch):
     assert before + LONGEST_THRESHOLD <= first["quiet_until"] <= after + LONGEST_THRESHOLD
 
 
+async def test_a_new_worker_keeps_the_device_check_quiet(db, monkeypatch):
+    """The quiet window lives in the worker process, so a worker that has just started can't
+    tell whether read-only mode ended a moment ago: its device check stays quiet for the longest
+    threshold from the start (UTC), as after a pause. A station quiet for 10 minutes is not
+    announced yet. Clearing still runs: a station that is back has its notice cleared at once."""
+    from serversherpa.notifications import worker as worker_mod
+    from serversherpa.services.device_online import LONGEST_THRESHOLD
+
+    seen = datetime.now(UTC)
+    station = {"device_type": "kiosk", "sub_type": "laptop", "station_type": "rfid"}
+    db.add_all([
+        Device(name="Device A", last_seen_at=seen - timedelta(minutes=10), **station),
+        Device(name="Device B", last_seen_at=seen, offline_notified_at=seen - timedelta(minutes=5),
+               **station),
+    ])
+    await db.commit()
+
+    real = worker_mod.run_device_check_once
+    results: list[tuple[int, dict]] = []
+
+    async def recorded(maker, *, now=None, state=None):
+        announced = await real(maker, now=now, state=state)
+        results.append((announced, dict(state)))
+        return announced
+
+    monkeypatch.setattr(worker_mod, "run_device_check_once", recorded)
+    before = datetime.now(UTC)
+    task = asyncio.create_task(run_forever(poll_seconds=0.05))
+    try:
+        await _until(lambda: results)                # the first loop runs the check
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    after = datetime.now(UTC)
+
+    [(announced, state)] = results
+    assert announced == 0
+    assert before + LONGEST_THRESHOLD <= state["quiet_until"] <= after + LONGEST_THRESHOLD
+    async with get_sessionmaker()() as s:
+        assert await s.scalar(select(func.count()).select_from(NotificationEvent)) == 0
+        notices = dict((await s.execute(select(Device.name, Device.offline_notified_at))).all())
+    assert notices == {"Device A": None, "Device B": None}
+
+
 async def test_event_sweep_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
     from serversherpa.notifications import worker as worker_mod
 
+    calls = []
+
     async def boom(maker):
+        calls.append(1)
         raise RuntimeError("db down")
 
     monkeypatch.setattr(worker_mod, "run_events_once", boom)
@@ -291,11 +378,12 @@ async def test_event_sweep_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
     caplog.set_level(logging.WARNING, logger="serversherpa.notifications.worker")
     task = asyncio.create_task(run_forever(poll_seconds=0.05))
     try:
-        await asyncio.sleep(0.3)
+        await _until(lambda: len(calls) >= 2)
         assert not task.done()
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+    assert len(calls) >= 2
     assert caplog.text.count("could not run the event sweep") == 1   # once per outage
     assert "RuntimeError" in caplog.text
     assert "db down" not in caplog.text          # the class only, never the text

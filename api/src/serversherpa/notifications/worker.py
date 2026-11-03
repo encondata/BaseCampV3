@@ -4,7 +4,9 @@ outbox (mail/delivery.py); once an hour it runs the password-expiry
 reminder sweep (notifications/password_reminders.py); every minute the
 learning sweep (learning/scheduler.py: scheduled invites, reminders,
 overdue notices), the device check (notifications/device_check.py:
-covered devices that stop checking in are announced), the event sweep
+covered devices that stop checking in are announced, except for the
+longest threshold after the worker starts and after read-only mode),
+the event sweep
 (notifications/event_sweep.py: announced events become notifications for
 the people they reach) and then the summary sweep
 (notifications/summary.py: email held for a person's quiet hours or day
@@ -177,6 +179,10 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
         last_events = time.monotonic() - EVENTS_INTERVAL_SECONDS
         last_summaries = time.monotonic() - SUMMARY_INTERVAL_SECONDS
         last_attestation = time.monotonic() - ATTESTATION_STATUS_INTERVAL_SECONDS
+        # The device check's quiet window lives in this process, so a worker that has just
+        # started can't tell whether read-only mode ended a moment ago: keep the check quiet for
+        # the longest threshold from now, as after a pause. Clearing still runs meanwhile.
+        keep_quiet(devices_state, datetime.now(UTC))
         while True:
             # read-only mode's "also pause background services": idle (still
             # heart-beating as paused) until the flag clears — no work lost
