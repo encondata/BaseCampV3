@@ -384,6 +384,15 @@ with the blockers. Both name each task (ID + name + reason
   the portal's `lastDay`): a night task ending at 24:00 Thursday is stored
   as Friday 00:00 and is due Thursday. The assignment notice's Finish label
   reads the same day.
+- *Amendment 2026-11-03:* with finish dates on, a **summary task** without
+  a deadline is not due at its finish: that finish is its last subtask's, and
+  the subtasks are reminded on their own finishes, so reminding the summary
+  too would count them twice. It gets no stages and is not counted or listed
+  in the owner's overdue digest. A summary with its own deadline is reminded
+  and counted like any other task. (A summary is any task another task names
+  as its parent, derived from the outline as everywhere else.) The help text
+  for this choice in Plan settings and System settings adds "Summary tasks
+  are reminded only when they have their own Deadline."
 - Reminder **stages**, sent at the plan-local *send time*:
   `d<N>` for each offset N days before the due day, `due` on the due day, then
   `overdue` (cadence *daily* / *once* / *off*) while incomplete.

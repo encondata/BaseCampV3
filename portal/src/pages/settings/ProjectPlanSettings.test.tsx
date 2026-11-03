@@ -91,6 +91,14 @@ describe('System settings › Project plans', () => {
     expect(checkbox('Email assignees').checked).toBe(true);
   });
 
+  it('Use Finish when there’s no Deadline says summary tasks need their own Deadline', async () => {
+    renderPage();
+    await loaded();
+    expect(screen.getByText(
+      'A task with no Deadline is due at its Finish. Summary tasks are reminded only when they have their own Deadline.',
+    ).id).toBe('pps-use_finish_without_deadline-hint');
+  });
+
   it('the send time is a native time field inside a .pf-form (house rule)', async () => {
     renderPage();
     await loaded();

@@ -2,7 +2,10 @@
 (`run_plan_reminders_once`), and the stages it works from.
 
 A task's *due moment* is its deadline, or its finish when the plan's
-`use_finish_without_deadline` is on and it has no deadline. Its *due day*
+`use_finish_without_deadline` is on and it has no deadline, except for a
+summary task: its finish is its last subtask's, and the subtasks are
+reminded on their own finishes, so a summary is due only at its own
+deadline (no stages, and not in the owner's digest). Its *due day*
 (`due_day`) is a deadline's own day (a moment: 00:00 Friday is Friday), or
 the day a finish's work ends (`floating.last_day`, the one finish-day rule
 the Calendar, Board and Timeline use: a finish at 00:00 Friday is
@@ -49,9 +52,10 @@ import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from serversherpa.db.models import Initiative, Partner
 from serversherpa.learning.stats import INACTIVE_STATUSES
@@ -168,6 +172,13 @@ def _live(initiative: Initiative | None) -> bool:
             and initiative.status not in INACTIVE_STATUSES)
 
 
+def _is_parent(task_id):
+    """Whether the task is a summary: another task names it as its parent
+    (derived from the outline, never stored; plans/engine.py)."""
+    child = aliased(PlanTask)
+    return exists().where(child.parent_id == task_id)
+
+
 # a log row as the sweep compares it: (task, person, stage, due day key)
 _Row = tuple[uuid.UUID, uuid.UUID, str, datetime]
 
@@ -279,6 +290,11 @@ async def _plan_one(db: AsyncSession, plan_id: uuid.UUID, now: datetime,
                                time())
     where = [PlanTask.plan_id == plan.id, PlanTask.percent_complete < 100,
              due_col.is_not(None), due_col <= horizon]
+    if r.use_finish_without_deadline:
+        # a summary is due at its finish only through its subtasks (the
+        # finish is the last one's), and they are reminded on their own:
+        # only a summary's own deadline makes it due
+        where.append(or_(PlanTask.deadline.is_not(None), ~_is_parent(PlanTask.id)))
     if r.overdue == "off":
         where.append(due_col >= datetime.combine(today, time()))
     tasks = list(await db.scalars(

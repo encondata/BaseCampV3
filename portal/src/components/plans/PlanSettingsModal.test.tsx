@@ -119,6 +119,14 @@ describe('Plan settings', () => {
     await waitFor(() => expect(patch).toHaveBeenCalledWith({ settings: { reminders: { send_time: '07:30' } } }));
   });
 
+  it('Reminders: Use Finish when there’s no Deadline says summary tasks need their own Deadline', async () => {
+    const { user } = open(plan());
+    await user.click(section('Reminders'));
+    const hint = within(dialog()).getByText(
+      'A task with no Deadline is due at its Finish. Summary tasks are reminded only when they have their own Deadline.');
+    expect(hint.previousElementSibling?.textContent).toBe('Use Finish when there’s no Deadline');
+  });
+
   it('Reminders: the native time field sits inside a .pf-form (house rule for native date and time inputs)', async () => {
     const { user } = open(plan());
     await user.click(section('Reminders'));

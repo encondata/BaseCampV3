@@ -472,7 +472,8 @@ export const REMINDER_HINTS: Record<keyof ReminderSettings, string> = {
   on_due_day: 'One more on the day a task is due.',
   overdue: 'While a task is overdue and not complete.',
   send_time: 'The time of day reminders go out, in the plan’s timezone.',
-  use_finish_without_deadline: 'A task with no Deadline is due at its Finish.',
+  use_finish_without_deadline:
+    'A task with no Deadline is due at its Finish. Summary tasks are reminded only when they have their own Deadline.',
   notify_on_assign: 'A notice when someone is assigned to a task.',
   overdue_to_owner: 'The plan owner also hears about overdue tasks.',
   email_assignees: 'Reminders are emailed as well as shown in the inbox.',

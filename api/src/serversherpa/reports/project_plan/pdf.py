@@ -8,6 +8,9 @@ tile of the chart under the two-tier timescale, tiled left to right and
 then top to bottom (gantt.py's page geometry, the same the options step's
 estimate uses). A tile is an SVG whose viewBox is its window onto the full
 chart, so a bar or a link that crosses its edge is cut there, not dropped.
+Every tile is the chart's full width, so the last one reaches past the
+printed range; its timescale and grid run on to its right edge (`_drawn`),
+and a deadline past that edge draws nothing.
 The footer is Move Scan History's: Page N of M, the generated stamp and
 the tracking id, and the PDF417 barcode.
 
@@ -299,6 +302,8 @@ def _short_day(text: str | None) -> str:
 
 def _task_marks(task: PlanTaskOut, row: int, scale: gantt.Scale, box: gantt.BarBox,
                 show_critical: bool, show_baseline: bool) -> _Marks | None:
+    """A task's marks on `scale`, the drawn chart (`_drawn`): a deadline
+    off either end of it draws nothing, like a task outside the range."""
     y = row * ROW_PX
     tid = str(task.id)
     parts: list[Markup] = []
@@ -367,8 +372,8 @@ def _task_marks(task: PlanTaskOut, row: int, scale: gantt.Scale, box: gantt.BarB
 
     if task.deadline:
         at = gantt.to_ms(task.deadline)
-        if at is not None:
-            x = gantt.x_of_ms(scale, at)
+        x = gantt.x_of_ms(scale, at) if at is not None else None
+        if x is not None and 0 <= x <= scale.width:
             height = box.height + 4
             parts.append(Markup(
                 '<path class="deadline" d="M3.5 0h3v7.5H10L5 14 0 7.5h3.5z" fill="{}" '
@@ -530,28 +535,40 @@ def _tile_span(scale: gantt.Scale, x0: float, x1: float, first_ms: int, last_ms:
     return day_span(gantt.moment_of(a), gantt.moment_of(max(a, b - 60_000)))
 
 
+def _drawn(scale: gantt.Scale, width: float) -> gantt.Scale:
+    """The chart the tiles draw: `scale`'s own axis (its start and px per
+    ms, so every x is the same) with its end moved to `width`, the last
+    tile's right edge. Every tile is the chart's full width, so the last one
+    reaches past the printed range: the timescale, the grid and the
+    nonworking days run on to its edge, and nothing on the page is
+    unlabeled. The printed range, its scale and the page estimate don't
+    move."""
+    return dataclasses.replace(scale, end_ms=gantt.ms_of(scale, width), width=width)
+
+
 def _gantt_pages(data: PlanData, tasks: list[PlanTaskOut], choices, start: str, finish: str,
                  zoom: str) -> list[dict]:
     paper = choices.paper
     scale = gantt.print_scale(start, finish, zoom)
-    box = gantt.bar_box(ROW_PX, choices.show_baseline)
-    marks = [m for i, t in enumerate(tasks)
-             if (m := _task_marks(t, i, scale, box, choices.show_critical,
-                                  choices.show_baseline)) is not None]
-    now = gantt.to_ms(data.now)
-    status = gantt.to_ms(data.status_date) if data.status_date else None
-    chart = _Chart(
-        scale=scale, zoom=zoom, marks=marks,
-        links=_links(data, tasks, scale, box, zoom, choices.show_critical),
-        bands=(gantt.nonworking_bands(data.calendar, scale)
-               if zoom in ("hours", "days", "weeks") else []),
-        top_ticks=gantt.tiers(scale, zoom).top,
-        today=gantt.x_of_ms(scale, now) if now is not None else None,
-        status=gantt.x_of_ms(scale, status) if status is not None else None)
     width = gantt.chart_width(paper)
     per = gantt.gantt_rows(paper)
     across = gantt.tiles_across(scale.width, paper)
     down = gantt.tiles_down(len(tasks), paper)
+    drawn = _drawn(scale, across * width)
+    box = gantt.bar_box(ROW_PX, choices.show_baseline)
+    marks = [m for i, t in enumerate(tasks)
+             if (m := _task_marks(t, i, drawn, box, choices.show_critical,
+                                  choices.show_baseline)) is not None]
+    now = gantt.to_ms(data.now)
+    status = gantt.to_ms(data.status_date) if data.status_date else None
+    chart = _Chart(
+        scale=drawn, zoom=zoom, marks=marks,
+        links=_links(data, tasks, drawn, box, zoom, choices.show_critical),
+        bands=(gantt.nonworking_bands(data.calendar, drawn)
+               if zoom in ("hours", "days", "weeks") else []),
+        top_ticks=gantt.tiers(drawn, zoom).top,
+        today=gantt.x_of_ms(drawn, now) if now is not None else None,
+        status=gantt.x_of_ms(drawn, status) if status is not None else None)
     first_ms, last_ms = gantt.to_ms(start), max(gantt.to_ms(start), gantt.to_ms(finish))
     names = [{"id": t.display_id, "name": t.name, "summary": t.is_summary,
               "indent": NAMES_INDENT_PAD + INDENT_PX * (max(t.outline_level, 1) - 1)}
@@ -570,7 +587,7 @@ def _gantt_pages(data: PlanData, tasks: list[PlanTaskOut], choices, start: str, 
                 "span": _tile_span(scale, x0, x0 + width, first_ms, last_ms),
                 "rows": rows, "across": f"{a + 1} of {across}" if across > 1 else "",
                 "names": names[r0:r1],
-                "scale": _scale_svg(scale, zoom, x0, width),
+                "scale": _scale_svg(drawn, zoom, x0, width),
                 "chart": _chart_svg(band, x0, width, r0, r1),
             })
     return pages

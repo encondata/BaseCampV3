@@ -5,6 +5,7 @@ on its own pages, tiled across and down, every text escaped and nothing
 fetched but data: URIs."""
 
 import importlib.util
+import itertools
 import json
 import multiprocessing
 import os
@@ -499,6 +500,76 @@ async def test_a_custom_range_is_cut_to_the_plan(client, db):
     data = await gather_mod.gather(db, move.id, me)
     assert gantt.print_range(data.span, "2026-10-01", "2027-12-31") == data.span
     assert data.span == gantt.PrintRange("2026-11-02T08:00", "2026-11-10T17:00")
+
+
+_VIEWBOX = r'<svg class="{}" [^>]*viewBox="(-?[\d.]+) (-?[\d.]+) ([\d.]+) [\d.]+">(.*?)</svg>'
+
+
+def _tiles(html: str, cls: str) -> list[tuple[float, float, str]]:
+    """Each tile's (x0, x1, its SVG's inside) for the `gscale` or `gchart` SVGs."""
+    return [(float(x0), float(x0) + float(w), body)
+            for x0, _, w, body in re.findall(_VIEWBOX.format(cls), html, re.DOTALL)]
+
+
+def _tick_xs(body: str, top: float) -> list[float]:
+    """The x of every tick rule in a timescale tier starting at `top`."""
+    return [float(x) for x in re.findall(
+        rf'<path d="M (-?[\d.]+) {top:g} V {top + pdf.TIER_PX:g}"', body)]
+
+
+async def test_the_timescale_runs_to_the_last_tiles_right_edge(client, db):
+    """A deadline after the last finish lands past the printed range but
+    inside the last tile: the tile's two tiers (and the grid under them)
+    run to its right edge, so the arrow sits under labeled days."""
+    hdrs, me, move, ids = await _twelve(client, db)
+    plan = (await client.get(f"/initiatives/{move.id}/plan", headers=hdrs)).json()
+    await _ok(client, hdrs, plan, [_update(ids["Install"], deadline="2026-11-13")])
+    html = await _html(db, move, me, zoom="days")
+    data = await gather_mod.gather(db, move.id, me)
+    printed = gantt.print_scale(data.span.start, data.span.finish, "days")
+    [(x0, x1, scale)] = _tiles(html, "gscale")
+    [(_, _, chart)] = _tiles(html, "gchart")
+    assert (x0, x1) == (0, gantt.chart_width("letter")) and printed.width < x1
+
+    per_day = gantt.ZOOM_PX_PER_DAY["days"]
+    days, weeks = _tick_xs(scale, 0 + pdf.TIER_PX), _tick_xs(scale, 0)
+    # every day of the tile is a tick, the last one reaching the right edge
+    assert days[0] <= per_day and days[-1] + per_day >= x1
+    assert all(abs((b - a) - per_day) < 0.01 for a, b in itertools.pairwise(days[1:]))
+    assert weeks[-1] + 7 * per_day >= x1 and weeks[-1] > printed.width
+    # the days past the printed range are labeled too
+    labels = re.findall(r'<text x="([\d.]+)" y="30.5"[^>]*>([SMTWF])</text>', scale)
+    assert max(float(x) for x, _ in labels) > x1 - per_day
+    # the grid's week rules are the top tier's
+    grid = [float(x) for x in re.findall(rf'<path d="M ([\d.]+) 0 V [\d.]+" stroke="{pdf.GRID}"',
+                                         chart)]
+    assert grid == [x for x in weeks if x > x0]
+    # the deadline's arrow is drawn, past the printed range, under labeled days
+    [arrow] = re.findall(r'<path class="deadline"[^>]*translate\(([\d.]+) ', chart)
+    tip = float(arrow) + pdf.DEADLINE_HALF
+    assert printed.width < tip < x1 and days[0] < tip < days[-1] + per_day
+
+
+async def test_a_deadline_past_the_drawn_chart_draws_nothing(client, db):
+    """Install's deadline (11/20) is past the last tile's right edge at the
+    days zoom: outside what prints, like a task outside a custom range, it
+    draws nothing. At the weeks zoom the tile reaches it, and it draws."""
+    hdrs, me, move, ids = await _twelve(client, db)
+    days = await _html(db, move, me, zoom="days")
+    assert len(_tiles(days, "gchart")) == 1
+    assert 'class="deadline"' not in days
+    assert re.search(rf'<rect class="bar[^"]*" data-task="{ids["Install"]}"', days)
+    weeks = await _html(db, move, me, zoom="weeks")
+    [(_, x1, chart)] = _tiles(weeks, "gchart")
+    [arrow] = re.findall(r'<path class="deadline"[^>]*translate\(([\d.]+) ', chart)
+    assert 0 < float(arrow) < x1
+    # and before the first tile's left edge: printing from 11/4 starts the
+    # chart after Ship's deadline (11/2), though Ship's bar (11/4-11/6) prints
+    plan = (await client.get(f"/initiatives/{move.id}/plan", headers=hdrs)).json()
+    await _ok(client, hdrs, plan, [_update(ids["Ship"], deadline="2026-11-02")])
+    late = await _html(db, move, me, zoom="days", **{"from": "2026-11-04", "to": "2026-11-10"})
+    assert re.search(rf'<rect class="bar[^"]*" data-task="{ids["Ship"]}"', late)
+    assert 'class="deadline"' not in late
 
 
 async def test_a_render_past_its_timeout_is_stopped(client, db):

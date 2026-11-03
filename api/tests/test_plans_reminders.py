@@ -600,6 +600,83 @@ async def test_a_deadline_at_midnight_is_its_own_day(client, db, monkeypatch):
     assert (log.stage, log.due_at) == ("d1", dt("2026-11-06 00:00"))
 
 
+async def _summary_over(client, hdrs, plan, worker, **summary) -> dict[str, str]:
+    """"Planning" over "Survey" (no deadline: 1 day, finishing Mon 11-02
+    17:00), both assigned to `worker`; `summary` are fields for Planning."""
+    ids = await _add(client, hdrs, plan, "Planning", "Survey")
+    await _ok(client, hdrs, plan, [
+        {"op": "indent", "ids": [ids["Survey"]]},
+        *([_update(ids["Planning"], **summary)] if summary else []),
+        _assign(ids["Planning"], ("person", worker.id)),
+        _assign(ids["Survey"], ("person", worker.id))])
+    tasks = {t["name"]: t for t in (await _get(client, hdrs, plan))["tasks"]}
+    assert tasks["Survey"]["parent_id"] == ids["Planning"]
+    assert tasks["Planning"]["finish"] == tasks["Survey"]["finish"] == "2026-11-02T17:00"
+    return ids
+
+
+async def test_a_summary_is_not_reminded_on_its_finish(client, db, monkeypatch):
+    """With finishes as due dates, a summary's finish is its last subtask's:
+    its subtasks are reminded on their own, so the summary gets no stages
+    and stays out of the owner's digest. Being a summary is the outline's
+    say: a summary whose subtask leaves is reminded on its finish again."""
+    hdrs, move, plan = await _world(client, db, settings={"use_finish_without_deadline": True})
+    worker = await _crew(db, move, "Wanda", account=True)
+    ids = await _summary_over(client, hdrs, plan, worker)
+
+    # Wed 11-04: both finished Monday, but only Survey is overdue
+    _clock(monkeypatch, "2026-11-04 09:00")
+    assert await _sweep() == _counts(reminders=1, digests=1)
+    rows, mails = await _reminders(db)
+    assert [r.title for r in rows] == [f"Overdue: Survey — {MOVE}"]
+    assert [m.subject for m in mails] == [r.title for r in rows]
+    [digest] = await _inbox(db, "plan_overdue_digest")
+    assert (digest.title, digest.body) == (f"1 overdue task in {MOVE}", "Survey")
+    assert digest.payload["task_ids"] == [ids["Survey"]]
+    [mail] = await _mail(db, "plan_overdue_digest")
+    assert "Planning" not in mail.text_body
+    assert {str(log.task_id) for log in await _logs(db)} == {ids["Survey"]}
+
+    # outdented, Survey leaves Planning a task of its own, due at its finish
+    await _ok(client, hdrs, plan, [{"op": "outdent", "ids": [ids["Survey"]]}])
+    _clock(monkeypatch, "2026-11-05 09:00")
+    assert await _sweep() == _counts(reminders=2, digests=1)
+    rows, _ = await _reminders(db)
+    assert sorted(r.title for r in rows[1:]) == [f"Overdue: Planning — {MOVE}",
+                                                 f"Overdue: Survey — {MOVE}"]
+    assert (await _inbox(db, "plan_overdue_digest"))[-1].title == f"2 overdue tasks in {MOVE}"
+
+
+async def test_a_summary_with_its_own_deadline_is_still_reminded(client, db, monkeypatch):
+    """A summary's own Deadline is a due date like any other task's: its
+    stages go, and it is counted in the owner's digest once overdue."""
+    hdrs, move, plan = await _world(client, db, settings={"use_finish_without_deadline": True})
+    worker = await _crew(db, move, "Wanda", account=True)
+    ids = await _summary_over(client, hdrs, plan, worker, deadline=DEADLINE)
+
+    # Wed 11-04: Planning's d1 (due Thursday), Survey overdue since Monday
+    _clock(monkeypatch, "2026-11-04 09:00")
+    assert await _sweep() == _counts(reminders=2, digests=1)
+    rows, _ = await _reminders(db)
+    assert sorted(r.title for r in rows) == [f"Due Thursday, November 5: Planning — {MOVE}",
+                                             f"Overdue: Survey — {MOVE}"]
+    [digest] = await _inbox(db, "plan_overdue_digest")
+    assert (digest.title, digest.body) == (f"1 overdue task in {MOVE}", "Survey")
+
+    # Fri 11-06: Planning is overdue too, and the digest counts both
+    _clock(monkeypatch, "2026-11-06 09:00")
+    assert await _sweep() == _counts(reminders=2, digests=1)
+    rows, _ = await _reminders(db)
+    assert sorted(r.title for r in rows[2:]) == [f"Overdue: Planning — {MOVE}",
+                                                 f"Overdue: Survey — {MOVE}"]
+    digest = (await _inbox(db, "plan_overdue_digest"))[-1]
+    assert (digest.title, digest.body) == (f"2 overdue tasks in {MOVE}", "Planning, Survey")
+    assert sorted(digest.payload["task_ids"]) == sorted([ids["Planning"], ids["Survey"]])
+    planning = {(log.stage, log.person_id) for log in await _logs(db)
+                if str(log.task_id) == ids["Planning"]}
+    assert ("d1", worker.id) in planning and ("overdue:2026-11-06", worker.id) in planning
+
+
 async def test_category_off(client, db, monkeypatch):
     hdrs, move, plan = await _world(client, db)
     off = await _crew(db, move, "Olive", account=True, choice="off")
