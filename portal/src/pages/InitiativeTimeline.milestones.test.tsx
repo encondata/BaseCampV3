@@ -5,8 +5,11 @@
  * pill-check (default on, remembered) beside "Show cancelled"; the tasks
  * flagged Show on timeline as diamonds on their initiative's row (Timeline)
  * or diamond chips on their day (Calendar), each with a hover card (name,
- * date, Complete / Late) and a link to the task in its plan; and a "Plan:"
- * line on the initiative hover card. Data from GET /plans/timeline for the
+ * date, Complete / Late) and a link to the task in its plan; diamonds too
+ * close to tell apart cluster into one; chips fold into "+N more" past the
+ * calendar's lane cap like runs; and a "Plan:" line on the initiative hover
+ * card. A milestone's day is the API's `day` (the plan tab's finish-day
+ * rule), never the date of its `at`. Data from GET /plans/timeline for the
  * range the page shows (lib/plans/api getTimelineMilestones, mocked here).
  */
 
@@ -85,15 +88,18 @@ const DATA: PlanTimeline = {
   milestones: [
     {
       initiative_id: 'i1', plan_id: 'p1', task_id: 't1', name: 'Crates staged',
-      at: '2026-09-07T17:00', complete: true, late: false,
+      at: '2026-09-07T17:00', day: '2026-09-07', complete: true, late: false,
     },
     {
       initiative_id: 'i1', plan_id: 'p1', task_id: 't2', name: 'Move day',
-      at: '2026-09-14T08:00', complete: false, late: false,
+      at: '2026-09-14T08:00', day: '2026-09-14', complete: false, late: false,
     },
   ],
   summaries: {
-    i1: { percent_complete: 42, next: { name: 'Move day', at: '2026-09-14T08:00' } },
+    i1: {
+      percent_complete: 42,
+      next: { name: 'Move day', at: '2026-09-14T08:00', day: '2026-09-14' },
+    },
   },
 };
 
@@ -185,7 +191,7 @@ describe('with project_plans:view', () => {
       ...DATA,
       milestones: [...DATA.milestones, {
         initiative_id: 'i2', plan_id: 'p2', task_id: 't9', name: 'Cutover',
-        at: '2026-09-04T17:00', complete: false, late: true,
+        at: '2026-09-04T17:00', day: '2026-09-04', complete: false, late: true,
       }],
     });
     await renderPage();
@@ -210,33 +216,106 @@ describe('with project_plans:view', () => {
     expect(card()?.textContent).toContain('Late');
   });
 
-  it('sets diamonds on the same day side by side, not on top of each other', async () => {
+  it('places a diamond by its day, not by the date of its finish', async () => {
+    // a finish at midnight is the day before's end (the API's `day`)
+    plans.getTimelineMilestones.mockResolvedValue({
+      milestones: [{
+        ...DATA.milestones[1], name: 'Cure', at: '2026-09-15T00:00', day: '2026-09-14',
+      }],
+      summaries: {
+        i1: { percent_complete: 10, next: { name: 'Cure', at: '2026-09-15T00:00', day: '2026-09-14' } },
+      },
+    });
+    await renderPage();
+    const [cure] = diamonds(rowOf('Denver DC migration'));
+    expect(parseFloat(cure.style.left)).toBeCloseTo((13.5 / 30) * 100, 5);
+    expect(cure.getAttribute('aria-label')).toBe('Cure, Sep 14');
+    await hover(cure);
+    expect(card()?.textContent).toContain('Sep 14');
+    fireEvent.mouseOut(cure);
+    await act(() => vi.advanceTimersByTimeAsync(0));
+
+    toCalendar();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    const [chip] = [...document.querySelectorAll('.itl-milestone-chip')] as HTMLElement[];
+    // Mon Sep 14: the first column, in the week that starts on it
+    expect(chip.style.gridColumn).toBe('1 / span 1');
+    expect(chip.closest('.itl-week')?.querySelector('.itl-day-num')?.textContent).toBe('14');
+
+    const denver = [...document.querySelectorAll('.itl-span:not(.itl-milestone-chip)')]
+      .find((el) => el.textContent?.includes('Denver DC migration')) as HTMLElement;
+    await hover(denver);
+    expect(card()?.textContent).toContain('Plan: 10% complete · next: Cure Sep 14');
+  });
+
+  it('clusters diamonds on the same day into one that lists them all', async () => {
     plans.getTimelineMilestones.mockResolvedValue({
       milestones: [
-        { ...DATA.milestones[0], task_id: 'a', name: 'Assign crew leads', at: '2026-09-07T10:00' },
-        { ...DATA.milestones[0], task_id: 'b', name: 'Kickoff meeting', at: '2026-09-07T12:00' },
+        { ...DATA.milestones[0], task_id: 'a', name: 'Assign crew leads', complete: false, late: true },
+        { ...DATA.milestones[0], task_id: 'b', name: 'Kickoff meeting' },
+        DATA.milestones[1],
       ],
       summaries: {},
     });
     await renderPage();
-    // either side of the middle of Sep 7 (6.5/30 of the range)
-    const [first, second] = diamonds(rowOf('Denver DC migration'));
-    expect(first.style.left).toMatch(/^calc\(21\.66\d*% - 6px\)$/);
-    expect(second.style.left).toMatch(/^calc\(21\.66\d*% \+ 6px\)$/);
+    const marks = diamonds(rowOf('Denver DC migration'));
+    expect(marks).toHaveLength(2);           // Sep 7's pair, and Move day on its own
+    const [pair, single] = marks;
+    expect(pair.className).toContain('cluster');
+    expect(pair.className).toContain('late');   // any late one
+    expect(single.className).not.toContain('cluster');
+    expect(parseFloat(pair.style.left)).toBeCloseTo((6.5 / 30) * 100, 5);
+    // a click opens the first of them
+    expect(pair.getAttribute('href')).toBe('/initiatives/i1?tab=plan&task=a');
+    expect(pair.getAttribute('aria-label'))
+      .toBe('2 milestones: Assign crew leads, Sep 7, Late; Kickoff meeting, Sep 7, Complete');
+
+    await hover(pair);
+    const lines = [...card()!.querySelectorAll('.ihv-line')].map((el) => el.textContent);
+    expect(card()?.querySelector('.ihv-name')?.textContent).toBe('2 milestones');
+    expect(lines).toEqual(['Assign crew leads · Sep 7 · Late', 'Kickoff meeting · Sep 7 · Complete']);
+  });
+
+  it('clusters diamonds a few days apart at the Year scale, not at Month', async () => {
+    plans.getTimelineMilestones.mockResolvedValue({
+      milestones: [
+        DATA.milestones[0],
+        { ...DATA.milestones[0], task_id: 't3', name: 'Racks out', at: '2026-09-09T17:00', day: '2026-09-09' },
+      ],
+      summaries: {},
+    });
+    await renderPage();
+    expect(diamonds(rowOf('Denver DC migration'))).toHaveLength(2);   // 64px apart
+
+    fireEvent.click(screen.getByRole('button', { name: 'Year' }));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    // two days on a 1,320px year: ~7px apart, one diamond
+    const [only, ...rest] = diamonds(rowOf('Denver DC migration'));
+    expect(rest).toHaveLength(0);
+    expect(only.className).toContain('cluster');
+    expect(only.className).toContain('complete');   // all complete
+    expect(only.getAttribute('aria-label')).toMatch(/^2 milestones: Crates staged, Sep 7, Complete; Racks out/);
   });
 
   it('keeps a row whose own dates are outside the range for its milestone in it', async () => {
     plans.getTimelineMilestones.mockResolvedValue({
       milestones: [{
         initiative_id: 'i3', plan_id: 'p3', task_id: 't3', name: 'Site survey',
-        at: '2026-09-21T10:00', complete: false, late: false,
+        at: '2026-09-21T10:00', day: '2026-09-21', complete: false, late: false,
       }],
       summaries: {},
     });
     await renderPage([DENVER, initiative({
       id: 'i3', name: 'Austin cutover', scheduled_start: '2026-10-05', scheduled_end: '2026-10-06',
     })]);
-    expect(diamonds(rowOf('Austin cutover'))).toHaveLength(1);
+    const austin = rowOf('Austin cutover');
+    expect(diamonds(austin)).toHaveLength(1);
+    // the row says why it has no bar, and its diamonds drop below that
+    // note (`.itl-row-bars.noted`) rather than sitting on it
+    expect(austin.textContent).toContain('Scheduled outside this range');
+    expect(austin.querySelector('.itl-row-bars')?.classList.contains('noted')).toBe(true);
+    expect(rowOf('Denver DC migration').querySelector('.itl-row-bars')?.classList.contains('noted'))
+      .toBe(false);
   });
 
   it('turning Milestones off hides the diamonds and is remembered', async () => {
@@ -270,6 +349,35 @@ describe('with project_plans:view', () => {
     expect(chips[1].querySelector('.itl-milestone-diamond')).not.toBeNull();
 
     fireEvent.click(screen.getByLabelText('Milestones'));
+    expect(document.querySelector('.itl-milestone-chip')).toBeNull();
+  });
+
+  it('a chip past the lane cap folds into its day\'s "+N more" like a run', async () => {
+    // four runs cross Tue Sep 8 and fill its lanes; a milestone that day
+    // would be the fifth lane
+    plans.getTimelineMilestones.mockResolvedValue({
+      milestones: [{ ...DATA.milestones[0], at: '2026-09-08T17:00', day: '2026-09-08' }],
+      summaries: {},
+    });
+    await renderPage([1, 2, 3, 4].map((n) => initiative({
+      id: n === 1 ? 'i1' : `r${n}`, name: `Run ${n}`,
+      scheduled_start: '2026-09-07', scheduled_end: '2026-09-11',
+    })));
+    toCalendar();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+
+    expect(document.querySelector('.itl-milestone-chip')).toBeNull();
+    const more = screen.getAllByRole('button', { name: /Show all initiatives/ });
+    expect(more.map((b) => b.textContent)).toEqual(['+1 more']);   // Sep 8 only
+    expect(more[0].closest('.itl-day-cell')?.querySelector('.itl-day-num')?.textContent).toBe('8');
+
+    fireEvent.click(more[0]);
+    const chip = document.querySelector('.itl-milestone-chip') as HTMLElement;
+    expect(chip.textContent).toBe('Crates staged');
+    expect(chip.style.gridRow).toBe('5');
+    expect(chip.style.gridColumn).toBe('2 / span 1');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show less' }));
     expect(document.querySelector('.itl-milestone-chip')).toBeNull();
   });
 

@@ -241,6 +241,12 @@
 .itl-milestone.complete { background: var(--c-green); }
 .itl-milestone.late { background: var(--c-red); }
 .itl-milestone:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Milestones too close to tell apart, drawn as one: a second ring round
+   the diamond says there's more than one (its card lists them). */
+.itl-milestone.cluster { box-shadow: 0 0 0 1.5px var(--text-dark); }
+/* A track with no bar shows a one-line note at its top ("Scheduled outside
+   this range"): its diamonds sit just below the note, not on it. */
+.itl-row-bars.noted .itl-milestone { top: 25px; }
 
 /* ── month calendar ───────────────────────────────────────────────────
  * Six week rows, each a seven-column grid of day cells with a second

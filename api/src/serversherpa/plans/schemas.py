@@ -539,6 +539,7 @@ class TimelineMilestoneOut(BaseModel):
     task_id: uuid.UUID
     name: str
     at: str                                 # its finish, floating
+    day: str                                # YYYY-MM-DD: floating.last_day
     complete: bool
     late: bool
 
@@ -546,6 +547,7 @@ class TimelineMilestoneOut(BaseModel):
 class TimelineNextOut(BaseModel):
     name: str
     at: str                                 # its finish, floating
+    day: str                                # YYYY-MM-DD: floating.last_day
 
 
 class TimelineSummaryOut(BaseModel):

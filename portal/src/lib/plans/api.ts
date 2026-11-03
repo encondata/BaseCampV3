@@ -566,6 +566,9 @@ export interface TimelineMilestone {
   task_id: string;
   name: string;
   at: string;                         // its finish (floating)
+  /** Its day, `YYYY-MM-DD`: floatingTime `lastDay`'s rule (a finish at
+   *  00:00 ends the day before; a zero-length task keeps its own day). */
+  day: string;
   complete: boolean;
   late: boolean;                      // the plan tab's status (against its status date, else now)
 }
@@ -574,7 +577,7 @@ export interface TimelineMilestone {
 export interface TimelineSummary {
   percent_complete: number;           // the plan's top-level rollup
   /** The earliest incomplete flagged task finishing on or after the plan's now. */
-  next: { name: string; at: string } | null;
+  next: { name: string; at: string; day: string } | null;
 }
 
 export interface PlanTimeline {

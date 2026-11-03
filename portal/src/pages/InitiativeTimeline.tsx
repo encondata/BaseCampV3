@@ -28,7 +28,10 @@
  * plan tasks flagged Show on timeline — a diamond on the initiative's row
  * on the day the task finishes, or a diamond chip on that day in the
  * calendar — each with a hover card (name, date, Complete / Late) and a
- * link to the task in the plan tab (`?tab=plan&task=`). An initiative whose
+ * link to the task in the plan tab (`?tab=plan&task=`). Diamonds on a row
+ * too close to tell apart cluster into one, whose card lists them all and
+ * whose click opens the first. A milestone's day is the API's `day` (the
+ * plan tab's finish-day rule). An initiative whose
  * own dates miss the range keeps its row for a milestone inside it. The
  * initiative hover card gains a "Plan:" line (% complete, next flagged
  * task), toggle or not. The data is GET /plans/timeline for the days the
@@ -53,7 +56,7 @@ import { longDateOf } from '../lib/format';
 import {
   getTimelineMilestones, type PlanTimeline, type TimelineMilestone, type TimelineSummary,
 } from '../lib/plans/api';
-import { dayOf, formatDayRange } from '../lib/plans/floatingTime';
+import { formatDayRange } from '../lib/plans/floatingTime';
 import {
   buildInitiativeTree, derivedSpan, readCollapsed, writeCollapsed,
   type InitiativeTreeRow,
@@ -195,45 +198,58 @@ function shownDays(view: View, anchor: Date, scale: TimelineScale): { from: stri
   return { from: isoDay(range.start), to: isoDay(last) };
 }
 
-/** A milestone's diamond in `range`: the middle of its finish day (the
- *  day of its floating finish, as a local calendar date), as a percent;
- *  null outside. */
+/** A milestone's day as `Nov 14`. Its day is the API's `day`: the plan
+ *  tab's finish-day rule (floatingTime `lastDay`: a finish at 00:00 ends
+ *  the day before, a zero-length task keeps its own day), never the date
+ *  of its `at`. */
+function milestoneDate(m: TimelineMilestone): string {
+  return formatDayRange(m.day, m.day);
+}
+
+/** A milestone's diamond in `range`: the middle of its day (as a local
+ *  calendar date), as a percent; null outside. */
 function milestonePct(m: TimelineMilestone, range: TimelineRange): number | null {
-  const day = parseApiDay(dayOf(m.at));
+  const day = parseApiDay(m.day);
   return pctForDate(new Date(day.getFullYear(), day.getMonth(), day.getDate(), 12), range);
 }
 
-/** Diamonds on one day sit this far apart, centered on the day, so each
- *  one shows and takes its own hover and click (a 14px diamond is ~20px
- *  across its points). */
-const SAME_DAY_STEP_PX = 12;
+/** Diamonds on a row whose centers are closer than this cluster into one:
+ *  a 14px diamond is ~20px across its points, so two this close can't be
+ *  told apart, hovered or clicked one by one. */
+const CLUSTER_PX = 14;
 
-/** A row's diamonds inside `range`, each with its `left`: the middle of
- *  its day, or, with others of the row on the same day, spread across it
- *  (in their order, the API's: by finish). */
-function rowDiamonds(
-  milestones: readonly TimelineMilestone[], range: TimelineRange,
-): { m: TimelineMilestone; left: string }[] {
-  const days = new Map<string, TimelineMilestone[]>();
-  for (const m of milestones) {
-    const day = dayOf(m.at);
-    const list = days.get(day);
-    if (list) list.push(m);
-    else days.set(day, [m]);
-  }
-  const out: { m: TimelineMilestone; left: string }[] = [];
-  for (const list of days.values()) {
-    const pct = milestonePct(list[0], range);
-    if (pct === null) continue;
-    list.forEach((m, k) => {
-      const shift = (k - (list.length - 1) / 2) * SAME_DAY_STEP_PX;
-      out.push({
-        m,
-        left: shift === 0 ? `${pct}%` : `calc(${pct}% ${shift < 0 ? '-' : '+'} ${Math.abs(shift)}px)`,
-      });
+/** One diamond on a row: a milestone, or a cluster of them, at `pct`. */
+interface RowMark { milestones: readonly TimelineMilestone[]; pct: number }
+
+/** A row's diamonds inside `range` on a track `width` px wide, left to
+ *  right: a milestone joins the cluster before it when it is within
+ *  CLUSTER_PX of that cluster's first one (so a cluster stays ~14px wide
+ *  however dense the row), and a cluster sits at its milestones' mean.
+ *  Same-day milestones always cluster; at Month they're the only ones that
+ *  do (a day is 32px or more), at Quarter and Year neighboring days do. */
+function rowMarks(
+  milestones: readonly TimelineMilestone[], range: TimelineRange, width: number,
+): RowMark[] {
+  const placed = milestones
+    .map((m) => ({ m, pct: milestonePct(m, range) }))
+    .filter((p): p is { m: TimelineMilestone; pct: number } => p.pct !== null)
+    .sort((a, b) => a.pct - b.pct);             // stable: the API's order on a day
+  const marks: RowMark[] = [];
+  let group: { m: TimelineMilestone; pct: number }[] = [];
+  const close = () => {
+    if (group.length === 0) return;
+    marks.push({
+      milestones: group.map((g) => g.m),
+      pct: group.reduce((sum, g) => sum + g.pct, 0) / group.length,
     });
+    group = [];
+  };
+  for (const p of placed) {
+    if (group.length > 0 && ((p.pct - group[0].pct) / 100) * width >= CLUSTER_PX) close();
+    group.push(p);
   }
-  return out;
+  close();
+  return marks;
 }
 
 function milestoneState(m: TimelineMilestone): 'Complete' | 'Late' | null {
@@ -243,8 +259,14 @@ function milestoneState(m: TimelineMilestone): 'Complete' | 'Late' | null {
 
 /** `Move day, Nov 14, Late` — the diamond's name for a screen reader. */
 function milestoneLabel(m: TimelineMilestone): string {
-  return [m.name || UNTITLED, formatDayRange(m.at, m.at), milestoneState(m)]
-    .filter(Boolean).join(', ');
+  return [m.name || UNTITLED, milestoneDate(m), milestoneState(m)].filter(Boolean).join(', ');
+}
+
+/** A diamond's name for a screen reader: the milestone's, or for a
+ *  cluster `2 milestones: A, Nov 2, Late; B, Nov 2, Complete`. */
+function markLabel(milestones: readonly TimelineMilestone[]): string {
+  if (milestones.length === 1) return milestoneLabel(milestones[0]);
+  return `${milestones.length} milestones: ${milestones.map(milestoneLabel).join('; ')}`;
 }
 
 /** The task in its initiative's plan tab, selected and scrolled to. */
@@ -253,28 +275,51 @@ function milestoneHref(m: TimelineMilestone): string {
     + `?tab=plan&task=${encodeURIComponent(m.task_id)}`;
 }
 
-function milestoneClass(base: string, m: TimelineMilestone): string {
-  if (m.complete) return `${base} complete`;
-  return m.late ? `${base} late` : base;
+/** `base`, plus `cluster` for more than one milestone, plus their state:
+ *  `late` when any is late, `complete` when all are complete. */
+function milestoneClass(base: string, milestones: readonly TimelineMilestone[]): string {
+  const classes = [base];
+  if (milestones.length > 1) classes.push('cluster');
+  if (milestones.some((m) => m.late)) classes.push('late');
+  else if (milestones.every((m) => m.complete)) classes.push('complete');
+  return classes.join(' ');
 }
 
 /** "Plan: 42% complete · next: Move day Nov 14". */
 function planLineOf(s: TimelineSummary): string {
   const pct = `Plan: ${s.percent_complete}% complete`;
   if (!s.next) return pct;
-  return `${pct} · next: ${s.next.name || UNTITLED} ${formatDayRange(s.next.at, s.next.at)}`;
+  return `${pct} · next: ${s.next.name || UNTITLED} ${formatDayRange(s.next.day, s.next.day)}`;
 }
 
-/** A diamond's hover card: name, date, Complete / Late. */
-function MilestoneCard({ m }: { m: TimelineMilestone }) {
-  const state = milestoneState(m);
+const stateClass = (state: 'Complete' | 'Late'): string => (state === 'Late' ? 'ihv-late' : 'ihv-done');
+
+/** A diamond's hover card: name, date, Complete / Late; for a cluster, a
+ *  line for each of its milestones (name · date · state). */
+function MilestoneCard({ milestones }: { milestones: readonly TimelineMilestone[] }) {
+  if (milestones.length === 1) {
+    const m = milestones[0];
+    const state = milestoneState(m);
+    return (
+      <>
+        <span className="ihv-name">{m.name || UNTITLED}</span>
+        <span className="ihv-line">{milestoneDate(m)}</span>
+        {state && <span className={`ihv-line ${stateClass(state)}`}>{state}</span>}
+      </>
+    );
+  }
   return (
     <>
-      <span className="ihv-name">{m.name || UNTITLED}</span>
-      <span className="ihv-line">{formatDayRange(m.at, m.at)}</span>
-      {state && (
-        <span className={`ihv-line ${state === 'Late' ? 'ihv-late' : 'ihv-done'}`}>{state}</span>
-      )}
+      <span className="ihv-name">{milestones.length} milestones</span>
+      {milestones.map((m) => {
+        const state = milestoneState(m);
+        return (
+          <span key={m.task_id} className="ihv-line">
+            {m.name || UNTITLED} · {milestoneDate(m)}
+            {state && <>{' · '}<span className={stateClass(state)}>{state}</span></>}
+          </span>
+        );
+      })}
     </>
   );
 }
@@ -799,7 +844,10 @@ function TimelineRow({
           <span className="chip c-slate">{row.role}</span>
         )}
       </div>
-      <div className="itl-row-bars" style={{ width: rightWidth }}>
+      {/* `noted`: no bar here, so the track shows a note at its start ("No
+          dates yet", "Scheduled outside this range") and its diamonds drop
+          below the note rather than sitting on it. */}
+      <div className={`itl-row-bars${bar ? '' : ' noted'}`} style={{ width: rightWidth }}>
         {kind !== 'none' && todayPct !== null && (
           <div className="itl-today-line" style={{ left: `${todayPct}%` }} />
         )}
@@ -834,15 +882,17 @@ function TimelineRow({
           <div className="itl-learning-mark" title={learningMarkTitle(item.learning_send_at)}
                style={{ left: `${markPct}%` }} />
         )}
-        {milestones && rowDiamonds(milestones, range).map(({ m, left }) => (
-          <MilestoneDiamond key={m.task_id} m={m} left={left} />
+        {milestones && rowMarks(milestones, range, rightWidth).map((mark) => (
+          <MilestoneDiamond key={mark.milestones[0].task_id} mark={mark} />
         ))}
         {kind === 'none' && (
           <span className="cell-top itl-no-dates">No dates yet</span>
         )}
         {/* Dated, but the span sits before or after the visible range: say
             so rather than leaving an unexplained empty track. The row is
-            here because a descendant of its own is in range. */}
+            here because a descendant of its own is in range, or because a
+            plan milestone of its own is (a milestone-only row: the text
+            stays at the track's start, the diamonds on their days). */}
         {kind !== 'none' && !bar && (
           <span className="cell-top itl-no-dates">Scheduled outside this range</span>
         )}
@@ -852,12 +902,16 @@ function TimelineRow({
 }
 
 /** A plan milestone on its initiative's row: a diamond on its day, with
- *  the hover card and a link to the task in the plan. */
-function MilestoneDiamond({ m, left }: { m: TimelineMilestone; left: string }) {
+ *  the hover card and a link to the task in the plan. A cluster is one
+ *  diamond (ringed) whose card lists every milestone in it; its click
+ *  opens the first (the leftmost), the simplest clear choice — the card
+ *  names the rest, each a click away in the plan. */
+function MilestoneDiamond({ mark }: { mark: RowMark }) {
   return (
-    <PointerHoverCard card={() => <MilestoneCard m={m} />}>
-      <Link to={milestoneHref(m)} className={milestoneClass('itl-milestone', m)}
-            aria-label={milestoneLabel(m)} style={{ left }} />
+    <PointerHoverCard card={() => <MilestoneCard milestones={mark.milestones} />}>
+      <Link to={milestoneHref(mark.milestones[0])}
+            className={milestoneClass('itl-milestone', mark.milestones)}
+            aria-label={markLabel(mark.milestones)} style={{ left: `${mark.pct}%` }} />
     </PointerHoverCard>
   );
 }
@@ -918,8 +972,7 @@ function placeMilestones(
   }
   const placed: PlacedMilestone[] = [];
   for (const m of milestones) {
-    const day = dayOf(m.at);
-    const col = week.days.findIndex((d) => isoDay(d.date) === day);
+    const col = week.days.findIndex((d) => isoDay(d.date) === m.day);
     if (col < 0) continue;
     let lane = 0;
     while (taken[lane]?.[col]) lane += 1;
@@ -969,11 +1022,14 @@ function CalendarMonth({
 
   /* The milestones of the initiatives the calendar shows (the pills and
    * the collapsed set decide, as for the runs), earliest first, as chips
-   * on their days. A milestone never folds into "+N more": a week shows
-   * at least down to its lowest milestone lane. */
+   * on their days. The page's lane cap holds for them too: a chip whose
+   * lane is past it folds into its day's "+N more" like a run. (The plan
+   * tab's own Calendar keeps every milestone in view; that one is a plan's
+   * schedule, this one a page of initiatives.) */
   const placedByWeek = useMemo(() => {
-    const shownMilestones = visible.flatMap((i) => milestones.get(i.id) ?? [])
-      .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+    const byDay = (a: TimelineMilestone, b: TimelineMilestone) =>
+      (a.day !== b.day ? (a.day < b.day ? -1 : 1) : a.at < b.at ? -1 : a.at > b.at ? 1 : 0);
+    const shownMilestones = visible.flatMap((i) => milestones.get(i.id) ?? []).sort(byDay);
     return weeks.map((week) => placeMilestones(week, shownMilestones));
   }, [visible, milestones, weeks]);
 
@@ -1001,17 +1057,20 @@ function CalendarMonth({
         const key = isoDay(week.days[0].date);
         const isOpen = expanded === key;
         const placed = placedByWeek[weekIndex];
-        const milestoneLanes = placed.reduce((n, p) => Math.max(n, p.lane + 1), 0);
-        const lanes = Math.max(week.laneCount, milestoneLanes);
-        const laneCap = isOpen ? lanes : Math.max(MAX_LANES, milestoneLanes);
+        const lanes = placed.reduce((n, p) => Math.max(n, p.lane + 1), week.laneCount);
+        const laneCap = isOpen ? lanes : MAX_LANES;
         const shown = week.segments.filter((s) => s.lane < laneCap);
         const hidden = week.segments.filter((s) => s.lane >= laneCap);
-        // A day's "+N more" counts the runs crossing that day that the
-        // lane cap dropped — the count belongs to the day, the row it
-        // opens belongs to the week.
+        const shownChips = placed.filter((p) => p.lane < laneCap);
+        const hiddenChips = placed.filter((p) => p.lane >= laneCap);
+        // A day's "+N more" counts the runs crossing that day and the
+        // milestone chips on it that the lane cap dropped — the count
+        // belongs to the day, the row it opens belongs to the week.
         const hiddenOnDay = (col: number) => hidden.filter(
-          (s) => col >= s.startCol && col < s.startCol + s.span).length;
-        const rows = Math.min(lanes, laneCap) + (hidden.length || isOpen ? 1 : 0);
+          (s) => col >= s.startCol && col < s.startCol + s.span).length
+          + hiddenChips.filter((p) => p.col === col).length;
+        const folded = hidden.length > 0 || hiddenChips.length > 0;
+        const rows = Math.min(lanes, laneCap) + (folded || isOpen ? 1 : 0);
 
         return (
           <div className={`itl-week ${isOpen ? 'open' : ''}`} key={key}
@@ -1041,7 +1100,7 @@ function CalendarMonth({
                               label={segmentLabel(seg.item, byId)}
                               planLine={planLines.get(seg.item.id)} />
               ))}
-              {placed.map(({ m, col, lane }) => {
+              {shownChips.map(({ m, col, lane }) => {
                 const owner = byId.get(m.initiative_id);
                 return (
                   <CalendarMilestone key={m.task_id} m={m} col={col} lane={lane}
@@ -1098,9 +1157,9 @@ function CalendarMilestone({
   m, col, lane, color,
 }: { m: TimelineMilestone; col: number; lane: number; color: string }) {
   return (
-    <PointerHoverCard card={() => <MilestoneCard m={m} />}>
+    <PointerHoverCard card={() => <MilestoneCard milestones={[m]} />}>
       <Link to={milestoneHref(m)} aria-label={milestoneLabel(m)}
-            className={milestoneClass('chip custom itl-span itl-milestone-chip', m)}
+            className={milestoneClass('chip custom itl-span itl-milestone-chip', [m])}
             style={{
               gridColumn: `${col + 1} / span 1`,
               gridRow: lane + 1,

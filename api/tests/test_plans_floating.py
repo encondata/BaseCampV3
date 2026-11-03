@@ -1,12 +1,12 @@
 """Floating plan times: the wall-clock text the plan API reads and writes,
 and "now" in a plan's zone. Plan times never carry a zone or offset."""
 
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from serversherpa.plans.floating import format_floating, parse_floating, plan_now
+from serversherpa.plans.floating import format_floating, last_day, parse_floating, plan_now
 
 
 def test_date_only_takes_the_given_time():
@@ -96,3 +96,24 @@ def test_plan_now_is_naive_wall_clock_in_the_zone():
 def test_plan_now_is_whole_minutes():
     now = plan_now("America/New_York")
     assert now.second == 0 and now.microsecond == 0
+
+
+def _at(text: str) -> datetime:
+    return parse_floating(text, date_only_time=time(0))
+
+
+@pytest.mark.parametrize(("start", "finish", "day"), [
+    # the day of the last working minute: a finish at midnight ends the day before
+    ("2026-11-03T08:00", "2026-11-04T17:00", date(2026, 11, 4)),
+    ("2026-11-03T20:00", "2026-11-05T00:00", date(2026, 11, 4)),
+    ("2026-11-03T08:00", "2026-11-03T08:01", date(2026, 11, 3)),
+    # a milestone, a finish not after the start, or none: the start's day
+    ("2026-11-06T17:00", "2026-11-06T17:00", date(2026, 11, 6)),
+    ("2026-11-06T00:00", "2026-11-06T00:00", date(2026, 11, 6)),
+    ("2026-11-06T17:00", "2026-11-05T17:00", date(2026, 11, 6)),
+    ("2026-11-06T17:00", None, date(2026, 11, 6)),
+])
+def test_last_day_matches_the_portal(start, finish, day):
+    """The portal's lib/plans/floatingTime `lastDay`, vector for vector
+    (floatingTime.test.ts), plus a zero-length task at midnight."""
+    assert last_day(_at(start), None if finish is None else _at(finish)) == day

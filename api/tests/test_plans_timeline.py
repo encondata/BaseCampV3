@@ -9,6 +9,8 @@ Reference plan: created through the API on Mon 2026-11-02 (project start
 08:00, America/New_York, the standard 8-hour calendar), every task ASAP from
 the project start unless it carries a constraint."""
 
+from datetime import UTC, datetime
+
 from sqlalchemy import event
 
 from serversherpa.db.engine import get_engine
@@ -75,7 +77,8 @@ async def test_milestones_in_range_only(client, db, monkeypatch):
     assert resp.status_code == 200, resp.text
     assert _mine(resp.json(), move) == [{
         "initiative_id": str(move.id), "plan_id": str(plan.id), "task_id": str(rows[0].id),
-        "name": "Crates", "at": "2026-11-06T17:00", "complete": False, "late": False,
+        "name": "Crates", "at": "2026-11-06T17:00", "day": "2026-11-06",
+        "complete": False, "late": False,
     }]
 
     later = await _get(client, hdrs, "2026-11-11", "2026-11-30")
@@ -96,6 +99,46 @@ async def test_range_ends_are_included(client, db, monkeypatch):
     for start, end in (("2026-11-01", "2026-11-05"), ("2026-11-07", "2026-11-30")):
         body = (await _get(client, hdrs, start, end)).json()
         assert _mine(body, move) == [], (start, end)
+
+
+async def test_a_midnight_finish_is_the_day_before(client, db, monkeypatch):
+    """The plan tab's finish-day rule (floatingTime `lastDay`): a task's day
+    is that of its last working minute, so a finish at 00:00 ends the day
+    before — unless the task is zero-length, which stays on its own day."""
+    _now(monkeypatch, "2026-11-01 09:00")
+    hdrs = await _admin(db, client)
+    move, _plan, _rows = await _plan_with(db, client, hdrs, "NAP11", lambda plan: [
+        # manual, both dates typed: kept as they are
+        _task(plan, 0, "Cure", mode="manual", start=dt("2026-11-03 20:00"),
+              finish=dt("2026-11-05 00:00"), show_on_timeline=True),
+        _task(plan, 1, "Cutover", mode="manual", is_milestone=True, duration_minutes=0,
+              start=dt("2026-11-06 00:00"), finish=dt("2026-11-06 00:00"),
+              show_on_timeline=True),
+    ])
+    body = (await _get(client, hdrs)).json()
+    days = {m["name"]: (m["at"], m["day"]) for m in _mine(body, move)}
+    assert days == {
+        "Cure": ("2026-11-05T00:00", "2026-11-04"),
+        "Cutover": ("2026-11-06T00:00", "2026-11-06"),
+    }
+    # the range is tested on the day: Cure is in a range ending Nov 4, not
+    # in one starting Nov 5
+    for start, end, want in (("2026-11-01", "2026-11-04", {"Cure"}),
+                             ("2026-11-05", "2026-11-05", set()),
+                             ("2026-11-06", "2026-11-06", {"Cutover"})):
+        got = {m["name"] for m in _mine((await _get(client, hdrs, start, end)).json(), move)}
+        assert got == want, (start, end)
+
+
+async def test_next_carries_its_day(client, db, monkeypatch):
+    _now(monkeypatch, "2026-11-01 09:00")
+    hdrs = await _admin(db, client)
+    move, _plan, _rows = await _plan_with(db, client, hdrs, "NAP11", lambda plan: [
+        _task(plan, 0, "Cure", mode="manual", start=dt("2026-11-03 20:00"),
+              finish=dt("2026-11-05 00:00"), show_on_timeline=True),
+    ])
+    nxt = (await _get(client, hdrs)).json()["summaries"][str(move.id)]["next"]
+    assert nxt == {"name": "Cure", "at": "2026-11-05T00:00", "day": "2026-11-04"}
 
 
 async def test_complete_and_late(client, db, monkeypatch):
@@ -155,7 +198,7 @@ async def test_percent_and_next_for_a_three_task_plan(client, db, monkeypatch):
     # (a plain average of the three would be 50)
     assert body["summaries"][str(move.id)] == {
         "percent_complete": 86,
-        "next": {"name": "Move day", "at": "2026-11-13T08:00"},
+        "next": {"name": "Move day", "at": "2026-11-13T08:00", "day": "2026-11-13"},
     }
 
 
@@ -200,7 +243,7 @@ async def test_next_is_the_earliest_on_or_after_now(client, db, monkeypatch):
         _task(plan, 2, "Pack", duration_minutes=960, show_on_timeline=True),
     ])
     nxt = (await _get(client, hdrs)).json()["summaries"][str(move.id)]["next"]
-    assert nxt == {"name": "Pack", "at": "2026-11-03T17:00"}
+    assert nxt == {"name": "Pack", "at": "2026-11-03T17:00", "day": "2026-11-03"}
 
 
 async def test_next_ties_go_to_outline_order(client, db, monkeypatch):
@@ -270,6 +313,24 @@ async def test_initiatives_scope_applies(client, db, monkeypatch):
     assert calls and set(calls) == {"initiatives"}
     assert {m["initiative_id"] for m in body["milestones"]} == {str(seen.id)}
     assert set(body["summaries"]) == {str(seen.id)}
+
+
+async def test_archived_initiatives_are_left_out(client, db, monkeypatch):
+    """The Timeline page never shows an archived initiative, so its plan's
+    milestones and summary aren't sent."""
+    _now(monkeypatch, "2026-11-01 09:00")
+    hdrs = await _admin(db, client)
+
+    def tasks(plan):
+        return [_task(plan, 0, "Crates", duration_minutes=2400, show_on_timeline=True)]
+
+    live, _p1, _r1 = await _plan_with(db, client, hdrs, "Live", tasks)
+    gone, _p2, _r2 = await _plan_with(db, client, hdrs, "Archived", tasks)
+    gone.archived_at = datetime.now(UTC)
+    await db.commit()
+    body = (await _get(client, hdrs)).json()
+    assert {m["initiative_id"] for m in body["milestones"]} == {str(live.id)}
+    assert set(body["summaries"]) == {str(live.id)}
 
 
 async def test_bad_range(client, db):

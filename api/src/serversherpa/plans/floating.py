@@ -10,7 +10,7 @@ Plan times are whole minutes: seconds are accepted on input and dropped,
 and never written back out."""
 
 import re
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 _ASCII_WHITESPACE = " \t\n\r\f\v"
@@ -63,6 +63,17 @@ def format_floating(dt: datetime | None) -> str | None:
     if dt.tzinfo is not None:
         raise ValueError("a plan time must be a naive wall-clock time")
     return dt.isoformat(timespec="minutes")
+
+
+def last_day(start: datetime, finish: datetime | None) -> date:
+    """The day a task's work ends: that of its last working minute, so a
+    finish at midnight ends the day before (Thu 00:00 is Wednesday's end).
+    A zero-length task (a milestone), a finish not after the start, or none
+    at all: the start's own day. The portal's lib/plans/floatingTime
+    `lastDay`, the one finish-day rule every day label uses."""
+    if finish is not None and finish > start:
+        return (finish - timedelta(minutes=1)).date()
+    return start.date()
 
 
 def plan_now(zone_name: str) -> datetime:
