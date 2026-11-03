@@ -20,8 +20,20 @@ export interface CommandTip {
 }
 
 export const COMMAND_TIPS = {
-  // the view switcher (Calendar and Board arrive in Plan C)
+  // the view switcher
   viewGantt: { label: 'Gantt', desc: 'Show the task sheet with its Gantt chart.' },
+  viewCalendar: { label: 'Calendar', desc: 'Show the tasks on a month calendar.' },
+  viewBoard: {
+    label: 'Board', desc: 'Show the tasks as cards in Not started, In progress and Complete; drag a card to update it.',
+  },
+
+  // the Calendar's month steps
+  calPrev: { label: 'Previous month', desc: 'Show the month before.' },
+  calToday: { label: 'Today', desc: 'Show the month of the plan’s today.' },
+  calNext: { label: 'Next month', desc: 'Show the month after.' },
+  // a Board card's menu (named for its task: "Actions for <name>")
+  cardActions: { label: 'Actions', desc: 'Move the task to another column, or open its Task Information.' },
+  cardActionsReadOnly: { label: 'Actions', desc: 'Open the task’s Task Information.' },
 
   // Undo
   undo: { label: 'Undo', desc: 'Take back your last change.', shortcut: 'undo' },
@@ -62,6 +74,9 @@ export const COMMAND_TIPS = {
   // Display
   critical: { label: 'Critical Path', desc: 'Show in red the tasks that set the project’s finish date.' },
   baseline: { label: 'Baseline', desc: 'Show the saved baseline under each bar.' },
+  strip: {
+    label: 'Timeline strip', desc: 'Show the timeline above the Gantt: the project’s span and the tasks added to it.',
+  },
   zoomOut: { label: 'Zoom Out', desc: 'Show more time in the chart, in less detail.' },
   zoomIn: { label: 'Zoom In', desc: 'Show less time in the chart, in more detail.' },
   fit: { label: 'Fit Project', desc: 'Zoom so the whole project fits in the chart.' },
@@ -125,6 +140,7 @@ export const OFF_NOTES = {
   zoomedOut: 'Zoomed out all the way',
   zoomedIn: 'Zoomed in all the way',
   noChart: 'Show the Gantt chart to use this',
+  ganttOnly: 'Switch to the Gantt view to use this',
   noBaseline: 'No baseline set',
   grouped: 'Turn off Group by to change the outline',
 } as const;

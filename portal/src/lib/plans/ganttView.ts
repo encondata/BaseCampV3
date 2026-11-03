@@ -2,10 +2,10 @@
  * The Gantt view's layout math, on top of ganttGeometry: which slice of the
  * scale the chart draws, bars and bands clipped to it, a bar's place in its
  * row, which links are drawn and where their arrowheads point, the
- * initiative window band, what the hover card says, the zoom, splitter
- * and layout settings kept in localStorage, and the Below layout's math
- * (the end pads that keep its two scrollers level, where a task's name
- * goes at its bar). Pure, so PlanGantt only renders.
+ * initiative window band, what the hover card says, the zoom, Timeline
+ * strip, splitter and layout settings kept in localStorage, and the Below
+ * layout's math (the end pads that keep its two scrollers level, where a
+ * task's name goes at its bar). Pure, so PlanGantt only renders.
  *
  * Drawing only what is visible (Review Focus 5): a 3-year plan at the hours
  * zoom is about 528,000 px wide, so the chart never makes an element that
@@ -419,6 +419,27 @@ export function writeZoom(planId: string, zoom: Zoom): void {
     localStorage.setItem(ZOOM_PREFIX + planId, zoom);
   } catch {
     // storage refused: the zoom lasts this visit only
+  }
+}
+
+/** Display › Timeline strip, per plan in this browser: '1' on, '0' off. */
+export const STRIP_PREFIX = 'plans.strip.';
+
+/** Whether the plan's Timeline strip is on here; off when none is kept (or storage refuses). */
+export function readStrip(planId: string | null): boolean {
+  if (!planId) return false;
+  try {
+    return localStorage.getItem(STRIP_PREFIX + planId) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function writeStrip(planId: string, on: boolean): void {
+  try {
+    localStorage.setItem(STRIP_PREFIX + planId, on ? '1' : '0');
+  } catch {
+    // storage refused: the choice lasts this visit only
   }
 }
 

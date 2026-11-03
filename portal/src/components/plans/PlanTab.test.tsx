@@ -283,19 +283,19 @@ describe('lock banner', () => {
 });
 
 describe('views', () => {
-  it('shows the Gantt view by default; the switcher offers Gantt only for now', async () => {
+  it('shows the Gantt view by default; the switcher offers Gantt, Calendar and Board', async () => {
     api.getPlan.mockResolvedValueOnce(makePlan());
     const { container } = renderTab();
     const views = await screen.findByRole('group', { name: 'View' }, { timeout: 3000 });
     const buttons = within(views).getAllByRole('button');
-    expect(buttons.map((b) => b.textContent)).toEqual(['Gantt']);
+    expect(buttons.map((b) => b.textContent)).toEqual(['Gantt', 'Calendar', 'Board']);
     expect(buttons[0].getAttribute('aria-pressed')).toBe('true');
     expect(container.querySelector('.pln-view')?.getAttribute('data-view')).toBe('gantt');
   });
 
   it('an unknown ?view= falls back to the Gantt view', async () => {
     api.getPlan.mockResolvedValueOnce(makePlan());
-    const { container } = renderTab('?tab=plan&view=board');
+    const { container } = renderTab('?tab=plan&view=list');
     await screen.findByRole('toolbar', { name: 'Project plan' }, { timeout: 3000 });
     expect(container.querySelector('.pln-view')?.getAttribute('data-view')).toBe('gantt');
     expect(location).toContain('tab=plan');

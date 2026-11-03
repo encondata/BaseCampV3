@@ -16,7 +16,9 @@
  *     added never disappears from under you.
  *  2. Collapse composes with it: a collapsed summary's subtasks are out,
  *     unless the summary is a context row (it is only there to place a
- *     match, so it is always open — the initiatives tree's rule).
+ *     match, so it is always open — the initiatives tree's rule). Collapse
+ *     is the sheet's: the Calendar and the Board (`collapsible` off) show
+ *     every task the filter keeps.
  *  3. Group by (the Gantt view only): the leaf tasks under a band per
  *     resource or status, a task with two resources under both. Grouped
  *     rows have keys of their own (filters `rowKey`, `bandKey`); ungrouped
@@ -85,6 +87,8 @@ export interface SheetViewOptions {
   me?: string;
   /** Group by applies (the Gantt view). */
   groupable?: boolean;
+  /** Collapsed summaries hide their subtasks (the Gantt view's sheet). */
+  collapsible?: boolean;
   /** The `&task=` deep link was handled for this task (the tab scrolls the
    *  chart to its bar). */
   onLinked?(taskId: string): void;
@@ -97,7 +101,7 @@ export interface SheetViewOptions {
  */
 export function useSheetView(ctl: PlanController, taskParam: string | null,
   scrollRef: RefObject<HTMLDivElement | null>, rowHeight: number, options: SheetViewOptions = {}) {
-  const { me = '', groupable = true, onLinked } = options;
+  const { me = '', groupable = true, collapsible = true, onLinked } = options;
   const linkedTo = useRef(onLinked);
   useLayoutEffect(() => {
     linkedTo.current = onLinked;
@@ -182,10 +186,11 @@ export function useSheetView(ctl: PlanController, taskParam: string | null,
       const g = groupedRows(groupRows(shown.rows, tasksById, view.group));
       return { rows: g.rows, context: NO_KEYS, bands: g.bands as ReadonlyMap<string, GroupBand> };
     }
+    if (!collapsible) return { rows: shown.rows, context: shown.context, bands: NO_BANDS };
     // a context row is only there to place a match: always open
     const shut = shown.context.size ? new Set([...collapsed].filter((id) => !shown.context.has(id))) : collapsed;
     return { rows: visibleRows(shown.rows, tasksById, shut), context: shown.context, bands: NO_BANDS };
-  }, [grouped, shown, tasksById, view.group, collapsed]);
+  }, [grouped, collapsible, shown, tasksById, view.group, collapsed]);
   const { rows, context, bands } = layout;
 
   /** A row nobody selects: a context row, a band. */

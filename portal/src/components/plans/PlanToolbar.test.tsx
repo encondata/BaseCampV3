@@ -45,14 +45,16 @@ function commands(over: Partial<PlanCommands> = {}): PlanCommands {
 
 const CTL = { canUndo: true, canRedo: false, undoLabel: 'Indent', redoLabel: null };
 
-function Bar({ plan, cmd, layout = 'beside', onLayout = () => {} }: {
+function Bar({ plan, cmd, layout = 'beside', onLayout = () => {}, gantt = true, strip = false, onStrip = () => {} }: {
   plan: Plan; cmd: PlanCommands; layout?: GanttLayout; onLayout?: (layout: GanttLayout) => void;
+  gantt?: boolean; strip?: boolean; onStrip?: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useRovingToolbar(ref);
   return (
     <div role="toolbar" aria-label="Project plan" ref={ref}>
-      <PlanToolbar plan={plan} ctl={CTL} commands={cmd} platform="win" layout={layout} onLayout={onLayout} />
+      <PlanToolbar plan={plan} ctl={CTL} commands={cmd} platform="win" layout={layout} onLayout={onLayout}
+                   gantt={gantt} strip={strip} onStrip={onStrip} />
     </div>
   );
 }
@@ -89,7 +91,8 @@ describe('groups', () => {
     render(<Bar plan={makePlan()} cmd={commands()} />);
     expect(groups()).toEqual(['Undo', 'Schedule', 'Tasks', 'Insert', 'Properties', 'Display']);
     expect(within(screen.getByRole('group', { name: 'Display' })).getAllByRole('button').map(nameOf))
-      .toEqual(['Critical Path', 'Baseline', 'Zoom Out', 'Zoom In', 'Fit Project', 'Scroll to Task', 'Gantt Layout']);
+      .toEqual(['Critical Path', 'Baseline', 'Timeline strip', 'Zoom Out', 'Zoom In', 'Fit Project', 'Scroll to Task',
+        'Gantt Layout']);
     // after a separator, and no frame or caption of its own
     const layout = button('Gantt Layout');
     const seps = [...(layout.closest('.pln-tgroup-btns') as HTMLElement).querySelectorAll('.pln-tsep')];
@@ -449,6 +452,41 @@ describe('the Gantt layout', () => {
     expect(cmd.fit).not.toHaveBeenCalled();
     fireEvent.click(button('Indent'));
     expect(cmd.indent).toHaveBeenCalled();
+  });
+
+  it('Hidden: the Timeline strip still toggles (it isn’t the chart’s)', () => {
+    const onStrip = vi.fn();
+    render(<Bar plan={makePlan()} cmd={commands()} layout="hidden" strip onStrip={onStrip} />);
+    expect(button('Timeline strip').getAttribute('aria-disabled')).toBeNull();
+    expect(button('Timeline strip').getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(button('Timeline strip'));
+    expect(onStrip).toHaveBeenCalledTimes(1);
+  });
+
+  it('outside the Gantt view: the chart-only commands, the strip and Gantt Layout are off, saying to switch', () => {
+    vi.useFakeTimers();
+    const cmd = commands();
+    const onLayout = vi.fn();
+    const onStrip = vi.fn();
+    render(<Bar plan={makePlan()} cmd={cmd} gantt={false} onLayout={onLayout} onStrip={onStrip} />);
+    for (const name of ['Critical Path', 'Baseline', 'Timeline strip', 'Zoom Out', 'Zoom In', 'Fit Project',
+      'Scroll to Task', 'Gantt Layout']) {
+      const b = button(name);
+      expect(b.getAttribute('aria-disabled'), name).toBe('true');
+      expect(hoverTip(b).note, name).toBe(OFF_NOTES.ganttOnly);
+    }
+    // Gantt Layout keeps its tip and its icon, but opens no menu
+    expect(hoverTip(button('Gantt Layout')).desc).toBe(COMMAND_TIPS.layout.desc);
+    expect(button('Gantt Layout').hasAttribute('aria-haspopup')).toBe(false);
+    fireEvent.click(button('Gantt Layout'));
+    expect(screen.queryByRole('menu')).toBeNull();
+    fireEvent.click(button('Timeline strip'));
+    fireEvent.click(button('Zoom In'));
+    expect(onStrip).not.toHaveBeenCalled();
+    expect(cmd.zoomIn).not.toHaveBeenCalled();
+    // the selection's commands still work
+    fireEvent.click(button('100% Complete'));
+    expect(cmd.percent).toHaveBeenCalledWith(100);
   });
 });
 

@@ -16,8 +16,17 @@
  *    by side in one vertical scroll box, `scrollRef`, both panes
  *    virtualize against; stacked, each in a box of its own kept on the
  *    same row; or the sheet alone), each pane with its own sideways scroll
- *    (SidePane: the design is in Splitter.tsx); Calendar and Board arrive
- *    in Plan C;
+ *    (SidePane: the design is in Splitter.tsx), with the Timeline strip
+ *    (PlanTimelineStrip, Display › Timeline strip, kept per plan in
+ *    localStorage `plans.strip.<planId>`) above the area when it is on; the
+ *    Calendar (PlanCalendar) and the Board (PlanBoard) take the whole area.
+ *    All three show the filter bar's tasks (Group by is the Gantt's alone,
+ *    and so is collapse) and share the selection: a task picked in the
+ *    Calendar, the Board or the strip is the sheet's selected row, and the
+ *    toolbar's commands work on it in every view. Outside the Gantt the
+ *    chart-only commands, the strip and Gantt Layout are off, and of the
+ *    keyboard map only the keys that don't need the sheet stay (Undo,
+ *    Redo, Task Information, Find, the shortcuts list);
  *  - the dialogs host: one PlanModal-based dialog at a time (`PlanDialog`;
  *    one from More that closes with nothing under it hands focus back to
  *    the sheet, quietly), and over it the completion check (useCompletion: every 100% path,
@@ -32,9 +41,9 @@
  * height (the list size).
  *
  * URL state lives beside `?tab=plan`: `&view=gantt|calendar|board` (Gantt
- * by default; only Gantt exists until Plan C, so anything else reads as
- * Gantt) and `&task=<id>` (reminder emails link to it): once the plan
- * loads, that task's collapsed summaries open, its row is selected and
+ * by default; anything else reads as Gantt) and `&task=<id>` (reminder
+ * emails link to it): once the plan loads, that task's collapsed summaries
+ * open, its row is selected and
  * scrolled into view, and the chart scrolls to its bar; an id the plan
  * doesn't have is ignored.
  *
@@ -58,13 +67,16 @@ import { SHEET_ROW_PX } from '../../lib/plans/columns';
 import { COMMAND_TIPS, tipKeys, type CommandTipId } from '../../lib/plans/commandTips';
 import { canAddTasks } from '../../lib/plans/editOps';
 import { isPlanChanged, planErrorText } from '../../lib/plans/errors';
-import { selectCell } from '../../lib/plans/selection';
+import { readStrip, writeStrip } from '../../lib/plans/ganttView';
+import { selectCell, toggleRow } from '../../lib/plans/selection';
 import { detectPlatform } from '../../lib/plans/shortcuts';
 import Tip from '../Tip';
 import ColumnsModal from './ColumnsModal';
 import DeletePlanModal from './DeletePlanModal';
 import DeleteTasksModal from './DeleteTasksModal';
 import GanttPanes, { useGanttLayout } from './GanttPanes';
+import PlanBoard from './PlanBoard';
+import PlanCalendar from './PlanCalendar';
 import { ClearBaselineModal, LockModal, ReplaceBaselineModal } from './PlanConfirmModals';
 import PlanCreateModal, { type PlanInitiative } from './PlanCreateModal';
 import PlanEmptyState from './PlanEmptyState';
@@ -72,6 +84,7 @@ import PlanFilterBar from './PlanFilterBar';
 import PlanGantt from './PlanGantt';
 import PlanSettingsModal from './PlanSettingsModal';
 import PlanSheet from './PlanSheet';
+import PlanTimelineStrip from './PlanTimelineStrip';
 import PlanToolbar, { useRovingToolbar } from './PlanToolbar';
 import ShortcutsModal from './ShortcutsModal';
 import TaskDependencyModal from './TaskDependencyModal';
@@ -80,22 +93,47 @@ import UpdateProjectModal from './UpdateProjectModal';
 import { CompletionContext, useCompletion } from './useCompletion';
 import { usePlan, type PlanController } from './usePlan';
 import { usePlanCommands, type PlanDialog } from './usePlanCommands';
-import { usePlanShortcuts } from './usePlanShortcuts';
+import { usePlanShortcuts, type PlanShortcutHandlers } from './usePlanShortcuts';
 import { useSheetView } from './useSheetView';
 
 import '../../styles/plans.css';
 
 export type PlanViewKey = 'gantt' | 'calendar' | 'board';
 
-/** The views the switcher offers, with their tips (lib/plans/commandTips).
- *  Plan C adds Calendar and Board. */
+/** The views the switcher offers, with their tips (lib/plans/commandTips). */
 const PLAN_VIEWS: readonly { key: PlanViewKey; tip: CommandTipId }[] = [
   { key: 'gantt', tip: 'viewGantt' },
+  { key: 'calendar', tip: 'viewCalendar' },
+  { key: 'board', tip: 'viewBoard' },
 ];
 
 /** `?view=` as one of the views on offer; anything else is the Gantt. */
 function readView(param: string | null): PlanViewKey {
   return PLAN_VIEWS.find((v) => v.key === param)?.key ?? 'gantt';
+}
+
+/** Display › Timeline strip for the plan on screen: kept per plan in this
+ *  browser (`plans.strip.<planId>`, off until turned on; storage that
+ *  refuses keeps the choice for this visit). */
+function usePlanStrip(planId: string | null): [boolean, () => void] {
+  const stored = useMemo(() => readStrip(planId), [planId]);
+  const [picked, setPicked] = useState<{ planId: string; on: boolean } | null>(null);
+  const on = picked && picked.planId === planId ? picked.on : stored;
+  const toggle = useCallback(() => {
+    if (!planId) return;
+    setPicked({ planId, on: !on });
+    writeStrip(planId, !on);
+  }, [planId, on]);
+  return [on, toggle];
+}
+
+/** The keys that work in every view: none of them needs the sheet. */
+const VIEW_KEYS = ['undo', 'redo', 'info', 'find', 'help'] as const;
+
+/** The keyboard map for the view: the whole of it in the Gantt, VIEW_KEYS elsewhere. */
+function keysFor(handlers: PlanShortcutHandlers, gantt: boolean): PlanShortcutHandlers {
+  if (gantt) return handlers;
+  return Object.fromEntries(VIEW_KEYS.filter((k) => handlers[k]).map((k) => [k, handlers[k]]));
 }
 
 /** The view area never gets shorter than this. */
@@ -226,8 +264,9 @@ export default function PlanTab({ initiativeId, initiative }: {
   // the deep link's bar in the chart: the commands' (they come after the view)
   const linkedRef = useRef<(taskId: string) => void>(() => {});
   const onLinked = useCallback((taskId: string) => linkedRef.current(taskId), []);
+  const gantt = view === 'gantt';
   const sheet = useSheetView(ctl, searchParams.get('task'), scrollRef, rowHeight, {
-    me: person?.id ?? '', groupable: view === 'gantt', onLinked,
+    me: person?.id ?? '', groupable: gantt, collapsible: gantt, onLinked,
   });
   // the completion check's Go to task: the commands' (they come after it)
   const goToRef = useRef<(taskId: string) => void>(() => {});
@@ -241,7 +280,8 @@ export default function PlanTab({ initiativeId, initiative }: {
     goToRef.current = commands.goToTask;
     linkedRef.current = commands.scrollChartTo;
   });
-  usePlanShortcuts(commands.handlers, { root: rootRef, enabled: ready && view === 'gantt' });
+  const keys = useMemo(() => keysFor(commands.handlers, gantt), [commands.handlers, gantt]);
+  usePlanShortcuts(keys, { root: rootRef, enabled: ready });
   useRovingToolbar(toolbarRef, ready);
   const { scheduled_start: scheduledStart, scheduled_end: scheduledEnd } = initiative;
   const scheduled = useMemo(() => ({ start: scheduledStart, end: scheduledEnd }), [scheduledStart, scheduledEnd]);
@@ -260,6 +300,12 @@ export default function PlanTab({ initiativeId, initiative }: {
     if (first) selectRows(selectCell(first, 'name'));
     focusSheet();
   }, [shownRows, contextRows, bandRows, selectRows, focusSheet]);
+  // the Calendar's and the Board's pick: the sheet's selection (Ctrl or ⌘ adds to it)
+  const pickTask = useCallback((id: string, additive: boolean) => {
+    selectRows(additive ? (sel) => toggleRow(sel, id, 'name') : selectCell(id, 'name'));
+  }, [selectRows]);
+  const selectedIds = useMemo(() => new Set(commands.selected.map((t) => t.id)), [commands.selected]);
+  const [strip, toggleStrip] = usePlanStrip(ctl.plan?.id ?? null);
 
   const selectView = (next: PlanViewKey) => {
     setSearchParams((prev) => {
@@ -326,7 +372,8 @@ export default function PlanTab({ initiativeId, initiative }: {
               <span className="pln-tgroup-label" aria-hidden="true">View</span>
             </div>
             <div className="pln-tools">
-              <PlanToolbar plan={plan} ctl={ctl} commands={commands} layout={layout} onLayout={setLayout} />
+              <PlanToolbar plan={plan} ctl={ctl} commands={commands} layout={layout} onLayout={setLayout}
+                           gantt={gantt} strip={strip} onStrip={toggleStrip} />
             </div>
             <Tip label={screenTip.label} desc={screenTip.desc}
                  keys={isFull ? tipKeys('exitFullScreen', detectPlatform()) : null}>
@@ -339,13 +386,27 @@ export default function PlanTab({ initiativeId, initiative }: {
           {ctl.staleBy && <span className="pln-stale" role="status">{ctl.staleBy}</span>}
         </div>
 
-        <PlanFilterBar view={sheet.view} onChange={sheet.setView} groupable={view === 'gantt'} searchRef={searchRef}
+        <PlanFilterBar view={sheet.view} onChange={sheet.setView} groupable={gantt} searchRef={searchRef}
                        counts={sheet.counts} onSearchEnter={toFirstMatch} onLeave={focusSheet} />
+
+        {/* the Timeline strip, above the Gantt view */}
+        {gantt && strip && (
+          <PlanTimelineStrip plan={plan} selected={selectedIds} onSelect={commands.goToTask}
+                             onOpenInfo={openTaskInfoById} />
+        )}
 
         {/* the view area */}
         <div className="pln-view" data-view={view} data-layout={layout} ref={viewRef}
              style={viewHeight === null ? undefined : { height: viewHeight }}>
-          {view === 'gantt' && (
+          {view === 'calendar' && (
+            <PlanCalendar plan={plan} rows={sheet.rows} context={sheet.context} selected={selectedIds}
+                          onSelect={pickTask} onOpenInfo={openTaskInfoById} />
+          )}
+          {view === 'board' && (
+            <PlanBoard plan={plan} rows={sheet.rows} context={sheet.context} selected={selectedIds}
+                       onSelect={pickTask} onOpenInfo={openTaskInfoById} completion={completion} />
+          )}
+          {gantt && (
             <GanttPanes layout={layout} on={ready} viewRef={viewRef} scrollRef={scrollRef} sheetSideRef={sheetSideRef}
                         sheet={(
                           <PlanSheet ctl={ctl} rows={sheet.rows} context={sheet.context} bands={sheet.bands}

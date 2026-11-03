@@ -6,10 +6,10 @@
  *   · Tasks (Auto / Manual, a `.segmented` pair showing the selection's
  *   mode) · Insert (Task, Summary, Milestone) · Properties (Information,
  *   Notes, Add to Timeline, Task color: a popover of colors for every
- *   selected task) · Display (Critical path, Baseline, Zoom − / +
- *   / Fit, Scroll to task, then Gantt Layout: one button whose icon is the
- *   layout now, opening a menu of Beside, Below and Hidden; the Timeline
- *   strip comes in Plan C) · More.
+ *   selected task) · Display (Critical path, Baseline, Timeline strip (the
+ *   band above the Gantt, on or off per plan), Zoom − / + / Fit, Scroll to
+ *   task, then Gantt Layout: one button whose icon is the layout now,
+ *   opening a menu of Beside, Below and Hidden) · More.
  *
  * Every button has a hover tip (components/Tip) in place of a native title:
  * its name (the button's accessible name), its shortcut as keycaps
@@ -22,7 +22,9 @@
  * stay reachable but off, their tip saying "Schedule is locked"; progress
  * (0–100%, Mark on Track, Notes) and Task color still work. A button that needs a
  * selection says so instead; with the chart Hidden, the chart-only commands
- * (Critical Path, Baseline, Zoom, Fit, Scroll to Task) say to show it;
+ * (Critical Path, Baseline, Zoom, Fit, Scroll to Task) say to show it; in
+ * the Calendar and the Board they, the Timeline strip and Gantt Layout are
+ * off, saying "Switch to the Gantt view to use this";
  * while the sheet is grouped (the filter bar's Group by), Insert, Indent,
  * Outdent, Link and Unlink say "Turn off Group by to change the outline"
  * (no links are drawn then). Off
@@ -72,9 +74,16 @@ interface Props {
   /** Where the Gantt chart is (PlanTab keeps it). */
   layout: GanttLayout;
   onLayout(layout: GanttLayout): void;
+  /** The Gantt view is on (the chart-only commands work only there). */
+  gantt?: boolean;
+  /** Display › Timeline strip is on, and its toggle. */
+  strip?: boolean;
+  onStrip?(): void;
 }
 
-export default function PlanToolbar({ plan, ctl, commands: cmd, platform, layout, onLayout }: Props) {
+export default function PlanToolbar({
+  plan, ctl, commands: cmd, platform, layout, onLayout, gantt = true, strip = false, onStrip,
+}: Props) {
   const os = platform ?? detectPlatform();
   const canChange = plan.permissions.change;
   const locked = plan.locked_at !== null;
@@ -88,8 +97,10 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform, layout
   const adding = canAddTasks(plan) ? grouped : LOCKED_HINT;
   const progress = count ? null : SELECT_HINT;
   const zoomAt = ZOOMS.indexOf(cmd.zoom);
-  /** The chart-only commands are off while the chart is hidden. */
-  const noChart = layout === 'hidden' ? OFF_NOTES.noChart : null;
+  /** The Gantt view's own commands are off in the Calendar and the Board. */
+  const notGantt = gantt ? null : OFF_NOTES.ganttOnly;
+  /** The chart-only commands are off there, and while the chart is hidden. */
+  const noChart = notGantt ?? (layout === 'hidden' ? OFF_NOTES.noChart : null);
 
   const more: RowAction[] = [];
   if (canChange) {
@@ -195,6 +206,8 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform, layout
       <Group label="Display">
         {tool('critical', cmd.toggleCritical, <Icon name="critical" />, { hint: noChart, pressed: cmd.display.critical })}
         {tool('baseline', cmd.toggleBaseline, <Icon name="baseline" />, { hint: noChart, pressed: cmd.display.baseline })}
+        {/* the band above the Gantt: with the chart hidden too, so only the view switches it off */}
+        {tool('strip', () => onStrip?.(), <Icon name="strip" />, { hint: notGantt, pressed: strip })}
         <span className="pln-tsep" aria-hidden="true" />
         {tool('zoomOut', cmd.zoomOut, <Icon name="zoomOut" />, {
           hint: noChart ?? (zoomAt === ZOOMS.length - 1 ? OFF_NOTES.zoomedOut : null),
@@ -209,14 +222,22 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform, layout
         })}
         <span className="pln-tsep" aria-hidden="true" />
         {/* where the chart goes: about the monitor, so everyone has it. A
-            choice leaves focus on this button, not the sheet */}
-        <Tip label={COMMAND_TIPS.layout.label} desc={COMMAND_TIPS.layout.desc}>
-          <RowActionsMenu label={COMMAND_TIPS.layout.label} icon={<LayoutIcon layout={layout} />}
-                          triggerClassName="mini-btn pln-tbtn" returnFocus
-                          actions={LAYOUTS.map(([value, id]) => ({
-                            key: value, label: COMMAND_TIPS[id].label, hint: COMMAND_TIPS[id].desc,
-                            checked: layout === value, onSelect: () => onLayout(value),
-                          }))} />
+            choice leaves focus on this button, not the sheet. Outside the
+            Gantt view the button stays, off, and opens nothing */}
+        <Tip label={COMMAND_TIPS.layout.label} desc={COMMAND_TIPS.layout.desc} note={notGantt}>
+          {notGantt ? (
+            <button type="button" className="mini-btn pln-tbtn" aria-label={COMMAND_TIPS.layout.label}
+                    aria-disabled="true">
+              <LayoutIcon layout={layout} />
+            </button>
+          ) : (
+            <RowActionsMenu label={COMMAND_TIPS.layout.label} icon={<LayoutIcon layout={layout} />}
+                            triggerClassName="mini-btn pln-tbtn" returnFocus
+                            actions={LAYOUTS.map(([value, id]) => ({
+                              key: value, label: COMMAND_TIPS[id].label, hint: COMMAND_TIPS[id].desc,
+                              checked: layout === value, onSelect: () => onLayout(value),
+                            }))} />
+          )}
         </Tip>
       </Group>
 
@@ -404,6 +425,8 @@ const ICONS: Record<string, ReactNode> = {
   zoomIn: <><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5M8 11h6M11 8v6" /></>,
   fit: <><path d="M3 5v14M21 5v14" /><path d="M7 12h10" /><path d="m9.5 9-3 3 3 3M14.5 9l3 3-3 3" /></>,
   scroll: <><rect x="11" y="9" width="10" height="6" rx="1.5" /><path d="M3 12h5" /><path d="m6 9 3 3-3 3" /></>,
+  // a window with the timeline band across its top
+  strip: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 10h18" /><path d="M7 7h5" /><path d="M7 14h10M7 17h6" /></>,
   // the Gantt layouts: sheet and chart side by side, stacked, the sheet alone
   layoutBeside: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M10 5v14" /><path d="M13 10h4M15 14h3" /></>,
   layoutBelow: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 11h18" /><path d="M7 15h5M10 17.5h6" /></>,
