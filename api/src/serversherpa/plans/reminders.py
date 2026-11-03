@@ -13,18 +13,23 @@ completed or cancelled) and whose reminders are enabled, locked or not:
 
 - every incomplete task with a due moment sends its assignees the latest
   stage whose time has passed and nothing older, so a sweep that was down
-  or a late edit never sends a burst. A stage that is not an overdue one is
-  dropped once its due day is over (a missed "due tomorrow" is not sent
-  the day after). Each goes once per (task, person, stage, due_at): the
-  `plan_reminder_log` row is inserted first (ON CONFLICT DO NOTHING
-  RETURNING), so two sweeps can't both send it, and moving a due date
-  re-arms its reminders. Only people get reminders (never partners), and
-  only those still among the plan's resources: an undo can put back an
-  assignee who has since left the initiative;
+  or a late edit never sends a burst. A stage is sent only on its own local
+  day: at the end of that day the next one supersedes it (a task reopened
+  at 01:00 waits for today's 08:00 stage instead of getting yesterday's at
+  01:00 and today's at 08:00). The `once` overdue stage is the exception:
+  it stays owed until it goes. Each goes once per (task, person, stage, due
+  day): the `plan_reminder_log` row is inserted first (ON CONFLICT DO
+  NOTHING RETURNING), so two sweeps can't both send it. Its `due_at` holds
+  the due day's start (plan-local 00:00), so moving a due date to another
+  day re-arms its reminders while a new time the same day (or a recalc
+  nudging a finish) sends nothing again. Only people get reminders (never
+  partners), and only those still among the plan's resources: an undo can
+  put back an assignee who has since left the initiative;
 - with `overdue_to_owner`, the plan's owner (its creator when it has none)
-  gets one `plan_overdue_digest` a day listing the tasks that entered an
-  overdue stage, logged per task as `owner:<the stage's day>`. A task that
-  turns overdue after the day's digest went out waits for tomorrow's.
+  gets one `plan_overdue_digest` a day, never before the send time, listing
+  the tasks that entered an overdue stage, logged per task as
+  `owner:<the stage's day>`. A task that turns overdue after the day's
+  digest went out waits for the next day's, at the send time.
 
 Delivery (inbox row, direct email, the person's own choice) is
 plans/notices.py's `send`. The message reads from the real due day, never
@@ -146,13 +151,24 @@ def _live(initiative: Initiative | None) -> bool:
             and initiative.status not in INACTIVE_STATUSES)
 
 
+# a log row as the sweep compares it: (task, person, stage, due day key)
+_Row = tuple[uuid.UUID, uuid.UUID, str, datetime]
+
+
+def due_key(due_at: datetime) -> datetime:
+    """What `plan_reminder_log.due_at` holds: the due day's start (plan-local
+    00:00), so reminders are deduplicated per due day, not per due moment."""
+    return datetime.combine(due_at.date(), time())
+
+
 async def _log_once(db: AsyncSession, task_id: uuid.UUID, person_id: uuid.UUID, stage: str,
-                    due_at: datetime, now: datetime) -> bool:
-    """Insert the dedupe row; False when it was already there (sent, or
-    being sent by another sweep, whose commit this waits for)."""
+                    key: datetime, now: datetime) -> bool:
+    """Insert the dedupe row (`key` from `due_key`); False when it was
+    already there (sent, or being sent by another sweep, whose commit this
+    waits for)."""
     inserted = await db.execute(
         pg_insert(PlanReminderLog)
-        .values(task_id=task_id, person_id=person_id, stage=stage, due_at=due_at,
+        .values(task_id=task_id, person_id=person_id, stage=stage, due_at=key,
                 sent_at=now)
         .on_conflict_do_nothing()
         .returning(PlanReminderLog.id))
@@ -160,7 +176,8 @@ async def _log_once(db: AsyncSession, task_id: uuid.UUID, person_id: uuid.UUID, 
 
 
 async def _logged(db: AsyncSession, task_ids: list[uuid.UUID], stages: set[str]) -> set[tuple]:
-    """The (task, person, stage, due_at) rows already logged among these."""
+    """The (task, person, stage, due day key) rows already logged among
+    these."""
     rows = await db.execute(
         select(PlanReminderLog.task_id, PlanReminderLog.person_id, PlanReminderLog.stage,
                PlanReminderLog.due_at)
@@ -246,7 +263,7 @@ async def _plan_one(db: AsyncSession, plan_id: uuid.UUID, now: datetime,
     tasks = list(await db.scalars(
         select(PlanTask).where(*where).order_by(PlanTask.position, PlanTask.id)))
 
-    # task id -> (task, due_at, stage, the stage's moment)
+    # task id -> (task, the real due moment, stage, the stage's moment)
     owed: dict[uuid.UUID, tuple[PlanTask, datetime, str, datetime]] = {}
     for task in tasks:
         due_at = task.deadline if task.deadline is not None else task.finish
@@ -254,14 +271,22 @@ async def _plan_one(db: AsyncSession, plan_id: uuid.UUID, now: datetime,
         if latest is None:
             continue
         stage, at = latest
-        if not _is_overdue(stage) and today > due_at.date():
-            continue
+        if stage != OVERDUE and at.date() < today:
+            continue            # superseded at the end of its own day
         owed[task.id] = (task, due_at, stage, at)
     if not owed:
         return 0, 0
 
-    # (task, person, stage, due_at) owed to assignees, in outline order
-    candidates: list[tuple[uuid.UUID, uuid.UUID, str, datetime]] = []
+    owner_id = plan.owner_id or plan.created_by
+    owner_owed: list[_Row] = []
+    if r.overdue_to_owner and owner_id is not None:
+        owner_owed = [(tid, owner_id, f"{OWNER}{at.date().isoformat()}", due_key(due_at))
+                      for tid, (_, due_at, stage, at) in owed.items() if _is_overdue(stage)]
+    done = await _logged(db, list(owed), {stage for _, _, stage, _ in owed.values()}
+                         | {row[2] for row in owner_owed})
+
+    # owed to assignees and not logged yet, in outline order; the plan's
+    # resources are read only when something is
     assigned: dict[uuid.UUID, list[uuid.UUID]] = {}
     for tid, pid in (await db.execute(
             select(PlanAssignment.task_id, PlanAssignment.person_id)
@@ -269,26 +294,18 @@ async def _plan_one(db: AsyncSession, plan_id: uuid.UUID, now: datetime,
                    PlanAssignment.person_id.is_not(None))
             .order_by(PlanAssignment.person_id))).all():
         assigned.setdefault(tid, []).append(pid)
-    if assigned:
+    pending: list[_Row] = [row for row in (
+        (tid, pid, stage, due_key(due_at)) for tid, (_, due_at, stage, _) in owed.items()
+        for pid in assigned.get(tid, [])) if row not in done]
+    if pending:
         current = {res.id for res in await resources_of(db, initiative) if res.kind == "person"}
-        candidates = [(tid, pid, stage, due_at) for tid, (_, due_at, stage, _) in owed.items()
-                      for pid in assigned.get(tid, []) if pid in current]
-    owner_id = plan.owner_id or plan.created_by
-    owner_owed: list[tuple[uuid.UUID, uuid.UUID, str, datetime]] = []
-    if r.overdue_to_owner and owner_id is not None:
-        owner_owed = [(tid, owner_id, f"{OWNER}{at.date().isoformat()}", due_at)
-                      for tid, (_, due_at, stage, at) in owed.items() if _is_overdue(stage)]
-    if not candidates and not owner_owed:
-        return 0, 0
-    done = await _logged(db, list(owed), {c[2] for c in candidates + owner_owed})
+        pending = [row for row in pending if row[1] in current]
 
     sent = 0
-    for task_id, person_id, stage, due_at in candidates:
-        if (task_id, person_id, stage, due_at) in done:
+    for task_id, person_id, stage, key in pending:
+        if not await _log_once(db, task_id, person_id, stage, key, now):
             continue
-        if not await _log_once(db, task_id, person_id, stage, due_at, now):
-            continue
-        task = owed[task_id][0]
+        task, due_at = owed[task_id][:2]
         template_stage, due_label = message(stage, due_at.date(), today)
         title, body = reminder_text(template_stage, task.name, initiative.name, due_label)
         if await notices.send(
@@ -302,16 +319,18 @@ async def _plan_one(db: AsyncSession, plan_id: uuid.UUID, now: datetime,
                 initiative_name=initiative.name, due_label=due_label, stage=template_stage):
             sent += 1
 
-    owner_owed = [c for c in owner_owed if c not in done]
+    owner_owed = [row for row in owner_owed if row not in done]
     if not owner_owed:
         return sent, 0
+    if now_local < datetime.combine(today, _send_time(r)):
+        return sent, 0          # never before the send time: these wait for it
     midnight = datetime.combine(today, time(), tzinfo=zone)
     if await _digested_today(db, plan.id, owner_id, midnight):
         return sent, 0          # one digest a day: these wait for tomorrow's
     newly: list[tuple[PlanTask, datetime]] = []
-    for task_id, person_id, stage, due_at in owner_owed:
-        if await _log_once(db, task_id, person_id, stage, due_at, now):
-            newly.append((owed[task_id][0], due_at))
+    for task_id, person_id, stage, key in owner_owed:
+        if await _log_once(db, task_id, person_id, stage, key, now):
+            newly.append(owed[task_id][:2])
     if not newly:
         return sent, 0
     return sent, int(await _digest(db, plan, initiative, owner_id, newly, r, today))

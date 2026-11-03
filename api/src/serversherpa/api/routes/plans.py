@@ -6,11 +6,13 @@ Every route requires its `project_plans` action first, then resolves the
 initiative (or the plan) through the actor's initiatives scope, so an id
 the actor cannot see reads as 404, never 403."""
 
+import logging
 import uuid
 
 from fastapi import APIRouter
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.plans import notices, ops, plan_writes, service
@@ -32,6 +34,7 @@ from serversherpa.plans.service import PlanState, err
 from serversherpa.services.audit import audit
 
 router = APIRouter(tags=["plans"])
+logger = logging.getLogger("serversherpa.api.routes.plans")
 
 PLAN_UNIQUE = "project_plans_initiative_id_key"
 
@@ -122,7 +125,8 @@ async def post_ops(
     the server's signature for this plan; anything but a progress-only
     batch needs an unlocked plan and `base_version` equal to its version.
     People the batch newly assigned are told in the same transaction
-    (plans/notices.py), so a failed batch tells nobody."""
+    (plans/notices.py), so a failed batch tells nobody; the notices run in
+    a savepoint, so a failing notice never fails the edit."""
     plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
     ops.check_restores(plan.id, body.ops)
     if not ops.is_progress_only(body.ops):
@@ -131,9 +135,31 @@ async def post_ops(
         if body.base_version != plan.version:
             raise err(409, "plan_changed", version=plan.version)
     run = await ops.run_batch(db, plan, body.ops, actor)
-    await notices.assignment_notices(db, run.state, run.newly_assigned, actor, run.settings)
+    await _assignment_notices(db, run, actor)
     await db.commit()
     return run.out
+
+
+# set while assignment notices keep failing: logged once per outage
+_notices_failing = {"failed": False}
+
+
+async def _assignment_notices(db: AsyncSession, run: ops.BatchRun, actor: AuthContext) -> None:
+    """Tell the people the batch newly assigned, in a savepoint: when that
+    fails its rows are rolled back and the edit is committed without them.
+    Only the exception's class is logged (its text can carry SQL
+    parameters: rendered emails)."""
+    try:
+        async with db.begin_nested():
+            await notices.assignment_notices(db, run.state, run.newly_assigned, actor,
+                                             run.settings)
+    except Exception as exc:  # noqa: BLE001 — a notice must never fail the edit
+        if not _notices_failing["failed"]:
+            logger.warning("could not send the assignment notices for plan %s: %s",
+                           run.state.plan.id, type(exc).__name__)
+        _notices_failing["failed"] = True
+    else:
+        _notices_failing["failed"] = False
 
 
 @router.post("/plans/{plan_id}/update-project", response_model=OpsOut)

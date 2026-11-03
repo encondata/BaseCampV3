@@ -3,6 +3,7 @@
 an inbox row (`plan_task_assigned`) and a direct `plan_assigned` email,
 under the same delivery rules as the reminders."""
 
+import logging
 from datetime import date
 
 from sqlalchemy import select, update
@@ -13,7 +14,7 @@ from serversherpa.plans import notices
 from serversherpa.plans.models import ProjectPlan
 from tests.test_plans_api import dt
 from tests.test_plans_links import _assign
-from tests.test_plans_ops import _add, _ok, _ops
+from tests.test_plans_ops import _add, _by_id, _get, _ok, _ops
 from tests.test_plans_reminders import MOVE, _crew, _inbox, _mail, _world
 
 
@@ -118,6 +119,38 @@ def test_day_labels_carry_the_year_only_when_it_differs():
 def test_name_list_caps_the_inbox_body():
     assert notices.name_list(["A"]) == "A"
     assert notices.name_list([str(n) for n in range(7)]) == "0, 1, 2, 3, 4 and 2 more"
+
+
+async def test_a_failing_notice_never_fails_the_edit(client, db, monkeypatch, caplog):
+    """The notices run in a savepoint: when they raise, their rows are rolled
+    back, the failure is logged once, and the edit itself is committed."""
+    hdrs, move, plan = await _world(client, db)
+    worker = await _crew(db, move, "Wanda", account=True)
+    ids = await _add(client, hdrs, plan, "Order crates", "Book trucks")
+    real = notices.assignment_notices
+
+    async def broken(*args, **kwargs):
+        await real(*args, **kwargs)         # writes its rows, then fails
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(notices, "assignment_notices", broken)
+    caplog.set_level(logging.WARNING, logger="serversherpa.api.routes.plans")
+    for name in ("Order crates", "Book trucks"):
+        body = await _ok(client, hdrs, plan, [_assign(ids[name], ("person", worker.id))])
+        assert [a["id"] for a in _by_id(body)[ids[name]]["assignees"]] == [str(worker.id)]
+    stored = {t["name"]: [a["id"] for a in t["assignees"]]
+              for t in (await _get(client, hdrs, plan))["tasks"]}
+    assert stored == {"Order crates": [str(worker.id)], "Book trucks": [str(worker.id)]}
+    assert await _assigned(db) == ([], [])
+    assert caplog.text.count("could not send the assignment notices") == 1   # once
+    assert "boom" not in caplog.text                # the class only
+
+    # working again: the next batch tells them
+    monkeypatch.setattr(notices, "assignment_notices", real)
+    ids.update(await _add(client, hdrs, plan, "Load trucks"))
+    await _ok(client, hdrs, plan, [_assign(ids["Load trucks"], ("person", worker.id))])
+    rows, mails = await _assigned(db)
+    assert len(rows) == 1 and len(mails) == 1
 
 
 async def test_a_failed_batch_sends_no_notice(client, db):

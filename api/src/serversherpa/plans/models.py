@@ -173,8 +173,9 @@ class PlanAssignment(Base):
 
 
 class PlanReminderLog(Base):
-    """One row per reminder sent. Keyed on due_at, so moving a due date
-    re-arms the task's reminders."""
+    """One row per reminder sent (plans/reminders.py). `due_at` holds the
+    due day's start (plan-local 00:00), so moving a due date to another day
+    re-arms the task's reminders and a new time the same day does not."""
     __tablename__ = "plan_reminder_log"
 
     id: Mapped[uuid.UUID] = _id()

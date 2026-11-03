@@ -405,6 +405,7 @@ with the blockers. Both name each task (ID + name + reason
   locked; nothing for completed tasks, nothing for archived or inactive initiatives
   (`INACTIVE_STATUSES`), nothing when reminders are disabled. One initiative
   per transaction; failures counted and logged once per outage.
+- *Amendment 2026-11-03:* reminders are deduplicated per due **day**, not per exact due moment (`plan_reminder_log.due_at` stores the due day's plan-local 00:00): a new time on the same day, or a recalc nudging a finish, re-sends nothing; a move to another day re-arms them.
 - Notification kinds in `notifications/kinds.py`, new category `plans` →
   "Project plans" (mirror in `portal/src/lib/notificationKinds.ts` and the /me
   category table): `plan_task_assigned`, `plan_task_due` ("Due in 3 days:

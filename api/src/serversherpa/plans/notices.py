@@ -9,7 +9,7 @@ personal, so it never goes through a notification group's subscription:
 - a person with a portal account gets the inbox row: `notify()`, with the
   plan kinds registered `email=False`, so notify() sends no group email;
 - the direct email goes through the mail outbox to the person's contact
-  email (else their login email: `learning.emails.address_for`), unless the
+  email (else their login email: `learning.emails.address_for`'s rule), unless the
   plan's `reminders.email_assignees` is off;
 - an account holder's own /me choice for Project plans is honored: off →
   nothing, inbox → the inbox row only, email (the default) → both. notify()
@@ -30,7 +30,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.deps import AuthContext
 from serversherpa.db.models import Initiative, Person
-from serversherpa.learning.emails import address_for
 from serversherpa.mail.outbox import enqueue
 from serversherpa.notifications.email import load_contact, personal_choice, portal_link
 from serversherpa.notifications.inbox import notify
@@ -65,7 +64,9 @@ async def reach(db: AsyncSession, person_id: uuid.UUID, kind: str, *,
     choice = personal_choice(kind_info(kind), contact) if has_account else "email"
     if choice == "off":
         return None
-    address = await address_for(db, person_id) if email and choice == "email" else None
+    # learning.emails.address_for's rule (contact email, else login email,
+    # for an active person), read from the contact already loaded
+    address = contact.address if email and choice == "email" else None
     if not has_account and address is None:
         return None
     return Reach(inbox=has_account, address=address)
@@ -80,11 +81,10 @@ async def send(db: AsyncSession, person_id: uuid.UUID, kind: str, *, email: bool
     who = await reach(db, person_id, kind, email=email)
     if who is None:
         return False
-    row = None
-    if who.inbox:
-        row = await notify(db, person_id, kind, title, body=body, link=link, payload=payload)
-        if row is None:         # notify() found the category off after all
-            return False
+    # notify() returns None only for a kind it would email; plan kinds never
+    # are, so the row is always written
+    row = (await notify(db, person_id, kind, title, body=body, link=link, payload=payload)
+           if who.inbox else None)
     if who.address is not None:
         person = await db.get(Person, person_id)
         await enqueue(db, template, who.address, person_id=person_id, kind=kind,

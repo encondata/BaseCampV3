@@ -1,8 +1,9 @@
 """The plan reminder sweep (notification-worker's run_plan_reminders_once):
 stages before, on and after a task's due day at the plan-local send time,
-only the latest passed stage sent, each once per (task, person, stage,
-due_at), the overdue digest to the plan's owner, and the delivery rules
-(the person's own Project plans choice, `email_assignees`).
+only the latest passed stage sent and only on its own day, each once per
+(task, person, stage, due day), the overdue digest to the plan's owner,
+and the delivery rules (the person's own Project plans choice,
+`email_assignees`).
 
 Reference week: plan timezone America/Chicago, send time 08:00, offsets
 [3, 1]; a deadline of Thu 2026-11-05 17:00 has stages d3 Mon 11-02 08:00,
@@ -200,7 +201,7 @@ async def test_sends_latest_stage_only(client, db, monkeypatch):
     assert portal_link(_task_link(move, task_id)) in mail.text_body
     [log] = await _logs(db)
     assert (str(log.task_id), log.person_id, log.stage, log.due_at) == (
-        task_id, worker.id, "d1", dt("2026-11-05 17:00"))
+        task_id, worker.id, "d1", dt("2026-11-05 00:00"))
 
     # the same moment again, and later the same day: nothing new
     assert await _sweep() == _counts()
@@ -293,6 +294,105 @@ async def test_no_due_today_the_morning_after(client, db, monkeypatch):
     assert row.kind == "plan_task_overdue"
 
 
+async def test_a_stage_is_sent_only_on_its_own_day(client, db, monkeypatch):
+    """At 01:00 on the due day the latest passed stage is yesterday's d1:
+    it is not sent then; the due day's reminder goes at the send time."""
+    hdrs, move, plan = await _world(client, db)
+    worker = await _crew(db, move, "Wanda", account=True)
+    await _task(client, hdrs, plan, "Order crates", worker)
+
+    _clock(monkeypatch, "2026-11-05 01:00")
+    assert await _sweep() == _counts()
+    _clock(monkeypatch, "2026-11-05 08:00")
+    assert await _sweep() == _counts(reminders=1)
+    assert [log.stage for log in await _logs(db)] == ["due"]
+
+
+async def test_reopened_overdue_task_sends_only_todays_reminder(client, db, monkeypatch):
+    """A task reopened at 01:00 does not get yesterday's overdue reminder
+    then and today's at the send time: only today's, at the send time."""
+    hdrs, move, plan = await _world(client, db, settings={"overdue_to_owner": False})
+    worker = await _crew(db, move, "Wanda", account=True)
+    task_id = await _task(client, hdrs, plan, "Order crates", worker)
+
+    async def percent(value):
+        await db.execute(update(PlanTask).where(PlanTask.id == task_id)
+                         .values(percent_complete=value))
+        await db.commit()
+
+    await percent(100)
+    _clock(monkeypatch, "2026-11-08 01:00")
+    assert await _sweep() == _counts()
+    await percent(50)
+    assert await _sweep() == _counts()
+    _clock(monkeypatch, "2026-11-08 08:00")
+    assert await _sweep() == _counts(reminders=1)
+    assert [log.stage for log in await _logs(db)] == ["overdue:2026-11-08"]
+
+
+async def test_dst_fall_back_sends_once(client, db, monkeypatch):
+    """2026-11-01 01:30 happens twice in Chicago: d1 goes once, and the
+    stage from two days before (d3) is not sent late."""
+    hdrs, move, plan = await _world(client, db, settings={"send_time": "01:30"})
+    worker = await _crew(db, move, "Wanda", account=True)
+    await _task(client, hdrs, plan, "Order crates", worker, deadline="2026-11-02T17:00")
+    sent = []
+    # 06:20 UTC = 01:20 CDT, 06:40 = 01:40 CDT, 07:20 = 01:20 CST, 07:40 = 01:40 CST
+    for hour, minute in ((6, 20), (6, 40), (7, 20), (7, 40)):
+        moment = datetime(2026, 11, 1, hour, minute, tzinfo=UTC)
+        monkeypatch.setattr(reminders, "_now", lambda m=moment: m)
+        sent.append((await _sweep())["reminders"])
+    assert sent == [0, 1, 0, 0]
+
+
+async def test_same_day_due_time_change_sends_nothing_new(client, db, monkeypatch):
+    """Reminders are deduplicated per due day: a deadline moved to another
+    time the same day, or a finish nudged by a recalc, re-sends nothing."""
+    hdrs, move, plan = await _world(
+        client, db, settings={"use_finish_without_deadline": True, "overdue": "off"})
+    worker = await _crew(db, move, "Wanda", account=True)
+    task_id = await _task(client, hdrs, plan, "Order crates", worker)
+    # no deadline: a 1-day task finishing Mon 11-02 17:00
+    survey = (await _add(client, hdrs, plan, "Survey"))["Survey"]
+    await _ok(client, hdrs, plan, [_assign(survey, ("person", worker.id))])
+
+    _clock(monkeypatch, "2026-11-02 09:00")
+    assert await _sweep() == _counts(reminders=2)      # Survey due, Order crates d3
+    await _ok(client, hdrs, plan, [_update(survey, duration="4h"),
+                                   _update(task_id, deadline="2026-11-05T12:00")])
+    _clock(monkeypatch, "2026-11-02 10:00")
+    assert await _sweep() == _counts()
+    # the labels still read from the real due moment
+    _clock(monkeypatch, "2026-11-04 08:00")
+    assert await _sweep() == _counts(reminders=1)
+    rows, _ = await _reminders(db)
+    assert rows[-1].title == f"Due Thursday, November 5: Order crates — {MOVE}"
+    assert rows[-1].payload["due_at"] == "2026-11-05T12:00"
+    assert {(log.stage, log.due_at) for log in await _logs(db)} == {
+        ("due", dt("2026-11-02 00:00")), ("d3", dt("2026-11-05 00:00")),
+        ("d1", dt("2026-11-05 00:00"))}
+
+
+async def test_resources_are_not_read_when_everything_is_logged(client, db, monkeypatch):
+    hdrs, move, plan = await _world(client, db)
+    worker = await _crew(db, move, "Wanda", account=True)
+    await _task(client, hdrs, plan, "Order crates", worker)
+    calls = []
+    real = reminders.resources_of
+
+    async def counted(db_, initiative):
+        calls.append(initiative.id)
+        return await real(db_, initiative)
+
+    monkeypatch.setattr(reminders, "resources_of", counted)
+    _clock(monkeypatch, "2026-11-04 09:00")
+    assert await _sweep() == _counts(reminders=1)
+    assert calls == [move.id]
+    _clock(monkeypatch, "2026-11-04 09:01")
+    assert await _sweep() == _counts()
+    assert calls == [move.id]           # the second sweep found it all logged
+
+
 async def test_moved_deadline_rearms(client, db, monkeypatch):
     hdrs, move, plan = await _world(client, db)
     worker = await _crew(db, move, "Wanda", account=True)
@@ -309,7 +409,7 @@ async def test_moved_deadline_rearms(client, db, monkeypatch):
     assert rows[-1].title == f"Due Thursday, November 12: Order crates — {MOVE}"
     assert mails[-1].subject == rows[-1].title
     log = (await _logs(db))[-1]
-    assert (log.stage, log.due_at) == ("d3", dt("2026-11-12 17:00"))
+    assert (log.stage, log.due_at) == ("d3", dt("2026-11-12 00:00"))
 
     # earlier, so d1 and the due day have both passed: only the latest goes
     await _ok(client, hdrs, plan, [_update(task_id, deadline="2026-11-09T17:00")])
@@ -318,7 +418,7 @@ async def test_moved_deadline_rearms(client, db, monkeypatch):
     assert len(rows) == 3 and len(mails) == 3
     assert rows[-1].title == f"Due today: Order crates — {MOVE}"
     log = (await _logs(db))[-1]
-    assert (log.stage, log.due_at) == ("due", dt("2026-11-09 17:00"))
+    assert (log.stage, log.due_at) == ("due", dt("2026-11-09 00:00"))
 
 
 async def test_completed_and_inactive_skipped(client, db, monkeypatch):
@@ -374,7 +474,7 @@ async def test_finish_used_only_when_the_setting_says(client, db, monkeypatch):
     await db.commit()
     assert await _sweep() == _counts(reminders=1)
     [log] = await _logs(db)
-    assert (log.stage, log.due_at) == ("due", dt("2026-11-02 17:00"))
+    assert (log.stage, log.due_at) == ("due", dt("2026-11-02 00:00"))
 
 
 async def test_category_off(client, db, monkeypatch):
@@ -501,6 +601,50 @@ async def test_owner_digest_once_a_day(client, db, monkeypatch):
     digests = await _inbox(db, "plan_overdue_digest")
     assert [d.title for d in digests] == [f"1 overdue task in {MOVE}",
                                           f"2 overdue tasks in {MOVE}"]
+
+
+async def test_late_overdue_task_waits_for_the_next_send_time(client, db, monkeypatch):
+    """A task that turns overdue after today's digest is not sent just after
+    midnight: tomorrow's digest goes at the send time and lists both."""
+    hdrs, _move, plan = await _world(client, db)
+    await _task(client, hdrs, plan, "Order crates")
+    later = await _task(client, hdrs, plan, "Book trucks", deadline="2026-11-20T17:00")
+
+    _clock(monkeypatch, "2026-11-06 09:00")
+    assert await _sweep() == _counts(digests=1)
+    await _ok(client, hdrs, plan, [_update(later, deadline="2026-11-05T12:00")])
+    _clock(monkeypatch, "2026-11-06 14:00")
+    assert await _sweep() == _counts()
+    _clock(monkeypatch, "2026-11-07 00:30")
+    assert await _sweep() == _counts()
+    _clock(monkeypatch, "2026-11-07 08:00")
+    assert await _sweep() == _counts(digests=1)
+    # and the day after, at the send time again, not at midnight
+    _clock(monkeypatch, "2026-11-08 00:30")
+    assert await _sweep() == _counts()
+    _clock(monkeypatch, "2026-11-08 08:00")
+    assert await _sweep() == _counts(digests=1)
+    digests = await _inbox(db, "plan_overdue_digest")
+    assert [(d.title, d.payload["day"]) for d in digests] == [
+        (f"1 overdue task in {MOVE}", "2026-11-06"),
+        (f"2 overdue tasks in {MOVE}", "2026-11-07"),
+        (f"2 overdue tasks in {MOVE}", "2026-11-08")]
+
+
+async def test_digest_waits_for_the_send_time_with_overdue_once(client, db, monkeypatch):
+    hdrs, _move, plan = await _world(client, db, settings={"overdue": "once"})
+    await _task(client, hdrs, plan, "Order crates")
+    later = await _task(client, hdrs, plan, "Book trucks", deadline="2026-11-20T17:00")
+
+    _clock(monkeypatch, "2026-11-06 09:00")
+    assert await _sweep() == _counts(digests=1)
+    await _ok(client, hdrs, plan, [_update(later, deadline="2026-11-05T12:00")])
+    _clock(monkeypatch, "2026-11-07 00:30")
+    assert await _sweep() == _counts()
+    _clock(monkeypatch, "2026-11-07 08:00")
+    assert await _sweep() == _counts(digests=1)
+    digests = await _inbox(db, "plan_overdue_digest")
+    assert [d.body for d in digests] == ["Order crates", "Book trucks"]
 
 
 async def test_creator_is_default_owner(client, db, monkeypatch):
