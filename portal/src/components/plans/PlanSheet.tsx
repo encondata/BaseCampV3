@@ -20,7 +20,9 @@
  *
  * A click selects a cell (`onSelect`); a click on a row number selects the
  * row, Shift extends from the anchor and Ctrl/⌘ toggles. A summary's
- * chevron asks the tab to collapse or expand it.
+ * chevron asks the tab to collapse or expand it. A row number dragged
+ * moves the row with its subtasks, or the selection it is part of
+ * (useRowDrag; `onMoveTasks` sends it), the drop line marking where.
  *
  * Editing is a spreadsheet's (lib/plans/sheetKeys): the grid takes focus
  * and keeps the active cell as `aria-activedescendant`; arrows, Enter and
@@ -46,12 +48,14 @@ import {
 import { MULTILINE_NOTE_TITLE, multiLineNote } from '../../lib/plans/editOps';
 import { indicatorsOf, noteExcerpt, type IndicatorKind } from '../../lib/plans/indicators';
 import { planUnits } from '../../lib/plans/merge';
+import type { MovePlace } from '../../lib/plans/moveTasks';
 import { extendRows, moveActive, selectCell, toggleRow, type Selection } from '../../lib/plans/selection';
 import { gridKey, keyLike, scrollToShow } from '../../lib/plans/sheetKeys';
 import { isPaletteColor } from '../../lib/plans/taskColor';
 import CellEditor from './CellEditor';
 import { resourceOptions } from './ResourcePicker';
 import type { PlanController } from './usePlan';
+import { useRowDrag } from './useRowDrag';
 import { useSheetEditing } from './useSheetEditing';
 
 import '../../styles/plan-sheet.css';
@@ -81,6 +85,11 @@ export interface PlanSheetProps {
   blankRow: boolean;
   /** Task Information for the task (a double-click on a cell that doesn't edit). */
   onOpenInfo?(taskId: string): void;
+  /** Grouped (Group by): the outline can't change, so rows don't drag. */
+  grouped?: boolean;
+  /** Moves the tasks a row drag let go of (usePlanCommands `moveTasks`);
+   *  without it rows don't drag. */
+  onMoveTasks?(ids: string[], place: MovePlace): void;
 }
 
 /** What a mousedown on a cell needs to know. */
@@ -100,7 +109,7 @@ const alignClass = (col: PlanColumn) => (col.align === 'start' ? '' : ` pln-${co
 
 export default function PlanSheet({
   ctl, rows, context = NO_KEYS, bands = NO_BANDS, collapsed, rowHeight, scrollRef, sideScrollRef, selection, onSelect,
-  onToggleCollapse, blankRow, onOpenInfo,
+  onToggleCollapse, blankRow, onOpenInfo, grouped = false, onMoveTasks,
 }: PlanSheetProps) {
   const plan = ctl.plan;
   const prefs = useSyncExternalStore(subscribeColumnPrefs, columnPrefsSnapshot);
@@ -155,15 +164,19 @@ export default function PlanSheet({
     }
   }, []);
   const editing = useSheetEditing({ ctl, columns, rows: nav, blankRow, selection, onSelect, focusGrid });
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const rowDrag = useRowDrag({
+    ctl, rows, context, grouped, rowHeight, selection, onSelect, scrollRef, bodyRef, onMove: onMoveTasks,
+  });
 
   // what the row callbacks read, so they keep one identity (rows are memoized)
-  const latest = useRef({ selection, nav, onSelect, editing, onOpenInfo });
+  const latest = useRef({ selection, nav, onSelect, editing, onOpenInfo, rowDrag });
   useLayoutEffect(() => {
-    latest.current = { selection, nav, onSelect, editing, onOpenInfo };
+    latest.current = { selection, nav, onSelect, editing, onOpenInfo, rowDrag };
   });
   const onCellDown = useCallback((id: string | 'blank', col: string, e: CellPress) => {
     if (e.button !== 0) return;
-    const { selection: sel, nav: shown, onSelect: select } = latest.current;
+    const { selection: sel, nav: shown, onSelect: select, rowDrag: rows } = latest.current;
     if (col === 'id' && id !== 'blank') {
       if (e.shiftKey) {
         select(extendRows(sel, id, col, shown));
@@ -173,8 +186,13 @@ export default function PlanSheet({
         select(toggleRow(sel, id, col));
         return;
       }
+      // one row of several selected: a drag of them all may follow (a click selects it on release)
+      if (rows.keepsSelection(id)) return;
     }
     select(selectCell(id, col));
+  }, []);
+  const onIdPointerDown = useCallback((id: string, e: PointerEvent<HTMLElement>) => {
+    latest.current.rowDrag.onIdPointerDown(e, id);
   }, []);
   const onCellOpen = useCallback((id: string | 'blank', col: string) => {
     const { editing: cells, onOpenInfo: info } = latest.current;
@@ -313,7 +331,7 @@ export default function PlanSheet({
     <div ref={gridRef} className="pln-sheet" role="grid" aria-label="Task sheet" aria-rowcount={count + 1}
          aria-colcount={columns.length} aria-multiselectable="true" style={gridStyle} tabIndex={0}
          aria-activedescendant={activeShown ? cellId(active.id, active.col) : undefined} onKeyDown={onGridKey}
-         onMouseDownCapture={onGridPress} onFocus={onGridFocus}>
+         onMouseDownCapture={onGridPress} onFocus={onGridFocus} data-row-drag={rowDrag.on ? '' : undefined}>
       <div className="pln-sheet-head" role="row" aria-rowindex={1}>
         {columns.map((col, i) => (
           <div key={col.key} role="columnheader" aria-colindex={i + 1} data-col={col.key}
@@ -329,7 +347,7 @@ export default function PlanSheet({
         ))}
       </div>
 
-      <div className="pln-sheet-body" role="rowgroup" style={{ height: virtualizer.getTotalSize() }}>
+      <div ref={bodyRef} className="pln-sheet-body" role="rowgroup" style={{ height: virtualizer.getTotalSize() }}>
         {items.map((item) => {
           const y = item.start - SHEET_HEAD_PX;
           if (item.index === blankIndex) {
@@ -351,9 +369,15 @@ export default function PlanSheet({
                       level={bands.size ? GROUPED_LEVEL : task.outline_level}
                       idBase={idBase} inert={context.has(key)} collapsed={collapsed.has(task.id)}
                       selected={selection.rows.has(key)} activeCol={active?.id === key ? active.col : null}
-                      onCellDown={onCellDown} onCellOpen={onCellOpen} onToggleCollapse={onToggleCollapse} />
+                      onCellDown={onCellDown} onCellOpen={onCellOpen} onToggleCollapse={onToggleCollapse}
+                      onIdPointerDown={onIdPointerDown} />
           );
         })}
+        {/* where a row drag would land: between two rows, or under the last */}
+        {rowDrag.gap !== null && (
+          <div className="pln-drop-line" aria-hidden="true"
+               style={{ transform: `translateY(${rowDrag.gap * rowHeight}px)` }} />
+        )}
         {ed && !edGone && (
           <CellEditor key={ed.seq} editor={ed} column={columns[edCol]}
                       options={ed.kind === 'resources' ? resourceOptions(plan.resources, edTask?.assignees ?? []) : NO_OPTIONS}
@@ -390,12 +414,14 @@ interface SheetRowProps extends RowEvents {
   selected: boolean;
   activeCol: string | null;
   onToggleCollapse(id: string): void;
+  /** A press on the row's ID: maybe a drag (useRowDrag). */
+  onIdPointerDown(id: string, e: PointerEvent<HTMLElement>): void;
 }
 
 /** One task's row; redraws only when its task object, place or state changes. */
 const SheetRow = memo(function SheetRow({
   rowKey, task, index, y, columns, ctx, inert, level, collapsed, selected, activeCol, idBase, onCellDown, onCellOpen,
-  onToggleCollapse,
+  onToggleCollapse, onIdPointerDown,
 }: SheetRowProps) {
   return (
     <div role="row" aria-rowindex={index + 2} aria-selected={selected} aria-disabled={inert || undefined}
@@ -407,6 +433,7 @@ const SheetRow = memo(function SheetRow({
              className={`cell pln-cell${alignClass(col)}${col.key === 'id' ? ' pln-idcell' : ''}${col.key === 'name' ? ' pln-namecell' : ''}`}
              style={col.key === 'name' ? { '--pln-level': level } as CSSProperties : undefined}
              onMouseDown={inert ? undefined : (e) => onCellDown(rowKey, col.key, e)}
+             onPointerDown={inert || col.key !== 'id' ? undefined : (e) => onIdPointerDown(rowKey, e)}
              onDoubleClick={inert ? undefined : () => onCellOpen(rowKey, col.key)}>
           <CellContent col={col} task={task} ctx={ctx} collapsed={collapsed}
                        onToggleCollapse={inert ? undefined : onToggleCollapse} />

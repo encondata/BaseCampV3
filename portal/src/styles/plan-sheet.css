@@ -122,6 +122,20 @@
 .pln-idcell { background: var(--surface-2); }
 .pln-idcell .mono { color: var(--text-mute); }
 .pln-row[aria-selected="true"] .pln-idcell { background: rgba(var(--accent-rgb), 0.16); }
+/* a row drags by its ID (useRowDrag) where the plan may change */
+.pln-sheet[data-row-drag] .pln-row:not(.pln-context):not(.pln-blank) > .pln-idcell { cursor: grab; }
+/* where a row drag would land: the house drop mark (2px of the accent),
+   across the row between two rows, over the cells */
+.pln-drop-line {
+  position: absolute;
+  top: -1px;
+  left: 0;
+  z-index: 2;
+  width: 100%;
+  height: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
 
 /* Task Name: indented by outline level, a chevron slot before the name */
 .pln-namecell { padding-left: calc(8px + (var(--pln-level, 1) - 1) * 16px); }

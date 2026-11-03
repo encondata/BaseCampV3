@@ -32,6 +32,8 @@
  *   on screen from the active one (`sheet.pasteRows`).
  * - Ctrl+F (⌘F) focuses the filter bar's search box (`searchBox`), its
  *   text selected; with no box the browser finds.
+ * - A row dragged by its ID (useRowDrag) lands here (`moveTasks`): one
+ *   `move_tasks` batch (lib/plans/moveTasks), one undo step.
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 
@@ -48,6 +50,7 @@ import {
 import { fitZoom, zoomIn as zoomInOf, zoomOut as zoomOutOf, type Zoom } from '../../lib/plans/ganttGeometry';
 import { LABEL_MAX_PX, readZoom, writeZoom, type GanttLayout } from '../../lib/plans/ganttView';
 import { PLAN_ERRORS, isPlanChanged, planErrorText } from '../../lib/plans/errors';
+import { moveOp, moveTops, type MovePlace } from '../../lib/plans/moveTasks';
 import { descendants } from '../../lib/plans/outline';
 import {
   copyCell, copyRows, opsForInternalPaste, opsForPaste, parseClipboard, sameClipboard, type PasteContext, type PlanCopy,
@@ -79,6 +82,8 @@ export const PASTE_LABEL = 'Paste';
 /** What an outline command says while the sheet is grouped. */
 export const GROUPED_SAID = `${OFF_NOTES.grouped}.`;
 export const BASELINE_SET = 'Baseline set: every task’s Start, Finish and Duration were copied.';
+/** A move into the tasks that move (a cut pasted into its own subtasks). */
+export const MOVE_INSIDE = 'Can’t move tasks into themselves.';
 /** How long Ctrl+V waits for the browser's paste event before asking
  *  navigator.clipboard instead. */
 const PASTE_WAIT_MS = 120;
@@ -202,6 +207,9 @@ export interface PlanCommands {
   deleteTasks(): void;
   /** The confirmed delete of a summary with its subtasks. */
   confirmDelete(dialog: Extract<PlanDialog, { kind: 'deleteTasks' }>): Promise<void>;
+  /** Moves the tasks (the top-most of `ids`, each with its subtasks) to
+   *  `place`: a row drag let go (useRowDrag). */
+  moveTasks(ids: string[], place: MovePlace): void;
   info(tab?: TaskInfoTab): void;
   /** Selects the task and scrolls it into view in the sheet and the chart. */
   goToTask(id: string): void;
@@ -412,6 +420,30 @@ export function usePlanCommands({
   const confirmDelete = useCallback(async (dialog: Extract<PlanDialog, { kind: 'deleteTasks' }>) => {
     const label = dialog.tasks.length > 1 ? 'Delete Tasks' : 'Delete Task';
     await run({ ops: dialog.ops }, label, () => latest.current.sheet.select(dialog.next));
+  }, [run]);
+
+  /** A row drag let go: the tasks to `place` in one `move_tasks` batch.
+   *  The plan as it is now decides (the drag checked it as it went). */
+  const moveTasks = useCallback((ids: string[], place: MovePlace) => {
+    const { ctl: now, sheet: view, toast: say } = latest.current;
+    const plan = now.plan;
+    if (!plan || !plan.permissions.change) return;
+    if (plan.locked_at) {
+      say(PLAN_ERRORS.plan_locked);
+      return;
+    }
+    if (view.grouped) {
+      say(GROUPED_SAID);
+      return;
+    }
+    const tops = moveTops(ids, plan);
+    const op = moveOp(plan, tops, place);
+    if (op === 'inside') {
+      say(MOVE_INSIDE);
+      return;
+    }
+    if (!op) return;
+    void run({ ops: [op] }, tops.length > 1 ? 'Move Rows' : 'Move Row');
   }, [run]);
 
   // ── the clipboard ──
@@ -693,6 +725,7 @@ export function usePlanCommands({
       color: (c: string | null) => { withPlan((sel, ctx) => setColor(sel, c, ctx), 'Task color', 'progress'); },
       deleteTasks,
       confirmDelete,
+      moveTasks,
       info: (tab?: TaskInfoTab) => { info(tab); },
       goToTask,
       setBaseline,
@@ -742,8 +775,8 @@ export function usePlanCommands({
       paste: () => (latest.current.ctl.plan?.permissions.change ? pasteKey() : false),
     };
     return { ...actions, handlers };
-  }, [withPlan, selectNew, deleteTasks, confirmDelete, copy, cut, paste, pasteKey, focusSheet, root, setZoom,
-    searchBox]);
+  }, [withPlan, selectNew, deleteTasks, confirmDelete, moveTasks, copy, cut, paste, pasteKey, focusSheet, root,
+    setZoom, searchBox]);
 
   const grouped = !!sheet.grouped;
   return useMemo(() => ({ ...commands, selected, mode, onTimeline, display, zoom, chartScroll, grouped }),
