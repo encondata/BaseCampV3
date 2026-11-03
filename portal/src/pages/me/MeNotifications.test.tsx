@@ -128,6 +128,16 @@ it('Project plans gets its own delivery control, Inbox + Email until the person 
   });
 });
 
+it('Project plans says mail goes to the contact email, never "No group"', async () => {
+  api.listMyNotificationGroups.mockResolvedValueOnce([]);
+  render(<MeNotifications />);
+  const table = screen.getByRole('table', { name: 'Notification delivery' });
+  const rowOf = (l: string) => within(table).getByText(l).closest('tr') as HTMLElement;
+  await waitFor(() => expect(within(rowOf('Wiki')).getByText('No group — inbox only')).toBeTruthy());
+  expect(within(rowOf('Project plans')).getByText('Sent to your contact email')).toBeTruthy();
+  expect(within(rowOf('Project plans')).queryByText('No group — inbox only')).toBeNull();
+});
+
 it('choosing a delivery saves the merged notif.categories object', async () => {
   api.listMyNotificationGroups.mockResolvedValueOnce([]);
   render(<MeNotifications />);

@@ -198,7 +198,7 @@ it('settings modal Categories toggles save as the categories patch', async () =>
 
   const cats = within(dialog).getByRole('group', { name: 'Categories' });
   expect(within(cats).getAllByRole('button').map((b) => b.textContent)).toEqual([
-    'Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Project plans', 'Account security',
+    'Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Account security',
   ]);
   expect(within(cats).getByRole('button', { name: 'Approvals & requests' }).getAttribute('aria-pressed')).toBe('true');
   expect(within(cats).getByRole('button', { name: 'Wiki' }).getAttribute('aria-pressed')).toBe('false');
@@ -208,6 +208,41 @@ it('settings modal Categories toggles save as the categories patch', async () =>
   await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
   await waitFor(() => expect(api.updateNotificationGroup)
     .toHaveBeenCalledWith('g1', { categories: ['wiki', 'security'] }));
+});
+
+it('settings modal does not offer Project plans: its mail goes to people directly', async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findByText('Ops Alerts');
+  const dialog = await openSettingsDialog(user);
+  const cats = within(dialog).getByRole('group', { name: 'Categories' });
+  expect(within(cats).queryByRole('button', { name: 'Project plans' })).toBeNull();
+});
+
+it('a group that already holds plans keeps it when other categories change', async () => {
+  const user = userEvent.setup();
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, categories: ['plans', 'wiki'] });
+  api.updateNotificationGroup.mockResolvedValue(BASE);
+  renderPage();
+  await screen.findByText('Ops Alerts');
+  const dialog = await openSettingsDialog(user);
+  const cats = within(dialog).getByRole('group', { name: 'Categories' });
+  expect(within(cats).queryByRole('button', { name: 'Project plans' })).toBeNull();
+  await user.click(within(cats).getByRole('button', { name: 'Wiki' }));
+  await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
+  await waitFor(() => expect(api.updateNotificationGroup)
+    .toHaveBeenCalledWith('g1', { categories: ['plans'] }));
+});
+
+it('a group that holds plans sends no categories when they are untouched', async () => {
+  const user = userEvent.setup();
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, categories: ['plans'] });
+  api.updateNotificationGroup.mockResolvedValue(BASE);
+  renderPage();
+  await screen.findByText('Ops Alerts');
+  const dialog = await openSettingsDialog(user);
+  await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
+  await waitFor(() => expect(api.updateNotificationGroup).toHaveBeenCalledWith('g1', {}));
 });
 
 it('settings modal sends no categories when they are untouched', async () => {

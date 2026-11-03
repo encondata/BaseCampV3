@@ -3,8 +3,10 @@
  * notification category with the person's own choice (Inbox + Email /
  * Inbox only / Off, the house `segmented` control) and which of their
  * groups can email them that category. Account security is fixed — it is
- * always emailed — so its row carries text instead of a control. Groups
- * decide what may email a person and when; this only turns it down.
+ * always emailed — so its row carries text instead of a control. A direct
+ * category (Project plans) is mailed to the contact email, not through a
+ * group, so its "Email from" cell says so while Inbox + Email is chosen.
+ * Groups decide what may email a person and when; this only turns it down.
  */
 
 import DataTable from '../../components/DataTable';
@@ -20,7 +22,7 @@ export default function CategoryDelivery({ categories, groups, onChange }: {
   groups: MyNotificationGroup[] | null;
   onChange: (category: NotificationCategory, choice: DeliveryChoice) => void;
 }) {
-  const rows = NOTIFICATION_CATEGORIES.map(({ key, label }) => {
+  const rows = NOTIFICATION_CATEGORIES.map(({ key, label, direct }) => {
     const current: DeliveryChoice = categories?.[key] ?? 'email';
     const emailFrom = groups === null ? null : emailGroupsFor(key, groups);
     return {
@@ -42,15 +44,17 @@ export default function CategoryDelivery({ categories, groups, onChange }: {
           ),
         key === 'security'
           ? <span key="f" className="cell-sub">—</span>
-          : emailFrom === null
-            ? <span key="f" className="cell-sub">—</span>
-            : emailFrom.length === 0
-              ? <span key="f" className="cell-sub">No group — inbox only</span>
-              : (
-                <div key="f" className="chips">
-                  {emailFrom.map((g) => <span key={g.id} className="chip tag">{g.name}</span>)}
-                </div>
-              ),
+          : direct
+            ? <span key="f" className="cell-sub">{current === 'email' ? direct : '—'}</span>
+            : emailFrom === null
+              ? <span key="f" className="cell-sub">—</span>
+              : emailFrom.length === 0
+                ? <span key="f" className="cell-sub">No group — inbox only</span>
+                : (
+                  <div key="f" className="chips">
+                    {emailFrom.map((g) => <span key={g.id} className="chip tag">{g.name}</span>)}
+                  </div>
+                ),
       ],
     };
   });

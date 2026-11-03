@@ -5,5 +5,3 @@ Hi {{ person_name }},
 Open the plan:
 
 {{ link }}
-
-Reminders stop once the task is marked complete.

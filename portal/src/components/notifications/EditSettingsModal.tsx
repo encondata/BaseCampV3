@@ -184,7 +184,11 @@ export default function EditSettingsModal({ group, onClose, onSaved }: {
 
             <div className="ngd-section">Categories</div>
             <div className="day-pills" role="group" aria-label="Categories">
-              {NOTIFICATION_CATEGORIES.map((c) => (
+              {/* a direct category (Project plans) is mailed to people, not
+                  through a group, so it is not offered here; the save above
+                  still builds from the full list, so a group that already
+                  holds one keeps it */}
+              {NOTIFICATION_CATEGORIES.filter((c) => !c.direct).map((c) => (
                 <button type="button" key={c.key} disabled={saving}
                         aria-pressed={categories.has(c.key)}
                         className={`mini-btn${categories.has(c.key) ? ' active' : ''}`}

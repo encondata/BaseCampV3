@@ -27,8 +27,8 @@ ASSIGNED = {"person_name": "Pat", "initiative_name": INITIATIVE, "tasks": TASKS,
             "link": LINK, "assigned_by": "Jimmy Henderson"}
 
 DIGEST_TASKS = [
-    {"name": "Order crates", "due_label": "Tuesday, November 3", "assignees": "Pat, Sam"},
-    {"name": "Book trucks", "due_label": "Monday, November 2", "assignees": "Unassigned"},
+    {"name": "Order crates", "due_label": "Tuesday, November 3", "assignees": ["Pat", "Sam"]},
+    {"name": "Book trucks", "due_label": "Monday, November 2", "assignees": []},
 ]
 DIGEST = {"person_name": "Jimmy", "initiative_name": INITIATIVE, "tasks": DIGEST_TASKS,
           "link": LINK}
@@ -83,6 +83,14 @@ def test_reminder_escapes_names_in_html_but_not_text():
     assert "&lt;b&gt;Crates&lt;/b&gt;" in r.html and "<b>Crates</b>" not in r.html
     assert "A &amp; B" in r.html
     assert "<b>Crates</b>" in r.text and "A & B" in r.text
+
+
+def test_reminder_says_only_what_the_stage_needs():
+    """No footer or policy copy beyond the message, the button and the link."""
+    r = render("plan_reminder", **REMINDER)
+    for part in (r.html, r.text):
+        assert "Reminders stop" not in part
+        assert "marked complete" not in part
 
 
 def test_reminder_subject_is_one_line_whatever_the_names_hold():
@@ -144,7 +152,8 @@ def test_digest_lists_overdue_tasks_with_due_date_and_assignees():
         assert "Hi Jimmy" in part
         assert "Order crates" in part and "Book trucks" in part
         assert "Tuesday, November 3" in part and "Monday, November 2" in part
-        assert "Pat, Sam" in part and "Unassigned" in part
+        assert "Due Tuesday, November 3 · Pat, Sam" in part
+        assert "Due Monday, November 2 · Unassigned" in part
     _links_to_the_plan(r)
 
 
@@ -154,17 +163,21 @@ def test_digest_subject_is_singular_for_one_task():
     assert "task(s)" not in r.html and "task(s)" not in r.text
 
 
-def test_digest_takes_assignees_as_a_list_too():
-    tasks = [{**DIGEST_TASKS[0], "assignees": ["Pat", "Sam"]}]
+def test_digest_joins_assignees_and_says_unassigned_for_none():
+    tasks = [{**DIGEST_TASKS[0], "assignees": ["Pat", "Sam", "Lee"]},
+             {**DIGEST_TASKS[1], "assignees": ["Pat"]},
+             {**DIGEST_TASKS[1], "name": "Nobody's", "assignees": []}]
     r = render("plan_overdue_digest", **{**DIGEST, "tasks": tasks})
-    assert "Pat, Sam" in r.html and "Pat, Sam" in r.text
+    for part in (r.html, r.text):
+        assert "Pat, Sam, Lee" in part
+        assert part.count("Unassigned") == 1
 
 
 def test_digest_escapes_names_in_html_but_not_text():
-    tasks = [{**DIGEST_TASKS[0], "name": "<i>x</i>", "assignees": "A & B"}]
+    tasks = [{**DIGEST_TASKS[0], "name": "<i>x</i>", "assignees": ["A & B", "C"]}]
     r = render("plan_overdue_digest", **{**DIGEST, "tasks": tasks})
-    assert "&lt;i&gt;x&lt;/i&gt;" in r.html and "A &amp; B" in r.html
-    assert "<i>x</i>" in r.text and "A & B" in r.text
+    assert "&lt;i&gt;x&lt;/i&gt;" in r.html and "A &amp; B, C" in r.html
+    assert "<i>x</i>" in r.text and "A & B, C" in r.text
 
 
 # every template ---------------------------------------------------------------
