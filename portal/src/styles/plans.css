@@ -1329,8 +1329,6 @@
 @media (max-width: 900px) {
   .rgm-choice-cards.pln-empty-cards { grid-template-columns: 1fr; }
 }
-/* "Coming soon" is news, not an error: muted, not the hint's red */
-.pln-empty-cards .rgm-choice-hint { color: var(--text-mute); font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; }
 
 /* ── dialogs (PlanModal): sized to content within the size bounds ── */
 
@@ -1766,3 +1764,31 @@
 .mini-btn.pln-tmpl-menu:hover,
 .mini-btn.pln-tmpl-menu[aria-expanded='true'] { border-color: var(--paper-line); background: var(--surface-2); }
 .mini-btn.pln-tmpl-menu svg { width: 14px; height: 14px; }
+
+/* ── Import from MS Project or Excel (PlanImportModal) ────────────
+   One width for every step (IMPORT_WIDTH_PX: the review's list floors fit
+   in it), so the card doesn't jump as the steps change. The review's list
+   is the house dir-list; its layout lives in plan-sheet.css. */
+.pln-import {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(1040px, 88vw);
+}
+.pln-import-mode { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.pln-import .pf-error { margin: 0; }
+.pln-import-sum { margin: 0; font-size: 14px; color: var(--text-mute); }
+.pln-import-sum b { font-weight: 600; color: var(--text-dark); }
+/* the problems about the whole file, above the rows */
+.pln-import-problems {
+  margin: 0;
+  padding: 10px 14px 10px 30px;
+  border: 1px solid var(--c-amber-bd);
+  border-radius: 10px;
+  background: var(--c-amber-bg);
+  font-size: 13px;
+  color: var(--text-dark);
+}
+.pln-import-problems li + li { margin-top: 4px; }
+/* the footer's message (plan_changed, a refusal) wraps beside its buttons */
+.modal-card.pln-modal:has(.pln-import) > .modal-foot { flex-wrap: wrap; }

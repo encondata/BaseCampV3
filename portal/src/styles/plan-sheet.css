@@ -252,3 +252,7 @@
 }
 .pln-editor-error-end { left: auto; right: 0; }
 .pln-editor-error-up { top: auto; bottom: calc(100% + 4px); }
+
+/* ── Import's review list (PlanImportModal): the house dir-list ──
+   Its rows open nothing, so no hand cursor. */
+.pln-import-rows .row-main { cursor: default; }

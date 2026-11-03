@@ -43,6 +43,7 @@ const api = vi.hoisted(() => ({
   updateProject: vi.fn(),
   getPlanVersion: vi.fn(),
   listPlanTemplates: vi.fn(),
+  importIntoNewPlan: vi.fn(),
 }));
 vi.mock('../../lib/plans/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/plans/api')>()),
@@ -145,19 +146,40 @@ describe('loading and errors', () => {
 });
 
 describe('empty state', () => {
-  it('offers three ways to start; import waits for a later release', async () => {
+  it('offers three ways to start, every one ready', async () => {
     api.getPlan.mockRejectedValueOnce(noPlan());
     renderTab();
     expect(await screen.findByText('No project plan yet')).not.toBeNull();
     const blank = screen.getByRole('button', { name: /^Blank plan/ });
     const template = screen.getByRole('button', { name: /^From a template/ });
     const imports = screen.getByRole('button', { name: /^Import from MS Project or Excel/ });
-    expect(blank.hasAttribute('disabled')).toBe(false);
-    expect(template.hasAttribute('disabled')).toBe(false);
-    expect(imports.hasAttribute('disabled')).toBe(true);
-    expect(within(template).queryByText('Coming soon')).toBeNull();
-    expect(within(imports).getByText('Coming soon')).not.toBeNull();
-    expect(within(blank).queryByText('Coming soon')).toBeNull();
+    for (const card of [blank, template, imports]) expect(card.hasAttribute('disabled')).toBe(false);
+    expect(screen.queryByText('Coming soon')).toBeNull();
+  });
+
+  it('Import from MS Project or Excel makes the plan from a file, then shows it', async () => {
+    const user = userEvent.setup({ applyAccept: false });
+    api.getPlan.mockRejectedValueOnce(noPlan());
+    renderTab();
+    await user.click(await screen.findByRole('button', { name: /^Import from MS Project or Excel/ }));
+    const dialog = screen.getByRole('dialog', { name: 'Import from MS Project or Excel' });
+    const out = {
+      rows: [{ index: 1, name: 'Survey', action: 'create', problems: [], moved_days: null }],
+      problems: [], summary: { created: 1, problems: 0 }, version: null,
+    };
+    api.importIntoNewPlan.mockResolvedValueOnce(out);
+    const file = new File(['<Project/>'], 'hall.xml', { type: 'application/xml' });
+    await user.upload(within(dialog).getByLabelText(/Drop your file here/), file);
+    expect(api.importIntoNewPlan).toHaveBeenCalledWith('init-1', file, { dryRun: true });
+    api.importIntoNewPlan.mockResolvedValueOnce({ ...out, version: 1 });
+    api.getPlan.mockResolvedValueOnce(EMPTY_PLAN);
+    await user.click(await within(dialog).findByRole('button', { name: 'Import 1 task' }));
+    expect(api.importIntoNewPlan).toHaveBeenLastCalledWith('init-1', file, { dryRun: false });
+    // the plan, read again, is on the page under the Done step
+    expect(await screen.findByRole('toolbar', { name: 'Project plan' }, { timeout: 3000 })).not.toBeNull();
+    expect(within(dialog).getByText('1 task created')).not.toBeNull();
+    await user.click(within(dialog).getByRole('button', { name: 'Done' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('From a template opens the create dialog with a template required, and makes the plan from it', async () => {

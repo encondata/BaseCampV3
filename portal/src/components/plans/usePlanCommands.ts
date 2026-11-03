@@ -49,7 +49,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 
 import { useToast } from '../../lib/notificationsContext';
-import type { Op, Plan, PlanTask, TaskMode } from '../../lib/plans/api';
+import { exportPlan, type ExportFormat, type Op, type Plan, type PlanTask, type TaskMode } from '../../lib/plans/api';
 import type { ApplyResult } from '../../lib/plans/applyResult';
 import { COLUMN_BY_KEY, columnPrefsSnapshot, type PlanColumn } from '../../lib/plans/columns';
 import { OFF_NOTES } from '../../lib/plans/commandTips';
@@ -90,11 +90,13 @@ export type PlanDialog =
   | { kind: 'settings' }
   | { kind: 'deletePlan' }
   | { kind: 'saveTemplate' }
-  | { kind: 'templates' };
+  | { kind: 'templates' }
+  /** More › Import…, or the empty state's Import from MS Project or Excel (no plan yet). */
+  | { kind: 'import' };
 
 /** The dialogs More opens by name. */
 export type MoreDialog = 'columns' | 'shortcuts' | 'clearBaseline' | 'updateProject' | 'settings' | 'deletePlan'
-  | 'saveTemplate' | 'templates';
+  | 'saveTemplate' | 'templates' | 'import';
 
 export const PASTE_LABEL = 'Paste';
 /** What an outline command says while the sheet is grouped. */
@@ -273,6 +275,9 @@ export interface PlanCommands {
   lock(): void;
   unlock(): void;
   open(kind: MoreDialog): void;
+  /** More › Export: the plan as MS Project XML, or the sheet's visible
+   *  columns as an Excel workbook, downloaded under the API's file name. */
+  exportPlan(format: ExportFormat): void;
   /** Focus back on the sheet (a toolbar click hands it back). */
   focusSheet(): void;
   /** For usePlanShortcuts. */
@@ -837,6 +842,16 @@ export function usePlanCommands({
         if (!isPlanChanged(err)) latest.current.toast(planErrorText(err));
       });
     };
+    // a download through the bearer token, named by the API (`<code or
+    // name> - Project plan.<ext>`; this the fallback when its header can't
+    // be read); Excel gets the sheet's visible columns
+    const exportFile = (format: ExportFormat) => {
+      const plan = latest.current.ctl.plan;
+      if (!plan) return;
+      const columns = format === 'xlsx' ? columnPrefsSnapshot().visible : undefined;
+      void exportPlan(plan.id, format, columns, `${plan.initiative_name} - Project plan.${format}`)
+        .catch((err: unknown) => latest.current.toast(planErrorText(err)));
+    };
     // sent at once; only replacing one asks (the 409 says when it was set)
     const setBaseline = () => {
       void latest.current.ctl.setBaseline(false).then((result) => {
@@ -895,6 +910,7 @@ export function usePlanCommands({
       unlock,
       open: (kind: MoreDialog) =>
         latest.current.openDialog({ kind }),
+      exportPlan: exportFile,
       focusSheet,
     };
     const handlers: PlanShortcutHandlers = {

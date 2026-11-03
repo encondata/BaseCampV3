@@ -29,8 +29,10 @@
  *  Optional, for a toolbar's menu button: an `icon` trigger (named by
  *  `label`) in place of "label ▾", with its own `triggerClassName`; items
  *  that are a choice among several (`checked`: menuitemradio, a ✓ on the
- *  current one); and `returnFocus`, which puts focus back on the trigger
- *  after a mouse pick too. */
+ *  current one); `returnFocus`, which puts focus back on the trigger
+ *  after a mouse pick too; and `group`, which gathers a few items under a
+ *  title (a labeled group set apart by rules; the keys go through it like
+ *  any other items). */
 
 import {
   useEffect, useId, useRef, useState, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent,
@@ -57,6 +59,24 @@ export interface RowAction {
   /** A choice among several (a menuitemradio): true on the current one,
    *  which shows a ✓; false on the others. Left out, a plain menuitem. */
   checked?: boolean;
+  /** Consecutive items with the same group sit under its name (the menu's
+   *  `.pop-title`) in a `role="group"` it names, set apart by rules
+   *  (`.pop-sep`) from the items around them: a small family of commands,
+   *  like a toolbar More menu's Export › MS Project XML, Excel. */
+  group?: string;
+}
+
+/** The menu's items in order, consecutive items of one group gathered. */
+type MenuPart = { group: null; action: RowAction } | { group: string; actions: RowAction[] };
+
+function menuParts(actions: RowAction[]): MenuPart[] {
+  const parts: MenuPart[] = [];
+  for (const a of actions) {
+    const last = parts[parts.length - 1];
+    if (a.group && last?.group === a.group) last.actions.push(a);
+    else parts.push(a.group ? { group: a.group, actions: [a] } : { group: null, action: a });
+  }
+  return parts;
 }
 
 interface MenuPos { top: number | 'auto'; bottom: number | 'auto'; right: number }
@@ -243,6 +263,62 @@ export function RowActionsMenu({
   // the enclosing .portal-shell holds the theme tokens (the dark palette);
   // a menu parked under document.body would paint light in dark mode
   const host = triggerRef.current?.closest<HTMLElement>('.portal-shell') ?? document.body;
+
+  const item = (a: RowAction) => {
+    const radio = a.checked !== undefined;
+    const text = a.hint ? (
+      <>
+        <span>{a.label}</span>
+        <span className="pop-item-hint" id={`${hintPrefix}-${a.key}`}>{a.hint}</span>
+      </>
+    ) : a.label;
+    return (
+      <button key={a.key} type="button" role={radio ? 'menuitemradio' : 'menuitem'} tabIndex={-1}
+              aria-checked={radio ? a.checked : undefined}
+              className={`pop-item${a.destructive ? ' danger' : ''}${a.hint ? ' has-hint' : ''}`
+                + `${radio ? ' pop-radio' : ''}${a.checked ? ' on' : ''}`}
+              disabled={a.disabled}
+              aria-label={a.hint ? a.label : undefined}
+              aria-describedby={a.hint ? `${hintPrefix}-${a.key}` : undefined}
+              onClick={(e) => {
+                e.stopPropagation();
+                // Belt and braces: a disabled button fires no click
+                // in a browser, but a programmatic dispatch still
+                // reaches React's root listener.
+                if (a.disabled) return;
+                // picked with Enter or Space (a click with no pointer: detail 0)
+                const fromKeys = e.detail === 0;
+                setOpen(false);
+                a.onSelect();
+                // back to the trigger, unless the pick moved focus somewhere itself
+                const now = document.activeElement;
+                const unmoved = !now || now === document.body || !!menuRef.current?.contains(now);
+                if (returnFocus || (fromKeys && unmoved)) buttonRef.current?.focus();
+              }}>
+        {radio ? (
+          <>
+            <span className="pop-mark" aria-hidden="true">✓</span>
+            <span className="pop-item-main">{text}</span>
+          </>
+        ) : text}
+      </button>
+    );
+  };
+
+  const parts = menuParts(actions);
+  const body = parts.flatMap((part, i) => {
+    if (part.group === null) return [item(part.action)];
+    const titleId = `${hintPrefix}-group-${i}`;
+    // a rule before it, unless it opens the menu or a group's rule is already there
+    return [
+      ...(i > 0 && parts[i - 1].group === null ? [<div key={`sep-${i}`} className="pop-sep" role="separator" />] : []),
+      <div key={`group-${i}`} role="group" aria-labelledby={titleId}>
+        <div className="pop-title" id={titleId}>{part.group}</div>
+        {part.actions.map(item)}
+      </div>,
+      ...(i < parts.length - 1 ? [<div key={`sep-${i}-after`} className="pop-sep" role="separator" />] : []),
+    ];
+  });
   return (
     <div className="row-actions" ref={triggerRef} style={{ position: 'relative' }}>
       <button type="button" className={triggerClassName ?? 'mini-btn'} aria-haspopup="menu" ref={buttonRef}
@@ -265,46 +341,7 @@ export function RowActionsMenu({
                position: 'fixed', top: pos.top, bottom: pos.bottom, right: pos.right,
                zIndex: 1200,
              }}>
-          {actions.map((a) => {
-            const radio = a.checked !== undefined;
-            const text = a.hint ? (
-              <>
-                <span>{a.label}</span>
-                <span className="pop-item-hint" id={`${hintPrefix}-${a.key}`}>{a.hint}</span>
-              </>
-            ) : a.label;
-            return (
-              <button key={a.key} type="button" role={radio ? 'menuitemradio' : 'menuitem'} tabIndex={-1}
-                      aria-checked={radio ? a.checked : undefined}
-                      className={`pop-item${a.destructive ? ' danger' : ''}${a.hint ? ' has-hint' : ''}`
-                        + `${radio ? ' pop-radio' : ''}${a.checked ? ' on' : ''}`}
-                      disabled={a.disabled}
-                      aria-label={a.hint ? a.label : undefined}
-                      aria-describedby={a.hint ? `${hintPrefix}-${a.key}` : undefined}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        // Belt and braces: a disabled button fires no click
-                        // in a browser, but a programmatic dispatch still
-                        // reaches React's root listener.
-                        if (a.disabled) return;
-                        // picked with Enter or Space (a click with no pointer: detail 0)
-                        const fromKeys = e.detail === 0;
-                        setOpen(false);
-                        a.onSelect();
-                        // back to the trigger, unless the pick moved focus somewhere itself
-                        const now = document.activeElement;
-                        const unmoved = !now || now === document.body || !!menuRef.current?.contains(now);
-                        if (returnFocus || (fromKeys && unmoved)) buttonRef.current?.focus();
-                      }}>
-                {radio ? (
-                  <>
-                    <span className="pop-mark" aria-hidden="true">✓</span>
-                    <span className="pop-item-main">{text}</span>
-                  </>
-                ) : text}
-              </button>
-            );
-          })}
+          {body}
         </div>,
         host,
       )}

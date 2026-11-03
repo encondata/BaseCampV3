@@ -17,9 +17,11 @@
  * and, when it's off, why. The names, sentences and reasons are one table,
  * lib/plans/commandTips.
  *
- * Read-only people see Display (Gantt Layout included) and More (Columns…,
- * Keyboard shortcuts) only. More's template commands follow their own
- * permissions: Save as template… `add`, Templates… `change` or `delete`. On a locked plan the buttons that change the schedule
+ * Read-only people see Display (Gantt Layout included) and More (Export ›
+ * MS Project XML / Excel, Columns…, Keyboard shortcuts) only. More's
+ * template commands follow their own permissions: Save as template… `add`,
+ * Templates… `change` or `delete`; Import… is `change`, off while the
+ * schedule is locked. On a locked plan the buttons that change the schedule
  * stay reachable but off, their tip saying "Schedule is locked"; progress
  * (0–100%, Mark on Track, Notes) and Task color still work. A button that needs a
  * selection says so instead; with the chart Hidden, the chart-only commands
@@ -127,6 +129,18 @@ export default function PlanToolbar({
   if (canChange || plan.permissions.delete) {
     more.push({ key: 'templates', label: COMMAND_TIPS.templates.label, onSelect: () => cmd.open('templates') });
   }
+  // a file's tasks go into the plan as a change (a new plan from a file is
+  // the empty state's); the exports are everyone's, one titled group (Print's PDF… joins it)
+  if (canChange) {
+    more.push({ key: 'import', label: COMMAND_TIPS.importFile.label, onSelect: () => cmd.open('import'),
+                disabled: locked, hint: locked ? LOCKED_HINT : undefined });
+  }
+  const exportGroup = COMMAND_TIPS.exportGroup.label;
+  more.push(
+    { key: 'export-xml', label: COMMAND_TIPS.exportXml.label, group: exportGroup, onSelect: () => cmd.exportPlan('xml') },
+    { key: 'export-xlsx', label: COMMAND_TIPS.exportXlsx.label, group: exportGroup,
+      onSelect: () => cmd.exportPlan('xlsx') },
+  );
   more.push(
     { key: 'columns', label: 'Columns…', onSelect: () => cmd.open('columns') },
     { key: 'shortcuts', label: 'Keyboard shortcuts', onSelect: () => cmd.open('shortcuts') },

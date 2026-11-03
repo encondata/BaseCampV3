@@ -7,10 +7,11 @@
  * closes (including a mousedown on the portaled menu itself NOT
  * counting as outside), the menu portaling to document.body so
  * .dir-list's overflow:hidden can't clip it, and an empty actions list
- * renders nothing at all.
+ * renders nothing at all; items sharing a `group` sit under its title in
+ * a labeled group, set apart by rules.
  */
 
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -539,5 +540,58 @@ describe('the keyboard (the menu-button pattern)', () => {
     }
     expect(fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Tab', shiftKey: true })).toBe(true);
     expect(screen.queryByRole('menu')).toBeNull();
+  });
+});
+
+describe('groups', () => {
+  const grouped = (xml = vi.fn()): RowAction[] => [
+    { key: 'columns', label: 'Columns…', onSelect: vi.fn() },
+    { key: 'xml', label: 'MS Project XML', group: 'Export', onSelect: xml },
+    { key: 'xlsx', label: 'Excel', group: 'Export', onSelect: vi.fn() },
+    { key: 'shortcuts', label: 'Keyboard shortcuts', onSelect: vi.fn() },
+  ];
+
+  it('items sharing a group sit under its title in a group named by it, set apart by rules', async () => {
+    const user = userEvent.setup();
+    render(<RowActionsMenu label="More" actions={grouped()} />);
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    const group = screen.getByRole('group', { name: 'Export' });
+    expect(within(group).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['MS Project XML', 'Excel']);
+    // the title is the house menu title, naming the group
+    const title = group.querySelector('.pop-title') as HTMLElement;
+    expect(title.textContent).toBe('Export');
+    expect(group.getAttribute('aria-labelledby')).toBe(title.id);
+    // every item in menu order, the group's in their place
+    expect(screen.getAllByRole('menuitem').map((i) => i.textContent))
+      .toEqual(['Columns…', 'MS Project XML', 'Excel', 'Keyboard shortcuts']);
+    // a rule before and after it (nothing before a group that opens the menu)
+    const menu = screen.getByRole('menu');
+    expect([...menu.children].map((el) => el.getAttribute('role') ?? el.tagName))
+      .toEqual(['menuitem', 'separator', 'group', 'separator', 'menuitem']);
+    expect(menu.querySelectorAll('.pop-sep')).toHaveLength(2);
+  });
+
+  it('the keys go through a group like any other items; a pick in it runs and closes', async () => {
+    const user = userEvent.setup();
+    const xml = vi.fn();
+    render(<RowActionsMenu label="More" actions={grouped(xml)} />);
+    act(() => { screen.getByRole('button', { name: 'More' }).focus(); });
+    await user.keyboard('{Enter}');
+    expect(document.activeElement?.textContent).toBe('Columns…');
+    await user.keyboard('{ArrowDown}');
+    expect(document.activeElement?.textContent).toBe('MS Project XML');
+    await user.keyboard('{End}');
+    expect(document.activeElement?.textContent).toBe('Keyboard shortcuts');
+    await user.keyboard('{ArrowUp}{ArrowUp}{Enter}');
+    expect(xml).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('a group at the end of the menu has a rule before it only', async () => {
+    const user = userEvent.setup();
+    render(<RowActionsMenu label="More" actions={grouped().slice(0, 3)} />);
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    expect([...screen.getByRole('menu').children].map((el) => el.getAttribute('role')))
+      .toEqual(['menuitem', 'separator', 'group']);
   });
 });

@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../../lib/api';
 import { longDate } from '../../lib/format';
 import type { Op, Plan, PlanTask } from '../../lib/plans/api';
+import { saveColumnPrefs } from '../../lib/plans/columns';
 import { flatTasks, makeLink, makeOpsResult, makePlan } from '../../lib/plans/planFixtures';
 import { findSheet } from './planTabTesting';
 
@@ -47,6 +48,8 @@ const api = vi.hoisted(() => ({
   saveAsTemplate: vi.fn(),
   patchPlanTemplate: vi.fn(),
   deletePlanTemplate: vi.fn(),
+  importPlanFile: vi.fn(),
+  exportPlan: vi.fn(),
 }));
 vi.mock('../../lib/plans/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/plans/api')>()),
@@ -248,6 +251,45 @@ describe('Update project, Plan settings, Delete plan', () => {
     await more(user, 'Templates…');
     const list = await dialogNamed('Templates');
     expect(await within(list).findByText('Hall move')).not.toBeNull();
+  });
+
+  it('More › Import… adds a file’s tasks after the last one, and the plan reloads with them', async () => {
+    const user = await ready();
+    await more(user, 'Import…');
+    const dialog = await dialogNamed('Import from MS Project or Excel');
+    const out = {
+      rows: [{ index: 1, name: 'Ship', action: 'create', problems: [], moved_days: null }],
+      problems: [], summary: { created: 1, problems: 0 }, version: plan3().version,
+    };
+    api.importPlanFile.mockResolvedValueOnce(out);
+    const file = new File(['ID,Task Name\n1,Ship\n'], 'more.csv', { type: 'text/csv' });
+    await user.upload(within(dialog).getByLabelText(/Drop your file here/), file);
+    expect(api.importPlanFile).toHaveBeenCalledWith(plan3().id, file, { dryRun: true, mode: 'append' });
+    api.importPlanFile.mockResolvedValueOnce({ ...out, version: plan3().version + 1 });
+    const four = [...tasks3(), { ...flatTasks(['a', 'b', 'c', 'd'])[3], name: 'Ship' }];
+    api.getPlan.mockResolvedValueOnce(plan3({ tasks: four, version: plan3().version + 1 }));
+    await user.click(await within(dialog).findByRole('button', { name: 'Import 1 task' }));
+    expect(api.importPlanFile).toHaveBeenLastCalledWith(plan3().id, file,
+      { dryRun: false, mode: 'append', baseVersion: plan3().version });
+    await waitFor(() => expect(rowOf('Ship')).toBeTruthy());
+    await user.click(within(dialog).getByRole('button', { name: 'Done' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('More › Export › Excel downloads the sheet’s visible columns; MS Project XML the whole plan', async () => {
+    saveColumnPrefs({ visible: ['id', 'name', 'duration', 'notes'], widths: {} });
+    const user = await ready();
+    api.exportPlan.mockResolvedValue('NAP11 Hall Migration - Project plan.xlsx');
+    await more(user, 'Excel');
+    expect(api.exportPlan).toHaveBeenLastCalledWith(plan3().id, 'xlsx', ['id', 'name', 'duration', 'notes'],
+      `${plan3().initiative_name} - Project plan.xlsx`);
+    await more(user, 'MS Project XML');
+    expect(api.exportPlan).toHaveBeenLastCalledWith(plan3().id, 'xml', undefined,
+      `${plan3().initiative_name} - Project plan.xml`);
+    // a refusal says why
+    api.exportPlan.mockRejectedValueOnce(new ApiError(404, 'plan_not_found', { code: 'plan_not_found' }));
+    await more(user, 'MS Project XML');
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('This plan no longer exists, or you can’t see it.'));
   });
 
   it('More opens Update project and Plan settings', async () => {

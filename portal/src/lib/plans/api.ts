@@ -9,7 +9,7 @@
  * Every call goes through apiFetch and throws the portal's ApiError
  * (status, code, detail) on a non-2xx; lib/plans/errors.ts words them.
  */
-import { apiFetch, errorFrom } from '../api';
+import { apiFetch, dispositionFilename, errorFrom, saveBlob } from '../api';
 import type { DurationUnit } from './durations';
 import type { LinkType } from './predecessors';
 
@@ -587,6 +587,90 @@ export const patchPlanTemplate = (templateId: string, patch: PlanTemplatePatch) 
 /** project_plans:delete; plans made from it keep their tasks. */
 export const deletePlanTemplate = (templateId: string) =>
   send<void>(`/plan-templates/${seg(templateId)}`, 'DELETE');
+
+// ── import and export (MS Project XML, Excel, CSV) ───────────────────
+
+/** `append`: after the plan's last task; `fill`: an empty plan, which also
+ *  takes the file's calendar, project start and status date (409
+ *  `plan_not_empty` on a plan with tasks). */
+export type ImportMode = 'append' | 'fill';
+
+/** One task of the file (ImportRowOut). */
+export interface ImportRow {
+  index: number;                      // 1-based, in the file's order
+  name: string;
+  action: 'create';
+  problems: string[];                 // what the import changed or skipped, and why
+  moved_days: number | null;          // signed working days the plan's schedule moves it
+}
+
+/** A dry run's (or an apply's) answer (PlanImportOut): the rows, the
+ *  problems about the whole file, the counts, and the plan's version — on
+ *  a dry run the one it saw (the apply's `base_version`), null for a plan
+ *  not made yet; after an apply the plan's new one. */
+export interface PlanImport {
+  rows: ImportRow[];
+  problems: string[];
+  summary: { created: number; problems: number };
+  version: number | null;
+}
+
+/** The most an import takes (importer.MAX_FILE_BYTES; 413 `file_too_large`). */
+export const MAX_IMPORT_BYTES = 20 * 1024 * 1024;
+
+/** The file as the multipart `file` (no Content-Type: the browser writes
+ *  the boundary). */
+async function postFile(path: string, file: File): Promise<PlanImport> {
+  const body = new FormData();
+  body.append('file', file, file.name);
+  const resp = await apiFetch(path, { method: 'POST', body });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json() as Promise<PlanImport>;
+}
+
+const flag = (on: boolean) => (on ? '1' : '0');
+
+/**
+ * Import a file into the plan (project_plans:change): a dry run answers
+ * what applying would create and writes nothing; an apply sends the
+ * version its dry run saw as `baseVersion` (409 `plan_changed` when the
+ * plan changed since). 409 `plan_locked`; 413 `file_too_large`; 422
+ * `bad_file` {message}, `too_many_rows`.
+ */
+export const importPlanFile = (planId: string, file: File, opts: {
+  dryRun: boolean; mode: ImportMode; baseVersion?: number;
+}) => {
+  const query = `dry_run=${flag(opts.dryRun)}&mode=${opts.mode}`
+    + (opts.baseVersion === undefined ? '' : `&base_version=${opts.baseVersion}`);
+  return postFile(`/plans/${seg(planId)}/import?${query}`, file);
+};
+
+/** Make the initiative's plan from a file (project_plans:add), always a
+ *  fill; 409 `plan_exists`, and the file's errors as importPlanFile. */
+export const importIntoNewPlan = (initiativeId: string, file: File, opts: { dryRun: boolean }) =>
+  postFile(`/initiatives/${seg(initiativeId)}/plan/import?dry_run=${flag(opts.dryRun)}`, file);
+
+export type ExportFormat = 'xml' | 'xlsx';
+
+/** The export's path: MS Project XML, or an Excel workbook of `columns`
+ *  (the sheet's visible column keys, comma-joined; none = its default set). */
+export function exportUrl(planId: string, format: ExportFormat, columns?: readonly string[]): string {
+  const path = `/plans/${seg(planId)}/export.${format}`;
+  return format === 'xlsx' && columns?.length ? `${path}?columns=${columns.map(seg).join(',')}` : path;
+}
+
+/** Download the plan's export (project_plans:view) through an
+ *  authenticated fetch (a bare link wouldn't carry the bearer token),
+ *  saved under the name its Content-Disposition gives, else `fallbackName`.
+ *  Answers the name it was saved as. */
+export async function exportPlan(planId: string, format: ExportFormat, columns: readonly string[] | undefined,
+  fallbackName: string): Promise<string> {
+  const resp = await apiFetch(exportUrl(planId, format, columns));
+  if (!resp.ok) throw await errorFrom(resp);
+  const name = dispositionFilename(resp.headers.get('Content-Disposition')) ?? fallbackName;
+  saveBlob(await resp.blob(), name);
+  return name;
+}
 
 // ── system settings ──────────────────────────────────────────────────
 

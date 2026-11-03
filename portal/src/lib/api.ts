@@ -1471,13 +1471,9 @@ export async function commitSiteBulk(
   return resp.json();
 }
 
-/** GET an attachment and hand it to the browser as a download. */
-export async function downloadAttachment(
-  path: string, filename: string, init: RequestInit = {},
-): Promise<void> {
-  const resp = await apiFetch(path, init);
-  if (!resp.ok) throw await errorFrom(resp);
-  const blob = await resp.blob();
+/** Hand a blob to the browser as a download named `filename` (a detached,
+ *  clicked link to an object URL, revoked once the click has it). */
+export function saveBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -1486,6 +1482,36 @@ export async function downloadAttachment(
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+/** The file name a Content-Disposition header gives: its RFC 5987
+ *  `filename*` (decoded) when present and readable, else its plain
+ *  `filename`; only the last path segment either way. Null for no header
+ *  or no usable name. A cross-origin response shows the header only when
+ *  the API exposes it (api/app.py, CORS `expose_headers`). */
+export function dispositionFilename(header: string | null): string | null {
+  if (!header) return null;
+  const leaf = (name: string): string | null => name.split(/[\\/]/).pop()?.trim() || null;
+  const extended = /filename\*\s*=\s*([^']*)'[^']*'([^;]+)/i.exec(header);
+  if (extended) {
+    try {
+      const name = leaf(decodeURIComponent(extended[2].trim()));
+      if (name) return name;
+    } catch {
+      /* a malformed escape: fall back to the plain name */
+    }
+  }
+  const plain = /(?:^|;)\s*filename\s*=\s*(?:"([^"]*)"|([^;]*))/i.exec(header);
+  return plain ? leaf(plain[1] ?? plain[2] ?? '') : null;
+}
+
+/** GET an attachment and hand it to the browser as a download. */
+export async function downloadAttachment(
+  path: string, filename: string, init: RequestInit = {},
+): Promise<void> {
+  const resp = await apiFetch(path, init);
+  if (!resp.ok) throw await errorFrom(resp);
+  saveBlob(await resp.blob(), filename);
 }
 
 export function downloadSiteTemplate(format: 'csv' | 'xlsx'): Promise<void> {

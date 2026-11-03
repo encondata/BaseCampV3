@@ -29,6 +29,16 @@ it('renders the house header: eyebrow, h3 title, one-line description', () => {
   expect(screen.getByText('How this plan schedules.').className).toBe('page-hint');
 });
 
+it('a stepped dialog’s step indicator sits between the header and the body', () => {
+  render(
+    <PlanModal title="Import" onClose={() => {}} steps={<div className="rgm-steps">Choose file · Review</div>}>
+      <p>Body</p>
+    </PlanModal>,
+  );
+  const card = screen.getByRole('dialog', { name: 'Import' });
+  expect([...card.children].map((el) => el.className)).toEqual(['modal-head', 'rgm-steps', 'modal-body']);
+});
+
 it('moves focus to the first field of the body on open, past the Close button', () => {
   render(
     <PlanModal title="Task Information" onClose={() => {}}>

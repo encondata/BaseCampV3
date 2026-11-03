@@ -88,6 +88,7 @@ import PlanCreateModal, { type PlanInitiative } from './PlanCreateModal';
 import PlanEmptyState from './PlanEmptyState';
 import PlanFilterBar from './PlanFilterBar';
 import PlanGantt from './PlanGantt';
+import PlanImportModal from './PlanImportModal';
 import PlanSettingsModal from './PlanSettingsModal';
 import PlanSheet from './PlanSheet';
 import PlanTimelineStrip from './PlanTimelineStrip';
@@ -227,7 +228,7 @@ function useInertOutside(ref: RefObject<HTMLElement | null>, on: boolean): void 
 /** The dialogs More opens (and Set baseline's replace question). */
 const MORE_DIALOGS: ReadonlySet<PlanDialog['kind']> = new Set<PlanDialog['kind']>([
   'columns', 'shortcuts', 'replaceBaseline', 'clearBaseline', 'lock', 'updateProject', 'settings', 'deletePlan',
-  'saveTemplate', 'templates',
+  'saveTemplate', 'templates', 'import',
 ]);
 
 /** A dialog from More that closes with no dialog under it hands focus back
@@ -396,7 +397,8 @@ export default function PlanTab({ initiativeId, initiative }: {
     body = (
       <PlanEmptyState canAdd={can('project_plans', 'add')}
                       onBlank={() => setDialog({ kind: 'create' })}
-                      onTemplate={() => setDialog({ kind: 'create', fromTemplate: true })} />
+                      onTemplate={() => setDialog({ kind: 'create', fromTemplate: true })}
+                      onImport={() => setDialog({ kind: 'import' })} />
     );
   } else {
     const plan = ctl.plan;
@@ -526,6 +528,7 @@ export default function PlanTab({ initiativeId, initiative }: {
       {dialog?.kind === 'templates' && ctl.plan && (
         <TemplatesModal permissions={ctl.plan.permissions} onClose={closeDialog} />
       )}
+      {dialog?.kind === 'import' && <PlanImportModal ctl={ctl} initiativeId={initiativeId} onClose={closeDialog} />}
 
       {/* the completion check, over any dialog it answers for */}
       {completion.dialog}

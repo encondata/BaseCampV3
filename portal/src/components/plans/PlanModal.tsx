@@ -1,8 +1,8 @@
 /**
  * Every Project plan dialog's shell: the house modal-scrim/modal-card with
  * the report-generate header (eyebrow "Project plan", h3 title, one-line
- * description), sized to its content between the `size` bounds, rounded
- * like every modal card. Dropdowns inside it portal out of the card on
+ * description, then a stepped dialog's `.rgm-steps`), sized to its
+ * content between the `size` bounds, rounded like every modal card. Dropdowns inside it portal out of the card on
  * their own (ComboBox/TagInput via useMenuPlacement). Modeled on
  * LearningModal.
  *
@@ -41,7 +41,7 @@ function onTop(scrim: HTMLElement | null): boolean {
 
 export default function PlanModal({
   eyebrow = 'Project plan', title, description, label, onClose, busy = false, size = 'normal',
-  className = '', children, footer,
+  className = '', steps, children, footer,
 }: {
   eyebrow?: string;
   title: string;
@@ -54,6 +54,8 @@ export default function PlanModal({
   /** The widest the card grows: normal 720px, wide 980px, xwide 1200px (all within 96vw). */
   size?: PlanModalSize;
   className?: string;
+  /** A stepped dialog's step indicator (`.rgm-steps`), between the header and the body. */
+  steps?: ReactNode;
   /** The body; a one-question dialog (its title and description say it all) has none. */
   children?: ReactNode;
   footer?: ReactNode;
@@ -108,6 +110,7 @@ export default function PlanModal({
                  strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
           </button>
         </div>
+        {steps}
         {children !== undefined && children !== null && children !== false && (
           <div className="modal-body">{children}</div>
         )}

@@ -38,7 +38,7 @@ function commands(over: Partial<PlanCommands> = {}): PlanCommands {
     moveTasks: fn(),
     info: fn(), toggleCritical: fn(), toggleBaseline: fn(), zoomIn: fn(), zoomOut: fn(), fit: fn(), scrollToTask: fn(),
     collapse: fn(), expand: fn(), copy: vi.fn(() => true), cut: fn(), paste: fn(), lock: fn(), unlock: fn(), open: fn(),
-    focusSheet: fn(), color: fn(), handlers: {}, grouped: false, cutMarks: new Set(),
+    focusSheet: fn(), color: fn(), exportPlan: fn(), handlers: {}, grouped: false, cutMarks: new Set(),
     ...over,
   };
 }
@@ -113,7 +113,9 @@ describe('groups', () => {
     expect(screen.queryByRole('group', { name: 'Schedule' })).toBeNull();
     expect(screen.queryByRole('group', { name: 'Insert' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'More' }));
-    expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Columns…', 'Keyboard shortcuts']);
+    // a reader exports (`view`), but doesn't import
+    expect(screen.getAllByRole('menuitem').map((m) => m.textContent))
+      .toEqual(['MS Project XML', 'Excel', 'Columns…', 'Keyboard shortcuts']);
   });
 
   it('locked: Indent and the other schedule changes are off, saying why; progress still works', () => {
@@ -317,39 +319,44 @@ describe('hover tips', () => {
     const { unmount } = render(<Bar plan={makePlan()} cmd={commands()} />);
     expect(hoverTip(button('More')).desc).toBe(
       'Set or clear the baseline, update the project, lock the schedule, change plan settings, save the plan '
-      + 'as a template, manage templates, choose the sheet’s columns, see the keyboard shortcuts, or delete the plan.');
+      + 'as a template, manage templates, import tasks from a file, export the plan for MS Project or Excel, '
+      + 'choose the sheet’s columns, see the keyboard shortcuts, or delete the plan.');
     expect(COMMAND_TIPS.more.desc).toBe(moreDesc({ view: true, add: true, change: true, delete: true }));
     unmount();
     const noDelete = render(<Bar plan={makePlan({ permissions: { view: true, add: true, change: true, delete: false } })}
                                  cmd={commands()} />);
     expect(hoverTip(button('More')).desc).toBe(
       'Set or clear the baseline, update the project, lock the schedule, change plan settings, save the plan '
-      + 'as a template, manage templates, choose the sheet’s columns, or see the keyboard shortcuts.');
+      + 'as a template, manage templates, import tasks from a file, export the plan for MS Project or Excel, '
+      + 'choose the sheet’s columns, or see the keyboard shortcuts.');
     noDelete.unmount();
     const reader = render(<Bar plan={makePlan({ permissions: { view: true, add: false, change: false, delete: false } })}
                                cmd={commands()} />);
-    expect(hoverTip(button('More')).desc).toBe('Choose the sheet’s columns, or see the keyboard shortcuts.');
+    expect(hoverTip(button('More')).desc).toBe(
+      'Export the plan for MS Project or Excel, choose the sheet’s columns, or see the keyboard shortcuts.');
     reader.unmount();
-    // a reader who may delete: the templates too (to delete them), the columns, the shortcuts and Delete plan
+    // a reader who may delete: the templates too (to delete them), the exports, the columns, the shortcuts and Delete plan
     render(<Bar plan={makePlan({ permissions: { view: true, add: false, change: false, delete: true } })}
                 cmd={commands()} />);
     expect(hoverTip(button('More')).desc).toBe(
-      'Manage templates, choose the sheet’s columns, see the keyboard shortcuts, or delete the plan.');
+      'Manage templates, export the plan for MS Project or Excel, choose the sheet’s columns, see the keyboard '
+      + 'shortcuts, or delete the plan.');
     vi.useRealTimers();
     fireEvent.click(button('More'));
     expect(screen.getAllByRole('menuitem').map((m) => m.textContent))
-      .toEqual(['Templates…', 'Columns…', 'Keyboard shortcuts', 'Delete plan…']);
+      .toEqual(['Templates…', 'MS Project XML', 'Excel', 'Columns…', 'Keyboard shortcuts', 'Delete plan…']);
   });
 
   it('Save as template needs add; Templates… needs change or delete', () => {
     render(<Bar plan={makePlan({ permissions: { view: true, add: true, change: false, delete: false } })}
                 cmd={commands()} />);
     expect(hoverTip(button('More')).desc).toBe(
-      'Save the plan as a template, choose the sheet’s columns, or see the keyboard shortcuts.');
+      'Save the plan as a template, export the plan for MS Project or Excel, choose the sheet’s columns, or see '
+      + 'the keyboard shortcuts.');
     vi.useRealTimers();
     fireEvent.click(button('More'));
     expect(screen.getAllByRole('menuitem').map((m) => m.textContent))
-      .toEqual(['Save as template…', 'Columns…', 'Keyboard shortcuts']);
+      .toEqual(['Save as template…', 'MS Project XML', 'Excel', 'Columns…', 'Keyboard shortcuts']);
   });
 
   it('the More trigger’s tip says what it holds, and goes once its menu opens', () => {
@@ -511,7 +518,8 @@ describe('More', () => {
     await user.click(screen.getByRole('button', { name: 'More' }));
     expect(screen.getAllByRole('menuitem').map((m) => m.firstChild?.textContent)).toEqual([
       'Set baseline…', 'Clear baseline…', 'Update project…', 'Lock schedule…', 'Plan settings…',
-      'Save as template…', 'Templates…', 'Columns…', 'Keyboard shortcuts', 'Delete plan…',
+      'Save as template…', 'Templates…', 'Import…', 'MS Project XML', 'Excel', 'Columns…', 'Keyboard shortcuts',
+      'Delete plan…',
     ]);
     const menu = document.querySelector('.pop-menu') as HTMLElement;
     expect(Number(menu.style.zIndex)).toBeGreaterThan(60);
@@ -522,11 +530,42 @@ describe('More', () => {
     expect(cmd.lock).toHaveBeenCalled();
     for (const [item, kind] of [['Clear baseline…', 'clearBaseline'], ['Update project…', 'updateProject'],
       ['Plan settings…', 'settings'], ['Delete plan…', 'deletePlan'], ['Columns…', 'columns'],
-      ['Save as template…', 'saveTemplate'], ['Templates…', 'templates']] as const) {
+      ['Save as template…', 'saveTemplate'], ['Templates…', 'templates'], ['Import…', 'import']] as const) {
       await user.click(screen.getByRole('button', { name: 'More' }));
       await user.click(screen.getByRole('menuitem', { name: item }));
       expect(cmd.open).toHaveBeenLastCalledWith(kind);
     }
+  });
+
+  it('Export: MS Project XML and Excel under one titled group, each downloading its file', async () => {
+    const user = userEvent.setup();
+    const cmd = commands();
+    render(<Bar plan={makePlan()} cmd={cmd} />);
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    const group = screen.getByRole('group', { name: COMMAND_TIPS.exportGroup.label });
+    expect(within(group).getAllByRole('menuitem').map((m) => m.textContent))
+      .toEqual([COMMAND_TIPS.exportXml.label, COMMAND_TIPS.exportXlsx.label]);
+    await user.click(within(group).getByRole('menuitem', { name: 'Excel' }));
+    expect(cmd.exportPlan).toHaveBeenLastCalledWith('xlsx');
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    await user.click(screen.getByRole('menuitem', { name: 'MS Project XML' }));
+    expect(cmd.exportPlan).toHaveBeenLastCalledWith('xml');
+  });
+
+  it('Import… needs change and an unlocked schedule; a locked plan still exports', async () => {
+    const user = userEvent.setup();
+    const cmd = commands();
+    const locked = render(<Bar plan={makePlan({ locked_at: '2026-10-27T12:00:00Z' })} cmd={cmd} />);
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    const item = screen.getByRole('menuitem', { name: 'Import…' }) as HTMLButtonElement;
+    expect(item.disabled).toBe(true);
+    expect(item.textContent).toContain(LOCKED_HINT);
+    expect((screen.getByRole('menuitem', { name: 'Excel' }) as HTMLButtonElement).disabled).toBe(false);
+    locked.unmount();
+    // add without change: no Import… (a file goes into an existing plan as a change)
+    render(<Bar plan={makePlan({ permissions: { view: true, add: true, change: false, delete: false } })} cmd={cmd} />);
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    expect(screen.queryByRole('menuitem', { name: 'Import…' })).toBeNull();
   });
 
   it('no baseline yet: Clear baseline is off, saying why', async () => {

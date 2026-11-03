@@ -95,8 +95,9 @@ def create_app() -> FastAPI:
         # step and the code step (no session exists yet, so no Authorization).
         allow_headers=["Authorization", "Content-Type", "X-Totp-Challenge"],
         # the label builder reads a badge image raster's size from these
-        # (POST /labels/images/raster)
-        expose_headers=["X-Raster-Width", "X-Raster-Height"],
+        # (POST /labels/images/raster); a download fetched with the bearer
+        # token (a project plan's export) is named from Content-Disposition
+        expose_headers=["X-Raster-Width", "X-Raster-Height", "Content-Disposition"],
     )
     app.add_middleware(GZipMiddleware, minimum_size=1024)
 

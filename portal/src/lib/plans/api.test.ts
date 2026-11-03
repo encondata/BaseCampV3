@@ -3,12 +3,13 @@
  *  rule mirrored from the API (plans/ops.py, is_progress_only). */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Op, RestoreOp, TaskFields } from './api';
+import type { Op, PlanImport, RestoreOp, TaskFields } from './api';
 
-const http = vi.hoisted(() => ({ apiFetch: vi.fn() }));
+const http = vi.hoisted(() => ({ apiFetch: vi.fn(), saveBlob: vi.fn() }));
 vi.mock('../api', async (importActual) => ({
   ...(await importActual<typeof import('../api')>()),
   apiFetch: http.apiFetch,
+  saveBlob: http.saveBlob,
 }));
 
 const { ApiError } = await import('../api');
@@ -32,7 +33,10 @@ function answer(response: () => Response): Call[] {
   return calls;
 }
 
-beforeEach(() => http.apiFetch.mockReset());
+beforeEach(() => {
+  http.apiFetch.mockReset();
+  http.saveBlob.mockReset();
+});
 
 const SIGNED_RESTORE: RestoreOp = {
   op: 'restore',
@@ -184,5 +188,87 @@ describe('isProgressOnly', () => {
     expect(P.isProgressOnly([{ op: 'set_percent', ids: ['t1'], percent: 5 }, { op: 'indent', ids: ['t1'] }]))
       .toBe(false);
     expect(P.isProgressOnly([{ op: 'set_assignees', task_id: 't1', resources: [] }])).toBe(false);
+  });
+});
+
+const sent = (n = 0) => http.apiFetch.mock.calls[n] as [string, RequestInit];
+
+describe('import (MS Project XML, Excel, CSV)', () => {
+  const OUT: PlanImport = {
+    rows: [{ index: 1, name: 'Survey', action: 'create', problems: [], moved_days: null }],
+    problems: [], summary: { created: 1, problems: 0 }, version: 4,
+  };
+  const xml = () => new File(['<Project/>'], 'hall.xml', { type: 'application/xml' });
+
+  it('posts the file as the multipart `file`: a dry run with the mode, into the plan', async () => {
+    answer(() => json(OUT));
+    const file = xml();
+    expect(await P.importPlanFile('p 1', file, { dryRun: true, mode: 'fill' })).toEqual(OUT);
+    const [path, init] = sent();
+    expect(path).toBe('/plans/p%201/import?dry_run=1&mode=fill');
+    expect(init.method).toBe('POST');
+    // no Content-Type: the browser writes the multipart boundary
+    expect(init.headers).toBeUndefined();
+    const part = (init.body as FormData).get('file') as File;
+    expect([part.name, part.size, part.type]).toEqual([file.name, file.size, file.type]);
+  });
+
+  it('an apply sends dry_run=0 and the version its preview saw as base_version', async () => {
+    answer(() => json({ ...OUT, version: 5 }));
+    await P.importPlanFile('p1', xml(), { dryRun: false, mode: 'append', baseVersion: 4 });
+    expect(sent()[0]).toBe('/plans/p1/import?dry_run=0&mode=append&base_version=4');
+  });
+
+  it('a new plan goes to the initiative: always a fill, no mode or version to send', async () => {
+    answer(() => json({ ...OUT, version: null }));
+    await P.importIntoNewPlan('i 1', xml(), { dryRun: true });
+    await P.importIntoNewPlan('i 1', xml(), { dryRun: false });
+    expect(sent(0)[0]).toBe('/initiatives/i%201/plan/import?dry_run=1');
+    expect(sent(1)[0]).toBe('/initiatives/i%201/plan/import?dry_run=0');
+    expect((sent(1)[1].body as FormData).get('file')).toBeInstanceOf(File);
+  });
+
+  it('throws the API’s refusal (a file it can’t read is 422 bad_file with a message)', async () => {
+    answer(() => json({ detail: { code: 'bad_file', message: 'Save it as comma-separated.' } }, 422));
+    await expect(P.importPlanFile('p1', xml(), { dryRun: true, mode: 'append' }))
+      .rejects.toMatchObject({ status: 422, code: 'bad_file' });
+  });
+});
+
+describe('export', () => {
+  it('exportUrl: MS Project XML takes no columns; Excel sends the visible column keys, comma-joined', () => {
+    expect(P.exportUrl('p 1', 'xml')).toBe('/plans/p%201/export.xml');
+    expect(P.exportUrl('p1', 'xlsx', ['indicators', 'id', 'name', 'duration']))
+      .toBe('/plans/p1/export.xlsx?columns=indicators,id,name,duration');
+    expect(P.exportUrl('p1', 'xlsx')).toBe('/plans/p1/export.xlsx');
+  });
+
+  it('downloads the file under the name its Content-Disposition gives', async () => {
+    answer(() => new Response('PK', {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': 'attachment; filename="NAP11 - Project plan.xlsx"; '
+          + "filename*=UTF-8''NAP11%20-%20Project%20plan.xlsx",
+      },
+    }));
+    expect(await P.exportPlan('p1', 'xlsx', ['id', 'name'], 'Fallback.xlsx')).toBe('NAP11 - Project plan.xlsx');
+    expect(sent()[0]).toBe('/plans/p1/export.xlsx?columns=id,name');
+    const [blob, name] = http.saveBlob.mock.calls[0] as [Blob, string];
+    expect(name).toBe('NAP11 - Project plan.xlsx');
+    expect(await blob.text()).toBe('PK');
+  });
+
+  it('falls back to the given name when the header can’t be read', async () => {
+    answer(() => new Response('<Project/>', { status: 200 }));
+    expect(await P.exportPlan('p1', 'xml', undefined, 'Hall move - Project plan.xml'))
+      .toBe('Hall move - Project plan.xml');
+    expect(http.saveBlob.mock.calls[0][1]).toBe('Hall move - Project plan.xml');
+  });
+
+  it('a refusal throws, and nothing is saved', async () => {
+    answer(() => json({ detail: { code: 'bad_field', field: 'columns' } }, 422));
+    await expect(P.exportPlan('p1', 'xlsx', ['nope'], 'x.xlsx')).rejects.toMatchObject({ code: 'bad_field' });
+    expect(http.saveBlob).not.toHaveBeenCalled();
   });
 });
