@@ -322,8 +322,9 @@ describe('hover tips', () => {
     unmount();
     const noDelete = render(<Bar plan={makePlan({ permissions: { view: true, add: true, change: true, delete: false } })}
                                  cmd={commands()} />);
-    expect(hoverTip(button('More')).desc).toBe(moreDesc({ view: true, add: true, change: true, delete: false }));
-    expect(hoverTip(button('More')).desc).not.toMatch(/delete/i);
+    expect(hoverTip(button('More')).desc).toBe(
+      'Set or clear the baseline, update the project, lock the schedule, change plan settings, save the plan '
+      + 'as a template, manage templates, choose the sheet’s columns, or see the keyboard shortcuts.');
     noDelete.unmount();
     const reader = render(<Bar plan={makePlan({ permissions: { view: true, add: false, change: false, delete: false } })}
                                cmd={commands()} />);

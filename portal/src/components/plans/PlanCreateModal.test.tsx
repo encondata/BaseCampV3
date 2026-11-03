@@ -60,7 +60,8 @@ describe('from a template', () => {
   it('is titled for it and offers the templates with their size', async () => {
     const { user } = open(true);
     const dialog = screen.getByRole('dialog', { name: 'New plan from a template' });
-    expect(within(dialog).getByText(/every date moved to the project start/)).not.toBeNull();
+    expect(within(dialog).getByText('The template’s tasks, links, settings and working week and hours, every '
+      + 'date moved to the project start. Holidays come from the system calendar.')).not.toBeNull();
     await waitFor(() => expect((picker() as HTMLInputElement).disabled).toBe(false));
     await user.click(picker());
     const menu = document.querySelector('.combo-menu') as HTMLElement;
@@ -85,6 +86,31 @@ describe('from a template', () => {
     await user.click(screen.getByRole('button', { name: 'Create plan' }));
     expect(create).toHaveBeenCalledWith({ project_start: '2026-11-09', template_id: 't2' });
     await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it('a failed template list keeps Create off; Try again loads it', async () => {
+    api.listPlanTemplates.mockRejectedValueOnce(new ApiError(500, 'unknown_error', { code: 'unknown_error' }));
+    const { user, create } = open(true);
+    const tryAgain = await screen.findByRole('button', { name: 'Try again' });
+    expect(screen.getByText('Something went wrong. Try again.')).not.toBeNull();
+    const createButton = screen.getByRole('button', { name: 'Create plan' }) as HTMLButtonElement;
+    expect(createButton.disabled).toBe(true);
+    await user.click(tryAgain);
+    await waitFor(() => expect((picker() as HTMLInputElement).disabled).toBe(false));
+    expect(api.listPlanTemplates).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(createButton.disabled).toBe(false);
+    await pick(user, /^Hall move/);
+    await user.click(createButton);
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ template_id: 't1' }));
+  });
+
+  it('Create stays off while the list loads', async () => {
+    api.listPlanTemplates.mockReturnValueOnce(new Promise(() => {}));
+    const create = vi.fn();
+    render(<PlanCreateModal ctl={{ create } as unknown as PlanController} initiative={INITIATIVE}
+                            fromTemplate onClose={vi.fn()} />);
+    expect((screen.getByRole('button', { name: 'Create plan' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('none saved yet: says how to make one, and Create stays off', async () => {

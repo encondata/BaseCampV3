@@ -433,15 +433,28 @@ def template_data(template: PlanTemplate) -> dict:
     return template.data
 
 
+async def new_plan_calendar(db: AsyncSession, template: PlanTemplate | None) -> dict:
+    """A new plan's calendar, its own copy: the system calendar, or from a
+    template its working week, hours, units and default times with the
+    system calendar's exceptions (templates.plan_calendar). A date-only
+    project start begins at this calendar's default start."""
+    system = await system_calendar(db)
+    if template is None:
+        return system
+    return templates.plan_calendar(template_data(template), system)
+
+
 async def create_plan(db: AsyncSession, initiative: Initiative, actor: AuthContext, *,
                       project_start: datetime, owner_id: uuid.UUID | None,
                       template: PlanTemplate | None = None) -> ProjectPlan:
     """A new plan for the initiative: the site's zone, version 1. Without a
     template it is empty, with its own copy of the system calendar and no
     overrides. From a template (plans/templates.py) it takes the
-    template's calendar and settings overrides and its tasks and links,
-    every date shifted to `project_start`, and is recalculated (422 with
-    the engine's or the calendar's code when it cannot be scheduled).
+    template's settings overrides, its calendar less the dated exceptions
+    (the system's instead: new_plan_calendar) and its tasks and links,
+    every date shifted to `project_start`, and is recalculated: 422 with
+    the engine's or the calendar's code when it cannot be scheduled, and
+    `bad_template` for data the engine refuses as input (a ValueError).
     Flushed (so it has an id) and audited (`plan_create`, naming the
     template); the caller commits. A second plan for the same initiative
     fails the flush on `project_plans_initiative_id_key`."""
@@ -450,8 +463,7 @@ async def create_plan(db: AsyncSession, initiative: Initiative, actor: AuthConte
         initiative_id=initiative.id,
         timezone=await plan_zone(db, initiative),
         project_start=project_start,
-        calendar=(copy.deepcopy(data["calendar"]) if data is not None
-                  else await system_calendar(db)),
+        calendar=await new_plan_calendar(db, template),
         settings=copy.deepcopy(data.get("settings") or {}) if data is not None else {},
         owner_id=owner_id,
         version=1,
@@ -469,6 +481,8 @@ async def create_plan(db: AsyncSession, initiative: Initiative, actor: AuthConte
             await templates.instantiate(db, plan, data)
         except templates.TemplateError as exc:
             raise err(422, exc.code) from None
+        except CalendarError as exc:
+            raise calendar_error(exc) from None
         state = await load_state(db, plan)
         renumber(state)
         try:
@@ -477,6 +491,10 @@ async def create_plan(db: AsyncSession, initiative: Initiative, actor: AuthConte
             raise schedule_error(state, exc) from None
         except CalendarError as exc:
             raise calendar_error(exc) from None
+        except ValueError:
+            # the engine's own input checks (an unknown mode, a parent loop):
+            # the template's fault; the caller rolls the plan back
+            raise err(422, templates.TemplateError.code) from None
         changes |= {"template_id": str(template.id), "template_name": template.name,
                     "tasks": len(state.tasks)}
     audit(db, actor_id=actor.person.id, entity_type="project_plan", entity_id=str(plan.id),

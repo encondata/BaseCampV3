@@ -7,10 +7,12 @@
  *
  * The template picker (a ComboBox of GET /plan-templates, each with its
  * task count and description) is required when the dialog opens from
- * "From a template" and optional from "Blank plan", where a list that
- * can't be loaded never stands in the way. From a template the plan gets
- * the template's tasks, links, calendar and settings, every date moved to
- * the project start; without one it is empty, on the system calendar.
+ * "From a template" (Create stays off until the list is in, and a failed
+ * load offers Try again) and optional from "Blank plan", where a list
+ * that can't be loaded never stands in the way. From a template the plan
+ * gets the template's tasks, links, settings and working week and hours,
+ * every date moved to the project start, and the system calendar's
+ * holidays; without one it is empty, on the system calendar.
  * The picker is not the first field: focusing a ComboBox opens its list,
  * so the project start keeps the first focus.
  *
@@ -40,7 +42,8 @@ export interface PlanInitiative {
 const FORM_ID = 'pln-create-form';
 export const CHOOSE_TEMPLATE = 'Choose a template.';
 const BLANK_DESCRIPTION = 'An empty schedule on the system working calendar. Add tasks once it’s created.';
-const TEMPLATE_DESCRIPTION = 'The template’s tasks, links, calendar and settings, every date moved to the project start.';
+const TEMPLATE_DESCRIPTION = 'The template’s tasks, links, settings and working week and hours, every date moved '
+  + 'to the project start. Holidays come from the system calendar.';
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -170,7 +173,7 @@ export default function PlanCreateModal({ ctl, initiative, fromTemplate = false,
                footer={(
                  <>
                    <button type="submit" form={FORM_ID} className="btn-solid"
-                           disabled={saving || (fromTemplate && none)}>
+                           disabled={saving || (fromTemplate && (templates.state !== 'ready' || none))}>
                      {saving ? 'Creating…' : 'Create plan'}
                    </button>
                    <button type="button" className="mini-btn" onClick={onClose} disabled={saving}>Cancel</button>
@@ -192,7 +195,10 @@ export default function PlanCreateModal({ ctl, initiative, fromTemplate = false,
           </p>
         )}
         {fromTemplate && templates.state === 'error' && (
-          <p className="full pf-error">{templates.message}</p>
+          <div className="full pln-load-problem">
+            <p className="pf-error" role="alert">{templates.message}</p>
+            <button type="button" className="mini-btn" onClick={() => void loadTemplates()}>Try again</button>
+          </div>
         )}
         {scheduled && <p className="full pln-note">{scheduled}</p>}
       </form>

@@ -1750,6 +1750,9 @@
 .pln-tmpl-problem { width: min(560px, 86vw); }
 .pln-tmpl-problem { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .pln-tmpl-problem .pf-error { margin: 0; }
+/* New plan from a template: a list that couldn't load, with Try again */
+.pln-load-problem { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pln-load-problem .pf-error { margin: 0; }
 /* the card's ⋯ Actions: the Board card menu's quiet button */
 .mini-btn.pln-tmpl-menu {
   width: 26px;

@@ -2,9 +2,10 @@
  * Save as template (More › Save as template…, `project_plans:add`): a name
  * and a description, then POST /plans/{id}/save-as-template. The API keeps
  * the plan's structure (tasks, durations, links, constraints, deadlines,
- * notes, colors, the calendar and the settings overrides) with every date
- * as an offset from the project start; never resources, progress or the
- * baseline. The plan itself doesn't change, so this writes outside the
+ * notes, colors, the working week and hours and the settings overrides)
+ * with every date as an offset from the project start; never the
+ * calendar's holidays, resources, progress or the baseline. Every plan
+ * viewer sees templates, so the dialog says notes go along. The plan itself doesn't change, so this writes outside the
  * PlanController.
  *
  * The name is required (the API trims it and allows 120 characters, the
@@ -38,13 +39,17 @@ export function templateErrorText(err: unknown): string {
   return planErrorText(err);
 }
 
-/** What the template keeps: "Keep this plan’s 12 tasks, durations, links
- *  and calendar to start new plans from." */
+/** What the template keeps: "Keep this plan’s 12 tasks (durations, links
+ *  and notes included) and its working week and hours to start new plans
+ *  from." Notes are named: templates are shared with every plan viewer. */
 export function keepsText(count: number): string {
-  if (count === 0) return 'Keep this plan’s calendar and settings to start new plans from.';
-  const tasks = count === 1 ? '1 task' : `${count.toLocaleString('en-US')} tasks`;
-  return `Keep this plan’s ${tasks}, durations, links and calendar to start new plans from.`;
+  if (count === 0) return 'Keep this plan’s settings and its working week and hours to start new plans from.';
+  const tasks = count === 1 ? '1 task (its duration, links and notes included)'
+    : `${count.toLocaleString('en-US')} tasks (durations, links and notes included)`;
+  return `Keep this plan’s ${tasks} and its working week and hours to start new plans from.`;
 }
+
+export const SHARED_NOTE = 'Everyone who can view project plans can see and use templates, task notes included.';
 
 export default function SaveTemplateModal({ planId, taskCount, onClose }: {
   planId: string;
@@ -106,6 +111,7 @@ export default function SaveTemplateModal({ planId, taskCount, onClose }: {
                     maxLength={MAX_TEMPLATE_DESCRIPTION} disabled={busy}
                     onChange={(e) => setDescription(e.target.value)} />
         </div>
+        <p className="full pln-note">{SHARED_NOTE}</p>
       </form>
     </PlanModal>
   );

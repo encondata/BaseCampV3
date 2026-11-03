@@ -90,15 +90,12 @@ async def create_plan(
     if await service.plan_of_initiative(db, initiative_id) is not None:
         raise err(409, "plan_exists")
     # a date-only start begins at the default start of the calendar the new
-    # plan gets: the template's, else the system one
+    # plan gets (from a template: its week and times, the system's exceptions)
     template = None
     if body.template_id is not None:
         template = await service.template_or_404(db, body.template_id)
-        calendar_json = service.template_data(template)["calendar"]
-    else:
-        calendar_json = await service.system_calendar(db)
     try:
-        calendar = WorkCalendar.from_json(calendar_json)
+        calendar = WorkCalendar.from_json(await service.new_plan_calendar(db, template))
     except CalendarError as exc:
         raise service.calendar_error(exc) from None
     try:

@@ -8,8 +8,10 @@ overrides; never assignees, progress, actuals or the baseline.
 Reference week (Standard calendar): the source plan starts Mon 2026-11-02
 08:00; the plan made from it starts a week later, Mon 2026-11-09 08:00."""
 
+import copy
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import select
 
 from serversherpa.db.models import AuditLog
@@ -150,7 +152,7 @@ async def test_snapshot_keeps_structure_only(client, db):
     state = await load_state(db, await _plan_row(db, move))
     data = templates.snapshot(state)
     assert data["version"] == 1
-    assert data["calendar"] == state.plan.calendar
+    assert data["calendar"] == {k: v for k, v in state.plan.calendar.items() if k != "exceptions"}
     assert data["settings"] == {}
     assert [t["name"] for t in data["tasks"]] == ["Phase 1", "Survey", "Pack", "Move"]
     by_name = {t["name"]: t for t in data["tasks"]}
@@ -192,21 +194,38 @@ async def test_manual_task_dates_shift(client, db):
 
 
 async def test_template_keeps_the_calendar_and_settings(client, db):
+    """A template keeps the working week, the hours and units and the
+    default times, and the settings overrides, but no dated exceptions: a
+    plan made from it takes the system calendar's exceptions, and a
+    date-only project start begins at the template's default start."""
     hdrs = await _admin(db, client)
+    system = (await client.get("/system/project-plans", headers=hdrs)).json()["calendar"]
+    christmas = [{"date": "2026-12-25", "name": "Christmas Day", "hours": []}]
+    resp = await client.put("/system/project-plans", headers=hdrs,
+                            json={"calendar": {**system, "exceptions": christmas}})
+    assert resp.status_code == 200, resp.text
     move = await _initiative(db)
     plan = await _create(client, hdrs, move)
     calendar = (await _get(client, hdrs, plan))["calendar"]
     calendar["week"]["sat"] = [["09:00", "13:00"]]
+    calendar["default_start"] = "07:00"
+    calendar["exceptions"] = [{"date": "2026-11-26", "name": "Thanksgiving", "hours": []}]
     resp = await client.patch(f"/plans/{plan['id']}", headers=hdrs, json={
         "base_version": 1, "calendar": calendar,
         "settings": {"honor_constraints": False, "reminders": {"enabled": False}}})
     assert resp.status_code == 200, resp.text
     await _add(client, hdrs, plan, "A")
     saved = await _save(client, hdrs, plan, name="Weekend crew")
+    stored = (await db.get(PlanTemplate, saved["id"])).data["calendar"]
+    assert "exceptions" not in stored
+    assert stored["week"]["sat"] == [["09:00", "13:00"]]
 
     other = await _initiative(db, name="Other")
     body = await _create(client, hdrs, other, project_start="2026-11-09", template_id=saved["id"])
-    assert body["calendar"]["week"]["sat"] == [["09:00", "13:00"]]
+    assert body["calendar"]["week"] == calendar["week"]                 # the template's
+    assert body["calendar"]["default_start"] == "07:00"
+    assert body["calendar"]["exceptions"] == christmas                  # the system's
+    assert body["project_start"] == "2026-11-09T07:00"                  # merged default start
     assert body["settings_overrides"] == {"honor_constraints": False,
                                           "reminders": {"enabled": False}}
 
@@ -221,27 +240,171 @@ async def test_unknown_template(client, db):
     assert (await client.get(f"/initiatives/{move.id}/plan", headers=hdrs)).status_code == 404
 
 
-async def test_template_this_code_cannot_apply(client, db):
-    """Stored data that isn't a version-1 template, or names a task it
-    doesn't have: 422 `bad_template`, and no plan is made."""
+async def _refused_from(client, db, hdrs, template_id, code="bad_template"):
+    """Creating a plan from the template is refused with `code`, and the
+    initiative is left with no plan."""
+    move = await _initiative(db, name="Target")
+    resp = await client.post(f"/initiatives/{move.id}/plan", headers=hdrs,
+                             json={"project_start": "2026-11-09", "template_id": str(template_id)})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == code
+    assert (await client.get(f"/initiatives/{move.id}/plan", headers=hdrs)).status_code == 404
+
+
+async def _broken(client, db):
+    """A saved template of A, B, C with a link A -> B, and its stored row."""
     hdrs = await _admin(db, client)
     plan = await _create(client, hdrs, await _initiative(db))
-    await _add(client, hdrs, plan, "A", "B")
+    ids = await _add(client, hdrs, plan, "A", "B", "C")
+    await _ok(client, hdrs, plan, [{"op": "add_link", "predecessor_id": ids["A"],
+                                    "successor_id": ids["B"]}])
     saved = await _save(client, hdrs, plan, name="Broken")
     row = await db.get(PlanTemplate, saved["id"])
-    good = row.data
-    bad_link = {**good, "links": [{"from": "1", "to": "9", "link_type": "FS", "lag_minutes": 0,
-                                   "lag_unit": "d", "lag_elapsed": False}]}
-    no_name = {**good, "tasks": [{k: v for k, v in good["tasks"][0].items() if k != "name"}]}
-    for data in ({**good, "version": 2}, bad_link, no_name):
+    return hdrs, row, copy.deepcopy(row.data)
+
+
+def _with_task(good, index, **fields):
+    tasks = copy.deepcopy(good["tasks"])
+    tasks[index].update(fields)
+    return {**good, "tasks": tasks}
+
+
+def _without(good, index, key):
+    tasks = copy.deepcopy(good["tasks"])
+    del tasks[index][key]
+    return {**good, "tasks": tasks}
+
+
+def _link(frm, to, **fields):
+    return {"from": frm, "to": to, "link_type": "FS", "lag_minutes": 0, "lag_unit": "d",
+            "lag_elapsed": False, **fields}
+
+
+async def test_template_this_code_cannot_apply(client, db):
+    """Stored data this code can't apply: 422 `bad_template` (never a 500
+    from the database or the engine), and no plan is made. A parent must be
+    a task listed before it (snapshots are in outline order, so no parent
+    loop can be written); a link's type must be one MS Project has and a
+    pair is linked once."""
+    hdrs, row, good = await _broken(client, db)
+    a, b, c = (t["key"] for t in good["tasks"])
+    cases = {
+        "version": {**good, "version": 2},
+        "link to no task": {**good, "links": [_link(a, "9")]},
+        "no name": _without(good, 0, "name"),
+        "no parent_key": _without(good, 1, "parent_key"),
+        "parent names no task": _with_task(good, 1, parent_key="9"),
+        "parent listed later": _with_task(good, 0, parent_key=c),
+        "own parent": _with_task(good, 1, parent_key=b),
+        "parent loop": _with_task(_with_task(good, 1, parent_key=c), 2, parent_key=b),
+        "link type": {**good, "links": [_link(a, b, link_type="XX")]},
+        "duplicate link": {**good, "links": [_link(a, b), _link(a, b, link_type="SS")]},
+        "self link": {**good, "links": [_link(a, a)]},
+        "mode": _with_task(good, 0, mode="sometimes"),
+        "duration unit": _with_task(good, 0, duration_unit="fortnight"),
+        "negative duration": _with_task(good, 0, duration_minutes=-60),
+        "duration not a number": _with_task(good, 0, duration_minutes="8h"),
+        "constraint type": _with_task(good, 0, constraint_type="whenever"),
+        "color": _with_task(good, 0, color="red"),
+        "name not text": _with_task(good, 0, name=42),
+        "offset not whole minutes": _with_task(good, 0, deadline_offset=1.5),
+        "lag unit": {**good, "links": [_link(a, b, lag_unit="ages")]},
+        "lag not a number": {**good, "links": [_link(a, b, lag_minutes="1d")]},
+        "duration over the cap": _with_task(good, 0, duration_minutes=10**12),
+        "lag over the cap": {**good, "links": [_link(a, b, lag_minutes=-(10**12))]},
+        "offset out of range": _with_task(good, 0, deadline_offset=10**13),
+        "tasks not a list": {**good, "tasks": {"1": good["tasks"][0]}},
+    }
+    for name, data in cases.items():
         row.data = data
         await db.commit()
-        move = await _initiative(db, name="Target")
-        resp = await client.post(f"/initiatives/{move.id}/plan", headers=hdrs,
-                                 json={"project_start": "2026-11-09", "template_id": saved["id"]})
-        assert resp.status_code == 422, data
-        assert resp.json()["detail"]["code"] == "bad_template"
-        assert (await client.get(f"/initiatives/{move.id}/plan", headers=hdrs)).status_code == 404
+        try:
+            await _refused_from(client, db, hdrs, row.id)
+        except AssertionError as exc:
+            raise AssertionError(name) from exc
+
+
+async def test_a_link_loop_in_a_template_is_the_engines_refusal(client, db):
+    """A -> B and B -> A gets past the data checks; the engine refuses it
+    with its own code, still a 422 with no plan made."""
+    hdrs, row, good = await _broken(client, db)
+    a, b, _c = (t["key"] for t in good["tasks"])
+    row.data = {**good, "links": [_link(a, b), _link(b, a)]}
+    await db.commit()
+    await _refused_from(client, db, hdrs, row.id, code="link_cycle")
+
+
+async def test_any_other_engine_refusal_is_bad_template(client, db, monkeypatch):
+    """A ValueError out of the recalc (the engine's own input checks) is the
+    template's fault: 422 `bad_template`, nothing created."""
+    from serversherpa.plans import service
+
+    hdrs, row, _good = await _broken(client, db)
+
+    def refuse(_state, _settings):
+        raise ValueError("task x: unknown mode 'sometimes'")
+
+    monkeypatch.setattr(service, "recalc", refuse)
+    await _refused_from(client, db, hdrs, row.id)
+
+
+async def test_size_cap(client, db, monkeypatch):
+    """More than MAX_RESTORE_ROWS tasks or links (the restore op's cap) is
+    refused before anything is added."""
+    hdrs, row, good = await _broken(client, db)
+    monkeypatch.setattr(templates, "MAX_RESTORE_ROWS", 2)
+    await _refused_from(client, db, hdrs, row.id)              # 3 tasks
+    a, b, c = (t["key"] for t in good["tasks"])
+    with pytest.raises(templates.TemplateError, match="tasks"):
+        templates.check(good)
+    two = {**good, "tasks": good["tasks"][:2], "links": [_link(a, b), _link(b, a), _link(a, c)]}
+    with pytest.raises(templates.TemplateError, match="links"):
+        templates.check(two)
+    monkeypatch.setattr(templates, "MAX_RESTORE_ROWS", 3)
+    templates.check(good)                                       # at the cap: fine
+
+
+async def test_elapsed_lag_survives(client, db):
+    hdrs = await _admin(db, client)
+    plan = await _create(client, hdrs, await _initiative(db))
+    ids = await _add(client, hdrs, plan, "A", duration="2d")
+    ids.update(await _add(client, hdrs, plan, "B"))
+    await _ok(client, hdrs, plan, [{"op": "add_link", "predecessor_id": ids["A"],
+                                    "successor_id": ids["B"], "link_type": "SS",
+                                    "lag": "+2ed"}])
+    source = await _get(client, hdrs, plan)
+    saved = await _save(client, hdrs, plan, name="Elapsed")
+    body = await _create(client, hdrs, await _initiative(db, name="Later"),
+                         project_start="2026-11-09", template_id=saved["id"])
+    [link] = body["links"]
+    assert (link["link_type"], link["lag_minutes"], link["lag_elapsed"]) == ("SS", 2880, True)
+    assert link["lag_text"] == source["links"][0]["lag_text"]
+    assert _tasks(body)["B"]["predecessors"] == _tasks(source)["B"]["predecessors"] == "1SS+2 edays"
+    # two elapsed days from Mon 08:00 run to Wed 08:00
+    assert _tasks(body)["B"]["start"] == "2026-11-11T08:00"
+
+
+async def test_out_of_scope_initiative(client, db, monkeypatch):
+    """A template_id never gets past the initiatives scope: an initiative
+    the actor can't see is 404 `initiative_not_found`, whether or not the
+    template exists."""
+    from serversherpa.db.models import Initiative
+    from serversherpa.plans import service
+
+    hdrs = await _admin(db, client)
+    plan = await _create(client, hdrs, await _initiative(db))
+    await _add(client, hdrs, plan, "A")
+    saved = await _save(client, hdrs, plan, name="Scoped")
+    hidden = await _initiative(db, name="Hidden")
+    monkeypatch.setattr(service, "scope_conditions",
+                        lambda resource, access, person_id: Initiative.id != hidden.id)
+    for template_id in (saved["id"], str(uuid4())):
+        resp = await client.post(f"/initiatives/{hidden.id}/plan", headers=hdrs,
+                                 json={"project_start": "2026-11-09", "template_id": template_id})
+        assert resp.status_code == 404, resp.text
+        assert resp.json()["detail"]["code"] == "initiative_not_found"
+    monkeypatch.undo()
+    assert (await client.get(f"/initiatives/{hidden.id}/plan", headers=hdrs)).status_code == 404
 
 
 # ── save ─────────────────────────────────────────────────────────────

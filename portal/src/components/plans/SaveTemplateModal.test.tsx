@@ -44,8 +44,12 @@ describe('Save as template', () => {
     expect(within(dialog()).getByText('Project plan')).not.toBeNull();
     expect(within(dialog()).getByRole('heading', { level: 3, name: 'Save as template' })).not.toBeNull();
     expect(document.activeElement).toBe(screen.getByLabelText('Name'));
-    expect(within(dialog()).getByText(/12 tasks/)).not.toBeNull();
-    expect(within(dialog()).getByText(/Resources, progress and the baseline aren’t saved/)).not.toBeNull();
+    // templates are shared with everyone who can view plans: it says notes go along
+    expect(within(dialog()).getByText(
+      'Keep this plan’s 12 tasks (durations, links and notes included) and its working week and hours to '
+      + 'start new plans from. Resources, progress and the baseline aren’t saved.')).not.toBeNull();
+    expect(within(dialog()).getByText(
+      'Everyone who can view project plans can see and use templates, task notes included.')).not.toBeNull();
     expect(screen.getByLabelText('Name').closest('.pf-form')).not.toBeNull();
   });
 
