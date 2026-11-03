@@ -291,11 +291,15 @@ async def test_a_paused_loop_keeps_the_device_check_quiet(db, monkeypatch):
     from serversherpa.system import admin_config
 
     polls = 0
+    paused_at: list[datetime] = []
 
     async def paused_twice(maker, state):
         nonlocal polls
         polls += 1
-        return polls <= 2
+        paused = polls <= 2
+        if paused:
+            paused_at.append(datetime.now(UTC))        # just before the loop pushes the window
+        return paused
 
     states: list[dict] = []
     checked = asyncio.Event()
@@ -318,6 +322,10 @@ async def test_a_paused_loop_keeps_the_device_check_quiet(db, monkeypatch):
     assert polls >= 3                                  # it ran only once the pause ended
     first = states[0]
     assert before + LONGEST_THRESHOLD <= first["quiet_until"] <= after + LONGEST_THRESHOLD
+    # the start-up seed alone would fall short of this: only a push at the last paused poll
+    # (or later) puts the window a full threshold beyond it
+    assert len(paused_at) == 2
+    assert first["quiet_until"] >= paused_at[-1] + LONGEST_THRESHOLD
 
 
 async def test_a_new_worker_keeps_the_device_check_quiet(db, monkeypatch):
