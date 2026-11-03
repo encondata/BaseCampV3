@@ -3,7 +3,7 @@
  * Not imported by the app: each factory takes overrides for the fields a
  * test cares about and fills the rest with plain defaults.
  */
-import type { OpsResult, Plan, PlanLink, PlanTask, RestoreOp } from './api';
+import type { OpsResult, Plan, PlanLink, PlanTask, ProjectPlanSettings, RestoreOp } from './api';
 
 export function makeTask(id: string, over: Partial<PlanTask> = {}): PlanTask {
   return {
@@ -134,6 +134,34 @@ export function makePlan(over: Partial<Plan> = {}): Plan {
     tasks: flatTasks(['a', 'b', 'c']),
     links: [],
     resources: [],
+    ...over,
+  };
+}
+
+/** GET /system/project-plans: the API's defaults (config_store), plus one
+ *  nonworking exception so a calendar round trip has one to carry. */
+export function makeSystemSettings(over: Partial<ProjectPlanSettings> = {}): ProjectPlanSettings {
+  const hours = (): [string, string][] => [['08:00', '12:00'], ['13:00', '17:00']];
+  return {
+    calendar: {
+      week: { mon: hours(), tue: hours(), wed: hours(), thu: hours(), fri: hours(), sat: [], sun: [] },
+      exceptions: [{ date: '2026-11-26', name: 'Thanksgiving', hours: [] }],
+      hours_per_day: 8,
+      hours_per_week: 40,
+      days_per_month: 20,
+      default_start: '08:00',
+      default_end: '17:00',
+    },
+    honor_constraints: true,
+    critical_slack_days: 0,
+    default_task_mode: 'auto',
+    default_duration: '1d',
+    show_times: false,
+    completion: { subtasks: 'cascade', predecessors: 'block' },
+    reminders: {
+      enabled: true, offsets_days: [3, 1], on_due_day: true, overdue: 'daily', send_time: '08:00',
+      use_finish_without_deadline: false, notify_on_assign: true, overdue_to_owner: true, email_assignees: true,
+    },
     ...over,
   };
 }

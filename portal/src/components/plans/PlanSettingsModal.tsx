@@ -20,18 +20,20 @@
  */
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 
-import type { CompletionSettings, ReminderSettings, TaskMode } from '../../lib/plans/api';
+import type { CompletionSettings, ReminderSettings } from '../../lib/plans/api';
 import { SETTING_LABELS, isPlanChanged, planErrorText } from '../../lib/plans/errors';
 import { naturalCompare } from '../../lib/naturalSort';
 import { timezoneOptions } from '../../lib/notifications';
 import {
-  OVERDUE_CADENCES, PREDECESSOR_RULES, REMINDER_KEYS, SETTINGS_SECTIONS, SUBTASK_RULES, sectionOfError,
-  systemValueText, toForm, toPatch, validate, type Inherit, type SettingsErrors, type SettingsForm, type SettingsSection,
+  COMPLETION_HINTS, OVERDUE_CADENCES, PREDECESSOR_RULES, REMINDER_HINTS, REMINDER_KEYS, SETTINGS_SECTIONS,
+  SUBTASK_RULES, TASK_MODES, sectionOfError, systemValueText, toForm, toPatch, validate, type Inherit,
+  type SettingsErrors, type SettingsForm, type SettingsSection,
 } from '../../lib/plans/settingsForm';
 import ComboBox, { type ComboOption } from '../ComboBox';
 import { Switch } from '../Switch';
 import CalendarEditor from './CalendarEditor';
 import PlanModal from './PlanModal';
+import { Choice, OnOff, choiceOptions } from './SettingChoice';
 import type { PlanController } from './usePlan';
 
 import '../../styles/profile.css';   // .pf-form, .btn-solid
@@ -39,34 +41,6 @@ import '../../styles/profile.css';   // .pf-form, .btn-solid
 const HOLD_OWNER = 'plan-settings';
 const FORM_ID = 'pln-settings-form';
 export const LOCKED_NOTE = 'Schedule is locked: only the status date and the owner can change until it’s unlocked.';
-
-function Choice<T extends string>({ label, options, value, disabled, onChange }: {
-  label: string;
-  options: readonly (readonly [T, string])[];
-  value: T;
-  disabled: boolean;
-  onChange(v: T): void;
-}) {
-  return (
-    <div className="segmented pln-set-choice" role="group" aria-label={label}>
-      {options.map(([v, text]) => (
-        <button key={v} type="button" aria-pressed={value === v} className={value === v ? 'on' : ''}
-                disabled={disabled} onClick={() => onChange(v)}>
-          {text}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-const ON_OFF = [['on', 'On'], ['off', 'Off']] as const;
-
-function OnOff({ label, value, disabled, onChange }: {
-  label: string; value: boolean; disabled: boolean; onChange(v: boolean): void;
-}) {
-  return <Choice label={label} options={ON_OFF} value={value ? 'on' : 'off'} disabled={disabled}
-                 onChange={(v) => onChange(v === 'on')} />;
-}
 
 /** One inheritable key: its name, "Use system default (<value>)", and its control while that is off. */
 function InheritField({ label, hint, system, inherit, disabled, error, onInherit, children }: {
@@ -99,18 +73,6 @@ function InheritField({ label, hint, system, inherit, disabled, error, onInherit
 function FieldError({ text }: { text: string | undefined }) {
   return text ? <p className="pf-error pln-set-error" role="alert">{text}</p> : null;
 }
-
-const REMINDER_HINTS: Partial<Record<keyof ReminderSettings, string>> = {
-  enabled: 'Reminders about due and overdue tasks to the people assigned.',
-  offsets_days: 'Days before a task is due, like 3, 1.',
-  on_due_day: 'One more on the day a task is due.',
-  overdue: 'While a task is overdue and not complete.',
-  send_time: 'The time of day reminders go out, in the plan’s timezone.',
-  use_finish_without_deadline: 'A task with no Deadline is due at its Finish.',
-  notify_on_assign: 'A notice when someone is assigned to a task.',
-  overdue_to_owner: 'The plan owner also hears about overdue tasks.',
-  email_assignees: 'Reminders are emailed as well as shown in the inbox.',
-};
 
 export default function PlanSettingsModal({ ctl, onClose }: { ctl: PlanController; onClose(): void }) {
   const plan = ctl.plan;
@@ -205,8 +167,7 @@ export default function PlanSettingsModal({ ctl, onClose }: { ctl: PlanControlle
       case 'overdue': {
         const field = form.reminders.overdue;
         return (
-          <Choice label={label} value={field.value} disabled={off}
-                  options={Object.entries(OVERDUE_CADENCES) as [ReminderSettings['overdue'], string][]}
+          <Choice label={label} value={field.value} disabled={off} options={choiceOptions(OVERDUE_CADENCES)}
                   onChange={(v) => setReminder('overdue', { ...field, value: v })} />
         );
       }
@@ -271,8 +232,7 @@ export default function PlanSettingsModal({ ctl, onClose }: { ctl: PlanControlle
               <div>
                 <span className="pln-set-label" id="pln-set-mode-label">Default task mode</span>
                 <Choice label="Default task mode" value={form.defaultTaskMode} disabled={off}
-                        options={[['auto', 'Auto Scheduled'], ['manual', 'Manually Scheduled']] as [TaskMode, string][]}
-                        onChange={(v) => set({ defaultTaskMode: v })} />
+                        options={choiceOptions(TASK_MODES)} onChange={(v) => set({ defaultTaskMode: v })} />
               </div>
               <div>
                 <label htmlFor="pln-set-duration">Default duration</label>
@@ -314,23 +274,23 @@ export default function PlanSettingsModal({ ctl, onClose }: { ctl: PlanControlle
 
           <div hidden={section !== 'completion'}>
             <div className="pln-set-items">
-              <InheritField label={SETTING_LABELS['completion.subtasks']} hint="Its subtasks that aren’t complete yet."
+              <InheritField label={SETTING_LABELS['completion.subtasks']} hint={COMPLETION_HINTS.subtasks}
                             system={systemValueText('completion', 'subtasks', plan.system_settings.completion.subtasks)}
                             inherit={form.completion.subtasks.inherit} disabled={off}
                             onInherit={(on) => setCompletion('subtasks', { ...form.completion.subtasks, inherit: on })}>
                 <Choice label={SETTING_LABELS['completion.subtasks']} value={form.completion.subtasks.value} disabled={off}
-                        options={Object.entries(SUBTASK_RULES) as [CompletionSettings['subtasks'], string][]}
+                        options={choiceOptions(SUBTASK_RULES)}
                         onChange={(v) => setCompletion('subtasks', { inherit: false, value: v })} />
               </InheritField>
               <InheritField label={SETTING_LABELS['completion.predecessors']}
-                            hint="Completing a task whose predecessors aren’t complete yet."
+                            hint={COMPLETION_HINTS.predecessors}
                             system={systemValueText('completion', 'predecessors',
                               plan.system_settings.completion.predecessors)}
                             inherit={form.completion.predecessors.inherit} disabled={off}
                             onInherit={(on) => setCompletion('predecessors', { ...form.completion.predecessors, inherit: on })}>
                 <Choice label={SETTING_LABELS['completion.predecessors']} value={form.completion.predecessors.value}
                         disabled={off}
-                        options={Object.entries(PREDECESSOR_RULES) as [CompletionSettings['predecessors'], string][]}
+                        options={choiceOptions(PREDECESSOR_RULES)}
                         onChange={(v) => setCompletion('predecessors', { inherit: false, value: v })} />
               </InheritField>
             </div>

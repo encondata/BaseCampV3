@@ -18,6 +18,12 @@
  *   exception dates and names, the default times, duration and slack, the
  *   reminder offsets and send time. Inherited values are the system's and
  *   aren't checked.
+ *
+ * System settings › Project plans (lib/plans/systemSettings) edits the same
+ * keys with no inheriting, and shares the pieces: the calendar form
+ * (`toCalendarForm`, `toCalendar`, `sameCalendar`, `calendarErrors`), the
+ * checks (`defaultDurationError`, `slackError`, `sendTimeError`), and the
+ * words (the option labels and hints).
  */
 import type {
   CompletionSettings, DayKey, PlanCalendar, Plan, PlanPatch, PlanSettingsOverrides, ReminderSettings, TaskMode,
@@ -204,6 +210,9 @@ function canonical(c: PlanCalendar): string {
   });
 }
 
+/** The same calendar, whatever order its hours and exceptions are in. */
+export const sameCalendar = (a: PlanCalendar, b: PlanCalendar): boolean => canonical(a) === canonical(b);
+
 // ── the PATCH ──
 
 function sameDate(text: string, current: string | null): boolean {
@@ -251,7 +260,7 @@ export function toPatch(form: SettingsForm, plan: Plan): PlanPatch {
   if (start !== null && !sameDate(start, plan.project_start)) patch.project_start = start;
   if (form.timezone !== plan.timezone) patch.timezone = form.timezone;
   const calendar = toCalendar(form.calendar);
-  if (canonical(calendar) !== canonical(plan.calendar)) patch.calendar = calendar;
+  if (!sameCalendar(calendar, plan.calendar)) patch.calendar = calendar;
 
   const now = plan.settings;
   const settings: PlanSettingsOverrides = {};
@@ -326,17 +335,10 @@ function unitsOfForm(c: CalendarForm): Units | null {
   }
 }
 
-export function validate(form: SettingsForm): SettingsErrors {
+/** What's wrong with the calendar, keyed `calendar.*` the way CalendarEditor
+ *  shows it (Plan settings and System settings › Project plans). */
+export function calendarErrors(c: CalendarForm): SettingsErrors {
   const errors: SettingsErrors = {};
-  const c = form.calendar;
-
-  if (fromDateInput(asciiTrim(form.projectStart)) === null) errors.projectStart = 'Enter the project start date.';
-  if (asciiTrim(form.statusDate) && fromDateInput(asciiTrim(form.statusDate)) === null) {
-    errors.statusDate = 'Enter a full date, or leave it blank for now.';
-  }
-  if (!form.timezone) errors.timezone = 'Choose a timezone from the list.';
-
-  // the calendar
   if (!DAYS.some(({ key }) => c.week[key].working)) errors['calendar.week'] = NO_WORKING_DAY;
   for (const { key } of DAYS) {
     const day = c.week[key];
@@ -367,21 +369,52 @@ export function validate(form: SettingsForm): SettingsErrors {
     if (fromDateInput(e.date) !== null) dates.add(e.date);
     if (err) errors[where] = err;
   }
+  return errors;
+}
+
+/** The default duration, read in the units of the calendar being edited
+ *  (null when those units are themselves wrong: that error shows there). */
+export function defaultDurationError(text: string, calendar: CalendarForm): string | null {
+  const units = unitsOfForm(calendar);
+  if (!units) return null;
+  try {
+    const d = parseDuration(text, units);
+    return d.minutes > maxMinutes(units, d.elapsed) ? 'A duration can be at most 10 years.' : null;
+  } catch (err) {
+    return err instanceof DurationError ? err.message : 'Enter a duration like 1d.';
+  }
+}
+
+/** Critical slack: 0 to 30 days, fractions allowed. */
+export function slackError(text: string): string | null {
+  const t = asciiTrim(text);
+  const slack = Number(t);
+  if (t === '' || !Number.isFinite(slack) || slack < 0 || slack > MAX_SLACK_DAYS) {
+    return `Enter 0 to ${MAX_SLACK_DAYS} days (halves and quarters are fine).`;
+  }
+  return null;
+}
+
+/** A reminder send time: HH:MM. */
+export const sendTimeError = (text: string): string | null =>
+  (HHMM.test(asciiTrim(text)) ? null : 'Enter a time like 08:00.');
+
+export function validate(form: SettingsForm): SettingsErrors {
+  const errors: SettingsErrors = {};
+
+  if (fromDateInput(asciiTrim(form.projectStart)) === null) errors.projectStart = 'Enter the project start date.';
+  if (asciiTrim(form.statusDate) && fromDateInput(asciiTrim(form.statusDate)) === null) {
+    errors.statusDate = 'Enter a full date, or leave it blank for now.';
+  }
+  if (!form.timezone) errors.timezone = 'Choose a timezone from the list.';
+
+  Object.assign(errors, calendarErrors(form.calendar));
 
   // General's settings
-  const units = unitsOfForm(c);
-  if (units) {
-    try {
-      const d = parseDuration(form.defaultDuration, units);
-      if (d.minutes > maxMinutes(units, d.elapsed)) errors.defaultDuration = 'A duration can be at most 10 years.';
-    } catch (err) {
-      errors.defaultDuration = err instanceof DurationError ? err.message : 'Enter a duration like 1d.';
-    }
-  }
-  const slack = Number(asciiTrim(form.criticalSlackDays));
-  if (asciiTrim(form.criticalSlackDays) === '' || !Number.isFinite(slack) || slack < 0 || slack > MAX_SLACK_DAYS) {
-    errors.criticalSlackDays = `Enter 0 to ${MAX_SLACK_DAYS} days (halves and quarters are fine).`;
-  }
+  const duration = defaultDurationError(form.defaultDuration, form.calendar);
+  if (duration) errors.defaultDuration = duration;
+  const slack = slackError(form.criticalSlackDays);
+  if (slack) errors.criticalSlackDays = slack;
 
   // the reminders this plan sets itself
   const offsets = form.reminders.offsets_days;
@@ -393,7 +426,8 @@ export function validate(form: SettingsForm): SettingsErrors {
     }
   }
   const send = form.reminders.send_time;
-  if (!send.inherit && !HHMM.test(asciiTrim(send.value))) errors['reminders.send_time'] = 'Enter a time like 08:00.';
+  const sendError = send.inherit ? null : sendTimeError(send.value);
+  if (sendError) errors['reminders.send_time'] = sendError;
   return errors;
 }
 
@@ -421,6 +455,27 @@ export const OVERDUE_CADENCES: Record<ReminderSettings['overdue'], string> = {
   daily: 'Daily',
   once: 'Once',
   off: 'Off',
+};
+export const TASK_MODES: Record<TaskMode, string> = {
+  auto: 'Auto Scheduled',
+  manual: 'Manually Scheduled',
+};
+
+/** One line under each completion rule and reminder key. */
+export const COMPLETION_HINTS: Record<keyof CompletionSettings, string> = {
+  subtasks: 'Its subtasks that aren’t complete yet.',
+  predecessors: 'Completing a task whose predecessors aren’t complete yet.',
+};
+export const REMINDER_HINTS: Record<keyof ReminderSettings, string> = {
+  enabled: 'Reminders about due and overdue tasks to the people assigned.',
+  offsets_days: 'Days before a task is due, like 3, 1.',
+  on_due_day: 'One more on the day a task is due.',
+  overdue: 'While a task is overdue and not complete.',
+  send_time: 'The time of day reminders go out, in the plan’s timezone.',
+  use_finish_without_deadline: 'A task with no Deadline is due at its Finish.',
+  notify_on_assign: 'A notice when someone is assigned to a task.',
+  overdue_to_owner: 'The plan owner also hears about overdue tasks.',
+  email_assignees: 'Reminders are emailed as well as shown in the inbox.',
 };
 
 /** `HH:MM` on a 12-hour clock: 8:00 AM. */

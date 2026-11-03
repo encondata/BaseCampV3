@@ -68,6 +68,16 @@ export interface PlanSettings {
   reminders: ReminderSettings;
 }
 
+/** GET|PUT /system/project-plans (ProjectPlanSettingsOut): the defaults
+ *  every plan inherits live, and the calendar a new plan copies. */
+export interface ProjectPlanSettings extends PlanSettings {
+  calendar: PlanCalendar;
+}
+
+/** A PUT: only the keys sent change. `completion`, `reminders` and
+ *  `calendar` replace the stored value whole, so they go complete. */
+export type ProjectPlanSettingsPatch = Partial<ProjectPlanSettings>;
+
 /** A plan's own overrides (PlanSettingsOverrides). In a PATCH, null
  *  removes an override (the plan inherits the system value again), for a
  *  key or a whole group. */
@@ -535,3 +545,14 @@ export const updateProject = (planId: string, body: UpdateProjectBody) =>
 /** What an open tab polls to notice someone else's change. */
 export const getPlanVersion = (planId: string) =>
   get<PlanVersion>(`/plans/${seg(planId)}/version`);
+
+// ── system settings ──────────────────────────────────────────────────
+
+/** System settings › Project plans (settings:view). */
+export const getProjectPlanSettings = () => get<ProjectPlanSettings>('/system/project-plans');
+
+/** settings:change. Reschedules the plans that inherit a changed scheduling
+ *  key. 422 `bad_calendar` {message}, or `bad_field` {field} (a default
+ *  duration over 10 years in the calendar's units). */
+export const putProjectPlanSettings = (patch: ProjectPlanSettingsPatch) =>
+  send<ProjectPlanSettings>('/system/project-plans', 'PUT', patch);

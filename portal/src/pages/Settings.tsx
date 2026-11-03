@@ -1,7 +1,8 @@
 /**
  * System settings — console-wide controls that affect every user, in
- * tabs: Administration, Security, AI lookup and Branding (live),
- * Maintenance / About (placeholders until their content lands). Gated on
+ * tabs: Administration, Security, AI lookup, Branding and Project plans
+ * (live; the last is pages/settings/ProjectPlanSettings), Maintenance /
+ * About (placeholders until their content lands). Gated on
  * `settings:view`; the controls are interactive only with
  * `settings:change` (each takes a `canChange` prop). Personal preferences
  * live on /me — see pages/me/MePreferences.tsx.
@@ -14,9 +15,10 @@ import AdminControls from '../components/settings/AdminControls';
 import AiLookupControls from '../components/settings/AiLookupControls';
 import BrandingControls from '../components/settings/BrandingControls';
 import SecurityControls from '../components/settings/SecurityControls';
+import ProjectPlanSettings from './settings/ProjectPlanSettings';
 import '../styles/settings.css';
 
-type Tab = 'administration' | 'security' | 'ai-lookup' | 'branding' | 'maintenance' | 'about';
+type Tab = 'administration' | 'security' | 'ai-lookup' | 'branding' | 'maintenance' | 'project-plans' | 'about';
 
 const TABS: { key: Tab; label: string; to: string }[] = [
   { key: 'administration', label: 'Administration', to: '/settings' },
@@ -24,10 +26,11 @@ const TABS: { key: Tab; label: string; to: string }[] = [
   { key: 'ai-lookup', label: 'AI lookup', to: '/settings/ai-lookup' },
   { key: 'branding', label: 'Branding', to: '/settings/branding' },
   { key: 'maintenance', label: 'Maintenance', to: '/settings/maintenance' },
+  { key: 'project-plans', label: 'Project plans', to: '/settings/project-plans' },
   { key: 'about', label: 'About', to: '/settings/about' },
 ];
 
-const PLACEHOLDERS: Record<Exclude<Tab, 'administration' | 'security' | 'ai-lookup' | 'branding'>, { title: string; hint: string }> = {
+const PLACEHOLDERS: Record<Extract<Tab, 'maintenance' | 'about'>, { title: string; hint: string }> = {
   maintenance: { title: 'Maintenance', hint: 'Backups, housekeeping, and scheduled maintenance windows.' },
   about: { title: 'About', hint: 'Version, build, environment, and license details.' },
 };
@@ -37,6 +40,7 @@ export function settingsTabFor(pathname: string): Tab {
   if (pathname.startsWith('/settings/ai-lookup')) return 'ai-lookup';
   if (pathname.startsWith('/settings/branding')) return 'branding';
   if (pathname.startsWith('/settings/maintenance')) return 'maintenance';
+  if (pathname.startsWith('/settings/project-plans')) return 'project-plans';
   if (pathname.startsWith('/settings/about')) return 'about';
   return 'administration';
 }
@@ -86,6 +90,7 @@ export default function Settings() {
           </section>
         )}
         {tab === 'branding' && <BrandingControls canChange={canChange} />}
+        {tab === 'project-plans' && <ProjectPlanSettings canChange={canChange} />}
         {(tab === 'maintenance' || tab === 'about') && (
           <section className="set-section">
             <div className="set-head">

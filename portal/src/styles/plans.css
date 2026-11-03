@@ -1062,7 +1062,8 @@
 /* `.pf-form label` would make the switch's own label a block with a gap under it */
 .pf-form .pln-switch-line .switch,
 .pln-set-inherit .switch,
-.pf-form.pln-cal .switch { margin: 0; display: inline-block; }
+.pf-form.pln-cal .switch,
+.pf-form.pln-sys-body .switch { margin: 0; display: inline-block; }
 /* a field's caption that isn't a <label> (a segmented control's) */
 .pln-ti-label,
 .pln-set-label {
@@ -1252,6 +1253,26 @@
   .pln-cal-units { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pln-cal-exc { grid-template-columns: 1fr 1fr; }
 }
+
+/* ── System settings › Project plans (pages/settings/ProjectPlanSettings) ── */
+
+/* the form takes the settings grid's whole width: its cards stack, and the
+   calendar needs the room */
+.pln-sys { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+/* a card's settings are a .pf-form (the native time field's house) laid out
+   as the System settings lines, not as its two-column grid */
+.pf-form.pln-sys-body { display: block; }
+.pln-sys-pad { padding: 16px 20px 20px; }
+.pln-sys-control { flex: none; display: flex; justify-content: flex-end; max-width: 100%; }
+/* over .pf-form input and notifications.css's .pf-form input[type='time'] */
+.pf-form.pln-sys-body input.pln-sys-input { width: 160px; }
+.pln-sys-picker { width: min(340px, 100%); }
+.pln-sys-error { margin: 6px 0 0; }
+/* the calendar card's line is a page-hint, sized like the other cards' lines */
+.pln-sys .set-section .page-hint { margin: 3px 0 0; font-size: 12.5px; }
+.pln-sys input:disabled:not([type="checkbox"]) { opacity: 0.6; cursor: not-allowed; }
+.pln-sys-failed { display: flex; align-items: center; gap: 12px; color: var(--text-mute); }
+.pln-sys-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
 /* ── Update project, Delete plan ────────────────────────────────── */
 

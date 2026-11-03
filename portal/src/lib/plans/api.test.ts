@@ -62,6 +62,9 @@ const CASES: [string, () => Promise<unknown>, string, string, unknown][] = [
   ['updateProject', () => P.updateProject('p1', { status_date: '2026-11-06', complete_through: null }),
     'POST', '/plans/p1/update-project', { status_date: '2026-11-06', complete_through: null }],
   ['getPlanVersion', () => P.getPlanVersion('p1'), 'GET', '/plans/p1/version', undefined],
+  ['getProjectPlanSettings', () => P.getProjectPlanSettings(), 'GET', '/system/project-plans', undefined],
+  ['putProjectPlanSettings', () => P.putProjectPlanSettings({ critical_slack_days: 0.5 }), 'PUT',
+    '/system/project-plans', { critical_slack_days: 0.5 }],
 ];
 
 describe('routes', () => {
