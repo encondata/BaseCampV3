@@ -300,16 +300,23 @@ def test_error_details_do_not_echo_unbounded_input():
     ],
 )
 def test_long_input_fails_fast(text):
-    started = time.perf_counter()
+    # timed in this thread's CPU time, not the wall clock, so a loaded
+    # machine doesn't fail it: each is under 0.1 ms today, while a
+    # quadratic backtrack over the 100,000-character ones (read before the
+    # length cap) is seconds, and an exponential one on the shapes inside
+    # the cap never ends
+    started = time.thread_time()
     with pytest.raises(PredecessorError):
         _parse(text, valid_ids=set(range(1, 300)), self_id=None)
-    assert time.perf_counter() - started < 0.1
+    assert time.thread_time() - started < 0.5
 
 
 def test_whitespace_only_input_of_any_size_is_fast_and_empty():
-    started = time.perf_counter()
+    # CPU time, as above: ~3 ms today; a quadratic step over a million
+    # spaces would be minutes
+    started = time.thread_time()
     assert _parse(" " * 1_000_000) == []
-    assert time.perf_counter() - started < 0.1
+    assert time.thread_time() - started < 0.5
 
 
 def test_non_string_input_is_a_predecessor_error():

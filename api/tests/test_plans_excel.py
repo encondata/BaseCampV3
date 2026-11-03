@@ -1094,12 +1094,21 @@ def test_long_cells_stay_small(column, text):
 
 def test_resource_names_and_predecessors_do_linear_work():
     """Thousands of distinct names, thousands of unreadable predecessors
-    (one problem for the cell, not one each), a run of `[`."""
+    (one problem for the cell, not one each), a run of `[`. About 0.12 s
+    of this thread's CPU time (not the wall clock, so a loaded machine
+    doesn't fail it); a quadratic step in names, predecessors or problems
+    would be tens of seconds."""
+    import time
+
     names = ",".join(f"p{i}" for i in range(5_000))          # under one cell's 32,767
     rows = [["Task Name", "Resource Names", "Predecessors"]]
     rows += [[f"T{i}", "[" * 30_000, ",".join(["1x"] * 10_000)] for i in range(10)]
     rows += [["Wide", names + ",p1" * 200, "1,2"]]
-    parsed = excel.parse_csv(_csv(rows))
+    content = _csv(rows)
+    started = time.thread_time()
+    parsed = excel.parse_csv(content)
+    spent = time.thread_time() - started
+    assert spent < 5, spent
     assert parsed.tasks[0].problems == [
         "Predecessors '1x' and 9999 more aren't readable; links skipped."]
     wide = parsed.tasks[-1]
@@ -1210,6 +1219,39 @@ def test_shared_strings_before_the_header_count_against_the_budget(monkeypatch):
     (task,) = excel.parse_workbook(book(3, header=True)).tasks
     assert task.name == "Survey"
     assert len(reads) == 32             # 30 cells above, the header's cell found then named
+
+
+def test_shared_strings_in_unread_columns_are_not_scanned(monkeypatch):
+    """After the header, a cell in a column the import doesn't keep is
+    dropped without reading its text. A shared string is never blank
+    unless it is "" (the table holds blank entries that way), so telling a
+    shared cell blank is one comparison, not a strip() of its 32,767
+    characters: the reviewer's probe named `"a" + 32,766 spaces` from
+    600,000 cells for ~7 s of CPU, uncharged. Counted, not timed: how often
+    the long entry is stripped."""
+    strips = []
+
+    class Spy(str):
+        def strip(self, chars=None):
+            strips.append(1)
+            return super().strip(chars)
+
+    real = excel._shared_strings
+
+    def spied(pkg, member):
+        return [Spy(text) if len(text) > 100 else text for text in real(pkg, member)]
+
+    monkeypatch.setattr(excel, "_shared_strings", spied)
+    names = "".join(f'<c r="{col}{{n}}" t="s"><v>0</v></c>' for col in "BCDEFGHIJK")
+    rows = ('<row r="1"><c r="A1" t="s"><v>1</v></c></row>'
+            + "".join(f'<row r="{n}">{_inline(f"A{n}", f"T{n}")}{names.format(n=n)}</row>'
+                      for n in range(2, 202)))
+    content = _excel_style_package(
+        rows, [f"<si><t>a{' ' * (excel.MAX_CELL_TEXT - 1)}</t></si>",
+               "<si><t>Task Name</t></si>"], date1904=False)
+    parsed = excel.parse_workbook(content)
+    assert len(parsed.tasks) == 200                          # 2,000 cells naming it
+    assert strips == []
 
 
 def test_error_cells_are_problems():

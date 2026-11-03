@@ -637,7 +637,11 @@ class _SheetReader:
                 inline.add(element.text)
             elif depth == 4 and tag == "c":
                 decoded = self._decode(kind, style, value, inline)
-                if not _blank(decoded):
+                # the shared table holds a blank entry as "", so a shared
+                # cell is told blank in one step: stripping it would scan a
+                # long entry's spaces again for every cell naming it
+                blank = (decoded is None or decoded == "") if kind == "s" else _blank(decoded)
+                if not blank:
                     self.any_value = True
                     # a shared string is stored once but is a whole cell of
                     # text each time it is named: charged when a cell keeps

@@ -5,6 +5,7 @@ of the `db` fixture alongside a heartbeat task writing through its own
 session."""
 
 import asyncio
+import inspect
 import logging
 from datetime import UTC, datetime
 
@@ -34,6 +35,33 @@ async def _group(db, name, *, enabled=True):
 async def _add_member(db, group, person):
     db.add(NotificationGroupMember(group_id=group.id, person_id=person.id))
     await db.flush()
+
+
+async def _until(check, seconds: float = 30) -> None:
+    """Wait for `check()` (plain or async) to hold, up to a generous
+    deadline: never a fixed sleep, so a loaded machine waits longer instead
+    of failing."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + seconds
+    while True:
+        held = check()
+        if inspect.isawaitable(held):
+            held = await held
+        if held:
+            return
+        assert loop.time() < deadline, "the worker loop never got there"
+        await asyncio.sleep(0.01)
+
+
+def _count_loops(monkeypatch, worker_mod) -> list:
+    """The worker loop's passes, counted: each delivers the outbox once."""
+    passes = []
+
+    async def deliver(maker):
+        passes.append(1)
+
+    monkeypatch.setattr(worker_mod, "deliver_once", deliver)
+    return passes
 
 
 async def test_status_counts_excludes_disabled_groups(db):
@@ -75,7 +103,9 @@ async def test_run_forever_heartbeats_and_marks_stop(db, caplog):
     caplog.set_level(logging.INFO, logger="serversherpa.notifications.worker")
     task = asyncio.create_task(run_forever(poll_seconds=0.05))
     try:
-        await asyncio.sleep(0.3)
+        idle = "email delivery off (SMTP not configured)"
+        await _until(lambda: idle in caplog.text)
+        await _until(lambda: db.get(SystemProcess, "notification-worker"))
         row = await db.get(SystemProcess, "notification-worker")
         assert row is not None
         assert row.kind == "worker"
@@ -85,7 +115,7 @@ async def test_run_forever_heartbeats_and_marks_stop(db, caplog):
         assert row.stopped_at is None
         # The first loop iteration must emit the idle status line
         # immediately — the cadence seed cannot defer it 15 minutes.
-        assert "email delivery off (SMTP not configured)" in caplog.text
+        assert idle in caplog.text
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -104,13 +134,14 @@ async def test_run_forever_runs_the_reminder_sweep(db, caplog, monkeypatch):
         return 0
 
     monkeypatch.setattr(worker_mod, "run_reminders_once", fake_once)
-    task = asyncio.create_task(run_forever(poll_seconds=0.05))
+    passes = _count_loops(monkeypatch, worker_mod)
+    task = asyncio.create_task(run_forever(poll_seconds=0.01))
     try:
-        await asyncio.sleep(0.3)
+        await _until(lambda: len(passes) >= 4)
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-    assert len(calls) == 1   # once on the first loop; the next is an hour away
+    assert len(calls) == 1   # once on the first pass; the next is an hour away
 
 
 async def test_run_forever_runs_the_learning_sweep(db, monkeypatch):
@@ -123,53 +154,36 @@ async def test_run_forever_runs_the_learning_sweep(db, monkeypatch):
         return {"invites": 0, "reminders": 0, "overdue": 0, "errors": 0}
 
     monkeypatch.setattr(worker_mod, "run_learning_once", fake_learning)
-    task = asyncio.create_task(run_forever(poll_seconds=0.05))
+    passes = _count_loops(monkeypatch, worker_mod)
+    task = asyncio.create_task(run_forever(poll_seconds=0.01))
     try:
-        await asyncio.sleep(0.3)
+        await _until(lambda: len(passes) >= 4)
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-    assert len(calls) == 1   # once on the first loop; the next is a minute away
+    assert len(calls) == 1   # once on the first pass; the next is a minute away
 
 
 async def test_learning_sweep_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
     from serversherpa.notifications import worker as worker_mod
 
+    calls = []
+
     async def boom(maker):
+        calls.append(1)
         raise RuntimeError("db down")
 
     monkeypatch.setattr(worker_mod, "run_learning_once", boom)
     monkeypatch.setattr(worker_mod, "LEARNING_INTERVAL_SECONDS", 0)
     caplog.set_level(logging.WARNING, logger="serversherpa.notifications.worker")
-    task = asyncio.create_task(run_forever(poll_seconds=0.05))
+    task = asyncio.create_task(run_forever(poll_seconds=0.01))
     try:
-        await asyncio.sleep(0.3)
+        await _until(lambda: len(calls) >= 3)
         assert not task.done()
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
     assert caplog.text.count("could not run the learning sweep") == 1   # once per outage
-
-
-async def _until(check, seconds: float = 30) -> None:
-    """Wait for `check()` to hold, up to a generous deadline: never a fixed
-    sleep, so a loaded machine waits longer instead of failing."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + seconds
-    while not check():
-        assert loop.time() < deadline, "the worker loop never got there"
-        await asyncio.sleep(0.01)
-
-
-def _count_loops(monkeypatch, worker_mod) -> list:
-    """The worker loop's passes, counted: each delivers the outbox once."""
-    passes = []
-
-    async def deliver(maker):
-        passes.append(1)
-
-    monkeypatch.setattr(worker_mod, "deliver_once", deliver)
-    return passes
 
 
 async def test_run_forever_runs_the_plan_reminder_sweep(db, monkeypatch):
@@ -241,9 +255,9 @@ async def test_run_forever_delivers_the_outbox(db, monkeypatch):
         return 0
 
     monkeypatch.setattr(worker_mod, "deliver_once", fake_deliver)
-    task = asyncio.create_task(run_forever(poll_seconds=0.05))
+    task = asyncio.create_task(run_forever(poll_seconds=0.01))
     try:
-        await asyncio.sleep(0.3)
+        await _until(lambda: len(calls) >= 2)
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -261,9 +275,9 @@ async def test_delivery_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
 
     monkeypatch.setattr(worker_mod, "deliver_once", boom)
     caplog.set_level(logging.WARNING, logger="serversherpa.notifications.worker")
-    task = asyncio.create_task(run_forever(poll_seconds=0.05))
+    task = asyncio.create_task(run_forever(poll_seconds=0.01))
     try:
-        await asyncio.sleep(0.3)
+        await _until(lambda: len(calls) >= 2)
         assert not task.done()
     finally:
         task.cancel()

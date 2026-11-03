@@ -219,12 +219,15 @@ def test_error_message_does_not_echo_unbounded_input():
     ],
 )
 def test_long_input_fails_fast(text):
-    # the whitespace around the unit used to backtrack quadratically
-    started = time.perf_counter()
+    # the whitespace around the unit used to backtrack quadratically: on
+    # 100,000 characters that is seconds. Timed in this thread's CPU time,
+    # not the wall clock, so a loaded machine doesn't fail it (today it is
+    # under a millisecond)
+    started = time.thread_time()
     for parser in (parse_duration, parse_lag):
         with pytest.raises(DurationError):
             parser(text, UNITS)
-    assert time.perf_counter() - started < 0.1
+    assert time.thread_time() - started < 0.5
 
 
 def test_only_ascii_whitespace_counts():
