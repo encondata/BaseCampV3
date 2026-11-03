@@ -21,6 +21,12 @@ describe('resolveInboxLink', () => {
       { kind: 'app', to: '/reports?run=r1#top' });
   });
 
+  it('takes no link on the portal origin whose path starts with another slash: "<origin>//host" goes home, as "//host" does', () => {
+    for (const path of ['//evil.example/x', '//evil.example/x?a=1#top', '/\\evil.example/x']) {
+      expect(resolveInboxLink(`${window.location.origin}${path}`)).toEqual({ kind: 'app', to: '/' });
+    }
+  });
+
   it('keeps a malformed absolute link in the app', () => {
     expect(resolveInboxLink('http://')).toEqual({ kind: 'app', to: '/' });
     expect(resolveInboxLink('https://exa mple.com/n/1')).toEqual({ kind: 'app', to: '/' });

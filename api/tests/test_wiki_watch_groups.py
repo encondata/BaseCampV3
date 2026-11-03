@@ -477,6 +477,77 @@ async def test_nobody_can_see_a_page_in_the_trash_so_each_watcher_is_logged_no_a
         _kept_out("wiki_update", {"via": ["watch"], "names": {}})]
 
 
+async def test_a_new_page_is_logged_no_access_for_a_view_only_watcher(client, db):
+    """A page that isn't published yet is not a reader's to see, so a watcher who only reads
+    the library hears nothing of a new one, and the Delivery log says so as it does for any
+    notice kept out for access: one row, `inbox_suppressed` `no_access`, with the route that
+    brought them. The watcher who can open it (the library's manager) has the notice and no
+    such row, and the person who made the page has nothing at all."""
+    s = await _setup(client, db)
+    await _watch(client, s["viewer"], space=s["space"])      # reads the library: no drafts
+    await _watch(client, s["owner"], space=s["space"])       # manages it: every page
+
+    page = await _create(client, s["editor"], s["space"], "Draft plan", kind="page")
+
+    assert await _log(db, s["viewer_id"]) == [
+        _kept_out("wiki_update", {"via": ["watch"], "names": {}})]
+    assert await _inbox(db, s["viewer_id"]) == []
+    editor = await _name(db, s["editor_id"])
+    assert [(n.kind, n.title, n.link) for n in await _inbox(db, s["owner_id"])] == [
+        ("wiki_update", f"{editor} added Draft plan to {s['space']['name']}",
+         _wiki(f"/n/{page['id']}"))]
+    assert [(event, kind) for event, channel, kind, *_rest in await _log(db, s["owner_id"])
+            if channel == "inbox"] == [("inbox_written", "wiki_update")]
+    assert await _log(db, s["editor_id"]) == []
+
+
+async def test_a_review_decision_logs_a_requester_and_a_watcher_who_cant_see_the_page(
+        client, db):
+    """Each person a review's decision leaves out because they can't see the page is logged
+    once for each decision, as the notice that was theirs: the requester, who also watches the
+    page, for the decision (the update its watchers hear is not theirs as well), and another
+    watcher for the update. A watcher who can see the page is not logged, though a rejection
+    tells a reader nothing, and the person who decided never is."""
+    s = await _setup(client, db)
+    reader_h, reader = await login_as(client, db)           # keeps reading the page (below)
+    blind_h, blind = await login_as(client, db)             # doesn't
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    version_id = (await publish_via_db(db, page["id"])).id
+    # they watch it while they can still open it; then the page keeps readers of its own
+    await _watch(client, s["viewer"], node=page)            # the requester, who watches it too
+    await _watch(client, blind_h, node=page)
+    await _watch(client, reader_h, node=page)
+    await _only(client, s["owner"], page, [
+        _grant(s["owner_id"], "manage"), _grant(s["editor_id"], "edit"), _grant(reader, "view")])
+    node = await _node(db, page["id"])
+
+    async def decide(status) -> None:
+        review = WikiReview(node_id=node.id, version_id=version_id, status=status,
+                            requested_by=s["viewer_id"], decided_by=s["owner_id"],
+                            decision_note="Fine by me")
+        db.add(review)
+        await db.flush()
+        await notify.on_review_decided(db, node, review, actor_id=s["owner_id"])
+        await db.commit()
+
+    requester_row = _kept_out("wiki_review_decision", {})
+    watcher_row = _kept_out("wiki_update", {"via": ["watch"], "names": {}})
+
+    await decide("rejected")
+    assert await _log(db, s["viewer_id"]) == [requester_row]
+    assert await _log(db, blind) == [watcher_row]
+    # a reader hears nothing of a rejection, and can see the page: nothing to log
+    assert await _log(db, reader) == []
+    assert await _log(db, s["owner_id"]) == []
+
+    await decide("approved")
+    assert await _log(db, s["viewer_id"]) == [requester_row] * 2
+    assert await _log(db, blind) == [watcher_row] * 2
+    assert [(event, kind) for event, channel, kind, *_rest in await _log(db, reader)
+            if channel == "inbox"] == [("inbox_written", "wiki_update")]
+    assert await _log(db, s["owner_id"]) == []
+
+
 # ── /me ─────────────────────────────────────────────────────────────
 
 

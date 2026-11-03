@@ -8,7 +8,8 @@
  *  falls back to the portal's home page: a malformed absolute URL
  *  ("http://"), another scheme ("javascript:", "data:", "vbscript:"), a
  *  protocol-relative "//host" (or "/\host", which browsers read the same
- *  way), or no link at all — so a link never runs, and never leaves for
+ *  way), whether bare or after the portal's own origin ("<origin>//host"),
+ *  or no link at all — so a link never runs, and never leaves for
  *  somewhere unchecked. The wiki follows the same rule
  *  (wiki/web/src/lib/inboxLinks.ts): keep the two in step. */
 
@@ -32,9 +33,11 @@ export function resolveInboxLink(link: string): InboxTarget {
     // "http://" and the like: not a URL we can open
     return home();
   }
-  return url.origin === window.location.origin
-    ? { kind: 'app', to: `${url.pathname}${url.search}${url.hash}` }
-    : { kind: 'external', href: url.href };
+  if (url.origin !== window.location.origin) return { kind: 'external', href: url.href };
+  // a URL on our own origin can still carry another host's path: the pathname of
+  // "<origin>//evil.example/x" is "//evil.example/x", which the router reads as that host's
+  const to = `${url.pathname}${url.search}${url.hash}`;
+  return PATH.test(to) ? { kind: 'app', to } : home();
 }
 
 /** Leaves the portal for `href` (its own function so tests can stub it). */

@@ -16,6 +16,12 @@ describe('resolveInboxLink', () => {
     expect(resolveInboxLink(`${location.origin}/n/abc?edit=1#intro`)).toEqual({ kind: 'app', to: '/n/abc?edit=1#intro' });
   });
 
+  it('takes no link on the wiki origin whose path starts with another slash: "<origin>//host" stays on the wiki home, as "//host" does', () => {
+    for (const path of ['//evil.example/x', '//evil.example/x?a=1#top', '/\\evil.example/x']) {
+      expect(resolveInboxLink(`${location.origin}${path}`)).toEqual({ kind: 'app', to: '/' });
+    }
+  });
+
   it('leaves any other absolute http(s) URL as it is', () => {
     expect(resolveInboxLink('https://status.serversherpa.com/')).toEqual({
       kind: 'external', href: 'https://status.serversherpa.com/',

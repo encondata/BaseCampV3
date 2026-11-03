@@ -7,9 +7,10 @@
  *  ("/reports"), opens on the portal. Anything else falls back to the
  *  wiki's home page: a malformed absolute URL ("http://"), another scheme
  *  ("javascript:", "data:", "vbscript:"), a protocol-relative "//host" (or
- *  "/\host", which browsers read the same way), or no link at all — so a
- *  link never runs, and never leaves for somewhere unchecked. Keep the two
- *  in step. */
+ *  "/\host", which browsers read the same way), whether bare or after the
+ *  wiki's own origin ("<origin>//host"), or no link at all — so a link
+ *  never runs, and never leaves for somewhere unchecked. Keep the two in
+ *  step. */
 import { portalOrigin } from './origins';
 
 export type InboxTarget = { kind: 'app'; to: string } | { kind: 'external'; href: string };
@@ -34,9 +35,11 @@ export function resolveInboxLink(link: string): InboxTarget {
     // "http://" and the like: not a URL we can open
     return home();
   }
-  return url.origin === location.origin
-    ? { kind: 'app', to: `${url.pathname}${url.search}${url.hash}` }
-    : { kind: 'external', href: url.href };
+  if (url.origin !== window.location.origin) return { kind: 'external', href: url.href };
+  // a URL on our own origin can still carry another host's path: the pathname of
+  // "<origin>//evil.example/x" is "//evil.example/x", which the router reads as that host's
+  const to = `${url.pathname}${url.search}${url.hash}`;
+  return PATH.test(to) ? { kind: 'app', to } : home();
 }
 
 /** Leaves the wiki for `href` (its own function so tests can stub it). */
