@@ -1,5 +1,6 @@
 """Device online rules (services/device_online.py): which devices notifications cover, how long
-each may go quiet before it reads as offline, and where each one lives in the portal.
+each may go quiet before it reads as offline, where each one lives in the portal and what it is
+called there.
 
 The thresholds are the screens' own, kept in one place so the API and the portal agree: a kiosk
 is online for 3 minutes after it was last seen, a router for 4, and a fixed reader for 3 (offline
@@ -12,14 +13,26 @@ Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (section 
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 
 from serversherpa.api.routes import kiosk as kiosk_routes
 from serversherpa.api.routes.devices import reader_status_for
 from serversherpa.db.models import Device
 from serversherpa.services.device_online import (
-    KIOSK_ONLINE, LONGEST_THRESHOLD, READER_STALE_AFTER, ROUTER_ONLINE, covered,
-    covered_clause, device_link, device_list_link, is_offline, is_rfid_station, kind_label,
+    KIOSK_ONLINE,
+    LONGEST_THRESHOLD,
+    READER_STALE_AFTER,
+    ROUTER_ACRONYMS,
+    ROUTER_ONLINE,
+    covered,
+    covered_clause,
+    device_link,
+    device_list_link,
+    display_name,
+    is_offline,
+    is_rfid_station,
+    kind_label,
 )
 from serversherpa.status.labels import status_labels
 
@@ -225,3 +238,38 @@ async def test_the_labels_are_the_device_type_vocabulary(db):
     assert kind_label(_station(), vocab) == "RFID Station"
     assert kind_label(_reader(), vocab) == "Fixed Reader"
     assert kind_label(_router(), vocab) == "Router"
+
+
+def test_router_names_match_the_portal():
+    """A router is called what the Routers page calls it: `routerDisplayName` in
+    portal/src/lib/devices.ts, whose tests pin these same names and the same acronyms. So a
+    Device offline notice, /me, a group's page and Check delivery name it as the list does."""
+    assert display_name(_router(name="csg_router_kit_19")) == "CSG Router Kit 19"
+    # an acronym, and a word with a digit in it, kept as typed
+    assert display_name(_router(name="GL-MT3000")) == "GL MT3000"
+    assert ROUTER_ACRONYMS == ("csg", "gl", "vpn", "lte", "nap", "dc", "ups", "lan", "wan", "ap")
+
+
+@pytest.mark.parametrize(("hostname", "shown"), [
+    # the portal's own cases (devices.test.ts, describe('routerDisplayName'))
+    ("csg_router_kit_19", "CSG Router Kit 19"),
+    ("GL-MT3000", "GL MT3000"),
+    ("dock__router--2", "Dock Router 2"),
+    ("CSG_ROUTER_KIT", "CSG Router Kit"),
+    ("nap.14 vpn  gateway", "NAP 14 VPN Gateway"),
+    ("Csg_Lan_ap_1", "CSG LAN AP 1"),
+    ("kit19_mt3000", "kit19 mt3000"),
+    # nothing readable left: the hostname as it is
+    ("", ""),
+    ("__--", "__--"),
+])
+def test_a_router_hostname_reads_as_on_the_routers_page(hostname, shown):
+    assert display_name(_router(name=hostname)) == shown
+    # whatever its approval: the name is the device's, not its state's
+    assert display_name(_router(name=hostname, approval_state="pending")) == shown
+
+
+def test_every_other_device_is_called_by_its_name():
+    for device in (_station(name="csg_router_kit_19"), _reader(name="csg_router_kit_19"),
+                   _device("kiosk", sub_type="android", name="csg_router_kit_19")):
+        assert display_name(device) == "csg_router_kit_19", device.device_type

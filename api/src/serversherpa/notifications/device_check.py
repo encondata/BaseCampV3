@@ -1,21 +1,24 @@
 """The device check, run by notification-worker every 60 s just before the event sweep
 (`run_device_check_once`). It tells people when a covered device stops checking in: an RFID
 Station, a fixed reader or an approved router. services/device_online.py says which devices are
-covered, when each one reads as offline and where each lives in the portal. One check is one
-session and one transaction:
+covered, when each one reads as offline, where each lives in the portal and what it is called
+there. One check is one session and one transaction:
 
 1. **Maintenance.** Read-only mode refuses heartbeats, so every station would look offline. A
    check that sees it on stays quiet until the longest threshold from now (`quiet_until` in
    the state the worker keeps between checks; the worker loop pushes it too while it is
-   paused, because the check doesn't run then). A device still offline once the window passes
-   is announced then.
+   paused, because the check doesn't run then, and sets it when the worker starts, because a
+   new process can't tell whether read-only mode ended a moment ago). A device still offline
+   once the window passes is announced then.
 2. **Clear.** A device with a notice out (`offline_notified_at`) that is seen again, or is no
    longer covered, has its notice cleared, so its next outage is announced. This happens while
    quiet too.
-3. **Announce,** unless quiet. The covered devices with no notice out that have ever checked
-   in are claimed with FOR UPDATE SKIP LOCKED (production runs two workers on one database),
-   and each one that is offline now is announced (`device_offline`) and marked with `now`:
-   one notice per outage.
+3. **Announce,** unless quiet. The covered devices with no notice out that could be offline
+   now are claimed with FOR UPDATE SKIP LOCKED (production runs two workers on one database):
+   those quiet for longer than the shortest threshold, and the readers reported unreachable.
+   A device seen recently with no notice out is not locked at all, so its heartbeat never
+   waits on the check. Each claimed device that is offline now (`is_offline` decides) is
+   announced (`device_offline`) and marked with `now`: one notice per outage.
 4. **Commit** once: a check that fails keeps nothing, and the next one starts over.
 
 Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (section 5, Device offline)
@@ -24,24 +27,32 @@ Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (section 
 from collections.abc import Mapping
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from serversherpa.db.models import Device
 from serversherpa.notifications.events import EventItem, Thing, announce
 from serversherpa.notifications.status_changes import event_time
 from serversherpa.services.device_online import (
+    KIOSK_ONLINE,
     LONGEST_THRESHOLD,
+    READER_STALE_AFTER,
+    ROUTER_ONLINE,
     covered,
     covered_clause,
     device_link,
     device_list_link,
+    display_name,
     is_offline,
     kind_label,
 )
 from serversherpa.services.initiatives import ancestor_ids
 from serversherpa.status.labels import status_labels
 from serversherpa.system.admin_config import read_admin_config
+
+# No covered device reads as offline sooner than this after it was last seen, short of a reader
+# reported unreachable: the claim leaves every device seen more recently alone.
+_SHORTEST_THRESHOLD = min(KIOSK_ONLINE, ROUTER_ONLINE, READER_STALE_AFTER)
 
 
 def keep_quiet(state: dict, now: datetime) -> None:
@@ -73,7 +84,7 @@ async def _announce(db: AsyncSession, device: Device, vocab: Mapping[str, str]) 
     announce(
         db, "device_offline",
         subject=Thing("device", device.id),
-        item=EventItem(f"{device.name} is offline",
+        item=EventItem(f"{display_name(device)} is offline",
                        line=(f"{kind_label(device, vocab)} · last seen "
                              f"{event_time(device.last_seen_at)}"),
                        link=device_link(device), initiative_id=device.current_initiative_id,
@@ -82,12 +93,18 @@ async def _announce(db: AsyncSession, device: Device, vocab: Mapping[str, str]) 
 
 
 async def _announce_offline(db: AsyncSession, now: datetime) -> int:
-    """Claim the covered devices with no notice out that have ever checked in, then announce
-    each one that is offline at `now` and mark it. Returns how many were announced."""
+    """Claim the covered devices with no notice out that could be offline at `now` (quiet for
+    longer than the shortest threshold, or a reader reported unreachable), then announce each
+    one that is offline and mark it. Returns how many were announced. The claim only narrows
+    what is locked, on the check's own clock; `is_offline` decides, so a router quiet for 3
+    minutes 30 seconds (its threshold is 4) is claimed and left alone."""
     claimed = list(await db.scalars(
         select(Device)
         .where(covered_clause(), Device.offline_notified_at.is_(None),
-               Device.last_seen_at.is_not(None))
+               Device.last_seen_at.is_not(None),
+               or_(Device.last_seen_at < now - _SHORTEST_THRESHOLD,
+                   and_(Device.device_type == "fixed_reader",
+                        Device.raw_info["reachable"].astext == "false")))
         .order_by(Device.last_seen_at, Device.id)       # the one quiet longest first
         .with_for_update(skip_locked=True)))
     offline = [device for device in claimed if is_offline(device, now)]

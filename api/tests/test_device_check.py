@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select, update
+from sqlalchemy.exc import DBAPIError
 
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import Device, InitiativeLink, NotificationEvent, SystemConfig
@@ -103,6 +104,22 @@ async def _notified_at(device: Device) -> datetime | None:
 
 def _ref(thing: str, row) -> dict:
     return {"type": thing, "id": str(row.id)}
+
+
+async def _lockable(device: Device) -> bool:
+    """Whether another connection can lock the device's row at once (FOR UPDATE NOWAIT), as a
+    heartbeat's write would need to without waiting."""
+    async with get_sessionmaker()() as other:
+        try:
+            await other.execute(select(Device.id).where(Device.id == device.id)
+                                .with_for_update(nowait=True))
+        except DBAPIError as exc:
+            if getattr(exc.orig, "sqlstate", None) != "55P03":      # lock_not_available
+                raise
+            return False
+        finally:
+            await other.rollback()
+    return True
 
 
 # ── announcing an outage ────────────────────────────────────────────
@@ -199,6 +216,22 @@ async def test_boundaries_and_kinds(db):
         assert await _notified_at(device) is None, device.name
 
 
+async def test_a_router_is_named_as_on_the_routers_page(db):
+    """A router's notice calls it what the Routers page calls it (device_online.display_name),
+    not by its raw hostname, and so does the notification its watchers get."""
+    person = await _person(db, "A")
+    await _watch(db, person, None, [OFFLINE])            # Device offline, everywhere
+    router = await _router(db, "csg_router_kit_19")
+
+    assert await _check() == 1
+    [event] = await _events()
+    assert (event.subject_id, event.item["title"]) == (router.id, "CSG Router Kit 19 is offline")
+    assert await _sweep() == 1
+    [note] = await _notifications(person)
+    assert (note.title, note.body) == (
+        "CSG Router Kit 19 is offline", "Router · last seen Nov 2, 3:50 PM EST")
+
+
 async def test_a_device_no_longer_covered_is_cleared(db):
     """A device that leaves coverage (a router revoked, a station set up as a Label Station) is
     cleared like one that is seen again, and nothing more is said about it."""
@@ -279,6 +312,45 @@ async def test_concurrent_checks_announce_once(db, monkeypatch):
         run_device_check_once(maker, now=later, state={}),
         run_device_check_once(maker, now=later, state={})), timeout=30) == [0, 0]
     assert len(await _events()) == len(devices)
+
+
+async def test_the_claim_leaves_healthy_devices_unlocked(db, monkeypatch):
+    """The check locks only the devices that could be offline: those quiet for longer than the
+    shortest threshold (3 minutes), and readers their station reports unreachable. A device seen
+    since is not locked, so its heartbeat never waits on the check. While the check holds its
+    claim, another connection locks a healthy device at once, and can't lock a candidate.
+    `is_offline` still decides: a router quiet for 3 minutes 30 seconds is claimed, but its
+    threshold is 4, so it is not announced."""
+    healthy = [await _station(db, "Device A", ago=timedelta(minutes=3)),     # exactly 3: online
+               await _reader(db, "Device B", ago=timedelta(0)),
+               await _router(db, "Device C", ago=timedelta(minutes=1))]
+    candidates = [await _station(db, "Device D"),                              # quiet 10 minutes
+                  await _reader(db, "Device E", ago=timedelta(0), raw_info={"reachable": False}),
+                  await _router(db, "Device F", ago=timedelta(minutes=3, seconds=30))]
+    # The barrier holds the check's transaction open right after its claim, while the row locks
+    # are held, until the other connection has tried each device.
+    real = device_check._announce_offline
+    barrier = asyncio.Barrier(2)
+
+    async def holding(session, now):
+        announced = await real(session, now)
+        await barrier.wait()                            # claimed
+        await barrier.wait()                            # tried
+        return announced
+
+    monkeypatch.setattr(device_check, "_announce_offline", holding)
+    check = asyncio.create_task(run_device_check_once(get_sessionmaker(), now=NOW, state={}))
+    await asyncio.wait_for(barrier.wait(), timeout=30)
+    try:
+        lockable = {device.name: await _lockable(device) for device in (*healthy, *candidates)}
+    finally:
+        await asyncio.wait_for(barrier.wait(), timeout=30)
+    assert await asyncio.wait_for(check, timeout=30) == 2
+    assert lockable == {"Device A": True, "Device B": True, "Device C": True,
+                        "Device D": False, "Device E": False, "Device F": False}
+    assert sorted(event.subject_id for event in await _events()) == sorted(
+        device.id for device in candidates[:2])
+    assert await _notified_at(candidates[2]) is None
 
 
 async def test_a_failed_check_keeps_nothing(db, monkeypatch):

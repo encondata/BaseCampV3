@@ -179,6 +179,29 @@ async def test_group_watches_a_device(client, db):
     assert await _count(db) == 0
 
 
+async def test_a_router_watch_is_named_as_on_the_routers_page(client, db):
+    """A router's watch is named what the Routers page calls it (device_online.display_name),
+    not by its raw hostname: in the answer to adding it, on /me, on its group's page and in
+    Check delivery."""
+    admin = await _login(db, client, "A", "admin")
+    group = await _group(db, "Group A", admin)
+    router = await _router(db, "csg_router_kit_19")
+    shown = "CSG Router Kit 19"
+
+    resp = await _post(client, admin, "device", router.id)
+    assert (resp.status_code, resp.json()["thing_name"]) == (201, shown)
+    assert [row["thing_name"] for row in await _list(client, admin)] == [shown]
+
+    resp = await _group_post(client, admin, group.id, "device", router.id)
+    assert (resp.status_code, resp.json()["thing_name"]) == (201, shown)
+    listed = (await client.get(_url(group.id), headers=admin.headers)).json()
+    assert [row["thing_name"] for row in listed] == [shown]
+
+    result = await check_delivery(db, admin.id, OFFLINE, now=NOW)
+    assert [(entry["via"]["type"], entry["thing_name"]) for entry in result["watches"]] == [
+        ("you", shown), ("group", shown)]
+
+
 # ── what the watchers hear ──────────────────────────────────────────
 
 async def test_device_watch_hears_its_offline_notice(db):

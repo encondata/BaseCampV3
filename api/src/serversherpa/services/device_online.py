@@ -1,6 +1,7 @@
 """Device online rules: which devices notifications cover, how long each may go quiet before it
-reads as offline, and where each one lives in the portal. They sit in one place so the Readers
-list, the check that announces outages and the routes that watch devices all agree.
+reads as offline, where each one lives in the portal and what it is called there. They sit in one
+place so the Readers list, the check that announces outages and the routes that watch devices all
+agree.
 
 The thresholds are the screens' own, not new policy. The portal shows a kiosk offline after 3
 minutes without a check-in (KIOSK_ONLINE_MS in portal/src/lib/kioskConfig.ts) and a router after
@@ -19,6 +20,7 @@ nothing, so a quiet stretch from any of them is not an outage.
 Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (section 5, Device offline)
 """
 
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 
@@ -66,7 +68,13 @@ def is_offline(device: Device, now: datetime) -> bool | None:
     never checked in, so there is nothing to judge. A naive `last_seen_at` reads as UTC.
 
     This is the rule for the device's kind, covered or not; `covered()` says whether
-    notifications act on it."""
+    notifications act on it.
+
+    Three clocks meet here. A router's `last_seen_at` is the database's clock (`now()` in
+    services/router_agent.py `handle_report`); a kiosk's and a reader's are the API's (a
+    reader's can be its station's own time for the reading, never later than the API's); and
+    `now` is the caller's, the worker's for the device check. All of them are kept by NTP, so
+    they agree far more closely than any threshold needs."""
     seen = device.last_seen_at
     if seen is None:
         return None
@@ -105,3 +113,32 @@ def kind_label(device: Device, vocab: Mapping[str, str]) -> str:
     if device.device_type == "kiosk" and is_rfid_station(device):
         return "RFID Station"
     return vocab.get(device.device_type, device.device_type)
+
+
+# Words a router hostname spells in capitals ("csg" → "CSG"): the portal's ROUTER_ACRONYMS
+# (portal/src/lib/devices.ts), copied exactly. devices.test.ts pins the list there and
+# tests/test_device_online.py here.
+ROUTER_ACRONYMS = ("csg", "gl", "vpn", "lte", "nap", "dc", "ups", "lan", "wan", "ap")
+_ROUTER_WORD_BREAK = re.compile(r"[\s_.-]+")
+_DIGIT = re.compile(r"[0-9]")
+
+
+def display_name(device: Device) -> str:
+    """What the portal calls this device. A router's hostname is made readable as the Routers
+    page shows it (routerDisplayName in portal/src/lib/devices.ts): `csg_router_kit_19` →
+    "CSG Router Kit 19". Its words are split at whitespace, underscores, dots and hyphens; a word of
+    ROUTER_ACRONYMS goes to capitals, a word with a digit in it is kept as typed, and every other
+    word gets a capital first letter. Every other device is called by its name, as stored."""
+    if device.device_type != "router":
+        return device.name
+    words = []
+    for word in _ROUTER_WORD_BREAK.split(device.name):
+        if not word:
+            continue
+        if word.lower() in ROUTER_ACRONYMS:
+            words.append(word.upper())
+        elif _DIGIT.search(word):
+            words.append(word)
+        else:
+            words.append(word[:1].upper() + word[1:].lower())
+    return " ".join(words) if words else device.name
