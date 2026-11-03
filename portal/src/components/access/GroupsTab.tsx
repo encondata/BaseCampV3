@@ -16,6 +16,7 @@ import { avatarGradient, initials } from '../../lib/format';
 import ComboBox, { type ComboOption } from '../ComboBox';
 import { Switch } from '../Switch';
 import TwoFactorOffNote from '../TwoFactorOffNote';
+import PhotoPreview from '../PhotoPreview';
 
 interface Props {
   summary: AccessSummary;
@@ -263,10 +264,12 @@ function GroupDetail({ group, canEdit, gates, twoFactorOff, onChanged, onDeleted
 
       <div className="av-stack">
         {group.members.slice(0, 6).map((m) => (
-          <span key={m.person_id} className="av-sm" title={m.display_name}
-                style={{ background: m.avatar_url ? 'var(--surface-2)' : avatarGradient(m.display_name) }}>
-            {m.avatar_url ? <img src={m.avatar_url} alt="" /> : initials(m.display_name)}
-          </span>
+          <PhotoPreview key={m.person_id} src={m.avatar_url} name={m.display_name}>
+            <span className="av-sm" title={m.display_name}
+                  style={{ background: m.avatar_url ? 'var(--surface-2)' : avatarGradient(m.display_name) }}>
+              {m.avatar_url ? <img src={m.avatar_url} alt="" /> : initials(m.display_name)}
+            </span>
+          </PhotoPreview>
         ))}
         {group.member_count > 6 && (
           <span className="av-sm av-more">+{group.member_count - 6}</span>
@@ -280,10 +283,12 @@ function GroupDetail({ group, canEdit, gates, twoFactorOff, onChanged, onDeleted
         )}
         {group.members.map((m) => (
           <div key={m.person_id} className="mini-row mem-row">
-            <span className="av-sm"
-                  style={{ background: m.avatar_url ? 'var(--surface-2)' : avatarGradient(m.display_name) }}>
-              {m.avatar_url ? <img src={m.avatar_url} alt="" /> : initials(m.display_name)}
-            </span>
+            <PhotoPreview src={m.avatar_url} name={m.display_name}>
+              <span className="av-sm"
+                    style={{ background: m.avatar_url ? 'var(--surface-2)' : avatarGradient(m.display_name) }}>
+                {m.avatar_url ? <img src={m.avatar_url} alt="" /> : initials(m.display_name)}
+              </span>
+            </PhotoPreview>
             <b className="cell-top">{m.display_name}</b>
             {canEdit && (
               <button className="mini-btn danger" disabled={busy}

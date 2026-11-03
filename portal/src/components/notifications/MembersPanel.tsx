@@ -28,6 +28,7 @@ import DataTable from '../DataTable';
 import { RowActionsMenu, type RowAction } from '../hardware/RowActionsMenu';
 import { NO_EMAIL } from './ChannelChips';
 import OverrideEditorModal from './OverrideEditorModal';
+import PhotoPreview from '../PhotoPreview';
 
 const msgFor = (err: unknown): string =>
   err instanceof ApiError
@@ -193,10 +194,12 @@ export default function MembersPanel({ group, canChange, reload }: {
             key: m.person_id,
             cells: [
               <div className="ngd-person cell-primary">
-                <span className="dir-avatar ngd-avatar"
-                      style={{ background: m.avatar_url ? 'var(--surface-2)' : avatarGradient(m.display_name) }}>
-                  {m.avatar_url ? <img src={m.avatar_url} alt="" /> : initials(m.display_name)}
-                </span>
+                <PhotoPreview src={m.avatar_url} name={m.display_name}>
+                  <span className="dir-avatar ngd-avatar"
+                        style={{ background: m.avatar_url ? 'var(--surface-2)' : avatarGradient(m.display_name) }}>
+                    {m.avatar_url ? <img src={m.avatar_url} alt="" /> : initials(m.display_name)}
+                  </span>
+                </PhotoPreview>
                 <div className="pn">
                   <b>{m.display_name}</b>
                   <div className="cell-sub">{m.job_title ?? '—'}</div>

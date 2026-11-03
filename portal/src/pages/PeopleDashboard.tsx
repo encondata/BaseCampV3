@@ -23,6 +23,7 @@ import { DailyBars } from '../components/dashboard/charts';
 import '../styles/directory.css';
 import '../styles/dashboard.css';
 import '../styles/time.css';
+import PhotoPreview from '../components/PhotoPreview';
 
 const REFRESH_OPTIONS: { label: string; seconds: number }[] = [
   { label: 'Off', seconds: 0 },
@@ -73,10 +74,12 @@ function WalkByRail({ events }: { events: PeopleFlowEvent[] }) {
           <Link key={`${e.person_id}|${e.device_id}|${e.scanned_at}`}
                 className="pdash-flow-card dash-rise" title={e.display_name}
                 to={`/people/users?open=${encodeURIComponent(e.person_id)}`}>
-            <div className="dir-avatar pdash-flow-avatar"
-                 style={{ background: e.avatar_url ? 'var(--surface-2)' : avatarGradient(e.display_name) }}>
-              {e.avatar_url ? <img src={e.avatar_url} alt="" /> : initials(e.display_name)}
-            </div>
+            <PhotoPreview src={e.avatar_url} name={e.display_name}>
+              <div className="dir-avatar pdash-flow-avatar"
+                   style={{ background: e.avatar_url ? 'var(--surface-2)' : avatarGradient(e.display_name) }}>
+                {e.avatar_url ? <img src={e.avatar_url} alt="" /> : initials(e.display_name)}
+              </div>
+            </PhotoPreview>
             <div className="pdash-flow-name">{e.display_name.split(/\s+/)[0]}</div>
             <span className="chip tag">{e.device_id || 'reader'}</span>
             <div className="pdash-flow-time">{relativeTime(e.scanned_at)}</div>
@@ -251,10 +254,12 @@ export default function PeopleDashboard() {
                     const context = e.initiative_name ?? e.site_name ?? null;
                     return (
                       <div key={e.id} className="mini-row flex pdash-clock-row">
-                        <div className="dir-avatar"
-                             style={{ background: avatarUrl ? 'var(--surface-2)' : avatarGradient(e.person_name) }}>
-                          {avatarUrl ? <img src={avatarUrl} alt="" /> : initials(e.person_name)}
-                        </div>
+                        <PhotoPreview src={avatarUrl} name={e.person_name}>
+                          <div className="dir-avatar"
+                               style={{ background: avatarUrl ? 'var(--surface-2)' : avatarGradient(e.person_name) }}>
+                            {avatarUrl ? <img src={avatarUrl} alt="" /> : initials(e.person_name)}
+                          </div>
+                        </PhotoPreview>
                         <div className="cell-primary">
                           <div className="pn">
                             <Link className="pdash-clock-name" to={`/people/workers/${e.person_id}`}>

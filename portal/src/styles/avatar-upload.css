@@ -2,6 +2,13 @@
 
 .avatar-up-wrap { position: relative; flex: none; }
 
+/* The hover-preview wrapper's one element child. A disabled button (a
+   read-only avatar, or one mid-upload) can swallow mouse events in some
+   browsers, so the button lets the pointer through to this span, which
+   has the button's exact box and is never disabled. */
+.avatar-up-hit { display: block; }
+.avatar-up:disabled { pointer-events: none; }
+
 .avatar-up {
   position: relative;
   display: grid;

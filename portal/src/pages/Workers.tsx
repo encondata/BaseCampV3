@@ -52,6 +52,7 @@ import StatusHover from '../components/StatusHover';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
+import PhotoPreview from '../components/PhotoPreview';
 
 type LevelDef = WorkerLevelDef;
 
@@ -400,10 +401,12 @@ export default function Workers() {
                     different endpoint than the worker-profile PATCH this page's
                     god-edit wiring uses, so it stays read-only even in god mode. */}
                 <div className="cell cell-primary">
-                  <div className="dir-avatar"
-                       style={{ background: w.avatar_url ? 'var(--surface-2)' : avatarGradient(w.display_name) }}>
-                    {w.avatar_url ? <img src={w.avatar_url} alt="" /> : initials(w.display_name)}
-                  </div>
+                  <PhotoPreview src={w.avatar_url} name={w.display_name}>
+                    <div className="dir-avatar"
+                         style={{ background: w.avatar_url ? 'var(--surface-2)' : avatarGradient(w.display_name) }}>
+                      {w.avatar_url ? <img src={w.avatar_url} alt="" /> : initials(w.display_name)}
+                    </div>
+                  </PhotoPreview>
                   <div className="pn">
                     <b>{w.display_name}</b>
                     <span>{w.contact_email ?? w.phone ?? '—'}</span>

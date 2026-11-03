@@ -218,7 +218,12 @@
   border: 2px solid var(--surface);
   flex: none;
 }
-.av-stack .av-sm + .av-sm { margin-left: -7px; }
+.av-stack .av-sm { margin-left: -7px; }
+/* The first avatar does not overlap anything. It is either a bare .av-sm or
+   one inside a PhotoPreview .pp-wrap (display: contents), so a sibling
+   selector (`.av-sm + .av-sm`) cannot be used: wrappers sit between them. */
+.av-stack > .av-sm:first-child,
+.av-stack > .pp-wrap:first-child > .av-sm { margin-left: 0; }
 .av-sm img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .av-sm.av-more {
   background: var(--surface-2);
