@@ -15,12 +15,15 @@ transaction:
    (notifications/access.py); someone dropped for access is logged `inbox_suppressed`
    `no_access`. An event that fails stays waiting for the next sweep, logged once, and the
    failure is counted against it, so an event that always fails drops behind newer ones
-   instead of holding them up. Nothing gives up on it.
+   instead of holding them up. Nothing gives up on it. Nothing ages it forward either: however
+   long it has waited, it stays behind every event that has failed fewer times.
 3. **One notification per person per kind.** The items that reach one person become one
    notification for each kind, written with notify(), so the person's switches, schedule,
    summary and critical kinds apply as to any other. One item says what it says; several are
-   counted under the kind's label, a line each, oldest first, and link to the initiative they
-   all belong to, else to the list they all share (a device's), else to the kind's list page.
+   counted under the kind's label, a line each, oldest first (by event id: the claim order
+   only decides which events a sweep takes, so a retried event keeps its place), and link to
+   the initiative they all belong to, else to the list they all share (a device's), else to
+   the kind's list page.
    The payload carries the event ids, the subjects and the routes (`via`) for the send-time
    re-check, and the inbox log row the routes, the event ids and the groups' names.
 4. **Finish:** every handled event is marked sent, and it all commits at once. A write that
@@ -161,10 +164,11 @@ async def _recipients(db: AsyncSession, event: NotificationEvent) -> Routes:
 # ── one notification per person per kind ───────────────────────────
 
 def _group_items(reached: Iterable[tuple[Item, Routes]]) -> dict[tuple[uuid.UUID, str], Batch]:
-    """The items each person hears of, by person and kind, in the order given (oldest first),
-    with every route that brought them."""
+    """The items each person hears of, by person and kind, oldest first, with every route that
+    brought them. Oldest is by event id, whatever order the events were claimed in: a retried
+    event is claimed after newer ones (it has failed more), but its line still comes first."""
     batches: dict[tuple[uuid.UUID, str], Batch] = {}
-    for item, people in reached:
+    for item, people in sorted(reached, key=lambda pair: pair[0].event_id):
         for person_id, routes in people.items():
             batch = batches.setdefault((person_id, item.kind), Batch())
             batch.items.append(item)

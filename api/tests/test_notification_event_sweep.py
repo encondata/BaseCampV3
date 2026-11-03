@@ -625,6 +625,38 @@ async def test_a_stuck_event_drops_behind(db, monkeypatch):
     assert (await _attempts(stuck), await _sent_at(stuck)) == (2, NOW)
 
 
+async def test_a_retried_event_keeps_its_place(db, monkeypatch):
+    """A retried event is claimed after newer ones (it has failed more), but when it goes out
+    with them its line still comes first: a notification tells its items oldest first, by
+    event, whatever order the sweep claimed them in."""
+    monkeypatch.setattr(event_sweep, "_failing", set())
+    person = await _person(db, "A")
+    initiative = await _initiative(db, "Initiative A")
+    trucks = [await _truck(db, f"Truck {name}", initiative) for name in "ABC"]
+    await _watch(db, person, _on(initiative))
+    retried = await _truck_changed(db, trucks[0])
+    real = event_sweep.matching_routes
+
+    async def failing(session, event):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(event_sweep, "matching_routes", failing)
+    assert await _sweep() == 0
+    assert (await _attempts(retried), await _sent_at(retried)) == (1, None)
+
+    monkeypatch.setattr(event_sweep, "matching_routes", real)
+    newer = [await _truck_changed(db, truck) for truck in trucks[1:]]
+    assert await _sweep() == 1                      # claimed after the newer two, sent with them
+    [note] = await _notifications(person)
+    assert note.title == "Truck status changed (3)"
+    assert note.body.split("\n") == ["Truck A: Created → Active", "Truck B: Created → Active",
+                                     "Truck C: Created → Active"]
+    assert note.payload["events"] == [retried.id, *(event.id for event in newer)]
+    assert note.payload["subjects"] == [{"type": "truck", "id": str(truck.id)}
+                                        for truck in trucks]
+    assert await _sent_at(retried) == NOW
+
+
 async def test_a_failed_write_rolls_the_whole_sweep_back(db, monkeypatch):
     """A notification that can't be written undoes the sweep, its log rows included, and
     every event waits for the next one."""

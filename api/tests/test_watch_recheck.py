@@ -519,6 +519,22 @@ async def test_back_online_runs_before_category_turned_down(db, email_on):
     assert await _recheck(mail) == "category_turned_down"
 
 
+async def test_resolved_runs_before_back_online(db, email_on):
+    """`back_online` comes right after `resolved`, not before it: a Device offline notification
+    whose payload says its state was decided reads `resolved`, though every device it names is
+    back online."""
+    person, [station] = await _devices_offline(db, 1)
+    mail = await _mail_of(person)
+    await _back(station)
+    assert await _recheck(mail) == "back_online"
+
+    async with get_sessionmaker()() as s:
+        note = await s.get(Notification, mail.notification_id)
+        note.payload = {**note.payload, "state": "approved"}
+        await s.commit()
+    assert await _recheck(mail) == "resolved"
+
+
 async def test_back_online_is_for_device_offline_alone(db):
     """Only a Device offline notification is asked whether its devices are back, and only when it
     names one: a notification of another kind that lists a device is not judged by it, and one
