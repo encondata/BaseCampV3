@@ -19,7 +19,7 @@ from tests.test_status_values_write import _make
 
 SETTINGS = "/notifications/settings"
 CONFIGURABLE = ("approvals", "reports", "wiki", "learning", "initiatives", "trucks", "devices",
-                "bulk_actions")
+                "status_rules", "bulk_actions")
 ON_ON = {"inbox": True, "email": True}
 
 
@@ -72,15 +72,18 @@ async def test_settings_out_of_the_box(client, seeded_user):
         assert (entry["watchable"], entry["everywhere"], entry["reaches"]) == (
             info.watchable, info.everywhere, list(info.reaches))
     kinds = _by_kind(body)
-    # what a watch can follow: the two status changes and Device offline, on the things
-    # they reach
+    # what a watch can follow: the two status changes, Device offline and Status rule
+    # matched, on the things they reach (a rule's notice never everywhere)
     flags = {kind: (entry["watchable"], entry["everywhere"], entry["reaches"])
              for kind, entry in kinds.items()}
     assert flags["truck_status_changed"] == (True, True, ["truck", "initiative", "site"])
     assert flags["initiative_status_changed"] == (True, True, ["initiative", "site"])
     assert flags["device_offline"] == (True, True, ["device", "site", "initiative"])
+    assert flags["status_rule_matched"] == (True, False, ["initiative", "site"])
+    assert kinds["status_rule_matched"]["category"] == "status_rules"
     assert [kind for kind, (watchable, _, _) in flags.items() if watchable] == [
-        "initiative_status_changed", "truck_status_changed", "device_offline"]
+        "initiative_status_changed", "truck_status_changed", "device_offline",
+        "status_rule_matched"]
     assert flags["report_ready"] == (False, False, [])
     # the bulk action notices go to whoever started the job: nobody watches for them
     assert flags["bulk_action_finished"] == (False, False, [])
@@ -223,6 +226,17 @@ async def test_put_sets_the_bulk_actions_default(client, db, seeded_user):
     assert (await db.get(SystemConfig, "notifications")).data["defaults"] == expected
 
 
+async def test_put_sets_the_status_rules_default(client, db, seeded_user):
+    """Status rules is configurable like the rest: on and on until an admin says otherwise."""
+    admin = await _admin(db, client)
+    assert (await _get(client, admin))["defaults"]["status_rules"] == ON_ON
+    resp = await _put(client, admin, defaults={"status_rules": {"inbox": True, "email": False}})
+    assert resp.status_code == 200, resp.text
+    expected = {**{c: ON_ON for c in CONFIGURABLE}, "status_rules": {"inbox": True, "email": False}}
+    assert resp.json()["defaults"] == expected
+    assert (await db.get(SystemConfig, "notifications")).data["defaults"] == expected
+
+
 async def test_put_waits_for_a_concurrent_save_and_keeps_both(client, db, seeded_user):
     """A partial save is read-merge-write. While another save holds the row (it
     has read it and not yet written) a second one waits, then merges onto what
@@ -245,7 +259,8 @@ async def test_put_waits_for_a_concurrent_save_and_keeps_both(client, db, seeded
     assert resp.json()["defaults"] == {
         "approvals": ON_ON, "reports": {"inbox": False, "email": False},
         "wiki": {"inbox": True, "email": False}, "learning": ON_ON,
-        "initiatives": ON_ON, "trucks": ON_ON, "devices": ON_ON, "bulk_actions": ON_ON}
+        "initiatives": ON_ON, "trucks": ON_ON, "devices": ON_ON, "status_rules": ON_ON,
+        "bulk_actions": ON_ON}
 
 
 async def test_put_rejects_bad_categories(client, db, seeded_user):
@@ -383,7 +398,8 @@ async def test_load_company_settings_ignores_what_it_does_not_know(db):
         "approvals": Switches(False, False), "reports": Switches(True, True),
         "wiki": Switches(True, True), "learning": Switches(True, True),
         "initiatives": Switches(True, True), "trucks": Switches(True, True),
-        "devices": Switches(True, True), "bulk_actions": Switches(True, True)}
+        "devices": Switches(True, True), "status_rules": Switches(True, True),
+        "bulk_actions": Switches(True, True)}
     assert company.critical_kinds == frozenset({"report_failed"})
 
 

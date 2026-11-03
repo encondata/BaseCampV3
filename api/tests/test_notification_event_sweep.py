@@ -445,11 +445,13 @@ def test_every_watchable_kind_has_a_list_page():
     of their own (`EventItem.list_link`), link to the kind's list page (`_compose`): a watchable
     kind needs an entry, so such a burst never goes nowhere by accident. Device offline's is
     None on purpose: its items carry their own list (kiosks, readers or routers), and items
-    from different lists get no link."""
+    from different lists get no link. Status rule matched's is None too: its notices link to
+    the rule (plan call 5)."""
     watchable = {kind for kind, info in KINDS.items() if info.watchable}
     assert watchable                      # the registry still has kinds someone can watch for
     assert watchable <= set(event_sweep.LIST_PAGES)
     assert event_sweep.LIST_PAGES["device_offline"] is None
+    assert event_sweep.LIST_PAGES["status_rule_matched"] is None
 
 
 async def test_category_off_is_still_respected(db):

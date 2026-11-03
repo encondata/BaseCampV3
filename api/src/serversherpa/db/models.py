@@ -1137,6 +1137,21 @@ class StatusRuleExecution(Base):
     duration_ms: Mapped[int] = mapped_column(server_default="0")
 
 
+class StatusRuleNotified(Base):
+    """When a status rule's Notify action last told anyone about a matched thing (an asset,
+    container or person), migration 0115. The action (status_rules/notify.py) notifies about
+    the same thing again only an hour later, and checks and sets this row in one upsert. The
+    thing is not a foreign key; deleting the rule deletes its rows."""
+
+    __tablename__ = "status_rule_notified"
+
+    rule_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("status_rules.id", ondelete="CASCADE"), primary_key=True)
+    subject_type: Mapped[str] = mapped_column(primary_key=True)
+    subject_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    notified_at: Mapped[datetime]
+
+
 class Device(Base):
     """One row per piece of scanning hardware; device_type discriminates
     (initiatives-style unification). wan_ip/lan_ip/uptime_seconds are

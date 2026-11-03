@@ -38,6 +38,7 @@ from serversherpa.notifications.watches import (
 INITIATIVE_CHANGED = "initiative_status_changed"
 TRUCK_CHANGED = "truck_status_changed"
 DEVICE_OFFLINE = "device_offline"
+RULE_MATCHED = "status_rule_matched"
 
 
 async def _people(db, *names) -> list[Person]:
@@ -366,10 +367,12 @@ async def test_status_changes_reach_the_watchers_of_the_things_around_them(db):
 # ── what a watch may name ───────────────────────────────────────────
 
 def test_kinds_for():
-    assert kinds_for("initiative") == [INITIATIVE_CHANGED, TRUCK_CHANGED, DEVICE_OFFLINE]
-    assert kinds_for("site") == [INITIATIVE_CHANGED, TRUCK_CHANGED, DEVICE_OFFLINE]
+    assert kinds_for("initiative") == [INITIATIVE_CHANGED, TRUCK_CHANGED, DEVICE_OFFLINE,
+                                       RULE_MATCHED]
+    assert kinds_for("site") == [INITIATIVE_CHANGED, TRUCK_CHANGED, DEVICE_OFFLINE, RULE_MATCHED]
     assert kinds_for("truck") == [TRUCK_CHANGED]
     assert kinds_for("device") == [DEVICE_OFFLINE]
+    # a status rule's notice is about its own initiative: never everywhere
     assert kinds_for(EVERYTHING) == [INITIATIVE_CHANGED, TRUCK_CHANGED, DEVICE_OFFLINE]
     # nothing reaches a kind of thing no kind names
     assert kinds_for("wiki_node") == []

@@ -43,7 +43,11 @@ class EventItem:
     to (items of one initiative link to it together). `at` is when it happened, for an
     item that is announced later than it happened (a MacroPoint message). `list_link` is
     the portal list the item's thing is on (a device's kiosks, readers or routers list):
-    items that share no initiative but share a list link to it together."""
+    items that share no initiative but share a list link to it together.
+
+    A status rule's notice (status_rules/notify.py) also says what the rule matched: the
+    kind of thing (`matched_type`: "asset", "container" or "person") and their ids, one
+    or many."""
 
     title: str
     line: str = ""
@@ -51,14 +55,21 @@ class EventItem:
     initiative_id: uuid.UUID | None = None
     at: datetime | None = None
     list_link: str | None = None
+    matched_type: str | None = None
+    matched_ids: tuple[uuid.UUID, ...] = ()
 
     def to_json(self) -> dict:
-        """The stored form: every key, ids and times as strings."""
-        return {"title": self.title, "line": self.line, "link": self.link,
-                "initiative_id": (str(self.initiative_id)
-                                  if self.initiative_id is not None else None),
-                "at": self.at.isoformat() if self.at is not None else None,
-                "list_link": self.list_link}
+        """The stored form: every key, ids and times as strings. A rule's notice adds
+        `count`, `matched_type` and `matched_ids`; no other item has them."""
+        stored = {"title": self.title, "line": self.line, "link": self.link,
+                  "initiative_id": (str(self.initiative_id)
+                                    if self.initiative_id is not None else None),
+                  "at": self.at.isoformat() if self.at is not None else None,
+                  "list_link": self.list_link}
+        if self.matched_type is not None:
+            stored |= {"count": len(self.matched_ids), "matched_type": self.matched_type,
+                       "matched_ids": [str(thing_id) for thing_id in self.matched_ids]}
+        return stored
 
 
 def announce(db: AsyncSession, kind: str, *, subject: Thing, item: EventItem,

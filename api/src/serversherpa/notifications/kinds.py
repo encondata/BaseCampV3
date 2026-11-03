@@ -36,6 +36,7 @@ CATEGORIES: dict[str, str] = {
     "initiatives": "Initiatives",
     "trucks": "Trucks",
     "devices": "Devices",
+    "status_rules": "Status rules",
     "bulk_actions": "Bulk actions",
     "security": "Account security",
 }
@@ -76,6 +77,13 @@ KINDS: dict[str, KindInfo] = {
     # stops checking in: it reaches the device's watchers, its site's and its move's.
     "device_offline": KindInfo("devices", "Device offline",
                                reaches=("device", "site", "initiative"), everywhere=True),
+    # Announced by a status rule's Notify action (status_rules/notify.py): one event per rule
+    # and initiative in a transaction (a match with no initiative is one of its own). It
+    # reaches the people and groups the rule names and, with the rule's "watchers" on, the
+    # watchers of its initiative (and the ones above it) and of the scan's site. Never
+    # everywhere: a rule's notice is about its own initiative.
+    "status_rule_matched": KindInfo("status_rules", "Status rule matched",
+                                    reaches=("initiative", "site")),
     # Sent with notify() by the import worker (imports/notices.py) to the person who started
     # a job that wrote data, when it finishes or fails. Not announced and not watchable: it
     # reaches that one person, and the category's switches are the way out. The failed notice

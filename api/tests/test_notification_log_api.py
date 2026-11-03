@@ -535,12 +535,14 @@ async def test_kinds_report_critical_and_locked(client, db):
          "category": "security", "email": True, "owner_always": True, "critical": True,
          "locked": True, "watchable": False, "everywhere": False, "reaches": []},
     ]
-    # the two status changes and Device offline can be watched, on the things they reach
+    # the two status changes, Device offline and Status rule matched can be watched, on the
+    # things they reach (a rule's notice never everywhere)
     assert [(k["kind"], k["watchable"], k["everywhere"], k["reaches"])
             for k in resp.json() if k["watchable"]] == [
         ("initiative_status_changed", True, True, ["initiative", "site"]),
         ("truck_status_changed", True, True, ["truck", "initiative", "site"]),
         ("device_offline", True, True, ["device", "site", "initiative"]),
+        ("status_rule_matched", True, False, ["initiative", "site"]),
     ]
     # the bulk action notices: their own category, sent to one person and never watched for
     # (the rows carry no brief flag: a failed notice is title + link only, see the kinds pin)

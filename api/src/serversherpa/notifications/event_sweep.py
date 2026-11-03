@@ -67,10 +67,12 @@ EVENT_BATCH = 200
 
 # Where several items of one kind link when they don't all belong to one initiative and don't
 # share a list of their own. Device offline has none: its items carry their device's list, and
-# items from different lists (readers and routers, say) get no link.
+# items from different lists (readers and routers, say) get no link. Status rule matched has
+# none either: a rule's notices link to the rule (status_rules/notify.py).
 LIST_PAGES: dict[str, str | None] = {"initiative_status_changed": "/initiatives",
                                      "truck_status_changed": "/logistics/trucks",
-                                     "device_offline": None}
+                                     "device_offline": None,
+                                     "status_rule_matched": None}
 
 # Events whose last try failed: each is logged once per process. Only the exception's class is
 # logged: its text can carry SQL parameters.

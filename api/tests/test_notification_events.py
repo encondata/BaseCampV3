@@ -178,6 +178,13 @@ def test_thing_and_item_json():
         "title": "T", "line": "L", "link": "/x", "initiative_id": str(initiative_id),
         "at": "2026-11-02T20:04:00+00:00", "list_link": "/y"}
 
+    # a status rule's notice also says what it matched: the kind of thing, how many, which
+    first, second = uuid.uuid4(), uuid.uuid4()
+    assert EventItem("T", matched_type="asset", matched_ids=(first, second)).to_json() == {
+        "title": "T", "line": "", "link": None, "initiative_id": None, "at": None,
+        "list_link": None, "count": 2, "matched_type": "asset",
+        "matched_ids": [str(first), str(second)]}
+
 
 @pytest.mark.parametrize("at,expected", [
     (datetime(2026, 11, 2, 20, 4, tzinfo=UTC), "Nov 2, 3:04 PM EST"),
