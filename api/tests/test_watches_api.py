@@ -572,7 +572,8 @@ async def test_a_group_watch_is_added_as_the_admin_who_can_see_the_thing(db):
     assert (caught.value.status, caught.value.code) == (404, "thing_not_found")
 
 
-async def test_group_watches_lists_every_watch_newest_first(db):
+async def test_group_watches_lists_every_watch_the_asker_can_open_newest_first(db):
+    asker, _access = await _staff(db)               # opens sites, trucks and initiatives
     group, other = await _group(db, "Group A"), await _group(db, "Group B")
     initiative, site, truck = await _things(db)
     start = datetime(2026, 1, 1, tzinfo=UTC)
@@ -582,7 +583,7 @@ async def test_group_watches_lists_every_watch_newest_first(db):
                        created_at=start + timedelta(days=1))
     await _group_watch(db, other, "initiative", initiative.id)
 
-    views = await group_watches(db, group.id)
+    views = await group_watches(db, group.id, asker.id)
     assert [(v.thing, v.thing_name, v.link) for v in views] == [
         ("truck", "Truck A", f"/logistics/trucks/{truck.id}"),
         (EVERYTHING, None, None),
@@ -590,4 +591,9 @@ async def test_group_watches_lists_every_watch_newest_first(db):
     ]
     assert all(v.group is not None and v.group.id == group.id for v in views)
     assert views[1].thing_id is None and views[0].thing_id == truck.id
-    assert await group_watches(db, uuid.uuid4()) == []
+    assert await group_watches(db, uuid.uuid4(), asker.id) == []
+
+    # someone who can't open trucks gets the rest: Everything has no thing to open
+    db.add(PermissionOverride(person_id=asker.id, resource="trucks", action="view", allow=False))
+    await db.commit()
+    assert [v.thing for v in await group_watches(db, group.id, asker.id)] == [EVERYTHING, "site"]

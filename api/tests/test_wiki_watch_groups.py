@@ -16,7 +16,7 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
@@ -181,8 +181,8 @@ async def test_group_wiki_watch_fan_out(client, db):
     page's own access (a member who reads the folder but not the page hears nothing, nor does
     one who can't see the library), never the actor, and someone reached by a watch of their
     own and the group's is told once. A Paused group's members hear nothing until it is
-    resumed. Each notice logs the routes that reached its person, their own watch first, with
-    the groups' names, as the event sweep's do; the notice itself is the wiki's as before."""
+    resumed. Each notice logs the routes that reached its person, with the groups' names,
+    exactly as the event sweep's do; the notice itself is the wiki's as before."""
     s = await _setup(client, db)
     folder = await _create(client, s["owner"], s["space"], "Guides")
     page = await _create(client, s["owner"], s["space"], "Runbook", kind="page", parent=folder)
@@ -215,8 +215,9 @@ async def test_group_wiki_watch_fan_out(client, db):
 
     route = f"group:{group.id}"
     assert await _routes(db, member) == [{"via": [route], "names": {route: "Group A"}}]
+    # sorted by code, as the event sweep logs a person's routes
     assert await _routes(db, s["viewer_id"]) == [
-        {"via": ["watch", route], "names": {route: "Group A"}}]
+        {"via": [route, "watch"], "names": {route: "Group A"}}]
     # the owner watches the folder and the page they created, and is in no group
     assert await _routes(db, s["owner_id"]) == [{"via": ["watch"], "names": {}}]
 
@@ -523,6 +524,55 @@ async def test_group_watches_a_library_and_a_page(client, db):
     assert removed.changes == {"thing": "wiki_node", "thing_id": page["id"]}
     assert [row["id"] for row in (await client.get(url, headers=admin_h)).json()] == [
         added["folder"]["id"], added["library"]["id"]]
+
+
+async def test_the_group_page_lists_only_the_wiki_watches_the_asker_can_see(client, db):
+    """The group page lists a group's watch only while the person asking can open its thing,
+    by the rule /me uses, which for the wiki is the wiki's own: a wiki administrator doesn't
+    get the group's watch on someone else's private page, nor its title, and a developer does.
+    Nobody gets one on a page in the trash, and it is listed again once the page is restored.
+    The rows stay where they are throughout."""
+    admin_h, _admin = await login_as(client, db, roles=("admin",))     # a wiki administrator
+    developer_h, _developer = await login_as(client, db, roles=("developer",))
+    s = await _setup(client, db)
+    space = s["space"]
+    secret = await _create(client, s["editor"], space, "Secret plans", kind="page")
+    await _make_private(client, s["editor"], secret)       # its author is the editor
+    retired = await _create(client, s["owner"], space, "Retired", kind="page")
+    await publish_via_db(db, retired["id"])
+    group = await _group(db, "Group A")
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    ids = {}
+    for days, (name, target) in enumerate((("library", {"space": space}),
+                                           ("secret", {"node": secret}),
+                                           ("retired", {"node": retired}))):
+        ids[name] = str(await _group_watch(db, group, created_at=start + timedelta(days=days),
+                                           **target))
+    url = f"/notifications/groups/{group.id}/watches"
+
+    async def listed(headers):
+        resp = await client.get(url, headers=headers)
+        assert resp.status_code == 200, resp.text
+        return resp, [row["id"] for row in resp.json()]
+
+    resp, rows = await listed(admin_h)
+    assert rows == [ids["retired"], ids["library"]]
+    assert "Secret plans" not in resp.text
+    _, rows = await listed(developer_h)
+    assert rows == [ids["retired"], ids["secret"], ids["library"]]
+
+    resp = await client.delete(f"/wiki/nodes/{retired['id']}", headers=s["owner"])
+    assert resp.status_code == 200, resp.text
+    batch_id = resp.json()["batch_id"]
+    for headers in (admin_h, developer_h):
+        resp, rows = await listed(headers)
+        assert ids["retired"] not in rows and "Retired" not in resp.text
+    resp = await client.post(f"/wiki/trash/{batch_id}/restore", headers=s["owner"])
+    assert resp.status_code == 200, resp.text
+    _, rows = await listed(admin_h)
+    assert rows == [ids["retired"], ids["library"]]
+    assert await db.scalar(select(func.count()).select_from(NotificationWatch).where(
+        NotificationWatch.group_id == group.id)) == 3
 
 
 # ── Check delivery ──────────────────────────────────────────────────

@@ -301,13 +301,15 @@ async def _get_watch(db: DbSession, group_id: uuid.UUID,
 async def list_group_watches(
     group_id: uuid.UUID,
     db: DbSession,
-    _actor: AuthContext = require_permission("notifications", "view"),
+    actor: AuthContext = require_permission("notifications", "view"),
 ) -> list[WatchOut]:
-    """Everything the group watches, newest first. Unlike /auth/me/watches this is not
-    narrowed to what the asker can open: only global roles hold a notifications permission,
-    and a global role is not row-scoped."""
+    """What the group watches, newest first: the watches whose thing the asker can open now,
+    as /auth/me/watches lists them. A global role is not row-scoped, but the wiki's grants and
+    private items still hide things from it, so a watch on one it can't see is left out, name
+    and all."""
     await _get_group(db, group_id)          # 404 group_not_found
-    return [WatchOut.from_view(view) for view in await group_watches(db, group_id)]
+    return [WatchOut.from_view(view)
+            for view in await group_watches(db, group_id, actor.person.id)]
 
 
 @router.post("/groups/{group_id}/watches", response_model=WatchOut, status_code=201)

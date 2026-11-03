@@ -225,6 +225,32 @@ async def test_the_admin_has_to_be_able_to_open_the_thing(client, db):
     assert (await _post(client, admin, group.id, "truck", truck.id)).status_code == 201
 
 
+async def test_the_list_shows_only_what_the_asker_can_open(client, db):
+    """The group page lists what the person asking can open now, by each thing's own page, as
+    /me does (a wiki library, folder or page by the wiki's own rule:
+    tests/test_wiki_watch_groups.py): an admin denied sites gets neither the group's site watch
+    nor its name, another admin gets it, and an Everything watch, which has no thing to open,
+    is listed for both. Only the list narrows: the rows stay as they are."""
+    admin = await _login(db, client, "A", "admin")
+    blind = await _login(db, client, "B", "admin")
+    db.add(PermissionOverride(person_id=blind.id, resource="sites", action="view", allow=False))
+    await db.commit()
+    _initiative, site, truck = await _things(db)
+    group = await _group(db, "Group A")
+    await _group_watch(db, group, "site", site.id)
+    await _group_watch(db, group, "truck", truck.id)
+    await _group_watch(db, group, None, kinds=[INITIATIVE_CHANGED])
+
+    resp = await client.get(_url(group.id), headers=admin.headers)
+    assert resp.status_code == 200, resp.text
+    assert sorted(row["thing"] for row in resp.json()) == [EVERYTHING, "site", "truck"]
+    resp = await client.get(_url(group.id), headers=blind.headers)
+    assert resp.status_code == 200, resp.text
+    assert sorted(row["thing"] for row in resp.json()) == [EVERYTHING, "truck"]
+    assert "Site A" not in resp.text
+    assert await _count(db) == 3
+
+
 # ── who may ─────────────────────────────────────────────────────────
 
 async def test_permissions(client, db):

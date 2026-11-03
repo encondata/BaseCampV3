@@ -370,15 +370,19 @@ async def watches_hearing(db: AsyncSession, person_id: uuid.UUID, kind: str) -> 
     return await _views(db, rows)
 
 
-async def group_watches(db: AsyncSession, group_id: uuid.UUID) -> list[WatchView]:
-    """Every watch of the group, newest first, whoever is asking: what the asker may see of
-    them is for the route to decide."""
+async def group_watches(db: AsyncSession, group_id: uuid.UUID,
+                        asker_id: uuid.UUID) -> list[WatchView]:
+    """The group's watches whose thing the person asking can open now, newest first, by the
+    rule /me lists by (`_visible`): each thing's own page, and for a wiki library, folder or
+    page the wiki's own rule, so a private page they can't see or a page in the trash is left
+    out. An Everything watch has no thing to open and is always listed. The rest stay stored,
+    and the group's members still hear what they themselves can open."""
     group = await db.get(NotificationGroup, group_id)
     if group is None:
         return []
     watches = (await db.scalars(_newest_first(
         select(NotificationWatch).where(NotificationWatch.group_id == group_id)))).all()
-    return await _views(db, [(watch, group) for watch in watches])
+    return await _views(db, await _visible(db, asker_id, [(watch, group) for watch in watches]))
 
 
 async def own_watch_on(db: AsyncSession, person_id: uuid.UUID, thing: str,

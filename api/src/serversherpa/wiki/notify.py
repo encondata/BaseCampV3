@@ -163,20 +163,13 @@ async def watchers_for(db: AsyncSession, node: WikiNode) -> dict[uuid.UUID, set[
     return await _watchers(db, node.space_id, [*(node.path or []), node.id])
 
 
-def _via(routes: AbstractSet[str]) -> list[str]:
-    """A person's routes as the Delivery log lists them: their own watch
-    first, then their groups', in a fixed order."""
-    return [*(["watch"] if "watch" in routes else []),
-            *sorted(route for route in routes if route != "watch")]
-
-
 async def _logged(db: AsyncSession, routes: Routes | None,
                   person_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, dict]:
     """What the Delivery log records with the notice of each of `person_ids`
-    that a watch brought: the routes (`via`) and the names of the groups
-    among them (`names`, by route), as the event sweep logs them. Nothing
-    for someone no watch brought (a thread participant, say)."""
-    via = {pid: _via(routes[pid]) for pid in person_ids
+    that a watch brought: the routes (`via`, sorted) and the names of the
+    groups among them (`names`, by route), exactly as the event sweep logs
+    them. Nothing for someone no watch brought (a thread participant, say)."""
+    via = {pid: sorted(routes[pid]) for pid in person_ids
            if routes is not None and routes.get(pid)}
     group_ids = {uuid.UUID(route.removeprefix("group:"))
                  for found in via.values() for route in found if route.startswith("group:")}
