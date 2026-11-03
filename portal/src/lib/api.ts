@@ -3919,7 +3919,7 @@ export async function listWorkerOptions(): Promise<WorkerOption[]> {
 
 /* ── god mode (developer easter egg) ─────────────────────────────── */
 
-/** Returns the nav colour on success, or null when refused. A refusal is
+/** Returns the nav color on success, or null when refused. A refusal is
  *  indistinguishable from a wrong word by design — the caller must not
  *  surface it, or it becomes the signal the 404 exists to avoid. */
 export async function unlockGodMode(word: string): Promise<string | null> {

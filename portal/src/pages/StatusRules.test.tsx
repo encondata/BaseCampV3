@@ -348,6 +348,31 @@ it('rule list: the tooltip names the ids when the lists cannot be had (they need
   expect(screen.queryByText(/Couldn.t load status rules/i)).toBeNull();
 });
 
+it('rule list: a viewer without notification permissions makes no list calls, and the tooltip names the ids', async () => {
+  auth.can = (resource) => resource === 'status_rules';
+  api.listStatusRules.mockResolvedValue([NOTIFY_RULE]);
+  render(<StatusRules />);
+  await screen.findByText('Tells people');
+
+  expect(actionsCell('Tells people', 'Notify')?.getAttribute('title')).toBe('Notify p1, g1 and watchers');
+  expect(api.listNotificationRecipients).not.toHaveBeenCalled();
+  expect(api.listNotificationGroups).not.toHaveBeenCalled();
+  expect(screen.queryByText(/Couldn.t load status rules/i)).toBeNull();
+});
+
+it('rule list: each list is asked for by its own permission, the people by notifications:change and the groups by notifications:view', async () => {
+  auth.can = (resource, action) => resource === 'status_rules'
+    || (resource === 'notifications' && action === 'view');
+  api.listStatusRules.mockResolvedValue([NOTIFY_RULE]);
+  render(<StatusRules />);
+  await screen.findByText('Tells people');
+
+  await waitFor(() => expect(actionsCell('Tells people', 'Notify')?.getAttribute('title'))
+    .toBe('Notify p1, Group A and watchers'));
+  expect(api.listNotificationGroups).toHaveBeenCalledTimes(1);
+  expect(api.listNotificationRecipients).not.toHaveBeenCalled();
+});
+
 it('rule list: the notification lists are asked for only when some rule notifies', async () => {
   render(<StatusRules />);
   await screen.findByText('High priority');

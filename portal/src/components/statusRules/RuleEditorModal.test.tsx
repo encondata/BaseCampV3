@@ -7,9 +7,11 @@
  * detail-code error surface (a bad_action says why through its reason).
  *
  * Controls: every dropdown is the house ComboBox (no native <select>); a
- * yes/no value reads Yes / No and a new one starts at "true". The Send a
- * notification action's People and Groups are ChipPickers and its watchers a
- * Switch; a rule has one such action, so no other row offers it.
+ * yes/no value reads Yes / No and a new one starts at "true". A yes/no field
+ * offers only the operator "equals" (a stored one with another keeps it). The
+ * Send a notification action's People and Groups are ChipPickers and its
+ * watchers a Switch; a rule has one such action, so no other row offers it.
+ * Their lists are asked for only by a viewer who may have them.
  */
 
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
@@ -33,6 +35,15 @@ vi.mock('../../lib/api', async (importActual) => ({
   ...api,
 }));
 
+/** What the signed-in viewer may do: everything, unless a test narrows it. */
+const auth = vi.hoisted(() => ({
+  can: (_resource: string, _action?: string): boolean => true,
+}));
+
+vi.mock('../../auth/AuthContext', () => ({
+  useAuth: () => ({ can: auth.can }),
+}));
+
 const NOTIFY_ACTION: RuleSchemaAction = {
   key: 'notify', label: 'Send a notification',
   params: [
@@ -53,6 +64,7 @@ const SCHEMA: StatusRuleSchema = {
   ],
   operators: [
     { key: 'equals', label: 'equals', needs_value: true },
+    { key: 'not_equals', label: 'not equals', needs_value: true },
     { key: 'is_null', label: 'is null', needs_value: false },
   ],
   condition_fields: [
@@ -107,6 +119,7 @@ const WATCHERS = 'Also people watching the initiative or site';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  auth.can = () => true;
   Element.prototype.scrollIntoView = vi.fn();   // jsdom has none; ComboBox scrolls its active option
   api.listNotificationRecipients.mockResolvedValue(PEOPLE);
   api.listNotificationGroups.mockResolvedValue(GROUPS);
@@ -376,7 +389,7 @@ it('shows no select on an edit of a rule either, and offers every option of a dr
   expect(await offered(user, 'matches a')).toEqual(['Exact', 'Fuzzy']);
   expect(await offered(user, 'Condition 1 field'))
     .toEqual(['Asset status', 'Scan device', 'Off-move sighting']);
-  expect(await offered(user, 'Condition 1 operator')).toEqual(['equals', 'is null']);
+  expect(await offered(user, 'Condition 1 operator')).toEqual(['equals', 'not equals', 'is null']);
   expect(await offered(user, 'Condition 1 value')).toEqual(['Good', 'Bad']);
   expect(await offered(user, 'Action 1 type')).toEqual([
     'Set asset status', 'Mark move asset side verified', 'Send a notification',
@@ -530,18 +543,94 @@ it('a new condition on a yes/no field starts at "true": untouched, it saves true
   }));
 });
 
-it('a yes/no value starts at "true" again when the operator takes a value again', async () => {
+it('a yes/no value starts at "true" again when a stored operator that takes none gives way to equals', async () => {
   const user = userEvent.setup();
-  renderCreate();
-  await user.click(screen.getByRole('button', { name: 'Add condition' }));
-  await pick(user, 'Condition 1 field', 'Off-move sighting');
-  await pick(user, 'Condition 1 value', 'No');
-
-  await pick(user, 'Condition 1 operator', 'is null');
+  renderEdit({
+    ...RULE, conditions: [{ field: 'scan.off_move', operator: 'is_null', value: null }],
+  });
   expect(screen.queryByRole('combobox', { name: 'Condition 1 value' })).toBeNull();
+
   await pick(user, 'Condition 1 operator', 'equals');
 
   expect(combobox('Condition 1 value').value).toBe('Yes');
+});
+
+// ── a yes/no field offers only "equals" ──────────────────────────────
+
+it('a yes/no field offers only the operator "equals"; every other field offers them all', async () => {
+  const user = userEvent.setup();
+  renderCreate();
+  await user.click(screen.getByRole('button', { name: 'Add condition' }));
+  const everyOperator = ['equals', 'not equals', 'is null'];
+
+  // Asset status (a status field) is the first field
+  expect(await offered(user, 'Condition 1 operator')).toEqual(everyOperator);
+  await pick(user, 'Condition 1 field', 'Off-move sighting');
+  expect(await offered(user, 'Condition 1 operator')).toEqual(['equals']);
+  await pick(user, 'Condition 1 field', 'Scan device');
+  expect(await offered(user, 'Condition 1 operator')).toEqual(everyOperator);
+});
+
+it('a condition moved onto a yes/no field takes "equals" and starts at Yes, whatever operator it had', async () => {
+  const user = userEvent.setup();
+  api.createStatusRule.mockResolvedValue({ ...RULE, id: 'new-1' });
+  renderCreate();
+  await fillBasics(user);
+  await user.click(screen.getByRole('button', { name: 'Add condition' }));
+
+  await pick(user, 'Condition 1 operator', 'not equals');
+  await pick(user, 'Condition 1 field', 'Off-move sighting');
+  expect(combobox('Condition 1 operator').value).toBe('equals');
+  expect(combobox('Condition 1 value').value).toBe('Yes');
+
+  // one that takes no value: the value box comes back
+  await pick(user, 'Condition 1 field', 'Scan device');
+  await pick(user, 'Condition 1 operator', 'is null');
+  expect(screen.queryByLabelText('Condition 1 value')).toBeNull();
+  await pick(user, 'Condition 1 field', 'Off-move sighting');
+  expect(combobox('Condition 1 operator').value).toBe('equals');
+  expect(combobox('Condition 1 value').value).toBe('Yes');
+
+  await user.click(screen.getByRole('button', { name: 'Add action' }));
+  await createRule(user);
+  await waitFor(() => expect(api.createStatusRule).toHaveBeenCalledTimes(1));
+  expect(api.createStatusRule).toHaveBeenCalledWith(body({
+    conditions: [{ field: 'scan.off_move', operator: 'equals', value: 'true' }],
+    actions: [{ action_type: 'set_asset_status', params: { status: 'good' } }],
+  }));
+});
+
+it('a new condition starts on "equals" when the first field is a yes/no one', async () => {
+  const user = userEvent.setup();
+  const [status, device, offMove] = SCHEMA.condition_fields;
+  const [equals, notEquals, isNull] = SCHEMA.operators;
+  renderCreate({
+    ...SCHEMA,
+    condition_fields: [offMove, status, device],
+    operators: [notEquals, equals, isNull],        // the first one that takes a value isn't "equals"
+  });
+
+  await user.click(screen.getByRole('button', { name: 'Add condition' }));
+
+  expect(combobox('Condition 1 field').value).toBe('Off-move sighting');
+  expect(combobox('Condition 1 operator').value).toBe('equals');
+  expect(combobox('Condition 1 value').value).toBe('Yes');
+});
+
+it('a stored condition on a yes/no field with another operator keeps it: the box reads blank and a save sends it as stored', async () => {
+  const user = userEvent.setup();
+  api.updateStatusRule.mockResolvedValue(RULE);
+  const stored = { field: 'scan.off_move', operator: 'not_equals', value: 'false' };
+  renderEdit({ ...RULE, conditions: [stored] });
+
+  expect(combobox('Condition 1 operator').value).toBe('');
+  expect(combobox('Condition 1 value').value).toBe('No');
+  expect(await offered(user, 'Condition 1 operator')).toEqual(['equals']);
+  expect(combobox('Condition 1 operator').value).toBe('');
+
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateStatusRule).toHaveBeenCalledTimes(1));
+  expect(api.updateStatusRule.mock.calls[0][1].conditions).toEqual([stored]);
 });
 
 it('a field with choices starts empty, and a text field too: only a yes/no field starts at a value', async () => {
@@ -806,6 +895,39 @@ it('Send a notification: the group list not loading is named in the same way', a
 
   expect(await screen.findByText('Could not load the group list.')).not.toBeNull();
   expect(screen.queryByText('Could not load the recipient list.')).toBeNull();
+});
+
+it('Send a notification: a viewer without notification permissions asks for no list, and each picker says it has none', async () => {
+  const user = userEvent.setup();
+  auth.can = (resource) => resource === 'status_rules';
+  renderCreate();
+  await addNotify(user);
+
+  expect(await screen.findByText('Could not load the recipient list.')).not.toBeNull();
+  expect(screen.getByText('Could not load the group list.')).not.toBeNull();
+  expect(api.listNotificationRecipients).not.toHaveBeenCalled();
+  expect(api.listNotificationGroups).not.toHaveBeenCalled();
+  expect(combobox('Action 1 people').disabled).toBe(false);   // not left off for ever
+  expect(combobox('Action 1 groups').disabled).toBe(false);
+});
+
+it('Send a notification: a rule edited without notification permissions shows its ids, and saves them unchanged', async () => {
+  const user = userEvent.setup();
+  auth.can = (resource) => resource === 'status_rules';
+  api.updateStatusRule.mockResolvedValue(RULE);
+  const notify = { people: ['p1'], groups: ['g1'], watchers: true };
+  renderEdit({ ...RULE, actions: [{ action_type: 'notify', params: notify }] });
+
+  expect(await screen.findByRole('button', { name: 'Remove p1' })).not.toBeNull();
+  expect(screen.getByRole('button', { name: 'Remove g1' })).not.toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+
+  await waitFor(() => expect(api.updateStatusRule).toHaveBeenCalledTimes(1));
+  expect(api.updateStatusRule.mock.calls[0][1].actions).toEqual([
+    { action_type: 'notify', params: notify },
+  ]);
+  expect(api.listNotificationRecipients).not.toHaveBeenCalled();
+  expect(api.listNotificationGroups).not.toHaveBeenCalled();
 });
 
 // ── one Send a notification action per rule ──────────────────────────

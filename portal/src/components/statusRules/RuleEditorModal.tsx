@@ -10,7 +10,11 @@
  * Every dropdown is the house ComboBox (type to filter); a yes/no value
  * reads Yes / No and is stored as "true" / "false" (a condition) or true /
  * false (an action's parameter). A new condition on a yes/no field starts
- * at "true".
+ * at "true". A yes/no field offers only the operator "equals": Yes / No
+ * already says either way, and another operator can build a rule that never
+ * fires (an off-move sighting runs only the rules that say "equals Yes"). A
+ * stored condition that has another one keeps it, its operator box reading
+ * blank until another is picked.
  *
  * The Send a notification action's parameters are People and Groups
  * (ChipPickers over the notification recipients and groups, asked for once
@@ -140,9 +144,23 @@ function startValue(
   return field?.type === 'bool' ? 'true' : '';
 }
 
+/** The one operator a yes/no field offers: Yes / No already says either way, and another one
+ *  (not equals, ...) only gives a second way to say it, or builds a rule that never fires: the
+ *  engine runs an off-move sighting just for a rule that says "equals Yes". */
+const BOOL_OPERATOR = 'equals';
+
+/** The operators a condition on this field offers. */
+const operatorsFor = (
+  schema: StatusRuleSchema, field: RuleSchemaField | undefined,
+): RuleSchemaOperator[] => (field?.type === 'bool'
+  ? schema.operators.filter((o) => o.key === BOOL_OPERATOR) : schema.operators);
+
+const operatorChoices = (operators: RuleSchemaOperator[]): ComboOption[] =>
+  operators.map((o) => ({ value: o.key, label: o.label }));
+
 function defaultCondition(schema: StatusRuleSchema): StatusRuleCondition {
   const field = schema.condition_fields[0];
-  const operator = schema.operators.find((o) => o.needs_value) ?? schema.operators[0];
+  const operator = operatorsFor(schema, field).find((o) => o.needs_value) ?? schema.operators[0];
   return {
     field: field?.key ?? '', operator: operator?.key ?? '', value: startValue(field, operator),
   };
@@ -267,8 +285,6 @@ export default function RuleEditorModal({ schema, rule, onClose, onSaved }: Prop
     () => schema.match_types.map((o) => ({ value: o.value, label: o.label })), [schema]);
   const fieldOptions = useMemo<ComboOption[]>(
     () => schema.condition_fields.map((f) => ({ value: f.key, label: f.label })), [schema]);
-  const operatorOptions = useMemo<ComboOption[]>(
-    () => schema.operators.map((o) => ({ value: o.key, label: o.label })), [schema]);
 
   const fieldFor = (key: string) => schema.condition_fields.find((f) => f.key === key);
   const actionDefFor = (key: string) => schema.actions.find((a) => a.key === key);
@@ -284,8 +300,11 @@ export default function RuleEditorModal({ schema, rule, onClose, onSaved }: Prop
   const onFieldChange = (i: number, fieldKey: string) => {
     const condition = conditions[i];
     if (!condition || condition.field === fieldKey) return;
-    const op = schema.operators.find((o) => o.key === condition.operator);
-    updateCondition(i, { field: fieldKey, value: startValue(fieldFor(fieldKey), op) });
+    const next = fieldFor(fieldKey);
+    // A yes/no field offers only "equals", so a condition moved onto one takes it.
+    const operatorKey = next?.type === 'bool' ? BOOL_OPERATOR : condition.operator;
+    const op = schema.operators.find((o) => o.key === operatorKey);
+    updateCondition(i, { field: fieldKey, operator: operatorKey, value: startValue(next, op) });
   };
 
   const onOperatorChange = (i: number, opKey: string) => {
@@ -411,7 +430,8 @@ export default function RuleEditorModal({ schema, rule, onClose, onSaved }: Prop
                               ariaLabel={`Condition ${i + 1} field`}
                               onChange={(v) => onFieldChange(i, v)} /></div>
                   <div><label>Operator</label>
-                    <ComboBox options={operatorOptions} value={c.operator} disabled={saving}
+                    <ComboBox options={operatorChoices(operatorsFor(schema, field))}
+                              value={c.operator} disabled={saving}
                               ariaLabel={`Condition ${i + 1} operator`}
                               onChange={(v) => onOperatorChange(i, v)} /></div>
                   <div><label>Value</label>
