@@ -330,11 +330,28 @@ describe('describeEntry', () => {
       expect(written(['direct'])).toBe('Named');
     });
 
-    it('lists every route, joined with commas, in the order the API logged them', () => {
+    it('lists every route, joined with commas: their own watch, then groups\', then rules\', then being named', () => {
+      // the API logs them sorted by code, so "direct" comes first and "watch" last
       expect(written(
         ['direct', 'group:g1', 'group:g2', 'rule:r1', 'watch'],
         { 'group:g1': 'Group A', 'group:g2': 'Group B', 'rule:r1': 'Rule A' },
-      )).toBe('Named, Watching · Group A, Watching · Group B, Rule · Rule A, Watching · their own');
+      )).toBe('Watching · their own, Watching · Group A, Watching · Group B, Rule · Rule A, Named');
+    });
+
+    it('keeps the API\'s order among routes of one kind, not an order of the names', () => {
+      expect(written(
+        ['group:g1', 'group:g2', 'rule:r1', 'rule:r2'],
+        { 'group:g1': 'Group B', 'group:g2': 'Group A', 'rule:r1': 'Rule B', 'rule:r2': 'Rule A' },
+      )).toBe('Watching · Group B, Watching · Group A, Rule · Rule B, Rule · Rule A');
+      // routes out of their usual order are put in it by kind alone
+      expect(written(['rule:r1', 'group:g1', 'direct', 'watch'], { 'group:g1': 'Group A', 'rule:r1': 'Rule A' }))
+        .toBe('Watching · their own, Watching · Group A, Rule · Rule A, Named');
+    });
+
+    it('does not change the list it is given', () => {
+      const via = ['direct', 'watch'];
+      written(via);
+      expect(via).toEqual(['direct', 'watch']);
     });
 
     it('a group or rule whose name was not logged reads as "Watching" or "Rule" alone', () => {
@@ -346,9 +363,10 @@ describe('describeEntry', () => {
       expect(written(['rule:r1'], { 'rule:r1': 7 })).toBe('Rule');
     });
 
-    it('shows a route it does not know as the route itself', () => {
+    it('shows a route it does not know as the route itself, after the ones it does', () => {
       expect(written(['device:d1'])).toBe('device:d1');
       expect(written(['watch', 'device:d1'])).toBe('Watching · their own, device:d1');
+      expect(written(['device:d1', 'direct', 'watch'])).toBe('Watching · their own, Named, device:d1');
       expect(written(['constructor'])).toBe('constructor');   // never an Object.prototype member
     });
 

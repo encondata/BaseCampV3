@@ -168,15 +168,31 @@ function routeText(route: string, routeNames: Record<string, unknown>): string {
   return route;
 }
 
-/** The routes of an inbox row, joined with ", " in the order the API logged
- *  them (it sorts them): `detail.via`, a list of "watch", "direct",
- *  "group:<id>" and "rule:<id>", with `detail.names` giving the groups' and
- *  rules' names by route. Empty when none was logged. Only the event sweep's
- *  inbox rows carry this list: on a queued email `via` is a string (where the
- *  address came from), so ask for it of the two inbox events alone. */
+/** Where a route reads among the others: the person's own watch first, then
+ *  groups', then rules', then being named; a route this file does not know
+ *  (a newer API) comes last. */
+function routeRank(route: string): number {
+  if (route === 'watch') return 0;
+  if (route.startsWith('group:')) return 1;
+  if (route.startsWith('rule:')) return 2;
+  if (route === 'direct') return 3;
+  return 4;
+}
+
+/** The routes of an inbox row, joined with ", ": `detail.via`, a list of
+ *  "watch", "direct", "group:<id>" and "rule:<id>", with `detail.names` giving
+ *  the groups' and rules' names by route. They read the person's own watch
+ *  first, then groups', then rules', then being named, and within one kind in
+ *  the order the API logged them (the API sorts them by code, which would put
+ *  "Named" ahead of the person's own watch). Empty when none was logged. Only
+ *  the event sweep's inbox rows carry this list: on a queued email `via` is a
+ *  string (where the address came from), so ask for it of the two inbox events
+ *  alone. */
 function routesText(d: Record<string, unknown>): string {
   const routeNames = isMap(d.names) ? d.names : {};
-  return names(d.via).map((route) => routeText(route, routeNames)).join(', ');
+  // names() builds a new list, and the sort is stable: the API's order holds within a rank.
+  return names(d.via).sort((a, b) => routeRank(a) - routeRank(b))
+    .map((route) => routeText(route, routeNames)).join(', ');
 }
 
 /** "OSError" or "SMTPResponseException, SMTP 452": the failure's class and code. */

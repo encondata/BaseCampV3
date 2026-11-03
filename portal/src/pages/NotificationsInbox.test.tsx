@@ -6,6 +6,9 @@
  * context (so the bell's badge follows) and show on the page at once through
  * a local overlay; Mark all read / Clear read reload page 1.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -142,6 +145,30 @@ it('rows are the bell rows: kind icon, unread dot, body and relative time', asyn
   expect(within(a).getByText('NAP11')).toBeTruthy();
   expect(b.className).not.toContain('unread');
   expect(b.querySelector('.notif-icon-report_failed')).toBeTruthy();
+});
+
+it('a notification about several items keeps one line per item in its body', async () => {
+  const body = 'Truck A: Created → Active\nTruck B: Created → Active';
+  api.listInboxPage.mockResolvedValue(page([
+    item('g', { kind: 'truck_status_changed', category: 'trucks', title: 'Truck status changed (2)', body }),
+  ]));
+  renderPage();
+  await screen.findByText('Truck status changed (2)');
+
+  const row = rowOf('Truck status changed (2)');
+  const text = row.querySelector('.notif-body') as HTMLElement;
+  expect(text.textContent).toBe(body);          // the break is in the text...
+  // ...and the stylesheet shows it. jsdom lays nothing out, so ask the cascade of the real
+  // toast.css what .notif-body does with a line break (and that the time under it is not touched).
+  const style = document.createElement('style');
+  style.textContent = readFileSync(join(__dirname, '../styles/toast.css'), 'utf8');
+  document.head.appendChild(style);
+  try {
+    expect(getComputedStyle(text).whiteSpace).toBe('pre-line');
+    expect(getComputedStyle(row.querySelector('.notif-time') as HTMLElement).whiteSpace).not.toBe('pre-line');
+  } finally {
+    style.remove();
+  }
 });
 
 it('All | Unread is a pressed-state segmented control; Unread asks for unread only', async () => {
