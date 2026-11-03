@@ -291,7 +291,7 @@ async def watch_recheck(db: AsyncSession, notification: Notification) -> str | N
     is known to be active, and before their Email switch:
 
     - `no_access`: the person can open none of the notification's subjects now (an initiative,
-      site or truck that is gone has no viewers).
+      site, truck or device that is gone has no viewers).
     - `not_watching`: none of its events reaches the person any more. A route still holds when
       the code named them, they belong to an Active group the code named, or a watch matches
       (their own, or an Active group's they belong to): `candidates`, asked again now. So

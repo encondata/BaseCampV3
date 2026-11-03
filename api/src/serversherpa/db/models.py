@@ -2057,8 +2057,8 @@ class NotificationHeld(Base):
 
 
 # The things a watch can point at (migration 0113). At most one is set; none is an
-# Everything watch. The device and wiki columns are in place for the slices that make
-# those watchable; the API accepts initiatives, sites and trucks until then.
+# Everything watch. The wiki columns are in place for the slice that makes those
+# watchable; the API accepts initiatives, sites, trucks and devices until then.
 _WATCH_THINGS = ("initiative_id", "site_id", "truck_id", "device_id",
                  "wiki_space_id", "wiki_node_id")
 _WATCH_THING_COUNT = f"num_nonnulls({', '.join(_WATCH_THINGS)})"

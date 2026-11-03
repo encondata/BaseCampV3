@@ -1,14 +1,16 @@
-"""Watches. A person, or a notification group, watches an initiative, a site or a truck, or
-chosen kinds of event everywhere (an "Everything" watch): `NotificationWatch`, migration 0113.
-This module validates and stores them, lists what a person hears about, and works out which
-watches an event reaches (`matching_routes`, for the event sweep and the send-time re-check) and
-which of a person's would hear a kind of event (`watches_hearing`, for Check delivery).
+"""Watches. A person, or a notification group, watches an initiative, a site, a truck or a
+device, or chosen kinds of event everywhere (an "Everything" watch): `NotificationWatch`,
+migration 0113. This module validates and stores them, lists what a person hears about, and works
+out which watches an event reaches (`matching_routes`, for the event sweep and the send-time
+re-check) and which of a person's would hear a kind of event (`watches_hearing`, for Check
+delivery).
 
 A watch on a thing hears the events whose subject is that thing, or that reach it
 (`NotificationEvent.reaches`), so a watch on an initiative also hears its child initiatives.
 An Everything watch names its events, and only a kind marked `everywhere` can be named. Access
 is not stored: a watch whose owner can't open its thing stays in place and is neither listed
-nor delivered until they can again.
+nor delivered until they can again. Only the devices notifications check can be watched
+(services/device_online.py `covered`).
 
 Like notify() and announce(), nothing here commits: the routes do.
 
@@ -18,6 +20,7 @@ import uuid
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -25,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.access.resolver import AccessInfo, resolve_access_many
 from serversherpa.db.models import (
+    Device,
     Initiative,
     NotificationEvent,
     NotificationGroup,
@@ -36,6 +40,7 @@ from serversherpa.db.models import (
 from serversherpa.notifications.access import viewers
 from serversherpa.notifications.events import Thing
 from serversherpa.notifications.kinds import KINDS
+from serversherpa.services.device_online import covered, device_link
 
 EVERYTHING = "everything"
 
@@ -47,26 +52,30 @@ _UNIQUE_TARGET = "uq_notification_watches_target"
 @dataclass(frozen=True)
 class ThingSpec:
     """What a kind of thing is made of: the watch column holding its id, its table, what the
-    portal calls it, and the path of its page."""
+    portal calls it, and where its page is, worked out from the loaded row (a device's depends on
+    what kind it is). `watchable` is for a kind of which only some rows can be watched: it says
+    whether this row can. None means every row can."""
 
     column: str
     model: type
     label: str
-    link: Callable[[uuid.UUID], str]
+    link: Callable[[Any], str]
+    watchable: Callable[[Any], bool] | None = None
 
 
-# The things the API takes a watch on. The device and wiki columns exist (see _THING_COLUMNS)
-# for the slices that make those watchable, and join this table then.
+# The things the API takes a watch on. The wiki columns exist (see _THING_COLUMNS) for the slice
+# that makes those watchable, and join this table then. A device can be watched only while
+# notifications check it (an RFID Station, a fixed reader or an approved router).
 THINGS: Mapping[str, ThingSpec] = {
     "initiative": ThingSpec("initiative_id", Initiative, "Initiative",
-                            lambda thing_id: f"/initiatives/{thing_id}"),
-    "site": ThingSpec("site_id", Site, "Site", lambda thing_id: f"/sites/{thing_id}"),
-    "truck": ThingSpec("truck_id", Truck, "Truck",
-                       lambda thing_id: f"/logistics/trucks/{thing_id}"),
+                            lambda row: f"/initiatives/{row.id}"),
+    "site": ThingSpec("site_id", Site, "Site", lambda row: f"/sites/{row.id}"),
+    "truck": ThingSpec("truck_id", Truck, "Truck", lambda row: f"/logistics/trucks/{row.id}"),
+    "device": ThingSpec("device_id", Device, "Device", device_link, watchable=covered),
 }
 
 # Every column of a watch that names a thing. An Everything watch has none of them set, so this
-# list has to hold them all, the ones THINGS does not take yet included.
+# list has to hold them all, the ones THINGS does not take yet (the wiki's) included.
 _THING_COLUMNS = ("initiative_id", "site_id", "truck_id", "device_id",
                   "wiki_space_id", "wiki_node_id")
 
@@ -144,11 +153,14 @@ async def add_watch(db: AsyncSession, *, thing: str, thing_id: uuid.UUID | None,
 
     422 `invalid_thing` for an unknown thing, an Everything watch given an id and any other
     thing without one; 422 for kinds that don't fit (clean_kinds); 404 `thing_not_found` when
-    the thing is missing or the viewer can't open it; 409 `already_watching` when the
-    subscriber already has this watch, including when a concurrent request wins the insert."""
+    the thing is missing or the viewer can't open it; 422 `invalid_thing` again for a thing
+    the viewer can open but that can't be watched (a device notifications don't check);
+    409 `already_watching` when the subscriber already has this watch, including when a
+    concurrent request wins the insert."""
     if (person_id is None) == (group_id is None):
         raise ValueError("a watch is for exactly one of person_id and group_id")
     fields: dict[str, uuid.UUID] = {}
+    spec: ThingSpec | None = None
     if thing == EVERYTHING:
         if thing_id is not None:
             raise WatchError(422, "invalid_thing")
@@ -163,6 +175,13 @@ async def add_watch(db: AsyncSession, *, thing: str, thing_id: uuid.UUID | None,
     if thing_id is not None and viewer_id not in await viewers(
             db, Thing(thing, thing_id), [viewer_id], access={viewer_id: viewer_access}):
         raise WatchError(404, "thing_not_found")
+    # Only now that the viewer is known to see the thing may a refusal say what it is.
+    if spec is not None and spec.watchable is not None:
+        row = await db.get(spec.model, thing_id)
+        if row is None:                 # deleted since the check above
+            raise WatchError(404, "thing_not_found")
+        if not spec.watchable(row):
+            raise WatchError(422, "invalid_thing")
     if await _existing(db, person_id, group_id, thing, thing_id) is not None:
         raise WatchError(409, "already_watching")
 
@@ -207,34 +226,34 @@ def _newest_first(query):
     return query.order_by(NotificationWatch.created_at.desc(), NotificationWatch.id)
 
 
-async def _names(db: AsyncSession, things: Iterable[Thing]) -> dict[Thing, str]:
-    """The name of each thing that is still there, in one query per kind of thing."""
+async def _loaded(db: AsyncSession, things: Iterable[Thing]) -> dict[Thing, Any]:
+    """The row of each thing that is still there, in one query per kind of thing."""
     ids: dict[str, list[uuid.UUID]] = defaultdict(list)
     for thing in things:
         ids[thing.type].append(thing.id)
-    names: dict[Thing, str] = {}
+    found: dict[Thing, Any] = {}
     for kind, thing_ids in ids.items():
         model = THINGS[kind].model
-        for thing_id, name in await db.execute(
-                select(model.id, model.name).where(model.id.in_(thing_ids))):
-            names[Thing(kind, thing_id)] = name
-    return names
+        for row in await db.scalars(select(model).where(model.id.in_(thing_ids))):
+            found[Thing(kind, row.id)] = row
+    return found
 
 
 async def _views(db: AsyncSession, rows: Sequence[_Row]) -> list[WatchView]:
     """A view of each watch, in order. One on a thing that is gone, or on a kind of thing this
     module does not take yet, is left out."""
-    names = await _names(db, [thing for watch, _ in rows
-                              if (thing := thing_of(watch)) is not None])
+    found = await _loaded(db, [thing for watch, _ in rows
+                               if (thing := thing_of(watch)) is not None])
     views = []
     for watch, group in rows:
         thing = thing_of(watch)
         if thing is None:
             if _is_everything(watch):
                 views.append(WatchView(watch, EVERYTHING, None, None, None, group))
-        elif thing in names:
-            views.append(WatchView(watch, thing.type, thing.id, names[thing],
-                                   THINGS[thing.type].link(thing.id), group))
+        elif thing in found:
+            row = found[thing]
+            views.append(WatchView(watch, thing.type, thing.id, row.name,
+                                   THINGS[thing.type].link(row), group))
     return views
 
 

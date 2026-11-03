@@ -1,7 +1,8 @@
 """Your own watches: GET and POST /auth/me/watches, GET /auth/me/watches/state and
-PATCH and DELETE /auth/me/watches/{id}. A watch is on an initiative, a site or a truck, or on
-chosen events everywhere (an Everything watch). /me lists the person's own watches and those of
-the Active groups they belong to, for the things they can open right now.
+PATCH and DELETE /auth/me/watches/{id}. A watch is on an initiative, a site, a truck or a device
+(tests/test_device_watches.py covers what is special about devices), or on chosen events
+everywhere (an Everything watch). /me lists the person's own watches and those of the Active
+groups they belong to, for the things they can open right now.
 
 Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (sections 1, 2 and 10)"""
 
@@ -241,13 +242,13 @@ async def test_errors(client, db):
     ghost = uuid.uuid4()
 
     # something that is not a thing to watch, now or until its slice
-    for thing in ("bogus", "device", "wiki_node", ""):
+    for thing in ("bogus", "wiki_node", ""):
         resp = await _post(client, me, thing, ghost)
         assert (resp.status_code, _code(resp)) == (422, "invalid_thing"), thing
     # Everything has no id; every other thing needs one
     resp = await _post(client, me, EVERYTHING, initiative.id, kinds=[INITIATIVE_CHANGED])
     assert (resp.status_code, _code(resp)) == (422, "invalid_thing")
-    for thing in ("initiative", "site", "truck"):
+    for thing in ("initiative", "site", "truck", "device"):
         resp = await _post(client, me, thing)
         assert (resp.status_code, _code(resp)) == (422, "invalid_thing"), thing
         resp = await _post(client, me, thing, ghost)
@@ -325,7 +326,7 @@ async def test_state_counts_only_my_own_watch(client, db):
     assert (state.status_code, state.json()["watching"]) == (200, False)
 
 
-@pytest.mark.parametrize("thing", ["bogus", "device", EVERYTHING, ""])
+@pytest.mark.parametrize("thing", ["bogus", "wiki_node", EVERYTHING, ""])
 async def test_state_of_an_unknown_thing_is_refused(client, db, thing):
     me = await _login(db, client, "A")
     resp = await _state(client, me, thing, uuid.uuid4())

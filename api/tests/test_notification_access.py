@@ -1,7 +1,7 @@
 """Who can see a thing (notifications/access.py). `viewers` has to make exactly the decision a
 thing's own page makes, for people other than the one asking. So the equivalence tests here sign
-real people in, ask the page (GET /initiatives, /sites or /trucks/{id}) and compare the people who
-got a 200 with what `viewers` says for the same people.
+real people in, ask the page (GET /initiatives, /sites, /trucks or /devices/{id}) and compare the
+people who got a 200 with what `viewers` says for the same people.
 
 Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (Anti-goals and section 4)"""
 
@@ -29,7 +29,8 @@ from serversherpa.notifications.access import VIEWABLE_THINGS, active_ids, thing
 from serversherpa.notifications.events import Thing
 from tests.test_sites_api import make_login
 
-PAGES = {"initiative": "/initiatives", "site": "/sites", "truck": "/trucks"}
+PAGES = {"initiative": "/initiatives", "site": "/sites", "truck": "/trucks",
+         "device": "/devices"}
 # Devices are deleted outright, never archived.
 ARCHIVABLE = tuple(kind for kind in VIEWABLE_THINGS if kind != "device")
 
@@ -64,8 +65,9 @@ async def _signed_in(db, client, name, role=None, **kwargs) -> Login:
 
 
 async def _people(db, client, client_a, client_b, partner) -> dict[str, Login]:
-    """Everyone the equivalence tests ask, signed in. Most differ in one way, and sites and
-    trucks each have a person denied just that one, so a mix-up between the resources shows."""
+    """Everyone the equivalence tests ask, signed in. Most differ in one way, and sites, trucks
+    and devices each have a person denied just that one, so a mix-up between the resources
+    shows."""
     people = {}
     for name, spec in {
         "admin": {"role": "admin"},
@@ -77,9 +79,11 @@ async def _people(db, client, client_a, client_b, partner) -> dict[str, Login]:
         "staff_denied_initiatives": {"role": "staff", "view": {"initiatives": False}},
         "staff_denied_sites": {"role": "staff", "view": {"sites": False}},
         "staff_denied_trucks": {"role": "staff", "view": {"trucks": False}},
-        # Sites and trucks are global-only: no override opens them to a client's user.
+        "staff_denied_hardware": {"role": "staff", "view": {"scanning_hardware": False}},
+        # Sites, trucks and devices are global-only: no override opens them to a client's user.
         "client_a_granted": {"role": "client_viewer", "client_id": client_a.id,
-                             "view": {"sites": True, "trucks": True}},
+                             "view": {"sites": True, "trucks": True,
+                                      "scanning_hardware": True}},
     }.items():
         people[name] = await _signed_in(db, client, name, **spec)
     return people
@@ -130,8 +134,9 @@ async def test_initiative_viewers_match_the_page(client, db):
     await db.commit()
     people = await _people(db, client, client_a, client_b, partner)
     everyone = [login.id for login in people.values()]
-    # Staff are global, so the denied-sites and denied-trucks ones still see initiatives.
-    staff_side = ("admin", "staff", "staff_denied_sites", "staff_denied_trucks")
+    # Staff are global, so the ones denied sites, trucks or devices still see initiatives.
+    staff_side = ("admin", "staff", "staff_denied_sites", "staff_denied_trucks",
+                  "staff_denied_hardware")
 
     for initiative, expected in (
         # a client's initiative: its own users and staff, not another client's, a partner's,
@@ -156,13 +161,32 @@ async def test_site_and_truck_viewers_match_the_pages(client, db):
     everyone = [login.id for login in people.values()]
 
     for kind, row, expected in (
-        ("site", site, ("admin", "staff", "staff_denied_initiatives", "staff_denied_trucks")),
-        ("truck", truck, ("admin", "staff", "staff_denied_initiatives", "staff_denied_sites")),
+        ("site", site, ("admin", "staff", "staff_denied_initiatives", "staff_denied_trucks",
+                        "staff_denied_hardware")),
+        ("truck", truck, ("admin", "staff", "staff_denied_initiatives", "staff_denied_sites",
+                          "staff_denied_hardware")),
     ):
         seen = await _page_viewers(client, people, f"{PAGES[kind]}/{row.id}")
         assert seen == _who(people, *expected), kind
         found = await viewers(db, Thing(kind, row.id), everyone)
         assert found == seen, kind
+
+
+async def test_device_viewers_match_the_page(client, db):
+    """A device opens with `scanning_hardware:view` (the device lists and the kiosk page), global
+    only. Everyone denied some other resource still opens it; the one denied just this one, and
+    the client's user an override tries to let in, do not."""
+    client_a, client_b, partner = await _world(db)
+    device = _row("device", "Device A")
+    db.add(device)
+    await db.commit()
+    people = await _people(db, client, client_a, client_b, partner)
+    everyone = [login.id for login in people.values()]
+
+    seen = await _page_viewers(client, people, f"{PAGES['device']}/{device.id}")
+    assert seen == _who(people, "admin", "staff", "staff_denied_initiatives",
+                        "staff_denied_sites", "staff_denied_trucks")
+    assert await viewers(db, Thing("device", device.id), everyone) == seen
 
 
 @pytest.mark.parametrize("kind", ARCHIVABLE)

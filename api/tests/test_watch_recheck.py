@@ -1,15 +1,15 @@
 """The send-time re-check of an email the event sweep wrote (event_sweep.watch_recheck, asked by
 email.recheck_notification for a queued email and for a held one), and the watches Check delivery
-lists. Worlds are built the way the app builds them: through the status-change helpers and the
-real sweep, so the notification's payload is genuine. What happens meanwhile (a watch deleted, a
-group paused, access taken away) is done in a session of its own, as another request would do
-it, and the re-check is asked in yet another, as the delivery worker asks it. Nothing is ever
-sent to a real server.
+lists. Worlds are built the way the app builds them: through the status-change helpers, the real
+device check and the real sweep, so the notification's payload is genuine. What happens meanwhile
+(a watch deleted, a group paused, access taken away, a device seen again) is done in a session of
+its own, as another request would do it, and the re-check is asked in yet another, as the delivery
+worker asks it. Nothing is ever sent to a real server.
 
-Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (sections 4 and 8)"""
+Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (sections 4, 5 and 8)"""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -18,6 +18,7 @@ from sqlalchemy import delete, select, update
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
     Client,
+    Device,
     EmailOutbox,
     Initiative,
     Notification,
@@ -35,10 +36,14 @@ from serversherpa.mail import outbox as outbox_mod
 from serversherpa.mail.delivery import deliver_once
 from serversherpa.notifications import email as email_mod
 from serversherpa.notifications.check import check_delivery
-from serversherpa.notifications.email import recheck_before_send
+from serversherpa.notifications.company import load_company_settings
+from serversherpa.notifications.email import recheck_before_send, recheck_notification
 from serversherpa.notifications.event_sweep import run_events_once, watch_recheck
 from serversherpa.notifications.events import EventItem, announce
+from serversherpa.notifications.kinds import kind_info
 from serversherpa.notifications.summary import run_summaries_once
+from tests.test_device_check import _check as _device_check
+from tests.test_device_check import _notified_at, _reader, _seen, _station
 from tests.test_mail_delivery import FakeSend, _assert_dropped, _get, _run
 from tests.test_notification_event_sweep import (
     INITIATIVE_CHANGED,
@@ -47,6 +52,7 @@ from tests.test_notification_event_sweep import (
     _group,
     _initiative,
     _initiative_changed,
+    _notifications,
     _on,
     _person,
     _site,
@@ -54,6 +60,7 @@ from tests.test_notification_event_sweep import (
     _watch,
 )
 
+OFFLINE = "device_offline"
 CHICAGO = ZoneInfo("America/Chicago")
 # Quiet hours from 9:00 PM to 6:00 AM, every day: an email written at EVENING is held for the
 # summary, which is due an hour before they end.
@@ -102,6 +109,31 @@ async def _queued(db):
     mail = await _mail_of(person)
     assert (mail.status, mail.kind) == ("queued", INITIATIVE_CHANGED)
     return person, initiative, mail
+
+
+async def _devices_offline(db, count=1, *, prefs=None):
+    """Person A watches each of `count` devices (an RFID Station, then a fixed reader), all of
+    which have stopped checking in. The device check has announced them and the sweep has turned
+    that into one notification. Returns the person and the devices."""
+    person = await _person(db, "A", prefs=prefs)
+    devices = [await _station(db, "Device A")]
+    if count == 2:      # the reader went quiet a minute after the station: that is their order
+        devices.append(await _reader(db, "Device B", ago=timedelta(minutes=9)))
+    for device in devices:
+        await _watch(db, person, _on(device, "device"))
+    assert await _device_check() == count
+    assert await _sweep() == 1
+    return person, devices
+
+
+async def _back(*devices) -> None:
+    """The devices check in again, and the next device check clears their notices."""
+    later = NOW + timedelta(minutes=1)
+    for device in devices:
+        await _seen(device, later)
+    assert await _device_check(later + timedelta(seconds=30)) == 0
+    for device in devices:
+        assert await _notified_at(device) is None
 
 
 async def _pause(group, enabled=False) -> None:
@@ -345,6 +377,175 @@ async def test_a_notification_that_names_no_events_is_not_asked(db):
         note = Notification(person_id=uuid.uuid4(), kind="report_ready", title="Ready",
                             payload=payload)
         assert await watch_recheck(db, note) is None
+
+
+# ── a Device offline email whose devices are back ───────────────────
+
+async def test_held_email_dropped_when_back_online(db, email_on, clock):
+    """Review Focus: a Device offline email held for the summary is dropped at send time once its
+    device has been seen again. The delivery log says `back_online`, and the inbox row stays as
+    it was."""
+    person = await _person(db, "A", prefs=QUIET)
+    station = await _station(db, "Device A")
+    await _watch(db, person, _on(station, "device"))
+    assert await _device_check() == 1
+    clock(EVENING)
+    assert await _sweep() == 1
+    [held] = await _held()
+    assert (held.person_id, held.kind, held.category) == (person.id, OFFLINE, "devices")
+
+    await _back(station)
+    clock(MORNING)
+    assert await run_summaries_once(get_sessionmaker(), now=MORNING) == 0      # nothing to say
+    assert await _held() == []
+    assert await _outbox() == []
+    [dropped] = await _skipped()
+    assert (dropped.person_id, dropped.notification_id, dropped.reason) == (
+        person.id, held.notification_id, "back_online")
+    assert (dropped.kind, dropped.category) == (OFFLINE, "devices")
+
+    # the notice itself is still in their inbox, unread and visible
+    [note] = await _notifications(person)
+    assert (note.id, note.title) == (held.notification_id, "Device A is offline")
+    assert (note.read_at, note.dismissed_at) == (None, None)
+
+
+async def test_held_email_of_a_device_still_offline_is_summarized(db, email_on, clock):
+    """The same world with the device still down: the summary goes."""
+    person = await _person(db, "A", prefs=QUIET)
+    station = await _station(db, "Device A")
+    await _watch(db, person, _on(station, "device"))
+    assert await _device_check() == 1
+    clock(EVENING)
+    assert await _sweep() == 1
+
+    clock(MORNING)
+    assert await run_summaries_once(get_sessionmaker(), now=MORNING) == 1
+    [summary] = await _outbox()
+    assert (summary.template, summary.person_id) == ("notification_summary", person.id)
+    assert await _skipped() == []
+
+
+async def test_one_device_still_offline_keeps_the_email(db, email_on):
+    """A burst names several devices, and the email goes while any of them is still offline."""
+    person, [station, reader] = await _devices_offline(db, 2)
+    mail = await _mail_of(person)
+    assert (mail.status, mail.kind) == ("queued", OFFLINE)
+    [note] = await _notifications(person)
+    assert note.title == "Device offline (2)"
+    assert note.payload["subjects"] == [{"type": "device", "id": str(station.id)},
+                                        {"type": "device", "id": str(reader.id)}]
+    assert await _recheck(mail) is None
+
+    await _back(station)
+    assert await _recheck(mail) is None             # the reader has not come back
+
+    send = FakeSend()
+    assert await deliver_once(get_sessionmaker(), send=send) == 1
+    assert [call["to"] for call in send.calls] == ["a@test.example.com"]
+    row = await _get(mail.id)
+    assert (row.status, row.skip_reason, row.attempts) == ("sent", None, 1)
+    assert await _skipped() == []
+
+
+async def test_queued_email_dropped_once_every_device_is_back_or_gone(db, email_on):
+    """The delivery worker drops a queued email when the last device in it is seen again, and a
+    device that has been deleted counts as back."""
+    person, [station, reader] = await _devices_offline(db, 2)
+    mail = await _mail_of(person)
+    assert await _recheck(mail) is None
+
+    await _back(station)
+    assert await _recheck(mail) is None             # one is back, the reader is not
+    await _run(delete(Device).where(Device.id == reader.id))
+    assert await _recheck(mail) == "back_online"    # its watch went with it; that is no matter
+
+    send = FakeSend()
+    assert await deliver_once(get_sessionmaker(), send=send) == 1
+    assert send.calls == []
+    log = await _assert_dropped(mail.id, "back_online")
+    assert (log.person_id, log.notification_id, log.outbox_id) == (
+        person.id, mail.notification_id, mail.id)
+    assert (log.kind, log.category) == (OFFLINE, "devices")
+
+
+async def test_a_device_that_went_quiet_again_keeps_the_email(db, email_on):
+    """Back online is the device's state now. One that has gone quiet again since (a new outage,
+    with a notice of its own) is offline, so an older email about it still goes."""
+    person, [station] = await _devices_offline(db, 1)
+    mail = await _mail_of(person)
+    await _back(station)
+    assert await _recheck(mail) == "back_online"
+
+    await _run(update(Device).where(Device.id == station.id).values(offline_notified_at=NOW))
+    assert await _recheck(mail) is None
+
+
+async def test_back_online_runs_before_category_turned_down(db, email_on):
+    """The first reason that applies decides, and `back_online` comes right after `resolved`:
+    ahead of the inbox row's own state, the person, their access and watches, and their Email
+    switch. All of those are wrong here at once. While the device is down the first of them
+    shows; once it is back, `back_online` does."""
+    person, [station] = await _devices_offline(db, 1)
+    mail = await _mail_of(person)
+    await _run(delete(NotificationWatch).where(NotificationWatch.person_id == person.id))
+    db.add(PermissionOverride(person_id=person.id, resource="scanning_hardware", action="view",
+                              allow=False))
+    await db.commit()
+    await _run(update(UserAccount).where(UserAccount.person_id == person.id)
+               .values(ui_prefs={"notif": {"switches": {"devices": {"email": False}}}}))
+    await _run(update(Person).where(Person.id == person.id).values(archived_at=NOW))
+    await _run(update(Notification).where(Notification.id == mail.notification_id)
+               .values(read_at=NOW, dismissed_at=NOW))
+
+    assert await _recheck(mail) == "hidden"
+    await _back(station)
+    assert await _recheck(mail) == "back_online"
+
+    # with the device down again, the reasons come in their usual order
+    await _run(update(Device).where(Device.id == station.id).values(offline_notified_at=NOW))
+    assert await _recheck(mail) == "hidden"
+    await _run(update(Notification).where(Notification.id == mail.notification_id)
+               .values(dismissed_at=None))
+    assert await _recheck(mail) == "read"
+    await _run(update(Notification).where(Notification.id == mail.notification_id)
+               .values(read_at=None))
+    assert await _recheck(mail) == "recipient_inactive"
+    await _run(update(Person).where(Person.id == person.id).values(archived_at=None))
+    assert await _recheck(mail) == "no_access"
+    await _run(delete(PermissionOverride).where(PermissionOverride.person_id == person.id))
+    assert await _recheck(mail) == "not_watching"
+    await _watch(db, person, _on(station, "device"))
+    assert await _recheck(mail) == "category_turned_down"
+
+
+async def test_back_online_is_for_device_offline_alone(db):
+    """Only a Device offline notification is asked whether its devices are back, and only when it
+    names one: a notification of another kind that lists a device is not judged by it, and one
+    that names no device has nothing to judge. A person nobody knows ends at `recipient_inactive`,
+    the first reason after `back_online`, so that is what "not back" reads as here."""
+    station = await _station(db, "Device A")        # never announced: its notice is clear
+    named = {"type": "device", "id": str(station.id)}
+    gone = {"type": "device", "id": str(uuid.uuid4())}
+    company = await load_company_settings(db)
+
+    async def reason(kind, payload):
+        note = Notification(person_id=uuid.uuid4(), kind=kind, title="Title", payload=payload)
+        return await recheck_notification(db, note, kind_info(kind), None, company)
+
+    for subjects in ([named], [gone], [named, gone]):
+        assert await reason(OFFLINE, {"subjects": subjects}) == "back_online", subjects
+    assert await reason(INITIATIVE_CHANGED, {"subjects": [named]}) == "recipient_inactive"
+    for payload in ({}, {"subjects": []},
+                    {"subjects": [{"type": "site", "id": str(uuid.uuid4())}]}):
+        assert await reason(OFFLINE, payload) == "recipient_inactive", payload
+
+    # one device still carrying its notice is enough to keep the email, deleted ones aside
+    station.offline_notified_at = NOW
+    await db.commit()
+    for subjects in ([named], [named, gone]):
+        assert await reason(OFFLINE, {"subjects": subjects}) == "recipient_inactive", subjects
+    assert await reason(OFFLINE, {"subjects": [gone]}) == "back_online"
 
 
 # ── Check delivery ──────────────────────────────────────────────────

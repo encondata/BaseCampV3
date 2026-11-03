@@ -11,7 +11,7 @@ transaction:
 2. **The server can't send email:** every row is dropped (email_not_set_up).
 3. **Re-check each row,** oldest first: the re-check the delivery worker runs
    before sending (email.recheck_notification: notification_gone, resolved,
-   hidden, read, recipient_inactive, no_access, not_watching,
+   back_online, hidden, read, recipient_inactive, no_access, not_watching,
    category_turned_down), then the address (no_address). A row no longer
    wanted is dropped: logged `email_skipped` with the reason.
 4. **Send the rest as one email:** `notification_summary`, template mail that

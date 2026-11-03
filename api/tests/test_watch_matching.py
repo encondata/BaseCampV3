@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from serversherpa.db.models import (
+    Device,
     Initiative,
     InitiativeLink,
     NotificationGroup,
@@ -72,6 +73,13 @@ async def _site(db, name) -> Site:
 
 async def _truck(db, name, **fields) -> Truck:
     row = Truck(name=name, **fields)
+    db.add(row)
+    await db.commit()
+    return row
+
+
+async def _device(db, name) -> Device:
+    row = Device(device_type="fixed_reader", name=name)
     db.add(row)
     await db.commit()
     return row
@@ -300,8 +308,26 @@ async def test_a_thing_in_reaches_that_cannot_be_watched_yet_is_ignored(db):
     await _watch(db, person, _on(site, "site"))
 
     event = await _event(db, INITIATIVE_CHANGED, _on(initiative),
-                         Thing("device", uuid.uuid4()), _on(site, "site"))
+                         Thing("wiki_node", uuid.uuid4()), _on(site, "site"))
     assert await matching_routes(db, event) == {person.id: {"watch"}}
+
+
+async def test_a_device_watch_matches_the_devices_event(db):
+    """Device offline names the device as its subject and reaches its site and move: a watch of
+    any of the three hears it, a watch of another device does not."""
+    on_device, on_site, on_initiative, on_other = await _people(db, "A", "B", "C", "D")
+    device, other = await _device(db, "Device A"), await _device(db, "Device B")
+    site = await _site(db, "Site A")
+    initiative = await _initiative(db, "Initiative A")
+    await _watch(db, on_device, _on(device, "device"))
+    await _watch(db, on_site, _on(site, "site"))
+    await _watch(db, on_initiative, _on(initiative))
+    await _watch(db, on_other, _on(other, "device"))
+
+    event = await _event(db, DEVICE_OFFLINE, _on(device, "device"),
+                         _on(site, "site"), _on(initiative))
+    assert await matching_routes(db, event) == {
+        on_device.id: {"watch"}, on_site.id: {"watch"}, on_initiative.id: {"watch"}}
 
 
 async def test_status_changes_reach_the_watchers_of_the_things_around_them(db):
@@ -360,6 +386,8 @@ def test_clean_kinds_dedupes_into_registry_order():
 @pytest.mark.parametrize(("thing", "kinds"), [
     ("truck", [INITIATIVE_CHANGED]),
     ("truck", [TRUCK_CHANGED, INITIATIVE_CHANGED]),
+    ("device", [INITIATIVE_CHANGED]),
+    ("device", [DEVICE_OFFLINE, TRUCK_CHANGED]),
     ("site", ["report_ready"]),                  # a real kind nobody can watch for
     ("initiative", ["nonsense"]),
     (EVERYTHING, ["report_ready"]),
@@ -378,7 +406,7 @@ def test_everything_must_name_its_events():
 
 def test_the_thing_columns_are_every_column_the_table_has():
     """An Everything watch is one with none of them set, so the list has to name them all,
-    the device and wiki columns the API does not take yet included."""
+    the wiki columns the API does not take yet included."""
     foreign = {column.name for column in NotificationWatch.__table__.columns
                if column.foreign_keys}
     assert set(_THING_COLUMNS) == foreign - {"person_id", "group_id", "created_by"}

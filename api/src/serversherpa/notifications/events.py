@@ -24,7 +24,7 @@ from serversherpa.notifications.kinds import KINDS
 @dataclass(frozen=True)
 class Thing:
     """Something an event is about or reaches, and a watch can point at: a kind of
-    thing ("initiative", "site", "truck") and its id."""
+    thing ("initiative", "site", "truck", "device") and its id."""
 
     type: str
     id: uuid.UUID

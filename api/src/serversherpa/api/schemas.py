@@ -3085,8 +3085,8 @@ class WatchViaOut(BaseModel):
 
 
 class CheckWatchOut(BaseModel):
-    """A watch of the person that would hear the kind: `thing` is initiative, site, truck or
-    everything (which has no id or name), `kinds` the events it names (empty: every event that
+    """A watch of the person that would hear the kind: `thing` is initiative, site, truck, device
+    or everything (which has no id or name), `kinds` the events it names (empty: every event that
     applies) and `via` whose it is."""
 
     thing: str
@@ -3253,7 +3253,7 @@ class MyNotificationGroupOut(BaseModel):
 # ── watches (a person's own, and a notification group's) ──
 
 class WatchIn(BaseModel):
-    """Watch a thing (`thing` is initiative, site or truck, with its `id`), or events
+    """Watch a thing (`thing` is initiative, site, truck or device, with its `id`), or events
     everywhere (`thing` is "everything", with no id). `kinds` empty means every event that
     applies to a thing; an Everything watch has to name its events."""
     thing: str
@@ -3268,8 +3268,8 @@ class WatchKindsIn(BaseModel):
 
 
 class WatchOut(BaseModel):
-    """A watch with what it is on: `thing` is initiative, site, truck or everything (which
-    has no id, name or link). `kinds` empty means every event that applies."""
+    """A watch with what it is on: `thing` is initiative, site, truck, device or everything
+    (which has no id, name or link). `kinds` empty means every event that applies."""
     id: uuid.UUID
     thing: str
     thing_id: uuid.UUID | None

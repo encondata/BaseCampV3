@@ -16,7 +16,8 @@ before sending, whether a queued email is still wanted (same spec, section 4);
 `recheck_notification()` is the part of it the summary sweep shares. For a
 notification the event sweep wrote it also asks whether the person can still
 open what it is about and is still reached by a watch or a group
-(event_sweep.watch_recheck; phase 2 spec, section 4)."""
+(event_sweep.watch_recheck; phase 2 spec, section 4). A Device offline email is also dropped once
+every device in it has been seen again (`back_online`; same spec, section 5)."""
 
 import uuid
 from dataclasses import dataclass
@@ -27,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.schemas import UiPreferences
 from serversherpa.config import get_settings
-from serversherpa.db.models import EmailOutbox, Notification, Person, UserAccount
+from serversherpa.db.models import Device, EmailOutbox, Notification, Person, UserAccount
 from serversherpa.mail.outbox import email_enabled, enqueue
 from serversherpa.notifications.company import (
     CompanySettings,
@@ -35,6 +36,7 @@ from serversherpa.notifications.company import (
     load_company_settings,
 )
 from serversherpa.notifications.delivery_log import record
+from serversherpa.notifications.events import Thing
 from serversherpa.notifications.held import hold_email
 from serversherpa.notifications.kinds import KINDS, KindInfo, kind_info
 from serversherpa.notifications.schedule import (
@@ -316,6 +318,21 @@ async def maybe_email(db: AsyncSession, notification: Notification, *,
         prefs_url=portal_link(INBOX_PATH))
 
 
+async def _devices_back_online(db: AsyncSession, notification: Notification) -> bool:
+    """Whether every device a Device offline notification names has come back: seen again since
+    the notice (its `offline_notified_at` is clear) or deleted. One that still carries its
+    notice keeps the email. A notification that names no device has nothing to judge, so it is
+    not back. `payload.subjects` is de-duplicated, so each device is named once. Reads only."""
+    device_ids = [thing.id for raw in notification.payload.get("subjects") or ()
+                  if (thing := Thing.from_json(raw)).type == "device"]
+    if not device_ids:
+        return False
+    still_down = await db.scalar(
+        select(Device.id)
+        .where(Device.id.in_(device_ids), Device.offline_notified_at.is_not(None)).limit(1))
+    return still_down is None
+
+
 async def recheck_notification(db: AsyncSession, notification: Notification | None,
                                info: KindInfo | None, contact: Contact | None,
                                company: CompanySettings) -> str | None:
@@ -323,24 +340,28 @@ async def recheck_notification(db: AsyncSession, notification: Notification | No
     out, as a reason code, or None when it still should. Asked of a queued
     email by the delivery worker (recheck_before_send) and of a held one by
     the summary sweep: meanwhile the person may have read or hidden the inbox
-    row, an admin may have decided the approval, the person may have lost
-    access to what an event was about or stopped being reached by it, or the
+    row, an admin may have decided the approval, every device in a Device
+    offline notice may have been seen again, the person may have lost access
+    to what an event was about or stopped being reached by it, or the
     person's switches or the company defaults may have changed. The checks run
     in order and the first that fails decides: notification_gone, resolved,
-    hidden, read, recipient_inactive, no_access and not_watching (only a
-    notification the event sweep wrote can fail those two), then
-    category_turned_down (the effective Email switch is now off). `contact` is
-    the recipient, loaded when None is passed. Timing is not re-computed.
-    Writes nothing.
+    back_online (Device offline only), hidden, read, recipient_inactive,
+    no_access and not_watching (only a notification the event sweep wrote can
+    fail those two), then category_turned_down (the effective Email switch is
+    now off). `contact` is the recipient, loaded when None is passed. Timing
+    is not re-computed. Writes nothing.
 
     `resolved` comes before `hidden` and `read` because deciding an approval
     marks every copy of it read: the log must name the decision, not a read
-    nobody did."""
+    nobody did. `back_online` sits beside it, as a state of the thing itself
+    that overrides everything about the person; the inbox row stays."""
     if notification is None:
         return "notification_gone"
     state = notification.payload.get("state")
     if state is not None and state not in ("pending", "open"):
         return "resolved"      # an approval someone already decided
+    if notification.kind == "device_offline" and await _devices_back_online(db, notification):
+        return "back_online"
     if notification.dismissed_at is not None:
         return "hidden"
     if notification.read_at is not None:
