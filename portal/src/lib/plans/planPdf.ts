@@ -16,7 +16,12 @@
  * The page is landscape with 38px (10 mm) margins at the top and sides and
  * 76px at the bottom, where the footer goes (Page N of M, the generated
  * stamp, the tracking barcode).
+ *
+ * The range is bounded: a custom one is cut to the plan's own span, and no
+ * span over MAX_PRINT_YEARS (the plan's own duration bound) is printed, so
+ * every loop the API draws with is bounded too.
  */
+import { MAX_YEARS } from './durations';
 import { fromMs, toMs } from './floatingTime';
 import { FIT_MARGIN, MS_PER_DAY, ZOOM_PX_PER_DAY, fitZoom, type Scale, type Zoom } from './ganttGeometry';
 
@@ -74,18 +79,67 @@ export function tableRows(paper: Paper): { first: number; rest: number } {
   };
 }
 
-/**
- * The PDF's date range as plan times: the whole project (its start to its
- * finish; an empty plan's is its start), or the custom days `from` through
- * `to` (`YYYY-MM-DD`), from the first day's midnight to the midnight after
- * the last.
- */
-export function printRange(
-  projectStart: string, projectFinish: string | null | undefined, from?: string | null, to?: string | null,
-): { start: string; finish: string } {
-  if (from && to) return { start: `${from}T00:00`, finish: fromMs(toMs(to) + MS_PER_DAY) };
-  return { start: projectStart, finish: projectFinish || projectStart };
+/** A span of plan time, `start` to `finish`. */
+export interface PrintSpan {
+  start: string;
+  finish: string;
 }
+
+/**
+ * The plan's own span: from the project start, or an earlier task's start
+ * (a manually scheduled one may begin before it), to the latest task finish
+ * (the project finish); an empty plan's is its start. Every task counts,
+ * printed or not. A start that is not a plan time throws.
+ */
+export function planSpan(
+  projectStart: string, projectFinish: string | null | undefined,
+  tasks: readonly { start: string | null; finish: string | null }[],
+): PrintSpan {
+  let s = toMs(projectStart);
+  if (Number.isNaN(s)) throw new RangeError(`planSpan: not a plan time: ${projectStart}`);
+  const pf = projectFinish ? toMs(projectFinish) : Number.NaN;
+  let f = Number.isNaN(pf) ? s : Math.max(s, pf);
+  for (const t of tasks) {
+    for (const at of [t.start ? toMs(t.start) : Number.NaN, t.finish ? toMs(t.finish) : Number.NaN]) {
+      if (Number.isNaN(at)) continue;
+      if (at < s) s = at;
+      if (at > f) f = at;
+    }
+  }
+  return { start: fromMs(s), finish: fromMs(f) };
+}
+
+/**
+ * The PDF's date range: the plan's span, or the custom days `from` through
+ * `to` (`YYYY-MM-DD`, the first day's midnight to the midnight after the
+ * last) cut to that span, since nothing is drawn outside it. null when the
+ * custom days lie wholly outside the span.
+ */
+export function printRange(span: PrintSpan, from?: string | null, to?: string | null): PrintSpan | null {
+  if (!(from && to)) return span;
+  const a = toMs(from);
+  const b = toMs(to) + MS_PER_DAY;
+  const s = toMs(span.start);
+  const f = toMs(span.finish);
+  if (b < s || a > f) return null;
+  return { start: fromMs(Math.max(a, s)), finish: fromMs(Math.min(b, f)) };
+}
+
+/** The longest span the PDF prints: the plan's own bound on a duration. */
+export const MAX_PRINT_YEARS = MAX_YEARS;
+
+/** True when `finish` is past `start` plus MAX_PRINT_YEARS calendar years
+ *  (the same wall-clock date and time; Feb 29 goes on to Mar 1). */
+export function spanTooLong(start: string, finish: string): boolean {
+  const at = new Date(toMs(start));
+  const limit = Date.UTC(at.getUTCFullYear() + MAX_PRINT_YEARS, at.getUTCMonth(), at.getUTCDate(),
+    at.getUTCHours(), at.getUTCMinutes());
+  return toMs(finish) > limit;
+}
+
+/** What the dialog says for a range the PDF won't print (the API's problems). */
+export const RANGE_TOO_LONG = `The date range can be at most ${MAX_PRINT_YEARS} years.`;
+export const RANGE_OUTSIDE = 'The dates are outside this plan’s tasks.';
 
 /** The scale's lead before the range and after it: half of FIT_MARGIN, as
  *  whole minutes of the zoom. */

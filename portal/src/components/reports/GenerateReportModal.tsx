@@ -22,7 +22,7 @@ import {
 import type { InitiativeItem, ReportDefinition, ReportRun } from '../../lib/api';
 import type { Plan } from '../../lib/plans/api';
 import {
-  fmtDate, openPresigned, runErrorText, RUN_ERROR_TEXT, sortInitiativesForPicker,
+  fmtDate, openPresigned, refusalText, runErrorText, sortInitiativesForPicker,
 } from '../../lib/reports';
 import { useSystemStatus } from '../../lib/systemStatusContext';
 import ContainerLabelsOptions from './ContainerLabelsOptions';
@@ -139,7 +139,8 @@ export default function GenerateReportModal({
       setRun(await createReportRun({ definition_id: definition.id, ...use }));
     } catch (err) {
       setError(err instanceof ApiError
-        ? (RUN_ERROR_TEXT[err.code] ?? err.message) : "Couldn't start the report.");
+        ? refusalText(err.code, err.detail, err.message)
+        : "Couldn't start the report.");
     }
   };
 

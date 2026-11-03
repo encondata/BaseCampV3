@@ -1767,11 +1767,52 @@
   "expected": "hours"
  },
  {
-  "name": "print range: the whole project",
-  "fn": "printRange",
+  "name": "plan span: a task before the start widens it",
+  "fn": "planSpan",
   "args": [
    "2026-11-02T08:00",
    "2026-11-20T17:00",
+   [
+    {
+     "start": "2026-11-02T08:00",
+     "finish": "2026-11-03T17:00"
+    },
+    {
+     "start": "2026-10-28T08:00",
+     "finish": "2026-10-28T12:00"
+    },
+    {
+     "start": null,
+     "finish": null
+    }
+   ]
+  ],
+  "expected": {
+   "start": "2026-10-28T08:00",
+   "finish": "2026-11-20T17:00"
+  }
+ },
+ {
+  "name": "plan span: an empty plan",
+  "fn": "planSpan",
+  "args": [
+   "2026-11-02T08:00",
+   null,
+   []
+  ],
+  "expected": {
+   "start": "2026-11-02T08:00",
+   "finish": "2026-11-02T08:00"
+  }
+ },
+ {
+  "name": "print range: the whole project",
+  "fn": "printRange",
+  "args": [
+   {
+    "start": "2026-11-02T08:00",
+    "finish": "2026-11-20T17:00"
+   },
    null,
    null
   ],
@@ -1781,32 +1822,114 @@
   }
  },
  {
-  "name": "print range: an empty plan",
+  "name": "print range: custom days inside",
   "fn": "printRange",
   "args": [
-   "2026-11-02T08:00",
-   null,
-   null,
-   null
+   {
+    "start": "2026-11-02T08:00",
+    "finish": "2026-11-20T17:00"
+   },
+   "2026-11-09",
+   "2026-11-12"
   ],
   "expected": {
-   "start": "2026-11-02T08:00",
-   "finish": "2026-11-02T08:00"
+   "start": "2026-11-09T00:00",
+   "finish": "2026-11-13T00:00"
   }
  },
  {
-  "name": "print range: custom days",
+  "name": "print range: custom days cut to the plan",
   "fn": "printRange",
   "args": [
-   "2026-11-02T08:00",
-   "2026-11-20T17:00",
-   "2026-12-28",
-   "2027-01-03"
+   {
+    "start": "2026-11-02T08:00",
+    "finish": "2026-11-20T17:00"
+   },
+   "2026-10-01",
+   "2027-12-31"
   ],
   "expected": {
-   "start": "2026-12-28T00:00",
-   "finish": "2027-01-04T00:00"
+   "start": "2026-11-02T08:00",
+   "finish": "2026-11-20T17:00"
   }
+ },
+ {
+  "name": "print range: cut at the end only",
+  "fn": "printRange",
+  "args": [
+   {
+    "start": "2026-11-02T08:00",
+    "finish": "2026-11-20T17:00"
+   },
+   "2026-11-15",
+   "2027-01-31"
+  ],
+  "expected": {
+   "start": "2026-11-15T00:00",
+   "finish": "2026-11-20T17:00"
+  }
+ },
+ {
+  "name": "print range: wholly after the plan",
+  "fn": "printRange",
+  "args": [
+   {
+    "start": "2026-11-02T08:00",
+    "finish": "2026-11-20T17:00"
+   },
+   "2026-12-01",
+   "2026-12-31"
+  ],
+  "expected": null
+ },
+ {
+  "name": "print range: wholly before the plan",
+  "fn": "printRange",
+  "args": [
+   {
+    "start": "2026-11-02T08:00",
+    "finish": "2026-11-20T17:00"
+   },
+   "2026-10-01",
+   "2026-11-01"
+  ],
+  "expected": null
+ },
+ {
+  "name": "ten years exactly is not too long",
+  "fn": "spanTooLong",
+  "args": [
+   "2026-01-01T00:00",
+   "2036-01-01T00:00"
+  ],
+  "expected": false
+ },
+ {
+  "name": "a minute past ten years is too long",
+  "fn": "spanTooLong",
+  "args": [
+   "2026-01-01T00:00",
+   "2036-01-01T00:01"
+  ],
+  "expected": true
+ },
+ {
+  "name": "ten years from Feb 29 ends on Mar 1",
+  "fn": "spanTooLong",
+  "args": [
+   "2028-02-29T08:00",
+   "2038-03-01T08:00"
+  ],
+  "expected": false
+ },
+ {
+  "name": "ten years from Feb 29, a day over",
+  "fn": "spanTooLong",
+  "args": [
+   "2028-02-29T08:00",
+   "2038-03-02T08:00"
+  ],
+  "expected": true
  },
  {
   "name": "page layout on letter",

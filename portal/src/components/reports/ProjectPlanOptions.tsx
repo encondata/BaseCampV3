@@ -18,9 +18,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { ApiError, type ReportDefinition } from '../../lib/api';
 import { getPlan, type Plan } from '../../lib/plans/api';
 import { DEFAULT_VISIBLE, PLAN_COLUMNS, REQUIRED_COLUMNS, columnPrefsSnapshot } from '../../lib/plans/columns';
-import { dayOf, formatDay, lastDay, toMs } from '../../lib/plans/floatingTime';
-import type { Zoom } from '../../lib/plans/ganttGeometry';
-import { estimatePages, estimateText, printRange, type Paper } from '../../lib/plans/planPdf';
+import { dayOf, formatDay, fromMs, lastDay, toMs } from '../../lib/plans/floatingTime';
+import { MS_PER_DAY, type Zoom } from '../../lib/plans/ganttGeometry';
+import {
+  RANGE_OUTSIDE, RANGE_TOO_LONG, estimatePages, estimateText, planSpan, printRange, spanTooLong, type Paper,
+} from '../../lib/plans/planPdf';
 import { RUN_ERROR_TEXT } from '../../lib/reports';
 import ChipPicker from '../ChipPicker';
 import { Switch } from '../Switch';
@@ -125,23 +127,32 @@ export default function ProjectPlanOptions({ initiative, plan: given, initial, o
     return () => { cancelled = true; };
   }, [given, initiative.id]);
 
-  // the custom range starts as the project's own days
+  // the custom range starts as the plan's own days
   useEffect(() => {
     if (!plan) return;
-    setFrom((v) => v || dayOf(plan.project_start));
-    setTo((v) => v || lastDay(plan.project_start, plan.project_finish));
+    const own = planSpan(plan.project_start, plan.project_finish, plan.tasks);
+    setFrom((v) => v || dayOf(own.start));
+    setTo((v) => v || lastDay(own.start, own.finish));
   }, [plan]);
 
   const custom = rangeMode === 'custom';
-  const rangeError = custom && (!from || !to || Number.isNaN(toMs(from)) || Number.isNaN(toMs(to)) || from > to)
-    ? 'Choose a From date on or before the To date.' : '';
+  const datesBad = custom && (!from || !to || Number.isNaN(toMs(from)) || Number.isNaN(toMs(to)) || from > to);
+  // what would print: the plan's span, or the custom days cut to it (the
+  // API's rule, lib/plans/planPdf); without the plan yet, the days alone
+  const span = useMemo(() => (plan ? planSpan(plan.project_start, plan.project_finish, plan.tasks) : null), [plan]);
+  const printed = datesBad ? null
+    : span ? printRange(span, custom ? from : null, custom ? to : null)
+      : custom ? { start: `${from}T00:00`, finish: fromMs(toMs(to) + MS_PER_DAY) } : null;
+  const rangeError = datesBad ? 'Choose a From date on or before the To date.'
+    : span && custom && !printed
+      ? `${RANGE_OUTSIDE} The plan runs ${formatDay(span.start)} → ${formatDay(span.finish)}.`
+      : printed && spanTooLong(printed.start, printed.finish) ? RANGE_TOO_LONG : '';
 
   const estimate = useMemo(() => {
-    if (!plan || rangeError) return null;
+    if (!plan || !printed || rangeError) return null;
     const rows = includeCompleted ? plan.tasks.length : plan.tasks.filter((t) => t.percent_complete < 100).length;
-    const span = printRange(plan.project_start, plan.project_finish, custom ? from : null, custom ? to : null);
-    return estimatePages({ rows, start: span.start, finish: span.finish, zoom: timescale, paper });
-  }, [plan, rangeError, includeCompleted, custom, from, to, timescale, paper]);
+    return estimatePages({ rows, start: printed.start, finish: printed.finish, zoom: timescale, paper });
+  }, [plan, printed?.start, printed?.finish, rangeError, includeCompleted, timescale, paper]);
 
   const columns = columnsMode === 'current' ? current
     : columnsMode === 'default' ? [...DEFAULT_VISIBLE]
@@ -160,7 +171,7 @@ export default function ProjectPlanOptions({ initiative, plan: given, initial, o
     });
   };
 
-  const printed = plan ? (includeCompleted ? plan.tasks.length : plan.tasks.filter((t) => t.percent_complete < 100).length) : 0;
+  const taskCount = plan ? (includeCompleted ? plan.tasks.length : plan.tasks.filter((t) => t.percent_complete < 100).length) : 0;
 
   return (
     <>
@@ -171,7 +182,7 @@ export default function ProjectPlanOptions({ initiative, plan: given, initial, o
             {plan && (
               <div className="cell-sub">
                 {formatDay(plan.project_start)}{plan.project_finish ? ` → ${formatDay(plan.project_finish)}` : ''}
-                {` · ${printed} of ${plan.tasks.length} ${plan.tasks.length === 1 ? 'task' : 'tasks'}`}
+                {` · ${taskCount} of ${plan.tasks.length} ${plan.tasks.length === 1 ? 'task' : 'tasks'}`}
               </div>
             )}
             {missing && <div className="pf-error">{NO_PLAN}</div>}

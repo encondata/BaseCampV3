@@ -28,7 +28,22 @@ export const RUN_ERROR_TEXT: Record<string, string> = {
   project_plans_view_required: 'You need permission to view project plans to run this report.',
   plan_not_found: 'This initiative has no project plan yet.',
   bad_calendar: 'This plan’s calendar can’t be read, so the PDF couldn’t be made. Check Plan settings › Calendar.',
+  // the plan changed between Generate and the run: its printed range is checked again
+  range_too_long: 'The date range can be at most 10 years.',
+  range_outside_plan: 'The dates are outside this plan’s tasks.',
 };
+
+/** A refusal's sentence: the error table's, else a 422's problems (the
+ *  API's own sentences, e.g. the Project plan PDF's 10-year bound), else
+ *  `fallback` (the error's own message), else the code. */
+export function refusalText(code: string, detail: unknown, fallback?: string): string {
+  if (RUN_ERROR_TEXT[code]) return RUN_ERROR_TEXT[code];
+  const problems = (detail as { problems?: unknown } | undefined)?.problems;
+  if (Array.isArray(problems) && problems.length && problems.every((p) => typeof p === 'string')) {
+    return problems.join(' ');
+  }
+  return fallback || code;
+}
 export const runErrorText = (code: string): string => RUN_ERROR_TEXT[code] ?? code;
 
 export function sectionCount(options: Record<string, unknown>): number {

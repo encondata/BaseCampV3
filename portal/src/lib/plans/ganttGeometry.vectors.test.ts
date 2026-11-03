@@ -26,8 +26,8 @@ import {
 } from './ganttGeometry';
 import { barBox, linkShape, linkStub } from './ganttView';
 import {
-  PAPERS, chartWidth, contentBox, estimatePages, ganttRows, printFit, printRange, printScale, tableRows,
-  type Paper,
+  PAPERS, chartWidth, contentBox, estimatePages, ganttRows, planSpan, printFit, printRange, printScale, spanTooLong,
+  tableRows, type Paper, type PrintSpan,
 } from './planPdf';
 import type { LinkType } from './predecessors';
 
@@ -60,8 +60,10 @@ const FNS: Record<string, (...args: never[]) => unknown> = {
   nonworkingBands: (calendar: PlanCalendar, scale: Scale) => nonworkingBands(calendar, scale),
   printScale: (start: string, finish: string, zoom: Zoom) => printScale(start, finish, zoom),
   printFit: (start: string, finish: string, paper: Paper) => printFit(start, finish, paper),
-  printRange: (start: string, finish: string | null, from: string | null, to: string | null) =>
-    printRange(start, finish, from, to),
+  planSpan: (start: string, finish: string | null, tasks: { start: string | null; finish: string | null }[]) =>
+    planSpan(start, finish, tasks),
+  printRange: (span: PrintSpan, from: string | null, to: string | null) => printRange(span, from, to),
+  spanTooLong: (start: string, finish: string) => spanTooLong(start, finish),
   pageLayout: (paper: Paper) => ({
     content: contentBox(paper), chart: chartWidth(paper), ganttRows: ganttRows(paper), tableRows: tableRows(paper),
   }),
@@ -170,9 +172,21 @@ function cases(): { name: string; fn: string; args: unknown[] }[] {
   add('print fit on letter', 'printFit', '2026-11-02T08:00', '2027-01-29T17:00', 'letter');
   add('print fit on A4', 'printFit', '2026-11-02T08:00', '2026-11-16T17:00', 'a4');
   add('print fit, a short range', 'printFit', '2026-11-02T08:00', '2026-11-03T12:00', 'letter');
-  add('print range: the whole project', 'printRange', ...PROJECT, null, null);
-  add('print range: an empty plan', 'printRange', PROJECT[0], null, null, null);
-  add('print range: custom days', 'printRange', ...PROJECT, '2026-12-28', '2027-01-03');
+  add('plan span: a task before the start widens it', 'planSpan', ...PROJECT, [
+    { start: '2026-11-02T08:00', finish: '2026-11-03T17:00' }, { start: '2026-10-28T08:00', finish: '2026-10-28T12:00' },
+    { start: null, finish: null }]);
+  add('plan span: an empty plan', 'planSpan', PROJECT[0], null, []);
+  const span = { start: PROJECT[0], finish: PROJECT[1] };
+  add('print range: the whole project', 'printRange', span, null, null);
+  add('print range: custom days inside', 'printRange', span, '2026-11-09', '2026-11-12');
+  add('print range: custom days cut to the plan', 'printRange', span, '2026-10-01', '2027-12-31');
+  add('print range: cut at the end only', 'printRange', span, '2026-11-15', '2027-01-31');
+  add('print range: wholly after the plan', 'printRange', span, '2026-12-01', '2026-12-31');
+  add('print range: wholly before the plan', 'printRange', span, '2026-10-01', '2026-11-01');
+  add('ten years exactly is not too long', 'spanTooLong', '2026-01-01T00:00', '2036-01-01T00:00');
+  add('a minute past ten years is too long', 'spanTooLong', '2026-01-01T00:00', '2036-01-01T00:01');
+  add('ten years from Feb 29 ends on Mar 1', 'spanTooLong', '2028-02-29T08:00', '2038-03-01T08:00');
+  add('ten years from Feb 29, a day over', 'spanTooLong', '2028-02-29T08:00', '2038-03-02T08:00');
   for (const paper of PAPERS) add(`page layout on ${paper}`, 'pageLayout', paper);
   add('pages: 40 tasks fit to letter', 'estimatePages', 40, '2026-11-02T08:00', '2027-01-29T17:00', 'fit', 'letter');
   add('pages: 40 tasks at days on letter', 'estimatePages', 40, '2026-11-02T08:00', '2027-01-29T17:00', 'days', 'letter');

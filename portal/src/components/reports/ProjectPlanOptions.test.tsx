@@ -123,6 +123,47 @@ describe('ProjectPlanOptions', () => {
     expect(onGenerate.mock.lastCall?.[0].options).toMatchObject({ zoom: 'fit', paper: 'a4', include_completed: false });
   });
 
+  it('days wholly outside the plan can’t be sent; days past it are cut to it', async () => {
+    const { onGenerate, user } = renderOptions();
+    await user.click(within(group('Date range')).getByRole('button', { name: 'Custom' }));
+    const from = screen.getByLabelText('From') as HTMLInputElement;
+    const to = screen.getByLabelText('To') as HTMLInputElement;
+    await user.clear(from);
+    await user.type(from, '2027-03-01');
+    await user.clear(to);
+    await user.type(to, '2027-03-31');
+    expect(screen.getByText(/^The dates are outside this plan’s tasks\. The plan runs Mon 11\/2\/26 → Fri 1\/29\/27\.$/))
+      .toBeTruthy();
+    expect((generate() as HTMLButtonElement).disabled).toBe(true);
+    // reaching back into the plan: the estimate is the plan's own days from Jan 1
+    await user.clear(from);
+    await user.type(from, '2027-01-01');
+    expect(screen.queryByText(/outside this plan/)).toBeNull();
+    expect(screen.getByText(estimateText(estimatePages({
+      rows: 40, start: '2027-01-01T00:00', finish: '2027-01-29T17:00', zoom: 'weeks', paper: 'letter',
+    })))).toBeTruthy();
+    await user.click(generate());
+    expect(onGenerate).toHaveBeenCalled();
+  });
+
+  it('a plan over ten years prints ten years of it at most', async () => {
+    const long = plan40({ project_finish: '2037-06-01T17:00' });
+    const { onGenerate, user } = renderOptions({ plan: long });
+    expect(screen.getByText('The date range can be at most 10 years.')).toBeTruthy();
+    expect((generate() as HTMLButtonElement).disabled).toBe(true);
+    await user.click(within(group('Date range')).getByRole('button', { name: 'Custom' }));
+    const to = screen.getByLabelText('To') as HTMLInputElement;
+    await user.clear(to);
+    await user.type(to, '2036-11-01');
+    expect(screen.queryByText('The date range can be at most 10 years.')).toBeNull();
+    await user.click(generate());
+    expect(onGenerate.mock.lastCall?.[0].options).toMatchObject({ from: '2026-11-02', to: '2036-11-01' });
+    await user.clear(to);
+    await user.type(to, '2036-11-02');
+    expect(screen.getByText('The date range can be at most 10 years.')).toBeTruthy();
+    expect((generate() as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('the hours zoom isn’t offered: it opens on Fit', () => {
     renderOptions({ initial: { columns: CURRENT, zoom: 'hours' } });
     expect(pressed('Timescale')).toEqual(['Fit']);

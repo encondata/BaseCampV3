@@ -75,8 +75,11 @@ FNS = {
     "nonworkingBands": lambda calendar, scale: gantt.nonworking_bands(calendar, _scale(scale)),
     "printScale": lambda start, finish, zoom: gantt.print_scale(start, finish, zoom),
     "printFit": lambda start, finish, paper: gantt.print_fit(start, finish, paper),
-    "printRange": lambda start, finish, first, last: gantt.print_range(start, finish, first,
-                                                                       last),
+    "planSpan": lambda start, finish, tasks: gantt.plan_span(
+        start, finish, [(t["start"], t["finish"]) for t in tasks]),
+    "printRange": lambda span, first, last: gantt.print_range(
+        gantt.PrintRange(span["start"], span["finish"]), first, last),
+    "spanTooLong": lambda start, finish: gantt.span_too_long(start, finish),
     "pageLayout": lambda paper: gantt.page_layout(paper),
     "estimatePages": lambda rows, start, finish, zoom, paper: gantt.estimate_pages(
         rows, start, finish, zoom, paper),

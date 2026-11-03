@@ -25,7 +25,11 @@ which escapes each value; text reaches the CSS margin boxes only through
 `cssstr`; WeasyPrint gets a fetcher that refuses everything but data:
 URIs (the barcode)."""
 
+import asyncio
+import bisect
 import dataclasses
+import itertools
+import multiprocessing
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -40,7 +44,7 @@ from serversherpa.reports.move_report.render import css_string, render_pdf_async
 from serversherpa.reports.move_scan_history.barcode import pdf417_data_uri
 from serversherpa.reports.project_plan import gantt
 from serversherpa.reports.project_plan.gantt import ROW_PX, TIER_PX
-from serversherpa.reports.project_plan.gather import PlanData
+from serversherpa.reports.project_plan.gather import PlanData, printed_range
 from serversherpa.services.timezone import report_timezone
 
 _ENV = Environment(loader=FileSystemLoader(Path(__file__).parent / "templates"),
@@ -188,7 +192,7 @@ _DATETIME_WEIGHT = 1.6
 def _cell_text(key: str, task: PlanTaskOut, data: PlanData, zone: ZoneInfo) -> str:
     if key == "percent":
         return f"{task.percent_complete}%"
-    value = excel.cell_value(key, task, data.state.tasks[task.id], data.units, zone)
+    value = excel.cell_value(key, task, data.times[task.id], data.units, zone)
     if value is None:
         return ""
     if isinstance(value, datetime):
@@ -467,10 +471,14 @@ class _Chart:
     zoom: str
     marks: list[_Marks]
     links: list[_Link]
-    bands: list[gantt.Band]
-    top_ticks: list[gantt.Tick]
+    bands: list[gantt.Band]             # in x order
+    top_ticks: list[gantt.Tick]         # in x order
     today: float | None
     status: float | None
+
+    def __post_init__(self) -> None:
+        self.band_ends = [b.x + b.width for b in self.bands]
+        self.tick_xs = [t.x for t in self.top_ticks]
 
 
 def _chart_svg(chart: _Chart, x0: float, width: float, r0: int, r1: int) -> Markup:
@@ -481,14 +489,15 @@ def _chart_svg(chart: _Chart, x0: float, width: float, r0: int, r1: int) -> Mark
     y0, height = r0 * ROW_PX, rows * ROW_PX
     y1 = y0 + height
     parts = [_rect("lane", None, x0, y0, width, height, LANE)]
-    for band in chart.bands:
-        if band.x < x1 and band.x + band.width > x0:
-            parts.append(_rect("offday", None, band.x, y0, band.width, height, MUTE,
-                               opacity=0.10))
-    for t in chart.top_ticks:
-        if x0 < t.x < x1:
-            parts.append(Markup('<path d="M {} {} V {}" stroke="{}" stroke-width="0.75"/>').format(
-                _n(t.x), _n(y0), _n(y1), GRID))
+    # the bands and ticks are in x order: start at the first one reaching the
+    # tile and stop past it, so a tile looks at its own few, not all of them
+    for band in itertools.takewhile(lambda b: b.x < x1, chart.bands[
+            bisect.bisect_right(chart.band_ends, x0):]):
+        parts.append(_rect("offday", None, band.x, y0, band.width, height, MUTE, opacity=0.10))
+    for t in itertools.takewhile(lambda t: t.x < x1, chart.top_ticks[
+            bisect.bisect_right(chart.tick_xs, x0):]):
+        parts.append(Markup('<path d="M {} {} V {}" stroke="{}" stroke-width="0.75"/>').format(
+            _n(t.x), _n(y0), _n(y1), GRID))
     rules = " ".join(f"M {_n(x0)} {_n((i + 1) * ROW_PX - 0.5)} H {_n(x1)}" for i in range(r0, r1))
     if rules:
         parts.append(Markup('<path d="{}" stroke="{}" stroke-width="1"/>').format(rules, ROW_RULE))
@@ -573,8 +582,8 @@ def render_html(data: PlanData, choices, *, generated_at: datetime, tracking_id:
     """The PDF's HTML. `choices` is the run's options with the defaults in
     (project_plan.Choices)."""
     tasks = [t for t in data.tasks if choices.include_completed or t.percent_complete < 100]
-    span = gantt.print_range(data.project_start, data.project_finish, choices.first,
-                             choices.last)
+    # bounded: cut to the plan's span, at most MAX_PRINT_YEARS (PrintRangeError)
+    span = printed_range(data.span, choices.first, choices.last)
     zoom = (gantt.print_fit(span.start, span.finish, choices.paper)
             if choices.zoom == "fit" else choices.zoom)
     zone = report_timezone()
@@ -584,8 +593,9 @@ def render_html(data: PlanData, choices, *, generated_at: datetime, tracking_id:
     finish = _floating(data.project_finish)
     status = _floating(data.status_date)
     if choices.first and choices.last:
-        first, last = _floating(f"{choices.first}T00:00"), _floating(f"{choices.last}T00:00")
-        range_text = day_span(first, last)
+        # the days printed: the asked-for ones cut to the plan
+        a, b = gantt.to_ms(span.start), gantt.to_ms(span.finish)
+        range_text = day_span(gantt.moment_of(a), gantt.moment_of(max(a, b - 60_000)))
     else:
         range_text = "Whole project"
     lock = ((f"Locked {_instant_day(data.locked_at)}"
@@ -625,5 +635,65 @@ def render_html(data: PlanData, choices, *, generated_at: datetime, tracking_id:
         stamp=stamp, tracking_id=tracking_id, barcode_data_uri=pdf417_data_uri(tracking_id))
 
 
-__all__ = ["data_fetcher", "day_span", "render_html", "render_pdf", "sheet_day", "task_deep",
-           "task_hue"]
+# ── the render, in a child process the timeout can kill ───────────────
+#
+# Making the HTML and printing it are synchronous CPU work: under the
+# worker's asyncio.wait_for they could not be interrupted, so a huge PDF
+# would hold the worker long past RUN_TIMEOUT_SECONDS. Both run in a
+# spawned child instead; the parent only waits (an awaitable poll), so the
+# worker's timeout cancels the wait, and the child is killed either way.
+
+_POLL_SECONDS = 0.05
+
+
+class RenderFailed(RuntimeError):
+    """The child stopped without a PDF: it raised, or it died."""
+
+
+def _render_child(conn, data: PlanData, choices, generated_at: datetime,
+                  tracking_id: str) -> None:
+    """The child's whole job: HTML, then PDF, sent back over `conn`."""
+    from weasyprint import HTML
+    try:
+        html = render_html(data, choices, generated_at=generated_at, tracking_id=tracking_id)
+        conn.send(("ok", HTML(string=html, url_fetcher=data_fetcher()).write_pdf()))
+    except BaseException as exc:                      # the parent reports it
+        conn.send(("error", f"{type(exc).__name__}: {exc}"))
+    finally:
+        conn.close()
+
+
+async def render_pdf_in_child(data: PlanData, choices, *, generated_at: datetime,
+                              tracking_id: str, timeout: float) -> bytes:
+    """The PDF, made in a spawned child process that is killed after
+    `timeout` seconds (TimeoutError) or when this wait is cancelled (the
+    worker's own timeout). RenderFailed when the child raises or dies."""
+    ctx = multiprocessing.get_context("spawn")
+    receive, send = ctx.Pipe(duplex=False)
+    child = ctx.Process(target=_render_child, name="project-plan-pdf", daemon=True,
+                        args=(send, data, choices, generated_at, tracking_id))
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    child.start()
+    send.close()
+    try:
+        while not receive.poll():
+            if not child.is_alive() and not receive.poll():
+                raise RenderFailed(f"the PDF renderer stopped (exit code {child.exitcode})")
+            left = deadline - loop.time()
+            if left <= 0:
+                raise TimeoutError(f"the PDF took longer than {timeout:g}s")
+            await asyncio.sleep(min(_POLL_SECONDS, left))
+        kind, payload = receive.recv()
+    finally:
+        if child.is_alive():
+            child.kill()
+        child.join(5)
+        receive.close()
+    if kind != "ok":
+        raise RenderFailed(payload)
+    return payload
+
+
+__all__ = ["RenderFailed", "data_fetcher", "day_span", "render_html", "render_pdf",
+           "render_pdf_in_child", "sheet_day", "task_deep", "task_hue"]

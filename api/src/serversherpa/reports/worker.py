@@ -33,7 +33,7 @@ from serversherpa.reports.container_label_renderer import ContainerLabelRenderer
 from serversherpa.reports.jobs import claim_next, requeue_stale
 from serversherpa.reports.move_report.gather import InitiativeUnavailable
 from serversherpa.reports.project_plan.gather import (
-    PlanCalendarUnreadable, ProjectPlanUnavailable,
+    PlanCalendarUnreadable, PrintRangeError, ProjectPlanUnavailable,
 )
 from serversherpa.reports.rack_renderer import RackRendererUnavailable
 from serversherpa.reports.registry import get_module
@@ -161,7 +161,7 @@ async def process_run(db: AsyncSession, run: ReportRun, *, sessionmaker,
     except InitiativeUnavailable:
         error = "initiative_unavailable"
     except (SurveyGatherError, TimesheetTooLarge, ProjectPlanUnavailable,
-            PlanCalendarUnreadable) as exc:
+            PlanCalendarUnreadable, PrintRangeError) as exc:
         error = exc.code
     except RackRendererUnavailable as exc:
         error = f"rack renderer unavailable: {exc}"

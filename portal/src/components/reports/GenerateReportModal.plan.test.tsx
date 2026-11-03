@@ -78,6 +78,17 @@ it('from the plan: no pick step, the plan’s initiative, and Generate queues it
   expect(screen.queryByText(/saved to the initiative/)).toBeNull();
 });
 
+it('a run the API refuses for its options says each problem', async () => {
+  const user = userEvent.setup();
+  render(<GenerateReportModal definition={DEF} onClose={() => {}} initialInitiative={{ id: 'init-1', name: 'NAP11' }}
+                              projectPlan={{ plan: PLAN }} />);
+  api.createReportRun.mockRejectedValueOnce(new ApiError(422, 'invalid_options', {
+    code: 'invalid_options', problems: ['The date range can be at most 10 years.'],
+  }));
+  await user.click(screen.getByRole('button', { name: 'Generate Report' }));
+  expect(await screen.findByText('The date range can be at most 10 years.')).toBeTruthy();
+});
+
 it('from the Reports page: pick the initiative, its plan loads, and a 404 says it has none', async () => {
   const user = userEvent.setup();
   render(<GenerateReportModal definition={DEF} onClose={() => {}} />);

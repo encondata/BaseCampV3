@@ -7,9 +7,14 @@ and Group by are not applied.
 
 `gather.py` reads the plan the way the GET plan route does; `gantt.py` is
 the portal's Gantt geometry ported (held to shared vectors); `pdf.py`
-renders the HTML WeasyPrint prints. There is no size cap of its own: the
-worker's RUN_TIMEOUT_SECONDS is the guard, and the options step shows the
-page estimate before Generate."""
+renders the HTML WeasyPrint prints.
+
+Bounds: the printed range is the plan's own span (custom days are cut to
+it) and at most MAX_PRINT_YEARS (the plan's duration bound), checked when
+the run is queued (`validate_run_options`, `check_against_plan`) and again
+when it is built. There is no page cap: the HTML and the PDF are made in a
+child process killed at the worker's RUN_TIMEOUT_SECONDS, and the options
+step shows the page estimate before Generate."""
 
 import re
 from dataclasses import dataclass
@@ -18,12 +23,19 @@ from datetime import UTC, date, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import ReportRun
-from serversherpa.plans import excel
+from serversherpa.plans import excel, service
+from serversherpa.plans.models import ProjectPlan
+from serversherpa.reports.project_plan import gantt
 from serversherpa.reports.project_plan import gather as gather_mod
-from serversherpa.reports.project_plan.gantt import PAPERS, ZOOMS
-from serversherpa.reports.project_plan.pdf import data_fetcher, render_html, render_pdf
+from serversherpa.reports.project_plan.gantt import MS_PER_DAY, PAPERS, ZOOMS
+from serversherpa.reports.project_plan.gather import PrintRangeError
+from serversherpa.reports.project_plan.pdf import render_html, render_pdf_in_child
 from serversherpa.reports.registry import OptionsError, ReportResult
 from serversherpa.services.timezone import report_timezone
+
+__all__ = ["Choices", "PrintRangeError", "build", "check_against_plan", "default_options",
+           "parse_options", "render_html", "report_type", "validate_options",
+           "validate_run_options"]
 
 report_type = "project_plan"
 
@@ -94,8 +106,12 @@ def validate_run_options(options: dict) -> dict:
     elif has_from:
         first, last = _day(options, "from", problems), _day(options, "to", problems)
         if first and last:
+            start = f"{first.isoformat()}T00:00"
+            finish = gantt.from_ms(gantt.to_ms(last.isoformat()) + MS_PER_DAY)
             if first > last:
                 problems.append("option 'from' must be on or before 'to'")
+            elif gantt.span_too_long(start, finish):
+                problems.append(gather_mod.TOO_LONG)
             else:
                 out["from"], out["to"] = first.isoformat(), last.isoformat()
 
@@ -149,15 +165,33 @@ def _safe(text: str) -> str:
     return _FILENAME_UNSAFE_RE.sub("-", text).strip()
 
 
+async def check_against_plan(db: AsyncSession, plan: ProjectPlan, options: dict) -> None:
+    """create_run's check of validated run options against the plan itself:
+    OptionsError when the custom days lie wholly outside the plan's span, or
+    what would print (the whole span, or the days cut to it) is over
+    MAX_PRINT_YEARS. `build` checks the same again, the plan having perhaps
+    changed since."""
+    span = gather_mod.span_of(plan, await service.load_state(db, plan))
+    try:
+        gather_mod.printed_range(span, options.get("from"), options.get("to"))
+    except PrintRangeError as exc:
+        raise OptionsError([exc.message]) from None
+
+
 async def build(db: AsyncSession, run: ReportRun) -> ReportResult:
+    # read lazily: the worker imports this package (through the registry)
+    from serversherpa.reports.worker import RUN_TIMEOUT_SECONDS
+
     choices = parse_options(validate_run_options(run.options or {}))
     # InitiativeUnavailable / ProjectPlanUnavailable propagate to the worker
     data = await gather_mod.gather(db, run.initiative_id, run.requested_by)
+    # PrintRangeError (range_outside_plan / range_too_long) too, before any work
+    gather_mod.printed_range(data.span, choices.first, choices.last)
     generated_at = datetime.now(UTC)
-    html = render_html(data, choices, generated_at=generated_at, tracking_id=str(run.id))
+    content = await render_pdf_in_child(data, choices, generated_at=generated_at,
+                                        tracking_id=str(run.id), timeout=RUN_TIMEOUT_SECONDS)
     local = generated_at.astimezone(report_timezone())
     label = _safe(data.initiative_code or data.initiative_name or "") or "Project"
-    return ReportResult(
-        content=await render_pdf(html, url_fetcher=data_fetcher()),
-        filename=f"{label} - Project plan - {local:%Y-%m-%d %H%M}.pdf",
-        content_type="application/pdf")
+    return ReportResult(content=content,
+                        filename=f"{label} - Project plan - {local:%Y-%m-%d %H%M}.pdf",
+                        content_type="application/pdf")

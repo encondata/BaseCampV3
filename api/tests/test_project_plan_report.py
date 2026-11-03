@@ -6,7 +6,9 @@ fetched but data: URIs."""
 
 import importlib.util
 import json
+import multiprocessing
 import re
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +26,7 @@ from serversherpa.db.models import (
     ReportDefinition,
     ReportRun,
 )
+from serversherpa.plans.durations import MAX_YEARS
 from serversherpa.plans.models import ProjectPlan
 from serversherpa.reports import project_plan, worker
 from serversherpa.reports.project_plan import gantt
@@ -32,6 +35,7 @@ from serversherpa.reports.project_plan.pdf import (
     data_fetcher,
     day_span,
     render_html,
+    render_pdf_in_child,
     sheet_day,
     task_deep,
     task_hue,
@@ -103,6 +107,19 @@ def test_bad_run_options_are_problems(options, needle):
 
 def test_problems_are_all_reported_together():
     assert len(_problems({"zoom": "x", "paper": "y", "columns": ["zz"]})) == 3
+
+
+TOO_LONG = "The date range can be at most 10 years."
+OUTSIDE = "The dates are outside this plan's tasks."
+
+
+def test_a_custom_range_is_at_most_ten_years():
+    """The plan's own duration bound (plans/durations.py MAX_YEARS), in
+    calendar years: the 1st of January through the 31st of December ten
+    years on is the most."""
+    assert gantt.MAX_PRINT_YEARS == MAX_YEARS == 10
+    assert project_plan.validate_run_options({"from": "2026-01-01", "to": "2035-12-31"})
+    assert _problems({"from": "2026-01-01", "to": "2036-01-01"}) == [TOO_LONG]
 
 
 def test_definition_options_are_empty():
@@ -202,6 +219,62 @@ async def test_bad_options_are_422_with_problems(client, db):
     assert resp.status_code == 422
     detail = resp.json()["detail"]
     assert detail["code"] == "invalid_options" and len(detail["problems"]) == 3
+
+
+async def _long_plan(client, db):
+    """A plan whose own span is over ten years: a task held to start in 2037."""
+    hdrs, me = await _admin(db, client)
+    move = await _initiative(db, "Long haul")
+    plan = await _create(client, hdrs, move)
+    ids = await _add(client, hdrs, plan, "Kickoff", "Far off")
+    await _ok(client, hdrs, plan, [_update(ids["Far off"], constraint_type="snet",
+                                           constraint_date="2037-06-01")])
+    return hdrs, me, move
+
+
+async def test_create_run_refuses_days_outside_the_plan(client, db):
+    d = await _definition(db)
+    hdrs, _ = await _admin(db, client)
+    move = await _initiative(db)
+    await _create(client, hdrs, move)          # one day from Mon 11/2/26
+    resp = await client.post("/reports/runs", headers=hdrs, json=_body(
+        d, move.id, {"from": "2027-03-01", "to": "2027-03-31"}))
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "invalid_options", "problems": [OUTSIDE]}
+    # days that reach the plan are fine (the PDF cuts them to it)
+    resp = await client.post("/reports/runs", headers=hdrs, json=_body(
+        d, move.id, {"from": "2026-10-01", "to": "2026-11-02"}))
+    assert resp.status_code == 201, resp.text
+
+
+async def test_create_run_refuses_a_plan_over_ten_years(client, db):
+    d = await _definition(db)
+    hdrs, _, move = await _long_plan(client, db)
+    resp = await client.post("/reports/runs", headers=hdrs, json=_body(d, move.id))
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "invalid_options", "problems": [TOO_LONG]}
+    # ten years of it are fine
+    resp = await client.post("/reports/runs", headers=hdrs, json=_body(
+        d, move.id, {"from": "2026-11-02", "to": "2036-11-01"}))
+    assert resp.status_code == 201, resp.text
+
+
+async def test_the_build_checks_the_range_against_the_plan_again(client, db, stored):
+    """A plan can change between Generate and the run: the worker fails the
+    run with the same rule's code."""
+    d = await _definition(db)
+    _, me, long_move = await _long_plan(client, db)
+    hdrs, _ = await _admin(db, client)
+    short = await _initiative(db, "Short")
+    await _create(client, hdrs, short)
+    too_long = await _queued(db, d, long_move, me)
+    outside = await _queued(db, d, short, me, {"from": "2027-03-01", "to": "2027-03-31"})
+    for run_id, code in ((too_long, "range_too_long"), (outside, "range_outside_plan")):
+        assert await worker.run_once(get_sessionmaker()) is True
+        run = await db.get(ReportRun, run_id)
+        await db.refresh(run)
+        assert (run.status, run.error) == ("failed", code)
+    assert stored == {}
 
 
 async def test_history_hides_project_plan_runs_without_view(client, db):
@@ -310,8 +383,17 @@ async def test_text_is_escaped_in_both_sections(client, db):
     assert ESCAPED in _section(html, "gantt")
 
 
+async def _stretch(client, hdrs, move, until: str) -> None:
+    """A 13th task held to start on `until`: the plan's span reaches it."""
+    plan = (await client.get(f"/initiatives/{move.id}/plan", headers=hdrs)).json()
+    ids = await _add(client, hdrs, plan, "Wrap-up")
+    await _ok(client, hdrs, plan, [_update(ids["Wrap-up"], constraint_type="snet",
+                                           constraint_date=until)])
+
+
 async def test_every_gantt_page_repeats_the_names_and_the_timescale(client, db):
-    _, me, move, _ = await _twelve(client, db)
+    hdrs, me, move, _ = await _twelve(client, db)
+    await _stretch(client, hdrs, move, "2026-12-28")
     html = await _html(db, move, me, zoom="days", **{"from": "2026-11-01", "to": "2026-12-31"})
     pages = html.count('<div class="gpage"')
     assert pages >= 2
@@ -319,7 +401,7 @@ async def test_every_gantt_page_repeats_the_names_and_the_timescale(client, db):
     assert html.count('class="gscale"') == pages
     assert html.count('class="gchart"') == pages
     # each page's header names its dates and rows
-    assert len(re.findall(r'<div class="ghead">.*?Rows 1–12 of 12', html, re.S)) == pages
+    assert len(re.findall(r'<div class="ghead">.*?Rows 1–13 of 13', html, re.S)) == pages
 
 
 async def test_bars_take_the_task_color_and_critical_its_class(client, db):
@@ -363,14 +445,52 @@ async def test_chosen_columns_and_an_unknown_one(client, db):
 
 
 async def test_a_year_at_days_tiles_across_pages_with_page_footers(client, db):
-    _, me, move, _ = await _twelve(client, db)
+    hdrs, me, move, _ = await _twelve(client, db)
+    await _stretch(client, hdrs, move, "2027-10-29")
     html = await _html(db, move, me, zoom="days", **{"from": "2026-11-01", "to": "2027-10-31"})
     windows = set(re.findall(r'<svg class="gchart" [^>]*viewBox="(-?[\d.]+) ', html))
-    est = gantt.estimate_pages(12, "2026-11-01T00:00", "2027-11-01T00:00", "days", "letter")
+    printed = gantt.print_range((await gather_mod.gather(db, move.id, me)).span,
+                                "2026-11-01", "2027-10-31")
+    assert printed == gantt.PrintRange("2026-11-02T08:00", "2027-10-29T17:00")
+    est = gantt.estimate_pages(13, printed.start, printed.finish, "days", "letter")
     assert len(windows) == est.across >= 2
     assert 'content: "Page " counter(page) " of " counter(pages)' in html
     pages = HTML(string=html, url_fetcher=data_fetcher()).render().pages
     assert len(pages) == est.table + est.gantt
+
+
+async def test_a_custom_range_is_cut_to_the_plan(client, db):
+    """Days reaching past the plan print the plan's own span: the same
+    tiles as the whole project, the clamped days in the title block."""
+    _, me, move, _ = await _twelve(client, db)
+    whole = await _html(db, move, me, zoom="days")
+    wide = await _html(db, move, me, zoom="days", **{"from": "2026-10-01", "to": "2027-12-31"})
+    tiles = r'<svg class="gchart" [^>]*viewBox="([^"]+)"'
+    assert re.findall(tiles, wide) == re.findall(tiles, whole)
+    assert re.findall(r'<div class="ghead">.*?</div>', wide, re.S) == re.findall(
+        r'<div class="ghead">.*?</div>', whole, re.S)
+    assert "Nov 2–10, 2026 · Days" in wide and "Whole project · Days" in whole
+    data = await gather_mod.gather(db, move.id, me)
+    assert gantt.print_range(data.span, "2026-10-01", "2027-12-31") == data.span
+    assert data.span == gantt.PrintRange("2026-11-02T08:00", "2026-11-10T17:00")
+
+
+async def test_a_render_past_its_timeout_is_stopped(client, db):
+    """The HTML and the PDF are made in a child process, killed at the
+    timeout: CPU work in it can't hold the worker past RUN_TIMEOUT_SECONDS."""
+    _, me, move, _ = await _twelve(client, db)
+    data = await gather_mod.gather(db, move.id, me)
+    choices = project_plan.parse_options({})
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await render_pdf_in_child(data, choices, generated_at=datetime.now(UTC),
+                                  tracking_id=str(uuid.uuid4()), timeout=0.3)
+    assert time.monotonic() - started < 5
+    assert multiprocessing.active_children() == []
+    # given the time, the same call makes the PDF
+    pdf = await render_pdf_in_child(data, choices, generated_at=datetime.now(UTC),
+                                    tracking_id=str(uuid.uuid4()), timeout=120)
+    assert pdf.startswith(b"%PDF")
 
 
 async def test_build_makes_a_pdf_named_for_the_initiative(client, db):
@@ -456,6 +576,21 @@ async def test_the_worker_keeps_the_pdf_on_the_run_only(client, db, stored):
     assert await db.scalar(select(Attachment.id)) is None
     n = await db.scalar(select(Notification).where(Notification.person_id == me))
     assert n.kind == "report_ready" and n.body == "NAP11 Hall Migration"
+
+
+async def test_the_worker_timeout_stops_the_render(client, db, stored, monkeypatch):
+    _, me, move, _ = await _twelve(client, db)
+    d = await _definition(db)
+    run_id = await _queued(db, d, move, me)
+    monkeypatch.setattr(worker, "RUN_TIMEOUT_SECONDS", 0.5)
+    started = time.monotonic()
+    assert await worker.run_once(get_sessionmaker()) is True
+    assert time.monotonic() - started < 10
+    run = await db.get(ReportRun, run_id)
+    await db.refresh(run)
+    assert (run.status, run.error) == ("failed", "timed out after 0.5s")
+    assert multiprocessing.active_children() == []
+    assert stored == {}
 
 
 async def test_a_plan_deleted_before_the_run_fails_it_as_plan_not_found(client, db, stored):

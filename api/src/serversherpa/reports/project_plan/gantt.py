@@ -17,9 +17,11 @@ so both sides compute the same IEEE doubles. Lengths are CSS px (1/96 in).
 
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+
+from serversherpa.plans.durations import MAX_YEARS
 
 MS_PER_DAY = 86_400_000
 MS_PER_HOUR = 3_600_000
@@ -262,11 +264,21 @@ _LABELS: dict[str, tuple[Callable[[float], str], Callable[[float], str]]] = {
 }
 
 
+# the shortest each unit can be: sizes a tick loop before it runs
+_UNIT_MIN_MS = {"hour": MS_PER_HOUR, "day": MS_PER_DAY, "week": MS_PER_WEEK,
+                "month": 28 * MS_PER_DAY, "quarter": 89 * MS_PER_DAY, "year": 365 * MS_PER_DAY}
+
+
 def _ticks(scale: Scale, unit: str, label: Callable[[float], str], from_x: float,
            to_x: float) -> list[Tick]:
     ticks: list[Tick] = []
     at = _FLOOR[unit](max(scale.start_ms, ms_of(scale, from_x)))
-    while at < scale.end_ms:
+    # sized before it runs: no more units than fit between `at` and the end
+    # of the window (or of the scale), plus the two cut at the edges
+    stop = min(scale.end_ms, ms_of(scale, to_x))
+    for _ in range(max(0, math.ceil((stop - at) / _UNIT_MIN_MS[unit])) + 2):
+        if at >= scale.end_ms:
+            break
         nxt = _ADD[unit](at, 1)
         start = max(at, scale.start_ms)
         x = x_of_ms(scale, start)
@@ -553,17 +565,19 @@ def nonworking_bands(calendar: dict, scale: Scale) -> list[Band]:
             bands.append(Band(x_of_ms(scale, a), width_of_ms(scale, b - a)))
 
     run: float | None = None
-    day: float = math.floor(scale.start_ms / MS_PER_DAY) * MS_PER_DAY
-    while day < scale.end_ms:
+    first = math.floor(scale.start_ms / MS_PER_DAY) * MS_PER_DAY
+    # sized before it runs: one step a day of the scale
+    days = max(0, math.ceil((scale.end_ms - first) / MS_PER_DAY))
+    day = first
+    for day in range(first, first + days * MS_PER_DAY, MS_PER_DAY):
         if off(day):
             if run is None:
                 run = day
         elif run is not None:
             close(run, day)
             run = None
-        day += MS_PER_DAY
     if run is not None:
-        close(run, day)
+        close(run, first + days * MS_PER_DAY)
     return bands
 
 
@@ -634,12 +648,55 @@ class PrintRange:
     finish: str
 
 
-def print_range(project_start: str, project_finish: str | None, first: str | None = None,
-                last: str | None = None) -> PrintRange:
-    """The whole project, or the days `first` through `last` whole."""
-    if first and last:
-        return PrintRange(f"{first}T00:00", from_ms(to_ms(last) + MS_PER_DAY))
-    return PrintRange(project_start, project_finish or project_start)
+def plan_span(project_start: str, project_finish: str | None,
+              tasks: Iterable[tuple[str | None, str | None]]) -> PrintRange:
+    """The plan's own span: the project start, or an earlier task start, to
+    the latest task finish (the project finish); an empty plan's is its
+    start. `tasks` is every task's (start, finish) as plan time text."""
+    s = to_ms(project_start)
+    if s is None:
+        raise ValueError(f"plan_span: not a plan time: {project_start}")
+    pf = to_ms(project_finish) if project_finish else None
+    f = s if pf is None else max(s, pf)
+    for start, finish in tasks:
+        for text in (start, finish):
+            at = to_ms(text) if text else None
+            if at is None:
+                continue
+            s, f = min(s, at), max(f, at)
+    return PrintRange(from_ms(s), from_ms(f))
+
+
+def print_range(span: PrintRange, first: str | None = None, last: str | None = None
+                ) -> PrintRange | None:
+    """The plan's span, or the days `first` through `last` (the first's
+    midnight to the midnight after the last) cut to it; None when those
+    days lie wholly outside it."""
+    if not (first and last):
+        return span
+    a, b = to_ms(first), to_ms(last) + MS_PER_DAY
+    s, f = to_ms(span.start), to_ms(span.finish)
+    if b < s or a > f:
+        return None
+    return PrintRange(from_ms(max(a, s)), from_ms(min(b, f)))
+
+
+# the longest span the PDF prints: the plan's own bound on a duration
+MAX_PRINT_YEARS = MAX_YEARS
+
+
+def _plus_years(moment: datetime, years: int) -> datetime:
+    """`Date.UTC(year + years, month, day, ...)`: Feb 29 goes on to Mar 1."""
+    try:
+        return moment.replace(year=moment.year + years)
+    except ValueError:
+        return moment.replace(year=moment.year + years, day=28) + timedelta(days=1)
+
+
+def span_too_long(start: str, finish: str) -> bool:
+    """True when `finish` is past `start` plus MAX_PRINT_YEARS calendar years."""
+    limit = _plus_years(moment_of(to_ms(start)), MAX_PRINT_YEARS)
+    return to_ms(finish) > (limit - _EPOCH) // timedelta(milliseconds=1)
 
 
 def _lead_ms(zoom: str) -> int:

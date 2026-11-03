@@ -12,6 +12,8 @@ describe('run error text', () => {
     expect(runErrorText('plan_not_found')).toBe('This initiative has no project plan yet.');
     expect(runErrorText('bad_calendar'))
       .toBe('This plan’s calendar can’t be read, so the PDF couldn’t be made. Check Plan settings › Calendar.');
+    expect(runErrorText('range_too_long')).toBe('The date range can be at most 10 years.');
+    expect(runErrorText('range_outside_plan')).toBe('The dates are outside this plan’s tasks.');
     expect(runErrorText('something_new')).toBe('something_new');
   });
 });
