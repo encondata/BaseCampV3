@@ -381,10 +381,15 @@ async def export_xlsx(
     actor: AuthContext = require_permission("project_plans", "view"),
 ) -> Response:
     """The plan's sheet as an Excel workbook (plans/excel.py): `columns` is
-    the sheet's visible column keys (`id,name,duration,...`; unknown ones
-    are skipped, ID and Task Name are always there; none means the sheet's
-    default set), then Outline Level, and Color when a task has one. Built
-    in a worker thread: a large plan takes a second or two."""
+    the sheet's visible column keys (`id,name,duration,...`; its icon
+    column is skipped, ID and Task Name are always there; none means the
+    sheet's default set; a key the sheet doesn't have is 422 `bad_field`
+    {field: columns}), then Outline Level, and Color when a task has one.
+    Built in a worker thread: a large plan takes a second or two."""
+    try:
+        keys = excel.column_keys(columns)
+    except ValueError:
+        raise err(422, "bad_field", field="columns") from None
     plan = await service.plan_for_actor(db, plan_id, actor)
     state = await service.load_state(db, plan)
     initiative = await db.get(Initiative, plan.initiative_id)
@@ -394,8 +399,7 @@ async def export_xlsx(
         raise service.calendar_error(exc) from None
     settings = await service.settings_of(db, plan)
     outline = await service.tasks_out(db, state)
-    content = await asyncio.to_thread(excel.export_xlsx, state, outline, units,
-                                      excel.column_keys(columns),
+    content = await asyncio.to_thread(excel.export_xlsx, state, outline, units, keys,
                                       show_times=settings.show_times)
     return Response(content, media_type=excel.XLSX_MIME, headers={
         "Content-Disposition": content_disposition(_download_name(initiative, ".xlsx"))})
@@ -548,17 +552,19 @@ async def import_into_plan(
 async def _new_plan_start(db: AsyncSession, initiative: Initiative,
                           parsed: importer.ParsedPlan) -> datetime:
     """A plan made from a file starts at the file's project start, else
-    its earliest task start, else today at the calendar's default start
-    in the plan's zone."""
+    its earliest task start (a day alone at the new plan's calendar's
+    default start: the system default calendar's), else today at that
+    default start in the plan's zone."""
     if parsed.project_start is not None:
         return parsed.project_start
-    starts = [task.start for task in parsed.tasks if task.start is not None]
-    if starts:
-        return min(starts)
     try:
         calendar = WorkCalendar.from_json(await service.new_plan_calendar(db, None))
     except CalendarError as exc:
         raise service.calendar_error(exc) from None
+    starts = [importer.dated(task, "start", calendar) for task in parsed.tasks
+              if task.start is not None]
+    if starts:
+        return min(starts)
     today = plan_now(await service.plan_zone(db, initiative)).date()
     return datetime.combine(today, calendar.default_start)
 

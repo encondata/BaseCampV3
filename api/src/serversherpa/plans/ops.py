@@ -42,7 +42,7 @@ the progress-only check). Update project (`run_batch` with an
 
 import uuid
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -278,15 +278,22 @@ class BatchRun:
 
 async def run_batch(db: AsyncSession, plan: ProjectPlan, ops: Sequence,
                     actor: AuthContext, *, changes: dict | None = None,
-                    action: str = "plan_update") -> BatchRun:
+                    action: str = "plan_update",
+                    settle: Callable[[PlanState, PlanSettings], dict] | None = None
+                    ) -> BatchRun:
     """Apply a batch to a plan the caller has locked and checked, bump its
     version, audit it as `action` (with `changes` the caller made to the
     plan itself; an import, plans/importer.py, is `plan_import`) and answer
-    what changed. The caller commits."""
+    what changed. The caller commits. `settle`, when given, runs on the
+    scheduled plan before the version and the audit (an import keeps a
+    sheet's Start as a constraint only where the schedule needs it); what
+    it answers is merged into the audit's changes."""
     state = await load_state(db, plan)
     try:
         settings = await settings_of(db, plan)
         result = await apply_ops(db, state, ops, actor, settings)
+        if settle is not None:
+            changes = {**(changes or {}), **settle(state, settings)}
     except ScheduleError as exc:
         raise schedule_error(state, exc) from None
     except CalendarError as exc:

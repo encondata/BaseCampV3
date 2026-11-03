@@ -9,6 +9,7 @@ evaluates a formula, and refuses a package that unpacks past the cap."""
 import csv
 import io
 import re
+import struct
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -18,7 +19,7 @@ import pytest
 from openpyxl import Workbook
 from sqlalchemy import func, select
 
-from serversherpa.db.models import InitiativePerson
+from serversherpa.db.models import AuditLog, InitiativePerson
 from serversherpa.plans import excel
 from serversherpa.plans.models import PlanTask, ProjectPlan
 from tests.test_plans_api import _admin, _create, _initiative
@@ -171,7 +172,7 @@ async def test_export_xlsx(client, db):
     wb = openpyxl.load_workbook(io.BytesIO(resp.content))
     assert wb.sheetnames == ["Project plan"]
     ws = wb.worksheets[0]
-    assert _header(ws) == ["ID", "Mode", "Task Name", "Duration", "Start", "Finish",
+    assert _header(ws) == ["ID", "Task Mode", "Task Name", "Duration", "Start", "Finish",
                            "Predecessors", "Resource Names", "% Complete", "Deadline",
                            "Outline Level"]
     assert all(c.font.bold for c in ws[1])
@@ -186,7 +187,7 @@ async def test_export_xlsx(client, db):
     assert survey["Task Name"].alignment.indent == 1
     assert phase["Task Name"].font.bold and phase["Duration"].font.bold
     assert not survey["Task Name"].font.bold
-    assert survey["Mode"].value == "Auto Scheduled"
+    assert survey["Task Mode"].value == "Auto Scheduled"
     assert survey["Duration"].value == "2 days"
     assert survey["Start"].value == datetime(2026, 11, 2, 8, 0)
     assert survey["Finish"].value == datetime(2026, 11, 3, 17, 0)
@@ -200,9 +201,9 @@ async def test_export_xlsx(client, db):
 
 
 async def test_export_columns_and_color(client, db):
-    """`columns` picks the sheet's columns by key (unknown keys and the
-    Indicators icons are skipped; ID and Task Name are always there); a
-    Color column (#rrggbb) joins whenever a task has a color."""
+    """`columns` picks the sheet's columns by key (the Indicators icons are
+    skipped; ID and Task Name are always there); a Color column (#rrggbb)
+    joins whenever a task has a color."""
     hdrs, _move, plan, _pat_row = await _setup(client, db)
     ids = await _add(client, hdrs, plan, "Plain", "Painted")
     await _ok(client, hdrs, plan, [
@@ -211,7 +212,7 @@ async def test_export_columns_and_color(client, db):
     url = f"/plans/{plan['id']}/export.xlsx"
 
     ws = _sheet((await client.get(url, headers=hdrs,
-                                  params={"columns": "indicators,id,name,wbs,notes,bogus,id"})
+                                  params={"columns": "indicators,id,name,wbs,notes,,id"})
                  ).content)
     assert _header(ws) == ["ID", "Task Name", "WBS", "Notes", "Outline Level", "Color"]
     rows = _by_name(ws)
@@ -229,6 +230,14 @@ async def test_export_columns_and_color(client, db):
     assert "Color" not in _header(ws)
 
 
+async def test_unknown_export_columns_are_refused(client, db):
+    hdrs, _move, plan, _pat_row = await _setup(client, db)
+    resp = await client.get(f"/plans/{plan['id']}/export.xlsx", headers=hdrs,
+                            params={"columns": "id,name,bogus"})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "bad_field", "field": "columns"}
+
+
 async def test_export_never_writes_a_formula(client, db):
     """A name typed as a formula stays text in the workbook."""
     hdrs, _move, plan, _pat_row = await _setup(client, db)
@@ -242,7 +251,8 @@ async def test_export_never_writes_a_formula(client, db):
 
 def test_columns_mirror_the_portal_sheet():
     """The export's column keys and names are the portal sheet's
-    (portal/src/lib/plans/columns.ts), in its order."""
+    (portal/src/lib/plans/columns.ts), in its order; the mode column takes
+    MS Project's own name, Task Mode."""
     text = COLUMNS_TS.read_text()
     portal = {}
     for m in re.finditer(r"key: '([a-z_]+)', label: '([^']+)'"
@@ -250,7 +260,9 @@ def test_columns_mirror_the_portal_sheet():
         key, label = (m[1], m[2]) if m[1] else (m[3], m[4])
         portal[key] = label
     assert len(portal) == 29
-    assert {k: v for k, v in portal.items() if k != "indicators"} == excel.COLUMNS
+    assert portal["mode"] == "Mode"
+    assert {**{k: v for k, v in portal.items() if k != "indicators"},
+            "mode": "Task Mode"} == excel.COLUMNS
     assert list(excel.COLUMNS) == [k for k in portal if k != "indicators"]
     assert excel.DEFAULT_COLUMNS == ("id", "mode", "name", "duration", "start", "finish",
                                      "predecessors", "resources", "percent", "deadline")
@@ -344,8 +356,8 @@ async def test_bad_duration_is_a_problem_row(client, db):
 async def test_csv_import(client, db):
     """A CSV (UTF-8, with Excel's BOM): text dates (MS Project's own and
     ISO), % Complete as text, IDs as the predecessors' numbers, resources
-    matched by name, a Start on an unlinked task kept as Start No Earlier
-    Than and dropped on a linked one, a bad color a problem."""
+    matched by name, a Start that the links move said so, a bad color a
+    problem."""
     hdrs, _move, plan, pat = await _setup(client, db)
     content = _csv([
         ["ID", "Task Name", "Duration", "Start", "Predecessors", "Resource Names",
@@ -369,7 +381,8 @@ async def test_csv_import(client, db):
 
     tasks = _tasks(await _get(client, hdrs, plan))
     survey, pack_t, done = tasks["Survey"], tasks["Pack"], tasks["Done"]
-    assert (survey["constraint_type"], survey["constraint_date"]) == ("snet", "2026-11-02T08:00")
+    # its Start is where it schedules anyway (the project start): no constraint
+    assert (survey["constraint_type"], survey["start"]) == ("asap", "2026-11-02T08:00")
     assert survey["percent_complete"] == 50
     assert survey["deadline"] == "2026-11-06T17:00"           # a date alone: the day's end
     assert survey["color"] == "#3b82f6"
@@ -378,6 +391,82 @@ async def test_csv_import(client, db):
     assert pack_t["predecessors"] == "1FS+1 day"              # renumbered: Survey is 1
     assert pack_t["start"] == "2026-11-05T08:00"
     assert done["is_milestone"] is True and done["predecessors"] == "2"
+
+
+async def test_start_rule(client, db):
+    """A sheet's Start is where the task was scheduled, not a constraint:
+    on an unlinked auto task it becomes Start No Earlier Than only when it's
+    later than where the plan schedules the task; on a linked one a problem
+    says so only when the links put it elsewhere. A link the importer drops
+    (to an ID the file doesn't have) doesn't count as a link."""
+    hdrs, _move, plan, _pat_row = await _setup(client, db)
+    content = _csv([
+        ["ID", "Task Name", "Duration", "Start", "Predecessors"],
+        ["1", "At the start", "1d", "11/2/2026 8:00 AM", ""],
+        ["2", "Later", "1d", "11/4/2026", ""],
+        ["3", "Earlier", "1d", "10/30/2026", ""],
+        ["4", "Where linked", "1d", "11/3/2026 8:00 AM", "1"],
+        ["5", "Moved by links", "1d", "11/9/2026", "1"],
+        ["6", "Dangling link", "1d", "11/5/2026", "99"],
+    ])
+    body = await _ok_import(client, hdrs, plan, content, filename="p.csv",
+                            content_type="text/csv", dry_run=True, mode="fill")
+    rows = _rows(body)
+    assert {name: row["problems"] for name, row in rows.items() if row["problems"]} == {
+        "Moved by links": [START_IGNORED],
+        "Dangling link": ["Predecessor ID 99 isn't in the file; link skipped."],
+    }
+    assert rows["Moved by links"]["moved_days"] == -4.0
+
+    await _ok_import(client, hdrs, plan, content, filename="p.csv", content_type="text/csv",
+                     dry_run=False, mode="fill")
+    tasks = _tasks(await _get(client, hdrs, plan))
+    constraints = {n: (t["constraint_type"], t["constraint_date"]) for n, t in tasks.items()}
+    assert constraints == {
+        "At the start": ("asap", None),
+        "Later": ("snet", "2026-11-04T08:00"),
+        "Earlier": ("asap", None),
+        "Where linked": ("asap", None),
+        "Moved by links": ("asap", None),
+        "Dangling link": ("snet", "2026-11-05T08:00"),
+    }
+    assert tasks["Later"]["start"] == "2026-11-04T08:00"
+    assert tasks["Moved by links"]["start"] == "2026-11-03T08:00"
+    (audit,) = (await db.scalars(select(AuditLog).where(AuditLog.action == "plan_import"))).all()
+    assert audit.changes["problems"] == 2
+
+
+async def test_dates_without_a_time_take_the_plans_default_times(client, db):
+    """A day alone is that day at the plan calendar's default start (Start)
+    or end (Finish, Deadline); a plan made from the file takes the system
+    default calendar's."""
+    hdrs, _move, plan, _pat_row = await _setup(client, db)
+    calendar = {**plan["calendar"], "default_start": "07:00", "default_end": "16:00",
+                "week": {**plan["calendar"]["week"], **{
+                    day: [["07:00", "11:00"], ["12:00", "16:00"]]
+                    for day in ("mon", "tue", "wed", "thu", "fri")}}}
+    resp = await client.patch(f"/plans/{plan['id']}", headers=hdrs,
+                              json={"base_version": plan["version"], "calendar": calendar})
+    assert resp.status_code == 200, resp.text
+    content = _csv([["Task Name", "Start", "Deadline"],
+                    ["Dated", "11/4/2026", "2026-11-06"],
+                    ["Midnight", "", "11/9/2026 12:00 AM"]])
+    await _ok_import(client, hdrs, plan, content, filename="p.csv", content_type="text/csv",
+                     dry_run=False, mode="fill")
+    tasks = _tasks(await _get(client, hdrs, plan))
+    assert tasks["Dated"]["constraint_date"] == "2026-11-04T07:00"
+    assert tasks["Dated"]["start"] == "2026-11-04T07:00"
+    assert tasks["Dated"]["deadline"] == "2026-11-06T16:00"
+    assert tasks["Midnight"]["deadline"] == "2026-11-09T00:00"      # a time was typed
+
+    move = await _initiative(db, name="From a sheet")
+    resp = await _post(client, hdrs, f"/initiatives/{move.id}/plan/import",
+                       _csv([["Task Name", "Start"], ["First", "11/9/2026"]]),
+                       filename="p.csv", content_type="text/csv", dry_run=False)
+    assert resp.status_code == 200, resp.text
+    got = (await client.get(f"/initiatives/{move.id}/plan", headers=hdrs)).json()
+    assert got["project_start"] == "2026-11-09T08:00"
+    assert got["tasks"][0]["start"] == "2026-11-09T08:00"
 
 
 async def test_text_dates_without_a_time(client, db):
@@ -528,8 +617,8 @@ def test_excel_saved_workbook(date1904):
     strings = ["<si><t>Task Name</t></si>", "<si><t>Start</t></si>",
                "<si><t>% Complete</t></si>", "<si><t>Deadline</t></si>",
                "<si><t>Milestone</t></si>", "<si><t>Duration</t></si>",
-               '<si><r><t xml:space="preserve">Pack </t></r><r><rPr><b/></rPr><t>crates</t>'
-               "</r><rPh><t>PHONETIC</t></rPh></si>"]
+               ('<si><r><t xml:space="preserve">Pack </t></r><r><rPr><b/></rPr><t>crates</t>'
+                "</r><rPh><t>PHONETIC</t></rPh></si>")]
     rows = ('<row r="1">' + "".join(f'<c r="{col}1" t="s"><v>{i}</v></c>'
                                     for i, col in enumerate("ABCDEF")) + "</row>"
             '<row r="2"><c r="A2" t="s"><v>6</v></c>'
@@ -542,13 +631,14 @@ def test_excel_saved_workbook(date1904):
     (task,) = parsed.tasks
     assert task.name == "Pack crates"
     assert task.start == datetime(2026, 11, 2, 9, 30)
-    assert task.constraint_type == "snet"
-    assert task.deadline == datetime(2026, 11, 6, 17, 0)      # a date alone: the day's end
+    assert task.soft_start and task.constraint_type == "asap"   # the importer decides
+    # a date alone: its time is the plan calendar's, set by the importer
+    assert task.deadline == datetime(2026, 11, 6, 0, 0)
+    assert task.date_only == {"deadline"}
     assert task.percent_complete == 25
     assert task.is_milestone is True
     assert task.duration is None
-    (problem,) = task.problems
-    assert "#N/A" in problem and "Duration" in problem
+    assert task.problems == ["Duration is the error #N/A; ignored."]
 
 
 async def test_first_sheet_only(client, db):
@@ -592,7 +682,8 @@ async def _round_trip_plan(client, db):
     """Summaries, a manual task, working and elapsed durations in hours,
     days and weeks, a milestone, FS/SS/FF/SF links with a lag, a lead, an
     elapsed lag and week and month lags (into and out of summaries),
-    progress, a deadline, a color, a person and a partner."""
+    progress, a deadline, a color, a person and a partner, and an unlinked
+    task that a Start No Earlier Than holds later than it would start."""
     hdrs = await _admin(db, client)
     move = await _initiative(db, name="Source move")
     worker, shipper = await _resources(db, move)
@@ -608,6 +699,7 @@ async def _round_trip_plan(client, db):
     ids.update(await _add(client, hdrs, plan, "Build", duration="1w"))
     ids.update(await _add(client, hdrs, plan, "Go live", duration="0"))
     ids.update(await _add(client, hdrs, plan, "Wrap up", duration="2d"))
+    ids.update(await _add(client, hdrs, plan, "Permit", duration="1d"))
     pack = ids["Pack <crates> & tape"]
     await _ok(client, hdrs, plan, [
         {"op": "indent", "ids": [ids["Survey"], pack, ids["Freight"], ids["Walkthrough"]]},
@@ -625,6 +717,7 @@ async def _round_trip_plan(client, db):
         _update(ids["Go live"], predecessors="8"),
         _update(ids["Phase 2"], predecessors="1FS+1w"),
         _update(ids["Wrap up"], predecessors="6SS+1mo"),
+        _update(ids["Permit"], constraint_type="snet", constraint_date="2026-12-01T08:00"),
         _assign(ids["Survey"], ("person", worker.id), ("partner", shipper.id)),
     ])
     return hdrs, plan, worker, shipper
@@ -633,8 +726,8 @@ async def _round_trip_plan(client, db):
 ROUND_TRIP_FIELDS = (
     "display_id", "wbs", "outline_level", "is_summary", "name", "is_milestone", "mode",
     "duration_minutes", "duration_unit", "elapsed", "duration_text", "start", "finish",
-    "deadline", "percent_complete", "actual_start", "color", "predecessors", "successors",
-    "status")
+    "constraint_type", "constraint_date", "deadline", "percent_complete", "actual_start",
+    "color", "predecessors", "successors", "status")
 
 
 def _comparable(body) -> list[dict]:
@@ -658,9 +751,10 @@ def _links(body) -> list[tuple]:
 async def test_round_trip(client, db):
     """Export a plan built through ops, import the workbook into a new
     initiative (with the same people and partner): names, the outline,
-    durations, links, modes, progress, deadlines, colors and assignees come
-    back as they were. A linked task's Start is set by its links (a
-    problem says so); an unlinked one's becomes Start No Earlier Than."""
+    durations, links, modes, progress, deadlines, colors, assignees and
+    constraints come back as they were, with no problem: every Start is
+    where the plan schedules the task, and the one held later by a Start No
+    Earlier Than gets it back."""
     hdrs, plan, worker, shipper = await _round_trip_plan(client, db)
     source = await _get(client, hdrs, plan)
     resp = await client.get(f"/plans/{plan['id']}/export.xlsx", headers=hdrs)
@@ -674,20 +768,18 @@ async def test_round_trip(client, db):
                        dry_run=False)
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["problems"] == []
-    assert all(row["moved_days"] is None for row in body["rows"]), body["rows"]
-    flagged = {row["name"] for row in body["rows"] if row["problems"]}
-    assert flagged == {"Pack <crates> & tape", "Freight", "Call", "Build", "Go live",
-                       "Wrap up"}
-    assert all(row["problems"] == [START_IGNORED] for row in body["rows"] if row["problems"])
+    assert body["problems"] == [] and body["summary"]["problems"] == 0, body
+    assert all(row["problems"] == [] and row["moved_days"] is None
+               for row in body["rows"]), body["rows"]
 
     got = (await client.get(f"/initiatives/{other.id}/plan", headers=hdrs)).json()
     assert got["project_start"] == source["project_start"]
     assert _comparable(got) == _comparable(source)
     assert _links(got) == _links(source)
     assert len(got["links"]) == 7
-    survey = _tasks(got)["Survey"]
-    assert (survey["constraint_type"], survey["constraint_date"]) == ("snet", "2026-11-02T08:00")
+    permit = _tasks(got)["Permit"]
+    assert (permit["constraint_type"], permit["constraint_date"]) == ("snet", "2026-12-01T08:00")
+    assert sum(t["constraint_type"] != "asap" for t in got["tasks"]) == 1
 
 
 # ── the file: kinds, limits, hostile workbooks ──────────────────────
@@ -788,6 +880,152 @@ async def test_wide_rows_keep_only_the_named_columns(client, db):
     assert [row["name"] for row in body["rows"]] == ["Only"]
 
 
+def _bzip2_package(real: int, declared: int) -> bytes:
+    """A zip whose one member (the package's root relationships) is `real`
+    bytes of zeros compressed with bzip2, its sizes patched to `declared`."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        info = zipfile.ZipInfo("_rels/.rels")
+        info.compress_type = zipfile.ZIP_BZIP2
+        with z.open(info, "w") as member:
+            chunk = b"\0" * (1024 * 1024)
+            for _ in range(real // len(chunk)):
+                member.write(chunk)
+    data = bytearray(buf.getvalue())
+    struct.pack_into("<I", data, data.find(b"PK\x03\x04") + 22, declared)   # local header
+    struct.pack_into("<I", data, data.find(b"PK\x01\x02") + 24, declared)   # directory
+    return bytes(data)
+
+
+def test_compression_excel_never_writes_is_refused():
+    """Excel stores or deflates a member, nothing else. A bzip2 or LZMA
+    member is refused before any of it is read: zipfile unpacks those a
+    whole chunk at a time, past any size the directory claims."""
+    import tracemalloc
+
+    content = _bzip2_package(real=25 * 1024 * 1024, declared=1000)
+    assert len(content) < 1000
+    tracemalloc.start()
+    try:
+        with pytest.raises(excel.ImportFileError) as caught:
+            excel.parse_workbook(content)
+        _size, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert caught.value.code == "bad_file" and "compressed" in caught.value.extra["message"]
+    assert peak < 4 * 1024 * 1024, peak
+
+    src = zipfile.ZipFile(io.BytesIO(_xlsx([["Task Name"], ["A"]])))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_LZMA) as z:
+        for info in src.infolist():
+            z.writestr(info.filename, src.read(info))
+    with pytest.raises(excel.ImportFileError) as caught:
+        excel.parse_workbook(out.getvalue())
+    assert "compressed" in caught.value.extra["message"]
+
+
+def test_one_budget_for_the_whole_package(monkeypatch):
+    """What every read unpacks counts against one budget for the package,
+    so a member reached through two relationships (here the sheet, named as
+    the shared strings too) can't read past it."""
+    rows = ('<row r="1"><c r="A1" t="inlineStr"><is><t>Task Name</t></is></c></row>'
+            '<row r="2"><c r="A2" t="inlineStr"><is><t>Only</t></is></c></row>'
+            + "".join(f'<row r="{n}"/>' for n in range(3, 3000)))
+    plain = _excel_style_package(rows, ["<si><t>unused</t></si>"], date1904=False)
+    twice = _replace(plain, "xl/_rels/workbook.xml.rels", zipfile.ZipFile(
+        io.BytesIO(plain)).read("xl/_rels/workbook.xml.rels").replace(
+            b'Target="sharedStrings.xml"', b'Target="worksheets/sheet1.xml"'))
+    declared = sum(i.file_size for i in zipfile.ZipFile(io.BytesIO(twice)).infolist())
+    monkeypatch.setattr(excel, "MAX_UNPACKED_BYTES", declared)
+    assert [t.name for t in excel.parse_workbook(plain).tasks] == ["Only"]
+    with pytest.raises(excel.ImportFileError) as caught:
+        excel.parse_workbook(twice)
+    assert caught.value.code == "bad_file" and "unpacks" in caught.value.extra["message"]
+
+
+@pytest.mark.parametrize(("column", "text"), [
+    ("Resource Names", "abc," * 525_000),         # the cut at 32,767 ends on "abc"
+    ("Predecessors", "12," * 700_000),
+], ids=["resources", "predecessors"])
+def test_long_cells_stay_small(column, text):
+    """A cell holds what an Excel cell can (32,767 characters) and its
+    entries are read one at a time: a 2 MB Resource Names or Predecessors
+    cell costs a few MB, not a list of 700,000 strings."""
+    import tracemalloc
+
+    content = _with_sheet('<row r="1">' + _inline("A1", "Name") + _inline("B1", column)
+                          + '</row><row r="2">' + _inline("A2", "Task")
+                          + _inline("B2", text) + "</row>")
+    tracemalloc.start()
+    try:
+        parsed = excel.parse_workbook(content)
+        _size, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 16 * 1024 * 1024, peak
+    (task,) = parsed.tasks
+    if column == "Resource Names":
+        assert task.resources == ["abc"] and len(parsed.resources) == 1
+    else:
+        assert 10_000 < len(parsed.links) <= excel.MAX_CELL_TEXT // 3 + 1
+
+
+def test_resource_names_and_predecessors_do_linear_work():
+    """No quadratic step in a cell: a run of `[` (MS Project's units
+    suffix), thousands of distinct names, thousands of unreadable
+    predecessors (one problem for the cell, not one each)."""
+    import time
+
+    names = ",".join(f"p{i}" for i in range(5_000))          # under one cell's 32,767
+    rows = [["Task Name", "Resource Names", "Predecessors"]]
+    rows += [[f"T{i}", "[" * 30_000, ",".join(["1x"] * 10_000)] for i in range(10)]
+    rows += [["Wide", names + ",p1" * 200, "1,2"]]
+    started = time.perf_counter()
+    parsed = excel.parse_csv(_csv(rows))
+    elapsed = time.perf_counter() - started
+    assert elapsed < 1.5, elapsed
+    assert parsed.tasks[0].problems == [
+        "Predecessors '1x' and 9999 more aren't readable; links skipped."]
+    wide = parsed.tasks[-1]
+    assert len(wide.resources) == 5_000 and wide.resources[1] == "p1"
+
+
+def test_cells_are_cut_at_excels_limit():
+    long = "n" * 40_000
+    parsed = excel.parse_csv(_csv([["Task Name", "Notes"], ["A", long]]))
+    assert len(parsed.tasks[0].notes) == excel.MAX_CELL_TEXT
+    content = _with_sheet('<row r="1">' + _inline("A1", "Name") + _inline("B1", "Notes")
+                          + '</row><row r="2">' + _inline("A2", "A") + _inline("B2", long)
+                          + "</row>")
+    assert len(excel.parse_workbook(content).tasks[0].notes) == excel.MAX_CELL_TEXT
+
+
+def test_error_cells_are_problems():
+    """A formula's error value (#REF!, #N/A) is a problem on its field,
+    never the task's text."""
+    body = ('<row r="1">' + _inline("A1", "Name") + _inline("B1", "Duration")
+            + _inline("C1", "Notes") + '</row><row r="2"><c r="A2" t="e"><v>#REF!</v></c>'
+            '<c r="B2" t="e"><v>#DIV/0!</v></c>' + _inline("C2", "kept") + "</row>")
+    (task,) = excel.parse_workbook(_with_sheet(body)).tasks
+    assert task.name == "" and task.duration is None and task.notes == "kept"
+    assert sorted(task.problems) == sorted([
+        "Task Name is the error #REF!; ignored.", "Duration is the error #DIV/0!; ignored.",
+        "This task has no name."])
+
+
+@pytest.mark.parametrize("separator", [";", "\t"], ids=["semicolon", "tab"])
+def test_csv_separated_otherwise_says_so(separator):
+    content = (separator.join(["ID", "Task Name", "Duration"]) + "\r\n"
+               + separator.join(["1", "A", "1d"]) + "\r\n").encode()
+    with pytest.raises(excel.ImportFileError) as caught:
+        excel.parse_csv(content)
+    assert "comma-separated" in caught.value.extra["message"]
+    with pytest.raises(excel.ImportFileError) as caught:
+        excel.parse_csv(b"Duration\r\n2d\r\n")
+    assert "Task Name" in caught.value.extra["message"]
+
+
 def test_reading_holds_no_element_once_read():
     """Every element is dropped once read, though the parser hands over its
     events in batches (when a cell ends, the row already holds the cells
@@ -860,20 +1098,24 @@ def test_parse_xlsx_by_name():
     assert [(t.name, t.duration.minutes) for t in parsed.tasks] == [("A", 960)]
 
 
-@pytest.mark.parametrize(("text", "expected"), [
-    ("2026-11-02", datetime(2026, 11, 2, 8, 0)),
-    ("2026-11-02T13:30", datetime(2026, 11, 2, 13, 30)),
-    ("2026-11-02 13:30", datetime(2026, 11, 2, 13, 30)),
-    ("11/2/2026", datetime(2026, 11, 2, 8, 0)),
-    ("11/2/26 1:05 PM", datetime(2026, 11, 2, 13, 5)),
-    ("Mon 11/2/26 12:00 AM", datetime(2026, 11, 2, 0, 0)),
-    ("Mon 11/2/26 12:30 PM", datetime(2026, 11, 2, 12, 30)),
-    ("11/2/2026 17:00", datetime(2026, 11, 2, 17, 0)),
+@pytest.mark.parametrize(("text", "expected", "day_alone"), [
+    ("2026-11-02", datetime(2026, 11, 2, 0, 0), True),
+    ("2026-11-02T13:30", datetime(2026, 11, 2, 13, 30), False),
+    ("2026-11-02 13:30", datetime(2026, 11, 2, 13, 30), False),
+    ("11/2/2026", datetime(2026, 11, 2, 0, 0), True),
+    ("11/2/26 1:05 PM", datetime(2026, 11, 2, 13, 5), False),
+    ("Mon 11/2/26 12:00 AM", datetime(2026, 11, 2, 0, 0), False),
+    ("Mon 11/2/26 12:30 PM", datetime(2026, 11, 2, 12, 30), False),
+    ("11/2/2026 17:00", datetime(2026, 11, 2, 17, 0), False),
 ])
-def test_text_start_dates(text, expected):
+def test_text_start_dates(text, expected, day_alone):
+    """A day alone is kept as that day, flagged for the importer to give
+    it the plan calendar's default time; a typed time is kept, midnight
+    too."""
     parsed = excel.parse_csv(_csv([["Name", "Start"], ["A", text]]))
     (task,) = parsed.tasks
     assert task.start == expected and task.problems == []
+    assert task.date_only == ({"start"} if day_alone else set())
 
 
 @pytest.mark.parametrize("text", ["2/30/2026", "13/1/2026", "11/2/2026 25:00", "next week",

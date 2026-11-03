@@ -16,6 +16,13 @@ The parsed shape (what a parser hands over):
 - `ParsedTask.start` / `finish` are the file's scheduled dates: a manual
   task keeps them, an auto task is scheduled by the plan's engine and they
   only measure how far it moved (`ImportRow.moved_days`).
+- A soft Start (`ParsedTask.soft_start`, a sheet's) is settled once the
+  plan is scheduled (`_Build.settle_starts`, inside the batch): an auto
+  task no kept link leads into takes it as Start No Earlier Than only when
+  it is later than where the task schedules anyway; a linked one gets
+  START_IGNORED only when its links put it elsewhere.
+- A date given as a day alone (`ParsedTask.date_only`) takes the plan
+  calendar's default start (Start) or end (Finish, Deadline) time.
 - Times are floating wall-clock values (plans/floating.py), never zoned.
 
 `apply` (`mode`: `fill` an empty plan, or `append` after its last task):
@@ -91,9 +98,11 @@ from serversherpa.plans.service import (
     calendar_error,
     calendar_of,
     err,
+    recalc,
     resources_of,
     settings_of,
 )
+from serversherpa.plans.settings import PlanSettings
 
 IMPORT_MODES = ("fill", "append")
 # the most an uploaded plan file may hold (413 `file_too_large`)
@@ -106,6 +115,7 @@ CONSTRAINT_LABELS = {
     "mso": "Must Start On", "mfo": "Must Finish On",
 }
 KEPT_CALENDAR = "Kept this plan's calendar"
+START_IGNORED = "Start ignored — set by links."
 
 
 class ImportFileError(ValueError):
@@ -137,6 +147,14 @@ class ParsedTask:
     color: str | None = None               # "#rrggbb" (Excel's Color column; never MSPDI)
     resources: list[str] = field(default_factory=list)      # ParsedResource keys
     problems: list[str] = field(default_factory=list)
+    # `start` is where the file had the task scheduled, not a constraint (a
+    # sheet): an auto task with no predecessors keeps it as Start No Earlier
+    # Than when it is later than where the plan schedules the task, and one
+    # whose links put it elsewhere says so (START_IGNORED)
+    soft_start: bool = False
+    # of "start", "finish", "deadline": the ones given as a day alone (held
+    # at midnight), which take the plan calendar's default start or end time
+    date_only: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -227,6 +245,7 @@ async def apply(db: AsyncSession, state: PlanState, parsed: ParsedPlan, mode: st
         calendar = calendar_of(plan)
     except CalendarError as exc:
         raise calendar_error(exc) from None
+    resolve_dates(parsed, calendar)
     settings = await settings_of(db, plan)
     build = _Build(parsed=parsed, rows=rows, units=calendar.units, actor=actor,
                    default=_default_duration(settings.default_duration, calendar.units),
@@ -242,11 +261,33 @@ async def apply(db: AsyncSession, state: PlanState, parsed: ParsedPlan, mode: st
           "remove_tasks": [], "remove_links": []}
     restore = RestoreOp.model_validate({**op, "sig": sign_restore(plan.id, op)})
     problems = sum(len(row.problems) for row in rows) + len(file_problems(parsed, mode))
-    run = await ops.run_batch(db, plan, [restore], actor, action="plan_import", changes={
-        "mode": mode, "tasks": len(tasks), "links": len(links), "assignments": assigned,
-        "problems": problems, **changes})
+    run = await ops.run_batch(
+        db, plan, [restore], actor, action="plan_import",
+        changes={"mode": mode, "tasks": len(tasks), "links": len(links),
+                 "assignments": assigned, "problems": problems, **changes},
+        settle=lambda state, plan_settings: build.settle_starts(state, plan_settings, problems))
     build.measure(run.state, calendar)
     return rows
+
+
+def dated(task: ParsedTask, name: str, calendar: WorkCalendar) -> datetime | None:
+    """The task's `name` ("start", "finish" or "deadline") as a plan time:
+    a day given alone is that day at the calendar's default start (start)
+    or end (finish, deadline)."""
+    value = getattr(task, name)
+    if value is None or name not in task.date_only:
+        return value
+    return datetime.combine(value.date(), calendar.default_start if name == "start"
+                            else calendar.default_end)
+
+
+def resolve_dates(parsed: ParsedPlan, calendar: WorkCalendar) -> None:
+    """Give every day-alone date of the file the calendar's default time
+    (`dated`), once."""
+    for task in parsed.tasks:
+        for name in task.date_only:
+            setattr(task, name, dated(task, name, calendar))
+        task.date_only = set()
 
 
 def file_problems(parsed: ParsedPlan, mode: str) -> list[str]:
@@ -369,6 +410,7 @@ class _Build:
     last: list[int] = field(default_factory=list)
     summaries: set[int] = field(default_factory=set)
     ids: list[uuid.UUID] = field(default_factory=list)
+    linked: set[int] = field(default_factory=set)       # tasks a kept link leads into
 
     # --- the outline ---
 
@@ -546,6 +588,7 @@ class _Build:
                 problems.append(f"The lag from {name} is over 10 years; used no lag.")
                 lag = Duration(0, lag.unit, lag.elapsed)
             pairs.add((pred, succ))
+            self.linked.add(succ)
             out.append({"id": str(uuid.uuid4()), "predecessor_id": str(self.ids[pred]),
                         "successor_id": str(self.ids[succ]), "link_type": link_type,
                         "lag_minutes": lag.minutes, "lag_unit": lag.unit,
@@ -582,6 +625,39 @@ class _Build:
         return entries, count
 
     # --- after the recalc ---
+
+    def settle_starts(self, state: PlanState, settings: PlanSettings, problems: int) -> dict:
+        """The file's Start on each auto leaf whose Start is soft (a
+        sheet's), once the plan is scheduled: a task no kept link leads into
+        takes it as Start No Earlier Than when it is later than where the
+        plan schedules the task (then the plan is scheduled again); a linked
+        task the links put elsewhere says so (START_IGNORED). Runs inside
+        the import's batch (ops.run_batch `settle`); answers the audit's
+        changes to `problems` and the constraints it added."""
+        soft = []
+        for i, task in enumerate(self.parsed.tasks):
+            row = state.tasks.get(self.ids[i])
+            if (task.soft_start and task.start is not None and i not in self.summaries
+                    and row is not None and row.mode == "auto"):
+                soft.append((i, task, row))
+        pinned = 0
+        for i, task, row in soft:
+            if i not in self.linked and row.start is not None and task.start > row.start:
+                row.constraint_type, row.constraint_date = "snet", task.start
+                pinned += 1
+        if pinned:
+            recalc(state, settings)
+        added = 0
+        for i, task, row in soft:
+            if i in self.linked and row.start != task.start:
+                self.rows[i].problems.append(START_IGNORED)
+                added += 1
+        out: dict = {}
+        if added:
+            out["problems"] = problems + added
+        if pinned:
+            out["start_constraints"] = pinned
+        return out
 
     def measure(self, state: PlanState, calendar: WorkCalendar) -> None:
         """`moved_days` on each auto task the plan schedules more than one

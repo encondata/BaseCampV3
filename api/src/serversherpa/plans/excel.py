@@ -6,12 +6,13 @@ Export (GET /plans/{id}/export.xlsx): one sheet, "Project plan", in the
 plan's outline order. The header row is MS Project's column names for the
 columns asked for (the portal sheet's keys, portal/src/lib/plans/
 columns.ts; by default the sheet's default set, never its Indicators
-icons), then `Outline Level`, then `Color` (`#rrggbb` or blank) whenever a
-task has a color. Task names are indented by outline level, summary rows
-are bold, dates are real Excel dates (the plan's floating wall clock, no
-zone; Created and Updated in the plan's zone), % Complete is a percent.
-Text never becomes a formula. The house workbook helpers
-(reports/timesheet/xlsx.py) write the cells, widths and header.
+icons; any other key is refused), then `Outline Level`, then `Color`
+(`#rrggbb` or blank) whenever a task has a color. Task names are indented
+by outline level, summary rows are bold, dates are real Excel dates (the
+plan's floating wall clock, no zone; Created and Updated in the plan's
+zone), % Complete is a percent. Text never becomes a formula. The house
+workbook helpers (reports/timesheet/xlsx.py) write the cells, widths and
+header.
 
 Import (an .xlsx's first sheet, or a CSV): the header row is the first
 row naming a known column, matched ignoring case: ID, Name / Task Name,
@@ -24,33 +25,38 @@ Color (what the export writes). Other columns are ignored.
 - Durations and lags are read by plans/durations.py against the Standard
   calendar's units; the importer rescales day, week and month counts into
   the plan's. MS Project's estimate mark (`5 days?`) is dropped.
-- Start on an auto task becomes Start No Earlier Than when the task has no
-  predecessors; with predecessors it is set by the links (the problem
-  START_IGNORED; the file's Start still measures how far the task moved).
-  A summary's dates are its subtasks'; a manual task keeps its Start and
-  Finish. A date with no time (or an Excel date at midnight) is that day
-  at the Standard calendar's default start (Start) or end (Finish,
-  Deadline).
+- Start is where the sheet had the task scheduled, not a constraint
+  (`ParsedTask.soft_start`): the importer settles it against the plan's
+  schedule (Start No Earlier Than only where the task would start earlier;
+  a problem only where the links move it). A manual task keeps its Start
+  and Finish. A day alone (or an Excel date at midnight) is flagged in
+  `ParsedTask.date_only`: the importer gives it the plan calendar's
+  default start (Start) or end (Finish, Deadline) time.
 - Resource Names are matched by the importer (by name or email, never
   created); MS Project's units suffix (`Pat Lee[50%]`) is dropped.
 - A value that cannot be read is a problem on its row with a fallback,
-  never a failure; blank rows are skipped and counted.
+  never a failure, a formula's error value (#N/A) too; blank rows are
+  skipped and counted. Each cell is held to what an Excel cell holds
+  (MAX_CELL_TEXT) and its comma-separated entries are read one at a time.
 
 Reading a workbook. An upload is hostile: a 20 MB zip can unpack to
 gigabytes, and openpyxl's loader builds objects for every part it reads
 (a 35 KB upload of empty style records costs it 2.7 GB of memory), so the
-workbook is not loaded with openpyxl. The members' unpacked sizes are
-added up from the zip's directory before anything is read, and must stay
-within MAX_UNPACKED_BYTES (the 20 MB an import file may be: a workbook is
-never more to read than a CSV at the cap; zipfile stops each member at its
-declared size). Then only the parts the import needs are streamed, each
-element dropped once read: the relationships to find the first worksheet,
-its shared strings, the number format of each cell style, and the sheet
-itself, keeping only the cells of the named columns. Formulas are never
-evaluated (a cell reads as its cached value), a DTD or entity is refused,
-XML nested deeper than MAX_DEPTH is refused, and the tasks, links and
-assignments are held to MAX_ROWS (the restore op's cap). openpyxl's own
-helpers decode the values (number formats, Excel dates)."""
+workbook is not loaded with openpyxl. A member compressed any way but
+Excel's two (stored, deflated) is refused before anything is read
+(zipfile unpacks bzip2 and LZMA a whole chunk at a time, past any size
+the directory claims); so is a package whose members' declared sizes add
+up past MAX_UNPACKED_BYTES (the 20 MB an import file may be: a workbook is
+never more to read than a CSV at the cap). Every byte read after that is
+charged to that one budget, however many relationships name a member.
+Only the parts the import needs are streamed, each element dropped once
+read: the relationships to find the first worksheet, its shared strings,
+the number format of each cell style, and the sheet itself, keeping only
+the cells of the named columns. Formulas are never evaluated (a cell
+reads as its cached value), a DTD or entity is refused, XML nested deeper
+than MAX_DEPTH is refused, and the tasks, links and assignments are held
+to MAX_ROWS (the restore op's cap). openpyxl's own helpers decode the
+values (number formats, Excel dates)."""
 
 from __future__ import annotations
 
@@ -75,7 +81,6 @@ from openpyxl.utils.datetime import MAC_EPOCH, WINDOWS_EPOCH, from_excel
 
 from serversherpa.imports.bulk import cell as cell_text
 from serversherpa.plans import mspdi
-from serversherpa.plans.calendar import STANDARD_CALENDAR
 from serversherpa.plans.durations import (
     Duration,
     DurationError,
@@ -95,7 +100,7 @@ from serversherpa.plans.importer import (
     _shown,
 )
 from serversherpa.plans.limits import MAX_OUTLINE_LEVEL, MAX_RESTORE_ROWS
-from serversherpa.plans.predecessors import PredecessorError, parse_predecessors, split_entries
+from serversherpa.plans.predecessors import PredecessorError, parse_predecessors
 from serversherpa.plans.schemas import PlanTaskOut
 from serversherpa.plans.service import PlanState
 from serversherpa.reports.move_scan_history.xlsx import XLSX_MIME
@@ -111,10 +116,10 @@ OUTLINE_LEVEL = "Outline Level"
 COLOR = "Color"
 
 # The portal sheet's columns (portal/src/lib/plans/columns.ts) by key, with
-# MS Project's names, in its order. Its Indicators column is icons, never
-# exported.
+# MS Project's names, in its order (the sheet's "Mode" is MS Project's Task
+# Mode). Its Indicators column is icons, never exported.
 COLUMNS: dict[str, str] = {
-    "id": "ID", "mode": "Mode", "name": "Task Name", "duration": "Duration",
+    "id": "ID", "mode": "Task Mode", "name": "Task Name", "duration": "Duration",
     "start": "Start", "finish": "Finish", "predecessors": "Predecessors",
     "resources": "Resource Names", "percent": "% Complete", "deadline": "Deadline",
     "wbs": "WBS", "successors": "Successors", "slack": "Total Slack", "critical": "Critical",
@@ -128,6 +133,7 @@ COLUMNS: dict[str, str] = {
 DEFAULT_COLUMNS = ("id", "mode", "name", "duration", "start", "finish", "predecessors",
                    "resources", "percent", "deadline")
 REQUIRED_COLUMNS = ("id", "name")          # never hidden on the sheet
+ICON_COLUMNS = frozenset({"indicators"})   # the sheet's, skipped by the export
 DATE_COLUMNS = frozenset({"start", "finish", "deadline", "constraint_date", "actual_start",
                           "actual_finish", "baseline_start", "baseline_finish", "created",
                           "updated"})
@@ -143,13 +149,17 @@ STATUS_LABELS = {"complete": "Complete", "late": "Late", "in_progress": "In prog
 
 def column_keys(text: str | None) -> list[str]:
     """The columns `?columns=a,b,...` asks for, as the export writes them:
-    the known keys in the order given, each once; ID and Task Name always
-    (first, when not asked for). None or blank: the sheet's default set."""
+    the keys in the order given, each once, the sheet's icon column left
+    out; ID and Task Name always (first, when not asked for). None or
+    blank: the sheet's default set. ValueError for a key the sheet doesn't
+    have."""
     if text is None or not text.strip():
         keys = list(DEFAULT_COLUMNS)
     else:
-        keys = list(dict.fromkeys(k for k in (p.strip() for p in text.split(","))
-                                  if k in COLUMNS))
+        asked = [key for key in (part.strip() for part in text.split(",")) if key]
+        if any(key not in COLUMNS and key not in ICON_COLUMNS for key in asked):
+            raise ValueError("not a column of the sheet")
+        keys = list(dict.fromkeys(key for key in asked if key in COLUMNS))
     return [k for k in REQUIRED_COLUMNS if k not in keys] + keys
 
 
@@ -256,21 +266,27 @@ MAX_UNPACKED_BYTES = MAX_FILE_BYTES
 # bound)
 MAX_DEPTH = mspdi.MAX_DEPTH
 
+# Excel stores or deflates a member, nothing else; zipfile unpacks bzip2
+# and LZMA a whole chunk at a time, past any size the zip's directory claims
+COMPRESSIONS = frozenset({zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED})
+
 NOT_A_WORKBOOK = "This file isn't an Excel workbook (.xlsx), or it's password-protected."
+ODD_COMPRESSION = ("This workbook is compressed in a way Excel doesn't use, so open it in "
+                   "Excel and save it again.")
 UNREADABLE = "This workbook isn't readable."
 DTD_REFUSED = "This workbook declares a DTD or entities, which aren't allowed."
 TOO_DEEP = "This workbook's XML is nested too deeply to be an Excel file."
 NO_WORKSHEET = "This workbook has no worksheet."
 NOT_UTF8 = ("This CSV file isn't UTF-8 text, so save it from Excel as "
             "CSV UTF-8 (Comma delimited).")
+NOT_COMMAS = "This CSV file isn't comma-separated, so save it as a comma-separated CSV."
 CSV_UNREADABLE = "This CSV file isn't readable."
-START_IGNORED = "Start ignored — set by links."
 
 STANDARD = Units()                  # what the file's durations and lags count in
-START_TIME = time.fromisoformat(STANDARD_CALENDAR["default_start"])
-END_TIME = time.fromisoformat(STANDARD_CALENDAR["default_end"])
 
-_DROP_EVERY = 512                   # ended children cut from their parent at a time
+_DROP_EVERY = mspdi.DROP_EVERY      # ended children cut from their parent at a time
+_OTHER_SEPARATORS = re.compile(r"[;\t]")
+_READ_SIZE = 64 * 1024              # what a member read asks for when given no size
 _INT = re.compile(r"[+-]?[0-9]{1,9}")
 _CELL_REF = re.compile(r"([A-Za-z]{1,3})[0-9]{1,9}")
 _WANTED_RELS = frozenset({"officeDocument", "worksheet", "sharedStrings", "styles"})
@@ -311,9 +327,17 @@ def _blank(value) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
 
 
+def _too_big() -> ImportFileError:
+    return _bad_file(f"This workbook unpacks to more than "
+                     f"{MAX_UNPACKED_BYTES // (1024 * 1024)} MB, the most an import reads.")
+
+
 class _Package:
-    """An .xlsx upload's zip, checked before any member is read: a zip, and
-    no more than MAX_UNPACKED_BYTES unpacked."""
+    """An .xlsx upload's zip, checked before any member is read: a zip,
+    every member stored or deflated (COMPRESSIONS), and no more than
+    MAX_UNPACKED_BYTES unpacked by the directory's own count. Then every
+    byte any read unpacks is charged to that one budget (_Metered), so no
+    member, however many relationships name it, reads past it."""
 
     def __init__(self, content: bytes):
         try:
@@ -321,13 +345,19 @@ class _Package:
             infos = self.zip.infolist()
         except (zipfile.BadZipFile, zipfile.LargeZipFile, ValueError, EOFError, OSError):
             raise _bad_file(NOT_A_WORKBOOK) from None
+        if any(info.compress_type not in COMPRESSIONS for info in infos):
+            raise _bad_file(ODD_COMPRESSION)
         if sum(info.file_size for info in infos) > MAX_UNPACKED_BYTES:
-            raise _bad_file(f"This workbook unpacks to more than "
-                            f"{MAX_UNPACKED_BYTES // (1024 * 1024)} MB, the most an import "
-                            "reads.")
+            raise _too_big()
+        self.left = MAX_UNPACKED_BYTES      # what reads may still unpack
         self.names: dict[str, str] = {}
         for info in infos:
             self.names.setdefault(info.filename.casefold(), info.filename)
+
+    def charge(self, count: int) -> None:
+        self.left -= count
+        if self.left < 0:
+            raise _too_big()
 
     def find(self, name: str | None) -> str | None:
         """The member called `name` (ignoring case, as Excel does), or None."""
@@ -347,7 +377,8 @@ class _Package:
         path: list[str] = []
         opened: list = []
         ended: list[int] = []               # per open element: its children that ended
-        with self.zip.open(name) as src:
+        with self.zip.open(name) as member:
+            src = _Metered(member, self)
             for event, element in DET.iterparse(src, events=("start", "end"), forbid_dtd=True):
                 if event == "start":
                     if len(path) >= MAX_DEPTH:
@@ -367,6 +398,18 @@ class _Package:
                     if ended[-1] >= _DROP_EVERY:
                         del opened[-1][:ended[-1]]
                         ended[-1] = 0
+
+
+class _Metered:
+    """A member being read, each read charged to its package's budget."""
+
+    def __init__(self, member, pkg: _Package):
+        self.member, self.pkg = member, pkg
+
+    def read(self, size: int | None = -1) -> bytes:
+        data = self.member.read(size if size is not None and size > 0 else _READ_SIZE)
+        self.pkg.charge(len(data))
+        return data
 
 
 def _resolve(folder: str, target: str) -> str:
@@ -427,24 +470,46 @@ def _parts(pkg: _Package) -> tuple[str, str | None, str | None, datetime]:
     return sheet, pkg.find(strings), pkg.find(styles), epoch
 
 
+class _Runs:
+    """A cell's text gathered from its runs, kept to what an Excel cell
+    holds (MAX_CELL_TEXT): runs past it are dropped unread."""
+
+    def __init__(self) -> None:
+        self.parts: list[str] = []
+        self.size = 0
+
+    def add(self, text: str | None) -> None:
+        if text and self.size < MAX_CELL_TEXT:
+            self.parts.append(text)
+            self.size += len(text)
+
+    def text(self) -> str:
+        return "".join(self.parts)[:MAX_CELL_TEXT]
+
+
+def _cut(text: str) -> str:
+    """Text as an Excel cell holds it: at most MAX_CELL_TEXT characters."""
+    return text[:MAX_CELL_TEXT]
+
+
 def _shared_strings(pkg: _Package, member: str | None) -> list[str]:
     """The shared strings table: each entry's text (its runs joined, its
-    phonetic hints left out)."""
+    phonetic hints left out, cut where an Excel cell ends)."""
     out: list[str] = []
     if member is None:
         return out
-    parts: list[str] | None = None
+    runs: _Runs | None = None
     for event, path, element in pkg.walk(member):
         depth = len(path)
         if depth == 2 and path[1] == "si":
             if event == "start":
-                parts = []
-            else:
-                out.append("".join(parts or ()))
-                parts = None
-        elif (event == "end" and parts is not None and path[-1] == "t"
+                runs = _Runs()
+            elif runs is not None:
+                out.append(runs.text())
+                runs = None
+        elif (event == "end" and runs is not None and path[-1] == "t"
               and (depth == 3 or (depth == 4 and path[2] == "r"))):
-            parts.append(element.text or "")
+            runs.add(element.text)
     return out
 
 
@@ -488,14 +553,18 @@ def _column(ref: str | None, previous: int) -> int:
     return column_index_from_string(match[1].upper()) if match else previous + 1
 
 
+class _ErrorCell(str):
+    """A formula's error value (#N/A, #REF!): a problem, never text."""
+
+
 class _SheetReader:
     """The first worksheet's rows, streamed: (row number, {column: value})
-    for each row, holding only the cells `keep` takes. A value is text, a
-    number, a bool, a datetime or a _Percent; a formula reads as its cached
-    value and is never evaluated."""
+    for each row, holding only the cells `keep` takes. A value is text
+    (cut where an Excel cell ends), a number, a bool, a datetime, a
+    _Percent or an _ErrorCell; a formula reads as its cached value and is
+    never evaluated."""
 
     EMPTY = "The first sheet is empty."
-    NO_HEADER = "The first sheet needs a header row with a Task Name (or Name) column."
 
     def __init__(self, pkg: _Package, member: str, strings: list[str],
                  kinds: list[str | None], epoch: datetime):
@@ -503,12 +572,15 @@ class _SheetReader:
             pkg, member, strings, kinds, epoch)
         self.any_value = False
 
+    def no_header(self) -> str:
+        return "The first sheet needs a header row with a Task Name (or Name) column."
+
     def rows(self, keep: Callable[[int, object], bool]
              ) -> Iterator[tuple[int, dict[int, object]]]:
         number = column = 0
         cells: dict[int, object] = {}
         kind = style = value = None
-        inline: list[str] | None = None
+        inline: _Runs | None = None
         for event, path, element in self.pkg.walk(self.member):
             depth = len(path)
             if depth < 3 or path[1] != "sheetData":
@@ -519,13 +591,14 @@ class _SheetReader:
                     number, column, cells = _row_number(element.get("r"), number), 0, {}
                 elif depth == 4 and tag == "c":
                     column = _column(element.get("r"), column)
-                    kind, style, value, inline = element.get("t") or "n", element.get("s"), None, []
+                    kind, style, value = element.get("t") or "n", element.get("s"), None
+                    inline = _Runs()
                 continue
             if depth == 5 and tag == "v" and path[3] == "c":
                 value = element.text or ""
             elif (tag == "t" and inline is not None and depth >= 6 and path[4] == "is"
                   and (depth == 6 or (depth == 7 and path[5] == "r"))):
-                inline.append(element.text or "")
+                inline.add(element.text)
             elif depth == 4 and tag == "c":
                 decoded = self._decode(kind, style, value, inline)
                 if not _blank(decoded):
@@ -536,17 +609,19 @@ class _SheetReader:
             elif depth == 3 and tag == "row":
                 yield number, cells
 
-    def _decode(self, kind: str, style: str | None, value: str | None, inline: list[str] | None):
+    def _decode(self, kind: str, style: str | None, value: str | None, inline: _Runs | None):
         if kind == "inlineStr":
-            return "".join(inline or ())
+            return inline.text() if inline is not None else None
         if value is None:
             return None
         if kind == "s":
             index = _int(value)
             return self.strings[index] if index is not None and 0 <= index < len(
                 self.strings) else None
-        if kind in ("str", "e", "d"):           # formula text, an error, an ISO date
-            return value
+        if kind == "e":
+            return _ErrorCell(_cut(value.strip()))
+        if kind in ("str", "d"):                # formula text, an ISO date
+            return _cut(value)
         if kind == "b":
             return value.strip().lower() in ("1", "true")
         try:
@@ -568,10 +643,9 @@ class _SheetReader:
 
 class _CsvReader:
     """A CSV's rows (UTF-8, Excel's BOM allowed, commas): (row number,
-    {column: text})."""
+    {column: text}), each cell cut where an Excel cell ends."""
 
     EMPTY = "This CSV file has no rows."
-    NO_HEADER = "This CSV file needs a header row with a Task Name (or Name) column."
 
     def __init__(self, content: bytes):
         try:
@@ -579,6 +653,13 @@ class _CsvReader:
         except UnicodeDecodeError:
             raise _bad_file(NOT_UTF8) from None
         self.any_value = False
+        # a cell like "ID;Task Name": the file is separated by something else
+        self.other_separator = False
+
+    def no_header(self) -> str:
+        if self.other_separator:
+            return NOT_COMMAS
+        return "This CSV file needs a header row with a Task Name (or Name) column."
 
     def rows(self, keep: Callable[[int, object], bool]
              ) -> Iterator[tuple[int, dict[int, object]]]:
@@ -587,10 +668,15 @@ class _CsvReader:
             for number, record in enumerate(reader, 1):
                 cells: dict[int, object] = {}
                 for column, raw in enumerate(record, 1):
-                    if raw.strip():
-                        self.any_value = True
-                        if keep(column, raw):
-                            cells[column] = raw
+                    if not raw.strip():
+                        continue
+                    raw = _cut(raw)
+                    self.any_value = True
+                    if keep(column, raw):
+                        cells[column] = raw
+                    elif not self.other_separator and ("\t" in raw or ";" in raw):
+                        self.other_separator = any(
+                            _field(part) for part in _OTHER_SEPARATORS.split(raw))
                 yield number, cells
         except csv.Error:
             raise _bad_file(CSV_UNREADABLE) from None
@@ -642,14 +728,22 @@ HEADERS = {
     "outline level": "outline_level", "wbs": "wbs", "notes": "notes",
     "milestone": "milestone", "color": "color", "mode": "mode", "task mode": "mode",
 }
+# each field's MS Project column name, for the problems that name one
+LABELS = {
+    "id": "ID", "name": "Task Name", "duration": "Duration", "start": "Start",
+    "finish": "Finish", "predecessors": "Predecessors", "resources": "Resource Names",
+    "percent": "% Complete", "deadline": "Deadline", "outline_level": "Outline Level",
+    "wbs": "WBS", "notes": "Notes", "milestone": "Milestone", "color": "Color",
+    "mode": "Task Mode",
+}
 # a row with only these is a blank row (MS Project numbers its blank rows)
 _PLACE_FIELDS = frozenset({"id", "outline_level", "wbs"})
 _MODES = {"auto scheduled": "auto", "auto": "auto", "manually scheduled": "manual",
           "manual": "manual"}
 _YES = frozenset({"yes", "y", "true", "1"})
 _NO = frozenset({"no", "n", "false", "0"})
-_UNITS = re.compile(r"\s*\[[^\]]*\]\s*$")             # MS Project's `Pat Lee[50%]`
 _EMAIL = re.compile(r"[^@\s]+@[^@\s]+")
+_ASCII_WHITESPACE = " \t\n\r\f\v"           # what predecessor entries are trimmed of
 _WBS = re.compile(r"[^.\s]+(?:\.[^.\s]+)*")
 _WHOLE = re.compile(r"[0-9]{1,9}")
 _DECIMAL = re.compile(r"[+-]?[0-9]{1,9}(?:\.[0-9]{0,9})?")
@@ -691,6 +785,24 @@ def _text(value) -> str:
     return cell_text(value)
 
 
+def _entries(text: str, trim: str | None = None) -> Iterator[str]:
+    """A cell's comma-separated entries, each trimmed (of `trim`, else of
+    any whitespace), one at a time: a cell is never split into a list."""
+    start = 0
+    while True:
+        end = text.find(",", start)
+        yield (text[start:] if end < 0 else text[start:end]).strip(trim)
+        if end < 0:
+            return
+        start = end + 1
+
+
+def _without_units(part: str) -> str:
+    """A Resource Names entry without MS Project's units (`Pat Lee[50%]`)."""
+    head, bracket, tail = part.rpartition("[")
+    return head if bracket and tail.rstrip().endswith("]") else part
+
+
 def _year(text: str) -> int:
     """A 2-digit year as Excel reads one: 00-29 in the 2000s, 30-99 the 1900s."""
     year = int(text)
@@ -699,17 +811,19 @@ def _year(text: str) -> int:
     return year
 
 
-def _text_date(text: str, date_only: time) -> datetime:
+def _text_date(text: str) -> tuple[datetime, bool]:
     """A typed date: `2026-11-02`, `2026-11-02T08:00` (or a space for the
     T), or the sheet's US order `11/2/2026`, `Mon 11/2/26 8:00 AM`, `11/2/26
-    17:00`. A date with no time is that day at `date_only`. ValueError when
-    it isn't one."""
+    17:00`; and whether it was a day alone (held at midnight: the importer
+    gives it the plan calendar's default time). ValueError when it isn't
+    one."""
     text = " ".join(text.split())
     if len(text) > 40:
         raise ValueError("too long for a date")
     iso = _ISO_SPACE.fullmatch(text)
+    typed = f"{iso[1]}T{iso[2]}" if iso else text
     try:
-        return parse_floating(f"{iso[1]}T{iso[2]}" if iso else text, date_only_time=date_only)
+        return parse_floating(typed, date_only_time=time(0, 0)), "T" not in typed
     except ValueError:
         pass
     match = _US_DATE.fullmatch(text)
@@ -717,14 +831,15 @@ def _text_date(text: str, date_only: time) -> datetime:
         raise ValueError("not a date")
     month, day, year = int(match[1]), int(match[2]), _year(match[3])
     if match[4] is None:
-        return datetime.combine(date(year, month, day), date_only)
+        return datetime.combine(date(year, month, day), time(0, 0)), True
     hour, minute, second = int(match[4]), int(match[5]), int(match[6] or 0)
     if match[7]:
         if not 1 <= hour <= 12:
             raise ValueError("not a 12-hour time")
         hour = hour % 12 + (12 if match[7] in "Pp" else 0)
     # built with the seconds so 13:30:99 is refused, then dropped (plan times are minutes)
-    return datetime.combine(date(year, month, day), time(hour, minute, second)).replace(second=0)
+    return (datetime.combine(date(year, month, day), time(hour, minute, second))
+            .replace(second=0), False)
 
 
 def _to_minute(moment: datetime) -> datetime:
@@ -733,16 +848,6 @@ def _to_minute(moment: datetime) -> datetime:
     moment = moment.replace(tzinfo=None)
     rounded = moment.replace(second=0, microsecond=0)
     return rounded + timedelta(minutes=1) if moment - rounded >= timedelta(seconds=30) else rounded
-
-
-def _effective_levels(wanted: list[int]) -> list[int]:
-    """Each task's outline level as the importer places it: never more than
-    one below the task above, never past MAX_OUTLINE_LEVEL."""
-    out, previous = [], 0
-    for level in wanted:
-        previous = min(max(level, 1), previous + 1, MAX_OUTLINE_LEVEL)
-        out.append(previous)
-    return out
 
 
 class _Table:
@@ -763,12 +868,12 @@ class _Table:
         rows = reader.rows(keep)
         header = next(((number, cells) for number, cells in rows if cells), None)
         if header is None:
-            raise _bad_file(reader.NO_HEADER if reader.any_value else reader.EMPTY)
+            raise _bad_file(reader.no_header() if reader.any_value else reader.EMPTY)
         fields: dict[str, int] = {}
         for column in sorted(header[1]):
             fields.setdefault(_field(header[1][column]), column)
         if "name" not in fields:
-            raise _bad_file(reader.NO_HEADER)
+            raise _bad_file(reader.no_header())
         keep.columns = set(fields.values())
         table = cls(fields, header[0])
         for number, cells in rows:
@@ -796,6 +901,10 @@ class _Table:
 
     def task(self, values: dict[str, object]) -> ParsedTask:
         problems: list[str] = []
+        for field, value in list(values.items()):
+            if isinstance(value, _ErrorCell):
+                problems.append(f"{LABELS[field]} is the error {_shown(value)}; ignored.")
+                del values[field]
         name = _text(values.get("name"))
         if not name:
             problems.append("This task has no name.")
@@ -804,15 +913,16 @@ class _Table:
         milestone = self.milestone(values.get("milestone"), problems)
         if milestone is None:
             milestone = duration is not None and duration.minutes == 0
+        date_only: set[str] = set()
+        dates = {name: self.when(values.get(name), name, date_only, problems)
+                 for name in ("start", "finish", "deadline")}
         task = ParsedTask(
             key=key, name=name, outline_level=self.level(values, problems), duration=duration,
             mode=self.mode(values.get("mode"), problems), is_milestone=milestone,
-            start=self.when(values.get("start"), "Start", START_TIME, problems),
-            finish=self.when(values.get("finish"), "Finish", END_TIME, problems),
-            deadline=self.when(values.get("deadline"), "Deadline", END_TIME, problems),
-            percent_complete=self.percent(values.get("percent"), problems),
+            **dates, percent_complete=self.percent(values.get("percent"), problems),
             notes=_text(values.get("notes")) or None, color=_text(values.get("color")) or None,
-            resources=self.resource_keys(values.get("resources")), problems=problems)
+            resources=self.resource_keys(values.get("resources")), problems=problems,
+            soft_start=True, date_only=date_only)
         self.preds.append(self.predecessors(values.get("predecessors"), problems))
         return task
 
@@ -878,21 +988,28 @@ class _Table:
         return mode
 
     @staticmethod
-    def when(raw, label: str, date_only: time, problems: list[str]) -> datetime | None:
-        """A date cell (an Excel date, or text: _text_date); one at midnight,
-        or text with no time, is that day at `date_only`."""
+    def when(raw, field: str, date_only: set[str], problems: list[str]) -> datetime | None:
+        """A date cell (an Excel date, or text: _text_date). A day alone
+        (text with no time, or an Excel date at midnight) is held at
+        midnight and its field added to `date_only`: the importer gives it
+        the plan calendar's default time."""
         if _blank(raw):
             return None
         if isinstance(raw, datetime):
             moment = _to_minute(raw)
-            return (datetime.combine(moment.date(), date_only)
-                    if moment.time() == time(0, 0) else moment)
+            if moment.time() == time(0, 0):
+                date_only.add(field)
+            return moment
         if isinstance(raw, str):
             try:
-                return _text_date(raw, date_only)
+                moment, day_alone = _text_date(raw)
             except ValueError:
                 pass
-        problems.append(f"{label} {_shown(_text(raw))!r} isn't a date; ignored.")
+            else:
+                if day_alone:
+                    date_only.add(field)
+                return moment
+        problems.append(f"{LABELS[field]} {_shown(_text(raw))!r} isn't a date; ignored.")
         return None
 
     @staticmethod
@@ -931,58 +1048,58 @@ class _Table:
 
     def resource_keys(self, raw) -> list[str]:
         """The Resource Names cell's people and partners (comma-separated,
-        units dropped), as keys into the file's resources."""
+        units dropped), as keys into the file's resources; each new one
+        counts toward MAX_ROWS assignments."""
         keys: list[str] = []
-        for part in _text(raw).split(","):
-            name = _UNITS.sub("", part).strip()
-            if not name:
-                continue
+        seen: set[str] = set()
+        for part in _entries(_text(raw)):
+            name = _without_units(part).strip()
             key = name.casefold()
-            if key in keys:
+            if not name or key in seen:
                 continue
             self.assigned += 1
             if self.assigned > MAX_ROWS:
                 raise _too_many()
             self.resources.setdefault(key, ParsedResource(
-                key=key, name=name, email=name if _EMAIL.fullmatch(name) else None))
+                key=key, name=name,
+                email=name if "@" in name and _EMAIL.fullmatch(name) else None))
+            seen.add(key)
             keys.append(key)
         return keys
 
     def predecessors(self, raw, problems: list[str]) -> list[tuple[str, str, Duration]]:
         """The Predecessors cell (`2,3SS+1d`), entry by entry: (the
-        predecessor's key, link type, lag); an entry that can't be read is
-        a problem and skipped."""
+        predecessor's key, link type, lag). The entries that can't be read
+        are skipped, with one problem for the cell."""
         out = []
-        for part in split_entries(_text(raw)):
+        bad, first = 0, ""
+        for part in _entries(_text(raw), _ASCII_WHITESPACE):
             if not part:
                 continue
             try:
                 (spec,) = parse_predecessors(part, STANDARD, valid_ids=_AnyId(), self_id=None)
             except PredecessorError:
-                problems.append(f"Predecessor {_shown(part)!r} isn't readable; link skipped.")
+                bad, first = bad + 1, first or part
                 continue
             self.links += 1
             if self.links > MAX_ROWS:
                 raise _too_many()
             out.append((str(spec.display_id), spec.link_type, spec.lag))
+        if bad == 1:
+            problems.append(f"Predecessor {_shown(first)!r} isn't readable; link skipped.")
+        elif bad:
+            problems.append(f"Predecessors {_shown(first)!r} and {bad - 1} more aren't "
+                            "readable; links skipped.")
         return out
 
     # --- the plan ---
 
     def plan(self) -> ParsedPlan:
-        levels = _effective_levels([task.outline_level for task in self.tasks])
-        summaries = {i for i in range(len(levels) - 1) if levels[i + 1] > levels[i]}
-        links: list[ParsedLink] = []
-        for i, task in enumerate(self.tasks):
-            preds = self.preds[i]
-            links.extend(ParsedLink(predecessor=pred, successor=task.key, link_type=link_type,
-                                    lag=lag) for pred, link_type, lag in preds)
-            if i in summaries or task.mode == "manual" or task.start is None:
-                continue                    # a summary's dates are its subtasks'
-            if preds:
-                task.problems.append(START_IGNORED)
-            else:
-                task.constraint_type, task.constraint_date = "snet", task.start
+        """The tasks (their Start soft: the importer settles it against the
+        schedule) and the links."""
+        links = [ParsedLink(predecessor=pred, successor=task.key, link_type=link_type, lag=lag)
+                 for task, preds in zip(self.tasks, self.preds, strict=True)
+                 for pred, link_type, lag in preds]
         problems = []
         if self.blank:
             problems.append(f"Skipped {self.blank} blank row{'s' if self.blank != 1 else ''}.")
