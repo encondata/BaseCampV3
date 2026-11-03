@@ -15,6 +15,7 @@ from serversherpa.access.resolver import AccessInfo, resolve_access_many
 from serversherpa.access.resources import REGISTRY
 from serversherpa.db.models import (
     Client,
+    Device,
     Initiative,
     Partner,
     PermissionOverride,
@@ -29,6 +30,8 @@ from serversherpa.notifications.events import Thing
 from tests.test_sites_api import make_login
 
 PAGES = {"initiative": "/initiatives", "site": "/sites", "truck": "/trucks"}
+# Devices are deleted outright, never archived.
+ARCHIVABLE = tuple(kind for kind in VIEWABLE_THINGS if kind != "device")
 
 
 @dataclass(frozen=True)
@@ -99,9 +102,11 @@ async def _page_viewers(client, people, path) -> set[uuid.UUID]:
 
 
 def _row(kind, name, **fields):
-    """An unsaved initiative, site or truck."""
+    """An unsaved initiative, site, truck or device (a fixed reader)."""
     if kind == "initiative":
         return Initiative(name=name, initiative_type="move", **fields)
+    if kind == "device":
+        return Device(device_type="fixed_reader", name=name, **fields)
     return {"site": Site, "truck": Truck}[kind](name=name, **fields)
 
 
@@ -160,7 +165,7 @@ async def test_site_and_truck_viewers_match_the_pages(client, db):
         assert found == seen, kind
 
 
-@pytest.mark.parametrize("kind", VIEWABLE_THINGS)
+@pytest.mark.parametrize("kind", ARCHIVABLE)
 async def test_archived_things_stay_visible(client, db, kind):
     """The pages read an archived row like any other, so `viewers` does too."""
     admin = await _signed_in(db, client, "admin", "admin")
@@ -191,33 +196,34 @@ async def test_missing_thing_has_no_viewers(db, kind):
 
 @pytest.mark.parametrize("kind", VIEWABLE_THINGS)
 async def test_thing_exists(db, kind):
-    live = _row(kind, "Thing A")
-    archived = _row(kind, "Thing B", archived_at=datetime.now(UTC))
-    db.add_all([live, archived])
+    rows = [_row(kind, "Thing A")]
+    if kind in ARCHIVABLE:                  # an archived row counts too
+        rows.append(_row(kind, "Thing B", archived_at=datetime.now(UTC)))
+    db.add_all(rows)
     await db.commit()
 
-    assert await thing_exists(db, Thing(kind, live.id)) is True
-    assert await thing_exists(db, Thing(kind, archived.id)) is True
+    for row in rows:
+        assert await thing_exists(db, Thing(kind, row.id)) is True
     assert await thing_exists(db, Thing(kind, uuid.uuid4())) is False
     # another kind's id is not this kind's
     other = next(k for k in VIEWABLE_THINGS if k != kind)
-    assert await thing_exists(db, Thing(other, live.id)) is False
+    assert await thing_exists(db, Thing(other, rows[0].id)) is False
 
 
 def test_viewable_things():
-    assert VIEWABLE_THINGS == ("initiative", "site", "truck")
+    assert VIEWABLE_THINGS == ("initiative", "site", "truck", "device")
 
 
-@pytest.mark.parametrize("resource", ["sites", "trucks"])
-def test_sites_and_trucks_stay_global_only(resource):
-    """`viewers` asks only for `sites:view` or `trucks:view` and applies no row scope to either,
-    because only a global person can hold them. Opening one of these resources to a client's or a
-    partner's users would make `viewers` let in people the page turns away, so widening it has
-    to fail here first."""
+@pytest.mark.parametrize("resource", ["sites", "trucks", "scanning_hardware"])
+def test_sites_trucks_and_devices_stay_global_only(resource):
+    """`viewers` asks only for `sites:view`, `trucks:view` or (a device) `scanning_hardware:view`
+    and applies no row scope to any of them, because only a global person can hold them. Opening
+    one of these resources to a client's or a partner's users would make `viewers` let in people
+    the page turns away, so widening it has to fail here first."""
     assert REGISTRY[resource].visible_to == frozenset({"global"})
 
 
-@pytest.mark.parametrize("kind", ["everything", "device", "wiki", ""])
+@pytest.mark.parametrize("kind", ["everything", "wiki_node", "wiki", ""])
 async def test_unknown_thing_type_raises(db, kind):
     thing = Thing(kind, uuid.uuid4())
     # even with nobody to ask about: a type nobody can answer for is a bug, not an empty answer

@@ -18,10 +18,11 @@ def test_categories_order_and_labels():
         ("learning", "Learning"),
         ("initiatives", "Initiatives"),
         ("trucks", "Trucks"),
+        ("devices", "Devices"),
         ("security", "Account security"),
     ]
     assert CATEGORY_KEYS == ("approvals", "reports", "wiki", "learning", "initiatives",
-                             "trucks", "security")
+                             "trucks", "devices", "security")
 
 
 def test_every_kind_has_a_known_category_and_a_label():
@@ -43,14 +44,16 @@ def test_kind_table_matches_the_spec():
         "learning_complete": "learning", "learning_overdue": "learning",
         "learning_quiz_locked": "learning",
         "initiative_status_changed": "initiatives", "truck_status_changed": "trucks",
+        "device_offline": "devices",
         "password_expiring": "security", "totp_enrolled": "security",
     }
     assert {k: v.category for k, v in KINDS.items()} == expected
     # registry order is the order the portal shows: the new kinds follow learning
-    assert list(KINDS)[-4:] == ["initiative_status_changed", "truck_status_changed",
-                                "password_expiring", "totp_enrolled"]
-    assert (KINDS["initiative_status_changed"].label, KINDS["truck_status_changed"].label) == (
-        "Initiative status changed", "Truck status changed")
+    assert list(KINDS)[-5:] == ["initiative_status_changed", "truck_status_changed",
+                                "device_offline", "password_expiring", "totp_enrolled"]
+    assert (KINDS["initiative_status_changed"].label, KINDS["truck_status_changed"].label,
+            KINDS["device_offline"].label) == (
+        "Initiative status changed", "Truck status changed", "Device offline")
 
 
 def test_flags_match_the_spec():
@@ -67,8 +70,8 @@ def test_flags_match_the_spec():
         "password_expiring": (False, True, True),
         "totp_enrolled": (True, True, True),
     }
-    # the two status kinds are emailed in full, to whoever hears them, like the defaults
-    for kind in ("initiative_status_changed", "truck_status_changed"):
+    # the announced kinds are emailed in full, to whoever hears them, like the defaults
+    for kind in ("initiative_status_changed", "truck_status_changed", "device_offline"):
         assert (KINDS[kind].brief, KINDS[kind].email, KINDS[kind].owner_always) == (
             False, True, False), kind
     # the urgent flag is gone: critical is company-set (notifications/company.py)
@@ -77,14 +80,15 @@ def test_flags_match_the_spec():
 
 def test_reaches_and_everywhere():
     """Which kinds a watch can follow, on what, and which an Everything watch may name:
-    exactly the two status changes."""
+    exactly the two status changes and Device offline."""
     assert {kind: (info.reaches, info.everywhere) for kind, info in KINDS.items()
             if info.reaches or info.everywhere} == {
         "initiative_status_changed": (("initiative", "site"), True),
         "truck_status_changed": (("truck", "initiative", "site"), True),
+        "device_offline": (("device", "site", "initiative"), True),
     }
     assert {kind for kind, info in KINDS.items() if info.watchable} == {
-        "initiative_status_changed", "truck_status_changed"}
+        "initiative_status_changed", "truck_status_changed", "device_offline"}
     assert KINDS["truck_status_changed"].watchable is True
     assert KINDS["report_ready"].watchable is False
     # the defaults: not watchable, not named by an Everything watch
@@ -136,6 +140,7 @@ def test_every_notify_kind_in_the_codebase_is_registered():
     assert {"report_ready", "labels_failed", "membership_request", "router_approval",
             "totp_enrolled", "password_reset_request", "password_expiring",
             "wiki_comment", "wiki_export_ready", "learning_overdue", "learning_complete",
-            "learning_quiz_locked", "initiative_status_changed", "truck_status_changed"} <= found
+            "learning_quiz_locked", "initiative_status_changed", "truck_status_changed",
+            "device_offline"} <= found
     assert found == set(KINDS), (
         f"unregistered: {sorted(found - set(KINDS))}; never sent: {sorted(set(KINDS) - found)}")

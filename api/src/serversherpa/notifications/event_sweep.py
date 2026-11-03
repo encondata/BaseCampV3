@@ -3,8 +3,9 @@ something happen announces it (notifications/events.py): a notification_events r
 `sent_at` null, until a sweep turns it into notifications. One sweep is one session and one
 transaction:
 
-1. **Claim** the oldest waiting events, up to EVENT_BATCH, with FOR UPDATE SKIP LOCKED:
-   production runs two workers on one database, and neither takes what the other holds.
+1. **Claim** the waiting events that have failed least (`attempts`), oldest first, up to
+   EVENT_BATCH, with FOR UPDATE SKIP LOCKED: production runs two workers on one database, and
+   neither takes what the other holds.
 2. **Each event's recipients,** in a savepoint of its own. An event whose subject is gone is
    dropped: marked sent, and nothing else. The candidates come in route order: the people the
    code named ("direct", or "rule:<id>" for a status rule's), the members of the Active groups
@@ -12,13 +13,16 @@ transaction:
    the first MAX_RECIPIENTS are considered, as the wiki does. Then: never the actor unless the
    code named them, active accounts only, and only people who can open the subject now
    (notifications/access.py); someone dropped for access is logged `inbox_suppressed`
-   `no_access`. An event that fails stays waiting for the next sweep, logged once.
+   `no_access`. An event that fails stays waiting for the next sweep, logged once, and the
+   failure is counted against it, so an event that always fails drops behind newer ones
+   instead of holding them up. Nothing gives up on it.
 3. **One notification per person per kind.** The items that reach one person become one
    notification for each kind, written with notify(), so the person's switches, schedule,
    summary and critical kinds apply as to any other. One item says what it says; several are
-   counted under the kind's label, a line each, oldest first. The payload carries the event
-   ids, the subjects and the routes (`via`) for the send-time re-check, and the inbox log row
-   the routes, the event ids and the groups' names.
+   counted under the kind's label, a line each, oldest first, and link to the initiative they
+   all belong to, else to the list they all share (a device's), else to the kind's list page.
+   The payload carries the event ids, the subjects and the routes (`via`) for the send-time
+   re-check, and the inbox log row the routes, the event ids and the groups' names.
 4. **Finish:** every handled event is marked sent, and it all commits at once. A write that
    fails rolls the whole sweep back for the next tick (the worker logs it once).
 
@@ -36,7 +40,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from itertools import islice
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from serversherpa.access.resolver import resolve_access_many
@@ -58,9 +62,12 @@ logger = logging.getLogger("serversherpa.notifications.event_sweep")
 
 EVENT_BATCH = 200
 
-# Where several items of one kind link when they don't all belong to one initiative.
-LIST_PAGES: dict[str, str] = {"initiative_status_changed": "/initiatives",
-                              "truck_status_changed": "/logistics/trucks"}
+# Where several items of one kind link when they don't all belong to one initiative and don't
+# share a list of their own. Device offline has none: its items carry their device's list, and
+# items from different lists (readers and routers, say) get no link.
+LIST_PAGES: dict[str, str | None] = {"initiative_status_changed": "/initiatives",
+                                     "truck_status_changed": "/logistics/trucks",
+                                     "device_offline": None}
 
 # Events whose last try failed: each is logged once per process. Only the exception's class is
 # logged: its text can carry SQL parameters.
@@ -81,6 +88,7 @@ class Item:
     line: str
     link: str | None
     initiative_id: str | None
+    list_link: str | None
 
     @classmethod
     def from_event(cls, event: NotificationEvent) -> "Item":
@@ -88,7 +96,7 @@ class Item:
         item = event.item
         return cls(event.id, event.kind, Thing(event.subject_type, event.subject_id),
                    item["title"], item.get("line") or "", item.get("link"),
-                   item.get("initiative_id"))
+                   item.get("initiative_id"), item.get("list_link"))
 
 
 @dataclass
@@ -167,7 +175,8 @@ def _group_items(reached: Iterable[tuple[Item, Routes]]) -> dict[tuple[uuid.UUID
 def _compose(kind: str, items: Sequence[Item]) -> tuple[str, str, str | None]:
     """The title, body and link of one notification about these items, oldest first. One item
     says what it says. Several are counted under the kind's label, a line each, and link to
-    the initiative they all belong to, else to the kind's list page."""
+    the initiative they all belong to, else to the list they all share, else to the kind's
+    list page (none for some kinds)."""
     if len(items) == 1:
         return items[0].title, items[0].line, items[0].link
     info = kind_info(kind)
@@ -177,6 +186,9 @@ def _compose(kind: str, items: Sequence[Item]) -> tuple[str, str, str | None]:
     shared = {item.initiative_id for item in items}
     if len(shared) == 1 and None not in shared:
         return title, body, f"/initiatives/{shared.pop()}"
+    lists = {item.list_link for item in items}
+    if len(lists) == 1 and None not in lists:
+        return title, body, lists.pop()
     return title, body, LIST_PAGES.get(kind)
 
 
@@ -207,18 +219,19 @@ async def _write(db: AsyncSession, person_id: uuid.UUID, kind: str, batch: Batch
 
 
 async def run_events_once(maker: async_sessionmaker, *, now: datetime | None = None) -> int:
-    """One sweep: the oldest waiting events, up to EVENT_BATCH, become notifications. Returns
-    how many were written. An event that fails is logged (once per event) and waits for the
-    next sweep while the rest go on; a notification that can't be written raises, and nothing
-    of the sweep is kept. Handled events are stamped with `now` (aware), by default the
-    current time."""
+    """One sweep: the waiting events that have failed least, oldest first, up to EVENT_BATCH,
+    become notifications. Returns how many were written. An event that fails is logged (once
+    per event), counts the failure and waits for the next sweep while the rest go on; a
+    notification that can't be written raises, and nothing of the sweep is kept (the failure
+    counts included). Handled events are stamped with `now` (aware), by default the current
+    time."""
     now = datetime.now(UTC) if now is None else now
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
     async with maker() as db:
         events = list(await db.scalars(
             select(NotificationEvent).where(NotificationEvent.sent_at.is_(None))
-            .order_by(NotificationEvent.id).limit(EVENT_BATCH)
+            .order_by(NotificationEvent.attempts, NotificationEvent.id).limit(EVENT_BATCH)
             .with_for_update(skip_locked=True)))
         if not events:      # nothing waiting, or another sweep holds it all
             return 0
@@ -235,6 +248,12 @@ async def run_events_once(maker: async_sessionmaker, *, now: datetime | None = N
                     logger.warning("could not send notification event %s — retrying (%s)",
                                    event_id, type(exc).__name__)
                 _failing.add(event_id)
+                # Counted in SQL, in the sweep's own transaction (any savepoint is rolled back
+                # by now), so the event object is never read after a rollback.
+                await db.execute(update(NotificationEvent)
+                                 .where(NotificationEvent.id == event_id)
+                                 .values(attempts=NotificationEvent.attempts + 1)
+                                 .execution_options(synchronize_session=False))
                 continue
             handled.append(event)
             reached.append((item, people))

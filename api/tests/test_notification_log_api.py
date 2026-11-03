@@ -535,11 +535,12 @@ async def test_kinds_report_critical_and_locked(client, db):
          "category": "security", "email": True, "owner_always": True, "critical": True,
          "locked": True, "watchable": False, "everywhere": False, "reaches": []},
     ]
-    # the two status changes can be watched, on the things they reach
+    # the two status changes and Device offline can be watched, on the things they reach
     assert [(k["kind"], k["watchable"], k["everywhere"], k["reaches"])
             for k in resp.json() if k["watchable"]] == [
         ("initiative_status_changed", True, True, ["initiative", "site"]),
         ("truck_status_changed", True, True, ["truck", "initiative", "site"]),
+        ("device_offline", True, True, ["device", "site", "initiative"]),
     ]
 
     admin = await _make(db, client, "admin", "admin@test.example.com")

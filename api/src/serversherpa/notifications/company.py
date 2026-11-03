@@ -25,9 +25,9 @@ SECTION = "notifications"
 
 # The categories an admin sets a default for. Account security is left out:
 # the owner's own notices are always written and always emailed, so there is
-# nothing to set. (config_store.DEFAULTS spells the same six out.)
+# nothing to set. (config_store.DEFAULTS spells the same seven out.)
 CONFIGURABLE_CATEGORIES: tuple[str, ...] = ("approvals", "reports", "wiki", "learning",
-                                            "initiatives", "trucks")
+                                            "initiatives", "trucks", "devices")
 
 SECURITY_CATEGORY = "security"
 

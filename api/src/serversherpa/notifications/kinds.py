@@ -35,6 +35,7 @@ CATEGORIES: dict[str, str] = {
     "learning": "Learning",
     "initiatives": "Initiatives",
     "trucks": "Trucks",
+    "devices": "Devices",
     "security": "Account security",
 }
 
@@ -70,6 +71,10 @@ KINDS: dict[str, KindInfo] = {
                                           reaches=("initiative", "site"), everywhere=True),
     "truck_status_changed": KindInfo("trucks", "Truck status changed",
                                      reaches=("truck", "initiative", "site"), everywhere=True),
+    # Announced by the device check (notifications/device_check.py) when a covered device
+    # stops checking in: it reaches the device's watchers, its site's and its move's.
+    "device_offline": KindInfo("devices", "Device offline",
+                               reaches=("device", "site", "initiative"), everywhere=True),
     "password_expiring": KindInfo("security", "Password expiring", owner_always=True),
     "totp_enrolled": KindInfo("security", "Two-factor authentication enrolled",
                                brief=True, owner_always=True),

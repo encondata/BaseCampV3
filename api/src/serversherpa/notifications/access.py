@@ -1,9 +1,10 @@
 """Who can see a thing. The notification worker has to say, for people other than the one
-making a request, whether each of them can open an initiative, a site or a truck, and the
-answer must be the one that thing's own page gives: `_get_initiative` for an initiative
-(api/routes/initiatives.py), `get_site` and `get_truck` for the others. A watch on
-something a person can't open stays silent, and an Everything watch never carries one
-client's work to another client's user.
+making a request, whether each of them can open an initiative, a site, a truck or a device,
+and the answer must be the one that thing's own page gives: `_get_initiative` for an
+initiative (api/routes/initiatives.py), `get_site` and `get_truck` for a site and a truck,
+and the device lists and kiosk page (api/routes/devices.py, `scanning_hardware` view) for a
+device. A watch on something a person can't open stays silent, and an Everything watch never
+carries one client's work to another client's user.
 
 `viewers` makes that decision for many people at once. `active_ids` is the wiki's rule for
 who is still a person to tell (wiki/notify.py), and `thing_exists` says whether the row is
@@ -20,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.access.resolver import AccessInfo, resolve_access_many
 from serversherpa.access.scope import scope_conditions
-from serversherpa.db.models import Initiative, Person, Site, Truck, UserAccount
+from serversherpa.db.models import Device, Initiative, Person, Site, Truck, UserAccount
 from serversherpa.notifications.events import Thing
 
 
@@ -29,7 +30,7 @@ class _Page:
     """What a kind of thing's page is made of: its table, and the resource whose `view`
     permission opens it."""
 
-    model: type[Initiative] | type[Site] | type[Truck]
+    model: type[Initiative] | type[Site] | type[Truck] | type[Device]
     resource: str
 
 
@@ -37,9 +38,10 @@ _PAGES: dict[str, _Page] = {
     "initiative": _Page(Initiative, "initiatives"),
     "site": _Page(Site, "sites"),
     "truck": _Page(Truck, "trucks"),
+    "device": _Page(Device, "scanning_hardware"),
 }
 
-# The kinds of thing `viewers` can answer for: initiative, site, truck.
+# The kinds of thing `viewers` can answer for: initiative, site, truck, device.
 VIEWABLE_THINGS: tuple[str, ...] = tuple(_PAGES)
 
 
@@ -67,8 +69,9 @@ async def active_ids(db: AsyncSession, person_ids: Iterable[uuid.UUID]) -> set[u
 
 
 async def thing_exists(db: AsyncSession, thing: Thing) -> bool:
-    """Whether the row is there now. An archived row counts: its page still opens. Raises
-    ValueError for a kind of thing outside VIEWABLE_THINGS."""
+    """Whether the row is there now. An archived row counts: its page still opens (a device
+    is never archived, only deleted). Raises ValueError for a kind of thing outside
+    VIEWABLE_THINGS."""
     model = _page(thing).model
     return await db.scalar(select(model.id).where(model.id == thing.id)) is not None
 
@@ -89,10 +92,10 @@ async def viewers(db: AsyncSession, thing: Thing, person_ids: Iterable[uuid.UUID
     """The people among `person_ids` who can open `thing`'s page right now.
 
     An initiative needs `initiatives:view` and, for anyone who isn't global, the initiative
-    to be in their scope (archived ones are still readable). A site needs `sites:view` and a
-    truck `trucks:view`; both resources are global-only, so no row scope applies. A thing
-    whose row is gone has no viewers. Raises ValueError for a kind of thing outside
-    VIEWABLE_THINGS, before anything else.
+    to be in their scope (archived ones are still readable). A site needs `sites:view`, a
+    truck `trucks:view` and a device `scanning_hardware:view`; those resources are
+    global-only, so no row scope applies. A thing whose row is gone has no viewers. Raises
+    ValueError for a kind of thing outside VIEWABLE_THINGS, before anything else.
 
     Everyone's access is resolved in one batch. `access` skips that and is used as it stands:
     a person it has no entry for is not a viewer."""
@@ -107,7 +110,8 @@ async def viewers(db: AsyncSession, thing: Thing, person_ids: Iterable[uuid.UUID
         info = access.get(person_id)
         if info is None or not info.can(page.resource, "view"):
             continue
-        # Sites and trucks have no row scope: only a global person can hold their permission.
+        # Sites, trucks and devices have no row scope: only a global person can hold their
+        # permission.
         if thing.type == "initiative" and not await _initiative_in_scope(
                 db, thing.id, person_id, info):
             continue

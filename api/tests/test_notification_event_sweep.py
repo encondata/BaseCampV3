@@ -152,6 +152,12 @@ async def _sent_at(event) -> datetime | None:
                               .where(NotificationEvent.id == event.id))
 
 
+async def _attempts(event) -> int:
+    async with get_sessionmaker()() as s:
+        return await s.scalar(select(NotificationEvent.attempts)
+                              .where(NotificationEvent.id == event.id))
+
+
 def _sweep_lines(caplog) -> list[str]:
     return [record.getMessage() for record in caplog.records if record.name == SWEEP_LOGGER]
 
@@ -435,11 +441,15 @@ async def test_burst_groups_into_one_notification(db):
 
 
 def test_every_watchable_kind_has_a_list_page():
-    """Several items of one kind that don't all belong to one initiative link to the kind's
-    list page (`_compose`): a watchable kind without one would send such a burst nowhere."""
+    """Several items of one kind that don't all belong to one initiative, and don't share a list
+    of their own (`EventItem.list_link`), link to the kind's list page (`_compose`): a watchable
+    kind needs an entry, so such a burst never goes nowhere by accident. Device offline's is
+    None on purpose: its items carry their own list (kiosks, readers or routers), and items
+    from different lists get no link."""
     watchable = {kind for kind, info in KINDS.items() if info.watchable}
     assert watchable                      # the registry still has kinds someone can watch for
     assert watchable <= set(event_sweep.LIST_PAGES)
+    assert event_sweep.LIST_PAGES["device_offline"] is None
 
 
 async def test_category_off_is_still_respected(db):
@@ -574,6 +584,45 @@ async def test_failed_event_stays_waiting(db, monkeypatch, caplog):
     assert await _sweep() == 1                      # the next sweep sends it
     assert len(await _notifications(person_a)) == 1
     assert await _sent_at(stuck) == NOW
+
+
+async def test_a_stuck_event_drops_behind(db, monkeypatch):
+    """An event that always fails no longer holds up the queue: each failure is counted against
+    it (`attempts`), and a sweep takes the events that failed least first, so a newer one goes
+    out ahead of it. It is never given up on."""
+    monkeypatch.setattr(event_sweep, "_failing", set())
+    monkeypatch.setattr(event_sweep, "EVENT_BATCH", 1)
+    person_a, person_b = await _person(db, "A"), await _person(db, "B")
+    initiative_a = await _initiative(db, "Initiative A")
+    initiative_b = await _initiative(db, "Initiative B")
+    await _watch(db, person_a, _on(initiative_a))
+    await _watch(db, person_b, _on(initiative_b))
+    stuck = await _initiative_changed(db, initiative_a)          # the older of the two
+    newer = await _initiative_changed(db, initiative_b)
+    real = event_sweep.matching_routes
+
+    async def failing_for_one(session, event):
+        if event.id == stuck.id:
+            raise RuntimeError("stuck")
+        return await real(session, event)
+
+    monkeypatch.setattr(event_sweep, "matching_routes", failing_for_one)
+    assert await _sweep() == 0                      # the oldest goes first, and fails
+    assert (await _attempts(stuck), await _sent_at(stuck)) == (1, None)
+    assert (await _attempts(newer), await _sent_at(newer)) == (0, None)
+
+    assert await _sweep() == 1                      # the newer one goes out ahead of it
+    assert await _sent_at(newer) == NOW
+    assert len(await _notifications(person_b)) == 1
+    assert await _attempts(newer) == 0
+
+    assert await _sweep() == 0                      # then the stuck one again: no limit
+    assert (await _attempts(stuck), await _sent_at(stuck)) == (2, None)
+
+    monkeypatch.setattr(event_sweep, "matching_routes", real)
+    assert await _sweep() == 1
+    assert len(await _notifications(person_a)) == 1
+    assert (await _attempts(stuck), await _sent_at(stuck)) == (2, NOW)
 
 
 async def test_a_failed_write_rolls_the_whole_sweep_back(db, monkeypatch):

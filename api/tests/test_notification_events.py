@@ -109,7 +109,7 @@ async def test_announce_is_part_of_the_callers_transaction(db, seeded_user):
     assert event.item == {
         "title": "Initiative A: Planned → In progress", "line": "A line",
         "link": "/initiatives/x", "initiative_id": str(subject.id),
-        "at": "2026-11-02T20:04:00+00:00"}
+        "at": "2026-11-02T20:04:00+00:00", "list_link": None}
     # de-duplicated in order, and never the subject itself
     assert event.reaches == [_ref("site", site_a.id), _ref("initiative", initiative_b.id)]
     assert event.actor_id == actor_id
@@ -170,12 +170,13 @@ def test_thing_and_item_json():
 
     # every key is always there, so the sweep can read them without guessing
     assert EventItem("T").to_json() == {
-        "title": "T", "line": "", "link": None, "initiative_id": None, "at": None}
+        "title": "T", "line": "", "link": None, "initiative_id": None, "at": None,
+        "list_link": None}
     initiative_id = uuid.uuid4()
     assert EventItem("T", "L", "/x", initiative_id=initiative_id,
-                     at=datetime(2026, 11, 2, 20, 4, tzinfo=UTC)).to_json() == {
+                     at=datetime(2026, 11, 2, 20, 4, tzinfo=UTC), list_link="/y").to_json() == {
         "title": "T", "line": "L", "link": "/x", "initiative_id": str(initiative_id),
-        "at": "2026-11-02T20:04:00+00:00"}
+        "at": "2026-11-02T20:04:00+00:00", "list_link": "/y"}
 
 
 @pytest.mark.parametrize("at,expected", [
@@ -207,7 +208,8 @@ async def test_initiative_status_patch_announces(client, db):
     assert event.actor_id == admin_id
     assert event.item == {
         "title": "Initiative A: Planned → In progress", "line": "",
-        "link": f"/initiatives/{initiative.id}", "initiative_id": str(initiative.id), "at": None}
+        "link": f"/initiatives/{initiative.id}", "initiative_id": str(initiative.id), "at": None,
+        "list_link": None}
     # the parent, then the three sites in the order the columns are named
     assert event.reaches == [_ref("initiative", parent.id), _ref("site", site.id),
                              _ref("site", origin.id), _ref("site", destination.id)]
@@ -316,7 +318,8 @@ async def test_truck_edit_announces(client, db):
     assert event.actor_id == admin_id
     assert event.item == {
         "title": "Truck A: Created → In Transit", "line": "",
-        "link": f"/logistics/trucks/{truck.id}", "initiative_id": str(initiative.id), "at": None}
+        "link": f"/logistics/trucks/{truck.id}", "initiative_id": str(initiative.id), "at": None,
+        "list_link": None}
     # its initiative, that one's parent, then its own start and end sites
     # (not the initiative's sites)
     assert event.reaches == [_ref("initiative", initiative.id), _ref("initiative", parent.id),
