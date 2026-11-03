@@ -21,22 +21,23 @@
 import { Link } from 'react-router-dom';
 
 import type { NotificationKindSetting, Watch } from '../../lib/api';
+import { resolveInboxLink } from '../../lib/inboxLinks';
 import { THING_LABELS, eventsText } from '../../lib/watches';
 import DataTable, { type DataTableColumn, type DataTableRow } from '../DataTable';
 import { RowActionsMenu, type RowAction } from '../hardware/RowActionsMenu';
 import '../../styles/directory.css';       // .data-table, .chip, .cell-top
 import '../../styles/notifications.css';   // .watch-table, .watch-thing, .watch-actions
 
-/** An absolute link is another app's page (the wiki's), which the router can't open. */
-const ABSOLUTE_LINK = /^https?:\/\//i;
-
-/** A thing's name, linked to its page when it has one: through the router for a
- *  path in the portal, as a plain link (same tab) for another app's absolute URL. */
+/** A thing's name, linked to its page when it has one, by the rule the inbox opens
+ *  links by (lib/inboxLinks): through the router for a path in the portal, as a plain
+ *  link (same tab) for another app's absolute URL, and to the portal's home page for
+ *  anything else (another scheme, "//host"). */
 function ThingName({ name, link }: { name: string; link: string | null }) {
   if (!link) return <b className="cell-top">{name}</b>;
-  return ABSOLUTE_LINK.test(link)
-    ? <a className="cell-top" href={link}>{name}</a>
-    : <Link className="cell-top" to={link}>{name}</Link>;
+  const target = resolveInboxLink(link);
+  return target.kind === 'app'
+    ? <Link className="cell-top" to={target.to}>{name}</Link>
+    : <a className="cell-top" href={target.href}>{name}</a>;
 }
 
 /** The Watching cell. The kind's chip is the neutral `tag` one, as a category's is

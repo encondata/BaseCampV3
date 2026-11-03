@@ -225,22 +225,24 @@ export default function AddGroupWatchModal({ group, kinds, onAdded, onClose }: {
   }, [thing]);
 
   // The Wiki picker's search: once the typing has paused, the wiki's folders and pages that
-  // match the text. Both are asked for together and answer together, so one that fails is a
-  // search that failed. Only the newest text counts: the answer to an older one, or to a
-  // kind since left, is dropped. With no text there is nothing to ask (the libraries are
-  // the kind's list), and nothing that failed.
+  // match the text. It is keyed on the text as it is searched, without the spaces around it
+  // and cut to what the wiki takes, so typing that changes nothing searched (a space at the
+  // end) asks nothing again. Both are asked for together and answer together, so one that
+  // fails is a search that failed. Only the newest text counts: the answer to an older one,
+  // or to a kind since left, is dropped. With no text there is nothing to ask (the libraries
+  // are the kind's list), and nothing that failed.
+  const wikiQuery = wikiText.trim().slice(0, SEARCH_TEXT_MAX);
   useEffect(() => {
-    const text = wikiText.trim();
-    if (thing !== 'wiki' || text === '') {
+    if (thing !== 'wiki' || wikiQuery === '') {
       setWikiNodes((nodes) => (nodes.length > 0 ? [] : nodes));
       setSearchFailed(false);
       return undefined;
     }
     let current = true;
-    const query = text.slice(0, SEARCH_TEXT_MAX);
     const timer = setTimeout(() => {
       Promise.all([
-        searchWiki(query, 'folder', HITS_PER_KIND), searchWiki(query, 'page', HITS_PER_KIND),
+        searchWiki(wikiQuery, 'folder', HITS_PER_KIND),
+        searchWiki(wikiQuery, 'page', HITS_PER_KIND),
       ])
         .then(([folders, pages]) => {
           if (!current) return;
@@ -254,7 +256,7 @@ export default function AddGroupWatchModal({ group, kinds, onAdded, onClose }: {
         });
     }, SEARCH_PAUSE_MS);
     return () => { current = false; clearTimeout(timer); };
-  }, [thing, wikiText]);
+  }, [thing, wikiQuery]);
 
   const needsThing = thing !== 'everything';
   // A wiki watch names no events, so the events say nothing about whether it can be saved.

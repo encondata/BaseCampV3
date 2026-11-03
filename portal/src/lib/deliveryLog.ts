@@ -188,9 +188,9 @@ function routeRank(route: string): number {
  *  first, then groups', then rules', then being named, and within one kind in
  *  the order the API logged them (the API sorts them by code, which would put
  *  "Named" ahead of the person's own watch). Empty when none was logged. Only
- *  the event sweep's inbox rows carry this list: on a queued email `via` is a
- *  string (where the address came from), so ask for it of the two inbox events
- *  alone. */
+ *  inbox rows carry this list (the event sweep's, and the wiki's for a notice
+ *  a watch brought): on a queued email `via` is a string (where the address
+ *  came from), so ask for it of the two inbox events alone. */
 function routesText(d: Record<string, unknown>): string {
   const routeNames = isMap(d.names) ? d.names : {};
   // names() builds a new list, and the sort is stable: the API's order holds within a rank.
@@ -275,7 +275,7 @@ export function describeEntry(e: DeliveryLogEntry): string {
       // A switch that turned it down (category_off, category_inbox_only) logs
       // where its value came from: the company default or the person's own.
       const source = text(d.source);
-      // An inbox row the event sweep kept out also logs what would have brought it.
+      // An inbox row the event sweep or the wiki kept out also logs what would have brought it.
       const routes = e.event === 'inbox_suppressed' ? routesText(d) : '';
       return [
         e.reason ? reasonLabel(e.reason) : null, source ? switchSourceLabel(source) : null, routes,

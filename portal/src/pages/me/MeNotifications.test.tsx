@@ -543,13 +543,14 @@ const pickAction = (sectionName: string, item: string) => {
   fireEvent.click(screen.getByRole('menuitem', { name: item }));
 };
 
-it('the hints say groups don\'t change what you get, and how to join one', async () => {
+it('the hints say which groups are yours, and how to join one', async () => {
   render(<MeNotifications />);
   await loaded();
   const mine = within(region('My groups'));
   const joinable = within(region('Join a group'));
-  const myHint = mine.getByText("The notification groups you belong to. Groups don't change what you get.");
+  const myHint = mine.getByText('The notification groups you belong to.');
   expect(myHint.classList.contains('page-hint')).toBe(true);
+  expect(screen.queryByText(/Groups don't change what you get/)).toBeNull();
   const joinHint = joinable.getByText('Search other notification groups and ask to join.');
   expect(joinHint.classList.contains('page-hint')).toBe(true);
   expect(screen.queryByText(/tune your own overrides/)).toBeNull();

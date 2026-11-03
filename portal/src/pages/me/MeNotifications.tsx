@@ -188,7 +188,7 @@ export default function MeNotifications() {
       <GroupsList
         kind="member"
         title="My groups"
-        hint="The notification groups you belong to. Groups don't change what you get."
+        hint="The notification groups you belong to."
         groups={myGroups}
         loaded={groups !== null}
         busyRequestIds={cancelBusy}

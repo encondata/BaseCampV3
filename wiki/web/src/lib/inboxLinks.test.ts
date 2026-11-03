@@ -22,18 +22,19 @@ describe('resolveInboxLink', () => {
     });
   });
 
-  it('never follows another scheme: like the portal, it is read as a portal path', () => {
-    for (const link of ['javascript:alert(1)', 'data:text/html,hi', 'JavaScript:void(0)']) {
-      const target = resolveInboxLink(link);
-      expect(target.kind).toBe('external');
-      expect(target.kind === 'external' && target.href.startsWith('http://localhost:5173/')).toBe(true);
+  it('opens no other kind of link: another scheme, a protocol-relative one or none at all stays on the wiki home, as the portal does', () => {
+    for (const link of ['javascript:alert(1)', 'data:text/html,x', '//evil.example/x', '']) {
+      expect(resolveInboxLink(link)).toEqual({ kind: 'app', to: '/' });
+    }
+    for (const link of ['JavaScript:void(0)', 'vbscript:msgbox(1)', 'reports']) {
+      expect(resolveInboxLink(link)).toEqual({ kind: 'app', to: '/' });
     }
   });
 
-  it('reads a protocol-relative link as a path, as the portal does', () => {
-    expect(resolveInboxLink('//evil.example/x')).toEqual({
-      kind: 'external', href: 'http://localhost:5173//evil.example/x',
-    });
+  it('takes no path a browser reads as another host\'s: a backslash, tab or newline after the slash', () => {
+    for (const link of ['/\\evil.example/x', '/\t/evil.example/x', '/\n/evil.example/x', '/\r/evil.example/x']) {
+      expect(resolveInboxLink(link)).toEqual({ kind: 'app', to: '/' });
+    }
   });
 
   it('stays on the wiki home for an http link it cannot parse', () => {

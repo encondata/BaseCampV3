@@ -25,4 +25,20 @@ describe('resolveInboxLink', () => {
     expect(resolveInboxLink('http://')).toEqual({ kind: 'app', to: '/' });
     expect(resolveInboxLink('https://exa mple.com/n/1')).toEqual({ kind: 'app', to: '/' });
   });
+
+  it('opens no other kind of link: another scheme, a protocol-relative one or none at all goes home, as a malformed one does', () => {
+    for (const link of ['javascript:alert(1)', 'data:text/html,x', '//evil.example/x', '']) {
+      expect(resolveInboxLink(link)).toEqual({ kind: 'app', to: '/' });
+    }
+    for (const link of ['JavaScript:void(0)', 'vbscript:msgbox(1)', 'reports']) {
+      expect(resolveInboxLink(link)).toEqual({ kind: 'app', to: '/' });
+    }
+  });
+
+  it('takes no path a browser reads as another host\'s: a backslash, tab or newline after the slash', () => {
+    for (const link of ['/\\evil.example/x', '/\t/evil.example/x', '/\n/evil.example/x', '/\r/evil.example/x']) {
+      expect(resolveInboxLink(link)).toEqual({ kind: 'app', to: '/' });
+    }
+    expect(resolveInboxLink('/n/a\\b')).toEqual({ kind: 'app', to: '/n/a\\b' });
+  });
 });

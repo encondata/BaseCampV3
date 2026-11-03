@@ -249,6 +249,24 @@ it('a relative link stays a router Link: clicking it moves the router, not the p
   expect(screen.getByTestId('here').textContent).toBe(`/initiatives/${INI_ID}`);
 });
 
+it('opens a link by the inbox\'s rule: a javascript:, data: or "//host" link renders no such href, only the portal\'s home page', () => {
+  setup({
+    watches: [
+      { ...initiative, link: 'javascript:alert(1)' },
+      { ...site, link: 'data:text/html,x' },
+      { ...truck, link: '//evil.example/x' },
+    ],
+  });
+
+  for (const name of ['Initiative A', 'Site A', 'Truck A']) {
+    const link = screen.getByRole('link', { name });
+    expect(link.getAttribute('href')).toBe('/');
+    expect(link.className).toBe('cell-top');
+  }
+  const hrefs = [...document.querySelectorAll('a')].map((a) => a.getAttribute('href') ?? '');
+  expect(hrefs.filter((href) => /^(javascript|data):|^\/\//i.test(href))).toEqual([]);
+});
+
 it('a wiki row hears every update and comment: Events reads "All events"', () => {
   setup({ watches: [wikiLibrary, wikiFolder, wikiPage] });
 

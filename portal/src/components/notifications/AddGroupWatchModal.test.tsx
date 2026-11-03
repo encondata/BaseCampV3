@@ -790,6 +790,25 @@ it('waits for a pause in the typing: one search for the whole text, not one for 
   expect(api.searchWiki.mock.calls).toEqual([['Page', 'folder', 8], ['Page', 'page', 8]]);
 });
 
+it('a space typed at the end changes nothing searched: "Page" and then "Page " is one search', async () => {
+  // fireEvent, not userEvent: Testing Library's own waits hang on timers that are faked
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+  open();
+  fireEvent.click(segment('Wiki'));
+  await advance(0);                       // the libraries come in
+  const input = combobox('Wiki');
+
+  fireEvent.change(input, { target: { value: 'Page' } });
+  await advance(200);
+  expect(api.searchWiki.mock.calls).toEqual([['Page', 'folder', 8], ['Page', 'page', 8]]);
+
+  fireEvent.change(input, { target: { value: 'Page ' } });
+  await advance(1000);                    // well past the typing pause
+
+  expect(api.searchWiki.mock.calls).toEqual([['Page', 'folder', 8], ['Page', 'page', 8]]);
+});
+
 it('a library is matched by its name, whatever the case, and by nothing else: not by its key', async () => {
   const user = userEvent.setup();
   api.searchWiki.mockResolvedValue([]);
