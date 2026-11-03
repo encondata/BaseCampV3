@@ -26,11 +26,13 @@ vi.mock('../../lib/notificationsContext', () => ({ useToast: () => toast }));
 
 vi.mock('../../auth/AuthContext', () => ({
   useAuth: () => ({
-    can: (resource: string) => resource === 'project_plans',
+    can: (resource: string) => resource === 'project_plans' || (resource === 'reports' && auth.reports),
     person: { id: 'p-me', display_name: 'Jimmy Henderson' },
     preferences: {},
   }),
 }));
+// reports access (More › Export ▸ PDF… needs reports:add)
+const auth = vi.hoisted(() => ({ reports: true }));
 
 const api = vi.hoisted(() => ({
   getPlan: vi.fn(),
@@ -65,7 +67,7 @@ vi.mock('../../lib/api', async (importActual) => ({
 }));
 
 const { default: PlanTab } = await import('./PlanTab');
-const { BASELINE_SET, PDF_REPORT_MISSING, PDF_REPORTS_DENIED, PREPARING_EXPORT } = await import('./usePlanCommands');
+const { BASELINE_SET, PDF_REPORT_MISSING, PREPARING_EXPORT } = await import('./usePlanCommands');
 const { BASELINE_CLEARED, LOCK_DESCRIPTION } = await import('./PlanConfirmModals');
 const { PLAN_DELETED } = await import('./DeletePlanModal');
 
@@ -111,6 +113,7 @@ const SIZES = ['offsetHeight', 'offsetWidth', 'clientHeight', 'clientWidth'] as 
 const realSizes = SIZES.map((key) => Object.getOwnPropertyDescriptor(HTMLElement.prototype, key)
   ?? Object.getOwnPropertyDescriptor(Element.prototype, key));
 beforeEach(() => {
+  auth.reports = true;
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
     top: 0, left: 0, right: 1200, bottom: 600, width: 1200, height: 600, x: 0, y: 0, toJSON: () => ({}),
   } as DOMRect);
@@ -355,15 +358,24 @@ describe('Update project, Plan settings, Delete plan', () => {
     expect(screen.queryByRole('heading', { name: 'Project plan' })).toBeNull();
   });
 
-  it('PDF… without the Project plan report says it isn’t set up; without reports access, says so', async () => {
+  it('PDF… without the Project plan report says it isn’t set up', async () => {
     reportsApi.listReportDefinitions.mockResolvedValue([]);
     const user = await ready();
     await more(user, 'PDF…');
     await waitFor(() => expect(toast).toHaveBeenCalledWith(PDF_REPORT_MISSING));
     expect(screen.queryByRole('heading', { name: 'Project plan' })).toBeNull();
-    reportsApi.listReportDefinitions.mockRejectedValueOnce(new ApiError(403, 'forbidden', { code: 'forbidden' }));
-    await more(user, 'PDF…');
-    await waitFor(() => expect(toast).toHaveBeenCalledWith(PDF_REPORTS_DENIED));
+  });
+
+  it('without reports:add, PDF… is off with its reason, and never asks for the reports', async () => {
+    auth.reports = false;
+    const user = await ready();
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    const item = screen.getByRole('menuitem', { name: /^PDF…/ }) as HTMLButtonElement;
+    expect(item.disabled).toBe(true);
+    expect(item.textContent).toContain('Needs access to Reports');
+    await user.click(item);
+    expect(reportsApi.listReportDefinitions).not.toHaveBeenCalled();
+    expect(toast).not.toHaveBeenCalled();
   });
 
   it('More opens Update project and Plan settings', async () => {

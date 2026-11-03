@@ -11,7 +11,7 @@ renders the HTML WeasyPrint prints.
 
 Bounds: the printed range is the plan's own span (custom days are cut to
 it) and at most MAX_PRINT_YEARS (the plan's duration bound), checked when
-the run is queued (`validate_run_options`, `check_against_plan`) and again
+the run is queued (`check_against_plan`, on the days cut to the plan) and again
 when it is built. There is no page cap: the HTML and the PDF are made in a
 child process killed at the worker's RUN_TIMEOUT_SECONDS, and the options
 step shows the page estimate before Generate."""
@@ -25,9 +25,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.db.models import ReportRun
 from serversherpa.plans import excel, service
 from serversherpa.plans.models import ProjectPlan
-from serversherpa.reports.project_plan import gantt
 from serversherpa.reports.project_plan import gather as gather_mod
-from serversherpa.reports.project_plan.gantt import MS_PER_DAY, PAPERS, ZOOMS
+from serversherpa.reports.project_plan.gantt import PAPERS, ZOOMS
 from serversherpa.reports.project_plan.gather import PrintRangeError
 from serversherpa.reports.project_plan.pdf import render_html, render_pdf_in_child
 from serversherpa.reports.registry import OptionsError, ReportResult
@@ -106,12 +105,10 @@ def validate_run_options(options: dict) -> dict:
     elif has_from:
         first, last = _day(options, "from", problems), _day(options, "to", problems)
         if first and last:
-            start = f"{first.isoformat()}T00:00"
-            finish = gantt.from_ms(gantt.to_ms(last.isoformat()) + MS_PER_DAY)
+            # the 10-year bound is on what prints, the days cut to the plan
+            # (check_against_plan, build), not on the days as asked
             if first > last:
                 problems.append("option 'from' must be on or before 'to'")
-            elif gantt.span_too_long(start, finish):
-                problems.append(gather_mod.TOO_LONG)
             else:
                 out["from"], out["to"] = first.isoformat(), last.isoformat()
 

@@ -7,7 +7,9 @@ fetched but data: URIs."""
 import importlib.util
 import json
 import multiprocessing
+import os
 import re
+import signal
 import time
 import uuid
 from datetime import UTC, datetime
@@ -29,9 +31,10 @@ from serversherpa.db.models import (
 from serversherpa.plans.durations import MAX_YEARS
 from serversherpa.plans.models import ProjectPlan
 from serversherpa.reports import project_plan, worker
-from serversherpa.reports.project_plan import gantt
+from serversherpa.reports.project_plan import gantt, pdf
 from serversherpa.reports.project_plan import gather as gather_mod
 from serversherpa.reports.project_plan.pdf import (
+    RenderFailed,
     data_fetcher,
     day_span,
     render_html,
@@ -113,13 +116,19 @@ TOO_LONG = "The date range can be at most 10 years."
 OUTSIDE = "The dates are outside this plan's tasks."
 
 
-def test_a_custom_range_is_at_most_ten_years():
-    """The plan's own duration bound (plans/durations.py MAX_YEARS), in
-    calendar years: the 1st of January through the 31st of December ten
-    years on is the most."""
+def test_the_ten_year_bound_is_on_what_prints_not_the_days_asked():
+    """The plan's own duration bound (plans/durations.py MAX_YEARS) applies
+    to the printed span, after the custom days are cut to the plan (the
+    dialog's rule too), so the options alone never refuse wide days."""
     assert gantt.MAX_PRINT_YEARS == MAX_YEARS == 10
-    assert project_plan.validate_run_options({"from": "2026-01-01", "to": "2035-12-31"})
-    assert _problems({"from": "2026-01-01", "to": "2036-01-01"}) == [TOO_LONG]
+    wide = {"from": "2020-01-01", "to": "2035-12-31"}
+    assert project_plan.validate_run_options(wide) == wide
+    # the 1st of January through the 31st of December ten years on is the most
+    span = gantt.PrintRange("2026-01-01T00:00", "2040-01-01T00:00")
+    assert gather_mod.printed_range(span, "2026-01-01", "2035-12-31").finish == "2036-01-01T00:00"
+    with pytest.raises(gather_mod.PrintRangeError) as exc:
+        gather_mod.printed_range(span, "2026-01-01", "2036-01-01")
+    assert (exc.value.code, exc.value.message) == ("range_too_long", TOO_LONG)
 
 
 def test_definition_options_are_empty():
@@ -257,6 +266,23 @@ async def test_create_run_refuses_a_plan_over_ten_years(client, db):
     resp = await client.post("/reports/runs", headers=hdrs, json=_body(
         d, move.id, {"from": "2026-11-02", "to": "2036-11-01"}))
     assert resp.status_code == 201, resp.text
+    # wider days are cut to the plan first, which is still over ten years
+    resp = await client.post("/reports/runs", headers=hdrs, json=_body(
+        d, move.id, {"from": "2020-01-01", "to": "2045-12-31"}))
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["problems"] == [TOO_LONG]
+
+
+async def test_wide_days_on_a_short_plan_are_cut_to_it_not_refused(client, db):
+    """The dialog allows it (it cuts the days to the plan), so the API does."""
+    d = await _definition(db)
+    hdrs, _ = await _admin(db, client)
+    move = await _initiative(db)
+    await _create(client, hdrs, move)
+    resp = await client.post("/reports/runs", headers=hdrs, json=_body(
+        d, move.id, {"from": "2020-01-01", "to": "2035-12-31"}))
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["options"] == {"from": "2020-01-01", "to": "2035-12-31"}
 
 
 async def test_the_build_checks_the_range_against_the_plan_again(client, db, stored):
@@ -491,6 +517,83 @@ async def test_a_render_past_its_timeout_is_stopped(client, db):
     pdf = await render_pdf_in_child(data, choices, generated_at=datetime.now(UTC),
                                     tracking_id=str(uuid.uuid4()), timeout=120)
     assert pdf.startswith(b"%PDF")
+
+
+def _exit_early(conn, *args):
+    """A child that dies without a word: an OOM kill, a segfault."""
+    os._exit(1)
+
+
+def _sleep_forever(conn, *args):
+    time.sleep(3600)
+
+
+def _report_alarm(conn, *args):
+    """Sends back the seconds left on the child's own alarm."""
+    conn.send(("ok", str(signal.alarm(0)).encode()))
+    conn.close()
+
+
+async def test_a_child_that_dies_fails_as_the_renderer_stopping():
+    with pytest.raises(RenderFailed, match=r"^the PDF renderer stopped \(exit code 1\)$"):
+        await render_pdf_in_child(None, None, generated_at=datetime.now(UTC), tracking_id="t",
+                                  timeout=60, target=_exit_early)
+    assert multiprocessing.active_children() == []
+
+
+async def test_the_child_has_its_own_deadline():
+    """Set when it starts: the worker's timeout plus a grace, so a child
+    outlives a SIGKILLed worker by little."""
+    left = await render_pdf_in_child(None, None, generated_at=datetime.now(UTC),
+                                     tracking_id="t", timeout=30, target=_report_alarm)
+    assert int(left) in (29 + pdf.CHILD_GRACE_SECONDS, 30 + pdf.CHILD_GRACE_SECONDS)
+
+
+def test_the_child_stops_itself_at_its_deadline():
+    ctx = multiprocessing.get_context("spawn")
+    receive, send = ctx.Pipe(duplex=False)
+    child = ctx.Process(target=pdf._child_main, args=(send, 1, _sleep_forever, ()), daemon=True)
+    started = time.monotonic()
+    child.start()
+    send.close()
+    child.join(30)
+    receive.close()
+    assert child.exitcode == -signal.SIGALRM
+    assert time.monotonic() - started < 20
+
+
+def test_weasyprint_gets_a_fetcher_only_when_one_is_given(monkeypatch):
+    """Other reports call WeasyPrint exactly as before (no url_fetcher at
+    all); the project plan's renders pass its data-only one."""
+    import weasyprint
+
+    from serversherpa.reports.move_report import render
+
+    seen: list[dict] = []
+
+    class FakeHTML:
+        def __init__(self, **kwargs):
+            seen.append(kwargs)
+
+        def write_pdf(self):
+            return b"%PDF-fake"
+
+    monkeypatch.setattr(weasyprint, "HTML", FakeHTML)
+    assert render.render_pdf("<p>x</p>") == b"%PDF-fake"
+    fetcher = data_fetcher()
+    render._pdf("<p>y</p>", fetcher)
+    assert seen == [{"string": "<p>x</p>"}, {"string": "<p>y</p>", "url_fetcher": fetcher}]
+    # and nothing in the project plan's module renders without its fetcher
+    assert not hasattr(pdf, "render_pdf")
+
+
+async def test_chart_labels_print_at_seven_points(client, db):
+    _, me, move, _ = await _twelve(client, db)
+    chart = _section(await _html(db, move, me), "gantt")
+    labels = re.findall(r'<text [^>]*font-size="([\d.]+)"[^>]*fill="([^"]+)"', chart)
+    assert labels and {size for size, _ in labels} == {"9.33"}      # 7 pt
+    assert {"#475467", "#1b2129"} >= {fill for _, fill in labels}
+    assert "#667085" not in {fill for _, fill in labels}
 
 
 async def test_build_makes_a_pdf_named_for_the_initiative(client, db):

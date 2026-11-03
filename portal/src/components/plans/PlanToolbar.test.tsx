@@ -45,16 +45,18 @@ function commands(over: Partial<PlanCommands> = {}): PlanCommands {
 
 const CTL = { canUndo: true, canRedo: false, undoLabel: 'Indent', redoLabel: null };
 
-function Bar({ plan, cmd, layout = 'beside', onLayout = () => {}, gantt = true, strip = false, onStrip = () => {} }: {
+function Bar({
+  plan, cmd, layout = 'beside', onLayout = () => {}, gantt = true, strip = false, onStrip = () => {}, reports = true,
+}: {
   plan: Plan; cmd: PlanCommands; layout?: GanttLayout; onLayout?: (layout: GanttLayout) => void;
-  gantt?: boolean; strip?: boolean; onStrip?: () => void;
+  gantt?: boolean; strip?: boolean; onStrip?: () => void; reports?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useRovingToolbar(ref);
   return (
     <div role="toolbar" aria-label="Project plan" ref={ref}>
       <PlanToolbar plan={plan} ctl={CTL} commands={cmd} platform="win" layout={layout} onLayout={onLayout}
-                   gantt={gantt} strip={strip} onStrip={onStrip} />
+                   gantt={gantt} strip={strip} onStrip={onStrip} canReport={reports} />
     </div>
   );
 }
@@ -555,6 +557,21 @@ describe('More', () => {
     await user.click(screen.getByRole('menuitem', { name: 'PDF…' }));
     expect(cmd.exportPdf).toHaveBeenCalledTimes(1);
     expect(COMMAND_TIPS.exportPdf.desc).toBe('Make a PDF of the task table and the Gantt chart on separate pages.');
+  });
+
+  it('PDF… is off, saying why, for someone who can’t run reports', async () => {
+    const user = userEvent.setup();
+    const cmd = commands();
+    render(<Bar plan={makePlan()} cmd={cmd} reports={false} />);
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    const item = screen.getByRole('menuitem', { name: /^PDF…/ }) as HTMLButtonElement;
+    expect(item.disabled).toBe(true);
+    expect(item.textContent).toContain(OFF_NOTES.noReports);
+    expect(OFF_NOTES.noReports).toBe('Needs access to Reports');
+    await user.click(item);
+    expect(cmd.exportPdf).not.toHaveBeenCalled();
+    // the downloads are the plan's own: still on
+    expect((screen.getByRole('menuitem', { name: 'Excel' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('a read-only person still has Export › PDF…', async () => {

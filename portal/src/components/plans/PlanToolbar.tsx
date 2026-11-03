@@ -82,10 +82,12 @@ interface Props {
   /** Display › Timeline strip is on, and its toggle. */
   strip?: boolean;
   onStrip?(): void;
+  /** The person may run reports (reports:add): Export ▸ PDF… is one. */
+  canReport?: boolean;
 }
 
 export default function PlanToolbar({
-  plan, ctl, commands: cmd, platform, layout, onLayout, gantt = true, strip = false, onStrip,
+  plan, ctl, commands: cmd, platform, layout, onLayout, gantt = true, strip = false, onStrip, canReport = true,
 }: Props) {
   const os = platform ?? detectPlatform();
   const canChange = plan.permissions.change;
@@ -140,7 +142,9 @@ export default function PlanToolbar({
     { key: 'export-xml', label: COMMAND_TIPS.exportXml.label, group: exportGroup, onSelect: () => cmd.exportPlan('xml') },
     { key: 'export-xlsx', label: COMMAND_TIPS.exportXlsx.label, group: exportGroup,
       onSelect: () => cmd.exportPlan('xlsx') },
-    { key: 'export-pdf', label: COMMAND_TIPS.exportPdf.label, group: exportGroup, onSelect: cmd.exportPdf },
+    // the PDF is a report: off, saying why, without reports:add
+    { key: 'export-pdf', label: COMMAND_TIPS.exportPdf.label, group: exportGroup, onSelect: cmd.exportPdf,
+      disabled: !canReport, hint: canReport ? undefined : OFF_NOTES.noReports },
   );
   more.push(
     { key: 'columns', label: 'Columns…', onSelect: () => cmd.open('columns') },

@@ -48,7 +48,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 
-import { ApiError, listReportDefinitions, type ReportDefinition } from '../../lib/api';
+import { listReportDefinitions, type ReportDefinition } from '../../lib/api';
 import { useToast } from '../../lib/notificationsContext';
 import { exportPlan, type ExportFormat, type Op, type Plan, type PlanTask, type TaskMode } from '../../lib/plans/api';
 import type { ApplyResult } from '../../lib/plans/applyResult';
@@ -111,8 +111,6 @@ export const PREPARING_EXPORT = 'Preparing export…';
 /** PDF… found no Project plan report (TimeManagement's words for the Timesheet's). */
 export const PDF_REPORT_MISSING = 'The Project plan report isn’t set up. Ask an administrator.';
 export const PDF_REPORTS_FAILED = 'Couldn’t load the reports. Try again.';
-/** The PDF is a report: without reports access there is none to make. */
-export const PDF_REPORTS_DENIED = 'You need permission to run reports to make a PDF.';
 /** A move into the tasks that move (a cut pasted into its own subtasks). */
 export const MOVE_INSIDE = 'Can’t move tasks into themselves.';
 /** How long Ctrl+V waits for the browser's paste event before asking
@@ -892,8 +890,7 @@ export function usePlanCommands({
           kind: 'exportPdf', definition,
           initial: { columns: columnPrefsSnapshot().visible, zoom: at, critical: shown.critical, baseline: shown.baseline },
         });
-      }).catch((err: unknown) => latest.current.toast(
-        err instanceof ApiError && err.status === 403 ? PDF_REPORTS_DENIED : PDF_REPORTS_FAILED))
+      }).catch(() => latest.current.toast(PDF_REPORTS_FAILED))
         .finally(() => { findingPdf.current = false; });
     };
     // sent at once; only replacing one asks (the 409 says when it was set)

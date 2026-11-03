@@ -181,6 +181,8 @@ export const OFF_NOTES = {
   ganttOnly: 'Switch to the Gantt view to use this',
   noBaseline: 'No baseline set',
   grouped: 'Turn off Group by to change the outline',
+  /** More › Export ▸ PDF…: the PDF is a report (reports:add). */
+  noReports: 'Needs access to Reports',
 } as const;
 
 /** Undo's sentence, naming the step it takes back ("Indent") when there is one. */

@@ -431,7 +431,7 @@ export default function PlanTab({ initiativeId, initiative }: {
             </div>
             <div className="pln-tools">
               <PlanToolbar plan={plan} ctl={ctl} commands={commands} layout={layout} onLayout={setLayout}
-                           gantt={gantt} strip={strip} onStrip={toggleStrip} />
+                           gantt={gantt} strip={strip} onStrip={toggleStrip} canReport={can('reports', 'add')} />
             </div>
             <Tip label={screenTip.label} desc={screenTip.desc}
                  keys={isFull ? tipKeys('exitFullScreen', detectPlatform()) : null}>

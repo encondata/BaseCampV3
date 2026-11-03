@@ -40,7 +40,7 @@ from markupsafe import Markup
 
 from serversherpa.plans import excel
 from serversherpa.plans.schemas import PlanTaskOut
-from serversherpa.reports.move_report.render import css_string, render_pdf_async
+from serversherpa.reports.move_report.render import css_string
 from serversherpa.reports.move_scan_history.barcode import pdf417_data_uri
 from serversherpa.reports.project_plan import gantt
 from serversherpa.reports.project_plan.gantt import ROW_PX, TIER_PX
@@ -51,8 +51,6 @@ _ENV = Environment(loader=FileSystemLoader(Path(__file__).parent / "templates"),
                    autoescape=select_autoescape(["html"]), trim_blocks=True,
                    lstrip_blocks=True)
 _ENV.filters["cssstr"] = css_string
-
-render_pdf = render_pdf_async
 
 
 def data_fetcher():
@@ -82,7 +80,11 @@ FONT = "Helvetica, Arial, sans-serif"
 INDENT_PX = 12          # per outline level, in the table and the names column
 CELL_PAD_PX = 6         # the table's cell padding, left
 NAMES_INDENT_PAD = 2
-CHAR_PX = 4.6           # a character of 8px Helvetica, near enough to place labels
+# the chart's labels (resource names, milestone dates, the timescale): 7 pt
+# (28/3 px), in the darker muted text so they hold up in print
+LABEL_PX = 9.33
+LABEL_INK = "#475467"
+CHAR_PX = 4.6           # a character of 8px Helvetica (scaled by size), to place labels
 
 
 # ── a task's own color: lightness as the portal caps it on the light theme ─
@@ -254,7 +256,7 @@ def _polygon(cls: str, task_id: str | None, points: list[tuple[float, float]], f
         cls, attrs, pts, fill, extra)
 
 
-def _text(x: float, y: float, text: str, *, size: float = 8, fill: str = MUTE,
+def _text(x: float, y: float, text: str, *, size: float = LABEL_PX, fill: str = LABEL_INK,
           anchor: str = "start", weight: str = "normal") -> Markup:
     return Markup('<text x="{}" y="{}" font-family="{}" font-size="{}" font-weight="{}" '
                   'fill="{}" text-anchor="{}">{}</text>').format(
@@ -375,8 +377,8 @@ def _task_marks(task: PlanTaskOut, row: int, scale: gantt.Scale, box: gantt.BarB
             xs += [x - DEADLINE_HALF, x + DEADLINE_HALF]
 
     if label and label_x is not None:
-        parts.append(_text(label_x, y + box.mid + 3, label))
-        xs += [label_x, label_x + len(label) * CHAR_PX]
+        parts.append(_text(label_x, y + box.mid + 3.3, label))
+        xs += [label_x, label_x + len(label) * CHAR_PX * LABEL_PX / 8]
     if not parts:
         return None
     return _Marks(row=row, markup=Markup("").join(parts), x_lo=min(xs), x_hi=max(xs))
@@ -442,7 +444,7 @@ def _scale_svg(scale: gantt.Scale, zoom: str, x0: float, width: float) -> Markup
     x1 = x0 + width
     parts = [_rect("scale-bg", None, x0, 0, width, 2 * TIER_PX, SCALE_BG)]
     for tier, (top, size, weight, fill, centered) in enumerate((
-            (0, 8.5, "bold", DARK, False), (TIER_PX, 8, "normal", MUTE, True))):
+            (0, LABEL_PX, "bold", DARK, False), (TIER_PX, LABEL_PX, "normal", LABEL_INK, True))):
         for t in (ticks.top if tier == 0 else ticks.bottom):
             parts.append(Markup('<path d="M {} {} V {}" stroke="{}" stroke-width="0.75"/>').format(
                 _n(t.x), _n(top), _n(top + TIER_PX), SCALE_RULE))
@@ -642,12 +644,26 @@ def render_html(data: PlanData, choices, *, generated_at: datetime, tracking_id:
 # would hold the worker long past RUN_TIMEOUT_SECONDS. Both run in a
 # spawned child instead; the parent only waits (an awaitable poll), so the
 # worker's timeout cancels the wait, and the child is killed either way.
+# The child also has a deadline of its own (SIGALRM at the timeout plus a
+# grace), so it can't outlive a SIGKILLed worker by long. Its memory has no
+# cap of its own (an RLIMIT_AS would need a memory number nobody has set).
 
 _POLL_SECONDS = 0.05
+# what the child's own deadline allows past the parent's timeout
+CHILD_GRACE_SECONDS = 5
 
 
 class RenderFailed(RuntimeError):
     """The child stopped without a PDF: it raised, or it died."""
+
+
+def _child_main(conn, deadline_seconds: int, target, args: tuple) -> None:
+    """The child: arm its own deadline (SIGALRM's default action ends the
+    process), then do `target`'s work."""
+    import signal
+    if hasattr(signal, "alarm"):
+        signal.alarm(max(1, deadline_seconds))
+    target(conn, *args)
 
 
 def _render_child(conn, data: PlanData, choices, generated_at: datetime,
@@ -664,36 +680,53 @@ def _render_child(conn, data: PlanData, choices, generated_at: datetime,
 
 
 async def render_pdf_in_child(data: PlanData, choices, *, generated_at: datetime,
-                              tracking_id: str, timeout: float) -> bytes:
+                              tracking_id: str, timeout: float,
+                              target=_render_child) -> bytes:
     """The PDF, made in a spawned child process that is killed after
     `timeout` seconds (TimeoutError) or when this wait is cancelled (the
-    worker's own timeout). RenderFailed when the child raises or dies."""
+    worker's own timeout). RenderFailed when the child raises or dies.
+    `target` is what the child runs (the tests swap in ones that misbehave)."""
     ctx = multiprocessing.get_context("spawn")
     receive, send = ctx.Pipe(duplex=False)
-    child = ctx.Process(target=_render_child, name="project-plan-pdf", daemon=True,
-                        args=(send, data, choices, generated_at, tracking_id))
+    child = ctx.Process(target=_child_main, name="project-plan-pdf", daemon=True,
+                        args=(send, int(timeout) + CHILD_GRACE_SECONDS, target,
+                              (data, choices, generated_at, tracking_id)))
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
-    child.start()
-    send.close()
     try:
+        # off the event loop: start() writes the pickled arguments into the
+        # child's pipe, which blocks until the child reads them
+        await asyncio.to_thread(child.start)
+        send.close()
         while not receive.poll():
             if not child.is_alive() and not receive.poll():
-                raise RenderFailed(f"the PDF renderer stopped (exit code {child.exitcode})")
+                raise _stopped(child)
             left = deadline - loop.time()
             if left <= 0:
                 raise TimeoutError(f"the PDF took longer than {timeout:g}s")
             await asyncio.sleep(min(_POLL_SECONDS, left))
-        kind, payload = receive.recv()
+        try:
+            kind, payload = receive.recv()
+        except EOFError:                   # the pipe ends with nothing in it: it died
+            raise _stopped(child) from None
     finally:
-        if child.is_alive():
-            child.kill()
-        child.join(5)
+        # (cancelled mid-start, the child isn't ours to kill yet: its own
+        # deadline ends it)
+        if child.pid is not None:
+            if child.is_alive():
+                child.kill()
+            child.join(5)
+        send.close()
         receive.close()
     if kind != "ok":
         raise RenderFailed(payload)
     return payload
 
 
-__all__ = ["RenderFailed", "data_fetcher", "day_span", "render_html", "render_pdf",
+def _stopped(child) -> RenderFailed:
+    child.join(5)
+    return RenderFailed(f"the PDF renderer stopped (exit code {child.exitcode})")
+
+
+__all__ = ["CHILD_GRACE_SECONDS", "RenderFailed", "data_fetcher", "day_span", "render_html",
            "render_pdf_in_child", "sheet_day", "task_deep", "task_hue"]

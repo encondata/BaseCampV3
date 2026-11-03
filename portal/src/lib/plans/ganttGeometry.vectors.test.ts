@@ -157,6 +157,11 @@ function cases(): { name: string; fn: string; args: unknown[] }[] {
   add('an SS arrow', 'linkShape', end(100, 200, 9), end(120, 220, 45), 'SS', 18, 8, 3.5);
   add('an FF arrow, leftward', 'linkShape', end(100, 200, 9), end(120, 180, 27), 'FF', 18, 6, 3.5);
   add('a detoured arrow, up', 'linkShape', end(100, 200, 63), end(120, 300, 9), 'FS', 18, 8, 3.5);
+  // a milestone met at its diamond's tip (PlanGantt's shapeInto: toHalf 0),
+  // or from above at its center when that saves a detour (toHalf MILESTONE_HALF)
+  add('an FS arrow into a milestone’s tip', 'linkShape', end(100, 200, 9), end(254, 266, 27), 'FS', 18, 8, 0);
+  add('an FF arrow into a milestone’s tip', 'linkShape', end(100, 200, 9), end(144, 156, 27), 'FF', 18, 8, 0);
+  add('an FS arrow dropping onto a milestone', 'linkShape', end(100, 200, 9), end(200, 200, 27), 'FS', 18, 8, 6);
   for (const zoom of ZOOMS) add(`link stub at ${zoom}`, 'linkStub', zoom);
 
   add('bar box, no baseline', 'barBox', 18, false);

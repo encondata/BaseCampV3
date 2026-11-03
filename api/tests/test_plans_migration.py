@@ -84,10 +84,12 @@ def _state(conn) -> dict:
         "tables": tables,
         "indexes": indexes,
         "color": color and tuple(color),
-        # the "Project plan" PDF's system report definition
+        # the "Project plan" PDF's system report definition, and its runs
         "definitions": [tuple(r) for r in conn.execute(
             "SELECT name, report_type, options, is_system FROM report_definitions "
             "WHERE report_type = 'project_plan'")],
+        "plan_runs": conn.execute(
+            "SELECT count(*) FROM report_runs WHERE report_type = 'project_plan'").fetchone()[0],
         "grants": {role: {r[0] for r in conn.execute(
             "SELECT action FROM role_permissions "
             "WHERE role = %s AND resource = 'project_plans'", (role,))}
@@ -117,6 +119,12 @@ def _seed_plan(conn) -> dict:
     conn.execute("INSERT INTO plan_reminder_log (task_id, person_id, stage, due_at) "
                  "VALUES (%s, %s, 'd3', '2026-11-05 08:00')", (a, person))
     conn.execute("INSERT INTO plan_templates (name, data) VALUES ('Standard move', '{}'::jsonb)")
+    # a run of the seeded Project plan report: the downgrade deletes it
+    # before its definition (report_runs.definition_id doesn't cascade)
+    conn.execute(
+        "INSERT INTO report_runs (definition_id, report_type, initiative_id, requested_by) "
+        "SELECT id, 'project_plan', %s, %s FROM report_definitions "
+        "WHERE report_type = 'project_plan'", (initiative, person))
     return {"person": person, "plan": plan}
 
 
@@ -143,6 +151,7 @@ def test_downgrade_and_upgrade_again(throwaway_url):
         conn.execute("INSERT INTO notification_groups (name, categories) "
                      "VALUES ('Mixed', ARRAY['plans','wiki'])")
         _seed_plan(conn)
+        assert _state(conn)["plan_runs"] == 1
 
     _alembic(throwaway_url, "downgrade", "0109")
     with psycopg.connect(sync, autocommit=True) as conn:
@@ -151,6 +160,7 @@ def test_downgrade_and_upgrade_again(throwaway_url):
         assert down["indexes"] == set()
         assert down["color"] is None
         assert down["definitions"] == []
+        assert down["plan_runs"] == 0
         assert all(grants == set() for grants in down["grants"].values())
         assert conn.execute(
             "SELECT categories FROM notification_groups WHERE name = 'Mixed'"
