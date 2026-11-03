@@ -2,10 +2,14 @@
  * DeliveryLogTrail — an opened Delivery log row: every entry of the same
  * notification (or, for template mail that mirrors no notification, of the
  * same email) in the order it happened, in a real table (Time, Event, Detail,
- * Process), fetched fresh on each open. An inbox row that was never written
- * has neither, so it is its own one-line trail. Under the table: the address
- * the email went to (from its outbox row, never from the log) and links to
- * the person's page and to the notification's own link.
+ * Process), fetched fresh on each open. A held notification's trail runs
+ * inbox → held for the summary → in the summary (or dropped, with the
+ * reason). A summary email is template mail, so its trail is found by its
+ * outbox id: queued, one "In summary" row for each notification it carries
+ * (the Detail names which), then sent. An inbox row that was never written
+ * has neither id, so it is its own one-line trail. Under the table: the
+ * address the email went to (from its outbox row, never from the log) and
+ * links to the person's page and to the notification's own link.
  */
 
 import { useEffect, useState } from 'react';
@@ -36,6 +40,14 @@ function emailTo(rows: DeliveryLogEntry[]): string | null {
   const via = rows.find((r) => r.event === 'email_queued')?.detail?.via;
   const source = typeof via === 'string' ? ADDRESS_SOURCE_LABELS[via] ?? via : null;
   return `Email to ${address}${source ? ` (${source})` : ''}`;
+}
+
+/** A trail row's Detail. On a summary email's trail (found by outbox id, not
+ *  by notification) each "In summary" row names the notification it carries;
+ *  everywhere else that event has nothing to add. */
+function detailOf(r: DeliveryLogEntry, summaryTrail: boolean): string {
+  if (summaryTrail && r.event === 'email_summarized') return r.notification_title ?? '—';
+  return describeEntry(r) || '—';
 }
 
 /** The notification's own link: in the portal through the router, another
@@ -92,7 +104,7 @@ export default function DeliveryLogTrail({ entry }: { entry: DeliveryLogEntry })
               cells: [
                 fullDateTime(r.at),
                 <span key="event" className={`chip ${outcome.chip}`}>{outcome.label}</span>,
-                describeEntry(r) || '—',
+                detailOf(r, !notificationId),
                 r.process ?? '—',
               ],
             };

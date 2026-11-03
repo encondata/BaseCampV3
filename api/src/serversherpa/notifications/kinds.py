@@ -15,7 +15,6 @@ class KindInfo:
     brief: bool = False    # email carries title + link only, never the body
     email: bool = True     # False = never emailed
     owner_always: bool = False  # owner copies always email (decision 3)
-    urgent: bool = False   # counts for a group's urgent_bypass
 
 
 # Ordered: the order here is the order the portal shows.
@@ -28,19 +27,6 @@ CATEGORIES: dict[str, str] = {
 }
 
 CATEGORY_KEYS: tuple[str, ...] = tuple(CATEGORIES)
-
-# Where a category's email permission comes from: "groups" (one of the
-# person's groups must subscribe to the category with Email among its
-# channels) or "always" (account security: the owner's own notices email
-# whatever the groups say). "direct" is reserved for a later category whose
-# email follows the person's /me choice alone. Mirrored in the portal.
-CATEGORY_EMAIL_SOURCE: dict[str, str] = {
-    "approvals": "groups",
-    "reports": "groups",
-    "wiki": "groups",
-    "learning": "groups",
-    "security": "always",
-}
 
 KINDS: dict[str, KindInfo] = {
     "membership_request": KindInfo("approvals", "Group membership request"),
@@ -66,10 +52,9 @@ KINDS: dict[str, KindInfo] = {
     "learning_overdue": KindInfo("learning", "Learning overdue"),
     # A worker used every quiz attempt; a lead follows up in person.
     "learning_quiz_locked": KindInfo("learning", "Quiz locked", email=False),
-    "password_expiring": KindInfo("security", "Password expiring",
-                                   owner_always=True, urgent=True),
+    "password_expiring": KindInfo("security", "Password expiring", owner_always=True),
     "totp_enrolled": KindInfo("security", "Two-factor authentication enrolled",
-                               brief=True, owner_always=True, urgent=True),
+                               brief=True, owner_always=True),
 }
 
 

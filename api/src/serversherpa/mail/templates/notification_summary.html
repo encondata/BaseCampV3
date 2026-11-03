@@ -1,0 +1,9 @@
+{% extends "_base.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">Hi {{ name }},</p>
+<p style="margin:0 0 16px;">Here's what arrived during your quiet hours or day off:</p>
+<ul style="margin:0 0 24px;padding-left:20px;">
+{% for i in items %}<li style="margin:0 0 8px;">{{ i.category }} · <a href="{{ i.link }}" style="color:#1b2129;">{{ i.title }}</a></li>
+{% endfor %}</ul>
+<p style="margin:0;font-size:13px;color:#667085;">Change what you receive and when: <a href="{{ prefs_url }}" style="color:#667085;word-break:break-all;">{{ prefs_url }}</a></p>
+{% endblock %}

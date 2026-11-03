@@ -7,6 +7,7 @@
 
 import { readableTextColor } from './color';
 import type { UiPreferences } from './api';
+import { DEFAULT_SCHEDULE } from './notificationSchedule';
 
 export const DEFAULT_PREFERENCES: UiPreferences = {
   accent: 'amber',
@@ -18,10 +19,9 @@ export const DEFAULT_PREFERENCES: UiPreferences = {
   nav_bg: 'default',
   nav_size: 'default',
   list_view: 'expanded',
-  notif: {
-    sound: 'chime',
-    categories: { approvals: 'email', reports: 'email', wiki: 'email', learning: 'email', security: 'email' },
-  },
+  // No switch of their own (every one follows the company default) and the
+  // default schedule: nothing waits.
+  notif: { sound: 'chime', switches: {}, schedule: DEFAULT_SCHEDULE },
   list_prefs: {},
 };
 

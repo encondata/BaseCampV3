@@ -1,0 +1,8 @@
+Hi {{ name }},
+
+Here's what arrived during your quiet hours or day off:
+
+{% for i in items %}{{ i.category }} · {{ i.title }}
+{{ i.link }}
+
+{% endfor %}Change what you receive and when: {{ prefs_url }}

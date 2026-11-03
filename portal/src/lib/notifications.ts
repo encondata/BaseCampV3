@@ -1,35 +1,17 @@
 /**
- * Notification groups — pure display helpers + the channel/day constants
- * shared with the API's CHECK constraints (api/src/serversherpa/api/routes/
- * notifications.py). Kept dependency-free so both the list page and the
- * (Task 4/5) detail page can share them.
+ * Notification schedules — pure display helpers + the day constants shared
+ * with the API's schedule (api/src/serversherpa/notifications/schedule.py):
+ * days, quiet hours and time zones, as the schedule card, the summary line
+ * and Check delivery read them. Kept dependency-free so every page can share
+ * them.
  */
 
 import { naturalCompare } from './naturalSort';
 
-export const CHANNELS = ['email', 'text', 'push', 'web'] as const;
-export type Channel = typeof CHANNELS[number];
-
-export const CHANNEL_LABELS: Record<Channel, string> = {
-  email: 'Email', text: 'Text (SMS)', push: 'Push', web: 'Web',
-};
-
-/** The channels that can actually send — email only. Text, Push and Web have
- *  no sender, so lists, chips, filters and exports leave them out. They stay
- *  valid stored values: the API's channel list and every saved setting are
- *  unchanged, they are just not shown. */
-export const LIVE_CHANNELS: readonly Channel[] = ['email'];
-
-/** The live channels among `channels`, in CHANNELS order. Unknown values and
- *  repeats drop out, so an empty result means "nothing here can send". */
-export function liveChannels(channels: readonly string[]): Channel[] {
-  return CHANNELS.filter((c) => LIVE_CHANNELS.includes(c) && channels.includes(c));
-}
-
 export const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
 export type Day = typeof DAYS[number];
 
-const DAY_LABELS: Record<Day, string> = {
+export const DAY_LABELS: Record<Day, string> = {
   mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun',
 };
 
@@ -50,8 +32,10 @@ function formatClock(hms: string): string {
  *  stripping the daylight/standard middle letter (CDT/CST -> CT, EDT/EST
  *  -> ET, etc.). Zones outside that 3-letter D/S pattern (UTC, IST, ...)
  *  pass through unchanged. Falls back to the raw zone name if Intl can't
- *  resolve one (e.g. an invalid zone in a test environment). */
-function tzAbbrev(tz: string): string {
+ *  resolve one (e.g. an invalid zone in a test environment). Shared by
+ *  formatQuietHours and the schedule card's summary line, so both read a
+ *  zone the same way. */
+export function tzAbbrev(tz: string): string {
   try {
     const parts = new Intl.DateTimeFormat('en-US', {
       timeZone: tz, timeZoneName: 'short',
@@ -64,8 +48,8 @@ function tzAbbrev(tz: string): string {
 }
 
 /** '21:00:00', '07:00:00', 'America/Chicago' -> '9:00 PM – 7:00 AM CT'.
- *  Either time null (both should be — group/member quiet hours are
- *  both-or-neither) -> '—'. */
+ *  Either time null (both should be — quiet hours are both-or-neither)
+ *  -> '—'. */
 export function formatQuietHours(
   start: string | null, end: string | null, tz: string,
 ): string {
@@ -98,23 +82,8 @@ export function formatDays(days: string[]): string {
   return DAYS.filter((d) => set.has(d)).map((d) => DAY_LABELS[d]).join(', ');
 }
 
-/** Can this member/recipient actually receive the given channel, per their
- *  capability flags (email on file, phone on file, has an account). */
-export function canForChannel(
-  m: { can_email: boolean; can_text: boolean; can_push: boolean; can_web: boolean },
-  c: Channel,
-): boolean {
-  switch (c) {
-    case 'email': return m.can_email;
-    case 'text': return m.can_text;
-    case 'push': return m.can_push;
-    case 'web': return m.can_web;
-    default: return false;
-  }
-}
-
-/** Default timezone for new groups and fresh pickers — the company's
- *  reference zone (server default on notification_groups.timezone). */
+/** Default timezone for fresh pickers — the company's reference zone (what a
+ *  schedule with no zone of its own runs in). */
 export const DEFAULT_TIMEZONE = 'America/New_York';
 
 /** Curated fallback for environments without Intl.supportedValuesOf

@@ -10,13 +10,17 @@ from sqlalchemy import select
 
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
-    AuditLog, Notification, NotificationGroup, NotificationGroupMember,
+    Notification, NotificationGroup, NotificationGroupMember,
     NotificationMembershipRequest, Person, PersonRole, UserAccount,
 )
 from serversherpa.security.passwords import hash_password
 from tests.test_access_roles_api import login_admin
 
 PW = "CorrectHorse9!"
+
+# what /auth/me/notification-groups returns for a group (MyNotificationGroupOut)
+MY_GROUP_KEYS = {"id", "name", "description", "categories", "member_count", "is_member",
+                 "pending_request"}
 
 
 async def _person(db, role=None, *, first="Terry", last="Tech", email=None,
@@ -65,10 +69,9 @@ async def _login(client, person):
 
 async def test_list_shows_member_and_non_member_shape(client, db, seeded_user):
     hdrs = await login_admin(client, db, seeded_user)
-    mine = await _group(db, "On-call")
-    db.add(NotificationGroupMember(group_id=mine.id, person_id=seeded_user.id,
-                                   channels=["email"]))
-    theirs = await _group(db, "Escalations")
+    mine = await _group(db, "On-call", description="Night pager")
+    db.add(NotificationGroupMember(group_id=mine.id, person_id=seeded_user.id))
+    await _group(db, "Escalations")
     await db.commit()
 
     resp = await client.get("/auth/me/notification-groups", headers=hdrs)
@@ -79,18 +82,33 @@ async def test_list_shows_member_and_non_member_shape(client, db, seeded_user):
     by_name = {i["name"]: i for i in items}
 
     mine_out = by_name["On-call"]
+    assert mine_out["description"] == "Night pager"
     assert mine_out["is_member"] is True
     assert mine_out["member_count"] == 1
-    assert mine_out["overrides"]["channels"] == ["email"]
-    assert mine_out["effective"]["channels"] == ["email"]
     assert mine_out["pending_request"] is None
 
     theirs_out = by_name["Escalations"]
     assert theirs_out["is_member"] is False
     assert theirs_out["member_count"] == 0
-    assert theirs_out["overrides"] is None
-    assert theirs_out["effective"] is None
     assert theirs_out["pending_request"] is None
+
+
+async def test_my_group_has_no_delivery_fields(client, db, seeded_user):
+    """A group is a list of people, so what /me shows of one is who it is, how many
+    are in it, whether you are, and your request: no channels, quiet hours, days,
+    do-not-disturb, urgent bypass, overrides or effective settings."""
+    hdrs = await login_admin(client, db, seeded_user)
+    mine = await _group(db, "On-call")
+    db.add(NotificationGroupMember(group_id=mine.id, person_id=seeded_user.id))
+    await _group(db, "Escalations")
+    await db.commit()
+
+    resp = await client.get("/auth/me/notification-groups", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    items = resp.json()
+    assert {i["name"] for i in items} == {"On-call", "Escalations"}
+    for item in items:                       # a member's row and a non-member's alike
+        assert set(item) == MY_GROUP_KEYS
 
 
 async def test_list_includes_pending_request_summary(client, db, seeded_user):
@@ -140,71 +158,25 @@ async def test_worker_can_call_my_notification_groups(client, db, seeded_user):
     assert resp.status_code == 200
 
 
-# ── PATCH /auth/me/notification-groups/{group_id}/overrides ──────────
+# ── PATCH /auth/me/notification-groups/{group_id}/overrides (retired) ──
 
-async def test_patch_overrides_applies_and_returns_my_group(client, db, seeded_user):
+async def test_override_route_is_gone(client, db, seeded_user):
+    """A member could once set their own delivery for a group; groups have none
+    now, so the route is gone (a 404, not a 405: nothing else lives on its path)
+    and nothing about the membership changes."""
     hdrs = await login_admin(client, db, seeded_user)
     group = await _group(db, "On-call")
     db.add(NotificationGroupMember(group_id=group.id, person_id=seeded_user.id))
     await db.commit()
 
-    resp = await client.patch(
-        f"/auth/me/notification-groups/{group.id}/overrides", headers=hdrs,
-        json={"quiet_mode": "custom", "quiet_start": "22:00:00",
-              "quiet_end": "07:00:00"})
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["overrides"]["quiet_mode"] == "custom"
-    assert body["overrides"]["quiet_start"] == "22:00:00"
-    assert body["effective"]["quiet_start"] == "22:00:00"
-    assert body["effective"]["quiet_end"] == "07:00:00"
+    for body in ({"channels": ["email"]}, {"quiet_mode": "none"}, {}):
+        resp = await client.patch(
+            f"/auth/me/notification-groups/{group.id}/overrides", headers=hdrs, json=body)
+        assert resp.status_code == 404, resp.text
 
-    row = await db.scalar(select(AuditLog).where(
-        AuditLog.entity_type == "notification_group",
-        AuditLog.action == "member.self_override"))
-    assert row is not None and row.entity_id == str(group.id)
-
-
-async def test_patch_overrides_invalid_quiet_hours_422(client, db, seeded_user):
-    hdrs = await login_admin(client, db, seeded_user)
-    group = await _group(db, "On-call")
-    db.add(NotificationGroupMember(group_id=group.id, person_id=seeded_user.id))
-    await db.commit()
-
-    resp = await client.patch(
-        f"/auth/me/notification-groups/{group.id}/overrides", headers=hdrs,
-        json={"quiet_mode": "custom", "quiet_start": "22:00:00",
-              "quiet_end": "22:00:00"})
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "invalid_quiet_hours"
-
-
-async def test_patch_overrides_email_with_only_a_login_email(client, db, seeded_user):
-    """No profile email, but the sign-in email the sender falls back to: an
-    Email channel override is reachable, not channel_unavailable."""
-    seeded_user.email = None
-    await db.commit()
-    hdrs = await _login_alice(client)
-    group = await _group(db, "On-call")
-    db.add(NotificationGroupMember(group_id=group.id, person_id=seeded_user.id))
-    await db.commit()
-
-    resp = await client.patch(
-        f"/auth/me/notification-groups/{group.id}/overrides", headers=hdrs,
-        json={"channels": ["email"]})
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["overrides"]["channels"] == ["email"]
-
-
-async def test_patch_overrides_non_member_404(client, db, seeded_user):
-    hdrs = await login_admin(client, db, seeded_user)
-    group = await _group(db, "On-call")
-
-    resp = await client.patch(
-        f"/auth/me/notification-groups/{group.id}/overrides", headers=hdrs,
-        json={"quiet_mode": "none"})
-    assert resp.status_code == 404
-    assert resp.json()["detail"]["code"] == "not_a_member"
+    resp = await client.get("/auth/me/notification-groups", headers=hdrs)
+    [mine] = resp.json()
+    assert (mine["name"], mine["is_member"]) == ("On-call", True)
 
 
 # ── POST /auth/me/notification-groups/{group_id}/requests ────────────
@@ -499,25 +471,21 @@ async def test_worker_forbidden_on_notifications_requests(client, db, seeded_use
     assert resp.status_code == 403
 
 
-# ── categories + effective channels in my groups ─────────────────────
+# ── categories in my groups ──────────────────────────────────────────
 
-async def test_my_groups_include_categories_and_effective_channels(
-        client, db, seeded_user):
+async def test_my_groups_include_categories(client, db, seeded_user):
+    """`categories` is kept but hidden: the API still reads it, so a member's and a
+    non-member's row both carry it."""
     hdrs = await login_admin(client, db, seeded_user)
-    joined = NotificationGroup(name="Joined", categories=["reports", "wiki"],
-                               channels=["email", "web"])
-    other = NotificationGroup(name="Other", categories=["approvals"],
-                              channels=["email", "push"])
+    joined = NotificationGroup(name="Joined", categories=["reports", "wiki"])
+    other = NotificationGroup(name="Other", categories=["approvals"])
     db.add_all([joined, other])
     await db.commit()
-    db.add(NotificationGroupMember(group_id=joined.id, person_id=seeded_user.id,
-                                   channels=["web"]))
+    db.add(NotificationGroupMember(group_id=joined.id, person_id=seeded_user.id))
     await db.commit()
 
     resp = await client.get("/auth/me/notification-groups", headers=hdrs)
     assert resp.status_code == 200, resp.text
     by_name = {i["name"]: i for i in resp.json()}
     assert by_name["Joined"]["categories"] == ["reports", "wiki"]
-    assert by_name["Joined"]["effective_channels"] == ["web"]
     assert by_name["Other"]["categories"] == ["approvals"]
-    assert by_name["Other"]["effective_channels"] == ["email", "push"]

@@ -4,12 +4,17 @@
    .modal-*, .switch, .segmented, .mini-btn chrome already defined by
    initiatives.css, directory.css, profile.css and settings.css — this
    file only adds the handful of rules those stylesheets don't already
-   cover: the Delivery-defaults panel's heading+button row, labeled
-   switch rows inside a dialog's .pf-form grid, the Active-days toggle
-   pills, and NotificationModal's card size (.nm-card) and the muted
-   hint under a control (.nm-hint); the /notifications page's frame
-   (its category picker and day headings); and the System › Notifications
-   Delivery log (its person link, row trail and Check delivery result).
+   cover: the group page's Members panel (the add-member field and the
+   person, contact and row-action cells), the day toggle pills (the
+   schedule card's), the field style of a native <select> inside any
+   .pf-form (profile.css styles the inputs only), and NotificationModal's
+   card size (.nm-card) and the muted hint under a control (.nm-hint); the
+   /notifications page's frame (its category picker and day headings); the
+   System › Notifications Delivery log (its person link, row trail and Check
+   delivery result); and the switch grid and schedule card (the state line
+   under a category, the schedule rows' wrapping and picker widths, the shaded
+   summary line); and the System › Notifications › Defaults tab (its one-column
+   stack, the foot note and the Save row).
    ============================================================ */
 
 /* ── NotificationModal (components/notifications/NotificationModal.tsx) ──
@@ -19,8 +24,8 @@
 .modal-card.reports-modal-card.rgm-card.nm-card { width: min(640px, 96vw); max-width: 96vw; }
 .modal-card.reports-modal-card.rgm-card.nm-card.nm-card-wide { width: min(920px, 96vw); }
 
-/* The muted line under a segmented control (the group's own value) or
- * beside a switch list. Typography only; `cell-sub` is its semantic class. */
+/* The muted line under a result (Check delivery's prompt and the trail's
+ * notes). Typography only; `cell-sub` is its semantic class. */
 .nm-hint {
   margin: 6px 0 0;
   font-size: 12px;
@@ -28,54 +33,7 @@
   color: var(--text-mute);
 }
 
-.ngd-panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 4px;
-}
-
-/* EditSettingsModal's section headings (Channels/Quiet hours/Active
- * days/Behavior) in place of the shared .modal-section — that class
- * renders at the same mono/9.5px/uppercase/text-mute look as .pf-form's
- * own field labels just below it, so the two hierarchy levels were
- * visually identical (house rule: section headings must be visually
- * distinct from field labels — divider + spacing + weight). This adds
- * a hairline top divider, generous surrounding space, a heavier weight
- * and a touch more size/darker color than the field labels, all from
- * existing house tokens. Scoped to this file/class rather than
- * .modal-section itself, which ~15 other modals across the app share
- * unchanged. */
-.ngd-section {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--text-dark);
-  border-top: 1px solid var(--paper-line);
-  padding-top: 16px;
-  margin: 22px 0 12px;
-}
-.ngd-section:first-child {
-  border-top: 0;
-  padding-top: 0;
-  margin-top: 0;
-}
-
-/* Labeled switch row — label left, switch right, spanning the full
-   width of the 2-col .pf-form grid (never a raw floating checkbox). */
-.ngd-switch-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  font-family: var(--font-display);
-  font-size: 13.5px;
-  color: var(--text-dark);
-}
-
+/* The schedule card's day toggles (components/notifications/ScheduleCard.tsx). */
 .day-pills {
   display: flex;
   flex-wrap: wrap;
@@ -89,6 +47,10 @@
   font-weight: 600;
 }
 
+/* A native <select> in a .pf-form takes the inputs' field look (profile.css
+ * styles `.pf-form input` only). Not the notification dialogs' (they use the
+ * house ComboBox): DeviceEditModal, SiteEditModal, SurveyForm, the status
+ * rules' RuleEditorModal and others put a <select> in a .pf-form. */
 .pf-form select {
   width: 100%;
   box-sizing: border-box;
@@ -123,10 +85,6 @@
    reflow. Set via the Actions column's `width` prop on <DataTable> in
    MembersPanel.tsx, not here. */
 
-.ngd-nowrap {
-  white-space: nowrap;
-}
-
 /* Person cell: `.dir-avatar` (directory.css) supplies the avatar's
  * sizing + golden typography for the initials glyph; `.ngd-avatar` only
  * adds the absolute-positioned <img> mask this panel needs. Name/job
@@ -151,18 +109,6 @@
   gap: 2px;
 }
 
-/* Pairs an effective-value string with an "Override" marker chip — used
-   in the Quiet hours / Days cells (Channels uses .chips directly, since
-   the marker sits alongside real channel chips there). The value span
-   carries the golden `.cell-top` class for typography; this is layout
-   only. */
-.ngd-cell-marker {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
 /* Holds a single RowActionsMenu trigger, right-aligned in its 88px
    column — the gap and wrap the old two/three-button strip needed went
    with the strip. */
@@ -170,18 +116,6 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-}
-
-/* OverrideEditorModal's body: one .pf-form block per setting (label,
-   segmented control, the group's value as a hint, then the custom
-   editor when Custom), with no section headings — a hairline and some
-   air between the blocks is the whole rhythm. Scoped to .ov-body (the
-   <form> inside the dialog's body) so no other dialog's .pf-form
-   pairing is affected. */
-.ov-body > .pf-form + .pf-form {
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid var(--paper-line);
 }
 
 /* ── /notifications page (pages/NotificationsInbox.tsx) ───────────────
@@ -259,38 +193,131 @@
 .dlog-trail-links { display: flex; flex-wrap: wrap; gap: 10px; }
 .dlog-trail a.mini-btn { text-decoration: none; }
 
-/* Check delivery: under the pickers, the result card, then the groups. While
- * a new pick is being checked the last answer stays, dimmed. */
+/* Check delivery: under the pickers, the result card. While a new pick is
+ * being checked the last answer stays, dimmed. */
 .dlog-check { margin-top: 20px; }
 .dlog-check > .nm-hint { margin: 0; }
-.dlog-check-note { margin: 0 0 10px; }
 .dlog-check-result { transition: opacity 0.15s; }
 .dlog-check-result[aria-busy='true'] { opacity: 0.55; }
 
-/* The list card and the two tables scroll sideways only below their
+/* The list card and the trail's table scroll sideways only below their
  * floors; then they show the slim themed bar, never the browser's classic
  * one, and the card's stops short of its rounded corners. */
-:is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll)::-webkit-scrollbar {
+:is(.dlog-list, .dlog-trail .data-table-scroll)::-webkit-scrollbar {
   height: 12px;
 }
-:is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll)::-webkit-scrollbar-track {
+:is(.dlog-list, .dlog-trail .data-table-scroll)::-webkit-scrollbar-track {
   background: transparent;
   margin-inline: 16px;
 }
-:is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll)::-webkit-scrollbar-thumb {
+:is(.dlog-list, .dlog-trail .data-table-scroll)::-webkit-scrollbar-thumb {
   background-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent);
   border: 3px solid transparent;
   background-clip: padding-box;
   border-radius: 999px;
 }
-:is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll)::-webkit-scrollbar-thumb:hover {
+:is(.dlog-list, .dlog-trail .data-table-scroll)::-webkit-scrollbar-thumb:hover {
   background-color: color-mix(in srgb, var(--muted, #51606f) 65%, transparent);
 }
 /* Firefox has no ::-webkit-scrollbar; give it the slim, trackless bar. Only
    there: in Chromium, scrollbar-width/color would override the rules above. */
 @supports not selector(::-webkit-scrollbar) {
-  :is(.dlog-list, .dlog-trail .data-table-scroll, .dlog-check-groups .data-table-scroll) {
+  :is(.dlog-list, .dlog-trail .data-table-scroll) {
     scrollbar-width: thin;
     scrollbar-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent) transparent;
   }
+}
+
+/* ── Switch grid and schedule card (components/notifications/SwitchGrid.tsx,
+ *    ScheduleCard.tsx) ────────────────────────────────────────────────────
+ * The grid is a DataTable and the card a .set-section, so their type comes from
+ * directory.css and settings.css (the day pills above are the card's). This
+ * adds only what those don't cover: the state line under a category, how the
+ * schedule rows wrap and size their pickers, and the shaded summary line. */
+
+/* The grid (and the Defaults tab's critical list, which is a table of switches
+ * too, and a group page's Members table) scrolls sideways only in a card
+ * narrower than its floor (the grid's is about 315px: a 360px-wide phone).
+ * Then it shows the slim themed bar, never the browser's classic one — the
+ * Delivery log's list and trail, above, are the model. */
+:is(.swgrid, .nd-crit, .ngd-members) .data-table-scroll::-webkit-scrollbar { height: 12px; }
+:is(.swgrid, .nd-crit, .ngd-members) .data-table-scroll::-webkit-scrollbar-track { background: transparent; margin-inline: 16px; }
+:is(.swgrid, .nd-crit, .ngd-members) .data-table-scroll::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+:is(.swgrid, .nd-crit, .ngd-members) .data-table-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--muted, #51606f) 65%, transparent);
+}
+/* Firefox has no ::-webkit-scrollbar; give it the slim, trackless bar. Only
+   there: in Chromium, scrollbar-width/color would override the rules above. */
+@supports not selector(::-webkit-scrollbar) {
+  :is(.swgrid, .nd-crit, .ngd-members) .data-table-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent) transparent;
+  }
+}
+
+/* "Company default" / "Your choice · Use company default" under a category. */
+.swgrid-state { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 6px; }
+.swgrid-sep { color: var(--text-mute); }
+/* The way back reads as a link, not a button. */
+.swgrid-reset {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  color: var(--c-blue);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.swgrid-reset:disabled { opacity: 0.45; cursor: default; }
+
+/* A schedule row that doesn't fit drops its control under its label. */
+.sched-card .set-row { flex-wrap: wrap; }
+.sched-zone { flex: 0 1 280px; min-width: 0; }
+.sched-quiet { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; }
+.sched-time { flex: 0 1 132px; min-width: 112px; }
+.sched-to { font-size: 12.5px; color: var(--text-mute); }
+
+/* The shaded line under the controls: when the summary email goes out, or
+ * what still has to be picked. The last row's own bottom border is its divider. */
+.sched-summary {
+  margin: 0;
+  padding: 14px 20px;
+  background: rgba(var(--accent-rgb), 0.07);
+  font-size: 13px;
+  color: var(--text-dark);
+}
+.sched-summary.warn { background: var(--c-red-bg); color: var(--c-red); }
+
+/* ── System › Notifications › Defaults
+ *    (components/notifications/NotificationDefaultsTab.tsx) ────────────────
+ * Two .set-section cards. They stack in one column (the settings stack would
+ * put them side by side, too narrow for the critical list). Each card ends in
+ * its Save row; the critical list has its foot note above that. The dividers
+ * above the note and the Save row are the borders of the table wrapper (the
+ * `.set-section .data-table-scroll` rule in settings.css) and of the note. */
+.set-stack.nd-one { grid-template-columns: minmax(0, 1fr); }
+.nd-note {
+  margin: 0;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--paper-line);
+  font-size: 12px;
+  font-weight: 300;
+  color: var(--text-mute);
+}
+/* The error sits beside Save, as in a dialog's footer. */
+.nd-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; padding: 12px 20px; }
+/* The critical list needs about 390px (480px at the largest list size); the
+ * category chip is the wide part. In a card narrower than that (a viewport under
+ * 540px) the Category column steps aside, so the switches stay in view instead
+ * of scrolling off to the right. Its <col> goes too: a column with no cells would
+ * still claim the Critical column's 104px. */
+@media (max-width: 540px) {
+  .nd-crit :is(col, th, td):nth-child(2) { display: none; }
 }

@@ -30,7 +30,7 @@ vi.mock('../auth/AuthContext', () => ({
       accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default',
       motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default',
       list_view: 'expanded',
-      notif: { sound: 'chime', categories: {} }, list_prefs: {},
+      notif: { sound: 'chime', switches: {}, schedule: { timezone: null, days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'], quiet_start: null, quiet_end: null } }, list_prefs: {},
     },
     updatePreferences: vi.fn(async () => true),
     can: auth.can,

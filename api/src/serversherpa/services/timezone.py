@@ -2,12 +2,11 @@
 local time (reports, the label-generation worker) — plus `stored_day`,
 the date-only reader for a TIMESTAMP(timezone=True) column that actually
 holds a plain calendar day. No system-wide timezone config exists yet
-(grepped serversherpa/notifications/ and
-serversherpa/system/config_store.py — neither defines a DEFAULT_TIMEZONE
-constant or a system_config section key for it). This mirrors
-NotificationGroup.timezone's own server_default (db/models.py) — the
-closest thing V3 has today to a house-default time zone. Swap this for a
-real system_config read if one is added later.
+(serversherpa/system/config_store.py has no section key for one), so
+DEFAULT_TIMEZONE, America/New_York, is the company reference zone: it is
+also the zone a notification schedule is read in when it names none, or
+names one that no longer loads (notifications/schedule.py). Swap this for
+a real system_config read if one is added later.
 
 Originally lived in reports/move_scan_history (the first caller); moved
 here so a non-report caller (labels/generate/values.py) doesn't have to

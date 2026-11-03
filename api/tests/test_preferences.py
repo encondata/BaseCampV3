@@ -1,6 +1,16 @@
 """UI preferences: defaults, persistence across logins, validation."""
 
+import logging
+
+import pytest
+from pydantic import ValidationError
+from sqlalchemy import func, select
+
+from serversherpa.db.models import AuditLog, UserAccount
+
 LOGIN = {"email": "alice@test.example.com", "password": "CorrectHorse9!"}
+
+ALL_DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 PREFS = {
     "accent": "aqua",
@@ -8,8 +18,13 @@ PREFS = {
     "density": "compact",
     "list_size": "default",
     "motion": False,
-    "notif": {"categories": {"approvals": "email", "reports": "inbox", "wiki": "off",
-                             "learning": "email", "security": "email"}, "sound": "ping"},
+    "notif": {
+        "sound": "ping",
+        # only the person's own values: an absent key follows the company default
+        "switches": {"reports": {"email": False}, "wiki": {"inbox": False, "email": False}},
+        "schedule": {"timezone": "America/Chicago", "days": ["mon", "tue", "wed", "thu", "fri"],
+                     "quiet_start": "21:00", "quiet_end": "06:00"},
+    },
     "list_prefs": {
         "sites": {
             "visible": ["name", "status", "city"],
@@ -37,9 +52,9 @@ async def test_login_returns_default_preferences(client, seeded_user):
         "accent": "amber", "theme": "light", "density": "comfortable",
         "list_size": "default",
         "motion": True,
-        "notif": {"categories": {"approvals": "email", "reports": "email",
-                                 "wiki": "email", "learning": "email", "security": "email"},
-                 "sound": "chime"},
+        "notif": {"sound": "chime", "switches": {},
+                  "schedule": {"timezone": None, "days": ALL_DAYS,
+                               "quiet_start": None, "quiet_end": None}},
         "list_prefs": {},
         "nav_mode": "expanded",
         "nav_bg": "default",
@@ -181,43 +196,297 @@ async def test_invalid_notification_sound_rejected(client, seeded_user):
     assert resp.status_code == 422
 
 
-async def test_invalid_category_choice_rejected(client, seeded_user):
+def _with_notif(**notif):
+    """PREFS with some of its notif values replaced."""
+    return {**PREFS, "notif": {**PREFS["notif"], **notif}}
+
+
+async def _put(client, **notif):
     body = await _login(client)
-    hdrs = {"Authorization": f"Bearer {body['access_token']}"}
-    notif = {**body["preferences"]["notif"], "categories": {"wiki": "sms"}}
-    resp = await client.put("/auth/me/preferences", headers=hdrs,
-                            json={**body["preferences"], "notif": notif})
+    headers = {"Authorization": f"Bearer {body['access_token']}"}
+    return await client.put("/auth/me/preferences", json=_with_notif(**notif), headers=headers)
+
+
+@pytest.mark.parametrize("schedule,code", [
+    ({"days": []}, "invalid_days"),
+    ({"days": ["mon", "funday"]}, "invalid_days"),
+    ({"days": ["mon", "mon"]}, "invalid_days"),
+    ({"quiet_start": "21:00", "quiet_end": "21:00"}, "invalid_quiet_hours"),
+    ({"quiet_start": "21:00", "quiet_end": "21:00:00"}, "invalid_quiet_hours"),
+    ({"quiet_start": "21:00", "quiet_end": None}, "invalid_quiet_hours"),
+    ({"quiet_start": None, "quiet_end": "06:00"}, "invalid_quiet_hours"),
+    ({"quiet_start": "25:00", "quiet_end": "06:00"}, "invalid_quiet_hours"),
+    ({"quiet_start": "21:00", "quiet_end": "9pm"}, "invalid_quiet_hours"),
+])
+async def test_invalid_schedule_is_rejected_with_its_code(client, seeded_user, schedule, code):
+    resp = await _put(client, schedule={**PREFS["notif"]["schedule"], **schedule})
     assert resp.status_code == 422
+    assert any(code in error["msg"] for error in resp.json()["detail"]), resp.text
 
 
-async def test_old_notif_blob_still_parses_and_defaults_categories():
+@pytest.mark.parametrize("zone", [
+    "Not/AZone", "", "../etc/passwd", "America",
+    # ZoneInfo recurses through this until RecursionError: still a 422, not a 500
+    pytest.param("A/" * 300 + "B", id="deeply-nested"),
+])
+async def test_an_unloadable_zone_is_refused_with_its_code_and_nothing_is_saved(
+        client, db, seeded_user, zone):
+    """The zone is checked where preferences are saved, not by the model (which
+    must keep reading whatever is stored): 422 {"code": "invalid_timezone"}."""
+    resp = await _put(client, schedule={**PREFS["notif"]["schedule"], "timezone": zone})
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == {"code": "invalid_timezone"}
+    # nothing was saved: neither the preferences nor an audit row
+    stored = await db.scalar(select(UserAccount.ui_prefs).where(
+        UserAccount.person_id == seeded_user.id))
+    assert stored == {}
+    assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+        AuditLog.action == "preferences.update")) == 0
+
+
+@pytest.mark.parametrize("schedule", [
+    {"timezone": "Not/AZone"},
+    {"days": []},
+    {"quiet_start": "21:00"},
+    {"quiet_start": "09:00", "quiet_end": "09:00"},
+])
+async def test_a_partial_schedule_is_checked_against_the_defaults(client, seeded_user, schedule):
+    """A schedule that names only some keys: the others take their defaults,
+    so the one that was given is the one that fails."""
+    assert (await _put(client, schedule=schedule)).status_code == 422
+
+
+async def test_schedule_clock_times_round_trip_normalized(client, seeded_user):
+    schedule = {"timezone": "America/Chicago", "days": ["fri", "mon", "wed"],
+                "quiet_start": "21:00:00", "quiet_end": "06:00"}
+    resp = await _put(client, schedule=schedule)
+    assert resp.status_code == 200, resp.text
+    expected = {"timezone": "America/Chicago", "days": ["mon", "wed", "fri"],
+                "quiet_start": "21:00", "quiet_end": "06:00"}
+    assert resp.json()["notif"]["schedule"] == expected
+    # what was stored is the normalized form, not the request's
+    assert (await _login(client))["preferences"]["notif"]["schedule"] == expected
+
+
+async def test_an_overnight_window_and_an_unset_zone_are_accepted(client, seeded_user):
+    schedule = {"timezone": None, "days": ALL_DAYS, "quiet_start": "21:00", "quiet_end": "06:00"}
+    resp = await _put(client, schedule=schedule)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["notif"]["schedule"] == schedule
+
+
+async def test_stored_bad_zone_still_reads(client, db, seeded_user, caplog, monkeypatch):
+    """A zone that stops loading after it was saved (a tz database that lost it)
+    must never break reading preferences: sign-in and /auth/me still answer with
+    what is stored, and the schedule falls back to the reference zone when it is
+    used (spec section 3)."""
+    from serversherpa.notifications import schedule as schedule_module
+    from serversherpa.notifications.email import load_contact
+    from serversherpa.notifications.schedule import schedule_from_prefs
+
+    monkeypatch.setattr(schedule_module, "_warned_zones", set())   # nothing warned yet
+    headers = {"Authorization": f"Bearer {(await _login(client))['access_token']}"}
+    stored = {"timezone": "Not/AZone", "days": ["mon"], "quiet_start": "21:00",
+              "quiet_end": "06:00"}
+    account = await db.get(UserAccount, seeded_user.id)
+    account.ui_prefs = {"notif": {"sound": "ping", "schedule": stored}}   # the PUT would refuse it
+    await db.commit()
+
+    me = await client.get("/auth/me", headers=headers)
+    assert me.status_code == 200, me.text
+    assert me.json()["preferences"]["notif"] == {
+        "sound": "ping", "switches": {}, "schedule": stored}
+    assert (await _login(client))["preferences"]["notif"]["schedule"] == stored
+
+    # the notification side reads it too, and the schedule falls back when it is used
+    contact = await load_contact(db, seeded_user.id)
+    assert contact.choice_prefs.notif.sound == "ping"          # not the defaults' "chime"
+    assert contact.choice_prefs.notif.schedule.timezone == "Not/AZone"
+    with caplog.at_level(logging.WARNING, logger="serversherpa.notifications.schedule"):
+        schedule = schedule_from_prefs(contact.choice_prefs.notif.schedule.model_dump())
+    assert schedule.zone.key == "America/New_York"
+    assert "Not/AZone" in caplog.text
+
+
+async def _store_prefs(db, seeded_user, prefs):
+    """Write ui_prefs straight to the account, as the PUT would now refuse them."""
+    account = await db.get(UserAccount, seeded_user.id)
+    account.ui_prefs = prefs
+    await db.commit()
+
+
+async def _stored_prefs(db, seeded_user):
+    return await db.scalar(select(UserAccount.ui_prefs).where(
+        UserAccount.person_id == seeded_user.id))
+
+
+async def test_a_stored_zone_that_stopped_loading_does_not_block_other_changes(
+        client, db, seeded_user):
+    """Only a changed zone is checked. A stored zone that has since stopped
+    loading comes back unchanged with every save, and an unrelated change
+    (here the theme) still saves."""
+    stored = _with_notif(schedule={**PREFS["notif"]["schedule"], "timezone": "Not/AZone"})
+    await _store_prefs(db, seeded_user, stored)
+
+    body = await _login(client)
+    headers = {"Authorization": f"Bearer {body['access_token']}"}
+    resp = await client.put("/auth/me/preferences", json={**stored, "theme": "light"},
+                            headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["theme"] == "light"
+    assert resp.json()["notif"]["schedule"]["timezone"] == "Not/AZone"
+    assert await _stored_prefs(db, seeded_user) == {**stored, "theme": "light"}
+
+
+@pytest.mark.parametrize("stored_zone", ["America/Chicago", "Not/AZone"])
+async def test_changing_to_a_zone_that_does_not_load_is_refused(
+        client, db, seeded_user, stored_zone):
+    """A zone that does not load is let through only unchanged: changing to one,
+    from a good zone or from another that stopped loading, answers 422 and
+    saves nothing."""
+    schedule = {**PREFS["notif"]["schedule"], "timezone": stored_zone}
+    stored = _with_notif(schedule=schedule)
+    await _store_prefs(db, seeded_user, stored)
+
+    body = await _login(client)
+    headers = {"Authorization": f"Bearer {body['access_token']}"}
+    changed = _with_notif(schedule={**schedule, "timezone": "Also/NotAZone"})
+    resp = await client.put("/auth/me/preferences", json={**changed, "theme": "light"},
+                            headers=headers)
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == {"code": "invalid_timezone"}
+    assert await _stored_prefs(db, seeded_user) == stored
+
+
+async def test_switches_drop_security_unknown_and_empty_entries(client, seeded_user):
+    switches = {"wiki": {"email": False}, "security": {"inbox": False, "email": False},
+                "nope": {"inbox": False}, "reports": {}, "learning": {"inbox": None, "email": None}}
+    resp = await _put(client, switches=switches)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["notif"]["switches"] == {"wiki": {"email": False}}
+    assert (await _login(client))["preferences"]["notif"]["switches"] == {"wiki": {"email": False}}
+
+
+async def test_switches_hold_only_the_values_a_person_set(client, seeded_user):
+    """An unset value is absent, not null: absent means "follows the default"."""
+    switches = {"approvals": {"inbox": False}, "learning": {"inbox": True, "email": None}}
+    resp = await _put(client, switches=switches)
+    assert resp.json()["notif"]["switches"] == {
+        "approvals": {"inbox": False}, "learning": {"inbox": True}}
+
+
+async def test_an_older_client_that_still_sends_categories_is_ignored_not_refused(
+        client, seeded_user):
+    resp = await _put(client, categories={"wiki": "sms"})     # not even a valid old choice
+    assert resp.status_code == 200, resp.text
+    assert "categories" not in resp.json()["notif"]
+
+
+def test_legacy_notif_blob_parses_without_its_old_keys():
     from serversherpa.api.schemas import UiPreferences
 
-    old = {"notif": {"critical": False, "email": False, "maint": True,
-                     "digest": True, "sound": "pop"}}
+    old = {"notif": {"categories": {"reports": "inbox"}, "critical": True, "digest": "daily",
+                     "email": False, "maint": True, "sound": "pop"}}
     prefs = UiPreferences.model_validate(old)
     assert prefs.notif.sound == "pop"
-    assert prefs.notif.categories == {
-        "approvals": "email", "reports": "email", "wiki": "email", "learning": "email",
-        "security": "email"}
-    assert "critical" not in prefs.notif.model_dump()
+    assert prefs.notif.switches == {}
+    dumped = prefs.notif.model_dump()
+    assert set(dumped) == {"sound", "switches", "schedule"}
 
 
-async def test_partial_categories_fill_missing_and_drop_unknown():
+def test_switches_validator_keeps_only_configurable_categories_with_a_value():
     from serversherpa.api.schemas import NotifPrefs
 
-    prefs = NotifPrefs.model_validate({"categories": {"wiki": "off", "bogus": "inbox"}})
-    assert prefs.categories == {
-        "approvals": "email", "reports": "email", "wiki": "off", "learning": "email",
-        "security": "email"}
+    prefs = NotifPrefs.model_validate({"switches": {
+        "wiki": {"email": False}, "bogus": {"email": False}, "security": {"email": False},
+        "reports": {"inbox": None, "email": None}, "approvals": {}}})
+    assert list(prefs.switches) == ["wiki"]
+    assert prefs.switches["wiki"].model_dump() == {"email": False}
 
 
-async def test_default_notif_categories_are_all_email():
+def test_switches_come_back_in_registry_order():
+    from serversherpa.api.schemas import NotifPrefs
+
+    prefs = NotifPrefs.model_validate({"switches": {
+        "learning": {"email": False}, "wiki": {"email": False}, "approvals": {"email": False}}})
+    assert list(prefs.switches) == ["approvals", "wiki", "learning"]
+
+
+def test_default_notif_has_no_own_switches_and_an_open_schedule():
     from serversherpa.api.schemas import UiPreferences
 
-    assert UiPreferences().notif.categories == {
-        "approvals": "email", "reports": "email", "wiki": "email", "learning": "email",
-        "security": "email"}
+    notif = UiPreferences().notif
+    assert notif.switches == {}
+    assert notif.schedule.model_dump() == {
+        "timezone": None, "days": ALL_DAYS, "quiet_start": None, "quiet_end": None}
+
+
+def test_a_default_schedule_is_not_shared_between_instances():
+    from serversherpa.api.schemas import NotifPrefs, NotifSchedule, SwitchOverride, UiPreferences
+
+    a, b = NotifPrefs(), NotifPrefs()
+    a.schedule.days.remove("sun")
+    a.switches["wiki"] = SwitchOverride(email=False)
+    assert b.schedule.days == ALL_DAYS and b.switches == {}
+    assert NotifSchedule().days == ALL_DAYS
+
+    # UiPreferences' own default notif is one instance too: it must be copied per use
+    first, second = UiPreferences(), UiPreferences()
+    first.notif.schedule.days.remove("sun")
+    first.notif.switches["wiki"] = SwitchOverride(email=False)
+    assert second.notif.schedule.days == ALL_DAYS and second.notif.switches == {}
+    assert UiPreferences().notif.schedule.days == ALL_DAYS
+
+
+@pytest.mark.parametrize("days,expected", [
+    (["sun", "mon"], ["mon", "sun"]),
+    (["fri", "tue", "mon"], ["mon", "tue", "fri"]),
+    (ALL_DAYS, ALL_DAYS),
+])
+def test_schedule_days_come_back_in_week_order(days, expected):
+    from serversherpa.api.schemas import NotifSchedule
+
+    assert NotifSchedule(days=days).days == expected
+
+
+@pytest.mark.parametrize("zone", ["Not/AZone", "", "../etc/passwd", "America"])
+def test_the_model_reads_any_zone_name(zone):
+    """The model never tries to load the zone: whatever is stored must parse, so
+    a zone that stops loading cannot break reading preferences. Saving refuses
+    it instead (the PUT route)."""
+    from serversherpa.api.schemas import NotifSchedule, UiPreferences
+
+    assert NotifSchedule(timezone=zone).timezone == zone
+    prefs = UiPreferences.model_validate({"notif": {"schedule": {"timezone": zone}}})
+    assert prefs.notif.schedule.timezone == zone
+
+
+@pytest.mark.parametrize("kwargs,code", [
+    ({"days": []}, "invalid_days"),
+    ({"days": ["Mon"]}, "invalid_days"),
+    ({"days": ["mon", "mon"]}, "invalid_days"),
+    ({"quiet_start": "21:00"}, "invalid_quiet_hours"),
+    ({"quiet_end": "06:00"}, "invalid_quiet_hours"),
+    ({"quiet_start": "06:00", "quiet_end": "06:00"}, "invalid_quiet_hours"),
+    ({"quiet_start": "24:00", "quiet_end": "06:00"}, "invalid_quiet_hours"),
+    ({"quiet_start": "21:60", "quiet_end": "06:00"}, "invalid_quiet_hours"),
+    ({"quiet_start": "9:00", "quiet_end": "06:00"}, "invalid_quiet_hours"),
+    ({"quiet_start": "21:00:61", "quiet_end": "06:00"}, "invalid_quiet_hours"),
+    ({"quiet_start": "", "quiet_end": "06:00"}, "invalid_quiet_hours"),
+])
+def test_schedule_rules_use_their_code_as_the_message(kwargs, code):
+    from serversherpa.api.schemas import NotifSchedule
+
+    with pytest.raises(ValidationError) as caught:
+        NotifSchedule(**kwargs)
+    assert [error["msg"] for error in caught.value.errors()] == [f"Value error, {code}"]
+
+
+def test_schedule_accepts_seconds_and_drops_them():
+    from serversherpa.api.schemas import NotifSchedule
+
+    s = NotifSchedule(quiet_start="21:00:00", quiet_end="06:30:00")
+    assert (s.quiet_start, s.quiet_end) == ("21:00", "06:30")
 
 
 async def test_list_view_rejects_unknown_value(client, seeded_user):

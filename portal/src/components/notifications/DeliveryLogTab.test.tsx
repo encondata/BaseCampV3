@@ -51,6 +51,7 @@ const SENT = entry(40, {
   event: 'email_sent', channel: 'email', detail: { attempt: 1 }, process: 'notification-worker',
   outbox_id: 'o1', to_address: 'ada@example.com', outbox_status: 'sent',
 });
+/** A queued email from before Phase 1: held by a group's schedule (deferred, with why and which groups). */
 const HELD = entry(38, {
   event: 'email_queued', channel: 'email', kind: 'wiki_update', kind_label: 'Page updated',
   category: 'wiki', notification_id: 'n3', notification_title: 'Rack plan was updated',
@@ -80,6 +81,27 @@ const FAILED = entry(10, {
   detail: { attempts: 5, error: 'SMTPRecipientsRefused', smtp_code: 550 },
 });
 const ROWS = [SENT, HELD, SUPPRESSED, TEMPLATE, FAILED];
+
+/** Phase 1: an email held for the person's summary, the same notification
+ *  once it went out in the summary, and the summary email itself. */
+const HELD_FOR_SUMMARY = entry(44, {
+  event: 'email_held', channel: 'email', reason: 'quiet_hours', kind: 'report_ready',
+  notification_id: 'n5', notification_title: 'NAP12 move report is ready',
+  detail: { summary_at: MONDAY_7AM },
+});
+const IN_SUMMARY = entry(43, {
+  event: 'email_summarized', channel: 'email', kind: 'wiki_comment', kind_label: 'New comment',
+  category: 'wiki', notification_id: 'n6', notification_title: 'Comment on the rack plan',
+  outbox_id: 'o5', to_address: 'ada@example.com', outbox_status: 'sent', process: 'notification-worker',
+});
+const SUMMARY_EMAIL = entry(42, {
+  event: 'email_queued', channel: 'email', kind: 'notification_summary',
+  kind_label: 'notification_summary', category: null, notification_id: null,
+  notification_title: null, notification_link: null, outbox_id: 'o5',
+  to_address: 'ada@example.com', outbox_status: 'sent', process: 'notification-worker',
+  detail: { template: 'notification_summary', send_at: minutesAgo(5), deferred: false, summary: true, count: 3 },
+});
+const NEW_ROWS = [HELD_FOR_SUMMARY, IN_SUMMARY, SUMMARY_EMAIL];
 
 /** n1's whole trail, newest first as the API sends it. */
 const TRAIL_N1 = [
@@ -139,6 +161,51 @@ it('renders a row per decision with its outcome chip', async () => {
   expect(chipOf(rowOf('Bo Diaz'), 'Not in inbox').className).toContain('c-slate');
   expect(chipOf(rowOf('learning_reminder'), 'Queued').className).toContain('c-blue');
   expect(chipOf(rowOf('NAP11 labels are ready'), 'Failed').className).toContain('c-red');
+});
+
+it('an email held for the summary is amber, one in a summary blue, and a row from before Phase 1 still reads Held', async () => {
+  api.getDeliveryLogPage.mockResolvedValue(page([...NEW_ROWS, HELD]));
+  renderTab();
+  await screen.findByText('NAP12 move report is ready');
+
+  const chipOf = (row: HTMLElement, label: string) => within(row).getByText(label, { selector: '.chip' });
+  const held = rowOf('NAP12 move report is ready');
+  expect(chipOf(held, 'Held for summary').className).toContain('c-amber');
+  expect(within(held).getByText('Until Mon 7:00 AM · Quiet hours')).toBeTruthy();
+  expect(within(held).getByText('Email', { selector: '.chip' })).toBeTruthy();
+
+  const summarized = rowOf('Comment on the rack plan');
+  expect(chipOf(summarized, 'In summary').className).toContain('c-blue');
+  expect(within(summarized).getByText('New comment')).toBeTruthy();       // the kind under the title
+  expect(within(summarized).getByText('Wiki', { selector: '.chip' })).toBeTruthy();
+
+  // the summary email itself is template mail: queued, with how many it holds
+  const mail = rowOf('notification_summary');
+  expect(chipOf(mail, 'Queued').className).toContain('c-blue');
+  expect(within(mail).getByText('Summary email · 3 notifications')).toBeTruthy();
+
+  // a queued row from before Phase 1 that carries deferred keeps its words
+  const old = rowOf('Rack plan was updated');
+  expect(chipOf(old, 'Held').className).toContain('c-amber');
+  expect(within(old).getByText('Held until Mon 7:00 AM · Quiet hours · Night Desk')).toBeTruthy();
+});
+
+it('a queued email says why it did not wait, in the Detail column', async () => {
+  const queued = (id: number, title: string, extra: Record<string, unknown>) => entry(id, {
+    event: 'email_queued', channel: 'email', notification_id: `n${id}`, notification_title: title,
+    outbox_id: `o${id}`,
+    detail: { template: 'notification', send_at: minutesAgo(5), deferred: false, via: 'contact', ...extra },
+  });
+  api.getDeliveryLogPage.mockResolvedValue(page([
+    queued(60, 'A critical one', { critical: true }),
+    queued(61, 'The owner copy', { owner_copy: true, via: 'login' }),
+    queued(62, 'Sent after the summary', { after_summary: true }),
+  ]));
+  renderTab();
+  await screen.findByText('A critical one');
+  expect(within(rowOf('A critical one')).getByText('Due now · critical')).toBeTruthy();
+  expect(within(rowOf('The owner copy')).getByText("Due now · owner's copy")).toBeTruthy();
+  expect(within(rowOf('Sent after the summary')).getByText('Due now · after the summary')).toBeTruthy();
 });
 
 it('fills When, Person, Notification, Category, Channel and Detail', async () => {
@@ -228,7 +295,8 @@ it('the Outcome filter sends the chosen events', async () => {
     return options;
   };
   expect(optionsAfter('Outcome')).toEqual([
-    'In inbox', 'Not in inbox', 'Queued', 'Not emailed', 'Sent', 'Dropped', 'Retrying', 'Failed',
+    'In inbox', 'Not in inbox', 'Queued', 'Not emailed', 'Held for summary', 'In summary',
+    'Sent', 'Dropped', 'Retrying', 'Failed',
   ]);
   expect(optionsAfter('Channel')).toEqual(['Inbox', 'Email']);
   expect(optionsAfter('Category')).toEqual([
@@ -238,6 +306,11 @@ it('the Outcome filter sends the chosen events', async () => {
   await user.click(within(menu).getByRole('button', { name: 'Failed' }));
   await user.click(within(menu).getByRole('button', { name: 'Sent' }));
   await waitFor(() => expect(lastQuery().events).toEqual(['email_sent', 'email_failed']));
+
+  await user.click(within(menu).getByRole('button', { name: 'In summary' }));
+  await user.click(within(menu).getByRole('button', { name: 'Held for summary' }));
+  await waitFor(() => expect(lastQuery().events)
+    .toEqual(['email_held', 'email_summarized', 'email_sent', 'email_failed']));
 });
 
 it('Channel and Category each send one value; picking another replaces it', async () => {
@@ -302,6 +375,95 @@ it('expanding a row requests its trail by notificationId and shows it oldest fir
     .toBe('/people/users/p1');
   expect(within(row).getByRole('link', { name: 'Open notification link' }).getAttribute('href'))
     .toBe('/reports?tab=history&run=r1');
+});
+
+/** n5's whole trail, newest first as the API sends it: inbox, held, then in a summary. */
+const TRAIL_HELD = [
+  entry(52, {
+    at: minutesAgo(5), event: 'email_summarized', channel: 'email', kind: 'report_ready',
+    notification_id: 'n5', notification_title: 'NAP12 move report is ready', outbox_id: 'o5',
+    to_address: 'ada@example.com', outbox_status: 'sent', process: 'notification-worker',
+  }),
+  entry(51, {
+    at: minutesAgo(30), event: 'email_held', channel: 'email', reason: 'quiet_hours',
+    notification_id: 'n5', notification_title: 'NAP12 move report is ready',
+    detail: { summary_at: MONDAY_7AM },
+  }),
+  entry(50, { at: minutesAgo(31), notification_id: 'n5', notification_title: 'NAP12 move report is ready' }),
+];
+
+it('a held notification\'s trail reads inbox, held for the summary, then in the summary', async () => {
+  const user = userEvent.setup();
+  api.getDeliveryLogPage.mockImplementation(async (q: { notificationId?: string }) =>
+    (q.notificationId === 'n5' ? page(TRAIL_HELD) : page([HELD_FOR_SUMMARY])));
+  renderTab();
+  await user.click(await screen.findByText('NAP12 move report is ready'));
+
+  const trail = await screen.findByRole('table', { name: 'Delivery trail' });
+  const rows = within(trail).getAllByRole('row').slice(1);
+  expect(rows.map((r) => r.children[1].textContent)).toEqual(['In inbox', 'Held for summary', 'In summary']);
+  expect(rows.map((r) => r.children[2].textContent)).toEqual(['—', 'Until Mon 7:00 AM · Quiet hours', '—']);
+  expect(within(rows[1]).getByText('Held for summary').className).toContain('c-amber');
+  expect(within(rows[2]).getByText('In summary').className).toContain('c-blue');
+  // the address is the summary email's, from its outbox row
+  expect(within(rowOf('NAP12 move report is ready')).getByText(/^Email to/).textContent)
+    .toBe('Email to ada@example.com');
+});
+
+it('a held notification that is dropped reads inbox, held for the summary, then dropped with the reason', async () => {
+  const user = userEvent.setup();
+  api.getDeliveryLogPage.mockImplementation(async (q: { notificationId?: string }) => (q.notificationId === 'n5'
+    ? page([
+      entry(53, {
+        at: minutesAgo(5), event: 'email_skipped', channel: 'email', reason: 'read',
+        notification_id: 'n5', notification_title: 'NAP12 move report is ready',
+      }),
+      TRAIL_HELD[1], TRAIL_HELD[2],
+    ])
+    : page([HELD_FOR_SUMMARY])));
+  renderTab();
+  await user.click(await screen.findByText('NAP12 move report is ready'));
+
+  const trail = await screen.findByRole('table', { name: 'Delivery trail' });
+  const rows = within(trail).getAllByRole('row').slice(1);
+  expect(rows.map((r) => r.children[1].textContent)).toEqual(['In inbox', 'Held for summary', 'Dropped']);
+  expect(rows[2].children[2].textContent).toBe('Already read in the portal');
+  expect(within(rowOf('NAP12 move report is ready')).queryByText(/^Email to/)).toBeNull();
+});
+
+it('the summary email\'s own trail runs queued, in summary for each item, then sent; each item is named', async () => {
+  const user = userEvent.setup();
+  const sentSummary = entry(55, {
+    at: minutesAgo(4), event: 'email_sent', channel: 'email', kind: 'notification_summary',
+    kind_label: 'notification_summary', category: null, notification_id: null,
+    notification_title: null, notification_link: null, outbox_id: 'o5',
+    to_address: 'ada@example.com', outbox_status: 'sent', process: 'notification-worker',
+    detail: { attempt: 1 },
+  });
+  const item = (id: number, notificationId: string, title: string, secondsAgo: number) => entry(id, {
+    at: new Date(Date.now() - secondsAgo * 1000).toISOString(),
+    event: 'email_summarized', channel: 'email', kind: 'wiki_comment',
+    notification_id: notificationId, notification_title: title, outbox_id: 'o5',
+    to_address: 'ada@example.com', outbox_status: 'sent', process: 'notification-worker',
+  });
+  api.getDeliveryLogPage.mockImplementation(async (q: { outboxId?: string }) => (q.outboxId === 'o5'
+    ? page([sentSummary, item(54, 'n7', 'Second comment', 289), item(53, 'n6', 'First comment', 290), SUMMARY_EMAIL])
+    : page([SUMMARY_EMAIL])));
+  renderTab();
+  await user.click(await screen.findByText('notification_summary'));
+
+  await waitFor(() => expect(api.getDeliveryLogPage).toHaveBeenCalledWith(
+    expect.objectContaining({ outboxId: 'o5' }), expect.anything()));
+  const call = api.getDeliveryLogPage.mock.calls.find((c) => c[0].outboxId === 'o5')![0];
+  expect(call.notificationId).toBeUndefined();
+  const trail = await screen.findByRole('table', { name: 'Delivery trail' });
+  const rows = within(trail).getAllByRole('row').slice(1);
+  expect(rows.map((r) => r.children[1].textContent)).toEqual(['Queued', 'In summary', 'In summary', 'Sent']);
+  expect(rows.map((r) => r.children[2].textContent)).toEqual([
+    'Summary email · 3 notifications', 'First comment', 'Second comment', 'Sent on attempt 1',
+  ]);
+  expect(within(rowOf('notification_summary')).getByText(/^Email to/).textContent)
+    .toBe('Email to ada@example.com');
 });
 
 it('another app\'s notification link leaves the portal; template mail opens by outbox id', async () => {

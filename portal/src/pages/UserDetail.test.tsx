@@ -88,7 +88,7 @@ export const DETAIL: UserDetailOut = {
   max_rank: 40,
   worker: { trade: 'Cabling', level: 'l2', level_title: 'Journeyman', level_color: '#123456',
     partner: { id: 'pa1', name: 'Wire Co' }, status: 'active', status_label: 'Active', status_color: '#178a4c' },
-  notification_groups: [{ id: 'ng1', name: 'Ops alerts', channels: ['email', 'web'], added_at: '2026-03-01T00:00:00Z' }],
+  notification_groups: [{ id: 'ng1', name: 'Ops alerts', added_at: '2026-03-01T00:00:00Z' }],
   access: {
     groups: [{ id: 'g1', name: 'Finance', description: 'Money people', gate_count: 1, gated_pages: ['Clients'],
       added_by: { id: 'me-1', display_name: 'Me' }, added_at: '2026-04-01T00:00:00Z' }],
@@ -150,6 +150,19 @@ it('renders the hero, three tabs, and the Profile panels', async () => {
   // sessions
   expect(screen.getByText('10.0.0.5', { exact: false })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Sign out everywhere' })).toBeTruthy();
+});
+
+it('the notification groups table names the group and when they joined, with no Channels column', async () => {
+  renderAt('/people/users/p1');
+  await screen.findByRole('heading', { level: 1, name: /Wan Worker/ });
+  const table = screen.getByRole('table', { name: 'Notification groups' });
+
+  expect(within(table).getAllByRole('columnheader').map((h) => h.textContent))
+    .toEqual(['Group', 'Member since']);
+  expect(within(table).getByRole('link', { name: 'Ops alerts' }).getAttribute('href'))
+    .toBe('/system/notifications/ng1');
+  expect(table.querySelector('.chip')).toBeNull();
+  expect(within(table).queryByText(/email|channels/i)).toBeNull();
 });
 
 it('hides the History tab without audit:view and the sessions panel when null', async () => {

@@ -34,8 +34,17 @@ const api = vi.hoisted(() => ({
   forgetAllMyTrustedBrowsers: vi.fn(async () => {}),
   listMyBiometricKeys: vi.fn(async (): Promise<BiometricKey[]> => []),
   forgetMyBiometricKey: vi.fn(async () => {}),
-  // MeNotifications (the Notifications tab) loads the person's groups on mount
+  // MeNotifications (the Notifications tab) loads the person's groups and the
+  // company notification settings on mount
   listMyNotificationGroups: vi.fn(async () => []),
+  getNotificationSettings: vi.fn(async () => ({
+    defaults: {
+      approvals: { inbox: true, email: true }, reports: { inbox: true, email: true },
+      wiki: { inbox: true, email: true }, learning: { inbox: true, email: true },
+    },
+    critical_kinds: [] as string[],
+    kinds: [] as unknown[],
+  })),
 }));
 
 const PROFILE: PersonDetail = {
@@ -80,7 +89,7 @@ vi.mock('../auth/AuthContext', () => ({
       nav_bg: 'default',
       nav_size: 'default',
       list_view: 'expanded',
-      notif: { sound: 'chime', categories: { approvals: 'email', reports: 'email', wiki: 'email', learning: 'email', security: 'email' } },
+      notif: { sound: 'chime', switches: {}, schedule: { timezone: null, days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'], quiet_start: null, quiet_end: null } },
       list_prefs: {},
     } satisfies UiPreferences,
     updatePreferences: auth.updatePreferences,
@@ -166,7 +175,7 @@ it('/me shows the Profile panel and not the preferences sections', async () => {
   ).toBeTruthy());
 
   expect(screen.queryByText('Appearance')).toBeNull();
-  expect(screen.queryByRole('heading', { name: 'Notifications', level: 3 })).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'What you get', level: 3 })).toBeNull();
 });
 
 it('/me/preferences shows Appearance only, not Notifications or the Profile panel', async () => {
@@ -174,7 +183,7 @@ it('/me/preferences shows Appearance only, not Notifications or the Profile pane
 
   await waitFor(() => expect(screen.getByText('Appearance')).toBeTruthy());
 
-  expect(screen.queryByRole('heading', { name: 'Notifications', level: 3 })).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'What you get', level: 3 })).toBeNull();
   expect(screen.queryByRole('heading', { name: 'Profile', level: 3 })).toBeNull();
 });
 
@@ -182,10 +191,11 @@ it('/me/notifications shows the Notifications section only', async () => {
   renderAt('/me/notifications');
 
   await waitFor(() => expect(
-    screen.getByRole('heading', { name: 'Notifications', level: 3 }),
+    screen.getByRole('heading', { name: 'What you get', level: 3 }),
   ).toBeTruthy());
 
   expect(screen.getByText('Approvals & requests')).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'When email reaches you', level: 3 })).toBeTruthy();
   expect(screen.queryByText('Appearance')).toBeNull();
   expect(screen.queryByRole('heading', { name: 'Profile', level: 3 })).toBeNull();
   expect(screen.getByRole('tab', { name: 'Notifications' }).getAttribute('aria-selected')).toBe('true');

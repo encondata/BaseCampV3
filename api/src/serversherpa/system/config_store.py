@@ -78,6 +78,17 @@ DEFAULTS: dict[str, dict] = {
         "email_text": {},
         "languages": ["en"],
     },
+    # Company notification settings (notifications/company.py), edited by
+    # admins and above. `defaults` are the Inbox and Email switches a person
+    # follows until they change their own, per configurable category (account
+    # security is always on, so it has none); `critical_kinds` are the
+    # notification types an admin marked critical. The security kinds are
+    # always critical in code and are never stored here.
+    "notifications": {
+        "defaults": {category: {"inbox": True, "email": True}
+                     for category in ("approvals", "reports", "wiki", "learning")},
+        "critical_kinds": [],
+    },
 }
 
 

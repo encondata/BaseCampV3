@@ -4,21 +4,21 @@
  * count badge, the dir-toolbar with the filter box and result count, then
  * a dir-list with a list-head and row-main rows using the golden cell
  * classes. Both sections render this one component so they stay
- * symmetrical; only the columns and the row actions differ by `kind`.
+ * symmetrical; only the row actions differ by `kind`.
+ *
+ * A group is a name, a description and its members: it no longer decides what
+ * a person gets, so the columns are Group, Members and Status (a waiting join
+ * or leave request), and a member has nothing of their own to edit per group.
  */
 
 import { useMemo, useState } from 'react';
 
 import { useAuth } from '../../auth/AuthContext';
 import { RowActionsMenu, type RowAction } from '../../components/hardware/RowActionsMenu';
-import CategoryChips from '../../components/notifications/CategoryChips';
-import ChannelChips from '../../components/notifications/ChannelChips';
 import type { MyNotificationGroup } from '../../lib/api';
-import { ColHead, listGridStyle, listScale, titleFor, type ColumnDef } from '../../lib/listTools';
-import { formatDays, formatQuietHours } from '../../lib/notifications';
-import { hasOverrides } from '../../lib/notificationGroups';
+import { ColHead, listGridStyle, listScale, type ColumnDef } from '../../lib/listTools';
 
-/** Status cell: the pending request (if any) wins over "Customized". */
+/** Status cell: the request waiting on an admin, or nothing. */
 function StatusChip({ group }: { group: MyNotificationGroup }) {
   const pending = group.pending_request;
   if (pending) {
@@ -27,9 +27,6 @@ function StatusChip({ group }: { group: MyNotificationGroup }) {
         <span className="dot" />{pending.action === 'leave' ? 'Leave requested' : 'Join requested'}
       </span>
     );
-  }
-  if (group.is_member && hasOverrides(group.overrides)) {
-    return <span className="chip c-aqua">Customized</span>;
   }
   return <span className="cell-sub">—</span>;
 }
@@ -44,23 +41,17 @@ export type GroupsListKind = 'member' | 'joinable';
 // 1512px window, nav expanded — GroupsList sits directly in .portal-page
 // under /me/notifications).
 const COLUMNS: ColumnDef[] = [
-  { key: 'group', label: 'Group', width: '2fr', default: true, min: 200 },
-  // 156px holds the longest chip, "Approvals & requests" (measured, as on the
-  // admin list); chips wrap onto extra lines, and one cut short has its title.
-  { key: 'categories', label: 'Categories', width: '1.5fr', default: true, min: 156 },
-  // One short chip (Email / No email) — the header's own floor is enough.
-  { key: 'channels', label: 'Channels', width: '1fr', default: true },
-  // 168px holds the longest value, "12:00 AM – 12:00 AM CT", on one line
-  // (measured), as on the admin list.
-  { key: 'quiet_hours', label: 'Quiet hours', width: '1.2fr', default: true, min: 168 },
-  { key: 'days', label: 'Days', width: '0.7fr', default: true },
-  { key: 'members', label: 'Members', width: '0.6fr', default: true },
-  { key: 'status', label: 'Status', width: '0.9fr', default: true },
+  { key: 'group', label: 'Group', width: '3fr', default: true, min: 200 },
+  // Holds a count: the header's own floor is enough.
+  { key: 'members', label: 'Members', width: '0.7fr', default: true },
+  // 140px holds the longest chip, "Leave requested" (measured 129px at the
+  // default list size; the floor scales with the list size preference).
+  { key: 'status', label: 'Status', width: '1fr', default: true, min: 140 },
 ];
 const TRAILING = ['88px'];
 
 export default function GroupsList({
-  kind, title, hint, groups, loaded, busyRequestIds, onEditOverrides, onRequest, onCancel,
+  kind, title, hint, groups, loaded, busyRequestIds, onRequest, onCancel,
 }: {
   kind: GroupsListKind;
   title: string;
@@ -68,7 +59,6 @@ export default function GroupsList({
   groups: MyNotificationGroup[];
   loaded: boolean;
   busyRequestIds: Record<string, boolean>;
-  onEditOverrides?: (g: MyNotificationGroup) => void;
   onRequest: (g: MyNotificationGroup, action: 'join' | 'leave') => void;
   onCancel: (requestId: string) => void;
 }) {
@@ -84,23 +74,16 @@ export default function GroupsList({
 
   const actionsFor = (g: MyNotificationGroup): RowAction[] => {
     const pending = g.pending_request;
-    const actions: RowAction[] = [];
-    if (kind === 'member' && onEditOverrides) {
-      actions.push({ key: 'edit', label: 'Edit overrides', onSelect: () => onEditOverrides(g) });
-    }
     if (pending) {
-      actions.push({
+      return [{
         key: 'cancel',
-        label: busyRequestIds[pending.id] ? 'Cancelling…' : 'Cancel request',
+        label: busyRequestIds[pending.id] ? 'Canceling…' : 'Cancel request',
         onSelect: () => { if (!busyRequestIds[pending.id]) onCancel(pending.id); },
-      });
-    } else if (kind === 'member') {
-      actions.push({ key: 'leave', label: 'Leave group', destructive: true,
-                     onSelect: () => onRequest(g, 'leave') });
-    } else {
-      actions.push({ key: 'join', label: 'Ask to join', onSelect: () => onRequest(g, 'join') });
+      }];
     }
-    return actions;
+    return kind === 'member'
+      ? [{ key: 'leave', label: 'Leave group', destructive: true, onSelect: () => onRequest(g, 'leave') }]
+      : [{ key: 'join', label: 'Ask to join', onSelect: () => onRequest(g, 'join') }];
   };
 
   const emptyCopy = kind === 'member'
@@ -142,36 +125,20 @@ export default function GroupsList({
           <div className="dir-empty">{query ? 'No groups match that filter.' : emptyCopy}</div>
         )}
 
-        {visible.map((g) => {
-          // A member sees what they actually get — their own channels, quiet
-          // hours and days after any overrides; someone deciding whether to
-          // join sees the group's. (`effective` is only set for members.)
-          const shown = kind === 'member' ? (g.effective ?? g) : g;
-          const quietHours = formatQuietHours(shown.quiet_start, shown.quiet_end, shown.timezone);
-          const days = formatDays(shown.active_days);
-          return (
-            <div className="dir-row" key={g.id} style={{ minWidth: rowStyle.minWidth }}>
-              <div className="row-main" style={rowStyle}>
-                <div className="cell cell-primary">
-                  <div className="pn"><b>{g.name}</b><span>{g.description || '—'}</span></div>
-                </div>
-                <div className="cell"><CategoryChips categories={g.categories} /></div>
-                <div className="cell"><ChannelChips channels={shown.channels} /></div>
-                <div className="cell">
-                  <span className="mono cell-nowrap cell-line" title={titleFor(quietHours)}>{quietHours}</span>
-                </div>
-                <div className="cell">
-                  <span className="cell-top cell-nowrap cell-line" title={titleFor(days)}>{days}</span>
-                </div>
-                <div className="cell mono cell-line">{g.member_count}</div>
-                <div className="cell"><StatusChip group={g} /></div>
-                <div className="cell row-actions-cell" style={{ justifySelf: 'end' }} onClick={(e) => e.stopPropagation()}>
-                  <RowActionsMenu actions={actionsFor(g)} />
-                </div>
+        {visible.map((g) => (
+          <div className="dir-row" key={g.id} style={{ minWidth: rowStyle.minWidth }}>
+            <div className="row-main" style={rowStyle}>
+              <div className="cell cell-primary">
+                <div className="pn"><b>{g.name}</b><span>{g.description || '—'}</span></div>
+              </div>
+              <div className="cell mono cell-line">{g.member_count}</div>
+              <div className="cell"><StatusChip group={g} /></div>
+              <div className="cell row-actions-cell" style={{ justifySelf: 'end' }} onClick={(e) => e.stopPropagation()}>
+                <RowActionsMenu actions={actionsFor(g)} />
               </div>
             </div>
-          );
-        })}
+          </div>
+        ))}
       </div>
     </section>
   );

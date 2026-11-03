@@ -1,31 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type {
-  MyNotificationGroup, NotificationMemberOverrides,
-} from './api';
-import {
-  GROUP_ERRORS, hasOverrides, toGroupDetail, toMember,
-} from './notificationGroups';
-
-const NO_OVERRIDES: NotificationMemberOverrides = {
-  channels: null, quiet_mode: null, quiet_start: null, quiet_end: null,
-  timezone: null, active_days: null, dnd_behavior: null, urgent_bypass: null,
-};
-
-describe('hasOverrides', () => {
-  it('is false for null overrides', () => {
-    expect(hasOverrides(null)).toBe(false);
-  });
-
-  it('is false when every field is null', () => {
-    expect(hasOverrides(NO_OVERRIDES)).toBe(false);
-  });
-
-  it('is true when any single field is non-null', () => {
-    expect(hasOverrides({ ...NO_OVERRIDES, urgent_bypass: true })).toBe(true);
-    expect(hasOverrides({ ...NO_OVERRIDES, channels: ['email'] })).toBe(true);
-  });
-});
+import * as groups from './notificationGroups';
+import { GROUP_ERRORS } from './notificationGroups';
 
 describe('GROUP_ERRORS', () => {
   it('carries the spec copy for every self-service error code', () => {
@@ -37,69 +13,8 @@ describe('GROUP_ERRORS', () => {
   });
 });
 
-const GROUP: MyNotificationGroup = {
-  id: 'g1', name: 'Ops', description: 'Operations alerts', channels: ['email', 'push'],
-  quiet_start: '22:00:00', quiet_end: '07:00:00', timezone: 'America/New_York',
-  active_days: ['mon', 'tue', 'wed', 'thu', 'fri'], dnd_behavior: 'defer', urgent_bypass: false,
-  member_count: 3, is_member: true,
-  categories: ['approvals'], effective_channels: ['email', 'push'],
-  overrides: { ...NO_OVERRIDES, urgent_bypass: true },
-  effective: {
-    channels: ['email', 'push'], quiet_start: '22:00:00', quiet_end: '07:00:00',
-    timezone: 'America/New_York', active_days: ['mon', 'tue', 'wed', 'thu', 'fri'],
-    dnd_behavior: 'defer', urgent_bypass: true,
-  },
-  pending_request: null,
-};
-
-describe('toGroupDetail', () => {
-  it('carries the group settings through and starts members empty', () => {
-    const detail = toGroupDetail(GROUP);
-    expect(detail.id).toBe('g1');
-    expect(detail.name).toBe('Ops');
-    expect(detail.channels).toEqual(['email', 'push']);
-    expect(detail.timezone).toBe('America/New_York');
-    expect(detail.enabled).toBe(true);
-    expect(detail.members).toEqual([]);
-  });
-});
-
-describe('toMember', () => {
-  it('derives can_text from the person\'s phone, and always allows email/push/web', () => {
-    const member = toMember(GROUP, {
-      id: 'p1', display_name: 'Ada Lovelace', email: 'ada@test.example.com', phone: null,
-    });
-    expect(member.person_id).toBe('p1');
-    expect(member.display_name).toBe('Ada Lovelace');
-    expect(member.email).toBe('ada@test.example.com');
-    expect(member.can_email).toBe(true);
-    expect(member.can_text).toBe(false);
-    expect(member.can_push).toBe(true);
-    expect(member.can_web).toBe(true);
-    expect(member.has_account).toBe(true);
-  });
-
-  it('can_email stays true for a person with no profile email: the sign-in email counts', () => {
-    // The sender falls back to the sign-in email (user_accounts.email is NOT NULL),
-    // so a signed-in person is always reachable by email.
-    for (const email of [null, undefined]) {
-      const member = toMember(GROUP, { id: 'p1', display_name: 'Ada Lovelace', email });
-      expect(member.can_email).toBe(true);
-      expect(member.email).toBeNull(); // nothing to show as the contact address
-    }
-  });
-
-  it('passes the group\'s overrides/effective through unchanged when present', () => {
-    const member = toMember(GROUP, { id: 'p1', display_name: 'Ada Lovelace' });
-    expect(member.overrides).toEqual(GROUP.overrides);
-    expect(member.effective).toEqual(GROUP.effective);
-  });
-
-  it('falls back to inherit-everything overrides and group defaults when null', () => {
-    const bare = { ...GROUP, overrides: null, effective: null };
-    const member = toMember(bare, { id: 'p1', display_name: 'Ada Lovelace' });
-    expect(member.overrides).toEqual(NO_OVERRIDES);
-    expect(member.effective.channels).toEqual(GROUP.channels);
-    expect(member.effective.timezone).toBe(GROUP.timezone);
+describe('what a group no longer has', () => {
+  it('is only the error copy: a member sets nothing per group, so there is no editor, adapter or override check', () => {
+    expect(Object.keys(groups)).toEqual(['GROUP_ERRORS']);
   });
 });

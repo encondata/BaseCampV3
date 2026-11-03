@@ -5,5 +5,5 @@
 {% if body %}<p style="margin:0 0 24px;white-space:pre-line;">{{ body }}</p>{% endif %}
 <p style="margin:0 0 24px;"><a href="{{ link }}" style="color:#1b2129;">Open in ServerSherpa</a></p>
 {% if security %}<p style="margin:0;font-size:13px;color:#667085;">This is a security notice about your account.</p>
-{% else %}<p style="margin:0;font-size:13px;color:#667085;">You get these emails through your notification groups. <a href="{{ prefs_url }}" style="color:#667085;">Change what you receive</a></p>
+{% else %}<p style="margin:0;font-size:13px;color:#667085;">You get these emails from your notification settings. Change what you receive: <a href="{{ prefs_url }}" style="color:#667085;word-break:break-all;">{{ prefs_url }}</a></p>
 {% endif %}{% endblock %}

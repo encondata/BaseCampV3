@@ -4,12 +4,12 @@
  * `load()`/`reload()` contract) — no separate fetch; only the recipients
  * list backing the add-member ComboBox is lazy-loaded on first open, and
  * filtered to exclude people already in the group. Renders a
- * `<DataTable>` ('—' per empty cell) with warning chips for channels a
- * member can't actually receive and
- * "Override" markers wherever a per-member override shadows the group
- * default. Per-row Edit and Remove live in one RowActionsMenu; Remove
- * confirms through window.confirm() rather than swapping the cell into an
- * inline "Really remove?" pair, so invoking it never reflows the row.
+ * `<DataTable>` of Person, Contact and (with change permission) Actions, '—'
+ * per empty cell: a group is a list of people and decides nothing about what
+ * they get, so there is nothing else to show or edit per member. The one row
+ * action, Remove, lives in a RowActionsMenu and confirms through
+ * window.confirm() rather than swapping the cell into an inline "Really
+ * remove?" pair, so invoking it never reflows the row.
  */
 
 import { useMemo, useRef, useState } from 'react';
@@ -19,65 +19,15 @@ import {
   type NotificationGroupDetail, type NotificationMember, type NotificationRecipient,
 } from '../../lib/api';
 import { avatarGradient, initials } from '../../lib/format';
-import {
-  CHANNEL_LABELS, LIVE_CHANNELS, canForChannel, formatDays, formatQuietHours, liveChannels,
-  type Channel,
-} from '../../lib/notifications';
 import ComboBox, { type ComboOption } from '../ComboBox';
 import DataTable from '../DataTable';
 import { RowActionsMenu, type RowAction } from '../hardware/RowActionsMenu';
-import { NO_EMAIL } from './ChannelChips';
-import OverrideEditorModal from './OverrideEditorModal';
 import PhotoPreview from '../PhotoPreview';
 
 const msgFor = (err: unknown): string =>
   err instanceof ApiError
     ? `Request failed (${err.code}).`
     : 'Network error — nothing was saved.';
-
-/** Why a chip's channel isn't actually reachable for this person — mirrors
- *  the API's capabilities() gating (api/routes/notifications.py). Only live
- *  channels ever reach a chip today, so Email's note is the one people see. */
-const CHANNEL_WARNING_TITLE: Record<Channel, string> = {
-  email: 'No email address',
-  text: 'No phone number',
-  push: 'No user account',
-  web: 'No user account',
-};
-
-type Capable = { can_email: boolean; can_text: boolean; can_push: boolean; can_web: boolean };
-
-/** What the add-member picker says under a person's name: the live channels
- *  they can receive, or why they can't be emailed. */
-function reachableSummary(r: Capable): string {
-  const reachable = LIVE_CHANNELS.filter((c) => canForChannel(r, c));
-  return reachable.length
-    ? reachable.map((c) => CHANNEL_LABELS[c]).join(', ')
-    : CHANNEL_WARNING_TITLE.email;
-}
-
-/** A member's Channels cell: the live channels in their effective settings
- *  (red, with the reason, when they have no way to receive it), "No email"
- *  when none are live, and an Override marker beside a personal choice. */
-function MemberChannels({ member }: { member: NotificationMember }) {
-  const live = liveChannels(member.effective.channels);
-  return (
-    <div className="chips">
-      {live.length === 0 && <span className="chip c-slate">{NO_EMAIL}</span>}
-      {live.map((c) => {
-        const reachable = canForChannel(member, c);
-        return (
-          <span key={c}
-                className={`chip ${reachable ? 'tag' : 'c-red'}`}
-                title={reachable ? undefined : CHANNEL_WARNING_TITLE[c]}>
-            {CHANNEL_LABELS[c]}
-          </span>
-        );
-      })}
-      {member.overrides.channels != null && <span className="chip c-amber">Override</span>}
-    </div>
-  );
-}
 
 export default function MembersPanel({ group, canChange, reload }: {
   group: NotificationGroupDetail;
@@ -90,8 +40,6 @@ export default function MembersPanel({ group, canChange, reload }: {
 
   const [addBusy, setAddBusy] = useState(false);
   const [addError, setAddError] = useState('');
-
-  const [editingMember, setEditingMember] = useState<NotificationMember | null>(null);
 
   const [rowBusy, setRowBusy] = useState<Record<string, boolean>>({});
   const [rowError, setRowError] = useState<Record<string, string>>({});
@@ -115,7 +63,7 @@ export default function MembersPanel({ group, canChange, reload }: {
     .map((r) => ({
       value: r.person_id,
       label: r.display_name,
-      sub: [r.job_title, reachableSummary(r)].filter(Boolean).join(' · '),
+      sub: r.job_title,
     })), [recipients, memberIds]);
 
   const handleAdd = async (personId: string) => {
@@ -170,20 +118,16 @@ export default function MembersPanel({ group, canChange, reload }: {
       )}
 
       {group.members.length === 0 ? (
-        <div className="dir-empty" style={{ marginTop: 12 }}>
-          <b>No members yet</b>Add people above — they'll receive this group's notifications.
-        </div>
+        <div className="dir-empty" style={{ marginTop: 12 }}>No members yet.</div>
       ) : (
-        <div style={{ marginTop: 12 }}>
+        // .ngd-members scopes the table's themed scrollbar (notifications.css)
+        <div className="ngd-members" style={{ marginTop: 12 }}>
         <DataTable
           ariaLabel="Members"
           className="ngd-members-table"
           columns={[
             { key: 'person', label: 'Person' },
             { key: 'contact', label: 'Contact' },
-            { key: 'channels', label: 'Channels' },
-            { key: 'quiet', label: 'Quiet hours' },
-            { key: 'days', label: 'Days' },
             // 88px: the width the other converted lists give a single
             // RowActionsMenu trigger. The old 250px existed only to keep
             // the inline "Really remove?" confirm from reflowing the row,
@@ -209,24 +153,10 @@ export default function MembersPanel({ group, canChange, reload }: {
                 <span>{m.email ?? '—'}</span>
                 <span>{m.phone ?? '—'}</span>
               </div>,
-              <MemberChannels member={m} />,
-              <div className="ngd-cell-marker">
-                <span className="mono ngd-nowrap">{formatQuietHours(m.effective.quiet_start, m.effective.quiet_end, m.effective.timezone)}</span>
-                {m.overrides.quiet_mode != null && <span className="chip c-amber">Override</span>}
-              </div>,
-              <div className="ngd-cell-marker">
-                <span className="cell-top ngd-nowrap">{formatDays(m.effective.active_days)}</span>
-                {m.overrides.active_days != null && <span className="chip c-amber">Override</span>}
-              </div>,
               ...(canChange ? [(
                 <>
                   <div className="ngd-row-actions">
                     <RowActionsMenu actions={[
-                      {
-                        key: 'edit', label: 'Edit',
-                        disabled: rowBusy[m.person_id],
-                        onSelect: () => setEditingMember(m),
-                      },
                       {
                         key: 'remove', label: 'Remove', destructive: true,
                         disabled: rowBusy[m.person_id],
@@ -245,15 +175,6 @@ export default function MembersPanel({ group, canChange, reload }: {
           }))}
         />
         </div>
-      )}
-
-      {editingMember && (
-        <OverrideEditorModal
-          group={group}
-          member={editingMember}
-          onClose={() => setEditingMember(null)}
-          onSaved={() => { setEditingMember(null); void reload(); }}
-        />
       )}
     </div>
   );

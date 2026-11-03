@@ -104,10 +104,7 @@ async def test_plan_reports_database_handled_foreign_keys(db, seeded_user):
 
     person = Person(first_name="Notified", last_name="Person")
     db.add(person)
-    group = NotificationGroup(
-        name="Ops", description="", channels=["email"],
-        timezone="America/New_York", active_days=["mon"],
-        dnd_behavior="defer", urgent_bypass=False, enabled=True)
+    group = NotificationGroup(name="Ops", description="", enabled=True)
     db.add_all([person, group])
     await db.flush()
     db.add(NotificationGroupMember(group_id=group.id, person_id=person.id))
@@ -335,10 +332,7 @@ async def test_references_report_marks_database_handled_foreign_keys(
 
     hdrs = await _developer(db, client, seeded_user)
     person = Person(first_name="Reported", last_name="Person")
-    group = NotificationGroup(
-        name="Ops2", description="", channels=["email"],
-        timezone="America/New_York", active_days=["mon"],
-        dnd_behavior="defer", urgent_bypass=False, enabled=True)
+    group = NotificationGroup(name="Ops2", description="", enabled=True)
     db.add_all([person, group])
     await db.flush()
     db.add(NotificationGroupMember(group_id=group.id, person_id=person.id))

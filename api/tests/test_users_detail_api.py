@@ -31,13 +31,13 @@ async def test_detail_full_payload_for_admin(client, db, seeded_user):
                       granted_by=seeded_user.id))
     # worker profile
     db.add(WorkerProfile(person_id=wan.id, trade="Cabling", status="active"))
-    # notification group membership
-    ng = NotificationGroup(name="Ops", description="", channels=["email"],
-                           timezone="America/New_York", active_days=["mon"],
-                           dnd_behavior="defer", urgent_bypass=False, enabled=True)
-    db.add(ng)
+    # notification group membership: an active group, and a paused one that stays off the page
+    ng = NotificationGroup(name="Ops", description="", enabled=True)
+    paused = NotificationGroup(name="Paused", description="", enabled=False)
+    db.add_all([ng, paused])
     await db.flush()
-    db.add(NotificationGroupMember(group_id=ng.id, person_id=wan.id, channels=["web"]))
+    db.add(NotificationGroupMember(group_id=ng.id, person_id=wan.id))
+    db.add(NotificationGroupMember(group_id=paused.id, person_id=wan.id))
     await db.commit()
     # access group via the real endpoint (adds added_by)
     gid = (await client.post("/access/groups", headers=hdrs,
@@ -73,9 +73,11 @@ async def test_detail_full_payload_for_admin(client, db, seeded_user):
     assert body["worker"]["status_label"]            # vocabulary label resolved
     assert body["worker"]["partner"] is None
 
+    # only the active group, and only what it is: no channels (groups carry no delivery)
     assert body["notification_groups"] == [
-        {"id": str(ng.id), "name": "Ops", "channels": ["web"],
+        {"id": str(ng.id), "name": "Ops",
          "added_at": body["notification_groups"][0]["added_at"]}]
+    assert set(body["notification_groups"][0]) == {"id", "name", "added_at"}
 
     acc = body["access"]
     assert acc is not None

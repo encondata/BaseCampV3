@@ -18,7 +18,6 @@ from serversherpa.api.deps import (
     AuthContext, DbSession, client_ip, raise_if_reused, require_password_length,
     require_permission,
 )
-from serversherpa.api.routes.notifications import effective_settings
 from serversherpa.api.schemas import (
     AccessGroupsOut,
     AccessGroupsUpdateIn,
@@ -220,19 +219,17 @@ async def get_user_detail(
             **status_fields(profile.status, await status_labels(db, "worker")),
         )
 
-    # ── notification groups (enabled only; channels = effective) ──
+    # ── notification groups (enabled only) ──
     ng_rows = (await db.execute(
-        select(NotificationGroup, NotificationGroupMember)
+        select(NotificationGroup.id, NotificationGroup.name, NotificationGroupMember.added_at)
         .join(NotificationGroupMember,
               NotificationGroupMember.group_id == NotificationGroup.id)
         .where(NotificationGroupMember.person_id == person_id,
                NotificationGroup.enabled.is_(True))
         .order_by(natural(NotificationGroup.name)))).all()
     notification_groups = [
-        UserNotificationGroup(id=g.id, name=g.name,
-                              channels=effective_settings(g, m)["channels"],
-                              added_at=m.added_at)
-        for g, m in ng_rows]
+        UserNotificationGroup(id=group_id, name=name, added_at=added_at)
+        for group_id, name, added_at in ng_rows]
 
     # ── access block (rank-60 rule, same as /access/effective) ──
     access_block: UserAccessBlock | None = None

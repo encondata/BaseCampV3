@@ -10,6 +10,8 @@
  * renders nothing at all.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -215,6 +217,18 @@ it('a destructive item can also be disabled and keeps its danger class', async (
   const item = screen.getByRole('menuitem', { name: 'Delete' }) as HTMLButtonElement;
   expect(item.disabled).toBe(true);
   expect(item.className).toContain('danger');
+});
+
+it('a lone destructive item sits where any first item does: no top gap', async () => {
+  const user = userEvent.setup();
+  render(<RowActionsMenu actions={[{ key: 'remove', label: 'Remove', destructive: true, onSelect: vi.fn() }]} />);
+  await user.click(screen.getByRole('button', { name: 'Actions ▾' }));
+  expect(screen.getByRole('menuitem', { name: 'Remove' }).matches('.pop-item.danger:first-child')).toBe(true);
+
+  // the 6px gap that sets a destructive item apart from those above it is dropped for a first one
+  const css = readFileSync(join(__dirname, '../../styles/hardware.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  expect(css).toMatch(/\.pop-item\.danger\s*\{[^}]*margin-top:\s*6px/);
+  expect(css).toMatch(/\.pop-item\.danger:first-child\s*\{\s*margin-top:\s*0\s*;?\s*\}/);
 });
 
 it('still renders the trigger when every item is disabled', async () => {

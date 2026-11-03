@@ -1,113 +1,72 @@
-"""Notification groups CRUD. A group carries the default delivery
-channels, quiet hours, active days, and DND behavior for its members.
-Task 2 adds member endpoints (with per-member overrides); the React UI
-is a later task still. This file also hosts the per-person in-app
-inbox routes (/inbox, mark-one-read, mark-all-read) and, for super admins
-and above, the delivery log (/log), Check delivery (/check) and the kinds
-it picks from (/kinds).
-
-CHANNELS/DAYS are the source of truth other modules (the future
-notification sender, Task 2's member validation) should import from."""
+"""Notification groups: a named list of people (name, description, Active or
+Paused), its members, and the join and leave requests an admin approves. A group
+decides nothing about delivery (a person's own switches and schedule do,
+notifications/email.py), so it has no channels, quiet hours or member overrides;
+its `categories` are kept and still read and written, but nothing shows them.
+This file also hosts the per-person in-app inbox routes (/inbox, mark-one-read,
+mark-all-read), the company notification settings (/settings: anyone signed in
+reads them, admins and above change them) and, for super admins and above, the
+delivery log (/log), Check delivery (/check) and the kinds it picks from (/kinds)."""
 
 import base64
 import uuid
 from datetime import UTC, datetime
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import AwareDatetime
 from sqlalchemy import func, or_, select, tuple_
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import aliased
 
 from serversherpa.api.deps import (
-    AuthContext, CurrentUser, DbSession, ensure_super_admin, require_permission,
+    AuthContext, CurrentUser, DbSession, ensure_admin, ensure_super_admin,
+    require_permission,
 )
 from serversherpa.api.schemas import (
     DeliveryCheckOut, DeliveryLogEntryOut, DeliveryLogPageOut,
-    MembershipDecisionIn, MembershipRequestOut, NotificationEffectiveSettings,
-    NotificationGroupCreateIn, NotificationGroupDetailOut, NotificationGroupOut,
-    NotificationGroupPatchIn, NotificationInboxItemOut, NotificationInboxOut,
-    NotificationKindOut, NotificationMemberAddIn, NotificationMemberOut,
-    NotificationMemberOverrides, NotificationRecipientOut,
+    MembershipDecisionIn, MembershipRequestOut, NotificationGroupCreateIn,
+    NotificationGroupDetailOut, NotificationGroupOut, NotificationGroupPatchIn,
+    NotificationGroupSettings, NotificationInboxItemOut, NotificationInboxOut,
+    NotificationKindOut, NotificationKindSettingOut, NotificationMemberAddIn,
+    NotificationMemberOut, NotificationRecipientOut, NotificationSettingsIn,
+    NotificationSettingsOut, SwitchPair,
 )
 from serversherpa.db.models import (
     EmailOutbox, Notification, NotificationGroup, NotificationGroupMember,
-    NotificationLog, NotificationMembershipRequest, Person, UserAccount,
+    NotificationLog, NotificationMembershipRequest, Person, SystemConfig,
+    UserAccount,
 )
 from serversherpa.db.ordering import natural
 from serversherpa.notifications import check as delivery_check
+from serversherpa.notifications.company import (
+    CONFIGURABLE_CATEGORIES, SECTION as COMPANY_SECTION, SECURITY_CATEGORY,
+    CompanySettings, Switches, critical_eligible, is_critical, load_company_settings,
+)
 from serversherpa.notifications.delivery_log import EVENTS
 from serversherpa.notifications.kinds import CATEGORY_KEYS, KINDS, kind_info
 from serversherpa.notifications.requests import RequestError, decide_request
-from serversherpa.notifications.settings import effective_settings
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.storage import presign_get
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
-CHANNELS: tuple[str, ...] = ("email", "text", "push", "web")
-DAYS: tuple[str, ...] = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+GROUP_FIELDS = ["name", "description", "categories", "enabled"]
 
-GROUP_FIELDS = ["name", "description", "channels", "quiet_start", "quiet_end",
-                "timezone", "active_days", "dnd_behavior", "urgent_bypass",
-                "categories", "enabled"]
-
-# Every group column except quiet_start/quiet_end is NOT NULL — an explicit
-# null in a PATCH body must 422 here, not IntegrityError at commit.
-NON_NULLABLE_GROUP_FIELDS = frozenset(GROUP_FIELDS) - {"quiet_start", "quiet_end"}
+# Every group field is NOT NULL: an explicit null in a PATCH body must 422 here,
+# not IntegrityError at commit.
+NON_NULLABLE_GROUP_FIELDS = frozenset(GROUP_FIELDS)
 
 
 def _err(status: int, code: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code})
 
 
-def _validate_quiet_hours(quiet_start, quiet_end) -> None:
-    """Both-or-neither, and (if both) not-equal. Callers pass whichever
-    pair of values is authoritative for their case — the raw body for a
-    create, or the merged (incoming-over-existing) state for a patch."""
-    if (quiet_start is None) != (quiet_end is None):
-        raise _err(422, "invalid_quiet_hours")
-    if quiet_start is not None and quiet_start == quiet_end:
-        raise _err(422, "invalid_quiet_hours")
-
-
-def validate_settings(body, *, check_quiet_hours: bool = True) -> None:
-    """Shared settings validation for group create/patch (and Task 2's
-    member override patch) — duck-typed on whichever of these attributes
-    the given body carries, so callers can pass any object that has some
-    subset of them.
-
-    check_quiet_hours is disabled by patch_group, which validates quiet
-    hours itself against the merged (incoming + existing) state instead
-    of the raw, possibly-partial patch body."""
-    channels = getattr(body, "channels", None)
-    if channels is not None and not set(channels) <= set(CHANNELS):
-        raise _err(422, "invalid")
-
-    active_days = getattr(body, "active_days", None)
-    if active_days is not None and (
-            not active_days or not set(active_days) <= set(DAYS)):
-        raise _err(422, "invalid_days")
-
-    categories = getattr(body, "categories", None)
-    if categories is not None and not set(categories) <= set(CATEGORY_KEYS):
+def validate_settings(body: NotificationGroupSettings) -> None:
+    """The one group setting that needs more than its type: every category must be
+    registered (notifications/kinds.py). Shared by group create and patch."""
+    if body.categories is not None and not set(body.categories) <= set(CATEGORY_KEYS):
         raise _err(422, "invalid_category")
-
-    dnd_behavior = getattr(body, "dnd_behavior", None)
-    if dnd_behavior is not None and dnd_behavior not in ("defer", "skip"):
-        raise _err(422, "invalid")
-
-    timezone = getattr(body, "timezone", None)
-    if timezone is not None:
-        try:
-            ZoneInfo(timezone)
-        except (ZoneInfoNotFoundError, ValueError):
-            raise _err(422, "invalid_timezone")
-
-    if check_quiet_hours:
-        _validate_quiet_hours(getattr(body, "quiet_start", None),
-                               getattr(body, "quiet_end", None))
 
 
 def _normalize_categories(categories: list[str]) -> list[str]:
@@ -131,51 +90,33 @@ async def _member_count(db: DbSession, group_id: uuid.UUID) -> int:
 def _out(group: NotificationGroup, member_count: int) -> NotificationGroupOut:
     return NotificationGroupOut(
         id=group.id, name=group.name, description=group.description,
-        channels=group.channels, quiet_start=group.quiet_start,
-        quiet_end=group.quiet_end, timezone=group.timezone,
-        active_days=group.active_days, dnd_behavior=group.dnd_behavior,
-        urgent_bypass=group.urgent_bypass, categories=group.categories,
-        enabled=group.enabled, member_count=member_count, created_at=group.created_at)
+        categories=group.categories, enabled=group.enabled,
+        member_count=member_count, created_at=group.created_at)
 
 
-# ── members, overrides, recipients ─────────────────────────────────
-
-# channel name -> the capabilities() key that gates it
-CHANNEL_CAPABILITY = {"email": "can_email", "text": "can_text",
-                       "push": "can_push", "web": "can_web"}
+# ── members, recipients ────────────────────────────────────────────
 
 
 def capabilities(person: Person, has_account: bool, *,
                  account_email: str | None) -> dict[str, bool]:
-    """What a person is actually reachable on, independent of any group's
-    aspirational channel list. Drives both the recipients picker and the
-    per-member channel-override validation below. Email needs a profile
-    email or a sign-in email (`account_email`, None without an account): the
-    sender falls back to the sign-in one. Required and by name, so no caller
-    can leave it out and misreport a sign-in-only person as unreachable."""
+    """What a person is actually reachable on. Drives the recipients picker
+    (GET /recipients). Email needs a profile email or a sign-in email
+    (`account_email`, None without an account): the sender falls back to the
+    sign-in one. Required and by name, so no caller can leave it out and
+    misreport a sign-in-only person as unreachable."""
     return {"can_email": bool(person.email or account_email),
             "can_text": person.phone is not None,
             "can_push": has_account, "can_web": has_account}
 
 
-def _member_out(group: NotificationGroup, member: NotificationGroupMember,
-                 person: Person, account_email: str | None) -> NotificationMemberOut:
+def _member_out(member: NotificationGroupMember, person: Person,
+                account_email: str | None) -> NotificationMemberOut:
     """`account_email` is the person's sign-in email, None without an account
     (every account has one)."""
-    has_account = account_email is not None
-    caps = capabilities(person, has_account, account_email=account_email)
     return NotificationMemberOut(
         person_id=person.id, display_name=person.display_name,
         job_title=person.job_title, avatar_url=presign_get(person.avatar_key),
-        email=person.email, phone=person.phone, has_account=has_account,
-        **caps,
-        overrides=NotificationMemberOverrides(
-            channels=member.channels, quiet_mode=member.quiet_mode,
-            quiet_start=member.quiet_start, quiet_end=member.quiet_end,
-            timezone=member.timezone, active_days=member.active_days,
-            dnd_behavior=member.dnd_behavior, urgent_bypass=member.urgent_bypass),
-        effective=NotificationEffectiveSettings(
-            **effective_settings(group, member)),
+        email=person.email, phone=person.phone, has_account=account_email is not None,
         added_at=member.added_at)
 
 
@@ -243,14 +184,7 @@ async def patch_group(
     actor: AuthContext = require_permission("notifications", "change"),
 ) -> NotificationGroupOut:
     group = await _get_group(db, group_id)
-    validate_settings(body, check_quiet_hours=False)
-
-    fields_set = body.model_fields_set
-    effective_start = (body.quiet_start if "quiet_start" in fields_set
-                        else group.quiet_start)
-    effective_end = (body.quiet_end if "quiet_end" in fields_set
-                      else group.quiet_end)
-    _validate_quiet_hours(effective_start, effective_end)
+    validate_settings(body)
 
     data = body.model_dump(exclude_unset=True)
     if any(data[field] is None
@@ -306,7 +240,7 @@ async def get_group(
         .outerjoin(UserAccount, UserAccount.person_id == Person.id)
         .where(NotificationGroupMember.group_id == group_id)
         .order_by(natural(Person.last_name), natural(Person.first_name)))).all()
-    members = [_member_out(group, member, person, account_email)
+    members = [_member_out(member, person, account_email)
                for member, person, account_email in rows]
     return NotificationGroupDetailOut(
         **_out(group, len(members)).model_dump(), members=members)
@@ -320,7 +254,7 @@ async def add_member(
     db: DbSession,
     actor: AuthContext = require_permission("notifications", "change"),
 ) -> NotificationMemberOut:
-    group = await _get_group(db, group_id)
+    await _get_group(db, group_id)          # 404 group_not_found
     person = await db.get(Person, body.person_id)
     if person is None or person.archived_at is not None:
         raise _err(404, "person_not_found")
@@ -337,70 +271,7 @@ async def add_member(
           entity_id=str(group_id), action="member.add",
           changes={"person_id": str(person.id)})
     await db.commit()
-    return _member_out(group, member, person, await _account_email(db, person.id))
-
-
-def apply_member_overrides(member: NotificationGroupMember,
-                            body: NotificationMemberOverrides,
-                            person: Person, account_email: str | None) -> dict:
-    """Validate `body` (same rules as `validate_settings` plus the
-    quiet-mode/quiet-hours and channel-capability checks) and apply it onto
-    `member` in place. Returns the snapshot diff (empty if nothing
-    changed) so the caller decides whether to audit. Shared by the admin
-    member-override PATCH and the self-service one under /auth/me — same
-    rules for both, only the caller (and thus the audit action) differs.
-    `account_email` is the person's sign-in email, None without an account."""
-    validate_settings(body, check_quiet_hours=False)
-
-    fields_set = body.model_fields_set
-
-    quiet_mode = body.quiet_mode if "quiet_mode" in fields_set else member.quiet_mode
-    if quiet_mode is not None and quiet_mode not in ("none", "custom"):
-        raise _err(422, "invalid")
-    effective_start = (body.quiet_start if "quiet_start" in fields_set
-                        else member.quiet_start)
-    effective_end = (body.quiet_end if "quiet_end" in fields_set
-                      else member.quiet_end)
-    if quiet_mode == "custom":
-        if effective_start is None or effective_end is None:
-            raise _err(422, "invalid_quiet_hours")
-        if effective_start == effective_end:
-            raise _err(422, "invalid_quiet_hours")
-
-    if "channels" in fields_set and body.channels is not None:
-        caps = capabilities(person, account_email is not None, account_email=account_email)
-        allowed = {ch for ch, cap_key in CHANNEL_CAPABILITY.items() if caps[cap_key]}
-        if not set(body.channels) <= allowed:
-            raise _err(422, "channel_unavailable")
-
-    data = body.model_dump(exclude_unset=True)
-    fields = list(data.keys())
-    before = snapshot(member, fields)
-    for field, value in data.items():
-        setattr(member, field, value)
-    return diff(before, snapshot(member, fields))
-
-
-@router.patch("/groups/{group_id}/members/{person_id}",
-              response_model=NotificationMemberOut)
-async def patch_member(
-    group_id: uuid.UUID,
-    person_id: uuid.UUID,
-    body: NotificationMemberOverrides,
-    db: DbSession,
-    actor: AuthContext = require_permission("notifications", "change"),
-) -> NotificationMemberOut:
-    member = await _get_member(db, group_id, person_id)
-    group = await _get_group(db, group_id)
-    person = await db.get(Person, person_id)
-    account_email = await _account_email(db, person_id)
-
-    changes = apply_member_overrides(member, body, person, account_email)
-    if changes:
-        audit(db, actor_id=actor.person.id, entity_type="notification_group",
-              entity_id=str(group_id), action="member.update", changes=changes)
-    await db.commit()
-    return _member_out(group, member, person, account_email)
+    return _member_out(member, person, await _account_email(db, person.id))
 
 
 @router.delete("/groups/{group_id}/members/{person_id}", status_code=204)
@@ -780,10 +651,12 @@ async def check_delivery(
     actor: AuthContext = require_permission("notifications", "view"),
 ) -> DeliveryCheckOut:
     """What would happen right now if this person got a notification of this
-    registered kind: the inbox row, the email's outcome and why, the address,
-    and each of the person's groups. Writes nothing. For a kind the account
-    owner always receives, `owner_copy=false` models an admin's copy instead
-    of the owner's. Super admin and above."""
+    registered kind: the inbox row, the email's outcome (now, held for their
+    summary, or not sent) and why, the address, their switches for the
+    category and where each comes from, their schedule, and whether the kind
+    is critical. Writes nothing. For a kind the account owner always receives,
+    `owner_copy=false` models an admin's copy instead of the owner's. Super
+    admin and above."""
     ensure_super_admin(actor)
     if kind not in KINDS:
         raise _err(422, "invalid_kind")
@@ -793,14 +666,107 @@ async def check_delivery(
         db, person_id, kind, owner_copy=owner_copy, now=datetime.now(UTC)))
 
 
+def _kind_flags(company: CompanySettings) -> list[dict]:
+    """Every registered kind in registry order with its flags: whether it is
+    ever emailed, whether it is critical (account security always; any other
+    kind once an admin marked it), and whether that is locked (security)."""
+    return [{"kind": kind, "label": info.label, "category": info.category,
+             "email": info.email, "owner_always": info.owner_always,
+             "critical": is_critical(kind, company),
+             "locked": info.category == SECURITY_CATEGORY}
+            for kind, info in KINDS.items()]
+
+
 @router.get("/kinds", response_model=list[NotificationKindOut])
 async def list_kinds(
+    db: DbSession,
     actor: AuthContext = require_permission("notifications", "view"),
 ) -> list[NotificationKindOut]:
     """The registered notification kinds in registry order, for Check
-    delivery's picker. Super admin and above."""
+    delivery's picker, each with whether it is critical and whether that is
+    locked. Super admin and above."""
     ensure_super_admin(actor)
-    return [NotificationKindOut(kind=kind, label=info.label, category=info.category,
-                                email=info.email, owner_always=info.owner_always,
-                                urgent=info.urgent)
-            for kind, info in KINDS.items()]
+    return [NotificationKindOut(**flags)
+            for flags in _kind_flags(await load_company_settings(db))]
+
+
+# ── company settings (anyone signed in reads; admin and above changes) ─────
+# The switches a person follows until they change their own, and the kinds an
+# admin marked critical (notifications/company.py). /me shows both.
+
+def _stored_settings(company: CompanySettings) -> dict:
+    """The settings in the shape the `notifications` section stores and the
+    audit records: every configurable category, the marked kinds in registry
+    order."""
+    return {"defaults": {category: {"inbox": switches.inbox, "email": switches.email}
+                         for category, switches in company.defaults.items()},
+            "critical_kinds": [kind for kind in KINDS if kind in company.critical_kinds]}
+
+
+def _settings_out(company: CompanySettings) -> NotificationSettingsOut:
+    stored = _stored_settings(company)
+    return NotificationSettingsOut(
+        defaults={category: SwitchPair(**pair) for category, pair in stored["defaults"].items()},
+        critical_kinds=stored["critical_kinds"],
+        kinds=[NotificationKindSettingOut(**flags) for flags in _kind_flags(company)])
+
+
+@router.get("/settings", response_model=NotificationSettingsOut)
+async def get_notification_settings(
+    _user: CurrentUser,
+    db: DbSession,
+) -> NotificationSettingsOut:
+    """The company defaults, the critical kinds an admin marked, and every
+    registered kind with its flags: what /me needs to say what a switch follows
+    and which notifications skip quiet hours. Any signed-in person."""
+    return _settings_out(await load_company_settings(db))
+
+
+@router.put("/settings", response_model=NotificationSettingsOut)
+async def put_notification_settings(
+    body: NotificationSettingsIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("notifications", "change"),
+) -> NotificationSettingsOut:
+    """Change the company defaults and/or the critical kinds, and answer with
+    the whole settings. `defaults` merges per category; `critical_kinds`
+    replaces the list (de-duplicated, in registry order). Admin and above.
+    422 `invalid_category` for a default of a category that has none (account
+    security included), `invalid_kind` for a critical kind that is
+    unregistered, never emailed or account security. Frozen by read-only mode
+    like every other write."""
+    ensure_admin(actor)
+    if body.defaults is not None and not body.defaults.keys() <= set(CONFIGURABLE_CATEGORIES):
+        raise _err(422, "invalid_category")
+    if body.critical_kinds is not None and not all(
+            critical_eligible(kind) for kind in body.critical_kinds):
+        raise _err(422, "invalid_kind")
+
+    # The section's row, created if missing and locked for this transaction: a
+    # partial save is read-merge-write, and two of them (a category each) must
+    # not overwrite each other, nor two first saves collide on the insert.
+    await db.execute(pg_insert(SystemConfig).values(section=COMPANY_SECTION, data={})
+                     .on_conflict_do_nothing(index_elements=[SystemConfig.section]))
+    row = await db.get(SystemConfig, COMPANY_SECTION, with_for_update=True,
+                       populate_existing=True)
+
+    before = await load_company_settings(db)
+    defaults = dict(before.defaults)
+    if body.defaults is not None:
+        defaults.update({category: Switches(pair.inbox, pair.email)
+                         for category, pair in body.defaults.items()})
+    after = CompanySettings(
+        defaults=defaults,
+        critical_kinds=(before.critical_kinds if body.critical_kinds is None
+                        else frozenset(body.critical_kinds)))
+
+    old, new = _stored_settings(before), _stored_settings(after)
+    row.data = new
+    row.updated_at = datetime.now(UTC)
+    row.updated_by = actor.person.id
+    changes = {key: {"from": old[key], "to": new[key]} for key in new if old[key] != new[key]}
+    if changes:
+        audit(db, actor_id=actor.person.id, entity_type="system", entity_id=COMPANY_SECTION,
+              action="notifications_config_update", changes=changes)
+    await db.commit()
+    return _settings_out(after)

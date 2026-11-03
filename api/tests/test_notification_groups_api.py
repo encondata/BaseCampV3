@@ -9,6 +9,24 @@ from serversherpa.db.models import (
 )
 from tests.test_access_roles_api import login_admin
 
+# the delivery settings a group no longer has (Phase 1): who gets email, and when,
+# is a person's own switches and schedule now
+DELIVERY_VALUES = [
+    ("channels", ["email"]),
+    ("quiet_start", "22:00:00"),
+    ("quiet_end", "06:00:00"),
+    ("timezone", "America/Chicago"),
+    ("active_days", ["mon"]),
+    ("dnd_behavior", "skip"),
+    ("urgent_bypass", False),
+]
+DELIVERY_FIELDS = tuple(field for field, _ in DELIVERY_VALUES)
+
+GROUP_KEYS = {"id", "name", "description", "categories", "enabled", "member_count",
+              "created_at"}
+MEMBER_KEYS = {"person_id", "display_name", "job_title", "avatar_url", "email", "phone",
+               "has_account", "added_at"}
+
 
 async def login_staff(client, seeded_user):
     """seeded_user is already role 'staff' — just log in, no upgrade."""
@@ -35,13 +53,7 @@ async def test_create_group_defaults_echoed(client, db, seeded_user):
     body = resp.json()
     assert body["name"] == "On-call"
     assert body["description"] == ""
-    assert set(body["channels"]) == {"email", "web"}
-    assert body["quiet_start"] is None and body["quiet_end"] is None
-    assert body["timezone"] == "America/New_York"
-    assert set(body["active_days"]) == {"mon", "tue", "wed", "thu", "fri",
-                                        "sat", "sun"}
-    assert body["dnd_behavior"] == "defer"
-    assert body["urgent_bypass"] is True
+    assert body["categories"] == []
     assert body["enabled"] is True
     assert body["member_count"] == 0
 
@@ -49,6 +61,8 @@ async def test_create_group_defaults_echoed(client, db, seeded_user):
         AuditLog.entity_type == "notification_group",
         AuditLog.action == "group.create"))
     assert row is not None and row.entity_id == body["id"]
+    assert row.changes["name"] == {"from": None, "to": "On-call"}
+    assert not set(DELIVERY_FIELDS) & row.changes.keys()
 
 
 async def test_duplicate_name_conflicts(client, db, seeded_user):
@@ -72,128 +86,41 @@ async def test_list_shows_member_count_zero(client, db, seeded_user):
     assert items[0]["member_count"] == 0
 
 
-async def test_patch_settings_round_trip(client, db, seeded_user):
+async def test_patch_round_trip(client, db, seeded_user):
     hdrs = await login_admin(client, db, seeded_user)
     resp = await client.post("/notifications/groups", headers=hdrs,
                              json={"name": "Escalations"})
     gid = resp.json()["id"]
 
     resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
-                              json={"quiet_start": "22:00:00",
-                                    "quiet_end": "06:00:00",
-                                    "active_days": ["mon", "tue", "wed"],
-                                    "dnd_behavior": "skip",
+                              json={"name": "Escalation desk",
+                                    "description": "Who gets paged",
                                     "enabled": False})
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["quiet_start"] == "22:00:00"
-    assert body["quiet_end"] == "06:00:00"
-    assert body["active_days"] == ["mon", "tue", "wed"]
-    assert body["dnd_behavior"] == "skip"
+    assert body["name"] == "Escalation desk"
+    assert body["description"] == "Who gets paged"
     assert body["enabled"] is False
 
     row = await db.scalar(select(AuditLog).where(
         AuditLog.entity_type == "notification_group",
         AuditLog.action == "group.update"))
     assert row is not None and row.entity_id == gid
+    assert set(row.changes) == {"name", "description", "enabled"}
 
 
-async def test_patch_bad_channel_rejected(client, db, seeded_user):
+async def test_patch_with_nothing_changed_writes_no_audit(client, db, seeded_user):
     hdrs = await login_admin(client, db, seeded_user)
     resp = await client.post("/notifications/groups", headers=hdrs,
-                             json={"name": "Bad channel"})
-    gid = resp.json()["id"]
-    resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
-                              json={"channels": ["email", "carrier_pigeon"]})
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "invalid"
-
-
-async def test_patch_bad_timezone_rejected(client, db, seeded_user):
-    hdrs = await login_admin(client, db, seeded_user)
-    resp = await client.post("/notifications/groups", headers=hdrs,
-                             json={"name": "Bad tz"})
-    gid = resp.json()["id"]
-    resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
-                              json={"timezone": "Mars/Olympus_Mons"})
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "invalid_timezone"
-
-
-async def test_patch_quiet_start_without_end_rejected(client, db, seeded_user):
-    hdrs = await login_admin(client, db, seeded_user)
-    resp = await client.post("/notifications/groups", headers=hdrs,
-                             json={"name": "Half quiet"})
-    gid = resp.json()["id"]
-    resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
-                              json={"quiet_start": "10:00:00"})
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "invalid_quiet_hours"
-
-
-async def test_patch_equal_quiet_times_rejected(client, db, seeded_user):
-    hdrs = await login_admin(client, db, seeded_user)
-    resp = await client.post("/notifications/groups", headers=hdrs,
-                             json={"name": "Equal quiet"})
-    gid = resp.json()["id"]
-    resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
-                              json={"quiet_start": "10:00:00",
-                                    "quiet_end": "10:00:00"})
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "invalid_quiet_hours"
-
-
-async def test_patch_partial_quiet_start_against_existing_end_allowed(
-        client, db, seeded_user):
-    """A PATCH that supplies only quiet_start must be validated against the
-    MERGED state (existing quiet_end), not treated as if quiet_end were
-    being cleared."""
-    hdrs = await login_admin(client, db, seeded_user)
-    resp = await client.post("/notifications/groups", headers=hdrs,
-                             json={"name": "Merged quiet",
-                                   "quiet_start": "22:00:00",
-                                   "quiet_end": "06:00:00"})
+                             json={"name": "Steady", "description": "Same"})
     gid = resp.json()["id"]
 
     resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
-                              json={"quiet_start": "23:00:00"})
+                              json={"description": "Same", "enabled": True})
     assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["quiet_start"] == "23:00:00"
-    assert body["quiet_end"] == "06:00:00"
-
-
-async def test_patch_quiet_start_against_no_existing_quiet_hours_rejected(
-        client, db, seeded_user):
-    """Same partial-field PATCH, but the group has no quiet hours set at
-    all — merged state is start-only, still invalid."""
-    hdrs = await login_admin(client, db, seeded_user)
-    resp = await client.post("/notifications/groups", headers=hdrs,
-                             json={"name": "No quiet yet"})
-    gid = resp.json()["id"]
-
-    resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
-                              json={"quiet_start": "10:00:00"})
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "invalid_quiet_hours"
-
-
-async def test_patch_explicit_null_quiet_start_alone_rejected(
-        client, db, seeded_user):
-    """Explicitly nulling only quiet_start (leaving quiet_end untouched)
-    on a group with both set must still 422 — clearing requires nulling
-    both fields together."""
-    hdrs = await login_admin(client, db, seeded_user)
-    resp = await client.post("/notifications/groups", headers=hdrs,
-                             json={"name": "Explicit null quiet",
-                                   "quiet_start": "22:00:00",
-                                   "quiet_end": "06:00:00"})
-    gid = resp.json()["id"]
-
-    resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
-                              json={"quiet_start": None})
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "invalid_quiet_hours"
+    assert await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "notification_group",
+        AuditLog.action == "group.update")) is None
 
 
 async def test_patch_explicit_null_non_nullable_field_rejected(
@@ -204,29 +131,60 @@ async def test_patch_explicit_null_non_nullable_field_rejected(
     resp = await client.post("/notifications/groups", headers=hdrs,
                              json={"name": "Null guard"})
     gid = resp.json()["id"]
-    for field in ("name", "description", "channels", "timezone",
-                  "active_days", "dnd_behavior", "urgent_bypass", "enabled"):
+    for field in ("name", "description", "categories", "enabled"):
         resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
                                   json={field: None})
         assert resp.status_code == 422, f"{field}: {resp.text}"
         assert resp.json()["detail"]["code"] == "invalid"
 
 
-async def test_patch_both_quiet_nulls_clears_quiet_hours(
-        client, db, seeded_user):
-    """quiet_start/quiet_end are the nullable exceptions — nulling both
-    together clears quiet hours."""
+# ── no delivery settings on a group ──────────────────────────────────
+
+async def test_group_out_has_no_delivery_fields(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    created = await client.post("/notifications/groups", headers=hdrs,
+                                json={"name": "Ops"})
+    assert created.status_code == 201, created.text
+    gid = created.json()["id"]
+    listed = await client.get("/notifications/groups", headers=hdrs)
+    detail = await client.get(f"/notifications/groups/{gid}", headers=hdrs)
+    patched = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
+                                 json={"description": "Pager rota"})
+    assert patched.status_code == 200, patched.text
+
+    shown = {"POST": created.json(), "GET list": listed.json()[0],
+             "GET one": detail.json(), "PATCH": patched.json()}
+    for label, body in shown.items():
+        assert not set(DELIVERY_FIELDS) & body.keys(), label
+        assert set(body) == GROUP_KEYS | ({"members"} if label == "GET one" else set()), label
+
+
+@pytest.mark.parametrize("field,value", DELIVERY_VALUES)
+async def test_create_rejects_delivery_fields(client, db, seeded_user, field, value):
     hdrs = await login_admin(client, db, seeded_user)
     resp = await client.post("/notifications/groups", headers=hdrs,
-                             json={"name": "Clear quiet",
-                                   "quiet_start": "22:00:00",
-                                   "quiet_end": "06:00:00"})
+                             json={"name": "Ops", field: value})
+    assert resp.status_code == 422, resp.text
+    [error] = resp.json()["detail"]
+    assert (error["type"], error["loc"]) == ("extra_forbidden", ["body", field])
+    # nothing was created
+    assert (await client.get("/notifications/groups", headers=hdrs)).json() == []
+
+
+@pytest.mark.parametrize("field,value", DELIVERY_VALUES)
+async def test_patch_rejects_delivery_fields(client, db, seeded_user, field, value):
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/notifications/groups", headers=hdrs,
+                             json={"name": "Ops"})
     gid = resp.json()["id"]
     resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
-                              json={"quiet_start": None, "quiet_end": None})
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["quiet_start"] is None and body["quiet_end"] is None
+                              json={"description": "changed", field: value})
+    assert resp.status_code == 422, resp.text
+    [error] = resp.json()["detail"]
+    assert (error["type"], error["loc"]) == ("extra_forbidden", ["body", field])
+    # the rest of the patch was not applied either
+    assert (await client.get(f"/notifications/groups/{gid}",
+                             headers=hdrs)).json()["description"] == ""
 
 
 async def test_delete_group(client, db, seeded_user):
@@ -254,7 +212,7 @@ async def test_staff_forbidden_from_creating_group(client, db, seeded_user):
     assert resp.status_code == 403
 
 
-# ── members, overrides, recipients (Task 2) ─────────────────────────
+# ── members and recipients ───────────────────────────────────────────
 
 async def test_group_detail_not_found(client, db, seeded_user):
     hdrs = await login_admin(client, db, seeded_user)
@@ -270,7 +228,6 @@ async def test_add_member_email_only_person(client, db, seeded_user):
     resp = await client.post("/notifications/groups", headers=hdrs,
                              json={"name": "Email only"})
     gid = resp.json()["id"]
-    group = resp.json()
     person = await _person(db, "Emma", "Emailer", email="emma@test.example.com")
 
     resp = await client.post(f"/notifications/groups/{gid}/members",
@@ -278,22 +235,9 @@ async def test_add_member_email_only_person(client, db, seeded_user):
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["person_id"] == str(person.id)
-    assert body["can_email"] is True
-    assert body["can_text"] is False
-    assert body["can_push"] is False
-    assert body["can_web"] is False
+    assert body["display_name"] == "Emma Emailer"
+    assert body["email"] == "emma@test.example.com"
     assert body["has_account"] is False
-    assert body["overrides"] == {
-        "channels": None, "quiet_mode": None, "quiet_start": None,
-        "quiet_end": None, "timezone": None, "active_days": None,
-        "dnd_behavior": None, "urgent_bypass": None}
-    assert set(body["effective"]["channels"]) == set(group["channels"])
-    assert body["effective"]["timezone"] == group["timezone"]
-    assert set(body["effective"]["active_days"]) == set(group["active_days"])
-    assert body["effective"]["dnd_behavior"] == group["dnd_behavior"]
-    assert body["effective"]["urgent_bypass"] == group["urgent_bypass"]
-    assert body["effective"]["quiet_start"] is None
-    assert body["effective"]["quiet_end"] is None
 
     row = await db.scalar(select(AuditLog).where(
         AuditLog.entity_type == "notification_group",
@@ -303,6 +247,27 @@ async def test_add_member_email_only_person(client, db, seeded_user):
     detail = await client.get(f"/notifications/groups/{gid}", headers=hdrs)
     assert detail.status_code == 200
     assert [m["person_id"] for m in detail.json()["members"]] == [str(person.id)]
+    assert detail.json()["member_count"] == 1
+
+
+async def test_member_out_has_only_who_they_are(client, db, seeded_user):
+    """A member is a person on a list: no overrides, no effective settings, no
+    channel capabilities (those are the recipients picker's, GET /recipients)."""
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/notifications/groups", headers=hdrs,
+                             json={"name": "Plain list"})
+    gid = resp.json()["id"]
+    person = await _person(db, "Pia", "Plain", email="pia@test.example.com",
+                           phone="555-0101")
+
+    added = await client.post(f"/notifications/groups/{gid}/members", headers=hdrs,
+                              json={"person_id": str(person.id)})
+    assert added.status_code == 201, added.text
+    detail = await client.get(f"/notifications/groups/{gid}", headers=hdrs)
+    [listed] = detail.json()["members"]
+    for label, member in (("POST", added.json()), ("GET", listed)):
+        assert set(member) == MEMBER_KEYS, label
+        assert (member["email"], member["phone"]) == ("pia@test.example.com", "555-0101")
 
 
 async def test_add_duplicate_member_conflicts(client, db, seeded_user):
@@ -334,121 +299,27 @@ async def test_add_archived_person_not_found(client, db, seeded_user):
     assert resp.json()["detail"]["code"] == "person_not_found"
 
 
-async def test_override_channels_unavailable_for_phoneless_person(
-        client, db, seeded_user):
+async def test_member_override_route_is_gone(client, db, seeded_user):
+    """Overrides ended with the group delivery settings: the member path only
+    deletes now, and a PATCH to it changes nothing."""
     hdrs = await login_admin(client, db, seeded_user)
     resp = await client.post("/notifications/groups", headers=hdrs,
-                             json={"name": "No phone"})
+                             json={"name": "No overrides"})
     gid = resp.json()["id"]
-    person = await _person(db, "Noah", "Nophone")
+    person = await _person(db, "Olive", "Override", email="olive@test.example.com")
     await client.post(f"/notifications/groups/{gid}/members", headers=hdrs,
                       json={"person_id": str(person.id)})
 
-    resp = await client.patch(
-        f"/notifications/groups/{gid}/members/{person.id}", headers=hdrs,
-        json={"channels": ["text"]})
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "channel_unavailable"
-
-
-async def test_override_empty_channels_means_muted(client, db, seeded_user):
-    hdrs = await login_admin(client, db, seeded_user)
-    resp = await client.post("/notifications/groups", headers=hdrs,
-                             json={"name": "Muted"})
-    gid = resp.json()["id"]
-    person = await _person(db, "Mia", "Muted", email="mia@test.example.com")
-    await client.post(f"/notifications/groups/{gid}/members", headers=hdrs,
-                      json={"person_id": str(person.id)})
-
-    resp = await client.patch(
-        f"/notifications/groups/{gid}/members/{person.id}", headers=hdrs,
-        json={"channels": []})
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["overrides"]["channels"] == []
-    assert body["effective"]["channels"] == []
-
-
-async def test_override_quiet_mode_custom_without_times_rejected(
-        client, db, seeded_user):
-    hdrs = await login_admin(client, db, seeded_user)
-    resp = await client.post("/notifications/groups", headers=hdrs,
-                             json={"name": "Custom no times"})
-    gid = resp.json()["id"]
-    person = await _person(db, "Cora", "Custom")
-    await client.post(f"/notifications/groups/{gid}/members", headers=hdrs,
-                      json={"person_id": str(person.id)})
-
-    resp = await client.patch(
-        f"/notifications/groups/{gid}/members/{person.id}", headers=hdrs,
-        json={"quiet_mode": "custom"})
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "invalid_quiet_hours"
-
-
-async def test_override_quiet_mode_none_nulls_effective_quiet_hours(
-        client, db, seeded_user):
-    hdrs = await login_admin(client, db, seeded_user)
-    resp = await client.post("/notifications/groups", headers=hdrs,
-                             json={"name": "Quiet group",
-                                   "quiet_start": "22:00:00",
-                                   "quiet_end": "06:00:00"})
-    gid = resp.json()["id"]
-    person = await _person(db, "Quinn", "Quiet")
-    await client.post(f"/notifications/groups/{gid}/members", headers=hdrs,
-                      json={"person_id": str(person.id)})
-
-    resp = await client.patch(
-        f"/notifications/groups/{gid}/members/{person.id}", headers=hdrs,
-        json={"quiet_mode": "none"})
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["effective"]["quiet_start"] is None
-    assert body["effective"]["quiet_end"] is None
-
-
-async def test_override_explicit_null_clears_channel_override(
-        client, db, seeded_user):
-    hdrs = await login_admin(client, db, seeded_user)
-    resp = await client.post("/notifications/groups", headers=hdrs,
-                             json={"name": "Clear override"})
-    gid = resp.json()["id"]
-    group = resp.json()
-    person = await _person(db, "Cleo", "Clear", email="cleo@test.example.com")
-    await client.post(f"/notifications/groups/{gid}/members", headers=hdrs,
-                      json={"person_id": str(person.id)})
-
-    resp = await client.patch(
-        f"/notifications/groups/{gid}/members/{person.id}", headers=hdrs,
-        json={"channels": ["email"]})
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["effective"]["channels"] == ["email"]
-
-    resp = await client.patch(
-        f"/notifications/groups/{gid}/members/{person.id}", headers=hdrs,
-        json={"channels": None})
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["overrides"]["channels"] is None
-    assert set(body["effective"]["channels"]) == set(group["channels"])
-
-    row = await db.scalar(select(AuditLog).where(
-        AuditLog.entity_type == "notification_group",
-        AuditLog.action == "member.update"))
-    assert row is not None and row.entity_id == gid
-
-
-async def test_patch_member_not_found(client, db, seeded_user):
-    hdrs = await login_admin(client, db, seeded_user)
-    resp = await client.post("/notifications/groups", headers=hdrs,
-                             json={"name": "No such member"})
-    gid = resp.json()["id"]
-    resp = await client.patch(
-        f"/notifications/groups/{gid}/members/"
-        "00000000-0000-0000-0000-000000000000",
-        headers=hdrs, json={"channels": []})
-    assert resp.status_code == 404
-    assert resp.json()["detail"]["code"] == "member_not_found"
+    for body in ({"channels": ["email"]}, {"quiet_mode": "none"}, {}):
+        resp = await client.patch(
+            f"/notifications/groups/{gid}/members/{person.id}", headers=hdrs, json=body)
+        assert resp.status_code in (404, 405), resp.text
+    # and the member is still there, unchanged
+    detail = await client.get(f"/notifications/groups/{gid}", headers=hdrs)
+    [member] = detail.json()["members"]
+    assert member["person_id"] == str(person.id)
+    assert set(member) == MEMBER_KEYS
+    assert await db.get(NotificationGroupMember, (gid, person.id)) is not None
 
 
 async def test_remove_member(client, db, seeded_user):
@@ -521,9 +392,10 @@ async def test_staff_forbidden_from_recipients(client, db, seeded_user):
     assert resp.status_code == 403
 
 
-async def test_member_with_only_a_login_email_can_email(client, db, seeded_user):
-    """The sender falls back to the sign-in email, so a person with no profile
-    email but an account is reachable by email (spec section 8)."""
+async def test_member_with_only_a_login_email(client, db, seeded_user):
+    """A person with no profile email but an account joins like anyone else, and the
+    recipients picker still says they can be emailed: the sender falls back to the
+    sign-in email (spec section 8)."""
     hdrs = await login_admin(client, db, seeded_user)
     resp = await client.post("/notifications/groups", headers=hdrs,
                              json={"name": "Login only"})
@@ -536,23 +408,15 @@ async def test_member_with_only_a_login_email_can_email(client, db, seeded_user)
     resp = await client.post(f"/notifications/groups/{gid}/members",
                              headers=hdrs, json={"person_id": str(person.id)})
     assert resp.status_code == 201, resp.text
-    assert resp.json()["can_email"] is True
+    assert (resp.json()["email"], resp.json()["has_account"]) == (None, True)
 
     detail = await client.get(f"/notifications/groups/{gid}", headers=hdrs)
     [member] = detail.json()["members"]
-    assert (member["email"], member["has_account"], member["can_email"]) == (
-        None, True, True)
+    assert (member["email"], member["has_account"]) == (None, True)
 
     recipients = await client.get("/notifications/recipients", headers=hdrs)
     lou = {row["person_id"]: row for row in recipients.json()}[str(person.id)]
     assert (lou["email"], lou["can_email"]) == (None, True)
-
-    resp = await client.patch(
-        f"/notifications/groups/{gid}/members/{person.id}", headers=hdrs,
-        json={"channels": ["email"]})
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["overrides"]["channels"] == ["email"]
-    assert resp.json()["can_email"] is True
 
 
 def test_capabilities_needs_the_sign_in_email_by_name():

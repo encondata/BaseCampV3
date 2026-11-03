@@ -16,6 +16,7 @@
 import type { BulkDiff } from '../components/bulk/BulkApplySummary';
 import type { TagKey } from '../labels/tagTypes';
 import type { Action, PermMap, ScopeInfo } from './access';
+import type { Day } from './notifications';
 import type { OrgItem } from './orgs';
 import { trucksFeedQuery, trucksListQuery, trucksMapQuery } from './shipments';
 import { siblingOrigin } from './siblingOrigin';
@@ -52,14 +53,16 @@ export interface PersonOut {
 
 export type NotificationSound = 'none' | 'chime' | 'ping' | 'pop' | 'bell';
 
-/** How one notification category reaches the person: inbox + email, inbox
- *  only, or nothing. Mirrors notifications/kinds.py CATEGORIES. */
-export type DeliveryChoice = 'email' | 'inbox' | 'off';
+/** Mirrors notifications/kinds.py CATEGORIES. */
 export type NotificationCategory = 'approvals' | 'reports' | 'wiki' | 'learning' | 'security';
 
+/** What the person has chosen about notifications, on their account: the
+ *  in-app sound, their own switch values (only those; a category or a value
+ *  left out follows the company default) and when email may reach them. */
 export interface NotifPrefs {
   sound: NotificationSound; // in-app sound for new inbox items
-  categories: Record<NotificationCategory, DeliveryChoice>;
+  switches: NotifSwitches;
+  schedule: NotifSchedule;
 }
 
 export type NamedAccent = 'amber' | 'aqua' | 'blue' | 'violet' | 'pink' | 'green';
@@ -749,7 +752,7 @@ export interface UserWorkerCard {
 }
 
 export interface UserNotificationGroup {
-  id: string; name: string; channels: string[]; added_at: string;
+  id: string; name: string; added_at: string;
 }
 
 export interface UserAccessGroupRow {
@@ -4752,46 +4755,22 @@ export async function testSpecLookup(): Promise<{ ok: boolean; latency_ms: numbe
 
 /* ── notification groups ─────────────────────────────────────────────
  * Mirrors api/src/serversherpa/api/schemas.py's Notification*Out shapes.
- * Times ("quiet_start"/"quiet_end") serialize as "HH:MM:SS" strings. */
+ * A group is a name, a description, Active/Paused and its members: it decides
+ * nothing about what anyone gets, so it carries no delivery settings. Its
+ * `categories` are kept by the API but shown nowhere. */
 
 export interface NotificationGroup {
   id: string;
   name: string;
   description: string;
-  channels: string[];
   categories: string[];
-  quiet_start: string | null;
-  quiet_end: string | null;
-  timezone: string;
-  active_days: string[];
-  dnd_behavior: string;
-  urgent_bypass: boolean;
   enabled: boolean;
   member_count: number;
   created_at: string;
 }
 
-export interface NotificationMemberOverrides {
-  channels: string[] | null;
-  quiet_mode: string | null;
-  quiet_start: string | null;
-  quiet_end: string | null;
-  timezone: string | null;
-  active_days: string[] | null;
-  dnd_behavior: string | null;
-  urgent_bypass: boolean | null;
-}
-
-export interface NotificationEffectiveSettings {
-  channels: string[];
-  quiet_start: string | null;
-  quiet_end: string | null;
-  timezone: string;
-  active_days: string[];
-  dnd_behavior: string;
-  urgent_bypass: boolean;
-}
-
+/** A person on a group's list. What they can be reached on is the recipients
+ *  picker's business (NotificationRecipient), not the member's. */
 export interface NotificationMember {
   person_id: string;
   display_name: string;
@@ -4800,12 +4779,6 @@ export interface NotificationMember {
   email: string | null;
   phone: string | null;
   has_account: boolean;
-  can_email: boolean;
-  can_text: boolean;
-  can_push: boolean;
-  can_web: boolean;
-  overrides: NotificationMemberOverrides;
-  effective: NotificationEffectiveSettings;
   added_at: string;
 }
 
@@ -4827,28 +4800,19 @@ export interface NotificationRecipient {
   can_web: boolean;
 }
 
-/** Shared shape for group create/patch — all fields optional so callers can
- *  send a partial patch. */
-export interface NotificationGroupSettingsIn {
-  channels?: string[];
-  categories?: string[];
-  quiet_start?: string | null;
-  quiet_end?: string | null;
-  timezone?: string;
-  active_days?: string[];
-  dnd_behavior?: string;
-  urgent_bypass?: boolean;
-}
-
-export interface NotificationGroupCreateIn extends NotificationGroupSettingsIn {
+/** `categories` is what the API still accepts and keeps; no screen sends it. */
+export interface NotificationGroupCreateIn {
   name: string;
   description?: string;
+  categories?: string[];
 }
 
-export interface NotificationGroupPatchIn extends NotificationGroupSettingsIn {
+/** All fields optional so a caller can send a partial patch. */
+export interface NotificationGroupPatchIn {
   name?: string;
   description?: string;
   enabled?: boolean;
+  categories?: string[];
 }
 
 export async function listNotificationGroups(): Promise<NotificationGroup[]> {
@@ -4904,18 +4868,6 @@ export async function addNotificationMember(
   return resp.json();
 }
 
-export async function updateNotificationMember(
-  groupId: string, personId: string, overrides: Partial<NotificationMemberOverrides>,
-): Promise<NotificationMember> {
-  const resp = await apiFetch(`/notifications/groups/${groupId}/members/${personId}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(overrides),
-  });
-  if (!resp.ok) throw await errorFrom(resp);
-  return resp.json();
-}
-
 export async function removeNotificationMember(
   groupId: string, personId: string,
 ): Promise<void> {
@@ -4947,19 +4899,9 @@ export interface MyNotificationGroup {
   id: string;
   name: string;
   description: string;
-  channels: string[];
   categories: string[];
-  effective_channels: string[];
-  quiet_start: string | null;
-  quiet_end: string | null;
-  timezone: string;
-  active_days: string[];
-  dnd_behavior: string;
-  urgent_bypass: boolean;
   member_count: number;
   is_member: boolean;
-  overrides: NotificationMemberOverrides | null;
-  effective: NotificationEffectiveSettings | null;
   pending_request: MyPendingRequest | null;
 }
 
@@ -4982,18 +4924,6 @@ export async function listMyNotificationGroups(q = ''): Promise<MyNotificationGr
   const params = new URLSearchParams();
   if (q) params.set('q', q);
   const resp = await apiFetch(`/auth/me/notification-groups?${params.toString()}`);
-  if (!resp.ok) throw await errorFrom(resp);
-  return resp.json();
-}
-
-export async function updateMyGroupOverrides(
-  groupId: string, body: Partial<NotificationMemberOverrides>,
-): Promise<MyNotificationGroup> {
-  const resp = await apiFetch(`/auth/me/notification-groups/${groupId}/overrides`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
@@ -6561,23 +6491,32 @@ export async function clearReadInbox(): Promise<void> {
 
 /* ── delivery log + Check delivery (super admin and above) ───────────
  * Mirrors api/src/serversherpa/api/schemas.py DeliveryLogEntryOut,
- * DeliveryCheckOut, DeliveryCheckGroupOut and NotificationKindOut; every
- * call below answers 403 under super admin (global access, rank 80+). */
+ * DeliveryCheckOut (with DeliveryCheckSwitchesOut and DeliveryCheckScheduleOut)
+ * and NotificationKindOut; every call below answers 403 under super admin
+ * (global access, rank 80+). */
 
 /** The delivery log's events (notifications/delivery_log.py EVENTS). */
 export type DeliveryLogEvent =
   | 'inbox_written' | 'inbox_suppressed'
-  | 'email_queued' | 'email_not_queued'
+  | 'email_queued' | 'email_not_queued' | 'email_held' | 'email_summarized'
   | 'email_sent' | 'email_skipped' | 'email_retry' | 'email_failed';
 
 /** One recorded decision with the names it points at. `event`, `channel`,
  *  `reason` and `category` are codes; one a newer API adds shows as itself.
  *  `detail` holds ids, codes and counts only (never an address or a body):
- *  email_queued → template, send_at, deferred, and for notification mail
- *  reason (quiet_hours / inactive_day), groups (names) and via (contact /
- *  login); email_sent → attempt; email_retry → attempt, error (exception
- *  class), smtp_code, next_attempt_at; email_failed → attempts, error,
- *  smtp_code. `to_address` and `outbox_status` come from the outbox row. */
+ *  inbox_suppressed, and email_not_queued for category_off or
+ *  category_inbox_only → source (default / own: whether the switch that
+ *  turned it down follows the company default or is the person's own);
+ *  email_queued → template, send_at, deferred, and for notification mail via
+ *  (contact / login) plus critical, owner_copy and after_summary when true;
+ *  for the summary email itself summary (true) and count; rows from before
+ *  Phase 1 may also carry reason (quiet_hours / inactive_day) and groups
+ *  (names) on a deferred email; email_held (reason: quiet_hours /
+ *  inactive_day) → summary_at; email_summarized → nothing (its `outbox_id`
+ *  is the summary email); email_sent → attempt; email_retry → attempt, error
+ *  (exception class), smtp_code, next_attempt_at; email_failed → attempts,
+ *  error, smtp_code. `to_address` and `outbox_status` come from the outbox
+ *  row. */
 export interface DeliveryLogEntry {
   id: number;
   at: string;
@@ -6638,59 +6577,72 @@ export async function getDeliveryLogPage(
   return resp.json();
 }
 
-/** One group the person is in, with its effective settings for them and its
- *  answer right now: `verdict` is open, quiet_hours, inactive_day,
- *  urgent_bypass or no_email_channel for an enabled group that covers the
- *  category, else paused or not_subscribed. `allowed_at` is the earliest it
- *  allows the email (null: never, or not asked). */
-export interface DeliveryCheckGroup {
-  group_id: string;
-  name: string;
-  enabled: boolean;
-  subscribed: boolean;
-  email_channel: boolean;
-  verdict: string;
-  allowed_at: string | null;
+/** Where a switch's value comes from: the company default the person
+ *  follows, their own choice, or fixed (account security is always on). */
+export type SwitchSource = 'default' | 'own' | 'fixed';
+
+/** One of the person's switches for the category: whether it is on, and
+ *  where that comes from. */
+export interface DeliveryCheckSwitch { on: boolean; source: SwitchSource }
+
+/** The person's schedule as the decision reads it, and where it stands right
+ *  now: `timezone` is the reference zone when they set none (or theirs no
+ *  longer loads), `days` the days they work in week order, the quiet hours
+ *  both "HH:MM" or both null. */
+export interface DeliveryCheckSchedule {
+  timezone: string;
+  days: Day[];
   quiet_start: string | null;
   quiet_end: string | null;
-  timezone: string;
-  active_days: string[];
+  state: 'open' | 'quiet_hours' | 'inactive_day';
 }
 
 /** What would happen right now if this person got a notification of this
- *  kind; nothing is written. `outcome` is the email's (sent now, held until
- *  `send_at`, or not sent), `reason` why it waits or does not go.
- *  `email_source` is the category's, so an admin's copy of a security kind
- *  still reads "always": `owner_copy` says which copy was modeled. */
+ *  kind; nothing is written. `inbox` is whether the row is written and
+ *  `inbox_source` where the Inbox switch behind it comes from. `outcome` is
+ *  the email's: sent now (`send_at`), held for the person's summary (due
+ *  `summary_at`), or not sent; `reason` says why it is held or does not go.
+ *  `after_summary` marks an email sent now only because it falls in the last
+ *  hour before the person is back online, when that morning's summary has
+ *  already gone. `owner_copy` is the copy that was modeled; `critical` is
+ *  whether the TYPE skips quiet hours, days off and the summary (true for an
+ *  admin copy that is not emailed, too). */
 export interface DeliveryCheck {
   person_id: string;
   person_name: string;
   kind: string;
   kind_label: string;
   category: string;
-  email_source: string;
   owner_copy: boolean;
   active: boolean;
   has_account: boolean;
-  choice: string;
   inbox: 'written' | 'suppressed';
+  inbox_source: SwitchSource;
   email_enabled: boolean;
+  critical: boolean;
+  switches: { inbox: DeliveryCheckSwitch; email: DeliveryCheckSwitch };
+  schedule: DeliveryCheckSchedule;
   outcome: 'now' | 'held' | 'not_sent';
+  after_summary: boolean;
   send_at: string | null;
+  summary_at: string | null;
   reason: string | null;
   address: string | null;
   address_source: 'contact' | 'login' | null;
-  groups: DeliveryCheckGroup[];
 }
 
-/** One registered notification kind, for Check delivery's picker. */
+/** One registered notification kind, for Check delivery's picker. `email` is
+ *  whether it is ever emailed; `critical` whether it skips quiet hours, days
+ *  off and the summary; `locked` whether that is fixed (account security is
+ *  always critical). */
 export interface NotificationKindInfo {
   kind: string;
   label: string;
   category: NotificationCategory;
   email: boolean;
   owner_always: boolean;
-  urgent: boolean;
+  critical: boolean;
+  locked: boolean;
 }
 
 /** The registered kinds in registry order (GET /notifications/kinds). */
@@ -6709,6 +6661,78 @@ export async function checkDelivery(
   const qs = new URLSearchParams({ person_id: personId, kind });
   if (ownerCopy !== undefined) qs.set('owner_copy', String(ownerCopy));
   const resp = await apiFetch(`/notifications/check?${qs.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/* ── your switches and schedule, and the company settings ────────────────
+ * Mirrors api/src/serversherpa/api/schemas.py SwitchPair, SwitchOverride,
+ * NotifSchedule, NotificationKindSettingOut and NotificationSettingsOut. The
+ * person's own values live in ui_prefs.notif and are saved through
+ * PUT /auth/me/preferences; the company defaults and the critical kinds are
+ * the /notifications/settings calls below. */
+
+/** One category's two switches: written to the inbox, and emailed. */
+export interface SwitchPair { inbox: boolean; email: boolean }
+
+/** A person's own switch values (ui_prefs.notif.switches): only what they
+ *  changed. A category or a value that is missing follows the company
+ *  default. Account security is always on, so it is never here. */
+export type NotifSwitches = Partial<Record<NotificationCategory, { inbox?: boolean; email?: boolean }>>;
+
+/** When email may reach a person (ui_prefs.notif.schedule). `timezone` null
+ *  is the company reference zone; `days` are the days they work, at least
+ *  one, in week order; the quiet hours are both local "HH:MM" times, or
+ *  neither, and differ (the window may run past midnight). */
+export interface NotifSchedule {
+  timezone: string | null;
+  days: Day[];
+  quiet_start: string | null;
+  quiet_end: string | null;
+}
+
+/** One registered kind in the company settings. `email` is whether it is ever
+ *  emailed; `critical` whether it skips quiet hours, days off and the summary;
+ *  `locked` whether that is fixed (account security is always critical). */
+export interface NotificationKindSetting {
+  kind: string;
+  label: string;
+  category: NotificationCategory;
+  email: boolean;
+  owner_always: boolean;
+  critical: boolean;
+  locked: boolean;
+}
+
+/** The company notification settings. `defaults` holds each configurable
+ *  category's switches by category key (account security has none);
+ *  `critical_kinds` the kinds an admin marked critical (not the always-critical
+ *  security kinds); `kinds` every registered kind, in registry order. */
+export interface NotificationSettings {
+  defaults: Record<string, SwitchPair>;
+  critical_kinds: string[];
+  kinds: NotificationKindSetting[];
+}
+
+/** The company settings (GET /notifications/settings), for any signed-in
+ *  person: /me needs the defaults and the critical list to show what a
+ *  switch they have not changed follows. */
+export async function getNotificationSettings(): Promise<NotificationSettings> {
+  const resp = await apiFetch('/notifications/settings');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Change the company settings (PUT /notifications/settings), admin and above.
+ *  A partial body: a category in `defaults` replaces both its switches, and
+ *  `critical_kinds` replaces the whole list. Answers the whole settings; 422
+ *  `invalid_category` / `invalid_kind`, and `read_only_mode` in read-only mode. */
+export async function updateNotificationSettings(
+  body: { defaults?: Record<string, SwitchPair>; critical_kinds?: string[] },
+): Promise<NotificationSettings> {
+  const resp = await apiFetch('/notifications/settings', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

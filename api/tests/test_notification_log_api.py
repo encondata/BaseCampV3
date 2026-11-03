@@ -2,9 +2,11 @@
 decisions notify(), enqueue() and delivery recorded), GET /notifications/check
 (what would happen right now for one person and one notification kind,
 writing nothing) and GET /notifications/kinds (the check's picker). Log rows
-are seeded with record(); the check runs against real groups and prefs.
+are seeded with record(); the check runs against real prefs and company
+settings.
 
-Spec: docs/superpowers/specs/2026-10-31-notifications-phase0-design.md (section 9)"""
+Spec: docs/superpowers/specs/2026-10-31-notifications-phase0-design.md (section 9) and
+docs/superpowers/specs/2026-11-01-notifications-phase1-design.md (section 7)"""
 
 from datetime import UTC, datetime, time, timedelta
 from uuid import uuid4
@@ -18,12 +20,11 @@ from serversherpa.api.deps import AuthContext, ensure_super_admin
 from serversherpa.db.models import (
     EmailOutbox,
     Notification,
-    NotificationGroup,
-    NotificationGroupMember,
     NotificationLog,
     PermissionOverride,
     Person,
     Role,
+    SystemConfig,
     UserAccount,
 )
 from serversherpa.notifications.check import check_delivery
@@ -76,25 +77,41 @@ async def _person(db, first="Pat", *, account_email=None, prefs=None):
     return p
 
 
-async def _group(db, person, *, categories=("reports",), **over):
-    g = NotificationGroup(name=f"g-{uuid4().hex[:8]}", categories=list(categories),
-                          timezone="UTC", **over)
-    db.add(g)
-    await db.flush()
-    db.add(NotificationGroupMember(group_id=g.id, person_id=person.id))
-    await db.flush()
-    return g
-
-
 def _prefs(**cats):
-    return {"notif": {"categories": cats}}
+    """ui_prefs of a person who chose, per category, "email" (follow the company
+    default: no entry), "inbox" (Email off) or "off" (Inbox and Email off)."""
+    own = {"inbox": {"email": False}, "off": {"inbox": False, "email": False}}
+    return {"notif": {"switches": {category: own[choice] for category, choice in cats.items()
+                                   if choice != "email"}}}
 
 
 def _quiet_now():
-    """UTC quiet hours around the current time, and the instant they end."""
+    """A schedule (in UTC) whose quiet hours hold right now, and its summary
+    time. The window starts an hour before the current hour and ends three
+    hours after it, so the summary (an hour before it ends) is still ahead even
+    when the hour turns while the test runs."""
     now = datetime.now(UTC)
-    window = {"quiet_start": time((now.hour - 1) % 24), "quiet_end": time((now.hour + 2) % 24)}
-    return window, now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=2)
+    start, end = time((now.hour - 1) % 24), time((now.hour + 3) % 24)
+    schedule = {"timezone": "UTC", "quiet_start": start.strftime("%H:%M"),
+                "quiet_end": end.strftime("%H:%M")}
+    return schedule, now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=2)
+
+
+def _last_quiet_hour_now():
+    """A schedule (in UTC) in the last hour of its quiet hours right now: the
+    window began two hours ago and ends in half an hour, so its summary time
+    (an hour before the end) has already passed, with ample margin for the
+    test to run before the window ends."""
+    now = datetime.now(UTC)
+    start, end = now - timedelta(hours=2), now + timedelta(minutes=30)
+    return {"timezone": "UTC", "quiet_start": start.strftime("%H:%M"),
+            "quiet_end": end.strftime("%H:%M")}
+
+
+async def _company(db, **data):
+    """Save the company notification settings (defaults and/or critical kinds)."""
+    db.add(SystemConfig(section="notifications", data=data))
+    await db.flush()
 
 
 async def _counts(db):
@@ -227,7 +244,6 @@ async def test_log_filters(client, db):
 async def test_log_entry_joins_names_and_address(client, db, email_on):
     hdrs = await _super_admin(db, client)
     pat = await _person(db)
-    await _group(db, pat)
     row = await notify(db, pat.id, "report_ready", "Move Report is ready",
                        body="NAP11 finished", link="/reports?run=abc")
     record(db, "email_sent", channel="email", kind="invite")     # template mail, no outbox
@@ -276,10 +292,18 @@ async def _check(client, hdrs, person, kind="report_ready", **params):
     return resp.json()
 
 
+CHECK_KEYS = {
+    "person_id", "person_name", "kind", "kind_label", "category", "owner_copy", "active",
+    "has_account", "inbox", "inbox_source", "email_enabled", "critical", "switches",
+    "schedule", "outcome", "after_summary", "send_at", "summary_at", "reason", "address",
+    "address_source",
+}
+EVERY_DAY = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
 async def test_check_explains_without_writing(client, db, email_on):
     hdrs = await _super_admin(db, client)
     pat = await _person(db)
-    await _group(db, pat)
     await db.commit()
     before = await _counts(db)
 
@@ -294,86 +318,40 @@ async def test_check_explains_without_writing(client, db, email_on):
 
 async def test_check_outcomes(client, db, email_on):
     hdrs = await _super_admin(db, client)
-    quiet, quiet_end = _quiet_now()
-
-    # a subscribed group that is open now
+    # no account: the default switches and the open schedule
     open_person = await _person(db, "Olive")
-    open_group = await _group(db, open_person)
-    # quiet hours that defer
-    held_person = await _person(db, "Hank")
-    held_group = await _group(db, held_person, dnd_behavior="defer", **quiet)
-    # no group at all
-    lone = await _person(db, "Lena")
     # the category turned off
     off = await _person(db, "Otto", prefs=_prefs(reports="off"))
-    await _group(db, off)
-    # a paused group and one that does not cover the category
-    member = await _person(db, "Mira")
-    paused = await _group(db, member, enabled=False)
-    other = await _group(db, member, categories=("wiki",))
-    # an owner's own security notice
-    owner = await _person(db, "Owen", account_email="owen.login@test.example.com")
-    # an admin copy of an urgent kind, in quiet hours with urgent bypass
-    admin_copy = await _person(db, "Ada")
-    bypass = await _group(db, admin_copy, categories=("security",), dnd_behavior="skip",
-                          urgent_bypass=True, **quiet)
     # a kind that is never emailed, with its category off
     reset = await _person(db, "Rhea", prefs=_prefs(approvals="off"))
     await db.commit()
 
     body = await _check(client, hdrs, open_person)
-    assert (body["outcome"], body["reason"], body["inbox"]) == ("now", None, "written")
+    assert set(body) == CHECK_KEYS
+    assert (body["outcome"], body["reason"], body["after_summary"]) == ("now", None, False)
+    assert (body["inbox"], body["inbox_source"]) == ("written", "default")
     assert (body["person_id"], body["person_name"]) == (str(open_person.id), "Olive Tester")
     assert (body["kind"], body["kind_label"], body["category"]) == (
         "report_ready", "Report ready", "reports")
-    assert (body["email_source"], body["owner_copy"], body["choice"]) == ("groups", False, "email")
+    assert (body["owner_copy"], body["critical"]) == (False, False)
     assert (body["active"], body["has_account"], body["email_enabled"]) == (True, False, True)
     assert (body["address"], body["address_source"]) == ("olive@test.example.com", "contact")
-    assert body["send_at"] is not None
-    [g] = body["groups"]
-    assert (g["group_id"], g["name"], g["verdict"]) == (str(open_group.id), open_group.name, "open")
-    assert (g["enabled"], g["subscribed"], g["email_channel"]) == (True, True, True)
-    assert g["allowed_at"] == body["send_at"]
-    assert (g["timezone"], g["quiet_start"], g["quiet_end"]) == ("UTC", None, None)
-    assert g["active_days"] == ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-
-    body = await _check(client, hdrs, held_person)
-    assert (body["outcome"], body["reason"]) == ("held", "quiet_hours")
-    assert datetime.fromisoformat(body["send_at"]) == quiet_end
-    [g] = body["groups"]
-    assert (g["group_id"], g["verdict"]) == (str(held_group.id), "quiet_hours")
-    assert datetime.fromisoformat(g["allowed_at"]) == quiet_end
-    assert g["quiet_start"] == quiet["quiet_start"].isoformat()
-    assert g["quiet_end"] == quiet["quiet_end"].isoformat()
-
-    body = await _check(client, hdrs, lone)
-    assert (body["outcome"], body["reason"], body["groups"]) == ("not_sent", "no_email_group", [])
-    assert body["send_at"] is None
+    assert body["send_at"] is not None and body["summary_at"] is None
+    assert body["switches"] == {"inbox": {"on": True, "source": "default"},
+                                "email": {"on": True, "source": "default"}}
+    assert body["schedule"] == {"timezone": "America/New_York", "days": EVERY_DAY,
+                                "quiet_start": None, "quiet_end": None, "state": "open"}
 
     body = await _check(client, hdrs, off)
-    assert (body["inbox"], body["choice"]) == ("suppressed", "off")
+    assert (body["inbox"], body["inbox_source"]) == ("suppressed", "own")
     assert (body["outcome"], body["reason"]) == ("not_sent", "category_off")
+    assert body["switches"] == {"inbox": {"on": False, "source": "own"},
+                                "email": {"on": False, "source": "own"}}
     assert body["has_account"] is True
-
-    body = await _check(client, hdrs, member)
-    assert (body["outcome"], body["reason"]) == ("not_sent", "no_email_group")
-    verdicts = {g["group_id"]: (g["verdict"], g["enabled"], g["subscribed"], g["allowed_at"])
-                for g in body["groups"]}
-    assert verdicts == {str(paused.id): ("paused", False, True, None),
-                        str(other.id): ("not_subscribed", True, False, None)}
-
-    body = await _check(client, hdrs, owner, "password_expiring")
-    assert (body["outcome"], body["owner_copy"], body["email_source"]) == ("now", True, "always")
-    assert (body["address"], body["address_source"]) == ("owen.login@test.example.com", "login")
-    assert body["category"] == "security" and body["choice"] == "email"
-
-    body = await _check(client, hdrs, admin_copy, "totp_enrolled", owner_copy="false")
-    assert (body["outcome"], body["owner_copy"]) == ("now", False)
-    [g] = body["groups"]
-    assert (g["group_id"], g["verdict"]) == (str(bypass.id), "urgent_bypass")
+    assert body["send_at"] is None and body["summary_at"] is None
 
     body = await _check(client, hdrs, reset, "password_reset_request")
-    assert (body["inbox"], body["choice"]) == ("written", "off")
+    assert (body["inbox"], body["switches"]["inbox"]["on"]) == ("written", False)
     assert (body["outcome"], body["reason"]) == ("not_sent", "kind_not_emailed")
 
     resp = await client.get(CHECK, params={"person_id": str(open_person.id), "kind": "nope"},
@@ -384,11 +362,111 @@ async def test_check_outcomes(client, db, email_on):
     assert resp.status_code == 404 and resp.json()["detail"]["code"] == "person_not_found"
 
 
+async def test_check_held_shows_summary_time(client, db, email_on):
+    hdrs = await _super_admin(db, client)
+    schedule, summary = _quiet_now()
+    held = await _person(db, "Held", prefs={"notif": {"schedule": schedule}})
+    await db.commit()
+
+    body = await _check(client, hdrs, held)
+    assert (body["outcome"], body["reason"], body["after_summary"]) == (
+        "held", "quiet_hours", False)
+    assert datetime.fromisoformat(body["summary_at"]) == summary
+    assert body["send_at"] is None
+    assert (body["address"], body["address_source"]) == ("held@test.example.com", "contact")
+    assert body["schedule"] == {"timezone": "UTC", "days": EVERY_DAY,
+                                "quiet_start": schedule["quiet_start"],
+                                "quiet_end": schedule["quiet_end"], "state": "quiet_hours"}
+
+
+async def test_check_last_quiet_hour_sends_now_after_the_summary(client, db, email_on):
+    """In the last hour before the person is back online, that morning's
+    summary has already gone: the email goes now, in quiet hours, and the
+    answer says it goes after the summary."""
+    hdrs = await _super_admin(db, client)
+    late = await _person(db, "Late", prefs={"notif": {"schedule": _last_quiet_hour_now()}})
+    await db.commit()
+
+    body = await _check(client, hdrs, late)
+    assert (body["outcome"], body["reason"], body["after_summary"]) == ("now", None, True)
+    assert body["schedule"]["state"] == "quiet_hours"
+    assert body["send_at"] is not None and body["summary_at"] is None
+    assert (body["address"], body["address_source"]) == ("late@test.example.com", "contact")
+    assert body["critical"] is False
+
+
+async def test_check_switch_sources(client, db, email_on):
+    hdrs = await _super_admin(db, client)
+    await _company(db, defaults={"wiki": {"inbox": True, "email": False}})
+    person = await _person(db, "Sources", prefs={})
+    await db.commit()
+
+    body = await _check(client, hdrs, person, "wiki_comment")
+    assert body["switches"]["email"] == {"on": False, "source": "default"}
+    assert body["switches"]["inbox"] == {"on": True, "source": "default"}
+    assert (body["outcome"], body["reason"]) == ("not_sent", "category_inbox_only")
+
+    account = await db.get(UserAccount, person.id)
+    account.ui_prefs = {"notif": {"switches": {"wiki": {"email": True}}}}
+    await db.commit()
+    body = await _check(client, hdrs, person, "wiki_comment")
+    assert body["switches"]["email"] == {"on": True, "source": "own"}
+    assert body["outcome"] == "now"
+
+
+async def test_check_owner_copy_now(client, db, email_on):
+    """The owner's own security notice goes now, quiet hours or not, to the
+    sign-in email."""
+    hdrs = await _super_admin(db, client)
+    schedule, _ = _quiet_now()
+    owner = await _person(db, "Owner", account_email="owner.login@test.example.com",
+                         prefs={"notif": {"schedule": schedule}})
+    await db.commit()
+
+    body = await _check(client, hdrs, owner, "password_expiring")
+    assert (body["outcome"], body["reason"], body["owner_copy"]) == ("now", None, True)
+    assert (body["address"], body["address_source"]) == ("owner.login@test.example.com", "login")
+    assert (body["category"], body["critical"], body["inbox"]) == ("security", True, "written")
+    assert body["switches"] == {"inbox": {"on": True, "source": "fixed"},
+                                "email": {"on": True, "source": "fixed"}}
+    assert body["schedule"]["state"] == "quiet_hours"
+    assert body["send_at"] is not None and body["summary_at"] is None
+
+
+async def test_check_admin_copy_not_sent(client, db, email_on):
+    hdrs = await _super_admin(db, client)
+    admin = await _person(db, "Admin")
+    await db.commit()
+
+    body = await _check(client, hdrs, admin, "totp_enrolled", owner_copy="false")
+    assert (body["outcome"], body["reason"], body["owner_copy"]) == (
+        "not_sent", "admin_copy", False)
+    assert body["inbox"] == "written"
+    assert body["send_at"] is None and body["summary_at"] is None
+
+
+async def test_check_critical_flag(client, db, email_on):
+    """A kind marked critical goes now even in quiet hours; one that is not
+    waits for the summary."""
+    hdrs = await _super_admin(db, client)
+    await _company(db, critical_kinds=["report_failed"])
+    schedule, summary = _quiet_now()
+    person = await _person(db, "Critical", prefs={"notif": {"schedule": schedule}})
+    await db.commit()
+
+    body = await _check(client, hdrs, person, "report_failed")
+    assert (body["critical"], body["outcome"], body["reason"]) == (True, "now", None)
+    assert body["after_summary"] is False     # it goes now because it is critical
+    assert body["schedule"]["state"] == "quiet_hours"
+    body = await _check(client, hdrs, person, "report_ready")
+    assert (body["critical"], body["outcome"]) == (False, "held")
+    assert datetime.fromisoformat(body["summary_at"]) == summary
+
+
 async def test_check_names_an_inactive_recipient(client, db, email_on):
     hdrs = await _super_admin(db, client)
     gone = await _person(db, "Gale")
     gone.archived_at = datetime.now(UTC)
-    await _group(db, gone)
     await db.commit()
     body = await _check(client, hdrs, gone)
     assert (body["active"], body["outcome"], body["reason"]) == (
@@ -397,14 +475,27 @@ async def test_check_names_an_inactive_recipient(client, db, email_on):
 
 # ── GET /notifications/kinds ────────────────────────────────────────
 
-async def test_kinds_lists_the_registry(client, db):
+async def test_kinds_report_critical_and_locked(client, db):
     hdrs = await _super_admin(db, client)
+    await _company(db, critical_kinds=["report_failed"])
+    await db.commit()
     resp = await client.get(KINDS_PATH, headers=hdrs)
     assert resp.status_code == 200, resp.text
+    always = {"password_expiring", "totp_enrolled"}
     assert resp.json() == [
         {"kind": kind, "label": info.label, "category": info.category, "email": info.email,
-         "owner_always": info.owner_always, "urgent": info.urgent}
+         "owner_always": info.owner_always,
+         "critical": kind in always | {"report_failed"}, "locked": kind in always}
         for kind, info in KINDS.items()]
+    assert [k for k in resp.json() if k["critical"]] == [
+        {"kind": "report_failed", "label": "Report failed", "category": "reports",
+         "email": True, "owner_always": False, "critical": True, "locked": False},
+        {"kind": "password_expiring", "label": "Password expiring", "category": "security",
+         "email": True, "owner_always": True, "critical": True, "locked": True},
+        {"kind": "totp_enrolled", "label": "Two-factor authentication enrolled",
+         "category": "security", "email": True, "owner_always": True, "critical": True,
+         "locked": True},
+    ]
 
     admin = await _make(db, client, "admin", "admin@test.example.com")
     resp = await client.get(KINDS_PATH, headers=admin)

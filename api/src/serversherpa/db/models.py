@@ -2,12 +2,12 @@
 these models mirror them for application queries."""
 
 import uuid
-from datetime import date, datetime, time
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger, Boolean, CheckConstraint, Date, Float, ForeignKey, Identity, Index, Integer,
-    LargeBinary, Numeric, SmallInteger, String, Text, Time, text,
+    LargeBinary, Numeric, SmallInteger, String, Text, text,
 )
 from sqlalchemy.dialects.postgresql import (
     ARRAY, BYTEA, CITEXT, INET, JSONB, TIMESTAMP, TSVECTOR, UUID,
@@ -467,23 +467,20 @@ class AccessGroupMember(Base):
 
 
 class NotificationGroup(Base):
+    """A named list of people: a name, a description, Active or Paused (`enabled`),
+    its members and their join/leave requests. A group decides nothing about
+    delivery (migration 0112 dropped its channels, quiet hours, days and the rest):
+    a person's own switches and schedule do (notifications/email.py)."""
+
     __tablename__ = "notification_groups"
 
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, server_default=text("gen_random_uuid()"))
     name: Mapped[str] = mapped_column(CITEXT)
     description: Mapped[str] = mapped_column(server_default="")
-    channels: Mapped[list[str]] = mapped_column(
-        ARRAY(Text), server_default=text("'{email,web}'::text[]"))
-    quiet_start: Mapped[time | None] = mapped_column(Time)
-    quiet_end: Mapped[time | None] = mapped_column(Time)
-    timezone: Mapped[str] = mapped_column(server_default="America/New_York")
-    active_days: Mapped[list[str]] = mapped_column(
-        ARRAY(Text), server_default=text("'{mon,tue,wed,thu,fri,sat,sun}'::text[]"))
-    dnd_behavior: Mapped[str] = mapped_column(server_default="defer")
-    urgent_bypass: Mapped[bool] = mapped_column(server_default=text("true"))
     enabled: Mapped[bool] = mapped_column(server_default=text("true"))
-    # Event categories this group's settings apply to (notifications/kinds.py).
+    # Event categories (notifications/kinds.py). Kept but hidden: the API still reads
+    # and writes them, no delivery decision reads them and nothing shows them.
     categories: Mapped[list[str]] = mapped_column(
         ARRAY(Text), server_default=text("'{}'::text[]"))
     created_by: Mapped[uuid.UUID | None] = mapped_column(
@@ -502,15 +499,6 @@ class NotificationGroupMember(Base):
     added_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("people.id", ondelete="SET NULL"))
     added_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
-    # nullable per-member overrides — NULL means "inherit the group value"
-    channels: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
-    quiet_mode: Mapped[str | None]
-    quiet_start: Mapped[time | None] = mapped_column(Time)
-    quiet_end: Mapped[time | None] = mapped_column(Time)
-    timezone: Mapped[str | None]
-    active_days: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
-    dnd_behavior: Mapped[str | None]
-    urgent_bypass: Mapped[bool | None]
 
 
 class NotificationMembershipRequest(Base):
@@ -2034,6 +2022,35 @@ class NotificationLog(Base):
     reason: Mapped[str | None]             # a reason code, not prose
     detail: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
     process: Mapped[str | None]            # the writing process (db_logging name)
+
+
+class NotificationHeld(Base):
+    """One notification email held for its recipient's summary (migration 0111):
+    it is not rendered or queued until the summary goes out, so this row only
+    points at the inbox row. Deleted once handled, sent in the summary or dropped
+    with a logged reason; the history lives in notification_log. A person's
+    deletion takes their rows along, and a deleted notification leaves the row
+    with its link cleared so the summary can drop it with a reason. `held_at` is
+    set by the writer, not by the column: a transaction's now() is frozen (see
+    delivery_log.record)."""
+
+    __tablename__ = "notification_held"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    person_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"))
+    notification_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("notifications.id", ondelete="SET NULL"))
+    kind: Mapped[str]
+    category: Mapped[str]
+    reason: Mapped[str]                    # the schedule state that held it
+    held_at: Mapped[datetime]
+
+    __table_args__ = (
+        CheckConstraint("reason IN ('quiet_hours', 'inactive_day')",
+                        name="ck_notification_held_reason"),
+        Index("notification_held_person_idx", "person_id", "held_at"),
+    )
 
 
 class WikiSpace(Base):

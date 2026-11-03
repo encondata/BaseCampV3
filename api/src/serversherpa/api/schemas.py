@@ -4,7 +4,7 @@ import json
 import re
 import urllib.parse
 import uuid
-from datetime import date, datetime, time
+from datetime import date, datetime
 from ipaddress import IPv4Address
 from typing import Annotated, Any, Literal
 
@@ -15,13 +15,16 @@ from pydantic import (
     ConfigDict,
     EmailStr,
     Field,
+    SerializerFunctionWrapHandler,
     StringConstraints,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
 from serversherpa.learning import languages as learning_languages
 from serversherpa.notifications.kinds import CATEGORY_KEYS
+from serversherpa.notifications.schedule import DAYS
 
 
 def _lower(v: str) -> str:
@@ -53,23 +56,97 @@ class PersonOut(BaseModel):
     avatar_url: str | None = None  # presigned; set by routes via with_avatar()
 
 
+# The categories a person sets their own switches for: all but account
+# security, which is always on (notifications/kinds.py CATEGORIES).
+_SWITCH_CATEGORIES: tuple[str, ...] = tuple(k for k in CATEGORY_KEYS if k != "security")
+
+# "HH:MM", or "HH:MM:SS" whose seconds are dropped
+_CLOCK = re.compile(r"(?P<hm>(?:[01]\d|2[0-3]):[0-5]\d)(?::[0-5]\d)?")
+
+
+class SwitchOverride(BaseModel):
+    """A person's own Inbox and Email values for one category. A value left
+    None follows the company default, and is left out of what is stored and
+    returned: the saved blob holds only what the person chose."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    inbox: bool | None = None
+    email: bool | None = None
+
+    @model_serializer(mode="wrap")
+    def _only_own_values(self, handler: SerializerFunctionWrapHandler):
+        return {k: v for k, v in handler(self).items() if v is not None}
+
+
+class NotifSchedule(BaseModel):
+    """When email may reach the person: their timezone (None: the company
+    reference zone), the days they work, and quiet hours as two local "HH:MM"
+    times, both or neither and different (the window may run past midnight).
+    A rejected value's message is its code: invalid_days or invalid_quiet_hours.
+
+    The timezone is any string here: the model never loads it, so a stored zone
+    that later stops loading cannot break reading preferences (login, /auth/me),
+    and schedule_from_prefs() falls back to the reference zone when it is used.
+    Saving is where the zone is checked (PUT /auth/me/preferences answers 422
+    invalid_timezone). Days and quiet hours cannot go stale after a valid save,
+    so the model checks those."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    timezone: str | None = None
+    days: list[str] = Field(default_factory=lambda: list(DAYS))
+    quiet_start: str | None = None
+    quiet_end: str | None = None
+
+    @field_validator("days")
+    @classmethod
+    def _days_are_known_and_unique(cls, v: list[str]) -> list[str]:
+        """At least one day, none unknown or repeated; in week order."""
+        if not v or len(set(v)) != len(v) or not set(v) <= set(DAYS):
+            raise ValueError("invalid_days")
+        return [d for d in DAYS if d in v]
+
+    @field_validator("quiet_start", "quiet_end")
+    @classmethod
+    def _clock_time(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        match = _CLOCK.fullmatch(v)
+        if match is None:
+            raise ValueError("invalid_quiet_hours")
+        return match["hm"]
+
+    @model_validator(mode="after")
+    def _quiet_hours_are_a_window(self) -> "NotifSchedule":
+        if (self.quiet_start is None) != (self.quiet_end is None):
+            raise ValueError("invalid_quiet_hours")
+        if self.quiet_start is not None and self.quiet_start == self.quiet_end:
+            raise ValueError("invalid_quiet_hours")
+        return self
+
+
 class NotifPrefs(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    # Per-category delivery choice (notifications/kinds.py CATEGORIES):
-    # "email" = inbox + email, "inbox" = inbox only, "off" = nothing.
-    # Account security is always emailed whatever is stored here.
-    categories: dict[str, Literal["email", "inbox", "off"]] = Field(
-        default_factory=lambda: {k: "email" for k in CATEGORY_KEYS})
-
-    @field_validator("categories")
-    @classmethod
-    def _all_known_categories(cls, v: dict[str, str]) -> dict[str, str]:
-        """Drop unknown keys and fill missing ones with "email", so readers
-        always see exactly the registry's categories."""
-        return {k: v.get(k, "email") for k in CATEGORY_KEYS}
     # in-app sound played when a new inbox item arrives while the portal is open
     sound: Literal["none", "chime", "ping", "pop", "bell"] = "chime"
+    # The person's own Inbox and Email values per category (notifications/kinds.py
+    # CATEGORIES): only what they changed. A category with no entry, or a value left
+    # unset, follows the company default (notifications/company.py). Account security
+    # is always on, so it is never stored.
+    switches: dict[str, SwitchOverride] = Field(default_factory=dict)
+    # When email may reach them: timezone, working days, quiet hours.
+    schedule: NotifSchedule = Field(default_factory=NotifSchedule)
+
+    @field_validator("switches")
+    @classmethod
+    def _own_values_of_known_categories(
+            cls, v: dict[str, SwitchOverride]) -> dict[str, SwitchOverride]:
+        """Drop unknown categories, account security and entries that hold no
+        value; the rest in the registry's order."""
+        return {k: v[k] for k in _SWITCH_CATEGORIES
+                if k in v and (v[k].inbox is not None or v[k].email is not None)}
 
 
 NAMED_ACCENTS = {"amber", "aqua", "blue", "violet", "pink", "green"}
@@ -991,7 +1068,6 @@ class UserWorkerCard(BaseModel):
 class UserNotificationGroup(BaseModel):
     id: uuid.UUID
     name: str
-    channels: list[str]
     added_at: datetime
 
 
@@ -2842,16 +2918,10 @@ class TimeBulkRejectIn(BaseModel):
 
 
 class NotificationGroupSettings(BaseModel):
-    """Shared shape for the group-level notification settings. All fields
-    optional so it can be reused for PATCH (partial update)."""
-    channels: list[str] | None = None
-    quiet_start: time | None = None
-    quiet_end: time | None = None
-    timezone: str | None = None
-    active_days: list[str] | None = None
-    dnd_behavior: str | None = None
-    urgent_bypass: bool | None = None
-    # Event categories the group's settings apply to (notifications/kinds.py).
+    """Shared shape for the group's settings. A group carries no delivery settings
+    (a person's own switches and schedule decide email); what is left is the event
+    categories (notifications/kinds.py), kept but hidden. Optional so it can be
+    reused for PATCH (partial update)."""
     categories: list[str] | None = None
 
 
@@ -2872,13 +2942,6 @@ class NotificationGroupOut(BaseModel):
     id: uuid.UUID
     name: str
     description: str
-    channels: list[str]
-    quiet_start: time | None = None
-    quiet_end: time | None = None
-    timezone: str
-    active_days: list[str]
-    dnd_behavior: str
-    urgent_bypass: bool
     categories: list[str]
     enabled: bool
     member_count: int
@@ -2890,36 +2953,9 @@ class NotificationMemberAddIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class NotificationMemberOverrides(BaseModel):
-    """Raw per-member override columns — nulls preserved (None means
-    'inherit the group value'). Used both as the PATCH body (all fields
-    optional, and `model_fields_set` distinguishes absent from explicit
-    null) and embedded read-only in NotificationMemberOut."""
-    channels: list[str] | None = None
-    quiet_mode: str | None = None
-    quiet_start: time | None = None
-    quiet_end: time | None = None
-    timezone: str | None = None
-    active_days: list[str] | None = None
-    dnd_behavior: str | None = None
-    urgent_bypass: bool | None = None
-    model_config = ConfigDict(extra="forbid")
-
-
-class NotificationEffectiveSettings(BaseModel):
-    """Fully resolved settings (member override merged over group
-    default) — no Nones except the quiet hour times, which are legitimately
-    absent when there are no quiet hours in effect."""
-    channels: list[str]
-    quiet_start: time | None = None
-    quiet_end: time | None = None
-    timezone: str
-    active_days: list[str]
-    dnd_behavior: str
-    urgent_bypass: bool
-
-
 class NotificationMemberOut(BaseModel):
+    """A person on a group's list. What they can be reached on is the recipients
+    picker's business (NotificationRecipientOut), not the member's."""
     person_id: uuid.UUID
     display_name: str
     job_title: str | None
@@ -2927,12 +2963,6 @@ class NotificationMemberOut(BaseModel):
     email: str | None
     phone: str | None
     has_account: bool
-    can_email: bool
-    can_text: bool
-    can_push: bool
-    can_web: bool
-    overrides: NotificationMemberOverrides
-    effective: NotificationEffectiveSettings
     added_at: datetime
 
 
@@ -3020,61 +3050,128 @@ class DeliveryLogPageOut(BaseModel):
     total: int
 
 
-class DeliveryCheckGroupOut(BaseModel):
-    """One group the person belongs to, with its effective settings for
-    them. `verdict` is the group's answer right now (open, quiet_hours,
-    inactive_day, urgent_bypass, no_email_channel) when it is enabled and
-    covers the category, else `paused` or `not_subscribed`; `allowed_at` is
-    the earliest it allows the email (null: never, or not asked)."""
+class DeliveryCheckSwitchOut(BaseModel):
+    """One of the person's switches for the category: whether it is on, and
+    where that comes from (`default`: the company default they follow; `own`:
+    they set it; `fixed`: account security, always on)."""
 
-    group_id: uuid.UUID
-    name: str
-    enabled: bool
-    subscribed: bool
-    email_channel: bool
-    verdict: str
-    allowed_at: datetime | None = None
-    quiet_start: time | None = None
-    quiet_end: time | None = None
+    on: bool
+    source: Literal["default", "own", "fixed"]
+
+
+class DeliveryCheckSwitchesOut(BaseModel):
+    """The person's Inbox and Email switches for the category. Email needs
+    Inbox: it is off whenever Inbox is."""
+
+    inbox: DeliveryCheckSwitchOut
+    email: DeliveryCheckSwitchOut
+
+
+class DeliveryCheckScheduleOut(BaseModel):
+    """The person's schedule as the decision reads it: the timezone (the
+    reference zone when they set none, or when theirs no longer loads), the
+    days they work in week order, quiet hours as "HH:MM" (both null: none),
+    and the state right now: open, in quiet hours, or a day off."""
+
     timezone: str
-    active_days: list[str]
+    days: list[str]
+    quiet_start: str | None = None
+    quiet_end: str | None = None
+    state: Literal["open", "quiet_hours", "inactive_day"]
 
 
 class DeliveryCheckOut(BaseModel):
     """What would happen right now if this person got a notification of this
-    kind. Nothing is written. `outcome` is the email's: sent now, held until
-    `send_at`, or not sent (`reason` says why; for a held email, why it
-    waits). `owner_copy` is the copy that was modeled."""
+    kind. Nothing is written. `inbox` is notify()'s answer, with the source of
+    the Inbox switch behind it. `outcome` is the email's: sent now (at
+    `send_at`), held for the person's summary (due `summary_at`), or not sent
+    (`reason` says why; for a held email, the schedule state that holds it).
+    `after_summary` marks an email sent now only because it falls in the last
+    hour before the person is back online, when that morning's summary has
+    already gone. `owner_copy` is the copy that was modeled; `critical`
+    whether the kind skips quiet hours, days off and the summary."""
 
     person_id: uuid.UUID
     person_name: str
     kind: str
     kind_label: str
     category: str
-    email_source: str
     owner_copy: bool
     active: bool
     has_account: bool
-    choice: str
     inbox: Literal["written", "suppressed"]
+    inbox_source: Literal["default", "own", "fixed"]
     email_enabled: bool
+    critical: bool
+    switches: DeliveryCheckSwitchesOut
+    schedule: DeliveryCheckScheduleOut
     outcome: Literal["now", "held", "not_sent"]
+    after_summary: bool
     send_at: datetime | None = None
+    summary_at: datetime | None = None
     reason: str | None = None
     address: str | None = None
     address_source: str | None = None
-    groups: list[DeliveryCheckGroupOut]
 
 
 class NotificationKindOut(BaseModel):
-    """One registered notification kind, for the Check delivery picker."""
+    """One registered notification kind, for the Check delivery picker.
+    `email` is whether it is ever emailed; `critical` whether it skips quiet
+    hours, days off and the summary; `locked` whether that is fixed (account
+    security is always critical)."""
 
     kind: str
     label: str
     category: str
     email: bool
     owner_always: bool
-    urgent: bool
+    critical: bool
+    locked: bool
+
+
+class SwitchPair(BaseModel):
+    """One category's two switches: written to the inbox, and emailed."""
+
+    inbox: bool
+    email: bool
+
+
+class NotificationKindSettingOut(BaseModel):
+    """One registered kind in the company settings. `email` is whether it is
+    ever emailed; `critical` whether it skips quiet hours, days off and the
+    summary; `locked` whether that is fixed (account security is always
+    critical, and is not the admin's to change)."""
+
+    kind: str
+    label: str
+    category: str
+    email: bool
+    owner_always: bool
+    critical: bool
+    locked: bool
+
+
+class NotificationSettingsOut(BaseModel):
+    """The company notification settings. `defaults` holds each configurable
+    category's switches (account security has none: it is always on);
+    `critical_kinds` the kinds an admin marked critical, in registry order,
+    not the always-critical security kinds; `kinds` every registered kind,
+    in registry order."""
+
+    defaults: dict[str, SwitchPair]
+    critical_kinds: list[str]
+    kinds: list[NotificationKindSettingOut]
+
+
+class NotificationSettingsIn(BaseModel):
+    """Partial update: only sent keys change. `defaults` merges per category
+    (a category sent replaces both its switches); `critical_kinds` replaces
+    the whole list."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    defaults: dict[str, SwitchPair] | None = None
+    critical_kinds: list[str] | None = None
 
 
 # ── notification-group membership requests (self-service + approval) ──
@@ -3116,20 +3213,9 @@ class MyNotificationGroupOut(BaseModel):
     id: uuid.UUID
     name: str
     description: str
-    channels: list[str]
-    quiet_start: time | None = None
-    quiet_end: time | None = None
-    timezone: str
-    active_days: list[str]
-    dnd_behavior: str
-    urgent_bypass: bool
     categories: list[str]
-    # The member's effective channels when a member, else the group's.
-    effective_channels: list[str]
     member_count: int
     is_member: bool
-    overrides: NotificationMemberOverrides | None = None
-    effective: NotificationEffectiveSettings | None = None
     pending_request: MyPendingRequestOut | None = None
 
 

@@ -4,8 +4,10 @@
  * AssetModels.tsx). Covers what a unit test can see that the pure
  * lib/notifications.ts helpers can't: wiring of load/search/permission
  * gating and the navigate-on-row-click contract (no inline expansion).
- * Super admins and above (global access, rank 80+) also get a Groups |
- * Delivery log tab strip, kept in ?tab=log.
+ * Admins and above (global access, rank 60+) also get a Groups | Defaults tab
+ * strip, kept in ?tab=defaults; super admins and above (rank 80+) a third tab,
+ * Delivery log, kept in ?tab=log. The groups list carries no delivery columns:
+ * groups only list their members.
  */
 
 import { cleanup, render as rtlRender, screen, waitFor, within } from '@testing-library/react';
@@ -15,8 +17,11 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { ScopeInfo } from '../lib/access';
-import { ApiError, type MembershipRequest, type NotificationGroup, type UiPreferences } from '../lib/api';
-import { LIST_FIT } from '../lib/listTools';
+import {
+  ApiError, type MembershipRequest, type NotificationGroup, type NotificationSettings,
+  type UiPreferences,
+} from '../lib/api';
+import { LIST_FIT, columnFloor, listScale } from '../lib/listTools';
 
 const navigate = vi.hoisted(() => vi.fn());
 vi.mock('react-router-dom', async (importActual) => ({
@@ -29,10 +34,12 @@ const auth = vi.hoisted(() => {
     can: (resource: string, action: string) => boolean;
     maxRank: number;
     scope: ScopeInfo | null;
+    listSize: 'small' | 'default' | 'large' | 'xlarge';
   } = {
     can: () => true,
     maxRank: 60,
     scope: { global: true, client_ids: [], partner_ids: [] },
+    listSize: 'default',
   };
   return state;
 });
@@ -44,8 +51,8 @@ vi.mock('../auth/AuthContext', () => ({
     scope: auth.scope,
     godMode: false,
     preferences: {
-      accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default', motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default', list_view: 'expanded',
-      notif: { sound: 'chime', categories: { approvals: 'email', reports: 'email', wiki: 'email', learning: 'email', security: 'email' } },
+      accent: 'blue', theme: 'dark', density: 'comfortable', list_size: auth.listSize, motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default', list_view: 'expanded',
+      notif: { sound: 'chime', switches: {}, schedule: { timezone: null, days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'], quiet_start: null, quiet_end: null } },
       list_prefs: {},
     } satisfies UiPreferences,
     updatePreferences: vi.fn(() => Promise.resolve()),
@@ -59,6 +66,8 @@ const api = vi.hoisted(() => ({
   approveMembershipRequest: vi.fn(),
   rejectMembershipRequest: vi.fn(),
   getDeliveryLogPage: vi.fn(),
+  getNotificationSettings: vi.fn(),
+  updateNotificationSettings: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -66,19 +75,17 @@ vi.mock('../lib/api', async (importActual) => ({
   ...api,
 }));
 
+/* A group is a name, a description, Active/Paused and its members. The API
+ * still returns its (hidden) categories: the list must show none of them. */
 const GROUPS: NotificationGroup[] = [
   {
     id: 'g1', name: 'Ops Alerts', description: 'Operational issues',
-    channels: ['email', 'push'], categories: ['approvals'], quiet_start: '21:00:00', quiet_end: '07:00:00',
-    timezone: 'America/Chicago', active_days: ['mon', 'tue', 'wed', 'thu', 'fri'],
-    dnd_behavior: 'defer', urgent_bypass: true, enabled: true, member_count: 5,
+    categories: ['approvals'], enabled: true, member_count: 5,
     created_at: '2026-01-01T00:00:00Z',
   },
   {
     id: 'g2', name: 'Weekend Oncall', description: '',
-    channels: [], categories: [], quiet_start: null, quiet_end: null,
-    timezone: 'America/New_York', active_days: ['sat', 'sun'],
-    dnd_behavior: 'skip', urgent_bypass: false, enabled: false, member_count: 0,
+    categories: [], enabled: false, member_count: 0,
     created_at: '2026-02-01T00:00:00Z',
   },
 ];
@@ -90,6 +97,21 @@ const REQUESTS: MembershipRequest[] = [
     decision_note: '', created_at: '2026-09-10T00:00:00Z',
   },
 ];
+
+/** What the Defaults tab loads (GET /notifications/settings). */
+const SETTINGS: NotificationSettings = {
+  defaults: {
+    approvals: { inbox: true, email: true }, reports: { inbox: true, email: false },
+    wiki: { inbox: true, email: true }, learning: { inbox: true, email: true },
+  },
+  critical_kinds: [],
+  kinds: [
+    { kind: 'report_ready', label: 'Report ready', category: 'reports', email: true,
+      owner_always: false, critical: false, locked: false },
+    { kind: 'password_expiring', label: 'Password expiring', category: 'security', email: true,
+      owner_always: true, critical: true, locked: true },
+  ],
+};
 
 /** Where the page opens: the router's starting URL (?tab=log, say). */
 const at = { url: '/system/notifications' };
@@ -108,41 +130,68 @@ beforeEach(() => {
   auth.can = () => true;
   auth.maxRank = 60;
   auth.scope = { global: true, client_ids: [], partner_ids: [] };
+  auth.listSize = 'default';
   at.url = '/system/notifications';
   api.listNotificationGroups.mockResolvedValue(GROUPS);
   api.listMembershipRequests.mockResolvedValue([]);
   api.approveMembershipRequest.mockResolvedValue(REQUESTS[0]);
   api.rejectMembershipRequest.mockResolvedValue(REQUESTS[0]);
   api.getDeliveryLogPage.mockResolvedValue({ rows: [], next_cursor: null, total: 0 });
+  api.getNotificationSettings.mockResolvedValue(structuredClone(SETTINGS));
 });
 
 afterEach(cleanup);
 
 const { default: Notifications } = await import('./Notifications');
 
-/* ── Groups | Delivery log (super admin and above) ─────────────────── */
+/* ── Groups | Defaults | Delivery log ──────────────────────────────────
+ * Admin and above (global access, rank 60+) see Groups and Defaults; super
+ * admin and above (global access, rank 80+) also see Delivery log; everyone
+ * else sees the groups with no strip. */
+
+const GROUPS_HINT = "Notification groups and who's in them.";
+const DEFAULTS_HINT = "What everyone gets until they change it, and which notifications can't wait.";
+const LOG_HINT = 'Every notification and email decision — who, what and why.';
+
+const DEFAULTS_CARD = 'What people get by default';
 
 const superAdmin = () => {
   auth.maxRank = 80;
   auth.scope = { global: true, client_ids: [], partner_ids: [] };
 };
 
-it('shows no tab strip to an admin (rank 60)', async () => {
-  render(<Notifications />);
-  await screen.findByText('Ops Alerts');
-  expect(screen.queryByRole('tablist')).toBeNull();
-  expect(screen.queryByRole('tab', { name: 'Delivery log' })).toBeNull();
-});
+/** [label, aria-selected] of every tab in the strip. */
+const stripTabs = () => within(screen.getByRole('tablist')).getAllByRole('tab')
+  .map((t) => [t.textContent, t.getAttribute('aria-selected')]);
 
-it('shows Groups | Delivery log to a super admin with global access, Groups first', async () => {
-  superAdmin();
+it('admin (60, global) sees Groups and Defaults, Groups first', async () => {
   render(<Notifications />);
   await screen.findByText('Ops Alerts');
   const strip = screen.getByRole('tablist');
   expect(strip.classList.contains('subs-tabs')).toBe(true);
-  expect(within(strip).getAllByRole('tab').map((t) => [t.textContent, t.getAttribute('aria-selected')]))
-    .toEqual([['Groups', 'true'], ['Delivery log', 'false']]);
+  expect(stripTabs()).toEqual([['Groups', 'true'], ['Defaults', 'false']]);
+  expect(screen.queryByRole('tab', { name: 'Delivery log' })).toBeNull();
   expect(api.getDeliveryLogPage).not.toHaveBeenCalled();
+  // the Defaults tab loads its settings only once it is opened
+  expect(api.getNotificationSettings).not.toHaveBeenCalled();
+});
+
+it('a super admin with global access sees Groups, Defaults and Delivery log, in that order', async () => {
+  superAdmin();
+  render(<Notifications />);
+  await screen.findByText('Ops Alerts');
+  expect(screen.getByRole('tablist').classList.contains('subs-tabs')).toBe(true);
+  expect(stripTabs()).toEqual([['Groups', 'true'], ['Defaults', 'false'], ['Delivery log', 'false']]);
+  expect(api.getDeliveryLogPage).not.toHaveBeenCalled();
+  expect(api.getNotificationSettings).not.toHaveBeenCalled();
+});
+
+it('rank 60 without global access sees no tab strip', async () => {
+  auth.maxRank = 60;
+  auth.scope = { global: false, client_ids: ['c1'], partner_ids: [] };
+  render(<Notifications />);
+  await screen.findByText('Ops Alerts');
+  expect(screen.queryByRole('tablist')).toBeNull();
 });
 
 it('shows no tab strip to a rank-80 role without global access', async () => {
@@ -153,13 +202,102 @@ it('shows no tab strip to a rank-80 role without global access', async () => {
   expect(screen.queryByRole('tablist')).toBeNull();
 });
 
+it('shows no tab strip below admin, even with global access', async () => {
+  auth.maxRank = 40;
+  render(<Notifications />);
+  await screen.findByText('Ops Alerts');
+  expect(screen.queryByRole('tablist')).toBeNull();
+});
+
+/** Who sees what: the strip's tabs (null: no strip) for each kind of person. */
+const PEOPLE: { who: string; rank: number; global: boolean; strip: string[] | null }[] = [
+  { who: 'staff (40, global)', rank: 40, global: true, strip: null },
+  { who: 'admin (60) without global access', rank: 60, global: false, strip: null },
+  { who: 'super admin (80) without global access', rank: 80, global: false, strip: null },
+  { who: 'admin (60, global)', rank: 60, global: true, strip: ['Groups', 'Defaults'] },
+  { who: 'super admin (80, global)', rank: 80, global: true, strip: ['Groups', 'Defaults', 'Delivery log'] },
+  { who: 'top rank (100, global)', rank: 100, global: true, strip: ['Groups', 'Defaults', 'Delivery log'] },
+];
+
+/** The tab each ?tab value names, and a value no tab has. */
+const TAB_VALUES: { value: string | null; tab: string }[] = [
+  { value: null, tab: 'Groups' },
+  { value: 'groups', tab: 'Groups' },
+  { value: 'defaults', tab: 'Defaults' },
+  { value: 'log', tab: 'Delivery log' },
+  { value: 'bogus', tab: 'Groups' },
+];
+
+const HINT_OF: Record<string, string> = { Groups: GROUPS_HINT, Defaults: DEFAULTS_HINT, 'Delivery log': LOG_HINT };
+
+it.each(PEOPLE)('$who: the strip and ?tab= (a tab they cannot see falls back to Groups)', async ({ rank, global, strip }) => {
+  auth.maxRank = rank;
+  auth.scope = { global, client_ids: global ? [] : ['c1'], partner_ids: [] };
+
+  for (const { value, tab } of TAB_VALUES) {
+    cleanup();
+    vi.clearAllMocks();
+    at.url = value === null ? '/system/notifications' : `/system/notifications?tab=${value}`;
+    render(<Notifications />);
+
+    const shown = strip?.includes(tab) ? tab : 'Groups';
+    if (strip === null) expect(screen.queryByRole('tablist')).toBeNull();
+    else expect(stripTabs()).toEqual(strip.map((label) => [label, String(label === shown)]));
+    expect(screen.getByText(HINT_OF[shown]).className).toContain('page-hint');
+
+    // and the tab's own content is what is on the page
+    if (shown === 'Groups') {
+      expect(await screen.findByText('Ops Alerts')).toBeTruthy();
+      expect(screen.queryByRole('region', { name: DEFAULTS_CARD })).toBeNull();
+      expect(api.getNotificationSettings).not.toHaveBeenCalled();
+      expect(api.getDeliveryLogPage).not.toHaveBeenCalled();
+    } else if (shown === 'Defaults') {
+      expect(await screen.findByRole('region', { name: DEFAULTS_CARD })).toBeTruthy();
+      expect(screen.queryByText('Ops Alerts')).toBeNull();
+      expect(api.getDeliveryLogPage).not.toHaveBeenCalled();
+    } else {
+      expect(await screen.findByRole('button', { name: 'Check delivery' })).toBeTruthy();
+      expect(screen.queryByText('Ops Alerts')).toBeNull();
+      expect(api.getNotificationSettings).not.toHaveBeenCalled();
+    }
+  }
+});
+
+it('?tab=defaults for a non-admin falls back to the groups list', async () => {
+  auth.maxRank = 40;
+  at.url = '/system/notifications?tab=defaults';
+  render(<Notifications />);
+  expect(await screen.findByText('Ops Alerts')).toBeTruthy();
+  expect(screen.queryByRole('tablist')).toBeNull();
+  expect(screen.queryByRole('region', { name: DEFAULTS_CARD })).toBeNull();
+  expect(screen.getByText(GROUPS_HINT)).toBeTruthy();
+  expect(screen.queryByText(DEFAULTS_HINT)).toBeNull();
+  expect(api.getNotificationSettings).not.toHaveBeenCalled();
+});
+
 it('?tab=log below super admin falls back to the groups list', async () => {
   at.url = '/system/notifications?tab=log';
   render(<Notifications />);
   expect(await screen.findByText('Ops Alerts')).toBeTruthy();
-  expect(screen.queryByRole('tablist')).toBeNull();
-  expect(screen.queryByText('Every notification and email decision — who, what and why.')).toBeNull();
+  expect(stripTabs()).toEqual([['Groups', 'true'], ['Defaults', 'false']]);
+  expect(screen.queryByText(LOG_HINT)).toBeNull();
   expect(api.getDeliveryLogPage).not.toHaveBeenCalled();
+});
+
+it('?tab=defaults opens the Defaults tab for an admin, and the header describes it', async () => {
+  at.url = '/system/notifications?tab=defaults';
+  render(<Notifications />);
+  expect(screen.getByRole('tab', { name: 'Defaults' }).getAttribute('aria-selected')).toBe('true');
+  expect(screen.getByText(DEFAULTS_HINT).className).toContain('page-hint');
+  expect(screen.queryByText(GROUPS_HINT)).toBeNull();
+  expect(await screen.findByRole('region', { name: DEFAULTS_CARD })).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'Critical notifications' })).toBeTruthy();
+  // none of the groups list is on this tab
+  expect(screen.queryByText('Ops Alerts')).toBeNull();
+  expect(screen.queryByRole('button', { name: /New group/i })).toBeNull();
+  expect(screen.queryByPlaceholderText('Filter this list…')).toBeNull();
+  // there is no list to count here, so the header carries no count
+  expect(document.querySelector('.badge-count')).toBeNull();
 });
 
 it('?tab=log opens the Delivery log for a super admin, and the header describes it', async () => {
@@ -168,9 +306,8 @@ it('?tab=log opens the Delivery log for a super admin, and the header describes 
   api.getDeliveryLogPage.mockResolvedValue({ rows: [], next_cursor: null, total: 1234 });
   render(<Notifications />);
   expect(screen.getByRole('tab', { name: 'Delivery log' }).getAttribute('aria-selected')).toBe('true');
-  expect(screen.getByText('Every notification and email decision — who, what and why.').className)
-    .toContain('page-hint');
-  expect(screen.queryByText('Notification groups — who gets notified, how, and when.')).toBeNull();
+  expect(screen.getByText(LOG_HINT).className).toContain('page-hint');
+  expect(screen.queryByText(GROUPS_HINT)).toBeNull();
   await waitFor(() => expect(api.getDeliveryLogPage).toHaveBeenCalled());
   // the header count follows the log, not the groups
   await waitFor(() => expect(document.querySelector('.badge-count')?.textContent).toBe('1234'));
@@ -178,22 +315,49 @@ it('?tab=log opens the Delivery log for a super admin, and the header describes 
   expect(screen.queryByRole('button', { name: /New group/i })).toBeNull();
 });
 
-it('the tabs switch views and keep the choice in ?tab=log', async () => {
+it('the tabs switch views and keep the choice in ?tab=', async () => {
   superAdmin();
   const user = userEvent.setup();
   render(<Notifications />);
   await screen.findByText('Ops Alerts');
+  expect(screen.getByText(GROUPS_HINT)).toBeTruthy();
+
+  await user.click(screen.getByRole('tab', { name: 'Defaults' }));
+  expect(screen.getByTestId('search').textContent).toBe('?tab=defaults');
+  expect(screen.getByRole('tab', { name: 'Defaults' }).getAttribute('aria-selected')).toBe('true');
+  expect(await screen.findByRole('region', { name: DEFAULTS_CARD })).toBeTruthy();
+  expect(screen.getByText(DEFAULTS_HINT)).toBeTruthy();
+  expect(screen.queryByText('Ops Alerts')).toBeNull();
+  expect(document.querySelector('.badge-count')).toBeNull();
 
   await user.click(screen.getByRole('tab', { name: 'Delivery log' }));
   expect(screen.getByTestId('search').textContent).toBe('?tab=log');
   expect(screen.getByRole('tab', { name: 'Delivery log' }).getAttribute('aria-selected')).toBe('true');
   expect(await screen.findByRole('button', { name: 'Check delivery' })).toBeTruthy();
+  expect(screen.getByText(LOG_HINT)).toBeTruthy();
+  expect(screen.queryByRole('region', { name: DEFAULTS_CARD })).toBeNull();
   expect(screen.queryByText('Ops Alerts')).toBeNull();
 
   await user.click(screen.getByRole('tab', { name: 'Groups' }));
   expect(screen.getByTestId('search').textContent).toBe('');
   expect(await screen.findByText('Ops Alerts')).toBeTruthy();
+  expect(screen.getByText(GROUPS_HINT)).toBeTruthy();
   expect(document.querySelector('.badge-count')?.textContent).toBe('2');
+});
+
+it('an admin switches between Groups and Defaults', async () => {
+  const user = userEvent.setup();
+  render(<Notifications />);
+  await screen.findByText('Ops Alerts');
+
+  await user.click(screen.getByRole('tab', { name: 'Defaults' }));
+  expect(screen.getByTestId('search').textContent).toBe('?tab=defaults');
+  expect(await screen.findByRole('region', { name: DEFAULTS_CARD })).toBeTruthy();
+
+  await user.click(screen.getByRole('tab', { name: 'Groups' }));
+  expect(screen.getByTestId('search').textContent).toBe('');
+  expect(await screen.findByText('Ops Alerts')).toBeTruthy();
+  expect(screen.queryByRole('region', { name: DEFAULTS_CARD })).toBeNull();
 });
 
 it('pending requests stay with the groups, under the page header', async () => {
@@ -204,6 +368,9 @@ it('pending requests stay with the groups, under the page header', async () => {
   const panel = (await screen.findByText('Pending requests')).closest('.panel') as HTMLElement;
   const head = document.querySelector('.dir-head') as HTMLElement;
   expect(head.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+  await user.click(screen.getByRole('tab', { name: 'Defaults' }));
+  expect(screen.queryByText('Pending requests')).toBeNull();
 
   await user.click(screen.getByRole('tab', { name: 'Delivery log' }));
   expect(screen.queryByText('Pending requests')).toBeNull();
@@ -226,8 +393,8 @@ it('notification groups: column floors, shared template + minimum, sideways-scro
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
-  // The Categories column is on by default, so the fit above covers it.
-  expect(within(head).getByRole('button', { name: 'Categories' })).not.toBeNull();
+  // Every default column's header sits in the template, so the fit above covers them all.
+  expect(within(head).getByRole('button', { name: 'Status' })).not.toBeNull();
 });
 
 it('group-list floors hold their longest values at the 1512px reference width', async () => {
@@ -237,9 +404,10 @@ it('group-list floors hold their longest values at the 1512px reference width', 
   const head = row.closest('.dir-list')?.querySelector('.list-head') as HTMLElement;
   const tracks = head.style.gridTemplateColumns;
   expect(tracks.startsWith('minmax(184px, 1.3fr) ')).toBe(true);   // Name: "Destination Side Ops Team"
-  expect(tracks).toContain(' minmax(156px, 1.6fr) ');              // Categories: "Approvals & requests"
-  expect(tracks).toContain(' minmax(168px, 1.2fr) ');              // Quiet hours: "12:00 AM – 12:00 AM CT"
-  // Created is off by default, to leave Name the room; Columns still offers it.
+  // The Categories (156px) and Quiet hours (168px) floors went with their columns.
+  expect(tracks).not.toContain('156px');
+  expect(tracks).not.toContain('168px');
+  // Created is off by default (spec §6); Columns still offers it.
   expect(within(head).queryByRole('button', { name: 'Created' })).toBeNull();
   expect(within(row).queryByText(new Date(GROUPS[0].created_at).toLocaleDateString())).toBeNull();
   await user.click(screen.getByRole('button', { name: 'Columns' }));
@@ -250,162 +418,146 @@ it('group-list floors hold their longest values at the 1512px reference width', 
   await waitFor(() => expect(within(head).getByRole('button', { name: 'Created' })).not.toBeNull());
 });
 
-/** A group row with a few fields overridden, for the channel/category tests. */
-const group = (over: Partial<NotificationGroup>): NotificationGroup => ({ ...GROUPS[0], ...over });
+/** The Members track's floor in px: Name, Description and Members are the three
+ *  `minmax(floor, fr)` tracks (Status and the chevron are fixed). */
+async function membersFloor(): Promise<{ floor: number; head: HTMLElement }> {
+  const row = (await screen.findByText('Ops Alerts')).closest('.dir-row') as HTMLElement;
+  const head = row.closest('.dir-list')?.querySelector('.list-head') as HTMLElement;
+  const tracks = [...head.style.gridTemplateColumns.matchAll(/minmax\((\d+)px, ([\d.]+)fr\)/g)];
+  expect(tracks).toHaveLength(3);
+  return { floor: Number(tracks[2][1]), head };
+}
 
-/** The chip labels inside the chips container that holds `text` in `row`. */
-const chipsHolding = (row: HTMLElement, text: string): (string | null)[] => {
-  const chips = within(row).getByText(text).closest('.chips') as HTMLElement;
-  return [...chips.children].map((c) => c.textContent);
-};
+it('the Members track holds its header: a 60px track clipped it to "MEMBE"', async () => {
+  render(<Notifications />);
+  const { floor, head } = await membersFloor();
+
+  // Measured in Chromium at the default list size, with the real fonts: "MEMBERS" and the
+  // column menu's funnel need 75px, and 87px once the list is sorted by Members (the sort caret
+  // joins the label). columnFloor's own 82px cuts the caret, so the floor must clear 87px.
+  expect(floor).toBeGreaterThanOrEqual(87);
+  expect(floor).toBeGreaterThanOrEqual(columnFloor({ key: 'members', label: 'Members', width: '', default: true }));
+  // ...and the list still fits the 1512px reference width.
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
+});
+
+it('the Members floor grows with the list size, so the header holds at the larger sizes too', async () => {
+  auth.listSize = 'xlarge';
+  render(<Notifications />);
+  const { floor } = await membersFloor();
+
+  // Measured at xlarge: the sorted header needs 105px. A fixed px track would stay at its default width.
+  expect(floor).toBe(Math.ceil(92 * listScale('xlarge')));
+  expect(floor).toBeGreaterThanOrEqual(105);
+});
+
+/** A group row with a few fields overridden. */
+const group = (over: Partial<NotificationGroup>): NotificationGroup => ({ ...GROUPS[0], ...over });
 
 const rowOf = async (name: string) => (await screen.findByText(name)).closest('.dir-row') as HTMLElement;
 
 /** Names of the rendered rows, top to bottom. */
 const rowNames = () => [...document.querySelectorAll('.dir-row .cell-top b')].map((b) => b.textContent);
 
-it('lists each group\'s categories as chips in registry order, or says inbox only', async () => {
-  api.listNotificationGroups.mockResolvedValue([
-    group({ id: 'g3', name: 'Docs Team', categories: ['wiki', 'approvals'] }),
-    group({ id: 'g4', name: 'Quiet Team', categories: [] }),
-  ]);
-  render(<Notifications />);
+/** The header labels of the shown columns, left to right (without the sort caret). */
+const headerLabels = (head: HTMLElement) =>
+  [...head.querySelectorAll('button.sortable')].map((b) => b.textContent?.replace(/[▲▼]/, '').trim());
 
-  const docs = await rowOf('Docs Team');
-  expect(chipsHolding(docs, 'Wiki')).toEqual(['Approvals & requests', 'Wiki']);
-  // A chip cut short at a narrow width still names its category on hover.
-  expect(within(docs).getByText('Approvals & requests').title).toBe('Approvals & requests');
-  expect(within(docs).getByText('Wiki').title).toBe('Wiki');
-  const quiet = await rowOf('Quiet Team');
-  expect(within(quiet).getByText('None — inbox only').className).toContain('c-slate');
-  expect(within(quiet).getByText('None — inbox only').title).toBe('None — inbox only');
+const DELIVERY_COLUMNS = ['Categories', 'Channels', 'Quiet hours', 'Days'];
+
+it('the columns are Name, Description, Members and Status: none of the delivery columns', async () => {
+  const user = userEvent.setup();
+  render(<Notifications />);
+  const row = await rowOf('Ops Alerts');
+  const head = row.closest('.dir-list')?.querySelector('.list-head') as HTMLElement;
+
+  const labels = headerLabels(head);
+  expect(labels).toEqual(['Name', 'Description', 'Members', 'Status']);
+  for (const label of DELIVERY_COLUMNS) expect(labels).not.toContain(label);
+  expect(within(head).queryByRole('button', { name: /Categories|Channels|Quiet hours|Days/ })).toBeNull();
+
+  // the Columns menu offers the same set, plus Created (off by default)
+  await user.click(screen.getByRole('button', { name: 'Columns' }));
+  const popover = screen.getByText('Visible columns').parentElement as HTMLElement;
+  expect(within(popover).getAllByRole('button').map((b) => b.textContent?.trim()))
+    .toEqual(['Name', 'Description', 'Members', 'Status', 'Created']);
 });
 
-it('shows only the channels that can send, or a No email chip', async () => {
-  api.listNotificationGroups.mockResolvedValue([
-    group({ id: 'g3', name: 'Mixed Channels', channels: ['email', 'web', 'text'] }),
-    group({ id: 'g4', name: 'Text Only', channels: ['text', 'push'] }),
-  ]);
+it('a group row shows its name, description, members and status, and not its categories', async () => {
   render(<Notifications />);
-
-  const mixed = await rowOf('Mixed Channels');
-  expect(chipsHolding(mixed, 'Email')).toEqual(['Email']);
-  expect(within(mixed).getByText('Email').className).toContain('c-blue');
-  const textOnly = await rowOf('Text Only');
-  expect(within(textOnly).getByText('No email').className).toContain('c-slate');
-  for (const hidden of ['Text (SMS)', 'Push', 'Web']) {
-    expect(screen.queryByText(hidden)).toBeNull();
-  }
+  const row = await rowOf('Ops Alerts');
+  // GROUPS[0] still carries categories (the API keeps them), but nothing shows them
+  expect(within(row).queryByText('Approvals & requests')).toBeNull();
+  expect(within(row).queryByText('None — inbox only')).toBeNull();
+  expect(row.querySelector('.chips')).toBeNull();
+  // what is left: name, description, members, status
+  expect(row.textContent).toContain('Operational issues');
+  expect(within(row).getByText('5')).not.toBeNull();
+  expect(within(row).getByText('Enabled')).not.toBeNull();
 });
 
 /** Open the toolbar Filters popover and return it. */
 async function openFilters(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: /Filters/ }));
-  return screen.getByText('Categories', { selector: '.pop-title' }).closest('.pop-menu') as HTMLElement;
+  return screen.getByText('Status', { selector: '.pop-title' }).closest('.pop-menu') as HTMLElement;
 }
 
-it('Filters offers live channels plus No email, and every category plus None', async () => {
+it('Filters offers Status only: no Channels or Categories', async () => {
   const user = userEvent.setup();
   render(<Notifications />);
   await screen.findByText('Ops Alerts');
 
   const menu = await openFilters(user);
-  const optionsAfter = (title: string) => {
-    const options: (string | null)[] = [];
-    for (let el = screen.getByText(title, { selector: '.pop-title' }).nextElementSibling;
-      el && el.classList.contains('pop-item'); el = el.nextElementSibling) options.push(el.textContent);
-    return options;
-  };
-  expect(optionsAfter('Channels')).toEqual(['Email', 'No email']);
-  expect(optionsAfter('Categories')).toEqual([
-    'Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Account security', 'None',
+  expect([...menu.querySelectorAll('.pop-title')].map((t) => t.textContent)).toEqual(['Status']);
+  expect([...menu.querySelectorAll('.pop-item')].map((i) => i.textContent)).toEqual(['Enabled', 'Paused']);
+});
+
+it('the Status filter keeps the enabled or the paused groups', async () => {
+  const user = userEvent.setup();
+  render(<Notifications />);
+  await screen.findByText('Ops Alerts');
+
+  const menu = await openFilters(user);
+  await user.click(within(menu).getByRole('button', { name: 'Paused' }));
+  expect(rowNames()).toEqual(['Weekend Oncall']);
+
+  await user.click(within(menu).getByRole('button', { name: 'Paused' })); // off again
+  await user.click(within(menu).getByRole('button', { name: 'Enabled' }));
+  expect(rowNames()).toEqual(['Ops Alerts']);
+});
+
+it('search matches the name, the description and the status, and not the categories', async () => {
+  const user = userEvent.setup();
+  api.listNotificationGroups.mockResolvedValue([
+    group({ id: 'g3', name: 'Group A', description: 'Description A', categories: ['wiki'], enabled: true }),
+    group({ id: 'g4', name: 'Group B', description: 'Description B', categories: ['learning'], enabled: false }),
   ]);
-  for (const hidden of ['Text (SMS)', 'Push', 'Web']) {
-    expect(within(menu).queryByRole('button', { name: hidden })).toBeNull();
+  render(<Notifications />);
+  await screen.findByText('Group A');
+
+  const box = screen.getByPlaceholderText('Filter this list…');
+  await user.type(box, 'description a');
+  expect(rowNames()).toEqual(['Group A']);
+
+  await user.clear(box);
+  await user.type(box, 'paused');
+  expect(rowNames()).toEqual(['Group B']);
+
+  // a group's categories are kept by the API but are not shown, so not searched either
+  for (const hidden of ['wiki', 'learning']) {
+    await user.clear(box);
+    await user.type(box, hidden);
+    expect(rowNames()).toEqual([]);
+    expect(screen.getByText('No matches')).not.toBeNull();
   }
 });
 
-it('the Categories filter keeps groups that cover a category, and None keeps those with none', async () => {
-  const user = userEvent.setup();
+it('exports ID, Name, Description, Members, Status and Created, and nothing of delivery', async () => {
   api.listNotificationGroups.mockResolvedValue([
-    group({ id: 'g3', name: 'Docs Team', categories: ['wiki', 'approvals'] }),
-    group({ id: 'g4', name: 'Learning Team', categories: ['learning'] }),
-    group({ id: 'g5', name: 'Quiet Team', categories: [] }),
-  ]);
-  render(<Notifications />);
-  await screen.findByText('Docs Team');
-
-  const menu = await openFilters(user);
-  await user.click(within(menu).getByRole('button', { name: 'Wiki' }));
-  expect(rowNames()).toEqual(['Docs Team']);
-
-  await user.click(within(menu).getByRole('button', { name: 'Wiki' })); // off again
-  await user.click(within(menu).getByRole('button', { name: 'None' }));
-  expect(rowNames()).toEqual(['Quiet Team']);
-});
-
-it('the Channels filter has No email for groups that cannot email, and ignores hidden channels', async () => {
-  const user = userEvent.setup();
-  api.listNotificationGroups.mockResolvedValue([
-    group({ id: 'g3', name: 'Emailing Team', channels: ['email', 'web'] }),
-    group({ id: 'g4', name: 'Pushing Team', channels: ['push'] }),
-    group({ id: 'g5', name: 'Silent Team', channels: [] }),
-  ]);
-  render(<Notifications />);
-  await screen.findByText('Emailing Team');
-
-  const menu = await openFilters(user);
-  await user.click(within(menu).getByRole('button', { name: 'No email' }));
-  expect(rowNames()).toEqual(['Pushing Team', 'Silent Team']);
-
-  await user.click(within(menu).getByRole('button', { name: 'No email' })); // off again
-  await user.click(within(menu).getByRole('button', { name: 'Email' }));
-  expect(rowNames()).toEqual(['Emailing Team']);
-});
-
-it('search finds a category by its label, and does not find a hidden channel', async () => {
-  const user = userEvent.setup();
-  api.listNotificationGroups.mockResolvedValue([
-    group({ id: 'g3', name: 'Docs Team', categories: ['wiki'], channels: ['email', 'push'] }),
-    group({ id: 'g4', name: 'Other Team', categories: ['learning'], channels: ['email'] }),
-  ]);
-  render(<Notifications />);
-  await screen.findByText('Docs Team');
-
-  const box = screen.getByPlaceholderText('Filter this list…');
-  await user.type(box, 'wiki');
-  expect(rowNames()).toEqual(['Docs Team']);
-
-  await user.clear(box);
-  await user.type(box, 'push');
-  expect(rowNames()).toEqual([]);
-  expect(screen.getByText('No matches')).not.toBeNull();
-});
-
-it('sorts by the Categories column', async () => {
-  const user = userEvent.setup();
-  api.listNotificationGroups.mockResolvedValue([
-    group({ id: 'g3', name: 'Docs Team', categories: ['wiki'] }),
-    group({ id: 'g4', name: 'Alpha Team', categories: ['approvals'] }),
-    group({ id: 'g5', name: 'Quiet Team', categories: [] }),
-  ]);
-  render(<Notifications />);
-  await screen.findByText('Docs Team');
-  expect(rowNames()).toEqual(['Alpha Team', 'Docs Team', 'Quiet Team']); // by name
-
-  // Held once: after a click the header's name gains the sort caret.
-  const header = screen.getByRole('button', { name: 'Categories' });
-  await user.click(header);
-  expect(rowNames()).toEqual(['Quiet Team', 'Alpha Team', 'Docs Team']);
-
-  await user.click(header);
-  expect(rowNames()).toEqual(['Docs Team', 'Alpha Team', 'Quiet Team']);
-});
-
-it('exports live channels and a Categories column', async () => {
-  api.listNotificationGroups.mockResolvedValue([
-    group({ id: 'g3', name: 'Docs Team', channels: ['email', 'text'], categories: ['wiki', 'approvals'] }),
-    group({ id: 'g4', name: 'Quiet Team', channels: ['push'], categories: [] }),
+    group({ id: 'g3', name: 'Group A', description: 'Description A', member_count: 3, enabled: true,
+      created_at: '2026-03-01T00:00:00Z' }),
+    group({ id: 'g4', name: 'Group B', description: '', member_count: 0, enabled: false,
+      created_at: '2026-04-01T00:00:00Z' }),
   ]);
   let blob: Blob | null = null;
   const prevCreate = URL.createObjectURL;
@@ -416,7 +568,7 @@ it('exports live channels and a Categories column', async () => {
   try {
     const user = userEvent.setup();
     render(<Notifications />);
-    await screen.findByText('Docs Team');
+    await screen.findByText('Group A');
     await user.click(screen.getByRole('button', { name: /Export/ }));
 
     const text = await new Promise<string>((resolve) => {
@@ -425,13 +577,12 @@ it('exports live channels and a Categories column', async () => {
       reader.readAsText(blob as unknown as Blob);
     });
     const [header, ...rows] = text.split('\n').map((line) => line.split(','));
-    const cell = (row: string[], name: string) => row[header.indexOf(name)];
-    expect(cell(rows[0], 'Name')).toBe('Docs Team');
-    expect(cell(rows[0], 'Channels')).toBe('Email');
-    expect(cell(rows[0], 'Categories')).toBe('Approvals & requests; Wiki');
-    expect(cell(rows[1], 'Name')).toBe('Quiet Team');
-    expect(cell(rows[1], 'Channels')).toBe('No email');
-    expect(cell(rows[1], 'Categories')).toBe('None');
+    expect(header).toEqual(['ID', 'Name', 'Description', 'Members', 'Status', 'Created']);
+    for (const label of [...DELIVERY_COLUMNS, 'Timezone']) expect(header).not.toContain(label);
+    expect(rows).toEqual([
+      ['g3', 'Group A', 'Description A', '3', 'Enabled', '2026-03-01T00:00:00Z'],
+      ['g4', 'Group B', '', '0', 'Paused', '2026-04-01T00:00:00Z'],
+    ]);
   } finally {
     clickSpy.mockRestore();
     URL.createObjectURL = prevCreate;
@@ -483,8 +634,9 @@ it('New group opens a dialog with the standard header', async () => {
   const dialog = screen.getByRole('dialog', { name: 'New notification group' });
   expect(dialog.querySelector('.eyebrow')?.textContent).toBe('Notifications');
   expect(within(dialog).getByRole('heading', { name: 'New notification group' })).not.toBeNull();
-  expect(within(dialog).getByText('Name the group. Delivery settings and members come next.').className)
+  expect(within(dialog).getByText('Name the group. Members come next.').className)
     .toContain('page-hint');
+  expect(within(dialog).queryByText(/delivery settings/i)).toBeNull();
   expect(dialog.classList.contains('rgm-card')).toBe(true);
   expect(within(dialog).getByRole('button', { name: 'Create group' })).not.toBeNull();
 });
@@ -575,6 +727,16 @@ it('shows the empty state when there are no groups', async () => {
   api.listNotificationGroups.mockResolvedValue([]);
   render(<Notifications />);
   expect(await screen.findByText('No notification groups yet')).not.toBeNull();
+});
+
+it('the empty state is the bold title alone: a group no longer defines who is notified or how', async () => {
+  api.listNotificationGroups.mockResolvedValue([]);
+  render(<Notifications />);
+  const title = await screen.findByText('No notification groups yet');
+
+  expect(title.tagName).toBe('B');
+  expect((title.closest('.dir-empty') as HTMLElement).textContent).toBe('No notification groups yet');
+  expect(screen.queryByText(/define who gets notified/i)).toBeNull();
 });
 
 it('renders the Pending requests panel from the mocked list, hidden when empty', async () => {

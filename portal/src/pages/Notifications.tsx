@@ -1,9 +1,10 @@
 /**
- * Notifications — the directory list of notification groups (who gets
- * notified, how, and when). Directory pattern, modeled on
- * pages/AssetModels.tsx: dir-head/dir-toolbar/dir-list, VirtualRows,
- * ColumnMenu per-column filters, usePersistentListState, toolbar
- * FilterButton facets (Status, Channels, Categories), CSV export.
+ * Notifications — the directory list of notification groups (who is in
+ * them). Directory pattern, modeled on pages/AssetModels.tsx:
+ * dir-head/dir-toolbar/dir-list, VirtualRows, ColumnMenu per-column filters,
+ * usePersistentListState, a toolbar FilterButton facet (Status), CSV export.
+ * Groups only list their members: they decide nothing about what anyone gets,
+ * so the list has no delivery columns.
  *
  * Row click navigates straight to the group's detail page — no inline
  * expansion (the detail view, with membership management, is Tasks 4-5).
@@ -11,11 +12,15 @@
  * components/access/GroupsTab.tsx's CreateGroupModal) that hands off to
  * that detail page on success.
  *
- * Super admins and above (global access and rank 80+, the API's own gate)
- * also get a `.subs-tabs` strip (pages/Access.tsx): Groups, the list above
- * with its pending requests, and Delivery log (DeliveryLogTab), kept in
- * ?tab=log. Everyone else sees the groups with no strip, whatever the URL
- * says. The header's hint and count follow the tab.
+ * Admins and above (global access and rank 60+, the API's ensure_admin) get a
+ * `.subs-tabs` strip (pages/Access.tsx): Groups, the list above with its
+ * pending requests, and Defaults (NotificationDefaultsTab: the company's
+ * switches and critical notifications), kept in ?tab=defaults. Super admins
+ * and above (global access and rank 80+, ensure_super_admin) also get
+ * Delivery log (DeliveryLogTab), kept in ?tab=log. Everyone else sees the
+ * groups with no strip, and a ?tab= a person may not open falls back to
+ * Groups. The header's hint follows the tab, and so does its count (the groups
+ * or the log's entries; Defaults has nothing to count).
  */
 
 import { useEffect, useId, useMemo, useState, type FormEvent } from 'react';
@@ -24,11 +29,10 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import DataTable, { type DataTableColumn, type DataTableRow } from '../components/DataTable';
 import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
-import CategoryChips, { NO_CATEGORIES } from '../components/notifications/CategoryChips';
-import ChannelChips, { NO_EMAIL } from '../components/notifications/ChannelChips';
 import DeliveryLogTab from '../components/notifications/DeliveryLogTab';
+import NotificationDefaultsTab from '../components/notifications/NotificationDefaultsTab';
 import NotificationModal from '../components/notifications/NotificationModal';
-import { SUPER_ADMIN_RANK } from '../lib/access';
+import { ADMIN_RANK, SUPER_ADMIN_RANK } from '../lib/access';
 import {
   ApiError, approveMembershipRequest, createNotificationGroup, listMembershipRequests,
   listNotificationGroups, rejectMembershipRequest,
@@ -46,10 +50,6 @@ import {
   visibleColumnsFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { GROUP_ERRORS } from '../lib/notificationGroups';
-import { NOTIFICATION_CATEGORIES, categoryLabels } from '../lib/notificationKinds';
-import {
-  CHANNEL_LABELS, LIVE_CHANNELS, formatDays, formatQuietHours, liveChannels,
-} from '../lib/notifications';
 import { naturalCompare } from '../lib/sites';
 import { VirtualRows } from '../lib/virtualRows';
 import '../styles/access.css';   /* .subs-tabs — the page-local tab strip */
@@ -57,14 +57,21 @@ import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
 
-type Tab = 'groups' | 'log';
+type Tab = 'groups' | 'defaults' | 'log';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'groups', label: 'Groups' },
+  { key: 'defaults', label: 'Defaults' },
   { key: 'log', label: 'Delivery log' },
 ];
 
-const GROUPS_HINT = 'Notification groups — who gets notified, how, and when.';
+const GROUPS_HINT = "Notification groups and who's in them.";
+const DEFAULTS_HINT = "What everyone gets until they change it, and which notifications can't wait.";
+
+/** The header's one-line description of each tab. */
+const HINTS: Record<Tab, string> = {
+  groups: GROUPS_HINT, defaults: DEFAULTS_HINT, log: DELIVERY_LOG_HINT,
+};
 
 /** Copy for request-decision error codes — same mapping as the popover's
  *  strip (NotificationsPanel.tsx), plus the one code unique to a second
@@ -78,24 +85,28 @@ const requestErrorMsg = (err: unknown): string =>
   err instanceof ApiError ? (REQUEST_ERRORS[err.code] ?? `Request failed (${err.code}).`) : 'Network error — try again.';
 
 /* Most tracks carry an explicit `min` — the px floor keeps the header
- * label and the column's real content (chips, the nowrap quiet-hours
- * string, the status chip) from colliding with its neighbor at narrow
- * viewports (~1024px), the plain `fr` width keeps the original relative
- * growth once there's slack; see notif-polish1-brief.md fix 6.
- * listGridStyle (lib/listTools.tsx, spec 2026-09-23-list-column-floors)
- * owns turning `min` into the track's `minmax(floor, fr)`. Members/Days/
- * Status/Created carry short, low-variance content (a count, a day summary,
- * a two-word chip, a locale date) that gains nothing from growing, so those
- * four stay plain fixed px instead — this is what keeps the floors + gaps
- * inside the fit below (polish pass 2, fix 3). Three floors hold their
- * column's longest everyday value at the 1512px reference width, measured
- * in the browser: Name 184px ("Destination Side Ops Team"), Categories 156px
- * (the "Approvals & requests" chip, as on the Delivery log; chips wrap onto
- * extra lines, and one cut short still has its title) and Quiet hours 168px
- * ("12:00 AM – 12:00 AM CT", a nowrap ellipsis below that). Created is off
- * by default (still offered in Columns) to leave Name that room. Channels
- * holds one short chip (Email / No email), so it carries only the floor its
- * header derives; Description is clamped to 2 lines and shrinks furthest.
+ * label and the column's real content (the name, the status chip) from
+ * colliding with its neighbor at narrow viewports (~1024px), the plain `fr`
+ * width keeps the original relative growth once there's slack; see
+ * notif-polish1-brief.md fix 6. listGridStyle (lib/listTools.tsx, spec
+ * 2026-09-23-list-column-floors) owns turning `min` into the track's
+ * `minmax(floor, fr)`. Status/Created carry short, low-variance content (a
+ * two-word chip, a locale date) that gains nothing from growing, so those two
+ * stay plain fixed px instead. Name's floor holds its longest everyday value
+ * at the 1512px reference width, measured in the browser: 184px
+ * ("Destination Side Ops Team"). Members' floor holds its header, not its
+ * count: measured in the browser at the default list size, "MEMBERS" with the
+ * column menu's funnel needs 75px, and 87px once the list is sorted by it (the
+ * sort caret joins the label); sorted, it needs 81px at the small size and 105px
+ * at xlarge. The 60px fixed track this column once had clipped it to "MEMBE",
+ * and columnFloor's own 82px for the label would still cut the caret, so `min`
+ * is 92: the 87px plus a little room (83px at the small size, 120px at xlarge).
+ * The count is short, so the track barely grows (0.3fr), but it is an `fr` and
+ * not px because only an `fr` floor scales with the list size preference (a
+ * fixed track clips the header at the larger sizes). Created is off by default
+ * (still offered in Columns, spec §6). Description is clamped to 2 lines and
+ * shrinks furthest. The delivery columns (Categories, Channels, Quiet hours,
+ * Days) went with the settings they showed.
  *
  * Fit: default columns + trailing ≤ LIST_FIT.page
  * (1172px — .portal-page at a 1512px window, nav expanded). */
@@ -109,11 +120,7 @@ const COLUMNS: ColumnDef[] = [
     key: 'description', label: 'Description', short: 'Desc',
     width: '2fr', default: true, min: 75,
   },
-  { key: 'members', label: 'Members', width: '60px', default: true },
-  { key: 'categories', label: 'Categories', width: '1.6fr', default: true, min: 156 },
-  { key: 'channels', label: 'Channels', width: '1fr', default: true },
-  { key: 'quiet_hours', label: 'Quiet hours', width: '1.2fr', default: true, min: 168 },
-  { key: 'days', label: 'Days', width: '70px', default: true },
+  { key: 'members', label: 'Members', width: '0.3fr', default: true, min: 92 },
   { key: 'status', label: 'Status', width: '90px', default: true },
   { key: 'created', label: 'Created', width: '85px', default: false },
 ];
@@ -123,44 +130,26 @@ const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c)
 
 const formatCreated = (iso: string): string => new Date(iso).toLocaleDateString();
 
-/** Labels of the channels that can send — the only ones the Channels cell,
- *  filter, search and export ever show (stored text/push/web stay hidden). */
-const channelLabels = (g: NotificationGroup): string[] =>
-  liveChannels(g.channels).map((c) => CHANNEL_LABELS[c]);
-
 /** Column-menu / search accessor — mirrors cellFor's display text exactly. */
 const groupCellText: CellText<NotificationGroup> = (g, colKey) => {
   switch (colKey) {
     case 'name': return g.name;
     case 'description': return g.description;
     case 'members': return String(g.member_count);
-    case 'categories': return categoryLabels(g.categories).join(', ') || NO_CATEGORIES;
-    case 'channels': return channelLabels(g).join(', ') || NO_EMAIL;
-    case 'quiet_hours': return formatQuietHours(g.quiet_start, g.quiet_end, g.timezone);
-    case 'days': return formatDays(g.active_days);
     case 'status': return g.enabled ? 'Enabled' : 'Paused';
     case 'created': return formatCreated(g.created_at);
     default: return '';
   }
 };
 
-// The empty-state words ("No email", "None — inbox only") are left out of the
-// search text on purpose: "email" must find the groups that email, not also
-// every group that says it does not.
-const groupSearchText = (g: NotificationGroup): string => [
-  g.name, g.description, channelLabels(g).join(' '), categoryLabels(g.categories).join(' '),
-  formatDays(g.active_days), g.enabled ? 'enabled' : 'paused', g.timezone,
-].join(' ').toLowerCase();
+const groupSearchText = (g: NotificationGroup): string =>
+  [g.name, g.description, g.enabled ? 'enabled' : 'paused'].join(' ').toLowerCase();
 
 function sortValueFor(g: NotificationGroup, key: string): string {
   switch (key) {
     case 'name': return g.name.toLowerCase();
     case 'description': return g.description.toLowerCase();
     case 'members': return String(g.member_count);
-    case 'categories': return categoryLabels(g.categories).join(', ').toLowerCase();
-    case 'channels': return channelLabels(g).join(', ').toLowerCase();
-    case 'quiet_hours': return formatQuietHours(g.quiet_start, g.quiet_end, g.timezone).toLowerCase();
-    case 'days': return formatDays(g.active_days).toLowerCase();
     case 'status': return g.enabled ? 'enabled' : 'paused';
     case 'created': return g.created_at;
     default: return '';
@@ -172,11 +161,6 @@ const CSV_COLUMNS: [string, (g: NotificationGroup) => string][] = [
   ['Name', (g) => g.name],
   ['Description', (g) => g.description],
   ['Members', (g) => String(g.member_count)],
-  ['Categories', (g) => categoryLabels(g.categories).join('; ') || 'None'],
-  ['Channels', (g) => channelLabels(g).join('; ') || NO_EMAIL],
-  ['Quiet hours', (g) => formatQuietHours(g.quiet_start, g.quiet_end, g.timezone)],
-  ['Timezone', (g) => g.timezone],
-  ['Days', (g) => formatDays(g.active_days)],
   ['Status', (g) => (g.enabled ? 'Enabled' : 'Paused')],
   ['Created', (g) => g.created_at],
 ];
@@ -211,11 +195,15 @@ export default function Notifications() {
   const canChange = can('notifications', 'change');
   const navigate = useNavigate();
 
-  // The Delivery log's gate mirrors the API's (ensure_super_admin): global
-  // access and super admin rank or above.
+  // The strip mirrors the API's gates: Defaults is admin and above
+  // (ensure_admin: global access and rank 60+), the Delivery log super admin
+  // and above (ensure_super_admin: global access and rank 80+). Below admin
+  // there is no strip, and a ?tab= a person may not open is just Groups.
+  const adminUp = maxRank >= ADMIN_RANK && !!scope?.global;
   const superAdmin = maxRank >= SUPER_ADMIN_RANK && !!scope?.global;
+  const tabs = adminUp ? TABS.filter((t) => t.key !== 'log' || superAdmin) : [];
   const [searchParams, setSearchParams] = useSearchParams();
-  const tab: Tab = superAdmin && searchParams.get('tab') === 'log' ? 'log' : 'groups';
+  const tab: Tab = tabs.find((t) => t.key === searchParams.get('tab'))?.key ?? 'groups';
   const [logCount, setLogCount] = useState<number | null>(null);
   const selectTab = (next: Tab) => {
     if (next === tab) return;
@@ -305,29 +293,10 @@ export default function Notifications() {
       { value: 'enabled', label: 'Enabled' },
       { value: 'paused', label: 'Paused' },
     ] },
-    { key: 'channels', title: 'Channels', options: [
-      ...LIVE_CHANNELS.map((c) => ({ value: c, label: CHANNEL_LABELS[c] })),
-      { value: 'none', label: NO_EMAIL },
-    ] },
-    { key: 'categories', title: 'Categories', options: [
-      ...NOTIFICATION_CATEGORIES.map((c) => ({ value: c.key, label: c.label })),
-      { value: 'none', label: 'None' },
-    ] },
   ], []);
 
-  const facetValues = (g: NotificationGroup) => (groupKey: string): string[] => {
-    if (groupKey === 'status') return [g.enabled ? 'enabled' : 'paused'];
-    if (groupKey === 'channels') {
-      const live = liveChannels(g.channels);
-      return live.length ? live : ['none'];
-    }
-    if (groupKey === 'categories') {
-      // Registry keys only, like the chips — an unknown stored key is not a category here.
-      const keys = NOTIFICATION_CATEGORIES.filter((c) => g.categories.includes(c.key)).map((c) => c.key);
-      return keys.length ? keys : ['none'];
-    }
-    return [];
-  };
+  const facetValues = (g: NotificationGroup) => (groupKey: string): string[] =>
+    (groupKey === 'status' ? [g.enabled ? 'enabled' : 'paused'] : []);
 
   const haystack = useSearchHaystacks(groups, groupSearchText);
 
@@ -360,18 +329,6 @@ export default function Notifications() {
         return <span className="cell-sub cell-clamp2">{g.description || '—'}</span>;
       case 'members':
         return <span className="mono cell-line" style={{ display: 'block', textAlign: 'right' }}>{g.member_count}</span>;
-      case 'categories':
-        return <CategoryChips categories={g.categories} />;
-      case 'channels':
-        return <ChannelChips channels={g.channels} />;
-      case 'quiet_hours': {
-        const text = formatQuietHours(g.quiet_start, g.quiet_end, g.timezone);
-        return <span className="mono cell-nowrap cell-line" title={titleFor(text)}>{text}</span>;
-      }
-      case 'days': {
-        const text = formatDays(g.active_days);
-        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
-      }
       case 'status':
         return (
           <span className={`chip ${g.enabled ? 'c-green' : 'tag'}`}>
@@ -440,15 +397,17 @@ export default function Notifications() {
           <div className="eyebrow">System</div>
           <h1 className="page-title">
             Notifications
-            <span className="badge-count">{(tab === 'log' ? logCount : groups?.length) ?? '…'}</span>
+            {tab !== 'defaults' && (
+              <span className="badge-count">{(tab === 'log' ? logCount : groups?.length) ?? '…'}</span>
+            )}
           </h1>
-          <p className="page-hint">{tab === 'log' ? DELIVERY_LOG_HINT : GROUPS_HINT}</p>
+          <p className="page-hint">{HINTS[tab]}</p>
         </div>
       </div>
 
-      {superAdmin && (
+      {tabs.length > 0 && (
         <div className="subs-tabs" role="tablist">
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <button key={t.key} type="button" role="tab" aria-selected={tab === t.key}
                     className={tab === t.key ? 'on' : ''}
                     onClick={() => selectTab(t.key)}>
@@ -457,6 +416,8 @@ export default function Notifications() {
           ))}
         </div>
       )}
+
+      {tab === 'defaults' && <NotificationDefaultsTab />}
 
       {tab === 'log' && <DeliveryLogTab onCount={setLogCount} />}
 
@@ -523,7 +484,6 @@ export default function Notifications() {
             groups.length === 0 ? (
               <div className="dir-empty">
                 <b>No notification groups yet</b>
-                Create a group to define who gets notified and how.
               </div>
             ) : (
               <div className="dir-empty">
@@ -566,8 +526,8 @@ export default function Notifications() {
  * Model: components/access/GroupsTab.tsx's CreateGroupModal — the same
  * ERRORS/msgFor pattern, in the shared NotificationModal shell (standard
  * header; the Create button sits in the footer and submits the form by id, so
- * Enter in a field still creates). Create-only (no edit here); settings
- * beyond name/description are configured on the detail page. */
+ * Enter in a field still creates). Create-only (no edit here); the members
+ * are added on the detail page. */
 
 function NewGroupModal({ onClose, onDone }: {
   onClose: () => void; onDone: (id: string) => void;
@@ -597,7 +557,7 @@ function NewGroupModal({ onClose, onDone }: {
   return (
     <NotificationModal
       eyebrow="Notifications" title="New notification group"
-      description="Name the group. Delivery settings and members come next."
+      description="Name the group. Members come next."
       onClose={onClose} busy={saving}
       footer={(
         <>

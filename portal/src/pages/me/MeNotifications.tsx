@@ -1,30 +1,37 @@
 /**
- * MeNotifications — the Notifications tab of /me: what the signed-in
- * person wants to hear about (saved on the account like every
- * preference), plus (Task 3) the notification groups they belong to —
- * tune per-group overrides or ask to leave — and a search-and-join list
- * for the rest. Joining/leaving is a request an admin approves or
- * rejects from the inbox popover; overrides apply immediately via the
- * self-service PATCH, reusing OverrideEditorModal (built for the admin
- * group-detail page) through the lib/notificationGroups.ts adapters.
+ * MeNotifications — the Notifications tab of /me: what reaches the signed-in
+ * person and when (saved on the account like every preference), plus the
+ * notification groups they belong to.
+ *
+ * "What you get" is the Inbox / Email switch grid. A switch the person has not
+ * changed follows the company default, which the server sends
+ * (GET /notifications/settings); only their own choices are saved, so a later
+ * change to a default still reaches them. The grid stays off limits until the
+ * defaults have loaded. Under it the critical note names the kinds an admin
+ * made critical, then the Sound row. "When email reaches you" is the schedule
+ * card beside it.
+ *
+ * The groups lists come last. Groups only list their members: they decide
+ * nothing about what a person gets, so a member can ask to join or leave one
+ * (a request an admin approves or rejects from the inbox popover) and that is
+ * all.
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { useAuth } from '../../auth/AuthContext';
 import MembershipRequestModal from '../../components/notifications/MembershipRequestModal';
-import OverrideEditorModal from '../../components/notifications/OverrideEditorModal';
+import ScheduleCard from '../../components/notifications/ScheduleCard';
+import SwitchGrid from '../../components/notifications/SwitchGrid';
 import {
-  ApiError, cancelMembershipRequest, listMyNotificationGroups, updateMyGroupOverrides,
-  type MyNotificationGroup, type NotificationSound,
+  ApiError, cancelMembershipRequest, getNotificationSettings, listMyNotificationGroups,
+  type MyNotificationGroup, type NotifSwitches, type NotificationCategory,
+  type NotificationSettings, type NotificationSound,
 } from '../../lib/api';
-import {
-  GROUP_ERRORS, toGroupDetail, toMember,
-} from '../../lib/notificationGroups';
+import { GROUP_ERRORS } from '../../lib/notificationGroups';
+import type { SwitchValues } from '../../lib/notificationSwitches';
 import { useSystemStatus } from '../../lib/systemStatusContext';
 import { NOTIFICATION_SOUNDS, playNotificationSound } from '../../lib/notificationSounds';
-import CategoryDelivery from './CategoryDelivery';
 import GroupsList from './GroupsList';
 import SaveHint from './SaveHint';
 import { usePreferenceSave } from './usePreferenceSave';
@@ -36,18 +43,32 @@ const msgFor = (err: unknown): string =>
     ? (GROUP_ERRORS[err.code] ?? `Request failed (${err.code}).`)
     : 'Network error.';
 
+/** The person's own switches with one category set, or cleared when nothing
+ *  of theirs is left for it (it follows the default again). */
+function withCategory(
+  own: NotifSwitches, category: NotificationCategory, next: SwitchValues | undefined,
+): NotifSwitches {
+  const switches = { ...own };
+  if (next === undefined) delete switches[category];
+  else switches[category] = next;
+  return switches;
+}
+
 export default function MeNotifications() {
   const { preferences, update, saveState } = usePreferenceSave();
-  const { person } = useAuth();
 
   // Until the first status lands its defaults read "email off": say nothing
   // about email until it is known.
   const { status, loaded: statusLoaded } = useSystemStatus();
 
+  // The company defaults and the critical kinds: null while they load or if
+  // they could not be loaded.
+  const [settings, setSettings] = useState<NotificationSettings | null>(null);
+  const [settingsError, setSettingsError] = useState('');
+
   const [groups, setGroups] = useState<MyNotificationGroup[] | null>(null);
   const [loadError, setLoadError] = useState('');
 
-  const [editingGroup, setEditingGroup] = useState<MyNotificationGroup | null>(null);
   const [requestFor, setRequestFor] =
     useState<{ group: MyNotificationGroup; action: 'join' | 'leave' } | null>(null);
   const [cancelBusy, setCancelBusy] = useState<Record<string, boolean>>({});
@@ -60,6 +81,14 @@ export default function MeNotifications() {
   };
 
   useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    let ignore = false;   // the page went away before the answer did
+    getNotificationSettings()
+      .then((next) => { if (!ignore) setSettings(next); })
+      .catch(() => { if (!ignore) setSettingsError('Could not load notification settings.'); });
+    return () => { ignore = true; };
+  }, []);
 
   const myGroups = useMemo(() => (groups ?? []).filter((g) => g.is_member), [groups]);
   const joinable = useMemo(() => (groups ?? []).filter((g) => !g.is_member), [groups]);
@@ -76,6 +105,9 @@ export default function MeNotifications() {
     }
   };
 
+  // The critical kinds, in registry order (the order the server lists them).
+  const criticalLabels = (settings?.kinds ?? []).filter((k) => k.critical).map((k) => k.label);
+
   return (
     <>
       <SaveHint state={saveState}>
@@ -83,14 +115,13 @@ export default function MeNotifications() {
       </SaveHint>
 
       <div className="set-stack">
-        <section className="set-section">
+        <section className="set-section me-get-card">
           <div className="set-head set-head-actions">
             <div>
-              <h3>Notifications</h3>
+              <h3>What you get</h3>
               <p>
                 Emails go to your contact email; account security notices go to your sign-in
-                email. Your groups decide which categories can email you and when — here you
-                can turn them down.
+                email. Switches you haven't changed follow the company defaults.
               </p>
             </div>
             <Link className="mini-btn" to="/notifications">View all notifications</Link>
@@ -100,16 +131,25 @@ export default function MeNotifications() {
               Email isn't set up on this server yet — notifications stay in the inbox.
             </p>
           )}
-          <CategoryDelivery
-            categories={preferences.notif.categories}
-            groups={groups}
+          {settingsError && <p className="pf-error set-hint">{settingsError}</p>}
+          <SwitchGrid
+            mode="person"
+            defaults={settings?.defaults ?? null}
+            own={preferences.notif.switches}
             emailEnabled={statusLoaded ? status.email_enabled : null}
-            onChange={(category, choice) => update({
+            onChange={(category, next) => update({
               notif: {
                 ...preferences.notif,
-                categories: { ...preferences.notif.categories, [category]: choice },
+                switches: withCategory(preferences.notif.switches, category, next),
               },
             })} />
+          {settings && (
+            <p className="set-note set-hint">
+              Critical notifications still follow these switches, but skip your quiet hours, days
+              off and the summary email. Your admins choose which are critical.
+              {criticalLabels.length > 0 && <> Right now: {criticalLabels.join(', ')}.</>}
+            </p>
+          )}
           <div className="set-row">
             <div className="set-label">
               <b>Sound</b>
@@ -133,16 +173,19 @@ export default function MeNotifications() {
             </div>
           </div>
         </section>
+
+        <ScheduleCard
+          value={preferences.notif.schedule}
+          onChange={(schedule) => update({ notif: { ...preferences.notif, schedule } })} />
       </div>
 
       <GroupsList
         kind="member"
         title="My groups"
-        hint="Notification groups you belong to — tune your own overrides or ask to leave."
+        hint="The notification groups you belong to. Groups don't change what you get."
         groups={myGroups}
         loaded={groups !== null}
         busyRequestIds={cancelBusy}
-        onEditOverrides={(g) => setEditingGroup(g)}
         onRequest={(group, action) => setRequestFor({ group, action })}
         onCancel={(id) => void handleCancel(id)}
       />
@@ -161,16 +204,6 @@ export default function MeNotifications() {
         onRequest={(group, action) => setRequestFor({ group, action })}
         onCancel={(id) => void handleCancel(id)}
       />
-
-      {editingGroup && person && (
-        <OverrideEditorModal
-          group={toGroupDetail(editingGroup)}
-          member={toMember(editingGroup, person)}
-          onSave={(body) => updateMyGroupOverrides(editingGroup.id, body)}
-          onClose={() => setEditingGroup(null)}
-          onSaved={() => { setEditingGroup(null); load(); }}
-        />
-      )}
 
       {requestFor && (
         <MembershipRequestModal
