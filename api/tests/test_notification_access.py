@@ -551,9 +551,8 @@ async def test_everyone_is_resolved_in_one_batch(db, monkeypatch):
 # private items, an archived library and, for someone who only reads, a page's first publish.
 # A library's page is GET /wiki/spaces/{key}. A folder or page is judged as the wiki's own watch
 # routes judge it (GET /wiki/nodes/{id}/watch, PUT /wiki/watches), by the rule its tree and its
-# fan-out use too. GET /wiki/nodes/{id} answers the same but in one case: someone who only reads
-# may open the details of a page that was never published, which the tree, the watch routes and
-# the fan-out hide (a reader doesn't learn that it exists).
+# fan-out use too, and GET /wiki/nodes/{id} answers the same (someone who only reads a page that
+# was never published gets 404 `not_published`).
 
 def _wiki_grant(principal_type, principal_id, level) -> dict:
     return {"principal_type": principal_type, "principal_id": str(principal_id), "level": level}
@@ -689,11 +688,10 @@ async def test_wiki_folder_and_page_viewers_match_the_wiki(client, db):
     seen = await _same_as_the_wiki(client, db, people, "wiki_node", {
         node_id: f"/wiki/nodes/{node_id}/watch" for node_id in nodes.values()})
     assert {name: seen[node_id] for name, node_id in nodes.items()} == expected
-    # the node's details agree, but for the readers of the page that was never published
+    # the node's details agree
     for name, node_id in nodes.items():
         details = await _page_viewers(client, people, f"/wiki/nodes/{node_id}")
-        readers = _who(people, "reader", "client_a") if name == "draft" else set()
-        assert details == expected[name] | readers, name
+        assert details == expected[name], name
 
 
 async def test_a_wiki_thing_that_is_gone_or_in_the_trash_opens_for_nobody(db):

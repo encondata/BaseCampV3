@@ -21,8 +21,13 @@
  * The Send a notification action's parameters are People and Groups
  * (ChipPickers over the notification recipients and groups, asked for once
  * the rule has such an action) and a Switch for the people watching what the
- * rule matched. A rule has one such action, so once it has one no other
- * action row offers it. A refused save says why through the 422's `reason`.
+ * rule matched. A viewer who may not ask for a list (people need
+ * notifications:change, groups notifications:view) sees what the rule chose
+ * by name, from the rule's own `names`, read-only, with a note saying which
+ * permission picking needs; a list that failed to load shows its error and
+ * leaves its picker on. A rule has one such action, so once it has one no
+ * other action row offers it. A refused save says why through the 422's
+ * `reason`.
  *
  * Follows the modal-scrim/modal-card/modal-head/modal-body/modal-foot
  * skeleton from pages/Notifications.tsx's NewGroupModal (lines
@@ -225,24 +230,42 @@ function ValueControl({
   );
 }
 
-function ParamControl({ param, value, label, disabled, targets, onChange }: {
+function ParamControl({ param, value, label, disabled, targets, names, onChange }: {
   param: RuleSchemaParam;
   value: unknown;
   label: string;
   disabled: boolean;
   targets: NotifyTargets;
+  /** The names the rule came with, by id: they stand in for a list the viewer may not ask for. */
+  names: Record<string, string>;
   onChange: (v: unknown) => void;
 }) {
   if (isListParam(param)) {
     const people = param.type === 'people';
     const list = people ? targets.people : targets.groups;
+    const selected = idsOf(value);
+    // A list the viewer may not ask for offers nothing to pick: the chips are the chosen ids
+    // under the names the rule came with (an id with no name reads as itself), and the picker
+    // is off, with a note saying what picking needs.
+    const unavailable = list.status === 'unavailable';
+    const options = unavailable
+      ? selected.map((id) => ({ value: id, label: names[id] ?? id }))
+      : list.options;
     return (
       <>
         {/* Off until its list is in, so it never offers "No matches." for a list that is on
             its way. A list that failed leaves it on: a chip can still come off. */}
-        <ChipPicker options={list.options} selected={idsOf(value)} onChange={onChange}
-                    disabled={disabled || list.status === 'loading'} ariaLabel={label}
+        <ChipPicker options={options} selected={selected} onChange={onChange}
+                    disabled={disabled || unavailable || list.status === 'loading'}
+                    ariaLabel={label}
                     placeholder={people ? 'Search people…' : 'Search groups…'} />
+        {unavailable && (
+          <span className="set-note" style={{ display: 'block', padding: 0, margin: '6px 0 0' }}>
+            {people
+              ? 'Picking people needs permission to change notifications.'
+              : 'Picking groups needs permission to view notifications.'}
+          </span>
+        )}
         {list.status === 'failed' && (
           <span className="pf-error" role="alert">
             {people ? 'Could not load the recipient list.' : 'Could not load the group list.'}
@@ -485,7 +508,8 @@ export default function RuleEditorModal({ schema, rule, onClose, onSaved }: Prop
               const control = (p: RuleSchemaParam, label: string) => (
                 <ParamControl
                   param={p} value={a.params[p.name]} label={label} disabled={saving}
-                  targets={targets} onChange={(v) => setActionParam(i, p.name, v)}
+                  targets={targets} names={rule?.names ?? {}}
+                  onChange={(v) => setActionParam(i, p.name, v)}
                 />
               );
               return (

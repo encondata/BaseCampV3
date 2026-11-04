@@ -3,10 +3,13 @@ validated against the code-side catalog at save time (the same catalog
 the worker executes — one source of truth); status-typed action params
 are additionally checked against the vocabulary here, where we have a
 DB, and so are the people and notification groups a Notify action names.
+A rule's answer carries the names of those people and groups (`names`),
+for a viewer who may not list them.
 PUT replaces children wholesale: child ids are not stable and nothing may
 reference them. All writes audit through services.audit."""
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query
@@ -36,7 +39,9 @@ def _err(status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra})
 
 
-def _out(rule: StatusRule) -> dict:
+def _out(rule: StatusRule, names: dict[str, str]) -> dict:
+    """The rule as the API answers it. `names` is what _names() found for every rule in the
+    response; the rule keeps the entries for the ids it names itself."""
     return {
         "id": rule.id, "name": rule.name, "description": rule.description,
         "trigger_status": rule.trigger_status,
@@ -46,6 +51,8 @@ def _out(rule: StatusRule) -> dict:
                         "value": c.value} for c in rule.conditions],
         "actions": [{"action_type": a.action_type, "params": a.params}
                     for a in rule.actions],
+        "names": {value: names[value] for param in ("people", "groups")
+                  for value in _chosen(rule, param) if value in names},
         "created_at": rule.created_at, "updated_at": rule.updated_at,
     }
 
@@ -68,6 +75,45 @@ async def _all_exist(db: DbSession, model, ids: list[str]) -> bool:
         return True
     found = set(await db.scalars(select(model.id).where(model.id.in_(wanted))))
     return found == wanted
+
+
+def _chosen(rule: StatusRule, param: str) -> list[str]:
+    """The ids the rule's Notify action chooses in `param` ("people" or "groups"), as saved."""
+    return [value for action in rule.actions if action.action_type == "notify"
+            for value in action.params.get(param) or () if isinstance(value, str)]
+
+
+def _wanted(rules: Sequence[StatusRule], param: str) -> set[uuid.UUID]:
+    """The ids the rules' Notify actions choose in `param`. A saved value that is no id names
+    nobody, so it is left out (one bad rule must not take the whole list down)."""
+    wanted = set()
+    for rule in rules:
+        for value in _chosen(rule, param):
+            try:
+                wanted.add(uuid.UUID(value))
+            except ValueError:
+                continue
+    return wanted
+
+
+async def _names(db: DbSession, rules: Sequence[StatusRule]) -> dict[str, str]:
+    """The name of each person (Person.display_name) and notification group the rules' Notify
+    actions choose, by id as a string: one query per kind for all the rules, not one per rule.
+    An id that names nobody (a group deleted since the rule was saved) has no entry."""
+    names: dict[str, str] = {}
+    if people := _wanted(rules, "people"):
+        found = await db.scalars(select(Person).where(Person.id.in_(people)))
+        names.update({str(person.id): person.display_name for person in found})
+    if groups := _wanted(rules, "groups"):
+        found = await db.execute(select(NotificationGroup.id, NotificationGroup.name)
+                                 .where(NotificationGroup.id.in_(groups)))
+        names.update({str(group_id): name for group_id, name in found})
+    return names
+
+
+async def _answer(db: DbSession, rule: StatusRule) -> dict:
+    """One rule as the API answers it."""
+    return _out(rule, await _names(db, [rule]))
 
 
 async def _validate(db: DbSession, body: StatusRuleIn) -> None:
@@ -135,7 +181,8 @@ async def list_rules(
     rules = (await db.scalars(
         select(StatusRule).options(*_LOAD)
         .order_by(StatusRule.priority, StatusRule.created_at))).all()
-    return [_out(r) for r in rules]
+    names = await _names(db, rules)
+    return [_out(r, names) for r in rules]
 
 
 @router.post("", response_model=StatusRuleOut, status_code=201)
@@ -159,7 +206,7 @@ async def create_rule(
           changes=body.model_dump(mode="json"))
     await db.commit()
     invalidate_cache()
-    return _out(await _get(db, rule.id))
+    return await _answer(db, await _get(db, rule.id))
 
 
 @router.get("/schema")
@@ -263,7 +310,7 @@ async def get_rule(
     rule_id: uuid.UUID, db: DbSession,
     actor: AuthContext = require_permission("status_rules", "view"),
 ) -> dict:
-    return _out(await _get(db, rule_id))
+    return await _answer(db, await _get(db, rule_id))
 
 
 @router.put("/{rule_id}", response_model=StatusRuleOut)
@@ -288,7 +335,7 @@ async def replace_rule(
           changes=body.model_dump(mode="json"))
     await db.commit()
     invalidate_cache()
-    return _out(await _get(db, rule.id))
+    return await _answer(db, await _get(db, rule.id))
 
 
 @router.patch("/{rule_id}", response_model=StatusRuleOut)
@@ -304,7 +351,7 @@ async def toggle_rule(
           changes={"enabled": body.enabled})
     await db.commit()
     invalidate_cache()
-    return _out(await _get(db, rule.id))
+    return await _answer(db, await _get(db, rule.id))
 
 
 @router.delete("/{rule_id}", status_code=204)

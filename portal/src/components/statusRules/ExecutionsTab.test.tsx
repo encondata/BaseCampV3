@@ -40,13 +40,13 @@ const RULES: StatusRule[] = [
   {
     id: 'rule-1', name: 'Rule One', description: '',
     trigger_status: 'in_transit', trigger_match_type: 'exact',
-    priority: 10, enabled: true, conditions: [], actions: [],
+    priority: 10, enabled: true, conditions: [], actions: [], names: {},
     created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
   },
   {
     id: 'rule-2', name: 'Rule Two', description: '',
     trigger_status: 'delivered', trigger_match_type: 'exact',
-    priority: 20, enabled: true, conditions: [], actions: [],
+    priority: 20, enabled: true, conditions: [], actions: [], names: {},
     created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
   },
 ];

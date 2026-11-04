@@ -97,13 +97,13 @@ const RULES: StatusRule[] = [
   {
     id: 'r1', name: 'High priority', description: 'A rule',
     trigger_status: 'in_transit', trigger_match_type: 'fuzzy',
-    priority: 1, enabled: true, conditions: [], actions: [],
+    priority: 1, enabled: true, conditions: [], actions: [], names: {},
     created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
   },
   {
     id: 'r2', name: 'Low priority', description: 'B rule',
     trigger_status: 'delivered', trigger_match_type: 'exact',
-    priority: 5, enabled: false, conditions: [], actions: [],
+    priority: 5, enabled: false, conditions: [], actions: [], names: {},
     created_at: '2026-01-02T00:00:00Z', updated_at: '2026-01-02T00:00:00Z',
   },
 ];
@@ -358,6 +358,56 @@ it('rule list: a viewer without notification permissions makes no list calls, an
   expect(api.listNotificationRecipients).not.toHaveBeenCalled();
   expect(api.listNotificationGroups).not.toHaveBeenCalled();
   expect(screen.queryByText(/Couldn.t load status rules/i)).toBeNull();
+});
+
+it('rules list names notify recipients from the rule for a viewer', async () => {
+  auth.can = (resource) => resource === 'status_rules';
+  api.listStatusRules.mockResolvedValue([
+    { ...NOTIFY_RULE, names: { p1: 'Pat Doe', g1: 'Group A' } },
+    {
+      ...NOTIFY_RULE, id: 'r4', name: 'Tells someone else',
+      actions: [{ action_type: 'notify', params: { people: ['p2'], groups: [], watchers: false } }],
+      names: { p2: 'Sam Roe' },
+    },
+  ]);
+  render(<StatusRules />);
+  await screen.findByText('Tells people');
+
+  // each rule's summary names its recipients from the names the rules carry, not the ids
+  expect(actionsCell('Tells people', 'Notify')?.getAttribute('title'))
+    .toBe('Notify Pat Doe, Group A and watchers');
+  expect(actionsCell('Tells someone else', 'Notify')?.getAttribute('title')).toBe('Notify Sam Roe');
+  expect(api.listNotificationRecipients).not.toHaveBeenCalled();
+  expect(api.listNotificationGroups).not.toHaveBeenCalled();
+});
+
+it('rules list: a rule answered without names still lists, and its summary names the ids', async () => {
+  // an older API slot, during a deploy, answers a rule with no `names` at all
+  auth.can = (resource) => resource === 'status_rules';
+  const unnamed: Partial<StatusRule> = { ...NOTIFY_RULE };
+  delete unnamed.names;
+  api.listStatusRules.mockResolvedValue([unnamed]);
+  render(<StatusRules />);
+
+  expect(await screen.findByText('Tells people')).not.toBeNull();
+  expect(actionsCell('Tells people', 'Notify')?.getAttribute('title')).toBe('Notify p1, g1 and watchers');
+  expect(screen.queryByText(/Couldn.t load status rules/i)).toBeNull();
+});
+
+it('rules list: a list the viewer may ask for names its own recipients, and the other takes the names from the rule', async () => {
+  auth.can = (resource, action) => resource === 'status_rules'
+    || (resource === 'notifications' && action === 'view');
+  api.listStatusRules.mockResolvedValue([
+    { ...NOTIFY_RULE, names: { p1: 'Pat Doe', g1: 'Group From The Rule' } },
+  ]);
+  render(<StatusRules />);
+  await screen.findByText('Tells people');
+
+  // the groups are the loaded list's (Group A), the people the rule's
+  await waitFor(() => expect(actionsCell('Tells people', 'Notify')?.getAttribute('title'))
+    .toBe('Notify Pat Doe, Group A and watchers'));
+  expect(api.listNotificationGroups).toHaveBeenCalledTimes(1);
+  expect(api.listNotificationRecipients).not.toHaveBeenCalled();
 });
 
 it('rule list: each list is asked for by its own permission, the people by notifications:change and the groups by notifications:view', async () => {

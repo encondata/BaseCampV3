@@ -55,6 +55,7 @@ from serversherpa.notifications.watches import (
     own_watch_on,
     person_watches,
     thing_of,
+    watch_target,
     watch_view,
 )
 from serversherpa.security.passwords import verify_password
@@ -354,7 +355,10 @@ async def cancel_my_request(
 # ── watches: what I hear about because I watch it, or my groups do ───
 # Anyone signed in can watch what they can open. The rules live in
 # notifications/watches.py; a WatchError becomes the same {"code"} answer
-# as elsewhere here.
+# as elsewhere here. My own watches are audited on my account (`user_account`:
+# watch.add, watch.update, watch.remove) when I start, change and stop them, as
+# a group's are on the group. A watch on the wiki is the wiki's own as well, so
+# it writes the wiki's audit instead (`wiki_watch`), never a second row here.
 
 def _watch_http(err: WatchError) -> HTTPException:
     return HTTPException(status_code=err.status, detail={"code": err.code})
@@ -402,8 +406,8 @@ def _on_the_wiki(watch: NotificationWatch) -> bool:
 @router.post("/watches", response_model=WatchOut, status_code=201)
 async def create_my_watch(body: WatchIn, user: CurrentUser, db: DbSession) -> WatchOut:
     """Watch a thing I can open, or chosen events everywhere. One watch each: watching again
-    is a 409, and the events are changed on the watch that is there. A wiki watch is recorded
-    as the wiki records its own."""
+    is a 409, and the events are changed on the watch that is there. Starting one is audited on
+    my account, except a wiki watch, which is recorded as the wiki records its own."""
     try:
         watch = await add_watch(
             db, thing=body.thing, thing_id=body.id, kinds=body.kinds,
@@ -414,6 +418,10 @@ async def create_my_watch(body: WatchIn, user: CurrentUser, db: DbSession) -> Wa
         raise _watch_http(err) from None
     if _on_the_wiki(watch):
         audit_wiki_watch(db, actor_id=user.person.id, watch=watch)
+    else:
+        audit(db, actor_id=user.person.id, entity_type="user_account",
+              entity_id=str(user.person.id), action="watch.add",
+              changes={**watch_target(watch), "kinds": list(watch.kinds)})
     await db.commit()
     return WatchOut.from_view(view)
 
@@ -423,18 +431,25 @@ async def update_my_watch(
     watch_id: uuid.UUID, body: WatchKindsIn, user: CurrentUser, db: DbSession,
 ) -> WatchOut:
     """Choose the events of one of my watches; none means every event that applies. A wiki
-    watch names none (it hears every page update and comment): any is 422 `invalid_kind`."""
+    watch names none (it hears every page update and comment): any is 422 `invalid_kind`.
+    Choosing the events it already has changes nothing and is not audited."""
     watch = await _my_watch(db, watch_id, user.person.id)
     # A watch on something I can't open stays stored but out of sight, as in the list: its
     # answer would carry the thing's name.
     if not await can_open(db, user.person.id, watch):
         raise HTTPException(status_code=404, detail={"code": "watch_not_found"})
     thing = thing_of(watch)
+    before = list(watch.kinds)
     try:
         watch.kinds = clean_kinds(thing.type if thing is not None else EVERYTHING, body.kinds)
         view = await watch_view(db, watch)
     except WatchError as err:
         raise _watch_http(err) from None
+    if watch.kinds != before and not _on_the_wiki(watch):
+        audit(db, actor_id=user.person.id, entity_type="user_account",
+              entity_id=str(user.person.id), action="watch.update",
+              changes={**watch_target(watch),
+                       "kinds": {"from": before, "to": list(watch.kinds)}})
     await db.commit()
     return WatchOut.from_view(view)
 
@@ -443,10 +458,13 @@ async def update_my_watch(
 async def delete_my_watch(watch_id: uuid.UUID, user: CurrentUser, db: DbSession) -> None:
     """Stop watching. Any watch of mine can go, whether or not I can still open its thing. A
     wiki watch's end is recorded as the wiki records its own (`wiki_watch` `unwatch`), so the
-    wiki's history stays whole whichever page stopped it; watches on portal things go
-    unaudited."""
+    wiki's history stays whole whichever page stopped it; any other is audited on my account
+    (`watch.remove`)."""
     watch = await _my_watch(db, watch_id, user.person.id)
     if _on_the_wiki(watch):
         audit_wiki_unwatch(db, actor_id=user.person.id, watch=watch)
+    else:
+        audit(db, actor_id=user.person.id, entity_type="user_account",
+              entity_id=str(user.person.id), action="watch.remove", changes=watch_target(watch))
     await db.delete(watch)
     await db.commit()

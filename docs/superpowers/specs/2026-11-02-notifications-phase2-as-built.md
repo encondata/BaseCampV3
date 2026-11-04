@@ -4,7 +4,7 @@ Companion to `2026-11-02-notifications-phase2-design.md` (approved 2026-11-02). 
 
 - **Branch:** `notif-phase2`, stacked on the unmerged `notif-phase1` (0468afe7).
 - **Size:** 56 commits from fdcc3ac6 to 9d714279, plus this note; 159 files.
-- **Migrations:** 0113 to 0116, on top of Phase 1's 0111 and 0112.
+- **Migrations:** 0113 to 0116, on top of Phase 1's 0111 and 0112; answer 7 adds 0119 (see Answers).
 - **Plans:** `docs/superpowers/plans/2026-11-0{2,3}-notifications-phase2-slice{1..5}.md`. Each plan's "Calls this plan makes" section stands as built.
 
 ## What was built
@@ -21,7 +21,7 @@ Companion to `2026-11-02-notifications-phase2-design.md` (approved 2026-11-02). 
    - The check stays quiet while read-only mode is on, for 4 minutes after it, and for 4 minutes after the worker starts.
    - Devices can be watched from the kiosk detail page, Fixed Readers and Routers.
    - Migration 0114 adds `devices.offline_notified_at` (devices already offline are marked at migration time) and `notification_events.attempts`.
-3. **Bulk actions (slice 3).** The person who started a background bulk action (asset bulk update, move assets, move setup, From-To import) hears when it finishes or fails. A From-To import that left rows out says how many.
+3. **Bulk actions (slice 3).** The person who committed a background bulk action, and the uploader when that's someone else, hear when it finishes or fails (asset bulk update, move assets, move setup, From-To import). A From-To import that left rows out says how many.
 4. **Status rules (slice 4).**
    - A "Send a notification" action goes to people, groups, and optionally people watching the initiative or site. It sends at most once an hour per rule and thing (migration 0115).
    - Matches are grouped per rule. Each person's text names only what they can open.
@@ -39,7 +39,8 @@ Companion to `2026-11-02-notifications-phase2-design.md` (approved 2026-11-02). 
 - **The group page lists only what the viewer can open.** This applies to every row: a private wiki page, a page in the trash, or a thing the admin can't open is left out. PATCH and DELETE on such a row answer "not found". Slice 1 had left this list unfiltered; the wiki's private pages made the filter necessary.
 - **Wiki emails are re-checked before they go out.** The design's re-check covered only the sweep's notices. A held or queued wiki email is now dropped as "No access" when the reader can no longer open the page. This follows the design's first anti-goal.
 - **The wiki logs people it leaves out for access.** It writes `inbox_suppressed` / `no_access` for every active person it leaves out for access, as the sweep does, so the Delivery log can explain a group member who didn't hear.
-- **Removing a wiki watch from /me writes the wiki's own audit.** So does adding one. Watches on portal things stay unaudited, as designed.
+- **Removing a wiki watch from /me writes the wiki's own audit.** So does adding one. Your own watches on portal things are audited too, since answer 2 (`watch.add`, `watch.update` and `watch.remove` on your account).
+- **Bulk action notices reach the person who committed the job.** The uploader hears too when that's someone else, since answer 7 (`import_jobs.committed_by`, migration 0119). The design sent them only to whoever started the job (`created_by`).
 - **`notification_events.attempts`.** The sweep claims events ordered by failures, then age, so an event that always fails can't block the queue. This is not in the design.
 - **One Notify action per rule.** A second one is refused.
 - **Yes/no conditions in the rule editor.** They offer only "equals". "Asset has rails", which can be empty, also offers "is null" and "is not null".
@@ -101,6 +102,7 @@ Each decision is listed with what it costs if it's wrong.
 - "Wiki library", "Wiki folder", "Wiki page"
 - "Notified within the hour"
 - From the mockup: "Wiki" and "Wiki watches hear every page update and comment, as today."
+- "Picking people needs permission to change notifications." and "Picking groups needs permission to view notifications." (answer 9)
 - Removed: "Groups don't change what you get." from the My groups hint, because group watches now do. Say if you want a replacement line.
 
 ## Open questions
@@ -117,10 +119,29 @@ Each decision is listed with what it costs if it's wrong.
 10. **Unpublished wiki pages.** The wiki's `GET /wiki/nodes/{id}` answers a view-only reader on a never-published page (existing behavior; is it meant to?).
 11. **Wiki fan-out at scale.** It stays inside the editor's request. With a 500-member group watching a library, each publish or comment costs about 2,500 to 3,000 database round trips. Letting the wiki announce into the sweep is Phase 3 material.
 
+## Answers (2026-11-04)
+
+Jimmy answered the open questions on 2026-11-04. The fixes are planned in `docs/superpowers/plans/2026-11-04-notifications-phase2-answers.md`.
+
+1. **Flapping readers:** keep it as built. A reader its station reports unreachable is offline at once, and its notice goes out straight away.
+2. **Auditing your own watches:** yes. Starting, changing or stopping your own watch on an initiative, site, truck, device or Everything writes `watch.add`, `watch.update` or `watch.remove` on your account (`user_account`), with the same details a group's watch records. Wiki watches keep the wiki's own audit.
+3. **Members without a portal login:** keep it as built. People who can't sign in get nothing from watches, and nothing is logged for them. Anyone who signs in can watch anything they can open.
+4. **The 500-recipient cap:** keep it as built. The system has 25 users at most, so the cap is never reached.
+5. **Clients and truck events:** keep the "No access" rows.
+6. **Failed move setup:** keep the link to a fresh wizard.
+7. **From-To imports:** the notice goes to the person who committed the import, and to the uploader too when that's someone else. Migration 0119 adds `import_jobs.committed_by`, which both commit routes set (From-To import and Bulk update assets). A move setup's job is committed by the person who started it.
+8. **What a job left out:** Jimmy needs to see what failed in the portal, during the upload and import. The pages already show it, so nothing changes:
+   - Bulk update assets marks each row Update, No change, Needs a match, Error or Skipped before Apply, then shows each row's result, with a CSV download.
+   - Move setup's Assets step shows the same per-row report as the From-To page before the move is created. Its finish screen lists every row as Added, Updated or Skipped, with the row's message and a CSV download.
+   - A From-To import's Review step lists the error and review rows and says they'll be skipped. Import complete keeps that report, with an .xlsx download.
+9. **Recipient list for viewers:** fix it. Someone who may not list people (or groups) sees the rule's chosen people (or groups) by name, read-only, with a note saying which permission picking them needs, instead of an error. A rule's API answer carries those names (`names`).
+10. **Unpublished wiki pages:** fix it. `GET /wiki/nodes/{id}` answers a view-only reader on a never-published page with 404 `not_published`, as the page read does, and the wiki shows the API's "This page hasn't been published yet." for it.
+11. **Wiki fan-out at scale:** left for Phase 3.
+
 ## Deploy
 
 1. Turn read-only mode on.
-2. Run the migrations (0111 to 0116).
+2. Run the migrations (0111 to 0119).
 3. Deploy both slots.
 4. Turn read-only mode off. Never leave an old slot live.
 
@@ -129,6 +150,8 @@ What breaks if an old slot runs on 0116:
 - Developers bypass read-only mode, so a developer creating, publishing or approving wiki pages on the old slot gets a failed save; it rolls back and nothing is corrupted.
 - The old worker doesn't touch `wiki_watches`.
 - New code on 0115 runs, but wiki watches stay invisible until 0116.
+
+Answer 7's migration 0119 only adds a nullable column, so an old slot keeps working on it.
 
 Migration numbering: `project-plans` also has a 0110, and `notif-phase1` is unmerged. Whichever branch merges later renumbers.
 

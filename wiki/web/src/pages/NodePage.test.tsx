@@ -68,4 +68,13 @@ describe('NodePage', () => {
     renderAt('/n/gone');
     expect(await screen.findByRole('heading', { name: 'Nothing here' })).toBeTruthy();
   });
+
+  it('a never-published page says it hasn\'t been published', async () => {
+    const message = 'This page hasn\'t been published yet.';
+    vi.mocked(getNode).mockRejectedValue(
+      new ApiError(404, 'not_published', { code: 'not_published', message }, message));
+    renderAt('/n/draft');
+    expect(await screen.findByText(message)).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Nothing here' })).toBeNull();
+  });
 });
