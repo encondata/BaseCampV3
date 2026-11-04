@@ -296,17 +296,17 @@ export default function PlanTab({ initiativeId, initiative }: {
   const goToRef = useRef<(taskId: string) => void>(() => {});
   const completion = useCompletion(ctl, { onGoTo: (taskId) => goToRef.current(taskId) });
   const [layout, setLayout] = useGanttLayout();
+  const { scheduled_start: scheduledStart, scheduled_end: scheduledEnd } = initiative;
+  const scheduled = useMemo(() => ({ start: scheduledStart, end: scheduledEnd }), [scheduledStart, scheduledEnd]);
   const commands = usePlanCommands({
     ctl, sheet: sheet.forCommands, root: rootRef, clip: clipRef, openDialog: setDialog, completion, layout,
-    searchBox: searchRef,
+    searchBox: searchRef, scheduled,
   });
   useLayoutEffect(() => {
     goToRef.current = commands.goToTask;
     linkedRef.current = commands.scrollChartTo;
   });
   useRovingToolbar(toolbarRef, ready);
-  const { scheduled_start: scheduledStart, scheduled_end: scheduledEnd } = initiative;
-  const scheduled = useMemo(() => ({ start: scheduledStart, end: scheduledEnd }), [scheduledStart, scheduledEnd]);
   const { zoomIn, zoomOut, focusSheet } = commands;
   const zoomStep = useCallback((dir: -1 | 1) => (dir < 0 ? zoomIn() : zoomOut()), [zoomIn, zoomOut]);
   useFocusBackAfter(dialog, focusSheet);

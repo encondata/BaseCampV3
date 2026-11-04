@@ -60,7 +60,9 @@ import {
   type CommandOps, type InsertKind,
 } from '../../lib/plans/commands';
 import { coarserOf, fitZoom, zoomIn as zoomInOf, zoomOut as zoomOutOf, type Zoom } from '../../lib/plans/ganttGeometry';
-import { LABEL_MAX_PX, planFinestZoom, readZoom, writeZoom, type GanttLayout } from '../../lib/plans/ganttView';
+import {
+  LABEL_MAX_PX, planFinestZoom, readZoom, writeZoom, type DayWindow, type GanttLayout,
+} from '../../lib/plans/ganttView';
 import { PLAN_ERRORS, isPlanChanged, planErrorText } from '../../lib/plans/errors';
 import { moveOp, moveTops, type MovePlace } from '../../lib/plans/moveTasks';
 import { descendants } from '../../lib/plans/outline';
@@ -226,6 +228,10 @@ interface Options {
   layout?: GanttLayout;
   /** The filter bar's search box: Ctrl+F (⌘F) focuses it. */
   searchBox?: RefObject<HTMLInputElement | null>;
+  /** The initiative's scheduled window the chart is drawn over (PlanGantt's
+   *  `scheduled`), so `finestZoom` counts the same span; the plan's copy
+   *  (`initiative_window`) when not given. */
+  scheduled?: DayWindow;
 }
 
 export interface PlanCommands {
@@ -308,7 +314,7 @@ function visibleColumns(): PlanColumn[] {
 }
 
 export function usePlanCommands({
-  ctl, sheet, root, clip, openDialog, completion, layout = 'beside', searchBox,
+  ctl, sheet, root, clip, openDialog, completion, layout = 'beside', searchBox, scheduled,
 }: Options): PlanCommands {
   const toast = useToast();
   const { prompt, answer: answered } = completion;
@@ -316,8 +322,9 @@ export function usePlanCommands({
   const [storedZoom, setZoom] = usePlanZoom(ctl.plan?.id ?? null);
   const startAt = ctl.plan?.project_start;
   const finishAt = ctl.plan?.project_finish;
-  const winFrom = ctl.plan?.initiative_window?.start ?? null;
-  const winTo = ctl.plan?.initiative_window?.end ?? null;
+  const drawnWindow = scheduled ?? ctl.plan?.initiative_window;
+  const winFrom = drawnWindow?.start ?? null;
+  const winTo = drawnWindow?.end ?? null;
   const finestZoom = useMemo(() => planFinestZoom(startAt, finishAt, { start: winFrom, end: winTo }),
     [startAt, finishAt, winFrom, winTo]);
   // a zoom kept for this plan when it was shorter is held to what it can draw now

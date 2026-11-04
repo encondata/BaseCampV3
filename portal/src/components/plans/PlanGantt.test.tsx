@@ -139,11 +139,11 @@ function Harness({
   );
 }
 
-function renderTab() {
+function renderTab(initiative = INITIATIVE) {
   return render(
     <MemoryRouter initialEntries={['/initiatives/init-1?tab=plan']}>
       <Routes>
-        <Route path="/initiatives/:id" element={<PlanTab initiativeId="init-1" initiative={INITIATIVE} />} />
+        <Route path="/initiatives/:id" element={<PlanTab initiativeId="init-1" initiative={initiative} />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -702,6 +702,20 @@ describe('in the tab beside the sheet', () => {
     expect(localStorage.getItem('plans.zoom.plan-1')).toBe('quarterHours');
     fireEvent.wheel(q('.pln-pane-chart') as HTMLElement, { deltaY: -100, ctrlKey: true });
     expect(localStorage.getItem('plans.zoom.plan-1')).toBe('fiveMinutes');
+  });
+
+  it('a chart drawn over years of the initiative’s window stops zooming in where it can still scroll', async () => {
+    // the plan's own copy of the window is short; the chart draws the initiative's three years
+    localStorage.setItem('plans.zoom.plan-1', 'fiveMinutes');
+    api.getPlan.mockResolvedValue(plan3());
+    renderTab({ ...INITIATIVE, scheduled_start: '2026-11-01', scheduled_end: '2029-11-01' });
+    await findSheet();
+    expect(screen.getByRole('button', { name: 'Zoom In' }).getAttribute('aria-disabled')).toBe('true');
+    // held at quarter hours: the timescale is 15-minute ticks, not 5-minute ones
+    expect(q('.pln-scale-bottom')?.textContent).toMatch(/\d\d:15/);
+    expect(q('.pln-scale-bottom')?.textContent).not.toMatch(/\d\d:05/);
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom Out' }));
+    expect(localStorage.getItem('plans.zoom.plan-1')).toBe('wideHours');
   });
 
   it('Fit picks the zoom from the chart pane’s width and scrolls to the project start', async () => {
