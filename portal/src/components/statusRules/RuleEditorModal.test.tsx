@@ -111,7 +111,7 @@ const RULE: StatusRule = {
   created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
 };
 
-const person =(person_id: string, display_name: string, job_title: string | null = null): NotificationRecipient => ({
+const person = (person_id: string, display_name: string, job_title: string | null = null): NotificationRecipient => ({
   person_id, display_name, job_title, avatar_url: null, email: null, phone: null, has_account: true,
   can_email: true, can_text: false, can_push: true, can_web: true,
 });

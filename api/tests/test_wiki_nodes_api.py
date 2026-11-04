@@ -308,6 +308,24 @@ async def test_view_only_reader_gets_not_published_for_a_never_published_page(cl
     assert "Reorganization plan" not in resp.text
 
 
+async def test_unviewable_never_published_page_is_not_found(client, db):
+    """The view check runs before the never-published one: a caller who can't
+    see a page at all is told it isn't there, as for an id that doesn't exist,
+    never that it hasn't been published, which would confirm the page exists."""
+    s = await _setup(client, db)
+    # a library the viewer has no grant on, holding a page nobody has published
+    private = await _space(client, s["owner"], default_access="private", name="Private")
+    page = await _create(client, s["owner"], private, "Reorganization plan", kind="page")
+    assert (await client.get(f"/wiki/nodes/{page['id']}", headers=s["owner"])).status_code == 200
+
+    resp = await client.get(f"/wiki/nodes/{page['id']}", headers=s["viewer"])
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"]["code"] == "not_found"
+    unknown = await client.get(f"/wiki/nodes/{uuid.uuid4()}", headers=s["viewer"])
+    assert resp.json() == unknown.json()
+    assert "Reorganization plan" not in resp.text
+
+
 async def test_view_only_reader_reads_a_published_page_node(client, db):
     s = await _setup(client, db)
     page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")

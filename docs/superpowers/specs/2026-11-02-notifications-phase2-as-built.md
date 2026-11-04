@@ -4,7 +4,7 @@ Companion to `2026-11-02-notifications-phase2-design.md` (approved 2026-11-02). 
 
 - **Branch:** `notif-phase2`, stacked on the unmerged `notif-phase1` (0468afe7).
 - **Size:** 56 commits from fdcc3ac6 to 9d714279, plus this note; 159 files.
-- **Migrations:** 0113 to 0116, on top of Phase 1's 0111 and 0112.
+- **Migrations:** 0113 to 0116, on top of Phase 1's 0111 and 0112; answer 7 adds 0119 (see Answers).
 - **Plans:** `docs/superpowers/plans/2026-11-0{2,3}-notifications-phase2-slice{1..5}.md`. Each plan's "Calls this plan makes" section stands as built.
 
 ## What was built
@@ -40,6 +40,7 @@ Companion to `2026-11-02-notifications-phase2-design.md` (approved 2026-11-02). 
 - **Wiki emails are re-checked before they go out.** The design's re-check covered only the sweep's notices. A held or queued wiki email is now dropped as "No access" when the reader can no longer open the page. This follows the design's first anti-goal.
 - **The wiki logs people it leaves out for access.** It writes `inbox_suppressed` / `no_access` for every active person it leaves out for access, as the sweep does, so the Delivery log can explain a group member who didn't hear.
 - **Removing a wiki watch from /me writes the wiki's own audit.** So does adding one. Your own watches on portal things are audited too, since answer 2 (`watch.add`, `watch.update` and `watch.remove` on your account).
+- **Bulk action notices reach the person who committed the job.** The uploader hears too when that's someone else, since answer 7 (`import_jobs.committed_by`, migration 0119). The design sent them only to whoever started the job (`created_by`).
 - **`notification_events.attempts`.** The sweep claims events ordered by failures, then age, so an event that always fails can't block the queue. This is not in the design.
 - **One Notify action per rule.** A second one is refused.
 - **Yes/no conditions in the rule editor.** They offer only "equals". "Asset has rails", which can be empty, also offers "is null" and "is not null".
@@ -140,7 +141,7 @@ Jimmy answered the open questions on 2026-11-04. The fixes are planned in `docs/
 ## Deploy
 
 1. Turn read-only mode on.
-2. Run the migrations (0111 to 0116).
+2. Run the migrations (0111 to 0119).
 3. Deploy both slots.
 4. Turn read-only mode off. Never leave an old slot live.
 

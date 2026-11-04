@@ -163,7 +163,11 @@ async def get_node(node_id: uuid.UUID, ctx: WikiContext) -> NodeDetailOut:
     `not_published`, the answer its content read gives, and nothing about
     the page (its title, owner or dates) comes with it."""
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "view")
-    # the tree's own rule, before anything about the node is read or returned
+    # the tree's own rule, before anything about the node is read or returned. Past
+    # require_node_level (which has already answered not_found for a deleted node or one the
+    # caller can't view), the only node visible_nodes can still hide is a never-published
+    # page for a view-only caller, so an empty result means not_published; anything else it
+    # ever hides would need its own answer here.
     visible, levels = await visible_nodes(ctx, [node])
     if not visible:
         raise err(404, "not_published", "This page hasn't been published yet.")

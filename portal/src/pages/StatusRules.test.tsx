@@ -381,6 +381,19 @@ it('rules list names notify recipients from the rule for a viewer', async () => 
   expect(api.listNotificationGroups).not.toHaveBeenCalled();
 });
 
+it('rules list: a rule answered without names still lists, and its summary names the ids', async () => {
+  // an older API slot, during a deploy, answers a rule with no `names` at all
+  auth.can = (resource) => resource === 'status_rules';
+  const unnamed: Partial<StatusRule> = { ...NOTIFY_RULE };
+  delete unnamed.names;
+  api.listStatusRules.mockResolvedValue([unnamed]);
+  render(<StatusRules />);
+
+  expect(await screen.findByText('Tells people')).not.toBeNull();
+  expect(actionsCell('Tells people', 'Notify')?.getAttribute('title')).toBe('Notify p1, g1 and watchers');
+  expect(screen.queryByText(/Couldn.t load status rules/i)).toBeNull();
+});
+
 it('rules list: a list the viewer may ask for names its own recipients, and the other takes the names from the rule', async () => {
   auth.can = (resource, action) => resource === 'status_rules'
     || (resource === 'notifications' && action === 'view');

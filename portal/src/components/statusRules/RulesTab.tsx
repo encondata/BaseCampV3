@@ -132,7 +132,8 @@ export default function RulesTab({ onCount }: {
   );
   const targets = useNotifyTargets(anyNotify);
   const actionNames = useMemo<ActionNames>(() => {
-    const fromRules = (rules ?? []).flatMap((r) => Object.entries(r.names))
+    // `?? {}`: a rule answered by an older API slot (during a deploy) has no `names`
+    const fromRules = (rules ?? []).flatMap((r) => Object.entries(r.names ?? {}))
       .map(([value, label]) => ({ value, label }));
     return {
       people: targets.people.status === 'unavailable' ? fromRules : targets.people.options,
