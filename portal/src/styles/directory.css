@@ -1101,6 +1101,8 @@ button.combo-caret:hover { color: var(--text-dark); }
 .collapse-panel.open .collapse-chevron { transform: rotate(90deg); }
 .collapse-body { margin-top: 12px; }
 .supplied-modal-row:hover { background: var(--surface-2, #f5f7fa); }
+/* trade chips then the level, on one wrapping line */
+.supplied-modal-row .supplied-sub { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
 
 /* ── Add a child partner (partner detail) ──────────────────────────── */
 /* Sizes to its content: one ComboBox and a hint, so a narrow card; overflow

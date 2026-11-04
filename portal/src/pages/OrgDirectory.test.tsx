@@ -374,3 +374,45 @@ it('Clients list has no Parent column option', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Columns' }));
   expect(screen.queryByRole('button', { name: /^Parent/ })).toBeNull();
 });
+
+/* ── Partners: supplied-workers picker sub-line ──────────────────────── */
+
+const supplied = (over: Record<string, unknown>) => ({
+  person_id: 'x', display_name: 'X', avatar_url: null, trade: null, level: null,
+  status: 'active', status_label: 'Active', status_color: '#178a4c', level_color: null,
+  ...over,
+});
+
+it('supplied workers picker: trade chips then the level, "no profile" when both are empty', async () => {
+  auth.global = true;
+  mockPartnerApi();
+  const base = api.apiFetch.getMockImplementation()!;
+  api.apiFetch.mockImplementation(async (path: string, init?: RequestInit) => (
+    path === '/partners/po/workers'
+      ? jsonResponse([
+        supplied({ person_id: 'a', display_name: 'Ada Both', trade: 'Cable, Hardware', level: 'L2' }),
+        supplied({ person_id: 'b', display_name: 'Bo Trade', trade: 'Fiber' }),
+        supplied({ person_id: 'c', display_name: 'Cy Level', level: 'L3' }),
+        supplied({ person_id: 'd', display_name: 'Di Nothing' }),
+        supplied({ person_id: 'e', display_name: 'Ed Blank', level: '' }),
+      ])
+      : base(path, init)));
+  renderPartners();
+  const row = (await screen.findByText('Other Staffing')).closest('.dir-row') as HTMLElement;
+  fireEvent.click(row.querySelector('.row-main') as HTMLElement);
+  fireEvent.click(await within(row).findByRole('button', { name: 'View workers' }));
+
+  const subOf = (name: string) =>
+    screen.getByText(name).closest('.cell')!.querySelector('.cell-sub') as HTMLElement;
+  const chips = (el: HTMLElement) =>
+    Array.from(el.querySelectorAll('.chip.tag')).map((c) => c.textContent);
+
+  expect(chips(subOf('Ada Both'))).toEqual(['Cable', 'Hardware']);
+  expect(subOf('Ada Both').textContent).toBe('CableHardware· L2');
+  expect(chips(subOf('Bo Trade'))).toEqual(['Fiber']);
+  expect(subOf('Bo Trade').textContent).toBe('Fiber');
+  expect(chips(subOf('Cy Level'))).toEqual([]);
+  expect(subOf('Cy Level').textContent).toBe('L3');
+  expect(subOf('Di Nothing').textContent).toBe('no profile');
+  expect(subOf('Ed Blank').textContent).toBe('no profile');
+});

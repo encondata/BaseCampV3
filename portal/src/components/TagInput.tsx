@@ -89,13 +89,20 @@ export default function TagInput({
   // outside click closes — a portaled menu lives outside wrapRef, so a
   // mousedown on it counts as inside too (otherwise this capture-phase
   // listener would close the menu before a suggestion's mousedown adds it).
+  // In free-text mode the typed text is committed first rather than dropped:
+  // this capture listener runs before the field's blur, so by then the text
+  // would already be gone and a click on, say, a form's Save button would
+  // silently lose what was typed.
+  const latest = useRef({ text, restricted, commit: (_v: string) => {} });
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
       const target = e.target as Node;
       if (!wrapRef.current?.contains(target) && !menuRef.current?.contains(target)) {
+        const { text: typed, restricted: onlyOptions, commit } = latest.current;
         setOpen(false);
-        setText('');
+        if (onlyOptions) setText('');
+        else commit(typed.trim());
       }
     };
     document.addEventListener('mousedown', onDown, true);
@@ -110,6 +117,7 @@ export default function TagInput({
     onChange([...value, v]);
     setText('');
   };
+  latest.current = { text, restricted, commit: commitValue };
 
   const commitTyped = () => {
     if (restricted) {

@@ -55,6 +55,31 @@ export interface WorkerItem {
   certs_expired: number;
 }
 
+/** A worker's trade is free text holding one or more comma-separated values
+ *  ("Cable, General, Hardware"). Trims each, drops blanks, and drops repeats
+ *  (case-insensitive, first spelling wins) so chips never show a value twice. */
+export function splitTrades(trade: string | null | undefined): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of (trade ?? '').split(',')) {
+    const value = part.trim();
+    const key = value.toLowerCase();
+    if (!value || seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
+/** Per-column split values for the list ColumnMenu / passesColumnFilters, so a
+ *  worker with "Cable, Hardware" is filterable under each trade. Only the
+ *  trade column splits; every other column returns null (single-valued). Takes
+ *  the minimal `{ trade }` shape so any worker row type fits. A module-level
+ *  function keeps one stable identity for memo deps. */
+export function workerCellValues(w: { trade: string | null }, colKey: string): string[] | null {
+  return colKey === 'trade' ? splitTrades(w.trade) : null;
+}
+
 /** Codes upsert_profile (PUT /workers/{id}/profile, api/src/serversherpa/api/
  *  routes/workers.py) can raise, plus the generic 403 every require_permission
  *  dependency raises (api/src/serversherpa/api/deps.py:93). Verified against

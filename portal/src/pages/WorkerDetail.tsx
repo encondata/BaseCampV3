@@ -17,6 +17,7 @@ import StatusHover from '../components/StatusHover';
 import CertsPanel from '../components/workers/CertsPanel';
 import LevelBadge from '../components/workers/LevelBadge';
 import ProfileForm from '../components/workers/ProfileForm';
+import TradeChips from '../components/workers/TradeChips';
 import { GrantAccessModal } from '../components/users/GrantAccessModal';
 import {
   apiFetch, listTimeEntries, listWorkerStatuses,
@@ -195,9 +196,9 @@ export default function WorkerDetailPage() {
               {chip(worker.status_label, worker.status_color)}
               <LevelBadge level={worker.level} levels={levels} />
             </h1>
-            <div className="pm-role">
-              {[worker.trade ?? 'No trade set',
-                worker.partner?.name ?? 'Direct hire'].join(' · ')}
+            <div className="pm-role pm-role-chips">
+              <TradeChips trade={worker.trade} fallback="No trade set" />
+              <span>· {worker.partner?.name ?? 'Direct hire'}</span>
             </div>
             <div className="pm-sub">
               {worker.contact_email && <span>✉ {worker.contact_email}</span>}
@@ -242,7 +243,7 @@ export default function WorkerDetailPage() {
                              onCancel={() => setEditingProfile(false)} />
               ) : (
                 <dl className="kv">
-                  <dt>Trade</dt><dd>{worker.trade ?? '—'}</dd>
+                  <dt>Trade</dt><dd><TradeChips trade={worker.trade} /></dd>
                   <dt>Level</dt><dd><LevelBadge level={worker.level} levels={levels} /></dd>
                   <dt>Partner</dt><dd>{worker.partner?.name ?? 'Direct hire'}</dd>
                   <dt>Status</dt><dd>{chip(worker.status_label, worker.status_color)}</dd>

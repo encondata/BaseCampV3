@@ -133,3 +133,28 @@ it('shows the Learning history panel for the worker', async () => {
   renderPage();
   expect((await screen.findByTestId('learning-history')).textContent).toBe('w1:Wes Worker');
 });
+
+const chipTexts = (el: Element) =>
+  Array.from(el.querySelectorAll('.chip.tag')).map((c) => c.textContent);
+
+it('shows the trades as chips in the header and the Profile panel', async () => {
+  workers.getWorker.mockResolvedValue({
+    ...WORKER, trade: 'Cable, Hardware', partner: { id: 'p1', name: 'Wire Co' } });
+  renderPage();
+  await screen.findByRole('heading', { level: 1, name: /Wes Worker/ });
+  const role = document.querySelector('.pm-role') as HTMLElement;
+  expect(chipTexts(role)).toEqual(['Cable', 'Hardware']);
+  expect(role.textContent).toBe('CableHardware· Wire Co');
+  const dt = Array.from(document.querySelectorAll('dt')).find((d) => d.textContent === 'Trade')!;
+  expect(chipTexts(dt.nextElementSibling!)).toEqual(['Cable', 'Hardware']);
+});
+
+it('says "No trade set" in the header and a dash in the Profile panel without a trade', async () => {
+  renderPage();
+  await screen.findByRole('heading', { level: 1, name: /Wes Worker/ });
+  const role = document.querySelector('.pm-role') as HTMLElement;
+  expect(role.querySelector('.chip')).toBeNull();
+  expect(role.textContent).toBe('No trade set· Direct hire');
+  const dt = Array.from(document.querySelectorAll('dt')).find((d) => d.textContent === 'Trade')!;
+  expect(dt.nextElementSibling!.textContent).toBe('—');
+});

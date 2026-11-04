@@ -17,6 +17,7 @@ import GodDeleteButton from '../components/GodDeleteButton';
 import CertsPanel from '../components/workers/CertsPanel';
 import LevelBadge from '../components/workers/LevelBadge';
 import ProfileForm from '../components/workers/ProfileForm';
+import TradeChips from '../components/workers/TradeChips';
 import { apiFetch, listWorkerStatuses, updateWorkerProfile, type StatusValue } from '../lib/api';
 import { ADMIN_RANK } from '../lib/access';
 import { initialOpenId } from '../lib/auditFormat';
@@ -26,6 +27,7 @@ import {
 } from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { usePendingDeletes } from '../lib/pendingDeletes';
+import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import { avatarGradient, initials } from '../lib/format';
 import {
@@ -46,7 +48,7 @@ import {
 import { VirtualRows } from '../lib/virtualRows';
 import {
   applyWorkerPatch, WORKER_BLACKLIST, WORKER_ERRORS, WORKER_GOD_FIELDS,
-  workerCellText, workerSearchText, type WorkerItem, type WorkerLevelDef,
+  splitTrades, workerCellText, workerCellValues, workerSearchText, type WorkerItem, type WorkerLevelDef,
 } from '../lib/workers';
 import StatusHover from '../components/StatusHover';
 import '../styles/directory.css';
@@ -216,7 +218,7 @@ export default function Workers() {
     if (!workers) return [];
     const q = query.trim().toLowerCase();
     const rows = workers.filter((w) => {
-      if (!passesColumnFilters(w, filters, cellText)) return false;
+      if (!passesColumnFilters(w, filters, cellText, workerCellValues)) return false;
       if (!q) return true;
       return haystack(w).includes(q);
     });
@@ -235,7 +237,7 @@ export default function Workers() {
     if (openId === deepLinkTarget.current && clearedDeepLink.current !== openId) {
       clearedDeepLink.current = openId;
       const target = workers.find((w) => w.person_id === openId);
-      if (target && !passesColumnFilters(target, filters, cellText)) {
+      if (target && !passesColumnFilters(target, filters, cellText, workerCellValues)) {
         clearFilters();
         return;
       }
@@ -250,6 +252,18 @@ export default function Workers() {
       deepLinkTarget.current = null;
     }
   }, [visible]);
+
+  // Trades already in use across the loaded workers, offered while typing in
+  // the Edit profile Trade box (case-insensitive distinct, first spelling wins).
+  const tradeSuggestions = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const w of workers ?? []) {
+      for (const t of splitTrades(w.trade)) {
+        if (!seen.has(t.toLowerCase())) seen.set(t.toLowerCase(), t);
+      }
+    }
+    return [...seen.values()].sort(naturalCompare);
+  }, [workers]);
 
   const canManage = can('workers', 'change');
   const canBulk = can('workers', 'add') && maxRank >= ADMIN_RANK;  // mirrors the API's GATE_BYPASS_RANK bar
@@ -278,10 +292,7 @@ export default function Workers() {
       }
     }
     switch (key) {
-      case 'trade': {
-        const text = w.trade ?? '—';
-        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
-      }
+      case 'trade': return <TradeChips trade={w.trade} />;
       case 'level': return <LevelBadge level={w.level} levels={levels} />;
       case 'partner': {
         const text = w.partner?.name ?? 'Direct';
@@ -359,7 +370,7 @@ export default function Workers() {
                    onToggleSort={() => toggleSort('primary')}>
             <ColumnMenu colKey="primary" label="Name"
                         allRows={workers ?? []} filters={filters}
-                        text={cellText}
+                        text={cellText} cellValues={workerCellValues}
                         filter={filters.primary} onFilter={setFilter}
                         sortDir={sortKey === 'primary' ? sortDir : null}
                         onSort={(dir) => setSort('primary', dir)} />
@@ -371,7 +382,7 @@ export default function Workers() {
                      dragProps={headerDrag.dragProps(c.key)}>
               <ColumnMenu colKey={c.key} label={c.label}
                           allRows={workers ?? []} filters={filters}
-                          text={cellText}
+                          text={cellText} cellValues={workerCellValues}
                           filter={filters[c.key]} onFilter={setFilter}
                           sortDir={sortKey === c.key ? sortDir : null}
                           onSort={(dir) => setSort(c.key, dir)} />
@@ -429,6 +440,7 @@ export default function Workers() {
                         worker={w}
                         levels={levels}
                         statuses={statuses}
+                        tradeSuggestions={tradeSuggestions}
                         canManage={canManage}
                         onChanged={() => void load()}
                         godVisible={godMode}
@@ -451,11 +463,12 @@ export default function Workers() {
 /* ── detail: profile edit + level card + certifications ─────────── */
 
 function WorkerDetail({
-  worker, levels, statuses, canManage, onChanged, godVisible, pending, onMark, onUnmark,
+  worker, levels, statuses, tradeSuggestions, canManage, onChanged, godVisible, pending, onMark, onUnmark,
 }: {
   worker: WorkerItem;
   levels: LevelDef[];
   statuses: StatusValue[];
+  tradeSuggestions: string[];
   canManage: boolean;
   onChanged: () => void;
   godVisible: boolean;
@@ -492,12 +505,13 @@ function WorkerDetail({
         </div>
         {editing ? (
           <ProfileForm worker={worker} levels={levels} statuses={statuses}
+                       tradeSuggestions={tradeSuggestions}
                        onDone={() => { setEditing(false); onChanged(); }}
                        onCancel={() => setEditing(false)} />
         ) : (
           <>
             <dl className="kv">
-              <dt>Trade</dt><dd>{worker.trade ?? '—'}</dd>
+              <dt>Trade</dt><dd><TradeChips trade={worker.trade} /></dd>
               <dt>Level</dt><dd><LevelBadge level={worker.level} levels={levels} /></dd>
               <dt>Partner</dt><dd>{worker.partner?.name ?? 'Direct hire'}</dd>
               <dt>Status</dt>

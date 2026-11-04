@@ -10,6 +10,7 @@
  */
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import TagInput from './TagInput';
@@ -87,6 +88,17 @@ describe('inside a .modal-card', () => {
     fireEvent.focus(screen.getByPlaceholderText('Tags'));
     fireEvent.mouseDown(screen.getByText('outside'));
     expect(screen.queryByText('Alpha')).toBeNull();
+  });
+
+  it('a mousedown outside commits the typed text instead of dropping it', () => {
+    const onChange = vi.fn();
+    renderInCard(onChange);
+    const input = screen.getByPlaceholderText('Tags');
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'Fiber' } });
+    fireEvent.mouseDown(screen.getByText('outside'));
+    expect(onChange).toHaveBeenCalledWith(['Fiber']);
+    expect((input as HTMLInputElement).value).toBe('');
   });
 
   it('a window scroll that moves the field, or a resize, closes it; scrolling the menu itself does not', () => {
@@ -195,5 +207,39 @@ describe('outside a .modal-card', () => {
     fireEvent.focus(screen.getByPlaceholderText('Tags'));
     fireEvent.scroll(window);
     expect(screen.getByText('Alpha')).toBeTruthy();
+  });
+});
+
+describe('committing typed text on an outside press', () => {
+  it('options mode clears the typed text and never calls onChange', () => {
+    const onChange = vi.fn();
+    render(
+      <div>
+        <TagInput value={[]} onChange={onChange} options={[{ value: 'a', label: 'Alpha' }]} placeholder="Tags" />
+        <button type="button">outside</button>
+      </div>,
+    );
+    const input = screen.getByPlaceholderText('Tags') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'Alp' } });
+    expect(input.value).toBe('Alp');
+    fireEvent.mouseDown(screen.getByText('outside'));
+    expect(input.value).toBe('');
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('free-text mode: a real click elsewhere commits the typed text exactly once', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <div>
+        <TagInput value={['Alpha']} onChange={onChange} suggestions={SUGGESTIONS} placeholder="Tags" />
+        <button type="button">elsewhere</button>
+      </div>,
+    );
+    await user.type(screen.getByRole('textbox'), 'Fiber');
+    await user.click(screen.getByRole('button', { name: 'elsewhere' }));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(['Alpha', 'Fiber']);
   });
 });

@@ -43,10 +43,24 @@ export { activeFilterCount };
  *  global search box and the (now-retired) facet filters. */
 export type CellText<T> = (row: T, colKey: string) => string;
 
+/** Optional per-column split of a cell into several filterable values (a
+ *  worker's comma-separated trades). Return `null` for a column that stays
+ *  single-valued, so it behaves exactly as without this accessor. An empty
+ *  array counts as a blank cell, like `['—']`. */
+export type CellValues<T> = (row: T, colKey: string) => string[] | null;
+
 const BLANK_DISPLAY = '—'; // '—'
 
 function displayOf(cell: string): string {
   return cell === '' ? BLANK_DISPLAY : cell;
+}
+
+/** A row's filterable values for a column, or null when the column is
+ *  single-valued (no accessor, or the accessor returned null). */
+function valuesOf<T>(row: T, colKey: string, cellValues?: CellValues<T>): string[] | null {
+  const vals = cellValues?.(row, colKey) ?? null;
+  if (!vals) return null;
+  return vals.length ? vals : [BLANK_DISPLAY];
 }
 
 /** Does this row pass every active column filter? A column with both a
@@ -56,13 +70,27 @@ function displayOf(cell: string): string {
  *  restored from prefs before its checklist has ever been narrowed only
  *  carries `text`, and that alone must still filter rows. */
 export function passesColumnFilters<T>(
-  row: T, filters: ColumnFilters, text: CellText<T>,
+  row: T, filters: ColumnFilters, text: CellText<T>, cellValues?: CellValues<T>,
 ): boolean {
   for (const [colKey, f] of Object.entries(filters)) {
     const cell = text(row, colKey);
     if (f.text && !cell.toLowerCase().includes(f.text.toLowerCase())) return false;
-    if (f.values && f.values.length && !f.values.includes(displayOf(cell))) return false;
-    if (f.exclude && f.exclude.length && f.exclude.includes(displayOf(cell))) return false;
+    // A multi-value cell passes `values` when any one of its values is picked
+    // (or its whole text is, for combinations saved before the split), and
+    // passes `exclude` while at least one of its values is not excluded.
+    const multi = valuesOf(row, colKey, cellValues);
+    if (f.values && f.values.length) {
+      const hit = multi
+        ? multi.some((v) => f.values!.includes(v)) || f.values.includes(displayOf(cell))
+        : f.values.includes(displayOf(cell));
+      if (!hit) return false;
+    }
+    if (f.exclude && f.exclude.length) {
+      const dropped = multi
+        ? multi.every((v) => f.exclude!.includes(v))
+        : f.exclude.includes(displayOf(cell));
+      if (dropped) return false;
+    }
   }
   return true;
 }
@@ -75,19 +103,27 @@ export function passesColumnFilters<T>(
  *  vanishing once it's the only thing left selected). */
 export function rowsForMenu<T>(
   rows: T[], filters: ColumnFilters, colKey: string, text: CellText<T>,
+  cellValues?: CellValues<T>,
 ): T[] {
   const others: ColumnFilters = {};
   for (const [key, f] of Object.entries(filters)) {
     if (key !== colKey) others[key] = f;
   }
-  return rows.filter((row) => passesColumnFilters(row, others, text));
+  return rows.filter((row) => passesColumnFilters(row, others, text, cellValues));
 }
 
 /** Sorted (naturalCompare), deduped display values for a column — blanks
- *  collapse to '—' so an empty cell gets one checkbox, not a blank row. */
-export function uniqueValues<T>(rows: T[], colKey: string, text: CellText<T>): string[] {
+ *  collapse to '—' so an empty cell gets one checkbox, not a blank row. A
+ *  multi-value cell contributes each of its values. */
+export function uniqueValues<T>(
+  rows: T[], colKey: string, text: CellText<T>, cellValues?: CellValues<T>,
+): string[] {
   const set = new Set<string>();
-  for (const row of rows) set.add(displayOf(text(row, colKey)));
+  for (const row of rows) {
+    const multi = valuesOf(row, colKey, cellValues);
+    if (multi) for (const v of multi) set.add(v);
+    else set.add(displayOf(text(row, colKey)));
+  }
   return Array.from(set).sort(naturalCompare);
 }
 
@@ -136,7 +172,7 @@ function seedExclude(filter: ColumnFilter | undefined): string[] | undefined {
 }
 
 export function ColumnMenu<T>({
-  colKey, label, allRows, filters, text, valuesSource, valuesKey, displayValue,
+  colKey, label, allRows, filters, text, cellValues, valuesSource, valuesKey, displayValue,
   filter, onFilter, sortDir, onSort,
 }: {
   colKey: string;
@@ -153,6 +189,9 @@ export function ColumnMenu<T>({
   /** Reads a row's display text. Unused when `valuesSource` supplies the
    *  checklist. */
   text?: CellText<T>;
+  /** Splits a multi-value column's cell into separate checklist entries (see
+   *  `CellValues`). Local checklist only; unused with `valuesSource`. */
+  cellValues?: CellValues<T>;
   /** Server-backed checklist (values + counts) in place of the one computed
    *  from `allRows`: loaded when the menu opens, re-queried as the user types.
    *  Read through a ref, so a fresh function identity each render is fine. */
@@ -281,8 +320,9 @@ export function ColumnMenu<T>({
     if (!open) return [];
     if (remoteOn) return remote.items.map((i) => i.value);
     if (!allRows || !text) return [];
-    return uniqueValues(rowsForMenu(allRows, filters, colKey, text), colKey, text);
-  }, [open, remoteOn, remote, allRows, filters, colKey, text]);
+    return uniqueValues(
+      rowsForMenu(allRows, filters, colKey, text, cellValues), colKey, text, cellValues);
+  }, [open, remoteOn, remote, allRows, filters, colKey, text, cellValues]);
   const counts = useMemo(() => {
     const m = new Map<string, number>();
     if (remoteOn) for (const i of remote.items) if (i.count !== undefined) m.set(i.value, i.count);

@@ -8,6 +8,7 @@
  * or reached storage some other way.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
@@ -128,7 +129,7 @@ const contact = (over: Partial<ContactItem> = {}): ContactItem => ({
 const worker = (over: Partial<WorkerItem> = {}): WorkerItem => ({
   person_id: 'w1', display_name: 'Ada Lovelace', first_name: 'Ada', last_name: 'Lovelace',
   contact_email: null, phone: null, avatar_url: null, has_account: false,
-  trade: 'Electrician', level: 'Journeyman', status: 'active', status_label: 'Active',
+  trade: 'Electrician, Cable', level: 'Journeyman', status: 'active', status_label: 'Active',
   status_color: '#178a4c', status_note: null, partner: null, cert_count: 0, certs_expired: 0,
   ...over,
 });
@@ -231,6 +232,43 @@ it('workers (partner only): column floors, shared template + minimum, sideways-s
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.initPanel);
+});
+
+it('workers (partner only): the Trade cell shows chips and the column menu filters per trade', async () => {
+  const user = userEvent.setup();
+  api.getOrg.mockResolvedValue(partnerOrg());
+  api.listInitiatives.mockResolvedValue([]);
+  api.listOrgContacts.mockResolvedValue([]);
+  api.listPartnerTypes.mockResolvedValue([]);
+  api.listPartnerWorkers.mockResolvedValue([
+    worker(),
+    worker({ person_id: 'w2', display_name: 'Grace Hopper', trade: 'Hardware' }),
+    worker({ person_id: 'w3', display_name: 'Alan Turing', trade: null }),
+  ]);
+  api.listPartnerChildren.mockResolvedValue([]);
+
+  renderPartnerPage();
+
+  const row = (await screen.findByText('Ada Lovelace')).closest('.dir-row') as HTMLElement;
+  const tradeCell = row.querySelectorAll('.row-main .cell')[1] as HTMLElement;
+  expect(Array.from(tradeCell.querySelectorAll('.chip.tag')).map((c) => c.textContent))
+    .toEqual(['Electrician', 'Cable']);
+  const blankRow = (await screen.findByText('Alan Turing')).closest('.dir-row') as HTMLElement;
+  expect((blankRow.querySelectorAll('.row-main .cell')[1] as HTMLElement).textContent).toBe('—');
+
+  await user.click(screen.getByRole('button', { name: 'Trade column menu' }));
+  const menu = document.querySelector('.pop-menu') as HTMLElement;
+  expect(within(menu).getByText('Cable')).toBeDefined();
+  expect(within(menu).getByText('Electrician')).toBeDefined();
+  expect(within(menu).queryByText('Electrician, Cable')).toBeNull();
+
+  // every value starts checked and a click unchecks it: keep only Cable
+  await user.click(within(menu).getByText('Electrician'));
+  await user.click(within(menu).getByText('Hardware'));
+  await user.click(within(menu).getByText('—'));
+  await waitFor(() => expect(screen.queryByText('Grace Hopper')).toBeNull());
+  expect(screen.getByText('Ada Lovelace')).toBeDefined();
+  expect(screen.queryByText('Alan Turing')).toBeNull();
 });
 
 /* ── Parent partner row + Child partners panel ──────────────────────── */

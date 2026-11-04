@@ -20,6 +20,7 @@ import { sanitize,
   uniqueValues,
   usePersistentListState,
   type CellText,
+  type CellValues,
   type ColumnValue,
   type ColumnValuesSource,
   type ColumnFilters,
@@ -119,6 +120,73 @@ describe('rowsForMenu', () => {
     // only offer values among rows that still pass the name filter.
     const result = rowsForMenu(rows, { name: { text: 'Bravo' } }, 'site', text);
     expect(result).toEqual([rows[1]]);
+  });
+});
+
+describe('multi-value columns', () => {
+  interface TradeRow { id: string; t: string }
+  const tradeRows: TradeRow[] = [
+    { id: '1', t: 'Cable, Hardware' },
+    { id: '2', t: 'Hardware' },
+    { id: '3', t: 'Cable' },
+    { id: '4', t: '' },
+  ];
+  const tradeText: CellText<TradeRow> = (r) => r.t;
+  const splitLike = (s: string) => s.split(',').map((p) => p.trim()).filter(Boolean);
+  const cellValues: CellValues<TradeRow> = (r, k) => (k === 't' ? splitLike(r.t) : null);
+  const ids = (f: ColumnFilters) =>
+    tradeRows.filter((r) => passesColumnFilters(r, f, tradeText, cellValues)).map((r) => r.id);
+
+  it('lists each value once in the checklist, blanks as the em dash', () => {
+    const result = uniqueValues(tradeRows, 't', tradeText, cellValues);
+    expect([...result].sort()).toEqual(['Cable', 'Hardware', '—']);
+  });
+
+  it('values keeps rows where any value is picked', () => {
+    expect(ids({ t: { values: ['Hardware'] } })).toEqual(['1', '2']);
+    expect(ids({ t: { values: ['—'] } })).toEqual(['4']);
+  });
+
+  it('values still honors an old saved whole-cell combination', () => {
+    expect(ids({ t: { values: ['Cable, Hardware'] } })).toEqual(['1']);
+  });
+
+  it('exclude drops a row only when every one of its values is excluded', () => {
+    expect(ids({ t: { exclude: ['Hardware'] } })).toEqual(['1', '3', '4']);
+    expect(ids({ t: { exclude: ['Cable', 'Hardware'] } })).toEqual(['4']);
+    expect(ids({ t: { exclude: ['—'] } })).toEqual(['1', '2', '3']);
+  });
+
+  it('text still substring-matches the whole cell', () => {
+    expect(ids({ t: { text: 'cable, h' } })).toEqual(['1']);
+  });
+
+  it('a column whose cellValues returns null behaves as before', () => {
+    const blank = rows[3]; // site: ''
+    const none: CellValues<Row> = () => null;
+    expect(passesColumnFilters(blank, { site: { values: ['—'] } }, text, none)).toBe(true);
+    expect(passesColumnFilters(blank, { site: { values: ['DA1'] } }, text, none)).toBe(false);
+    expect(uniqueValues(rows, 'site', text, none)).toEqual(uniqueValues(rows, 'site', text));
+  });
+
+  it('rowsForMenu passes cellValues through to the other columns\' filters', () => {
+    const two = [{ id: '1', t: 'Cable, Hardware', u: 'x' }, { id: '2', t: 'Cable', u: 'y' }];
+    const txt: CellText<(typeof two)[number]> = (r, k) => (k === 't' ? r.t : r.u);
+    const cv: CellValues<(typeof two)[number]> = (r, k) => (k === 't' ? splitLike(r.t) : null);
+    expect(rowsForMenu(two, { t: { values: ['Hardware'] } }, 'u', txt, cv).map((r) => r.id)).toEqual(['1']);
+  });
+
+  it('ColumnMenu lists the split values as separate checkboxes', async () => {
+    const user = userEvent.setup();
+    render(
+      <ColumnMenu colKey="t" label="Trade" allRows={tradeRows} filters={{}} text={tradeText}
+                  cellValues={cellValues} filter={undefined} onFilter={vi.fn()}
+                  sortDir={null} onSort={vi.fn()} />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Trade column menu' }));
+    expect(screen.getByText('Cable')).toBeDefined();
+    expect(screen.getByText('Hardware')).toBeDefined();
+    expect(screen.queryByText('Cable, Hardware')).toBeNull();
   });
 });
 

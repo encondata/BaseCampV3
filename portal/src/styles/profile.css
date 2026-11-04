@@ -67,6 +67,12 @@
   font-weight: 300;
   color: var(--text-mute);
 }
+.profile-meta .pm-role-chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
 .profile-meta .pm-sub {
   margin-top: 8px;
   font-family: var(--font-mono);
