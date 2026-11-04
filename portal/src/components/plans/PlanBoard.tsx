@@ -47,7 +47,7 @@ import { COMMAND_TIPS } from '../../lib/plans/commandTips';
 import { setPercent } from '../../lib/plans/commands';
 import { formatDay, lastDay } from '../../lib/plans/floatingTime';
 import { selectCell } from '../../lib/plans/selection';
-import { RowActionsMenu, type RowAction } from '../hardware/RowActionsMenu';
+import { DotsIcon, RowActionsMenu, type RowAction } from '../hardware/RowActionsMenu';
 import Tip from '../Tip';
 import type { Completion } from './useCompletion';
 
@@ -316,13 +316,3 @@ const Card = memo(function Card({
     </div>
   );
 });
-
-function DotsIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <circle cx="5" cy="12" r="1.8" />
-      <circle cx="12" cy="12" r="1.8" />
-      <circle cx="19" cy="12" r="1.8" />
-    </svg>
-  );
-}

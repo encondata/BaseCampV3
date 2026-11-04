@@ -16,16 +16,18 @@
 
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { InitiativeItem, UiPreferences } from '../lib/api';
 import { COLLAPSED_KEY } from '../lib/initiatives';
 import { LIST_FIT } from '../lib/listTools';
 
+const auth = vi.hoisted(() => ({ canChange: true }));
+
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
-    can: () => true,
+    can: (_resource: string, action: string) => action !== 'change' || auth.canChange,
     godMode: false,
     maxRank: 90,
     preferences: {
@@ -97,6 +99,7 @@ const CHILD = initiative({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  auth.canChange = true;
   localStorage.clear(); // the collapsed set persists here — isolate each test
   api.listInitiatives.mockResolvedValue([PARENT, CHILD]);
   api.listInitiativeStatuses.mockResolvedValue([]);
@@ -132,7 +135,7 @@ const rowNames = () =>
 const rowFor = (name: string) =>
   rowEls().find((r) => r.querySelector('.cell-primary .pn b')?.textContent === name)!;
 const chevronIn = (row: HTMLElement) =>
-  row.querySelector('.row-main button[aria-expanded]') as HTMLButtonElement | null;
+  row.querySelector('.row-main button.tree-toggle') as HTMLButtonElement | null;
 
 it('renders a child indented under its parent, with the role chip and a parent count', async () => {
   mount();
@@ -288,4 +291,90 @@ it('initiatives: column floors, shared template + minimum, sideways-scroll card'
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
+});
+
+
+// ── the row's actions button (in place of the old open arrow) ─────────
+
+const actionsIn = (row: HTMLElement) =>
+  row.querySelector('.row-main .chevron-cell button') as HTMLButtonElement | null;
+const menuItems = () =>
+  screen.queryAllByRole('menuitem').map((m) => m.textContent?.trim());
+
+it('each row ends in an actions button offering Full details and Edit, without opening the row', async () => {
+  const user = userEvent.setup();
+  mount();
+  await waitFor(() => expect(rowNames()).toHaveLength(2));
+
+  const button = actionsIn(rowFor('Denver DC migration'))!;
+  expect(button.getAttribute('aria-label')).toBe('Actions for Denver DC migration');
+  await user.click(button);
+  expect(menuItems()).toEqual(['Full details', 'Edit']);
+  // the menu is the button's, not the row's: nothing opened underneath
+  expect(document.querySelector('.dir-row.open')).toBeNull();
+  expect(api.getInitiative).not.toHaveBeenCalled();
+});
+
+it('Full details goes to the initiative page', async () => {
+  const user = userEvent.setup();
+  render(
+    <MemoryRouter initialEntries={['/initiatives']}>
+      <Routes>
+        <Route path="/initiatives" element={<Initiatives />} />
+        <Route path="/initiatives/:id" element={<p>initiative page</p>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  await waitFor(() => expect(rowNames()).toHaveLength(2));
+
+  await user.click(actionsIn(rowFor('Kickoff walkthrough'))!);
+  await user.click(screen.getByRole('menuitem', { name: 'Full details' }));
+  expect(await screen.findByText('initiative page')).toBeTruthy();
+});
+
+it('Edit opens the edit form for that initiative and leaves the row closed', async () => {
+  const user = userEvent.setup();
+  mount();
+  await waitFor(() => expect(rowNames()).toHaveLength(2));
+
+  await user.click(actionsIn(rowFor('Denver DC migration'))!);
+  await user.click(screen.getByRole('menuitem', { name: 'Edit' }));
+  expect(await screen.findByText('Edit — Denver DC migration')).toBeTruthy();
+  expect(document.querySelector('.dir-row.open')).toBeNull();
+});
+
+it('without permission to change initiatives the menu offers only Full details', async () => {
+  auth.canChange = false;
+  const user = userEvent.setup();
+  mount();
+  await waitFor(() => expect(rowNames()).toHaveLength(2));
+
+  await user.click(actionsIn(rowFor('Denver DC migration'))!);
+  expect(menuItems()).toEqual(['Full details']);
+});
+
+it('a context row offers no actions button', async () => {
+  const user = userEvent.setup();
+  mount();
+  await waitFor(() => expect(rowNames()).toHaveLength(2));
+
+  await user.type(screen.getByPlaceholderText('Filter this list…'), 'Kickoff');
+  await waitFor(() => expect(
+    rowFor('Denver DC migration').classList.contains('context')).toBe(true));
+  expect(actionsIn(rowFor('Denver DC migration'))).toBeNull();
+  expect(actionsIn(rowFor('Kickoff walkthrough'))).not.toBeNull();
+});
+
+it('from the keyboard, Enter opens the actions menu and Enter on Edit opens the form, the row staying closed', async () => {
+  const user = userEvent.setup();
+  mount();
+  await waitFor(() => expect(rowNames()).toHaveLength(2));
+
+  actionsIn(rowFor('Denver DC migration'))!.focus();
+  await user.keyboard('{Enter}');            // opens on its first item, Full details
+  expect(menuItems()).toEqual(['Full details', 'Edit']);
+  await user.keyboard('{ArrowDown}{Enter}');  // Edit
+  expect(await screen.findByText('Edit — Denver DC migration')).toBeTruthy();
+  expect(document.querySelector('.dir-row.open')).toBeNull();
+  expect(api.getInitiative).not.toHaveBeenCalled();
 });

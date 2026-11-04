@@ -11,6 +11,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import ComboBox from '../components/ComboBox';
 import GodDeleteButton from '../components/GodDeleteButton';
+import { DotsIcon, RowActionsMenu } from '../components/hardware/RowActionsMenu';
 import InitiativeEditModal from '../components/initiatives/InitiativeEditModal';
 import InlineTextField from '../components/InlineTextField';
 import NotesFilesPanel from '../components/NotesFilesPanel';
@@ -156,6 +157,7 @@ const TYPE_PILLS = [
 
 export default function Initiatives() {
   const { can, godMode, maxRank, preferences } = useAuth();
+  const navigate = useNavigate();
   const listGridScale = listScale(preferences?.list_size);
   const canAdd = can('initiatives', 'add');
   const canChange = can('initiatives', 'change');
@@ -616,10 +618,22 @@ export default function Initiatives() {
                   {shownCols.map((col) => (
                     <div className="cell" key={col.key}>{cellFor(i, col.key)}</div>
                   ))}
-                  <div className="cell chevron-cell">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                         strokeWidth="2" strokeLinecap="round"
-                         strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+                  {/* The row's actions, where other lists keep the open arrow
+                      (the row itself opens on a click). The menu is portaled,
+                      but its clicks still bubble through React to the row,
+                      so the cell stops them. A context row is inert. */}
+                  <div className="cell chevron-cell actions-cell"
+                       onClick={(e) => e.stopPropagation()}>
+                    {!row.isContext && (
+                      <RowActionsMenu label={`Actions for ${i.name}`} icon={<DotsIcon />}
+                                      triggerClassName="mini-btn row-menu-btn"
+                                      actions={[
+                                        { key: 'details', label: 'Full details',
+                                          onSelect: () => navigate(`/initiatives/${i.id}`) },
+                                        ...(canChange ? [{ key: 'edit', label: 'Edit',
+                                          onSelect: () => setEditingId(i.id) }] : []),
+                                      ]} />
+                    )}
                   </div>
                 </div>
 

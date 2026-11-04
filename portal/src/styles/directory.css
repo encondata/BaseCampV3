@@ -402,6 +402,21 @@
   transition: transform 0.25s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 .dir-row.open .chevron-cell svg { transform: rotate(90deg); color: var(--amber); }
+/* A row whose last cell is an actions button (Initiatives) instead of the
+   open arrow: the "⋯" never turns, and the button is quiet until hovered. */
+.dir-row.open .actions-cell svg { transform: none; color: inherit; }
+.mini-btn.row-menu-btn {
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  justify-content: center;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-mute);
+}
+.mini-btn.row-menu-btn:hover,
+.mini-btn.row-menu-btn[aria-expanded='true'] { border-color: var(--paper-line); background: var(--surface-2); color: var(--text-dark); }
+.mini-btn.row-menu-btn svg { width: 14px; height: 14px; }
 
 /* ── avatar ───────────────────────────────────────────────── */
 
