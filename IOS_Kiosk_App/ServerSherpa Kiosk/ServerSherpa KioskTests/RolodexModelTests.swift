@@ -523,6 +523,68 @@ struct RolodexModelTests {
         #expect(m.editing == nil && m.errorText == nil)
     }
 
+    // MARK: travel (worker page only)
+
+    private static let travelRowJSON = """
+        {"person_id":"p-ana","first_name":"Ana","last_name":"Ortiz","display_name":"Ana Ortiz","status":"active",
+         "status_label":"Active","has_photo":true,"can_edit":true,"can_change_status":true
+        """
+
+    /// Review Focus 3: an older API that sends none of the travel keys still decodes, as not set.
+    @Test func aDetailWithoutTheTravelKeysDecodesAsNotSet() throws {
+        let d = try KioskJSON.decoder.decode(RolodexDetail.self, from: Data((Self.travelRowJSON + "}").utf8))
+        #expect(d.willTravel == nil); #expect(d.travelRegion == nil); #expect(d.travelRestrictions == nil)
+        #expect(d.canEdit)
+        let nulls = try KioskJSON.decoder.decode(RolodexDetail.self, from: Data((Self.travelRowJSON
+            + #","will_travel":null,"travel_region":null,"travel_restrictions":null}"#).utf8))
+        #expect(nulls.willTravel == nil); #expect(nulls.travelRegion == nil); #expect(nulls.travelRestrictions == nil)
+    }
+
+    /// Review Focus 1: No (false) is a real answer, not "not set".
+    @Test func willTravelFalseDecodesAsFalse() throws {
+        let d = try KioskJSON.decoder.decode(RolodexDetail.self, from: Data((Self.travelRowJSON
+            + #","will_travel":false,"travel_region":"Midwest","travel_restrictions":"No overnight trips"}"#).utf8))
+        #expect(d.willTravel == false)
+        #expect(d.travelRegion == "Midwest"); #expect(d.travelRestrictions == "No overnight trips")
+        let yes = try KioskJSON.decoder.decode(RolodexDetail.self, from: Data((Self.travelRowJSON + #","will_travel":true}"#).utf8))
+        #expect(yes.willTravel == true)
+    }
+
+    /// Review Focus 2: Will travel is left out until set; set to Not set it goes out as null.
+    @Test func patchEncodesWillTravelAbsentNullOrBool() throws {
+        func json(_ p: RolodexPatch) throws -> String { String(decoding: try KioskJSON.encoder.encode(p), as: UTF8.self) }
+        var patch = RolodexPatch([.travelRegion: nil])
+        #expect(try json(patch) == #"{"travel_region":null}"#)
+        patch.setWillTravel(nil)
+        #expect(try json(patch) == #"{"travel_region":null,"will_travel":null}"#)
+        patch.setWillTravel(false)
+        #expect(try json(patch) == #"{"travel_region":null,"will_travel":false}"#)
+        patch.setWillTravel(true)
+        #expect(try json(patch) == #"{"travel_region":null,"will_travel":true}"#)
+        #expect(RolodexPatch().isEmpty)
+        var onlyTravel = RolodexPatch()
+        onlyTravel.setWillTravel(nil)
+        #expect(!onlyTravel.isEmpty)
+    }
+
+    @Test func savingOnlyWillTravelSendsOnlyThatAndKeepsTravelOutOfTheOfflineCopy() async throws {
+        api.rolodexWorkerResult = { _ in anaDetail { $0.travelRegion = "Midwest"; $0.travelRestrictions = "No overnight trips" } }
+        let m = await anaOpen()
+        m.startEdit()
+        #expect(m.editing?.willTravel == nil)
+        #expect(m.editing?.travelRestrictions == "No overnight trips")
+        m.editing?.willTravel = false
+        let saved = anaDetail { $0.willTravel = false; $0.travelRegion = "Midwest"; $0.travelRestrictions = "No overnight trips" }
+        api.rolodexUpdateResult = { _, _ in saved }
+        #expect(await m.save())
+        let sent = try #require(api.rolodexPatches.first)
+        #expect(String(decoding: try KioskJSON.encoder.encode(sent.patch), as: UTF8.self) == #"{"will_travel":false}"#)
+        #expect(m.detail?.willTravel == false)
+        // restrictions can be personal: the offline list never carries travel
+        let text = try #require(try await store.rolodexCache())
+        #expect(!text.contains("travel") && !text.contains("Midwest") && !text.contains("overnight"))
+    }
+
     // MARK: copy
 
     @Test func errorCopyFollowsTheSpec() {

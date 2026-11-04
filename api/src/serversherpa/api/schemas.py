@@ -4519,6 +4519,13 @@ class KioskRolodexWorkerDetailOut(KioskRolodexWorkerOut):
     status_block_reason: Literal["self", "rank_too_low"] | None = None
     jobs: list[KioskRolodexJobItem] = []
     jobs_total: int = 0
+    # Travel (added 2026-11-04, migration 0118): on the worker page only,
+    # never the list row, which the apps cache offline and restrictions can
+    # be personal. `will_travel` null = not set; false = No. An older app
+    # ignores all three.
+    will_travel: bool | None = None
+    travel_region: str | None = None
+    travel_restrictions: str | None = None
 
 
 class KioskRolodexLevelOut(BaseModel):
@@ -4636,6 +4643,10 @@ class KioskRolodexPatchIn(BaseModel):
     # vocabulary, validated against status_values like WorkerProfileIn
     status: str | None = None
     status_note: RolodexText = None
+    # null clears Will travel back to "not set"; false is a real answer
+    will_travel: bool | None = None
+    travel_region: RolodexText = None
+    travel_restrictions: RolodexText = None
 
 
 class KioskRolodexPhotoOut(BaseModel):

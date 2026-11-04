@@ -160,7 +160,10 @@ class RolodexScreenTest {
         waitForText("Save changes")
         compose.onNodeWithText("First name *").assertExists()
         compose.onNodeWithTag("edit-status-note").assertDoesNotExist()
-        compose.onNodeWithText("Blacklist").performScrollTo().performClick()       // below the fold on a phone
+        // Below the fold on a phone. The page scrolls to the control: a segment's own scroll-to only
+        // moves the control's horizontal scroll.
+        compose.onNodeWithTag("edit-status").performScrollTo()
+        compose.onNodeWithText("Blacklist").performScrollTo().performClick()
         waitFor("edit-status-note")
         compose.onNodeWithTag("edit-cancel").performScrollTo().performClick()
         waitFor("worker-edit")

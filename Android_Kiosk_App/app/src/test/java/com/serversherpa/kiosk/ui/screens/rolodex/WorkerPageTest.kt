@@ -17,7 +17,11 @@ import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -27,6 +31,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.toSize
@@ -47,6 +52,7 @@ import com.serversherpa.kiosk.ui.shell.KioskShell
 import com.serversherpa.kiosk.ui.theme.KioskTheme
 import java.util.Locale
 import java.util.TimeZone
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -96,8 +102,8 @@ class WorkerPageTest {
     )
 
     /** The Rolodex route inside the kiosk shell (16 dp gutters), with [row]'s page open; its detail is [detail]. */
-    private fun showPage(row: RolodexRow, detail: RolodexDetail) {
-        val api = FakeKioskApi().apply {
+    private fun showPage(row: RolodexRow, detail: RolodexDetail, api: FakeKioskApi = FakeKioskApi()): FakeKioskApi {
+        api.apply {
             rolodexWorkersResult = { RolodexList("now", listOf(row)) }
             rolodexOptionsResult = { ROLODEX_OPTIONS }
             rolodexWorkerResult = { detail }
@@ -118,6 +124,7 @@ class WorkerPageTest {
         waitFor("rolodex-row-${row.person_id}")
         compose.onNodeWithTag("rolodex-row-${row.person_id}").performClick()
         waitForText(detail.email!!)
+        return api
     }
 
     private fun waitFor(tag: String) =
@@ -427,5 +434,90 @@ class WorkerPageTest {
             assertWhole(text)
         }
         assertTrue("the long name wraps", layoutOf(long.initiative_name).lineCount > 1)
+    }
+
+    // ── Travel ──
+
+    private val restrictions = "No overnight flights; can drive up to six hours from Chicago, and needs two weeks' notice before any trip."
+
+    /** No is a real answer (not the empty look); region and long restrictions show whole on a 320 dp handheld. */
+    @Config(qualifiers = "w320dp-h533dp-hdpi")
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Test fun theWorkCardShowsTravelAndLongRestrictionsWrap() {
+        showPage(abbott, rolodexDetail(abbott).copy(will_travel = false, travel_region = "Midwest", travel_restrictions = restrictions))
+        compose.onNodeWithText(restrictions).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Will travel").assertIsDisplayed()
+        compose.onNodeWithText("No").assertIsDisplayed()
+        assertEquals(top("Will travel"), top("No"), 0.5f)
+        compose.onNodeWithText("Travel region").assertIsDisplayed()
+        compose.onNodeWithText("Midwest").assertIsDisplayed()
+        assertWhole(restrictions)
+        assertTrue("the restrictions wrap", layoutOf(restrictions).lineCount > 2)
+        assertTrue(top("Will travel") < top("Travel region") && top("Travel region") < top("Travel restrictions"))
+    }
+
+    /** An older API without the travel keys: Will travel reads as an empty field, and region and restrictions don't show. */
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun travelNotSetLooksEmptyAndHidesRegionAndRestrictions() {
+        showPage(abbott, rolodexDetail(abbott))
+        compose.onNodeWithText("Will travel").performScrollTo().assertIsDisplayed()
+        val label = top("Will travel")
+        val dashes = compose.onAllNodesWithText("—", useUnmergedTree = true).fetchSemanticsNodes().map { it.boundsInRoot.top }
+        assertTrue("no dash beside Will travel: $label vs $dashes", dashes.any { kotlin.math.abs(it - label) < 0.5f })
+        compose.onNodeWithText("Yes").assertDoesNotExist()
+        compose.onNodeWithText("No").assertDoesNotExist()
+        compose.onNodeWithText("Travel region").assertDoesNotExist()
+        compose.onNodeWithText("Travel restrictions").assertDoesNotExist()
+    }
+
+    /** A Will travel segment, with the control scrolled into view first: a segment's own scroll-to
+     *  only moves the control's horizontal scroll, not the page. */
+    private fun travelSegment(label: String): androidx.compose.ui.test.SemanticsNodeInteraction {
+        compose.onNodeWithTag("edit-travel").performScrollTo()
+        return compose.onNode(hasText(label) and hasAnyAncestor(hasTestTag("edit-travel")))
+    }
+
+    /** The Edit form has the three travel controls; picking Yes and saving sends only will_travel, and
+     *  they are all off while the save runs. */
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun editingTravelSendsOnlyWillTravelAndLocksWhileSaving() {
+        val detail = rolodexDetail(abbott)
+        val answer = CompletableDeferred<RolodexDetail>()
+        val api = showPage(abbott, detail, FakeKioskApi().apply { rolodexUpdateResult = { _, _ -> answer.await() } })
+        compose.onNodeWithTag("worker-edit").performClick()
+        waitFor("edit-save")
+        compose.onNodeWithText("Will travel").performScrollTo().assertIsDisplayed()
+        for (label in listOf("Not set", "Yes", "No")) travelSegment(label).assertIsDisplayed().assertIsEnabled()
+        compose.onNodeWithTag("edit-travel-region").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Travel region").assertIsDisplayed()
+        compose.onNodeWithTag("edit-travel-restrictions").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Travel restrictions").assertIsDisplayed()
+
+        travelSegment("Yes").performClick()
+        compose.onNodeWithTag("edit-save").performScrollTo().performClick()
+        compose.waitUntil(10_000) { api.rolodexUpdates.isNotEmpty() }
+        assertEquals("""{"will_travel":true}""", api.rolodexUpdates.single().second.toString())
+        waitForText("Saving…")
+        travelSegment("No").assertIsNotEnabled()
+        compose.onNodeWithTag("edit-travel-region").assertIsNotEnabled()
+        compose.onNodeWithTag("edit-travel-restrictions").assertIsNotEnabled()
+
+        answer.complete(detail.copy(will_travel = true))
+        waitFor("worker-edit")
+        compose.onNodeWithText("Yes").performScrollTo().assertIsDisplayed()
+    }
+
+    /** No round-trips as false and clearing the region sends an explicit null. */
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun choosingNoAndClearingTheRegionSendsFalseAndNull() {
+        val detail = rolodexDetail(abbott).copy(will_travel = true, travel_region = "Midwest")
+        val api = showPage(abbott, detail, FakeKioskApi().apply { rolodexUpdateResult = { _, _ -> detail.copy(will_travel = false, travel_region = null) } })
+        compose.onNodeWithTag("worker-edit").performClick()
+        waitFor("edit-save")
+        travelSegment("No").performClick()
+        compose.onNodeWithTag("edit-travel-region").performScrollTo().performTextReplacement("")
+        compose.onNodeWithTag("edit-save").performScrollTo().performClick()
+        compose.waitUntil(10_000) { api.rolodexUpdates.isNotEmpty() }
+        assertEquals("""{"will_travel":false,"travel_region":null}""", api.rolodexUpdates.single().second.toString())
     }
 }

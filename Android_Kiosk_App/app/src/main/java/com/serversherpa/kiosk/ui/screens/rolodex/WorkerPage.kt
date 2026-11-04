@@ -213,6 +213,12 @@ private fun ColumnScope.WorkerView(ui: RolodexUi, vm: RolodexViewModel, wide: Bo
         val trade = detail?.trade ?: row?.trade
         val level = detail?.level ?: row?.level
         Field("Trade · Level", listOfNotNull(trade?.takeIf { it.isNotBlank() }, level).joinToString(" · ").ifEmpty { null })
+        // Travel comes with the worker page only (never on the cached list row): not before it loads, nor offline.
+        if (detail != null) {
+            Field("Will travel", willTravelLabel(detail.will_travel))
+            detail.travel_region?.takeIf { it.isNotBlank() }?.let { Field("Travel region", it, wrap = true) }
+            detail.travel_restrictions?.takeIf { it.isNotBlank() }?.let { Field("Travel restrictions", it, wrap = true) }
+        }
         detail?.status_note?.takeIf { it.isNotBlank() }?.let { Field("Status note", it) }
     }
     // They come with the worker page, so not before it loads, nor offline.
@@ -375,26 +381,53 @@ internal fun InfoCard(title: String, content: @Composable ColumnScope.() -> Unit
     }
 }
 
+/** A card row: the label, then the value ("—" when empty). [wrap] shows long text whole, on as many lines as it takes. */
 @Composable
-private fun Field(label: String, value: String?) {
+private fun Field(label: String, value: String?, wrap: Boolean = false) {
     val c = LocalKioskColors.current
     Column {
         Spacer(Modifier.fillMaxWidth().height(1.dp).background(c.paperLine))
-        Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = if (wrap) Alignment.Top else Alignment.CenterVertically,
+        ) {
             Text(label, style = MaterialTheme.typography.bodyMedium, color = c.textMute, modifier = Modifier.width(120.dp))
             Text(
                 value?.takeIf { it.isNotBlank() } ?: "—", style = MaterialTheme.typography.bodyMedium, color = c.textDark,
-                maxLines = 2, overflow = TextOverflow.Ellipsis,
+                maxLines = if (wrap) Int.MAX_VALUE else 2, overflow = TextOverflow.Ellipsis,
             )
         }
     }
+}
+
+/** Will travel on the page: Yes, No (a real answer), or null (not set) for the empty-field look. */
+private fun willTravelLabel(willTravel: Boolean?): String? = when (willTravel) {
+    true -> "Yes"
+    false -> "No"
+    null -> null
+}
+
+/** The Edit form's Will travel segments, keyed "" (Not set), "yes" and "no". */
+private val TRAVEL_CHOICES = listOf("" to "Not set", "yes" to "Yes", "no" to "No")
+
+private fun travelKey(willTravel: Boolean?): String = when (willTravel) {
+    true -> "yes"
+    false -> "no"
+    null -> ""
+}
+
+private fun travelValue(key: String): Boolean? = when (key) {
+    "yes" -> true
+    "no" -> false
+    else -> null
 }
 
 // ── Edit ──
 
 /**
  * The Edit form (mockup "Editing"): first* and last*, preferred name, job title, phone, email,
- * company, trade, level and status, with a required note when Blacklist is chosen. RFID enrollment
+ * company, trade, level, will travel (Not set / Yes / No), travel region and restrictions, and
+ * status, with a required note when Blacklist is chosen. RFID enrollment
  * shows read-only below; the Employee ID isn't shown (Jimmy, 2026-10-22). The fields keep their own
  * text (typing never waits on the view model's flow) and hand every change to [RolodexViewModel.updateEdit].
  */
@@ -430,6 +463,18 @@ private fun EditForm(ui: RolodexUi, detail: RolodexDetail, start: RolodexEdit, v
         TextBox("Trade", form.trade, saving, "edit-trade", Modifier.weight(1f), words = true) { change(form.copy(trade = it)) }
         PickBox("Level", levels.firstOrNull { it.first == form.level }?.second ?: "None", saving, "edit-level", Modifier.weight(1f)) { picker = "level" }
     }
+
+    Text("Will travel", style = MaterialTheme.typography.bodySmall, color = c.textMute, modifier = Modifier.padding(top = 14.dp, bottom = 4.dp))
+    Segmented(TRAVEL_CHOICES, travelKey(form.willTravel), enabled = !saving, modifier = Modifier.testTag("edit-travel")) {
+        change(form.copy(willTravel = travelValue(it)))
+    }
+    TextBox("Travel region", form.travelRegion, saving, "edit-travel-region", pair, words = true) { change(form.copy(travelRegion = it)) }
+    OutlinedTextField(
+        form.travelRestrictions, { change(form.copy(travelRestrictions = it)) }, label = { Text("Travel restrictions") },
+        enabled = !saving, minLines = 2,
+        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+        modifier = pair.testTag("edit-travel-restrictions"),
+    )
 
     Text("Status", style = MaterialTheme.typography.bodySmall, color = c.textMute, modifier = Modifier.padding(top = 14.dp, bottom = 4.dp))
     Segmented(editStatuses(ui.options, detail), form.status, enabled = detail.can_change_status && !saving, modifier = Modifier.testTag("edit-status")) {

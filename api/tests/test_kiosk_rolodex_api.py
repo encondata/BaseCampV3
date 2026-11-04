@@ -62,7 +62,7 @@ ROW_FIELDS = {
 DETAIL_FIELDS = ROW_FIELDS | {
     "email", "phone", "external_id", "status_note", "can_edit",
     "can_change_status", "edit_block_reason", "status_block_reason", "jobs",
-    "jobs_total",
+    "jobs_total", "will_travel", "travel_region", "travel_restrictions",
 }
 # One "Previous jobs" row. No `rating`: it's internal performance data.
 JOB_FIELDS = {
@@ -1153,6 +1153,54 @@ async def test_patch_returns_detail(client, db, seeded_user):
     assert r.status_code == 200, r.text
     assert r.json() == d
     assert len(await _audits(db, "person", paz, "update")) == 1
+
+
+async def test_patch_travel_fields_round_trip(client, db, seeded_user):
+    """Will travel, travel region and travel restrictions ride the worker
+    page only (never the list row, which the apps cache offline)."""
+    admin_id, hdrs = await _kiosk_admin(db, client)
+    await _bind_serial(db, admin_id, "KIOSK-0042")
+    paz = await _worker(db, "Paz", "Plain")
+    travel = ("will_travel", "travel_region", "travel_restrictions")
+
+    r = await client.get(f"{BASE}/workers/{paz}", headers=hdrs)
+    assert r.status_code == 200, r.text
+    assert [r.json()[k] for k in travel] == [None, None, None]
+
+    r = await client.patch(f"{BASE}/workers/{paz}", headers=hdrs, json={
+        "will_travel": True, "travel_region": "Southeast US",
+        "travel_restrictions": "No overnight flights"})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert (d["will_travel"], d["travel_region"], d["travel_restrictions"]) == (
+        True, "Southeast US", "No overnight flights")
+    (row,) = await _audits(db, "worker", paz, "profile.update")
+    assert row.changes["via"] == "kiosk_rolodex"
+    assert row.changes["device"] == "KIOSK-0042"
+    assert row.changes["will_travel"] == {"from": None, "to": True}
+    assert row.changes["travel_region"] == {"from": None, "to": "Southeast US"}
+
+    # No is a real answer, not "not set"; a blank region clears; absent = unchanged
+    r = await client.patch(f"{BASE}/workers/{paz}", headers=hdrs,
+                           json={"will_travel": False, "travel_region": "  "})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["will_travel"] is False
+    assert d["travel_region"] is None
+    assert d["travel_restrictions"] == "No overnight flights"
+    assert (await _fresh(db, WorkerProfile, paz)).will_travel is False
+
+    # an explicit null puts Will travel back to Not set
+    r = await client.patch(f"{BASE}/workers/{paz}", headers=hdrs, json={"will_travel": None})
+    assert r.status_code == 200, r.text
+    assert r.json()["will_travel"] is None
+    assert r.json()["travel_restrictions"] == "No overnight flights"
+
+    # never on the list row
+    r = await client.get(f"{BASE}/workers", headers=hdrs)
+    assert r.status_code == 200, r.text
+    for row in r.json()["workers"]:
+        assert not set(travel) & set(row)
 
 
 async def test_patch_person_and_profile_in_one_transaction(client, db, seeded_user):

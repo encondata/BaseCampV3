@@ -128,6 +128,7 @@ fun filterCounts(rows: List<RolodexRow>, statusKeys: List<String>): Map<String, 
 /**
  * The worker page's Edit form. Text fields are as typed ("" is empty); [partnerId] and [level]
  * are picker values (null is None). [status] is a status key; [statusNote] matters for Blacklist.
+ * [willTravel] is the Not set / Yes / No choice.
  */
 data class RolodexEdit(
     val firstName: String = "",
@@ -141,6 +142,10 @@ data class RolodexEdit(
     val level: String? = null,
     val status: String = "",
     val statusNote: String = "",
+    /** Not set (null), Yes (true) or No (false): false is a real answer, never folded into null. */
+    val willTravel: Boolean? = null,
+    val travelRegion: String = "",
+    val travelRestrictions: String = "",
 ) {
     companion object {
         /** The form as it opens: the worker's current values. */
@@ -149,6 +154,7 @@ data class RolodexEdit(
             jobTitle = d.job_title ?: "", phone = d.phone ?: "", email = d.email ?: "",
             partnerId = d.company?.id, trade = d.trade ?: "", level = d.level,
             status = d.status, statusNote = d.status_note ?: "",
+            willTravel = d.will_travel, travelRegion = d.travel_region ?: "", travelRestrictions = d.travel_restrictions ?: "",
         )
     }
 }
@@ -176,6 +182,10 @@ fun buildPatch(original: RolodexDetail, edited: RolodexEdit): JsonObject = build
     field("level", original.level, edited.level)
     if (clean(edited.status) != null) field("status", original.status, edited.status)
     field("status_note", original.status_note, edited.statusNote)
+    // Sent when it changes, including back to not set (an explicit null).
+    if (original.will_travel != edited.willTravel) put("will_travel", edited.willTravel?.let(::JsonPrimitive) ?: JsonNull)
+    field("travel_region", original.travel_region, edited.travelRegion)
+    field("travel_restrictions", original.travel_restrictions, edited.travelRestrictions)
 }
 
 /**
