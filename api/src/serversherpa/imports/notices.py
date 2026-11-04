@@ -30,6 +30,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.db.models import Initiative
 from serversherpa.notifications.inbox import notify
 
+# the notification kinds (notifications/kinds.py)
+KIND_FINISHED = "bulk_action_finished"
+KIND_FAILED = "bulk_action_failed"
+
 # The import_jobs kinds that write data, as the title names them: "{action} finished" or
 # "{action} failed".
 ACTIONS: dict[str, str] = {
@@ -137,11 +141,11 @@ async def notify_job_done(db: AsyncSession, done: JobDone) -> None:
     if done.status == "completed":
         initiative = (await db.get(Initiative, done.initiative_id)
                       if done.initiative_id is not None else None)
-        kind, title = "bulk_action_finished", f"{action} finished"
+        kind, title = KIND_FINISHED, f"{action} finished"
         body = _finished_line(done, initiative)
         link = _link(FINISHED_LINKS[done.kind], done.initiative_id)
     else:
-        kind, title = "bulk_action_failed", f"{action} failed"
+        kind, title = KIND_FAILED, f"{action} failed"
         body = ""
         link = _link(FAILED_LINKS[done.kind], done.initiative_id)
     for person_id in people:
