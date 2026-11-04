@@ -2,7 +2,7 @@
  * Labels → Printers. Zebra tab: a printer card for the browser-connected
  * (WebUSB) Zebra — connect/disconnect, previously authorized printers,
  * identity (`~HI`) and health (`~HS`) chips — over the tool rows (Test
- * Label Alignment / Install Fonts / Full Printer Setup / Factory Reset)
+ * Labels / Install Fonts / Full Printer Setup / Factory Reset)
  * that open their modals. A finished Factory Reset hands its post-reset
  * `^HH` straight into Full Printer Setup. Brother tab: placeholder. No
  * printer registry (spec).
@@ -11,8 +11,8 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
 import {
-  deleteLabelFont, getLabelFontBytes, listLabelFonts, listLabelVocab, uploadLabelFont,
-  type LabelFont, type LabelVocab,
+  deleteLabelFont, getLabelFontBytes, listLabelFonts, listLabelTemplateTree, listLabelVocab, renderTestLabel,
+  uploadLabelFont, type LabelFont, type LabelVocab,
 } from '../lib/api';
 import { useZebraPrinter } from '../lib/useZebraPrinter';
 import type { HostIdentification, HostStatus, PrinterConfiguration, UsbDeviceLike } from '../labels/zebraUsb';
@@ -32,7 +32,7 @@ const TABS: { id: Tab; label: string }[] = [{ id: 'zebra', label: 'Zebra Printer
 
 type Tool = 'alignment' | 'fonts' | 'setup' | 'reset';
 const ZEBRA_TOOLS: { key: Tool; title: string; description: string; action: string; needsPrinter: boolean; danger?: boolean }[] = [
-  { key: 'alignment', title: 'Test Label Alignment', description: 'Print a calibration label and dial in offsets.', action: 'Print test label', needsPrinter: true },
+  { key: 'alignment', title: 'Test Labels', description: 'Print an alignment or sample-data label and dial in offsets.', action: 'Print test label', needsPrinter: true },
   { key: 'fonts', title: 'Install Fonts', description: "Push the house label fonts to the printer's storage.", action: 'Manage fonts', needsPrinter: false },
   { key: 'setup', title: 'Full Printer Setup', description: 'Guided first-time configuration for a new Zebra printer.', action: 'Start setup', needsPrinter: true },
   { key: 'reset', title: 'Factory Reset', description: "Restore the printer's factory defaults, then set it up again.", action: 'Reset printer', needsPrinter: true, danger: true },
@@ -164,7 +164,10 @@ function ZebraTab() {
         })}
       </div>
 
-      {tool === 'alignment' && <AlignmentTestModal vocab={vocab} printerDpi={identity?.dpi ?? null} onPrint={printZpl} onClose={() => setTool(null)} />}
+      {tool === 'alignment' && (
+        <AlignmentTestModal vocab={vocab} printerDpi={identity?.dpi ?? null} onPrint={printZpl}
+                            loadTemplates={listLabelTemplateTree} renderLabel={renderTestLabel} onClose={() => setTool(null)} />
+      )}
       {tool === 'fonts' && (
         <InstallFontsModal printer={printer} fonts={fonts} canAdd={can('labels', 'add')} canDelete={can('labels', 'delete')}
                            onUpload={async (file, name) => { await uploadLabelFont(file, name); loadFonts(); }}

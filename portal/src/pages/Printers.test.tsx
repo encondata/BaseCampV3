@@ -9,7 +9,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { LabelVocab } from '../lib/api';
 
-const api = vi.hoisted(() => ({ listLabelVocab: vi.fn(), listLabelFonts: vi.fn(), uploadLabelFont: vi.fn(), deleteLabelFont: vi.fn(), getLabelFontBytes: vi.fn(), postLabelPrinterEvent: vi.fn(async () => true) }));
+const api = vi.hoisted(() => ({ listLabelVocab: vi.fn(), listLabelFonts: vi.fn(), uploadLabelFont: vi.fn(), deleteLabelFont: vi.fn(), getLabelFontBytes: vi.fn(), postLabelPrinterEvent: vi.fn(async () => true), listLabelTemplateTree: vi.fn(), renderTestLabel: vi.fn() }));
 vi.mock('../lib/api', async (importActual) => ({ ...(await importActual<typeof import('../lib/api')>()), ...api }));
 
 const printer = vi.hoisted(() => ({
@@ -44,12 +44,14 @@ beforeEach(() => {
   api.postLabelPrinterEvent.mockClear();
   api.listLabelVocab.mockResolvedValue(vocab);
   api.listLabelFonts.mockResolvedValue([]);
+  api.listLabelTemplateTree.mockReset(); api.listLabelTemplateTree.mockResolvedValue([]);
+  api.renderTestLabel.mockReset();
 });
 afterEach(cleanup);
 
 it('shows the tools disconnected with gated actions, and Connect via USB', async () => {
   render(<Printers />);
-  expect(screen.getByText('Test Label Alignment')).toBeTruthy();
+  expect(screen.getByText('Test Labels')).toBeTruthy();
   expect(screen.getByText('Install Fonts')).toBeTruthy();
   expect(screen.getByText('Full Printer Setup')).toBeTruthy();
   expect((screen.getByRole('button', { name: 'Print test label' }) as HTMLButtonElement).disabled).toBe(true);
@@ -83,13 +85,44 @@ it('opens the three modals', async () => {
   render(<Printers />);
   await screen.findByText('ZD421-203dpi ZPL');
   await userEvent.click(screen.getByRole('button', { name: 'Print test label' }));
-  expect(screen.getByRole('dialog', { name: 'Test label alignment' })).toBeTruthy();
+  expect(screen.getByRole('dialog', { name: 'Test labels' })).toBeTruthy();
   await userEvent.click(screen.getByRole('button', { name: 'Done' }));
   await userEvent.click(screen.getByRole('button', { name: 'Manage fonts' }));
   expect(screen.getByRole('dialog', { name: 'Install fonts' })).toBeTruthy();
   await userEvent.click(screen.getByRole('button', { name: 'Done' }));
   await userEvent.click(screen.getByRole('button', { name: 'Start setup' }));
   expect(screen.getByRole('dialog', { name: 'Full printer setup' })).toBeTruthy();
+});
+
+it('the first row is "Test Labels", with the sample-data description and the Print test label button', () => {
+  render(<Printers />);
+  const firstRow = document.querySelector('.dir-list > .dir-row:first-child') as HTMLElement;
+  expect(within(firstRow).getByText('Test Labels')).toBeTruthy();
+  expect(within(firstRow).getByText('Print an alignment or sample-data label and dial in offsets.')).toBeTruthy();
+  expect(within(firstRow).getByRole('button', { name: 'Print test label' })).toBeTruthy();
+  expect(screen.queryByText('Test Label Alignment')).toBeNull();
+});
+
+it('Test labels prints a mock-data label from the portal\'s template list and renderer', async () => {
+  printer.connected = true; printer.productName = 'ZD421';
+  const tpl = {
+    id: 't1', name: 'Front Tag', description: '', label_type: 'front', size_key: '2x1', dpi_key: '203', language_key: 'zpl',
+    kind: 'code', design: null, code: '^XA^XZ', version: 1, is_active: true, site_ids: [], created_at: '', updated_at: '',
+    family: 'Front Tag', children: [],
+  };
+  api.listLabelTemplateTree.mockResolvedValue([tpl]);
+  api.renderTestLabel.mockResolvedValue({ zpl: '^XA^FDsample^FS^XZ', template_name: 'Front Tag' });
+  printer.send.mockClear();
+  render(<Printers />);
+  await screen.findByText('ZD421-203dpi ZPL');
+  await userEvent.click(screen.getByRole('button', { name: 'Print test label' }));
+  await userEvent.click(screen.getByRole('radio', { name: /Mock-data label/ }));
+  await userEvent.click(screen.getByRole('combobox', { name: 'Template' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Front Tag · front' }));
+  await userEvent.click(within(screen.getByRole('dialog', { name: 'Test labels' })).getByRole('button', { name: 'Print test label' }));
+  await waitFor(() => expect(printer.send).toHaveBeenCalledTimes(1));
+  expect(api.renderTestLabel).toHaveBeenCalledWith('t1', '203');
+  expect(printer.send.mock.calls[0]).toEqual(['^XA^FDsample^FS^XZ']);
 });
 
 it('the Factory Reset row is last, gated on a connection, with the danger button', () => {
@@ -145,5 +178,5 @@ it('the Brother tab stays a placeholder', async () => {
   render(<Printers />);
   await userEvent.click(screen.getByRole('tab', { name: 'Brother Printers' }));
   expect(screen.getByText('Brother printer tools are coming soon.')).toBeTruthy();
-  expect(screen.queryByText('Test Label Alignment')).toBeNull();
+  expect(screen.queryByText('Test Labels')).toBeNull();
 });

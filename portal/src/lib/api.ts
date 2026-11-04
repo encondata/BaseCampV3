@@ -5982,6 +5982,21 @@ export async function compileLabel(body: {
   return resp.json();
 }
 
+/** POST /labels/test-render: one printable template row (a DPI child, or an
+ *  older single row) at its own DPI, filled with the portal's fixed sample
+ *  values. The API refuses any other key in the body (a 422 list), so this
+ *  sends exactly these two. Errors are `{ detail: { code } }`:
+ *  `template_not_found`, `not_zpl`, `dpi_mismatch`, `template_unconvertible`. */
+export async function renderTestLabel(templateId: string, dpiKey: string): Promise<{ zpl: string; template_name: string }> {
+  const resp = await apiFetch('/labels/test-render', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ template_id: templateId, dpi_key: dpiKey }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 // ── Label images (ID badges: the image element) ──────────────────────
 
 /** POST /labels/images/raster: one image element's picture, prepped as the
