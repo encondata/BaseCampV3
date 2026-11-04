@@ -22,12 +22,12 @@ from serversherpa.learning.models import (
 )
 from serversherpa.services.password_reset import hash_token
 from tests.test_learning_assign import (
-    TODAY,
     _assignments,
     _doc,
     _initiative,
     _manager,
     _packet,
+    _today,
     _worker,
 )
 
@@ -58,10 +58,10 @@ def _spaced(code: str) -> str:
 
 
 async def test_send_invite_renders_code_and_link_and_logs(db, seeded_user):
-    move = await _initiative(db, "Acme DFW move", end=TODAY + timedelta(days=30))
+    move = await _initiative(db, "Acme DFW move", end=_today() + timedelta(days=30))
     worker = await _worker(db, "Kenji", "Sato", "kenji@test.example.com")
     row, code, token = await codes.issue(db, worker.id, move.id, actor_id=None)
-    due = TODAY + timedelta(days=12)
+    due = _today() + timedelta(days=12)
 
     mail = await emails.send_invite(db, worker, row, code, token, move, due)
     await db.commit()

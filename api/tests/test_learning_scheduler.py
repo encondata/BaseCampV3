@@ -20,7 +20,7 @@ from serversherpa.learning.models import (
     LearningEmailLog,
     LearningInviteSchedule,
 )
-from tests.test_learning_assign import TODAY, _doc, _manager, _midnight, _packet, _worker
+from tests.test_learning_assign import _doc, _manager, _midnight, _packet, _today, _worker
 from tests.test_sites_api import login
 from tests.test_status_values_write import _make
 
@@ -76,7 +76,7 @@ async def _setup(db, client, *, start, zone=None, people=1, end=None):
 
 
 async def test_scheduled_send_fires_once_at_site_time(client, db, seeded_user, monkeypatch):
-    start = TODAY + timedelta(days=14)
+    start = _today() + timedelta(days=14)
     hdrs, move, [worker] = await _setup(db, client, start=start, zone="Asia/Tokyo")
     resp = await client.put(f"/learning/initiatives/{move.id}/schedule", headers=hdrs, json={
         "mode": "scheduled", "send_offset_days": 7, "send_time": "08:00",
@@ -100,7 +100,7 @@ async def test_scheduled_send_fires_once_at_site_time(client, db, seeded_user, m
 
 
 async def test_manual_mode_never_sends_on_its_own(client, db, seeded_user, monkeypatch):
-    start = TODAY + timedelta(days=14)
+    start = _today() + timedelta(days=14)
     _, move, _ = await _setup(db, client, start=start)
     db.add(LearningInviteSchedule(initiative_id=move.id, mode="manual"))
     await db.commit()
@@ -109,7 +109,7 @@ async def test_manual_mode_never_sends_on_its_own(client, db, seeded_user, monke
 
 
 async def test_reminders_per_offset_once(client, db, seeded_user, monkeypatch):
-    start = TODAY + timedelta(days=14)
+    start = _today() + timedelta(days=14)
     hdrs, move, workers = await _setup(db, client, start=start, people=2)
     resp = await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs, json={})
     assert resp.json()["sent"] == 2
@@ -140,7 +140,7 @@ async def test_reminders_per_offset_once(client, db, seeded_user, monkeypatch):
 
 async def test_reminders_skip_a_missed_stage_and_never_after_start(
         client, db, seeded_user, monkeypatch):
-    start = TODAY + timedelta(days=14)
+    start = _today() + timedelta(days=14)
     hdrs, move, [worker] = await _setup(db, client, start=start)
     await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs, json={})
     # the worker was down through both reminder times: only the latest goes
@@ -164,7 +164,7 @@ async def test_reminders_skip_a_missed_stage_and_never_after_start(
 
 async def test_start_day_reminder_late_in_a_western_zone(client, db, seeded_user,
                                                          monkeypatch):
-    start = TODAY + timedelta(days=10)
+    start = _today() + timedelta(days=10)
     hdrs, move, _ = await _setup(db, client, start=start, zone="America/Los_Angeles")
     await client.put(f"/learning/initiatives/{move.id}/schedule", headers=hdrs,
                      json={"reminder_offsets": [0], "send_time": "23:00"})
@@ -177,12 +177,12 @@ async def test_start_day_reminder_late_in_a_western_zone(client, db, seeded_user
 
 
 async def test_overdue_notice_once_per_day(client, db, seeded_user, monkeypatch):
-    start = TODAY + timedelta(days=3)
+    start = _today() + timedelta(days=3)
     hdrs, move, _ = await _setup(db, client, start=start, end=start + timedelta(days=5))
-    await db.execute(update(LearningAssignment).values(due_on=TODAY - timedelta(days=1)))
+    await db.execute(update(LearningAssignment).values(due_on=_today() - timedelta(days=1)))
     await db.commit()
 
-    now = datetime.combine(TODAY, time(12), tzinfo=UTC)
+    now = datetime.combine(_today(), time(12), tzinfo=UTC)
     _clock(monkeypatch, now)
     # nothing is overdue on training nobody was invited to yet
     assert (await scheduler.run_learning_once(get_sessionmaker()))["overdue"] == 0
@@ -210,7 +210,7 @@ async def test_overdue_notice_once_per_day(client, db, seeded_user, monkeypatch)
 @pytest.mark.parametrize("over", ["cancelled", "completed", "archived"])
 async def test_sweep_leaves_over_and_archived_initiatives_alone(
         client, db, seeded_user, monkeypatch, over):
-    start = TODAY + timedelta(days=14)
+    start = _today() + timedelta(days=14)
     hdrs, move, _ = await _setup(db, client, start=start, end=start + timedelta(days=5))
     resp = await client.put(f"/learning/initiatives/{move.id}/schedule", headers=hdrs, json={
         "mode": "scheduled", "send_offset_days": 7, "send_time": "08:00",
@@ -219,7 +219,7 @@ async def test_sweep_leaves_over_and_archived_initiatives_alone(
     # a second move, sent by hand, owed a reminder and overdue
     hdrs, sent, _ = await _setup(db, client, start=start, end=start + timedelta(days=5))
     await client.post(f"/learning/initiatives/{sent.id}/send", headers=hdrs, json={})
-    await db.execute(update(LearningAssignment).values(due_on=TODAY - timedelta(days=1)))
+    await db.execute(update(LearningAssignment).values(due_on=_today() - timedelta(days=1)))
     for target in (move, sent):
         values = ({"archived_at": datetime.now(UTC)} if over == "archived"
                   else {"status": over})
@@ -243,9 +243,9 @@ async def test_sweep_leaves_over_and_archived_initiatives_alone(
 
 async def test_sweep_survives_an_initiative_error(client, db, seeded_user, monkeypatch,
                                                   caplog):
-    start = TODAY + timedelta(days=3)
+    start = _today() + timedelta(days=3)
     await _setup(db, client, start=start)
-    await db.execute(update(LearningAssignment).values(due_on=TODAY - timedelta(days=1)))
+    await db.execute(update(LearningAssignment).values(due_on=_today() - timedelta(days=1)))
     await db.commit()
 
     async def boom(*a, **kw):
@@ -285,7 +285,7 @@ async def test_scheduled_send_time_follows_dst(db):
 
 
 async def test_roster_statuses(client, db, seeded_user):
-    start = TODAY + timedelta(days=10)
+    start = _today() + timedelta(days=10)
     hdrs = await _manager(db, client)
     docs = [await _doc(db, "Site safety"), await _doc(db, "Dress code")]
     await _packet(db, docs)
@@ -307,7 +307,7 @@ async def test_roster_statuses(client, db, seeded_user):
                               .order_by(LearningAssignment.created_at))).first()
     first.status, first.opened_at = "opened", now
     await db.execute(update(LearningAssignment).where(where("Olga"))
-                     .values(due_on=TODAY - timedelta(days=1)))
+                     .values(due_on=_today() - timedelta(days=1)))
     await db.commit()
 
     resp = await client.get(f"/learning/initiatives/{move.id}/roster", headers=hdrs)
@@ -354,7 +354,7 @@ async def test_person_with_nothing_assigned_is_not_complete(client, db, seeded_u
     """No assignments is `nothing_assigned`, never "Complete 0/0", and the
     summary's complete count leaves them out."""
     hdrs = await _manager(db, client)
-    move = await _move(db, start=TODAY + timedelta(days=10))      # no packets or rules
+    move = await _move(db, start=_today() + timedelta(days=10))      # no packets or rules
     await _add(db, client, hdrs, move, await _worker(db, "Nina", "Nothing", "nina@test.example.com"))
     [row] = (await client.get(f"/learning/initiatives/{move.id}/roster", headers=hdrs)).json()
     assert (row["status"], row["done"], row["total"]) == ("nothing_assigned", 0, 0)
@@ -373,8 +373,8 @@ async def _end(db, move, day):
 
 
 async def test_ended_initiative_refuses_manual_invites(client, db, seeded_user):
-    hdrs, move, [worker] = await _setup(db, client, start=TODAY + timedelta(days=3))
-    await _end(db, move, TODAY - timedelta(days=1))
+    hdrs, move, [worker] = await _setup(db, client, start=_today() + timedelta(days=3))
+    await _end(db, move, _today() - timedelta(days=1))
     base = f"/learning/initiatives/{move.id}"
     for path, body in ((f"{base}/send", {}), (f"{base}/send", {"person_ids": [str(worker.id)]}),
                        (f"{base}/people/{worker.id}/regenerate", None),
@@ -391,14 +391,14 @@ async def test_ended_initiative_refuses_manual_invites(client, db, seeded_user):
     assert summary["schedule"]["ended"] is True
     assert (await client.post(f"{base}/remind", headers=hdrs, json={})).status_code == 200
     # the last day itself is still open
-    await _end(db, move, TODAY)
+    await _end(db, move, _today())
     assert (await client.get(base, headers=hdrs)).json()["schedule"]["ended"] is False
     assert (await client.post(f"{base}/send", headers=hdrs, json={})).status_code == 200
 
 
 @pytest.mark.parametrize("over", ["cancelled", "completed", "archived"])
 async def test_manual_reminder_refused_on_an_over_initiative(client, db, seeded_user, over):
-    hdrs, move, [worker] = await _setup(db, client, start=TODAY + timedelta(days=3))
+    hdrs, move, [worker] = await _setup(db, client, start=_today() + timedelta(days=3))
     base = f"/learning/initiatives/{move.id}"
     await client.post(f"{base}/send", headers=hdrs, json={})
     assert (await client.get(base, headers=hdrs)).json()["schedule"]["inactive"] is False
@@ -425,8 +425,8 @@ async def test_ended_is_read_on_the_sites_local_day(db, seeded_user):
 
 
 async def test_scheduled_send_skips_an_ended_initiative(client, db, seeded_user, monkeypatch):
-    _, move, _ = await _setup(db, client, start=TODAY - timedelta(days=2))
-    await _end(db, move, TODAY - timedelta(days=1))
+    _, move, _ = await _setup(db, client, start=_today() - timedelta(days=2))
+    await _end(db, move, _today() - timedelta(days=1))
     db.add(LearningInviteSchedule(initiative_id=move.id, mode="scheduled"))
     await db.commit()
     _clock(monkeypatch, datetime.now(UTC))
@@ -437,10 +437,10 @@ async def test_scheduled_send_skips_an_ended_initiative(client, db, seeded_user,
 
 
 async def test_late_add_on_an_ended_initiative_gets_no_invite(client, db, seeded_user):
-    hdrs, move, _ = await _setup(db, client, start=TODAY + timedelta(days=3))
+    hdrs, move, _ = await _setup(db, client, start=_today() + timedelta(days=3))
     assert (await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs,
                               json={})).json()["sent"] == 1
-    await _end(db, move, TODAY - timedelta(days=1))
+    await _end(db, move, _today() - timedelta(days=1))
     late = await _worker(db, "Larry", "Late", "larry@test.example.com")
     await _add(db, client, hdrs, move, late)
     assert await _outbox(db) and all(m.person_id != late.id for m in await _outbox(db))
@@ -455,7 +455,7 @@ async def test_roster_and_sends_agree_on_a_disabled_account(client, db, seeded_u
     only email is a disabled login's is "no email" on both."""
     from serversherpa.db.models import UserAccount
 
-    start = TODAY + timedelta(days=10)
+    start = _today() + timedelta(days=10)
     hdrs, move, _ = await _setup(db, client, start=start, people=0)
     dana = await _worker(db, "Dana", "Disabled", None)
     db.add(UserAccount(person_id=dana.id, email="dana@test.example.com",
@@ -470,7 +470,7 @@ async def test_roster_and_sends_agree_on_a_disabled_account(client, db, seeded_u
 
 
 async def test_schedule_put_validates_and_marks_the_timeline(client, db, seeded_user):
-    start = TODAY + timedelta(days=14)
+    start = _today() + timedelta(days=14)
     hdrs, move, _ = await _setup(db, client, start=start, people=0)
     for bad in ({"send_time": "8am"}, {"reminder_offsets": [3, 3]},
                 {"send_offset_days": 0}, {"mode": "sometimes"}, {"late_adds": None}):
@@ -495,7 +495,7 @@ async def test_schedule_put_validates_and_marks_the_timeline(client, db, seeded_
 
 
 async def test_regenerate_revokes_old_code(client, db, seeded_user):
-    start = TODAY + timedelta(days=14)
+    start = _today() + timedelta(days=14)
     hdrs, move, [worker] = await _setup(db, client, start=start)
     await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs, json={})
     [old] = list(await db.scalars(select(LearningCode).where(
@@ -531,7 +531,7 @@ async def test_manual_reminder_keeps_codes_and_sessions(client, db, seeded_user,
     from serversherpa.learning import sessions
     from serversherpa.learning.models import LearningSession
 
-    start = TODAY + timedelta(days=14)
+    start = _today() + timedelta(days=14)
     hdrs, move, workers = await _setup(db, client, start=start, people=3)
     sent, done, nocode = workers
     await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs, json={})
@@ -585,7 +585,7 @@ async def test_manual_reminder_keeps_codes_and_sessions(client, db, seeded_user,
 
 
 async def test_moving_the_end_day_moves_code_expiry(client, db, seeded_user):
-    start = TODAY + timedelta(days=14)
+    start = _today() + timedelta(days=14)
     end = start + timedelta(days=3)
     hdrs, move, [worker] = await _setup(db, client, start=start, zone="Asia/Tokyo", end=end)
     await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs, json={})
@@ -610,7 +610,7 @@ async def test_moving_the_end_day_moves_code_expiry(client, db, seeded_user):
 
 async def test_code_sheet_pdf_returns_pdf(client, db, seeded_user):
     pytest.importorskip("weasyprint")
-    start = TODAY + timedelta(days=14)
+    start = _today() + timedelta(days=14)
     hdrs = await _manager(db, client)
     doc = await _doc(db, "Site safety")
     await _packet(db, [doc])

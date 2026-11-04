@@ -30,21 +30,23 @@ from serversherpa.learning.models import (
 )
 from serversherpa.reports import learning_compliance
 from tests.test_learning_assign import (
-    TODAY,
     _doc,
     _initiative,
     _manager,
     _packet,
     _publish,
+    _today,
     _worker,
 )
 from tests.test_learning_translations import offer_languages
 from tests.test_sites_api import make_login
 
-NOW = datetime.now(UTC)
-
-
 # ── helpers ──────────────────────────────────────────────────────────
+
+
+def _now() -> datetime:
+    """Read at each call, not at import (see `_today` in test_learning_assign)."""
+    return datetime.now(UTC)
 
 
 async def _person(db, first, last, email=None):
@@ -85,7 +87,7 @@ async def _sign(db, person, doc, *, initiative=None, days_ago=0, quiz_score=None
         initiative_id=initiative.id if initiative else None, language=language,
         typed_name=None if signature else f"{person.first_name} {person.last_name}",
         signature_png=signature, read_seconds=read_seconds, scrolled_to_end=True,
-        quiz_score=quiz_score, signed_at=signed_at or NOW - timedelta(days=days_ago))
+        quiz_score=quiz_score, signed_at=signed_at or _now() - timedelta(days=days_ago))
     db.add(row)
     await db.commit()
     return row
@@ -95,8 +97,8 @@ async def _override(db, person, admin, *, initiative=None, days_ago=0, reason="s
     db.add(LearningOverride(
         person_id=person.id, initiative_id=initiative.id if initiative else None,
         admin_person_id=admin.id, reason=reason, scope="punch",
-        local_day=(NOW - timedelta(days=days_ago)).date(), outstanding=[],
-        created_at=NOW - timedelta(days=days_ago)))
+        local_day=(_now() - timedelta(days=days_ago)).date(), outstanding=[],
+        created_at=_now() - timedelta(days=days_ago)))
     await db.commit()
 
 
@@ -114,13 +116,13 @@ async def test_dashboard_funnel_counts(client, db, seeded_user):
     doc = await _doc(db, "Site safety")
     move = await _initiative(db, "Acme move")
     ann, bob, cy, old = await _people(db, "Ann", "Bob", "Cy", "Old")
-    opened = NOW - timedelta(hours=30)
+    opened = _now() - timedelta(hours=30)
     await _assignment(db, ann, doc, move, status="signed", opened=opened,
                       signed=opened + timedelta(minutes=22))
     await _assignment(db, bob, doc, move, status="opened", opened=opened)
     await _assignment(db, cy, doc, move)
     # assigned before the window: not in a 30-day funnel
-    await _assignment(db, old, doc, move, created=NOW - timedelta(days=40))
+    await _assignment(db, old, doc, move, created=_now() - timedelta(days=40))
     # the invite went out 6 hours before Ann opened
     db.add(LearningEmailLog(person_id=ann.id, initiative_id=move.id, kind="invite",
                             created_at=opened - timedelta(hours=6)))
@@ -165,29 +167,29 @@ async def test_at_risk_sorting(client, db, seeded_user):
     hdrs = await _manager(db, client)
     doc = await _doc(db, "Site safety")
     two = await _doc(db, "Dress code")
-    soon = await _initiative(db, "Soon", start=TODAY + timedelta(days=3))
-    later = await _initiative(db, "Later", start=TODAY + timedelta(days=10))
-    far = await _initiative(db, "Far away", start=TODAY + timedelta(days=40))
-    done = await _initiative(db, "All signed", start=TODAY + timedelta(days=5))
-    over = await _initiative(db, "Completed", start=TODAY + timedelta(days=6))
+    soon = await _initiative(db, "Soon", start=_today() + timedelta(days=3))
+    later = await _initiative(db, "Later", start=_today() + timedelta(days=10))
+    far = await _initiative(db, "Far away", start=_today() + timedelta(days=40))
+    done = await _initiative(db, "All signed", start=_today() + timedelta(days=5))
+    over = await _initiative(db, "Completed", start=_today() + timedelta(days=6))
     over.status = "completed"
-    shelved = await _initiative(db, "Archived", start=TODAY + timedelta(days=6))
-    shelved.archived_at = NOW
+    shelved = await _initiative(db, "Archived", start=_today() + timedelta(days=6))
+    shelved.archived_at = _now()
     await db.commit()
     a, b, c = (await _person(db, "Ann", "A", "a@test.example.com"),
                await _person(db, "Bob", "B", None),
                await _person(db, "Cy", "C", "c@test.example.com"))
     # Soon: 1 of 4 signed (25%); Bob has no email and nothing signed
-    await _assignment(db, a, doc, soon, status="signed", signed=NOW)
+    await _assignment(db, a, doc, soon, status="signed", signed=_now())
     await _assignment(db, a, two, soon)
     await _assignment(db, b, doc, soon)
     await _assignment(db, c, doc, soon)
     # Later: 1 of 2 signed (50%)
-    await _assignment(db, a, doc, later, status="signed", signed=NOW)
-    await _assignment(db, c, doc, later, status="opened", opened=NOW)
+    await _assignment(db, a, doc, later, status="signed", signed=_now())
+    await _assignment(db, c, doc, later, status="opened", opened=_now())
     # out of scope: too far away, nothing open, completed, archived
     await _assignment(db, a, doc, far)
-    await _assignment(db, a, doc, done, status="signed", signed=NOW)
+    await _assignment(db, a, doc, done, status="signed", signed=_now())
     await _assignment(db, a, doc, over)
     await _assignment(db, a, doc, shelved)
 
@@ -242,7 +244,7 @@ async def test_dashboard_expiring_translations_and_hard_questions(client, db, se
     body = (await client.get("/learning/dashboard", headers=hdrs)).json()
     assert body["expiring"] == [{
         "document_id": str(fork.id), "title": "Forklift safety", "people": 2,
-        "first_date": (TODAY + timedelta(days=10)).isoformat()}]
+        "first_date": (_today() + timedelta(days=10)).isoformat()}]
     assert body["translation_issues"] == [{
         "document_id": str(never.id), "title": "Dress code", "language": "he"}]
     assert body["hard_questions"] == [{
@@ -257,8 +259,8 @@ async def test_grid_states_including_expires_during(client, db, seeded_user):
     dress = await _doc(db, "Dress code", validity_days=365)
     forklift = await _doc(db, "Forklift safety", validity_days=365)
     site_rules = await _doc(db, "Site rules", resign_rule="every_initiative")
-    move = await _initiative(db, "Acme move", start=TODAY + timedelta(days=5),
-                             end=TODAY + timedelta(days=60))
+    move = await _initiative(db, "Acme move", start=_today() + timedelta(days=5),
+                             end=_today() + timedelta(days=60))
     await _packet(db, [dress, site_rules])
     valid, expiring, missing, signed_here = (
         await _person(db, "Val", "Valid", "v@test.example.com"),
@@ -267,7 +269,7 @@ async def test_grid_states_including_expires_during(client, db, seeded_user):
         await _person(db, "Sig", "Signed", "s@test.example.com"))
     await _on(db, move, valid, expiring, missing, signed_here)
     await _sign(db, valid, dress, days_ago=10)
-    await _sign(db, expiring, dress, days_ago=350)          # good until TODAY+15
+    await _sign(db, expiring, dress, days_ago=350)          # good until today+15
     await _sign(db, signed_here, dress, days_ago=10)
     await _sign(db, signed_here, site_rules, initiative=move, days_ago=1)
     await _sign(db, valid, site_rules, days_ago=30)         # another move's: not this one's
@@ -286,7 +288,7 @@ async def test_grid_states_including_expires_during(client, db, seeded_user):
     assert cells["Val Valid"]["Forklift safety"]["state"] == "not_required"
     assert cells["Val Valid"]["Site rules"]["state"] == "missing"     # re-sign every initiative
     assert cells["Exp Expiring"]["Dress code"]["state"] == "expires_during"
-    assert (TODAY + timedelta(days=15)).strftime("%b") in cells[
+    assert (_today() + timedelta(days=15)).strftime("%b") in cells[
         "Exp Expiring"]["Dress code"]["label"]
     assert cells["Mia Missing"]["Dress code"]["state"] == "missing"
     assert cells["Mia Missing"]["Forklift safety"]["state"] == "missing"
@@ -300,7 +302,7 @@ async def test_grid_states_including_expires_during(client, db, seeded_user):
 async def test_grid_open_ended_initiative_never_expires_during(client, db, seeded_user):
     hdrs = await _manager(db, client)
     dress = await _doc(db, "Dress code", validity_days=365)
-    move = await _initiative(db, "Open ended", start=TODAY + timedelta(days=5))
+    move = await _initiative(db, "Open ended", start=_today() + timedelta(days=5))
     await _packet(db, [dress])
     worker = await _person(db, "Exp", "Expiring", "e@test.example.com")
     await _on(db, move, worker)
@@ -336,11 +338,11 @@ async def test_history_scoped(client, db, seeded_user):
     admin = await _person(db, "Ada", "Admin")
     await _sign(db, worker, doc, initiative=move, quiz_score=88, read_seconds=140,
                 signature=_png())
-    assignment = await _assignment(db, worker, doc, move, status="signed", signed=NOW)
+    assignment = await _assignment(db, worker, doc, move, status="signed", signed=_now())
     db.add(LearningQuizAttempt(assignment_id=assignment.id, score_percent=60, passed=False,
-                               answers={}, created_at=NOW - timedelta(hours=1)))
+                               answers={}, created_at=_now() - timedelta(hours=1)))
     db.add(LearningQuizAttempt(assignment_id=assignment.id, score_percent=88, passed=True,
-                               answers={}, created_at=NOW))
+                               answers={}, created_at=_now()))
     await db.commit()
     other_doc = await _doc(db, "Forklift safety")
     await _assignment(db, worker, other_doc, move)
@@ -475,8 +477,8 @@ async def _roster_of(db, count, prefix):
     partner = Partner(name=f"{prefix} partner")
     db.add(partner)
     await db.commit()
-    move = await _initiative(db, f"{prefix} move", start=TODAY + timedelta(days=5),
-                             end=TODAY + timedelta(days=60))
+    move = await _initiative(db, f"{prefix} move", start=_today() + timedelta(days=5),
+                             end=_today() + timedelta(days=60))
     await _packet(db, [dress, nda], name=f"{prefix} packet")
     for i in range(count):
         person = await _person(db, f"{prefix}{i}", "Roster", f"{prefix}{i}@test.example.com")
@@ -550,7 +552,7 @@ async def test_at_risk_window_edges(client, db, seeded_user):
     worker = await _person(db, "Ann", "A", "a@test.example.com")
     names = {}
     for label, offset in (("Yesterday", -1), ("Today", 0), ("Day 30", 30), ("Day 31", 31)):
-        move = await _initiative(db, label, start=TODAY + timedelta(days=offset))
+        move = await _initiative(db, label, start=_today() + timedelta(days=offset))
         names[label] = move
         await _assignment(db, worker, doc, move)
     body = (await client.get("/learning/dashboard", headers=hdrs)).json()
@@ -572,7 +574,7 @@ async def test_hard_questions_only_count_attempts_in_the_window(client, db, seed
     for i in range(12):
         db.add(LearningQuizAttempt(
             assignment_id=assignment.id, score_percent=0, passed=False,
-            answers={str(question.id): ["b"]}, created_at=NOW - timedelta(days=20 + i * 5)))
+            answers={str(question.id): ["b"]}, created_at=_now() - timedelta(days=20 + i * 5)))
     await db.commit()
     # 12 misses overall; only the first 2 fall inside 30 days, the first 5 inside 60
     def hard(days):
