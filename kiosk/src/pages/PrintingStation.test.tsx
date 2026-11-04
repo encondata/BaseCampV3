@@ -6,7 +6,7 @@
  *  end, run on the web backend: labels from the browser build's store,
  *  the Labeled scan through the real outbox, and never an edge route. */
 import 'fake-indexeddb/auto';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { IDBFactory } from 'fake-indexeddb';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
@@ -38,7 +38,7 @@ vi.mock('../lib/outbox', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/outbox')>();
   return {
     ...actual,
-    startSender: () => { sender.start(); actual.startSender(); },
+    startSender: () => { sender.start(); return actual.startSender(); },
     stopSender: () => { sender.stop(); actual.stopSender(); },
   };
 });
@@ -101,8 +101,8 @@ import { ApiError, type KioskScanIn, type LabelStationSettings } from '../lib/ap
 import { clearFlash } from '../lib/flash';
 import { writeKioskSetup } from '../lib/kioskSetup';
 import { closeDb, putRows, replaceAll, writeMeta } from '../lib/localDb';
-import { BATCH_DELAY, readOutbox, resetOutboxForTest } from '../lib/outbox';
-import { SYNCING_TEXT } from '../lib/printQueue';
+import { BATCH_DELAY, readOutbox, resetOutboxForTest, type OutboxRow } from '../lib/outbox';
+import { notDownloadedText, SYNCING_TEXT } from '../lib/printQueue';
 import { withPrintMode } from '../lib/stationPrinter';
 import { resetSyncStatus, runSync } from '../lib/sync';
 import { writeWebLabelSettings } from '../lib/webLabelSettings';
@@ -410,6 +410,10 @@ describe('web kiosk', () => {
   const accepting = async ({ scans }: { scans: KioskScanIn[] }) => ({
     accepted: scans.map((x) => x.client_scan_id), rejected: [],
   });
+  /** The portal turns every scan down by name: the outbox fails it at once. */
+  const rejecting = async ({ scans }: { scans: KioskScanIn[] }) => ({
+    accepted: [], rejected: scans.map((x) => ({ client_scan_id: x.client_scan_id, code: 'bad_status' })),
+  });
 
   beforeEach(async () => {
     delete window.__KIOSK_CONFIG__;   // web mode
@@ -522,9 +526,10 @@ describe('web kiosk', () => {
     expect(await screen.findByText("118 labels ready · 3 couldn't be made")).toBeTruthy();
     const reasons = [...document.querySelectorAll('.station-label-reasons li')].map((li) => li.textContent);
     expect(reasons).toEqual([
-      "2 · No label for this asset: this move has no active label template at this printer's DPI. "
+      "2 couldn't be made: this move has no active label template at this printer's DPI. "
         + 'Someone with label access needs to activate one on Labels › Templates.',
-      '1 · This kiosk needs an update to print this template.',
+      "1 couldn't be made: the move's label template is newer than this kiosk can print. "
+        + 'This kiosk needs an update.',
     ]);
     // web counts labels, not templates: no laptop notice
     expect(screen.queryByText(/need(s)? a (laptop|kiosk) update\.$/)).toBeNull();
@@ -532,6 +537,156 @@ describe('web kiosk', () => {
     buildChanged(idle({ ready: 1 }));
     expect(await screen.findByText('1 label ready')).toBeTruthy();
     expect(document.querySelector('.station-label-reasons')).toBeNull();
+  });
+
+  it('every reason reads as a count with a sentence of its own', async () => {
+    await writeMeta(LABELS_META_KEY, {
+      initiativeId: 'i-1', kind: 'top', dpi: 203,
+      problems: { template_failed: 1, odd_reason: 2, no_template_at_dpi: 1, template_unsupported: 3 },
+    });
+    build.status = idle({ ready: 5, errors: 7, unsupported: 3 });
+    render_();
+    expect(await screen.findByText("5 labels ready · 7 couldn't be made")).toBeTruthy();
+    const reasons = [...document.querySelectorAll('.station-label-reasons li')].map((li) => li.textContent);
+    expect(reasons).toEqual([
+      "1 couldn't be made: this move has no active label template at this printer's DPI. "
+        + 'Someone with label access needs to activate one on Labels › Templates.',
+      "1 couldn't be made: the move's label template couldn't be built.",
+      "3 couldn't be made: the move's label template is newer than this kiosk can print. "
+        + 'This kiosk needs an update.',
+      "2 couldn't be made: odd_reason.",
+    ]);
+  });
+
+  /** The header's note box, as one string (links and all). */
+  const headerNote = () => (document.querySelector('.station-label-count') as HTMLElement | null);
+
+  it("with this move's label data not downloaded, the header and every scan say to sync from Kiosk Setup", async () => {
+    build.status = idle({ total: 0, done: 0, ready: 0, blocked: 'not_downloaded' });
+    render_();
+    await waitFor(() => expect(headerNote()?.textContent)
+      .toBe("This kiosk doesn't have this move's label data yet. Sync again from Kiosk Setup."));
+    expect(within(headerNote()!).getByRole('link', { name: 'Kiosk Setup' }).getAttribute('href')).toBe('/setup');
+    expect(screen.queryByText(/labels? ready/)).toBeNull();
+
+    await scan('10042');
+    expect((await screen.findAllByText(notDownloadedText('kiosk'))).length).toBeGreaterThan(0);
+    expect(notDownloadedText('kiosk'))
+      .toBe("This kiosk doesn't have this move's label data yet. Sync again from Kiosk Setup.");
+    expect(station.sent).toEqual([]);
+    expect(readOutbox().rows).toEqual([]);
+
+    // a sync brings it: the build's status says so, and the note goes
+    buildChanged(idle({ ready: 1 }));
+    expect(await screen.findByText('1 label ready')).toBeTruthy();
+    expect(headerNote()?.textContent).toBe('1 label ready');
+  });
+
+  it("with only this move's templates missing, the header says so", async () => {
+    build.status = idle({ total: 0, done: 0, ready: 0, blocked: 'templates_missing' });
+    render_();
+    await waitFor(() => expect(headerNote()?.textContent)
+      .toBe("This kiosk doesn't have this move's label templates yet. Sync again from Kiosk Setup."));
+    expect(within(headerNote()!).getByRole('link', { name: 'Kiosk Setup' }).getAttribute('href')).toBe('/setup');
+  });
+
+  it("a build that failed says why under the counts, with Kiosk Setup's link", async () => {
+    build.status = idle({ ready: 3, error: 'the label worker failed to run' });
+    render_();
+    expect(await screen.findByText('3 labels ready')).toBeTruthy();
+    await waitFor(() => expect(headerNote()?.textContent).toContain(
+      "Labels couldn't be made (the label worker failed to run). Sync again from Kiosk Setup."));
+    expect(within(headerNote()!).getByRole('link', { name: 'Kiosk Setup' }).getAttribute('href')).toBe('/setup');
+
+    buildChanged(idle({ ready: 4 }));
+    expect(await screen.findByText('4 labels ready')).toBeTruthy();
+    expect(screen.queryByText(/couldn't be made \(/)).toBeNull();
+  });
+
+  it('with no move data at all, only the roster note says to sync', async () => {
+    await replaceAll('assets', []);
+    build.status = idle({ total: 0, done: 0, ready: 0, blocked: 'not_downloaded' });
+    render_();
+    expect(await screen.findByText('No move data on this kiosk. Sync it from Kiosk Setup.')).toBeTruthy();
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(screen.queryByText(/label data yet/)).toBeNull();
+  });
+
+  it('a Labeled scan the outbox gave up on reads "scan not recorded", and Retry sends it again', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      render_();
+      await scan('10042');
+      await waitFor(() => expect(readOutbox().rows).toHaveLength(1));
+      await scan('sn-4242');
+      await waitFor(() => expect(readOutbox().rows).toHaveLength(2));
+      // offline all the way down the outbox's backoff ladder
+      for (let i = 0; i < 6; i += 1) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(61_000); });
+      }
+      await waitFor(() => expect(readOutbox().rows.every((r) => r.status === 'failed')).toBe(true));
+      await act(async () => { await vi.advanceTimersByTimeAsync(RECORDED_POLL_MS); });
+      await waitFor(() => expect(statusCell().textContent).toBe('Printed · scan not recorded'));
+      const card = document.querySelector('.station-result .station-status') as HTMLElement;
+      expect(card.textContent).toBe('Printed · scan not recorded');
+      expect(screen.getByText("The scans for 2 printed labels weren't recorded.")).toBeTruthy();
+
+      api.postScans.mockImplementation(accepting);
+      await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      await waitFor(() => expect(readOutbox().rows.every((r) => r.status === 'accepted')).toBe(true));
+      await act(async () => { await vi.advanceTimersByTimeAsync(RECORDED_POLL_MS); });
+      await waitFor(() => expect(statusCell().textContent).toBe('Printed + Recorded'));
+      expect(screen.queryByText(/printed labels? (wasn't|weren't) recorded/)).toBeNull();
+      expect(screen.queryByText(/scan not recorded/)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('one scan not recorded reads in the singular', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      api.postScans.mockImplementation(rejecting);
+      render_();
+      await scan('10042');
+      await waitFor(() => expect(readOutbox().rows[0]?.status).toBe('failed'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(RECORDED_POLL_MS); });
+      expect(await screen.findByText("The scan for 1 printed label wasn't recorded.")).toBeTruthy();
+      expect(statusCell().textContent).toBe('Printed · scan not recorded');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sends the scans the outbox gave up on again when the station opens', async () => {
+    // a Labeled scan an earlier visit gave up on
+    const old: OutboxRow = {
+      client_scan_id: 'old-1', seq: 1, scanned_value: '10042', scan_type: 'barcode',
+      scanned_at: '2026-11-04T09:00:00.000Z', asset: null, matched: true, status: 'failed', attempts: 5,
+      last_error: 'network_error', site_id: 's-1', initiative_id: 'i-1', scan_status: 'labeled',
+    };
+    await putRows('outbox', [old]);
+    api.postScans.mockImplementation(accepting);
+    render_();
+    await waitFor(() => expect(api.postScans).toHaveBeenCalledTimes(1));
+    expect(api.postScans.mock.calls[0][0].scans.map((x: KioskScanIn) => x.client_scan_id)).toEqual(['old-1']);
+    await waitFor(() => expect(readOutbox().rows[0].status).toBe('accepted'));
+  });
+
+  it('sends them again when the browser is back online, and stops listening once closed', async () => {
+    api.postScans.mockImplementation(rejecting);
+    const view = render_();
+    await scan('10042');
+    await waitFor(() => expect(readOutbox().rows[0]?.status).toBe('failed'));
+
+    api.postScans.mockImplementation(accepting);
+    act(() => { window.dispatchEvent(new Event('online')); });
+    await waitFor(() => expect(readOutbox().rows[0].status).toBe('accepted'));
+
+    const removed = vi.spyOn(window, 'removeEventListener');
+    view.unmount();
+    expect(removed).toHaveBeenCalledWith('online', expect.any(Function));
+    removed.mockRestore();
   });
 
   it('a scan that hits a too-new template refreshes the header', async () => {

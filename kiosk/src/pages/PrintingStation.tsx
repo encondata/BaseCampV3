@@ -24,12 +24,17 @@
  *   templates need it (`unsupported` from GET /edge/labels/status).
  * - Web kiosk: the header says how many labels are ready and how many
  *   couldn't be made, and why (the build meta's counts per outcome); it is
- *   read again whenever the browser build finishes. The kiosk's outbox
- *   sender runs while this screen is open (as on Scanning), so a printed
- *   label's Labeled scan reaches the portal and its row can read
- *   "Printed + Recorded". With no printer saved, arriving here opens
- *   Printer Setup once; coming back from it without saving shows a note
- *   that links there instead.
+ *   read again whenever the browser build finishes. When the move's label
+ *   data isn't on the kiosk (`blocked`) or the last build failed
+ *   (`error`), it says so and links to Kiosk Setup to sync again. The
+ *   kiosk's outbox sender runs while this screen is open (as on
+ *   Scanning), so a printed label's Labeled scan reaches the portal and
+ *   its row can read "Printed + Recorded"; one the outbox gave up on reads
+ *   "Printed · scan not recorded", and a note counts them with a Retry
+ *   (Scanning's Retry failed). Failed scans are also sent again when the
+ *   screen opens and when the browser comes back online. With no printer
+ *   saved, arriving here opens Printer Setup once; coming back from it
+ *   without saving shows a note that links there instead.
  */
 
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
@@ -43,9 +48,9 @@ import {
   LABEL_SECTIONS, type PrinterSetupRouteState, type StationRouteState,
 } from '../lib/labelSections';
 import { getAll } from '../lib/localDb';
-import { startSender, stopSender } from '../lib/outbox';
+import { retryFailed, startSender, stopSender } from '../lib/outbox';
 import {
-  createPrintQueue, needsUpdateText, noLabelText, type PrintAsset, type PrintQueue, type QueueEntry,
+  createPrintQueue, needsUpdateText, type PrintAsset, type PrintQueue, type QueueEntry,
 } from '../lib/printQueue';
 import { buildScanIndex, matchAssetOrSerial, type ScanIndex } from '../lib/scanMatch';
 import { playScanSound } from '../lib/sound';
@@ -53,7 +58,8 @@ import { useStationPrinter } from '../lib/useStationPrinter';
 import { useSyncStatus } from '../lib/sync';
 import { useWebLabelSettings } from '../lib/webLabelSettings';
 import {
-  readWebLabelProblems, readWebLabelStatus, subscribeWebLabelStatus,
+  readWebLabelProblems, readWebLabelStatus, subscribeWebLabelStatus, type WebLabelBlocked,
+  type WebLabelStatus,
 } from '../lib/webLabels/labelBuild';
 
 type LoadStatus = 'loading' | 'ready' | 'error';
@@ -87,13 +93,28 @@ export const FAILED_ROW_MS = 5000;
 const MAX_RECORDED_ASK = 100;  // the edge's limit per request
 
 /** A row's (or the card's) status: the failure message, or the state, with
- *  "+ Recorded" once the portal has accepted the printed scan. */
-function statusText(e: QueueEntry, recorded: ReadonlySet<string>): string {
+ *  "+ Recorded" once the portal has accepted the printed scan, or (web)
+ *  "· scan not recorded" once the outbox gave up on it. */
+function statusText(e: QueueEntry, recorded: ReadonlySet<string>, notRecorded: ReadonlySet<string>): string {
   if (e.state === 'failed') return e.message ?? STATE_TEXT.failed;
   if (e.state === 'printed' && e.clientScanId && recorded.has(e.clientScanId)) {
     return 'Printed + Recorded';
   }
+  if (e.state === 'printed' && e.clientScanId && notRecorded.has(e.clientScanId)) {
+    return 'Printed · scan not recorded';
+  }
   return STATE_TEXT[e.state];
+}
+
+/** "The scan for 1 printed label wasn't recorded." */
+function notRecordedNotice(n: number): string {
+  return n === 1
+    ? "The scan for 1 printed label wasn't recorded."
+    : `The scans for ${n} printed labels weren't recorded.`;
+}
+
+function sameIds(a: ReadonlySet<string>, b: readonly string[]): boolean {
+  return a.size === b.length && b.every((id) => a.has(id));
 }
 
 function printTime(iso: string): string {
@@ -107,9 +128,16 @@ function updateNotice(n: number): string {
   return `${n} ${n === 1 ? 'template needs' : 'templates need'} a laptop update.`;
 }
 
-/** The web header: what the browser build stored, and why the labels that
- *  couldn't be made weren't (count per outcome). */
-interface WebLabelCounts { ready: number; errors: number; problems: Record<string, number> }
+/** The web header: what the browser build stored, why the labels that
+ *  couldn't be made weren't (count per outcome), and why none could be
+ *  made (`blocked`) or the last build failed (`error`). */
+interface WebLabelCounts {
+  ready: number;
+  errors: number;
+  problems: Record<string, number>;
+  blocked?: WebLabelBlocked;
+  error?: string;
+}
 
 /** The three outcomes in a fixed order; anything else after them. */
 const REASON_ORDER = ['no_template_at_dpi', 'template_failed', 'template_unsupported'];
@@ -118,6 +146,27 @@ function reasonRank(why: string): number {
   const at = REASON_ORDER.indexOf(why);
   return at < 0 ? REASON_ORDER.length : at;
 }
+
+/** Why a count of labels couldn't be made, as a sentence after the count. */
+const REASON_TEXT: Record<string, string> = {
+  no_template_at_dpi: "this move has no active label template at this printer's DPI. "
+    + 'Someone with label access needs to activate one on Labels › Templates.',
+  template_failed: "the move's label template couldn't be built.",
+  template_unsupported: "the move's label template is newer than this kiosk can print. "
+    + 'This kiosk needs an update.',
+};
+
+/** "2 couldn't be made: this move has no active label template at …" */
+function reasonLine(why: string, n: number): string {
+  const text = Object.hasOwn(REASON_TEXT, why) ? REASON_TEXT[why] : `${why}.`;
+  return `${n} couldn't be made: ${text}`;
+}
+
+/** What's missing when the set-up move's labels can't be built yet. */
+const BLOCKED_TEXT: Record<WebLabelBlocked, string> = {
+  not_downloaded: "This kiosk doesn't have this move's label data yet.",
+  templates_missing: "This kiosk doesn't have this move's label templates yet.",
+};
 
 /** "118 labels ready · 3 couldn't be made" */
 function webLabelSummary(c: WebLabelCounts): string {
@@ -151,6 +200,10 @@ export default function PrintingStation() {
   const [entries, setEntries] = useState<QueueEntry[]>([]);
   // client_scan_ids the portal has accepted: those rows read "Printed + Recorded"
   const [recorded, setRecorded] = useState<ReadonlySet<string>>(() => new Set());
+  // Web: client_scan_ids the outbox gave up on ("Printed · scan not recorded")
+  const [notRecorded, setNotRecorded] = useState<ReadonlySet<string>>(() => new Set());
+  // bumped after a Retry, so the list looks again at once
+  const [recheck, setRecheck] = useState(0);
   // failed rows whose FAILED_ROW_MS is up: hidden from the list
   const [expired, setExpired] = useState<ReadonlySet<string>>(() => new Set());
   const failTimers = useRef(new Map<string, number>());
@@ -177,7 +230,9 @@ export default function PrintingStation() {
         }
         const problems = s.errors > 0 ? await readWebLabelProblems() : {};
         if (mine !== statusId.current) return;
-        setLabelCounts({ ready: s.ready, errors: s.errors, problems });
+        // the web backend's status is the browser build's
+        const { blocked, error } = s as WebLabelStatus;
+        setLabelCounts({ ready: s.ready, errors: s.errors, problems, blocked, error });
       })
       .catch(() => {});
   };
@@ -263,11 +318,19 @@ export default function PrintingStation() {
   // Web: the Labeled scans go out through the outbox, whose sender only
   // runs while a screen that scans is open (Scanning starts it the same
   // way). The queue stays in IndexedDB when the page closes, and resumes
-  // on the next visit to either screen.
+  // on the next visit to either screen. A scan the outbox gave up on (its
+  // backoff spent offline) would otherwise wait for Scanning's Retry
+  // failed: it is sent again when this screen opens and whenever the
+  // browser says it is back online.
   useEffect(() => {
     if (!web) return undefined;
-    startSender();
-    return () => stopSender();
+    const retry = () => { retryFailed().catch(() => {}); };
+    startSender().then(retry, () => {});
+    window.addEventListener('online', retry);
+    return () => {
+      window.removeEventListener('online', retry);
+      stopSender();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -286,7 +349,8 @@ export default function PrintingStation() {
 
   // Ask the backend (the laptop's edge, or this kiosk's outbox) about
   // printed scans not yet known to be recorded: now (whenever that set
-  // changes) and every RECORDED_POLL_MS until they are.
+  // changes, or after a Retry) and every RECORDED_POLL_MS until they are.
+  // The web also says which of them the outbox gave up on.
   const waitingKey = entries
     .filter((e) => e.state === 'printed' && e.clientScanId && !recorded.has(e.clientScanId))
     .map((e) => e.clientScanId as string)
@@ -300,11 +364,19 @@ export default function PrintingStation() {
       backend.recordedIds(ids).then((got) => {
         if (alive && got.length > 0) setRecorded((prev) => new Set([...prev, ...got]));
       }, () => {});  // offline or busy: ask again next time
+      backend.failedIds?.(ids).then((got) => {
+        if (alive) setNotRecorded((prev) => (sameIds(prev, got) ? prev : new Set(got)));
+      }, () => {});
     };
     check();
     const timer = window.setInterval(check, RECORDED_POLL_MS);
     return () => { alive = false; window.clearInterval(timer); };
-  }, [waitingKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waitingKey, recheck]);
+
+  // Web: printed labels whose Labeled scan the outbox gave up on.
+  const notRecordedCount = entries.filter((e) => e.state === 'printed' && e.clientScanId
+    && notRecorded.has(e.clientScanId) && !recorded.has(e.clientScanId)).length;
 
   // Each failed row gets FAILED_ROW_MS from when it failed; one that is
   // retried (no longer failed) comes back and starts over if it fails again.
@@ -386,6 +458,12 @@ export default function PrintingStation() {
     focusInput();
   };
 
+  /** The scans-not-recorded note's Retry: back on the outbox's queue, and
+   *  the list looks again at once. */
+  const retryScans = () => act(() => {
+    retryFailed().then(() => setRecheck((n) => n + 1), () => {});
+  });
+
   const subtitle = useMemo(
     () => (setup ? `${setup.initiativeName} · ${setup.siteName}` : ''),
     [setup],
@@ -406,16 +484,38 @@ export default function PrintingStation() {
           <p>{updateNotice(unsupported)}</p>
         </div>
       )}
-      {web && webSettings && labelCounts && (
+      {web && webSettings && labelCounts && !(labelCounts.blocked && (loadStatus !== 'ready' || empty)) && (
+        // With no roster at all, the empty-move note below already says to
+        // sync (and a roster still loading may turn out to be none).
         <div className="station-printer-note station-label-count" role="status">
-          <p>{webLabelSummary(labelCounts)}</p>
-          {labelCounts.errors > 0 && Object.keys(labelCounts.problems).length > 0 && (
-            <ul className="station-label-reasons">
-              {Object.entries(labelCounts.problems)
-                .sort(([a], [b]) => reasonRank(a) - reasonRank(b) || a.localeCompare(b))
-                .map(([why, n]) => <li key={why}>{n} · {noLabelText(why, backend.deviceWord)}</li>)}
-            </ul>
+          {labelCounts.blocked ? (
+            <p>
+              {BLOCKED_TEXT[labelCounts.blocked]} Sync again from <Link to="/setup">Kiosk Setup</Link>.
+            </p>
+          ) : (
+            <>
+              <p>{webLabelSummary(labelCounts)}</p>
+              {labelCounts.errors > 0 && Object.keys(labelCounts.problems).length > 0 && (
+                <ul className="station-label-reasons">
+                  {Object.entries(labelCounts.problems)
+                    .sort(([a], [b]) => reasonRank(a) - reasonRank(b) || a.localeCompare(b))
+                    .map(([why, n]) => <li key={why}>{reasonLine(why, n)}</li>)}
+                </ul>
+              )}
+              {labelCounts.error && (
+                <p>
+                  Labels couldn&apos;t be made ({labelCounts.error}). Sync again
+                  from <Link to="/setup">Kiosk Setup</Link>.
+                </p>
+              )}
+            </>
           )}
+        </div>
+      )}
+      {web && notRecordedCount > 0 && (
+        <div className="station-printer-note" role="status">
+          <p>{notRecordedNotice(notRecordedCount)}</p>
+          <button type="button" className="mini-btn" onClick={retryScans}>Retry</button>
         </div>
       )}
 
@@ -486,7 +586,7 @@ export default function PrintingStation() {
           )}
           <div className="station-outcome">
             <p className="station-status">
-              {statusText(current, recorded)}
+              {statusText(current, recorded, notRecorded)}
             </p>
             {current.recordWarning && <p className="station-warning">{current.recordWarning}</p>}
             {current.state === 'printed' && current.asset && (
@@ -526,7 +626,7 @@ export default function PrintingStation() {
                   <td className="mono">{printTime(e.scannedAt)}</td>
                   <td>
                     <span className="scan-chip">
-                      {statusText(e, recorded)}
+                      {statusText(e, recorded, notRecorded)}
                       {e.reprint ? ' (reprint)' : ''}
                     </span>
                     {e.recordWarning && <div className="station-warning">{e.recordWarning}</div>}

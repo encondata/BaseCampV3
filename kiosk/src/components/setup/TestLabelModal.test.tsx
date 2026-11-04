@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -246,4 +246,23 @@ it('on the web picks its sample template from the local plan', async () => {
   await waitFor(() => expect(printer.sent).toHaveLength(1));
   expect(apiMock.postTestRender).toHaveBeenCalledWith({ initiative_id: 'i-1', template_id: 'v203', dpi_key: '203' });
   expect(apiMock.getLabelPlan).not.toHaveBeenCalled();
+});
+
+it('on the web names this kiosk, never the station', async () => {
+  delete window.__KIOSK_CONFIG__;
+  const user = userEvent.setup();
+  local.templates = TEMPLATES;
+  let answer!: (plan: unknown) => void;
+  local.plan.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+  renderModal();
+  const dialog = screen.getByRole('dialog', { name: 'Test labels' });
+  expect(dialog.querySelector('.eyebrow')?.textContent).toBe('Label Printing');
+  expect(within(dialog).getByText(/The offsets are saved on this kiosk\./)).toBeTruthy();
+  await user.click(screen.getByRole('radio', { name: /Mock-data label/ }));
+  expect(screen.getByText("Finding this kiosk's template…")).toBeTruthy();
+  expect(within(dialog).queryByText(/station/i)).toBeNull();
+  answer({
+    templateId: 'v203', templateFamily: 'Vegas', notes: [], fonts: [], availableDpis: [], hasAssetData: true, jobs: [],
+  });
+  await screen.findByText(/Vegas · 203 at 203 DPI/);
 });

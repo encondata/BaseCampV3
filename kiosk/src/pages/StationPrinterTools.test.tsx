@@ -7,7 +7,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { HostIdentification, HostStatus } from '@portal/labels/zebraUsb';
 
@@ -336,7 +336,61 @@ it("on the web Change printer is USB only and isn't Kiosk Setup's", async () => 
   expect(screen.getByText("Switch to another USB printer. The printer checks run before it's saved.")).toBeTruthy();
   await userEvent.click(screen.getByRole('button', { name: 'Change printer' }));
   const dialog = await screen.findByRole('dialog', { name: 'Change printer' });
-  expect(within(dialog).getByText("Pick the station's printer and run the printer checks. A printer at a "
+  expect(within(dialog).getByText("Pick this kiosk's printer and run the printer checks. A printer at a "
     + "different DPI regenerates the move's labels.")).toBeTruthy();
   expect(within(dialog).queryByText(/Kiosk Setup/)).toBeNull();
+});
+
+describe('on the web the copy names this kiosk, never a station', () => {
+  beforeEach(() => {
+    delete window.__KIOSK_CONFIG__;
+    station.settings = { ...SETTINGS, printer: { type: 'usb', ip: null, model: 'ZD421', serial: 'Z1' } };
+    station.zebra.connected = true;
+  });
+  const renderWeb = () => render(<MemoryRouter><StationPrinterTools /></MemoryRouter>);
+
+  it('the card and the tool rows', async () => {
+    renderWeb();
+    expect(screen.getByText('Label printer')).toBeTruthy();
+    expect(screen.getByText("Print a calibration label and dial in this kiosk's offsets.")).toBeTruthy();
+    await screen.findByText('Ready');
+    expect(screen.queryByText(/station/i)).toBeNull();
+    await waitFor(() => expect(api.fetchLabelVocab).toHaveBeenCalled());
+  });
+
+  it.each([
+    [true, false, 'Peeler detected, but this kiosk prints in tear-off mode. Run Check printer & fonts to switch.'],
+    [false, true, 'No peeler found, but this kiosk prints in peel-off mode. Run Check printer & fonts to switch.'],
+    [null, true, "Printer doesn't report a peeler, but this kiosk prints in peel-off mode. Run Check printer & fonts to switch."],
+  ])('the Peeler row (printer %s, peel %s)', async (present, peel, text) => {
+    station.settings = { ...station.settings!, peel };
+    station.peeler = present;
+    renderWeb();
+    expect(await screen.findByText(text)).toBeTruthy();
+  });
+
+  it('Check printer & fonts', async () => {
+    renderWeb();
+    await userEvent.click(screen.getByRole('button', { name: 'Check printer' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Check printer & fonts' });
+    expect(within(dialog).getByText("Run the printer checks on this kiosk's printer again and install any fonts "
+      + "the move's templates need.")).toBeTruthy();
+  });
+
+  it('Test Label Alignment', async () => {
+    renderWeb();
+    await screen.findByText('Ready');
+    await userEvent.click(screen.getByRole('button', { name: 'Print test label' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Test label alignment' });
+    expect(within(dialog).getByText(/These are this kiosk's offsets: the Printing Station uses them\./)).toBeTruthy();
+    expect(within(dialog).queryByText(/station's/)).toBeNull();
+  });
+
+  it('no printer saved points at Printer Setup, not Kiosk Setup', () => {
+    station.state = 'no_settings';
+    renderWeb();
+    expect(screen.getByText(/No label printer is saved for this kiosk/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Printer Setup' }).getAttribute('href')).toBe('/labels/printers');
+    expect(screen.queryByRole('link', { name: 'Kiosk Setup' })).toBeNull();
+  });
 });

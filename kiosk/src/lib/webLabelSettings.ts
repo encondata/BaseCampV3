@@ -4,8 +4,11 @@
  * `putLabelStation`); a web kiosk has no edge, so the same
  * `LabelStationSettings` shape lives in localStorage under
  * `ss.kiosk.labelPrinting`, with the store/hook shape of `kioskSetup.ts`
- * and the same try/catch idiom — a blocked or full store just leaves the
- * defaults in place and never throws.
+ * and the same try/catch idiom — a blocked or full store reads as the
+ * defaults and never throws. Saving a printer is the exception: a save
+ * the storage refuses, or one without a positive whole-number DPI, throws
+ * (`ApiError` `storage` / `bad_dpi`), so the printer step says it wasn't
+ * saved instead of moving on as if it were.
  *
  * Two things are kept, and they arrive at different times:
  *   - the label KIND (Top or Front), chosen in Kiosk Setup's last step.
@@ -23,7 +26,7 @@
 
 import { useSyncExternalStore } from 'react';
 
-import type { LabelKind, LabelStationSettings } from './api';
+import { ApiError, type LabelKind, type LabelStationSettings } from './api';
 
 const KEY = 'ss.kiosk.labelPrinting';
 
@@ -98,15 +101,16 @@ function load(): Parsed {
   return cached;
 }
 
-/** Stores the record and tells subscribers; nothing changed (so nobody is
- *  told) when storage refuses. */
-function persist(record: Record<string, unknown>): void {
+/** Stores the record and tells subscribers; false, with nothing changed
+ *  (so nobody is told), when storage refuses. */
+function persist(record: Record<string, unknown>): boolean {
   try {
     localStorage.setItem(KEY, JSON.stringify(record));
   } catch {
-    return;
+    return false;
   }
   listeners.forEach((fn) => fn());
+  return true;
 }
 
 /** What this kiosk prints, `'top'` until a kind is saved. */
@@ -134,8 +138,14 @@ export function readWebLabelSettings(): LabelStationSettings | null {
 }
 
 /** Saves the kind and printer together and returns what was stored: always
- *  a USB printer with no address, offsets in whole dots. */
+ *  a USB printer with no address, offsets in whole dots. Throws `ApiError`
+ *  `bad_dpi` (nothing written) unless the DPI is a positive whole number —
+ *  the reader would take such a save for no printer at all — and `storage`
+ *  when the browser refuses the write. */
 export function writeWebLabelSettings(settings: LabelStationSettings): LabelStationSettings {
+  if (typeof settings.dpi !== 'number' || !Number.isInteger(settings.dpi) || settings.dpi <= 0) {
+    throw new ApiError(422, 'bad_dpi');
+  }
   const stored: LabelStationSettings = {
     label_kind: settings.label_kind,
     printer: {
@@ -147,7 +157,7 @@ export function writeWebLabelSettings(settings: LabelStationSettings): LabelStat
     offset_y: wholeNumber(settings.offset_y),
     peel: settings.peel === true,
   };
-  persist({ ...stored });
+  if (!persist({ ...stored })) throw new ApiError(507, 'storage');
   return stored;
 }
 

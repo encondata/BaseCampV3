@@ -12,11 +12,14 @@
  *     - the plan: the shared generator's plan over the stored sync bodies
  *       (`requestLabelPlan`), named from the stored template set;
  *     - a label: the browser build's `labels` store — one IndexedDB read,
- *       no render, no wait (no status check is made per label);
+ *       no render, no wait (no status check is made per label; it only
+ *       looks at in-memory flags: a sync or a build under way, or the
+ *       move's label data not downloaded);
  *     - a printed label's Labeled scan: the existing scan outbox, exactly as
  *       Scanning queues a scan, so it reaches the portal when online;
  *     - recorded?: that outbox row reached `accepted` (looked up over the
- *       whole queue, not the list's newest rows);
+ *       whole queue, not the list's newest rows); failed?: the outbox gave
+ *       up on it (`failedIds`, web only: the edge retries on its own);
  *     - status: the browser build's status (`LabelRunStatus` shape).
  *
  * `deviceWord` is what copy calls the device ("this laptop" / "this
@@ -38,7 +41,9 @@ import { isLaptop } from './platform';
 import type { DeviceWord, PrintedJob } from './printQueue';
 import { readSyncStatus } from './sync';
 import { readWebLabelKind, readWebLabelSettings, writeWebLabelSettings } from './webLabelSettings';
-import { readWebLabelStatus, requestLabelPlan, type WebLabelRow } from './webLabels/labelBuild';
+import {
+  labelBuildBusy, readWebLabelStatus, requestLabelPlan, type WebLabelRow,
+} from './webLabels/labelBuild';
 
 export type PrinterType = LabelStationSettings['printer']['type'];
 
@@ -56,12 +61,17 @@ export interface LabelBackend {
   getPlan(opts: { dpi?: number; kind?: LabelKind }): Promise<LabelPlan>;
   /** The asset's finished label. Throws ApiError `label_not_found` (404),
    *  or 409 `labels_regenerating` / `labels_syncing` (web) while the
-   *  stored labels are being replaced. */
+   *  stored labels are being replaced, or 409 `labels_not_downloaded`
+   *  (web) while the move's label data isn't on this kiosk. */
   getLabel(assetId: string): Promise<StationLabel>;
   /** Queues the printed label's Labeled scan; its client_scan_id. */
   recordPrinted(job: PrintedJob): Promise<string | null>;
   /** Which of these Labeled scans the portal has accepted. */
   recordedIds(ids: string[]): Promise<string[]>;
+  /** Which of these Labeled scans were given up on and wait for a Retry
+   *  (web: the outbox's `failed` rows). The edge has none: it keeps
+   *  retrying its own. */
+  failedIds?(ids: string[]): Promise<string[]>;
   getStatus(): Promise<LabelRunStatus>;
 }
 
@@ -133,8 +143,16 @@ export const webLabelBackend: LabelBackend = {
   async getLabel(assetId) {
     // A sync is replacing the bodies the labels come from, and a build is
     // replacing the labels: refuse rather than print what is being replaced.
+    // A build counts from the moment it is requested (labelBuildBusy), not
+    // only from its first progress: the reads, hashing and parse before it
+    // would otherwise print the label a sync just replaced.
     if (readSyncStatus().phase === 'running') throw new ApiError(409, 'labels_syncing');
-    if (readWebLabelStatus().state === 'running') throw new ApiError(409, 'labels_regenerating');
+    const status = readWebLabelStatus();
+    if (labelBuildBusy() || status.state === 'running') throw new ApiError(409, 'labels_regenerating');
+    // The set-up move's raw bodies aren't stored (a kiosk upgraded from
+    // IndexedDB v6, or a move change whose templates download failed):
+    // say so, not "no label for this asset".
+    if (status.blocked) throw new ApiError(409, 'labels_not_downloaded');
     const row = await getRow<WebLabelRow>('labels', assetId);
     // Only a label made for this move, kind and DPI. A build can leave rows
     // of another move, kind or DPI in place (one whose assets body has no
@@ -176,6 +194,11 @@ export const webLabelBackend: LabelBackend = {
   async recordedIds(ids) {
     const statuses = outboxStatuses(ids);
     return ids.filter((id) => statuses.get(id) === 'accepted');
+  },
+
+  async failedIds(ids) {
+    const statuses = outboxStatuses(ids);
+    return ids.filter((id) => statuses.get(id) === 'failed');
   },
 
   getStatus: async () => readWebLabelStatus(),

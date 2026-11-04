@@ -285,14 +285,20 @@ function scheduleFlush(delay: number): void {
   }, delay);
 }
 
-export function startSender(): void {
-  if (running) return;
+let started: Promise<void> = Promise.resolve();
+
+/** Starts sending; resolves once the queue has been read off disk (at once
+ *  when the sender was already running), so a caller can act on the
+ *  loaded rows — the web Printing Station retries the failed ones. */
+export function startSender(): Promise<void> {
+  if (running) return started;
   running = true;
-  void loadOutbox().then(() => {
+  started = loadOutbox().then(() => {
     sweepInFlight = expireNoMatch().finally(() => { sweepInFlight = null; });
     scheduleFlush(BATCH_DELAY);
   });
   scheduleSweep();
+  return started;
 }
 
 export function stopSender(): void {

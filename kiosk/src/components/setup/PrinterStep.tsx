@@ -119,6 +119,23 @@ function noAnswer(err: unknown, printer: StationPrinter, word: DeviceWord): stri
     : "The printer didn't answer. Check that it's on and connected to the network.";
 }
 
+/** Why the save failed. `storage` and `bad_dpi` are the web kiosk's own
+ *  (its settings live in this browser); the edge answers neither. */
+function saveErrorText(code: string, word: DeviceWord): string {
+  if (code === 'not_label_station') {
+    return `This ${word} isn't set up as a Label Station yet. Go back and pick the site again.`;
+  }
+  if (code === 'storage') {
+    return "Couldn't save the printer settings: this browser's storage is full or turned off for this site. "
+      + 'Free up space or allow site data, then try again.';
+  }
+  if (code === 'bad_dpi') {
+    return "Couldn't save the printer settings: the printer didn't report its DPI. "
+      + 'Recheck the printer, then try again.';
+  }
+  return `Couldn't save the printer settings (${code}). Try again.`;
+}
+
 interface Props {
   initiativeId: string;
   labelKind: LabelKind;
@@ -446,10 +463,7 @@ export default function PrinterStep({
       });
       onFinish();
     } catch (err) {
-      const code = codeOf(err);
-      setSaveError(code === 'not_label_station'
-        ? `This ${backend.deviceWord} isn't set up as a Label Station yet. Go back and pick the site again.`
-        : `Couldn't save the printer settings (${code}). Try again.`);
+      setSaveError(saveErrorText(codeOf(err), backend.deviceWord));
     } finally {
       if (mounted.current) setSaving(false);
     }
@@ -462,7 +476,8 @@ export default function PrinterStep({
     <>
       <h2>Which printer?</h2>
       <p className="page-hint">
-        This station prints {KIND_LABEL[labelKind]} labels. Pick its printer, then check it&apos;s ready.
+        {backend.kind === 'web' ? 'This kiosk' : 'This station'} prints {KIND_LABEL[labelKind]} labels. Pick
+        its printer, then check it&apos;s ready.
       </p>
       {types.length > 1 && (
         <div className="setup-cards" role="listbox" aria-label="Printer types">

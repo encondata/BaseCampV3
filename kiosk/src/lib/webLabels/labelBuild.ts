@@ -13,12 +13,18 @@
  *     to that move. A missing body (a kiosk upgraded from IndexedDB v6
  *     that hasn't synced since) or one for another move is "not
  *     downloaded yet": the parsed rows are never re-serialized as a
- *     stand-in, since the generator must read the API's exact text.
+ *     stand-in, since the generator must read the API's exact text. The
+ *     status then says so (`blocked`: 'not_downloaded' for the assets
+ *     body, 'templates_missing' when only the templates body is missing
+ *     or another move's, e.g. a move change whose templates download
+ *     failed), and the web `getLabel` refuses every scan with
+ *     `labels_not_downloaded` until a sync brings them.
  *
- * The build key is (move, kind, DPI, the generator's `SOURCE_HASH`, a hash
- * of each body). It is stored in the `labels` meta row with the counts;
- * when a request's key matches it, nothing is rebuilt. Offsets and peel
- * are not in it: they are applied when a label is sent. Inside a build,
+ * The build key is (move, kind, DPI, the Python generator's `SOURCE_HASH`,
+ * `LABELGEN_HASH` over the TypeScript generator's sources, a hash of each
+ * body). It is stored in the `labels` meta row with the counts; when a
+ * request's key matches it, nothing is rebuilt. Offsets and peel are not
+ * in it: they are applied when a label is sent. Inside a build,
  * only labels whose fingerprint changed are rendered (`buildCore`); a row
  * made for another move, kind or DPI, or by another generator, counts as
  * changed, and removed assets' rows are deleted. Everything (changed rows,
@@ -36,6 +42,18 @@
  * builds: the sync's end asks again, so a build never reads a
  * half-replaced pair of bodies.
  *
+ * `labelBuildBusy()` is true from the moment a build is requested (set
+ * synchronously in `requestLabelBuild`) until that request settles, so the
+ * web `getLabel` refuses a scan through the reads, hashing, worker start
+ * and parse that come before a build's first progress, not only while the
+ * status says 'running' (a scan right after a sync must never print the
+ * label the sync just replaced).
+ *
+ * A build that fails (a Worker or IndexedDB failure) is asked again once,
+ * LABEL_RETRY_MS later, as the edge's runner retries a failed run once on
+ * its label loop's next timed pass; a retry that fails too waits for the
+ * next sync or settings change.
+ *
  * The status reuses the edge's `LabelRunStatus` shape, so the laptop's
  * screens (the yellow takeover, the Printing Station header) read it
  * unchanged: `state` is 'running' only while labels are being rendered (a
@@ -43,7 +61,7 @@
  * first build for a move and 'updates' after; `total`/`done` are the last
  * finished run's (kept while idle, as the edge keeps them); `ready`,
  * `errors` and `unsupported` count the stored labels. `error` says why the
- * last build failed, until the next one.
+ * last build failed, until the next one; `blocked` why none could start.
  *
  * Web only: `installLabelBuild()` is called from main.tsx when the kiosk
  * is not the laptop, whose labels come from its edge.
@@ -66,7 +84,12 @@ import {
 
 // ── shapes ──────────────────────────────────────────────────────────
 
-export type WebLabelStatus = LabelRunStatus & { error?: string };
+/** Why no build could start for the set-up move: its assets body isn't
+ *  downloaded ('not_downloaded'), or only its templates body isn't
+ *  ('templates_missing'). */
+export type WebLabelBlocked = 'not_downloaded' | 'templates_missing';
+
+export type WebLabelStatus = LabelRunStatus & { error?: string; blocked?: WebLabelBlocked };
 
 /** One stored label (`labels` store, keyPath `asset_id`). `zpl` is null
  *  and `error` the generator's outcome (`no_template_at_dpi`,
@@ -86,7 +109,14 @@ export interface WebLabelRow {
 /** The `meta` row of the stored build. */
 export const LABELS_META_KEY = 'labels';
 
-/** The build key (the first six fields) and what the build made. `total`
+/** A hash of the TypeScript generator's sources (`labelgen/*.ts`, tests
+ *  left out), computed by vite.config.ts at build time: a fix to the port
+ *  alone, with the Python (and so `SOURCE_HASH`) unchanged, still rebuilds
+ *  every stored label. Kept out of `labelgen/index.ts`, so the Android and
+ *  iOS bundles never move with it. */
+export const LABELGEN_HASH: string = __LABELGEN_HASH__;
+
+/** The build key (the first seven fields) and what the build made. `total`
  *  is the stored labels (`ready + errors`); `problems` counts the errors
  *  by outcome; `notes` are the plan's pick notes. */
 export type WebLabelMeta = {
@@ -94,6 +124,7 @@ export type WebLabelMeta = {
   kind: LabelKind;
   dpi: number;
   sourceHash: string;
+  labelgenHash: string;
   assetsHash: string;
   templatesHash: string;
   total: number;
@@ -107,10 +138,10 @@ export type WebLabelMeta = {
 };
 
 type BuildKey = Pick<WebLabelMeta,
-  'initiativeId' | 'kind' | 'dpi' | 'sourceHash' | 'assetsHash' | 'templatesHash'>;
+  'initiativeId' | 'kind' | 'dpi' | 'sourceHash' | 'labelgenHash' | 'assetsHash' | 'templatesHash'>;
 
 const KEY_FIELDS: readonly (keyof BuildKey)[] = [
-  'initiativeId', 'kind', 'dpi', 'sourceHash', 'assetsHash', 'templatesHash',
+  'initiativeId', 'kind', 'dpi', 'sourceHash', 'labelgenHash', 'assetsHash', 'templatesHash',
 ];
 
 // ── runners ─────────────────────────────────────────────────────────
@@ -243,7 +274,7 @@ let lastRun: Run = NO_RUN;
 const listeners = new Set<() => void>();
 
 const STATUS_FIELDS: readonly (keyof WebLabelStatus)[] = [
-  'state', 'reason', 'total', 'done', 'ready', 'errors', 'unsupported', 'error',
+  'state', 'reason', 'total', 'done', 'ready', 'errors', 'unsupported', 'error', 'blocked',
 ];
 
 /** Replaces the snapshot and tells subscribers, unless nothing changed
@@ -254,10 +285,11 @@ function setStatus(next: WebLabelStatus): void {
   listeners.forEach((fn) => fn());
 }
 
-/** Nothing to build from: idle, nothing counted, no run remembered. */
-function setNothing(): void {
+/** Nothing to build from: idle, nothing counted, no run remembered (and,
+ *  with `blocked`, why the set-up move's labels can't be built yet). */
+function setNothing(blocked?: WebLabelBlocked): void {
   lastRun = NO_RUN;
-  setStatus(IDLE);
+  setStatus(blocked === undefined ? IDLE : { ...IDLE, blocked });
 }
 
 export function readWebLabelStatus(): WebLabelStatus {
@@ -319,6 +351,36 @@ interface ActiveBuild {
 let active: ActiveBuild | null = null;
 let requestSeq = 0;
 let latest: Promise<void> = Promise.resolve();
+/** Requests not yet settled (`labelBuildBusy`). */
+let pending = 0;
+
+/** How long after a failed build it is asked again, once: the edge's label
+ *  loop retries a failed run on its next timed pass, LABEL_INTERVAL_S
+ *  (60 s) in kiosk_laptop/edge/src/edge/background.py. */
+export const LABEL_RETRY_MS = 60_000;
+
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+/** The failure being retried came from the retry itself: no more. */
+let retried = false;
+
+/**
+ * True from the moment a build is requested until every request has
+ * settled: while it reads and hashes the bodies, starts the worker and
+ * plans, before any progress makes the status 'running'. An in-memory
+ * flag: the web `getLabel` checks it per scan at no cost.
+ */
+export function labelBuildBusy(): boolean {
+  return pending > 0;
+}
+
+/** One retry for a failed build, unless this failure is the retry's. */
+function scheduleRetry(): void {
+  if (retried || retryTimer !== null) return;
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    void request(true);
+  }, LABEL_RETRY_MS);
+}
 
 /** Stops the running build, if any; its result is never written. */
 function stopActive(): void {
@@ -332,12 +394,23 @@ function stopActive(): void {
  * and the downloaded bodies (see the module comment for when that means
  * nothing at all). Resolves once they are, or once a newer request has
  * taken over and done the same. Never rejects: a failure is the status's
- * `error`.
+ * `error` (and is asked again once, LABEL_RETRY_MS later).
  */
 export function requestLabelBuild(): Promise<void> {
+  return request(false);
+}
+
+function request(isRetry: boolean): Promise<void> {
+  pending += 1;   // synchronously: a scan from now on is refused until this settles
+  // this request decides now: a retry still waiting has nothing left to do
+  if (retryTimer !== null) clearTimeout(retryTimer);
+  retryTimer = null;
+  retried = isRetry;
   const seq = ++requestSeq;
   const decided = decide(seq);
   latest = decided;
+  const settle = () => { pending -= 1; };
+  decided.then(settle, settle);
   return decided;
 }
 
@@ -368,19 +441,25 @@ async function decide(seq: number): Promise<void> {
     stopActive();
     lastRun = NO_RUN;
     setStatus({ ...IDLE, error: errorMessage(err) });
+    scheduleRetry();
     return;
   }
   if (seq !== requestSeq) return latest;   // a newer request decides instead
-  if (assets === null || templates === null
-      || assets.initiativeId !== moveId || templates.initiativeId !== moveId) {
+  if (assets === null || assets.initiativeId !== moveId) {
     stopActive();
-    setNothing();
+    setNothing('not_downloaded');
+    return;
+  }
+  if (templates === null || templates.initiativeId !== moveId) {
+    stopActive();
+    setNothing('templates_missing');
     return;
   }
 
   const key: BuildKey = {
     initiativeId: moveId, kind: settings.label_kind, dpi: settings.dpi, sourceHash: SOURCE_HASH,
-    assetsHash: fingerprint([assets.text]), templatesHash: fingerprint([templates.text]),
+    labelgenHash: LABELGEN_HASH, assetsHash: fingerprint([assets.text]),
+    templatesHash: fingerprint([templates.text]),
   };
   if (meta !== null && keyMatches(meta, key)) {
     stopActive();
@@ -407,13 +486,14 @@ function startBuild(
     if (active !== me) return;            // superseded: someone else owns the status
     active = null;
     setStatus({ state: 'idle', ...lastRun, ...before, error: errorMessage(err) });
+    scheduleRetry();
   };
 
   me.done = (async () => {
     try {
       const rows = await getAll<WebLabelRow>('labels');
       if (active !== me) return;
-      const fresh = meta !== null && meta.sourceHash === SOURCE_HASH;
+      const fresh = meta !== null && meta.sourceHash === SOURCE_HASH && meta.labelgenHash === LABELGEN_HASH;
       const previous = new Map(rows.map((r) => [r.asset_id,
         fresh && r.initiativeId === key.initiativeId && r.label_kind === key.kind && r.dpi === key.dpi
           ? r.fingerprint : STALE]));

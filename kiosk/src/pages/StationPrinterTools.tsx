@@ -20,6 +20,9 @@
  *
  * Nothing here writes printer settings except Full Printer Setup and
  * Factory Reset, as on every other kiosk.
+ *
+ * Copy that names the device keeps the laptop's "station" wording on the
+ * edge and says "this kiosk" on the web (`OWNER`).
  */
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -44,16 +47,29 @@ const SECTION = LABEL_SECTIONS.find((s) => s.id === 'printers')!;
 type Tool = 'alignment' | 'setup' | 'reset';
 type StepModal = 'change' | 'check';
 
-const TOOLS: { key: Tool; title: string; description: string; action: string; danger?: boolean }[] = [
-  { key: 'alignment', title: 'Test Label Alignment', description: "Print a calibration label and dial in the station's offsets.", action: 'Print test label' },
-  { key: 'setup', title: 'Full Printer Setup', description: 'Guided first-time configuration for a new Zebra printer.', action: 'Start setup' },
-  { key: 'reset', title: 'Factory Reset', description: "Restore the printer's factory defaults, then set it up again.", action: 'Reset printer', danger: true },
-];
+type BackendKind = 'edge' | 'web';
+
+/** How copy names the device: a laptop is a Label Station, as it always
+ *  said; a web kiosk is "this kiosk". */
+const OWNER: Record<BackendKind, { possessive: string; subject: string; eyebrow: string }> = {
+  edge: { possessive: "the station's", subject: 'this station', eyebrow: 'Label Station printer' },
+  web: { possessive: "this kiosk's", subject: 'this kiosk', eyebrow: 'Label printer' },
+};
+
+const capitalize = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
+
+function tools(kind: BackendKind): { key: Tool; title: string; description: string; action: string; danger?: boolean }[] {
+  return [
+    { key: 'alignment', title: 'Test Label Alignment', description: `Print a calibration label and dial in ${OWNER[kind].possessive} offsets.`, action: 'Print test label' },
+    { key: 'setup', title: 'Full Printer Setup', description: 'Guided first-time configuration for a new Zebra printer.', action: 'Start setup' },
+    { key: 'reset', title: 'Factory Reset', description: "Restore the printer's factory defaults, then set it up again.", action: 'Reset printer', danger: true },
+  ];
+}
 
 /** Change printer's row text: a laptop's printer step is Kiosk Setup's
  *  and offers USB and network; a web kiosk's offers USB only and isn't in
  *  Kiosk Setup (its printer is saved from Label Printing). */
-const CHANGE_HINT: Record<'edge' | 'web', string> = {
+const CHANGE_HINT: Record<BackendKind, string> = {
   edge: "Switch to another USB or network printer. The same checks as Kiosk Setup run before it's saved.",
   web: "Switch to another USB printer. The printer checks run before it's saved.",
 };
@@ -70,31 +86,38 @@ const STEP_MODALS: Record<StepModal, { title: string; description: string }> = {
 };
 
 /** The step 5 modal's heading text. On the web the printer step isn't
- *  Kiosk Setup's, so Change printer doesn't say it is. */
-function stepModalText(which: StepModal, kind: 'edge' | 'web'): { title: string; description: string } {
-  if (which === 'change' && kind === 'web') {
-    return {
-      title: STEP_MODALS.change.title,
-      description: "Pick the station's printer and run the printer checks. A printer at a different DPI regenerates the move's labels.",
-    };
-  }
-  return STEP_MODALS[which];
+ *  Kiosk Setup's, so neither modal says it is, and the printer is this
+ *  kiosk's. */
+const WEB_STEP_MODALS: Record<StepModal, { title: string; description: string }> = {
+  change: {
+    title: STEP_MODALS.change.title,
+    description: "Pick this kiosk's printer and run the printer checks. A printer at a different DPI regenerates the move's labels.",
+  },
+  check: {
+    title: STEP_MODALS.check.title,
+    description: "Run the printer checks on this kiosk's printer again and install any fonts the move's templates need.",
+  },
+};
+
+function stepModalText(which: StepModal, kind: BackendKind): { title: string; description: string } {
+  return kind === 'web' ? WEB_STEP_MODALS[which] : STEP_MODALS[which];
 }
 
 const SWITCH_HINT = 'Run Check printer & fonts to switch.';
 
 /** Step 5's Peeler wording when the printer agrees with the station's
  *  saved mode (`peel`, what the Printing Station actually uses); when it
- *  doesn't, the mode in use and how to switch. */
-function peelerText(present: boolean | null, peel: boolean): string {
+ *  doesn't, the mode in use and how to switch. `subject` names the device
+ *  ("this station", or "this kiosk" on the web). */
+function peelerText(present: boolean | null, peel: boolean, subject: string): string {
   if (present === true && !peel) {
-    return `Peeler detected, but this station prints in tear-off mode. ${SWITCH_HINT}`;
+    return `Peeler detected, but ${subject} prints in tear-off mode. ${SWITCH_HINT}`;
   }
   if (present === false && peel) {
-    return `No peeler found, but this station prints in peel-off mode. ${SWITCH_HINT}`;
+    return `No peeler found, but ${subject} prints in peel-off mode. ${SWITCH_HINT}`;
   }
   if (present === null && peel) {
-    return `Printer doesn't report a peeler, but this station prints in peel-off mode. ${SWITCH_HINT}`;
+    return `Printer doesn't report a peeler, but ${subject} prints in peel-off mode. ${SWITCH_HINT}`;
   }
   if (present === true) return 'Peeler detected · printing in peel-off mode';
   if (present === false) return 'No peeler · printing in tear-off mode';
@@ -103,6 +126,7 @@ function peelerText(present: boolean | null, peel: boolean): string {
 
 export default function StationPrinterTools() {
   const backend = labelBackend();
+  const owner = OWNER[backend.kind];
   const station = useStationPrinter();
   const { settings, printer, zebra, state } = station;
   const [setup] = useKioskSetup();
@@ -147,7 +171,7 @@ export default function StationPrinterTools() {
   useEffect(() => { void refreshStatus(); }, [refreshStatus]);
 
   const printZpl = async (zpl: string) => {
-    if (!printer) throw new Error("The station's printer isn't connected.");
+    if (!printer) throw new Error(`${capitalize(owner.possessive)} printer isn't connected.`);
     await printer.send(zpl);
   };
 
@@ -204,7 +228,7 @@ export default function StationPrinterTools() {
       <section className="zp-card" aria-label="Printer">
         <div className="zp-card-head">
           <div>
-            <span className="eyebrow">Label Station printer</span>
+            <span className="eyebrow">{owner.eyebrow}</span>
             <div className="modal-section">Printer</div>
           </div>
           <div className="zp-printer-actions">
@@ -218,16 +242,21 @@ export default function StationPrinterTools() {
           <span className={`dot ${ready ? 'on' : 'off'}`} />
           <span className="cell-top">{statusText}</span>
         </div>
-        {state === 'no_settings' && (
+        {state === 'no_settings' && (backend.kind === 'web' ? (
+          // A web kiosk's printer is saved in Printer Setup, not Kiosk Setup.
+          <p className="page-hint">
+            No label printer is saved for this kiosk. Set one up in <Link to={SECTION.path}>Printer Setup</Link>.
+          </p>
+        ) : (
           <p className="page-hint">
             No label printer is saved for this station. Set one up in <Link to="/setup">Kiosk Setup</Link>.
           </p>
-        )}
+        ))}
         {ready && (
           <>
             <PrinterHealth identity={identity} status={status} productName={toolPrinter?.productName ?? null} />
             <div className="zp-station-facts">
-              <div><span className="cell-sub">Peeler</span><span className="cell-top">{peeler ? peelerText(peeler.present, settings?.peel ?? false) : 'Checking…'}</span></div>
+              <div><span className="cell-sub">Peeler</span><span className="cell-top">{peeler ? peelerText(peeler.present, settings?.peel ?? false, owner.subject) : 'Checking…'}</span></div>
               <div><span className="cell-sub">Offsets</span><span className="cell-top">{`Horizontal ${settings?.offset_x ?? 0} dots · Vertical ${settings?.offset_y ?? 0} dots`}</span></div>
             </div>
           </>
@@ -244,7 +273,7 @@ export default function StationPrinterTools() {
       </section>
 
       <div className="dir-list">
-        {TOOLS.map((t) => (
+        {tools(backend.kind).map((t) => (
           <div key={t.key} className="dir-row">
             <div className="row-main zp-tool-row">
               <div className="cell">
@@ -287,7 +316,7 @@ export default function StationPrinterTools() {
         <AlignmentTestModal
           vocab={vocab} printerDpi={identity?.dpi ?? settings.dpi} onPrint={printZpl} onClose={() => setTool(null)}
           offsets={{ x: settings.offset_x, y: settings.offset_y }} onSaveOffsets={saveOffsets}
-          transform={(zpl) => withPrintMode(zpl, settings.peel)}
+          transform={(zpl) => withPrintMode(zpl, settings.peel)} deviceWord={backend.deviceWord}
         />
       )}
       {tool === 'reset' && toolPrinter && (

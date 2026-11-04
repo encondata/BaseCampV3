@@ -92,6 +92,14 @@ export const WEB_NO_SETTINGS_TEXT = "This kiosk's printer settings couldn't be r
  *  data (`labels_syncing`); its build runs as soon as the sync ends. */
 export const SYNCING_TEXT = 'This kiosk is syncing. Labels will be ready shortly.';
 
+/** The web kiosk refuses a label while the set-up move's label data isn't
+ *  stored (`labels_not_downloaded`): a kiosk upgraded before its next
+ *  sync, or a move change whose templates download failed. The edge never
+ *  sends it. */
+export function notDownloadedText(word: DeviceWord): string {
+  return `This ${word} doesn't have this move's label data yet. Sync again from Kiosk Setup.`;
+}
+
 /** The template is a newer design than this device's generator prints. */
 export function needsUpdateText(word: DeviceWord): string {
   return `This ${word} needs an update to print this template.`;
@@ -118,6 +126,7 @@ function labelErrorText(err: unknown, word: DeviceWord): string {
   if (err instanceof ApiError) {
     if (err.code === 'labels_regenerating') return REGENERATING_TEXT;
     if (err.code === 'labels_syncing') return SYNCING_TEXT;
+    if (err.code === 'labels_not_downloaded') return notDownloadedText(word);
     if (err.code === 'label_not_found') return noLabelText(null, word);
     return `Couldn't read this asset's label: ${err.code}`;
   }

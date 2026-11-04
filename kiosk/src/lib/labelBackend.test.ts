@@ -35,11 +35,13 @@ const build = vi.hoisted(() => ({
   status: {
     state: 'idle', reason: null, total: 0, done: 0, ready: 0, errors: 0, unsupported: 0,
   } as Record<string, unknown>,
+  busy: false,
   plan: vi.fn(),
 }));
 vi.mock('./webLabels/labelBuild', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./webLabels/labelBuild')>()),
   readWebLabelStatus: () => build.status,
+  labelBuildBusy: () => build.busy,
   requestLabelPlan: build.plan,
 }));
 
@@ -116,6 +118,7 @@ beforeEach(() => {
   resetOutboxForTest();
   syncState.phase = 'done';
   build.status = { state: 'idle', reason: 'setup', total: 1, done: 1, ready: 1, errors: 0, unsupported: 0 };
+  build.busy = false;
   build.plan.mockReset().mockResolvedValue(null);
   for (const fn of Object.values(apiMock)) fn.mockReset();
 });
@@ -218,6 +221,26 @@ describe('web backend', () => {
       expect(await refusal(webLabelBackend.getLabel('a-1'))).toEqual({ status: 409, code: 'labels_regenerating' });
     });
 
+    it("refuses while a build request hasn't reported progress yet (reading, hashing, parsing)", async () => {
+      await putRows('labels', [row()]);
+      build.busy = true;                       // state is still idle
+      expect(await refusal(webLabelBackend.getLabel('a-1'))).toEqual({ status: 409, code: 'labels_regenerating' });
+      build.busy = false;
+      expect((await webLabelBackend.getLabel('a-1')).zpl).toBe('^XA^FDLABEL^FS^XZ');
+    });
+
+    it.each(['not_downloaded', 'templates_missing'])(
+      "says the move's label data isn't downloaded when the build is blocked (%s)",
+      async (blocked) => {
+        await putRows('labels', [row()]);      // even a row that looks current
+        build.status = { ...build.status, ready: 0, blocked };
+        expect(await refusal(webLabelBackend.getLabel('a-1')))
+          .toEqual({ status: 409, code: 'labels_not_downloaded' });
+        expect(await refusal(webLabelBackend.getLabel('a-9')))
+          .toEqual({ status: 409, code: 'labels_not_downloaded' });
+      },
+    );
+
     it('refuses a row built for another move', async () => {
       await putRows('labels', [row({ initiativeId: 'm-2' })]);
       expect(await refusal(webLabelBackend.getLabel('a-1'))).toEqual({ status: 404, code: 'label_not_found' });
@@ -275,6 +298,24 @@ describe('web backend', () => {
     expect(await webLabelBackend.recordedIds(['c-1', 'c-2', 'c-3', 'c-4', 'c-5'])).toEqual(['c-1']);
   });
 
+  it('failedIds returns only the rows the outbox gave up on', async () => {
+    const base = {
+      seq: 1, scanned_value: '10042', scan_type: 'barcode', scanned_at: '2026-11-04T10:00:00.000Z',
+      asset: null, matched: true, attempts: 0, site_id: 's-1', initiative_id: 'm-1', scan_status: 'labeled',
+    };
+    await putRows('outbox', [
+      { ...base, client_scan_id: 'c-1', seq: 1, status: 'accepted' },
+      { ...base, client_scan_id: 'c-2', seq: 2, status: 'queued' },
+      { ...base, client_scan_id: 'c-3', seq: 3, status: 'retrying' },
+      { ...base, client_scan_id: 'c-4', seq: 4, status: 'failed' },
+      { ...base, client_scan_id: 'c-6', seq: 6, status: 'failed' },
+    ]);
+    await loadOutbox();
+    expect(await webLabelBackend.failedIds?.(['c-1', 'c-2', 'c-3', 'c-4', 'c-5'])).toEqual(['c-4']);
+    // the laptop's edge says nothing of the kind
+    expect(edgeLabelBackend.failedIds).toBeUndefined();
+  });
+
   it("recordedIds sees a busy station's early scans, past the list's newest 200", async () => {
     const base = {
       scanned_value: '10042', scan_type: 'barcode', scanned_at: '2026-11-04T10:00:00.000Z', asset: null,
@@ -302,6 +343,19 @@ describe('web backend', () => {
     expect(stored).toEqual(want);
     expect(readWebLabelSettings()).toEqual(want);
     expect(await webLabelBackend.getSettings()).toEqual(want);
+  });
+
+  it("saveSettings refuses a save this browser won't store, or one without a whole-number DPI", async () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+    try {
+      expect(await refusal(webLabelBackend.saveSettings(settings({ dpi: 300 }))))
+        .toEqual({ status: 507, code: 'storage' });
+    } finally {
+      setItem.mockRestore();
+    }
+    expect(await refusal(webLabelBackend.saveSettings(settings({ dpi: 0 }))))
+      .toEqual({ status: 422, code: 'bad_dpi' });
+    expect(readWebLabelSettings()).toEqual(settings());   // what was saved before
   });
 
   it('getSettings is null until a printer is saved', async () => {

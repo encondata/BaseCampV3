@@ -2,7 +2,7 @@
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { LabelStationSettings } from './api';
+import { ApiError, type LabelStationSettings } from './api';
 import {
   readWebLabelKind, readWebLabelSettings, subscribeWebLabelSettings, useWebLabelSettings,
   writeWebLabelKind, writeWebLabelSettings,
@@ -108,19 +108,59 @@ it('a kind written over garbage starts the record fresh', () => {
   expect(readWebLabelKind()).toBe('front');
 });
 
-it('blocked storage reads the defaults and writes do not throw', () => {
+function thrown(fn: () => unknown): unknown {
+  try {
+    fn();
+  } catch (err) {
+    return err;
+  }
+  return null;
+}
+
+it('blocked storage reads the defaults, a kind write does not throw, and a printer save says it failed', () => {
   const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
   const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+  const heard = vi.fn();
+  const off = subscribeWebLabelSettings(heard);
   try {
     expect(readWebLabelKind()).toBe('top');
     expect(readWebLabelSettings()).toBeNull();
     expect(() => writeWebLabelKind('front')).not.toThrow();
-    expect(writeWebLabelSettings(SETTINGS)).toEqual(SETTINGS);
+    const err = thrown(() => writeWebLabelSettings(SETTINGS));
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).code).toBe('storage');
+    expect(heard).not.toHaveBeenCalled();
   } finally {
+    off();
     setItem.mockRestore();
     getItem.mockRestore();
   }
 });
+
+it('a full store refuses the printer save and keeps what was saved before', () => {
+  writeWebLabelSettings(SETTINGS);
+  const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new DOMException('full', 'QuotaExceededError');
+  });
+  try {
+    const err = thrown(() => writeWebLabelSettings({ ...SETTINGS, dpi: 203 }));
+    expect((err as ApiError).code).toBe('storage');
+  } finally {
+    setItem.mockRestore();
+  }
+  expect(readWebLabelSettings()).toEqual(SETTINGS);
+});
+
+it.each([0, -203, 203.5, Number.NaN, Number.POSITIVE_INFINITY])(
+  'a printer save with dpi %s is refused as bad_dpi and writes nothing',
+  (dpi) => {
+    writeWebLabelSettings(SETTINGS);
+    const err = thrown(() => writeWebLabelSettings({ ...SETTINGS, offset_x: 99, dpi }));
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).code).toBe('bad_dpi');
+    expect(readWebLabelSettings()).toEqual(SETTINGS);
+  },
+);
 
 it('subscribers hear every write, and stop hearing after they unsubscribe', () => {
   const heard = vi.fn();

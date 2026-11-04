@@ -49,13 +49,16 @@ import { fingerprint, type LabelKind } from '../../labelgen/plan';
 import { SOURCE_HASH } from '../../labelgen/sourceHash';
 import type { LabelStationSettings } from '../api';
 import { writeKioskSetup } from '../kioskSetup';
-import { clearDb, closeDb, getAll, putRows, readMeta, writeMeta } from '../localDb';
+import { clearDb, closeDb, deleteRows, getAll, putRows, readMeta, writeMeta } from '../localDb';
 import { readSyncStatus, resetSyncStatus, runSync } from '../sync';
 import { writeWebLabelKind, writeWebLabelSettings } from '../webLabelSettings';
+import { ApiError } from '../api';
+import { webLabelBackend } from '../labelBackend';
 import {
-  LABELS_META_KEY, inThreadLabelBuildRunner, installLabelBuild, readWebLabelProblems, readWebLabelStatus,
-  requestLabelBuild, requestLabelPlan, setLabelBuildRunner, subscribeWebLabelStatus,
-  type LabelBuildRunner, type WebLabelRow, type WebLabelStatus,
+  LABEL_RETRY_MS, LABELGEN_HASH, LABELS_META_KEY, inThreadLabelBuildRunner, installLabelBuild, labelBuildBusy,
+  readWebLabelProblems, readWebLabelStatus, requestLabelBuild, requestLabelPlan, setLabelBuildRunner,
+  subscribeWebLabelStatus,
+  type LabelBuildJob, type LabelBuildRunner, type WebLabelRow, type WebLabelStatus,
 } from './labelBuild';
 
 // ── the reference bodies ───────────────────────────────────────────
@@ -163,6 +166,57 @@ function gatedRunner() {
   return { runner, gates };
 }
 
+/** The in-thread runner, each build held before it starts (no progress
+ *  at all) until its gate opens. */
+function heldRunner() {
+  const gates: (() => void)[] = [];
+  const runner: LabelBuildRunner = {
+    build: (input, previous, onProgress) => {
+      let inner: LabelBuildJob | null = null;
+      let canceled = false;
+      const result = new Promise<void>((resolve) => { gates.push(resolve); }).then(() => {
+        if (canceled) throw new Error('superseded');
+        inner = inThreadLabelBuildRunner.build(input, previous, onProgress);
+        return inner.result;
+      });
+      return { result, cancel: () => { canceled = true; inner?.cancel(); } };
+    },
+    plan: inThreadLabelBuildRunner.plan,
+  };
+  return { runner, gates };
+}
+
+/** The in-thread runner, its first `failures` builds failing. */
+function failingRunner(failures: number): LabelBuildRunner & { builds: number } {
+  const r = {
+    builds: 0,
+    build: (...args: Parameters<LabelBuildRunner['build']>): LabelBuildJob => {
+      r.builds += 1;
+      if (r.builds <= failures) {
+        return { result: Promise.reject(new Error('the label worker failed to run')), cancel: () => undefined };
+      }
+      return inThreadLabelBuildRunner.build(...args);
+    },
+    plan: inThreadLabelBuildRunner.plan,
+  };
+  return r;
+}
+
+/** The sync's four downloads answer with these bodies. */
+function syncAnswers(assets = ASSETS_TEXT, templates = TEMPLATES_TEXT): void {
+  apiMock.fetchAssetsSyncRaw.mockResolvedValue({ body: JSON.parse(assets), text: assets });
+  apiMock.fetchLabelTemplatesSyncRaw.mockResolvedValue({ body: JSON.parse(templates), text: templates });
+  apiMock.fetchPeopleSync.mockResolvedValue({ generated_at: '', people: [] });
+  apiMock.fetchContainersSync.mockResolvedValue({ initiative_id: 'm-1', generated_at: '', containers: [] });
+  apiMock.fetchTrucksSync.mockResolvedValue({ initiative_id: 'm-1', generated_at: '', trucks: [] });
+}
+
+async function refusal(p: Promise<unknown>): Promise<string> {
+  const err = await p.then(() => null, (e: unknown) => e);
+  expect(err).toBeInstanceOf(ApiError);
+  return (err as ApiError).code;
+}
+
 function expectRowsMatch(rows: WebLabelRow[], c: ReferenceCase, kind: LabelKind, dpi: number): void {
   expect(rows.map((r) => r.asset_id)).toEqual(c.expected.map((e) => e.asset_id).sort());
   for (const row of rows) {
@@ -205,7 +259,7 @@ describe('requestLabelBuild', () => {
     savePrinter();
     await requestLabelBuild();
     expect(runner.builds).toBe(0);             // no bodies yet: nothing to build from
-    expect(readWebLabelStatus()).toEqual(IDLE);
+    expect(readWebLabelStatus()).toEqual({ ...IDLE, blocked: 'not_downloaded' });
 
     await storeBodies();
     const seen: WebLabelStatus[] = [];
@@ -314,7 +368,7 @@ describe('requestLabelBuild', () => {
     });
   });
 
-  it('raw bodies for another move build nothing and leave status idle', async () => {
+  it("raw bodies for another move build nothing, and the status says this move's aren't downloaded", async () => {
     const runner = countingRunner();
     setLabelBuildRunner(runner);
     setUpMove('m-1');
@@ -322,20 +376,43 @@ describe('requestLabelBuild', () => {
 
     await storeBodies('m-2');                  // both bodies from the previous move
     await requestLabelBuild();
+    expect(readWebLabelStatus()).toEqual({ ...IDLE, blocked: 'not_downloaded' });
     await storeBodies('m-1', ASSETS_TEXT, TEMPLATES_TEXT, 'm-2');   // templates not yet re-synced
     await requestLabelBuild();
     expect(runner.builds).toBe(0);
     expect(await labelRows()).toEqual([]);
     expect(await readMeta(LABELS_META_KEY)).toBeNull();
-    expect(readWebLabelStatus()).toEqual(IDLE);
+    expect(readWebLabelStatus()).toEqual({ ...IDLE, blocked: 'templates_missing' });
 
     // built for m-1, then set up again on m-2 before its sync: nothing builds
     await storeBodies('m-1');
     await requestLabelBuild();
     expect(runner.builds).toBe(1);
+    expect(readWebLabelStatus().blocked).toBeUndefined();
     setUpMove('m-2');
     await requestLabelBuild();
     expect(runner.builds).toBe(1);
+    expect(readWebLabelStatus()).toEqual({ ...IDLE, blocked: 'not_downloaded' });
+  });
+
+  it("a move change whose templates download failed says this move's templates are missing", async () => {
+    setUpMove('m-1');
+    savePrinter();
+    await storeBodies('m-1');
+    // the sync cleared the old move's set when the new one's download failed
+    await deleteRows('label_templates_raw', ['body']);
+    await requestLabelBuild();
+    expect(readWebLabelStatus()).toEqual({ ...IDLE, blocked: 'templates_missing' });
+  });
+
+  it('nothing set up is not "not downloaded": no printer, or no move', async () => {
+    await storeBodies('m-1');
+    setUpMove('m-1');
+    await requestLabelBuild();                 // no printer saved
+    expect(readWebLabelStatus()).toEqual(IDLE);
+    localStorage.clear();
+    savePrinter();
+    await requestLabelBuild();                 // no move set up
     expect(readWebLabelStatus()).toEqual(IDLE);
   });
 
@@ -357,6 +434,28 @@ describe('requestLabelBuild', () => {
       state: 'idle', reason: 'updates', total: 4, done: 4, ready: 4,
     });
     expect((await readMeta(LABELS_META_KEY))?.sourceHash).toBe(SOURCE_HASH);
+    expectRowsMatch(await labelRows(), TOP_203, 'top', 203);
+  });
+
+  it('a different TypeScript generator hash re-renders every label', async () => {
+    setUpMove();
+    savePrinter();
+    await storeBodies();
+    await requestLabelBuild();
+    const meta = await readMeta(LABELS_META_KEY);
+    expect(meta?.labelgenHash).toBe(LABELGEN_HASH);
+    expect(LABELGEN_HASH).toMatch(/^[0-9a-f]{64}$/);
+
+    // as if these labels were made by a kiosk deploy with other labelgen
+    // sources (same Python, so the same SOURCE_HASH)
+    await writeMeta(LABELS_META_KEY, { ...meta, labelgenHash: 'old' });
+    const seen: WebLabelStatus[] = [];
+    const off = subscribeWebLabelStatus(() => seen.push(readWebLabelStatus()));
+    await requestLabelBuild();
+    off();
+    expect(seen[0]).toMatchObject({ state: 'running', reason: 'updates', total: 4, done: 0 });
+    expect(readWebLabelStatus()).toMatchObject({ state: 'idle', reason: 'updates', total: 4, ready: 4 });
+    expect((await readMeta(LABELS_META_KEY))?.labelgenHash).toBe(LABELGEN_HASH);
     expectRowsMatch(await labelRows(), TOP_203, 'top', 203);
   });
 
@@ -444,7 +543,7 @@ describe('requestLabelBuild', () => {
     expect(runner.builds).toBe(1);
     expect(await labelRows()).toEqual([]);
     expect(await readMeta(LABELS_META_KEY)).toBeNull();
-    expect(readWebLabelStatus()).toEqual(IDLE);
+    expect(readWebLabelStatus()).toEqual({ ...IDLE, blocked: 'not_downloaded' });
   });
 
   it('a build that finishes after Clear local data writes nothing', async () => {
@@ -489,6 +588,122 @@ describe('requestLabelBuild', () => {
     await Promise.all([first, second]);
     expectRowsMatch(await labelRows(), FRONT_203, 'front', 203);
     expect(readWebLabelStatus()).toMatchObject({ state: 'idle', ready: 4 });
+  });
+});
+
+// ── a failed build ─────────────────────────────────────────────────
+
+describe('a failed build', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('keeps its error in the status and is retried once, LABEL_RETRY_MS later', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const runner = failingRunner(1);
+    setLabelBuildRunner(runner);
+    setUpMove();
+    savePrinter();
+    await storeBodies();
+    await requestLabelBuild();
+    expect(runner.builds).toBe(1);
+    expect(readWebLabelStatus()).toEqual({ ...IDLE, error: 'the label worker failed to run' });
+    expect(await labelRows()).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(LABEL_RETRY_MS - 1000);
+    expect(runner.builds).toBe(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(runner.builds).toBe(2));
+    await vi.waitFor(() => expect(labelBuildBusy()).toBe(false));
+    expectRowsMatch(await labelRows(), TOP_203, 'top', 203);
+    expect(readWebLabelStatus()).toMatchObject({ state: 'idle', ready: 4 });
+    expect(readWebLabelStatus().error).toBeUndefined();
+  });
+
+  it('is retried only once: a retry that fails too waits for the next sync or settings change', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const runner = failingRunner(2);
+    setLabelBuildRunner(runner);
+    setUpMove();
+    savePrinter();
+    await storeBodies();
+    await requestLabelBuild();
+    await vi.advanceTimersByTimeAsync(LABEL_RETRY_MS);
+    await vi.waitFor(() => expect(runner.builds).toBe(2));
+    await vi.waitFor(() => expect(labelBuildBusy()).toBe(false));
+    expect(readWebLabelStatus().error).toBe('the label worker failed to run');
+    await vi.advanceTimersByTimeAsync(LABEL_RETRY_MS * 3);
+    expect(runner.builds).toBe(2);
+
+    // the next request (a sync, a printer saved) tries again, and builds
+    await requestLabelBuild();
+    expect(runner.builds).toBe(3);
+    expectRowsMatch(await labelRows(), TOP_203, 'top', 203);
+  });
+
+  it('a newer request replaces the pending retry', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const runner = failingRunner(1);
+    setLabelBuildRunner(runner);
+    setUpMove();
+    savePrinter();
+    await storeBodies();
+    await requestLabelBuild();
+    expect(runner.builds).toBe(1);
+    await requestLabelBuild();                 // e.g. a sync finished meanwhile
+    expect(runner.builds).toBe(2);
+    await vi.advanceTimersByTimeAsync(LABEL_RETRY_MS * 2);
+    expect(runner.builds).toBe(2);             // built: nothing left to retry
+  });
+});
+
+// ── busy ───────────────────────────────────────────────────────────
+
+describe('labelBuildBusy', () => {
+  it('is true from the moment a build is requested until that request settles', async () => {
+    setUpMove();
+    savePrinter();
+    await storeBodies();
+    expect(labelBuildBusy()).toBe(false);
+    const first = requestLabelBuild();
+    expect(labelBuildBusy()).toBe(true);       // before reading or hashing anything
+    await first;
+    expect(labelBuildBusy()).toBe(false);
+
+    // a request that finds nothing to rebuild is busy too while it looks
+    const again = requestLabelBuild();
+    expect(labelBuildBusy()).toBe(true);
+    await again;
+    expect(labelBuildBusy()).toBe(false);
+  });
+
+  it("a scan between a sync's end and the build's first progress is refused, not the pre-sync label", async () => {
+    setUpMove();
+    savePrinter();
+    await storeBodies();
+    await requestLabelBuild();
+    expect((await webLabelBackend.getLabel('a-1')).zpl).toContain('SAMPLE-SERVER-01');
+
+    const { runner, gates } = heldRunner();
+    setLabelBuildRunner(runner);
+    uninstall = installLabelBuild();
+    await vi.waitFor(() => expect(labelBuildBusy()).toBe(false));
+
+    // the portal renamed the asset; the sync brings the new body
+    const edited = ASSETS_TEXT.replace('"name": "SAMPLE-SERVER-01"', '"name": "SAMPLE-SERVER-99"');
+    syncAnswers(edited);
+    await runSync('m-1', 'Move m-1');
+    expect(readSyncStatus().phase).toBe('done');
+    // the build is still reading and hashing: no progress, no takeover yet
+    expect(readWebLabelStatus().state).toBe('idle');
+    expect(await refusal(webLabelBackend.getLabel('a-1'))).toBe('labels_regenerating');
+
+    // the worker started but hasn't parsed the move yet
+    await vi.waitFor(() => expect(gates).toHaveLength(1));
+    expect(readWebLabelStatus().state).toBe('idle');
+    expect(await refusal(webLabelBackend.getLabel('a-1'))).toBe('labels_regenerating');
+
+    gates[0]();
+    await vi.waitFor(() => expect(labelBuildBusy()).toBe(false));
+    expect((await webLabelBackend.getLabel('a-1')).zpl).toContain('SAMPLE-SERVER-99');
   });
 });
 

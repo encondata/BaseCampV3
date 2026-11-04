@@ -5,8 +5,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ApiError, type LabelStationSettings, type StationLabel } from './api';
 import {
-  createPrintQueue, NEEDS_UPDATE_TEXT, needsUpdateText, NO_SETTINGS_TEXT, noLabelText, PRINTER_SILENT_TEXT,
-  SYNCING_TEXT, WEB_NO_SETTINGS_TEXT, type PrintAsset, type PrintedJob, type QueueState,
+  createPrintQueue, NEEDS_UPDATE_TEXT, needsUpdateText, NO_SETTINGS_TEXT, noLabelText, notDownloadedText,
+  PRINTER_SILENT_TEXT, SYNCING_TEXT, WEB_NO_SETTINGS_TEXT, type PrintAsset, type PrintedJob, type QueueState,
 } from './printQueue';
 import { withPrintMode, type StationPrinter } from './stationPrinter';
 
@@ -313,6 +313,22 @@ describe('createPrintQueue', () => {
       state: 'failed', message: 'This kiosk is syncing. Labels will be ready shortly.',
     });
     expect(q.state().entries[0].message).toBe(SYNCING_TEXT);
+    expect(sent).toEqual([]);
+    expect(q.recordPrinted).not.toHaveBeenCalled();
+  });
+
+  it("labels_not_downloaded says the kiosk doesn't have the move's label data and where to sync", async () => {
+    const { printer, sent } = fakePrinter();
+    const q = setup({
+      printer, deviceWord: 'kiosk', getLabel: async () => { throw new ApiError(409, 'labels_not_downloaded'); },
+    });
+    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
+    await settled(q.state);
+    expect(q.state().entries[0]).toMatchObject({
+      state: 'failed',
+      message: "This kiosk doesn't have this move's label data yet. Sync again from Kiosk Setup.",
+    });
+    expect(q.state().entries[0].message).toBe(notDownloadedText('kiosk'));
     expect(sent).toEqual([]);
     expect(q.recordPrinted).not.toHaveBeenCalled();
   });

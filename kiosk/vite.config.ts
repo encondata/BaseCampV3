@@ -4,17 +4,25 @@ import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 import { configDefaults } from 'vitest/config';
 
+import { labelgenSourcesHash } from './src/lib/webLabels/labelgenHash';
+
 // The kiosk imports stylesheets and React-free helpers from the portal
 // through this alias (kiosk/src/portalImports.test.ts enforces the rule).
 // dedupe keeps a single React/gsap even though shared files resolve their
 // own imports from portal/node_modules.
 const portalSrc = fileURLToPath(new URL('../portal/src', import.meta.url));
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+// The web kiosk's stored labels are keyed on the TypeScript generator's
+// sources too (lib/webLabels/labelBuild.ts `LABELGEN_HASH`). Only this
+// config defines it: vite.labelgen.config.ts (the Android/iOS bundle) has
+// its own, and labelgen/index.ts never reads it.
+const labelgenDir = fileURLToPath(new URL('./src/labelgen', import.meta.url));
 
 export default defineConfig({
   plugins: [react()],
   define: {
     __KIOSK_VERSION__: JSON.stringify(process.env.npm_package_version ?? '0.0.0'),
+    __LABELGEN_HASH__: JSON.stringify(labelgenSourcesHash(labelgenDir)),
   },
   resolve: {
     alias: { '@portal': portalSrc },

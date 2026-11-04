@@ -274,7 +274,10 @@ describe('web kiosk', () => {
     saved();
     renderPage();
     expect(screen.getByRole('heading', { name: 'Printer Setup / Troubleshooting' })).toBeTruthy();
-    expect(screen.getByText('Label Station printer')).toBeTruthy();
+    expect(screen.getByText('Label printer')).toBeTruthy();
+    expect(screen.queryByText('Label Station printer')).toBeNull();
+    expect(screen.getByText("Print a calibration label and dial in this kiosk's offsets.")).toBeTruthy();
+    expect(screen.queryByText(/station/i)).toBeNull();
     expect(screen.getByText("Switch to another USB printer. The printer checks run before it's saved.")).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Change printer' })).toBeTruthy();
     expect(screen.queryByText('Connected printer')).toBeNull();
@@ -293,13 +296,13 @@ describe('web kiosk', () => {
     expect(screen.getByRole('link', { name: 'Back to Label Printing' }).getAttribute('href')).toBe('/labels');
     // opened from the tile, not by the station: no Back to go to
     expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
-    expect(screen.queryByText('Label Station printer')).toBeNull();
+    expect(screen.queryByText('Label printer')).toBeNull();
   });
 
   it('saving the printer from the tile shows the saved printer tools', async () => {
     renderPage();
     await userEvent.click(screen.getByRole('button', { name: 'Stub finish' }));
-    expect(await screen.findByText('Label Station printer')).toBeTruthy();
+    expect(await screen.findByText('Label printer')).toBeTruthy();
     expect(screen.queryByText(/^Printer step for/)).toBeNull();
     await waitFor(() => expect(api.fetchLabelVocab).toHaveBeenCalled());
   });

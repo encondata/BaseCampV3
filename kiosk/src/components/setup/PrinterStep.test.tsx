@@ -739,6 +739,12 @@ describe('in the Label Station printer tools', () => {
   });
 });
 
+it('on a laptop the hint still says this station prints its kind of label', async () => {
+  renderStep({ labelKind: 'front' });
+  expect(screen.getByText("This station prints Front labels. Pick its printer, then check it's ready.")).toBeTruthy();
+  await screen.findByRole('option', { name: /USB printer/ });
+});
+
 describe('on the web', () => {
   /** A labelgen plan as the browser build makes it. */
   const localPlan = (over: Partial<Plan> = {}): Plan => ({
@@ -846,5 +852,44 @@ describe('on the web', () => {
     await user.click(await screen.findByRole('button', { name: 'Use ZD421' }));
     await failed('Ready to print');
     expect(screen.getByRole('button', { name: 'Finish anyway' })).toBeTruthy();
+  });
+
+  it('says this kiosk prints its kind of label, not a station', async () => {
+    renderStep({ labelKind: 'front' });
+    expect(screen.getByText("This kiosk prints Front labels. Pick its printer, then check it's ready.")).toBeTruthy();
+    expect(screen.queryByText(/This station prints/)).toBeNull();
+    await screen.findByRole('button', { name: 'Use ZD421' });
+  });
+
+  it("a save this browser won't store says so and doesn't finish", async () => {
+    const user = userEvent.setup();
+    printerState.peeler = '"Present"';
+    const { onFinish } = renderStep();
+    await user.click(await screen.findByRole('button', { name: 'Use ZD421' }));
+    await allGreen();
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+    try {
+      await user.click(finishButton());
+      expect(await screen.findByText("Couldn't save the printer settings: this browser's storage is full or "
+        + 'turned off for this site. Free up space or allow site data, then try again.')).toBeTruthy();
+    } finally {
+      setItem.mockRestore();
+    }
+    expect(onFinish).not.toHaveBeenCalled();
+    expect(readWebLabelSettings()).toBeNull();
+  });
+
+  it("a printer that didn't report its DPI isn't saved, even with Finish anyway", async () => {
+    const user = userEvent.setup();
+    printerState.dpmm = 0;                     // ~HI with no usable dots-per-mm
+    webPlan.requestLabelPlan.mockResolvedValue(localPlan({ availableDpis: [203] }));
+    const { onFinish } = renderStep();
+    await user.click(await screen.findByRole('button', { name: 'Use ZD421' }));
+    await failed('DPI matches the templates');
+    await user.click(screen.getByRole('button', { name: 'Finish anyway' }));
+    expect(await screen.findByText("Couldn't save the printer settings: the printer didn't report its DPI. "
+      + 'Recheck the printer, then try again.')).toBeTruthy();
+    expect(onFinish).not.toHaveBeenCalled();
+    expect(readWebLabelSettings()).toBeNull();
   });
 });
