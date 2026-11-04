@@ -796,6 +796,9 @@ async def list_partner_workers(
             **level_fields(profile.level, lvl_colors),
             **status_fields(profile.status, labels),
             status_note=profile.status_note,
+            will_travel=profile.will_travel,
+            travel_region=profile.travel_region,
+            travel_restrictions=profile.travel_restrictions,
             partner=PartnerRef(id=partner_id, name=""),  # implicit on this page
             cert_count=certs.get(person.id, (0, 0))[0],
             certs_expired=certs.get(person.id, (0, 0))[1],

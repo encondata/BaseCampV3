@@ -443,3 +443,37 @@ async def test_unblacklist_elevated_target_requires_rank(client, seeded_user, db
     resp = await client.put(f"/workers/{worker.id}/profile", headers=super_headers,
                             json={"status": "active"})
     assert resp.status_code == 204
+
+
+async def test_profile_travel_fields_round_trip_and_audit(client, seeded_user, db):
+    worker = await _mk_worker(db)
+    headers = await _headers(client)
+
+    w = (await client.get("/workers", headers=headers)).json()[0]
+    assert (w["will_travel"], w["travel_region"], w["travel_restrictions"]) == (None, None, None)
+
+    resp = await client.put(f"/workers/{worker.id}/profile", headers=headers, json={
+        "will_travel": True, "travel_region": "Southeast US",
+        "travel_restrictions": "No overnight flights"})
+    assert resp.status_code == 204
+
+    w = (await client.get("/workers", headers=headers)).json()[0]
+    assert w["will_travel"] is True
+    assert w["travel_region"] == "Southeast US"
+    assert w["travel_restrictions"] == "No overnight flights"
+    d = (await client.get(f"/workers/{worker.id}", headers=headers)).json()
+    assert (d["will_travel"], d["travel_region"], d["travel_restrictions"]) == (
+        True, "Southeast US", "No overnight flights")
+
+    audit = (await db.execute(text(
+        "SELECT changes FROM audit_log WHERE entity_id = :id AND action = 'profile.update'"
+        " ORDER BY at DESC LIMIT 1"), {"id": str(worker.id)})).scalar_one()
+    assert audit["will_travel"] == {"from": None, "to": True}
+    assert audit["travel_region"] == {"from": None, "to": "Southeast US"}
+
+    # No is a real answer, distinct from not set; region and restrictions clear to null
+    resp = await client.put(f"/workers/{worker.id}/profile", headers=headers, json={
+        "will_travel": False, "travel_region": None, "travel_restrictions": None})
+    assert resp.status_code == 204
+    w = (await client.get("/workers", headers=headers)).json()[0]
+    assert (w["will_travel"], w["travel_region"], w["travel_restrictions"]) == (False, None, None)

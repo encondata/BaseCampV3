@@ -50,6 +50,9 @@ export interface WorkerItem {
   status_label: string;
   status_color: string;
   status_note: string | null;
+  will_travel: boolean | null;   // null = not set
+  travel_region: string | null;
+  travel_restrictions: string | null;
   partner: PartnerRef | null;
   cert_count: number;
   certs_expired: number;

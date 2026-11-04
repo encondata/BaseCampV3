@@ -1145,6 +1145,9 @@ class WorkerItem(BaseModel):
     status_label: str
     status_color: str
     status_note: str | None
+    will_travel: bool | None    # None = not set
+    travel_region: str | None
+    travel_restrictions: str | None
     partner: PartnerRef | None
     cert_count: int
     certs_expired: int
@@ -1203,6 +1206,9 @@ class WorkerProfileIn(BaseModel):
     # StatusValue, mirroring how sites validate `status` in _check_lookups.
     status: str | None = None
     status_note: str | None = None
+    will_travel: bool | None = None
+    travel_region: str | None = None
+    travel_restrictions: str | None = None
 
 
 class CertItem(BaseModel):

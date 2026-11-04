@@ -126,6 +126,9 @@ async def list_workers(
             **level_fields(profile.level if profile else None, lvl_colors),
             **status_fields(profile.status if profile else "active", labels),
             status_note=profile.status_note if profile else None,
+            will_travel=profile.will_travel if profile else None,
+            travel_region=profile.travel_region if profile else None,
+            travel_restrictions=profile.travel_restrictions if profile else None,
             partner=(PartnerRef(id=partner_id, name=partner_name)
                      if partner_id else None),
             cert_count=certs.get(person.id, (0, 0))[0],
@@ -268,6 +271,9 @@ async def get_worker(
         **level_fields(profile.level if profile else None, lvl_colors),
         **status_fields(profile.status if profile else "active", labels),
         status_note=profile.status_note if profile else None,
+        will_travel=profile.will_travel if profile else None,
+        travel_region=profile.travel_region if profile else None,
+        travel_restrictions=profile.travel_restrictions if profile else None,
         partner=(PartnerRef(id=partner.id, name=partner.name)
                  if partner else None),
         cert_count=cert_total or 0,
