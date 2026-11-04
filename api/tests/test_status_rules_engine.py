@@ -68,7 +68,7 @@ async def test_matching_rule_fires_and_logs(db):
     ex = (await db.scalars(select(StatusRuleExecution))).one()
     assert ex.conditions_met is True
     assert ex.processed_scan_id == scan.id
-    assert ex.actions_applied == [
+    assert ex.actions_applied[1:] == [
         {"action_type": "set_asset_status", "applied": True}]
 
 
@@ -125,7 +125,7 @@ async def test_failed_condition_logs_but_skips_actions(db):
     assert a.status == "unknown"
     ex = (await db.scalars(select(StatusRuleExecution))).one()
     assert ex.conditions_met is False
-    assert ex.actions_applied == []
+    assert ex.actions_applied[1:] == []
 
 
 async def test_active_initiative_resolved_for_asset_match(db):
@@ -170,7 +170,7 @@ async def test_missing_context_action_is_recorded_skip(db):
     scan = await _asset_scan(db, a)
     assert await apply_rules(db, scan) == 1
     ex = (await db.scalars(select(StatusRuleExecution))).one()
-    assert ex.actions_applied == [
+    assert ex.actions_applied[1:] == [
         {"action_type": "set_initiative_asset_status", "applied": False,
          "reason": "no_active_initiative"}]
 
@@ -227,7 +227,7 @@ async def test_asset_context_without_container_skips(db):
     scan = await _asset_scan(db, a)
     assert await apply_rules(db, scan) == 1
     ex = (await db.scalars(select(StatusRuleExecution))).one()
-    assert ex.actions_applied == [
+    assert ex.actions_applied[1:] == [
         {"action_type": "set_asset_location_from_container",
          "applied": False, "reason": "not_in_container"}]
 
@@ -278,3 +278,46 @@ async def test_apply_rules_acts_on_the_explicit_initiative_asset(db):
     assert n == 1
     assert on_planned.status == "in_transit"
     assert on_live.status == "loaded_in_system"      # untouched
+
+
+async def test_every_execution_logs_what_the_scan_matched(db):
+    a = Asset(status="unknown", name="lvn-c1n07", serial_number="FJ67144",
+              legacy_id=100222, rfid_tag="000000000000000000100222")
+    db.add(a)
+    db.add(_rule("Cage", actions=(
+        ("set_asset_status", {"status": "rfid_4_into_cage"}),)))
+    db.add(_rule("Unmet", priority=20, conditions=(
+        ("scan.device_id", "equals", "nowhere"),)))
+    await db.flush()
+    scan = await _asset_scan(db, a)
+
+    assert await apply_rules(db, scan, matched_on="rfid_tag") == 2
+    entries = [ex.actions_applied[0] for ex in await db.scalars(
+        select(StatusRuleExecution).order_by(StatusRuleExecution.id))]
+    expected = {"match": {
+        "match_type": "asset", "matched_on": "rfid_tag", "scan_type": "rfid",
+        "scanned_value": "V", "id": str(a.id), "name": "lvn-c1n07",
+        "serial_number": "FJ67144", "asset_id": "100222",
+        "rfid_tag": "000000000000000000100222"}}
+    # a rule whose conditions weren't met still records the match
+    assert entries == [expected, expected]
+
+
+async def test_container_match_logs_the_container(db):
+    c = Container(name="Crate 9", rfid_tag="E280AAA")
+    db.add(c)
+    db.add(_rule("Crate", match="container", actions=()))
+    await db.flush()
+    scan = ProcessedScan(scanned_value="E280AAA", scan_type="rfid",
+                         status="rfid_4_into_cage", scanned_at=datetime.now(UTC),
+                         processed_at=datetime.now(UTC), match_type="container",
+                         container_id=c.id)
+    db.add(scan)
+    await db.flush()
+
+    assert await apply_rules(db, scan, matched_on="rfid_tag") == 1
+    ex = (await db.scalars(select(StatusRuleExecution))).one()
+    assert ex.actions_applied == [{"match": {
+        "match_type": "container", "matched_on": "rfid_tag", "scan_type": "rfid",
+        "scanned_value": "E280AAA", "id": str(c.id), "name": "Crate 9",
+        "rfid_tag": "E280AAA"}}]

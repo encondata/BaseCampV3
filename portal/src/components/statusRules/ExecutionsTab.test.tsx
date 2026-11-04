@@ -60,7 +60,7 @@ function deferred<T>() {
 function mkExec(overrides: Partial<StatusRuleExecution> = {}): StatusRuleExecution {
   return {
     id: 1, rule_id: 'rule-1', rule_name: 'Rule One',
-    processed_scan_id: 'scan-1', conditions_met: true,
+    processed_scan_id: 'scan-1', conditions_met: true, match: null,
     actions_applied: [{ action_type: 'set_asset_status', applied: true }],
     error: null, executed_at: '2026-08-30T12:00:00Z', duration_ms: 42,
     scanned_value: 'ABC123', scan_status: 'in_transit',
@@ -434,7 +434,7 @@ it('a repeat reads "Notified within the hour" in the actions tooltip, and other 
   await screen.findByText('REPEAT');
 
   const title = tooltip('1 applied · skipped 2');
-  expect(JSON.parse(title)).toEqual([
+  expect(JSON.parse(title).actions).toEqual([
     { action_type: 'notify', applied: false, reason: 'Notified within the hour' },
     { action_type: 'set_asset_status', applied: false, reason: 'no_asset' },
     { action_type: 'set_asset_status', applied: true },
@@ -450,5 +450,22 @@ it('an action with no reason shows in the tooltip exactly as it came', async () 
   render(<Held />);
   await screen.findByText('PLAIN');
 
-  expect(tooltip('1 applied')).toBe(JSON.stringify(actions, null, 2));
+  expect(tooltip('1 applied')).toBe(JSON.stringify({ match: null, actions }, null, 2));
+});
+
+it('the actions tooltip leads with what the scan matched and how', async () => {
+  api.listStatusRules.mockResolvedValue(RULES);
+  const match = {
+    match_type: 'asset', matched_on: 'rfid_tag', scan_type: 'rfid',
+    scanned_value: '000000000000000000100222', id: 'asset-1', name: 'lvn-c1n07',
+    serial_number: 'FJ67144', asset_id: '100222', rfid_tag: '000000000000000000100222',
+  };
+  api.listStatusRuleExecutions.mockResolvedValue([mkExec({ scanned_value: 'TAGGED', match })]);
+
+  render(<Held />);
+  await screen.findByText('TAGGED');
+
+  const parsed = JSON.parse(tooltip('1 applied'));
+  expect(Object.keys(parsed)).toEqual(['match', 'actions']);
+  expect(parsed.match).toEqual(match);
 });

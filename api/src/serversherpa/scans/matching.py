@@ -1,7 +1,7 @@
 """Entity matching for the scan-matching worker. Ladder: ID (uuid or
-legacy numeric) → RFID tag → asset serial → name. An RFID read skips
-the ID tier: a reader's EPC is never a printed label, and a zero-padded
-EPC parses as a number that can equal another asset's V2 id. Within a tier, tables
+legacy numeric) → RFID tag → asset serial → name. An RFID read matches
+RFID tags only — never an id, serial or name: a zero-padded EPC parses
+as a number that can equal another asset's V2 id. Within a tier, tables
 are tried in asset → container → person order; the first table with
 hits decides. Multiple hits anywhere = ambiguous — the ladder STOPS and
 returns None (the value clearly refers to something; guessing or
@@ -23,6 +23,7 @@ from serversherpa.db.models import Asset, Container, Person
 class Match:
     match_type: str          # 'asset' | 'container' | 'person'
     target_id: uuid.UUID
+    matched_on: str          # id | legacy_id | rfid_tag | serial_number | name
 
 
 def _as_uuid(value: str) -> uuid.UUID | None:
@@ -61,36 +62,50 @@ _NAME_TIER = (("asset", Asset, Asset.name),
               ("container", Container, Container.name))
 
 
+async def _rfid_tier(db: AsyncSession,
+                     scanned_value: str) -> tuple[bool, Match | None]:
+    """(True, match) when a tag table has a hit — match None if that table
+    has two (ambiguous, stop the ladder); (False, None) when no tag does.
+    Partial-unique per table, so the first table with a hit wins."""
+    for match_type, model, column, case_fold in _RFID_TIER:
+        ids = await _hits(db, model, column, scanned_value, case_fold=case_fold)
+        if len(ids) == 1:
+            return True, Match(match_type, ids[0], "rfid_tag")
+        if ids:
+            return True, None
+    return False, None
+
+
 async def match_scan(db: AsyncSession, scanned_value: str, *,
                      scan_type: str | None = None) -> Match | None:
-    # Tier 1: ID — uuid PKs, then V2 numeric asset labels. Not for RFID.
-    uid = _as_uuid(scanned_value) if scan_type != "rfid" else None
+    if scan_type == "rfid":
+        return (await _rfid_tier(db, scanned_value))[1]
+
+    # Tier 1: ID — uuid PKs, then V2 numeric asset labels.
+    uid = _as_uuid(scanned_value)
     if uid is not None:
         for match_type, model in (("asset", Asset), ("container", Container),
                                   ("person", Person)):
             ids = await _hits(db, model, model.id, uid)
             if ids:
-                return Match(match_type, ids[0])
-    legacy = _as_int(scanned_value) if scan_type != "rfid" else None
+                return Match(match_type, ids[0], "id")
+    legacy = _as_int(scanned_value)
     if legacy is not None:
         ids = await _hits(db, Asset, Asset.legacy_id, legacy)
         if len(ids) == 1:
-            return Match("asset", ids[0])
+            return Match("asset", ids[0], "legacy_id")
         if ids:
             return None                      # ambiguous — stop the ladder
 
-    # Tier 2: RFID (partial-unique per table — first table with a hit wins).
-    for match_type, model, column, case_fold in _RFID_TIER:
-        ids = await _hits(db, model, column, scanned_value, case_fold=case_fold)
-        if len(ids) == 1:
-            return Match(match_type, ids[0])
-        if ids:
-            return None
+    # Tier 2: RFID.
+    hit, match = await _rfid_tier(db, scanned_value)
+    if hit:
+        return match
 
     # Tier 3: asset serial (deliberately non-unique — dupes are ambiguous).
     ids = await _hits(db, Asset, Asset.serial_number, scanned_value)
     if len(ids) == 1:
-        return Match("asset", ids[0])
+        return Match("asset", ids[0], "serial_number")
     if ids:
         return None
 
@@ -98,7 +113,7 @@ async def match_scan(db: AsyncSession, scanned_value: str, *,
     for match_type, model, column in _NAME_TIER:
         ids = await _hits(db, model, column, scanned_value)
         if len(ids) == 1:
-            return Match(match_type, ids[0])
+            return Match(match_type, ids[0], "name")
         if ids:
             return None
     return None

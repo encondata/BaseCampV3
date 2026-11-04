@@ -58,14 +58,14 @@ const REASON_LABELS = new Map([
   ['notified_within_hour', 'Notified within the hour'],
 ]);
 
-/** The actions cell's tooltip: what each action did, as the engine recorded it, with the
- *  reasons that have words of their own in those words. */
-function actionsTooltip(applied: StatusRuleExecution['actions_applied']): string {
-  return JSON.stringify(
-    applied.map((a) => (a.reason === undefined
+/** The actions cell's tooltip: what the scan matched and how, then what each action did, as
+ *  the engine recorded them, with the reasons that have words of their own in those words. */
+function actionsTooltip(exec: StatusRuleExecution): string {
+  return JSON.stringify({
+    match: exec.match,
+    actions: exec.actions_applied.map((a) => (a.reason === undefined
       ? a : { ...a, reason: REASON_LABELS.get(a.reason) ?? a.reason })),
-    null, 2,
-  );
+  }, null, 2);
 }
 
 export default function ExecutionsTab({ onCount, ruleId, onRuleChange }: {
@@ -174,7 +174,7 @@ export default function ExecutionsTab({ onCount, ruleId, onRuleChange }: {
 
           {rows.map((exec) => {
             const result = resultChip(exec);
-            const actionsTitle = actionsTooltip(exec.actions_applied);
+            const actionsTitle = actionsTooltip(exec);
             const time = new Date(exec.executed_at).toLocaleString();
             const scanValue = exec.scanned_value ?? '—';
             const scanStatus = exec.scan_status ?? '—';

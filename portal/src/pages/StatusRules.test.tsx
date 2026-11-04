@@ -115,7 +115,7 @@ const STATS: StatusRuleExecStat[] = [
 const EXECUTIONS: StatusRuleExecution[] = [
   {
     id: 1, rule_id: 'r1', rule_name: 'High priority',
-    processed_scan_id: 'scan-1', conditions_met: true,
+    processed_scan_id: 'scan-1', conditions_met: true, match: null,
     actions_applied: [{ action_type: 'notify', applied: true }],
     error: null, executed_at: '2026-01-05T00:00:00Z', duration_ms: 42,
     scanned_value: 'ABC123', scan_status: 'in_transit',

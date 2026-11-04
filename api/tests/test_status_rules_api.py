@@ -280,7 +280,8 @@ async def test_executions_list_and_filter(client, db, seeded_user):
     matched = StatusRuleExecution(
         rule_id=rule_id, rule_name="Into cage",
         processed_scan_id=scan.id, conditions_met=True,
-        actions_applied=[{"action_type": "set_asset_status"}],
+        actions_applied=[{"match": {"match_type": "asset", "matched_on": "rfid_tag"}},
+                         {"action_type": "set_asset_status"}],
         error=None, duration_ms=12, executed_at=now - timedelta(seconds=60))
     errored = StatusRuleExecution(
         rule_id=None, rule_name="Broken rule",
@@ -303,12 +304,16 @@ async def test_executions_list_and_filter(client, db, seeded_user):
     assert matched_item["scan_status"] == "rfid_4_into_cage"
     assert matched_item["rule_id"] == rule_id
     assert matched_item["conditions_met"] is True
+    # the engine's leading match entry comes back as its own field
+    assert matched_item["match"] == {"match_type": "asset", "matched_on": "rfid_tag"}
+    assert matched_item["actions_applied"] == [{"action_type": "set_asset_status"}]
 
     error_item = by_id[errored.id]
     assert error_item["scanned_value"] is None
     assert error_item["scan_status"] is None
     assert error_item["rule_id"] is None
     assert error_item["error"] == "boom"
+    assert error_item["match"] is None
 
     resp = await client.get(
         "/status-rules/executions", headers=hdrs,

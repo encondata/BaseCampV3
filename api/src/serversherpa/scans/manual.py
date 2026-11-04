@@ -40,7 +40,7 @@ async def record_status_edit(
     the transaction and decides to roll back."""
     scan = await _add_scan(db, asset=asset, status=status, actor_person_id=actor_person_id,
                            source=SOURCE_INITIATIVE_ASSET_EDIT)
-    await apply_rules(db, scan, initiative_asset=assoc)
+    await apply_rules(db, scan, initiative_asset=assoc, matched_on="manual")
     return scan
 
 
@@ -54,7 +54,7 @@ async def record_asset_status_edit(
     never commits; raises RuleExecutionError when a rule action fails."""
     scan = await _add_scan(db, asset=asset, status=status, actor_person_id=actor_person_id,
                            source=source)
-    await apply_rules(db, scan)
+    await apply_rules(db, scan, matched_on="manual")
     return scan
 
 

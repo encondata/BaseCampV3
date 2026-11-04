@@ -279,10 +279,21 @@ async def list_executions(
         "id": ex.id, "rule_id": ex.rule_id, "rule_name": ex.rule_name,
         "processed_scan_id": ex.processed_scan_id,
         "conditions_met": ex.conditions_met,
-        "actions_applied": ex.actions_applied, "error": ex.error,
+        **_split_match(ex.actions_applied), "error": ex.error,
         "executed_at": ex.executed_at, "duration_ms": ex.duration_ms,
         "scanned_value": value, "scan_status": status,
     } for ex, value, status in rows]
+
+
+def _split_match(applied: list) -> dict:
+    """The engine logs what the scan matched as a leading {"match": ...}
+    entry; hand it back as its own field. Executions logged before that
+    have none (match None)."""
+    match = next((e["match"] for e in applied
+                  if isinstance(e, dict) and "match" in e), None)
+    return {"match": match,
+            "actions_applied": [e for e in applied
+                                if not (isinstance(e, dict) and "match" in e)]}
 
 
 @router.get("/executions/stats", response_model=list[StatusRuleExecStat])

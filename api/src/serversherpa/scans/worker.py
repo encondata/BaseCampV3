@@ -89,7 +89,8 @@ async def process_raw_scan(maker, raw_id: int) -> str:
             # rules that ask for one, in the station's move
             # (raw.initiative_id; any other scan ignores it).
             await apply_rules(db, processed,
-                              off_move_initiative_id=raw.initiative_id)
+                              off_move_initiative_id=raw.initiative_id,
+                              matched_on=match.matched_on)
             await db.delete(raw)
             await db.commit()
             return "matched"
