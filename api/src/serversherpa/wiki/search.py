@@ -34,7 +34,7 @@ from serversherpa.db.models import (
     WikiSpace,
 )
 from serversherpa.wiki.content import CONTROL_CHARS
-from serversherpa.wiki.permissions import AccessIndex, grant_matches, level_rank
+from serversherpa.wiki.permissions import AccessIndex, grant_matches, level_rank, viewable_nodes
 
 KINDS = ("folder", "page", "file")
 
@@ -294,17 +294,19 @@ async def _unpublished_view_only_page_ids(
 
 async def _breadcrumbs_for(db: AsyncSession, ix: AccessIndex,
                            hits: list[_Candidate]) -> dict[uuid.UUID, list[str]]:
-    """Titles of each hit's viewable ancestors, root first — an ancestor
-    the caller can't see is skipped entirely (no placeholder)."""
+    """Titles of each hit's ancestors the caller can see, root first — an
+    ancestor they can't is skipped entirely (no placeholder): one they
+    can't view, or, where they only have view, a page never published
+    (`viewable_nodes`, the tree's own rule)."""
     ancestor_ids = {aid for c in hits for aid in c.path}
     if not ancestor_ids:
         return {c.id: [] for c in hits}
     ancestors = {n.id: n for n in (await db.scalars(
         select(WikiNode).where(WikiNode.id.in_(ancestor_ids)))).all()}
-    levels = await ix.levels_for_nodes(list(ancestors.values()))
+    shown, _ = await viewable_nodes(db, ix, list(ancestors.values()))
+    shown_ids = {n.id for n in shown}
     return {
-        c.id: [ancestors[aid].title for aid in c.path
-              if aid in ancestors and levels.get(aid) is not None]
+        c.id: [ancestors[aid].title for aid in c.path if aid in shown_ids]
         for c in hits
     }
 
