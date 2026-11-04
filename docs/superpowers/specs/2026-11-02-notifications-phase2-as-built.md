@@ -39,7 +39,7 @@ Companion to `2026-11-02-notifications-phase2-design.md` (approved 2026-11-02). 
 - **The group page lists only what the viewer can open.** This applies to every row: a private wiki page, a page in the trash, or a thing the admin can't open is left out. PATCH and DELETE on such a row answer "not found". Slice 1 had left this list unfiltered; the wiki's private pages made the filter necessary.
 - **Wiki emails are re-checked before they go out.** The design's re-check covered only the sweep's notices. A held or queued wiki email is now dropped as "No access" when the reader can no longer open the page. This follows the design's first anti-goal.
 - **The wiki logs people it leaves out for access.** It writes `inbox_suppressed` / `no_access` for every active person it leaves out for access, as the sweep does, so the Delivery log can explain a group member who didn't hear.
-- **Removing a wiki watch from /me writes the wiki's own audit.** So does adding one. Watches on portal things stay unaudited, as designed.
+- **Removing a wiki watch from /me writes the wiki's own audit.** So does adding one. Your own watches on portal things are audited too, since answer 2 (`watch.add`, `watch.update` and `watch.remove` on your account).
 - **`notification_events.attempts`.** The sweep claims events ordered by failures, then age, so an event that always fails can't block the queue. This is not in the design.
 - **One Notify action per rule.** A second one is refused.
 - **Yes/no conditions in the rule editor.** They offer only "equals". "Asset has rails", which can be empty, also offers "is null" and "is not null".

@@ -47,7 +47,8 @@ from serversherpa.notifications.delivery_log import EVENTS
 from serversherpa.notifications.kinds import CATEGORY_KEYS, KINDS, kind_info
 from serversherpa.notifications.requests import RequestError, decide_request
 from serversherpa.notifications.watches import (
-    EVERYTHING, WatchError, add_watch, can_open, clean_kinds, group_watches, thing_of, watch_view,
+    EVERYTHING, WatchError, add_watch, can_open, clean_kinds, group_watches, thing_of,
+    watch_target, watch_view,
 )
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
@@ -279,15 +280,6 @@ async def remove_member(
 # them, and each edit is audited on the group. A WatchError becomes the same {"code"}
 # answer as elsewhere here.
 
-def _watch_target(watch: NotificationWatch) -> dict:
-    """What a watch is on, as the audit records it: its kind of thing and the thing's id,
-    or "everything" with no id."""
-    thing = thing_of(watch)
-    if thing is None:
-        return {"thing": EVERYTHING, "thing_id": None}
-    return {"thing": thing.type, "thing_id": str(thing.id)}
-
-
 async def _get_watch(db: DbSession, group_id: uuid.UUID, watch_id: uuid.UUID,
                      asker_id: uuid.UUID) -> NotificationWatch:
     """One of the group's watches whose thing the asker can open now, as the list shows them
@@ -335,7 +327,7 @@ async def add_group_watch(
         raise _err(e.status, e.code) from None
     audit(db, actor_id=actor.person.id, entity_type="notification_group",
           entity_id=str(group_id), action="watch.add",
-          changes={**_watch_target(watch), "kinds": list(watch.kinds)})
+          changes={**watch_target(watch), "kinds": list(watch.kinds)})
     await db.commit()
     return WatchOut.from_view(view)
 
@@ -364,7 +356,7 @@ async def update_group_watch(
     if watch.kinds != before:
         audit(db, actor_id=actor.person.id, entity_type="notification_group",
               entity_id=str(group_id), action="watch.update",
-              changes={**_watch_target(watch),
+              changes={**watch_target(watch),
                        "kinds": {"from": before, "to": list(watch.kinds)}})
     await db.commit()
     return WatchOut.from_view(view)
@@ -382,7 +374,7 @@ async def remove_group_watch(
     await _get_group(db, group_id)          # 404 group_not_found
     watch = await _get_watch(db, group_id, watch_id, actor.person.id)
     audit(db, actor_id=actor.person.id, entity_type="notification_group",
-          entity_id=str(group_id), action="watch.remove", changes=_watch_target(watch))
+          entity_id=str(group_id), action="watch.remove", changes=watch_target(watch))
     await db.delete(watch)
     await db.commit()
 
