@@ -11,7 +11,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import ComboBox from '../components/ComboBox';
 import GodDeleteButton from '../components/GodDeleteButton';
-import { DotsIcon, RowActionsMenu } from '../components/hardware/RowActionsMenu';
+import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
 import InitiativeEditModal from '../components/initiatives/InitiativeEditModal';
 import InlineTextField from '../components/InlineTextField';
 import NotesFilesPanel from '../components/NotesFilesPanel';
@@ -59,7 +59,7 @@ import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
   applyColumnOrder,
   ColHead,
-  ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale, moveKey, titleFor,
+  ACTIONS_TRACK, ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale, moveKey, titleFor,
   useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
@@ -387,7 +387,7 @@ export default function Initiatives() {
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = listGridStyle([PRIMARY_COL, ...shownCols], ['30px'], undefined, listGridScale);
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], [ACTIONS_TRACK], undefined, listGridScale);
   const rowStyle = {
     gridTemplateColumns: grid.gridTemplateColumns,
     minWidth: god.editing ? undefined : grid.minWidth,
@@ -618,21 +618,19 @@ export default function Initiatives() {
                   {shownCols.map((col) => (
                     <div className="cell" key={col.key}>{cellFor(i, col.key)}</div>
                   ))}
-                  {/* The row's actions, where other lists keep the open arrow
-                      (the row itself opens on a click). The menu is portaled,
-                      but its clicks still bubble through React to the row,
-                      so the cell stops them. A context row is inert. */}
-                  <div className="cell chevron-cell actions-cell"
+                  {/* The row's Actions button, where other lists keep the open
+                      arrow (the row itself opens on a click). The menu is
+                      portaled, but its clicks still bubble through React to
+                      the row, so the cell stops them. A context row is inert. */}
+                  <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}
                        onClick={(e) => e.stopPropagation()}>
                     {!row.isContext && (
-                      <RowActionsMenu label={`Actions for ${i.name}`} icon={<DotsIcon />}
-                                      triggerClassName="mini-btn row-menu-btn"
-                                      actions={[
-                                        { key: 'details', label: 'Full details',
-                                          onSelect: () => navigate(`/initiatives/${i.id}`) },
-                                        ...(canChange ? [{ key: 'edit', label: 'Edit',
-                                          onSelect: () => setEditingId(i.id) }] : []),
-                                      ]} />
+                      <RowActionsMenu actions={[
+                        { key: 'details', label: 'Full details',
+                          onSelect: () => navigate(`/initiatives/${i.id}`) },
+                        ...(canChange ? [{ key: 'edit', label: 'Edit',
+                          onSelect: () => setEditingId(i.id) }] : []),
+                      ]} />
                     )}
                   </div>
                 </div>
