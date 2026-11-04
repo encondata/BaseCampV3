@@ -1,17 +1,22 @@
-"""API tests for /status-rules — CRUD + toggle, catalog validation, audit."""
+"""API tests for /status-rules — CRUD + toggle, catalog validation, audit, and the names of the
+people and groups a rule notifies."""
 
 import time
+import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, text
+from sqlalchemy import event, select, text
 
+from serversherpa.db.engine import get_engine
 from serversherpa.db.models import (
-    AuditLog, Asset, ProcessedScan, StatusRule, StatusRuleExecution,
+    AuditLog, Asset, NotificationGroup, Person, ProcessedScan, StatusRule,
+    StatusRuleExecution,
 )
 from serversherpa.status_rules import engine
 from serversherpa.status_rules.catalog import ACTIONS, CONDITION_FIELDS, OPERATORS
 from tests.test_access_roles_api import login_admin
 from tests.test_notification_groups_api import login_staff
+from tests.test_status_rules_engine import _rule
 
 
 def _prime_cache():
@@ -363,3 +368,179 @@ async def test_executions_require_view(client, db, seeded_user):
     hdrs = await login_staff(client, seeded_user)
     resp = await client.get("/status-rules/executions", headers=hdrs)
     assert resp.status_code == 403
+
+
+# ── the people and groups a rule notifies, by name ───────────────────
+
+async def _recipients(db):
+    """A person (known by her preferred name) and a notification group, for a rule to name."""
+    person = Person(first_name="Patricia", last_name="Doe", preferred_name="Pat")
+    group = NotificationGroup(name="Night shift")
+    db.add_all([person, group])
+    await db.commit()
+    return person, group
+
+
+def _names(person, group) -> dict[str, str]:
+    """What a rule that names this person and group answers in `names`."""
+    return {str(person.id): person.display_name, str(group.id): group.name}
+
+
+def _notify(people=(), groups=()) -> dict:
+    """A Notify action as a rule saves it, naming these people and groups (by id)."""
+    return {"action_type": "notify",
+            "params": {"people": [str(p) for p in people], "groups": [str(g) for g in groups],
+                       "watchers": False}}
+
+
+async def test_rule_names_its_notify_people_and_groups(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    person, group = await _recipients(db)
+    resp = await client.post("/status-rules", headers=hdrs, json=_body(
+        actions=[_notify([person.id], [group.id])]))
+    assert resp.status_code == 201, resp.text
+    rule_id = resp.json()["id"]
+    names = _names(person, group)
+    assert names == {str(person.id): "Pat Doe", str(group.id): "Night shift"}
+
+    resp = await client.get(f"/status-rules/{rule_id}", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["names"] == names
+    resp = await client.get("/status-rules", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert [rule["names"] for rule in resp.json()] == [names]
+
+    # each rule answers its own: another rule's recipients are not in it
+    other = Person(first_name="Sam", last_name="Roe")
+    db.add(other)
+    await db.commit()
+    resp = await client.post("/status-rules", headers=hdrs, json=_body(
+        name="Second rule", actions=[_notify([other.id])]))
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["names"] == {str(other.id): "Sam Roe"}
+    resp = await client.get("/status-rules", headers=hdrs)
+    by_name = {rule["name"]: rule["names"] for rule in resp.json()}
+    assert by_name == {"Into cage": names, "Second rule": {str(other.id): "Sam Roe"}}
+
+
+async def test_rule_names_on_save(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    person, group = await _recipients(db)
+    names = _names(person, group)
+    body = _body(actions=[_notify([person.id], [group.id])])
+
+    resp = await client.post("/status-rules", headers=hdrs, json=body)
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["names"] == names
+    rule_id = resp.json()["id"]
+
+    resp = await client.put(f"/status-rules/{rule_id}", headers=hdrs,
+                            json={**body, "name": "Renamed"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["names"] == names
+
+    resp = await client.patch(f"/status-rules/{rule_id}", headers=hdrs,
+                              json={"enabled": False})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["names"] == names
+
+    # a replace answers what it saved: the group dropped off, so did its name
+    resp = await client.put(f"/status-rules/{rule_id}", headers=hdrs, json={
+        **body, "actions": [_notify([person.id])]})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["names"] == {str(person.id): person.display_name}
+
+
+async def test_rule_without_notify_has_no_names(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/status-rules", headers=hdrs, json=_body())
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["names"] == {}
+    rule_id = resp.json()["id"]
+
+    resp = await client.get(f"/status-rules/{rule_id}", headers=hdrs)
+    assert resp.json()["names"] == {}
+    resp = await client.get("/status-rules", headers=hdrs)
+    assert [rule["names"] for rule in resp.json()] == [{}]
+
+
+async def test_rule_names_leave_out_unknown_ids(client, db, seeded_user):
+    """Saving refuses a person or group that doesn't exist, but one can go after the save (a
+    group is deleted). The rule still loads, and the id just has no name. So does a saved value
+    that is no id at all (the API never writes one): the page where rules get fixed must open."""
+    hdrs = await login_admin(client, db, seeded_user)
+    person, group = await _recipients(db)
+    gone = {"people": [str(uuid.uuid4()), "not-an-id"], "groups": [str(uuid.uuid4())],
+            "watchers": False}
+    mixed = {"people": [str(person.id), str(uuid.uuid4())],
+             "groups": [str(uuid.uuid4()), str(group.id)], "watchers": False}
+    db.add_all([_rule("Gone", actions=[("notify", gone)]),
+                _rule("Mixed", actions=[("notify", mixed)])])
+    await db.commit()
+
+    resp = await client.get("/status-rules", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    by_name = {rule["name"]: rule for rule in resp.json()}
+    assert by_name["Gone"]["names"] == {}
+    assert by_name["Mixed"]["names"] == _names(person, group)
+    resp = await client.get(f"/status-rules/{by_name['Gone']['id']}", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["names"] == {}
+
+
+async def test_rule_names_for_a_status_rules_viewer(client, db, seeded_user):
+    """Staff may view status rules and nothing of notifications, so they can't list the people
+    or the groups to name a rule's recipients from. The rule says who they are."""
+    person, group = await _recipients(db)
+    db.add(_rule("Tells people",
+                 actions=[("notify", _notify([person.id], [group.id])["params"])]))
+    await db.commit()
+    hdrs = await login_staff(client, seeded_user)
+    assert (await client.get("/notifications/recipients", headers=hdrs)).status_code == 403
+    assert (await client.get("/notifications/groups", headers=hdrs)).status_code == 403
+
+    resp = await client.get("/status-rules", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    [rule] = resp.json()
+    assert rule["names"] == _names(person, group)
+    resp = await client.get(f"/status-rules/{rule['id']}", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["names"] == _names(person, group)
+
+
+async def test_rule_names_are_looked_up_once_for_the_whole_list(client, db, seeded_user):
+    """Listing many rules reads their people once and their groups once, not once per rule:
+    three rules cost no more statements than one."""
+    hdrs = await login_admin(client, db, seeded_user)
+    sync_engine = get_engine().sync_engine
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, *rest):
+        statements.append(statement)
+
+    async def add_rule(tag: str):
+        person = Person(first_name=tag, last_name="Doe")
+        group = NotificationGroup(name=f"Group {tag}")
+        db.add_all([person, group])
+        await db.commit()
+        resp = await client.post("/status-rules", headers=hdrs, json=_body(
+            name=f"Rule {tag}", actions=[_notify([person.id], [group.id])]))
+        assert resp.status_code == 201, resp.text
+
+    async def list_rules(expected: int) -> int:
+        statements.clear()
+        event.listen(sync_engine, "before_cursor_execute", record)
+        try:
+            resp = await client.get("/status-rules", headers=hdrs)
+        finally:
+            event.remove(sync_engine, "before_cursor_execute", record)
+        assert resp.status_code == 200, resp.text
+        assert len(resp.json()) == expected
+        assert all(len(rule["names"]) == 2 for rule in resp.json())
+        return len(statements)
+
+    await add_rule("A")
+    one = await list_rules(1)
+    await add_rule("B")
+    await add_rule("C")
+    assert await list_rules(3) == one

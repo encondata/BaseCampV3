@@ -12,7 +12,8 @@
  * the two empty checks too (a stored condition with any other keeps it). The
  * Send a notification action's People and Groups are ChipPickers and its
  * watchers a Switch; a rule has one such action, so no other row offers it.
- * Their lists are asked for only by a viewer who may have them.
+ * Their lists are asked for only by a viewer who may have them; one who may not sees the
+ * rule's recipients by name (the names the rule came with), read-only, with a note.
  */
 
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
@@ -106,10 +107,11 @@ const RULE: StatusRule = {
   priority: 20, enabled: true,
   conditions: [{ field: 'asset.status', operator: 'equals', value: 'bad' }],
   actions: [{ action_type: 'set_asset_status', params: { status: 'good' } }],
+  names: {},
   created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
 };
 
-const person = (person_id: string, display_name: string, job_title: string | null = null): NotificationRecipient => ({
+const person =(person_id: string, display_name: string, job_title: string | null = null): NotificationRecipient => ({
   person_id, display_name, job_title, avatar_url: null, email: null, phone: null, has_account: true,
   can_email: true, can_text: false, can_push: true, can_web: true,
 });
@@ -995,18 +997,73 @@ it('Send a notification: the group list not loading is named in the same way', a
   expect(screen.queryByText('Could not load the recipient list.')).toBeNull();
 });
 
-it('Send a notification: a viewer without notification permissions asks for no list, and each picker says it has none', async () => {
+it("Send a notification: a viewer without notification permissions sees the rule's recipients by name, read-only", async () => {
   const user = userEvent.setup();
   auth.can = (resource) => resource === 'status_rules';
-  renderCreate();
-  await addNotify(user);
+  api.updateStatusRule.mockResolvedValue(RULE);
+  const notify = { people: ['p1'], groups: ['g1'], watchers: true };
+  renderEdit({
+    ...RULE,
+    actions: [{ action_type: 'notify', params: notify }],
+    names: { p1: 'Pat Doe', g1: 'Group A' },
+  });
 
-  expect(await screen.findByText('Could not load the recipient list.')).not.toBeNull();
-  expect(screen.getByText('Could not load the group list.')).not.toBeNull();
+  // the chips read by name, not by id
+  expect(await screen.findByText('Pat Doe')).not.toBeNull();
+  expect(screen.getByText('Group A')).not.toBeNull();
+  expect(screen.queryByText('p1')).toBeNull();
+  expect(screen.queryByText('g1')).toBeNull();
+  // read-only: both pickers are off, and so is each chip's ×
+  expect(combobox('Action 1 people').disabled).toBe(true);
+  expect(combobox('Action 1 groups').disabled).toBe(true);
+  expect((screen.getByRole('button', { name: 'Remove Pat Doe' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('button', { name: 'Remove Group A' }) as HTMLButtonElement).disabled).toBe(true);
+  // each says which permission picking needs, as a note and not an error
+  const peopleNote = screen.getByText('Picking people needs permission to change notifications.');
+  const groupsNote = screen.getByText('Picking groups needs permission to view notifications.');
+  expect(peopleNote.classList.contains('set-note')).toBe(true);
+  expect(groupsNote.classList.contains('set-note')).toBe(true);
+  expect(screen.queryByText('Could not load the recipient list.')).toBeNull();
+  expect(screen.queryByText('Could not load the group list.')).toBeNull();
+  // and no list is fetched
   expect(api.listNotificationRecipients).not.toHaveBeenCalled();
   expect(api.listNotificationGroups).not.toHaveBeenCalled();
-  expect(combobox('Action 1 people').disabled).toBe(false);   // not left off for ever
-  expect(combobox('Action 1 groups').disabled).toBe(false);
+
+  // saved as it came: the ids, unchanged
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateStatusRule).toHaveBeenCalledTimes(1));
+  expect(api.updateStatusRule.mock.calls[0][1].actions).toEqual([
+    { action_type: 'notify', params: { people: ['p1'], groups: ['g1'], watchers: true } },
+  ]);
+});
+
+it('Send a notification: a viewer who may view notifications but not change them sees the people by name, read-only, and picks groups as usual', async () => {
+  const user = userEvent.setup();
+  auth.can = (resource, action) => resource === 'status_rules'
+    || (resource === 'notifications' && action === 'view');
+  api.updateStatusRule.mockResolvedValue(RULE);
+  renderEdit({
+    ...RULE,
+    actions: [{ action_type: 'notify', params: { people: ['p1'], groups: ['g1'], watchers: false } }],
+    names: { p1: 'Pat Doe', g1: 'Group A' },
+  });
+
+  // the people: by the rule's names, off, with the note for what picking them needs
+  expect(await screen.findByText('Pat Doe')).not.toBeNull();
+  expect(combobox('Action 1 people').disabled).toBe(true);
+  expect(screen.getByText('Picking people needs permission to change notifications.')).not.toBeNull();
+  expect(screen.queryByText('Could not load the recipient list.')).toBeNull();
+  expect(api.listNotificationRecipients).not.toHaveBeenCalled();
+  // the groups: their own list, which loads, and the picker works
+  await pick(user, 'Action 1 groups', /^Group B/);
+  expect(screen.queryByText('Picking groups needs permission to view notifications.')).toBeNull();
+  expect(api.listNotificationGroups).toHaveBeenCalledTimes(1);
+
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateStatusRule).toHaveBeenCalledTimes(1));
+  expect(api.updateStatusRule.mock.calls[0][1].actions).toEqual([
+    { action_type: 'notify', params: { people: ['p1'], groups: ['g1', 'g2'], watchers: false } },
+  ]);
 });
 
 it('Send a notification: a rule edited without notification permissions shows its ids, and saves them unchanged', async () => {

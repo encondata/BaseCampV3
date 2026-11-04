@@ -101,6 +101,7 @@ Each decision is listed with what it costs if it's wrong.
 - "Wiki library", "Wiki folder", "Wiki page"
 - "Notified within the hour"
 - From the mockup: "Wiki" and "Wiki watches hear every page update and comment, as today."
+- "Picking people needs permission to change notifications." and "Picking groups needs permission to view notifications." (answer 9)
 - Removed: "Groups don't change what you get." from the My groups hint, because group watches now do. Say if you want a replacement line.
 
 ## Open questions
