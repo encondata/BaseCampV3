@@ -166,7 +166,9 @@ async def test_partner_supplied_workers_list(client, seeded_user, db):
     db.add(PersonRole(person_id=w.id, role="worker"))
     await db.commit()
     await client.put(f"/workers/{w.id}/profile", headers=headers, json={
-        "trade": "Packer", "level": "L3", "partner_id": partner["id"]})
+        "trade": "Packer", "level": "L3", "partner_id": partner["id"],
+        "will_travel": False, "travel_region": "Gulf Coast",
+        "travel_restrictions": "No flights"})
 
     # a direct-hire worker (no partner) — must NOT appear
     d = await _mk_person(db, first="Dee", last="Direct", email="dee2@test.example.com")
@@ -185,6 +187,8 @@ async def test_partner_supplied_workers_list(client, seeded_user, db):
     # here shows up as a blank chip, not an error
     assert supplied[0]["status_label"] == "Active"
     assert supplied[0]["status_color"] == "#178a4c"
+    assert (supplied[0]["will_travel"], supplied[0]["travel_region"],
+            supplied[0]["travel_restrictions"]) == (False, "Gulf Coast", "No flights")
 
     # unknown partner → 404
     import uuid
