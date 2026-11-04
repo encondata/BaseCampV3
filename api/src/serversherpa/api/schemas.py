@@ -4975,6 +4975,22 @@ class LabelZplPreviewIn(BaseModel):
     font_ids: list[uuid.UUID] = Field(default_factory=list, max_length=16)
 
 
+class LabelTestRenderIn(BaseModel):
+    """POST /labels/test-render: which template to fill with mock values,
+    at the DPI of the printer it is for (the template's own: 422
+    `dpi_mismatch` otherwise)."""
+    model_config = ConfigDict(extra="forbid")
+
+    template_id: uuid.UUID
+    dpi_key: str = Field(min_length=1, max_length=40)
+
+
+class LabelTestRenderOut(BaseModel):
+    """One mock-data test label, rendered by the portal's render_label."""
+    zpl: str
+    template_name: str
+
+
 class LabelImageOut(BaseModel):
     """A static image in the label image library (ID badge templates): the
     original upload's upright pixel size, type and bytes."""

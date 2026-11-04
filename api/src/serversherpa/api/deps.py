@@ -150,6 +150,9 @@ READ_ONLY_EXEMPT_PATHS = frozenset({
     # renders one mock-data test label and stores nothing: a Label Station's
     # setup must still be able to print a test label during a freeze
     "/kiosk/labels/test-render",
+    # the same for the portal's printer tools: a test print of any active
+    # ZPL template, rendered and stored nowhere
+    "/labels/test-render",
     # biometric sign-in is a sign-in, like /kiosk/pair*: the card's challenge
     # and the signed answer (both unauthenticated, so listed for
     # completeness). DELETE /kiosk/biometric forgets the caller's own key
@@ -226,15 +229,16 @@ async def enforce_read_only_config(db: AsyncSession, request: Request) -> None:
 # change (password_change_owed); the enroll/verify challenge path is
 # unaffected either way because a challenge holder has no session at all —
 # totp_actor never calls enforce_forced_password_change for it. Nor are
-# `/wiki/assets/urls` and `/labels/images/raster`: read-only exempts those
-# reads-through-POST so a freeze doesn't blank every wiki image or badge
-# picture, which is not part of signing in either.
+# `/wiki/assets/urls`, `/labels/images/raster` and `/labels/test-render`:
+# read-only exempts those reads-through-POST so a freeze doesn't blank every
+# wiki image or badge picture or stop a test print, which is not part of
+# signing in either.
 FORCED_CHANGE_EXEMPT_PATHS = (
     (READ_ONLY_EXEMPT_PATHS - {
         "/system/admin", "/kiosk/printer-events",
         "/auth/totp/verify", "/auth/totp/enroll/start",
         "/auth/totp/enroll/confirm", "/auth/totp/backup-codes/regenerate",
-        "/wiki/assets/urls", "/labels/images/raster",
+        "/wiki/assets/urls", "/labels/images/raster", "/labels/test-render",
     })
     | {"/auth/me", "/auth/me/sessions"}
 )

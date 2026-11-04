@@ -61,26 +61,26 @@ from serversherpa.api.schemas import (
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
     Asset, AssetModel, AuditLog, AuthSession, Client, Container, ContainerAsset, Device, Initiative,
-    InitiativeAsset, KioskPairRequest, KioskSound, LabelFont, LabelPlaceholder,
+    InitiativeAsset, KioskPairRequest, KioskSound, LabelFont,
     LabelTemplate, LabelVocab, Person,
     RawScan, Site, StatusValue, TimeEntry, Truck, TruckContainer, UserAccount,
     WorkerProfile,
 )
 from serversherpa.db.ordering import natural, natural_key
-from serversherpa.labels.fields import (
-    FT_PREFIX, PLACEHOLDER_MOCK_VALUES, design_field_keys, mock_field_values,
-)
+from serversherpa.labels.fields import FT_PREFIX, design_field_keys
 from serversherpa.labels.fonts import resident_object
-from serversherpa.labels.generate.engine import render_label
 from serversherpa.labels.generate.payloads import (
     asset_payload, container_payload, label_context, load_status_labels,
 )
-from serversherpa.labels.generate.values import (
-    CONTAINER_KEYS, AssetRow, Sites, _apply_length_limits, _apply_position_rules,
-    placeholder_values,
-)
+from serversherpa.labels.generate.values import AssetRow, Sites, placeholder_values
 from serversherpa.labels.kiosk_templates import (
     design_schema, move_template_set, template_code,
+)
+# MOCK_VALUES and mock_label_values moved to labels/mock_render.py (the
+# portal's test-render shares them); the kiosk names stay importable.
+from serversherpa.labels.mock_render import (  # noqa: F401 (re-exported)
+    MOCK_VALUES, MockRenderError, label_catalog_keys as _label_catalog_keys,
+    mock_label_values, render_mock_label,
 )
 from serversherpa.labels.template_fonts import design_fonts, fonts_used
 from serversherpa.learning import timeclock as learning_timeclock
@@ -967,19 +967,6 @@ async def kiosk_setup_read(
 # ── local-data sync (kiosk:view) ─────────────────────────────────────
 
 
-async def _label_catalog_keys(db: AsyncSession) -> list[str]:
-    """The active label placeholder catalog, minus the container-only
-    keys (labels/generate/values.py resolves those to "" for an asset
-    row anyway — the runner is asset-only). Same source of truth the
-    label generator reads, so the kiosk caches exactly the values a
-    generated label would carry."""
-    keys = list((await db.scalars(
-        select(LabelPlaceholder.key)
-        .where(LabelPlaceholder.is_active.is_(True))
-        .order_by(LabelPlaceholder.sort_order, natural(LabelPlaceholder.key)))).all())
-    return [k for k in keys if k not in CONTAINER_KEYS]
-
-
 @router.get("/sync/assets", response_model=KioskAssetsSyncOut)
 async def sync_assets(
     db: DbSession,
@@ -1257,27 +1244,6 @@ async def _label_templates_body(
 # Same access as /sync/label-templates. No station-key twins: setup always
 # has a person signed in.
 
-# Fixed sample values for the mock-data test label of a code template (or
-# a v1 design), one per placeholder catalog key: they live in labels/fields.py
-# beside the builder's own mocks.
-MOCK_VALUES = PLACEHOLDER_MOCK_VALUES
-
-
-def mock_label_values(catalog_keys: list[str], generation_rules: dict | None) -> dict[str, str]:
-    """MOCK_VALUES plus "" for any other active catalog key, then the
-    template's generation_rules through the label generator's own helpers
-    (position split, then length limits) — the same order
-    `placeholder_values` applies them."""
-    out = {key: "" for key in catalog_keys}
-    out.update(MOCK_VALUES)
-    if generation_rules:
-        _apply_position_rules(out, generation_rules,
-                              source_raw=MOCK_VALUES["source_raw"],
-                              destination_raw=MOCK_VALUES["destination_raw"])
-        _apply_length_limits(out, generation_rules)
-    return out
-
-
 async def _label_move(db: AsyncSession, initiative_id: uuid.UUID) -> Initiative:
     initiative = await db.get(Initiative, initiative_id)
     if initiative is None:
@@ -1391,24 +1357,9 @@ async def kiosk_label_test_render(
         raise _err(404, "template_not_found")
     if template.dpi_key != body.dpi_key:
         raise _err(422, "dpi_mismatch", template_dpi_key=template.dpi_key)
-    vocab = await _label_vocab(db)
-    size_meta = vocab.get(("size", template.size_key), {})
-    dpi_meta = vocab.get(("dpi", template.dpi_key), {})
-    if design_schema(template) >= 2:
-        # the builder's mock values, shaped like labels.fields.field_values
-        values = mock_field_values(template.label_type, design_field_keys(template.design))
-    else:
-        values = mock_label_values(await _label_catalog_keys(db), template.generation_rules)
     try:
-        if template.kind != "code" and (
-                size_meta.get("width_in") is None or size_meta.get("height_in") is None
-                or dpi_meta.get("dots") is None):
-            raise ValueError("unknown label size or DPI")
-        zpl, _unknown = render_label(template, values, size_meta=size_meta,
-                                     dpi_meta=dpi_meta, language_key=template.language_key)
-    except Exception as exc:
-        logger.warning("kiosk test label %s could not render: %s",
-                       template.id, type(exc).__name__, exc_info=True)
+        zpl = await render_mock_label(db, template)
+    except MockRenderError:
         raise _err(422, "template_unconvertible") from None
     return KioskTestRenderOut(zpl=zpl, template_name=template.name)
 
