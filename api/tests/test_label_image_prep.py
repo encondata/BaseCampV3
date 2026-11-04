@@ -24,6 +24,17 @@ from serversherpa.labels import image_prep
 from serversherpa.labels.image_prep import ImageTooLarge, Raster, UnreadableImage, gray_raster
 
 SRC = Path(serversherpa.__file__).resolve().parents[1]
+# Pillow's process-wide LOAD_TRUNCATED_IMAGES: off is Pillow's default, on
+# is how importing WeasyPrint anywhere in the process leaves it
+SWITCH = pytest.mark.parametrize("truncated_loading", [False, True],
+                                 ids=["pillow-default", "weasyprint-on"])
+
+
+@pytest.fixture(autouse=True)
+def _pillow_default_switch(monkeypatch):
+    """Each test starts from Pillow's default (off), whatever an earlier
+    test file imported: importing WeasyPrint turns it on for good."""
+    monkeypatch.setattr(ImageFile, "LOAD_TRUNCATED_IMAGES", False)
 
 
 def _png(im: Image.Image) -> bytes:
@@ -327,10 +338,13 @@ def corrupt_png(width: int = 20, height: int = 10) -> bytes:
             + chunk(b"IDAT", bytes(stream)) + chunk(b"IEND", b""))
 
 
-def test_a_corrupt_picture_is_unreadable_not_a_black_slab():
+@SWITCH
+def test_a_corrupt_picture_is_unreadable_not_a_black_slab(monkeypatch, truncated_loading):
     """Reading a PNG's EXIF can decode it (no early eXIf chunk): a broken
     stream must surface as UnreadableImage, never be swallowed there and
-    leave an empty (black) picture behind."""
+    leave an empty (black) picture behind. Pillow's LOAD_TRUNCATED_IMAGES
+    changes nothing, and is left as the process had it."""
+    monkeypatch.setattr(ImageFile, "LOAD_TRUNCATED_IMAGES", truncated_loading)
     for fit in ("cover", "contain"):
         with pytest.raises(UnreadableImage):
             gray_raster(corrupt_png(), 20, 10, fit, 0)
@@ -339,6 +353,64 @@ def test_a_corrupt_picture_is_unreadable_not_a_black_slab():
     # a large one, on the reduce path, too
     with pytest.raises(UnreadableImage):
         gray_raster(corrupt_png(400, 300), 20, 10, "cover", 0)
+    assert ImageFile.LOAD_TRUNCATED_IMAGES is truncated_loading
+
+
+def _cut_short() -> dict[str, bytes]:
+    """A noisy JPEG, PNG and GIF, each cut off halfway, as an interrupted
+    upload leaves it."""
+    rnd = random.Random(20261103)
+    im = Image.frombytes("L", (64, 48), bytes(rnd.randrange(256) for _ in range(64 * 48)))
+    out = {}
+    for fmt in ("JPEG", "PNG", "GIF"):
+        buf = io.BytesIO()
+        im.save(buf, fmt)
+        out[fmt] = buf.getvalue()[:len(buf.getvalue()) // 2]
+    return out
+
+
+@SWITCH
+def test_a_picture_cut_short_is_unreadable(monkeypatch, truncated_loading):
+    """With LOAD_TRUNCATED_IMAGES on, Pillow ends a JPEG cut short with a
+    made-up end marker and leaves the rest of a PNG or GIF black: still
+    unreadable here, from the probe and from each box of a raster."""
+    monkeypatch.setattr(ImageFile, "LOAD_TRUNCATED_IMAGES", truncated_loading)
+    for data in _cut_short().values():
+        with pytest.raises(UnreadableImage):
+            image_prep.probe(data)
+        with pytest.raises(UnreadableImage):
+            gray_raster(data, 20, 10, "cover", 0)
+        assert all(isinstance(r, UnreadableImage) for r in image_prep.gray_rasters(data, BOXES))
+    assert ImageFile.LOAD_TRUNCATED_IMAGES is truncated_loading
+
+
+def test_the_switch_stays_off_until_the_last_prep_ends(monkeypatch):
+    """Preps run in worker threads: the switch is off from the first prep's
+    Pillow call until the last one's ends, then back as the process had it,
+    including when something (WeasyPrint's import) turned it on meanwhile."""
+    # put back however this test ends, so no later test inherits a prep
+    # that never finished
+    monkeypatch.setattr(image_prep, "_strict_reads", 0)
+    monkeypatch.setattr(image_prep, "_process_switch", False)
+    monkeypatch.setattr(ImageFile, "LOAD_TRUNCATED_IMAGES", True)
+    first, second = image_prep._strict(), image_prep._strict()
+    first.__enter__()
+    second.__enter__()
+    assert ImageFile.LOAD_TRUNCATED_IMAGES is False
+    first.__exit__(None, None, None)
+    assert ImageFile.LOAD_TRUNCATED_IMAGES is False        # the second still decodes
+    second.__exit__(None, None, None)
+    assert ImageFile.LOAD_TRUNCATED_IMAGES is True
+
+    monkeypatch.setattr(ImageFile, "LOAD_TRUNCATED_IMAGES", False)
+    first, second = image_prep._strict(), image_prep._strict()
+    first.__enter__()
+    ImageFile.LOAD_TRUNCATED_IMAGES = True                  # WeasyPrint imported
+    second.__enter__()
+    assert ImageFile.LOAD_TRUNCATED_IMAGES is False
+    first.__exit__(None, None, None)
+    second.__exit__(None, None, None)
+    assert ImageFile.LOAD_TRUNCATED_IMAGES is True
 
 
 def _decodes(monkeypatch) -> dict[int, Image.Image]:

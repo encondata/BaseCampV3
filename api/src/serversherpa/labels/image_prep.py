@@ -41,6 +41,18 @@ over prints as decoded (libjpeg fills the rest of a JPEG whose data stops
 early at an end marker with mid-gray; a corrupt lossy WebP can decode to
 noise), as it shows anywhere else the picture is displayed.
 
+Pillow has one process-wide switch, `ImageFile.LOAD_TRUNCATED_IMAGES`, that
+keeps whatever decoded before a broken or cut-short stream instead of
+raising (the rest left black; a JPEG cut short gets a made-up end marker).
+WeasyPrint turns it on when it is imported, and the API process imports it
+(learning certificates and code sheets render there), so every Pillow call
+here that reads the picture runs with it off (`_strict`). There is no
+per-picture switch, and checking a stream without Pillow would take a PNG,
+GIF and JPEG decoder of our own. It is off only while a prep reads a
+picture, and back as the process had it once the last one ends; a
+WeasyPrint render in another thread meanwhile sees it off too, so a broken
+picture in that document fails the render rather than printing part of it.
+
 Pillow's own decompression-bomb warning (past ~89 MP) is left to the
 warnings filter: MAX_PIXELS refuses those pictures anyway, and a filter
 that turns the warning into an error gets ImageTooLarge too. (A
@@ -50,10 +62,12 @@ worker threads.)"""
 from __future__ import annotations
 
 import io
-from collections.abc import Sequence
+import threading
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from typing import NamedTuple
 
-from PIL import Image
+from PIL import Image, ImageFile
 
 # a decompression-bomb guard: a picture past this many pixels is refused
 # from its header, at upload and at prep
@@ -84,6 +98,11 @@ _SWAPPED = {5, 6, 7, 8}
 _ALPHA_MODES = ("RGBA", "LA", "PA", "RGBa", "La")
 # 16-bit gray levels to 8 (v // 257, a level never rounds up past its band)
 _SIXTEEN_TO_EIGHT = [v // 257 for v in range(65536)]
+# the preps reading a picture right now, and the LOAD_TRUNCATED_IMAGES value
+# that goes back when the last one ends (_strict)
+_strict_lock = threading.Lock()
+_strict_reads = 0
+_process_switch = False
 
 
 class ImageTooLarge(ValueError):
@@ -114,11 +133,34 @@ def _unreadable(exc: BaseException) -> UnreadableImage:
     return UnreadableImage(str(exc) or type(exc).__name__)
 
 
+@contextmanager
+def _strict() -> Iterator[None]:
+    """Pillow's LOAD_TRUNCATED_IMAGES off for the reading inside (module
+    docstring). A count under a lock, not the lock held for the whole read,
+    so concurrent preps still decode in parallel; whatever turns the switch
+    on meanwhile (WeasyPrint's import) is what goes back. The one gap: that
+    import landing in the middle of a read turns it on under that read."""
+    global _strict_reads, _process_switch
+    with _strict_lock:
+        if not _strict_reads or ImageFile.LOAD_TRUNCATED_IMAGES:
+            _process_switch = ImageFile.LOAD_TRUNCATED_IMAGES
+        ImageFile.LOAD_TRUNCATED_IMAGES = False
+        _strict_reads += 1
+    try:
+        yield
+    finally:
+        with _strict_lock:
+            _strict_reads -= 1
+            if not _strict_reads and not ImageFile.LOAD_TRUNCATED_IMAGES:
+                ImageFile.LOAD_TRUNCATED_IMAGES = _process_switch
+
+
 def _open(data: bytes) -> tuple[Image.Image, tuple[str, str]]:
     """The picture opened (its header read, nothing decoded yet) and its
     type, refused when it is past MAX_PIXELS or isn't one of TYPES."""
     try:
-        im = Image.open(io.BytesIO(data), formats=list(OPEN_FORMATS))
+        with _strict():     # a PNG's chunks up to its image data are read here
+            im = Image.open(io.BytesIO(data), formats=list(OPEN_FORMATS))
     except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
         raise ImageTooLarge(str(exc)) from exc
     except Exception as exc:   # whatever the decoder raises, the picture is unreadable
@@ -149,7 +191,8 @@ def _orientation(im: Image.Image) -> int | None:
 
 def _load(im: Image.Image) -> None:
     try:
-        im.load()
+        with _strict():
+            im.load()
     except Exception as exc:   # any decoder failure is "unreadable"
         raise _unreadable(exc) from exc
 
