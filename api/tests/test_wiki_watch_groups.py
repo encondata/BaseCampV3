@@ -614,8 +614,9 @@ async def test_my_wiki_watches_change_and_go_from_me_as_from_the_wiki(client, db
     """A wiki watch of one's own names no events on /me either: choosing none is accepted and
     stores none, choosing any is 422 `invalid_kind`. Stopping one from /me is recorded as the
     wiki records its own (`wiki_watch` `unwatch`), so the wiki's history stays whole whichever
-    page removed it, and so is watching a wiki thing from /me (`watch`); watches on portal
-    things come and go unaudited, as before."""
+    page removed it, and so is watching a wiki thing from /me (`watch`). A watch on a portal
+    thing isn't the wiki's to record: it writes no `wiki_watch` row, and is audited on the
+    person's account instead (`watch.add` and `watch.remove`: tests/test_watches_api.py)."""
     s = await _setup(client, db)
     folder = await _create(client, s["owner"], s["space"], "Guides")
     node_watch = await _watch(client, s["viewer"], node=folder)
@@ -656,7 +657,8 @@ async def test_my_wiki_watches_change_and_go_from_me_as_from_the_wiki(client, db
     assert [w["id"] for w in (await client.get("/wiki/watches", headers=s["viewer"])).json()] \
         == [again["id"]]
 
-    # a watch on a portal thing comes and goes unaudited, as it always has
+    # a watch on a portal thing isn't the wiki's to record, so it writes no `wiki_watch` row; the
+    # person's account records it instead, once each way (and none for the wiki watches above)
     initiative = Initiative(name="Initiative A", initiative_type="move")
     db.add(initiative)
     await db.commit()
@@ -666,7 +668,13 @@ async def test_my_wiki_watches_change_and_go_from_me_as_from_the_wiki(client, db
     portal_id = resp.json()["id"]
     assert resp.json()["thing_label"] == "Initiative"
     assert (await client.delete(f"{WATCHES}/{portal_id}", headers=s["viewer"])).status_code == 204
-    assert await db.scalar(select(AuditLog.id).where(AuditLog.entity_id == portal_id)) is None
+    assert await db.scalar(select(AuditLog.id).where(
+        AuditLog.entity_type == "wiki_watch", AuditLog.entity_id == portal_id)) is None
+    target = {"thing": "initiative", "thing_id": str(initiative.id)}
+    (added,) = await _audits(db, "user_account", s["viewer_id"], "watch.add")
+    assert (added.actor_person_id, added.changes) == (s["viewer_id"], {**target, "kinds": []})
+    (removed,) = await _audits(db, "user_account", s["viewer_id"], "watch.remove")
+    assert (removed.actor_person_id, removed.changes) == (s["viewer_id"], target)
 
 
 # ── the group page ──────────────────────────────────────────────────
