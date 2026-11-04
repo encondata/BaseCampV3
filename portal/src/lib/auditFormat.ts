@@ -53,8 +53,9 @@ export const ACTION_LABELS: Record<string, string> = {
   restore: 'Unarchived',
   'clients.set': 'Changed client links',
   'survey.update': 'Updated survey',
-  kiosk_printer_factory_reset: 'Printer factory reset',
-  printer_factory_reset: 'Printer factory reset',
+  // two labels, since both reach the Audit page's action filter
+  kiosk_printer_factory_reset: 'Printer factory reset (kiosk)',
+  printer_factory_reset: 'Printer factory reset (portal)',
   'godmode.enable': 'Enabled god mode',
   'spec_lookup.apply': 'Spec lookup applied',
   'spec_lookup.undo': 'Spec lookup undone',

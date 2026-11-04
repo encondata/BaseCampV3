@@ -7,8 +7,9 @@
  *   type, `mockTemplateOptions`), its row at the printer's DPI, filled with
  *   the portal's fixed sample values by the API (`POST /labels/test-render`).
  *   The DPI control shows only when `~HI` couldn't be read. The template
- *   list loads on the first switch to this choice, and a rendered label is
- *   kept per template row, so a reprint only re-shifts it.
+ *   list loads on the first switch to this choice (and again on the next
+ *   switch if that load failed), and a rendered label is kept per template
+ *   row, so a reprint only re-shifts it.
  *
  * The offsets are editable here for both, and saved to the shared
  * `labels.print.settings` store so Print Labels prints with them. Neither
@@ -34,8 +35,15 @@ type Rendered = { zpl: string; template_name: string };
 /** The template tree as the mock-data choice sees it: untouched until that
  *  choice is first made. */
 type TreeLoad =
-  | { state: 'idle' | 'loading' | 'failed' }
+  | { state: 'idle' | 'loading' }
+  | { state: 'failed'; code: string }
   | { state: 'ready'; tree: LabelTemplateTreeNode[] };
+
+/** What went wrong, for a notice's parentheses: an `ApiError`'s code, else
+ *  the message without its closing period (the sentence's own follows the
+ *  parenthesis). */
+const errorCode = (err: unknown): string =>
+  err instanceof ApiError ? err.code : ((err instanceof Error && err.message) || 'unknown_error').replace(/\.$/, '');
 
 /** The inner-box insets V2's routine draws (outer box at 5, then every 25
  *  dots while both sides stay ≥ 50) — mirrored here for the preview. */
@@ -114,11 +122,11 @@ export default function AlignmentTestModal({ vocab, printerDpi, onPrint, loadTem
     if (next === choice) return;
     setChoice(next);
     setNotice(null);
-    if (next === 'mock' && load.state === 'idle') {
+    if (next === 'mock' && (load.state === 'idle' || load.state === 'failed')) {
       setLoad({ state: 'loading' });
       loadTemplates()
         .then((tree) => { if (aliveRef.current) setLoad({ state: 'ready', tree }); })
-        .catch(() => { if (aliveRef.current) setLoad({ state: 'failed' }); });
+        .catch((err: unknown) => { if (aliveRef.current) setLoad({ state: 'failed', code: errorCode(err) }); });
     }
   };
 
@@ -149,8 +157,7 @@ export default function AlignmentTestModal({ vocab, printerDpi, onPrint, loadTem
       await onPrint(applyPrintSettings(label.zpl, { ...stored, verticalOffset: vertical, horizontalOffset: horizontal }, { singleCopy: true }));
       setNotice({ type: 'success', message: `Mock-data label (${label.template_name}) sent to the printer.` });
     } catch (err) {
-      const code = err instanceof ApiError ? err.code : (err instanceof Error && err.message) || 'unknown_error';
-      setNotice({ type: 'error', message: `Couldn't print the test label (${code}).` });
+      setNotice({ type: 'error', message: `Couldn't print the test label (${errorCode(err)}).` });
     } finally {
       setBusy(false);
     }
@@ -161,11 +168,12 @@ export default function AlignmentTestModal({ vocab, printerDpi, onPrint, loadTem
   /** The preview column's one line in mock mode. */
   const mockPreview = (): ReactNode => {
     if (load.state === 'loading') return <p className="page-hint" role="status">Loading templates…</p>;
+    if (load.state === 'failed') return <p className="page-hint" role="alert">{`Couldn't load the templates (${load.code}).`}</p>;
     if (templates.length === 0) return <p className="page-hint">No active templates to print.</p>;
     if (!template) return <p className="page-hint">Pick a template to print.</p>;
     if (!mockRow) return <p className="page-hint">{noVersionText(template, mockDpiKey)}</p>;
     const badge = isPersonLabelType(template.labelType) ? ' Photos and logos print blank.' : '';
-    return <p className="page-hint">{`Prints ${mockRow.name} at ${mockDpiKey} DPI with sample values, filled in by the portal.${badge}`}</p>;
+    return <p className="page-hint">{`Prints ${template.family} at ${mockDpiKey} DPI with sample values, filled in by the portal.${badge}`}</p>;
   };
 
   const save = () => {

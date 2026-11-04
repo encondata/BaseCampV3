@@ -29,11 +29,11 @@ describe('entityHref', () => {
 describe('labels', () => {
   it('names a kiosk printer factory reset', () => {
     expect(actionLabel({ ...row('device', 'd-1'), action: 'kiosk_printer_factory_reset' }))
-      .toBe('Printer factory reset');
+      .toBe('Printer factory reset (kiosk)');
   });
   it('names a portal printer factory reset and its label printer', () => {
     expect(actionLabel({ ...row('label_printer', 'D2J000001'), action: 'printer_factory_reset' }))
-      .toBe('Printer factory reset');
+      .toBe('Printer factory reset (portal)');
     expect(entityLabel(row('label_printer', 'D2J000001'))).toBe('label printer');
     expect(entityLabel(row('label_printer', null))).toBe('label printer');
     expect(ENTITY_LABELS.label_printer).toBe('label printer');

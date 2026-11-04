@@ -47,8 +47,9 @@ export function versionAt(option: MockTemplateOption, dpiKey: string): LabelTemp
   return option.versions[dpiKey] ?? null;
 }
 
-/** Why `option` can't print on a `dpiKey` DPI printer. */
+/** Why `option` can't print at `dpiKey` DPI: the printer's, or the one the
+ *  operator picked when the printer's couldn't be read. */
 export function noVersionText(option: MockTemplateOption, dpiKey: string): string {
   const dpis = Object.keys(option.versions).sort(naturalCompare).join(' or ');
-  return `"${option.family}" is only available at ${dpis} DPI, so it can't print on this ${dpiKey} DPI printer.`;
+  return `"${option.family}" is only available at ${dpis} DPI, so it can't print at ${dpiKey} DPI.`;
 }

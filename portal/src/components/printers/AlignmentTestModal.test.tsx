@@ -33,12 +33,12 @@ const kid = (id: string, over: Partial<LabelTemplate>): LabelTemplateChild =>
  *  RU Top: one older row, 203 only. Staff Badge: an ID badge, 203 only. */
 const TREE: LabelTemplateTreeNode[] = [
   { ...row('p1', { kind: 'design', schema_version: 2, dpi_key: '300', label_type: 'front', name: 'Front Tag' }), family: 'Front Tag',
-    children: [kid('c203', { dpi_key: '203', label_type: 'front', name: 'Front Tag v1' }), kid('c300', { dpi_key: '300', label_type: 'front', name: 'Front Tag v1 (300)' })] },
+    children: [kid('c203', { dpi_key: '203', label_type: 'front', name: 'Front Tag · 203' }), kid('c300', { dpi_key: '300', label_type: 'front', name: 'Front Tag · 300' })] },
   { ...row('g1', { name: 'Generic Rack and RU' }), family: 'Generic Rack and RU', children: [] },
   { ...row('b1', { name: 'Staff Badge', label_type: 'id_badge' }), family: 'Staff Badge', children: [] },
 ];
 
-const RENDERED = { zpl: '^XA\n^PW812\n^FDsample^FS\n^XZ', template_name: 'Front Tag' };
+const RENDERED = { zpl: '^XA\n^PW812\n^FDsample^FS\n^XZ', template_name: 'Front Tag · 203' };
 
 function setup(printerDpi: number | null = 203, tree: LabelTemplateTreeNode[] = TREE) {
   const onPrint = vi.fn(async (_zpl: string) => undefined);
@@ -161,7 +161,8 @@ describe('Test labels dialog', () => {
     expect(sent).toContain('^LT5');
     expect(sent).toContain('^LS3');
     expect(sent).not.toMatch(/\^MM/i);
-    expect(await screen.findByText('Mock-data label (Front Tag) sent to the printer.')).toBeTruthy();
+    // the notice names the exact version the API rendered
+    expect(await screen.findByText('Mock-data label (Front Tag · 203) sent to the printer.')).toBeTruthy();
   });
   it('previews what prints, at the picked DPI', async () => {
     setup(203);
@@ -169,7 +170,9 @@ describe('Test labels dialog', () => {
     expect(screen.getByText('Pick a template to print.')).toBeTruthy();
     expect(printButton().disabled).toBe(true);
     await pickTemplate('Front Tag · Front');
-    expect(screen.getByText('Prints Front Tag v1 at 203 DPI with sample values, filled in by the portal.')).toBeTruthy();
+    // the family, not the builder child's own name (which carries its DPI: "Front Tag · 203")
+    expect(screen.getByText('Prints Front Tag at 203 DPI with sample values, filled in by the portal.')).toBeTruthy();
+    expect(screen.queryByText(/Front Tag · 203/)).toBeNull();
     expect(printButton().disabled).toBe(false);
   });
   it('Reprint reuses the rendered label and shifts it by the current offsets', async () => {
@@ -202,7 +205,7 @@ describe('Test labels dialog', () => {
     const { renderLabel } = setup(300);
     await chooseMock();
     await pickTemplate('Generic Rack and RU · Top');
-    expect(screen.getByText('"Generic Rack and RU" is only available at 203 DPI, so it can\'t print on this 300 DPI printer.')).toBeTruthy();
+    expect(screen.getByText('"Generic Rack and RU" is only available at 203 DPI, so it can\'t print at 300 DPI.')).toBeTruthy();
     expect(printButton().disabled).toBe(true);
     expect(renderLabel).not.toHaveBeenCalled();
   });
@@ -212,14 +215,37 @@ describe('Test labels dialog', () => {
     expect(await screen.findByText('No active templates to print.')).toBeTruthy();
     expect(printButton().disabled).toBe(true);
   });
-  it('when the template list will not load says the same and disables Print', async () => {
-    const onPrint = vi.fn(async (_zpl: string) => undefined);
-    const loadTemplates = vi.fn(async (): Promise<LabelTemplateTreeNode[]> => { throw new Error('offline'); });
-    render(<AlignmentTestModal vocab={vocab} printerDpi={203} onPrint={onPrint} onClose={vi.fn()}
+  it('when the template list will not load says so with the code, not "No active templates"', async () => {
+    const loadTemplates = vi.fn(async (): Promise<LabelTemplateTreeNode[]> => { throw new ApiError(403, 'forbidden'); });
+    render(<AlignmentTestModal vocab={vocab} printerDpi={203} onPrint={vi.fn()} onClose={vi.fn()}
                                loadTemplates={loadTemplates} renderLabel={vi.fn()} />);
     await chooseMock();
-    expect(await screen.findByText('No active templates to print.')).toBeTruthy();
+    expect(await screen.findByText("Couldn't load the templates (forbidden).")).toBeTruthy();
+    expect(screen.queryByText('No active templates to print.')).toBeNull();
     expect(printButton().disabled).toBe(true);
+  });
+  it('a list that fails with a network error names the error\'s message, without its period', async () => {
+    const loadTemplates = vi.fn(async (): Promise<LabelTemplateTreeNode[]> => { throw new TypeError('Failed to fetch.'); });
+    render(<AlignmentTestModal vocab={vocab} printerDpi={203} onPrint={vi.fn()} onClose={vi.fn()}
+                               loadTemplates={loadTemplates} renderLabel={vi.fn()} />);
+    await chooseMock();
+    expect(await screen.findByText("Couldn't load the templates (Failed to fetch).")).toBeTruthy();
+  });
+  it('a failed list loads again on the next switch to Mock-data', async () => {
+    const onPrint = vi.fn(async (_zpl: string) => undefined);
+    const loadTemplates = vi.fn(async (): Promise<LabelTemplateTreeNode[]> => TREE);
+    loadTemplates.mockRejectedValueOnce(new ApiError(500, 'internal_error'));
+    render(<AlignmentTestModal vocab={vocab} printerDpi={203} onPrint={onPrint} onClose={vi.fn()}
+                               loadTemplates={loadTemplates} renderLabel={vi.fn(async () => RENDERED)} />);
+    await chooseMock();
+    expect(await screen.findByText("Couldn't load the templates (internal_error).")).toBeTruthy();
+    expect(loadTemplates).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByRole('radio', { name: /Alignment label/ }));
+    await chooseMock();
+    await pickTemplate('Front Tag · Front');
+    expect(loadTemplates).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/Couldn't load the templates/)).toBeNull();
+    expect(printButton().disabled).toBe(false);
   });
   it('shows Loading templates… while the list is on its way', async () => {
     const loadTemplates = vi.fn(() => new Promise<LabelTemplateTreeNode[]>(() => undefined));
@@ -236,11 +262,13 @@ describe('Test labels dialog', () => {
     const tab300 = screen.getByRole('tab', { name: '300 DPI' });
     expect(tab300.getAttribute('aria-selected')).toBe('true');
     await pickTemplate('Front Tag · Front');
-    expect(screen.getByText('Prints Front Tag v1 (300) at 300 DPI with sample values, filled in by the portal.')).toBeTruthy();
-    await userEvent.click(screen.getByRole('tab', { name: '203 DPI' }));
-    expect(screen.getByText('Prints Front Tag v1 at 203 DPI with sample values, filled in by the portal.')).toBeTruthy();
+    expect(screen.getByText('Prints Front Tag at 300 DPI with sample values, filled in by the portal.')).toBeTruthy();
     await userEvent.click(printButton());
-    await waitFor(() => expect(renderLabel).toHaveBeenCalledWith('c203', '203'));
+    await waitFor(() => expect(renderLabel).toHaveBeenLastCalledWith('c300', '300'));
+    await userEvent.click(screen.getByRole('tab', { name: '203 DPI' }));
+    expect(screen.getByText('Prints Front Tag at 203 DPI with sample values, filled in by the portal.')).toBeTruthy();
+    await userEvent.click(printButton());
+    await waitFor(() => expect(renderLabel).toHaveBeenLastCalledWith('c203', '203'));
   });
   it('a failed render shows the code and caches nothing', async () => {
     const { onPrint, renderLabel } = setup(203);
@@ -257,14 +285,14 @@ describe('Test labels dialog', () => {
     expect(renderLabel).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole('alert')).toBeNull();
   });
-  it('a printer failure in mock mode reads the same way, with the error\'s message', async () => {
+  it('a printer failure in mock mode reads the same way, with the error\'s message minus its period', async () => {
     const { onPrint } = setup(203);
     onPrint.mockRejectedValueOnce(new Error('Printer connection lost. Please reconnect.'));
     await chooseMock();
     await pickTemplate('Front Tag · Front');
     await userEvent.click(printButton());
     expect((await screen.findByRole('alert')).textContent)
-      .toBe("Couldn't print the test label (Printer connection lost. Please reconnect.).");
+      .toBe("Couldn't print the test label (Printer connection lost. Please reconnect).");
   });
   it('a badge says photos and logos print blank; another type does not', async () => {
     setup(203);

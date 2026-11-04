@@ -106,7 +106,7 @@ describe('noVersionText', () => {
   it('names the DPIs the template has', () => {
     const [option] = mockTemplateOptions([single('a', 'Front Tag', { dpi_key: '203' })], typeLabels);
     expect(noVersionText(option, '300')).toBe(
-      '"Front Tag" is only available at 203 DPI, so it can\'t print on this 300 DPI printer.');
+      '"Front Tag" is only available at 203 DPI, so it can\'t print at 300 DPI.');
   });
   it('joins several DPIs with "or", in natural order', () => {
     const [option] = mockTemplateOptions([
@@ -114,6 +114,6 @@ describe('noVersionText', () => {
       single('c', 'Front Tag', { dpi_key: '300' }),
     ], typeLabels);
     expect(noVersionText(option, '100')).toBe(
-      '"Front Tag" is only available at 203 or 300 or 600 DPI, so it can\'t print on this 100 DPI printer.');
+      '"Front Tag" is only available at 203 or 300 or 600 DPI, so it can\'t print at 100 DPI.');
   });
 });
