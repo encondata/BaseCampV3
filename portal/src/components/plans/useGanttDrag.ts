@@ -32,7 +32,8 @@
  *   threshold says "This task has started — change its Actual Start
  *   instead." and holds and sends nothing. Its other drags still work.
  * - Snaps (`snapShift`): the move snaps by the zoom's step (whole days at
- *   weeks and coarser, the hour at days, 15 minutes at hours), so a task
+ *   weeks and coarser, the hour at days, 15 minutes at hours, 5 minutes at
+ *   wide and quarter hours, the minute at five minutes), so a task
  *   keeps its clock time and a drop back at its origin sends nothing.
  * - The pointer's place on the scale is its x in the chart pane plus the
  *   pane's sideways scroll (the content moves by a transform), so a drag
@@ -51,7 +52,7 @@ import { useToast } from '../../lib/notificationsContext';
 import type { Op, Plan, PlanTask } from '../../lib/plans/api';
 import {
   DRAG_THRESHOLD_PX, DROP_SLOP_PX, LINK_DOT_PX, barEnd, canLink, dragKind, moveRefusal, opsForDrag, pointerScaleX,
-  snapShift, type DragKind,
+  showsTimes, snapShift, type DragKind,
 } from '../../lib/plans/drag';
 import { formatDuration } from '../../lib/plans/durations';
 import { formatDay, formatDayTime, fromMs, toMs } from '../../lib/plans/floatingTime';
@@ -241,7 +242,7 @@ export function useGanttDrag(o: Options): GanttDrag {
     const x = scaleX(clientX);
     const moved = (x - s.downX) / scale.pxPerMs;
     const units = planUnits(plan);
-    const fine = zoom === 'hours' || zoom === 'days';
+    const fine = showsTimes(zoom);
     const when = (ms: number) => (fine ? formatDayTime(fromMs(ms)) : formatDay(fromMs(ms)));
     const preview: DragPreview = {
       kind: s.kind, row: s.row, milestone: t.is_milestone, ghost: null, done: null, band: null, target: null,

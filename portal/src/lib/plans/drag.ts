@@ -98,10 +98,17 @@ export function moveRefusal(task: Pick<PlanTask, 'actual_start'>): string | null
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
-/** Each zoom's snap: hours to 15 minutes, days to the hour, coarser to the day. */
+/** Each zoom's snap: five minutes to the minute, quarter and wide hours to 5
+ *  minutes, hours to 15 minutes, days to the hour, coarser to the day. */
 export const SNAP_MS: Record<Zoom, number> = {
+  fiveMinutes: MINUTE, quarterHours: 5 * MINUTE, wideHours: 5 * MINUTE,
   hours: 15 * MINUTE, days: HOUR, weeks: MS_PER_DAY, months: MS_PER_DAY, quarters: MS_PER_DAY,
 };
+
+/** Whether a drag at this zoom shows times, not just days: it snaps finer than a day. */
+export function showsTimes(zoom: Zoom): boolean {
+  return SNAP_MS[zoom] < MS_PER_DAY;
+}
 
 /** The nearest snap of the zoom to `ms` (whole days are midnights of the plan's clock). */
 export function snapMs(ms: number, zoom: Zoom): number {

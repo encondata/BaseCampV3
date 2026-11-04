@@ -22,13 +22,16 @@ import { describe, expect, it } from 'vitest';
 import type { PlanCalendar } from './api';
 import { nonworkingBands } from './calendarShade';
 import {
-  ZOOMS, baselineOf, barOf, fitZoom, linkPath, makeScale, progressWidth, tiers, type LinkEnd, type Scale, type Zoom,
+  baselineOf, barOf, fitZoom, linkPath, makeScale, progressWidth, tiers, type LinkEnd, type Scale, type Zoom,
 } from './ganttGeometry';
 import { barBox, linkShape, linkStub } from './ganttView';
 import {
-  PAPERS, chartWidth, contentBox, estimatePages, ganttRows, planSpan, printFit, printRange, printScale, spanTooLong,
-  tableRows, type Paper, type PrintSpan,
+  PAPERS, PRINT_ZOOMS, chartWidth, contentBox, estimatePages, ganttRows, planSpan, printFit, printRange, printScale,
+  spanTooLong, tableRows, type Paper, type PrintSpan,
 } from './planPdf';
+
+/** The zooms the PDF draws: the API's port knows these, not the screen's finer three. */
+const ZOOMS = PRINT_ZOOMS;
 import type { LinkType } from './predecessors';
 
 const FILE = path.resolve(__dirname, '../../../../api/tests/fixtures/plans/gantt.json');
@@ -46,7 +49,7 @@ type BaseTask = { baseline_start: string | null; baseline_finish: string | null 
 /** What each vector's `fn` calls, by the name both suites use. */
 const FNS: Record<string, (...args: never[]) => unknown> = {
   makeScale: (start: string, finish: string | null, zoom: Zoom) => makeScale(start, finish, zoom),
-  fitZoom: (start: string, finish: string | null, width: number) => fitZoom(start, finish, width),
+  fitZoom: (start: string, finish: string | null, width: number) => fitZoom(start, finish, width, PRINT_ZOOMS),
   tiers: (scale: Scale, zoom: Zoom, window: [number, number] | null) => tiers(scale, zoom, window ?? undefined),
   barOf: (scale: Scale, task: Task) => barOf(scale, task),
   baselineOf: (scale: Scale, task: BaseTask) => baselineOf(scale, task),

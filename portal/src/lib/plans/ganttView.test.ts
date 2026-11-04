@@ -12,7 +12,8 @@ import {
   ARROW_LEN, LAYOUT_KEY, MIN_CHART_H, MIN_CHART_PX, MIN_LEAD_PX, MIN_SHEET_H, MIN_SHEET_PX, SCROLL_PAD, SPLIT_BELOW_KEY,
   SPLIT_KEY, SPLITTER_PX, LABEL_GAP_PX, bandsIn, barBox, endPads, labelPlace,
   PILL_GAP, TIER_CHAR_PX, TIER_PAD, chartWindow, clip, hoverFacts, lineAt, linkEnd, linkRow, linkShape, linkStub,
-  linksToDraw, pillAt, pillWidth, readLayout, readSplit, readSplitBelow, readZoom, scaleSpan, splitHeight, splitWidth,
+  linksToDraw, pillAt, pillWidth, planFinestZoom, readLayout, readSplit, readSplitBelow, readZoom, scaleSpan, splitHeight,
+  splitWidth,
   taskScrollLeft, windowLabel, windowPillX, windowSpan, writeLayout, writeSplit, writeSplitBelow, writeZoom,
 } from './ganttView';
 import { makeLink, makePlan, makeTask } from './planFixtures';
@@ -143,6 +144,24 @@ describe('the initiative window band', () => {
       .toEqual({ start: '2026-10-20T00:00', finish: '2026-11-05T17:00' });
     expect(scaleSpan('2026-11-02T08:00', null, null)).toEqual({ start: '2026-11-02T08:00', finish: null });
     expect(scaleSpan('2026-11-02T08:00', null, later)).toEqual({ start: '2026-11-02T08:00', finish: '2026-11-17T00:00' });
+  });
+});
+
+describe('planFinestZoom: how far a plan’s chart can zoom in', () => {
+  it('is five minutes for the NAP11 run book, even widened to a three-week window', () => {
+    expect(planFinestZoom('2026-11-16T06:00', '2026-11-17T09:10', null)).toBe('fiveMinutes');
+    expect(planFinestZoom('2026-11-16T06:00', '2026-11-17T09:10', { start: '2026-11-16', end: '2026-12-04' }))
+      .toBe('fiveMinutes');
+  });
+
+  it('counts the initiative’s window: a short plan in a three-year window stops at quarter hours', () => {
+    expect(planFinestZoom('2026-11-16T06:00', '2026-11-17T09:10', { start: '2026-11-01', end: '2029-11-01' }))
+      .toBe('quarterHours');
+  });
+
+  it('is the finest for a plan with no start, or one that isn’t a plan time', () => {
+    expect(planFinestZoom(null, null, null)).toBe('fiveMinutes');
+    expect(planFinestZoom('not a time', null, null)).toBe('fiveMinutes');
   });
 });
 

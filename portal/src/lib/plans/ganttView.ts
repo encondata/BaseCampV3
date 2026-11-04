@@ -19,7 +19,8 @@ import type { Band } from './calendarShade';
 import { formatDuration } from './durations';
 import { dayOf, formatCell, formatDayRange, fromMs, toMs } from './floatingTime';
 import {
-  LINK_STUB, MILESTONE_HALF, MS_PER_DAY, ZOOMS, barOf, linkPath, type Bar, type LinkEnd, type Scale, type Tick, type Zoom,
+  LINK_STUB, MILESTONE_HALF, MS_PER_DAY, ZOOMS, barOf, finestZoom, linkPath, type Bar, type LinkEnd, type Scale, type Tick,
+  type Zoom,
 } from './ganttGeometry';
 import { planUnits } from './merge';
 import type { LinkType } from './predecessors';
@@ -218,6 +219,22 @@ export function scaleSpan(
     start: win[0] < start ? fromMs(win[0]) : projectStart,
     finish: Number.isNaN(finish) || win[1] > finish ? fromMs(win[1]) : projectFinish,
   };
+}
+
+/** The finest zoom a plan's chart can draw: ganttGeometry `finestZoom` over
+ *  the span PlanGantt's scale covers (the plan widened to its initiative's
+ *  window). The finest of all for a plan with no start yet. */
+export function planFinestZoom(
+  projectStart: string | null | undefined, projectFinish: string | null | undefined,
+  window: DayWindow | null | undefined,
+): Zoom {
+  if (!projectStart) return ZOOMS[0];
+  try {
+    const span = scaleSpan(projectStart, projectFinish ?? null, windowSpan(window));
+    return finestZoom(span.start, span.finish);
+  } catch {
+    return ZOOMS[0];                   // a project start that isn't a plan time draws no chart
+  }
 }
 
 // ── links ────────────────────────────────────────────────────────────

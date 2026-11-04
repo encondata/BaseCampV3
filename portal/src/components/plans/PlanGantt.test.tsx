@@ -686,9 +686,22 @@ describe('in the tab beside the sheet', () => {
     cleanup();
     renderTab();
     await findSheet();
-    expect(screen.getByRole('button', { name: 'Zoom In' }).getAttribute('aria-disabled')).toBe('true');
+    // past hours: three more steps to five minutes, about an hour across the chart
+    const zoomIn = () => screen.getByRole('button', { name: 'Zoom In' });
+    for (const zoom of ['wideHours', 'quarterHours', 'fiveMinutes']) {
+      expect(zoomIn().getAttribute('aria-disabled')).not.toBe('true');
+      fireEvent.click(zoomIn());
+      expect(localStorage.getItem('plans.zoom.plan-1')).toBe(zoom);
+    }
+    expect(zoomIn().getAttribute('aria-disabled')).toBe('true');
+    // the timescale on a 24-hour clock: 08:00 over 08:05, 08:10…
+    expect(q('.pln-scale-top')?.textContent).toMatch(/\d\d:00/);
+    expect(q('.pln-scale-bottom')?.textContent).toMatch(/\d\d:05/);
+    expect(q('.pln-scale')?.textContent).not.toMatch(/AM|PM/);
     fireEvent.wheel(q('.pln-pane-chart') as HTMLElement, { deltaY: 100, ctrlKey: true });
-    expect(localStorage.getItem('plans.zoom.plan-1')).toBe('days');
+    expect(localStorage.getItem('plans.zoom.plan-1')).toBe('quarterHours');
+    fireEvent.wheel(q('.pln-pane-chart') as HTMLElement, { deltaY: -100, ctrlKey: true });
+    expect(localStorage.getItem('plans.zoom.plan-1')).toBe('fiveMinutes');
   });
 
   it('Fit picks the zoom from the chart pane’s width and scrolls to the project start', async () => {

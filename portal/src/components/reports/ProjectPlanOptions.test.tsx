@@ -169,6 +169,14 @@ describe('ProjectPlanOptions', () => {
     expect(pressed('Timescale')).toEqual(['Fit']);
   });
 
+  it.each(['fiveMinutes', 'quarterHours', 'wideHours'] as const)(
+    'the screen’s finer %s zoom isn’t printed either: it opens on Fit and sends fit', async (zoom) => {
+      const { onGenerate, user } = renderOptions({ initial: { columns: CURRENT, zoom } });
+      expect(pressed('Timescale')).toEqual(['Fit']);
+      await user.click(generate());
+      expect(onGenerate.mock.lastCall?.[0].options).toMatchObject({ zoom: 'fit' });
+    });
+
   it('from the Reports page it loads the initiative’s plan; one without says so', async () => {
     plans.getPlan.mockResolvedValueOnce(plan40());
     const first = renderOptions({ plan: undefined, initial: undefined });
