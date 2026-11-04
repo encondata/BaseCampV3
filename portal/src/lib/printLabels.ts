@@ -4,6 +4,7 @@
  * arithmetic, and per-asset label status. No React, no fetching.
  * Behavior contract: docs/superpowers/specs/2026-09-12-print-labels-design.md.
  */
+import { dpiDots, sizeMeta } from './labels';
 import { naturalCompare } from './naturalSort';
 import type { ContainerItem, GeneratedLabelBundle, GeneratedLabelBundleItem, InitiativeAssetRow, LabelVocab } from './api';
 
@@ -133,6 +134,87 @@ export function applyPrintSettings(
  *  can't multiply the blanks (callers send it with singleCopy). */
 export function blankLabelsZpl(count: number): string {
   return `^XA^FO10,10^A0N,10,10^FD ^FS^PQ${count}^XZ`;
+}
+
+/** The label type whose rack separators carry the source rack name: the
+ *  Front label is the one a tech applies at the rack, so each rack's stack
+ *  starts with the rack to walk to. Every other asset type keeps V2's
+ *  plain blanks between racks. */
+export const RACK_NAME_LABEL_TYPE = 'front';
+
+export function showsRackName(labelType: string): boolean {
+  return labelType === RACK_NAME_LABEL_TYPE;
+}
+
+export interface LabelDots { width: number; height: number }
+
+/** The stock a label prints on, in dots: the ^PW / ^LL its own code
+ *  carries (the compiler writes both, and the code is there offline when
+ *  the vocab isn't), else its size row × DPI. Null when neither says. */
+export function labelDots(
+  item: Pick<GeneratedLabelBundleItem, 'code' | 'size_key' | 'dpi_key'> | undefined, vocab: LabelVocab[],
+): LabelDots | null {
+  if (!item) return null;
+  const size = vocab.find((v) => v.kind === 'size' && v.key === item.size_key);
+  const fromVocab = (inches: number) => Math.round(inches * dpiDots(vocab, item.dpi_key));
+  const pw = /\^PW(\d+)/i.exec(item.code)?.[1];
+  const ll = /\^LL(\d+)/i.exec(item.code)?.[1];
+  const width = pw ? Number(pw) : size ? fromVocab(sizeMeta(size).width_in) : 0;
+  const height = ll ? Number(ll) : size ? fromVocab(sizeMeta(size).height_in) : 0;
+  return width > 0 && height > 0 ? { width, height } : null;
+}
+
+/** ZPL's smallest ^A height. */
+const MIN_FONT_DOTS = 10;
+
+/** A character's advance as a share of font 0's height — Helvetica Bold's
+ *  widths, on the wide side of font 0 (its condensed cut), so a name
+ *  fitted with them never runs past the label. */
+function textUnits(text: string): number {
+  let units = 0;
+  for (const ch of text) {
+    if (" .,:;!|'iIjl/\\".includes(ch)) units += 0.3;
+    else if ('-()[]frt'.includes(ch)) units += 0.36;
+    else if ('MmWw@%'.includes(ch)) units += 0.95;
+    else if (/[A-Z#&?]/.test(ch)) units += 0.75;
+    else units += 0.62;
+  }
+  return units;
+}
+
+/** The label compiler's ^FH_ escaping (api labels/zpl.py `_esc`): ^ ~ _ \
+ *  and anything outside printable ASCII go out as UTF-8 hex bytes. */
+function fhEscape(text: string): string {
+  let out = '';
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    if ('^~_\\'.includes(ch) || code < 32 || code > 126) {
+      for (const b of new TextEncoder().encode(ch)) out += `_${b.toString(16).padStart(2, '0')}`;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+/** The Front label's rack separator: `count` labels reading `rack` on one
+ *  line — never wrapped — as large as the stock allows (a longer name
+ *  prints smaller), centered inside a margin. ^PQ rides inside, as in the
+ *  blank, so callers send it with singleCopy. With no name or no known
+ *  stock it is the plain blank. */
+export function rackSeparatorZpl(rack: string, count: number, dots: LabelDots | null): string {
+  const name = rack.trim();
+  if (!name || !dots) return blankLabelsZpl(count);
+  const margin = Math.round(Math.min(dots.width, dots.height) * 0.08);
+  const innerWidth = dots.width - 2 * margin;
+  const innerHeight = dots.height - 2 * margin;
+  const font = Math.max(MIN_FONT_DOTS, Math.floor(Math.min(innerHeight, innerWidth / textUnits(name))));
+  const top = margin + Math.max(0, Math.round((innerHeight - font) / 2));
+  return [
+    '^XA', '^CI28', `^PW${dots.width}`, `^LL${dots.height}`, '^LH0,0',
+    `^FO${margin},${top}^A0N,${font},${font}^FB${innerWidth},1,0,C,0^FH_^FD${fhEscape(name)}^FS`,
+    `^PQ${count}`, '^XZ',
+  ].join('\n');
 }
 
 /** V2's generateAlignmentTestZpl: an outer box 5 dots in at 4-dot

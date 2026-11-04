@@ -40,9 +40,9 @@ import * as labelCache from '../lib/labelCache';
 import { isContainerLabelType, isPersonLabelType, vocabLabel, vocabOfKind } from '../lib/labels';
 import {
   LABEL_TYPE_CUSTOM, applyPrintSettings, batchBounds, batchCount, blankLabelsZpl, bundleAtDpi,
-  bundleByEntity, containerPrintOrder, defaultCopiesFor, dpisByEntity, labelStatusFor,
-  missingLabelIds, printOrder,
-  rackOf, readPrintSettings, settingsModified, staleLabelCount, writePrintSettings,
+  bundleByEntity, containerPrintOrder, defaultCopiesFor, dpisByEntity, labelDots, labelStatusFor,
+  missingLabelIds, printOrder, rackOf, rackSeparatorZpl, readPrintSettings, settingsModified,
+  showsRackName, staleLabelCount, writePrintSettings,
   type LabelStatus, type PrintSettings,
 } from '../lib/printLabels';
 import { useZebraPrinter } from '../lib/useZebraPrinter';
@@ -435,7 +435,6 @@ export default function PrintLabels() {
 
   // ── sending ──────────────────────────────────────────────────────────
   const sendLabel = (zpl: string, singleCopy = false) => printer.send(applyPrintSettings(zpl, settings, { singleCopy }));
-  const sendBlanks = async (count: number) => { if (count > 0) await sendLabel(blankLabelsZpl(count), true); };
   /** The code to send: a label generated for the printer's DPI only. */
   const zplFor = (assetId: string): string | null => {
     if (isCustom) return customZpl.trim() || null;
@@ -445,6 +444,19 @@ export default function PrintLabels() {
   const rowById = useMemo(() => new Map((roster ?? []).map((r) => [r.asset_id, r])), [roster]);
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+  const rackMode = settings.printByRack && !containerMode;
+  /** Front labels name each rack on its separator and lead the job with
+   *  one; every other type keeps V2's plain blanks between racks. */
+  const rackNames = rackMode && showsRackName(labelType);
+  /** Feed the separator in front of `assetId`'s rack; returns labels fed.
+   *  A Front separator is sized to that asset's own label stock. */
+  const sendSeparator = async (assetId: string, rack: string) => {
+    const count = settings.blanksBetweenRacks;
+    if (count <= 0) return 0;
+    await sendLabel(rackNames ? rackSeparatorZpl(rack, count, labelDots(byEntity.get(assetId), vocab)) : blankLabelsZpl(count), true);
+    return count;
+  };
+
   /** Send `ids[from..to)`; returns formats sent and blanks fed. */
   const sendRange = async (ids: string[], from: number, to: number, onSent?: (n: number) => void) => {
     let formatsSent = 0, blanksSent = 0, skipped = 0;
@@ -453,10 +465,7 @@ export default function PrintLabels() {
       const zpl = zplFor(assetId);
       if (!zpl) { skipped += 1; continue; }
       const rack = rackOf(rowById.get(assetId));
-      if (settings.printByRack && !containerMode && prevRack !== null && rack !== prevRack) {
-        await sendBlanks(settings.blanksBetweenRacks);
-        blanksSent += settings.blanksBetweenRacks;
-      }
+      if (rackMode && (prevRack === null ? rackNames : rack !== prevRack)) blanksSent += await sendSeparator(assetId, rack);
       await sendLabel(zpl);
       prevRack = rack;
       formatsSent += 1;

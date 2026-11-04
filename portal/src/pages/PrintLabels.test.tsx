@@ -221,6 +221,47 @@ it('applies offsets/copies from saved settings and feeds blanks between racks in
   expect(sent[3]).toBe('^XA\n^LS-10^PW822^FDa3^FS^PQ2^XZ');
 });
 
+it('on Front labels in rack mode, every rack starts with a separator carrying its source rack name', async () => {
+  localStorage.setItem('labels.print.settings', JSON.stringify({ copies: 2, printByRack: true, blanksBetweenRacks: 1 }));
+  api.getGeneratedLabelBundle.mockImplementation(async (_i: string, t: string) => bundleFor(['a1', 'a2', 'a3'], t));
+  printer.connected = true;
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByRole('radio', { name: /Front Label/ }));
+  await screen.findByText('3 of 3 assets have a Front Label');
+  await userEvent.click(screen.getByLabelText('Select all filtered assets'));
+  await userEvent.click(screen.getByRole('button', { name: 'Print 3 labels' }));
+  await waitFor(() => expect(printer.send).toHaveBeenCalledTimes(5));
+  const sent = printer.send.mock.calls.map((c) => c[0]);
+  // R1's separator leads the job, R2's comes at the change; each sized to the
+  // label (^PW from its code, ^LL from 4x2 at the printer's 203 DPI), and
+  // copies multiply the asset labels, not the separators
+  expect(sent[0]).toContain('^FH_^FDR1^FS');
+  expect(sent[0]).toContain('^PW812\n^LL406');
+  expect(sent[0]).toMatch(/\^PQ1\n\^XZ$/);
+  expect(sent[1]).toBe('^XA^PW812^FDa2^FS^PQ2^XZ');
+  expect(sent[2]).toBe('^XA^PW812^FDa1^FS^PQ2^XZ');
+  expect(sent[3]).toContain('^FH_^FDR2^FS');
+  expect(sent[4]).toBe('^XA^PW812^FDa3^FS^PQ2^XZ');
+  expect(await screen.findByText('Successfully printed 3 label(s)')).toBeTruthy();
+});
+
+it('on Front labels, zero blanks between racks feeds no separators at all', async () => {
+  localStorage.setItem('labels.print.settings', JSON.stringify({ printByRack: true, blanksBetweenRacks: 0 }));
+  api.getGeneratedLabelBundle.mockImplementation(async (_i: string, t: string) => bundleFor(['a1', 'a2', 'a3'], t));
+  printer.connected = true;
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByRole('radio', { name: /Front Label/ }));
+  await screen.findByText('3 of 3 assets have a Front Label');
+  await userEvent.click(screen.getByLabelText('Select all filtered assets'));
+  await userEvent.click(screen.getByRole('button', { name: 'Print 3 labels' }));
+  expect(await screen.findByText('Successfully printed 3 label(s)')).toBeTruthy();
+  expect(printer.send.mock.calls.map((c) => c[0])).toEqual([
+    '^XA^PW812^FDa2^FS^XZ', '^XA^PW812^FDa1^FS^XZ', '^XA^PW812^FDa3^FS^XZ',
+  ]);
+});
+
 it('blocks printing when selected assets lack labels and offers Deselect missing', async () => {
   printer.connected = true;
   renderPage();
