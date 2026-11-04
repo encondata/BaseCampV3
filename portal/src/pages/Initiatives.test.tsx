@@ -294,10 +294,10 @@ it('initiatives: column floors, shared template + minimum, sideways-scroll card'
 });
 
 
-// ── the row's actions button (in place of the old open arrow) ─────────
+// ── the row's Actions button (in place of the old open arrow) ─────────
 
 const actionsIn = (row: HTMLElement) =>
-  row.querySelector('.row-main .chevron-cell button') as HTMLButtonElement | null;
+  row.querySelector('.row-main .row-actions button') as HTMLButtonElement | null;
 const menuItems = () =>
   screen.queryAllByRole('menuitem').map((m) => m.textContent?.trim());
 
@@ -307,7 +307,9 @@ it('each row ends in an actions button offering Full details and Edit, without o
   await waitFor(() => expect(rowNames()).toHaveLength(2));
 
   const button = actionsIn(rowFor('Denver DC migration'))!;
-  expect(button.getAttribute('aria-label')).toBe('Actions for Denver DC migration');
+  // the standard "Actions ▾" button the other lists use, not an icon
+  expect(button.textContent).toContain('Actions');
+  expect(rowFor('Denver DC migration').querySelector('.chevron-cell')).toBeNull();
   await user.click(button);
   expect(menuItems()).toEqual(['Full details', 'Edit']);
   // the menu is the button's, not the row's: nothing opened underneath
