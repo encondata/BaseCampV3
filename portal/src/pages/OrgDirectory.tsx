@@ -58,6 +58,8 @@ import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
 import PhotoPreview from '../components/PhotoPreview';
+import TradeChips from '../components/workers/TradeChips';
+import { splitTrades } from '../lib/workers';
 
 export interface OrgConfig {
   kind: 'client' | 'partner';
@@ -888,7 +890,11 @@ function SuppliedWorkersModal({ workers, onClose, onPick }: {
               </PhotoPreview>
               <div className="session-main cell">
                 <div className="cell-top"><b>{w.display_name}</b></div>
-                <div className="cell-sub">{[w.trade, w.level].filter(Boolean).join(' · ') || 'no profile'}</div>
+                <div className="cell-sub supplied-sub">
+                  {splitTrades(w.trade).length > 0
+                    ? <><TradeChips trade={w.trade} />{w.level && <span>· {w.level}</span>}</>
+                    : (w.level ?? 'no profile')}
+                </div>
               </div>
               {w.level && (
                 <span className="lvl-badge">

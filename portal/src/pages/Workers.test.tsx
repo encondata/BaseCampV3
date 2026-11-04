@@ -123,3 +123,23 @@ it('the detail panel shows the trade as chips', async () => {
   });
   expect(chipTexts(dd)).toEqual(['Cable', 'Hardware']);
 });
+
+it('Edit profile offers the distinct trades across all workers, naturally sorted', async () => {
+  const user = userEvent.setup();
+  WORKERS.rows = [
+    worker({ person_id: 'w1', display_name: 'Ada Lovelace', trade: 'Cable, hardware' }),
+    worker({ person_id: 'w2', display_name: 'Grace Hopper', trade: 'Hardware, Rack 10, Rack 2' }),
+    worker({ person_id: 'w3', display_name: 'Alan Turing', trade: null }),
+  ];
+  mount();
+  const row = await rowOf('Ada Lovelace');
+  await user.click(row.querySelector('.row-main') as HTMLElement);
+  await user.click(await within(row).findByRole('button', { name: /Edit profile/ }));
+
+  // focus the (empty) trade input: every distinct trade not already a chip is offered
+  await user.click(row.querySelector('.tag-input-field') as HTMLElement);
+  const offered = Array.from(document.querySelectorAll('.combo-menu .kbar-item'))
+    .map((b) => b.textContent);
+  // "hardware" is already a chip on Ada, "Hardware" (Grace) dedupes against it
+  expect(offered).toEqual(['Rack 2', 'Rack 10']);
+});

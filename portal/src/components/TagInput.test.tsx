@@ -89,6 +89,17 @@ describe('inside a .modal-card', () => {
     expect(screen.queryByText('Alpha')).toBeNull();
   });
 
+  it('a mousedown outside commits the typed text instead of dropping it', () => {
+    const onChange = vi.fn();
+    renderInCard(onChange);
+    const input = screen.getByPlaceholderText('Tags');
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'Fiber' } });
+    fireEvent.mouseDown(screen.getByText('outside'));
+    expect(onChange).toHaveBeenCalledWith(['Fiber']);
+    expect((input as HTMLInputElement).value).toBe('');
+  });
+
   it('a window scroll that moves the field, or a resize, closes it; scrolling the menu itself does not', () => {
     const { container } = renderInCard();
     let top = 200;

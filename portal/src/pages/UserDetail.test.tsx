@@ -143,7 +143,8 @@ it('renders the hero, three tabs, and the Profile panels', async () => {
   expect(screen.getByText('v2:people:42')).toBeTruthy();
   expect(screen.getByText('change required')).toBeTruthy();
   // memberships
-  expect(screen.getByText('Cabling')).toBeTruthy();
+  expect(screen.getByText('Cabling').className).toContain('chip');
+  expect(screen.getByText('Cabling').classList.contains('tag')).toBe(true);
   expect(screen.getByRole('link', { name: 'Open worker page' }).getAttribute('href')).toBe('/people/workers/p1');
   expect(screen.getByRole('link', { name: 'Acme' }).getAttribute('href')).toBe('/stakeholders/clients/c1');
   expect(screen.getByRole('link', { name: 'Ops alerts' }).getAttribute('href')).toBe('/system/notifications/ng1');

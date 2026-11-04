@@ -1,17 +1,22 @@
 import { useMemo, useState, type FormEvent } from 'react';
 
 import ComboBox from '../ComboBox';
+import TagInput from '../TagInput';
 import { apiFetch, type StatusValue } from '../../lib/api';
-import { WORKER_BLACKLIST, type PartnerRef, type WorkerItem, type WorkerLevelDef } from '../../lib/workers';
+import {
+  splitTrades, WORKER_BLACKLIST, type PartnerRef, type WorkerItem, type WorkerLevelDef,
+} from '../../lib/workers';
 
-export default function ProfileForm({ worker, levels, statuses, onDone, onCancel }: {
+export default function ProfileForm({ worker, levels, statuses, tradeSuggestions, onDone, onCancel }: {
   worker: WorkerItem;
   levels: WorkerLevelDef[];
   statuses: StatusValue[];
+  /** trades already in use elsewhere, offered while typing in the Trade box */
+  tradeSuggestions?: string[];
   onDone: () => void;
   onCancel: () => void;
 }) {
-  const [trade, setTrade] = useState(worker.trade ?? '');
+  const [trades, setTrades] = useState(() => splitTrades(worker.trade));
   const [level, setLevel] = useState(worker.level ?? '');
   const [partnerId, setPartnerId] = useState(worker.partner?.id ?? '');
   const [partners, setPartners] = useState<PartnerRef[] | null>(null);
@@ -51,7 +56,8 @@ export default function ProfileForm({ worker, levels, statuses, onDone, onCancel
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        trade: trade.trim() || null,
+        // a tag may itself hold commas (pasted text), so re-split before joining
+        trade: splitTrades(trades.join(',')).join(', ') || null,
         level: level || null,
         partner_id: partnerId || null,
         status,
@@ -77,8 +83,8 @@ export default function ProfileForm({ worker, levels, statuses, onDone, onCancel
   return (
     <form className="pf-form" onSubmit={submit}>
       <div><label>Trade / specialty</label>
-        <input value={trade} onChange={(e) => setTrade(e.target.value)}
-               placeholder="Server tech, packer, driver…" /></div>
+        <TagInput value={trades} onChange={setTrades} suggestions={tradeSuggestions ?? []}
+                  placeholder="Add a trade…" maxTags={Math.max(12, trades.length)} /></div>
       <div><label>Level</label>
         <ComboBox
           placeholder="Type to pick a level…"

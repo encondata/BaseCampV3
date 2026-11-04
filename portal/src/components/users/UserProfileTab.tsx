@@ -12,6 +12,7 @@ import { statusChip } from '../../lib/chips';
 import { describeUserAgent, longDate, relativeTime } from '../../lib/format';
 import { STATUS_META, type DetailMode } from '../../lib/users';
 import { Switch } from '../Switch';
+import TradeChips from '../workers/TradeChips';
 import TwoFactorOffNote from '../TwoFactorOffNote';
 import UserBiometricKeys from './UserBiometricKeys';
 import UserTrustedBrowsers from './UserTrustedBrowsers';
@@ -164,7 +165,7 @@ export default function UserProfileTab({
                   rows={[{
                     key: 'worker',
                     cells: [
-                      worker.trade ?? '—', worker.level_title ?? 'Unleveled',
+                      <TradeChips key="trade" trade={worker.trade} />, worker.level_title ?? 'Unleveled',
                       worker.partner?.name ?? 'Direct hire',
                       statusChip(worker.status_label, worker.status_color),
                       <Link key="open" className="mini-btn" to={`/people/workers/${person.id}`}>Open worker page</Link>,

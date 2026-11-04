@@ -27,6 +27,7 @@ import {
 } from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { usePendingDeletes } from '../lib/pendingDeletes';
+import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import { avatarGradient, initials } from '../lib/format';
 import {
@@ -47,7 +48,7 @@ import {
 import { VirtualRows } from '../lib/virtualRows';
 import {
   applyWorkerPatch, WORKER_BLACKLIST, WORKER_ERRORS, WORKER_GOD_FIELDS,
-  workerCellText, workerCellValues, workerSearchText, type WorkerItem, type WorkerLevelDef,
+  splitTrades, workerCellText, workerCellValues, workerSearchText, type WorkerItem, type WorkerLevelDef,
 } from '../lib/workers';
 import StatusHover from '../components/StatusHover';
 import '../styles/directory.css';
@@ -252,6 +253,18 @@ export default function Workers() {
     }
   }, [visible]);
 
+  // Trades already in use across the loaded workers, offered while typing in
+  // the Edit profile Trade box (case-insensitive distinct, first spelling wins).
+  const tradeSuggestions = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const w of workers ?? []) {
+      for (const t of splitTrades(w.trade)) {
+        if (!seen.has(t.toLowerCase())) seen.set(t.toLowerCase(), t);
+      }
+    }
+    return [...seen.values()].sort(naturalCompare);
+  }, [workers]);
+
   const canManage = can('workers', 'change');
   const canBulk = can('workers', 'add') && maxRank >= ADMIN_RANK;  // mirrors the API's GATE_BYPASS_RANK bar
 
@@ -427,6 +440,7 @@ export default function Workers() {
                         worker={w}
                         levels={levels}
                         statuses={statuses}
+                        tradeSuggestions={tradeSuggestions}
                         canManage={canManage}
                         onChanged={() => void load()}
                         godVisible={godMode}
@@ -449,11 +463,12 @@ export default function Workers() {
 /* ── detail: profile edit + level card + certifications ─────────── */
 
 function WorkerDetail({
-  worker, levels, statuses, canManage, onChanged, godVisible, pending, onMark, onUnmark,
+  worker, levels, statuses, tradeSuggestions, canManage, onChanged, godVisible, pending, onMark, onUnmark,
 }: {
   worker: WorkerItem;
   levels: LevelDef[];
   statuses: StatusValue[];
+  tradeSuggestions: string[];
   canManage: boolean;
   onChanged: () => void;
   godVisible: boolean;
@@ -490,6 +505,7 @@ function WorkerDetail({
         </div>
         {editing ? (
           <ProfileForm worker={worker} levels={levels} statuses={statuses}
+                       tradeSuggestions={tradeSuggestions}
                        onDone={() => { setEditing(false); onChanged(); }}
                        onCancel={() => setEditing(false)} />
         ) : (
