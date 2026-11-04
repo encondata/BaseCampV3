@@ -51,8 +51,8 @@ async def label_catalog_keys(db: AsyncSession) -> list[str]:
     """The active label placeholder catalog, minus the container-only
     keys (labels/generate/values.py resolves those to "" for an asset
     row anyway — the runner is asset-only). Same source of truth the
-    label generator reads, so the kiosk caches exactly the values a
-    generated label would carry."""
+    label generator reads, so a client (the kiosk's cache, the portal's
+    test labels) fills exactly the keys a generated label would carry."""
     keys = list((await db.scalars(
         select(LabelPlaceholder.key)
         .where(LabelPlaceholder.is_active.is_(True))

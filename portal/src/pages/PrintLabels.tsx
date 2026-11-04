@@ -177,6 +177,8 @@ export default function PrintLabels() {
   // The printers this browser already allowed: Labels › Printers' "Known
   // printers" row, read on mount and again after a disconnect, so a printer
   // allowed during this visit shows up once it is no longer the held one.
+  // `knownRead` only suppresses a re-read while connected: the first run
+  // always reads, even on a page that mounts connected.
   const [known, setKnown] = useState<UsbDeviceLike[]>([]);
   const knownRead = useRef(false);
   useEffect(() => {
@@ -791,7 +793,7 @@ export default function PrintLabels() {
             <div className="zp-known">
               <span className="cell-sub">Known printers:</span>
               {known.map((d, i) => (
-                <button key={i} type="button" className="mini-btn" onClick={() => void printer.connectTo(d)}>Connect {d.productName || 'Zebra printer'}</button>
+                <button key={d.serialNumber ?? d.productName ?? String(i)} type="button" className="mini-btn" onClick={() => void printer.connectTo(d)}>Connect {d.productName || 'Zebra printer'}</button>
               ))}
             </div>
           )}

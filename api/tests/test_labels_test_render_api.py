@@ -178,7 +178,7 @@ async def test_needs_labels_view(client, db, seeded_user):
     r = await client.post(URL, headers=worker, json=_body(tpl))
     assert r.status_code == 403, r.text
     assert (await client.post(URL, json=_body(tpl))).status_code == 401
-    # labels:view alone is enough: no designer rank, no kiosk access
+    # a non-designer staff user is allowed
     r = await client.post(URL, headers=await login(client), json=_body(tpl))
     assert r.status_code == 200, r.text
 

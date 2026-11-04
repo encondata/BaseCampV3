@@ -77,7 +77,7 @@ describe('FactoryResetModal', () => {
     expect(document.activeElement).not.toBe(danger);
   });
 
-  it('cancelling sends nothing', async () => {
+  it('canceling sends nothing', async () => {
     const { printer, onClose } = setup();
     await click(screen.getByRole('button', { name: 'Cancel' }));
     expect(printer.send).not.toHaveBeenCalled();
@@ -217,7 +217,7 @@ describe('FactoryResetModal', () => {
   });
 
   // The hook throws 'Printer not connected' once the device is gone; the
-  // modal must not offer a retry it cannot honour.
+  // modal must not offer a retry it cannot honor.
   it('an unplugged printer asks to reconnect and offers no Try again', async () => {
     const { onDone } = setup(fakePrinter({ unplugged: true }));
     await click(screen.getByRole('button', { name: 'Factory reset' }));

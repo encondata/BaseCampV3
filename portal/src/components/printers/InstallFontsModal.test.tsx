@@ -236,6 +236,22 @@ describe('InstallFontsModal', () => {
     // the batch button agrees with the row: that font still needs reinstalling
     expect(screen.getByRole('button', { name: 'Install 1 missing font, reinstall 1 damaged font' })).toBeTruthy();
   });
+  it('Refresh drops a row\'s install verdict, so the row shows what the printer lists now', async () => {
+    const printer = fakePrinter(true, DIR_DAMAGED);   // the re-read after the install still lists 100,000 bytes
+    setup({ printer });
+    await screen.findByText('Damaged');
+    const row = screen.getByText('85620388.TTF').closest('tr') as HTMLElement;
+    await userEvent.click(within(row).getByRole('button', { name: /actions/i }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Reinstall' }));
+    await screen.findByText(`Installed, but the printer reports ${(100000).toLocaleString()} bytes, not ${(124336).toLocaleString()}.`, undefined, { timeout: 4000 });
+    expect(within(row).queryByText('Installed')).toBeNull();
+    // the printer's listing now has the right size; the stale verdict hides it until Refresh
+    printer.query.mockImplementation(async () => DIR_FIXED);
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(within(row).getByText('Installed')).toBeTruthy());
+    expect(within(row).queryByText('Installed ✓')).toBeNull();
+    expect(screen.queryByText(/the printer reports/)).toBeNull();
+  });
   it('an install the re-read does not list shows that, not Installed ✓', async () => {
     const printer = fakePrinter(true, DIR);   // ARIAL_B.TTF is still not on E: afterwards
     setup({ printer });

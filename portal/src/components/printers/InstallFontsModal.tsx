@@ -346,7 +346,7 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
                 {printer.connected && listing && (
                   <div className="zp-actions">
                     <span className="cell-sub">{listing.bytesFree !== null ? `${kb(listing.bytesFree)} free` : ''}</span>
-                    <button type="button" className="mini-btn" disabled={busy || batching} onClick={() => void readDirectory()}>Refresh</button>
+                    <button type="button" className="mini-btn" disabled={busy || batching} onClick={() => { setProgress({}); void readDirectory(); }}>Refresh</button>
                     <button type="button" className="mini-btn" disabled={busy || batching || missingCount + damagedCount === 0} onClick={() => void installAllMissing()}>{fontBatchLabel(missingCount, damagedCount)}</button>
                   </div>
                 )}
