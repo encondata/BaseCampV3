@@ -4,27 +4,36 @@ import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { beforeEach, expect, it, vi } from 'vitest';
 
+// `fetchAssetsSync` / `fetchLabelTemplatesSync` below are test-local
+// stand-ins for the PARSED bodies. `runSync` calls the `...Raw` fetchers
+// (body + the exact response text); by default those wrap the stand-ins
+// with `JSON.stringify`, and a test that cares about the text overrides
+// the raw mock itself.
 const apiMock = vi.hoisted(() => ({
   fetchAssetsSync: vi.fn(),
+  fetchAssetsSyncRaw: vi.fn(),
   fetchPeopleSync: vi.fn(),
   fetchContainersSync: vi.fn(),
   fetchTrucksSync: vi.fn(),
   fetchLabelTemplatesSync: vi.fn(),
+  fetchLabelTemplatesSyncRaw: vi.fn(),
 }));
 vi.mock('./api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./api')>();
   return {
     ...actual,
-    fetchAssetsSync: apiMock.fetchAssetsSync,
+    fetchAssetsSyncRaw: apiMock.fetchAssetsSyncRaw,
     fetchPeopleSync: apiMock.fetchPeopleSync,
     fetchContainersSync: apiMock.fetchContainersSync,
     fetchTrucksSync: apiMock.fetchTrucksSync,
-    fetchLabelTemplatesSync: apiMock.fetchLabelTemplatesSync,
+    fetchLabelTemplatesSyncRaw: apiMock.fetchLabelTemplatesSyncRaw,
   };
 });
 
 import { ApiError } from './api';
-import { clearDb, closeDb, count, getAll, readMeta, replaceAll, writeMeta } from './localDb';
+import {
+  clearDb, closeDb, count, getAll, readMeta, readRawBody, replaceAll, writeMeta,
+} from './localDb';
 import { clearKioskSetup, writeKioskSetup } from './kioskSetup';
 import { getLabelTemplates } from './labelTemplates';
 import { readSyncStatus, resetSyncStatus, runSync } from './sync';
@@ -113,6 +122,16 @@ beforeEach(() => {
   apiMock.fetchTrucksSync.mockReset();
   apiMock.fetchLabelTemplatesSync.mockReset();
   apiMock.fetchLabelTemplatesSync.mockResolvedValue(LABEL_TEMPLATES);
+  apiMock.fetchAssetsSyncRaw.mockReset();
+  apiMock.fetchAssetsSyncRaw.mockImplementation(async (id: string) => {
+    const body = await apiMock.fetchAssetsSync(id);
+    return { body, text: JSON.stringify(body) };
+  });
+  apiMock.fetchLabelTemplatesSyncRaw.mockReset();
+  apiMock.fetchLabelTemplatesSyncRaw.mockImplementation(async (id: string) => {
+    const body = await apiMock.fetchLabelTemplatesSync(id);
+    return { body, text: JSON.stringify(body) };
+  });
 });
 
 it('writes all four stores and the meta row, and reports done with counts', async () => {
@@ -410,6 +429,105 @@ it('clearing the local data empties the template set', async () => {
   expect(await count('label_templates')).toBe(2);
   await clearDb();
   expect(await count('label_templates')).toBe(0);
+});
+
+// ── the raw response texts the label generator reads ──
+
+// The generator needs the response bodies as the API wrote them (a number
+// like `2.0` must not become `2` through JSON.parse + stringify), so sync
+// stores each body's text beside the parsed rows it already stores.
+const RAW_ASSETS_TEXT = '{"initiative_id":"m1","assets":[{"id":"a1","x":2.0}]}';
+const RAW_TEMPLATES_TEXT = '{"initiative_id":"m1","templates":[{"id":"lt-1","w":4.0}]}';
+
+function rawAssets(text: string) {
+  return { body: { ...ASSETS, initiative_id: 'm1', assets: [ASSETS.assets[0]] }, text };
+}
+
+function rawTemplates(text: string, templates = LABEL_TEMPLATES.templates) {
+  return { body: { ...LABEL_TEMPLATES, initiative_id: 'm1', templates }, text };
+}
+
+it('stores the raw assets body in the same transaction as the assets', async () => {
+  mockMove();
+  apiMock.fetchAssetsSyncRaw.mockResolvedValue(rawAssets(RAW_ASSETS_TEXT));
+
+  await runSync('m1', 'Move 1');
+
+  expect(readSyncStatus().phase).toBe('done');
+  expect(await count('assets')).toBe(1);
+  // the `2.0` survives only as text
+  expect(await readRawBody('assets_raw'))
+    .toEqual({ key: 'body', initiativeId: 'm1', text: RAW_ASSETS_TEXT });
+});
+
+it('a failed assets fetch leaves the previous raw assets body alone', async () => {
+  mockMove();
+  apiMock.fetchAssetsSyncRaw.mockResolvedValueOnce(rawAssets(RAW_ASSETS_TEXT));
+  await runSync('m1', 'Move 1');
+  apiMock.fetchAssetsSyncRaw.mockRejectedValue(new ApiError(500, 'server_error'));
+
+  await runSync('m1', 'Move 1');
+
+  expect(readSyncStatus()).toMatchObject({ phase: 'error', error: 'server_error' });
+  expect(await readRawBody('assets_raw'))
+    .toEqual({ key: 'body', initiativeId: 'm1', text: RAW_ASSETS_TEXT });
+});
+
+it('stores the raw templates body with the template rows', async () => {
+  mockMove();
+  apiMock.fetchLabelTemplatesSyncRaw.mockResolvedValue(rawTemplates(RAW_TEMPLATES_TEXT));
+
+  await runSync('m1', 'Move 1');
+
+  expect(readSyncStatus().phase).toBe('done');
+  expect((await getLabelTemplates()).map((t) => t.id)).toEqual(['lt-1', 'lt-2']);
+  expect(await readRawBody('label_templates_raw'))
+    .toEqual({ key: 'body', initiativeId: 'm1', text: RAW_TEMPLATES_TEXT });
+});
+
+it('a failed templates download on the same move keeps the previous raw templates body', async () => {
+  mockMove();
+  apiMock.fetchLabelTemplatesSyncRaw.mockResolvedValueOnce(rawTemplates(RAW_TEMPLATES_TEXT));
+  await runSync('m1', 'Move 1');
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  apiMock.fetchLabelTemplatesSyncRaw.mockRejectedValue(new ApiError(500, 'server_error'));
+
+  await runSync('m1', 'Move 1');
+
+  expect(readSyncStatus().phase).toBe('done');
+  expect(await readRawBody('label_templates_raw'))
+    .toEqual({ key: 'body', initiativeId: 'm1', text: RAW_TEMPLATES_TEXT });
+  expect((await getLabelTemplates()).map((t) => t.id)).toEqual(['lt-1', 'lt-2']);
+  warn.mockRestore();
+});
+
+it('a failed templates download on a different move clears the raw templates body', async () => {
+  mockMove();
+  apiMock.fetchLabelTemplatesSyncRaw.mockResolvedValueOnce(rawTemplates(RAW_TEMPLATES_TEXT));
+  await runSync('m1', 'Move 1');
+  expect(await readRawBody('label_templates_raw')).not.toBeNull();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  apiMock.fetchLabelTemplatesSyncRaw.mockRejectedValue(new ApiError(500, 'server_error'));
+
+  await runSync('m2', 'Move 2');
+
+  expect(readSyncStatus().phase).toBe('done');
+  // never Move 1's templates, rows or text, on Move 2
+  expect(await readRawBody('label_templates_raw')).toBeNull();
+  expect(await getAll('label_templates')).toEqual([]);
+  warn.mockRestore();
+});
+
+it('clearing the local data empties the raw bodies', async () => {
+  mockMove();
+  await runSync('i-1', 'A Move');
+  expect(await readRawBody('assets_raw')).not.toBeNull();
+  expect(await readRawBody('label_templates_raw')).not.toBeNull();
+
+  await clearDb();
+
+  expect(await readRawBody('assets_raw')).toBeNull();
+  expect(await readRawBody('label_templates_raw')).toBeNull();
 });
 
 it('runSync with no move makes no fetch and leaves the status alone', async () => {

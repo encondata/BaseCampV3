@@ -4,7 +4,7 @@
  * holds the move's data downloaded after Kiosk Setup, so a kiosk can
  * recognize an asset or a person without the API.
  *
- * Database `serversherpa-kiosk` v6, eight stores:
+ * Database `serversherpa-kiosk` v7, eleven stores:
  *   - `assets` (keyPath `id`; indexes `rfid`, `asset_id`, `serial_number`)
  *   - `people` (keyPath `id`; index `rfid_tag`)
  *   - `meta`   (keyPath `key`) — the `sync` row: which move, the counts,
@@ -24,9 +24,19 @@
  *   - `label_templates` (keyPath `id`) — v6: the move's label template
  *     set (`/kiosk/sync/label-templates`), so the kiosk can fill in and
  *     print a label without the portal (`labelTemplates.ts`).
+ *   - `assets_raw` and `label_templates_raw` (keyPath `key`) — v7: the
+ *     last assets and label-template responses as TEXT, one row each,
+ *     `{ key: 'body', initiativeId, text }`. The shared label generator
+ *     (`labelgen`) reads the bodies exactly as the API wrote them, so a
+ *     value like `2.0` is never rewritten by a parse-and-stringify round
+ *     trip; the parsed rows in `assets` and `label_templates` serve every
+ *     other screen. Separate stores (not `meta` rows) so `replaceAllMulti`
+ *     can replace each beside its parsed rows in the one sync transaction.
+ *   - `labels` (keyPath `asset_id`) — v7: the generated label for each
+ *     asset (written by the web label generator, not by sync).
  *
  * Older databases upgrade in place: `onupgradeneeded` only creates the
- * stores that are missing, so a kiosk at v1 through v5 keeps its
+ * stores that are missing, so a kiosk at v1 through v6 keeps its
  * downloaded move (and its queued scans) and simply gains what it lacks.
  *
  * Unlike the portal's cache, failures here are NOT swallowed: every call
@@ -36,28 +46,40 @@
  */
 
 const DB_NAME = 'serversherpa-kiosk';
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 
 export type StoreName =
   'assets' | 'people' | 'containers' | 'trucks' | 'label_templates' | 'meta' | 'outbox'
-  | 'sounds';
+  | 'sounds' | 'assets_raw' | 'label_templates_raw' | 'labels';
 
 /** The downloaded move — what "Clear local data" empties. `containers`,
  *  `trucks` and `label_templates` join it for exactly the reason `assets` and `people` are
  *  here: each is a cached copy of the move, re-downloadable from Kiosk
  *  Setup, and leaving a stale crate or truck list behind after a wipe
- *  would be the one thing that still recognized the previous move.
+ *  would be the one thing that still recognized the previous move. The
+ *  raw response texts and the generated `labels` are copies of the move
+ *  too — a wipe that left them would still print the previous move.
  *  `outbox` and `sounds` are deliberately NOT here: clearing the cached
  *  roster must never throw away scans that have not reached the API yet,
  *  nor this kiosk's offline copies of its sounds. */
-export const STORES: StoreName[] =
-  ['assets', 'people', 'containers', 'trucks', 'label_templates', 'meta'];
+export const STORES: StoreName[] = [
+  'assets', 'people', 'containers', 'trucks', 'label_templates', 'assets_raw',
+  'label_templates_raw', 'labels', 'meta',
+];
 
 export const ALL_STORES: StoreName[] = [...STORES, 'outbox', 'sounds'];
 
 export interface MetaRow {
   key: string;
   [field: string]: unknown;
+}
+
+/** One stored response body (`assets_raw`, `label_templates_raw`): the
+ *  text exactly as the API wrote it, and the move it was downloaded for. */
+export interface RawBodyRow {
+  key: 'body';
+  initiativeId: string;
+  text: string;
 }
 
 function factory(): IDBFactory {
@@ -108,6 +130,15 @@ export function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('label_templates')) {
         db.createObjectStore('label_templates', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('assets_raw')) {
+        db.createObjectStore('assets_raw', { keyPath: 'key' });
+      }
+      if (!db.objectStoreNames.contains('label_templates_raw')) {
+        db.createObjectStore('label_templates_raw', { keyPath: 'key' });
+      }
+      if (!db.objectStoreNames.contains('labels')) {
+        db.createObjectStore('labels', { keyPath: 'asset_id' });
       }
     };
     req.onsuccess = () => {
@@ -264,6 +295,16 @@ export function getByIndex<T = unknown>(
 export async function readMeta(key: string): Promise<MetaRow | null> {
   const row = await withStores(['meta'], 'readonly', (tx) =>
     request(tx.objectStore('meta').get(key)) as Promise<MetaRow | undefined>);
+  return row ?? null;
+}
+
+/** The one stored response body for `store`, or null before the first
+ *  sync (and after a wipe). */
+export async function readRawBody(
+  store: 'assets_raw' | 'label_templates_raw',
+): Promise<RawBodyRow | null> {
+  const row = await withStores([store], 'readonly', (tx) =>
+    request(tx.objectStore(store).get('body')) as Promise<RawBodyRow | undefined>);
   return row ?? null;
 }
 

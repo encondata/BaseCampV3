@@ -5,8 +5,8 @@ import { IDBFactory } from 'fake-indexeddb';
 import { beforeEach, expect, it } from 'vitest';
 
 import {
-  clearDb, closeDb, count, deleteRows, getAll, getByIndex, openDb, putRows, readMeta, replaceAll,
-  replaceAllMulti, writeMeta,
+  clearDb, closeDb, count, deleteRows, getAll, getByIndex, openDb, putRows, readMeta, readRawBody,
+  replaceAll, replaceAllMulti, writeMeta,
 } from './localDb';
 
 const asset = (id: string, rfid: string) => ({
@@ -128,11 +128,13 @@ it('replaceAllMulti aborts every store together when one write is invalid', asyn
   expect(await readMeta('sync')).toBeNull();
 });
 
-it('v6 carries the outbox, the sounds, the containers, the trucks and the label templates', async () => {
+it('v7 carries the outbox, the sounds, the containers, the trucks, the label templates and the label stores', async () => {
   const db = await openDb();
-  expect(db.version).toBe(6);
-  expect([...db.objectStoreNames].sort()).toEqual(
-    ['assets', 'containers', 'label_templates', 'meta', 'outbox', 'people', 'sounds', 'trucks']);
+  expect(db.version).toBe(7);
+  expect([...db.objectStoreNames].sort()).toEqual([
+    'assets', 'assets_raw', 'containers', 'label_templates', 'label_templates_raw', 'labels',
+    'meta', 'outbox', 'people', 'sounds', 'trucks',
+  ]);
 });
 
 it('finds a truck by name and by load_number', async () => {
@@ -173,7 +175,7 @@ it('upgrades a v1 database in place, keeping its rows and adding the outbox', as
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(6);
+  expect(db.version).toBe(7);
   expect(db.objectStoreNames.contains('outbox')).toBe(true);
   expect(db.objectStoreNames.contains('sounds')).toBe(true);
   expect(db.objectStoreNames.contains('containers')).toBe(true);
@@ -200,7 +202,7 @@ it('upgrades a v2 database in place, keeping its outbox and adding sounds', asyn
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(6);
+  expect(db.version).toBe(7);
   expect(db.objectStoreNames.contains('sounds')).toBe(true);
   expect(db.objectStoreNames.contains('containers')).toBe(true);
   expect(db.objectStoreNames.contains('trucks')).toBe(true);
@@ -228,7 +230,7 @@ it('upgrades a v3 database in place, keeping its data and adding containers', as
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(6);
+  expect(db.version).toBe(7);
   expect(db.objectStoreNames.contains('containers')).toBe(true);
   expect(db.objectStoreNames.contains('trucks')).toBe(true);
   expect(await count('assets')).toBe(1);
@@ -262,7 +264,7 @@ it('upgrades a v4 database in place, keeping its containers and adding trucks', 
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(6);
+  expect(db.version).toBe(7);
   expect(db.objectStoreNames.contains('trucks')).toBe(true);
   expect(await count('assets')).toBe(1);
   expect(await count('containers')).toBe(1);
@@ -300,7 +302,7 @@ it('upgrades a v5 database in place, keeping its data and adding label_templates
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(6);
+  expect(db.version).toBe(7);
   expect(db.objectStoreNames.contains('label_templates')).toBe(true);
   expect(await count('assets')).toBe(1);
   expect(await count('containers')).toBe(1);
@@ -308,6 +310,83 @@ it('upgrades a v5 database in place, keeping its data and adding label_templates
   expect(await count('outbox')).toBe(1);
   expect(await readMeta('sync')).toMatchObject({ initiativeId: 'i-1' });
   expect(await count('label_templates')).toBe(0);
+});
+
+it('upgrades a v6 database in place, keeping its data and adding the raw-body and label stores', async () => {
+  // A kiosk that synced before the web label generator shipped: its
+  // downloaded move, template set and queued scans all survive, and it
+  // gains the three stores the generator reads and writes.
+  await new Promise<void>((resolve, reject) => {
+    const req = indexedDB.open('serversherpa-kiosk', 6);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      db.createObjectStore('assets', { keyPath: 'id' }).createIndex('rfid', 'rfid');
+      db.createObjectStore('people', { keyPath: 'id' }).createIndex('rfid_tag', 'rfid_tag');
+      db.createObjectStore('meta', { keyPath: 'key' });
+      db.createObjectStore('outbox', { keyPath: 'client_scan_id' }).createIndex('status', 'status');
+      db.createObjectStore('sounds', { keyPath: 'id' });
+      const containers = db.createObjectStore('containers', { keyPath: 'id' });
+      containers.createIndex('rfid_tag', 'rfid_tag');
+      containers.createIndex('name', 'name');
+      const trucks = db.createObjectStore('trucks', { keyPath: 'id' });
+      trucks.createIndex('name', 'name');
+      trucks.createIndex('load_number', 'load_number');
+      db.createObjectStore('label_templates', { keyPath: 'id' });
+    };
+    req.onsuccess = () => { req.result.close(); resolve(); };
+    req.onerror = () => reject(req.error);
+  });
+  await replaceAll('assets', [asset('a', 'R1')]);
+  await replaceAll('label_templates', [{ id: 'lt-1', name: 'Generic Rack and RU' }]);
+  await putRows('outbox', [{ client_scan_id: 's1', status: 'queued' }]);
+  await writeMeta('sync', { initiativeId: 'i-1', assets: 1 });
+  closeDb();
+
+  const db = await openDb();
+  expect(db.version).toBe(7);
+  for (const name of ['assets_raw', 'label_templates_raw', 'labels']) {
+    expect(db.objectStoreNames.contains(name)).toBe(true);
+  }
+  expect(await count('assets')).toBe(1);
+  expect(await count('label_templates')).toBe(1);
+  expect(await count('outbox')).toBe(1);
+  expect(await readMeta('sync')).toMatchObject({ initiativeId: 'i-1' });
+  expect(await count('assets_raw')).toBe(0);
+  expect(await count('labels')).toBe(0);
+});
+
+it('readRawBody is null until a body is stored, then returns the one row', async () => {
+  expect(await readRawBody('assets_raw')).toBeNull();
+  expect(await readRawBody('label_templates_raw')).toBeNull();
+
+  const row = { key: 'body' as const, initiativeId: 'i-1', text: '{"assets":[{"x":2.0}]}' };
+  await replaceAll('assets_raw', [row]);
+
+  expect(await readRawBody('assets_raw')).toEqual(row);
+  expect(await readRawBody('label_templates_raw')).toBeNull();
+});
+
+it('stores a label under its asset_id', async () => {
+  await putRows('labels', [{ asset_id: '10482', zpl: '^XA^XZ' }, { asset_id: '10483', zpl: '^XA^XZ' }]);
+  await putRows('labels', [{ asset_id: '10482', zpl: '^XA^FDnew^FS^XZ' }]);
+  const rows = await getAll<{ asset_id: string; zpl: string }>('labels');
+  expect(rows.map((r) => r.asset_id).sort()).toEqual(['10482', '10483']);
+  expect(rows.find((r) => r.asset_id === '10482')?.zpl).toBe('^XA^FDnew^FS^XZ');
+});
+
+it('clearing local data empties assets_raw, label_templates_raw and labels', async () => {
+  await replaceAll('assets_raw', [{ key: 'body', initiativeId: 'i-1', text: '{}' }]);
+  await replaceAll('label_templates_raw', [{ key: 'body', initiativeId: 'i-1', text: '{}' }]);
+  await putRows('labels', [{ asset_id: '10482', zpl: '^XA^XZ' }]);
+
+  await clearDb();
+
+  // These are cached copies of the move like the rest of the roster, so a
+  // wipe takes them too — a stale body would still print the old move.
+  expect(await count('assets_raw')).toBe(0);
+  expect(await count('label_templates_raw')).toBe(0);
+  expect(await count('labels')).toBe(0);
+  expect(await readRawBody('assets_raw')).toBeNull();
 });
 
 it('putRows upserts without clearing, and deleteRows removes by key', async () => {
@@ -347,13 +426,13 @@ it('closes its connection when another tab needs a higher version', async () => 
   // three stale tabs pinned the database at v1 and the Scanning page
   // never became usable.
   const upgraded = await new Promise<IDBDatabase>((resolve, reject) => {
-    const req = indexedDB.open('serversherpa-kiosk', 7);
+    const req = indexedDB.open('serversherpa-kiosk', 8);
     req.onupgradeneeded = () => req.result.createObjectStore('later', { keyPath: 'id' });
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
     req.onblocked = () => reject(new Error('blocked — the old connection never yielded'));
   });
-  expect(upgraded.version).toBe(7);
+  expect(upgraded.version).toBe(8);
   expect(upgraded.objectStoreNames.contains('assets')).toBe(true);
   upgraded.close();
 });
