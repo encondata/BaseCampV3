@@ -3099,9 +3099,12 @@ class CheckWatchOut(BaseModel):
 class DeliveryCheckOut(BaseModel):
     """What would happen right now if this person got a notification of this
     kind. Nothing is written. `inbox` is notify()'s answer, with the source of
-    the Inbox switch behind it. `outcome` is the email's: sent now (at
-    `send_at`), held for the person's summary (due `summary_at`), or not sent
-    (`reason` says why; for a held email, the schedule state that holds it).
+    the Inbox switch behind it and `inbox_reason` saying why a row is not
+    written. `outcome` is the email's: sent now (at `send_at`), held for the
+    person's summary (due `summary_at`), or not sent (`reason` says why; for
+    a held email, the schedule state that holds it). A project plan notice
+    follows the plans' own rule (plans/notices.py): its email is `direct`,
+    sent when the plan sends it and never held by the schedule.
     `after_summary` marks an email sent now only because it falls in the last
     hour before the person is back online, when that morning's summary has
     already gone. `owner_copy` is the copy that was modeled; `critical`
@@ -3120,12 +3123,13 @@ class DeliveryCheckOut(BaseModel):
     active: bool
     has_account: bool
     inbox: Literal["written", "suppressed"]
+    inbox_reason: str | None = None
     inbox_source: Literal["default", "own", "fixed"]
     email_enabled: bool
     critical: bool
     switches: DeliveryCheckSwitchesOut
     schedule: DeliveryCheckScheduleOut
-    outcome: Literal["now", "held", "not_sent"]
+    outcome: Literal["now", "held", "not_sent", "direct"]
     after_summary: bool
     send_at: datetime | None = None
     summary_at: datetime | None = None

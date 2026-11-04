@@ -25,6 +25,10 @@ personal, so it never goes through a notification group's subscription:
   email whose inbox row is gone) leaves it alone. Archived people and
   disabled accounts get nothing.
 
+The rule itself is `delivery()`, which reads nothing: `reach` acts on it, and
+the super-admin Check delivery tool (notifications/check.py) reports it, so the
+two cannot drift.
+
 Nothing here commits: every row joins the caller's transaction, so a
 rolled-back edit sends nothing."""
 
@@ -37,10 +41,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.api.deps import AuthContext
 from serversherpa.db.models import Initiative, Person
 from serversherpa.mail.outbox import enqueue
-from serversherpa.notifications.company import load_company_settings
-from serversherpa.notifications.email import effective_switches, load_contact, portal_link
+from serversherpa.notifications.company import CompanySettings, load_company_settings
+from serversherpa.notifications.email import (
+    Contact,
+    effective_switches,
+    load_contact,
+    portal_link,
+)
 from serversherpa.notifications.inbox import notify
-from serversherpa.notifications.kinds import kind_info
+from serversherpa.notifications.kinds import KindInfo, kind_info
 from serversherpa.plans.floating import last_day, plan_now
 from serversherpa.plans.service import PlanState
 from serversherpa.plans.settings import PlanSettings
@@ -48,6 +57,49 @@ from serversherpa.plans.settings import PlanSettings
 KIND = "plan_task_assigned"
 # an inbox body names this many tasks, then "and N more"
 BODY_TASKS = 5
+
+
+@dataclass(frozen=True)
+class Delivery:
+    """How a plan message would reach one person, and why not where it doesn't.
+    The reasons are the delivery log's codes: `inbox_reason` recipient_inactive,
+    category_off or no_account; `email_reason` recipient_inactive, category_off,
+    category_inbox_only, email_assignees_off or no_address. Each is None where
+    that part goes."""
+    inbox: bool                     # the inbox row is written
+    inbox_reason: str | None
+    address: str | None             # the direct email goes here
+    address_source: str | None      # "contact" (their own email) or "login" (the account's)
+    email_reason: str | None
+
+
+def delivery(info: KindInfo | None, contact: Contact | None, company: CompanySettings, *,
+             email: bool) -> Delivery:
+    """The delivery rule for one person, from what is already loaded (see the
+    module notes). `email` is the plan's `reminders.email_assignees`."""
+    if contact is None or not contact.active:
+        return Delivery(False, "recipient_inactive", None, None, "recipient_inactive")
+    # login_email is the account's email, which every account has
+    has_account = contact.login_email is not None
+    inbox_reason = email_reason = None
+    if has_account:
+        switches = effective_switches(info, contact, company)
+        if not switches.inbox:
+            return Delivery(False, "category_off", None, None, "category_off")
+        if not switches.email:          # already off when Inbox is
+            email_reason = "category_inbox_only"
+    else:
+        inbox_reason = "no_account"
+    if email_reason is None and not email:
+        email_reason = "email_assignees_off"
+    # learning.emails.address_for's rule (contact email, else login email,
+    # for an active person), read from the contact already loaded
+    if email_reason is None and contact.address is None:
+        email_reason = "no_address"
+    if email_reason is not None:
+        return Delivery(has_account, inbox_reason, None, None, email_reason)
+    return Delivery(has_account, inbox_reason, contact.address,
+                    "contact" if contact.contact_email else "login", None)
 
 
 @dataclass(frozen=True)
@@ -63,24 +115,11 @@ async def reach(db: AsyncSession, person_id: uuid.UUID, kind: str, *,
     (their Project plans Inbox switch is off, they are archived or disabled,
     or they have no account and no email we may use). `email` is the plan's
     `reminders.email_assignees`."""
-    contact = await load_contact(db, person_id)
-    if contact is None or not contact.active:
+    rule = delivery(kind_info(kind), await load_contact(db, person_id),
+                    await load_company_settings(db), email=email)
+    if not rule.inbox and rule.address is None:
         return None
-    # login_email is the account's email, which every account has
-    has_account = contact.login_email is not None
-    wants_email = True
-    if has_account:
-        switches = effective_switches(kind_info(kind), contact,
-                                      await load_company_settings(db))
-        if not switches.inbox:
-            return None
-        wants_email = switches.email      # already off when Inbox is
-    # learning.emails.address_for's rule (contact email, else login email,
-    # for an active person), read from the contact already loaded
-    address = contact.address if email and wants_email else None
-    if not has_account and address is None:
-        return None
-    return Reach(inbox=has_account, address=address)
+    return Reach(inbox=rule.inbox, address=rule.address)
 
 
 async def send(db: AsyncSession, person_id: uuid.UUID, kind: str, *, email: bool,

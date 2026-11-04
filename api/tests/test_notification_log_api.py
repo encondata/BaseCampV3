@@ -299,7 +299,7 @@ async def _check(client, hdrs, person, kind="report_ready", **params):
 
 CHECK_KEYS = {
     "person_id", "person_name", "kind", "kind_label", "category", "owner_copy", "active",
-    "has_account", "inbox", "inbox_source", "email_enabled", "critical", "switches",
+    "has_account", "inbox", "inbox_reason", "inbox_source", "email_enabled", "critical", "switches",
     "schedule", "outcome", "after_summary", "send_at", "summary_at", "reason", "address",
     "address_source", "watches",
 }
@@ -334,7 +334,8 @@ async def test_check_outcomes(client, db, email_on):
     body = await _check(client, hdrs, open_person)
     assert set(body) == CHECK_KEYS
     assert (body["outcome"], body["reason"], body["after_summary"]) == ("now", None, False)
-    assert (body["inbox"], body["inbox_source"]) == ("written", "default")
+    assert (body["inbox"], body["inbox_reason"], body["inbox_source"]) == (
+        "written", None, "default")
     assert (body["person_id"], body["person_name"]) == (str(open_person.id), "Olive Tester")
     assert (body["kind"], body["kind_label"], body["category"]) == (
         "report_ready", "Report ready", "reports")
@@ -349,7 +350,8 @@ async def test_check_outcomes(client, db, email_on):
     assert body["watches"] is None                  # nobody can watch for Report ready
 
     body = await _check(client, hdrs, off)
-    assert (body["inbox"], body["inbox_source"]) == ("suppressed", "own")
+    assert (body["inbox"], body["inbox_reason"], body["inbox_source"]) == (
+        "suppressed", "category_off", "own")
     assert (body["outcome"], body["reason"]) == ("not_sent", "category_off")
     assert body["switches"] == {"inbox": {"on": False, "source": "own"},
                                 "email": {"on": False, "source": "own"}}
@@ -506,6 +508,91 @@ async def test_check_names_an_inactive_recipient(client, db, email_on):
     body = await _check(client, hdrs, gone)
     assert (body["active"], body["outcome"], body["reason"]) == (
         False, "not_sent", "recipient_inactive")
+
+
+PLAN_KINDS = ("plan_task_assigned", "plan_task_due", "plan_task_overdue", "plan_overdue_digest")
+
+
+async def test_check_a_plan_kind_follows_the_plans_own_delivery(client, db, email_on):
+    """Project plan notices go straight to the person (plans/notices.py), so the check
+    answers with that rule, not notify()'s: the email is "direct" (never held, whatever the
+    schedule), the switches decide for an account holder, and someone without an account
+    gets the email only."""
+    hdrs = await _super_admin(db, client)
+    schedule, _ = _quiet_now()
+    holder = await _person(db, "Hal", prefs={"notif": {"schedule": schedule}})
+    inbox_only = await _person(db, "Ivy", prefs=_prefs(plans="inbox"))
+    off = await _person(db, "Otto", prefs=_prefs(plans="off"))
+    no_account = await _person(db, "Nora")
+    unreachable = await _person(db, "Una")
+    unreachable.email = None
+    gone = await _person(db, "Gale")
+    gone.archived_at = datetime.now(UTC)
+    await db.commit()
+    before = await _counts(db)
+
+    for kind in PLAN_KINDS:
+        body = await _check(client, hdrs, holder, kind)
+        assert set(body) == CHECK_KEYS
+        assert (body["category"], body["critical"], body["owner_copy"]) == ("plans", False, False)
+        assert (body["inbox"], body["inbox_reason"]) == ("written", None)
+        # in quiet hours, and still not held: the plan sends at its own times
+        assert body["schedule"]["state"] == "quiet_hours"
+        assert (body["outcome"], body["reason"], body["after_summary"]) == ("direct", None, False)
+        assert body["send_at"] is None and body["summary_at"] is None
+        assert (body["address"], body["address_source"]) == ("hal@test.example.com", "contact")
+
+    body = await _check(client, hdrs, inbox_only, "plan_task_due")
+    assert (body["inbox"], body["inbox_reason"]) == ("written", None)
+    assert (body["outcome"], body["reason"]) == ("not_sent", "category_inbox_only")
+    assert body["address"] is None
+
+    # notify() would keep the row of a never-emailed kind; a plan notice sends nothing at all
+    body = await _check(client, hdrs, off, "plan_task_due")
+    assert (body["inbox"], body["inbox_reason"], body["inbox_source"]) == (
+        "suppressed", "category_off", "own")
+    assert (body["outcome"], body["reason"]) == ("not_sent", "category_off")
+
+    body = await _check(client, hdrs, no_account, "plan_task_assigned")
+    assert (body["has_account"], body["inbox"], body["inbox_reason"]) == (
+        False, "suppressed", "no_account")
+    assert (body["outcome"], body["address"]) == ("direct", "nora@test.example.com")
+
+    body = await _check(client, hdrs, unreachable, "plan_task_assigned")
+    assert (body["inbox"], body["inbox_reason"]) == ("suppressed", "no_account")
+    assert (body["outcome"], body["reason"], body["address"]) == ("not_sent", "no_address", None)
+
+    body = await _check(client, hdrs, gone, "plan_task_due")
+    assert (body["active"], body["inbox"], body["inbox_reason"]) == (
+        False, "suppressed", "recipient_inactive")
+    assert (body["outcome"], body["reason"]) == ("not_sent", "recipient_inactive")
+    assert await _counts(db) == before
+
+
+async def test_check_a_plan_kind_under_the_company_default(client, db, email_on):
+    """With Project plans off by default, an account holder who never chose gets nothing,
+    and someone without an account still gets the email: the same as the sender."""
+    hdrs = await _super_admin(db, client)
+    await _company(db, defaults={"plans": {"inbox": False, "email": False}})
+    follows = await _person(db, "Fay", prefs={})
+    no_account = await _person(db, "Nora")
+    await db.commit()
+
+    body = await _check(client, hdrs, follows, "plan_task_due")
+    assert (body["inbox"], body["inbox_reason"], body["inbox_source"]) == (
+        "suppressed", "category_off", "default")
+    assert (body["outcome"], body["reason"]) == ("not_sent", "category_off")
+    body = await _check(client, hdrs, no_account, "plan_task_due")
+    assert (body["outcome"], body["reason"]) == ("direct", None)
+
+
+async def test_check_a_plan_kind_without_email_set_up(client, db):
+    hdrs = await _super_admin(db, client)
+    pat = await _person(db, "Pat", prefs={})
+    await db.commit()
+    body = await _check(client, hdrs, pat, "plan_task_due")
+    assert (body["inbox"], body["email_enabled"]) == ("written", False)
+    assert (body["outcome"], body["reason"]) == ("not_sent", "email_not_set_up")
 
 
 # ── GET /notifications/kinds ────────────────────────────────────────

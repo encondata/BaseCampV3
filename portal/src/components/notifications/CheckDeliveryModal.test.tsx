@@ -45,6 +45,7 @@ const KINDS: NotificationKindInfo[] = [
   { kind: 'password_reset_request', label: 'Password reset request', category: 'approvals', email: false, owner_always: false, critical: false, locked: false, watchable: false, everywhere: false, reaches: [] },
   { kind: 'initiative_status_changed', label: 'Initiative status changed', category: 'initiatives', email: true, owner_always: false, critical: false, locked: false, watchable: true, everywhere: true, reaches: ['initiative', 'site'] },
   { kind: 'truck_status_changed', label: 'Truck status changed', category: 'trucks', email: true, owner_always: false, critical: false, locked: false, watchable: true, everywhere: true, reaches: ['truck', 'initiative', 'site'] },
+  { kind: 'plan_task_due', label: 'Plan task due', category: 'plans', email: false, owner_always: false, critical: false, locked: false, watchable: false, everywhere: false, reaches: [] },
 ];
 
 const person = (person_id: string, display_name: string, job_title: string | null = null): NotificationRecipient => ({
@@ -58,7 +59,7 @@ const WEEKDAYS: DeliveryCheck['schedule']['days'] = ['mon', 'tue', 'wed', 'thu',
 const check = (over: Partial<DeliveryCheck> = {}): DeliveryCheck => ({
   person_id: 'p1', person_name: 'Ada Lovelace', kind: 'report_ready', kind_label: 'Report ready',
   category: 'reports', owner_copy: false, active: true, has_account: true,
-  inbox: 'written', inbox_source: 'default', email_enabled: true, critical: false,
+  inbox: 'written', inbox_reason: null, inbox_source: 'default', email_enabled: true, critical: false,
   switches: { inbox: { on: true, source: 'default' }, email: { on: true, source: 'default' } },
   schedule: { timezone: 'America/Chicago', days: WEEKDAYS, quiet_start: '21:00', quiet_end: '07:00', state: 'open' },
   outcome: 'now', after_summary: false, send_at: NOW, summary_at: null, reason: null,
@@ -279,7 +280,7 @@ it('an email that would not go says why, and names no address', async () => {
 it('a category turned off keeps it out of the inbox too, and says whose choice it was', async () => {
   const user = userEvent.setup();
   api.checkDelivery.mockResolvedValue(notSent('category_off', {
-    inbox: 'suppressed', inbox_source: 'own',
+    inbox: 'suppressed', inbox_reason: 'category_off', inbox_source: 'own',
     switches: { inbox: { on: false, source: 'own' }, email: { on: false, source: 'own' } },
   }));
   const dialog = open();
@@ -517,6 +518,51 @@ it('the owner\'s copy goes now to the sign-in email; an admin copy stays in the 
   expect(line(dialog, 'Inbox')).toBe('In inbox · Always');
   // the type is still critical; this copy simply is not emailed
   expect(line(dialog, 'Critical type')).toBe('Yes — skips quiet hours and the summary');
+});
+
+/** What the API answers for a project plan notice: its own delivery rule, emailed directly. */
+const planCheck = (over: Partial<DeliveryCheck> = {}): DeliveryCheck => check({
+  kind: 'plan_task_due', kind_label: 'Plan task due', category: 'plans',
+  outcome: 'direct', send_at: null, ...over,
+});
+
+it('a project plan notice is sent directly, and a note says when', async () => {
+  const user = userEvent.setup();
+  api.checkDelivery.mockResolvedValue(planCheck());
+  const dialog = open();
+  await ask(dialog, user, /^Plan task due/);
+  expect(api.checkDelivery).toHaveBeenLastCalledWith('p1', 'plan_task_due');
+  expect(line(dialog, 'Email')).toBe('Sent directly to ada@example.com (contact email)');
+  expect(within(dialog).getByText('Sent directly').className).toBe('chip c-green');
+  expect(line(dialog, 'Inbox')).toBe('In inbox · Company default');
+  expect(within(dialog).getByText("Project plan notices go straight to the person: a reminder at the plan's send time, an assignment notice when it is made. Their schedule never holds one, and a plan with Email assignees off sends no email.")).toBeTruthy();
+});
+
+it('a project plan notice to someone with no portal account: email only', async () => {
+  const user = userEvent.setup();
+  api.checkDelivery.mockResolvedValue(planCheck({
+    has_account: false, inbox: 'suppressed', inbox_reason: 'no_account',
+  }));
+  const dialog = open();
+  await ask(dialog, user, /^Plan task due/);
+  // no switch keeps it out, so the line names none
+  expect(line(dialog, 'Inbox')).toBe('Not in inbox · No portal account');
+  expect(line(dialog, 'Email')).toBe('Sent directly to ada@example.com (contact email)');
+});
+
+it('a project plan notice that does not go says why, and other types carry no plan note', async () => {
+  const user = userEvent.setup();
+  api.checkDelivery.mockResolvedValue(planCheck({
+    outcome: 'not_sent', reason: 'category_inbox_only', address: null, address_source: null,
+  }));
+  const dialog = open();
+  await ask(dialog, user, /^Plan task due/);
+  expect(line(dialog, 'Email')).toBe('Not sent · Category set to inbox only');
+
+  api.checkDelivery.mockResolvedValue(check());
+  await pick(user, 'Notification type', /^Report ready/);
+  await waitFor(() => expect(line(dialog, 'Email')).toBe('Sends now to ada@example.com (contact email)'));
+  expect(within(dialog).queryByText(/^Project plan notices go straight/)).toBeNull();
 });
 
 it('a type that is never emailed says so', async () => {

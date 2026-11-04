@@ -5,7 +5,10 @@
  * whether the email goes now, is held for the person's summary (until when,
  * and why) or does not go (and why), the address it would go to, the person's
  * switches and where each comes from, their schedule and whether it is open
- * right now, and whether the type is critical. For a type someone can watch
+ * right now, and whether the type is critical. A project plan notice is
+ * emailed directly when the plan sends it, never held by the schedule, so its
+ * Email line says "Sent directly" and a note under the rows says when that is.
+ * For a type someone can watch
  * for, a Watching row lists the person's watches that would hear it, a line
  * each (the thing, its events, whose watch it is), and a note under the rows
  * says that reaching them for a particular thing also depends on their access
@@ -47,6 +50,7 @@ const OUTCOMES: Record<DeliveryCheck['outcome'], { label: string; chip: string }
   now: { label: 'Sends now', chip: 'c-green' },
   held: { label: 'Held', chip: 'c-amber' },
   not_sent: { label: 'Not sent', chip: 'c-slate' },
+  direct: { label: 'Sent directly', chip: 'c-green' },
 };
 
 const ERRORS: Record<string, string> = {
@@ -60,10 +64,16 @@ const msgFor = (err: unknown): string =>
 
 function inboxLine(r: DeliveryCheck): ReactNode {
   const source = switchSourceLabel(r.inbox_source);
-  return r.inbox === 'written'
-    ? <><span className="chip c-blue">In inbox</span> · {source}</>
-    // notify() keeps the row out only for a category turned off
-    : <><span className="chip c-slate">Not in inbox</span> · {reasonLabel('category_off')} · {source}</>;
+  if (r.inbox === 'written') return <><span className="chip c-blue">In inbox</span> · {source}</>;
+  // a category turned off (and whose switch that is), or for a project plan
+  // notice no portal account or an archived person
+  const why = r.inbox_reason ?? 'category_off';
+  return (
+    <>
+      <span className="chip c-slate">Not in inbox</span> · {reasonLabel(why)}
+      {why === 'category_off' && <> · {source}</>}
+    </>
+  );
 }
 
 function emailLine(r: DeliveryCheck): ReactNode {
@@ -113,6 +123,9 @@ function scheduleLine(r: DeliveryCheck): ReactNode {
 }
 
 const NO_WATCHES = 'Nothing that hears this type';
+const DIRECT_NOTE = 'Project plan notices go straight to the person: a reminder at the plan\'s '
+  + 'send time, an assignment notice when it is made. Their schedule never holds one, and a plan '
+  + 'with Email assignees off sends no email.';
 const ACCESS_NOTE = 'Whether it reaches them for a particular thing also depends on their access to it.';
 
 /** One watch of the person that would hear the type: "Initiative A · All events ·
@@ -249,6 +262,7 @@ export default function CheckDeliveryModal({ onClose }: { onClose: () => void })
                 )}
               </dl>
               {result.watches && <p className="cell-sub nm-hint">{ACCESS_NOTE}</p>}
+              {result.category === 'plans' && <p className="cell-sub nm-hint">{DIRECT_NOTE}</p>}
             </section>
           </div>
         )}

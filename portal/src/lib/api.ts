@@ -6634,10 +6634,12 @@ export interface DeliveryCheckSchedule {
 }
 
 /** What would happen right now if this person got a notification of this
- *  kind; nothing is written. `inbox` is whether the row is written and
- *  `inbox_source` where the Inbox switch behind it comes from. `outcome` is
- *  the email's: sent now (`send_at`), held for the person's summary (due
- *  `summary_at`), or not sent; `reason` says why it is held or does not go.
+ *  kind; nothing is written. `inbox` is whether the row is written,
+ *  `inbox_reason` why not, and `inbox_source` where the Inbox switch behind it
+ *  comes from. `outcome` is the email's: sent now (`send_at`), held for the
+ *  person's summary (due `summary_at`), or not sent; `reason` says why it is
+ *  held or does not go. A project plan notice is emailed `direct`: when the
+ *  plan sends it, never held by the person's schedule.
  *  `after_summary` marks an email sent now only because it falls in the last
  *  hour before the person is back online, when that morning's summary has
  *  already gone. `owner_copy` is the copy that was modeled; `critical` is
@@ -6653,12 +6655,13 @@ export interface DeliveryCheck {
   active: boolean;
   has_account: boolean;
   inbox: 'written' | 'suppressed';
+  inbox_reason: string | null;
   inbox_source: SwitchSource;
   email_enabled: boolean;
   critical: boolean;
   switches: { inbox: DeliveryCheckSwitch; email: DeliveryCheckSwitch };
   schedule: DeliveryCheckSchedule;
-  outcome: 'now' | 'held' | 'not_sent';
+  outcome: 'now' | 'held' | 'not_sent' | 'direct';
   after_summary: boolean;
   send_at: string | null;
   summary_at: string | null;

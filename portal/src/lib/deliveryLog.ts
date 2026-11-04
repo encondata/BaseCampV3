@@ -54,6 +54,8 @@ const isEvent = (code: string): code is DeliveryLogEvent => Object.hasOwn(EVENT_
 export const REASON_LABELS: Record<string, string> = {
   // the inbox row was not written (inbox_suppressed)
   category_off: 'Category turned off',
+  // a project plan notice to someone with no portal account: email only (Check delivery)
+  no_account: 'No portal account',
   // the person can't open what the event is about: the event sweep keeps the
   // inbox row out (inbox_suppressed) and the send-time re-check drops the email
   // (email_skipped)
