@@ -177,3 +177,17 @@ async def test_worker_off_move_scan_is_a_sighting(db):
         runs = (await check.scalars(select(StatusRuleExecution))).all()
         assert [r.processed_scan_id for r in runs] == [p_on.id]        # no rule for the off-move scan
         assert (await check.scalars(select(RawScan))).all() == []
+
+
+async def test_worker_rfid_read_matches_tag_not_legacy_id(db):
+    by_legacy = Asset(legacy_id=100222)
+    by_rfid = Asset(rfid_tag="000000000000000000100222")
+    scan = _raw("000000000000000000100222")
+    db.add_all([by_legacy, by_rfid, scan])
+    await db.commit()
+
+    assert await worker.process_raw_scan(get_sessionmaker(), scan.id) == "matched"
+
+    async with get_sessionmaker()() as check:
+        processed = (await check.scalars(select(ProcessedScan))).one()
+        assert processed.asset_id == by_rfid.id
