@@ -4998,11 +4998,14 @@ export async function rejectMembershipRequest(id: string, note = ''): Promise<Me
 
 export interface StatusRuleCondition { field: string; operator: string; value: string | null }
 export interface StatusRuleAction { action_type: string; params: Record<string, unknown> }
+/** `names`: the name of each person and notification group the rule's Send a notification action
+ *  chooses, by id, for a viewer who may not list them. An id with no name is not in it. */
 export interface StatusRule {
   id: string; name: string; description: string;
   trigger_status: string; trigger_match_type: string;
   priority: number; enabled: boolean;
   conditions: StatusRuleCondition[]; actions: StatusRuleAction[];
+  names: Record<string, string>;
   created_at: string; updated_at: string;
 }
 export interface StatusRuleIn {

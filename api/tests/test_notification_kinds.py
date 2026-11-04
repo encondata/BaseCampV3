@@ -156,7 +156,8 @@ KIND_CONST = re.compile(r"""^KIND(?:_[A-Z]+)?\s*=\s*["']([a-z_]+)["']""", re.MUL
 ANNOUNCE_CALL = re.compile(r"""\bannounce\(\s*[\w.]+\s*,\s*["']([a-z_]+)["']""")
 # the modules that name their kinds in module-level KIND / KIND_<X> constants
 KIND_CONST_FILES = ("notifications/reset_requests.py", "notifications/password_reminders.py",
-                    "learning/scheduler.py", "plans/reminders.py", "plans/notices.py")
+                    "learning/scheduler.py", "plans/reminders.py", "plans/notices.py",
+                    "imports/notices.py")
 
 
 def _scan() -> set[str]:

@@ -3,11 +3,13 @@ breadcrumbs, rename, move, copy, delete (to the trash), favorites, and
 the recent/drafts lists.
 
 What a caller sees: live (not deleted) nodes they have a level on — and,
-where they only have view, never a page that has no published version.
-Every list serializes through `nodes_out`, so a listing costs a fixed
-number of statements however long it is. A node the caller can't view
-is a 404, a viewable one they lack the level on is a 403, and a tree
-operation that can't be done (`tree.TreeError`) is a 422 with its code.
+where they only have view, never a page that has no published version
+(the lists leave it out, and reading it is a 404 `not_published`, as the
+page's content read answers). Every list serializes through `nodes_out`,
+so a listing costs a fixed number of statements however long it is. A
+node the caller can't view is a 404, a viewable one they lack the level
+on is a 403, and a tree operation that can't be done (`tree.TreeError`)
+is a 422 with its code.
 """
 from __future__ import annotations
 
@@ -156,8 +158,20 @@ async def list_tree(key: str, ctx: WikiContext,
 
 @router.get("/nodes/{node_id}", response_model=NodeDetailOut)
 async def get_node(node_id: uuid.UUID, ctx: WikiContext) -> NodeDetailOut:
+    """One node with its breadcrumbs and library (view). A page that was
+    never published doesn't exist for a caller who only has view: 404
+    `not_published`, the answer its content read gives, and nothing about
+    the page (its title, owner or dates) comes with it."""
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "view")
-    level = await ctx.ix.level_for_node(node)
+    # the tree's own rule, before anything about the node is read or returned. Past
+    # require_node_level (which has already answered not_found for a deleted node or one the
+    # caller can't view), the only node visible_nodes can still hide is a never-published
+    # page for a view-only caller, so an empty result means not_published; anything else it
+    # ever hides would need its own answer here.
+    visible, levels = await visible_nodes(ctx, [node])
+    if not visible:
+        raise err(404, "not_published", "This page hasn't been published yet.")
+    level = levels[node.id]
 
     breadcrumbs: list[Breadcrumb] = []
     if node.path:

@@ -1283,6 +1283,7 @@ async def commit_move_asset_import_job(
     if job.phase != "validate" or job.status != "completed":
         raise _err(409, "job_not_ready")
     job.phase = "commit"
+    job.committed_by = actor.person.id      # not always the uploader: the worker tells both
     job.status = "queued"
     job.processed_rows = 0
     job.created_count = 0

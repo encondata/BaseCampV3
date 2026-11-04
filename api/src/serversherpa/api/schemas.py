@@ -3352,6 +3352,10 @@ class StatusRuleOut(BaseModel):
     enabled: bool
     conditions: list[StatusRuleConditionIn]
     actions: list[StatusRuleActionIn]
+    # The name of each person and notification group the rule's Notify action chooses, by id:
+    # for a viewer who may not list them (the lists need notification permissions). An id that
+    # names nobody (a group deleted since) is left out.
+    names: dict[str, str] = {}
     created_at: datetime
     updated_at: datetime
 

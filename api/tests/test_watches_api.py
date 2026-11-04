@@ -3,7 +3,9 @@ PATCH and DELETE /auth/me/watches/{id}. A watch is on an initiative, a site, a t
 (tests/test_device_watches.py covers what is special about devices), a wiki library, folder or
 page (tests/test_wiki_watch_groups.py), or on chosen events everywhere (an Everything watch).
 /me lists the person's own watches and those of the Active groups they belong to, for the things
-they can open right now.
+they can open right now. A person's own watches are audited on their account (`user_account`)
+when started, changed and stopped, as a group's are on the group; a wiki watch writes the wiki's
+own audit instead.
 
 Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (sections 1, 2 and 10)"""
 
@@ -17,6 +19,7 @@ from sqlalchemy.exc import IntegrityError
 
 from serversherpa.access.resolver import resolve_access_many
 from serversherpa.db.models import (
+    AuditLog,
     Client,
     Initiative,
     NotificationGroup,
@@ -38,6 +41,7 @@ from serversherpa.notifications.watches import (
 )
 from tests.test_sites_api import make_login
 from tests.test_status_values_write import _make
+from tests.wiki_helpers import _create, _setup, publish_via_db
 
 WATCHES = "/auth/me/watches"
 STATE = f"{WATCHES}/state"
@@ -122,6 +126,17 @@ async def _group_watch(db, group, thing=None, thing_id=None, kinds=(), *, create
 
 async def _count(db) -> int:
     return await db.scalar(select(func.count()).select_from(NotificationWatch))
+
+
+async def _own_audits(db, person_id, action=None):
+    """The `watch.*` audit rows written on the person's account (all of them, or those of one
+    action), oldest first."""
+    query = select(AuditLog).where(AuditLog.entity_type == "user_account",
+                                   AuditLog.entity_id == str(person_id),
+                                   AuditLog.action.startswith("watch."))
+    if action is not None:
+        query = query.where(AuditLog.action == action)
+    return (await db.scalars(query.order_by(AuditLog.at))).all()
 
 
 # ── watching and not watching ───────────────────────────────────────
@@ -442,6 +457,114 @@ async def test_list_puts_mine_first_then_my_groups_each_newest_first(client, db)
     rows = await _list(client, me)
     assert [(row["via"]["type"], row["thing"]) for row in rows] == [
         ("you", "truck"), ("you", "site"), ("group", "truck"), ("group", "site")]
+
+
+# ── what is audited ─────────────────────────────────────────────────
+
+async def test_own_watch_add_is_audited_on_the_account(client, db):
+    me = await _login(db, client, "A")
+    initiative, _site, _truck = await _things(db)
+
+    resp = await _post(client, me, "initiative", initiative.id, kinds=[TRUCK_CHANGED])
+    assert resp.status_code == 201, resp.text
+
+    (added,) = await _own_audits(db, me.id)
+    assert (added.entity_type, added.entity_id, added.action, added.actor_person_id) == (
+        "user_account", str(me.id), "watch.add", me.id)
+    assert added.changes == {"thing": "initiative", "thing_id": str(initiative.id),
+                             "kinds": [TRUCK_CHANGED]}
+
+    # watching it again is refused and writes nothing more
+    resp = await _post(client, me, "initiative", initiative.id)
+    assert (resp.status_code, _code(resp)) == (409, "already_watching")
+    assert len(await _own_audits(db, me.id)) == 1
+
+
+async def test_own_everything_watch_add_is_audited(client, db):
+    me = await _login(db, client, "A")
+
+    resp = await _post(client, me, EVERYTHING, kinds=[INITIATIVE_CHANGED])
+    assert resp.status_code == 201, resp.text
+
+    # it has no thing to name, so the row says "everything" with no id
+    (added,) = await _own_audits(db, me.id)
+    assert (added.action, added.actor_person_id) == ("watch.add", me.id)
+    assert added.changes == {"thing": EVERYTHING, "thing_id": None, "kinds": [INITIATIVE_CHANGED]}
+
+
+async def test_own_watch_kind_change_is_audited_once(client, db):
+    me = await _login(db, client, "A")
+    initiative, _site, _truck = await _things(db)
+    watch_id = (await _post(client, me, "initiative", initiative.id,
+                            kinds=[INITIATIVE_CHANGED])).json()["id"]
+
+    resp = await _patch(client, me, watch_id, [TRUCK_CHANGED])
+    assert resp.status_code == 200, resp.text
+    (updated,) = await _own_audits(db, me.id, "watch.update")
+    assert (updated.entity_type, updated.entity_id, updated.actor_person_id) == (
+        "user_account", str(me.id), me.id)
+    # the row names the watch it changed, as the add and remove rows do
+    assert updated.changes == {"thing": "initiative", "thing_id": str(initiative.id),
+                               "kinds": {"from": [INITIATIVE_CHANGED], "to": [TRUCK_CHANGED]}}
+
+    # the same events again, even repeated, change nothing and write nothing; nor does a refusal
+    for kinds in ([TRUCK_CHANGED], [TRUCK_CHANGED, TRUCK_CHANGED]):
+        resp = await _patch(client, me, watch_id, kinds)
+        assert resp.status_code == 200, resp.text
+    resp = await _patch(client, me, watch_id, ["nonsense"])
+    assert (resp.status_code, _code(resp)) == (422, "invalid_kind")
+    assert [row.action for row in await _own_audits(db, me.id)] == ["watch.add", "watch.update"]
+
+
+async def test_own_watch_remove_is_audited(client, db):
+    me = await _login(db, client, "A")
+    initiative, _site, _truck = await _things(db)
+    watch_id = (await _post(client, me, "initiative", initiative.id)).json()["id"]
+    everything_id = (await _post(client, me, EVERYTHING, kinds=[INITIATIVE_CHANGED])).json()["id"]
+
+    resp = await client.delete(f"{WATCHES}/{watch_id}", headers=me.headers)
+    assert resp.status_code == 204
+    (removed,) = await _own_audits(db, me.id, "watch.remove")
+    assert (removed.entity_type, removed.entity_id, removed.actor_person_id) == (
+        "user_account", str(me.id), me.id)
+    assert removed.changes == {"thing": "initiative", "thing_id": str(initiative.id)}
+
+    # an Everything watch has no thing to name: "everything" with no id
+    resp = await client.delete(f"{WATCHES}/{everything_id}", headers=me.headers)
+    assert resp.status_code == 204
+    assert [row.changes for row in await _own_audits(db, me.id, "watch.remove")] == [
+        {"thing": "initiative", "thing_id": str(initiative.id)},
+        {"thing": EVERYTHING, "thing_id": None}]
+
+
+async def test_own_wiki_watch_writes_only_the_wikis_audit(client, db):
+    """A wiki watch is the wiki's own as well, and the wiki audits it (`wiki_watch`: `watch`
+    and `unwatch`), from /me as from its own Watch button. It writes no second row on the
+    person's account."""
+    s = await _setup(client, db)
+    viewer = Login(s["viewer_id"], s["viewer"])
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    await publish_via_db(db, page["id"])        # a reader can't see a page never published
+
+    async def audited():
+        """Everything the viewer has had audited so far, apart from signing in, oldest first."""
+        rows = await db.execute(
+            select(AuditLog.entity_type, AuditLog.entity_id, AuditLog.action, AuditLog.changes)
+            .where(AuditLog.actor_person_id == viewer.id, AuditLog.entity_type != "auth")
+            .order_by(AuditLog.at))
+        return [tuple(row) for row in rows]
+
+    resp = await _post(client, viewer, "wiki_node", page["id"])
+    assert resp.status_code == 201, resp.text
+    watch_id = resp.json()["id"]
+    watched = ("wiki_watch", watch_id, "watch", {"node_id": page["id"]})
+    assert await audited() == [watched]
+
+    resp = await client.delete(f"{WATCHES}/{watch_id}", headers=viewer.headers)
+    assert resp.status_code == 204
+    assert await audited() == [watched, ("wiki_watch", watch_id, "unwatch",
+                                         {"node_id": page["id"], "space_id": None})]
+    assert await _own_audits(db, viewer.id) == []
 
 
 # ── read-only mode ──────────────────────────────────────────────────

@@ -122,17 +122,24 @@ export default function RulesTab({ onCount }: {
   const ctx = useMemo<RuleRowContext>(() => ({ schema, stats: statsMap }), [schema, statsMap]);
 
   // A Send a notification action's summary names its people and groups, so their names are
-  // asked for once some rule has one. Names that can't be had (they need notification
-  // permissions the rules' viewer may lack) leave the ids in the summary.
+  // asked for once some rule has one. A list the viewer may not ask for (it needs notification
+  // permissions the rules' viewer may lack) is named by the rules themselves, each rule's
+  // `names` merged; names that can't be had either way (a list that failed to load) leave the
+  // ids in the summary.
   const anyNotify = useMemo(
     () => (rules ?? []).some((r) => r.actions.some((a) => a.action_type === NOTIFY_ACTION)),
     [rules],
   );
   const targets = useNotifyTargets(anyNotify);
-  const actionNames = useMemo<ActionNames>(
-    () => ({ people: targets.people.options, groups: targets.groups.options }),
-    [targets],
-  );
+  const actionNames = useMemo<ActionNames>(() => {
+    // `?? {}`: a rule answered by an older API slot (during a deploy) has no `names`
+    const fromRules = (rules ?? []).flatMap((r) => Object.entries(r.names ?? {}))
+      .map(([value, label]) => ({ value, label }));
+    return {
+      people: targets.people.status === 'unavailable' ? fromRules : targets.people.options,
+      groups: targets.groups.status === 'unavailable' ? fromRules : targets.groups.options,
+    };
+  }, [targets, rules]);
 
   const cellText: CellText<StatusRule> = useCallback(
     (r, key) => ruleCellText(r, key, ctx), [ctx],

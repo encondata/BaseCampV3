@@ -163,6 +163,15 @@ def thing_of(watch: NotificationWatch) -> Thing | None:
     return None
 
 
+def watch_target(watch: NotificationWatch) -> dict:
+    """What a watch is on, as the audit records it: its kind of thing and the thing's id,
+    or "everything" with no id."""
+    thing = thing_of(watch)
+    if thing is None:
+        return {"thing": EVERYTHING, "thing_id": None}
+    return {"thing": thing.type, "thing_id": str(thing.id)}
+
+
 # ── adding one ──────────────────────────────────────────────────────
 
 async def _existing(db: AsyncSession, person_id: uuid.UUID | None, group_id: uuid.UUID | None,

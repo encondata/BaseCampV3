@@ -134,6 +134,7 @@ const RULE: StatusRule = {
   priority: 9, enabled: true,
   conditions: [{ field: 'scan.device_id', operator: 'equals', value: 'dock-1' }],
   actions: [{ action_type: 'set_asset_status', params: { status: 'rfid_4_into_cage' } }],
+  names: {},
   created_at: '2026-08-30T12:00:00Z', updated_at: '2026-08-31T09:00:00Z',
 };
 const STATS = new Map<string, StatusRuleExecStat>([['r1', {

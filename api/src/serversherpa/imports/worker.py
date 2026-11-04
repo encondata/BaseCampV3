@@ -9,11 +9,11 @@ imports/move_setup.apply_job in one transaction). Every hour the loop also
 sweeps stale drafts, their orphaned file checks, and abandoned bulk asset
 update previews (jobs.sweep_stale).
 
-When a job that writes data ends, its owner is told (imports/notices.py). That happens last,
-in a session of its own, after the job's final state is committed, so a notice that cannot be
-written never changes how the job ended. A worker that stalls past `requeue_stale`'s window
-while another finishes the same job can notify twice (the re-run converges on the same data;
-the notice is its visible side).
+When a job that writes data ends, the person who committed it and the uploader (when that's
+someone else) are told (imports/notices.py). That happens last, in a session of its own, after
+the job's final state is committed, so a notice that cannot be written never changes how the
+job ended. A worker that stalls past `requeue_stale`'s window while another finishes the same
+job can notify twice (the re-run converges on the same data; the notice is its visible side).
 
 Shutdown story: no signal handling on purpose. Commit-phase work is
 committed every BATCH_SIZE rows and the update path is idempotent, so
@@ -176,27 +176,32 @@ async def process_job(db: AsyncSession, job: ImportJob) -> None:
 
 async def _tell_the_owner(sessionmaker, job_id: uuid.UUID, kind: str, phase: str,
                           created_by: uuid.UUID | None) -> None:
-    """Best-effort, and always last: tell the person who started the job how it ended. The
-    job's final state is already committed, so a failure here only costs the notice. It is
-    logged once, by the class of the error and where it happened, never its text (a database
-    error can carry values), and the worker carries on.
+    """Best-effort, and always last: tell the people behind the job (whoever committed it, and
+    the uploader when that's someone else) how it ended. The job's final state is already
+    committed, so a failure here only costs the notice. It is logged once, by the class of the
+    error and where it happened, never its text (a database error can carry values), and the
+    worker carries on.
 
-    A job with nothing to say (a validate pass, or one nobody started) costs no session and
-    no read; notify_job_done makes the same checks."""
-    if created_by is None or not writes_data(kind, phase):
+    A validate pass has nothing to say and costs no session and no read; notify_job_done makes
+    the same check. Any other job opens a session, because who committed it is read back with
+    its final state: `recipients` decides there is nobody to tell (a job nobody started or
+    committed)."""
+    if not writes_data(kind, phase):
         return
     try:
         async with sessionmaker() as nb:
             final = (await nb.execute(
-                select(ImportJob.status, ImportJob.initiative_id, ImportJob.results["summary"])
+                select(ImportJob.status, ImportJob.initiative_id, ImportJob.committed_by,
+                       ImportJob.results["summary"])
                 .where(ImportJob.id == job_id))).first()
             if final is None:              # a move's jobs go with the move
                 return
             # a move setup knows its move only at the end
-            status, initiative_id, summary = final
+            status, initiative_id, committed_by, summary = final
             await notify_job_done(nb, JobDone(
                 job_id=job_id, kind=kind, phase=phase, status=status, created_by=created_by,
-                initiative_id=initiative_id, rows_left_out=count_left_out(summary)))
+                initiative_id=initiative_id, committed_by=committed_by,
+                rows_left_out=count_left_out(summary)))
             await nb.commit()
     except Exception as exc:  # the notice must never stop the worker
         # the traceback without the exception: the class is in the message, and its text can
