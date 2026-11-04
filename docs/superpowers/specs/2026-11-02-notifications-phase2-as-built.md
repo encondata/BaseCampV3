@@ -117,6 +117,25 @@ Each decision is listed with what it costs if it's wrong.
 10. **Unpublished wiki pages.** The wiki's `GET /wiki/nodes/{id}` answers a view-only reader on a never-published page (existing behavior; is it meant to?).
 11. **Wiki fan-out at scale.** It stays inside the editor's request. With a 500-member group watching a library, each publish or comment costs about 2,500 to 3,000 database round trips. Letting the wiki announce into the sweep is Phase 3 material.
 
+## Answers (2026-11-04)
+
+Jimmy answered the open questions on 2026-11-04. The fixes are planned in `docs/superpowers/plans/2026-11-04-notifications-phase2-answers.md`.
+
+1. **Flapping readers:** keep it as built. A reader its station reports unreachable is offline at once, and its notice goes out straight away.
+2. **Auditing your own watches:** yes. Starting, changing or stopping your own watch on an initiative, site, truck, device or Everything writes `watch.add`, `watch.update` or `watch.remove` on your account (`user_account`), with the same details a group's watch records. Wiki watches keep the wiki's own audit.
+3. **Members without a portal login:** keep it as built. People who can't sign in get nothing from watches, and nothing is logged for them. Anyone who signs in can watch anything they can open.
+4. **The 500-recipient cap:** keep it as built. The system has 25 users at most, so the cap is never reached.
+5. **Clients and truck events:** keep the "No access" rows.
+6. **Failed move setup:** keep the link to a fresh wizard.
+7. **From-To imports:** the notice goes to the person who committed the import, and to the uploader too when that's someone else. Migration 0118 adds `import_jobs.committed_by`, which both commit routes set (From-To import and Bulk update assets). A move setup's job is committed by the person who started it.
+8. **What a job left out:** Jimmy needs to see what failed in the portal, during the upload and import. The pages already show it, so nothing changes:
+   - Bulk update assets marks each row Update, No change, Needs a match, Error or Skipped before Apply, then shows each row's result, with a CSV download.
+   - Move setup's Assets step shows the same per-row report as the From-To page before the move is created. Its finish screen lists every row as Added, Updated or Skipped, with the row's message and a CSV download.
+   - A From-To import's Review step lists the error and review rows and says they'll be skipped. Import complete keeps that report, with an .xlsx download.
+9. **Recipient list for viewers:** fix it. Someone who may not list people (or groups) sees the rule's chosen people (or groups) by name, read-only, with a note saying which permission picking them needs, instead of an error. A rule's API answer carries those names (`names`).
+10. **Unpublished wiki pages:** fix it. `GET /wiki/nodes/{id}` answers a view-only reader on a never-published page with 404 `not_published`, as the page read does, and the wiki shows the API's "This page hasn't been published yet." for it.
+11. **Wiki fan-out at scale:** left for Phase 3.
+
 ## Deploy
 
 1. Turn read-only mode on.
