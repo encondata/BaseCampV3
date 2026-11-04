@@ -27,7 +27,7 @@ import {
 } from '../../lib/plans/api';
 import { COMMAND_TIPS } from '../../lib/plans/commandTips';
 import { TEMPLATES_UNLOADED, planErrorText } from '../../lib/plans/errors';
-import { RowActionsMenu, type RowAction } from '../hardware/RowActionsMenu';
+import { DotsIcon, RowActionsMenu, type RowAction } from '../hardware/RowActionsMenu';
 import Tip from '../Tip';
 import { DeleteTemplateModal } from './PlanConfirmModals';
 import PlanModal from './PlanModal';
@@ -275,15 +275,5 @@ function FieldEditor({ field, initial, onSave, onCancel }: {
         {error && <span className="pf-error" role="alert">{error}</span>}
       </div>
     </form>
-  );
-}
-
-function DotsIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <circle cx="5" cy="12" r="1.8" />
-      <circle cx="12" cy="12" r="1.8" />
-      <circle cx="19" cy="12" r="1.8" />
-    </svg>
   );
 }
