@@ -347,9 +347,9 @@ struct RolodexLogicTests {
     @Test func patchRoundTripsThroughJSON() throws {
         let patch = RolodexPatch([.phone: nil, .level: "L4"])
         #expect(try KioskJSON.decoder.decode(RolodexPatch.self, from: try KioskJSON.encoder.encode(patch)) == patch)
-        for willTravel in [.some(nil), .some(false), .some(true)] as [Bool??] {
+        for willTravel in [nil, false, true] as [Bool?] {
             var travel = RolodexPatch([.travelRegion: nil, .travelRestrictions: "Day trips only"])
-            travel.setWillTravel(willTravel!)
+            travel.setWillTravel(willTravel)
             #expect(try KioskJSON.decoder.decode(RolodexPatch.self, from: try KioskJSON.encoder.encode(travel)) == travel)
         }
     }

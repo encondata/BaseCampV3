@@ -334,7 +334,7 @@ private struct RolodexEditForm: View {
                         }
                         willTravel
                         field("Travel region", \.travelRegion)
-                        field("Travel restrictions", \.travelRestrictions, multiline: true)
+                        field("Travel restrictions", \.travelRestrictions, sentences: true, autocorrect: true, multiline: true)
                         status(edit, detail)
                         if edit.status == RolodexLogic.blacklistKey {
                             field("Blacklist note *", \.statusNote, multiline: true)
@@ -379,9 +379,10 @@ private struct RolodexEditForm: View {
     }
 
     private func field(_ label: String, _ key: WritableKeyPath<RolodexEdit, String>, keyboard: UIKeyboardType = .default,
-                       content: UITextContentType? = nil, capitalize: Bool = true, multiline: Bool = false) -> some View {
+                       content: UITextContentType? = nil, capitalize: Bool = true, sentences: Bool = false,
+                       autocorrect: Bool = false, multiline: Bool = false) -> some View {
         RolodexTextField(label: label, text: binding(key), keyboard: keyboard, content: content, capitalize: capitalize,
-                         multiline: multiline, disabled: model.saving)
+                         sentences: sentences, autocorrect: autocorrect, multiline: multiline, disabled: model.saving)
     }
 
     /// Not set / Yes / No; off while saving, like the other fields.
@@ -430,6 +431,10 @@ struct RolodexTextField: View {
     var keyboard: UIKeyboardType = .default
     var content: UITextContentType? = nil
     var capitalize = true
+    /// Capitalizes sentences instead of every word (free text).
+    var sentences = false
+    /// Autocorrect is off unless asked for (names, emails); free sentence text turns it on.
+    var autocorrect = false
     var multiline = false
     var disabled = false
     @Environment(\.kioskPalette) private var palette
@@ -446,8 +451,8 @@ struct RolodexTextField: View {
             }
             .keyboardType(keyboard)
             .textContentType(content)
-            .textInputAutocapitalization(capitalize ? .words : .never)
-            .autocorrectionDisabled()
+            .textInputAutocapitalization(sentences ? .sentences : (capitalize ? .words : .never))
+            .autocorrectionDisabled(!autocorrect)
             .submitLabel(.done)
             .disabled(disabled)
             .rolodexField(palette)
