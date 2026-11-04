@@ -92,3 +92,19 @@ async def test_duplicate_legacy_id_is_rejected(db):
     await _asset(db, legacy_id=4471)
     with pytest.raises(IntegrityError):
         await _asset(db, legacy_id=4471)
+
+
+async def test_rfid_read_matches_tag_before_legacy_id(db):
+    # A zero-padded EPC parses as a number; on an RFID read the tag must
+    # win over a V2 numeric asset id that happens to equal it.
+    by_legacy = await _asset(db, legacy_id=100222)
+    by_rfid = await _asset(db, rfid_tag="000000000000000000100222")
+    assert (await match_scan(db, "000000000000000000100222", scan_type="rfid")
+            == Match("asset", by_rfid.id))
+    assert await match_scan(db, "100222") == Match("asset", by_legacy.id)
+
+
+async def test_rfid_read_never_matches_legacy_id(db):
+    await _asset(db, legacy_id=100230)
+    assert await match_scan(db, "000000000000000000100230",
+                            scan_type="rfid") is None

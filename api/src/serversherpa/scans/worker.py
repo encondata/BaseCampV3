@@ -62,7 +62,8 @@ async def process_raw_scan(maker, raw_id: int) -> str:
                 .with_for_update(skip_locked=True))
             if raw is None:
                 return "gone"
-            match = await match_scan(db, raw.scanned_value)
+            match = await match_scan(db, raw.scanned_value,
+                                    scan_type=raw.scan_type)
             if match is None:
                 raw.match_attempted_at = datetime.now(UTC)
                 await db.commit()

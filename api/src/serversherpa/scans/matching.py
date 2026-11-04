@@ -1,5 +1,7 @@
 """Entity matching for the scan-matching worker. Ladder: ID (uuid or
-legacy numeric) → RFID tag → asset serial → name. Within a tier, tables
+legacy numeric) → RFID tag → asset serial → name. An RFID read skips
+the ID tier: a reader's EPC is never a printed label, and a zero-padded
+EPC parses as a number that can equal another asset's V2 id. Within a tier, tables
 are tried in asset → container → person order; the first table with
 hits decides. Multiple hits anywhere = ambiguous — the ladder STOPS and
 returns None (the value clearly refers to something; guessing or
@@ -59,16 +61,17 @@ _NAME_TIER = (("asset", Asset, Asset.name),
               ("container", Container, Container.name))
 
 
-async def match_scan(db: AsyncSession, scanned_value: str) -> Match | None:
-    # Tier 1: ID — uuid PKs, then V2 numeric asset labels.
-    uid = _as_uuid(scanned_value)
+async def match_scan(db: AsyncSession, scanned_value: str, *,
+                     scan_type: str | None = None) -> Match | None:
+    # Tier 1: ID — uuid PKs, then V2 numeric asset labels. Not for RFID.
+    uid = _as_uuid(scanned_value) if scan_type != "rfid" else None
     if uid is not None:
         for match_type, model in (("asset", Asset), ("container", Container),
                                   ("person", Person)):
             ids = await _hits(db, model, model.id, uid)
             if ids:
                 return Match(match_type, ids[0])
-    legacy = _as_int(scanned_value)
+    legacy = _as_int(scanned_value) if scan_type != "rfid" else None
     if legacy is not None:
         ids = await _hits(db, Asset, Asset.legacy_id, legacy)
         if len(ids) == 1:
