@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { actionLabel, entityHref, ENTITY_LABELS, targetLabel } from './auditFormat';
+import { actionLabel, entityHref, entityLabel, ENTITY_LABELS, targetLabel } from './auditFormat';
 
 const row = (entity_type: string, entity_id: string | null) =>
   ({ action: 'update', entity_type, entity_id, changes: {} });
@@ -30,6 +30,13 @@ describe('labels', () => {
   it('names a kiosk printer factory reset', () => {
     expect(actionLabel({ ...row('device', 'd-1'), action: 'kiosk_printer_factory_reset' }))
       .toBe('Printer factory reset');
+  });
+  it('names a portal printer factory reset and its label printer', () => {
+    expect(actionLabel({ ...row('label_printer', 'D2J000001'), action: 'printer_factory_reset' }))
+      .toBe('Printer factory reset');
+    expect(entityLabel(row('label_printer', 'D2J000001'))).toBe('label printer');
+    expect(entityLabel(row('label_printer', null))).toBe('label printer');
+    expect(ENTITY_LABELS.label_printer).toBe('label printer');
   });
   it('names spec lookup apply and undo', () => {
     expect(actionLabel({ ...row('asset_model', 'am-1'), action: 'spec_lookup.apply' }))

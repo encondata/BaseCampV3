@@ -1,9 +1,11 @@
 /**
  * Labels → Printers. Zebra tab: a printer card for the browser-connected
  * (WebUSB) Zebra — connect/disconnect, previously authorized printers,
- * identity (`~HI`) and health (`~HS`) chips — over the three tool rows
- * (Test Label Alignment / Install Fonts / Full Printer Setup) that open
- * their modals. Brother tab: placeholder. No printer registry (spec).
+ * identity (`~HI`) and health (`~HS`) chips — over the tool rows (Test
+ * Label Alignment / Install Fonts / Full Printer Setup / Factory Reset)
+ * that open their modals. A finished Factory Reset hands its post-reset
+ * `^HH` straight into Full Printer Setup. Brother tab: placeholder. No
+ * printer registry (spec).
  */
 import { useCallback, useEffect, useState } from 'react';
 
@@ -13,8 +15,9 @@ import {
   type LabelFont, type LabelVocab,
 } from '../lib/api';
 import { useZebraPrinter } from '../lib/useZebraPrinter';
-import type { HostIdentification, HostStatus, UsbDeviceLike } from '../labels/zebraUsb';
+import type { HostIdentification, HostStatus, PrinterConfiguration, UsbDeviceLike } from '../labels/zebraUsb';
 import AlignmentTestModal from '../components/printers/AlignmentTestModal';
+import FactoryResetModal from '../components/printers/FactoryResetModal';
 import InstallFontsModal from '../components/printers/InstallFontsModal';
 import PrinterHealth from '../components/printers/PrinterHealth';
 import PrinterSetupModal from '../components/printers/PrinterSetupModal';
@@ -27,11 +30,12 @@ import '../styles/printers.css';
 type Tab = 'zebra' | 'brother';
 const TABS: { id: Tab; label: string }[] = [{ id: 'zebra', label: 'Zebra Printers' }, { id: 'brother', label: 'Brother Printers' }];
 
-type Tool = 'alignment' | 'fonts' | 'setup';
-const ZEBRA_TOOLS: { key: Tool; title: string; description: string; action: string; needsPrinter: boolean }[] = [
+type Tool = 'alignment' | 'fonts' | 'setup' | 'reset';
+const ZEBRA_TOOLS: { key: Tool; title: string; description: string; action: string; needsPrinter: boolean; danger?: boolean }[] = [
   { key: 'alignment', title: 'Test Label Alignment', description: 'Print a calibration label and dial in offsets.', action: 'Print test label', needsPrinter: true },
   { key: 'fonts', title: 'Install Fonts', description: "Push the house label fonts to the printer's storage.", action: 'Manage fonts', needsPrinter: false },
   { key: 'setup', title: 'Full Printer Setup', description: 'Guided first-time configuration for a new Zebra printer.', action: 'Start setup', needsPrinter: true },
+  { key: 'reset', title: 'Factory Reset', description: "Restore the printer's factory defaults, then set it up again.", action: 'Reset printer', needsPrinter: true, danger: true },
 ];
 
 export default function Printers() {
@@ -67,6 +71,9 @@ function ZebraTab() {
   const [status, setStatus] = useState<HostStatus | null>(null);
   const [known, setKnown] = useState<UsbDeviceLike[]>([]);
   const [tool, setTool] = useState<Tool | null>(null);
+  // Set when the setup wizard is opened by a finished factory reset, so it
+  // starts from the printer's post-reset configuration instead of re-reading.
+  const [fromReset, setFromReset] = useState<{ config: PrinterConfiguration | null } | null>(null);
   const [notice, setNotice] = useState<{ type: string; message: string } | null>(null);
 
   useEffect(() => {
@@ -149,7 +156,7 @@ function ZebraTab() {
                 </div>
                 <div className="cell zp-tool-action">
                   {gated && <span className="cell-sub">Connect a printer first</span>}
-                  <button type="button" className="btn-solid" disabled={gated} onClick={() => setTool(t.key)}>{t.action}</button>
+                  <button type="button" className={t.danger ? 'btn-solid btn-danger' : 'btn-solid'} disabled={gated} onClick={() => { setFromReset(null); setTool(t.key); }}>{t.action}</button>
                 </div>
               </div>
             </div>
@@ -164,7 +171,22 @@ function ZebraTab() {
                            onDeleteFont={async (id) => { await deleteLabelFont(id); loadFonts(); }}
                            onFetchBytes={getLabelFontBytes} onClose={() => setTool(null)} />
       )}
-      {tool === 'setup' && <PrinterSetupModal printer={printer} vocab={vocab} identity={identity} onClose={() => { setTool(null); void refreshStatus(); }} />}
+      {tool === 'reset' && (
+        <FactoryResetModal
+          printer={printer}
+          identity={identity}
+          onDone={(config) => { setFromReset({ config }); setTool('setup'); }}
+          onClose={() => { setTool(null); void refreshStatus(); }}
+        />
+      )}
+      {tool === 'setup' && (
+        <PrinterSetupModal
+          printer={printer} vocab={vocab} identity={identity}
+          initialConfig={fromReset?.config ?? undefined}
+          intro={fromReset ? 'Printers · After factory reset' : undefined}
+          onClose={() => { setTool(null); setFromReset(null); void refreshStatus(); }}
+        />
+      )}
     </>
   );
 }

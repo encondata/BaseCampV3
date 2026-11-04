@@ -37,6 +37,11 @@
 .modal-card.reports-modal-card.rgm-card.zp-align-card { width: min(760px, 96vw); max-width: 96vw; overflow: visible; max-height: none; }
 .modal-card.reports-modal-card.rgm-card.zp-fonts-card { width: min(1100px, 96vw); max-width: 96vw; }
 .modal-card.reports-modal-card.rgm-card.zp-setup-card { width: min(980px, 96vw); max-width: 96vw; overflow: visible; max-height: none; }
+/* Factory reset: its own card class (not zp-setup-card) so the setup card's
+   `overflow: visible; max-height: none` — there for its dropdowns — never
+   applies. This card has none, so it keeps .modal-card's viewport cap and
+   scrolls inside its rounded corners. */
+.modal-card.reports-modal-card.rgm-card.zp-reset-card { width: min(620px, 96vw); max-width: 96vw; }
 .zp-two-col { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(280px, 1fr); gap: 12px 32px; align-items: start; }
 @media (max-width: 800px) { .zp-two-col { grid-template-columns: 1fr; } }
 .zp-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
@@ -72,3 +77,14 @@
 .zp-log pre { max-height: 220px; overflow: auto; margin: 8px 0 0; padding: 10px 12px; border: 1px solid var(--paper-line); border-radius: 10px; background: var(--surface, #fff); white-space: pre-wrap; overflow-wrap: anywhere; }
 .zp-guard { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .zp-guard input { width: 120px; }
+
+/* factory reset */
+.zp-check { display: flex; align-items: center; gap: 10px; }
+.zp-check input { width: 18px; height: 18px; }
+.zp-reset-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.zp-reset-step {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 12px; border: 1px solid var(--paper-line); border-radius: 10px;
+  background: var(--surface, #fff);
+}
+.zp-reset-step.is-pending { opacity: 0.6; }
