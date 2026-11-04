@@ -280,3 +280,12 @@ it('search and sort use the shown placement text', async () => {
   await waitFor(() => expect(screen.queryByText('SN-BETA')).toBeNull());
   expect(screen.queryByText('SN-ALPHA')).not.toBeNull();
 });
+
+
+it('the row ends in its Actions button alone, with no open arrow after it', async () => {
+  render(<MemoryRouter><Assets /></MemoryRouter>);
+  const trigger = (await screen.findAllByRole('button', { name: /Actions/ }))[0];
+  const row = trigger.closest('.row-main') as HTMLElement;
+  expect(row.querySelector('.chevron-cell')).toBeNull();
+  expect(row.lastElementChild?.contains(trigger)).toBe(true);
+});

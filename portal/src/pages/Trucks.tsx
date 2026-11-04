@@ -26,7 +26,7 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import {
-  applyColumnOrder, ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale,
+  ACTIONS_TRACK, applyColumnOrder, ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale,
   moveKey, titleFor, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
   type ColumnDef,
 } from '../lib/listTools';
@@ -209,7 +209,7 @@ export default function Trucks() {
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = listGridStyle([PRIMARY_COL, ...shownCols], ['30px'], undefined, listGridScale);
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], [ACTIONS_TRACK], undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cellFor = (t: TruckItem, key: string) => {
@@ -402,9 +402,18 @@ export default function Trucks() {
                   {shownCols.map((col) => (
                     <div className="cell" key={col.key}>{cellFor(t, col.key)}</div>
                   ))}
-                  <div className="cell chevron-cell">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                         strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+                  {/* The row's Actions button, where it used to show an open
+                      arrow (the row itself opens on a click). The menu is
+                      portaled, but its clicks still bubble through React to
+                      the row, so the cell stops them. */}
+                  <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}
+                       onClick={(e) => e.stopPropagation()}>
+                    <RowActionsMenu actions={[
+                      { key: 'details', label: 'Full details',
+                        onSelect: () => navigate(`/logistics/trucks/${t.id}`) },
+                      ...(canChange ? [{ key: 'edit', label: 'Edit',
+                        onSelect: () => setEditingId(t.id) }] : []),
+                    ]} />
                   </div>
                 </div>
 

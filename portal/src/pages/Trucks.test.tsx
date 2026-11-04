@@ -7,7 +7,7 @@
  * by lib/listTools.test.tsx and lib/columnMenu.test.tsx.
  */
 
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -96,6 +96,9 @@ function renderPage() {
   return render(<MemoryRouter><Trucks /></MemoryRouter>);
 }
 
+/** The toolbar's Actions menu (Bulk import, Manual update), not a row's. */
+const toolbar = () => within(document.querySelector('.dir-toolbar') as HTMLElement);
+
 beforeEach(() => {
   auth.can = () => true;
   auth.maxRank = 100;
@@ -180,13 +183,13 @@ it('Actions menu offers Bulk import (to /bulk/trucks) and Manual update opens th
   await screen.findByText('Truck One');
   expect(screen.queryByRole('button', { name: /bulk import/i })).toBeNull();
 
-  await user.click(screen.getByRole('button', { name: /^actions/i }));
+  await user.click(toolbar().getByRole('button', { name: /^actions/i }));
   const manual = screen.getByRole('menuitem', { name: 'Manual update' }) as HTMLButtonElement;
   expect(manual.disabled).toBe(false);
   await user.click(manual);
   expect(screen.getByRole('dialog', { name: 'Manual update' })).not.toBeNull();
   await user.click(screen.getByRole('button', { name: 'Cancel' }));
-  await user.click(screen.getByRole('button', { name: /^actions/i }));
+  await user.click(toolbar().getByRole('button', { name: /^actions/i }));
 
   await user.click(screen.getByRole('menuitem', { name: 'Bulk import' }));
   expect(await screen.findByText('Bulk trucks page')).not.toBeNull();
@@ -198,7 +201,7 @@ it('below admin rank the Actions menu has only Manual update', async () => {
   renderPage();
   await screen.findByText('Truck One');
 
-  await user.click(screen.getByRole('button', { name: /^actions/i }));
+  await user.click(toolbar().getByRole('button', { name: /^actions/i }));
   expect(screen.getByRole('menuitem', { name: 'Manual update' })).not.toBeNull();
   expect(screen.queryByRole('menuitem', { name: 'Bulk import' })).toBeNull();
 });
@@ -209,5 +212,66 @@ it('without change or bulk rights there is no Actions menu', async () => {
   renderPage();
   await screen.findByText('Truck One');
 
-  expect(screen.queryByRole('button', { name: /^actions/i })).toBeNull();
+  expect(toolbar().queryByRole('button', { name: /^actions/i })).toBeNull();
+});
+
+
+// ── each row's Actions button (in place of the old open arrow) ──────────
+
+const rowFor = (name: string) =>
+  [...document.querySelectorAll('.dir-row')].find(
+    (r) => r.querySelector('.cell-primary .pn b')?.textContent === name) as HTMLElement;
+const rowActions = (name: string) =>
+  rowFor(name).querySelector('.row-main .row-actions button') as HTMLButtonElement | null;
+const menuItems = () => screen.queryAllByRole('menuitem').map((m) => m.textContent?.trim());
+
+it('each row ends in an Actions button with Full details and Edit, without opening the row', async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findByText('Truck One');
+
+  expect(rowFor('Truck One').querySelector('.chevron-cell')).toBeNull();
+  const button = rowActions('Truck One')!;
+  expect(button.textContent).toContain('Actions');
+  await user.click(button);
+  expect(menuItems()).toEqual(['Full details', 'Edit']);
+  expect(document.querySelector('.dir-row.open')).toBeNull();
+});
+
+it('a row\'s Full details goes to the truck page', async () => {
+  const user = userEvent.setup();
+  render(
+    <MemoryRouter initialEntries={['/logistics/trucks']}>
+      <Routes>
+        <Route path="/logistics/trucks" element={<Trucks />} />
+        <Route path="/logistics/trucks/:id" element={<div>Truck page</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  await screen.findByText('Truck Two');
+
+  await user.click(rowActions('Truck Two')!);
+  await user.click(screen.getByRole('menuitem', { name: 'Full details' }));
+  expect(await screen.findByText('Truck page')).not.toBeNull();
+});
+
+it('a row\'s Edit opens the edit form and leaves the row closed', async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findByText('Truck One');
+
+  await user.click(rowActions('Truck One')!);
+  await user.click(screen.getByRole('menuitem', { name: 'Edit' }));
+  expect(await screen.findByText('Edit — Truck One')).not.toBeNull();
+  expect(document.querySelector('.dir-row.open')).toBeNull();
+});
+
+it('without permission to change trucks a row offers only Full details', async () => {
+  auth.can = (_r, a) => a === 'view';
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findByText('Truck One');
+
+  await user.click(rowActions('Truck One')!);
+  expect(menuItems()).toEqual(['Full details']);
 });
