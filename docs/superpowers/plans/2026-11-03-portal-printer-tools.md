@@ -5,7 +5,7 @@
 **Goal:** Bring the kiosk's printer tools to Labels › Printers in the portal: a
 Mock-data test label, Factory Reset (logged on /audit, handing off to Full
 Printer Setup), and damaged-font detection in Install Fonts. Print Labels
-gets a link to Labels › Printers.
+gets a link to Labels › Printers and the known-printers row.
 
 **Architecture:** There are two new `labels:view` API routes in
 `routes/labels.py`. One fills a template with mock values, sharing one
@@ -212,6 +212,8 @@ Read it before any task. Its §-numbers are cited below.
 - [ ] **Step 3: Write the page tests.**
   - Printers: `the first row is "Test Labels"`, with description `"Print an alignment or sample-data label and dial in offsets."` and button "Print test label".
   - PrintLabels: `Step 3 links to Labels › Printers`, a link named "Printer tools" with `href` `/labels/printers`.
+  - PrintLabels: `Step 3 offers known printers while disconnected`. With the hook mock's `knownDevices` resolving two devices (`productName` "ZD421", and one with no name), it shows "Known printers:", a "Connect ZD421" button and a "Connect Zebra printer" button. Clicking "Connect ZD421" calls `connectTo` with that device. While connected, no known-printer buttons show.
+  - PrintLabels: `the known printers reload after a disconnect`. `knownDevices` is called again once `connected` turns false.
 - [ ] **Step 4: Run them and confirm they fail.**
 - [ ] **Step 5: Implement.**
   - Write `testLabelTemplates.ts` and `renderTestLabel`.
@@ -225,8 +227,9 @@ Read it before any task. Its §-numbers are cited below.
     - The error notice reads `Couldn't print the test label (${code}).`, where `code` is the `ApiError`'s code or the error's message.
   - Printers row: retitle it, with the new description.
   - PrintLabels Step 3: add `<p className="page-hint"><Link to="/labels/printers">Printer tools</Link></p>` as the card's last child.
+  - PrintLabels Step 3 known printers (spec §7): a `known: UsbDeviceLike[]` state loaded from `printer.knownDevices()` on mount and whenever `printer.connected` becomes false. Right after the Connect via USB button, when `!printer.connected && known.length > 0`, render the Printers page's markup (`<div className="zp-known"><span className="cell-sub">Known printers:</span>` plus one `mini-btn` per device, "Connect {d.productName || 'Zebra printer'}", calling `printer.connectTo(d)`). If `zp-known` isn't styled on this page (it lives in `styles/printers.css`), import that sheet in PrintLabels.tsx.
 - [ ] **Step 6: Run the touched files plus `src/styles/modalDropdowns.test.ts src/components/labels/builder/BuilderPrinterModal.test.tsx` and confirm they pass.**
-- [ ] **Step 7: Commit:** `feat(printers): Test labels prints a mock-data label from a template you pick; Print Labels links to Printer tools`.
+- [ ] **Step 7: Commit:** `feat(printers): Test labels prints a mock-data label from a template you pick; Print Labels links to Printer tools and offers known printers`.
 
 ### Task 6: Damaged fonts in Install Fonts
 
@@ -265,6 +268,6 @@ Read it before any task. Its §-numbers are cited below.
   - Test labels, both choices, with a real active template (e.g. Generic Rack and RU at 203 and 300).
   - Factory Reset: a full run on the stub, the restart wait, a failure with Try again, the hand-off into setup, and the row on /audit.
   - Install Fonts, with a stub `^HW` reply that makes one font damaged.
-  - The Printer tools link.
+  - The Printer tools link and the known-printer buttons on Print Labels.
   - Screenshots of each new or changed dialog, with the corners checked.
 - [ ] **Step 4:** Report what was verified against the stub and what still needs a real Zebra over WebUSB (printing, factory reset).

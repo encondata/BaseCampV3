@@ -216,11 +216,23 @@ used by Print Labels."
   Built from it, a cut-short copy (same line, smaller size) must read
   Damaged ([[feedback-install-troubleshoot-perfect]]).
 
-### 7. Print Labels link (`portal/src/pages/PrintLabels.tsx`)
+### 7. Print Labels: link and known printers (`portal/src/pages/PrintLabels.tsx`)
 
-The Step 3 "Printer" card gets one router `Link` to `/labels/printers`, reading
-**Printer tools**, as the last line of the card. Nothing else on Print Labels
+The Step 3 "Printer" card gets two additions. Nothing else on Print Labels
 changes.
+
+- **Printer tools link.** One router `Link` to `/labels/printers`, reading
+  **Printer tools**, as the last line of the card.
+- **Known printers** (Jimmy, 2026-11-03: "add the known printers option from
+  the /labels/printers to the /labels/print page"). This is the same row as
+  Labels › Printers. While no printer is connected and the browser has
+  printers it already allowed (`printer.knownDevices()`), it shows "Known
+  printers:" and then one `mini-btn` per device: "Connect <productName>",
+  or "Connect Zebra printer" when the name is missing. Clicking one calls
+  `printer.connectTo(device)`, with no chooser. It sits right after the
+  Connect via USB button. The list loads on mount and again whenever the
+  printer disconnects, so a printer allowed during this visit shows up
+  after a Disconnect (my call; Labels › Printers loads it only on mount).
 
 ## Non-goals and anti-goals
 
