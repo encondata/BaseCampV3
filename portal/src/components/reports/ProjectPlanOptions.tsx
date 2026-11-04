@@ -30,7 +30,8 @@ import { OptionGroup, OptionsGrid, PreviewCard } from './ReportOptionsLayout';
 import '../../styles/profile.css';   /* .pf-form, .pf-error */
 import '../../styles/reports.css';   /* the options grid and groups */
 
-type Timescale = 'fit' | Exclude<Zoom, 'hours'>;
+/** What the PDF offers: Fit, or days and coarser (Fit may still draw hours). */
+type Timescale = 'fit' | 'days' | 'weeks' | 'months' | 'quarters';
 type ColumnsMode = 'current' | 'default' | 'choose';
 type RangeMode = 'whole' | 'custom';
 
@@ -46,9 +47,14 @@ export interface ProjectPlanInitial {
 const TIMESCALES: readonly (readonly [Timescale, string])[] = [
   ['fit', 'Fit'], ['days', 'Days'], ['weeks', 'Weeks'], ['months', 'Months'], ['quarters', 'Quarters'],
 ];
+/** How "Fit draws it by …" names the zoom Fit chose (PRINT_ZOOMS: hours and coarser). */
 const ZOOM_WORDS: Record<Zoom, string> = {
+  fiveMinutes: 'five minutes', quarterHours: 'quarter hours', wideHours: 'hours',
   hours: 'hours', days: 'days', weeks: 'weeks', months: 'months', quarters: 'quarters',
 };
+/** The screen's zoom as the PDF's starting timescale: Fit unless the PDF offers it. */
+const startingTimescale = (zoom: Zoom | undefined): Timescale =>
+  TIMESCALES.find(([value]) => value === zoom)?.[0] ?? 'fit';
 /** The columns Choose… offers: all but ID and Task Name (always printed) and the sheet's icons. */
 const PICKABLE = PLAN_COLUMNS.filter((c) => !REQUIRED_COLUMNS.has(c.key) && c.key !== 'indicators')
   .map((c) => ({ value: c.key, label: c.label }));
@@ -107,8 +113,7 @@ export default function ProjectPlanOptions({ initiative, plan: given, initial, o
   const [rangeMode, setRangeMode] = useState<RangeMode>('whole');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
-  const [timescale, setTimescale] = useState<Timescale>(
-    () => (initial?.zoom && initial.zoom !== 'hours' ? initial.zoom : 'fit'));
+  const [timescale, setTimescale] = useState<Timescale>(() => startingTimescale(initial?.zoom));
   const [paper, setPaper] = useState<Paper>('letter');
   const [includeCompleted, setIncludeCompleted] = useState(true);
   const [critical, setCritical] = useState(!!initial?.critical);

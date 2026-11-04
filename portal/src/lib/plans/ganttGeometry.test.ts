@@ -5,8 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { fromMs, toMs } from './floatingTime';
 import {
-  baselineOf, barOf, FIT_MARGIN, fitScrollLeft, fitZoom, LINK_STUB, linkPath, makeScale,
-  MILESTONE_HALF, msOf, progressWidth, tiers, xOf, ZOOM_PX_PER_DAY, ZOOMS, zoomIn, zoomOut,
+  baselineOf, barOf, coarserOf, FIT_MARGIN, finestZoom, fitScrollLeft, fitZoom, LINK_STUB, linkPath, makeScale,
+  MAX_SCALE_PX, MILESTONE_HALF, msOf, progressWidth, tiers, xOf, ZOOM_PX_PER_DAY, ZOOMS, zoomIn, zoomOut,
   type Scale, type Zoom,
 } from './ganttGeometry';
 import { makeTask } from './planFixtures';
@@ -26,22 +26,57 @@ function scaleOf(from: string, to: string, zoom: Zoom): Scale {
 const labels = (ticks: { label: string }[]): string[] => ticks.map((t) => t.label);
 
 describe('zoom levels', () => {
-  it('keeps the px per day the spec gives', () => {
-    expect(ZOOM_PX_PER_DAY).toEqual({ hours: 480, days: 48, weeks: 18, months: 5, quarters: 1.8 });
-    expect(ZOOMS).toEqual(['hours', 'days', 'weeks', 'months', 'quarters']);
+  it('keeps the px per day the spec gives, three finer steps before hours', () => {
+    expect(ZOOM_PX_PER_DAY).toEqual({
+      fiveMinutes: 23_040, quarterHours: 5_760, wideHours: 1_920,
+      hours: 480, days: 48, weeks: 18, months: 5, quarters: 1.8,
+    });
+    expect(ZOOMS).toEqual(['fiveMinutes', 'quarterHours', 'wideHours', 'hours', 'days', 'weeks', 'months', 'quarters']);
+    // about an hour across a 1,000px chart at the finest: 960 px an hour
+    expect(ZOOM_PX_PER_DAY.fiveMinutes / 24).toBe(960);
   });
 
-  it('zooms in toward hours and out toward quarters, and stops at the ends', () => {
+  it('zooms in toward five minutes and out toward quarters, and stops at the ends', () => {
     expect(zoomIn('quarters')).toBe('months');
     expect(zoomIn('months')).toBe('weeks');
     expect(zoomIn('weeks')).toBe('days');
     expect(zoomIn('days')).toBe('hours');
-    expect(zoomIn('hours')).toBe('hours');
+    expect(zoomIn('hours')).toBe('wideHours');
+    expect(zoomIn('wideHours')).toBe('quarterHours');
+    expect(zoomIn('quarterHours')).toBe('fiveMinutes');
+    expect(zoomIn('fiveMinutes')).toBe('fiveMinutes');
+    expect(zoomOut('fiveMinutes')).toBe('quarterHours');
+    expect(zoomOut('quarterHours')).toBe('wideHours');
+    expect(zoomOut('wideHours')).toBe('hours');
     expect(zoomOut('hours')).toBe('days');
     expect(zoomOut('days')).toBe('weeks');
     expect(zoomOut('weeks')).toBe('months');
     expect(zoomOut('months')).toBe('quarters');
     expect(zoomOut('quarters')).toBe('quarters');
+  });
+
+  it('takes the coarser of two zooms', () => {
+    expect(coarserOf('fiveMinutes', 'wideHours')).toBe('wideHours');
+    expect(coarserOf('days', 'wideHours')).toBe('days');
+    expect(coarserOf('hours', 'hours')).toBe('hours');
+  });
+});
+
+describe('finestZoom', () => {
+  it('is five minutes for a plan of weeks or months', () => {
+    expect(finestZoom('2026-11-16T06:00', '2026-11-17T09:10')).toBe('fiveMinutes');
+    expect(finestZoom('2026-11-02', '2027-05-02')).toBe('fiveMinutes');    // ~4.2 million px
+  });
+
+  it('stops before a scale passes MAX_SCALE_PX, so the browser can still draw it', () => {
+    expect(MAX_SCALE_PX).toBe(16_000_000);
+    // 3 years: ~25 million px at five minutes, ~6.3 million at quarter hours
+    expect(finestZoom('2026-11-02', '2029-11-02')).toBe('quarterHours');
+    // 10 years: ~21 million px at quarter hours, ~7 million at wide hours
+    expect(finestZoom('2026-11-02', '2036-11-02')).toBe('wideHours');
+    for (const [start, finish] of [['2026-11-02', '2029-11-02'], ['2026-11-02', '2036-11-02']]) {
+      expect(makeScale(start, finish, finestZoom(start, finish)).width).toBeLessThanOrEqual(MAX_SCALE_PX);
+    }
   });
 });
 
@@ -204,8 +239,25 @@ describe('fitZoom', () => {
     expect(fitZoom(start, after(14), 1000)).toBe('days');                       // a 2-week plan
     expect(fitZoom(start, '2029-11-02', 1000)).toBe('quarters');               // a 3-year plan
     expect(fitZoom('2026-11-02T08:00', '2026-11-13T17:00', 1000)).toBe('days');
-    // twelve hours of work come to 240px at 480 px/day
-    expect(fitZoom('2026-11-02T08:00', '2026-11-02T20:00', 1000)).toBe('hours');
+    // twelve hours come to 960px at 1,920 px/day: inside the 978px of room
+    expect(fitZoom('2026-11-02T08:00', '2026-11-02T20:00', 1000)).toBe('wideHours');
+  });
+
+  it('lands on the finer steps for a plan of a few hours or less', () => {
+    // the NAP11 run book: 27 h 10 min is 2,173px at wide hours, 543px at hours
+    expect(fitZoom('2026-11-16T06:00', '2026-11-17T09:10', 1000)).toBe('hours');
+    // two hours: 1,920px at five minutes, 480px at quarter hours
+    expect(fitZoom('2026-11-16T06:00', '2026-11-16T08:00', 1000)).toBe('quarterHours');
+    // 45 minutes: 720px at five minutes
+    expect(fitZoom('2026-11-16T06:00', '2026-11-16T06:45', 1000)).toBe('fiveMinutes');
+  });
+
+  it('fits from the zooms it is given, the last when none fits', () => {
+    const print: Zoom[] = ['hours', 'days', 'weeks', 'months', 'quarters'];
+    expect(fitZoom('2026-11-16T06:00', '2026-11-16T06:45', 1000, print)).toBe('hours');
+    expect(fitZoom(start, '2029-11-02', 1000, print)).toBe('quarters');
+    expect(fitZoom(start, after(14), 1000, ['hours', 'days'])).toBe('days');
+    expect(fitZoom(start, after(40), 1000, ['hours', 'days'])).toBe('days');
   });
 
   it.each([
@@ -311,6 +363,47 @@ describe('tiers', () => {
     expect(bottom.every((t) => t.width === 20)).toBe(true);
     tile(top, scale.width);
     tile(bottom, scale.width);
+  });
+
+  it('labels days over 24-hour hours at wide hours zoom', () => {
+    const scale = makeScale('2026-11-16T06:00', '2026-11-16T07:30', 'wideHours');
+    const { top, bottom } = tiers(scale, 'wideHours');
+    expect(labels(top)).toEqual(['Mon 11/16']);
+    expect(labels(bottom)).toEqual(['04:00', '05:00', '06:00', '07:00', '08:00', '09:00', '10:00', '11:00']);
+    expect(bottom.every((t) => t.width === 80)).toBe(true);
+    tile(top, scale.width);
+    tile(bottom, scale.width);
+  });
+
+  it('labels the hour over quarter hours at quarter hours zoom, on a 24-hour clock', () => {
+    const scale = makeScale('2026-11-16T06:00', '2026-11-16T06:30', 'quarterHours');
+    const { top, bottom } = tiers(scale, 'quarterHours');
+    expect(labels(top)).toEqual(['Mon 11/16 05:00', 'Mon 11/16 06:00', 'Mon 11/16 07:00']);
+    expect(top.map((t) => t.width)).toEqual([120, 240, 120]);
+    expect(labels(bottom)).toEqual(['05:30', '05:45', '06:00', '06:15', '06:30', '06:45', '07:00', '07:15']);
+    expect(bottom.every((t) => t.width === 60)).toBe(true);
+    tile(top, scale.width);
+    tile(bottom, scale.width);
+  });
+
+  it('labels the hour over five minutes at five minutes zoom', () => {
+    const scale = makeScale('2026-11-16T06:00', '2026-11-16T06:15', 'fiveMinutes');
+    const { top, bottom } = tiers(scale, 'fiveMinutes');
+    expect(labels(top)).toEqual(['Mon 11/16 05:00', 'Mon 11/16 06:00']);
+    expect(top.map((t) => t.width)).toEqual([160, 560]);
+    expect(labels(bottom)).toEqual(['05:50', '05:55', '06:00', '06:05', '06:10', '06:15', '06:20', '06:25', '06:30']);
+    expect(bottom.every((t) => t.width === 80)).toBe(true);
+    tile(top, scale.width);
+    tile(bottom, scale.width);
+  });
+
+  it('crosses midnight on the 24-hour clock, never AM or PM', () => {
+    const scale = makeScale('2026-11-16T23:30', '2026-11-17T00:15', 'quarterHours');
+    const { top, bottom } = tiers(scale, 'quarterHours');
+    expect(labels(top)).toEqual(['Mon 11/16 23:00', 'Tue 11/17 00:00', 'Tue 11/17 01:00']);
+    expect(labels(bottom)).toContain('23:45');
+    expect(labels(bottom)).toContain('00:00');
+    expect([...labels(top), ...labels(bottom)].some((l) => /AM|PM/.test(l))).toBe(false);
   });
 
   it('labels quarters over months at months zoom', () => {

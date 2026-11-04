@@ -166,9 +166,15 @@ export function printScale(start: string, finish: string, zoom: Zoom): Scale {
   return { startMs, endMs, pxPerMs: perDay / MS_PER_DAY, width: ((endMs - startMs) * perDay) / MS_PER_DAY };
 }
 
-/** The zoom the PDF's Fit uses: the portal's Fit for the range at one page's chart width. */
+/** The zooms the PDF draws, finest first: hours and coarser, the ones its API
+ *  port (reports/project_plan/gantt.py) knows. The screen's finer three
+ *  (ganttGeometry ZOOMS) aren't printed. */
+export const PRINT_ZOOMS: readonly Zoom[] = ['hours', 'days', 'weeks', 'months', 'quarters'];
+
+/** The zoom the PDF's Fit uses: the portal's Fit for the range at one page's
+ *  chart width, from PRINT_ZOOMS. */
 export function printFit(start: string, finish: string, paper: Paper): Zoom {
-  return fitZoom(start, finish, chartWidth(paper));
+  return fitZoom(start, finish, chartWidth(paper), PRINT_ZOOMS);
 }
 
 /** How many chart tiles a scale `width` px wide takes across a page row (a

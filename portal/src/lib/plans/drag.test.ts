@@ -16,8 +16,9 @@ import { toMs } from './floatingTime';
 import { makeLink, makePlan, makeTask } from './planFixtures';
 import {
   DRAG_THRESHOLD_PX, GRIP_PX, MIN_GRIP_BAR_PX, MOVE_REFUSAL, RESIZE_PX, canLink, dragKind, exactDurationText, gripX,
-  moveRefusal, opsForDrag, pointerScaleX, snapMs, snapShift, workMinutes,
+  moveRefusal, opsForDrag, pointerScaleX, showsTimes, snapMs, snapShift, workMinutes,
 } from './drag';
+import type { Zoom } from './ganttGeometry';
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -115,6 +116,19 @@ describe('snapMs', () => {
     expect(snapMs(at('2026-11-02T13:00'), 'weeks')).toBe(at('2026-11-03T00:00'));
     expect(snapMs(at('2026-11-02T13:00'), 'months')).toBe(at('2026-11-03T00:00'));
     expect(snapMs(at('2026-11-02T13:00'), 'quarters')).toBe(at('2026-11-03T00:00'));
+  });
+
+  it('the finer steps snap to 5 minutes (wide and quarter hours) and to the minute (five minutes)', () => {
+    expect(snapMs(at('2026-11-02T08:02'), 'wideHours')).toBe(at('2026-11-02T08:00'));
+    expect(snapMs(at('2026-11-02T08:03'), 'wideHours')).toBe(at('2026-11-02T08:05'));
+    expect(snapMs(at('2026-11-02T08:07'), 'quarterHours')).toBe(at('2026-11-02T08:05'));
+    expect(snapMs(at('2026-11-02T08:07'), 'fiveMinutes')).toBe(at('2026-11-02T08:07'));
+    expect(snapMs(at('2026-11-02T08:07') + 31_000, 'fiveMinutes')).toBe(at('2026-11-02T08:08'));
+  });
+
+  it('shows times while dragging at every step that snaps finer than a day', () => {
+    expect(['fiveMinutes', 'quarterHours', 'wideHours', 'hours', 'days'].every((z) => showsTimes(z as Zoom))).toBe(true);
+    expect(['weeks', 'months', 'quarters'].some((z) => showsTimes(z as Zoom))).toBe(false);
   });
 });
 
