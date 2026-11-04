@@ -28,3 +28,9 @@ it('renders a custom fallback when there is no trade', () => {
   expect(container.querySelector('.chip')).toBeNull();
   expect(screen.getByText('No trade set')).toBeTruthy();
 });
+
+it('gives each chip a title so a truncated chip can be read in full', () => {
+  const { container } = render(<TradeChips trade="Cable, Hardware" />);
+  const chips = Array.from(container.querySelectorAll('.chip.tag'));
+  expect(chips.map((c) => c.getAttribute('title'))).toEqual(['Cable', 'Hardware']);
+});

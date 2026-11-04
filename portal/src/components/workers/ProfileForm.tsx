@@ -44,6 +44,13 @@ export default function ProfileForm({ worker, levels, statuses, tradeSuggestions
     }
   };
 
+  // a trade matching a suggestion case-insensitively saves in the suggestion's spelling
+  const canonicalTrades = (tags: string[]) => {
+    const spelling = new Map((tradeSuggestions ?? []).map((s) => [s.trim().toLowerCase(), s.trim()]));
+    // a tag may itself hold commas (pasted text), so re-split before joining
+    return splitTrades(tags.join(',')).map((t) => spelling.get(t.toLowerCase()) || t);
+  };
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (status === WORKER_BLACKLIST && !note.trim()) {
@@ -56,8 +63,7 @@ export default function ProfileForm({ worker, levels, statuses, tradeSuggestions
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        // a tag may itself hold commas (pasted text), so re-split before joining
-        trade: splitTrades(trades.join(',')).join(', ') || null,
+        trade: canonicalTrades(trades).join(', ') || null,
         level: level || null,
         partner_id: partnerId || null,
         status,

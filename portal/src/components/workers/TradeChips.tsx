@@ -8,7 +8,7 @@ export default function TradeChips({ trade, fallback = '—' }: { trade: string 
   if (trades.length === 0) return <>{fallback}</>;
   return (
     <div className="chips">
-      {trades.map((t) => <span key={t} className="chip tag">{t}</span>)}
+      {trades.map((t) => <span key={t} className="chip tag" title={t}>{t}</span>)}
     </div>
   );
 }

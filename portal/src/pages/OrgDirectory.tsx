@@ -893,7 +893,7 @@ function SuppliedWorkersModal({ workers, onClose, onPick }: {
                 <div className="cell-sub supplied-sub">
                   {splitTrades(w.trade).length > 0
                     ? <><TradeChips trade={w.trade} />{w.level && <span>· {w.level}</span>}</>
-                    : (w.level ?? 'no profile')}
+                    : (w.level || 'no profile')}
                 </div>
               </div>
               {w.level && (

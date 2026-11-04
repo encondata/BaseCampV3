@@ -100,3 +100,17 @@ it('offers the suggestions it is given', () => {
   expect(screen.getByRole('button', { name: 'Fiber' })).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Cable' })).toBeNull();
 });
+
+it('saves a typed trade in the suggestion spelling when it matches case-insensitively', async () => {
+  renderForm({ ...WORKER, trade: null }, ['Cable', 'Fiber']);
+  fireEvent.change(tradeInput(), { target: { value: 'cable' } });
+  fireEvent.blur(tradeInput());
+  fireEvent.click(screen.getByRole('button', { name: 'Save profile' }));
+  expect(await savedTrade()).toBe('Cable');
+});
+
+it('canonical spelling still dedupes case-insensitively', async () => {
+  renderForm({ ...WORKER, trade: 'cable, CABLE, Other' }, ['Cable']);
+  fireEvent.click(screen.getByRole('button', { name: 'Save profile' }));
+  expect(await savedTrade()).toBe('Cable, Other');
+});

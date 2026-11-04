@@ -394,6 +394,7 @@ it('supplied workers picker: trade chips then the level, "no profile" when both 
         supplied({ person_id: 'b', display_name: 'Bo Trade', trade: 'Fiber' }),
         supplied({ person_id: 'c', display_name: 'Cy Level', level: 'L3' }),
         supplied({ person_id: 'd', display_name: 'Di Nothing' }),
+        supplied({ person_id: 'e', display_name: 'Ed Blank', level: '' }),
       ])
       : base(path, init)));
   renderPartners();
@@ -413,4 +414,5 @@ it('supplied workers picker: trade chips then the level, "no profile" when both 
   expect(chips(subOf('Cy Level'))).toEqual([]);
   expect(subOf('Cy Level').textContent).toBe('L3');
   expect(subOf('Di Nothing').textContent).toBe('no profile');
+  expect(subOf('Ed Blank').textContent).toBe('no profile');
 });
