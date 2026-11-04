@@ -146,6 +146,10 @@ struct RolodexDetail: Codable, Equatable, Sendable, Identifiable {
     /// Shown as "Employee ID" (read-only here).
     var externalId: String?
     var statusNote: String?
+    /// Will travel: nil is "Not set"; false (No) is a real answer. Worker page only, never the list row.
+    var willTravel: Bool?
+    var travelRegion: String?
+    var travelRestrictions: String?
     var canEdit: Bool
     var canChangeStatus: Bool
     /// `rank_too_low` or nil.
@@ -175,6 +179,9 @@ struct RolodexDetail: Codable, Equatable, Sendable, Identifiable {
         case email, phone
         case externalId = "external_id"
         case statusNote = "status_note"
+        case willTravel = "will_travel"
+        case travelRegion = "travel_region"
+        case travelRestrictions = "travel_restrictions"
         case canEdit = "can_edit"
         case canChangeStatus = "can_change_status"
         case editBlockReason = "edit_block_reason"
@@ -182,7 +189,7 @@ struct RolodexDetail: Codable, Equatable, Sendable, Identifiable {
     }
 
     init(row: RolodexRow, email: String? = nil, phone: String? = nil, externalId: String? = nil, statusNote: String? = nil,
-         canEdit: Bool = false, canChangeStatus: Bool = false, editBlockReason: String? = nil, statusBlockReason: String? = nil) {
+         willTravel: Bool? = nil, travelRegion: String? = nil, travelRestrictions: String? = nil, canEdit: Bool = false, canChangeStatus: Bool = false, editBlockReason: String? = nil, statusBlockReason: String? = nil) {
         personId = row.personId
         firstName = row.firstName
         lastName = row.lastName
@@ -205,6 +212,9 @@ struct RolodexDetail: Codable, Equatable, Sendable, Identifiable {
         self.phone = phone
         self.externalId = externalId
         self.statusNote = statusNote
+        self.willTravel = willTravel
+        self.travelRegion = travelRegion
+        self.travelRestrictions = travelRestrictions
         self.canEdit = canEdit
         self.canChangeStatus = canChangeStatus
         self.editBlockReason = editBlockReason
@@ -218,6 +228,10 @@ struct RolodexDetail: Codable, Equatable, Sendable, Identifiable {
         phone = try c.decodeIfPresent(String.self, forKey: .phone)
         externalId = try c.decodeIfPresent(String.self, forKey: .externalId)
         statusNote = try c.decodeIfPresent(String.self, forKey: .statusNote)
+        // Missing (an older API) decodes as not set, like null.
+        willTravel = try c.decodeIfPresent(Bool.self, forKey: .willTravel)
+        travelRegion = try c.decodeIfPresent(String.self, forKey: .travelRegion)
+        travelRestrictions = try c.decodeIfPresent(String.self, forKey: .travelRestrictions)
         canEdit = try c.decodeIfPresent(Bool.self, forKey: .canEdit) ?? false
         canChangeStatus = try c.decodeIfPresent(Bool.self, forKey: .canChangeStatus) ?? false
         editBlockReason = try c.decodeIfPresent(String.self, forKey: .editBlockReason)
@@ -448,6 +462,8 @@ struct RolodexCreateIn: Codable, Equatable, Sendable {
 /// nil is sent as JSON `null` (the server clears it); a field not in `fields` is left out
 /// (unchanged). The synthesized encoder would drop nils, so `encode(to:)` is written out.
 /// `fields` is read-only outside: `fields[.phone] = nil` would delete the key, not clear it.
+/// `will_travel` is the one Boolean, so it is kept apart from the text `fields` the same way:
+/// `willTravel` nil leaves it out, `.some(nil)` sends `null` (Not set), `.some(false)` sends `false`.
 struct RolodexPatch: Codable, Equatable, Sendable {
     enum Field: String, CodingKey, CaseIterable, Sendable {
         case firstName = "first_name"
@@ -458,32 +474,65 @@ struct RolodexPatch: Codable, Equatable, Sendable {
         case partnerId = "partner_id"
         case trade, level, status
         case statusNote = "status_note"
+        case travelRegion = "travel_region"
+        case travelRestrictions = "travel_restrictions"
     }
 
+    /// The Will travel key (not a text `Field`).
+    static let willTravelKey = "will_travel"
+
     private(set) var fields: [Field: String?]
+    /// nil: not sent. `.some(value)`: sent as `value`, null included.
+    private(set) var willTravel: Bool??
 
-    init(_ fields: [Field: String?] = [:]) { self.fields = fields }
+    init(_ fields: [Field: String?] = [:]) {
+        self.fields = fields
+        self.willTravel = nil
+    }
 
-    var isEmpty: Bool { fields.isEmpty }
+    var isEmpty: Bool { fields.isEmpty && willTravel == nil }
 
     /// Sends `field` as `value`; nil sends `null` (clears it).
     mutating func set(_ field: Field, _ value: String?) { fields[field] = .some(value) }
 
+    /// Sends Will travel as `value`; nil sends `null` (Not set).
+    mutating func setWillTravel(_ value: Bool?) { willTravel = .some(value) }
+
+    /// Any JSON key: the text `Field`s plus `will_travel`.
+    private struct Key: CodingKey {
+        let stringValue: String
+        init(_ stringValue: String) { self.stringValue = stringValue }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        var intValue: Int? { nil }
+        init?(intValue: Int) { nil }
+    }
+
     func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: Field.self)
+        var c = encoder.container(keyedBy: Key.self)
         for (field, value) in fields {
-            if let value { try c.encode(value, forKey: field) } else { try c.encodeNil(forKey: field) }
+            let key = Key(field.rawValue)
+            if let value { try c.encode(value, forKey: key) } else { try c.encodeNil(forKey: key) }
+        }
+        if let willTravel {
+            let key = Key(Self.willTravelKey)
+            if let willTravel { try c.encode(willTravel, forKey: key) } else { try c.encodeNil(forKey: key) }
         }
     }
 
     init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: Field.self)
+        let c = try decoder.container(keyedBy: Key.self)
         var fields: [Field: String?] = [:]
-        for field in c.allKeys {
-            let value: String? = try c.decodeNil(forKey: field) ? nil : c.decode(String.self, forKey: field)
-            fields[field] = .some(value)
+        var willTravel: Bool?? = nil
+        for key in c.allKeys {
+            if key.stringValue == Self.willTravelKey {
+                willTravel = .some(try c.decodeNil(forKey: key) ? nil : c.decode(Bool.self, forKey: key))
+            } else if let field = Field(rawValue: key.stringValue) {
+                let value: String? = try c.decodeNil(forKey: key) ? nil : c.decode(String.self, forKey: key)
+                fields[field] = .some(value)
+            }
         }
         self.fields = fields
+        self.willTravel = willTravel
     }
 }
 

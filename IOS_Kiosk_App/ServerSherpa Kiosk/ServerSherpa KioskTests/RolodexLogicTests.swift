@@ -193,6 +193,65 @@ struct RolodexLogicTests {
         #expect(try json(RolodexLogic.buildPatch(original: detail, edited: e)) == "{}")
     }
 
+    // MARK: travel (Android RolodexTest's travel cases)
+
+    /// Ana with travel filled in: willing (`false` here), a region and restrictions.
+    private func travelDetail(willTravel: Bool? = false) -> RolodexDetail {
+        var d = detail
+        d.willTravel = willTravel
+        d.travelRegion = "Midwest"
+        d.travelRestrictions = "No overnight trips"
+        return d
+    }
+
+    @Test func editSeedsWillTravelFalseFromTheDetail() {
+        let e = RolodexEdit(travelDetail())
+        #expect(e.willTravel == false)
+        #expect(e.travelRegion == "Midwest")
+        #expect(e.travelRestrictions == "No overnight trips")
+        let blank = RolodexEdit(detail)
+        #expect(blank.willTravel == nil); #expect(blank.travelRegion == ""); #expect(blank.travelRestrictions == "")
+    }
+
+    @Test func changingOnlyWillTravelSendsOnlyWillTravel() throws {
+        var e = RolodexEdit(travelDetail(willTravel: nil))
+        e.willTravel = false
+        let patch = RolodexLogic.buildPatch(original: travelDetail(willTravel: nil), edited: e)
+        #expect(!patch.isEmpty)
+        #expect(patch.fields.isEmpty)
+        #expect(try json(patch) == #"{"will_travel":false}"#)
+        e.willTravel = true
+        #expect(try json(RolodexLogic.buildPatch(original: travelDetail(willTravel: nil), edited: e)) == #"{"will_travel":true}"#)
+    }
+
+    @Test func willTravelBackToNotSetIsSentAsNull() throws {
+        var e = RolodexEdit(travelDetail())
+        e.willTravel = nil
+        #expect(try json(RolodexLogic.buildPatch(original: travelDetail(), edited: e)) == #"{"will_travel":null}"#)
+    }
+
+    @Test func clearedTravelRegionIsSentAsNull() throws {
+        var e = RolodexEdit(travelDetail())
+        e.travelRegion = "  "
+        let patch = RolodexLogic.buildPatch(original: travelDetail(), edited: e)
+        #expect(patch == RolodexPatch([.travelRegion: nil]))
+        #expect(try json(patch) == #"{"travel_region":null}"#)
+    }
+
+    @Test func changedTravelRestrictionsAreSentTrimmed() throws {
+        var e = RolodexEdit(travelDetail())
+        e.travelRestrictions = " Day trips only \n"
+        #expect(try json(RolodexLogic.buildPatch(original: travelDetail(), edited: e)) == #"{"travel_restrictions":"Day trips only"}"#)
+    }
+
+    @Test func unchangedTravelBuildsAnEmptyPatch() throws {
+        for willTravel in [nil, true, false] as [Bool?] {
+            let patch = RolodexLogic.buildPatch(original: travelDetail(willTravel: willTravel), edited: RolodexEdit(travelDetail(willTravel: willTravel)))
+            #expect(patch.isEmpty)
+            #expect(try json(patch) == "{}")
+        }
+    }
+
     // MARK: validate
 
     @Test func validateNeedsFirstAndLastName() {
@@ -288,5 +347,10 @@ struct RolodexLogicTests {
     @Test func patchRoundTripsThroughJSON() throws {
         let patch = RolodexPatch([.phone: nil, .level: "L4"])
         #expect(try KioskJSON.decoder.decode(RolodexPatch.self, from: try KioskJSON.encoder.encode(patch)) == patch)
+        for willTravel in [nil, false, true] as [Bool?] {
+            var travel = RolodexPatch([.travelRegion: nil, .travelRestrictions: "Day trips only"])
+            travel.setWillTravel(willTravel)
+            #expect(try KioskJSON.decoder.decode(RolodexPatch.self, from: try KioskJSON.encoder.encode(travel)) == travel)
+        }
     }
 }

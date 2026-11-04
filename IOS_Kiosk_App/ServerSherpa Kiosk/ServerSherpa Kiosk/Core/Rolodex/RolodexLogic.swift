@@ -1,8 +1,9 @@
 import Foundation
 
 /// The worker edit form's fields, as typed. Text fields are never nil (a blank one
-/// means "none"); `partnerId` and `level` are nil for None; `status` is a status key.
-/// Also the New worker form (whose status isn't shown or sent).
+/// means "none"); `partnerId` and `level` are nil for None; `willTravel` is nil for Not set
+/// (false is No); `status` is a status key. Also the New worker form (whose status and travel
+/// aren't shown or sent).
 struct RolodexEdit: Equatable, Sendable {
     var firstName = ""
     var lastName = ""
@@ -13,6 +14,9 @@ struct RolodexEdit: Equatable, Sendable {
     var partnerId: String? = nil
     var trade = ""
     var level: String? = nil
+    var willTravel: Bool? = nil
+    var travelRegion = ""
+    var travelRestrictions = ""
     var status = ""
     var statusNote = ""
 }
@@ -23,7 +27,8 @@ extension RolodexEdit {
         self.init(firstName: detail.firstName, lastName: detail.lastName, preferredName: detail.preferredName ?? "",
                   jobTitle: detail.jobTitle ?? "", phone: detail.phone ?? "", email: detail.email ?? "",
                   partnerId: detail.company?.id, trade: detail.trade ?? "", level: detail.level,
-                  status: detail.status, statusNote: detail.statusNote ?? "")
+                  willTravel: detail.willTravel, travelRegion: detail.travelRegion ?? "",
+                  travelRestrictions: detail.travelRestrictions ?? "", status: detail.status, statusNote: detail.statusNote ?? "")
     }
 }
 
@@ -147,6 +152,7 @@ enum RolodexLogic {
 
     /// Only the fields `edited` changed from `original`, trimmed; a field cleared to
     /// blank or None goes out as null. A blank status is never sent (it can't be cleared).
+    /// Will travel goes out only when it changed, as true, false or null (Not set).
     static func buildPatch(original: RolodexDetail, edited: RolodexEdit) -> RolodexPatch {
         let pairs: [(RolodexPatch.Field, String?, String?)] = [
             (.firstName, original.firstName, edited.firstName),
@@ -159,6 +165,8 @@ enum RolodexLogic {
             (.trade, original.trade, edited.trade),
             (.level, original.level, edited.level),
             (.statusNote, original.statusNote, edited.statusNote),
+            (.travelRegion, original.travelRegion, edited.travelRegion),
+            (.travelRestrictions, original.travelRestrictions, edited.travelRestrictions),
         ]
         var patch = RolodexPatch()
         for (field, before, after) in pairs {
@@ -166,6 +174,7 @@ enum RolodexLogic {
             if clean(before) != value { patch.set(field, value) }
         }
         if let status = clean(edited.status), status != clean(original.status) { patch.set(.status, status) }
+        if edited.willTravel != original.willTravel { patch.setWillTravel(edited.willTravel) }
         return patch
     }
 

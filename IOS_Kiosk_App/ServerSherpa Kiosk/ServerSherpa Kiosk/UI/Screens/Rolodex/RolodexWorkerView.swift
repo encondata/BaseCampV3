@@ -171,7 +171,15 @@ struct RolodexWorkerView: View {
         RolodexCard(title: "Work") {
             RolodexKeyValue(key: "Company", value: row.company?.name)
             RolodexKeyValue(key: "Trade · Level", value: rolodexTradeLevel(trade: row.trade, level: row.level))
+            // Travel arrives with the worker's page, never with the (offline-cached) list.
             if let detail {
+                RolodexKeyValue(key: "Will travel", value: detail.willTravel.map { $0 ? "Yes" : "No" })
+                if let region = RolodexLogic.clean(detail.travelRegion) {
+                    RolodexKeyValue(key: "Travel region", value: region, wraps: true)
+                }
+                if let restrictions = RolodexLogic.clean(detail.travelRestrictions) {
+                    RolodexKeyValue(key: "Travel restrictions", value: restrictions, wraps: true)
+                }
                 RolodexKeyValue(key: "Employee ID", value: detail.externalId, mono: true)
                 if let statusNote = RolodexLogic.clean(detail.statusNote) {
                     RolodexKeyValue(key: "Status note", value: statusNote)
@@ -264,6 +272,8 @@ private struct RolodexKeyValue: View {
     let key: String
     let value: String?
     var mono = false
+    /// Shows every line (long free text) instead of stopping at two.
+    var wraps = false
     @Environment(\.kioskPalette) private var palette
 
     var body: some View {
@@ -273,7 +283,8 @@ private struct RolodexKeyValue: View {
             Text(shown ?? "—")
                 .font(mono ? KioskType.mono(14) : KioskType.sans(14, .medium))
                 .foregroundStyle(shown == nil ? palette.textMute : palette.text)
-                .lineLimit(2)
+                .lineLimit(wraps ? nil : 2)
+                .fixedSize(horizontal: false, vertical: wraps)
                 .textSelection(.enabled)
             Spacer(minLength: 0)
         }
@@ -285,7 +296,7 @@ private struct RolodexKeyValue: View {
 
 // MARK: - Edit
 
-/// The Edit form (mockup 4, "Editing"): names, contact, company, trade, level and status, with
+/// The Edit form (mockup 4, "Editing"): names, contact, company, trade, level, travel and status, with
 /// Save changes / Cancel pinned below. Blacklist reveals its required note. The status control
 /// is off (with the reason) when the server says so. A failed save keeps every field as typed.
 private struct RolodexEditForm: View {
@@ -321,6 +332,9 @@ private struct RolodexEditForm: View {
                                 model.editing?.level = $0
                             }
                         }
+                        willTravel
+                        field("Travel region", \.travelRegion)
+                        field("Travel restrictions", \.travelRestrictions, sentences: true, autocorrect: true, multiline: true)
                         status(edit, detail)
                         if edit.status == RolodexLogic.blacklistKey {
                             field("Blacklist note *", \.statusNote, multiline: true)
@@ -365,9 +379,21 @@ private struct RolodexEditForm: View {
     }
 
     private func field(_ label: String, _ key: WritableKeyPath<RolodexEdit, String>, keyboard: UIKeyboardType = .default,
-                       content: UITextContentType? = nil, capitalize: Bool = true, multiline: Bool = false) -> some View {
+                       content: UITextContentType? = nil, capitalize: Bool = true, sentences: Bool = false,
+                       autocorrect: Bool = false, multiline: Bool = false) -> some View {
         RolodexTextField(label: label, text: binding(key), keyboard: keyboard, content: content, capitalize: capitalize,
-                         multiline: multiline, disabled: model.saving)
+                         sentences: sentences, autocorrect: autocorrect, multiline: multiline, disabled: model.saving)
+    }
+
+    /// Not set / Yes / No; off while saving, like the other fields.
+    private var willTravel: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Will travel").font(KioskType.bodySmall).foregroundStyle(palette.textMute)
+            Segmented<Bool?>(options: [(nil, "Not set"), (true, "Yes"), (false, "No")],
+                             selection: Binding(get: { model.editing?.willTravel }, set: { model.editing?.willTravel = $0 }))
+                .disabled(model.saving)
+                .accessibilityIdentifier("rolodex-travel")
+        }
     }
 
     @ViewBuilder private func status(_ edit: RolodexEdit, _ detail: RolodexDetail) -> some View {
@@ -405,6 +431,10 @@ struct RolodexTextField: View {
     var keyboard: UIKeyboardType = .default
     var content: UITextContentType? = nil
     var capitalize = true
+    /// Capitalizes sentences instead of every word (free text).
+    var sentences = false
+    /// Autocorrect is off unless asked for (names, emails); free sentence text turns it on.
+    var autocorrect = false
     var multiline = false
     var disabled = false
     @Environment(\.kioskPalette) private var palette
@@ -421,8 +451,8 @@ struct RolodexTextField: View {
             }
             .keyboardType(keyboard)
             .textContentType(content)
-            .textInputAutocapitalization(capitalize ? .words : .never)
-            .autocorrectionDisabled()
+            .textInputAutocapitalization(sentences ? .sentences : (capitalize ? .words : .never))
+            .autocorrectionDisabled(!autocorrect)
             .submitLabel(.done)
             .disabled(disabled)
             .rolodexField(palette)
