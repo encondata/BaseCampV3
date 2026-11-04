@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
-from PIL import Image
+from PIL import Image, ImageFile
 from sqlalchemy import select
 
 from serversherpa.api.routes import labels as labels_module
@@ -42,6 +42,14 @@ URL = "/labels/templates"
 SWISS = {"family": "swiss721-cond-bold", "weight": "regular"}
 GFA = re.compile(r"\^FO(\d+),(\d+)\^GFA,(\d+),(\d+),(\d+),:Z64:([A-Za-z0-9+/=]*):([0-9A-F]{4})\^FS")
 NOW = datetime.now(UTC)
+
+
+@pytest.fixture(autouse=True)
+def _pillow_default_switch(monkeypatch):
+    """Each test starts from Pillow's default LOAD_TRUNCATED_IMAGES (off),
+    whatever an earlier test file imported: importing WeasyPrint turns it
+    on for the whole process."""
+    monkeypatch.setattr(ImageFile, "LOAD_TRUNCATED_IMAGES", False)
 
 
 @pytest.fixture
@@ -467,12 +475,18 @@ async def test_raster_without_a_picture_is_404(client, db, seeded_user, store):
         **body, "image_id": fresh, "fit": "stretch"})).status_code == 422
 
 
-async def test_a_corrupt_stored_picture(client, db, seeded_user, store):
+@pytest.mark.parametrize("truncated_loading", [False, True],
+                         ids=["pillow-default", "weasyprint-on"])
+async def test_a_corrupt_stored_picture(client, db, seeded_user, store, monkeypatch,
+                                        truncated_loading):
     """A stored picture whose image stream is broken (the upload check
     would refuse it; a V2 avatar might not have had one): 422 from the
-    raster, nothing printed by the compile, never a black slab."""
+    raster, nothing printed by the compile, never a black slab. The same
+    with Pillow's LOAD_TRUNCATED_IMAGES on, as the API process has it once
+    a learning certificate or code sheet has rendered."""
     from tests.test_label_image_prep import corrupt_png
 
+    monkeypatch.setattr(ImageFile, "LOAD_TRUNCATED_IMAGES", truncated_loading)
     sa = await _super(db, client)
     image_id = await _library_image(client, sa)
     row = await db.get(LabelImage, uuid.UUID(image_id))
