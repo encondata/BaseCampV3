@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 const ctx = vi.hoisted(() => ({
   newItems: [] as { id: string; kind: string; title: string; body: string; link: string | null; payload: Record<string, unknown> }[],
-  dismissNew: vi.fn(), markRead: vi.fn(() => Promise.resolve()), local: [] as { id: number; message: string }[],
+  dismissNew: vi.fn(), markRead: vi.fn(() => Promise.resolve()), local: [] as { id: number; message: string; action?: { label: string; onClick: () => void } }[],
   dismissLocal: vi.fn(),
 }));
 vi.mock('../lib/notificationsContext', () => ({
@@ -132,6 +132,16 @@ it('renders local message toasts', () => {
   ctx.local = [{ id: 1, message: "We'll let you know when it's ready" }];
   render(<MemoryRouter><ToastHost /></MemoryRouter>);
   expect(screen.getByText("We'll let you know when it's ready")).toBeTruthy();
+});
+
+it('a local toast with an action shows its button, which acts and dismisses the toast', async () => {
+  const user = userEvent.setup();
+  const undo = vi.fn();
+  ctx.local = [{ id: 7, message: 'Start No Earlier Than constraint added', action: { label: 'Undo', onClick: undo } }];
+  render(<MemoryRouter><ToastHost /></MemoryRouter>);
+  await user.click(screen.getByRole('button', { name: 'Undo' }));
+  expect(undo).toHaveBeenCalledTimes(1);
+  expect(ctx.dismissLocal).toHaveBeenCalledWith(7);
 });
 
 it('inbox toasts dismiss themselves after INBOX_TOAST_MS', async () => {

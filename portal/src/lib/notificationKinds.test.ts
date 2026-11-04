@@ -3,13 +3,14 @@ import { expect, it } from 'vitest';
 import * as kinds from './notificationKinds';
 import { NOTIFICATION_CATEGORIES, categoryLabel } from './notificationKinds';
 
-it('lists the ten categories in spec order with their labels', () => {
+it('lists the eleven categories in spec order with their labels', () => {
   expect(NOTIFICATION_CATEGORIES.map(({ key, label }) => ({ key, label }))).toEqual([
     { key: 'approvals', label: 'Approvals & requests' },
     { key: 'reports', label: 'Reports & labels' },
     { key: 'wiki', label: 'Wiki' },
     { key: 'learning', label: 'Learning' },
     { key: 'initiatives', label: 'Initiatives' },
+    { key: 'plans', label: 'Project plans' },
     { key: 'trucks', label: 'Trucks' },
     { key: 'devices', label: 'Devices' },
     { key: 'status_rules', label: 'Status rules' },

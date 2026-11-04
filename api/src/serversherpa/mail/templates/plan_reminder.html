@@ -1,0 +1,8 @@
+{% extends "_base.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">Hi {{ person_name }},</p>
+<p style="margin:0 0 24px;"><b>{{ task_name }}</b> in {{ initiative_name }}{% if stage == 'overdue' %} has been overdue {{ due_label }}.{% else %} is due {{ due_label }}.{% endif %}</p>
+<p style="margin:0 0 24px;"><a href="{{ link }}" style="display:inline-block;background:#ffa12e;color:#0c1117;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:8px;">Open the plan</a></p>
+<p style="margin:0 0 8px;font-size:13px;color:#667085;">If the button doesn't work, paste this address into your browser:</p>
+<p style="margin:0;font-size:13px;word-break:break-all;"><a href="{{ link }}" style="color:#1b2129;">{{ link }}</a></p>
+{% endblock %}

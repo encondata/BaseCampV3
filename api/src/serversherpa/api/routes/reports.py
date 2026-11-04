@@ -22,7 +22,9 @@ from serversherpa.db.models import (
 )
 from serversherpa.db.ordering import natural
 from serversherpa.learning.access import is_manager
+from serversherpa.plans.service import plan_of_initiative
 from serversherpa.reports import learning_compliance as learning_report
+from serversherpa.reports import project_plan as plan_report
 from serversherpa.reports import timesheet as timesheet_report
 from serversherpa.reports.move_scan_history.gather import gather as gather_scan_history
 from serversherpa.reports.registry import OptionsError, get_module
@@ -203,6 +205,9 @@ def _visible_runs(actor: AuthContext):
     if not is_manager(actor.access, "view"):
         # who has signed what is for learning managers
         q = q.where(ReportRun.report_type != learning_report.report_type)
+    if not actor.access.can("project_plans", "view"):
+        # a plan's PDF is plan data, seen only by those who may open the plan
+        q = q.where(ReportRun.report_type != plan_report.report_type)
     return q
 
 
@@ -235,6 +240,9 @@ async def create_run(
     d = await _definition(db, body.definition_id)
     if d.report_type == timesheet_report.report_type and not actor.access.can("time", "view"):
         raise _err(403, "time_view_required")
+    if (d.report_type == plan_report.report_type
+            and not actor.access.can("project_plans", "view")):
+        raise _err(403, "project_plans_view_required")
     initiative_id = body.initiative_id
     if d.report_type == learning_report.report_type:
         if not is_manager(actor.access, "view"):
@@ -256,6 +264,10 @@ async def create_run(
                 cond is not None and await db.scalar(
                     select(Initiative.id).where(Initiative.id == ini.id, cond)) is None):
             raise _err(404, "initiative_not_found")
+        if d.report_type == plan_report.report_type:
+            plan = await plan_of_initiative(db, ini.id)
+            if plan is None:
+                raise _err(404, "plan_not_found")
     options_input = body.options
     if d.report_type == "site_move_survey":
         # The definition's own saved options (company_name + the three
@@ -272,6 +284,13 @@ async def create_run(
         # actually present in the request.
         options_input = {**(d.options or {}), **body.options}
     options = _validated_options(d.report_type, options_input, run=True)
+    if d.report_type == plan_report.report_type:
+        # the range against the plan itself: days wholly outside it, or a
+        # span over the PDF's bound (the build checks the same again)
+        try:
+            await plan_report.check_against_plan(db, plan, options)
+        except OptionsError as exc:
+            raise _err(422, "invalid_options", problems=exc.problems) from None
     run = ReportRun(definition_id=d.id, report_type=d.report_type,
                     initiative_id=ini.id if ini is not None else None,
                     options=options, requested_by=actor.person.id,

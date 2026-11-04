@@ -2,8 +2,9 @@
 (developer-only): paged reads, a 1 s-tailing WebSocket stream, and an
 audited clear. Also: logging/env config, the admin controls (read-only
 maintenance mode, worker pause, broadcast banner) — a public status
-endpoint plus a settings:change-gated get/put — and Branding (the company
-name and logo staff ID badges show)."""
+endpoint plus a settings:change-gated get/put — Branding (the company
+name and logo staff ID badges show), and the policy sections other
+features read: learning, AI lookup and project plans."""
 
 import asyncio
 import contextlib
@@ -39,6 +40,11 @@ from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
     AuthSession, LogEntry, SystemConfig, SystemProcess, TrustedDevice,
 )
+from serversherpa.plans import plan_writes
+from serversherpa.plans.calendar import CalendarError, clean_calendar
+from serversherpa.plans.schemas import ProjectPlanSettingsIn, ProjectPlanSettingsOut
+from serversherpa.plans.settings import SECTION as PLANS_SECTION
+from serversherpa.plans.settings import system_view
 from serversherpa.services import biometric
 from serversherpa.services.audit import audit
 from serversherpa.services.storage import delete_object, loggable, presign_get, put_object
@@ -267,6 +273,57 @@ async def put_learning_settings(
               changes=changes)
     await db.commit()
     return LearningSettingsOut(**data)
+
+
+@router.get("/project-plans", response_model=ProjectPlanSettingsOut)
+async def get_project_plan_settings(
+    db: DbSession,
+    actor: AuthContext = require_permission("settings", "view"),
+) -> ProjectPlanSettingsOut:
+    return ProjectPlanSettingsOut(**system_view(await read_section(db, PLANS_SECTION)))
+
+
+@router.put("/project-plans", response_model=ProjectPlanSettingsOut)
+async def put_project_plan_settings(
+    body: ProjectPlanSettingsIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("settings", "change"),
+) -> ProjectPlanSettingsOut:
+    """Project-plan settings (plans/settings.py reads them). Plans inherit
+    every key but the calendar live; a new plan copies the calendar. A
+    change to a scheduling key reschedules the plans that inherit it, in
+    this transaction (plan_writes.recalc_inheriting)."""
+    # locked before it is read, so two saves at once cannot both start from
+    # the same keys and drop one's change (read_section then reads this row)
+    row = await db.get(SystemConfig, PLANS_SECTION, with_for_update=True,
+                       populate_existing=True)
+    stored = system_view(await read_section(db, PLANS_SECTION))
+    patch = body.model_dump(exclude_unset=True)
+    if "calendar" in patch:
+        try:
+            patch["calendar"] = clean_calendar(patch["calendar"])
+        except CalendarError as exc:
+            raise _err(422, exc.code, message=str(exc)) from None
+    if "default_duration" in patch:
+        plan_writes.check_default_duration(
+            patch["default_duration"], patch.get("calendar", stored["calendar"]),
+            "default_duration")
+    data = {**stored, **patch}
+    if row is None:
+        row = SystemConfig(section=PLANS_SECTION)
+        db.add(row)
+    row.data = data
+    row.updated_at = datetime.now(UTC)
+    row.updated_by = actor.person.id
+    changes = {key: {"from": stored.get(key), "to": data[key]}
+               for key in data if stored.get(key) != data[key]}
+    if changes:
+        audit(db, actor_id=actor.person.id, entity_type="system",
+              entity_id=PLANS_SECTION, action="project_plans_config_update",
+              changes=changes)
+    await plan_writes.recalc_inheriting(db, stored, data, actor)
+    await db.commit()
+    return ProjectPlanSettingsOut(**data)
 
 
 AI_LOOKUP_SECTION = "ai_lookup"

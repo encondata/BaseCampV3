@@ -165,6 +165,10 @@
   background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0;
 }
 
+/* a `.segmented` choice in an option group (the Project plan PDF's) keeps
+   its own width instead of stretching across the column */
+.rgm-segmented { align-self: flex-start; }
+
 .ts-quick { display: flex; flex-wrap: wrap; gap: 8px; }
 /* Timesheet report: the status / view checkbox cards sit two across. */
 .rgm-choice-cards.ts-choice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }

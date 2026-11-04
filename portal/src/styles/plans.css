@@ -1,0 +1,1794 @@
+/* ============================================================
+   plans.css — the initiative's Project plan tab: the tab frame
+   (toolbar slot, view area and its scroll box, full screen), the
+   Gantt view (split panes, splitter, chart, hover card), the lock
+   banner, the empty state and the plan dialogs (Columns…), the
+   Timeline strip, the Calendar and the Board. Class prefix `pln-`.
+
+   NO list-ish selectors in this file (styles/listTypography.test.ts):
+   nothing containing row / cell / list / table / chip / mono / head,
+   and no `.pln-(row|rows|cell|cells|list|table|grid|feed)` class —
+   one of those would make every `.pln-*` rule here list-ish. The
+   task sheet's layout lives in plan-sheet.css instead.
+   ============================================================ */
+
+/* ── the tab ────────────────────────────────────────────────── */
+
+.pln-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* Full screen: the tab fills the viewport above the portal chrome (nav,
+   top bar) on the page's own background. z-index 60 sits over the nav and
+   the top bar; dialogs (.modal-scrim, 80), portaled menus (.combo-menu,
+   70; RowActionsMenu, 1200) and toasts still land above it. */
+.pln-tab.pln-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  padding: 14px 20px 18px;
+  background: linear-gradient(180deg, var(--paper) 0%, var(--paper-2) 100%);
+  color: var(--text-dark);
+}
+
+/* ── toolbar slot: views at the left, full screen at the right ── */
+
+/* the row: the name (full screen), the toolbar, the "updated by" status */
+.pln-topbar {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  min-width: 0;
+}
+/* centered on the 32px group frames, whether beside the toolbar or wrapped above it */
+.pln-topbar > .pln-fs-name { line-height: 20px; margin-top: 6px; }
+.pln-topbar > .pln-stale { line-height: 16px; margin-top: 8px; }
+/* role="toolbar": everything lines up on the group frames' top; the
+   captions hang below */
+.pln-toolbar {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* PlanToolbar's groups take the room between the views and Full screen,
+   wrapping onto a second line when the page is narrow (6px between the
+   groups keeps them on one line at 1512px with the nav open) */
+.pln-tools {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px 6px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+@media (max-width: 720px) {
+  .pln-toolbar { flex-wrap: wrap; }
+  .pln-tools { flex-basis: 100%; }
+}
+
+/* one ribbon group: a framed cluster of buttons, its name under it */
+.pln-tgroup {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.pln-tgroup-btns {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+}
+.pln-tgroup-label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  line-height: 1;
+  white-space: nowrap;
+}
+/* an icon button: the house mini button, quiet until hovered or on */
+.mini-btn.pln-tbtn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  justify-content: center;
+  border-color: transparent;
+  border-radius: 8px;
+  background: transparent;
+}
+.mini-btn.pln-tbtn svg { width: 16px; height: 16px; }
+.mini-btn.pln-tbtn.on,
+.mini-btn.pln-tbtn[aria-expanded='true'] {
+  background: var(--surface);
+  border-color: var(--paper-line);
+  color: var(--c-amber);
+  box-shadow: 0 1px 3px rgba(27, 33, 41, 0.08);
+}
+/* off (locked, nothing selected, not yet built): reachable, explained by its tooltip */
+.mini-btn.pln-tbtn[aria-disabled] { opacity: 0.38; cursor: default; }
+.mini-btn.pln-tbtn[aria-disabled]:hover { border-color: transparent; background: transparent; }
+/* 2px each side (with the buttons' 1px gaps): with Task color in Properties
+   the groups still fit one line at 1512px with the nav open */
+.pln-tsep { align-self: stretch; width: 1px; margin: 5px 2px; background: var(--paper-line); }
+/* the view switcher: a menu button as tall as a group frame, like More */
+.mini-btn.pln-tview { height: 32px; padding: 0 10px; }
+/* Auto / Manual: as tall as a group frame */
+.segmented.pln-modes { padding: 2px; gap: 2px; border-radius: 10px; }
+.segmented.pln-modes button { height: 26px; padding: 0 8px; }
+.segmented.pln-modes button[aria-disabled] { opacity: 0.45; cursor: default; }
+/* the clipboard shortcuts' hidden field: off screen, never clicked */
+.pln-clip {
+  position: fixed;
+  top: 0;
+  left: -10000px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.pln-tmore { display: flex; }
+.pln-tmore .mini-btn { height: 32px; padding: 0 11px; }
+/* full screen only: the initiative's name, since the page header is covered */
+.pln-fs-name {
+  margin: 0 4px 0 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-dark);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40vw;
+}
+.pln-stale { font-size: 12.5px; color: var(--c-amber); }
+/* Full screen: an icon button as tall as a group frame, at the right */
+.pln-screen-btn { display: inline-flex; align-items: center; justify-content: center; margin-left: auto; }
+/* (inside its tip's wrapper, so not a direct child of the toolbar) */
+.pln-toolbar .pln-screen-btn { width: 32px; height: 32px; padding: 0; flex: none; }
+.pln-screen-btn svg { width: 15px; height: 15px; flex: none; }
+
+/* ── the filter bar: Filter and Group by at the left, the count and the
+   search at the right (PlanFilterBar) ── */
+
+.pln-filterbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  min-width: 0;
+}
+.pln-fbox { display: flex; align-items: center; gap: 8px; }
+.pln-fbox .combo-wrap { flex: none; width: 172px; }
+/* named like the toolbar's group captions */
+.pln-flabel {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+.pln-ftools { display: flex; align-items: center; gap: 12px; min-width: 0; margin-left: auto; }
+.pln-ftools > * { min-width: 0; }
+.dir-search.pln-search { margin-left: 0; min-width: 0; }
+.dir-search.pln-search input { width: 260px; max-width: 100%; box-sizing: border-box; }
+.pln-fcount { white-space: nowrap; }
+@media (max-width: 720px) {
+  .pln-ftools { margin-left: 0; flex: 1 1 100%; }
+  .dir-search.pln-search { flex: 1 1 auto; }
+  /* the input and the hover tip's wrapper around it */
+  .dir-search.pln-search > :not(svg),
+  .dir-search.pln-search input { width: 100%; }
+}
+
+/* ── view area: the Gantt (Plan B), Calendar and Board (Plan C) ── */
+
+.pln-view {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: max(320px, calc(100dvh - 390px));
+  background: var(--surface);
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.pln-fullscreen .pln-view { flex: 1 1 auto; height: auto; min-height: 0; }
+
+/* The Gantt view's one vertical scroll box, around the sheet and the
+   chart side by side. Both virtualize against it, so they scroll up and
+   down as one; it never scrolls sideways (each pane does that on its own:
+   SidePane in Splitter.tsx). No radius of its own: .pln-view's rounded
+   corners clip it. */
+.pln-panes {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* slim, trackless bars (the dialogs' look), so the always-present bars of
+   a long, wide sheet (and the Columns dialog's list) don't paint a light
+   track in the dark theme */
+.pln-panes::-webkit-scrollbar,
+.pln-hbar::-webkit-scrollbar,
+.pln-colpick::-webkit-scrollbar,
+.pln-tmpls::-webkit-scrollbar,
+.pln-month-scroll::-webkit-scrollbar,
+.pln-board::-webkit-scrollbar,
+.pln-board-cards::-webkit-scrollbar { width: 12px; height: 12px; }
+.pln-panes::-webkit-scrollbar-track,
+.pln-panes::-webkit-scrollbar-corner,
+.pln-hbar::-webkit-scrollbar-track,
+.pln-colpick::-webkit-scrollbar-track,
+.pln-colpick::-webkit-scrollbar-corner,
+.pln-tmpls::-webkit-scrollbar-track,
+.pln-month-scroll::-webkit-scrollbar-track,
+.pln-board::-webkit-scrollbar-track,
+.pln-board-cards::-webkit-scrollbar-track { background: transparent; }
+.pln-panes::-webkit-scrollbar-thumb,
+.pln-hbar::-webkit-scrollbar-thumb,
+.pln-colpick::-webkit-scrollbar-thumb,
+.pln-tmpls::-webkit-scrollbar-thumb,
+.pln-month-scroll::-webkit-scrollbar-thumb,
+.pln-board::-webkit-scrollbar-thumb,
+.pln-board-cards::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--text-mute) 45%, transparent);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+.pln-panes::-webkit-scrollbar-thumb:hover,
+.pln-hbar::-webkit-scrollbar-thumb:hover,
+.pln-colpick::-webkit-scrollbar-thumb:hover,
+.pln-tmpls::-webkit-scrollbar-thumb:hover,
+.pln-month-scroll::-webkit-scrollbar-thumb:hover,
+.pln-board::-webkit-scrollbar-thumb:hover,
+.pln-board-cards::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--text-mute) 65%, transparent); }
+@supports not selector(::-webkit-scrollbar) {
+  .pln-panes,
+  .pln-hbar,
+  .pln-colpick,
+  .pln-tmpls,
+  .pln-month-scroll,
+  .pln-board,
+  .pln-board-cards { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text-mute) 45%, transparent) transparent; }
+}
+
+/* ── the Gantt view: sheet | splitter | chart ───────────────────
+   The panes sit side by side in the scroll box, each as tall as all the
+   rows. A pane clips sideways without being a scroll box (`clip`, so the
+   sticky header and scrollbar still hold to .pln-panes) and its content
+   moves by a transform under its own scrollbar (.pln-hbar), held at the
+   bottom of the view. */
+
+.pln-split {
+  display: grid;
+  grid-template-columns: var(--pln-split, 45%) 6px minmax(0, 1fr);
+  min-height: 100%;
+}
+/* one pane alone across the box: Below's two (each in its own box), Hidden's sheet */
+.pln-split.pln-solo { grid-template-columns: minmax(0, 1fr); }
+
+/* Below: the sheet on top at the height the splitter gives it, the bar
+   across the view, the chart under it taking the rest. Each box scrolls up
+   and down on its own; PlanTab keeps the two on the same row. */
+.pln-view[data-layout='below'] > .pln-panes-sheet { flex: none; }
+.pln-view[data-layout='below'] > .pln-panes-chart { flex: 1 1 0; }
+.pln-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-x: clip;
+}
+.pln-pane-shift { flex: 1 0 auto; will-change: transform; }
+/* the pane's own sideways scrollbar: a thin native scroller around an
+   empty spacer as wide as the content */
+.pln-hbar {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  flex: none;
+  height: 13px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--surface-2);
+  border-top: 1px solid var(--paper-line);
+}
+.pln-hbar-span { height: 1px; }
+
+/* the bar between the panes: drag it, or focus it and use the arrows */
+.pln-splitter {
+  position: relative;
+  z-index: 5;
+  background: var(--surface-2);
+  border-left: 1px solid var(--paper-line);
+  border-right: 1px solid var(--paper-line);
+  cursor: col-resize;
+  touch-action: none;
+}
+/* across the view between the stacked panes (Below) */
+.pln-splitter[aria-orientation='horizontal'] {
+  flex: none;
+  height: 6px;
+  border-width: 1px 0;
+  border-style: solid;
+  border-color: var(--paper-line);
+  cursor: row-resize;
+}
+.pln-splitter:hover,
+.pln-splitter:focus-visible,
+.pln-splitter.on {
+  outline: none;
+  background: rgba(var(--accent-rgb), 0.45);
+  border-color: var(--accent);
+}
+
+/* ── the chart (PlanGantt) ──────────────────────────────────────
+   Drawn in window coordinates: only a window of the scale around the
+   visible part exists, so nothing here is ever as wide as the scale. */
+
+.pln-gantt {
+  position: relative;
+  color: var(--text-dark);
+  user-select: none;
+}
+/* the timescale: two tiers, sticky at the top of the view and as tall as
+   the sheet's header (--pln-head-h), so the rows line up */
+.pln-scale {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  height: var(--pln-head-h);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--paper-line);
+}
+.pln-scale-top,
+.pln-scale-bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  overflow: hidden;
+}
+.pln-scale-top { top: 0; height: 50%; }
+.pln-scale-bottom { bottom: 0; height: 50%; border-top: 1px solid var(--paper-line); }
+.pln-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  border-left: 1px solid var(--paper-line);
+  overflow: hidden;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: var(--text-mute);
+}
+.pln-scale-top .pln-tick { color: var(--text-dark); }
+/* a top-tier label holds to the view's left edge while its unit scrolls
+   past (--pln-view-x, set by PlanGantt on scroll), stopping whole at the
+   unit's end and leaving with it. Moved by a transform, so the tick keeps
+   its width; the tier's type is monospace, so the label is its length in
+   ch (plus the letter spacing). */
+.pln-tick-label {
+  display: inline-block;
+  transform: translateX(clamp(0px,
+    calc(var(--pln-view-x, 0px) - var(--pln-tick-x, 0px)),
+    calc(var(--pln-tick-w, 0px) - 12px - var(--pln-label-ch, 0) * (1ch + 0.02em))));
+}
+.pln-scale-bottom .pln-tick { justify-content: center; padding: 0; }
+
+.pln-chart { position: relative; }
+
+/* behind the lanes, and deaf to the pointer (a press there is the lane's,
+   or a bar's): nonworking days, the initiative window, today, the status date */
+.pln-offday,
+.pln-window,
+.pln-today,
+.pln-status-date {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+.pln-offday { background: color-mix(in srgb, var(--text-mute) 10%, transparent); }
+.pln-window {
+  background: rgba(var(--accent-rgb), 0.07);
+  border-left: 1px dashed rgba(var(--accent-rgb), 0.6);
+  border-right: 1px dashed rgba(var(--accent-rgb), 0.6);
+}
+.pln-today { width: 0; margin-left: -1px; border-left: 2px solid var(--c-blue); }
+.pln-status-date { width: 0; margin-left: -1px; border-left: 2px dashed var(--c-violet); }
+/* each line's title ("Today …", "Status date …") is on a small mark at its
+   top, in the timescale: a hover there tells the two apart, and no hover
+   target lies over the bars */
+.pln-today-mark,
+.pln-status-mark {
+  position: absolute;
+  bottom: 0;
+  z-index: 2;
+  width: 12px;
+  height: 9px;
+  margin-left: -6px;
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
+}
+.pln-today-mark { background: var(--c-blue); }
+.pln-status-mark { background: var(--c-violet); }
+
+/* the initiative window's span, tinted across the timescale too */
+.pln-window-cap {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(var(--accent-rgb), 0.12);
+  pointer-events: none;
+}
+/* the window's label, in the top tier (never over a bar), clear of the
+   tier's labels: in the tier's monospace type, so ganttView's windowPillX
+   knows its width (TIER_CHAR_PX a character, 18px of padding and border) */
+.pln-window-label {
+  position: absolute;
+  top: 2px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 8px;
+  border: 1px solid rgba(var(--accent-rgb), 0.6);
+  border-radius: 999px;
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: var(--text-dark);
+  white-space: nowrap;
+}
+
+/* the link arrows: one SVG over the rendered rows, under the bars */
+.pln-links {
+  position: absolute;
+  left: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.pln-link-path {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text-mute) 90%, transparent);
+  stroke-width: 1.25;
+}
+.pln-link-tip { fill: color-mix(in srgb, var(--text-mute) 90%, transparent); }
+.pln-link-path.pln-link-critical { stroke: var(--c-red); }
+.pln-link-tip.pln-link-critical { fill: var(--c-red); }
+/* a link's click target: an invisible line 8px wide over the 1px one (the
+   lanes above let the pointer through to it); a hover lights the link */
+.pln-link-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 8;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+.pln-links g:hover .pln-link-path { stroke: var(--accent); stroke-width: 2; }
+.pln-links g:hover .pln-link-tip { fill: var(--accent); }
+
+/* one lane per row the sheet shows, its line matching the sheet's. A lane
+   lets the pointer through (a press on its empty part is the chart's,
+   which selects the row under it); only its marks that do something take it */
+.pln-lane {
+  /* the lane's color, for what must match it (the names' halo under the sheet) */
+  --pln-lane-bg: var(--surface);
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: var(--pln-row-h);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--paper-line) 60%, transparent);
+  pointer-events: none;
+}
+.pln-lane.on {
+  --pln-lane-bg: color-mix(in srgb, rgb(var(--accent-rgb)) 8%, var(--surface));
+  background-color: rgba(var(--accent-rgb), 0.08);
+}
+/* a filter's context row (a summary that places a match): its marks
+   dimmed and deaf to the pointer, as the sheet's row is (the initiatives
+   tree's rule) */
+.pln-lane.pln-context > * { opacity: 0.55; pointer-events: none; }
+/* Group by: a group's band, shaded as the sheet's band is */
+.pln-lane.pln-band-lane { --pln-lane-bg: var(--surface-2); background: var(--surface-2); }
+
+/* a task's bar: accent, the part done filled in */
+.pln-bar {
+  position: absolute;
+  min-width: 2px;
+  overflow: hidden;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  background: rgba(var(--accent-rgb), 0.42);
+}
+.pln-bar-done {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: var(--accent);
+}
+.pln-bar.pln-bar-critical {
+  border-color: var(--c-red);
+  background: color-mix(in srgb, var(--c-red) 38%, transparent);
+}
+.pln-bar.pln-bar-critical .pln-bar-done { background: var(--c-red); }
+/* cut at the drawn window's edge: no end there */
+.pln-bar.pln-cut-start { border-left-width: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.pln-bar.pln-cut-end { border-right-width: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+
+/* a summary: MS Project's bracket, its end caps pointing down */
+.pln-bar-summary {
+  position: absolute;
+  min-width: 2px;
+  background: var(--text-dark);
+}
+.pln-bar-summary .pln-bar-done { background: rgba(var(--accent-rgb), 0.9); }
+.pln-bar-summary::before,
+.pln-bar-summary::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  border-top: 5px solid var(--text-dark);
+}
+.pln-bar-summary::before { left: 0; border-right: 5px solid transparent; }
+.pln-bar-summary::after { right: 0; border-left: 5px solid transparent; }
+.pln-bar-summary.pln-cut-start::before,
+.pln-bar-summary.pln-cut-end::after { display: none; }
+
+/* a milestone: a diamond (2 × MILESTONE_HALF), its date beside it */
+.pln-diamond {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: var(--text-dark);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+.pln-diamond.pln-diamond-critical { background: var(--c-red); }
+.pln-diamond-date { margin-right: 6px; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-dark); }
+
+/* resource names (and a milestone's date) right of the bar */
+.pln-bar-names {
+  position: absolute;
+  transform: translateY(-50%);
+  font-size: 11.5px;
+  color: var(--text-mute);
+  white-space: nowrap;
+  pointer-events: none;
+}
+/* Below (the sheet isn't beside the bars): the task's name left of its bar,
+   right up to it and cut short with an ellipsis, or, with no room there,
+   after the bar ahead of its resource names */
+.pln-bar-label {
+  position: absolute;
+  transform: translateY(-50%);
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-dark);
+  /* a link running along the row passes under the name, never through it
+     (which would read as struck out): a solid halo in the lane's color,
+     wide enough sideways to close the gaps between words */
+  text-shadow:
+    -1px 0 var(--pln-lane-bg), 1px 0 var(--pln-lane-bg), 0 -1px var(--pln-lane-bg), 0 1px var(--pln-lane-bg),
+    -1px -1px var(--pln-lane-bg), 1px -1px var(--pln-lane-bg), -1px 1px var(--pln-lane-bg),
+    1px 1px var(--pln-lane-bg), -2px 0 var(--pln-lane-bg), 2px 0 var(--pln-lane-bg),
+    -2px 1px var(--pln-lane-bg), 2px -1px var(--pln-lane-bg), 0 0 3px var(--pln-lane-bg);
+  pointer-events: none;
+}
+.pln-bar-label-after {
+  display: inline-block;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  color: var(--text-dark);
+}
+
+/* a task's own color (Task Information, the Color column, Properties ›
+   Task color): `--pln-task`, set inline on its bar, bracket or diamond.
+   Read through --pln-hue, which keeps the hue and chroma as picked and
+   moves the lightness the way .chip.custom does (directory.css): on the
+   light theme a cap at 0.60, so a pale pick (#fff59d) still shows on a
+   white lane (every palette color is under it, so none changes); on the
+   dark theme a lift off the dark lanes. --pln-hue-deep is the darker shade
+   the part done is filled with. The lightness tokens stay unregistered,
+   so `l` is still a token when oklch(from …) reads it. No text sits on a
+   colored bar: names and resource names are beside it, on the lane. */
+.portal-shell { --pln-hue-l: min(l, 0.60); --pln-deep-l: calc(min(l, 0.60) * 0.72); }
+.portal-shell[data-theme='dark'] {
+  --pln-hue-l: clamp(0.66, calc(l + 0.18), 0.88);
+  --pln-deep-l: clamp(0.5, calc(l + 0.04), 0.74);
+}
+.pln-tinted, .pln-bar-hue {
+  --pln-hue: oklch(from var(--pln-task) var(--pln-hue-l, min(l, 0.60)) c h);
+  --pln-hue-deep: oklch(from var(--pln-task) var(--pln-deep-l, calc(min(l, 0.60) * 0.72)) c h);
+}
+.pln-bar.pln-tinted {
+  border-color: var(--pln-hue);
+  background: color-mix(in srgb, var(--pln-hue) 42%, transparent);
+}
+.pln-tinted .pln-bar-done { background: var(--pln-hue-deep); }
+.pln-bar-summary.pln-tinted { background: var(--pln-hue); }
+.pln-bar-summary.pln-tinted::before,
+.pln-bar-summary.pln-tinted::after { border-top-color: var(--pln-hue); }
+.pln-diamond.pln-tinted { background: var(--pln-hue); }
+/* Critical Path on: a critical task stays red; its own color is a 3px
+   stripe along the bar's top edge (the diamond's top point), so it isn't lost */
+.pln-bar-hue {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--pln-hue);
+  /* a 1px line in the lane's color under it: a color close to the critical
+     red would otherwise run into the bar and the stripe be lost */
+  box-shadow: 0 1px 0 var(--pln-lane-bg);
+  pointer-events: none;
+}
+/* a diamond's 3px point would be a speck: its top 5px (a 10px-wide cap) */
+.pln-diamond > .pln-bar-hue { height: 5px; }
+
+/* the baseline: thin and gray under the bar (a small diamond under a milestone) */
+.pln-baseline {
+  position: absolute;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--text-mute) 65%, transparent);
+  pointer-events: none;
+}
+.pln-baseline.pln-baseline-mark {
+  width: 8px;
+  height: 8px;
+  border-radius: 0;
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+
+/* a deadline: MS Project's green down-arrow at the date */
+.pln-deadline {
+  position: absolute;
+  width: 10px;
+  color: var(--c-green);
+  pointer-events: none;
+}
+.pln-deadline svg { display: block; width: 100%; height: 100%; fill: currentColor; }
+
+/* ── the chart's drags (useGanttDrag; lib/plans/drag's zones) ──
+   data-drag on .pln-gantt: full (an open plan the person may change),
+   progress (its schedule is locked), none (read only). The cursor says
+   what a press does: move, the right end resizes, the progress handle
+   sets % Complete, the dot right of a bar links; a summary does none of
+   these (it only links). The lanes let the pointer through; these marks
+   take it (whatever the plan allows: a press selects, a double-click is
+   Task Information's). */
+.pln-bar,
+.pln-bar-summary,
+.pln-diamond,
+.pln-link-dot { pointer-events: auto; }
+.pln-gantt[data-drag="full"] .pln-bar,
+.pln-gantt[data-drag="full"] .pln-diamond { cursor: move; touch-action: none; }
+.pln-gantt[data-drag="full"] .pln-bar-summary,
+.pln-gantt[data-drag="progress"] .pln-bar-summary { cursor: not-allowed; }
+.pln-gantt[data-drag="progress"] .pln-bar { touch-action: none; }
+/* the right end that resizes (RESIZE_PX, a third of a narrow bar) */
+.pln-gantt[data-drag="full"] .pln-bar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(6px, 33.333%);
+  cursor: ew-resize;
+}
+.pln-gantt[data-drag="full"] .pln-bar.pln-cut-end::after { display: none; }
+/* the progress handle (2 × GRIP_PX at the progress edge): a line on hover */
+.pln-pct-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  cursor: col-resize;
+}
+.pln-pct-grip::before {
+  content: '';
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  left: calc(50% - 1px);
+  width: 2px;
+  border-radius: 1px;
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--accent);
+  opacity: 0;
+}
+.pln-bar:hover .pln-pct-grip::before { opacity: 1; }
+/* the link handle: a dot right of the bar, shown while its lane is hovered */
+.pln-link-dot {
+  position: absolute;
+  width: 16px;
+  cursor: crosshair;
+  touch-action: none;
+}
+.pln-link-dot::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 4px;
+  width: 8px;
+  height: 8px;
+  box-sizing: border-box;
+  margin-top: -4px;
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+  background: var(--surface);
+  opacity: 0;
+}
+.pln-lane:hover .pln-link-dot::before,
+.pln-link-dot:hover::before { opacity: 1; }
+
+/* the live drag: where the bar would go (dashed), the part done once let
+   go, the bar a link would land on, the link's band, over every lane */
+.pln-drag-ghost {
+  position: absolute;
+  z-index: 2;
+  box-sizing: border-box;
+  border: 1.5px dashed var(--accent);
+  border-radius: 3px;
+  background: rgba(var(--accent-rgb), 0.18);
+  pointer-events: none;
+}
+.pln-drag-ghost.pln-drag-mark {
+  width: 12px;
+  height: 12px;
+  border: 0;
+  border-radius: 0;
+  background: rgba(var(--accent-rgb), 0.6);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+.pln-drag-ghost.pln-drag-done { border-style: solid; background: var(--accent); opacity: 0.75; }
+.pln-drag-ghost.pln-drag-target {
+  border-style: solid;
+  background: transparent;
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.35);
+}
+.pln-drag-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  overflow: visible;
+  pointer-events: none;
+}
+.pln-drag-band { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 3; }
+
+/* ── the Timeline strip (PlanTimelineStrip) ─────────────────────
+   The Gantt view's top band, inside the view area (which keeps its floor,
+   so the page never scrolls for it): the band's Start and Finish at its
+   ends, the span between them a track where each task sits at its share of
+   the span. Milestones hang over the track as diamonds; bars stack in up to
+   three lanes (--lanes) on it. Bars are chips (`chip custom`, their color
+   in --chip), so their type and theme contrast are the list's. Compact:
+   18px rows on a 20px pitch, tight padding. */
+
+.pln-strip {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  flex: none;
+  padding: 5px 12px 6px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--paper-line);
+}
+.pln-strip-end { display: flex; flex-direction: column; padding-bottom: 2px; white-space: nowrap; }
+.pln-strip-finish { align-items: flex-end; }
+/* named like the toolbar's group captions */
+.pln-strip-cap {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.pln-strip-date { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-dark); }
+/* the milestones' rows (--marks: none, one or two) over the track */
+.pln-strip-band { position: relative; min-width: 0; padding-top: calc(var(--marks, 0) * 18px + 2px); }
+.pln-strip-marks { position: absolute; top: 0; left: 0; right: 0; height: calc(var(--marks, 1) * 18px); }
+.pln-strip-track {
+  position: relative;
+  height: calc(var(--lanes, 1) * 20px + 2px);
+  background: var(--surface-2);
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+/* over the chip's own height (a list chip's): the strip's compact row */
+.pln-strip-track .pln-strip-bar {
+  position: absolute;
+  top: calc(1px + var(--lane, 0) * 20px);
+  box-sizing: border-box;
+  height: 18px;
+  min-width: 24px;
+  padding: 0 7px;
+  overflow: hidden;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.pln-strip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* the selected bar over any it overlaps */
+.pln-strip-track .pln-strip-bar.on { z-index: 1; box-shadow: inset 0 0 0 2px rgba(var(--accent-rgb), 0.8); }
+/* a milestone: its diamond centered on its day, the name and date after it
+   (before it near the right end, where they would run off the band) */
+.pln-strip-mark {
+  position: absolute;
+  top: calc(var(--row, 0) * 18px);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 45%;
+  height: 18px;
+  margin-left: -5.5px;
+  padding: 0 5px 0 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-dark);
+  font: inherit;
+  font-size: 11.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.pln-strip-mark.flip { flex-direction: row-reverse; padding: 0 0 0 5px; transform: translateX(calc(-100% + 11px)); }
+.pln-strip-mark:hover .pln-strip-label { text-decoration: underline; }
+.pln-strip-mark.on { background: rgba(var(--accent-rgb), 0.14); }
+.pln-strip-diamond {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  background: var(--text-dark);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+.pln-strip-diamond.pln-tinted { background: var(--pln-hue); }
+.pln-strip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pln-strip-mdate { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-mute); }
+/* the plan's now, as the Gantt marks it: a blue line with a small cap */
+.pln-strip-today {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 0;
+  margin-left: -1px;
+  border-left: 2px solid var(--c-blue);
+  pointer-events: none;
+}
+.pln-strip-today::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -6px;
+  width: 10px;
+  height: 7px;
+  background: var(--c-blue);
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
+}
+.pln-strip-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0 12px;
+  font-size: 12.5px;
+  color: var(--text-mute);
+  text-align: center;
+}
+@media (max-width: 720px) {
+  .pln-strip { grid-template-columns: 1fr 1fr; align-items: start; }
+  .pln-strip-band { grid-column: 1 / -1; grid-row: 2; }
+  .pln-strip-end { padding-bottom: 0; }
+}
+
+/* ── the Calendar view (PlanCalendar) ───────────────────────────
+   The all-initiatives calendar's month (initiative-timeline.css): week rows
+   of seven day cells with a second grid, `.pln-month-bars`, laid on the
+   same seven tracks above them, a task one bar across the days it covers.
+   A row is as tall as the lanes it shows (--lanes, set per week) and the
+   six rows share what the view has left over. Named `pln-month-*`: Plan
+   settings' calendar editor has the `pln-cal-*` names. */
+
+.pln-month { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.pln-month-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: none;
+  padding: 8px 12px 8px 16px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--paper-line);
+}
+.pln-month-title { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; color: var(--text-dark); }
+.pln-month-steps { display: inline-flex; align-items: center; gap: 4px; }
+.pln-month-steps .mini-btn { min-width: 30px; justify-content: center; }
+/* no radius of its own: .pln-view's rounded corners clip it */
+.pln-month-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.pln-month-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-height: 100%;
+  background: var(--paper-line);
+}
+.pln-month-weekdays,
+.pln-month-week {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 1px;
+}
+.pln-month-weekdays { position: sticky; top: 0; z-index: 3; flex: none; }
+.pln-month-weekday {
+  padding: 6px 10px;
+  background: var(--surface-2);
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.pln-month-week {
+  position: relative;
+  flex: 1 0 auto;
+  min-height: max(88px, calc(30px + var(--lanes, 0) * (var(--list-chip-h) + 3px)));
+}
+.pln-month-day {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 5px 8px;
+  background: var(--surface);
+}
+.pln-month-day.muted { background: var(--surface-2); }
+.pln-month-day.muted .pln-month-daynum { opacity: 0.6; }
+/* the plan's today, in the Gantt's today blue */
+.pln-month-day.today { box-shadow: inset 0 0 0 2px var(--c-blue); }
+.pln-month-day.today .pln-month-daynum { color: var(--c-blue); }
+.pln-month-more,
+.pln-month-less {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-mute);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.pln-month-more { margin-top: auto; text-align: left; }
+.pln-month-more:hover,
+.pln-month-less:hover { color: var(--text-dark); text-decoration: underline; }
+.pln-month-less { position: absolute; right: 10px; bottom: 5px; z-index: 1; }
+/* the bars' layer ignores the pointer, so empty stretches stay the day
+   cell's; each bar takes it back */
+.pln-month-bars {
+  position: absolute;
+  top: 27px;
+  left: 0;
+  right: 0;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-auto-rows: var(--list-chip-h);
+  gap: 3px 1px;
+  align-content: start;
+  pointer-events: none;
+}
+.pln-month-span {
+  display: flex;
+  min-width: 0;
+  margin: 0 4px;
+  overflow: hidden;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.pln-month-span .dot { flex: none; }
+.pln-month-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* a bar that carries on into the next (or from the last) week keeps a square end there */
+.pln-month-span.cont-before { margin-left: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.pln-month-span.cont-after { margin-right: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.pln-month-span.on { box-shadow: inset 0 0 0 2px rgba(var(--accent-rgb), 0.8); }
+/* a milestone: a diamond chip as wide as its name, on its day */
+.pln-month-span.pln-month-milestone { justify-self: start; max-width: calc(100% - 8px); }
+.pln-month-diamond {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  background: currentColor;
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+
+/* read by a screen reader, not shown (the Board's "Moved … to …") */
+.pln-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── the Board view (PlanBoard) ─────────────────────────────────
+   Three columns side by side, each a rounded tray whose cards scroll on
+   their own; under 3 × 240px the board scrolls sideways instead. A card's
+   text is the list's (`cell` around cell-top / cell-sub / mono / chip). */
+
+.pln-board {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(240px, 1fr));
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior: contain;
+}
+.pln-board-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  overflow: hidden;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+/* the column a dragged card would land in */
+.pln-board-col.on { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.18); }
+.pln-board-top { display: flex; align-items: center; gap: 8px; flex: none; padding: 10px 12px 8px 14px; }
+/* each column's status color (the Status column's chips) */
+.pln-board-top::before {
+  content: '';
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--c-slate);
+}
+.pln-board-col[data-column='in_progress'] .pln-board-top::before { background: var(--c-blue); }
+.pln-board-col[data-column='complete'] .pln-board-top::before { background: var(--c-green); }
+.pln-board-title { margin: 0; font-size: 13px; font-weight: 600; color: var(--text-dark); }
+.pln-board-count {
+  min-width: 22px;
+  padding: 1px 7px;
+  border: 1px solid var(--paper-line);
+  border-radius: 999px;
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+  text-align: center;
+}
+/* no radius of its own: the column clips it; the margin under it keeps its
+   bar clear of the column's rounded corners */
+.pln-board-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-bottom: 8px;
+  padding: 2px 10px 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.pln-board-empty {
+  margin: 0;
+  padding: 18px 8px;
+  border: 1px dashed var(--paper-line);
+  border-radius: 10px;
+  font-size: 12.5px;
+  color: var(--text-mute);
+  text-align: center;
+}
+.pln-card {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  gap: 2px;
+  /* 1,500 tasks: a card off screen skips its layout until scrolled to */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 104px;
+  padding: 8px 8px 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(27, 33, 41, 0.05);
+  cursor: pointer;
+}
+.pln-card[draggable='true'] { cursor: grab; }
+.pln-card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--paper-line)); }
+.pln-card.on { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.22); }
+.pln-card.dragging { opacity: 0.45; }
+.pln-card-top { display: flex; align-items: flex-start; gap: 6px; }
+.pln-card-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2px 0 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: inherit;
+}
+.mini-btn.pln-card-menu {
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  justify-content: center;
+  border-color: transparent;
+  background: transparent;
+}
+.mini-btn.pln-card-menu:hover,
+.mini-btn.pln-card-menu[aria-expanded='true'] { border-color: var(--paper-line); background: var(--surface-2); }
+.mini-btn.pln-card-menu svg { width: 14px; height: 14px; }
+.pln-card-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pln-card-tags { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; margin-top: 4px; }
+.pln-card-deadline.missed { color: var(--c-red); }
+
+/* ── the Gantt's hover card (GanttHoverCard) ───────────────────
+   InitiativeHoverCard's look: an always-dark card following the pointer,
+   portaled into the shell above full screen (60), never taking the hover. */
+
+.pln-hover {
+  position: fixed;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 280px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--ink, #0c1117);
+  color: var(--snow, #e8edf4);
+  font-family: var(--font-display, sans-serif);
+  font-size: 12px;
+  line-height: 1.45;
+  pointer-events: none;
+  box-shadow: 0 6px 20px rgba(12, 17, 23, 0.35);
+}
+.pln-hover-name { font-size: 13.5px; font-weight: 600; line-height: 1.3; }
+.pln-hover-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 12px;
+  margin: 0;
+}
+.pln-hover-fact { display: contents; }
+.pln-hover-facts dt {
+  align-self: center;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(232, 237, 244, 0.55);
+}
+.pln-hover-facts dd { margin: 0; color: rgba(232, 237, 244, 0.9); }
+/* a drag's tooltip is the hover card's look, a little narrower */
+.pln-hover.pln-drag-tip { max-width: 260px; }
+
+/* ── Task Dependency (TaskDependencyModal) ───────────────────── */
+
+.pln-dep { width: min(520px, 86vw); }
+.pln-dep-task {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 34px;
+  padding-top: 8px;
+  color: var(--text-dark);
+  overflow-wrap: anywhere;
+}
+.pln-dep-num { font-family: var(--font-mono); color: var(--text-mute); }
+.pln-dep-error { margin: 6px 0 0; }
+
+
+/* ── Resource Names picker (ResourcePicker) ─────────────────────
+   Portaled into .portal-shell with fixed placement under the cell: above
+   full screen (60), with the portaled menus (70), under dialogs (80). */
+
+.pln-respick {
+  position: fixed;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(340px, calc(100vw - 16px));
+  padding: 12px;
+  background: var(--surface);
+  color: var(--text-dark);
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  box-shadow: 0 18px 50px -18px rgba(12, 17, 23, 0.35);
+}
+.pln-respick:focus { outline: none; }
+.pln-respick .pf-error { margin: 0; }
+.pln-respick-foot { display: flex; justify-content: flex-end; gap: 8px; }
+/* a commit in flight: nothing is disabled (focus stays inside), so the
+   busy picker and its waiting buttons look it. Presence selectors: the
+   attributes are only set while busy. */
+.pln-respick[aria-busy] { cursor: progress; }
+.pln-respick[aria-busy] > :first-child { opacity: 0.6; }
+.pln-respick [aria-disabled] { opacity: 0.55; cursor: progress; }
+
+/* the task color popover (TaskColorPicker): the toolbar's Task color, the
+   Color cell, Task Information's Color field. Portaled into the shell,
+   above full screen (60) and the dialogs (80), under the hover tips */
+.pln-hues {
+  position: fixed;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px);
+  padding: 12px;
+  background: var(--surface);
+  color: var(--text-dark);
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  box-shadow: 0 18px 50px -18px rgba(12, 17, 23, 0.35);
+}
+.pln-hues:focus { outline: none; }
+.pln-hues .pf-error { margin: 0; }
+.pln-hues[aria-busy] { cursor: progress; }
+.pln-hues-set { display: flex; flex-wrap: wrap; gap: 8px; }
+/* a swatch: the color itself, a check on the one picked */
+.pln-hue {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--text-dark) 18%, transparent);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.pln-hue svg { width: 16px; height: 16px; }
+.pln-hue:hover { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--paper-line); }
+.pln-hue[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--text-dark); }
+.pln-hue:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.pln-hues-foot { display: flex; justify-content: space-between; gap: 8px; }
+.pln-hues-foot .mini-btn[aria-pressed="true"] { border-color: var(--text-dark); }
+
+/* Task Information › General: the Color field, a button that opens the popover */
+.pln-ti-color {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+}
+.pln-ti-color svg { flex: none; width: 14px; height: 14px; margin-left: auto; color: var(--text-mute); }
+.pln-ti-color:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* ── lock banner ──────────────────────────────────────────────── */
+
+.pln-lock {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 14px;
+  border: 1px solid var(--c-amber-bd);
+  border-radius: 10px;
+  background: var(--c-amber-bg);
+  color: var(--c-amber);
+  font-size: 13px;
+}
+.pln-lock svg { width: 15px; height: 15px; flex: none; }
+.pln-lock-text { flex: 1 1 auto; min-width: 0; }
+.pln-lock .mini-btn { flex: none; }
+
+/* ── empty state ──────────────────────────────────────────────── */
+
+.pln-empty { padding: 22px 24px 24px; }
+.pln-empty .eyebrow-sm { margin-bottom: 10px; }
+.pln-empty-title { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -0.01em; color: var(--text-dark); }
+.pln-empty .page-hint { margin: 6px 0 0; }
+.rgm-choice-cards.pln-empty-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 18px 0 0;
+}
+@media (max-width: 900px) {
+  .rgm-choice-cards.pln-empty-cards { grid-template-columns: 1fr; }
+}
+
+/* ── dialogs (PlanModal): sized to content within the size bounds ── */
+
+.modal-card.reports-modal-card.rgm-card.pln-modal {
+  width: fit-content;
+  min-width: min(480px, 96vw);
+  max-width: min(720px, 96vw);
+}
+.modal-card.reports-modal-card.rgm-card.pln-modal.pln-modal-wide { max-width: min(980px, 96vw); }
+.modal-card.reports-modal-card.rgm-card.pln-modal.pln-modal-xwide { max-width: min(1200px, 96vw); }
+/* the card takes focus on open when it has no field: no ring around the whole dialog */
+.modal-card.pln-modal:focus { outline: none; }
+/* a dialog taller than the window scrolls (the card, whose scrollbar
+   chrome.css keeps inside its corners) with its footer (OK, Save) pinned
+   in view at the bottom */
+.modal-card.pln-modal > .modal-foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+/* a one-question dialog has no body: one rule between the header and the footer */
+.modal-card.pln-modal > :first-child + .modal-foot { border-top: 0; }
+
+.pln-note { margin: 0; font-size: 12.5px; color: var(--text-mute); }
+/* a footer button set apart at the right (Reset to default) */
+.modal-foot .pln-foot-end { margin-left: auto; }
+.pln-icon-btn { display: inline-grid; place-items: center; padding: 4px 6px; }
+.pln-icon-btn svg { width: 14px; height: 14px; }
+
+/* ── Columns… (ColumnsModal) ──────────────────────────────────── */
+
+.pln-colpick-count { margin-bottom: 10px; }
+/* the list scrolls inside the dialog so Save stays in view */
+.pln-colpick {
+  list-style: none;
+  margin: 0;
+  padding: 0 4px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(440px, 80vw);
+  max-height: min(56vh, 560px);
+  overflow-y: auto;
+}
+.pln-colpick-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px 6px 12px;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.pln-colpick-item.off { background: var(--surface-2); }
+.pln-colpick-name { flex: 1 1 auto; min-width: 0; font-size: 13.5px; color: var(--text-dark); }
+.pln-colpick-item.off .pln-colpick-name { color: var(--text-mute); }
+.pln-colpick-moves { display: flex; gap: 4px; flex: none; }
+
+/* ── Keyboard shortcuts (ShortcutsModal): action · Windows · Mac ── */
+
+.pln-keys {
+  display: grid;
+  grid-template-columns: minmax(190px, 1.4fr) minmax(150px, 1fr) minmax(130px, 1fr);
+  width: min(700px, 86vw);
+  font-size: 13px;
+  color: var(--text-dark);
+}
+.pln-keys-cols,
+.pln-keys-line { display: contents; }
+.pln-keys-cols > span {
+  padding: 4px 8px 7px;
+  border-bottom: 1px solid var(--paper-line);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.pln-keys-sub > span { padding-top: 18px; }
+.pln-keys-line > span {
+  padding: 6px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--paper-line) 60%, transparent);
+}
+.pln-keys kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  border: 1px solid var(--paper-line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-dark);
+}
+
+/* ── Delete with subtasks (DeleteTasksModal) ──────────────────── */
+
+/* the tasks that go, framed; a long list scrolls inside its rounded
+   corners with the house dialog scrollbar (chrome.css's list) */
+.pln-doomed {
+  list-style: none;
+  margin: 0;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 40vh;
+  overflow-y: auto;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  font-size: 13.5px;
+  color: var(--text-dark);
+}
+.pln-doomed-id { display: inline-block; min-width: 2.5em; font-family: var(--font-mono); font-size: 12px; color: var(--text-mute); }
+
+/* ── shared by the plan dialogs' forms ──────────────────────────── */
+
+/* a switch with its words beside it (Milestone, Show times, …) */
+.pln-switch-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.pln-switch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pln-switch-text b { font-size: 13.5px; font-weight: 500; color: var(--text-dark); }
+.pln-switch-text span { font-size: 12px; color: var(--text-mute); }
+/* `.pf-form label` would make the switch's own label a block with a gap under it */
+.pf-form .pln-switch-line .switch,
+.pln-set-inherit .switch,
+.pf-form.pln-cal .switch,
+.pf-form.pln-sys-body .switch { margin: 0; display: inline-block; }
+/* a field's caption that isn't a <label> (a segmented control's) */
+.pln-ti-label,
+.pln-set-label {
+  display: block;
+  margin-bottom: 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.pln-ti-error,
+.pln-set-error,
+.pln-cal-error { margin: 6px 0 0; }
+.pln-ti input[readonly] { background: var(--surface); color: var(--text-mute); }
+.pln-ti input:disabled:not([type="checkbox"]),
+.pln-set input:disabled:not([type="checkbox"]) { opacity: 0.6; cursor: not-allowed; }
+/* "Schedule is locked: …" over a dialog's fields */
+.pln-locked-note { margin: 0; color: var(--c-amber); }
+
+/* ── the completion check (CompletionDialog) ────────────────────── */
+
+.pln-done-group { width: min(520px, 86vw); }
+.pln-done-group + .pln-done-group { margin-top: 18px; }
+.pln-done-title { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--text-dark); }
+/* a long list scrolls inside rounded corners with the house dialog
+   scrollbar (chrome.css's list), so its bar stays clear of them */
+.pln-done-tasks {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 40vh;
+  overflow-y: auto;
+  border-radius: 9px;
+}
+.pln-done-task {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  background: var(--surface);
+  font-size: 13.5px;
+  color: var(--text-dark);
+}
+.pln-done-id { flex: none; min-width: 2.2em; font-family: var(--font-mono); font-size: 12px; color: var(--text-mute); }
+.pln-done-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.pln-done-why { flex: none; font-size: 11.5px; color: var(--text-mute); }
+.pln-done-task .mini-btn { flex: none; }
+
+/* ── Task Information (TaskInfoModal) ───────────────────────────── */
+
+.pln-ti { width: min(780px, 88vw); display: flex; flex-direction: column; gap: 14px; }
+.pln-ti-tabs { align-self: flex-start; }
+.pln-ti-state { margin: 0; }
+/* the tallest tab's height, so the dialog doesn't jump between tabs */
+.pln-ti-body { min-height: 430px; }
+.pln-ti-panel { display: flex; flex-direction: column; gap: 12px; }
+.pln-ti-mode { display: flex; }
+.pln-ti-mode button:disabled { opacity: 0.55; cursor: not-allowed; }
+.pf-form textarea.pln-ti-notes,
+.pf-form textarea.pln-text-field {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 220px;
+  resize: vertical;
+  padding: 10px 12px;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  color: var(--text-dark);
+  background: var(--surface-2);
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  outline: none;
+}
+.pf-form textarea.pln-ti-notes:focus,
+.pf-form textarea.pln-text-field:focus {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
+  background: var(--surface);
+}
+.pf-form textarea.pln-ti-notes:disabled,
+.pf-form textarea.pln-text-field:disabled { opacity: 0.6; }
+/* the Predecessors grid: ID · Task Name · Type · Lag · remove */
+.pln-ti-preds {
+  display: grid;
+  grid-template-columns: 40px minmax(200px, 1fr) minmax(170px, 0.8fr) 104px 34px;
+  gap: 8px 10px;
+  align-items: center;
+}
+.pln-ti-pred-cols,
+.pln-ti-pred { display: contents; }
+.pln-ti-pred-cols > span {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.pln-ti-pred-id { text-align: right; color: var(--text-mute); }
+.pln-ti-lag {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  color: var(--text-dark);
+  background: var(--surface-2);
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  outline: none;
+}
+.pln-ti-lag:focus { border-color: var(--amber); background: var(--surface); }
+.pln-ti-lag:disabled { opacity: 0.6; }
+.pln-ti-pred-error { grid-column: 2 / -1; margin: -2px 0 4px; }
+
+/* ── Plan settings (PlanSettingsModal, CalendarEditor) ──────────── */
+
+.pln-set { width: min(980px, 90vw); display: flex; flex-direction: column; gap: 14px; }
+.pln-set-tabs { align-self: flex-start; }
+.pln-set-body { min-height: 380px; }
+.pln-set-hint { margin: 6px 0 0; }
+.pln-set-choice { display: flex; flex-wrap: wrap; }
+.pln-set-control .pln-set-choice { display: inline-flex; }
+.pln-set-choice button:disabled { opacity: 0.55; cursor: not-allowed; }
+.pln-set-items,
+.pf-form.pln-set-items { display: flex; flex-direction: column; gap: 10px; }
+.pln-set-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 18px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.pln-set-inherit { display: inline-flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--text-mute); }
+.pln-set-control,
+.pln-set-item > .pln-set-error { grid-column: 1 / -1; }
+/* the Reminders section is a .pf-form (its native time field's house): its
+   short fields keep their own size over .pf-form's full-width inputs */
+.pln-set-short,
+.pln-set .pf-form input.pln-set-short {
+  width: 140px;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  color: var(--text-dark);
+  background: var(--surface-2);
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  outline: none;
+}
+.pln-set-short:focus,
+.pln-set .pf-form input.pln-set-short:focus { border-color: var(--amber); background: var(--surface); box-shadow: none; }
+
+.pf-form.pln-cal { display: flex; flex-direction: column; gap: 20px; }
+.pln-cal-title { margin: 0 0 10px; font-size: 13px; font-weight: 600; color: var(--text-dark); }
+.pln-cal-week {
+  display: grid;
+  grid-template-columns: 100px auto minmax(0, 1fr);
+  gap: 8px 14px;
+  align-items: center;
+}
+.pln-cal-day { display: contents; }
+.pln-cal-dayname { font-size: 13.5px; color: var(--text-dark); }
+.pln-cal-off { font-size: 12.5px; color: var(--text-mute); }
+.pln-cal-day-error { grid-column: 3; margin: -4px 0 2px; }
+.pln-cal-hours { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+.pln-cal-range { display: inline-flex; align-items: center; gap: 6px; color: var(--text-mute); }
+.pf-form input.pln-cal-time { width: 72px; padding: 7px 8px; text-align: center; font-variant-numeric: tabular-nums; }
+.pln-cal-units { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.pln-cal-part > .pln-note { margin-top: 10px; }
+.pln-cal-excs { display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
+.pln-cal-exc {
+  display: grid;
+  grid-template-columns: 160px minmax(160px, 1fr) auto minmax(0, 1.4fr) 34px;
+  gap: 8px 12px;
+  align-items: center;
+}
+.pln-cal-exc-kind { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-mute); }
+.pln-cal-exc-error { grid-column: 1 / -1; margin: -2px 0 0; }
+@media (max-width: 900px) {
+  .pln-cal-units { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pln-cal-exc { grid-template-columns: 1fr 1fr; }
+}
+
+/* ── System settings › Project plans (pages/settings/ProjectPlanSettings) ── */
+
+/* the form takes the settings grid's whole width: its cards stack, and the
+   calendar needs the room; capped, so a line's control sits near its name */
+.pln-sys {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+  max-width: 960px;
+}
+/* a line's control drops under its name when both don't fit; the name gives
+   way first (its hint wraps) */
+.pln-sys-line { flex-wrap: wrap; }
+.pln-sys-line > .set-label { flex: 1 1 200px; min-width: 0; }
+/* the calendar's five unit fields go three to a line in a narrow card, so
+   "Default start time" keeps its caption on one line (two below 520px, as
+   the editor does on a small screen) */
+.pln-sys-cal { container-type: inline-size; }
+@container (max-width: 820px) {
+  .pln-sys-cal .pln-cal-units { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@container (max-width: 520px) {
+  .pln-sys-cal .pln-cal-units { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+/* a card's settings are a .pf-form (the native time field's house) laid out
+   as the System settings lines, not as its two-column grid */
+.pf-form.pln-sys-body { display: block; }
+.pln-sys-pad { padding: 16px 20px 20px; }
+.pln-sys-control { flex: none; display: flex; justify-content: flex-end; max-width: 100%; }
+/* over .pf-form input and notifications.css's .pf-form input[type='time'] */
+.pf-form.pln-sys-body input.pln-sys-input { width: 160px; }
+.pln-sys-picker { width: min(340px, 100%); }
+.pln-sys-error { margin: 6px 0 0; }
+/* the calendar card's line is a page-hint, sized like the other cards' lines */
+.pln-sys .set-section .page-hint { margin: 3px 0 0; font-size: 12.5px; }
+.pln-sys input:disabled:not([type="checkbox"]) { opacity: 0.6; cursor: not-allowed; }
+.pln-sys-failed { display: flex; align-items: center; gap: 12px; color: var(--text-mute); }
+.pln-sys-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* "Fix “Default duration” above. Go to it", beside Save */
+.pln-sys .pln-sys-actions .pln-sys-fix { margin: 0; font-size: 13px; }
+
+/* ── Update project, Delete plan ────────────────────────────────── */
+
+.pln-update,
+.pln-delete-plan { width: min(520px, 86vw); }
+
+/* ── New project plan, Save as template, Templates… ─────────────── */
+
+/* at least the house dialog width; as wide as the card when its header
+   description runs longer, so the fields line up with it */
+.pln-create-form,
+.pln-template-form { min-width: min(520px, 86vw); width: 100%; box-sizing: border-box; }
+/* a description field: Task Information's Notes look, three lines tall */
+.pf-form textarea.pln-text-field { min-height: 76px; }
+
+/* the template cards scroll inside the dialog so Done stays in view */
+.pln-tmpls {
+  list-style: none;
+  margin: 0;
+  padding: 0 4px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(560px, 86vw);
+  max-height: min(56vh, 560px);
+  overflow-y: auto;
+}
+.pln-tmpl {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 8px 10px 14px;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.pln-tmpl-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.pln-tmpl-name { font-size: 14px; font-weight: 600; color: var(--text-dark); overflow-wrap: anywhere; }
+.pln-tmpl-desc { font-size: 13px; color: var(--text-dark); white-space: pre-wrap; overflow-wrap: anywhere; }
+.pln-tmpl-desc.none { color: var(--text-mute); font-style: italic; }
+/* an editor in a card: the field over its Save / Cancel */
+.pf-form.pln-tmpl-edit { gap: 8px; }
+.pln-tmpl-btns { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pln-tmpl-none,
+.pln-tmpl-problem { width: min(560px, 86vw); }
+.pln-tmpl-problem { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pln-tmpl-problem .pf-error { margin: 0; }
+/* New plan from a template: a list that couldn't load, with Try again */
+.pln-load-problem { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pln-load-problem .pf-error { margin: 0; }
+/* the card's ⋯ Actions: the Board card menu's quiet button */
+.mini-btn.pln-tmpl-menu {
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  justify-content: center;
+  border-color: transparent;
+  background: transparent;
+  flex: none;
+}
+.mini-btn.pln-tmpl-menu:hover,
+.mini-btn.pln-tmpl-menu[aria-expanded='true'] { border-color: var(--paper-line); background: var(--surface-2); }
+.mini-btn.pln-tmpl-menu svg { width: 14px; height: 14px; }
+
+/* ── Import from MS Project or Excel (PlanImportModal) ────────────
+   One width for every step (IMPORT_WIDTH_PX: the review's list floors fit
+   in it), so the card doesn't jump as the steps change. The review's list
+   is the house dir-list; its layout lives in plan-sheet.css. */
+.pln-import {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(1040px, 88vw);
+}
+.pln-import-mode { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.pln-import .pf-error { margin: 0; }
+.pln-import-sum { margin: 0; font-size: 14px; color: var(--text-mute); }
+.pln-import-sum b { font-weight: 600; color: var(--text-dark); }
+/* the problems about the whole file, above the rows */
+.pln-import-problems {
+  margin: 0;
+  padding: 10px 14px 10px 30px;
+  border: 1px solid var(--c-amber-bd);
+  border-radius: 10px;
+  background: var(--c-amber-bg);
+  font-size: 13px;
+  color: var(--text-dark);
+}
+.pln-import-problems li + li { margin-top: 4px; }
+/* the footer's message (plan_changed, a refusal) wraps beside its buttons */
+.modal-card.pln-modal:has(.pln-import) > .modal-foot { flex-wrap: wrap; }

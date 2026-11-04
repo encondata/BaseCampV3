@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 
 import { ChoiceCard, InitiativeSummary } from './ReportOptionsLayout';
 
@@ -81,6 +81,30 @@ it('Space/Enter select the focused card', async () => {
   await user.keyboard('{ArrowRight}');   // focus Card B without selecting via click
   await user.keyboard(' ');
   expect(screen.getByRole('radio', { name: /Card B/ }).getAttribute('aria-checked')).toBe('true');
+});
+
+it('the button variant is a plain action: no role or checked state, always in the tab order', async () => {
+  const user = userEvent.setup();
+  const onSelect = vi.fn();
+  render(
+    <div className="rgm-choice-cards">
+      <ChoiceCard variant="button" title="Blank plan" description="Start empty" selected={false}
+                  onSelect={onSelect} />
+      <ChoiceCard variant="button" title="Import" description="Later" selected={false}
+                  onSelect={onSelect} disabled hint="Coming soon" />
+    </div>,
+  );
+  const blank = screen.getByRole('button', { name: /Blank plan/ });
+  expect(blank.hasAttribute('aria-checked')).toBe(false);
+  expect(blank.getAttribute('tabindex')).toBe('0');
+  await user.click(blank);
+  expect(onSelect).toHaveBeenCalledTimes(1);
+  blank.focus();
+  await user.keyboard('{Enter}');
+  expect(onSelect).toHaveBeenCalledTimes(2);
+  const later = screen.getByRole('button', { name: /Import/ });
+  expect(later.hasAttribute('disabled')).toBe(true);
+  expect(screen.getByText('Coming soon')).toBeTruthy();
 });
 
 it('InitiativeSummary renders the name, client, type/status chips, scheduled dates, and source → destination', () => {

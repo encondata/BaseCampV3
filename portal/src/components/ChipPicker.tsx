@@ -6,7 +6,8 @@
  *
  * - Chips show in `selected` order (sort it, if the caller wants them
  *   sorted); a picked id with no option shows the id itself.
- * - Picking adds a chip and clears the box. Backspace in the empty box
+ * - Picking adds a chip and clears the box, which keeps focus (its list
+ *   closed until typing, ↓ or a click). Backspace in the empty box
  *   takes the last chip off. Every × is a button, so Tab reaches it; after
  *   one removes its chip, focus goes to the next chip's ×, else the
  *   previous one's, else the box — without opening its menu (that waits
@@ -16,6 +17,8 @@
  * - Inside a modal the ComboBox menu portals by itself (ComboBox /
  *   useMenuPlacement), and its Escape closes the menu, not the dialog;
  *   `portal` makes it portal anywhere (inside an overflow-hidden panel).
+ * - Options with a `group` stay under their group's heading, the groups in
+ *   the order they first appear in `options`.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -40,6 +43,8 @@ export interface ChipPickerProps {
   ariaLabel?: string;
   /** Always portal the menu (ComboBox `portal`). */
   portal?: boolean;
+  /** aria-invalid on the box (a form's error is about the picks). */
+  invalid?: boolean;
 }
 
 /** Where focus goes after a chip is removed: a value's ×, or the box. */
@@ -47,7 +52,7 @@ type FocusTarget = { kind: 'chip'; value: string } | { kind: 'box' };
 
 export default function ChipPicker({
   options, selected, onChange, disabled = false, placeholder = 'Add…', clearAll = false, note, ariaLabel,
-  portal = false,
+  portal = false, invalid = false,
 }: ChipPickerProps) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const removeRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -57,8 +62,11 @@ export default function ChipPicker({
   const byValue = new Map(options.map((o) => [o.value, o]));
   const labelOf = (v: string) => byValue.get(v)?.label ?? v;
   const picked = new Set(selected);
+  // grouped options keep their groups, in the order the groups come
+  const groupRank = new Map<string | undefined, number>();
+  for (const o of options) if (!groupRank.has(o.group)) groupRank.set(o.group, groupRank.size);
   const remaining = options.filter((o) => !picked.has(o.value))
-    .sort((a, b) => naturalCompare(a.label, b.label));
+    .sort((a, b) => (groupRank.get(a.group)! - groupRank.get(b.group)!) || naturalCompare(a.label, b.label));
 
   useEffect(() => {
     if (!focusNext) return;
@@ -74,9 +82,11 @@ export default function ChipPicker({
     setFocusNext(next !== undefined ? { kind: 'chip', value: next } : { kind: 'box' });
   };
 
-  // Backspace in the empty box takes the last chip off
+  // Backspace in the empty box takes the last chip off (not one that edits
+  // an IME composition; keyCode 229 is Safari's composition key)
   const onKeyDownCapture = (e: KeyboardEvent<HTMLDivElement>) => {
     const target = e.target as HTMLInputElement;
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key !== 'Backspace' || disabled || target.getAttribute('role') !== 'combobox') return;
     if (target.value === '' && selected.length > 0) onChange(selected.slice(0, -1));
   };
@@ -103,8 +113,12 @@ export default function ChipPicker({
       )}
       {note ? <p className="page-hint chip-picker-note">{note}</p> : null}
       <ComboBox options={remaining} value="" disabled={disabled} placeholder={placeholder} ariaLabel={ariaLabel}
-        handle={combo} portal={portal}
-        onChange={(v) => { if (v) onChange([...selected, v]); }} />
+        handle={combo} portal={portal} invalid={invalid}
+        onChange={(v) => {
+          if (!v) return;
+          onChange([...selected, v]);
+          setFocusNext({ kind: 'box' });   // the box keeps focus for the next pick, its list closed
+        }} />
     </div>
   );
 }

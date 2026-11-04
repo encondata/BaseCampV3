@@ -52,10 +52,12 @@ def registry() -> dict[str, ReportModule]:
             learning_compliance,
             move_report,
             move_scan_history,
+            project_plan,
             site_move_survey,
             timesheet,
         )
         _REGISTRY = {
+            project_plan.report_type: project_plan,              # type: ignore[dict-item]
             move_report.report_type: move_report,                # type: ignore[dict-item]
             site_move_survey.report_type: site_move_survey,      # type: ignore[dict-item]
             move_scan_history.report_type: move_scan_history,    # type: ignore[dict-item]

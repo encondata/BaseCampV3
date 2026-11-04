@@ -87,9 +87,43 @@ DEFAULTS: dict[str, dict] = {
     "notifications": {
         "defaults": {category: {"inbox": True, "email": True}
                      for category in ("approvals", "reports", "wiki", "learning",
-                                      "initiatives", "trucks", "devices", "status_rules",
-                                      "bulk_actions")},
+                                      "initiatives", "plans", "trucks", "devices",
+                                      "status_rules", "bulk_actions")},
         "critical_kinds": [],
+    },
+    # Project plans (plans/settings.py): the calendar a new plan copies (MS
+    # Project's Standard calendar) plus every other key a plan inherits live
+    # unless it overrides it. completion: subtasks cascade|block|none,
+    # predecessors block|warn|none. reminders.overdue: daily|once|off;
+    # send_time is plan-local HH:MM. Written only by routes/system.py.
+    "project_plans": {
+        "calendar": {
+            "week": {
+                "mon": [["08:00", "12:00"], ["13:00", "17:00"]],
+                "tue": [["08:00", "12:00"], ["13:00", "17:00"]],
+                "wed": [["08:00", "12:00"], ["13:00", "17:00"]],
+                "thu": [["08:00", "12:00"], ["13:00", "17:00"]],
+                "fri": [["08:00", "12:00"], ["13:00", "17:00"]],
+                "sat": [],
+                "sun": [],
+            },
+            "exceptions": [],
+            "hours_per_day": 8, "hours_per_week": 40, "days_per_month": 20,
+            "default_start": "08:00", "default_end": "17:00",
+        },
+        "honor_constraints": True,
+        "critical_slack_days": 0,
+        "default_task_mode": "auto",
+        "default_duration": "1d",
+        "show_times": False,
+        "completion": {"subtasks": "cascade", "predecessors": "block"},
+        "reminders": {
+            "enabled": True, "offsets_days": [3, 1], "on_due_day": True,
+            "overdue": "daily", "send_time": "08:00",
+            "use_finish_without_deadline": False,
+            "notify_on_assign": True, "overdue_to_owner": True,
+            "email_assignees": True,
+        },
     },
 }
 

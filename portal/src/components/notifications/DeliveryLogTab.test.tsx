@@ -300,8 +300,8 @@ it('the Outcome filter sends the chosen events', async () => {
   ]);
   expect(optionsAfter('Channel')).toEqual(['Inbox', 'Email']);
   expect(optionsAfter('Category')).toEqual([
-    'Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Initiatives', 'Trucks',
-    'Devices', 'Status rules', 'Bulk actions', 'Account security',
+    'Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Initiatives',
+    'Project plans', 'Trucks', 'Devices', 'Status rules', 'Bulk actions', 'Account security',
   ]);
 
   await user.click(within(menu).getByRole('button', { name: 'Failed' }));

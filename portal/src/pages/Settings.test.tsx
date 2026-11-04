@@ -3,6 +3,8 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
+import { makeSystemSettings } from '../lib/plans/planFixtures';
+
 const api = vi.hoisted(() => ({
   getAdminConfig: vi.fn(),
   updateAdminConfig: vi.fn(),
@@ -14,7 +16,13 @@ vi.mock('../lib/api', async (orig) => ({
   ...api,
 }));
 
-const auth = vi.hoisted(() => ({ can: vi.fn(() => true) }));
+const plansApi = vi.hoisted(() => ({ getProjectPlanSettings: vi.fn(), putProjectPlanSettings: vi.fn() }));
+vi.mock('../lib/plans/api', async (orig) => ({
+  ...(await orig<typeof import('../lib/plans/api')>()),
+  ...plansApi,
+}));
+
+const auth = vi.hoisted(() => ({ can: vi.fn((_resource: string, _action?: string): boolean => true) }));
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({ can: auth.can }),
 }));
@@ -28,6 +36,7 @@ beforeEach(() => {
   api.getAdminConfig.mockResolvedValue({ ...base });
   api.updateAdminConfig.mockImplementation(async (patch) => ({ ...base, ...patch }));
   api.getBranding.mockResolvedValue({ company_name: 'Cumulus Solutions Group', has_logo: false, logo_url: null });
+  plansApi.getProjectPlanSettings.mockResolvedValue(makeSystemSettings());
 });
 afterEach(cleanup);
 
@@ -37,7 +46,8 @@ function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
-        {['/settings', '/settings/security', '/settings/ai-lookup', '/settings/branding', '/settings/maintenance', '/settings/about'].map((p) => (
+        {['/settings', '/settings/security', '/settings/ai-lookup', '/settings/branding', '/settings/maintenance',
+          '/settings/project-plans', '/settings/about'].map((p) => (
           <Route key={p} path={p} element={<Settings />} />
         ))}
       </Routes>
@@ -83,10 +93,10 @@ it('contains no Appearance, Notifications, or Account content', async () => {
   expect(screen.queryByText('Account')).toBeNull();
 });
 
-it('shows six tabs; placeholder tabs render their placeholder card instead of Administration', async () => {
+it('shows seven tabs; placeholder tabs render their placeholder card instead of Administration', async () => {
   renderAt('/settings');
   expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(
-    ['Administration', 'Security', 'AI lookup', 'Branding', 'Maintenance', 'About']);
+    ['Administration', 'Security', 'AI lookup', 'Branding', 'Maintenance', 'Project plans', 'About']);
   expect(screen.getByRole('tab', { name: 'Administration' }).getAttribute('aria-selected')).toBe('true');
   cleanup();
   renderAt('/settings/maintenance');
@@ -104,4 +114,15 @@ it('the Branding tab shows the company name and logo controls', async () => {
     .toBe('Cumulus Solutions Group'));
   expect(screen.getByRole('button', { name: 'Upload logo…' })).toBeTruthy();
   expect(screen.queryByRole('heading', { name: 'Administration', level: 3 })).toBeNull();
+});
+
+it('the Project plans tab shows the plan defaults, read-only without change', async () => {
+  auth.can.mockImplementation((_resource, action = 'view') => action === 'view');
+  renderAt('/settings/project-plans');
+  expect(screen.getByRole('tab', { name: 'Project plans' }).getAttribute('aria-selected')).toBe('true');
+  expect(await screen.findByRole('heading', { name: 'Scheduling', level: 3 })).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Default calendar', level: 3 })).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'Administration', level: 3 })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull();
+  expect((screen.getByRole('checkbox', { name: 'Honor constraints' }) as HTMLInputElement).disabled).toBe(true);
 });

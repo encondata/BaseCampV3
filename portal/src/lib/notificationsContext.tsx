@@ -17,8 +17,14 @@ import { installAudioUnlock, playNotificationSound } from './notificationSounds'
 
 export const INBOX_POLL_MS = 30_000;
 export const LOCAL_TOAST_MS = 4_000;
+/** A local toast with an action (Undo) stays as long as an inbox toast
+ *  with one (ToastHost's INBOX_TOAST_MS), so there is time to reach it. */
+export const ACTION_TOAST_MS = 10_000;
 
-interface LocalToast { id: number; message: string }
+/** A button on a local toast: clicking it runs `onClick` and dismisses it. */
+export interface ToastAction { label: string; onClick: () => void }
+
+interface LocalToast { id: number; message: string; action?: ToastAction }
 
 interface Value {
   unreadCount: number;
@@ -31,7 +37,7 @@ interface Value {
   hide: (id: string) => Promise<void>;
   clearRead: () => Promise<void>;
   dismissNew: (id: string) => void;
-  toast: (message: string) => void;
+  toast: (message: string, action?: ToastAction) => void;
   localToasts: LocalToast[];
   dismissLocal: (id: number) => void;
 }
@@ -136,10 +142,10 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   }, [refresh]);
   const dismissNew = useCallback((id: string) => setNewItems((cur) => cur.filter((i) => i.id !== id)), []);
   const dismissLocal = useCallback((id: number) => setLocalToasts((cur) => cur.filter((t) => t.id !== id)), []);
-  const toast = useCallback((message: string) => {
+  const toast = useCallback((message: string, action?: ToastAction) => {
     const id = nextLocalId.current++;
-    setLocalToasts((cur) => [...cur, { id, message }]);
-    setTimeout(() => dismissLocal(id), LOCAL_TOAST_MS);
+    setLocalToasts((cur) => [...cur, action ? { id, message, action } : { id, message }]);
+    setTimeout(() => dismissLocal(id), action ? ACTION_TOAST_MS : LOCAL_TOAST_MS);
   }, [dismissLocal]);
 
   const value = useMemo<Value>(() => ({
@@ -160,7 +166,7 @@ export function useNotifications(): Value {
   return useContext(Ctx) ?? EMPTY;
 }
 
-export function useToast(): (message: string) => void {
+export function useToast(): (message: string, action?: ToastAction) => void {
   return useNotifications().toast;
 }
 

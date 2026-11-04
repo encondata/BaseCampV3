@@ -1,0 +1,7 @@
+Hi {{ person_name }},
+
+{{ task_name }} in {{ initiative_name }}{% if stage == 'overdue' %} has been overdue {{ due_label }}.{% else %} is due {{ due_label }}.{% endif %}
+
+Open the plan:
+
+{{ link }}

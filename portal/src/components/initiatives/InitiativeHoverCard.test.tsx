@@ -170,6 +170,22 @@ it('leaves the move line off for a project, even with sites on the record', () =
   expect(card()!.textContent).not.toContain('Sunnyvale HQ → Denver DC');
 });
 
+it('adds the plan line when the initiative has a plan summary', () => {
+  render(
+    <InitiativeHoverCard item={initiative()} planLine="Plan: 42% complete · next: Move day Nov 14">
+      <a className="itl-span" href="/initiatives/i1">Denver DC migration</a>
+    </InitiativeHoverCard>,
+  );
+  hover(document.querySelector('.ihv-wrap') as HTMLElement);
+  const lines = [...card()!.querySelectorAll('.ihv-line')].map((el) => el.textContent);
+  expect(lines).toContain('Plan: 42% complete · next: Move day Nov 14');
+});
+
+it('has no plan line without a plan summary', () => {
+  hover(renderBar(initiative()));
+  expect(card()!.textContent).not.toContain('Plan:');
+});
+
 it('takes the card away on mouse leave', () => {
   const wrap = renderBar(initiative());
   hover(wrap);
@@ -212,6 +228,12 @@ it('flips to the left of the cursor rather than running off the right edge', () 
   const { left } = cardPosition(1000, 300, 1024, 768);
   expect(left).toBeLessThan(1000);          // on the cursor's left
   expect(left + 280).toBeLessThanOrEqual(1024 - 8);
+});
+
+it('a card that knows its size flips to sit right beside the cursor', () => {
+  // a 150px card near the right edge: its right side 14px left of the cursor, not 280px's worth
+  expect(cardPosition(1000, 300, 1024, 768, 150, 60)).toEqual({ left: 1000 - 14 - 150, top: 318 });
+  expect(cardPosition(400, 740, 1024, 768, 150, 60).top).toBe(740 - 18 - 60);
 });
 
 it('flips above the cursor rather than running off the bottom edge', () => {

@@ -34,6 +34,7 @@ CATEGORIES: dict[str, str] = {
     "wiki": "Wiki",
     "learning": "Learning",
     "initiatives": "Initiatives",
+    "plans": "Project plans",
     "trucks": "Trucks",
     "devices": "Devices",
     "status_rules": "Status rules",
@@ -71,6 +72,15 @@ KINDS: dict[str, KindInfo] = {
     # reaches everyone watching the thing, or the things above and around it.
     "initiative_status_changed": KindInfo("initiatives", "Initiative status changed",
                                           reaches=("initiative", "site"), everywhere=True),
+    # Project plan messages are personal and reach people with no portal login,
+    # so plans/notices.py emails the person directly through the mail outbox;
+    # email=False keeps notify() from sending a second copy. It also keeps the
+    # inbox row when the category's Inbox switch is off, so notices.py reads
+    # the person's switches itself before calling notify().
+    "plan_task_assigned": KindInfo("plans", "Assigned to a plan task", email=False),
+    "plan_task_due": KindInfo("plans", "Plan task due", email=False),
+    "plan_task_overdue": KindInfo("plans", "Plan task overdue", email=False),
+    "plan_overdue_digest": KindInfo("plans", "Overdue plan tasks", email=False),
     "truck_status_changed": KindInfo("trucks", "Truck status changed",
                                      reaches=("truck", "initiative", "site"), everywhere=True),
     # Announced by the device check (notifications/device_check.py) when a covered device

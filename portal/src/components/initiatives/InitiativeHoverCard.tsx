@@ -2,10 +2,12 @@
  * InitiativeHoverCard — the hover card behind a calendar bar on
  * /initiatives/timeline. Wraps a bar and, after a 180ms intent delay,
  * shows the initiative's high-level details: name, status and type
- * chips, client · site, the scheduled and actual ranges, and a move's
- * origin → destination. It replaces the native `title` the bars used to
- * carry, which could only print one flat line and arrived on the
- * browser's own schedule.
+ * chips, client · site, the scheduled and actual ranges, a move's
+ * origin → destination and, for a project-plan viewer, one "Plan:" line
+ * (`planLine`). It replaces the native `title` the bars used to carry,
+ * which could only print one flat line and arrived on the browser's own
+ * schedule. The mechanics alone are `PointerHoverCard`, which the page's
+ * plan milestones share.
  *
  * Mechanics follow components/StatusHover.tsx: the 180ms delay, a
  * position:fixed card portaled to <body> so it escapes the calendar
@@ -48,25 +50,27 @@ const CURSOR_GAP_Y = 18;
 /** Used only to decide which side of the cursor the card goes on, before
  *  it has rendered and can be measured. The width is the card's own
  *  max-width; the height is a generous estimate of its tallest form (a
- *  move with every line present measures ~152px). Guessing high just
- *  flips it early near an edge, which is the safe direction to be wrong. */
+ *  move with every line present, the plan line too, measures ~170px).
+ *  Guessing high just flips it early near an edge, which is the safe
+ *  direction to be wrong. */
 const CARD_W = 280;
-const CARD_H = 180;
+const CARD_H = 200;
 const EDGE = 8;
 
 /** Where the card's top-left goes for a cursor at (x, y): below-right by
  *  default, flipped to the opposite side of the cursor on whichever axis
  *  would otherwise run past the viewport, then clamped so it can never
- *  leave the screen entirely. */
+ *  leave the screen entirely. A card that knows its size (a measured one)
+ *  passes it as `w`/`h`, so a flip puts it right beside the cursor. */
 export function cardPosition(
-  x: number, y: number, vw: number, vh: number,
+  x: number, y: number, vw: number, vh: number, w: number = CARD_W, h: number = CARD_H,
 ): { left: number; top: number } {
   let left = x + CURSOR_GAP_X;
-  if (left + CARD_W > vw - EDGE) left = x - CURSOR_GAP_X - CARD_W;
+  if (left + w > vw - EDGE) left = x - CURSOR_GAP_X - w;
   let top = y + CURSOR_GAP_Y;
-  if (top + CARD_H > vh - EDGE) top = y - CURSOR_GAP_Y - CARD_H;
+  if (top + h > vh - EDGE) top = y - CURSOR_GAP_Y - h;
   return {
-    left: Math.max(EDGE, Math.min(left, vw - CARD_W - EDGE)),
+    left: Math.max(EDGE, Math.min(left, vw - w - EDGE)),
     top: Math.max(EDGE, top),
   };
 }
@@ -109,14 +113,18 @@ function chipStyle(color: string): CSSProperties {
   return { '--chip': color } as CSSProperties;
 }
 
-export default function InitiativeHoverCard({
-  item, name, className, style, children,
+/**
+ * The mechanics on their own: wraps `children` and, after the intent
+ * delay, shows `card()` in the same dark, pointer-tracking `.ihv-card`.
+ * The timeline page's plan milestones use it for their diamonds (name,
+ * date, Complete / Late); InitiativeHoverCard below is it with the
+ * initiative's details.
+ */
+export function PointerHoverCard({
+  card, className, style, children,
 }: {
-  item: InitiativeItem;
-  /** The heading, when the caller has a better one than the plain name —
-   *  the calendar passes `Parent › Child` so a child's provenance is
-   *  on the card as well as on the bar. Defaults to `item.name`. */
-  name?: string;
+  /** The card's content, built only while the card is up. */
+  card: () => ReactNode;
   /** Extra classes for the wrapper. */
   className?: string;
   /** Inline styles for the wrapper. */
@@ -166,12 +174,6 @@ export default function InitiativeHoverCard({
     setPos(null);
   };
 
-  const where = [item.client_name, item.site_name].filter(Boolean).join(' · ');
-  const scheduled = item.scheduled_start
-    ? range(item.scheduled_start, item.scheduled_end) : null;
-  const actual = actualRange(item);
-  const route = moveRoute(item);
-
   return (
     <span className={`ihv-wrap${className ? ` ${className}` : ''}`}
           style={style} onMouseEnter={onEnter} onMouseMove={onMove} onMouseLeave={onLeave}>
@@ -181,30 +183,67 @@ export default function InitiativeHoverCard({
       {pos && createPortal(
         <div className="ihv-card" role="tooltip"
              style={{ left: pos.left, top: pos.top }}>
-          <span className="ihv-name">{name ?? item.name}</span>
-          <span className="ihv-tags">
-            <span className="chip custom" style={chipStyle(item.status_color)}>
-              <span className="dot" />{item.status_label}
-            </span>
-            <span className="chip custom" style={chipStyle(item.type_color)}>
-              <span className="dot" />{item.type_label}
-            </span>
-          </span>
-          {where && <span className="ihv-line">{where}</span>}
-          {scheduled && (
-            <span className="ihv-line">
-              <span className="ihv-label">Scheduled:</span>{' '}{scheduled}
-            </span>
-          )}
-          {actual && (
-            <span className="ihv-line">
-              <span className="ihv-label">Actual:</span>{' '}{actual}
-            </span>
-          )}
-          {route && <span className="ihv-line ihv-route">{route}</span>}
+          {card()}
         </div>,
         document.body,
       )}
     </span>
+  );
+}
+
+export default function InitiativeHoverCard({
+  item, name, planLine, className, style, children,
+}: {
+  item: InitiativeItem;
+  /** The heading, when the caller has a better one than the plain name —
+   *  the calendar passes `Parent › Child` so a child's provenance is
+   *  on the card as well as on the bar. Defaults to `item.name`. */
+  name?: string;
+  /** The initiative's project plan in one line ("Plan: 42% complete ·
+   *  next: Move day Nov 14"), when it has one and the viewer may see it. */
+  planLine?: string;
+  /** Extra classes for the wrapper. */
+  className?: string;
+  /** Inline styles for the wrapper. */
+  style?: CSSProperties;
+  children: ReactNode;
+}) {
+  const card = () => {
+    const where = [item.client_name, item.site_name].filter(Boolean).join(' · ');
+    const scheduled = item.scheduled_start
+      ? range(item.scheduled_start, item.scheduled_end) : null;
+    const actual = actualRange(item);
+    const route = moveRoute(item);
+    return (
+      <>
+        <span className="ihv-name">{name ?? item.name}</span>
+        <span className="ihv-tags">
+          <span className="chip custom" style={chipStyle(item.status_color)}>
+            <span className="dot" />{item.status_label}
+          </span>
+          <span className="chip custom" style={chipStyle(item.type_color)}>
+            <span className="dot" />{item.type_label}
+          </span>
+        </span>
+        {where && <span className="ihv-line">{where}</span>}
+        {scheduled && (
+          <span className="ihv-line">
+            <span className="ihv-label">Scheduled:</span>{' '}{scheduled}
+          </span>
+        )}
+        {actual && (
+          <span className="ihv-line">
+            <span className="ihv-label">Actual:</span>{' '}{actual}
+          </span>
+        )}
+        {route && <span className="ihv-line ihv-route">{route}</span>}
+        {planLine && <span className="ihv-line">{planLine}</span>}
+      </>
+    );
+  };
+  return (
+    <PointerHoverCard card={card} className={className} style={style}>
+      {children}
+    </PointerHoverCard>
   );
 }

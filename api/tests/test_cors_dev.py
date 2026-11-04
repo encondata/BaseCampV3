@@ -95,3 +95,22 @@ async def test_credentialed_delete_preflight_is_allowed(monkeypatch):
     assert resp.headers["access-control-allow-credentials"] == "true"
     assert "DELETE" in resp.headers["access-control-allow-methods"]
     get_settings.cache_clear()
+
+
+async def test_the_browser_can_read_a_download_name(monkeypatch):
+    """The portal downloads a project plan's export through fetch (the
+    bearer token rides on it) and names the file from its
+    Content-Disposition, which a cross-origin response hides unless the
+    API exposes it."""
+    from starlette.testclient import TestClient
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("SS_ENV", "development")
+    app = create_app()
+    with TestClient(app) as client:
+        resp = client.get("/no-such-route", headers={"Origin": "https://portal.example.com"})
+    exposed = {h.strip().lower() for h in resp.headers["access-control-expose-headers"].split(",")}
+    assert "content-disposition" in exposed
+    # the label builder's raster size still reads too
+    assert {"x-raster-width", "x-raster-height"} <= exposed
+    get_settings.cache_clear()

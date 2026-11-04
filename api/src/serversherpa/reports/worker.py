@@ -32,6 +32,9 @@ from serversherpa.notifications.inbox import notify
 from serversherpa.reports.container_label_renderer import ContainerLabelRendererUnavailable
 from serversherpa.reports.jobs import claim_next, requeue_stale
 from serversherpa.reports.move_report.gather import InitiativeUnavailable
+from serversherpa.reports.project_plan.gather import (
+    PlanCalendarUnreadable, PrintRangeError, ProjectPlanUnavailable,
+)
 from serversherpa.reports.rack_renderer import RackRendererUnavailable
 from serversherpa.reports.registry import get_module
 from serversherpa.reports.site_move_survey.gather import SurveyGatherError
@@ -45,7 +48,8 @@ RUN_TIMEOUT_SECONDS = 300.0
 STALE_SWEEP_SECONDS = 60
 ERROR_MAX = 2000
 # reports whose file stays on the run: their data is gated, Files are not
-NOT_ATTACHED = ("timesheet", "learning_compliance")
+# (a project plan is project_plans:view data; Files need only attachments:view)
+NOT_ATTACHED = ("timesheet", "learning_compliance", "project_plan")
 
 
 def _finish(run: ReportRun, status: str, error: str | None = None) -> None:
@@ -156,7 +160,8 @@ async def process_run(db: AsyncSession, run: ReportRun, *, sessionmaker,
         await db.commit()                   # a failure here is a failed run too
     except InitiativeUnavailable:
         error = "initiative_unavailable"
-    except (SurveyGatherError, TimesheetTooLarge) as exc:
+    except (SurveyGatherError, TimesheetTooLarge, ProjectPlanUnavailable,
+            PlanCalendarUnreadable, PrintRangeError) as exc:
         error = exc.code
     except RackRendererUnavailable as exc:
         error = f"rack renderer unavailable: {exc}"

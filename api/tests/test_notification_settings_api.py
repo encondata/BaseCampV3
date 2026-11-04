@@ -18,8 +18,8 @@ from tests.test_sites_api import login
 from tests.test_status_values_write import _make
 
 SETTINGS = "/notifications/settings"
-CONFIGURABLE = ("approvals", "reports", "wiki", "learning", "initiatives", "trucks", "devices",
-                "status_rules", "bulk_actions")
+CONFIGURABLE = ("approvals", "reports", "wiki", "learning", "initiatives", "plans", "trucks",
+                "devices", "status_rules", "bulk_actions")
 ON_ON = {"inbox": True, "email": True}
 
 
@@ -259,8 +259,8 @@ async def test_put_waits_for_a_concurrent_save_and_keeps_both(client, db, seeded
     assert resp.json()["defaults"] == {
         "approvals": ON_ON, "reports": {"inbox": False, "email": False},
         "wiki": {"inbox": True, "email": False}, "learning": ON_ON,
-        "initiatives": ON_ON, "trucks": ON_ON, "devices": ON_ON, "status_rules": ON_ON,
-        "bulk_actions": ON_ON}
+        "initiatives": ON_ON, "plans": ON_ON, "trucks": ON_ON, "devices": ON_ON,
+        "status_rules": ON_ON, "bulk_actions": ON_ON}
 
 
 async def test_put_rejects_bad_categories(client, db, seeded_user):
@@ -385,7 +385,7 @@ async def test_load_company_settings_ignores_what_it_does_not_know(db):
             "reports": "garbage",                            # not a pair
             "wiki": {"inbox": False},                        # half a pair
             "security": {"inbox": False, "email": False},    # not configurable
-            "plans": {"inbox": False, "email": False},       # unknown
+            "bogus": {"inbox": False, "email": False},       # unknown
             # learning: missing
         },
         "critical_kinds": ["report_failed", "nope", "password_reset_request",
@@ -397,7 +397,8 @@ async def test_load_company_settings_ignores_what_it_does_not_know(db):
     assert dict(company.defaults) == {
         "approvals": Switches(False, False), "reports": Switches(True, True),
         "wiki": Switches(True, True), "learning": Switches(True, True),
-        "initiatives": Switches(True, True), "trucks": Switches(True, True),
+        "initiatives": Switches(True, True), "plans": Switches(True, True),
+        "trucks": Switches(True, True),
         "devices": Switches(True, True), "status_rules": Switches(True, True),
         "bulk_actions": Switches(True, True)}
     assert company.critical_kinds == frozenset({"report_failed"})

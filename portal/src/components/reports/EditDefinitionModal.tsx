@@ -51,6 +51,8 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
   const isScanHistory = definition.report_type === 'move_scan_history';
   const isTimesheet = definition.report_type === 'timesheet';
   const isLearning = definition.report_type === 'learning_compliance';
+  // the Project plan PDF: every choice is the run's, none is the definition's
+  const isProjectPlan = definition.report_type === 'project_plan';
   const [name, setName] = useState(definition.name);
   const [description, setDescription] = useState(definition.description);
   const [companyName, setCompanyName] = useState(String(definition.options.company_name ?? ''));
@@ -59,7 +61,7 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
   // never end up coerced into this boolean map (it would overwrite the
   // real company_name with `true`/`false` on save).
   const [boolOptions, setBoolOptions] = useState<Record<string, boolean>>(() => {
-    if (isScanHistory || isTimesheet || isLearning) return {};
+    if (isScanHistory || isTimesheet || isLearning || isProjectPlan) return {};
     const keys = isSurvey ? SURVEY_SWITCHES.map((s) => s.key) : MOVE_REPORT_SECTIONS.map((s) => s.key);
     const out: Record<string, boolean> = {};
     for (const k of keys) out[k] = !!definition.options[k];
@@ -256,7 +258,7 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
             </>
           )}
 
-          {!isScanHistory && !isTimesheet && !isLearning && (
+          {!isScanHistory && !isTimesheet && !isLearning && !isProjectPlan && (
             <>
               <div className="modal-section">{isSurvey ? 'Default options' : 'Default sections'}</div>
               <div className="mini-list report-sections">

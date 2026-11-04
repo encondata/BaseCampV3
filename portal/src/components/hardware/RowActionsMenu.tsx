@@ -3,16 +3,41 @@
  *  pre-gated (an item the user may not use is simply not passed), so
  *  an empty list means no trigger at all.
  *
- *  The open menu is portaled to document.body (see StatusHover for the
- *  same pattern) rather than nested under the trigger: list containers
+ *  The open menu is portaled to the enclosing .portal-shell, where the
+ *  theme tokens live (document.body without one; see useMenuPlacement
+ *  for the same rule) rather than nested under the trigger: list containers
  *  (.dir-list) clip overflow for their rounded corners, which would
  *  otherwise clip/eat clicks on the menu whenever it opens on the last
  *  row of a list. Position is computed from the trigger's
  *  getBoundingClientRect — below and right-aligned to the trigger by
  *  default, flipped upward when there isn't ~200px of viewport space
- *  below it. */
+ *  below it.
+ *
+ *  The keyboard (the ARIA menu-button pattern): Enter, Space or ↓ on the
+ *  trigger opens the menu on its checked item, else its first enabled one
+ *  (↑: its last); a mouse-opened menu leaves focus on the trigger, and ↓/↑
+ *  from there go into it. In the menu ↓/↑ move between the enabled items
+ *  (wrapping), Home/End go to the ends, Enter or Space picks one (focus
+ *  then goes back to the trigger, unless the pick moved it somewhere
+ *  itself), Escape closes it with focus back on the trigger, and Tab
+ *  closes it, focus moving on from the trigger as Tab would. Alt, Ctrl
+ *  or ⌘ with a key there is not the menu's. Focus leaving the trigger for
+ *  anywhere but the menu (Tab or Shift+Tab out of a mouse-opened menu)
+ *  closes it. The items take no tab stop of their own (tabIndex -1, focus
+ *  moved by the keys).
+ *
+ *  Optional, for a toolbar's menu button: an `icon` trigger (named by
+ *  `label`) in place of "label ▾", with its own `triggerClassName`; items
+ *  that are a choice among several (`checked`: menuitemradio, a ✓ on the
+ *  current one); `returnFocus`, which puts focus back on the trigger
+ *  after a mouse pick too; and `group`, which gathers a few items under a
+ *  title (a labeled group set apart by rules; the keys go through it like
+ *  any other items). */
 
-import { useEffect, useId, useRef, useState } from 'react';
+import {
+  useEffect, useId, useRef, useState, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from 'react';
 import { createPortal } from 'react-dom';
 
 import '../../styles/column-menu.css';
@@ -31,9 +56,34 @@ export interface RowAction {
   /** Why a disabled item is off ("Deactivate it first to rename it"): a
    *  muted line under its label that also describes it to a screen reader. */
   hint?: string;
+  /** A choice among several (a menuitemradio): true on the current one,
+   *  which shows a ✓; false on the others. Left out, a plain menuitem. */
+  checked?: boolean;
+  /** Consecutive items with the same group sit under its name (the menu's
+   *  `.pop-title`) in a `role="group"` it names, set apart by rules
+   *  (`.pop-sep`) from the items around them: a small family of commands,
+   *  like a toolbar More menu's Export › MS Project XML, Excel. */
+  group?: string;
+}
+
+/** The menu's items in order, consecutive items of one group gathered. */
+type MenuPart = { group: null; action: RowAction } | { group: string; actions: RowAction[] };
+
+function menuParts(actions: RowAction[]): MenuPart[] {
+  const parts: MenuPart[] = [];
+  for (const a of actions) {
+    const last = parts[parts.length - 1];
+    if (a.group && last?.group === a.group) last.actions.push(a);
+    else parts.push(a.group ? { group: a.group, actions: [a] } : { group: null, action: a });
+  }
+  return parts;
 }
 
 interface MenuPos { top: number | 'auto'; bottom: number | 'auto'; right: number }
+
+/** Where focus goes in a menu just opened from the keyboard: the checked
+ *  item (else the first enabled one), or the last enabled one. */
+type Landing = 'start' | 'last';
 
 const OPEN_UPWARD_THRESHOLD = 200;
 const GAP = 6;
@@ -50,13 +100,27 @@ const GAP = 6;
 const CLOSE_OTHERS_EVENT = 'row-actions-menu:close-others';
 const menuCoordinator = new EventTarget();
 
-export function RowActionsMenu({ label, actions }: {
+export function RowActionsMenu({
+  label, actions, 'aria-describedby': describedBy, icon, triggerClassName, returnFocus = false,
+}: {
   label?: string; actions: RowAction[];
+  /** Passed to the trigger button (a hover tip around the menu names itself here). */
+  'aria-describedby'?: string;
+  /** The trigger shows this icon instead of "label ▾", and is named by `label`. */
+  icon?: ReactNode;
+  /** The trigger's class (`mini-btn` by default). */
+  triggerClassName?: string;
+  /** Choosing an item puts focus back on the trigger. */
+  returnFocus?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<MenuPos | null>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const name = label ?? 'Actions';
   const menuRef = useRef<HTMLDivElement>(null);
+  /** A keyboard open's landing, done once the menu is drawn. */
+  const landing = useRef<Landing | null>(null);
   const instanceId = useRef(Symbol('row-actions-menu')).current;
   const hintPrefix = `row-action-hint-${useId().replace(/:/g, '')}`;
 
@@ -90,11 +154,20 @@ export function RowActionsMenu({ label, actions }: {
     return () => document.removeEventListener('mousedown', onDown, true);
   }, [open]);
 
+  // Escape closes the open menu and is marked handled (ComboBox's
+  // convention), so a host that also listens for Escape — a dialog, a
+  // full-screen view — leaves it alone. Capture phase: it runs before any
+  // host's document listener, whichever was added first.
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      e.preventDefault();
+      setOpen(false);
+      buttonRef.current?.focus();
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
   }, [open]);
 
   // Anchor the portaled menu to the trigger's current position. A
@@ -118,58 +191,159 @@ export function RowActionsMenu({ label, actions }: {
     return () => window.removeEventListener('scroll', onScroll, true);
   }, [open]);
 
+  // a keyboard open lands in the menu once it's drawn
+  useEffect(() => {
+    if (!open || !pos || !landing.current) return;
+    const where = landing.current;
+    landing.current = null;
+    focusItem(where);
+  });
+
+  /** The enabled items, in order (a disabled one takes no focus). */
+  const enabledItems = (): HTMLElement[] => [
+    ...(menuRef.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]') ?? []),
+  ].filter((el) => !(el as HTMLButtonElement).disabled);
+  const focusItem = (where: Landing | 'first') => {
+    const items = enabledItems();
+    const checked = where === 'start' ? items.find((el) => el.getAttribute('aria-checked') === 'true') : undefined;
+    const target = checked ?? (where === 'last' ? items[items.length - 1] : items[0]);
+    target?.focus();
+  };
+  const openMenu = (land: Landing | null) => {
+    // Broadcast BEFORE setState, in the handler body — never inside the
+    // updater: React may run updaters during render, and the broadcast
+    // synchronously setStates the other instances (setState-during-render
+    // warning).
+    menuCoordinator.dispatchEvent(new CustomEvent(CLOSE_OTHERS_EVENT, { detail: instanceId }));
+    landing.current = land;
+    setOpen(true);
+  };
+
+  const onTriggerKey = (e: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    e.preventDefault();
+    const where: Landing = e.key === 'ArrowDown' ? 'start' : 'last';
+    if (open) focusItem(where);
+    else openMenu(where);
+  };
+
+  // Tab or Shift+Tab out of a mouse-opened menu's trigger: focus went on
+  // to something else, so the menu goes. Focus into the menu (the arrows)
+  // keeps it; a blur to nothing (a click on the page, another window) is
+  // the outside-mousedown handler's to judge.
+  const onTriggerBlur = (e: ReactFocusEvent<HTMLButtonElement>) => {
+    const next = e.relatedTarget as Node | null;
+    if (!open || !next || menuRef.current?.contains(next) || triggerRef.current?.contains(next)) return;
+    setOpen(false);
+  };
+
+  const onMenuKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    // a modifier with a key is not the menu's (Shift+Tab still closes)
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === 'Tab') {
+      // close, and let the browser's Tab go on from the trigger
+      setOpen(false);
+      buttonRef.current?.focus();
+      return;
+    }
+    const items = enabledItems();
+    if (!items.length) return;
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    let next: HTMLElement | undefined;
+    if (e.key === 'ArrowDown') next = items[(at + 1) % items.length];
+    else if (e.key === 'ArrowUp') next = items[at <= 0 ? items.length - 1 : at - 1];
+    else if (e.key === 'Home') next = items[0];
+    else if (e.key === 'End') next = items[items.length - 1];
+    else return;
+    e.preventDefault();
+    next?.focus();
+  };
+
   if (actions.length === 0) return null;
-  return (
-    <div className="row-actions" ref={triggerRef} style={{ position: 'relative' }}>
-      <button type="button" className="mini-btn" aria-haspopup="menu"
-              aria-expanded={open}
+  // the enclosing .portal-shell holds the theme tokens (the dark palette);
+  // a menu parked under document.body would paint light in dark mode
+  const host = triggerRef.current?.closest<HTMLElement>('.portal-shell') ?? document.body;
+
+  const item = (a: RowAction) => {
+    const radio = a.checked !== undefined;
+    const text = a.hint ? (
+      <>
+        <span>{a.label}</span>
+        <span className="pop-item-hint" id={`${hintPrefix}-${a.key}`}>{a.hint}</span>
+      </>
+    ) : a.label;
+    return (
+      <button key={a.key} type="button" role={radio ? 'menuitemradio' : 'menuitem'} tabIndex={-1}
+              aria-checked={radio ? a.checked : undefined}
+              className={`pop-item${a.destructive ? ' danger' : ''}${a.hint ? ' has-hint' : ''}`
+                + `${radio ? ' pop-radio' : ''}${a.checked ? ' on' : ''}`}
+              disabled={a.disabled}
+              aria-label={a.hint ? a.label : undefined}
+              aria-describedby={a.hint ? `${hintPrefix}-${a.key}` : undefined}
               onClick={(e) => {
                 e.stopPropagation();
-                // Broadcast BEFORE setState, in the handler body — never
-                // inside the updater: React may run updaters during
-                // render, and the broadcast synchronously setStates the
-                // other instances (setState-during-render warning).
-                const next = !open;
-                if (next) {
-                  menuCoordinator.dispatchEvent(
-                    new CustomEvent(CLOSE_OTHERS_EVENT, { detail: instanceId }),
-                  );
-                }
-                setOpen(next);
+                // Belt and braces: a disabled button fires no click
+                // in a browser, but a programmatic dispatch still
+                // reaches React's root listener.
+                if (a.disabled) return;
+                // picked with Enter or Space (a click with no pointer: detail 0)
+                const fromKeys = e.detail === 0;
+                setOpen(false);
+                a.onSelect();
+                // back to the trigger, unless the pick moved focus somewhere itself
+                const now = document.activeElement;
+                const unmoved = !now || now === document.body || !!menuRef.current?.contains(now);
+                if (returnFocus || (fromKeys && unmoved)) buttonRef.current?.focus();
               }}>
-        {label ?? 'Actions'} ▾
+        {radio ? (
+          <>
+            <span className="pop-mark" aria-hidden="true">✓</span>
+            <span className="pop-item-main">{text}</span>
+          </>
+        ) : text}
+      </button>
+    );
+  };
+
+  const parts = menuParts(actions);
+  const body = parts.flatMap((part, i) => {
+    if (part.group === null) return [item(part.action)];
+    const titleId = `${hintPrefix}-group-${i}`;
+    // a rule before it, unless it opens the menu or a group's rule is already there
+    return [
+      ...(i > 0 && parts[i - 1].group === null ? [<div key={`sep-${i}`} className="pop-sep" role="separator" />] : []),
+      <div key={`group-${i}`} role="group" aria-labelledby={titleId}>
+        <div className="pop-title" id={titleId}>{part.group}</div>
+        {part.actions.map(item)}
+      </div>,
+      ...(i < parts.length - 1 ? [<div key={`sep-${i}-after`} className="pop-sep" role="separator" />] : []),
+    ];
+  });
+  return (
+    <div className="row-actions" ref={triggerRef} style={{ position: 'relative' }}>
+      <button type="button" className={triggerClassName ?? 'mini-btn'} aria-haspopup="menu" ref={buttonRef}
+              aria-expanded={open} aria-describedby={describedBy} aria-label={icon ? name : undefined}
+              onKeyDown={onTriggerKey} onBlur={onTriggerBlur}
+              onClick={(e) => {
+                e.stopPropagation();
+                // Enter or Space (a click with no pointer: detail 0) opens on
+                // an item; a mouse click leaves focus on the trigger
+                if (open) setOpen(false);
+                else openMenu(e.detail === 0 ? 'start' : null);
+              }}>
+        {/* the ▾ marks the menu; the trigger is named by its label alone. One
+            element, so the button's flex gap doesn't come between them */}
+        {icon ?? <span>{name}<span aria-hidden="true"> ▾</span></span>}
       </button>
       {open && pos && createPortal(
-        <div className="pop-menu" role="menu" ref={menuRef}
+        <div className="pop-menu" role="menu" ref={menuRef} onKeyDown={onMenuKey}
              style={{
                position: 'fixed', top: pos.top, bottom: pos.bottom, right: pos.right,
                zIndex: 1200,
              }}>
-          {actions.map((a) => (
-            <button key={a.key} type="button" role="menuitem"
-                    className={`pop-item${a.destructive ? ' danger' : ''}${a.hint ? ' has-hint' : ''}`}
-                    disabled={a.disabled}
-                    aria-label={a.hint ? a.label : undefined}
-                    aria-describedby={a.hint ? `${hintPrefix}-${a.key}` : undefined}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      // Belt and braces: a disabled button fires no click
-                      // in a browser, but a programmatic dispatch still
-                      // reaches React's root listener.
-                      if (a.disabled) return;
-                      setOpen(false);
-                      a.onSelect();
-                    }}>
-              {a.hint ? (
-                <>
-                  <span>{a.label}</span>
-                  <span className="pop-item-hint" id={`${hintPrefix}-${a.key}`}>{a.hint}</span>
-                </>
-              ) : a.label}
-            </button>
-          ))}
+          {body}
         </div>,
-        document.body,
+        host,
       )}
     </div>
   );

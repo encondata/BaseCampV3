@@ -37,6 +37,13 @@ vi.mock('../lib/api', async (importActual) => ({
   ...api,
 }));
 
+// `can` above grants project_plans:view, so the page asks for its plan
+// milestones; none here (InitiativeTimeline.milestones.test.tsx covers them)
+vi.mock('../lib/plans/api', async (importActual) => ({
+  ...(await importActual<typeof import('../lib/plans/api')>()),
+  getTimelineMilestones: vi.fn().mockResolvedValue({ milestones: [], summaries: {} }),
+}));
+
 const { default: InitiativeTimeline } = await import('./InitiativeTimeline');
 
 function initiative(over: Partial<InitiativeItem> = {}): InitiativeItem {
@@ -117,6 +124,21 @@ it('renders a row and bar for a scheduled initiative', async () => {
   expect(bar).not.toBeNull();
   expect(bar?.getAttribute('title')).toContain('Denver DC migration');
   expect(bar?.getAttribute('title')).toContain('Scheduled');
+});
+
+it('labels a row the way the lists do: the name, then the client · site under it', async () => {
+  // directory.css styles `.cell-primary .pn b` (the name) and `.pn span`
+  // (the subtitle, mono and muted, on its own line); outside a
+  // `.cell-primary` the label fell back to a browser-blue link with the
+  // two run together
+  await renderPage([initiative()]);
+  const label = document.querySelector('.itl-row-label') as HTMLElement;
+  const pn = label.querySelector('.cell-primary > a.pn') as HTMLAnchorElement;
+  expect(pn).not.toBeNull();
+  expect(pn.getAttribute('href')).toBe('/initiatives/i1');
+  expect([...pn.children].map((el) => [el.tagName, el.textContent])).toEqual([
+    ['B', 'Denver DC migration'], ['SPAN', 'Acme · DC-East'],
+  ]);
 });
 
 it('lists an unscheduled initiative under the Unscheduled divider', async () => {
@@ -277,6 +299,50 @@ it('paints a calendar span with the initiative color, falling back to status', a
   expect(spans).toHaveLength(2);
   expect(spans[0].style.getPropertyValue('--chip')).toBe('#8b3fb8');
   expect(spans[1].style.getPropertyValue('--chip')).toBe('#2f7d4f');
+});
+
+/* ── The ruler's and the notes' type ─────────────────────────────────── */
+
+/** directory.css gives the golden classes their `--list-fs-*` sizes only
+ *  inside a `.cell` (`.cell .mono`, `.cell .cell-top`, `.cell .cell-sub`);
+ *  outside one they fall back to the browser's 16px. */
+function typeOf(el: Element): string {
+  const golden = ['mono', 'cell-top', 'cell-sub'].filter((c) => el.classList.contains(c));
+  return `${golden.join(' ')}${el.parentElement?.closest('.cell') ? ' in .cell' : ''}`;
+}
+
+it('the ruler and the month band take the lists’ type, like the row labels beside them', async () => {
+  await renderPage([initiative()]);
+  fireEvent.click(within(scaleSwitch()).getByRole('button', { name: '45 days' }));
+  const ticks = [...document.querySelectorAll('.itl-tick')];
+  expect(ticks).toHaveLength(45);
+  expect(new Set(ticks.map(typeOf))).toEqual(new Set(['mono in .cell']));
+  const segs = [...document.querySelectorAll('.itl-band-seg')];
+  expect(segs).toHaveLength(2);
+  expect(new Set(segs.map(typeOf))).toEqual(new Set(['cell-top in .cell']));
+});
+
+it('a track’s note (no dates, or dates outside the range) is a sub line of the lists’ type', async () => {
+  await renderPage([
+    { ...PARENT, scheduled_start: '2026-07-01', scheduled_end: '2026-07-10' },
+    CHILD,
+    initiative({ id: 'i9', name: 'Someday project', scheduled_start: null, scheduled_end: null }),
+  ]);
+  const outside = within(itlRowFor('Denver DC migration')).getByText('Scheduled outside this range');
+  const none = screen.getByText('No dates yet');
+  expect([typeOf(outside), typeOf(none)]).toEqual(['cell-sub in .cell', 'cell-sub in .cell']);
+});
+
+it('a bar’s name and the Unscheduled divider take the lists’ type too', async () => {
+  await renderPage([
+    initiative({ scheduled_start: '2026-09-01', scheduled_end: '2026-09-20' }),
+    initiative({ id: 'i9', name: 'Someday project', scheduled_start: null, scheduled_end: null }),
+  ]);
+  const label = document.querySelector('.itl-bar-label') as HTMLElement;
+  expect(label.textContent).toBe('Denver DC migration');
+  expect(typeOf(label)).toBe('cell-top in .cell');
+  const divider = screen.getByText('Unscheduled');
+  expect(typeOf(divider)).toBe('cell-top in .cell');
 });
 
 /* ── The 45-day scale and the month band above the day ruler ────────── */

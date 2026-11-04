@@ -91,6 +91,24 @@ describe('VirtualRows', () => {
     expect(parents.has(spacer)).toBe(true);
   });
 
+  it('windows against another scroller when told which: a list in a dialog scrolls the dialog', () => {
+    const total = 1000;
+    const rows = Array.from({ length: total }, (_, i) => i);
+    // no .portal-main around it: only the dialog card scrolls
+    const { container } = render(
+      <div className="modal-card">
+        <div className="dir-list">
+          <VirtualRows<number> rows={rows} scroller=".modal-card"
+            renderRow={(r, vp?: VirtualRowProps) => (
+              <div key={r} className="dir-row" {...vp} style={vp?.style} />
+            )} />
+        </div>
+      </div>);
+    const dirRows = container.querySelectorAll('.dir-row');
+    expect(dirRows.length).toBeGreaterThan(0);
+    expect(dirRows.length).toBeLessThan(total);
+  });
+
   describe('onNearEnd', () => {
     // The scroller's bottom is 600 (the beforeEach mock); move the list's.
     function listBottom(px: number) {

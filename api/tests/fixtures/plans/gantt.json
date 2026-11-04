@@ -1,0 +1,2173 @@
+[
+ {
+  "name": "makeScale at hours",
+  "fn": "makeScale",
+  "args": [
+   "2026-11-02T08:00",
+   "2026-11-20T17:00",
+   "hours"
+  ],
+  "expected": {
+   "startMs": 1793599200000,
+   "endMs": 1795208400000,
+   "pxPerMs": 0.000005555555555555556,
+   "width": 8940
+  }
+ },
+ {
+  "name": "makeScale at days",
+  "fn": "makeScale",
+  "args": [
+   "2026-11-02T08:00",
+   "2026-11-20T17:00",
+   "days"
+  ],
+  "expected": {
+   "startMs": 1793404800000,
+   "endMs": 1795564800000,
+   "pxPerMs": 5.555555555555555e-7,
+   "width": 1200
+  }
+ },
+ {
+  "name": "makeScale at weeks",
+  "fn": "makeScale",
+  "args": [
+   "2026-11-02T08:00",
+   "2026-11-20T17:00",
+   "weeks"
+  ],
+  "expected": {
+   "startMs": 1792368000000,
+   "endMs": 1797811200000,
+   "pxPerMs": 2.0833333333333333e-7,
+   "width": 1134
+  }
+ },
+ {
+  "name": "makeScale at months",
+  "fn": "makeScale",
+  "args": [
+   "2026-11-02T08:00",
+   "2026-11-20T17:00",
+   "months"
+  ],
+  "expected": {
+   "startMs": 1788220800000,
+   "endMs": 1806537600000,
+   "pxPerMs": 5.787037037037037e-8,
+   "width": 1060
+  }
+ },
+ {
+  "name": "makeScale at quarters",
+  "fn": "makeScale",
+  "args": [
+   "2026-11-02T08:00",
+   "2026-11-20T17:00",
+   "quarters"
+  ],
+  "expected": {
+   "startMs": 1775001600000,
+   "endMs": 1830297600000,
+   "pxPerMs": 2.0833333333333335e-8,
+   "width": 1152
+  }
+ },
+ {
+  "name": "makeScale of an empty plan",
+  "fn": "makeScale",
+  "args": [
+   "2026-11-02T08:00",
+   null,
+   "days"
+  ],
+  "expected": {
+   "startMs": 1793404800000,
+   "endMs": 1794009600000,
+   "pxPerMs": 5.555555555555555e-7,
+   "width": 336
+  }
+ },
+ {
+  "name": "fit: a day and a half fits at hours",
+  "fn": "fitZoom",
+  "args": [
+   "2026-11-02T08:00",
+   "2026-11-03T12:00",
+   740
+  ],
+  "expected": "hours"
+ },
+ {
+  "name": "fit: three weeks fit at weeks",
+  "fn": "fitZoom",
+  "args": [
+   "2026-11-02T08:00",
+   "2026-11-20T17:00",
+   740
+  ],
+  "expected": "weeks"
+ },
+ {
+  "name": "fit: a year fits at quarters",
+  "fn": "fitZoom",
+  "args": [
+   "2026-11-02T08:00",
+   "2027-11-02T08:00",
+   740
+  ],
+  "expected": "quarters"
+ },
+ {
+  "name": "fit: three years fit nowhere, so quarters",
+  "fn": "fitZoom",
+  "args": [
+   "2026-11-02T08:00",
+   "2029-11-02T08:00",
+   740
+  ],
+  "expected": "quarters"
+ },
+ {
+  "name": "fit: no span is days",
+  "fn": "fitZoom",
+  "args": [
+   "2026-11-02T08:00",
+   "2026-11-02T08:00",
+   740
+  ],
+  "expected": "days"
+ },
+ {
+  "name": "tiers at hours, in a window",
+  "fn": "tiers",
+  "args": [
+   {
+    "startMs": 1793604420000,
+    "endMs": 1793727180000,
+    "pxPerMs": 0.000005555555555555556,
+    "width": 682
+   },
+   "hours",
+   [
+    100,
+    520
+   ]
+  ],
+  "expected": {
+   "top": [
+    {
+     "x": 0,
+     "width": 331,
+     "label": "Mon 11/2"
+    },
+    {
+     "x": 331,
+     "width": 351,
+     "label": "Tue 11/3"
+    }
+   ],
+   "bottom": [
+    {
+     "x": 91,
+     "width": 20,
+     "label": "12"
+    },
+    {
+     "x": 111,
+     "width": 20,
+     "label": "13"
+    },
+    {
+     "x": 131,
+     "width": 20,
+     "label": "14"
+    },
+    {
+     "x": 151,
+     "width": 20,
+     "label": "15"
+    },
+    {
+     "x": 171,
+     "width": 20,
+     "label": "16"
+    },
+    {
+     "x": 191,
+     "width": 20,
+     "label": "17"
+    },
+    {
+     "x": 211,
+     "width": 20,
+     "label": "18"
+    },
+    {
+     "x": 231,
+     "width": 20,
+     "label": "19"
+    },
+    {
+     "x": 251,
+     "width": 20,
+     "label": "20"
+    },
+    {
+     "x": 271,
+     "width": 20,
+     "label": "21"
+    },
+    {
+     "x": 291,
+     "width": 20,
+     "label": "22"
+    },
+    {
+     "x": 311,
+     "width": 20,
+     "label": "23"
+    },
+    {
+     "x": 331,
+     "width": 20,
+     "label": "0"
+    },
+    {
+     "x": 351,
+     "width": 20,
+     "label": "1"
+    },
+    {
+     "x": 371,
+     "width": 20,
+     "label": "2"
+    },
+    {
+     "x": 391,
+     "width": 20,
+     "label": "3"
+    },
+    {
+     "x": 411,
+     "width": 20,
+     "label": "4"
+    },
+    {
+     "x": 431,
+     "width": 20,
+     "label": "5"
+    },
+    {
+     "x": 451,
+     "width": 20,
+     "label": "6"
+    },
+    {
+     "x": 471,
+     "width": 20,
+     "label": "7"
+    },
+    {
+     "x": 491,
+     "width": 20,
+     "label": "8"
+    },
+    {
+     "x": 511,
+     "width": 20,
+     "label": "9"
+    }
+   ]
+  }
+ },
+ {
+  "name": "tiers at days across a month boundary",
+  "fn": "tiers",
+  "args": [
+   {
+    "startMs": 1795573800000,
+    "endMs": 1796423400000,
+    "pxPerMs": 5.555555555555555e-7,
+    "width": 472
+   },
+   "days",
+   null
+  ],
+  "expected": {
+   "top": [
+    {
+     "x": 0,
+     "width": 235,
+     "label": "Nov 23, '26"
+    },
+    {
+     "x": 235,
+     "width": 237,
+     "label": "Nov 30, '26"
+    }
+   ],
+   "bottom": [
+    {
+     "x": 0,
+     "width": 43,
+     "label": "W"
+    },
+    {
+     "x": 43,
+     "width": 48,
+     "label": "T"
+    },
+    {
+     "x": 91,
+     "width": 48,
+     "label": "F"
+    },
+    {
+     "x": 139,
+     "width": 48,
+     "label": "S"
+    },
+    {
+     "x": 187,
+     "width": 48,
+     "label": "S"
+    },
+    {
+     "x": 235,
+     "width": 48,
+     "label": "M"
+    },
+    {
+     "x": 283,
+     "width": 48,
+     "label": "T"
+    },
+    {
+     "x": 331,
+     "width": 48,
+     "label": "W"
+    },
+    {
+     "x": 379,
+     "width": 48,
+     "label": "T"
+    },
+    {
+     "x": 427,
+     "width": 45,
+     "label": "F"
+    }
+   ]
+  }
+ },
+ {
+  "name": "tiers at days, one tile of a long range",
+  "fn": "tiers",
+  "args": [
+   {
+    "startMs": 1793586600000,
+    "endMs": 1825162200000,
+    "pxPerMs": 5.555555555555555e-7,
+    "width": 17542
+   },
+   "days",
+   [
+    740,
+    1480
+   ]
+  ],
+  "expected": {
+   "top": [
+    {
+     "x": 667,
+     "width": 336,
+     "label": "Nov 16, '26"
+    },
+    {
+     "x": 1003,
+     "width": 336,
+     "label": "Nov 23, '26"
+    },
+    {
+     "x": 1339,
+     "width": 336,
+     "label": "Nov 30, '26"
+    }
+   ],
+   "bottom": [
+    {
+     "x": 715,
+     "width": 48,
+     "label": "T"
+    },
+    {
+     "x": 763,
+     "width": 48,
+     "label": "W"
+    },
+    {
+     "x": 811,
+     "width": 48,
+     "label": "T"
+    },
+    {
+     "x": 859,
+     "width": 48,
+     "label": "F"
+    },
+    {
+     "x": 907,
+     "width": 48,
+     "label": "S"
+    },
+    {
+     "x": 955,
+     "width": 48,
+     "label": "S"
+    },
+    {
+     "x": 1003,
+     "width": 48,
+     "label": "M"
+    },
+    {
+     "x": 1051,
+     "width": 48,
+     "label": "T"
+    },
+    {
+     "x": 1099,
+     "width": 48,
+     "label": "W"
+    },
+    {
+     "x": 1147,
+     "width": 48,
+     "label": "T"
+    },
+    {
+     "x": 1195,
+     "width": 48,
+     "label": "F"
+    },
+    {
+     "x": 1243,
+     "width": 48,
+     "label": "S"
+    },
+    {
+     "x": 1291,
+     "width": 48,
+     "label": "S"
+    },
+    {
+     "x": 1339,
+     "width": 48,
+     "label": "M"
+    },
+    {
+     "x": 1387,
+     "width": 48,
+     "label": "T"
+    },
+    {
+     "x": 1435,
+     "width": 48,
+     "label": "W"
+    }
+   ]
+  }
+ },
+ {
+  "name": "tiers at weeks across a year boundary",
+  "fn": "tiers",
+  "args": [
+   {
+    "startMs": 1796836800000,
+    "endMs": 1800517200000,
+    "pxPerMs": 2.0833333333333333e-7,
+    "width": 766.75
+   },
+   "weeks",
+   null
+  ],
+  "expected": {
+   "top": [
+    {
+     "x": 0,
+     "width": 401,
+     "label": "December 2026"
+    },
+    {
+     "x": 401,
+     "width": 365.75,
+     "label": "January 2027"
+    }
+   ],
+   "bottom": [
+    {
+     "x": 0,
+     "width": 77,
+     "label": "12/7"
+    },
+    {
+     "x": 77,
+     "width": 126,
+     "label": "12/14"
+    },
+    {
+     "x": 203,
+     "width": 126,
+     "label": "12/21"
+    },
+    {
+     "x": 329,
+     "width": 126,
+     "label": "12/28"
+    },
+    {
+     "x": 455,
+     "width": 126,
+     "label": "1/4"
+    },
+    {
+     "x": 581,
+     "width": 126,
+     "label": "1/11"
+    },
+    {
+     "x": 707,
+     "width": 59.75,
+     "label": "1/18"
+    }
+   ]
+  }
+ },
+ {
+  "name": "tiers at months across a year boundary",
+  "fn": "tiers",
+  "args": [
+   {
+    "startMs": 1790651520000,
+    "endMs": 1804110480000,
+    "pxPerMs": 5.787037037037037e-8,
+    "width": 778.875
+   },
+   "months",
+   null
+  ],
+  "expected": {
+   "top": [
+    {
+     "x": 0,
+     "width": 9.333333333333334,
+     "label": "Q3 2026"
+    },
+    {
+     "x": 9.333333333333334,
+     "width": 460,
+     "label": "Q4 2026"
+    },
+    {
+     "x": 469.3333333333333,
+     "width": 309.5416666666667,
+     "label": "Q1 2027"
+    }
+   ],
+   "bottom": [
+    {
+     "x": 0,
+     "width": 9.333333333333334,
+     "label": "Sep"
+    },
+    {
+     "x": 9.333333333333334,
+     "width": 155,
+     "label": "Oct"
+    },
+    {
+     "x": 164.33333333333334,
+     "width": 150,
+     "label": "Nov"
+    },
+    {
+     "x": 314.3333333333333,
+     "width": 155,
+     "label": "Dec"
+    },
+    {
+     "x": 469.3333333333333,
+     "width": 155,
+     "label": "Jan"
+    },
+    {
+     "x": 624.3333333333334,
+     "width": 140,
+     "label": "Feb"
+    },
+    {
+     "x": 764.3333333333334,
+     "width": 14.541666666666666,
+     "label": "Mar"
+    }
+   ]
+  }
+ },
+ {
+  "name": "tiers at quarters across a year boundary",
+  "fn": "tiers",
+  "args": [
+   {
+    "startMs": 1777094400000,
+    "endMs": 1817667600000,
+    "pxPerMs": 2.0833333333333335e-8,
+    "width": 845.275
+   },
+   "quarters",
+   null
+  ],
+  "expected": {
+   "top": [
+    {
+     "x": 0,
+     "width": 451.4,
+     "label": "2026"
+    },
+    {
+     "x": 451.4,
+     "width": 393.875,
+     "label": "2027"
+    }
+   ],
+   "bottom": [
+    {
+     "x": 0,
+     "width": 120.2,
+     "label": "Q2"
+    },
+    {
+     "x": 120.2,
+     "width": 165.6,
+     "label": "Q3"
+    },
+    {
+     "x": 285.8,
+     "width": 165.6,
+     "label": "Q4"
+    },
+    {
+     "x": 451.4,
+     "width": 162,
+     "label": "Q1"
+    },
+    {
+     "x": 613.4,
+     "width": 163.8,
+     "label": "Q2"
+    },
+    {
+     "x": 777.2,
+     "width": 68.075,
+     "label": "Q3"
+    }
+   ]
+  }
+ },
+ {
+  "name": "tiers on the portal scale at days",
+  "fn": "tiers",
+  "args": [
+   {
+    "startMs": 1793404800000,
+    "endMs": 1795564800000,
+    "pxPerMs": 5.555555555555555e-7,
+    "width": 1200
+   },
+   "days",
+   [
+    0,
+    400
+   ]
+  ],
+  "expected": {
+   "top": [
+    {
+     "x": 0,
+     "width": 96,
+     "label": "Oct 26, '26"
+    },
+    {
+     "x": 96,
+     "width": 336,
+     "label": "Nov 2, '26"
+    }
+   ],
+   "bottom": [
+    {
+     "x": 0,
+     "width": 48,
+     "label": "S"
+    },
+    {
+     "x": 48,
+     "width": 48,
+     "label": "S"
+    },
+    {
+     "x": 96,
+     "width": 48,
+     "label": "M"
+    },
+    {
+     "x": 144,
+     "width": 48,
+     "label": "T"
+    },
+    {
+     "x": 192,
+     "width": 48,
+     "label": "W"
+    },
+    {
+     "x": 240,
+     "width": 48,
+     "label": "T"
+    },
+    {
+     "x": 288,
+     "width": 48,
+     "label": "F"
+    },
+    {
+     "x": 336,
+     "width": 48,
+     "label": "S"
+    },
+    {
+     "x": 384,
+     "width": 48,
+     "label": "S"
+    }
+   ]
+  }
+ },
+ {
+  "name": "a whole-day bar",
+  "fn": "barOf",
+  "args": [
+   {
+    "startMs": 1793586600000,
+    "endMs": 1795213800000,
+    "pxPerMs": 5.555555555555555e-7,
+    "width": 904
+   },
+   {
+    "start": "2026-11-03T08:00",
+    "finish": "2026-11-03T17:00",
+    "is_milestone": false
+   }
+  ],
+  "expected": {
+   "x": 59,
+   "width": 18
+  }
+ },
+ {
+  "name": "a partial-day bar",
+  "fn": "barOf",
+  "args": [
+   {
+    "startMs": 1793586600000,
+    "endMs": 1795213800000,
+    "pxPerMs": 5.555555555555555e-7,
+    "width": 904
+   },
+   {
+    "start": "2026-11-04T10:30",
+    "finish": "2026-11-04T14:15",
+    "is_milestone": false
+   }
+  ],
+  "expected": {
+   "x": 112,
+   "width": 7.5
+  }
+ },
+ {
+  "name": "a bar over a weekend",
+  "fn": "barOf",
+  "args": [
+   {
+    "startMs": 1793586600000,
+    "endMs": 1795213800000,
+    "pxPerMs": 5.555555555555555e-7,
+    "width": 904
+   },
+   {
+    "start": "2026-11-06T13:00",
+    "finish": "2026-11-10T12:00",
+    "is_milestone": false
+   }
+  ],
+  "expected": {
+   "x": 213,
+   "width": 190
+  }
+ },
+ {
+  "name": "a milestone is a point",
+  "fn": "barOf",
+  "args": [
+   {
+    "startMs": 1793586600000,
+    "endMs": 1795213800000,
+    "pxPerMs": 5.555555555555555e-7,
+    "width": 904
+   },
+   {
+    "start": "2026-11-13T17:00",
+    "finish": "2026-11-13T17:00",
+    "is_milestone": true
+   }
+  ],
+  "expected": {
+   "x": 557,
+   "width": 0
+  }
+ },
+ {
+  "name": "a milestone with only a finish",
+  "fn": "barOf",
+  "args": [
+   {
+    "startMs": 1793586600000,
+    "endMs": 1795213800000,
+    "pxPerMs": 5.555555555555555e-7,
+    "width": 904
+   },
+   {
+    "start": null,
+    "finish": "2026-11-13T17:00",
+    "is_milestone": true
+   }
+  ],
+  "expected": {
+   "x": 557,
+   "width": 0
+  }
+ },
+ {
+  "name": "a task without dates has no bar",
+  "fn": "barOf",
+  "args": [
+   {
+    "startMs": 1793586600000,
+    "endMs": 1795213800000,
+    "pxPerMs": 5.555555555555555e-7,
+    "width": 904
+   },
+   {
+    "start": null,
+    "finish": null,
+    "is_milestone": false
+   }
+  ],
+  "expected": null
+ },
+ {
+  "name": "a finish before the start is width 0",
+  "fn": "barOf",
+  "args": [
+   {
+    "startMs": 1793586600000,
+    "endMs": 1795213800000,
+    "pxPerMs": 5.555555555555555e-7,
+    "width": 904
+   },
+   {
+    "start": "2026-11-05T08:00",
+    "finish": "2026-11-04T08:00",
+    "is_milestone": false
+   }
+  ],
+  "expected": {
+   "x": 155,
+   "width": 0
+  }
+ },
+ {
+  "name": "a partial-day bar at weeks",
+  "fn": "barOf",
+  "args": [
+   {
+    "startMs": 1793553600000,
+    "endMs": 1795246800000,
+    "pxPerMs": 2.0833333333333333e-7,
+    "width": 352.75
+   },
+   {
+    "start": "2026-11-04T10:30",
+    "finish": "2026-11-09T14:15",
+    "is_milestone": false
+   }
+  ],
+  "expected": {
+   "x": 48.875,
+   "width": 92.8125
+  }
+ },
+ {
+  "name": "a bar at quarters",
+  "fn": "barOf",
+  "args": [
+   {
+    "startMs": 1793078400000,
+    "endMs": 1795722000000,
+    "pxPerMs": 2.0833333333333335e-8,
+    "width": 55.075
+   },
+   {
+    "start": "2026-11-04T10:30",
+    "finish": "2026-11-19T14:15",
+    "is_milestone": false
+   }
+  ],
+  "expected": {
+   "x": 14.7875,
+   "width": 27.28125
+  }
+ },
+ {
+  "name": "a baseline bar",
+  "fn": "baselineOf",
+  "args": [
+   {
+    "startMs": 1793586600000,
+    "endMs": 1795213800000,
+    "pxPerMs": 5.555555555555555e-7,
+    "width": 904
+   },
+   {
+    "baseline_start": "2026-11-03T08:00",
+    "baseline_finish": "2026-11-05T17:00"
+   }
+  ],
+  "expected": {
+   "x": 59,
+   "width": 114
+  }
+ },
+ {
+  "name": "no baseline",
+  "fn": "baselineOf",
+  "args": [
+   {
+    "startMs": 1793586600000,
+    "endMs": 1795213800000,
+    "pxPerMs": 5.555555555555555e-7,
+    "width": 904
+   },
+   {
+    "baseline_start": null,
+    "baseline_finish": null
+   }
+  ],
+  "expected": null
+ },
+ {
+  "name": "progress: part done",
+  "fn": "progressWidth",
+  "args": [
+   96,
+   37.5
+  ],
+  "expected": 36
+ },
+ {
+  "name": "progress: over 100 is the bar",
+  "fn": "progressWidth",
+  "args": [
+   48,
+   150
+  ],
+  "expected": 48
+ },
+ {
+  "name": "progress: under 0 is none",
+  "fn": "progressWidth",
+  "args": [
+   48,
+   -5
+  ],
+  "expected": 0
+ },
+ {
+  "name": "FS with room: out, down, in",
+  "fn": "linkPath",
+  "args": [
+   {
+    "x0": 100,
+    "x1": 200,
+    "y": 9
+   },
+   {
+    "x0": 260,
+    "x1": 300,
+    "y": 27
+   },
+   "FS",
+   18,
+   8
+  ],
+  "expected": "M 200 9 H 208 V 27 H 260"
+ },
+ {
+  "name": "FS back to back: a straight drop",
+  "fn": "linkPath",
+  "args": [
+   {
+    "x0": 100,
+    "x1": 200,
+    "y": 9
+   },
+   {
+    "x0": 200,
+    "x1": 300,
+    "y": 27
+   },
+   "FS",
+   18,
+   8
+  ],
+  "expected": "M 200 9 V 27"
+ },
+ {
+  "name": "FS backward: the detour between the rows",
+  "fn": "linkPath",
+  "args": [
+   {
+    "x0": 100,
+    "x1": 200,
+    "y": 9
+   },
+   {
+    "x0": 150,
+    "x1": 300,
+    "y": 45
+   },
+   "FS",
+   18,
+   8
+  ],
+  "expected": "M 200 9 H 208 V 18 H 142 V 45 H 150"
+ },
+ {
+  "name": "FS backward and up",
+  "fn": "linkPath",
+  "args": [
+   {
+    "x0": 100,
+    "x1": 200,
+    "y": 63
+   },
+   {
+    "x0": 120,
+    "x1": 300,
+    "y": 9
+   },
+   "FS",
+   18,
+   8
+  ],
+  "expected": "M 200 63 H 208 V 54 H 112 V 9 H 120"
+ },
+ {
+  "name": "SS: out the start, back past the successor",
+  "fn": "linkPath",
+  "args": [
+   {
+    "x0": 100,
+    "x1": 200,
+    "y": 9
+   },
+   {
+    "x0": 120,
+    "x1": 220,
+    "y": 45
+   },
+   "SS",
+   18,
+   8
+  ],
+  "expected": "M 100 9 H 92 V 45 H 120"
+ },
+ {
+  "name": "SS to an earlier start",
+  "fn": "linkPath",
+  "args": [
+   {
+    "x0": 100,
+    "x1": 200,
+    "y": 9
+   },
+   {
+    "x0": 60,
+    "x1": 220,
+    "y": 27
+   },
+   "SS",
+   18,
+   8
+  ],
+  "expected": "M 100 9 H 52 V 27 H 60"
+ },
+ {
+  "name": "FF: out the end, back into the end",
+  "fn": "linkPath",
+  "args": [
+   {
+    "x0": 100,
+    "x1": 200,
+    "y": 9
+   },
+   {
+    "x0": 150,
+    "x1": 260,
+    "y": 27
+   },
+   "FF",
+   18,
+   8
+  ],
+  "expected": "M 200 9 H 268 V 27 H 260"
+ },
+ {
+  "name": "FF to an earlier end",
+  "fn": "linkPath",
+  "args": [
+   {
+    "x0": 100,
+    "x1": 200,
+    "y": 9
+   },
+   {
+    "x0": 120,
+    "x1": 180,
+    "y": 27
+   },
+   "FF",
+   18,
+   8
+  ],
+  "expected": "M 200 9 H 208 V 27 H 180"
+ },
+ {
+  "name": "SF: out the start into the end",
+  "fn": "linkPath",
+  "args": [
+   {
+    "x0": 300,
+    "x1": 400,
+    "y": 9
+   },
+   {
+    "x0": 100,
+    "x1": 250,
+    "y": 27
+   },
+   "SF",
+   18,
+   8
+  ],
+  "expected": "M 300 9 H 292 V 27 H 250"
+ },
+ {
+  "name": "SF backward: the detour",
+  "fn": "linkPath",
+  "args": [
+   {
+    "x0": 300,
+    "x1": 400,
+    "y": 9
+   },
+   {
+    "x0": 320,
+    "x1": 450,
+    "y": 45
+   },
+   "SF",
+   18,
+   8
+  ],
+  "expected": "M 300 9 H 292 V 18 H 458 V 45 H 450"
+ },
+ {
+  "name": "FS at a coarse zoom stub",
+  "fn": "linkPath",
+  "args": [
+   {
+    "x0": 100,
+    "x1": 104.5,
+    "y": 9
+   },
+   {
+    "x0": 106.2,
+    "x1": 120,
+    "y": 27
+   },
+   "FS",
+   18,
+   4
+  ],
+  "expected": "M 104.5 9 H 106.2 V 27"
+ },
+ {
+  "name": "an FS arrow into a bar",
+  "fn": "linkShape",
+  "args": [
+   {
+    "x0": 100,
+    "x1": 200,
+    "y": 9
+   },
+   {
+    "x0": 260,
+    "x1": 300,
+    "y": 27
+   },
+   "FS",
+   18,
+   8,
+   3.5
+  ],
+  "expected": {
+   "d": "M 200 9 H 208 V 27 H 256",
+   "head": "260,27 255,23.5 255,30.5",
+   "dir": "right",
+   "tip": [
+    260,
+    27
+   ]
+  }
+ },
+ {
+  "name": "an FS arrow dropping onto a bar",
+  "fn": "linkShape",
+  "args": [
+   {
+    "x0": 100,
+    "x1": 200,
+    "y": 9
+   },
+   {
+    "x0": 200,
+    "x1": 300,
+    "y": 27
+   },
+   "FS",
+   18,
+   8,
+   3.5
+  ],
+  "expected": {
+   "d": "M 200 9 V 19.5",
+   "head": "200,23.5 196.5,18.5 203.5,18.5",
+   "dir": "down",
+   "tip": [
+    200,
+    23.5
+   ]
+  }
+ },
+ {
+  "name": "an SS arrow",
+  "fn": "linkShape",
+  "args": [
+   {
+    "x0": 100,
+    "x1": 200,
+    "y": 9
+   },
+   {
+    "x0": 120,
+    "x1": 220,
+    "y": 45
+   },
+   "SS",
+   18,
+   8,
+   3.5
+  ],
+  "expected": {
+   "d": "M 100 9 H 92 V 45 H 116",
+   "head": "120,45 115,41.5 115,48.5",
+   "dir": "right",
+   "tip": [
+    120,
+    45
+   ]
+  }
+ },
+ {
+  "name": "an FF arrow, leftward",
+  "fn": "linkShape",
+  "args": [
+   {
+    "x0": 100,
+    "x1": 200,
+    "y": 9
+   },
+   {
+    "x0": 120,
+    "x1": 180,
+    "y": 27
+   },
+   "FF",
+   18,
+   6,
+   3.5
+  ],
+  "expected": {
+   "d": "M 200 9 H 206 V 27 H 184",
+   "head": "180,27 185,23.5 185,30.5",
+   "dir": "left",
+   "tip": [
+    180,
+    27
+   ]
+  }
+ },
+ {
+  "name": "a detoured arrow, up",
+  "fn": "linkShape",
+  "args": [
+   {
+    "x0": 100,
+    "x1": 200,
+    "y": 63
+   },
+   {
+    "x0": 120,
+    "x1": 300,
+    "y": 9
+   },
+   "FS",
+   18,
+   8,
+   3.5
+  ],
+  "expected": {
+   "d": "M 200 63 H 208 V 54 H 112 V 9 H 116",
+   "head": "120,9 115,5.5 115,12.5",
+   "dir": "right",
+   "tip": [
+    120,
+    9
+   ]
+  }
+ },
+ {
+  "name": "an FS arrow into a milestone’s tip",
+  "fn": "linkShape",
+  "args": [
+   {
+    "x0": 100,
+    "x1": 200,
+    "y": 9
+   },
+   {
+    "x0": 254,
+    "x1": 266,
+    "y": 27
+   },
+   "FS",
+   18,
+   8,
+   0
+  ],
+  "expected": {
+   "d": "M 200 9 H 208 V 27 H 250",
+   "head": "254,27 249,23.5 249,30.5",
+   "dir": "right",
+   "tip": [
+    254,
+    27
+   ]
+  }
+ },
+ {
+  "name": "an FF arrow into a milestone’s tip",
+  "fn": "linkShape",
+  "args": [
+   {
+    "x0": 100,
+    "x1": 200,
+    "y": 9
+   },
+   {
+    "x0": 144,
+    "x1": 156,
+    "y": 27
+   },
+   "FF",
+   18,
+   8,
+   0
+  ],
+  "expected": {
+   "d": "M 200 9 H 208 V 27 H 160",
+   "head": "156,27 161,23.5 161,30.5",
+   "dir": "left",
+   "tip": [
+    156,
+    27
+   ]
+  }
+ },
+ {
+  "name": "an FS arrow dropping onto a milestone",
+  "fn": "linkShape",
+  "args": [
+   {
+    "x0": 100,
+    "x1": 200,
+    "y": 9
+   },
+   {
+    "x0": 200,
+    "x1": 200,
+    "y": 27
+   },
+   "FS",
+   18,
+   8,
+   6
+  ],
+  "expected": {
+   "d": "M 200 9 V 17",
+   "head": "200,21 196.5,16 203.5,16",
+   "dir": "down",
+   "tip": [
+    200,
+    21
+   ]
+  }
+ },
+ {
+  "name": "link stub at hours",
+  "fn": "linkStub",
+  "args": [
+   "hours"
+  ],
+  "expected": 8
+ },
+ {
+  "name": "link stub at days",
+  "fn": "linkStub",
+  "args": [
+   "days"
+  ],
+  "expected": 8
+ },
+ {
+  "name": "link stub at weeks",
+  "fn": "linkStub",
+  "args": [
+   "weeks"
+  ],
+  "expected": 6
+ },
+ {
+  "name": "link stub at months",
+  "fn": "linkStub",
+  "args": [
+   "months"
+  ],
+  "expected": 4
+ },
+ {
+  "name": "link stub at quarters",
+  "fn": "linkStub",
+  "args": [
+   "quarters"
+  ],
+  "expected": 4
+ },
+ {
+  "name": "bar box, no baseline",
+  "fn": "barBox",
+  "args": [
+   18,
+   false
+  ],
+  "expected": {
+   "top": 5,
+   "height": 7,
+   "mid": 8.5,
+   "summaryHeight": 4,
+   "baseTop": 14,
+   "baseHeight": 3
+  }
+ },
+ {
+  "name": "bar box with the baseline",
+  "fn": "barBox",
+  "args": [
+   18,
+   true
+  ],
+  "expected": {
+   "top": 3,
+   "height": 7,
+   "mid": 6.5,
+   "summaryHeight": 4,
+   "baseTop": 12,
+   "baseHeight": 3
+  }
+ },
+ {
+  "name": "bar box in a sheet row",
+  "fn": "barBox",
+  "args": [
+   30,
+   true
+  ],
+  "expected": {
+   "top": 6,
+   "height": 12,
+   "mid": 12,
+   "summaryHeight": 6,
+   "baseTop": 20,
+   "baseHeight": 4
+  }
+ },
+ {
+  "name": "nonworking days: weekends, a holiday, a worked Saturday",
+  "fn": "nonworkingBands",
+  "args": [
+   {
+    "week": {
+     "mon": [
+      [
+       "08:00",
+       "12:00"
+      ],
+      [
+       "13:00",
+       "17:00"
+      ]
+     ],
+     "tue": [
+      [
+       "08:00",
+       "12:00"
+      ],
+      [
+       "13:00",
+       "17:00"
+      ]
+     ],
+     "wed": [
+      [
+       "08:00",
+       "12:00"
+      ],
+      [
+       "13:00",
+       "17:00"
+      ]
+     ],
+     "thu": [
+      [
+       "08:00",
+       "12:00"
+      ],
+      [
+       "13:00",
+       "17:00"
+      ]
+     ],
+     "fri": [
+      [
+       "08:00",
+       "12:00"
+      ],
+      [
+       "13:00",
+       "17:00"
+      ]
+     ],
+     "sat": [],
+     "sun": []
+    },
+    "exceptions": [
+     {
+      "date": "2026-11-26",
+      "name": "Thanksgiving",
+      "hours": []
+     },
+     {
+      "date": "2026-11-21",
+      "name": "Cutover Saturday",
+      "hours": [
+       [
+        "06:00",
+        "22:00"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "startMs": 1794796200000,
+    "endMs": 1796423400000,
+    "pxPerMs": 5.555555555555555e-7,
+    "width": 904
+   }
+  ],
+  "expected": [
+   {
+    "x": 283,
+    "width": 48
+   },
+   {
+    "x": 475,
+    "width": 48
+   },
+   {
+    "x": 571,
+    "width": 96
+   }
+  ]
+ },
+ {
+  "name": "nonworking days at hours",
+  "fn": "nonworkingBands",
+  "args": [
+   {
+    "week": {
+     "mon": [
+      [
+       "08:00",
+       "12:00"
+      ],
+      [
+       "13:00",
+       "17:00"
+      ]
+     ],
+     "tue": [
+      [
+       "08:00",
+       "12:00"
+      ],
+      [
+       "13:00",
+       "17:00"
+      ]
+     ],
+     "wed": [
+      [
+       "08:00",
+       "12:00"
+      ],
+      [
+       "13:00",
+       "17:00"
+      ]
+     ],
+     "thu": [
+      [
+       "08:00",
+       "12:00"
+      ],
+      [
+       "13:00",
+       "17:00"
+      ]
+     ],
+     "fri": [
+      [
+       "08:00",
+       "12:00"
+      ],
+      [
+       "13:00",
+       "17:00"
+      ]
+     ],
+     "sat": [],
+     "sun": []
+    },
+    "exceptions": [
+     {
+      "date": "2026-11-26",
+      "name": "Thanksgiving",
+      "hours": []
+     },
+     {
+      "date": "2026-11-21",
+      "name": "Cutover Saturday",
+      "hours": [
+       [
+        "06:00",
+        "22:00"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "startMs": 1795764420000,
+    "endMs": 1796059980000,
+    "pxPerMs": 0.000005555555555555556,
+    "width": 1642
+   }
+  ],
+  "expected": [
+   {
+    "x": 331,
+    "width": 960
+   }
+  ]
+ },
+ {
+  "name": "print scale at hours",
+  "fn": "printScale",
+  "args": [
+   "2026-11-02T08:00",
+   "2026-11-20T17:00",
+   "hours"
+  ],
+  "expected": {
+   "startMs": 1793604420000,
+   "endMs": 1795195980000,
+   "pxPerMs": 0.000005555555555555556,
+   "width": 8842
+  }
+ },
+ {
+  "name": "print scale at days",
+  "fn": "printScale",
+  "args": [
+   "2026-11-02T08:00",
+   "2026-11-20T17:00",
+   "days"
+  ],
+  "expected": {
+   "startMs": 1793586600000,
+   "endMs": 1795213800000,
+   "pxPerMs": 5.555555555555555e-7,
+   "width": 904
+  }
+ },
+ {
+  "name": "print scale at weeks",
+  "fn": "printScale",
+  "args": [
+   "2026-11-02T08:00",
+   "2026-11-20T17:00",
+   "weeks"
+  ],
+  "expected": {
+   "startMs": 1793553600000,
+   "endMs": 1795246800000,
+   "pxPerMs": 2.0833333333333333e-7,
+   "width": 352.75
+  }
+ },
+ {
+  "name": "print scale at months",
+  "fn": "printScale",
+  "args": [
+   "2026-11-02T08:00",
+   "2026-11-20T17:00",
+   "months"
+  ],
+  "expected": {
+   "startMs": 1793416320000,
+   "endMs": 1795384080000,
+   "pxPerMs": 5.787037037037037e-8,
+   "width": 113.875
+  }
+ },
+ {
+  "name": "print scale at quarters",
+  "fn": "printScale",
+  "args": [
+   "2026-11-02T08:00",
+   "2026-11-20T17:00",
+   "quarters"
+  ],
+  "expected": {
+   "startMs": 1793078400000,
+   "endMs": 1795722000000,
+   "pxPerMs": 2.0833333333333335e-8,
+   "width": 55.075
+  }
+ },
+ {
+  "name": "print scale of no span",
+  "fn": "printScale",
+  "args": [
+   "2026-11-02T08:00",
+   "2026-11-02T08:00",
+   "days"
+  ],
+  "expected": {
+   "startMs": 1793586600000,
+   "endMs": 1793626200000,
+   "pxPerMs": 5.555555555555555e-7,
+   "width": 22
+  }
+ },
+ {
+  "name": "print fit on letter",
+  "fn": "printFit",
+  "args": [
+   "2026-11-02T08:00",
+   "2027-01-29T17:00",
+   "letter"
+  ],
+  "expected": "months"
+ },
+ {
+  "name": "print fit on A4",
+  "fn": "printFit",
+  "args": [
+   "2026-11-02T08:00",
+   "2026-11-16T17:00",
+   "a4"
+  ],
+  "expected": "days"
+ },
+ {
+  "name": "print fit, a short range",
+  "fn": "printFit",
+  "args": [
+   "2026-11-02T08:00",
+   "2026-11-03T12:00",
+   "letter"
+  ],
+  "expected": "hours"
+ },
+ {
+  "name": "plan span: a task before the start widens it",
+  "fn": "planSpan",
+  "args": [
+   "2026-11-02T08:00",
+   "2026-11-20T17:00",
+   [
+    {
+     "start": "2026-11-02T08:00",
+     "finish": "2026-11-03T17:00"
+    },
+    {
+     "start": "2026-10-28T08:00",
+     "finish": "2026-10-28T12:00"
+    },
+    {
+     "start": null,
+     "finish": null
+    }
+   ]
+  ],
+  "expected": {
+   "start": "2026-10-28T08:00",
+   "finish": "2026-11-20T17:00"
+  }
+ },
+ {
+  "name": "plan span: an empty plan",
+  "fn": "planSpan",
+  "args": [
+   "2026-11-02T08:00",
+   null,
+   []
+  ],
+  "expected": {
+   "start": "2026-11-02T08:00",
+   "finish": "2026-11-02T08:00"
+  }
+ },
+ {
+  "name": "print range: the whole project",
+  "fn": "printRange",
+  "args": [
+   {
+    "start": "2026-11-02T08:00",
+    "finish": "2026-11-20T17:00"
+   },
+   null,
+   null
+  ],
+  "expected": {
+   "start": "2026-11-02T08:00",
+   "finish": "2026-11-20T17:00"
+  }
+ },
+ {
+  "name": "print range: custom days inside",
+  "fn": "printRange",
+  "args": [
+   {
+    "start": "2026-11-02T08:00",
+    "finish": "2026-11-20T17:00"
+   },
+   "2026-11-09",
+   "2026-11-12"
+  ],
+  "expected": {
+   "start": "2026-11-09T00:00",
+   "finish": "2026-11-13T00:00"
+  }
+ },
+ {
+  "name": "print range: custom days cut to the plan",
+  "fn": "printRange",
+  "args": [
+   {
+    "start": "2026-11-02T08:00",
+    "finish": "2026-11-20T17:00"
+   },
+   "2026-10-01",
+   "2027-12-31"
+  ],
+  "expected": {
+   "start": "2026-11-02T08:00",
+   "finish": "2026-11-20T17:00"
+  }
+ },
+ {
+  "name": "print range: cut at the end only",
+  "fn": "printRange",
+  "args": [
+   {
+    "start": "2026-11-02T08:00",
+    "finish": "2026-11-20T17:00"
+   },
+   "2026-11-15",
+   "2027-01-31"
+  ],
+  "expected": {
+   "start": "2026-11-15T00:00",
+   "finish": "2026-11-20T17:00"
+  }
+ },
+ {
+  "name": "print range: wholly after the plan",
+  "fn": "printRange",
+  "args": [
+   {
+    "start": "2026-11-02T08:00",
+    "finish": "2026-11-20T17:00"
+   },
+   "2026-12-01",
+   "2026-12-31"
+  ],
+  "expected": null
+ },
+ {
+  "name": "print range: wholly before the plan",
+  "fn": "printRange",
+  "args": [
+   {
+    "start": "2026-11-02T08:00",
+    "finish": "2026-11-20T17:00"
+   },
+   "2026-10-01",
+   "2026-11-01"
+  ],
+  "expected": null
+ },
+ {
+  "name": "ten years exactly is not too long",
+  "fn": "spanTooLong",
+  "args": [
+   "2026-01-01T00:00",
+   "2036-01-01T00:00"
+  ],
+  "expected": false
+ },
+ {
+  "name": "a minute past ten years is too long",
+  "fn": "spanTooLong",
+  "args": [
+   "2026-01-01T00:00",
+   "2036-01-01T00:01"
+  ],
+  "expected": true
+ },
+ {
+  "name": "ten years from Feb 29 ends on Mar 1",
+  "fn": "spanTooLong",
+  "args": [
+   "2028-02-29T08:00",
+   "2038-03-01T08:00"
+  ],
+  "expected": false
+ },
+ {
+  "name": "ten years from Feb 29, a day over",
+  "fn": "spanTooLong",
+  "args": [
+   "2028-02-29T08:00",
+   "2038-03-02T08:00"
+  ],
+  "expected": true
+ },
+ {
+  "name": "page layout on letter",
+  "fn": "pageLayout",
+  "args": [
+   "letter"
+  ],
+  "expected": {
+   "content": {
+    "width": 980,
+    "height": 702
+   },
+   "chart": 740,
+   "ganttRows": 35,
+   "tableRows": {
+    "first": 25,
+    "rest": 33
+   }
+  }
+ },
+ {
+  "name": "page layout on a4",
+  "fn": "pageLayout",
+  "args": [
+   "a4"
+  ],
+  "expected": {
+   "content": {
+    "width": 1046,
+    "height": 679
+   },
+   "chart": 806,
+   "ganttRows": 34,
+   "tableRows": {
+    "first": 24,
+    "rest": 32
+   }
+  }
+ },
+ {
+  "name": "pages: 40 tasks fit to letter",
+  "fn": "estimatePages",
+  "args": [
+   40,
+   "2026-11-02T08:00",
+   "2027-01-29T17:00",
+   "fit",
+   "letter"
+  ],
+  "expected": {
+   "zoom": "months",
+   "table": 2,
+   "gantt": 2,
+   "across": 1,
+   "down": 2,
+   "total": 4
+  }
+ },
+ {
+  "name": "pages: 40 tasks at days on letter",
+  "fn": "estimatePages",
+  "args": [
+   40,
+   "2026-11-02T08:00",
+   "2027-01-29T17:00",
+   "days",
+   "letter"
+  ],
+  "expected": {
+   "zoom": "days",
+   "table": 2,
+   "gantt": 12,
+   "across": 6,
+   "down": 2,
+   "total": 14
+  }
+ },
+ {
+  "name": "pages: 25 tasks at days on A4",
+  "fn": "estimatePages",
+  "args": [
+   25,
+   "2026-11-02T08:00",
+   "2026-12-15T17:00",
+   "days",
+   "a4"
+  ],
+  "expected": {
+   "zoom": "days",
+   "table": 2,
+   "gantt": 3,
+   "across": 3,
+   "down": 1,
+   "total": 5
+  }
+ },
+ {
+  "name": "pages: a year at days",
+  "fn": "estimatePages",
+  "args": [
+   12,
+   "2026-11-01T00:00",
+   "2027-11-01T00:00",
+   "days",
+   "letter"
+  ],
+  "expected": {
+   "zoom": "days",
+   "table": 1,
+   "gantt": 24,
+   "across": 24,
+   "down": 1,
+   "total": 25
+  }
+ },
+ {
+  "name": "pages: 1,500 tasks by months",
+  "fn": "estimatePages",
+  "args": [
+   1500,
+   "2026-11-02T08:00",
+   "2028-05-01T17:00",
+   "months",
+   "a4"
+  ],
+  "expected": {
+   "zoom": "months",
+   "table": 48,
+   "gantt": 180,
+   "across": 4,
+   "down": 45,
+   "total": 228
+  }
+ },
+ {
+  "name": "pages: no tasks",
+  "fn": "estimatePages",
+  "args": [
+   0,
+   "2026-11-02T08:00",
+   "2026-11-02T08:00",
+   "fit",
+   "letter"
+  ],
+  "expected": {
+   "zoom": "days",
+   "table": 1,
+   "gantt": 1,
+   "across": 1,
+   "down": 1,
+   "total": 2
+  }
+ }
+]

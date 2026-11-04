@@ -169,6 +169,52 @@ async def test_run_forever_runs_the_learning_sweep(db, monkeypatch):
     assert len(calls) == 1   # once on the first loop; the next is a minute away
 
 
+async def test_run_forever_runs_the_plan_reminder_sweep(db, monkeypatch, caplog):
+    from serversherpa.notifications import worker as worker_mod
+
+    calls = []
+
+    async def fake_plans(maker):
+        calls.append(maker)
+        return {"reminders": 3, "digests": 1, "errors": 0}
+
+    monkeypatch.setattr(worker_mod, "run_plan_reminders_once", fake_plans)
+    assert worker_mod.PLANS_INTERVAL_SECONDS == 60
+    polls = _count_polls(monkeypatch)
+    caplog.set_level(logging.INFO, logger="serversherpa.notifications.worker")
+    task = asyncio.create_task(run_forever(poll_seconds=0.05))
+    try:
+        await _until(lambda: calls)          # the first loop runs it
+        await _more_polls(polls)             # and the polls after it don't
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert len(calls) == 1   # once on the first loop; the next is a minute away
+    assert "plans: 3 reminder(s), 1 overdue digest(s)" in caplog.text
+
+
+async def test_plan_sweep_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
+    from serversherpa.notifications import worker as worker_mod
+
+    calls = []
+
+    async def boom(maker):
+        calls.append(1)
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(worker_mod, "run_plan_reminders_once", boom)
+    monkeypatch.setattr(worker_mod, "PLANS_INTERVAL_SECONDS", 0)
+    caplog.set_level(logging.WARNING, logger="serversherpa.notifications.worker")
+    task = asyncio.create_task(run_forever(poll_seconds=0.05))
+    try:
+        await _until(lambda: len(calls) >= 2)
+        assert not task.done()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert caplog.text.count("could not run the plan reminder sweep") == 1   # once per outage
+
+
 async def test_run_forever_runs_the_summary_sweep(db, monkeypatch, caplog):
     from serversherpa.notifications import worker as worker_mod
 

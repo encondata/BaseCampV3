@@ -17,6 +17,7 @@ def test_categories_order_and_labels():
         ("wiki", "Wiki"),
         ("learning", "Learning"),
         ("initiatives", "Initiatives"),
+        ("plans", "Project plans"),
         ("trucks", "Trucks"),
         ("devices", "Devices"),
         ("status_rules", "Status rules"),
@@ -24,7 +25,7 @@ def test_categories_order_and_labels():
         ("security", "Account security"),
     ]
     assert CATEGORY_KEYS == ("approvals", "reports", "wiki", "learning", "initiatives",
-                             "trucks", "devices", "status_rules", "bulk_actions", "security")
+                             "plans", "trucks", "devices", "status_rules", "bulk_actions", "security")
 
 
 def test_every_kind_has_a_known_category_and_a_label():
@@ -45,22 +46,34 @@ def test_kind_table_matches_the_spec():
         "wiki_export_failed": "wiki",
         "learning_complete": "learning", "learning_overdue": "learning",
         "learning_quiz_locked": "learning",
-        "initiative_status_changed": "initiatives", "truck_status_changed": "trucks",
+        "initiative_status_changed": "initiatives",
+        "plan_task_assigned": "plans", "plan_task_due": "plans",
+        "plan_task_overdue": "plans", "plan_overdue_digest": "plans",
+        "truck_status_changed": "trucks",
         "device_offline": "devices", "status_rule_matched": "status_rules",
         "bulk_action_finished": "bulk_actions", "bulk_action_failed": "bulk_actions",
         "password_expiring": "security", "totp_enrolled": "security",
     }
     assert {k: v.category for k, v in KINDS.items()} == expected
-    # registry order is the order the portal shows: the new kinds follow learning
-    assert list(KINDS)[-8:] == ["initiative_status_changed", "truck_status_changed",
-                                "device_offline", "status_rule_matched", "bulk_action_finished",
-                                "bulk_action_failed", "password_expiring", "totp_enrolled"]
+    # registry order is the order the portal shows: the new kinds follow learning, the plan
+    # kinds beside the initiative's own
+    assert list(KINDS)[-12:] == ["initiative_status_changed", "plan_task_assigned",
+                                 "plan_task_due", "plan_task_overdue", "plan_overdue_digest",
+                                 "truck_status_changed", "device_offline", "status_rule_matched",
+                                 "bulk_action_finished", "bulk_action_failed",
+                                 "password_expiring", "totp_enrolled"]
     assert (KINDS["initiative_status_changed"].label, KINDS["truck_status_changed"].label,
             KINDS["device_offline"].label) == (
         "Initiative status changed", "Truck status changed", "Device offline")
     assert (KINDS["bulk_action_finished"].label, KINDS["bulk_action_failed"].label) == (
         "Bulk action finished", "Bulk action failed")
     assert KINDS["status_rule_matched"].label == "Status rule matched"
+    assert {k: v.label for k, v in KINDS.items() if v.category == "plans"} == {
+        "plan_task_assigned": "Assigned to a plan task",
+        "plan_task_due": "Plan task due",
+        "plan_task_overdue": "Plan task overdue",
+        "plan_overdue_digest": "Overdue plan tasks",
+    }
 
 
 def test_flags_match_the_spec():
@@ -75,6 +88,11 @@ def test_flags_match_the_spec():
         "bulk_action_failed": (True, True, False),
         "password_reset_request": (False, False, False),
         "learning_quiz_locked": (False, False, False),
+        # plans/notices.py emails the person directly through the mail outbox
+        "plan_task_assigned": (False, False, False),
+        "plan_task_due": (False, False, False),
+        "plan_task_overdue": (False, False, False),
+        "plan_overdue_digest": (False, False, False),
         "password_expiring": (False, True, True),
         "totp_enrolled": (True, True, True),
     }
@@ -133,12 +151,12 @@ def test_no_two_kinds_share_a_kind_info():
 NOTIFY_CALL = re.compile(r"""\bnotify\(\s*[\w.]+\s*,\s*[\w.\[\]]+\s*,\s*["']([a-z_]+)["']""")
 # wiki/notify.py and wiki/worker.py: kind="wiki_x" keyword arguments and wiki/worker.py `kind, event = "wiki_x", ...`
 WIKI_KIND = re.compile(r"""\bkind\s*=\s*["']([a-z_]+)["']|\bkind\s*,\s*event\s*=\s*["']([a-z_]+)["']""")
-KIND_CONST = re.compile(r"""^KIND\s*=\s*["']([a-z_]+)["']""", re.MULTILINE)
+KIND_CONST = re.compile(r"""^KIND(?:_[A-Z]+)?\s*=\s*["']([a-z_]+)["']""", re.MULTILINE)
 # announce(db, "literal", ...) — the kind is the second positional argument
 ANNOUNCE_CALL = re.compile(r"""\bannounce\(\s*[\w.]+\s*,\s*["']([a-z_]+)["']""")
-# the modules that name their kind in a module-level KIND constant
+# the modules that name their kinds in module-level KIND / KIND_<X> constants
 KIND_CONST_FILES = ("notifications/reset_requests.py", "notifications/password_reminders.py",
-                    "learning/scheduler.py")
+                    "learning/scheduler.py", "plans/reminders.py", "plans/notices.py")
 
 
 def _scan() -> set[str]:

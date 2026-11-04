@@ -7,7 +7,8 @@
  * (keeps browser find-in-page for small lists). Dynamic row measurement
  * (ResizeObserver, via virtualizer.measureElement) tracks the row-
  * expansion animation. The scroll container is .portal-main (lists
- * scroll inside it, not the window).
+ * scroll inside it, not the window), or the nearest ancestor `scroller`
+ * names: a list in a dialog scrolls with the dialog card (`.modal-card`).
  */
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
@@ -26,7 +27,7 @@ export interface VirtualRowProps {
   'data-index': number;
 }
 
-export function VirtualRows<T>({ rows, renderRow, onNearEnd }: {
+export function VirtualRows<T>({ rows, renderRow, onNearEnd, scroller: scrollerSel = '.portal-main' }: {
   rows: T[];
   renderRow: (row: T, vp?: VirtualRowProps) => ReactNode;
   /** Server-paged lists: called when the scroller is within a few rows of the
@@ -34,6 +35,9 @@ export function VirtualRows<T>({ rows, renderRow, onNearEnd }: {
    *  changes, so a short page keeps loading until it fills the screen). May
    *  be called repeatedly — the callee must ignore calls while it is busy. */
   onNearEnd?: () => void;
+  /** The scroll box's selector, matched against the list's ancestors
+   *  (`.portal-main` by default). */
+  scroller?: string;
 }) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [margin, setMargin] = useState(0);
@@ -46,17 +50,17 @@ export function VirtualRows<T>({ rows, renderRow, onNearEnd }: {
   // virtualizer's overscan instead of an exact remeasure.
   useLayoutEffect(() => {
     const el = wrapRef.current;
-    const scroller = el?.closest('.portal-main');
+    const scroller = el?.closest(scrollerSel);
     if (el && scroller) {
       setMargin(el.getBoundingClientRect().top
         - scroller.getBoundingClientRect().top + scroller.scrollTop);
     }
-  }, [virtual, rows.length]);
+  }, [virtual, rows.length, scrollerSel]);
 
   const virtualizer = useVirtualizer<HTMLElement, HTMLElement>({
     count: virtual ? rows.length : 0,
     getScrollElement: () =>
-      (wrapRef.current?.closest('.portal-main') as HTMLElement | null) ?? null,
+      (wrapRef.current?.closest(scrollerSel) as HTMLElement | null) ?? null,
     estimateSize: () => ESTIMATED_ROW_PX,
     overscan: 12,
     scrollMargin: margin,
@@ -68,7 +72,7 @@ export function VirtualRows<T>({ rows, renderRow, onNearEnd }: {
   useEffect(() => {
     if (!watchEnd) return;
     const wrap = wrapRef.current;
-    const scroller = wrap?.closest('.portal-main');
+    const scroller = wrap?.closest(scrollerSel);
     if (!wrap || !scroller) return;
     const check = () => {
       const below = wrap.getBoundingClientRect().bottom
@@ -78,7 +82,7 @@ export function VirtualRows<T>({ rows, renderRow, onNearEnd }: {
     check();
     scroller.addEventListener('scroll', check, { passive: true });
     return () => scroller.removeEventListener('scroll', check);
-  }, [watchEnd, virtual, rows.length]);
+  }, [watchEnd, virtual, rows.length, scrollerSel]);
 
   if (!virtual) {
     return <div ref={wrapRef}>{rows.map((r) => renderRow(r))}</div>;

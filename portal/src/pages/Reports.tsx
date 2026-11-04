@@ -51,7 +51,7 @@ const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c)
 
 const TYPE_LABELS: Record<string, string> = {
   move_report: 'Move Report', site_move_survey: 'Site & Move Survey',
-  timesheet: 'Timesheet', learning_compliance: 'Learning compliance',
+  timesheet: 'Timesheet', learning_compliance: 'Learning compliance', project_plan: 'Project plan',
 };
 const TOTAL_SECTIONS = 8;
 
@@ -77,6 +77,8 @@ export default function Reports() {
   const canViewTime = can('time', 'view');
   // A Learning compliance run reads sign-offs: it needs learning access on top of reports:add.
   const canViewLearning = useLearningAccess()('view');
+  // A Project plan run is the plan's data: it needs project_plans:view on top of reports:add.
+  const canViewPlans = can('project_plans', 'view');
   const canChange = can('reports', 'change');
   const canDelete = can('reports', 'delete');
 
@@ -254,6 +256,7 @@ export default function Reports() {
                     <RowActionsMenu actions={[
                       ...(canAdd && !(d.report_type === 'timesheet' && !canViewTime)
                           && !(d.report_type === 'learning_compliance' && !canViewLearning)
+                          && !(d.report_type === 'project_plan' && !canViewPlans)
                         ? [{ key: 'generate', label: 'Generate', onSelect: () => setGenerating(d) }] : []),
                       ...(canChange ? [{ key: 'edit', label: 'Edit', onSelect: () => setEditing(d) }] : []),
                       ...(canAdd ? [{ key: 'clone', label: 'Clone', onSelect: () => void clone(d) }] : []),

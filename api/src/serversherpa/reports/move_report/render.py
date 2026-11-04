@@ -115,13 +115,18 @@ def render_html(ctx: ReportContext) -> str:
     return _ENV.get_template("move_report.html").render(ctx=ctx)
 
 
-def _pdf(html: str) -> bytes:
+def _pdf(html: str, url_fetcher=None) -> bytes:
     from weasyprint import HTML            # slow import; keep it off module load
-    return HTML(string=html).write_pdf()
+    # only when given: every other report calls WeasyPrint exactly as before
+    extra = {"url_fetcher": url_fetcher} if url_fetcher is not None else {}
+    return HTML(string=html, **extra).write_pdf()
 
 
-async def render_pdf_async(html: str) -> bytes:
-    return await asyncio.to_thread(_pdf, html)
+async def render_pdf_async(html: str, *, url_fetcher=None) -> bytes:
+    """`url_fetcher` (a weasyprint.urls.URLFetcher, WeasyPrint 68+) replaces
+    WeasyPrint's own, e.g. to refuse everything but data: URIs; left out,
+    WeasyPrint is called without one."""
+    return await asyncio.to_thread(_pdf, html, url_fetcher)
 
 
 def render_pdf(html: str) -> bytes:

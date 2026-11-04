@@ -3,10 +3,11 @@
 outbox (mail/delivery.py); once an hour it runs the password-expiry
 reminder sweep (notifications/password_reminders.py); every minute the
 learning sweep (learning/scheduler.py: scheduled invites, reminders,
-overdue notices), the device check (notifications/device_check.py:
-covered devices that stop checking in are announced, except for the
-longest threshold after the worker starts and after read-only mode),
-the event sweep
+overdue notices), the project plan sweep (plans/reminders.py: due-date
+reminders and the owner's overdue digest), the device check
+(notifications/device_check.py: covered devices that stop checking in
+are announced, except for the longest threshold after the worker starts
+and after read-only mode), the event sweep
 (notifications/event_sweep.py: announced events become notifications for
 the people they reach) and then the summary sweep
 (notifications/summary.py: email held for a person's quiet hours or day
@@ -34,12 +35,14 @@ from serversherpa.notifications.device_check import keep_quiet, run_device_check
 from serversherpa.notifications.event_sweep import run_events_once
 from serversherpa.notifications.password_reminders import run_reminders_once
 from serversherpa.notifications.summary import run_summaries_once
+from serversherpa.plans.reminders import run_plan_reminders_once
 from serversherpa.security import attestation_status
 
 logger = logging.getLogger("serversherpa.notifications.worker")
 IDLE_LOG_SECONDS = 900   # one INFO status line every 15 min
 REMINDER_INTERVAL_SECONDS = 3600
 LEARNING_INTERVAL_SECONDS = 60
+PLANS_INTERVAL_SECONDS = 60
 DEVICE_CHECK_INTERVAL_SECONDS = 60
 EVENTS_INTERVAL_SECONDS = 60
 SUMMARY_INTERVAL_SECONDS = 60
@@ -93,6 +96,24 @@ async def run_learning(maker, state: dict) -> None:
     if out["invites"] or out["reminders"] or out["overdue"]:
         logger.info("learning: %d invite(s), %d reminder(s), %d overdue notice(s)",
                     out["invites"], out["reminders"], out["overdue"])
+
+
+async def run_plans(maker, state: dict) -> None:
+    """One project plan sweep; a failure is logged once per outage, never
+    raised (each plan's own failures are already counted inside)."""
+    try:
+        out = await run_plan_reminders_once(maker)
+        state["failed"] = False
+    except Exception as exc:  # noqa: BLE001 — a DB blip must never kill the loop
+        # the class only: the text of a DB error can carry SQL parameters
+        if not state["failed"]:
+            logger.warning("could not run the plan reminder sweep — retrying (%s)",
+                           type(exc).__name__)
+        state["failed"] = True
+        return
+    if out["reminders"] or out["digests"]:
+        logger.info("plans: %d reminder(s), %d overdue digest(s)",
+                    out["reminders"], out["digests"])
 
 
 async def run_device_check(maker, state: dict) -> None:
@@ -157,6 +178,7 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
     check_state = {}
     deliver_state = {"failed": False}
     learning_state = {"failed": False}
+    plans_state = {"failed": False}
     devices_state = {"failed": False}
     events_state = {"failed": False}
     summary_state = {"failed": False}
@@ -164,8 +186,8 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
                                 meta_fn=lambda: dict(pause_state))
 
     logger.info("notification worker online — email outbox every %.0fs, hourly "
-                "password expiry reminders, learning, event and summary sweeps and the "
-                "device check every minute, daily attestation revocation list",
+                "password expiry reminders, learning, plan, event and summary sweeps "
+                "and the device check every minute, daily attestation revocation list",
                 poll_seconds)
 
     maker = get_sessionmaker()
@@ -175,6 +197,7 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
         last_log = time.monotonic() - IDLE_LOG_SECONDS
         last_reminders = time.monotonic() - REMINDER_INTERVAL_SECONDS
         last_learning = time.monotonic() - LEARNING_INTERVAL_SECONDS
+        last_plans = time.monotonic() - PLANS_INTERVAL_SECONDS
         last_devices = time.monotonic() - DEVICE_CHECK_INTERVAL_SECONDS
         last_events = time.monotonic() - EVENTS_INTERVAL_SECONDS
         last_summaries = time.monotonic() - SUMMARY_INTERVAL_SECONDS
@@ -216,6 +239,9 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
             if now - last_learning >= LEARNING_INTERVAL_SECONDS:
                 await run_learning(maker, learning_state)
                 last_learning = now
+            if now - last_plans >= PLANS_INTERVAL_SECONDS:
+                await run_plans(maker, plans_state)
+                last_plans = now
             # just before the event sweep, so what it announces goes out this tick
             if now - last_devices >= DEVICE_CHECK_INTERVAL_SECONDS:
                 await run_device_check(maker, devices_state)

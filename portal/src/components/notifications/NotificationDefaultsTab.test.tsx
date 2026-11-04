@@ -331,7 +331,7 @@ it('kinds that are never emailed are absent, and the foot note says so', async (
   const card = within(criticalCard());
   expect(card.queryByText('Password reset request')).toBeNull();
   expect(card.queryByText('Quiz locked')).toBeNull();
-  expect(card.getByText("Password reset requests and Quiz locked are never emailed, so they aren't listed."))
+  expect(card.getByText("Password reset requests and Quiz locked are never emailed, and project plan notices send their own email under each plan's settings, so they aren't listed."))
     .toBeTruthy();
 });
 

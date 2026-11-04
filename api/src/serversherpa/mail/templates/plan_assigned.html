@@ -1,0 +1,14 @@
+{% extends "_base.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">Hi {{ person_name }},</p>
+<p style="margin:0 0 24px;">{% if assigned_by %}{{ assigned_by }} assigned you{% else %}You were assigned{% endif %} {{ tasks|length }} task{{ "" if tasks|length == 1 else "s" }} in <b>{{ initiative_name }}</b>:</p>
+{% for task in tasks %}
+<div style="margin:0 0 12px;padding:0 0 0 12px;border-left:3px solid #ffa12e;">
+<div style="font-weight:600;">{{ task["name"] }}</div>
+<div style="font-size:13px;color:#667085;">Start {{ task["start_label"] }} · Finish {{ task["finish_label"] }}{% if task["deadline_label"] %} · Deadline {{ task["deadline_label"] }}{% endif %}</div>
+</div>
+{% endfor %}
+<p style="margin:12px 0 24px;"><a href="{{ link }}" style="display:inline-block;background:#ffa12e;color:#0c1117;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:8px;">Open the plan</a></p>
+<p style="margin:0 0 8px;font-size:13px;color:#667085;">If the button doesn't work, paste this address into your browser:</p>
+<p style="margin:0;font-size:13px;word-break:break-all;"><a href="{{ link }}" style="color:#1b2129;">{{ link }}</a></p>
+{% endblock %}

@@ -226,7 +226,8 @@ export default function NotificationDefaultsTab() {
           <DataTable ariaLabel="Critical notifications" columns={CRITICAL_COLUMNS} rows={criticalRows} />
         </div>
         <p className="nd-note">
-          Password reset requests and Quiz locked are never emailed, so they aren't listed.
+          Password reset requests and Quiz locked are never emailed, and project plan notices
+          send their own email under each plan's settings, so they aren't listed.
         </p>
         {foot('critical', criticalDirty)}
       </section>

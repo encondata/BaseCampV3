@@ -1,0 +1,1 @@
+{{ tasks|length }} overdue task{{ "" if tasks|length == 1 else "s" }} in {{ initiative_name }}

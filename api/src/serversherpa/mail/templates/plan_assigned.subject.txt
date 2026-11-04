@@ -1,0 +1,1 @@
+You were assigned {{ tasks|length }} task{{ "" if tasks|length == 1 else "s" }} in {{ initiative_name }}

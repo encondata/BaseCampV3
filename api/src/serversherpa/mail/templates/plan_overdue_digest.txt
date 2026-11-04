@@ -1,0 +1,10 @@
+Hi {{ person_name }},
+
+{{ tasks|length }} task{{ "" if tasks|length == 1 else "s" }} in {{ initiative_name }} {{ "is" if tasks|length == 1 else "are" }} overdue:
+{% for task in tasks %}
+- {{ task["name"] }}
+  Due {{ task["due_label"] }} · {{ task["assignees"]|join(", ") or "Unassigned" }}
+{% endfor %}
+Open the plan:
+
+{{ link }}
