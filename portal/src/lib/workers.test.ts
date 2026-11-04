@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  applyWorkerPatch, WORKER_ERRORS, WORKER_GOD_FIELDS, workerCellText, workerSearchText,
+  applyWorkerPatch, splitTrades, WORKER_ERRORS, WORKER_GOD_FIELDS, workerCellText, workerSearchText,
   type WorkerItem, type WorkerLevelLookup,
 } from './workers';
 import type { StatusValue } from './api';
@@ -180,5 +180,30 @@ describe('WORKER_ERRORS', () => {
     ]) {
       expect(WORKER_ERRORS[code]).toBeTruthy();
     }
+  });
+});
+
+describe('splitTrades', () => {
+  it('splits a comma-separated trade into trimmed values', () => {
+    expect(splitTrades('Cable, General, Hardware')).toEqual(['Cable', 'General', 'Hardware']);
+  });
+
+  it('drops empty segments', () => {
+    expect(splitTrades('Cable, , Hardware,')).toEqual(['Cable', 'Hardware']);
+  });
+
+  it('trims surrounding whitespace', () => {
+    expect(splitTrades(' Hardware ')).toEqual(['Hardware']);
+  });
+
+  it('drops case-insensitive duplicates, keeping the first spelling', () => {
+    expect(splitTrades('Hardware, hardware, Cable')).toEqual(['Hardware', 'Cable']);
+  });
+
+  it('returns an empty list when there is nothing to show', () => {
+    expect(splitTrades(null)).toEqual([]);
+    expect(splitTrades(undefined)).toEqual([]);
+    expect(splitTrades('')).toEqual([]);
+    expect(splitTrades(' , ')).toEqual([]);
   });
 });

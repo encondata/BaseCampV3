@@ -55,6 +55,22 @@ export interface WorkerItem {
   certs_expired: number;
 }
 
+/** A worker's trade is free text holding one or more comma-separated values
+ *  ("Cable, General, Hardware"). Trims each, drops blanks, and drops repeats
+ *  (case-insensitive, first spelling wins) so chips never show a value twice. */
+export function splitTrades(trade: string | null | undefined): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of (trade ?? '').split(',')) {
+    const value = part.trim();
+    const key = value.toLowerCase();
+    if (!value || seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
 /** Codes upsert_profile (PUT /workers/{id}/profile, api/src/serversherpa/api/
  *  routes/workers.py) can raise, plus the generic 403 every require_permission
  *  dependency raises (api/src/serversherpa/api/deps.py:93). Verified against
