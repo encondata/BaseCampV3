@@ -22,11 +22,34 @@ vi.mock('../api', async (importOriginal) => ({
   ...apiMock,
 }));
 
+// The real local database, with two seams: `readRawBody` counts its calls
+// (a request that reads the bodies hashes them), and `writeLabelSet` can
+// be held before it writes (a build's write in flight).
+const dbHooks = vi.hoisted(() => ({
+  rawReads: 0,
+  beforeWrite: null as null | (() => Promise<void>),
+}));
+vi.mock('../localDb', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../localDb')>();
+  return {
+    ...actual,
+    readRawBody: (...args: Parameters<typeof actual.readRawBody>) => {
+      dbHooks.rawReads += 1;
+      return actual.readRawBody(...args);
+    },
+    writeLabelSet: async (...args: Parameters<typeof actual.writeLabelSet>) => {
+      const hold = dbHooks.beforeWrite;
+      if (hold) await hold();
+      return actual.writeLabelSet(...args);
+    },
+  };
+});
+
 import { fingerprint, type LabelKind } from '../../labelgen/plan';
 import { SOURCE_HASH } from '../../labelgen/sourceHash';
 import type { LabelStationSettings } from '../api';
 import { writeKioskSetup } from '../kioskSetup';
-import { clearDb, closeDb, getAll, putRows, readMeta } from '../localDb';
+import { clearDb, closeDb, getAll, putRows, readMeta, writeMeta } from '../localDb';
 import { readSyncStatus, resetSyncStatus, runSync } from '../sync';
 import { writeWebLabelKind, writeWebLabelSettings } from '../webLabelSettings';
 import {
@@ -162,6 +185,7 @@ beforeEach(async () => {
   resetSyncStatus();
   setLabelBuildRunner(null);
   for (const fn of Object.values(apiMock)) fn.mockReset();
+  dbHooks.beforeWrite = null;
   // no settings, no move: this settles the module back to idle
   await requestLabelBuild();
 });
@@ -313,6 +337,75 @@ describe('requestLabelBuild', () => {
     await requestLabelBuild();
     expect(runner.builds).toBe(1);
     expect(readWebLabelStatus()).toEqual(IDLE);
+  });
+
+  it('a different generator hash re-renders every label', async () => {
+    setUpMove();
+    savePrinter();
+    await storeBodies();
+    await requestLabelBuild();
+    const meta = await readMeta(LABELS_META_KEY);
+
+    // as if these labels were made by a kiosk build with other Python
+    await writeMeta(LABELS_META_KEY, { ...meta, sourceHash: 'old' });
+    const seen: WebLabelStatus[] = [];
+    const off = subscribeWebLabelStatus(() => seen.push(readWebLabelStatus()));
+    await requestLabelBuild();
+    off();
+    expect(seen[0]).toMatchObject({ state: 'running', reason: 'updates', total: 4, done: 0 });
+    expect(readWebLabelStatus()).toMatchObject({
+      state: 'idle', reason: 'updates', total: 4, done: 4, ready: 4,
+    });
+    expect((await readMeta(LABELS_META_KEY))?.sourceHash).toBe(SOURCE_HASH);
+    expectRowsMatch(await labelRows(), TOP_203, 'top', 203);
+  });
+
+  it('a templates body that changed alone rebuilds', async () => {
+    const runner = countingRunner();
+    setLabelBuildRunner(runner);
+    setUpMove();
+    savePrinter();
+    await storeBodies();
+    await requestLabelBuild();
+    expect(runner.builds).toBe(1);
+
+    // the template renamed on the portal: same assets, same labels
+    const renamed = TEMPLATES_TEXT.replace(JSON.stringify(nameOf(TOP_203)), '"Vegas, renamed"');
+    expect(renamed).not.toBe(TEMPLATES_TEXT);
+    await storeBodies('m-1', ASSETS_TEXT, renamed);
+    await requestLabelBuild();
+    expect(runner.builds).toBe(2);
+    expect(await readMeta(LABELS_META_KEY)).toMatchObject({
+      templatesHash: fingerprint([renamed]), templateName: 'Vegas, renamed',
+    });
+  });
+
+  it('a build superseded while its write is in flight is followed up', async () => {
+    setUpMove();
+    savePrinter();
+    await storeBodies();
+    await requestLabelBuild();
+    expectRowsMatch(await labelRows(), TOP_203, 'top', 203);
+
+    // 203 -> 300, held at its write
+    let release!: () => void;
+    let holding = false;
+    dbHooks.beforeWrite = () => new Promise<void>((resolve) => {
+      holding = true;
+      release = resolve;
+    });
+    savePrinter({ dpi: 300 });
+    const at300 = requestLabelBuild();
+    await vi.waitFor(() => expect(holding).toBe(true));
+    dbHooks.beforeWrite = null;
+
+    // -> 203 again: the stored meta (pre-commit) still says 203, so this skips
+    savePrinter({ dpi: 203 });
+    await requestLabelBuild();
+    release();                                 // the 300 write lands after all
+    await at300;
+    expectRowsMatch(await labelRows(), TOP_203, 'top', 203);
+    expect((await readMeta(LABELS_META_KEY))?.dpi).toBe(203);
   });
 
   it('a move switch re-renders every label for the new move, even an identical one', async () => {
@@ -470,6 +563,30 @@ describe('installLabelBuild', () => {
       expect((await labelRows()).every((r) => r.label_kind === 'front')).toBe(true);
     });
     expectRowsMatch(await labelRows(), FRONT_203, 'front', 203);
+  });
+
+  it('an offsets-or-peel save neither reads the bodies nor builds', async () => {
+    const runner = countingRunner();
+    setLabelBuildRunner(runner);
+    setUpMove();
+    savePrinter();
+    await storeBodies();
+    uninstall = installLabelBuild();
+    await vi.waitFor(async () => expect(await labelRows()).toHaveLength(4));
+    expect(runner.builds).toBe(1);
+
+    dbHooks.rawReads = 0;
+    savePrinter({ offset_x: 12, offset_y: -4, peel: true });   // Test Label Alignment saves
+    await new Promise((resolve) => { setTimeout(resolve, 50); });
+    expect(dbHooks.rawReads).toBe(0);
+    expect(runner.builds).toBe(1);
+
+    savePrinter({ offset_x: 12, offset_y: -4, peel: true, dpi: 300 });
+    await vi.waitFor(async () => {
+      expect((await labelRows()).every((r) => r.dpi === 300)).toBe(true);
+    });
+    expect(dbHooks.rawReads).toBeGreaterThan(0);
+    expect(runner.builds).toBe(2);
   });
 
   it('stops listening once uninstalled', async () => {

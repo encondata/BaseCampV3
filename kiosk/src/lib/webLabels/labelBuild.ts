@@ -30,8 +30,11 @@
  * freezes; where there is no `Worker` (jsdom) they run in-thread. A newer
  * request supersedes a running build (its worker is terminated and its
  * result never written), except one with the very same key, which it
- * simply waits for. While a sync is running nothing builds: the sync's end
- * asks again, so a build never reads a half-replaced pair of bodies.
+ * simply waits for. A build superseded with its write already in flight
+ * may still land, so it then asks once more: the newer request decided on
+ * the meta from before that commit. While a sync is running nothing
+ * builds: the sync's end asks again, so a build never reads a
+ * half-replaced pair of bodies.
  *
  * The status reuses the edge's `LabelRunStatus` shape, so the laptop's
  * screens (the yellow takeover, the Printing Station header) read it
@@ -127,7 +130,7 @@ export interface LabelBuildRunner {
   plan(input: PlanInput): Promise<Plan>;
 }
 
-/** A cancelled build's rejection. */
+/** A canceled build's rejection. */
 class Superseded extends Error {
   constructor() {
     super('superseded by a newer label build');
@@ -140,16 +143,16 @@ class Superseded extends Error {
  *  makes its result reject. */
 export const inThreadLabelBuildRunner: LabelBuildRunner = {
   build(input, previous, onProgress) {
-    let cancelled = false;
+    let canceled = false;
     const result = Promise.resolve().then(() => {
-      if (cancelled) throw new Superseded();
+      if (canceled) throw new Superseded();
       const built = runBuild(input, previous, (done, total) => {
-        if (!cancelled) onProgress(done, total);
+        if (!canceled) onProgress(done, total);
       });
-      if (cancelled) throw new Superseded();
+      if (canceled) throw new Superseded();
       return built;
     });
-    return { result, cancel: () => { cancelled = true; } };
+    return { result, cancel: () => { canceled = true; } };
   },
   plan: async (input) => planOnly(input),
 };
@@ -159,7 +162,7 @@ let nextCallId = 0;
 type WorkerResult = Extract<WorkerResponse, { type: 'result' }>;
 
 /** One worker for one call: started, asked, terminated once it answers
- *  (or when cancelled, which really does stop it mid-render). */
+ *  (or when canceled, which really does stop it mid-render). */
 function workerCall(
   request: (id: number) => WorkerRequest,
   onProgress?: (done: number, total: number) => void,
@@ -446,7 +449,15 @@ function startBuild(
         builtFrom: { assets, templates }, put, remove: result.removed,
         meta: { key: LABELS_META_KEY, value },
       });
-      if (active !== me) return;
+      if (active !== me) {
+        // Superseded while the write was in flight, and it landed anyway.
+        // Whoever superseded this build decided on the meta from BEFORE
+        // the commit: one that skipped (DPI 203 -> 300 -> 203 with the 300
+        // write in flight) left the store holding this build's rows. Ask
+        // again now that the meta says what the store really holds.
+        if (wrote) return requestLabelBuild();
+        return;
+      }
       active = null;
       if (!wrote) {
         // wiped, or a sync replaced a body: nothing of this build is kept
@@ -483,13 +494,21 @@ export async function requestLabelPlan(opts: { dpi: number; kind: LabelKind }): 
   });
 }
 
+/** What of the label settings a build depends on: whether a printer is
+ *  saved, the kind and the DPI. Offsets and peel are applied when a label
+ *  is sent, so a save that changes only those is not a reason to look. */
+function buildSettings(): string | null {
+  const settings = readWebLabelSettings();
+  return settings === null ? null : `${settings.label_kind}:${settings.dpi}`;
+}
+
 /**
  * Starts the web kiosk's label builds: one now, one whenever the label
- * settings change (a kind or DPI change rebuilds; offsets and peel match
- * the stored key and don't), and one whenever the sync's phase changes (a
- * finished sync brings new bodies; a starting one stops any build; a
- * Clear local data resets it, and then finds nothing to build). Returns
- * the uninstaller.
+ * settings a build depends on change (a printer saved, or another kind or
+ * DPI; an offsets-or-peel save asks nothing, so it never reads and hashes
+ * the bodies), and one whenever the sync's phase changes (a finished sync
+ * brings new bodies; a starting one stops any build; a Clear local data
+ * resets it, and then finds nothing to build). Returns the uninstaller.
  */
 export function installLabelBuild(): () => void {
   let phase = readSyncStatus().phase;
@@ -499,7 +518,13 @@ export function installLabelBuild(): () => void {
     phase = next;
     void requestLabelBuild();
   });
-  const offSettings = subscribeWebLabelSettings(() => { void requestLabelBuild(); });
+  let seen = buildSettings();
+  const offSettings = subscribeWebLabelSettings(() => {
+    const next = buildSettings();
+    if (next === seen) return;
+    seen = next;
+    void requestLabelBuild();
+  });
   void requestLabelBuild();
   return () => {
     offSync();
