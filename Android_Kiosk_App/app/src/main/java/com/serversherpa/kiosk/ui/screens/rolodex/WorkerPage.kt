@@ -216,7 +216,7 @@ private fun ColumnScope.WorkerView(ui: RolodexUi, vm: RolodexViewModel, wide: Bo
         // Travel comes with the worker page only (never on the cached list row): not before it loads, nor offline.
         if (detail != null) {
             Field("Will travel", willTravelLabel(detail.will_travel))
-            detail.travel_region?.takeIf { it.isNotBlank() }?.let { Field("Travel region", it) }
+            detail.travel_region?.takeIf { it.isNotBlank() }?.let { Field("Travel region", it, wrap = true) }
             detail.travel_restrictions?.takeIf { it.isNotBlank() }?.let { Field("Travel restrictions", it, wrap = true) }
         }
         detail?.status_note?.takeIf { it.isNotBlank() }?.let { Field("Status note", it) }
