@@ -26,8 +26,9 @@ export type FontState = 'installed' | 'missing' | 'damaged' | 'printer-only';
  *  whose size isn't the library file's is damaged: a download cut short
  *  leaves a smaller file under the right name. A font without a known size
  *  (none passed, or 0) has nothing to compare, so it is never damaged.
- *  Nothing is known before the E: listing is read; a Z: listing not passed
- *  counts as empty. */
+ *  `sizesOnE` is every E: object's size by upper-case name, for the reason a
+ *  font reads damaged. Nothing is known before the E: listing is read; a Z:
+ *  listing not passed counts as empty. */
 export function fontStates(library: (Pick<LabelFont, 'name' | 'resident'> & { size_bytes?: number })[], listing: DirectoryListing | null, zListing: DirectoryListing | null = null) {
   const names = (l: DirectoryListing | null) => new Set((l?.objects ?? []).map((o) => o.name.toUpperCase()));
   const onE = names(listing);
@@ -45,7 +46,7 @@ export function fontStates(library: (Pick<LabelFont, 'name' | 'resident'> & { si
   }
   const libNames = new Set(library.map((f) => f.name.toUpperCase()));
   const printerOnly = (listing?.objects ?? []).filter((o) => !libNames.has(o.name.toUpperCase())).map((o) => ({ name: o.name, bytes: o.bytes }));
-  return { library: lib, resident, printerOnly };
+  return { library: lib, resident, printerOnly, sizesOnE: Object.fromEntries(sizeOnE) as Record<string, number> };
 }
 
 /** Push one library font to the printer's E: drive: a `~DY` header, then
@@ -75,6 +76,17 @@ export function fontBatchLabel(missing: number, damaged: number): string {
   if (damaged === 0) return `Install ${fonts(missing, 'missing')}`;
   if (missing === 0) return `Reinstall ${fonts(damaged, 'damaged')}`;
   return `Install ${fonts(missing, 'missing')}, reinstall ${fonts(damaged, 'damaged')}`;
+}
+
+/** What the directory re-read after a push says went wrong with [font], in
+ *  the printer's own numbers; null when it reads installed. */
+function installProblem(font: Pick<LabelFont, 'name' | 'resident' | 'size_bytes'>, after: DirectoryListing | null): string | null {
+  if (!after) return "Couldn't read the printer's E: drive to confirm the install.";
+  const { library, sizesOnE } = fontStates([font], after);
+  const name = font.name.toUpperCase();
+  if (library[name] === 'installed') return null;
+  if (library[name] === 'damaged') return `Installed, but the printer reports ${sizesOnE[name].toLocaleString()} bytes, not ${font.size_bytes.toLocaleString()}.`;
+  return `The printer didn't list ${font.name} after the install.`;
 }
 
 /** A library font's chip: its words and color class. */
@@ -118,14 +130,16 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose, busy, uploading, batching]);
 
-  const readDirectory = useCallback(async () => {
-    if (!printerRef.current.connected) { setListing(null); return; }
+  const readDirectory = useCallback(async (): Promise<DirectoryListing | null> => {
+    if (!printerRef.current.connected) { setListing(null); return null; }
     try {
       const parsed = parseDirectory(await printerRef.current.query(directoryQuery()));
       setListing(parsed);
       setListError(parsed ? '' : "Couldn't read the printer's E: drive.");
+      return parsed;
     } catch (err) {
       setListError(err instanceof Error ? err.message : "Couldn't read the printer's E: drive.");
+      return null;
     }
   }, [printer.connected]);
 
@@ -140,8 +154,10 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
     try {
       await installFont(printerRef.current, f, onFetchBytes,
         (sent, total) => setProgress((p) => ({ ...p, [f.id]: { sent, total } })));
-      await readDirectory();
-      setProgress((p) => ({ ...p, [f.id]: 'done' }));
+      // The row says what the re-read listing says: a push that landed at
+      // the wrong size, or not at all, is not "Installed ✓".
+      const problem = installProblem(f, await readDirectory());
+      setProgress((p) => ({ ...p, [f.id]: problem ? { error: problem } : 'done' }));
     } catch (err) {
       setProgress((p) => ({ ...p, [f.id]: { error: err instanceof Error ? err.message : 'Install failed' } }));
     } finally {
@@ -231,7 +247,8 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
         <span className="zp-chips" key="u">{f.used_by.length === 0 ? <span className="cell-sub">—</span> : f.used_by.map((u) => <span key={u.template_id} className="chip tag">{u.template_name}</span>)}</span>,
         <span className="mono" key="t">{relativeTime(f.created_at)}</span>,
         <span key="p">{f.resident ? <span className="chip c-slate" title="Zebra printers ship this font; it is never installed from here.">Built in on Zebra printers</span>
-          : state && !progress[f.id] ? <span className={`chip ${stateChip(state)[1]}`}>{stateChip(state)[0]}</span> : progressCell(f)}</span>,
+          : state && !progress[f.id] ? <span className={`chip ${stateChip(state)[1]}`}
+              title={state === 'damaged' ? `Printer: ${states.sizesOnE[f.name.toUpperCase()].toLocaleString()} bytes · library: ${f.size_bytes.toLocaleString()} bytes` : undefined}>{stateChip(state)[0]}</span> : progressCell(f)}</span>,
         // Items are pre-gated: an unreachable action isn't passed at all, so
         // a row with nothing to offer renders no trigger. `busy`/`batching`
         // disable rather than drop, keeping the trigger steady mid-install.

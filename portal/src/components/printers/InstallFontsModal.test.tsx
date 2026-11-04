@@ -23,6 +23,9 @@ const DIR = '\x02- DIR E:*.*\r\n* 85620388.TTF       124336\r\n* TT0003M_.TTF   
 // A cut-short push of 85620388.TTF (the library has 124,336 bytes) next to a missing ARIAL_B.TTF
 const DIR_DAMAGED = '\x02- DIR E:*.*\r\n* 85620388.TTF       100000\r\n* TT0003M_.TTF      169188\r\n-1928576 bytes free E: ONBOARD FLASH\r\n\x03';
 
+// The same drive once every pushed font is on it at the library's size
+const DIR_FIXED = '\x02- DIR E:*.*\r\n* 85620388.TTF       124336\r\n* ARIAL_B.TTF       124336\r\n* TT0003M_.TTF      169188\r\n-1928576 bytes free E: ONBOARD FLASH\r\n\x03';
+
 function fakePrinter(connected = true, dir = DIR) {
   return {
     connected,
@@ -30,6 +33,13 @@ function fakePrinter(connected = true, dir = DIR) {
     send: vi.fn(async (_zpl: string) => undefined),
     sendBytes: vi.fn(async (bytes: Uint8Array, onProgress?: (s: number, t: number) => void) => { onProgress?.(bytes.length, bytes.length); }),
   };
+}
+
+/** A printer whose E: listing follows its pushes: [listings][n] is what `^HW` returns after n files were sent. */
+function printerWithListings(listings: string[]) {
+  const printer = fakePrinter(true, listings[0]);
+  printer.query.mockImplementation(async (_cmd: string) => listings[Math.min(printer.sendBytes.mock.calls.length, listings.length - 1)]);
+  return printer;
 }
 
 function setup(over: Partial<Parameters<typeof InstallFontsModal>[0]> = {}) {
@@ -53,6 +63,7 @@ describe('fontStates', () => {
       library: { '85620388.TTF': 'installed', 'ARIAL_B.TTF': 'missing' },
       resident: {},
       printerOnly: [{ name: 'TT0003M_.TTF', bytes: 2 }],
+      sizesOnE: { '85620388.TTF': 124336, 'TT0003M_.TTF': 2 },
     });
     expect(fontStates(LIB, null).library).toEqual({});
   });
@@ -67,6 +78,12 @@ describe('fontStates', () => {
     expect(cutShort).not.toBe(ZT220_AFTER);
     const roboto = { name: 'ROBOTO_R.TTF', size_bytes: 146768 };
     expect(fontStates([roboto], parseDirectory(cutShort)).library).toEqual({ 'ROBOTO_R.TTF': 'damaged' });
+  });
+  it('exposes the E: sizes by upper-case name', () => {
+    const listing = parseDirectory(ZT220_AFTER.replace('146768', '120000'));
+    expect(fontStates([{ name: 'roboto_r.ttf', size_bytes: 146768 }], listing).sizesOnE)
+      .toEqual({ '85620388.TTF': 1045960, 'ROBOTO_R.TTF': 120000, 'TEXT.ZPL': 5, 'TT0003M_.TTF': 160676 });
+    expect(fontStates(LIB, null).sizesOnE).toEqual({});
   });
   it('nothing to compare never reads Damaged', () => {
     const listing = { objects: [{ name: 'ARIAL_B.TTF', bytes: 1 }, { name: 'TT0003M_.TTF', bytes: 2 }], bytesFree: 9 };
@@ -84,6 +101,7 @@ describe('fontStates', () => {
     const listing = { objects: [{ name: 'TT0003M_.TTF', bytes: 2 }], bytesFree: 9 };
     expect(fontStates([SWISS, LIB[1]], listing)).toEqual({
       library: { 'ARIAL_B.TTF': 'missing' }, resident: { 'TT0003M_.TTF': 'installed' }, printerOnly: [],
+      sizesOnE: { 'TT0003M_.TTF': 2 },
     });
   });
   it('counts a resident font present on Z: or on E:, and only E: for a library font', () => {
@@ -95,6 +113,7 @@ describe('fontStates', () => {
       library: { '85620388.TTF': 'missing', 'ARIAL_B.TTF': 'installed' },
       resident: { 'TT0003M_.TTF': 'installed' },
       printerOnly: [],
+      sizesOnE: { 'ARIAL_B.TTF': 124336 },
     });
     expect(fontStates([SWISS], { objects: [{ name: 'tt0003m_.ttf', bytes: 2 }], bytesFree: 9 }, none).resident)
       .toEqual({ 'TT0003M_.TTF': 'installed' });
@@ -149,7 +168,8 @@ describe('InstallFontsModal', () => {
     expect(screen.getByText(/1,883 KB free|1883 KB free/)).toBeTruthy();
   });
   it('installs a missing font: header, bytes, then re-reads the directory', async () => {
-    const { printer, onFetchBytes } = setup();
+    const printer = printerWithListings([DIR, DIR_FIXED]);
+    const { onFetchBytes } = setup({ printer });
     await screen.findByText('Missing');
     const row = screen.getByText('ARIAL_B.TTF').closest('tr') as HTMLElement;
     // The row's actions live in a RowActionsMenu now, portaled to
@@ -180,15 +200,62 @@ describe('InstallFontsModal', () => {
     expect(await screen.findByRole('menuitem', { name: 'Reinstall' })).toBeTruthy();
     expect(screen.queryByRole('menuitem', { name: 'Install' })).toBeNull();
   });
-  it('the batch button installs the missing and the damaged fonts', async () => {
-    const printer = fakePrinter(true, DIR_DAMAGED);
+  it('the Damaged chip gives both sizes as its reason', async () => {
+    setup({ printer: fakePrinter(true, DIR_DAMAGED) });
+    const chip = await screen.findByText('Damaged');
+    expect(chip.getAttribute('title')).toBe(`Printer: ${(100000).toLocaleString()} bytes · library: ${(124336).toLocaleString()} bytes`);
+    // only a damaged font carries the reason
+    expect(screen.getByText('Missing').getAttribute('title')).toBeNull();
+  });
+  it('the batch button installs the missing and the damaged fonts and ends with both rows installed', async () => {
+    // the damaged font is pushed first (library order), then the missing one
+    const printer = printerWithListings([DIR_DAMAGED, DIR, DIR_FIXED]);
     const { onFetchBytes } = setup({ printer });
     await screen.findByText('Damaged');
     await userEvent.click(screen.getByRole('button', { name: 'Install 1 missing font, reinstall 1 damaged font' }));
     // each push pauses 500 ms while the printer stores the file
-    await waitFor(() => expect(printer.send).toHaveBeenCalledWith('~DYE:ARIAL_B.TTF,B,T,6,,'), { timeout: 4000 });
-    await waitFor(() => expect(printer.send).toHaveBeenCalledWith('~DYE:85620388.TTF,B,T,6,,'), { timeout: 4000 });
-    expect(onFetchBytes.mock.calls.map((c) => c[0]).sort()).toEqual(['f1', 'f2']);
+    await waitFor(() => expect(screen.getAllByText('Installed ✓')).toHaveLength(2), { timeout: 4000 });
+    expect(printer.send.mock.calls.map((c) => c[0]).filter((z) => String(z).startsWith('~DY')))
+      .toEqual(['~DYE:85620388.TTF,B,T,6,,', '~DYE:ARIAL_B.TTF,B,T,6,,']);
+    expect(onFetchBytes.mock.calls.map((c) => c[0])).toEqual(['f1', 'f2']);
+    expect(screen.queryByText('Damaged')).toBeNull();
+    // nothing is left to install: the button is idle again, with its old words
+    const idle = await screen.findByRole('button', { name: 'Install all missing' });
+    expect((idle as HTMLButtonElement).disabled).toBe(true);
+  });
+  it('a reinstall that lands at the wrong size again shows the printer\'s numbers, not Installed ✓', async () => {
+    const printer = fakePrinter(true, DIR_DAMAGED);   // the re-read still lists 100,000 bytes
+    setup({ printer });
+    await screen.findByText('Damaged');
+    const row = screen.getByText('85620388.TTF').closest('tr') as HTMLElement;
+    await userEvent.click(within(row).getByRole('button', { name: /actions/i }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Reinstall' }));
+    const error = await screen.findByText(`Installed, but the printer reports ${(100000).toLocaleString()} bytes, not ${(124336).toLocaleString()}.`, undefined, { timeout: 4000 });
+    expect(error.className).toContain('pf-error');
+    expect(within(row).queryByText('Installed ✓')).toBeNull();
+    // the batch button agrees with the row: that font still needs reinstalling
+    expect(screen.getByRole('button', { name: 'Install 1 missing font, reinstall 1 damaged font' })).toBeTruthy();
+  });
+  it('an install the re-read does not list shows that, not Installed ✓', async () => {
+    const printer = fakePrinter(true, DIR);   // ARIAL_B.TTF is still not on E: afterwards
+    setup({ printer });
+    await screen.findByText('Missing');
+    const row = screen.getByText('ARIAL_B.TTF').closest('tr') as HTMLElement;
+    await userEvent.click(within(row).getByRole('button', { name: /actions/i }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Install' }));
+    const error = await screen.findByText("The printer didn't list ARIAL_B.TTF after the install.", undefined, { timeout: 4000 });
+    expect(error.className).toContain('pf-error');
+    expect(within(row).queryByText('Installed ✓')).toBeNull();
+  });
+  it('an install whose re-read cannot be read says so, not Installed ✓', async () => {
+    const printer = printerWithListings([DIR, 'garbled']);
+    setup({ printer });
+    await screen.findByText('Missing');
+    const row = screen.getByText('ARIAL_B.TTF').closest('tr') as HTMLElement;
+    await userEvent.click(within(row).getByRole('button', { name: /actions/i }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Install' }));
+    await waitFor(() => expect(within(row).getByText("Couldn't read the printer's E: drive to confirm the install.")).toBeTruthy(), { timeout: 4000 });
+    expect(within(row).queryByText('Installed ✓')).toBeNull();
   });
   it('the batch button reads Reinstall 1 damaged font when nothing is missing', async () => {
     const bothOn = DIR_DAMAGED.replace('* TT0003M_.TTF      169188', '* ARIAL_B.TTF       124336');
