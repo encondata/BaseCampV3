@@ -153,6 +153,9 @@ READ_ONLY_EXEMPT_PATHS = frozenset({
     # the same for the portal's printer tools: a test print of any active
     # ZPL template, rendered and stored nowhere
     "/labels/test-render",
+    # and the portal's factory reset report, exempt for the same reason as
+    # /kiosk/printer-events above: the reset already happened
+    "/labels/printer-events",
     # biometric sign-in is a sign-in, like /kiosk/pair*: the card's challenge
     # and the signed answer (both unauthenticated, so listed for
     # completeness). DELETE /kiosk/biometric forgets the caller's own key
@@ -219,9 +222,10 @@ async def enforce_read_only_config(db: AsyncSession, request: Request) -> None:
 # `/system/admin` is deliberately NOT inherited:
 # read-only exempts it because whoever can turn read-only on can turn it
 # off, which says nothing about a temp-password admin session. Neither is
-# `/kiosk/printer-events`: read-only exempts it so an already-performed
-# reset still gets recorded, which likewise says nothing about a session
-# that has not finished signing in. Nor are the four `/auth/totp/*` sign-in
+# `/kiosk/printer-events` or its portal twin `/labels/printer-events`:
+# read-only exempts them so an already-performed reset still gets recorded,
+# which likewise says nothing about a session that has not finished signing
+# in. Nor are the four `/auth/totp/*` sign-in
 # routes: they're in READ_ONLY_EXEMPT_PATHS for the sign-in lifecycle during
 # a maintenance freeze, but a temp-password session must still change its
 # password before it can enroll in 2FA or regenerate backup codes from My
@@ -235,7 +239,7 @@ async def enforce_read_only_config(db: AsyncSession, request: Request) -> None:
 # signing in either.
 FORCED_CHANGE_EXEMPT_PATHS = (
     (READ_ONLY_EXEMPT_PATHS - {
-        "/system/admin", "/kiosk/printer-events",
+        "/system/admin", "/kiosk/printer-events", "/labels/printer-events",
         "/auth/totp/verify", "/auth/totp/enroll/start",
         "/auth/totp/enroll/confirm", "/auth/totp/backup-codes/regenerate",
         "/wiki/assets/urls", "/labels/images/raster", "/labels/test-render",
