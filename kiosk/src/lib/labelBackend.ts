@@ -15,7 +15,8 @@
  *       no render, no wait (no status check is made per label);
  *     - a printed label's Labeled scan: the existing scan outbox, exactly as
  *       Scanning queues a scan, so it reaches the portal when online;
- *     - recorded?: that outbox row reached `accepted`;
+ *     - recorded?: that outbox row reached `accepted` (looked up over the
+ *       whole queue, not the list's newest rows);
  *     - status: the browser build's status (`LabelRunStatus` shape).
  *
  * `deviceWord` is what copy calls the device ("this laptop" / "this
@@ -32,7 +33,7 @@ import {
 import { readKioskSetup } from './kioskSetup';
 import { getLabelTemplates } from './labelTemplates';
 import { getRow } from './localDb';
-import { enqueueScan, readOutbox } from './outbox';
+import { enqueueScan, outboxStatuses } from './outbox';
 import { isLaptop } from './platform';
 import type { DeviceWord, PrintedJob } from './printQueue';
 import { readSyncStatus } from './sync';
@@ -50,7 +51,8 @@ export interface LabelBackend {
   /** Saves them and resolves to what was stored. */
   saveSettings(s: LabelStationSettings): Promise<LabelStationSettings>;
   /** The template the station prints with at `dpi` / `kind` (the saved
-   *  settings' when left out). */
+   *  settings' when left out). The web refuses it with 409
+   *  `labels_not_downloaded` until the move's sync bodies are stored. */
   getPlan(opts: { dpi?: number; kind?: LabelKind }): Promise<LabelPlan>;
   /** The asset's finished label. Throws ApiError `label_not_found` (404),
    *  or 409 `labels_regenerating` / `labels_syncing` (web) while the
@@ -82,7 +84,7 @@ export const edgeLabelBackend: LabelBackend = {
 
 // ── the web kiosk ───────────────────────────────────────────────────
 
-/** What the edge answers when the move's set has nothing to pick from. */
+/** Nothing to plan at: no DPI given and no printer saved. */
 const NO_PLAN: LabelPlan = { template: null, notes: [], fonts: [], available_dpis: [] };
 
 /** The picked template as the edge names it, from the stored template set
@@ -113,9 +115,13 @@ export const webLabelBackend: LabelBackend = {
     const dpi = opts.dpi ?? saved?.dpi;
     const kind = opts.kind ?? saved?.label_kind ?? readWebLabelKind();
     if (dpi === undefined) return NO_PLAN;
-    // null: the bodies aren't downloaded for the set-up move yet
+    // null: the bodies aren't downloaded for the set-up move yet (a kiosk
+    // upgraded from IndexedDB v6 before its next sync). Refused like an
+    // edge that didn't answer, so the printer step and the test labels
+    // fall back to the downloaded templates — an empty plan would say the
+    // move has no active template at all.
     const plan = await requestLabelPlan({ dpi, kind });
-    if (plan === null) return NO_PLAN;
+    if (plan === null) throw new ApiError(409, 'labels_not_downloaded');
     return {
       template: plan.templateId === null ? null : await planTemplate(plan.templateId, plan.templateFamily, dpi),
       notes: plan.notes,
@@ -155,6 +161,7 @@ export const webLabelBackend: LabelBackend = {
     const row = await enqueueScan({
       scanned_value: job.scannedValue,
       scan_type: 'barcode',
+      scanned_at: job.scannedAt,
       asset: {
         id: asset.id, asset_id: asset.asset_id, name: asset.name, rfid: asset.rfid,
         serial_number: asset.serial_number, make_model: asset.make_model,
@@ -167,9 +174,8 @@ export const webLabelBackend: LabelBackend = {
   },
 
   async recordedIds(ids) {
-    const accepted = new Set(readOutbox().rows
-      .filter((r) => r.status === 'accepted').map((r) => r.client_scan_id));
-    return ids.filter((id) => accepted.has(id));
+    const statuses = outboxStatuses(ids);
+    return ids.filter((id) => statuses.get(id) === 'accepted');
   },
 
   getStatus: async () => readWebLabelStatus(),

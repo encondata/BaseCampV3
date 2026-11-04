@@ -247,6 +247,8 @@ describe('web backend', () => {
     const queued = readOutbox().rows;
     expect(queued).toHaveLength(1);
     expect(queued[0]).toMatchObject({
+      // the moment it was scanned, not when its label finished printing
+      scanned_at: '2026-11-04T10:00:00.000Z',
       client_scan_id: id, scanned_value: 'sn-4242', scan_type: 'barcode', scan_status: 'labeled',
       site_id: 's-1', initiative_id: 'm-1', matched: true, status: 'queued',
       asset: {
@@ -271,6 +273,21 @@ describe('web backend', () => {
     ]);
     await loadOutbox();
     expect(await webLabelBackend.recordedIds(['c-1', 'c-2', 'c-3', 'c-4', 'c-5'])).toEqual(['c-1']);
+  });
+
+  it("recordedIds sees a busy station's early scans, past the list's newest 200", async () => {
+    const base = {
+      scanned_value: '10042', scan_type: 'barcode', scanned_at: '2026-11-04T10:00:00.000Z', asset: null,
+      matched: true, attempts: 0, site_id: 's-1', initiative_id: 'm-1', scan_status: 'labeled',
+    };
+    // c-1 (the oldest) accepted, then 250 newer scans still queued offline
+    await putRows('outbox', [
+      { ...base, client_scan_id: 'c-1', seq: 1, status: 'accepted' },
+      ...Array.from({ length: 250 }, (_, i) => ({ ...base, client_scan_id: `q-${i}`, seq: i + 2, status: 'queued' })),
+    ]);
+    await loadOutbox();
+    expect(readOutbox().rows.some((r) => r.client_scan_id === 'c-1')).toBe(false);
+    expect(await webLabelBackend.recordedIds(['c-1', 'q-0', 'q-249'])).toEqual(['c-1']);
   });
 
   it('saveSettings forces USB and returns what was stored', async () => {
@@ -324,11 +341,11 @@ describe('web backend', () => {
       });
     });
 
-    it('with the bodies not downloaded, picks nothing', async () => {
+    it('with the bodies not downloaded, refuses the plan so callers fall back', async () => {
+      // an empty plan would read as "this move has no active template"
       build.plan.mockResolvedValue(null);
-      expect(await webLabelBackend.getPlan({ dpi: 203, kind: 'top' })).toEqual({
-        template: null, notes: [], fonts: [], available_dpis: [],
-      });
+      expect(await refusal(webLabelBackend.getPlan({ dpi: 203, kind: 'top' })))
+        .toEqual({ status: 409, code: 'labels_not_downloaded' });
     });
 
     it('defaults to the saved kind and DPI', async () => {

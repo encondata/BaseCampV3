@@ -811,6 +811,27 @@ describe('on the web', () => {
     expect(apiMock.getLabelPlan).not.toHaveBeenCalled();
   });
 
+  it("with the move's sync bodies not downloaded, the DPI row falls back to the downloaded templates", async () => {
+    // e.g. a kiosk upgraded from IndexedDB v6, before its next sync: the
+    // local plan is refused, as an edge that didn't answer would be
+    const user = userEvent.setup();
+    webPlan.requestLabelPlan.mockResolvedValue(null);
+    renderStep();
+    await user.click(await screen.findByRole('button', { name: 'Use ZD421' }));
+    await passed('DPI matches the templates');
+    expect(within(row('DPI matches the templates')).getByText('203 DPI')).toBeTruthy();
+    expect(screen.queryByText(/No active Top template/)).toBeNull();
+
+    cleanup();
+    templatesMock.templates = [template({ id: 'g300', name: 'Generic Rack and RU', dpi_key: '300' })];
+    renderStep();
+    await user.click(await screen.findByRole('button', { name: 'Use ZD421' }));
+    await failed('DPI matches the templates');
+    expect(within(row('DPI matches the templates')).getByText('This move\'s Top template prints at 300 DPI only; '
+      + 'this printer is 203 DPI. Activate a 203 DPI version on Labels › Templates, or use a 300 DPI printer.'))
+      .toBeTruthy();
+  });
+
   it('never shows Finish anyway to a move-password session; a user session gets it', async () => {
     const user = userEvent.setup();
     printerState.paused = true;
