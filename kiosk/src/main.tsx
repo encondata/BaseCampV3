@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 
 import App from './App';
 import { installConfigTracking } from './lib/kioskConfig';
+import { isLaptop } from './lib/platform';
+import { installLabelBuild } from './lib/webLabels/labelBuild';
 // Portal design system first (tokens, shell, login theme, primitives), then
 // the kiosk's own rules. Order matters: kiosk.css only adds and scopes.
 import '@portal/styles/base.css';
@@ -23,6 +25,11 @@ import './styles/timeclock.css';
 // Settings edits count as local changes from the first render on, so a
 // change made before the heartbeat starts is still reported to the portal.
 installConfigTracking();
+
+// A web kiosk builds its move's labels itself, ahead of any scan (on start,
+// after each sync, and when the label kind or printer DPI changes). The
+// laptop's labels come from its edge: nothing of this runs there.
+if (!isLaptop()) installLabelBuild();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

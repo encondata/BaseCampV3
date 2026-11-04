@@ -33,7 +33,8 @@
  *     other screen. Separate stores (not `meta` rows) so `replaceAllMulti`
  *     can replace each beside its parsed rows in the one sync transaction.
  *   - `labels` (keyPath `asset_id`) — v7: the generated label for each
- *     asset (written by the web label generator, not by sync).
+ *     asset (written by the web label generator, not by sync), with the
+ *     build's `labels` row in `meta` (`writeLabelSet`).
  *
  * Older databases upgrade in place: `onupgradeneeded` only creates the
  * stores that are missing, so a kiosk at v1 through v6 keeps its
@@ -306,6 +307,42 @@ export async function readRawBody(
   const row = await withStores([store], 'readonly', (tx) =>
     request(tx.objectStore(store).get('body')) as Promise<RawBodyRow | undefined>);
   return row ?? null;
+}
+
+/**
+ * The web label build's one write (`webLabels/labelBuild.ts`): the changed
+ * `labels` rows put, the removed ones deleted, and its `meta` row, all in
+ * ONE transaction, so a reader never sees labels from one build beside
+ * another build's meta.
+ *
+ * Only when the inputs are still there: both raw bodies are read inside
+ * the same transaction and must still be exactly the rows the labels were
+ * built from. A "Clear local data", or a sync that replaced a body, while
+ * the build ran makes this write nothing and resolve false; otherwise a
+ * wiped kiosk would get the previous move's labels back the moment a build
+ * in flight finished.
+ */
+export function writeLabelSet(write: {
+  builtFrom: { assets: RawBodyRow; templates: RawBodyRow };
+  put: readonly unknown[];
+  remove: readonly IDBValidKey[];
+  meta: { key: string; value: Record<string, unknown> };
+}): Promise<boolean> {
+  const same = (row: RawBodyRow | undefined, want: RawBodyRow) =>
+    row !== undefined && row.initiativeId === want.initiativeId && row.text === want.text;
+  return withStores(['assets_raw', 'label_templates_raw', 'labels', 'meta'], 'readwrite', async (tx) => {
+    const assets = await request(tx.objectStore('assets_raw').get('body')) as RawBodyRow | undefined;
+    const templates = await request(
+      tx.objectStore('label_templates_raw').get('body')) as RawBodyRow | undefined;
+    if (!same(assets, write.builtFrom.assets) || !same(templates, write.builtFrom.templates)) {
+      return false;
+    }
+    const labels = tx.objectStore('labels');
+    for (const key of write.remove) labels.delete(key);
+    for (const row of write.put) labels.put(row);
+    tx.objectStore('meta').put({ ...write.meta.value, key: write.meta.key });
+    return true;
+  });
 }
 
 export function writeMeta(key: string, value: Record<string, unknown>): Promise<void> {

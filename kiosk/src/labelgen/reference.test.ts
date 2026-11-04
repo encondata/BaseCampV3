@@ -11,6 +11,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { buildPlan, renderLabels, type LabelKind, type PlanInput } from './plan';
+import { SOURCE_HASH } from './sourceHash';
 
 interface Expected { asset_id: string; zpl: string | null; error: string | null }
 
@@ -58,6 +59,11 @@ describe('reference labels', () => {
   it('were made from the current Python label code', () => {
     expect(sourceHash(),
       'Regenerate kiosk/src/labelgen/fixtures/reference.json (see make_reference.py)')
+      .toBe(REFERENCE.source_hash);
+  });
+
+  it('carry the hash the web kiosk keys its stored labels on', () => {
+    expect(SOURCE_HASH, 'run make_reference.py: it writes sourceHash.ts too')
       .toBe(REFERENCE.source_hash);
   });
 
