@@ -44,6 +44,7 @@ import { usePendingDeletes } from '../lib/pendingDeletes';
 import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
+  ACTIONS_TRACK,
   applyColumnOrder,
   ColHead,
   ColumnsButton,
@@ -230,7 +231,7 @@ export default function Assets() {
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = listGridStyle(shownCols, ['100px', '30px'], undefined, listGridScale);
+  const grid = listGridStyle(shownCols, [ACTIONS_TRACK], undefined, listGridScale);
   const rowStyle = {
     gridTemplateColumns: grid.gridTemplateColumns,
     minWidth: god.editing ? undefined : grid.minWidth,
@@ -407,10 +408,6 @@ export default function Assets() {
                   <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}
                        onClick={(e) => e.stopPropagation()}>
                     <RowActionsMenu actions={rowActions(a)} />
-                  </div>
-                  <div className="cell chevron-cell">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                         strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
                   </div>
                 </div>
 
