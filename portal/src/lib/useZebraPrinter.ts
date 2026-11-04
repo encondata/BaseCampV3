@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
-  closePrinter, openPrinter, requestZebraDevice, sendRaw, waitForPrinterIdle,
+  closePrinter, ensureOpen as ensureDeviceOpen, openPrinter, requestZebraDevice, sendRaw, waitForPrinterIdle,
   query as usbQuery, sendBytes as usbSendBytes, parseHostIdentification, parseHostStatus,
   type UsbDeviceLike, type UsbLike, type HostIdentification, type HostStatus, type ReadOptions,
 } from '../labels/zebraUsb';
@@ -29,11 +29,20 @@ export interface ZebraPrinter {
   supported: boolean;
   connected: boolean;
   productName: string | null;
+  /** The held printer, so a caller can tell it apart from the other
+   *  allowed ones in `knownDevices()`. Optional for hand-built fakes. */
+  device?: UsbDeviceLike | null;
   notice: PrinterNotice | null;
   clearNotice(): void;
   connect(): Promise<void>;
   connectTo(device: UsbDeviceLike): Promise<void>;
   disconnect(): Promise<void>;
+  /** Reopen and re-claim the held device if the browser closed it — what
+   *  a printer that drops off USB (a reboot after `^JUF`) needs before
+   *  the next command. Throws when there is no device, or when the handle
+   *  can no longer be opened. Deliberately does NOT drop the connection:
+   *  a caller polling a rebooting printer retries. */
+  ensureOpen(): Promise<void>;
   send(zpl: string): Promise<void>;
   waitForIdle(labelsSent: number, onQueued?: (n: number) => void): Promise<void>;
   query(command: string, opts?: ReadOptions): Promise<string>;
@@ -88,10 +97,16 @@ export function useZebraPrinter(usbOverride?: UsbApi | null): ZebraPrinter {
   }, [usb, drop]);
 
   // Leaving the page releases the interface and closes the device (V2).
-  useEffect(() => () => {
-    const held = deviceRef.current;
-    deviceRef.current = null;
-    if (held) void closePrinter(held);
+  // `mounted` is set on mount too, so StrictMode's dev remount is mounted.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      const held = deviceRef.current;
+      deviceRef.current = null;
+      if (held) void closePrinter(held);
+    };
   }, []);
 
   const connect = useCallback(async () => {
@@ -106,6 +121,8 @@ export function useZebraPrinter(usbOverride?: UsbApi | null): ZebraPrinter {
     try {
       const next = await requestZebraDevice(usb);
       await openPrinter(next);
+      // Unmounted while the open was in flight: nobody would close it.
+      if (!mounted.current) { await closePrinter(next); return; }
       adopt(next);
     } catch (err) {
       drop({ type: 'error', message: err instanceof Error && err.message ? err.message : 'Failed to connect to printer' });
@@ -119,6 +136,7 @@ export function useZebraPrinter(usbOverride?: UsbApi | null): ZebraPrinter {
     }
     try {
       await openPrinter(nextDevice);
+      if (!mounted.current) { await closePrinter(nextDevice); return; }
       adopt(nextDevice);
     } catch (err) {
       drop({ type: 'error', message: err instanceof Error && err.message ? err.message : 'Failed to connect to printer' });
@@ -130,6 +148,12 @@ export function useZebraPrinter(usbOverride?: UsbApi | null): ZebraPrinter {
     if (held) await closePrinter(held);
     drop({ type: 'info', message: 'Printer disconnected' });
   }, [drop]);
+
+  const ensureOpen = useCallback(async () => {
+    const held = deviceRef.current;
+    if (!held) throw new Error('Printer not connected');
+    await ensureDeviceOpen(held);
+  }, []);
 
   const send = useCallback(async (zpl: string) => {
     const held = deviceRef.current;
@@ -184,9 +208,10 @@ export function useZebraPrinter(usbOverride?: UsbApi | null): ZebraPrinter {
     supported: usb !== null,
     connected: device !== null,
     productName: device?.productName ?? null,
+    device,
     notice,
     clearNotice: () => setNotice(null),
-    connect, connectTo, disconnect, send, waitForIdle,
+    connect, connectTo, disconnect, ensureOpen, send, waitForIdle,
     query, sendBytes, identify, status, knownDevices,
     log, clearLog: () => setLog([]),
   };

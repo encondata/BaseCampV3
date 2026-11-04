@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { LabelVocab } from '../../lib/api';
-import type { HostStatus } from '../../labels/zebraUsb';
+import { parseConfiguration, type HostStatus } from '../../labels/zebraUsb';
 import PrinterSetupModal from './PrinterSetupModal';
 
 if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
@@ -38,10 +39,10 @@ function fakePrinter(config = HH()) {
   return { printer, state };
 }
 
-function setup(config?: string) {
+function setup(config?: string, extra: Partial<ComponentProps<typeof PrinterSetupModal>> = {}) {
   const { printer, state } = fakePrinter(config);
   const onClose = vi.fn();
-  render(<PrinterSetupModal printer={printer} vocab={vocab} identity={{ model: 'ZD421-203dpi ZPL', firmware: 'V92', dotsPerMm: 8, memory: '8192KB', dpi: 203 }} onClose={onClose} />);
+  render(<PrinterSetupModal printer={printer} vocab={vocab} identity={{ model: 'ZD421-203dpi ZPL', firmware: 'V92', dotsPerMm: 8, memory: '8192KB', dpi: 203 }} onClose={onClose} {...extra} />);
   return { printer, state, onClose };
 }
 
@@ -134,6 +135,18 @@ describe('PrinterSetupModal', () => {
     expect(reset.disabled).toBe(false);
     await userEvent.click(reset);
     await waitFor(() => expect(printer.send).toHaveBeenCalledWith('^XA^JUF^XZ'));
+  });
+  it('a seeded configuration skips the read and starts from it', async () => {
+    const { printer } = setup(undefined, { initialConfig: parseConfiguration(HH({ 'PRINT MODE': 'CUTTER' })) });
+    expect(await screen.findByText('CUTTER')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByRole('radio', { name: /Cutter/ }).getAttribute('aria-checked')).toBe('true');
+    expect(printer.query).not.toHaveBeenCalledWith('^XA^HH^XZ');
+  });
+  it('intro replaces the eyebrow', () => {
+    setup(undefined, { intro: 'Printers · After factory reset' });
+    expect(screen.getByText('Printers · After factory reset')).toBeTruthy();
+    expect(screen.queryByText('Printers')).toBeNull();
   });
   it('shows the command log', async () => {
     setup();
