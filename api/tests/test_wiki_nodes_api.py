@@ -235,6 +235,48 @@ async def test_view_only_tree_hides_unpublished_pages_and_broken_inheritance(cli
     assert draft["id"]
 
 
+async def test_view_only_tree_under_a_never_published_page_is_not_published(client, db):
+    """A page never published isn't there for a view-only reader, so neither
+    is what's under it: listing it answers as reading it does (404
+    `not_published`), with nothing of its children."""
+    s = await _setup(client, db)
+    space = s["space"]
+    page = await _create(client, s["owner"], space, "Reorganization plan", kind="page")
+    child = await _create(client, s["owner"], space, "Org chart", kind="page", parent=page)
+    await publish_via_db(db, child["id"])
+
+    resp = await client.get(f"/wiki/spaces/{space['key']}/tree",
+                            headers=s["viewer"], params={"parent_id": page["id"]})
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"] == {"code": "not_published",
+                                     "message": "This page hasn't been published yet."}
+    assert "Org chart" not in resp.text
+
+    # anyone who sees drafts still lists it, and so does the reader once it's published
+    for who in ("editor", "owner"):
+        assert _titles(await _tree(client, s[who], space, page)) == ["Org chart"], who
+    await publish_via_db(db, page["id"])
+    assert _titles(await _tree(client, s["viewer"], space, page)) == ["Org chart"]
+
+
+async def test_tree_under_an_unviewable_never_published_page_is_not_found(client, db):
+    """The view check runs before the never-published one here too: a caller
+    who can't see the page at all is told it isn't there, as for an id that
+    doesn't exist, never that it hasn't been published."""
+    s = await _setup(client, db)
+    space = s["space"]
+    hidden = await _create(client, s["owner"], space, "Reorganization plan", kind="page")
+    await _break_inheritance(db, hidden["id"], person_id=s["owner_id"])
+
+    resp = await client.get(f"/wiki/spaces/{space['key']}/tree",
+                            headers=s["viewer"], params={"parent_id": hidden["id"]})
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"]["code"] == "not_found"
+    unknown = await client.get(f"/wiki/spaces/{space['key']}/tree",
+                               headers=s["viewer"], params={"parent_id": str(uuid.uuid4())})
+    assert resp.json() == unknown.json()
+
+
 async def test_tree_listing_uses_a_bounded_number_of_statements(client, db):
     s = await _setup(client, db)
     space = s["space"]

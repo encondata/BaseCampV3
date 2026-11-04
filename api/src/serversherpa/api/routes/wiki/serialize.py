@@ -15,7 +15,7 @@ from collections.abc import Iterable, Mapping, Sequence
 
 from sqlalchemy import and_, func, or_, select
 
-from serversherpa.api.routes.wiki.deps import WikiCtx
+from serversherpa.api.routes.wiki.deps import WikiCtx, visible_nodes
 from serversherpa.api.routes.wiki.schemas import (
     FileVersionOut,
     Level,
@@ -160,26 +160,26 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
 
     # where each inheriting node's printing value comes from — warm the
     # index once for every space so a multi-space listing batches its loads;
-    # only source nodes outside this batch cost a query (for their title
-    # and the caller's level on them)
+    # only source nodes outside this batch cost a query (for their title),
+    # plus one when a source is a page the caller only views (is it published?)
     await ctx.ix.warm({n.space_id for n in nodes})
     printing = {n.id: await ctx.ix.printing_source(n) for n in nodes}
     in_private = {n.id: await ctx.ix.is_private(n) for n in nodes}
     in_batch = {n.id: n for n in nodes}
-    outside = {src for _, src in printing.values()
-               if src is not None} - in_batch.keys()
+    sources = {src for _, src in printing.values() if src is not None}
+    outside = sources - in_batch.keys()
     source_nodes = dict(in_batch)
     if outside:
         source_nodes.update({row.id: row for row in (await db.scalars(
             select(WikiNode).where(WikiNode.id.in_(outside)))).all()})
-    # a source the caller can't view (an ancestor behind broken inheritance
-    # or a private folder) is named "…" with no id — as get_node masks a
-    # hidden breadcrumb — so its title and id don't leak
-    source_visible: dict[uuid.UUID, bool] = {}
-    for src_id, src in source_nodes.items():
-        source_visible[src_id] = (
-            levels.get(src_id) is not None if src_id in in_batch
-            else await ctx.ix.level_for_node(src) is not None)
+    # a source the caller can't see is named "…" with no id — as get_node
+    # masks a hidden breadcrumb — so its title and id don't leak: one they
+    # can't view (an ancestor behind broken inheritance or a private folder)
+    # or, where they only have view, a page never published (the tree's own
+    # rule, `visible_nodes`)
+    shown_sources, _ = await visible_nodes(
+        ctx, [source_nodes[s] for s in sources if s in source_nodes])
+    visible_sources = {s.id for s in shown_sources}
 
     now = reviews.utcnow()
     out: list[NodeOut] = []
@@ -223,7 +223,7 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
         if n.allow_printing is None:
             if source_id is None:
                 printing_from = PrintingSourceOut(node_id=None, title="Library")
-            elif source_visible.get(source_id):
+            elif source_id in visible_sources:
                 printing_from = PrintingSourceOut(
                     node_id=source_id, title=source_nodes[source_id].title)
             else:
