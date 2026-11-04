@@ -143,11 +143,12 @@ export default function PrintSettingsModal({
                   <span className="cell-top">Print by rack</span>
                   <span className="cell-sub">
                     Prints in rack order (RU top-down within each rack) and feeds blank labels between racks.
+                    Front labels also get them before the first rack, printed with the source rack name.
                   </span>
                 </span>
               </label>
               <div className="pf-form plabels-settings-form">
-                {numberField({ key: 'blanksBetweenRacks', label: 'Blanks between racks', hint: 'Blank labels fed when the rack changes' }, !settings.printByRack)}
+                {numberField({ key: 'blanksBetweenRacks', label: 'Blanks between racks', hint: 'Labels fed at each rack change' }, !settings.printByRack)}
               </div>
               <div className="modal-section">Alignment test</div>
               <div className="plabels-align">

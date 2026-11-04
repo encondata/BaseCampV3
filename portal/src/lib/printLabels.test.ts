@@ -7,8 +7,8 @@ import type { ContainerItem, GeneratedLabelBundle, InitiativeAssetRow, LabelVoca
 import {
   DEFAULT_PRINT_SETTINGS, alignmentTestZpl, applyPrintSettings, batchBounds, batchCount,
   blankLabelsZpl, bundleAtDpi, bundleByEntity, clampSetting, containerPrintOrder, defaultCopiesFor,
-  dpisByEntity, labelStatusFor, missingLabelIds, printOrder, readPrintSettings,
-  sanitizePrintSettings, settingsModified, staleLabelCount, writePrintSettings,
+  dpisByEntity, labelDots, labelStatusFor, missingLabelIds, printOrder, rackSeparatorZpl, readPrintSettings,
+  sanitizePrintSettings, settingsModified, showsRackName, staleLabelCount, writePrintSettings,
 } from './printLabels';
 
 const S = (over: Partial<typeof DEFAULT_PRINT_SETTINGS> = {}) => ({ ...DEFAULT_PRINT_SETTINGS, ...over });
@@ -73,6 +73,88 @@ describe('blank + alignment ZPL', () => {
   });
 });
 
+
+describe('rack separator (Front labels)', () => {
+  const vocab: LabelVocab[] = [
+    { kind: 'size', key: '2x1', label: '2" x 1"', description: '', meta: { width_in: 2, height_in: 1 }, sort_order: 1, is_active: true, usage_count: null },
+    { kind: 'dpi', key: '300', label: '300 DPI', description: '', meta: { dots: 300 }, sort_order: 2, is_active: true, usage_count: null },
+  ];
+  const FRONT_203 = { width: 406, height: 203 };
+  const heights = (zpl: string) => [...zpl.matchAll(/\^A0N,(\d+),\1/g)].map((m) => Number(m[1]));
+  const fields = (zpl: string) => [...zpl.matchAll(/\^FH_\^FD([^^]*)\^FS/g)].map((m) => m[1]);
+
+  it('only the Front label carries the rack name', () => {
+    expect(showsRackName('front')).toBe(true);
+    for (const t of ['top', 'rail', 'custom', 'container', '']) expect(showsRackName(t)).toBe(false);
+  });
+
+  it('sizes from the label code, which works offline, else its size row × DPI', () => {
+    expect(labelDots({ code: '^XA^PW600^LL300^XZ', size_key: 'x', dpi_key: '300' }, [])).toEqual({ width: 600, height: 300 });
+    expect(labelDots({ code: '^XA^FDa^FS^XZ', size_key: '2x1', dpi_key: '300' }, vocab)).toEqual({ width: 600, height: 300 });
+    expect(labelDots({ code: '^XA^PW406^FDa^FS^XZ', size_key: '2x1', dpi_key: '300' }, vocab)).toEqual({ width: 406, height: 300 });
+    expect(labelDots({ code: '^XA^FDa^FS^XZ', size_key: 'nope', dpi_key: '300' }, vocab)).toBeNull();
+    expect(labelDots(undefined, vocab)).toBeNull();
+  });
+
+  it('prints the rack name on the label stock, N copies, through ^FH escaping', () => {
+    const zpl = rackSeparatorZpl('AN17', 2, FRONT_203);
+    const lines = zpl.split('\n');
+    expect(lines.slice(0, 5)).toEqual(['^XA', '^CI28', '^PW406', '^LL203', '^LH0,0']);
+    expect(lines.slice(-2)).toEqual(['^PQ2', '^XZ']);
+    expect(fields(zpl)).toEqual(['AN17']);
+    expect(zpl).toMatch(/\^FB\d+,1,0,C,0/);
+  });
+
+  it('escapes ^ ~ _ \\ and non-ASCII the way the label compiler does', () => {
+    expect(fields(rackSeparatorZpl('R^1~a_b\\é', 1, FRONT_203))).toEqual(['R_5e1_7ea_5fb_5c_c3_a9']);
+  });
+
+  it('falls back to a plain blank without a rack name or a known label size', () => {
+    expect(rackSeparatorZpl('', 2, FRONT_203)).toBe(blankLabelsZpl(2));
+    expect(rackSeparatorZpl('   ', 1, FRONT_203)).toBe(blankLabelsZpl(1));
+    expect(rackSeparatorZpl('AN17', 3, null)).toBe(blankLabelsZpl(3));
+  });
+
+  it('a short name fills the label height and stays inside it', () => {
+    const [h] = heights(rackSeparatorZpl('AN17', 1, FRONT_203));
+    expect(h).toBeGreaterThan(203 * 0.6);
+    expect(h).toBeLessThanOrEqual(203);
+  });
+
+  it('scales with DPI and label size, and shrinks as the name grows', () => {
+    const at203 = heights(rackSeparatorZpl('AN17', 1, FRONT_203))[0];
+    const at300 = heights(rackSeparatorZpl('AN17', 1, { width: 600, height: 300 }))[0];
+    const big = heights(rackSeparatorZpl('AN17', 1, { width: 812, height: 406 }))[0];
+    expect(at300).toBeGreaterThan(at203);
+    expect(big).toBeGreaterThan(at203);
+    const short = heights(rackSeparatorZpl('A1', 1, FRONT_203))[0];
+    const long = heights(rackSeparatorZpl('AISLE12RACK04', 1, FRONT_203))[0];
+    expect(long).toBeLessThan(short);
+  });
+
+  it('never wraps: every name prints on one line, a longer one smaller', () => {
+    const names = ['A01', 'BG04', 'ATL1-A01', 'Row 12 Rack 04', '09.01.05D.02.10',
+      'DC1-HALL-B-ROW-12-RACK-04', 'AN17 (Room=N (Singapore,SGD,3))'];
+    const sizes = names.map((name) => {
+      const zpl = rackSeparatorZpl(name, 1, FRONT_203);
+      expect(fields(zpl)).toEqual([name]);
+      expect(heights(zpl)).toHaveLength(1);
+      return heights(zpl)[0];
+    });
+    expect(sizes).toEqual([...sizes].sort((a, b) => b - a));
+    expect(sizes[sizes.length - 1]).toBeLessThan(sizes[0] / 3);
+  });
+
+  it('centers the line vertically inside the margin', () => {
+    const zpl = rackSeparatorZpl('09.01.05D.02.10', 1, FRONT_203);
+    const [, , y, h] = /\^FO(\d+),(\d+)\^A0N,(\d+)/.exec(zpl)!.map(Number);
+    expect(Math.abs(y - (203 - h - y))).toBeLessThanOrEqual(1);
+  });
+
+  it('never goes below the smallest font ZPL draws', () => {
+    expect(heights(rackSeparatorZpl('X'.repeat(200), 1, FRONT_203))[0]).toBe(10);
+  });
+});
 describe('settings', () => {
   it('clamps per field', () => {
     expect(clampSetting('copies', 0)).toBe(1);
