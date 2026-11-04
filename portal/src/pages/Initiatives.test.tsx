@@ -364,3 +364,17 @@ it('a context row offers no actions button', async () => {
   expect(actionsIn(rowFor('Denver DC migration'))).toBeNull();
   expect(actionsIn(rowFor('Kickoff walkthrough'))).not.toBeNull();
 });
+
+it('from the keyboard, Enter opens the actions menu and Enter on Edit opens the form, the row staying closed', async () => {
+  const user = userEvent.setup();
+  mount();
+  await waitFor(() => expect(rowNames()).toHaveLength(2));
+
+  actionsIn(rowFor('Denver DC migration'))!.focus();
+  await user.keyboard('{Enter}');            // opens on its first item, Full details
+  expect(menuItems()).toEqual(['Full details', 'Edit']);
+  await user.keyboard('{ArrowDown}{Enter}');  // Edit
+  expect(await screen.findByText('Edit — Denver DC migration')).toBeTruthy();
+  expect(document.querySelector('.dir-row.open')).toBeNull();
+  expect(api.getInitiative).not.toHaveBeenCalled();
+});
