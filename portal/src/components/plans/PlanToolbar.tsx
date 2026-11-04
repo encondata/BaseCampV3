@@ -240,8 +240,9 @@ export default function PlanToolbar({
         {tool('zoomOut', cmd.zoomOut, <Icon name="zoomOut" />, {
           hint: noChart ?? (zoomAt === ZOOMS.length - 1 ? OFF_NOTES.zoomedOut : null),
         })}
+        {/* in as far as the plan's chart can draw: five minutes unless it runs for years */}
         {tool('zoomIn', cmd.zoomIn, <Icon name="zoomIn" />, {
-          hint: noChart ?? (zoomAt === 0 ? OFF_NOTES.zoomedIn : null),
+          hint: noChart ?? (zoomAt <= ZOOMS.indexOf(cmd.finestZoom) ? OFF_NOTES.zoomedIn : null),
         })}
         {tool('fit', cmd.fit, <Icon name="fit" />, { hint: noChart })}
         <span className="pln-tsep" aria-hidden="true" />

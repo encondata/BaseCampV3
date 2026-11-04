@@ -59,8 +59,10 @@ import {
   selectionMode, setColor, setMode as modeOps, setPercent, toggleTimeline, unlinkSelected, type Command,
   type CommandOps, type InsertKind,
 } from '../../lib/plans/commands';
-import { fitZoom, zoomIn as zoomInOf, zoomOut as zoomOutOf, type Zoom } from '../../lib/plans/ganttGeometry';
-import { LABEL_MAX_PX, readZoom, writeZoom, type GanttLayout } from '../../lib/plans/ganttView';
+import { coarserOf, fitZoom, zoomIn as zoomInOf, zoomOut as zoomOutOf, type Zoom } from '../../lib/plans/ganttGeometry';
+import {
+  LABEL_MAX_PX, planFinestZoom, readZoom, writeZoom, type DayWindow, type GanttLayout,
+} from '../../lib/plans/ganttView';
 import { PLAN_ERRORS, isPlanChanged, planErrorText } from '../../lib/plans/errors';
 import { moveOp, moveTops, type MovePlace } from '../../lib/plans/moveTasks';
 import { descendants } from '../../lib/plans/outline';
@@ -226,6 +228,10 @@ interface Options {
   layout?: GanttLayout;
   /** The filter bar's search box: Ctrl+F (⌘F) focuses it. */
   searchBox?: RefObject<HTMLInputElement | null>;
+  /** The initiative's scheduled window the chart is drawn over (PlanGantt's
+   *  `scheduled`), so `finestZoom` counts the same span; the plan's copy
+   *  (`initiative_window`) when not given. */
+  scheduled?: DayWindow;
 }
 
 export interface PlanCommands {
@@ -236,8 +242,13 @@ export interface PlanCommands {
   /** Every selected task is on the timeline. */
   onTimeline: boolean;
   display: GanttDisplay;
-  /** The Gantt's zoom, kept per plan in localStorage `plans.zoom.<planId>`. */
+  /** The Gantt's zoom, kept per plan in localStorage `plans.zoom.<planId>`,
+   *  held to `finestZoom`. */
   zoom: Zoom;
+  /** The finest zoom this plan's chart can draw (ganttView planFinestZoom):
+   *  five minutes unless the plan and its window run for years. Zoom In
+   *  stops there. */
+  finestZoom: Zoom;
   /** The chart's latest one-off sideways scroll (Fit, Scroll to Task). */
   chartScroll: ChartScroll | null;
   /** The sheet is grouped: Insert, Indent and Outdent are off. */
@@ -303,19 +314,28 @@ function visibleColumns(): PlanColumn[] {
 }
 
 export function usePlanCommands({
-  ctl, sheet, root, clip, openDialog, completion, layout = 'beside', searchBox,
+  ctl, sheet, root, clip, openDialog, completion, layout = 'beside', searchBox, scheduled,
 }: Options): PlanCommands {
   const toast = useToast();
   const { prompt, answer: answered } = completion;
   const [display, setDisplay] = useState<GanttDisplay>({ critical: false, baseline: false });
-  const [zoom, setZoom] = usePlanZoom(ctl.plan?.id ?? null);
+  const [storedZoom, setZoom] = usePlanZoom(ctl.plan?.id ?? null);
+  const startAt = ctl.plan?.project_start;
+  const finishAt = ctl.plan?.project_finish;
+  const drawnWindow = scheduled ?? ctl.plan?.initiative_window;
+  const winFrom = drawnWindow?.start ?? null;
+  const winTo = drawnWindow?.end ?? null;
+  const finestZoom = useMemo(() => planFinestZoom(startAt, finishAt, { start: winFrom, end: winTo }),
+    [startAt, finishAt, winFrom, winTo]);
+  // a zoom kept for this plan when it was shorter is held to what it can draw now
+  const zoom = coarserOf(storedZoom, finestZoom);
   const [chartScroll, setChartScroll] = useState<ChartScroll | null>(null);
   const scrollSeq = useRef(0);
 
   // what callbacks read after an await, and what keeps them one identity
-  const latest = useRef({ ctl, sheet, toast, prompt, openDialog, layout, display, zoom });
+  const latest = useRef({ ctl, sheet, toast, prompt, openDialog, layout, display, zoom, finestZoom });
   useLayoutEffect(() => {
-    latest.current = { ctl, sheet, toast, prompt, openDialog, layout, display, zoom };
+    latest.current = { ctl, sheet, toast, prompt, openDialog, layout, display, zoom, finestZoom };
   });
   const tempRef = useRef(0);
   // an export on its way: a second click waits for it (MS Project XML and
@@ -835,7 +855,7 @@ export function usePlanCommands({
       const pane = root.current?.querySelector<HTMLElement>('.pln-pane-chart');
       const width = (pane?.clientWidth ?? 0) - (latest.current.layout === 'below' ? LABEL_MAX_PX : 0);
       if (!now || width <= 0) return;
-      setZoom(fitZoom(now.project_start, now.project_finish, width));
+      setZoom(coarserOf(fitZoom(now.project_start, now.project_finish, width), latest.current.finestZoom));
       scrollSeq.current += 1;
       setChartScroll({ seq: scrollSeq.current, to: 'fit' });
     };
@@ -938,8 +958,13 @@ export function usePlanCommands({
       setBaseline,
       toggleCritical: () => setDisplay((d) => ({ ...d, critical: !d.critical })),
       toggleBaseline: () => setDisplay((d) => ({ ...d, baseline: !d.baseline })),
-      zoomIn: () => setZoom(zoomInOf),
-      zoomOut: () => setZoom(zoomOutOf),
+      // each step from the zoom on screen (the kept one held to finestZoom),
+      // and never finer than it
+      zoomIn: () => setZoom((now) => {
+        const finest = latest.current.finestZoom;
+        return coarserOf(zoomInOf(coarserOf(now, finest)), finest);
+      }),
+      zoomOut: () => setZoom((now) => zoomOutOf(coarserOf(now, latest.current.finestZoom))),
       fit,
       scrollToTask,
       collapse: () => collapseTo(true),
@@ -991,8 +1016,9 @@ export function usePlanCommands({
   const planId = plan?.id ?? null;
   const cutMarks = useMemo(() => (pendingCut && pendingCut.planId === planId ? new Set(pendingCut.all) : NO_MARKS),
     [pendingCut, planId]);
-  return useMemo(() => ({ ...commands, selected, mode, onTimeline, display, zoom, chartScroll, grouped, cutMarks }),
-    [commands, selected, mode, onTimeline, display, zoom, chartScroll, grouped, cutMarks]);
+  return useMemo(() => ({
+    ...commands, selected, mode, onTimeline, display, zoom, finestZoom, chartScroll, grouped, cutMarks,
+  }), [commands, selected, mode, onTimeline, display, zoom, finestZoom, chartScroll, grouped, cutMarks]);
 }
 
 /** The Gantt's zoom for the plan on screen: kept per plan in this browser

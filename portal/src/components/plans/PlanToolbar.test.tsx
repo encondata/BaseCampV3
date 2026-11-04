@@ -31,7 +31,7 @@ function commands(over: Partial<PlanCommands> = {}): PlanCommands {
   const fn = () => vi.fn();
   return {
     selected: [makeTask('a')], mode: 'auto', onTimeline: false,
-    display: { critical: false, baseline: false }, zoom: 'days', chartScroll: null,
+    display: { critical: false, baseline: false }, zoom: 'days', finestZoom: 'fiveMinutes', chartScroll: null,
     goToTask: fn(), scrollChartTo: fn(), setBaseline: fn(),
     undo: fn(), redo: fn(), percent: fn(), markOnTrack: fn(), link: fn(), unlink: fn(), indent: fn(),
     outdent: fn(), setMode: fn(), insert: fn(), timeline: fn(), deleteTasks: fn(), confirmDelete: vi.fn(async () => {}),
@@ -206,13 +206,30 @@ describe('groups', () => {
   });
 
   it('Display toggles show their state; zoom stops at the ends', () => {
-    const cmd = commands({ display: { critical: true, baseline: false }, zoom: 'hours' });
+    vi.useFakeTimers();
+    const cmd = commands({ display: { critical: true, baseline: false }, zoom: 'fiveMinutes' });
     render(<Bar plan={makePlan()} cmd={cmd} />);
     expect(button('Critical Path').getAttribute('aria-pressed')).toBe('true');
     expect(button('Baseline').getAttribute('aria-pressed')).toBe('false');
     expect(button('Zoom In').getAttribute('aria-disabled')).toBe('true');
+    expect(hoverTip(button('Zoom In')).note).toBe(OFF_NOTES.zoomedIn);
     fireEvent.click(button('Zoom Out'));
     expect(cmd.zoomOut).toHaveBeenCalled();
+  });
+
+  it('Zoom In keeps going past Hours', () => {
+    const cmd = commands({ zoom: 'hours' });
+    render(<Bar plan={makePlan()} cmd={cmd} />);
+    expect(button('Zoom In').getAttribute('aria-disabled')).not.toBe('true');
+    fireEvent.click(button('Zoom In'));
+    expect(cmd.zoomIn).toHaveBeenCalled();
+  });
+
+  it('Zoom In stops at the finest step a long plan can draw', () => {
+    vi.useFakeTimers();
+    render(<Bar plan={makePlan()} cmd={commands({ zoom: 'wideHours', finestZoom: 'wideHours' })} />);
+    expect(button('Zoom In').getAttribute('aria-disabled')).toBe('true');
+    expect(hoverTip(button('Zoom In')).note).toBe(OFF_NOTES.zoomedIn);
   });
 });
 

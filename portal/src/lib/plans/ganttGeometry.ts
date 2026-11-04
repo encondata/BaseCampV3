@@ -36,13 +36,21 @@ export const FIT_MARGIN = 2 * LINK_STUB + MILESTONE_HALF;
 
 // ── zoom ─────────────────────────────────────────────────────────────
 
-export type Zoom = 'hours' | 'days' | 'weeks' | 'months' | 'quarters';
+/** The chart's zooms. The three before `hours` are the screen's alone, for
+ *  a run book of many short tasks in a day (`fiveMinutes` puts about an hour
+ *  across a 1,000px chart); the PDF draws `hours` and coarser (planPdf
+ *  PRINT_ZOOMS), as its API port does. */
+export type Zoom =
+  | 'fiveMinutes' | 'quarterHours' | 'wideHours' | 'hours' | 'days' | 'weeks' | 'months' | 'quarters';
 
 /** Finest first: `zoomIn` moves toward the front, `zoomOut` toward the back. */
-export const ZOOMS: readonly Zoom[] = ['hours', 'days', 'weeks', 'months', 'quarters'];
+export const ZOOMS: readonly Zoom[] = [
+  'fiveMinutes', 'quarterHours', 'wideHours', 'hours', 'days', 'weeks', 'months', 'quarters',
+];
 
 export const ZOOM_PX_PER_DAY: Record<Zoom, number> = {
-  hours: 480, days: 48, weeks: 18, months: 5, quarters: 1.8,
+  fiveMinutes: 23_040, quarterHours: 5_760, wideHours: 1_920, hours: 480, days: 48, weeks: 18, months: 5,
+  quarters: 1.8,
 };
 
 export function zoomIn(zoom: Zoom): Zoom {
@@ -53,9 +61,17 @@ export function zoomOut(zoom: Zoom): Zoom {
   return ZOOMS[Math.min(ZOOMS.length - 1, ZOOMS.indexOf(zoom) + 1)];
 }
 
+/** The coarser of two zooms (a zoom held to a plan's `finestZoom`). */
+export function coarserOf(a: Zoom, b: Zoom): Zoom {
+  return ZOOMS[Math.max(ZOOMS.indexOf(a), ZOOMS.indexOf(b))];
+}
+
 // ── calendar units (all UTC) ─────────────────────────────────────────
 
-type Unit = 'hour' | 'day' | 'week' | 'month' | 'quarter' | 'year';
+type Unit = 'fiveMinutes' | 'quarterHour' | 'hour' | 'day' | 'week' | 'month' | 'quarter' | 'year';
+
+const MS_PER_FIVE_MINUTES = 5 * 60_000;
+const MS_PER_QUARTER_HOUR = 15 * 60_000;
 
 const mod = (n: number, m: number): number => ((n % m) + m) % m;
 
@@ -75,6 +91,8 @@ function monthAdd(ms: number, n: number): number {
 /** The start of the unit that holds `ms`. Weeks begin on Monday, as the
  *  calendar's `week` does: the epoch day 0 was a Thursday. */
 const FLOOR: Record<Unit, (ms: number) => number> = {
+  fiveMinutes: (ms) => Math.floor(ms / MS_PER_FIVE_MINUTES) * MS_PER_FIVE_MINUTES,
+  quarterHour: (ms) => Math.floor(ms / MS_PER_QUARTER_HOUR) * MS_PER_QUARTER_HOUR,
   hour: (ms) => Math.floor(ms / MS_PER_HOUR) * MS_PER_HOUR,
   day: (ms) => Math.floor(ms / MS_PER_DAY) * MS_PER_DAY,
   week: (ms) => (Math.floor(ms / MS_PER_DAY) - mod(Math.floor(ms / MS_PER_DAY) + 3, 7)) * MS_PER_DAY,
@@ -85,6 +103,8 @@ const FLOOR: Record<Unit, (ms: number) => number> = {
 
 /** `n` units after `ms`, which must already be the start of a unit. */
 const ADD: Record<Unit, (ms: number, n: number) => number> = {
+  fiveMinutes: (ms, n) => ms + n * MS_PER_FIVE_MINUTES,
+  quarterHour: (ms, n) => ms + n * MS_PER_QUARTER_HOUR,
   hour: (ms, n) => ms + n * MS_PER_HOUR,
   day: (ms, n) => ms + n * MS_PER_DAY,
   week: (ms, n) => ms + n * MS_PER_WEEK,
@@ -100,10 +120,12 @@ function ceil(unit: Unit, ms: number): number {
 }
 
 const BOTTOM_UNIT: Record<Zoom, Unit> = {
+  fiveMinutes: 'fiveMinutes', quarterHours: 'quarterHour', wideHours: 'hour',
   hours: 'hour', days: 'day', weeks: 'week', months: 'month', quarters: 'quarter',
 };
 
 const TOP_UNIT: Record<Zoom, Unit> = {
+  fiveMinutes: 'hour', quarterHours: 'hour', wideHours: 'day',
   hours: 'day', days: 'week', weeks: 'month', months: 'quarter', quarters: 'year',
 };
 
@@ -148,20 +170,37 @@ export function makeScale(
 }
 
 /**
- * The zoom that fits the plan in a pane `widthPx` wide: the finest one at which
- * the plan's own span (start to finish, not snapped to a unit and without the
- * scale's padding, which scrolls out of the way) is no wider than the pane less
- * FIT_MARGIN; quarters when none is. A plan with no span (start == finish, or
- * no finish) is shown at days. After applying a fit, scroll to `fitScrollLeft`.
+ * The zoom that fits the plan in a pane `widthPx` wide: the finest of `zooms`
+ * (finest first; all of them by default) at which the plan's own span (start
+ * to finish, not snapped to a unit and without the scale's padding, which
+ * scrolls out of the way) is no wider than the pane less FIT_MARGIN; the last
+ * of them when none is. A plan with no span (start == finish, or no finish) is
+ * shown at days. After applying a fit, scroll to `fitScrollLeft`.
  */
-export function fitZoom(projectStart: string, projectFinish: string | null | undefined, widthPx: number): Zoom {
+export function fitZoom(
+  projectStart: string, projectFinish: string | null | undefined, widthPx: number,
+  zooms: readonly Zoom[] = ZOOMS,
+): Zoom {
   const { start, finish } = projectSpan('fitZoom', projectStart, projectFinish);
   if (finish <= start) return 'days';
   const room = widthPx - FIT_MARGIN;
-  for (const zoom of ZOOMS) {
+  for (const zoom of zooms) {
     if (((finish - start) * ZOOM_PX_PER_DAY[zoom]) / MS_PER_DAY <= room) return zoom;
   }
-  return 'quarters';
+  return zooms[zooms.length - 1];
+}
+
+/** The widest scale a zoom may make, in px: under the ~17.9 million px a
+ *  box can be in Firefox (Chrome and Safari allow ~33.5 million). Past it the
+ *  chart's scroll can't reach the plan's end; only a plan of years at the
+ *  finest zooms comes near it (a year at `fiveMinutes` is ~8.4 million). */
+export const MAX_SCALE_PX = 16_000_000;
+
+/** The finest zoom whose scale for this span (makeScale's: the plan widened
+ *  to its initiative's window) stays within MAX_SCALE_PX. */
+export function finestZoom(spanStart: string, spanFinish: string | null | undefined): Zoom {
+  return ZOOMS.find((zoom) => makeScale(spanStart, spanFinish, zoom).width <= MAX_SCALE_PX)
+    ?? ZOOMS[ZOOMS.length - 1];
 }
 
 /** Where to scroll the Gantt after a fit: the project start, half the margin
@@ -172,7 +211,7 @@ export function fitScrollLeft(scale: Scale, projectStart: string): number {
   return Number.isFinite(left) ? Math.max(0, left) : 0;
 }
 
-/** The scale's px per day, whole for every zoom (480, 48, 18, 5, 1.8). */
+/** The scale's px per day, as ZOOM_PX_PER_DAY gives it (23,040 down to 1.8). */
 export const pxPerDay = (scale: Scale): number => scale.pxPerMs * MS_PER_DAY;
 
 /** The width in px of a span of milliseconds. */
@@ -211,10 +250,27 @@ interface TierLabels {
 
 const quarterOf = (at: Date): number => Math.floor(at.getUTCMonth() / 3) + 1;
 
+/** Mon 11/2 */
+const weekdayDate = (ms: number): string => {
+  const at = new Date(ms);
+  return `${WEEKDAYS[at.getUTCDay()]} ${at.getUTCMonth() + 1}/${at.getUTCDate()}`;
+};
+/** 06:15, on a 24-hour clock: a cutover runs round the clock */
+const clock = (ms: number): string => {
+  const at = new Date(ms);
+  return `${String(at.getUTCHours()).padStart(2, '0')}:${String(at.getUTCMinutes()).padStart(2, '0')}`;
+};
+
 const LABELS: Record<Zoom, TierLabels> = {
+  // Mon 11/2 06:00 over 06:05
+  fiveMinutes: { top: (ms) => `${weekdayDate(ms)} ${clock(ms)}`, bottom: clock },
+  // Mon 11/2 06:00 over 06:15
+  quarterHours: { top: (ms) => `${weekdayDate(ms)} ${clock(ms)}`, bottom: clock },
+  // Mon 11/2 over 06:00
+  wideHours: { top: weekdayDate, bottom: clock },
   // Mon 11/2 over 8
   hours: {
-    top: (ms) => { const at = new Date(ms); return `${WEEKDAYS[at.getUTCDay()]} ${at.getUTCMonth() + 1}/${at.getUTCDate()}`; },
+    top: weekdayDate,
     bottom: (ms) => String(new Date(ms).getUTCHours()),
   },
   // Nov 2, '26 (the week's Monday) over M T W...

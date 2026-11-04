@@ -18,6 +18,7 @@ import CertsPanel from '../components/workers/CertsPanel';
 import LevelBadge from '../components/workers/LevelBadge';
 import ProfileForm from '../components/workers/ProfileForm';
 import TradeChips from '../components/workers/TradeChips';
+import TravelRows from '../components/workers/TravelRows';
 import { GrantAccessModal } from '../components/users/GrantAccessModal';
 import {
   apiFetch, listTimeEntries, listWorkerStatuses,
@@ -250,6 +251,7 @@ export default function WorkerDetailPage() {
                   {worker.status_note && (
                     <><dt>Status note</dt><dd>{worker.status_note}</dd></>
                   )}
+                  <TravelRows worker={worker} />
                   <dt>Login</dt>
                   <dd>{worker.has_account
                     ? (worker.status === WORKER_BLACKLIST

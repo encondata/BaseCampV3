@@ -55,11 +55,12 @@ from serversherpa.status.labels import UNKNOWN_COLOR
 REQUIRED_PERSON_FIELDS = ("first_name", "last_name", "country")
 
 # worker_profiles.status is Mapped[str] (NOT NULL, server_default 'active').
-# trade/level/partner_id/status_note are all genuinely nullable — clearing
+# trade/level/partner_id/status_note and the travel fields are all genuinely nullable — clearing
 # them is a real edit, so they must NOT be listed here.
 NON_NULLABLE_PROFILE_FIELDS = ("status",)
 
-PROFILE_FIELDS = ["partner_id", "trade", "level", "status", "status_note"]
+PROFILE_FIELDS = ["partner_id", "trade", "level", "status", "status_note",
+                  "will_travel", "travel_region", "travel_restrictions"]
 
 
 def _err(status: int, code: str) -> HTTPException:

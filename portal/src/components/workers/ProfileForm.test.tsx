@@ -19,7 +19,7 @@ const WORKER: WorkerItem = {
   person_id: 'w1', display_name: 'Wes Worker', first_name: 'Wes', last_name: 'Worker',
   contact_email: null, phone: null, avatar_url: null, has_account: false,
   trade: 'Cable, Hardware', level: null, status: 'active', status_label: 'Active',
-  status_color: '#178a4c', status_note: null, partner: null, cert_count: 0, certs_expired: 0,
+  status_color: '#178a4c', status_note: null, will_travel: null, travel_region: null, travel_restrictions: null, partner: null, cert_count: 0, certs_expired: 0,
 };
 
 beforeEach(() => {
@@ -113,4 +113,49 @@ it('canonical spelling still dedupes case-insensitively', async () => {
   renderForm({ ...WORKER, trade: 'cable, CABLE, Other' }, ['Cable']);
   fireEvent.click(screen.getByRole('button', { name: 'Save profile' }));
   expect(await savedTrade()).toBe('Cable, Other');
+});
+
+async function savedBody(): Promise<Record<string, unknown>> {
+  await waitFor(() => expect(api.apiFetch).toHaveBeenCalled());
+  const [, init] = api.apiFetch.mock.calls[0] as [string, RequestInit];
+  return JSON.parse(init.body as string);
+}
+
+const travelSelect = () => screen.getByLabelText('Will travel') as HTMLSelectElement;
+const regionInput = () => screen.getByLabelText('Travel region') as HTMLInputElement;
+const restrictionsInput = () => screen.getByLabelText('Travel restrictions') as HTMLInputElement;
+
+it('a worker with no travel answers saves them as null', async () => {
+  renderForm();
+  expect(travelSelect().value).toBe('');
+  fireEvent.click(screen.getByText('Save profile'));
+  const body = await savedBody();
+  expect(body.will_travel).toBeNull();
+  expect(body.travel_region).toBeNull();
+  expect(body.travel_restrictions).toBeNull();
+});
+
+it('saves Will travel, a trimmed region and restrictions', async () => {
+  renderForm();
+  fireEvent.change(travelSelect(), { target: { value: 'yes' } });
+  fireEvent.change(regionInput(), { target: { value: '  Southeast US ' } });
+  fireEvent.change(restrictionsInput(), { target: { value: 'No overnight flights' } });
+  fireEvent.click(screen.getByText('Save profile'));
+  const body = await savedBody();
+  expect(body.will_travel).toBe(true);
+  expect(body.travel_region).toBe('Southeast US');
+  expect(body.travel_restrictions).toBe('No overnight flights');
+});
+
+it('seeds the travel fields and No saves as false, distinct from not set', async () => {
+  renderForm({ ...WORKER, will_travel: false, travel_region: 'Texas', travel_restrictions: 'Day trips only' });
+  expect(travelSelect().value).toBe('no');
+  expect(regionInput().value).toBe('Texas');
+  expect(restrictionsInput().value).toBe('Day trips only');
+  fireEvent.change(regionInput(), { target: { value: '   ' } });
+  fireEvent.click(screen.getByText('Save profile'));
+  const body = await savedBody();
+  expect(body.will_travel).toBe(false);
+  expect(body.travel_region).toBeNull();
+  expect(body.travel_restrictions).toBe('Day trips only');
 });

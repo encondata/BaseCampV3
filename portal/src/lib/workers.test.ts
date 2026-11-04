@@ -9,7 +9,7 @@ const worker: WorkerItem = {
   person_id: 'p1', display_name: 'Jamie Rivera', first_name: 'Jamie', last_name: 'Rivera',
   contact_email: 'jamie@example.com', phone: null, avatar_url: null, has_account: true,
   trade: 'Server tech', level: 'L2', status: 'active', status_label: 'Active',
-  status_color: '#178a4c', status_note: null,
+  status_color: '#178a4c', status_note: null, will_travel: null, travel_region: null, travel_restrictions: null,
   partner: { id: 'pt1', name: 'Acme Staffing' },
   cert_count: 3, certs_expired: 0,
 };
@@ -30,11 +30,12 @@ const statuses: StatusValue[] = [
 
 // Fields upsert_profile (PUT /workers/{id}/profile, api/src/serversherpa/api/
 // routes/workers.py) accepts via WorkerProfileIn (api/src/serversherpa/api/
-// schemas.py:526-537): trade, level, partner_id, status, status_note — the
+// schemas.py): trade, level, partner_id, status, status_note and the three travel fields — the
 // full set the endpoint will `setattr` from `body.model_dump(exclude_unset=True)`.
 // Verified 1:1 against the handler; WORKER_GOD_FIELDS must only ever name a
 // field from this set.
-const WORKER_WRITABLE_FIELDS = new Set(['trade', 'level', 'partner_id', 'status', 'status_note']);
+const WORKER_WRITABLE_FIELDS = new Set(['trade', 'level', 'partner_id', 'status', 'status_note',
+  'will_travel', 'travel_region', 'travel_restrictions']);
 
 describe('WORKER_GOD_FIELDS', () => {
   const fields = WORKER_GOD_FIELDS({

@@ -52,7 +52,7 @@ const WORKER: WorkerDetailItem = {
   person_id: 'w1', display_name: 'Wes Worker', first_name: 'Wes', last_name: 'Worker',
   contact_email: 'wes@x.test', phone: null, avatar_url: null, has_account: false,
   trade: null, level: null, status: 'active', status_label: 'Active', status_color: '#178a4c',
-  status_note: null, partner: null, cert_count: 0, certs_expired: 0,
+  status_note: null, will_travel: null, travel_region: null, travel_restrictions: null, partner: null, cert_count: 0, certs_expired: 0,
   preferred_name: null, job_title: null, address_line1: null, address_line2: null, city: null,
   region: null, postal_code: null, country: 'US', badge_uid: 'B1', rfid_tag: null,
   person_notes: null, source: 'manual', source_ref: null, created_at: '2026-01-01T00:00:00Z',

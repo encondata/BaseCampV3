@@ -50,7 +50,7 @@ const worker = (over: Partial<WorkerItem>): WorkerItem => ({
   person_id: 'w1', display_name: 'Ada Lovelace', first_name: 'Ada', last_name: 'Lovelace',
   contact_email: null, phone: null, avatar_url: null, has_account: false,
   trade: null, level: null, status: 'active', status_label: 'Active',
-  status_color: '#178a4c', status_note: null, partner: null, cert_count: 0, certs_expired: 0,
+  status_color: '#178a4c', status_note: null, will_travel: null, travel_region: null, travel_restrictions: null, partner: null, cert_count: 0, certs_expired: 0,
   ...over,
 });
 

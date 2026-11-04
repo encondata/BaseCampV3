@@ -26,9 +26,15 @@ from serversherpa.wiki.export_sections import (
 )
 from serversherpa.wiki.statement import DEFAULT_CONFIDENTIALITY_STATEMENT
 
-weasyprint = pytest.importorskip("weasyprint")
-
 AT = datetime(2026, 9, 29, 10, 5, tzinfo=UTC)
+
+
+@pytest.fixture
+def weasyprint():
+    """WeasyPrint, imported when a test here runs, not at collection:
+    importing it turns on PIL's LOAD_TRUNCATED_IMAGES for the whole
+    process, and a collection-time import did that before any test ran."""
+    return pytest.importorskip("weasyprint")
 
 
 REVISIONS = [RevisionRow(1, AT, "Ada Lovelace", "First publish"),
@@ -82,7 +88,7 @@ def _pdftotext() -> None:
         pytest.skip("pdftotext isn't installed")
 
 
-def test_cover_history_contents_body_and_comments(tmp_path):
+def test_cover_history_contents_body_and_comments(tmp_path, weasyprint):
     doc = _document("<h2>Power</h2><p>Check the breaker.</p><h2>Cabling</h2><p>Label.</p>"
                     "<h2>Testing</h2><p>Ping it.</p>", THREADS)
     rendered = weasyprint.HTML(string=doc).render()
@@ -119,7 +125,7 @@ def test_cover_history_contents_body_and_comments(tmp_path):
     assert f"Page {last} of {last}" in closing
 
 
-def test_an_empty_statement_leaves_no_confidential_footer(tmp_path):
+def test_an_empty_statement_leaves_no_confidential_footer(tmp_path, weasyprint):
     _pdftotext()
     doc = _document("<h2>Power</h2><p>Check.</p><h2>Cabling</h2><p>Label.</p>", THREADS,
                     statement="")
@@ -133,7 +139,7 @@ def test_an_empty_statement_leaves_no_confidential_footer(tmp_path):
             assert f"Page {page} of {len(rendered.pages)}" in text
 
 
-def test_a_long_history_repeats_its_header_row(tmp_path):
+def test_a_long_history_repeats_its_header_row(tmp_path, weasyprint):
     _pdftotext()
     rows = [RevisionRow(n, AT, "Ada Lovelace", f"Change number {n}") for n in range(1, 41)]
     doc = _document("<p>Text.</p>", [], revisions=rows)
@@ -152,7 +158,7 @@ def test_a_long_history_repeats_its_header_row(tmp_path):
     ("Long statement words. " * 60)[:1000],
     "\n".join(["A statement line that goes on"] * 40)[:1000],
 ])
-def test_a_long_title_and_statement_share_one_cover(tmp_path, statement):
+def test_a_long_title_and_statement_share_one_cover(tmp_path, statement, weasyprint):
     """The statement is a footnote: pinned to the cover's foot, it can't
     overlap the title, and it never moves on to the history's page."""
     _pdftotext()
@@ -190,7 +196,7 @@ def test_a_long_title_and_statement_share_one_cover(tmp_path, statement):
     assert meta.position_y + meta.margin_height() <= exported.position_y
 
 
-def test_one_heading_and_no_comments_is_cover_history_and_body():
+def test_one_heading_and_no_comments_is_cover_history_and_body(weasyprint):
     doc = _document("<h2>Only</h2><p>Text.</p>", [])
     rendered = weasyprint.HTML(string=doc).render()
     assert len(rendered.pages) == 3
