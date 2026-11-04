@@ -25,7 +25,7 @@ from serversherpa.db.models import (
 from serversherpa.reports import learning_compliance, worker
 from serversherpa.reports.move_scan_history.xlsx import XLSX_MIME
 from serversherpa.reports.registry import OptionsError, get_module, registry
-from tests.test_learning_assign import TODAY, _doc, _initiative, _manager, _packet
+from tests.test_learning_assign import _doc, _initiative, _manager, _packet, _today
 from tests.test_learning_stats import _assignment, _on, _override, _people, _person, _sign
 from tests.test_sites_api import make_login
 
@@ -55,8 +55,8 @@ async def _scenario(db):
     that expires during the move; plus a general (no initiative) assignment."""
     dress = await _doc(db, "Dress code", validity_days=365)
     nda = await _doc(db, "Acme NDA")
-    move = await _initiative(db, "Acme move", start=TODAY + timedelta(days=5),
-                             end=TODAY + timedelta(days=60))
+    move = await _initiative(db, "Acme move", start=_today() + timedelta(days=5),
+                             end=_today() + timedelta(days=60))
     await _packet(db, [dress, nda])
     ann, bob, cy = await _people(db, "Ann", "Bob", "Cy")
     await _on(db, move, ann, bob, cy)
@@ -143,7 +143,7 @@ async def test_gather_rows_for_an_initiative(db, seeded_user):
     assert ann_dress.expires_on is not None            # signed for the move: good to its end
     assert ann_dress.overrides == 0
     assert rows[("Cy W", "Dress code")].status == "Expires during initiative"
-    assert rows[("Cy W", "Dress code")].expires_on == TODAY + timedelta(days=15)
+    assert rows[("Cy W", "Dress code")].expires_on == _today() + timedelta(days=15)
     bob_dress = rows[("Bob W", "Dress code")]
     assert bob_dress.status == "Not signed" and bob_dress.signed_at is None
     assert bob_dress.version is None and bob_dress.overrides == 2

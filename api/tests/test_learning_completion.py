@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from serversherpa.db.models import EmailOutbox, Notification, WorkerCertification
 from serversherpa.learning import completion
 from tests.test_learn_training import SIGN, _assign, _learner, _plain_doc
-from tests.test_learning_assign import TODAY, _initiative, _manager
+from tests.test_learning_assign import _initiative, _manager, _today
 
 
 async def _certs(db, person_id):
@@ -46,9 +46,9 @@ async def test_last_sign_writes_cert_notifies_and_queues_email(client, db, seede
     [cert] = await _certs(db, wanda.id)
     assert (cert.name, cert.source, cert.learning_initiative_id) == (
         "Onboarding: Acme DFW move", "learning", move.id)
-    assert cert.issued_on == TODAY
+    assert cert.issued_on == _today()
     # the earliest expiry among the signed documents; "never" doesn't count
-    assert cert.expires_on == TODAY + timedelta(days=10)
+    assert cert.expires_on == _today() + timedelta(days=10)
 
     [note] = await _notes(db)
     assert note.person_id not in (wanda.id, seeded_user.id)
@@ -96,7 +96,7 @@ async def test_general_completion_name_and_link(client, db, seeded_user):
 
     [cert] = await _certs(db, wanda.id)
     assert (cert.name, cert.learning_initiative_id) == ("Learning: general", None)
-    assert cert.expires_on == TODAY + timedelta(days=365)
+    assert cert.expires_on == _today() + timedelta(days=365)
     [note] = await _notes(db)
     assert note.title == "Wanda Worker finished their assigned learning"
     assert note.link == f"/people/workers/{wanda.id}"

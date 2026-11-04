@@ -23,7 +23,7 @@ from serversherpa.learning.models import (
     LearningSignoff,
     LearningTranslation,
 )
-from tests.test_learning_assign import TODAY, _doc, _initiative, _manager, _publish
+from tests.test_learning_assign import _doc, _initiative, _manager, _publish, _today
 
 # ── helpers ──────────────────────────────────────────────────────────
 
@@ -88,15 +88,15 @@ async def _fresh(db, row):
 
 
 async def test_training_lists_only_own_assignments(client, db, seeded_user):
-    move = await _initiative(db, "Acme DFW move", start=TODAY + timedelta(days=5),
-                             end=TODAY + timedelta(days=20))
+    move = await _initiative(db, "Acme DFW move", start=_today() + timedelta(days=5),
+                             end=_today() + timedelta(days=20))
     safety = await _plain_doc(db, "Site safety")
     nda = await _plain_doc(db, "Acme NDA", quiz_enabled=True, quiz_pass_percent=100)
     await _question(db, nda, "Share photos?", [("a", "Yes"), ("b", "No")], ["b"])
     extra = await _plain_doc(db, "Forklift basics")
     wanda, hdrs = await _learner(db)
     other, _ = await _learner(db, "Otto", "Other")
-    due = TODAY + timedelta(days=3)
+    due = _today() + timedelta(days=3)
     a1 = await _assign(db, wanda, safety, initiative=move, due_on=due)
     await _assign(db, wanda, nda, initiative=move, due_on=due + timedelta(days=1))
     await _assign(db, wanda, extra)
@@ -110,7 +110,7 @@ async def test_training_lists_only_own_assignments(client, db, seeded_user):
     assert set(by_initiative) == {str(move.id), None}
     group = by_initiative[str(move.id)]
     assert group["initiative"] == {"id": str(move.id), "name": "Acme DFW move",
-                                   "start": (TODAY + timedelta(days=5)).isoformat()}
+                                   "start": (_today() + timedelta(days=5)).isoformat()}
     assert group["due_on"] == due.isoformat()
     items = {i["title"]: i for i in group["items"]}
     assert set(items) == {"Site safety", "Acme NDA"}
@@ -488,8 +488,8 @@ async def test_history_lists_own_signoffs_newest_first(client, db, seeded_user):
 async def test_history_keeps_old_version_and_ended_moves(client, db, seeded_user):
     doc = await _plain_doc(db, "Site safety")
     gone = await _plain_doc(db, "Withdrawn")
-    ended = await _initiative(db, "Old move", start=TODAY - timedelta(days=20),
-                              end=TODAY - timedelta(days=5))
+    ended = await _initiative(db, "Old move", start=_today() - timedelta(days=20),
+                              end=_today() - timedelta(days=5))
     wanda, hdrs = await _learner(db)
     signed = await _assign(db, wanda, doc, initiative=ended)
     cancelled = await _assign(db, wanda, gone)

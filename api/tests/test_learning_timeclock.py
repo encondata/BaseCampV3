@@ -31,7 +31,7 @@ from tests.test_kiosk_station_key import SERIAL
 from tests.test_kiosk_station_scans import _auth
 from tests.test_kiosk_timeclock_api import _just_past_midnight_zone
 from tests.test_kiosk_timeclock_station_key import _timeclock_station
-from tests.test_learning_assign import TODAY, _doc, _initiative, _midnight, _worker
+from tests.test_learning_assign import _doc, _initiative, _midnight, _today, _worker
 from tests.test_sites_api import login
 from tests.test_totp_api import _enroll_direct, _next_code, _security
 
@@ -599,7 +599,7 @@ async def test_learning_link_not_offered_once_the_initiative_has_ended(client, d
     still shows, without the link button, and the link isn't sent."""
     _, init, key = await _timeclock_station(db)
     pid = await _owing(db, init)
-    (await db.get(Initiative, init.id)).scheduled_end = _midnight(TODAY - timedelta(days=2))
+    (await db.get(Initiative, init.id)).scheduled_end = _midnight(_today() - timedelta(days=2))
     await db.commit()
 
     r = await _status(client, key, pid)

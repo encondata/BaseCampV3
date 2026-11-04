@@ -26,10 +26,13 @@ from tests.test_status_values_write import _make
 from tests.test_team_bulk_service import commit as bulk_commit
 from tests.test_team_bulk_service import mk_worker
 
-TODAY = datetime.now(UTC).date()
-
-
 # ── helpers ──────────────────────────────────────────────────────────
+
+
+def _today() -> date:
+    """Today in UTC, read at each call like the code under test. A constant set
+    at import goes stale when a run crosses 00:00 UTC."""
+    return datetime.now(UTC).date()
 
 
 def _midnight(day: date) -> datetime:
@@ -76,7 +79,7 @@ async def _packet(db, docs, *, conditions=(("everyone", []),), name="Standard on
 
 
 async def _initiative(db, name="Move", *, start=None, end=None):
-    start = start or TODAY + timedelta(days=14)
+    start = start or _today() + timedelta(days=14)
     move = Initiative(name=name, initiative_type="move", scheduled_start=_midnight(start),
                       scheduled_end=_midnight(end) if end else None)
     db.add(move)
@@ -140,7 +143,7 @@ async def test_new_worker_gets_everyone_packet(client, db, seeded_user):
 
     rows = _by(await _assignments(db, worker.id))
     assert set(rows) == {safety.id, dress.id, photo.id}
-    start = TODAY + timedelta(days=14)
+    start = _today() + timedelta(days=14)
     for doc in (safety, dress):
         row = rows[doc.id]
         assert (row.packet_id, row.rule_id) == (everyone.id, rule1.id)
@@ -211,40 +214,40 @@ async def test_every_initiative_doc_always_assigned(db, seeded_user):
     move = await _initiative(db)
 
     assert await assign.signoff_valid(db, worker.id, briefing, initiative_id=move.id,
-                                      on=TODAY) == (False, "every_initiative")
+                                      on=_today()) == (False, "every_initiative")
     plan = await assign.plan_for(db, worker.id, move.id)
     assert [(i.document_id, i.action, i.reason) for i in plan] == [
         (briefing.id, "assign", "every_initiative")]
     # outside an initiative (the general set) the sign-off still counts
     assert await assign.signoff_valid(db, worker.id, briefing, initiative_id=None,
-                                      on=TODAY) == (True, "valid_until:never")
+                                      on=_today()) == (True, "valid_until:never")
 
 
 async def test_signed_for_same_initiative_stays_valid_past_expiry(db, seeded_user):
     doc = await _doc(db, "Badge rules", validity_days=30)
     worker = await _worker(db)
-    end = TODAY + timedelta(days=10)
-    long_move = await _initiative(db, "Long move", start=TODAY - timedelta(days=90), end=end)
+    end = _today() + timedelta(days=10)
+    long_move = await _initiative(db, "Long move", start=_today() - timedelta(days=90), end=end)
     await _signoff(db, worker, doc, doc.current_version_id, initiative=long_move,
                    days_ago=60)
     next_move = await _initiative(db, "Next move")
 
     assert await assign.signoff_valid(db, worker.id, doc, initiative_id=long_move.id,
-                                      on=TODAY) == (True, f"valid_until:{end}")
+                                      on=_today()) == (True, f"valid_until:{end}")
     assert await assign.signoff_valid(db, worker.id, doc, initiative_id=long_move.id,
                                       on=end) == (True, f"valid_until:{end}")
     assert await assign.signoff_valid(db, worker.id, doc, initiative_id=long_move.id,
                                       on=end + timedelta(days=1)) == (False, "expired")
     assert await assign.signoff_valid(db, worker.id, doc, initiative_id=next_move.id,
-                                      on=TODAY) == (False, "expired")
+                                      on=_today()) == (False, "expired")
 
 
 async def test_new_version_requires_resign_at_next_initiative(db, seeded_user):
     doc = await _doc(db, "Tool policy")
     await _packet(db, [doc])
     worker = await _worker(db)
-    current = await _initiative(db, "Current", start=TODAY - timedelta(days=3),
-                                end=TODAY + timedelta(days=20))
+    current = await _initiative(db, "Current", start=_today() - timedelta(days=3),
+                                end=_today() + timedelta(days=20))
     await _signoff(db, worker, doc, doc.current_version_id, initiative=current, days_ago=2)
     v2 = await _publish(db, doc)
     upcoming = await _initiative(db, "Upcoming")
@@ -252,7 +255,7 @@ async def test_new_version_requires_resign_at_next_initiative(db, seeded_user):
     # mid-initiative, the new version doesn't reopen the sign-off
     plan = await assign.plan_for(db, worker.id, current.id)
     assert [(i.action, i.reason) for i in plan] == [
-        ("skip", f"valid_until:{TODAY + timedelta(days=20)}")]
+        ("skip", f"valid_until:{_today() + timedelta(days=20)}")]
     # the next initiative requires the new version
     plan = await assign.plan_for(db, worker.id, upcoming.id)
     assert [(i.action, i.reason, i.version_id) for i in plan] == [
@@ -264,17 +267,18 @@ async def test_signoff_must_cover_the_initiative_start(db, seeded_user):
     await _packet(db, [doc])
     worker = await _worker(db)
     await _signoff(db, worker, doc, doc.current_version_id, days_ago=5)
-    move = await _initiative(db, start=TODAY + timedelta(days=14))
+    move = await _initiative(db, start=_today() + timedelta(days=14))
+    valid_until = f"valid_until:{_today() + timedelta(days=5)}"
 
     # valid today, lapsed by the start: assigned
     assert await assign.signoff_valid(db, worker.id, doc, initiative_id=move.id,
-                                      on=TODAY) == (True, f"valid_until:{TODAY + timedelta(days=5)}")
+                                      on=_today()) == (True, valid_until)
     assert [(i.action, i.reason) for i in await assign.plan_for(db, worker.id, move.id)] == [
         ("assign", "expired")]
     # an initiative already under way is checked on today
-    underway = await _initiative(db, "Under way", start=TODAY - timedelta(days=2))
+    underway = await _initiative(db, "Under way", start=_today() - timedelta(days=2))
     assert [(i.action, i.reason) for i in await assign.plan_for(db, worker.id, underway.id)] == [
-        ("skip", f"valid_until:{TODAY + timedelta(days=5)}")]
+        ("skip", valid_until)]
 
 
 # ── the add / remove hooks ───────────────────────────────────────────
@@ -463,7 +467,7 @@ async def test_dry_run_does_not_write(client, db, seeded_user):
     assert resp.status_code == 200, resp.text
     out = resp.json()
     rows = {r["person_id"]: r for r in out["rows"]}
-    until = TODAY - timedelta(days=1) + timedelta(days=365)
+    until = _today() - timedelta(days=1) + timedelta(days=365)
     assert rows[str(wanda.id)] == {
         "person_id": str(wanda.id), "name": "Wanda Worker", "will_get": ["Dress code"],
         "why": ["never_signed"],
@@ -577,7 +581,7 @@ async def test_manual_assign_on_initiative_needs_membership(client, db, seeded_u
         {"title": "Forklift safety", "reason": "not_on_initiative"}]
     [row] = await _assignments(db)
     assert (row.person_id, row.initiative_id, row.source) == (member.id, move.id, "manual")
-    assert row.due_on == TODAY + timedelta(days=14) - timedelta(days=2)
+    assert row.due_on == _today() + timedelta(days=14) - timedelta(days=2)
 
 
 async def test_push_version_after_a_general_signoff(client, db, seeded_user):
