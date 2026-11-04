@@ -205,6 +205,43 @@ class RolodexTest {
         assertEquals(JsonObject(emptyMap()), buildPatch(noStatus, RolodexEdit.from(noStatus)))
     }
 
+    // ── edit: travel ────────────────────────────────────────────────
+
+    private val traveler = detail.copy(will_travel = false, travel_region = "Midwest", travel_restrictions = "No overnight flights")
+
+    @Test fun editSeedsTravelFromTheDetailWithNoKeptAsFalse() {
+        val e = RolodexEdit.from(traveler)
+        assertEquals(false, e.willTravel)
+        assertEquals("Midwest", e.travelRegion); assertEquals("No overnight flights", e.travelRestrictions)
+        // An older API without the keys: not set, and empty text.
+        val old = RolodexEdit.from(detail)
+        assertNull(old.willTravel); assertEquals("", old.travelRegion); assertEquals("", old.travelRestrictions)
+    }
+
+    @Test fun changingOnlyWillTravelSendsOnlyWillTravel() {
+        val patch = buildPatch(detail, RolodexEdit.from(detail).copy(willTravel = false))
+        assertEquals("""{"will_travel":false}""", patch.toString())
+        assertEquals("""{"will_travel":true}""", buildPatch(traveler, RolodexEdit.from(traveler).copy(willTravel = true)).toString())
+    }
+
+    @Test fun willTravelBackToNotSetSendsAnExplicitNull() {
+        val patch = buildPatch(traveler, RolodexEdit.from(traveler).copy(willTravel = null))
+        assertEquals(buildJsonObject { put("will_travel", JsonNull) }, patch)
+        assertEquals("""{"will_travel":null}""", patch.toString())
+    }
+
+    @Test fun clearedTravelRegionSendsAnExplicitNull() {
+        val patch = buildPatch(traveler, RolodexEdit.from(traveler).copy(travelRegion = "  "))
+        assertEquals("""{"travel_region":null}""", patch.toString())
+        assertEquals("""{"travel_restrictions":"Day trips only"}""",
+            buildPatch(traveler, RolodexEdit.from(traveler).copy(travelRestrictions = " Day trips only ")).toString())
+    }
+
+    @Test fun unchangedTravelBuildsAnEmptyPatch() {
+        assertEquals(JsonObject(emptyMap()), buildPatch(traveler, RolodexEdit.from(traveler)))
+        assertEquals(JsonObject(emptyMap()), buildPatch(detail, RolodexEdit.from(detail)))
+    }
+
     @Test fun validateNeedsBothNames() {
         val ok = RolodexEdit.from(detail)
         assertNull(validate(ok))

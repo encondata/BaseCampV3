@@ -98,6 +98,12 @@ data class RolodexDetail(
     /** How many previous jobs the worker has in all ([jobs] holds at most the latest 50). An API
      *  from before the total sends none: 0, which never reads as more than are shown. */
     val jobs_total: Int = 0,
+    /** Will travel: true (Yes), false (No, a real answer) or null (not set). Detail only, never on the
+     *  cached list row. An API from before the travel fields sends none of the three: null. */
+    val will_travel: Boolean? = null,
+    val travel_region: String? = null,
+    /** Free text, possibly personal: detail only, like [will_travel]. */
+    val travel_restrictions: String? = null,
 ) {
     /** This person as a list row (no email or phone), e.g. to replace the row after a save. */
     fun toRow(): RolodexRow = RolodexRow(

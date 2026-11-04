@@ -82,6 +82,19 @@ class OkHttpKioskApiRolodexTest {
         assertNull(d.jobs[1].work_type_label); assertNull(d.jobs[1].site_worked_name)
     }
 
+    /** An API from before the travel fields sends none of them: not set. No (false) stays false, not null. */
+    @Test fun detailCarriesTheTravelFields() {
+        val old = KioskJson.decodeFromString(RolodexDetail.serializer(), detailJson)
+        assertNull(old.will_travel); assertNull(old.travel_region); assertNull(old.travel_restrictions)
+        val no = KioskJson.decodeFromString(RolodexDetail.serializer(), detailJson.dropLast(1) +
+            ""","will_travel":false,"travel_region":"Midwest","travel_restrictions":"No overnight flights"}""")
+        assertEquals(false, no.will_travel)
+        assertEquals("Midwest", no.travel_region); assertEquals("No overnight flights", no.travel_restrictions)
+        val yes = KioskJson.decodeFromString(RolodexDetail.serializer(), detailJson.dropLast(1) +
+            ""","will_travel":true,"travel_region":null,"travel_restrictions":null}""")
+        assertEquals(true, yes.will_travel); assertNull(yes.travel_region); assertNull(yes.travel_restrictions)
+    }
+
     /** The cached list is the list payload re-encoded: email or phone in a row never survive it. */
     @Test fun listRowsNeverCarryEmailOrPhone() {
         val decoded = KioskJson.decodeFromString(RolodexList.serializer(),
