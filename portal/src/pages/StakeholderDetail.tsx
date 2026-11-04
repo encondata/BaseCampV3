@@ -19,6 +19,7 @@ import AvatarUpload from '../components/AvatarUpload';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import ChildPartnersPanel from '../components/stakeholders/ChildPartnersPanel';
 import StatusHover from '../components/StatusHover';
+import TradeChips from '../components/workers/TradeChips';
 import { TIER_LABEL } from '../components/TierSelect';
 import {
   ApiError,
@@ -35,7 +36,7 @@ import { statusChip as chip } from '../lib/chips';
 import {
   partnerTypeColor, partnerTypeLabel, STATUS_META, type OrgItem,
 } from '../lib/orgs';
-import type { WorkerItem } from '../lib/workers';
+import { workerCellValues, type WorkerItem } from '../lib/workers';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
   usePersistentListState,
@@ -456,7 +457,7 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
     const rows = workers ?? [];
     const q = workerQuery.trim().toLowerCase();
     const filtered = rows.filter((w) => {
-      if (!passesColumnFilters(w, workerFilters, workerRowCellText)) return false;
+      if (!passesColumnFilters(w, workerFilters, workerRowCellText, workerCellValues)) return false;
       if (!q) return true;
       return workerHaystack(w).includes(q);
     });
@@ -478,10 +479,7 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
             {w.display_name}
           </span>
         );
-      case 'trade': {
-        const text = w.trade ?? '—';
-        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
-      }
+      case 'trade': return <TradeChips trade={w.trade} />;
       case 'level': {
         const text = w.level ?? '—';
         return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
@@ -814,7 +812,7 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
                              dragProps={workerHeaderDrag.dragProps(c.key)}>
                       <ColumnMenu colKey={c.key} label={c.label}
                                   allRows={workers} filters={workerFilters}
-                                  text={workerRowCellText}
+                                  text={workerRowCellText} cellValues={workerCellValues}
                                   filter={workerFilters[c.key]} onFilter={setWorkerFilter}
                                   sortDir={workerSortKey === c.key ? workerSortDir : null}
                                   onSort={(dir) => setWorkerSort(c.key, dir)} />

@@ -71,6 +71,15 @@ export function splitTrades(trade: string | null | undefined): string[] {
   return out;
 }
 
+/** Per-column split values for the list ColumnMenu / passesColumnFilters, so a
+ *  worker with "Cable, Hardware" is filterable under each trade. Only the
+ *  trade column splits; every other column returns null (single-valued). Takes
+ *  the minimal `{ trade }` shape so any worker row type fits. A module-level
+ *  function keeps one stable identity for memo deps. */
+export function workerCellValues(w: { trade: string | null }, colKey: string): string[] | null {
+  return colKey === 'trade' ? splitTrades(w.trade) : null;
+}
+
 /** Codes upsert_profile (PUT /workers/{id}/profile, api/src/serversherpa/api/
  *  routes/workers.py) can raise, plus the generic 403 every require_permission
  *  dependency raises (api/src/serversherpa/api/deps.py:93). Verified against

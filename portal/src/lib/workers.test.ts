@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  applyWorkerPatch, splitTrades, WORKER_ERRORS, WORKER_GOD_FIELDS, workerCellText, workerSearchText,
+  applyWorkerPatch, splitTrades, WORKER_ERRORS, WORKER_GOD_FIELDS, workerCellText, workerCellValues, workerSearchText,
   type WorkerItem, type WorkerLevelLookup,
 } from './workers';
 import type { StatusValue } from './api';
@@ -205,5 +205,18 @@ describe('splitTrades', () => {
     expect(splitTrades(undefined)).toEqual([]);
     expect(splitTrades('')).toEqual([]);
     expect(splitTrades(' , ')).toEqual([]);
+  });
+});
+
+describe('workerCellValues', () => {
+  it('splits the trade column into its values', () => {
+    expect(workerCellValues({ ...worker, trade: 'Cable, Hardware' }, 'trade')).toEqual(['Cable', 'Hardware']);
+    expect(workerCellValues({ ...worker, trade: null }, 'trade')).toEqual([]);
+  });
+
+  it('returns null for every other column', () => {
+    for (const key of ['primary', 'level', 'partner', 'status', 'certs', 'contact']) {
+      expect(workerCellValues(worker, key)).toBeNull();
+    }
   });
 });
