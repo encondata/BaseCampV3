@@ -410,6 +410,9 @@ class WorkerProfile(Base):
     level: Mapped[str | None] = mapped_column(ForeignKey("worker_levels.level"))
     status: Mapped[str] = mapped_column(server_default="active")
     status_note: Mapped[str | None]
+    will_travel: Mapped[bool | None]        # None = not set (migration 0118)
+    travel_region: Mapped[str | None]
+    travel_restrictions: Mapped[str | None]
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

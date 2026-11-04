@@ -18,6 +18,7 @@ import CertsPanel from '../components/workers/CertsPanel';
 import LevelBadge from '../components/workers/LevelBadge';
 import ProfileForm from '../components/workers/ProfileForm';
 import TradeChips from '../components/workers/TradeChips';
+import TravelRows from '../components/workers/TravelRows';
 import { apiFetch, listWorkerStatuses, updateWorkerProfile, type StatusValue } from '../lib/api';
 import { ADMIN_RANK } from '../lib/access';
 import { initialOpenId } from '../lib/auditFormat';
@@ -523,6 +524,7 @@ function WorkerDetail({
               {worker.status_note && (
                 <><dt>Status note</dt><dd>{worker.status_note}</dd></>
               )}
+              <TravelRows worker={worker} />
               <dt>Contact</dt>
               <dd className="mono">{[worker.contact_email, worker.phone]
                 .filter(Boolean).join(' · ') || '—'}</dd>

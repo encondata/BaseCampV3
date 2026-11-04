@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useId, useMemo, useState, type FormEvent } from 'react';
 
 import ComboBox from '../ComboBox';
 import TagInput from '../TagInput';
@@ -22,6 +22,12 @@ export default function ProfileForm({ worker, levels, statuses, tradeSuggestions
   const [partners, setPartners] = useState<PartnerRef[] | null>(null);
   const [status, setStatus] = useState(worker.status);
   const [note, setNote] = useState(worker.status_note ?? '');
+  // '' = not set; No is a real answer, distinct from not set
+  const [travel, setTravel] = useState(
+    worker.will_travel == null ? '' : worker.will_travel ? 'yes' : 'no');
+  const [region, setRegion] = useState(worker.travel_region ?? '');
+  const [restrictions, setRestrictions] = useState(worker.travel_restrictions ?? '');
+  const id = useId();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -68,6 +74,9 @@ export default function ProfileForm({ worker, levels, statuses, tradeSuggestions
         partner_id: partnerId || null,
         status,
         status_note: note.trim() || null,
+        will_travel: travel === '' ? null : travel === 'yes',
+        travel_region: region.trim() || null,
+        travel_restrictions: restrictions.trim() || null,
       }),
     });
     if (!resp.ok) {
@@ -131,6 +140,18 @@ export default function ProfileForm({ worker, levels, statuses, tradeSuggestions
           Leaving blacklist re-enables their login account.
         </p>
       )}
+      <div><label htmlFor={`${id}-travel`}>Will travel</label>
+        <select id={`${id}-travel`} className="org-select" value={travel}
+                onChange={(e) => setTravel(e.target.value)}>
+          <option value="">Not set</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select></div>
+      <div><label htmlFor={`${id}-region`}>Travel region</label>
+        <input id={`${id}-region`} value={region} onChange={(e) => setRegion(e.target.value)} /></div>
+      <div className="full"><label htmlFor={`${id}-restrictions`}>Travel restrictions</label>
+        <input id={`${id}-restrictions`} value={restrictions}
+               onChange={(e) => setRestrictions(e.target.value)} /></div>
       <div className="pf-form-actions">
         <button className="btn-solid" type="submit" disabled={saving}>
           {saving ? 'Saving…' : 'Save profile'}
