@@ -5,9 +5,10 @@
 favorites, recent, drafts, ...): it serializes any number of nodes with
 a fixed number of statements — one each for the spaces, the page rows
 (+ published version time and pending review), the file rows (+ current version), the
-people referenced, the caller's favorites, and a grouped child count —
-so a listing never costs a query per node. `node_out` is the
-one-element wrapper for single-node reads."""
+people referenced, the caller's favorites, a grouped child count, and the
+parents and printing sources outside the batch (+ whether one the caller
+only views is published) — so a listing never costs a query per node.
+`node_out` is the one-element wrapper for single-node reads."""
 from __future__ import annotations
 
 import uuid
@@ -93,7 +94,8 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
 
     `has_children` counts live children, but never someone else's
     private one; for a caller who only has view on the node, unpublished
-    child pages (which they can't see) don't count either."""
+    child pages (which they can't see) don't count either. `parent_id` is
+    null for a parent the caller can't see, as at the top level."""
     if not nodes:
         return []
     db = ctx.db
@@ -158,28 +160,30 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
             .group_by(WikiNode.parent_id)
         )).all()}
 
-    # where each inheriting node's printing value comes from — warm the
-    # index once for every space so a multi-space listing batches its loads;
-    # only source nodes outside this batch cost a query (for their title),
-    # plus one when a source is a page the caller only views (is it published?)
+    # the nodes the payloads name: each node's parent, and where an
+    # inheriting one's printing value comes from — warm the index once for
+    # every space so a multi-space listing batches its loads; only named
+    # nodes outside this batch cost a query (for their title), plus one when
+    # one is a page the caller only views (is it published?)
     await ctx.ix.warm({n.space_id for n in nodes})
     printing = {n.id: await ctx.ix.printing_source(n) for n in nodes}
     in_private = {n.id: await ctx.ix.is_private(n) for n in nodes}
     in_batch = {n.id: n for n in nodes}
-    sources = {src for _, src in printing.values() if src is not None}
-    outside = sources - in_batch.keys()
-    source_nodes = dict(in_batch)
+    named = ({n.parent_id for n in nodes if n.parent_id is not None}
+             | {src for _, src in printing.values() if src is not None})
+    outside = named - in_batch.keys()
+    named_nodes = dict(in_batch)
     if outside:
-        source_nodes.update({row.id: row for row in (await db.scalars(
+        named_nodes.update({row.id: row for row in (await db.scalars(
             select(WikiNode).where(WikiNode.id.in_(outside)))).all()})
-    # a source the caller can't see is named "…" with no id — as get_node
-    # masks a hidden breadcrumb — so its title and id don't leak: one they
-    # can't view (an ancestor behind broken inheritance or a private folder)
-    # or, where they only have view, a page never published (the tree's own
-    # rule, `visible_nodes`)
-    shown_sources, _ = await visible_nodes(
-        ctx, [source_nodes[s] for s in sources if s in source_nodes])
-    visible_sources = {s.id for s in shown_sources}
+    # one the caller can't see isn't named — as get_node masks a hidden
+    # breadcrumb — so its title and id don't leak: such a parent goes out as
+    # null and such a printing source as "…". Can't see: can't view (an
+    # ancestor behind broken inheritance or a private folder) or, where they
+    # only have view, a page never published (the tree's own rule,
+    # `visible_nodes`)
+    shown, _ = await visible_nodes(ctx, [named_nodes[i] for i in named if i in named_nodes])
+    visible_named = {s.id for s in shown}
 
     now = reviews.utcnow()
     out: list[NodeOut] = []
@@ -223,15 +227,16 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
         if n.allow_printing is None:
             if source_id is None:
                 printing_from = PrintingSourceOut(node_id=None, title="Library")
-            elif source_id in visible_sources:
+            elif source_id in visible_named:
                 printing_from = PrintingSourceOut(
-                    node_id=source_id, title=source_nodes[source_id].title)
+                    node_id=source_id, title=named_nodes[source_id].title)
             else:
                 printing_from = PrintingSourceOut(node_id=None, title=ELLIPSIS)
 
         out.append(NodeOut(
             id=n.id, space_id=n.space_id, space_key=space_key,
-            parent_id=n.parent_id, kind=n.kind, title=n.title,
+            parent_id=n.parent_id if n.parent_id in visible_named else None,
+            kind=n.kind, title=n.title,
             position=n.position, inherit_permissions=n.inherit_permissions,
             owner=people.get(n.owner_id) if n.owner_id else None,
             created_at=n.created_at, updated_at=n.updated_at,

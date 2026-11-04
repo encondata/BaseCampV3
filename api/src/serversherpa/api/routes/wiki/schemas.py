@@ -200,6 +200,8 @@ class NodeOut(BaseModel):
     id: uuid.UUID
     space_id: uuid.UUID
     space_key: str
+    # null at the top level, and for a parent the caller can't see (as a
+    # hidden breadcrumb has no id)
     parent_id: uuid.UUID | None
     kind: NodeKind
     title: str
