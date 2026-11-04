@@ -23,6 +23,7 @@ const FileView = lazy(() => import('./FileView'));
 type State =
   | { id: string; status: 'ready'; node: NodeDetailOut }
   | { id: string; status: 'missing' }
+  | { id: string; status: 'unpublished'; message: string }
   | { id: string; status: 'error'; message: string };
 
 const loading = <div className="portal-page wiki-page"><p className="page-hint">Loading…</p></div>;
@@ -45,8 +46,17 @@ export default function NodePage({ nodeId }: { nodeId?: string }) {
       })
       .catch((err) => {
         if (!live) return;
-        if (err instanceof ApiError && err.status === 404) setState({ id, status: 'missing' });
-        else setState({ id, status: 'error', message: errorMessage(err, 'Couldn\'t load this item.') });
+        if (err instanceof ApiError && err.status === 404 && err.code === 'not_published') {
+          // a page nobody has published is hidden from readers, and says why
+          setState({
+            id, status: 'unpublished',
+            message: errorMessage(err, 'This page hasn\'t been published yet.'),
+          });
+        } else if (err instanceof ApiError && err.status === 404) {
+          setState({ id, status: 'missing' });
+        } else {
+          setState({ id, status: 'error', message: errorMessage(err, 'Couldn\'t load this item.') });
+        }
       });
     return () => { live = false; };
   }, [id, revision, setCurrentNode, setCurrentSpace]);
@@ -55,6 +65,9 @@ export default function NodePage({ nodeId }: { nodeId?: string }) {
   const shown = state?.id === id ? state : null;
   if (!shown) return loading;
   if (shown.status === 'missing') return <NotFound />;
+  if (shown.status === 'unpublished') {
+    return <div className="portal-page wiki-page"><p className="page-hint">{shown.message}</p></div>;
+  }
   if (shown.status === 'error') {
     return <div className="portal-page wiki-page"><p className="pf-error">{shown.message}</p></div>;
   }

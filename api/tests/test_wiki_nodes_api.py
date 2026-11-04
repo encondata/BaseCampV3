@@ -296,6 +296,53 @@ async def test_node_detail_breadcrumbs_hide_unviewable_ancestors(client, db):
     ]
 
 
+async def test_view_only_reader_gets_not_published_for_a_never_published_page(client, db):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Reorganization plan", kind="page")
+
+    resp = await client.get(f"/wiki/nodes/{page['id']}", headers=s["viewer"])
+    assert resp.status_code == 404, resp.text
+    # the page read's own answer, with nothing of the page in it
+    assert resp.json()["detail"] == {"code": "not_published",
+                                     "message": "This page hasn't been published yet."}
+    assert "Reorganization plan" not in resp.text
+
+
+async def test_view_only_reader_reads_a_published_page_node(client, db):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    await publish_via_db(db, page["id"])
+
+    resp = await client.get(f"/wiki/nodes/{page['id']}", headers=s["viewer"])
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["title"], body["my_level"]) == ("Runbook", "view")
+    assert body["page"]["published_version_id"] is not None
+
+
+async def test_editor_reads_a_never_published_page_node(client, db):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Draft only", kind="page")
+
+    # edit is enough, and so is manage above it
+    for who, level in (("editor", "edit"), ("owner", "manage")):
+        resp = await client.get(f"/wiki/nodes/{page['id']}", headers=s[who])
+        assert resp.status_code == 200, (who, resp.text)
+        body = resp.json()
+        assert (body["title"], body["my_level"]) == ("Draft only", level), who
+        assert body["page"]["published_version_id"] is None, who
+
+
+async def test_view_only_reader_reads_a_folder_node(client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Guides")
+
+    resp = await client.get(f"/wiki/nodes/{folder['id']}", headers=s["viewer"])
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["kind"], body["title"], body["my_level"]) == ("folder", "Guides", "view")
+
+
 async def test_rename_needs_edit_and_is_audited(client, db):
     s = await _setup(client, db)
     space = s["space"]

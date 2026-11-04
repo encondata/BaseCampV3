@@ -77,6 +77,7 @@ async def test_node_payload_has_the_new_fields_for_pages_files_and_folders(clien
 async def test_can_set_private_is_true_only_for_the_author_or_a_developer(client, db):
     ctx = await _setup(client, db)
     page = await _create(client, ctx["owner"], ctx["space"], "Page", kind="page")
+    await publish_via_db(db, page["id"])    # a view-only reader opens a published page only
     dev_h, _ = await login_as(client, db, roles=("staff", "developer"))
     assert (await _get(client, ctx["owner"], page["id"]))["can_set_private"] is True
     assert (await _get(client, dev_h, page["id"]))["can_set_private"] is True
@@ -90,6 +91,8 @@ async def test_can_set_private_is_true_only_for_the_author_or_a_developer(client
 async def test_author_sets_and_clears_private(client, db):
     ctx = await _setup(client, db)
     page = await _create(client, ctx["editor"], ctx["space"], "Mine", kind="page")
+    # published, so the viewer's 404 below is the privacy and not the missing publish
+    await publish_via_db(db, page["id"])
     body = await _privacy(client, ctx["editor"], page["id"], True)
     assert body["is_private"] is True
     assert body["my_level"] == "manage"        # the author manages their private item
