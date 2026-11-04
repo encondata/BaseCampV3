@@ -477,6 +477,35 @@ function startBuild(
 }
 
 /**
+ * Why the stored labels that couldn't be made weren't, as a count per
+ * outcome (`no_template_at_dpi`, `template_failed`, `template_unsupported`):
+ * the build meta's `problems`, which the Printing Station's header lists
+ * under its count. Empty unless the stored build is for the set-up move
+ * and the saved kind and DPI — another move's or printer's build says
+ * nothing about what this kiosk prints now. Never rejects.
+ */
+export async function readWebLabelProblems(): Promise<Record<string, number>> {
+  const settings = readWebLabelSettings();
+  const moveId = readKioskSetup()?.initiativeId ?? '';
+  if (settings === null || moveId === '') return {};
+  let meta: MetaRow | null;
+  try {
+    meta = await readMeta(LABELS_META_KEY);
+  } catch {
+    return {};
+  }
+  if (meta === null || meta.initiativeId !== moveId || meta.kind !== settings.label_kind
+      || meta.dpi !== settings.dpi) return {};
+  const problems = meta.problems;
+  if (problems === null || typeof problems !== 'object') return {};
+  const counts: Record<string, number> = {};
+  for (const [why, n] of Object.entries(problems as Record<string, unknown>)) {
+    if (typeof n === 'number' && Number.isFinite(n) && n > 0) counts[why] = n;
+  }
+  return counts;
+}
+
+/**
  * The plan for `dpi` and `kind` from the stored bodies (which template,
  * its fonts and notes, the DPIs that have one), through the same runner as
  * the build; null unless both bodies are downloaded for the set-up move.

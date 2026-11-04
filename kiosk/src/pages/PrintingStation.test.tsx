@@ -1,18 +1,25 @@
 // @vitest-environment jsdom
 /** The Printing Station against a real (fake) IndexedDB roster, a fake
  *  station printer and stubbed edge label routes: scanning prints and
- *  shows the asset, and the problems say what's wrong. */
+ *  shows the asset, and the problems say what's wrong. The laptop cases
+ *  run in laptop mode (the edge backend); the web kiosk's cases, at the
+ *  end, run on the web backend: labels from the browser build's store,
+ *  the Labeled scan through the real outbox, and never an edge route. */
 import 'fake-indexeddb/auto';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { IDBFactory } from 'fake-indexeddb';
-import { MemoryRouter } from 'react-router-dom';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { HostStatus } from '@portal/labels/zebraUsb';
+import { applyPrintSettings, DEFAULT_PRINT_SETTINGS } from '@portal/lib/printLabels';
 
 const api = vi.hoisted(() => ({
   getStationLabel: vi.fn(), postLabelPrinted: vi.fn(), getLabelRunStatus: vi.fn(), getRecordedScans: vi.fn(),
+  // the web kiosk's outbox sender, and a sync that is still downloading
+  postScans: vi.fn(),
+  fetchAssetsSyncRaw: vi.fn(), fetchPeopleSync: vi.fn(), fetchContainersSync: vi.fn(), fetchTrucksSync: vi.fn(),
 }));
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>();
@@ -25,10 +32,42 @@ vi.mock('../lib/sound', async (importOriginal) => {
   return { ...actual, playScanSound: sound.playScanSound };
 });
 
+// The real outbox, with its sender's start and stop counted.
+const sender = vi.hoisted(() => ({ start: vi.fn(), stop: vi.fn() }));
+vi.mock('../lib/outbox', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/outbox')>();
+  return {
+    ...actual,
+    startSender: () => { sender.start(); actual.startSender(); },
+    stopSender: () => { sender.stop(); actual.stopSender(); },
+  };
+});
+
+// The web build's status is Task 3's (labelBuild.test.ts); here a test
+// can set it and say it changed. Null is the real (idle) one.
+const build = vi.hoisted(() => ({
+  status: null as null | Record<string, unknown>,
+  listeners: new Set<() => void>(),
+}));
+vi.mock('../lib/webLabels/labelBuild', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/webLabels/labelBuild')>();
+  return {
+    ...actual,
+    readWebLabelStatus: () => build.status ?? actual.readWebLabelStatus(),
+    subscribeWebLabelStatus: (fn: () => void) => {
+      build.listeners.add(fn);
+      return () => build.listeners.delete(fn);
+    },
+  };
+});
+
 const station = vi.hoisted(() => ({
   state: 'ready' as 'loading' | 'ready' | 'needs_usb' | 'no_settings',
   sent: [] as string[],
   connectUsb: vi.fn(),
+  /** The saved settings the hook reports (the laptop's network printer
+   *  unless a test says otherwise). */
+  settings: null as null | Record<string, unknown>,
 }));
 vi.mock('../lib/useStationPrinter', () => {
   const status: HostStatus = {
@@ -48,7 +87,7 @@ vi.mock('../lib/useStationPrinter', () => {
   };
   return {
     useStationPrinter: () => ({
-      settings: station.state === 'no_settings' ? null : settings,
+      settings: station.state === 'no_settings' ? null : station.settings ?? settings,
       printer: station.state === 'ready' ? printer : null,
       zebra: {},
       state: station.state,
@@ -58,10 +97,16 @@ vi.mock('../lib/useStationPrinter', () => {
   };
 });
 
-import { ApiError } from '../lib/api';
+import { ApiError, type KioskScanIn, type LabelStationSettings } from '../lib/api';
 import { clearFlash } from '../lib/flash';
 import { writeKioskSetup } from '../lib/kioskSetup';
-import { closeDb, replaceAll } from '../lib/localDb';
+import { closeDb, putRows, replaceAll, writeMeta } from '../lib/localDb';
+import { BATCH_DELAY, readOutbox, resetOutboxForTest } from '../lib/outbox';
+import { SYNCING_TEXT } from '../lib/printQueue';
+import { withPrintMode } from '../lib/stationPrinter';
+import { resetSyncStatus, runSync } from '../lib/sync';
+import { writeWebLabelSettings } from '../lib/webLabelSettings';
+import { LABELS_META_KEY, type WebLabelRow } from '../lib/webLabels/labelBuild';
 import PrintingStation, { FAILED_ROW_MS, RECORDED_POLL_MS } from './PrintingStation';
 
 const SERVER = {
@@ -71,6 +116,9 @@ const SERVER = {
 };
 
 beforeEach(async () => {
+  // These cases are the laptop's (the edge backend); the web kiosk's set
+  // web mode in their own beforeEach.
+  window.__KIOSK_CONFIG__ = { mode: 'laptop' };
   localStorage.clear();
   closeDb();
   (globalThis as unknown as { indexedDB: IDBFactory }).indexedDB = new IDBFactory();
@@ -81,6 +129,10 @@ beforeEach(async () => {
   });
   station.state = 'ready';
   station.sent = [];
+  station.settings = null;
+  build.status = null;
+  build.listeners.clear();
+  resetOutboxForTest();
   api.getStationLabel.mockReset().mockImplementation(async (id: string) => ({
     asset_id: id, zpl: '^XA^FDLABEL^FS^XZ', error: null, template_name: 'Generic', dpi: 203, label_kind: 'top',
   }));
@@ -93,7 +145,7 @@ function runStatus(unsupported: number | undefined) {
   return { state: 'idle', reason: 'setup', total: 1, done: 1, ready: 1, errors: 0, unsupported };
 }
 
-afterEach(() => { cleanup(); clearFlash(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); clearFlash(); vi.clearAllMocks(); delete window.__KIOSK_CONFIG__; });
 
 const render_ = () => render(<MemoryRouter><PrintingStation /></MemoryRouter>);
 
@@ -315,4 +367,262 @@ it('when only red rows were left, the list goes back to its empty note', async (
   } finally {
     vi.useRealTimers();
   }
+});
+
+it('a laptop station leaves the outbox sender alone: its edge records the scans', async () => {
+  const view = render_();
+  await scan('10042');
+  await screen.findAllByText('Printed');
+  view.unmount();
+  expect(sender.start).not.toHaveBeenCalled();
+  expect(sender.stop).not.toHaveBeenCalled();
+  expect(readOutbox().rows).toEqual([]);
+});
+
+// ── the web kiosk ───────────────────────────────────────────────────
+
+describe('web kiosk', () => {
+  /** What the web kiosk saved in Printer Setup: a USB Zebra with offsets,
+   *  printing peel-off. */
+  const WEB: LabelStationSettings = {
+    label_kind: 'top', dpi: 203, offset_x: 12, offset_y: -4, peel: true,
+    printer: { type: 'usb', ip: null, model: 'ZD421', serial: 'ZD-1' },
+  };
+  const ZPL = '^XA^FDLABEL^FS^XZ';
+
+  function labelRow(over: Partial<WebLabelRow> = {}): WebLabelRow {
+    return {
+      asset_id: 'a-1', zpl: ZPL, error: null, fingerprint: '0123456789abcd', template_name: 'Generic',
+      dpi: 203, label_kind: 'top', initiativeId: 'i-1', ...over,
+    };
+  }
+
+  function idle(over: Record<string, unknown> = {}) {
+    return { state: 'idle', reason: 'setup', total: 1, done: 1, ready: 1, errors: 0, unsupported: 0, ...over };
+  }
+
+  /** The build finished: a new status, and the station is told. */
+  function buildChanged(next: Record<string, unknown>) {
+    build.status = next;
+    act(() => { for (const fn of build.listeners) fn(); });
+  }
+
+  const accepting = async ({ scans }: { scans: KioskScanIn[] }) => ({
+    accepted: scans.map((x) => x.client_scan_id), rejected: [],
+  });
+
+  beforeEach(async () => {
+    delete window.__KIOSK_CONFIG__;   // web mode
+    writeWebLabelSettings(WEB);
+    station.settings = WEB as unknown as Record<string, unknown>;
+    build.status = idle();
+    await putRows('labels', [labelRow()]);
+    // Offline unless a test says otherwise: the Labeled scan waits in the outbox.
+    api.postScans.mockReset().mockRejectedValue(new ApiError(0, 'network_error'));
+    for (const fn of [api.fetchAssetsSyncRaw, api.fetchPeopleSync, api.fetchContainersSync, api.fetchTrucksSync]) {
+      fn.mockReset().mockReturnValue(new Promise(() => {}));   // a download that never finishes
+    }
+  });
+
+  afterEach(() => {
+    // The web kiosk has no edge: not one /edge/* route, whatever happened.
+    expect(api.getStationLabel).not.toHaveBeenCalled();
+    expect(api.postLabelPrinted).not.toHaveBeenCalled();
+    expect(api.getLabelRunStatus).not.toHaveBeenCalled();
+    expect(api.getRecordedScans).not.toHaveBeenCalled();
+    resetOutboxForTest();
+    resetSyncStatus();
+  });
+
+  it("prints a scanned asset's stored label to the USB printer with offsets and print mode", async () => {
+    render_();
+    await scan('10042');
+    await screen.findAllByText('Printed');
+    expect(station.sent).toEqual([withPrintMode(applyPrintSettings(ZPL, {
+      ...DEFAULT_PRINT_SETTINGS, horizontalOffset: 12, verticalOffset: -4,
+    }, { singleCopy: true }), true)]);
+    expect(station.sent[0]).toContain('^MMP');
+    expect(screen.getByTestId('station-asset').textContent).toContain('Rack 4 server');
+  });
+
+  it('records a Labeled scan in the outbox, never on Reprint', async () => {
+    render_();
+    await scan('sn-4242');
+    await screen.findAllByText('Printed');
+    await waitFor(() => expect(readOutbox().rows).toHaveLength(1));
+    expect(readOutbox().rows[0]).toMatchObject({
+      scanned_value: 'sn-4242', scan_type: 'barcode', scan_status: 'labeled',
+      site_id: 's-1', initiative_id: 'i-1', asset: { id: 'a-1', asset_id: '10042' },
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Reprint' }));
+    await waitFor(() => expect(station.sent).toHaveLength(2));
+    expect(readOutbox().rows).toHaveLength(1);
+  });
+
+  it('row reads Printed + Recorded once the outbox row is accepted', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      render_();
+      await scan('10042');
+      await screen.findAllByText('Printed');
+      // offline: the sender tried, the scan waits in the outbox
+      await act(async () => { await vi.advanceTimersByTimeAsync(BATCH_DELAY + 100); });
+      await waitFor(() => expect(api.postScans).toHaveBeenCalled());
+      await act(async () => { await vi.advanceTimersByTimeAsync(RECORDED_POLL_MS); });
+      expect(statusCell().textContent).toBe('Printed');
+      expect(readOutbox().rows[0].status).not.toBe('accepted');
+
+      // back online: the retry lands and the next look says so
+      api.postScans.mockImplementation(accepting);
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      await waitFor(() => expect(readOutbox().rows[0].status).toBe('accepted'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(RECORDED_POLL_MS); });
+      await waitFor(() => expect(statusCell().textContent).toBe('Printed + Recorded'));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('runs the outbox sender while it is open', async () => {
+    api.postScans.mockImplementation(accepting);
+    const view = render_();
+    await waitFor(() => expect(sender.start).toHaveBeenCalledTimes(1));
+    await scan('10042');
+    // the sender, not Scanning, takes the printed label's scan to the portal
+    await waitFor(() => expect(api.postScans).toHaveBeenCalledTimes(1));
+    expect(api.postScans.mock.calls[0][0].scans).toEqual([expect.objectContaining({
+      scanned_value: '10042', scan_type: 'barcode', scan_status: 'labeled', asset_id: 'a-1',
+    })]);
+    expect(sender.stop).not.toHaveBeenCalled();
+    view.unmount();
+    expect(sender.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('a scan while syncing shows the syncing message and prints nothing', async () => {
+    void runSync('i-1', 'NAP11 Hall Migration');   // still downloading
+    render_();
+    await scan('10042');
+    expect((await screen.findAllByText(SYNCING_TEXT)).length).toBeGreaterThan(0);
+    expect(station.sent).toEqual([]);
+    expect(readOutbox().rows).toEqual([]);
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+  });
+
+  it("header shows labels ready and how many couldn't be made, by reason", async () => {
+    await writeMeta(LABELS_META_KEY, {
+      initiativeId: 'i-1', kind: 'top', dpi: 203, total: 121, ready: 118, errors: 3, unsupported: 1,
+      problems: { template_unsupported: 1, no_template_at_dpi: 2 },
+    });
+    build.status = idle({ ready: 0, errors: 0 });
+    render_();
+    expect(await screen.findByText('0 labels ready')).toBeTruthy();
+
+    // the build finished: the header follows without waiting for its next look
+    buildChanged(idle({ total: 121, done: 121, ready: 118, errors: 3, unsupported: 1 }));
+    expect(await screen.findByText("118 labels ready · 3 couldn't be made")).toBeTruthy();
+    const reasons = [...document.querySelectorAll('.station-label-reasons li')].map((li) => li.textContent);
+    expect(reasons).toEqual([
+      "2 · No label for this asset: this move has no active label template at this printer's DPI. "
+        + 'Someone with label access needs to activate one on Labels › Templates.',
+      '1 · This kiosk needs an update to print this template.',
+    ]);
+    // web counts labels, not templates: no laptop notice
+    expect(screen.queryByText(/need(s)? a (laptop|kiosk) update\.$/)).toBeNull();
+
+    buildChanged(idle({ ready: 1 }));
+    expect(await screen.findByText('1 label ready')).toBeTruthy();
+    expect(document.querySelector('.station-label-reasons')).toBeNull();
+  });
+
+  it('a scan that hits a too-new template refreshes the header', async () => {
+    build.status = idle({ ready: 1, errors: 0 });
+    render_();
+    expect(await screen.findByText('1 label ready')).toBeTruthy();
+    // what the store holds now, though nobody said so yet
+    await putRows('labels', [labelRow({ zpl: null, error: 'template_unsupported' })]);
+    await writeMeta(LABELS_META_KEY, {
+      initiativeId: 'i-1', kind: 'top', dpi: 203, problems: { template_unsupported: 1 },
+    });
+    build.status = idle({ ready: 0, errors: 1, unsupported: 1 });
+    await scan('10042');
+    expect((await screen.findAllByText('This kiosk needs an update to print this template.')).length)
+      .toBeGreaterThan(0);
+    expect(await screen.findByText("0 labels ready · 1 couldn't be made")).toBeTruthy();
+    expect(station.sent).toEqual([]);
+  });
+
+  it("problems from another move's build aren't listed", async () => {
+    await writeMeta(LABELS_META_KEY, {
+      initiativeId: 'i-9', kind: 'top', dpi: 203, problems: { template_failed: 4 },
+    });
+    build.status = idle({ ready: 2, errors: 4 });
+    render_();
+    expect(await screen.findByText("2 labels ready · 4 couldn't be made")).toBeTruthy();
+    expect(document.querySelector('.station-label-reasons')).toBeNull();
+  });
+
+  /** Printer Setup's stand-in: shows the state it was opened with, and
+   *  goes back the way the real page's Back does. */
+  function PrinterSetupStub() {
+    const location = useLocation();
+    const navigate = useNavigate();
+    const state = location.state as { returnTo?: string } | null;
+    return (
+      <div>
+        <p>Printer Setup page</p>
+        <p data-testid="setup-state">{JSON.stringify(state)}</p>
+        <button type="button" onClick={() => navigate(state?.returnTo ?? '/labels', {
+          replace: true, state: { fromPrinterSetup: true },
+        })}>Stub back</button>
+      </div>
+    );
+  }
+
+  const renderRouted = () => render(
+    <MemoryRouter initialEntries={['/labels/station']}>
+      <Routes>
+        <Route path="/labels/station" element={<PrintingStation />} />
+        <Route path="/labels/printers" element={<PrinterSetupStub />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  function noPrinter() {
+    localStorage.removeItem('ss.kiosk.labelPrinting');
+    station.state = 'no_settings';
+  }
+
+  it('with no printer saved, the first visit opens Printer Setup', async () => {
+    noPrinter();
+    renderRouted();
+    expect(await screen.findByText('Printer Setup page')).toBeTruthy();
+    expect(JSON.parse(screen.getByTestId('setup-state').textContent ?? 'null'))
+      .toEqual({ returnTo: '/labels/station' });
+  });
+
+  it('with a printer saved, the station stays put', async () => {
+    renderRouted();
+    await screen.findByLabelText('Scan value');
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(screen.queryByText('Printer Setup page')).toBeNull();
+  });
+
+  it('coming back from Printer Setup without saving shows the note linking to Printer Setup, not Kiosk Setup', async () => {
+    noPrinter();
+    renderRouted();
+    await userEvent.click(await screen.findByRole('button', { name: 'Stub back' }));
+    expect(await screen.findByText(/No label printer is saved for this kiosk/)).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Printing Station' })).toBeTruthy();
+    // once per visit: it doesn't send the person straight back
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(screen.queryByText('Printer Setup page')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Kiosk Setup' })).toBeNull();
+    const link = screen.getByRole('link', { name: 'Printer Setup' });
+    expect(link.getAttribute('href')).toBe('/labels/printers');
+    // the link opens Printer Setup to come back here again
+    await userEvent.click(link);
+    expect(await screen.findByText('Printer Setup page')).toBeTruthy();
+    expect(JSON.parse(screen.getByTestId('setup-state').textContent ?? 'null'))
+      .toEqual({ returnTo: '/labels/station' });
+  });
 });

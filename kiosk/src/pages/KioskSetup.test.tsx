@@ -134,7 +134,7 @@ async function goToScanStep(user: ReturnType<typeof userEvent.setup>) {
 
 /** A web kiosk's setup ends by asking what it prints; Top is the default. */
 async function chooseTopLabels(user: ReturnType<typeof userEvent.setup>) {
-  await screen.findByText('What does this station print?');
+  await screen.findByText('What does this kiosk print?');
   await user.click(cardFor('Top labels'));
 }
 
@@ -1090,7 +1090,7 @@ it('web mode has no station-type step and sends no station_type', async () => {
 async function goToWebKindStep(user: ReturnType<typeof userEvent.setup>) {
   await goToScanStep(user);
   await user.click(cardFor('RFID 1 - Cage Exit'));
-  await screen.findByText('What does this station print?');
+  await screen.findByText('What does this kiosk print?');
 }
 
 it('web setup asks what it prints after the scan type', async () => {
@@ -1156,7 +1156,7 @@ it('Change setup on a web kiosk walks the same four steps and ends at What it pr
   await user.click(cardFor('NAP22 Hall'));
   await user.click(cardFor('RFID 2 - Dock'));
 
-  await screen.findByText('What does this station print?');
+  await screen.findByText('What does this kiosk print?');
   expect(cardFor('Front labels').getAttribute('aria-selected')).toBe('true');
 });
 

@@ -85,6 +85,9 @@ export const NOT_ON_MOVE_TEXT = "This asset isn't on this move.";
 export const PRINTER_SILENT_TEXT = "The printer didn't answer. Check that it's on and connected.";
 export const REGENERATING_TEXT = 'Labels are being regenerated. Scan again when it finishes.';
 export const NO_SETTINGS_TEXT = "This station's printer settings couldn't be read. Open Kiosk Setup.";
+/** The web kiosk saves its printer in Printer Setup (Label Printing), not
+ *  in Kiosk Setup as the laptop's step 5 does. */
+export const WEB_NO_SETTINGS_TEXT = "This kiosk's printer settings couldn't be read. Open Printer Setup.";
 /** The web kiosk refuses a label while a sync is replacing the move's
  *  data (`labels_syncing`); its build runs as soon as the sync ends. */
 export const SYNCING_TEXT = 'This kiosk is syncing. Labels will be ready shortly.';
@@ -172,7 +175,7 @@ export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
     update(entry, { state: 'printing', message: null });
     const settings = deps.settings();
     if (!settings) {
-      update(entry, { state: 'failed', message: NO_SETTINGS_TEXT });
+      update(entry, { state: 'failed', message: word === 'kiosk' ? WEB_NO_SETTINGS_TEXT : NO_SETTINGS_TEXT });
       return;
     }
     if (w.sent === null) {

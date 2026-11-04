@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ApiError, type LabelStationSettings, type StationLabel } from './api';
 import {
   createPrintQueue, NEEDS_UPDATE_TEXT, needsUpdateText, NO_SETTINGS_TEXT, noLabelText, PRINTER_SILENT_TEXT,
-  SYNCING_TEXT, type PrintAsset, type PrintedJob, type QueueState,
+  SYNCING_TEXT, WEB_NO_SETTINGS_TEXT, type PrintAsset, type PrintedJob, type QueueState,
 } from './printQueue';
 import { withPrintMode, type StationPrinter } from './stationPrinter';
 
@@ -290,6 +290,17 @@ describe('createPrintQueue', () => {
     expect(needsUpdateText('kiosk')).toBe('This kiosk needs an update to print this template.');
     expect(needsUpdateText('laptop')).toBe(NEEDS_UPDATE_TEXT);
     expect(noLabelText('template_unsupported', 'kiosk')).toBe(needsUpdateText('kiosk'));
+    expect(sent).toEqual([]);
+  });
+
+  it('deviceWord kiosk: no readable settings says to open Printer Setup, not Kiosk Setup', async () => {
+    const { printer, sent } = fakePrinter();
+    const q = setup({ printer, settings: null, deviceWord: 'kiosk' });
+    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
+    await settled(q.state);
+    expect(q.state().entries[0]).toMatchObject({ state: 'failed', message: WEB_NO_SETTINGS_TEXT });
+    expect(WEB_NO_SETTINGS_TEXT).toBe("This kiosk's printer settings couldn't be read. Open Printer Setup.");
+    expect(NO_SETTINGS_TEXT).toBe("This station's printer settings couldn't be read. Open Kiosk Setup.");
     expect(sent).toEqual([]);
   });
 

@@ -32,12 +32,13 @@ const TRUCKS = FEATURES.find((f) => f.id === 'trucks')!;
 const LABELS = FEATURES.find((f) => f.id === 'labels')!;
 const TIMECLOCK = FEATURES.find((f) => f.id === 'timeclock')!;
 
-/** One Label Printing section. Printing Station is real only on a laptop
- *  set up as a Label Station; anywhere else it stays the placeholder. */
+/** One Label Printing section. Printing Station is real on a web kiosk
+ *  and on a laptop set up as a Label Station; any other laptop keeps the
+ *  placeholder, and so does Bulk Print everywhere. */
 function LabelSectionRoute({ section }: { section: LabelSection }) {
   const [setup] = useKioskSetup();
   if (section.id === 'printers') return <PrinterTools />;
-  if (section.id === 'station' && isLaptop() && setup?.stationType === 'label') return <PrintingStation />;
+  if (section.id === 'station' && (!isLaptop() || setup?.stationType === 'label')) return <PrintingStation />;
   return <LabelSectionPage section={section} />;
 }
 
@@ -130,9 +131,9 @@ export default function App() {
             )}
           />
           {/* Printer Setup / Troubleshooting is a real screen, and so is
-              Printing Station on a laptop Label Station; the rest keep
-              the placeholder page. The section entry still owns the
-              title and blurb either way. */}
+              Printing Station (on a web kiosk, and on a laptop Label
+              Station); the rest keep the placeholder page. The section
+              entry still owns the title and blurb either way. */}
           {LABEL_SECTIONS.map((s) => (
             <Route
               key={s.id}

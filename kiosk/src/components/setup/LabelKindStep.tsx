@@ -1,7 +1,10 @@
 /** Label Station step 4: what does this station print? Top labels come
  *  first and are the default; the choice decides which templates the
  *  printer step checks against. Tapping a card chooses it and moves on,
- *  like the Move and Site steps; the default is shown selected. */
+ *  like the Move and Site steps; the default is shown selected.
+ *
+ *  A web kiosk's setup ends on the same step, but a web kiosk is no Label
+ *  Station: `device="kiosk"` asks what this kiosk prints. */
 
 import type { LabelKind } from '../../lib/api';
 
@@ -14,12 +17,14 @@ interface Props {
   selected: LabelKind;
   onChoose: (kind: LabelKind) => void;
   onBack: () => void;
+  /** What the question calls this device (default a laptop's "station"). */
+  device?: 'station' | 'kiosk';
 }
 
-export default function LabelKindStep({ selected, onChoose, onBack }: Props) {
+export default function LabelKindStep({ selected, onChoose, onBack, device = 'station' }: Props) {
   return (
     <>
-      <h2>What does this station print?</h2>
+      <h2>What does this {device} print?</h2>
       <div className="setup-cards" role="listbox" aria-label="Label types">
         {CHOICES.map((c) => (
           <button key={c.kind} type="button" role="option" aria-selected={selected === c.kind}

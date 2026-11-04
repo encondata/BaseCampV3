@@ -607,7 +607,7 @@ export default function KioskSetup() {
 
         {step === 'kind' && (
           <div>
-            <LabelKindStep selected={labelKind}
+            <LabelKindStep selected={labelKind} device={laptop ? 'station' : 'kiosk'}
                            onChoose={(kind) => {
                              kindChosen.current = true;
                              setLabelKind(kind);

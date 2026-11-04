@@ -176,6 +176,16 @@ it('after 10 s of failed polls it says the label service is unreachable, until a
   expect(screen.queryByRole('alertdialog')).toBeNull();
 });
 
+it("on a web kiosk the unreachable copy names this kiosk's label service", async () => {
+  const getStatus = vi.fn(async () => status({ state: 'running', reason: 'updates', total: 4, done: 1 }));
+  render(<LabelRegenScreen getStatus={getStatus} deviceWord="kiosk" />);
+  await flush();
+  getStatus.mockRejectedValue(new Error('unreadable'));
+  await tick(LABEL_RUN_UNREACHABLE_MS + LABEL_RUN_POLL_MS);
+  expect(screen.getByRole('alertdialog', { name: "Can't reach this kiosk's label service." })).toBeTruthy();
+  expect(screen.queryByText(/laptop/)).toBeNull();
+});
+
 it('the progress bar has no value range while the total is 0', async () => {
   apiMock.getLabelRunStatus.mockResolvedValue(status({ state: 'running', reason: 'setup', total: 0, done: 0 }));
   render(<LabelRegenScreen />);

@@ -53,7 +53,7 @@ import { clearDb, closeDb, getAll, putRows, readMeta, writeMeta } from '../local
 import { readSyncStatus, resetSyncStatus, runSync } from '../sync';
 import { writeWebLabelKind, writeWebLabelSettings } from '../webLabelSettings';
 import {
-  LABELS_META_KEY, inThreadLabelBuildRunner, installLabelBuild, readWebLabelStatus,
+  LABELS_META_KEY, inThreadLabelBuildRunner, installLabelBuild, readWebLabelProblems, readWebLabelStatus,
   requestLabelBuild, requestLabelPlan, setLabelBuildRunner, subscribeWebLabelStatus,
   type LabelBuildRunner, type WebLabelRow, type WebLabelStatus,
 } from './labelBuild';
@@ -624,5 +624,47 @@ describe('requestLabelPlan', () => {
     expect(await requestLabelPlan({ dpi: 203, kind: 'top' })).toBeNull();
     await storeBodies('m-2');
     expect(await requestLabelPlan({ dpi: 203, kind: 'top' })).toBeNull();
+  });
+});
+
+describe('readWebLabelProblems', () => {
+  it("counts the stored build's labels that couldn't be made, by outcome", async () => {
+    setUpMove();
+    savePrinter({ label_kind: 'front', dpi: 300 });   // the move has Front at 203 only
+    await storeBodies();
+    await requestLabelBuild();
+    const s = readWebLabelStatus();
+    expect(s.ready).toBe(0);
+    expect(s.errors).toBeGreaterThan(0);
+    expect(await readWebLabelProblems()).toEqual({ no_template_at_dpi: s.errors });
+  });
+
+  it('is empty when every label was made', async () => {
+    setUpMove();
+    savePrinter();
+    await storeBodies();
+    await requestLabelBuild();
+    expect(readWebLabelStatus().errors).toBe(0);
+    expect(await readWebLabelProblems()).toEqual({});
+  });
+
+  it('is empty for a build of another move, kind or DPI, and with nothing set up', async () => {
+    const meta = (over: Record<string, unknown>) => writeMeta(LABELS_META_KEY, {
+      initiativeId: 'm-1', kind: 'top', dpi: 203, problems: { template_failed: 2 }, ...over,
+    });
+    expect(await readWebLabelProblems()).toEqual({});   // no printer, no move
+    setUpMove();
+    savePrinter();
+    await meta({});
+    expect(await readWebLabelProblems()).toEqual({ template_failed: 2 });
+    await meta({ initiativeId: 'm-2' });
+    expect(await readWebLabelProblems()).toEqual({});
+    await meta({ kind: 'front' });
+    expect(await readWebLabelProblems()).toEqual({});
+    await meta({ dpi: 300 });
+    expect(await readWebLabelProblems()).toEqual({});
+    // a garbled count is left out rather than shown
+    await meta({ problems: { template_failed: 'two', no_template_at_dpi: 1 } });
+    expect(await readWebLabelProblems()).toEqual({ no_template_at_dpi: 1 });
   });
 });
