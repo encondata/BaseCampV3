@@ -231,6 +231,9 @@ async def worker_detail(
         jobs=[KioskRolodexJobItem(**item.model_dump(include=JOB_FIELDS))
               for item in await initiative_history(db, actor, person.id, limit=JOBS_CAP)],
         jobs_total=await initiative_history_total(db, actor, person.id),
+        will_travel=profile.will_travel if profile else None,
+        travel_region=profile.travel_region if profile else None,
+        travel_restrictions=profile.travel_restrictions if profile else None,
     )
 
 
@@ -312,7 +315,8 @@ async def rolodex_options(
 
 # The worker page's fields, split by the helper that owns them.
 PERSON_FIELDS = ("first_name", "last_name", "preferred_name", "job_title", "phone", "email")
-PROFILE_FIELDS = ("partner_id", "trade", "level", "status", "status_note")
+PROFILE_FIELDS = ("partner_id", "trade", "level", "status", "status_note",
+                  "will_travel", "travel_region", "travel_restrictions")
 
 # people.email's partial unique index (migration 0001); it covers archived
 # people too.
