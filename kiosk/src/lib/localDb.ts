@@ -293,6 +293,14 @@ export function getByIndex<T = unknown>(
     request(tx.objectStore(store).index(index).getAll(value)) as Promise<T[]>);
 }
 
+/** One row by its key, or null when there is none — the web Printing
+ *  Station's per-scan label read (one `get`, never the whole store). */
+export async function getRow<T = unknown>(store: StoreName, key: IDBValidKey): Promise<T | null> {
+  const row = await withStores([store], 'readonly', (tx) =>
+    request(tx.objectStore(store).get(key)) as Promise<T | undefined>);
+  return row ?? null;
+}
+
 export async function readMeta(key: string): Promise<MetaRow | null> {
   const row = await withStores(['meta'], 'readonly', (tx) =>
     request(tx.objectStore('meta').get(key)) as Promise<MetaRow | undefined>);

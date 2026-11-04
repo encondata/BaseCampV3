@@ -5,8 +5,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ApiError, type LabelStationSettings, type StationLabel } from './api';
 import {
-  createPrintQueue, NEEDS_UPDATE_TEXT, NO_SETTINGS_TEXT, noLabelText, PRINTER_SILENT_TEXT,
-  type PrintAsset, type PrintedJob, type QueueState,
+  createPrintQueue, NEEDS_UPDATE_TEXT, needsUpdateText, NO_SETTINGS_TEXT, noLabelText, PRINTER_SILENT_TEXT,
+  SYNCING_TEXT, type PrintAsset, type PrintedJob, type QueueState,
 } from './printQueue';
 import { withPrintMode, type StationPrinter } from './stationPrinter';
 
@@ -47,6 +47,7 @@ function setup(opts: {
   settings?: LabelStationSettings | null;
   getLabel?: (id: string) => Promise<StationLabel>;
   recordPrinted?: (job: PrintedJob) => Promise<void>;
+  deviceWord?: 'laptop' | 'kiosk';
 } = {}) {
   let state: QueueState = { entries: [] };
   const recordPrinted = vi.fn(opts.recordPrinted ?? (async (_job: PrintedJob) => {}));
@@ -59,6 +60,7 @@ function setup(opts: {
     getLabel,
     recordPrinted,
     onChange: (s) => { state = s; },
+    deviceWord: opts.deviceWord,
   });
   return { queue, recordPrinted, getLabel, state: () => state };
 }
@@ -262,5 +264,45 @@ describe('createPrintQueue', () => {
     expect(q.state().entries[0].state).toBe('printed');
     expect(q.state().entries[0].recordWarning).toMatch(/^Printed, but the scan wasn't recorded: /);
     expect(sent).toHaveLength(1);
+  });
+
+  it('recordPrinted receives the asset', async () => {
+    // The web kiosk's outbox row carries the asset (its list shows it
+    // after a re-sync), so the queue hands the whole asset over.
+    const a = asset(1);
+    const q = setup();
+    q.queue.enqueue({ asset: a, scannedValue: 'SN-1' });
+    await settled(q.state);
+    expect(q.recordPrinted).toHaveBeenCalledTimes(1);
+    expect(q.recordPrinted.mock.calls[0][0]).toEqual({
+      asset: a, assetId: 'a-1', scannedValue: 'SN-1', scannedAt: q.recordPrinted.mock.calls[0][0].scannedAt,
+    });
+  });
+
+  it('deviceWord kiosk says "This kiosk needs an update…" for template_unsupported', async () => {
+    const { printer, sent } = fakePrinter();
+    const q = setup({
+      printer, deviceWord: 'kiosk', getLabel: async (id) => label(id, { zpl: null, error: 'template_unsupported' }),
+    });
+    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
+    await settled(q.state);
+    expect(q.state().entries[0].message).toBe('This kiosk needs an update to print this template.');
+    expect(needsUpdateText('kiosk')).toBe('This kiosk needs an update to print this template.');
+    expect(needsUpdateText('laptop')).toBe(NEEDS_UPDATE_TEXT);
+    expect(noLabelText('template_unsupported', 'kiosk')).toBe(needsUpdateText('kiosk'));
+    expect(sent).toEqual([]);
+  });
+
+  it('labels_syncing reads as the syncing message', async () => {
+    const { printer, sent } = fakePrinter();
+    const q = setup({ printer, getLabel: async () => { throw new ApiError(409, 'labels_syncing'); } });
+    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
+    await settled(q.state);
+    expect(q.state().entries[0]).toMatchObject({
+      state: 'failed', message: 'This kiosk is syncing. Labels will be ready shortly.',
+    });
+    expect(q.state().entries[0].message).toBe(SYNCING_TEXT);
+    expect(sent).toEqual([]);
+    expect(q.recordPrinted).not.toHaveBeenCalled();
   });
 });
