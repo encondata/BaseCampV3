@@ -21,7 +21,7 @@ Companion to `2026-11-02-notifications-phase2-design.md` (approved 2026-11-02). 
    - The check stays quiet while read-only mode is on, for 4 minutes after it, and for 4 minutes after the worker starts.
    - Devices can be watched from the kiosk detail page, Fixed Readers and Routers.
    - Migration 0114 adds `devices.offline_notified_at` (devices already offline are marked at migration time) and `notification_events.attempts`.
-3. **Bulk actions (slice 3).** The person who started a background bulk action (asset bulk update, move assets, move setup, From-To import) hears when it finishes or fails. A From-To import that left rows out says how many.
+3. **Bulk actions (slice 3).** The person who committed a background bulk action, and the uploader when that's someone else, hear when it finishes or fails (asset bulk update, move assets, move setup, From-To import). A From-To import that left rows out says how many.
 4. **Status rules (slice 4).**
    - A "Send a notification" action goes to people, groups, and optionally people watching the initiative or site. It sends at most once an hour per rule and thing (migration 0115).
    - Matches are grouped per rule. Each person's text names only what they can open.
@@ -148,6 +148,8 @@ What breaks if an old slot runs on 0116:
 - Developers bypass read-only mode, so a developer creating, publishing or approving wiki pages on the old slot gets a failed save; it rolls back and nothing is corrupted.
 - The old worker doesn't touch `wiki_watches`.
 - New code on 0115 runs, but wiki watches stay invisible until 0116.
+
+Answer 7's migration 0118 only adds a nullable column, so an old slot keeps working on it.
 
 Migration numbering: `project-plans` also has a 0110, and `notif-phase1` is unmerged. Whichever branch merges later renumbers.
 

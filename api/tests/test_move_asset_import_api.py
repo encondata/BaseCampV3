@@ -2,11 +2,11 @@
 
 import uuid
 
-from serversherpa.db.models import ImportJob
+from serversherpa.db.models import ImportJob, Person, PersonRole
 from serversherpa.imports.parsing import TEMPLATE_GUIDE, TEMPLATE_HEADERS
 from serversherpa.services.storage import get_object
 
-from .test_assets_api import login
+from .test_assets_api import login, make_login
 from .test_initiative_assets_api import _move, _project, _view_only_headers
 
 CSV = b"Serial Number,Asset Name\nSN-1,web-01\n"
@@ -95,6 +95,33 @@ async def test_commit_requires_completed_validate(client, db, seeded_user):
     assert body["status"] == "queued"
     assert body["processed_rows"] == 0
     assert body["results"] is None
+
+
+async def test_commit_records_who_committed(client, db, seeded_user):
+    """A uploads the file and B, another person who may change initiatives, presses Import: the
+    job keeps both, because the worker tells the committer and the uploader how it ended. An
+    upload alone has no committer."""
+    alice = await login(client)
+    iid = await _move(client, alice)
+    job_id = (await _upload(client, alice, iid)).json()["id"]
+    job = await db.get(ImportJob, uuid.UUID(job_id))
+    assert (job.created_by, job.committed_by) == (seeded_user.id, None)
+    job.status = "completed"
+    job.results = {"summary": {}, "details": []}
+    bob = Person(first_name="Bob", last_name="Builder", email="bob@test.example.com")
+    db.add(bob)
+    await db.flush()
+    db.add(PersonRole(person_id=bob.id, role="staff"))
+    await db.commit()
+    bob_headers = await make_login(db, client, bob, "bob@test.example.com")
+
+    resp = await client.post(
+        f"/initiatives/assets/import-jobs/{job_id}/commit", headers=bob_headers)
+    assert resp.status_code == 200, resp.text
+
+    await db.refresh(job)
+    assert (job.phase, job.status) == ("commit", "queued")
+    assert (job.created_by, job.committed_by) == (seeded_user.id, bob.id)
 
 
 async def test_cancel_lifecycle(client, db, seeded_user):

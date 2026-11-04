@@ -240,6 +240,7 @@ async def commit_bulk_update_job(
                    "approve_all": approve_all}
     job.status = "queued"
     job.phase = "commit"
+    job.committed_by = actor.person.id
     audit(db, actor_id=actor.person.id, entity_type="asset", entity_id=None,
           action="asset_bulk_update_queued",
           changes={"job_id": {"from": None, "to": str(job.id)}})

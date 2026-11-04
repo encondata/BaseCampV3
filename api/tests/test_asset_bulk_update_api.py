@@ -153,6 +153,26 @@ async def test_commit_good_queues_job_with_stored_options(
     assert len(log) == 1
 
 
+async def test_bulk_update_commit_records_who_committed(client, db, seeded_user, admin_hdrs):
+    """The commit route says who queued the job to write, as the From-To import's does (the
+    worker tells the committer and the uploader). Only a job's creator can open it here, so
+    they are one person: an upload alone has no committer, and committing makes it them."""
+    a = await mk_asset(db, 100, "SN-A", name="old-a")
+    resp = await upload(client, admin_hdrs, CSV + f"{a.legacy_id},,new-a,,,,,,,,,,\n")
+    job_id = resp.json()["job_id"]
+    ada = await db.scalar(select(Person.id).where(Person.email == "ada@test.example.com"))
+    job = await db.get(ImportJob, uuid.UUID(job_id))
+    assert (job.created_by, job.committed_by) == (ada, None)
+
+    commit = await client.post(
+        f"{base(job_id)}/commit", headers=admin_hdrs, json={"approve_all": True})
+    assert commit.status_code == 200, commit.text
+
+    await db.refresh(job)
+    assert (job.phase, job.status) == ("commit", "queued")
+    assert (job.created_by, job.committed_by) == (ada, ada)
+
+
 async def test_run_once_completes_queued_job(client, db, seeded_user, admin_hdrs):
     a = await mk_asset(db, 100, "SN-A", name="old-a")
     resp = await upload(client, admin_hdrs, CSV + f"{a.legacy_id},,new-a,,,,,,,,,,\n")

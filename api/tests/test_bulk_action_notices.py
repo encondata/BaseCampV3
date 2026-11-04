@@ -1,9 +1,11 @@
 """Bulk action notices: when the import worker finishes or fails a job that wrote data, the
-person who started it gets an inbox row (imports/notices.py). It is written after the job's own
-final state is committed, in a session of its own, so no failure there can undo the work.
-Validation passes, canceled jobs and jobs nobody started say nothing.
+person who committed it and its uploader (when that's someone else) each get an inbox row
+(imports/notices.py). It is written after the job's own final state is committed, in a session
+of its own, so no failure there can undo the work. Validation passes, canceled jobs and jobs
+nobody started or committed say nothing.
 
-Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (section 5)"""
+Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (section 5), and answer 7
+in docs/superpowers/specs/2026-11-02-notifications-phase2-as-built.md"""
 
 import logging
 import uuid
@@ -64,6 +66,21 @@ async def admin_hdrs(db, client):
 async def _admin(db) -> Person:
     """The person the move setup wizard's admin login belongs to."""
     return await db.scalar(select(Person).where(Person.email == "ada@test.example.com"))
+
+
+async def _second_person(db) -> Person:
+    """Someone besides `mk_person`'s Ada: the other hand in a job two people had a part in."""
+    person = Person(first_name="Bea", last_name="Builder")
+    db.add(person)
+    await db.commit()
+    return person
+
+
+def _done(**fields) -> JobDone:
+    """A finished From-To import that names nobody, with whatever a test sets."""
+    return JobDone(**{"job_id": uuid.uuid4(), "kind": "move_assets", "phase": "commit",
+                      "status": "completed", "created_by": None, "initiative_id": None,
+                      **fields})
 
 
 async def _notices(db) -> list[Notification]:
@@ -193,6 +210,121 @@ async def test_only_a_from_to_import_says_how_many_rows_it_left_out(db):
     assert failed.body == ""
 
 
+# ── who is told ─────────────────────────────────────────────────────
+
+def test_recipients_committer_first_then_uploader():
+    uploader, committer = uuid.uuid4(), uuid.uuid4()
+    done = _done(created_by=uploader, committed_by=committer)
+    assert notices.recipients(done) == [committer, uploader]
+
+
+async def test_same_person_gets_one_notice(db):
+    """A uploads the file and commits it too: A is one person, so A hears once, not once for
+    each part."""
+    me = await mk_person(db)
+    done = _done(created_by=me.id, committed_by=me.id)
+
+    assert notices.recipients(done) == [me.id]
+    await notices.notify_job_done(db, done)
+    await db.commit()
+
+    [only] = await _notices(db)
+    assert (only.person_id, only.kind) == (me.id, "bulk_action_finished")
+
+
+async def test_recipients_before_0118_is_the_uploader(db):
+    """A job queued before migration 0118 has no committer (nor has a move setup, which its
+    creator queues): its uploader is told, as it always was."""
+    me = await mk_person(db)
+    done = _done(created_by=me.id, committed_by=None)
+
+    assert notices.recipients(done) == [me.id]
+    await notices.notify_job_done(db, done)
+    await db.commit()
+
+    [only] = await _notices(db)
+    assert (only.person_id, only.kind) == (me.id, "bulk_action_finished")
+
+
+def test_a_committer_is_told_when_the_row_has_no_uploader():
+    """A job with no uploader on its row (nobody started it) still tells whoever committed it."""
+    committer = uuid.uuid4()
+    assert notices.recipients(_done(created_by=None, committed_by=committer)) == [committer]
+
+
+async def test_recipients_none_is_silent(db):
+    done = _done(created_by=None, committed_by=None)
+
+    assert notices.recipients(done) == []
+    await notices.notify_job_done(db, done)
+    await db.commit()
+
+    assert await _notices(db) == []
+    assert await _log(db) == []
+
+
+async def test_from_to_finished_tells_committer_and_uploader(db):
+    uploader, committer = await mk_person(db), await _second_person(db)
+    move = Initiative(name="Move Q", initiative_type="move", status="planned")
+    db.add(move)
+    await db.commit()
+    done = _done(created_by=uploader.id, committed_by=committer.id, initiative_id=move.id,
+                 rows_left_out=2)
+
+    await notices.notify_job_done(db, done)
+    await db.commit()
+
+    told = await _notices(db)
+    assert sorted(n.person_id for n in told) == sorted([uploader.id, committer.id])
+    # one notice each, and the same notice: title, body, link and payload
+    for notice in told:
+        assert (notice.kind, notice.title, notice.body, notice.link, notice.payload) == (
+            "bulk_action_finished", "From-To import finished", "Move Q · 2 rows not imported",
+            f"/initiatives/{move.id}?tab=assets",
+            {"job_id": str(done.job_id), "job_kind": "move_assets"})
+        assert notice.read_at is None and notice.dismissed_at is None
+
+
+async def test_failed_job_tells_committer_and_uploader(db):
+    uploader, committer = await mk_person(db), await _second_person(db)
+    move = Initiative(name="Move Q", initiative_type="move", status="planned")
+    db.add(move)
+    await db.commit()
+    done = _done(created_by=uploader.id, committed_by=committer.id, initiative_id=move.id,
+                 status="failed")
+
+    await notices.notify_job_done(db, done)
+    await db.commit()
+
+    told = await _notices(db)
+    assert sorted(n.person_id for n in told) == sorted([uploader.id, committer.id])
+    # a failed notice is title and link only
+    for notice in told:
+        assert (notice.kind, notice.title, notice.body, notice.link, notice.payload) == (
+            "bulk_action_failed", "From-To import failed", "",
+            f"/initiatives/{move.id}/import-assets",
+            {"job_id": str(done.job_id), "job_kind": "move_assets"})
+
+
+async def test_each_person_follows_their_own_switches(db):
+    """Both are told through `notify()`, so each one's Bulk actions switches apply to their own
+    copy: the uploader has Inbox off and hears nothing, the committer still hears."""
+    uploader, committer = await mk_person(db), await _second_person(db)
+    db.add(UserAccount(person_id=uploader.id, email="ada@test.example.com",
+                       ui_prefs={"notif": {"switches": {"bulk_actions": {"inbox": False}}}}))
+    await db.commit()
+
+    await notices.notify_job_done(
+        db, _done(created_by=uploader.id, committed_by=committer.id))
+    await db.commit()
+
+    [heard] = await _notices(db)
+    assert heard.person_id == committer.id
+    suppressed = [row for row in await _log(db) if row.event == "inbox_suppressed"]
+    assert [(row.person_id, row.reason) for row in suppressed] == [
+        (uploader.id, "category_off")]
+
+
 # ── Bulk update assets ──────────────────────────────────────────────
 
 async def test_bulk_update_finished_and_failed(db):
@@ -275,6 +407,58 @@ async def test_from_to_import_finished_and_failed(db):
         f"/initiatives/{lost_ini}/import-assets")
     assert failed.payload == {"job_id": str(lost_id), "job_kind": "move_assets"}
     assert len(await _notices(db)) == 3
+
+
+async def test_worker_tells_the_committer(db):
+    """B committed the file A uploaded. The worker reads who committed it back with the job's
+    final state, so both hear how it ended, finished or failed."""
+    uploader, committer = await mk_person(db), await _second_person(db)
+    job_id, ini_id = await mk_from_to_job(db, phase="commit")
+    await _set(db, job_id, created_by=uploader.id, committed_by=committer.id)
+
+    await _run()
+
+    assert (await fresh_job(job_id)).status == "completed"
+    move = await db.get(Initiative, ini_id)
+    finished = await _notices(db)
+    assert sorted(n.person_id for n in finished) == sorted([uploader.id, committer.id])
+    for notice in finished:
+        assert (notice.kind, notice.title, notice.body, notice.link) == (
+            "bulk_action_finished", "From-To import finished", move.name,
+            f"/initiatives/{ini_id}?tab=assets")
+        assert notice.payload == {"job_id": str(job_id), "job_kind": "move_assets"}
+
+    # a stored file that cannot be read fails the commit, and both hear that too
+    lost_id, lost_ini = await mk_from_to_job(db, phase="commit")
+    await _set(db, lost_id, created_by=uploader.id, committed_by=committer.id,
+               file_key="import-jobs/gone/missing.csv")
+
+    await _run()
+
+    job = await fresh_job(lost_id)
+    assert (job.status, job.error) == ("failed", "file_unreadable")
+    failed = (await _notices(db))[len(finished):]
+    assert sorted(n.person_id for n in failed) == sorted([uploader.id, committer.id])
+    for notice in failed:
+        assert (notice.kind, notice.title, notice.body, notice.link) == (
+            "bulk_action_failed", "From-To import failed", "",
+            f"/initiatives/{lost_ini}/import-assets")
+        assert notice.payload == {"job_id": str(lost_id), "job_kind": "move_assets"}
+    assert len(await _notices(db)) == 4
+
+
+async def test_worker_tells_the_committer_when_the_row_has_no_uploader(db):
+    """A job with an empty `created_by` is no longer skipped on that alone: who committed it is
+    read back with its final state, and they are told."""
+    committer = await mk_person(db)
+    job_id, _ = await mk_from_to_job(db, phase="commit")              # no created_by
+    await _set(db, job_id, committed_by=committer.id)
+
+    await _run()
+
+    assert (await fresh_job(job_id)).status == "completed"
+    [finished] = await _notices(db)
+    assert (finished.person_id, finished.kind) == (committer.id, "bulk_action_finished")
 
 
 FROM_TO_HEADER = b"Serial Number,Asset Name,Asset Make,Asset Model\n"
@@ -468,10 +652,11 @@ async def test_validation_passes_are_silent(client, db, admin_hdrs):
         "bulk_action_finished", "From-To import finished", f"/initiatives/{ok_ini}?tab=assets")
 
 
-async def test_a_job_with_nothing_to_say_opens_no_notice_session(db):
-    """A validate pass and a job nobody started are skipped before a session is opened for
-    the notice: they pay no read, and a database blip there cannot warn about them. A commit
-    with an owner opens one, so the count tells the two apart."""
+async def test_a_validate_pass_opens_no_notice_session(db):
+    """A validate pass is skipped before a session is opened for the notice: it pays no read,
+    and a database blip there cannot warn about it. Every commit opens one, even a job nobody
+    started: who committed it is read back with its final state, and `recipients` is what finds
+    there is nobody to tell. So the count tells the validate pass apart."""
     me = await mk_person(db)
     validate_id, _ = await mk_from_to_job(db)                          # phase "validate"
     await _set(db, validate_id, created_by=me.id)
@@ -494,8 +679,9 @@ async def test_a_job_with_nothing_to_say_opens_no_notice_session(db):
 
     assert [(await fresh_job(j)).status for j in (validate_id, ownerless_id, owned_id)] == [
         "completed", "completed", "completed"]
-    assert sessions == [1, 1, 2]                        # the job's own, plus the notice's
-    [finished] = await _notices(db)
+    # the job's own session, plus the notice's (none for the validate pass)
+    assert sessions == [1, 2, 2]
+    [finished] = await _notices(db)             # the job nobody started said nothing
     assert finished.person_id == me.id
 
 

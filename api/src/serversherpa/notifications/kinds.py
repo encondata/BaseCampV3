@@ -94,11 +94,11 @@ KINDS: dict[str, KindInfo] = {
     # everywhere: a rule's notice is about its own initiative.
     "status_rule_matched": KindInfo("status_rules", "Status rule matched",
                                     reaches=("initiative", "site")),
-    # Sent with notify() by the import worker (imports/notices.py) to the person who started
-    # a job that wrote data, when it finishes or fails. Not announced and not watchable: it
-    # reaches that one person, and the category's switches are the way out. The failed notice
-    # is title + link only (brief, enforced here like the other failure kinds), since the
-    # error text behind it is internal.
+    # Sent with notify() by the import worker (imports/notices.py) to the person who committed
+    # a job that wrote data, and to its uploader when that's someone else, when it finishes or
+    # fails. Not announced and not watchable: it reaches only those people, and the category's
+    # switches are the way out. The failed notice is title + link only (brief, enforced here
+    # like the other failure kinds), since the error text behind it is internal.
     "bulk_action_finished": KindInfo("bulk_actions", "Bulk action finished"),
     "bulk_action_failed": KindInfo("bulk_actions", "Bulk action failed", brief=True),
     "password_expiring": KindInfo("security", "Password expiring", owner_always=True),
