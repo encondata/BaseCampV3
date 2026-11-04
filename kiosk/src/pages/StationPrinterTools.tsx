@@ -1,19 +1,22 @@
 /**
- * /labels/printers on a Label Station laptop: the same tools as
- * `PrinterTools`, but on the station's saved printer (`useStationPrinter`),
- * USB or network, instead of only a WebUSB one.
+ * /labels/printers on a Label Station laptop (and, on its label backend,
+ * a web kiosk with a printer saved): the same tools as `PrinterTools`, but
+ * on the station's saved printer (`useStationPrinter`), USB or network
+ * (USB only on the web), instead of only a WebUSB one.
  *
  * - The card opens on the saved printer: model, firmware and DPI, health
  *   chips, whether a peeler is fitted (step 5's wording) and the saved
  *   offsets.
  * - Test Label Alignment starts from the station's offsets, saves them to
- *   the station (`PUT /edge/label-station`, never localStorage) and prints
- *   in the station's print mode (`withPrintMode`).
+ *   the station (`labelBackend().saveSettings`: `PUT /edge/label-station`
+ *   on a laptop, never Print Labels' localStorage settings; this kiosk's
+ *   own label settings on the web) and prints in the station's print mode
+ *   (`withPrintMode`).
  * - Full Printer Setup and Factory Reset take the USB hook, or a network
  *   printer shaped like it (`networkZebraPrinter`, through the edge).
  * - Change printer and Check printer & fonts open Kiosk Setup's step 5 in
  *   a modal; saving reloads the card. Saving a different DPI or printer
- *   makes the edge regenerate the move's labels.
+ *   makes the edge (or the web kiosk's build) regenerate the move's labels.
  *
  * Nothing here writes printer settings except Full Printer Setup and
  * Factory Reset, as on every other kiosk.
@@ -28,8 +31,9 @@ import FactoryResetModal from '../components/printers/FactoryResetModal';
 import PrinterHealth from '../components/printers/PrinterHealth';
 import PrinterSetupModal from '../components/printers/PrinterSetupModal';
 import PrinterStep from '../components/setup/PrinterStep';
-import { fetchLabelVocab, putLabelStation, type LabelVocab } from '../lib/api';
+import { fetchLabelVocab, type LabelVocab } from '../lib/api';
 import { useKioskSetup } from '../lib/kioskSetup';
+import { labelBackend } from '../lib/labelBackend';
 import { LABEL_SECTIONS } from '../lib/labelSections';
 import { networkZebraPrinter } from '../lib/networkZebra';
 import { withPrintMode, type PeelerInfo } from '../lib/stationPrinter';
@@ -46,6 +50,14 @@ const TOOLS: { key: Tool; title: string; description: string; action: string; da
   { key: 'reset', title: 'Factory Reset', description: "Restore the printer's factory defaults, then set it up again.", action: 'Reset printer', danger: true },
 ];
 
+/** Change printer's row text: a laptop's printer step is Kiosk Setup's
+ *  and offers USB and network; a web kiosk's offers USB only and isn't in
+ *  Kiosk Setup (its printer is saved from Label Printing). */
+const CHANGE_HINT: Record<'edge' | 'web', string> = {
+  edge: "Switch to another USB or network printer. The same checks as Kiosk Setup run before it's saved.",
+  web: "Switch to another USB printer. The printer checks run before it's saved.",
+};
+
 const STEP_MODALS: Record<StepModal, { title: string; description: string }> = {
   change: {
     title: 'Change printer',
@@ -56,6 +68,18 @@ const STEP_MODALS: Record<StepModal, { title: string; description: string }> = {
     description: "Run the setup checks on the station's printer again and install any fonts the move's templates need.",
   },
 };
+
+/** The step 5 modal's heading text. On the web the printer step isn't
+ *  Kiosk Setup's, so Change printer doesn't say it is. */
+function stepModalText(which: StepModal, kind: 'edge' | 'web'): { title: string; description: string } {
+  if (which === 'change' && kind === 'web') {
+    return {
+      title: STEP_MODALS.change.title,
+      description: "Pick the station's printer and run the printer checks. A printer at a different DPI regenerates the move's labels.",
+    };
+  }
+  return STEP_MODALS[which];
+}
 
 const SWITCH_HINT = 'Run Check printer & fonts to switch.';
 
@@ -78,6 +102,7 @@ function peelerText(present: boolean | null, peel: boolean): string {
 }
 
 export default function StationPrinterTools() {
+  const backend = labelBackend();
   const station = useStationPrinter();
   const { settings, printer, zebra, state } = station;
   const [setup] = useKioskSetup();
@@ -128,7 +153,7 @@ export default function StationPrinterTools() {
 
   const saveOffsets = async (o: StationOffsets) => {
     if (!settings) throw new Error('No saved settings');
-    await putLabelStation({ ...settings, offset_x: o.x, offset_y: o.y });
+    await backend.saveSettings({ ...settings, offset_x: o.x, offset_y: o.y });
     // Saved: a failed re-read doesn't make it "Couldn't save".
     try {
       await station.reload();
@@ -238,7 +263,7 @@ export default function StationPrinterTools() {
           <div className="row-main zp-tool-row">
             <div className="cell">
               <div className="cell-top"><b>Change printer</b></div>
-              <div className="cell-sub">Switch to another USB or network printer. The same checks as Kiosk Setup run before it&apos;s saved.</div>
+              <div className="cell-sub">{CHANGE_HINT[backend.kind]}</div>
             </div>
             <div className="cell zp-tool-action">
               <button type="button" className="btn-solid" disabled={!settings} onClick={() => openStep('change')}>Change printer</button>
@@ -283,12 +308,12 @@ export default function StationPrinterTools() {
       )}
       {stepModal && settings && (
         <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) void closeStep(false); }}>
-          <div className="modal-card reports-modal-card rgm-card zp-station-card" role="dialog" aria-label={STEP_MODALS[stepModal].title}>
+          <div className="modal-card reports-modal-card rgm-card zp-station-card" role="dialog" aria-label={stepModalText(stepModal, backend.kind).title}>
             <div className="modal-head">
               <div className="rgm-head-text">
                 <div className="eyebrow">Printers</div>
-                <h3>{STEP_MODALS[stepModal].title}</h3>
-                <p className="page-hint">{STEP_MODALS[stepModal].description}</p>
+                <h3>{stepModalText(stepModal, backend.kind).title}</h3>
+                <p className="page-hint">{stepModalText(stepModal, backend.kind).description}</p>
               </div>
               <button type="button" className="modal-close" aria-label="Close" onClick={() => void closeStep(false)}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>

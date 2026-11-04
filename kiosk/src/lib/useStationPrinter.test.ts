@@ -4,7 +4,7 @@
  *  saved or it reports none), else the person
  *  has to connect one. */
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { LabelStationSettings } from './api';
 
@@ -40,6 +40,7 @@ vi.mock('./useZebraPrinter', async () => {
 
 import { writeKioskSetup } from './kioskSetup';
 import { useStationPrinter } from './useStationPrinter';
+import { writeWebLabelSettings } from './webLabelSettings';
 
 function settings(printer: Partial<LabelStationSettings['printer']>): LabelStationSettings {
   return {
@@ -49,13 +50,16 @@ function settings(printer: Partial<LabelStationSettings['printer']>): LabelStati
 }
 
 beforeEach(() => {
+  // A laptop Label Station: settings from the edge. The web cases below
+  // clear this.
+  window.__KIOSK_CONFIG__ = { mode: 'laptop' };
   usb.known = [];
   writeKioskSetup({
     initiativeId: 'i-1', initiativeName: 'Move', siteId: 's-1', siteName: 'ORD1',
     siteRole: 'source', scanStatus: 'k', scanLabel: 'Dock', stationType: 'label',
   });
 });
-afterEach(() => { cleanup(); vi.clearAllMocks(); localStorage.clear(); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); localStorage.clear(); delete window.__KIOSK_CONFIG__; });
 
 it('a network printer is ready from the saved IP', async () => {
   apiMock.getLabelStation.mockResolvedValue(settings({ type: 'network', ip: '10.0.0.40' }));
@@ -135,4 +139,33 @@ it('reload reads the settings again', async () => {
   await act(async () => { await result.current.reload(); });
   await waitFor(() => expect(result.current.state).toBe('ready'));
   expect(result.current.printer).toMatchObject({ ip: '10.0.0.41' });
+});
+
+describe('on the web', () => {
+  beforeEach(() => { delete window.__KIOSK_CONFIG__; });
+
+  it('reads saved web settings and reloads when they change', async () => {
+    usb.known = [{ productName: 'ZD421', serialNumber: 'SAVED' }];
+    writeWebLabelSettings(settings({ serial: 'SAVED' }));
+    const { result } = renderHook(() => useStationPrinter());
+    await waitFor(() => expect(result.current.state).toBe('ready'));
+    expect(result.current.settings).toEqual(settings({ serial: 'SAVED' }));
+    expect(usb.connectTo).toHaveBeenCalledWith(usb.known[0]);
+    expect(result.current.printer).toMatchObject({ kind: 'usb', serial: 'SAVED' });
+
+    // a save elsewhere on the page (the offsets, the printer step) shows
+    // up here without anyone calling reload
+    act(() => { writeWebLabelSettings({ ...settings({ serial: 'SAVED' }), offset_x: 6, peel: true }); });
+    await waitFor(() => expect(result.current.settings).toMatchObject({ offset_x: 6, peel: true }));
+    expect(apiMock.getLabelStation).not.toHaveBeenCalled();
+  });
+
+  it('no_settings until a printer is saved on this kiosk, then picks it up', async () => {
+    const { result } = renderHook(() => useStationPrinter());
+    await waitFor(() => expect(result.current.state).toBe('no_settings'));
+    usb.known = [{ productName: 'ZD421', serialNumber: 'NEW' }];
+    act(() => { writeWebLabelSettings(settings({ serial: 'NEW' })); });
+    await waitFor(() => expect(result.current.state).toBe('ready'));
+    expect(apiMock.getLabelStation).not.toHaveBeenCalled();
+  });
 });

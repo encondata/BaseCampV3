@@ -5,7 +5,8 @@
  * laptop edge). Either way the printer becomes one `StationPrinter`, and
  * the same checks run against it, each a row that turns green:
  * - Printer answers (`~HI`);
- * - DPI: the edge's label plan (`GET /edge/labels/plan`) finds a template
+ * - DPI: the station's label plan (`labelBackend().getPlan`: the edge's
+ *   `GET /edge/labels/plan`, or the web kiosk's own) finds a template
  *   of the station's kind at the printer's DPI, and names it; the plan's
  *   notes show under the row as warnings that never block. With none, the
  *   row says what to do: activate one in the portal (none at all), or a
@@ -27,9 +28,14 @@
  * Problems say what to fix, with Recheck. Finish needs every row green;
  * "Finish anyway" is for a person signed in with a user account and never
  * shows to a move-password session. Either saves the station's settings
- * on the edge (`PUT /edge/label-station`), including the offsets set in
- * the test labels modal and whether to print peel-off. Setup never writes
- * printer settings: the print mode goes on each label instead.
+ * (`labelBackend().saveSettings`: on the edge, `PUT /edge/label-station`;
+ * on the web, this kiosk's own), including the offsets set in the test
+ * labels modal and whether to print peel-off. Setup never writes printer
+ * settings: the print mode goes on each label instead.
+ *
+ * A web kiosk is the same step with one printer type: a browser reaches a
+ * printer over WebUSB only, so there are no type cards and it opens on USB.
+ * Copy that says "this laptop" there says "this kiosk".
  *
  * Printer Setup / Troubleshooting on a Label Station reuses this step as
  * its Change printer / Check printer & fonts modal: no Back, its own
@@ -45,11 +51,13 @@ import { naturalCompare } from '@portal/lib/naturalSort';
 
 import { useKioskAuth } from '../../auth/KioskAuthContext';
 import {
-  ApiError, fetchKioskLabelFonts, getLabelPlan, getPrinterScan, putLabelStation, startPrinterScan,
+  ApiError, fetchKioskLabelFonts, getPrinterScan, startPrinterScan,
   type KioskLabelFont, type KioskLabelTemplate, type LabelKind, type LabelStationSettings,
   type PrinterScan, type FoundPrinter,
 } from '../../lib/api';
+import { labelBackend, type PrinterType } from '../../lib/labelBackend';
 import { getLabelTemplates } from '../../lib/labelTemplates';
+import type { DeviceWord } from '../../lib/printQueue';
 import {
   builtInFontText, checkDpi, downloadedDpis, fontFixFor, isResidentFont, KIND_LABEL, neededFonts,
   networkStationPrinter, noTemplateText, readFonts, statusProblems, templatesOfKind, usbStationPrinter,
@@ -62,7 +70,6 @@ import CheckList, { type CheckRowResult } from './CheckList';
 import TestLabelModal, { type Offsets } from './TestLabelModal';
 
 type CheckKey = 'answers' | 'dpi' | 'status' | 'peeler' | 'fonts';
-type PrinterType = 'usb' | 'network';
 
 const ITEMS: { name: CheckKey; label: string; showOkDetail?: boolean }[] = [
   { name: 'answers', label: 'Printer answers' },
@@ -72,10 +79,13 @@ const ITEMS: { name: CheckKey; label: string; showOkDetail?: boolean }[] = [
   { name: 'fonts', label: 'Fonts installed' },
 ];
 
-const TYPES: { type: PrinterType; title: string; meta: string }[] = [
-  { type: 'usb', title: 'USB printer', meta: 'A Zebra plugged into this laptop. Printers this browser already allowed come first.' },
-  { type: 'network', title: 'Network printer', meta: "A Zebra on this laptop's network, found by a scan for port 9100 or by its IP address." },
-];
+/** The printer type cards; `word` is what the copy calls this device. */
+function typeCards(word: DeviceWord): { type: PrinterType; title: string; meta: string }[] {
+  return [
+    { type: 'usb', title: 'USB printer', meta: `A Zebra plugged into this ${word}. Printers this browser already allowed come first.` },
+    { type: 'network', title: 'Network printer', meta: `A Zebra on this ${word}'s network, found by a scan for port 9100 or by its IP address.` },
+  ];
+}
 
 const UNSUPPORTED = "This browser can't talk to USB printers. Use Chrome or Edge over HTTPS or localhost.";
 
@@ -100,9 +110,9 @@ function codeOf(err: unknown): string {
   return err instanceof ApiError ? err.code : 'unknown_error';
 }
 
-function noAnswer(err: unknown, printer: StationPrinter): string {
+function noAnswer(err: unknown, printer: StationPrinter, word: DeviceWord): string {
   const code = codeOf(err);
-  if (code === 'bad_printer_ip') return "That address isn't a printer on this laptop's local network.";
+  if (code === 'bad_printer_ip') return `That address isn't a printer on this ${word}'s local network.`;
   if (code === 'printer_unreachable') return `Nothing answered at ${printer.ip} on port 9100.`;
   return printer.kind === 'usb'
     ? "The printer didn't answer. Check that it's on and plugged in."
@@ -136,11 +146,17 @@ export default function PrinterStep({
   initiativeId, labelKind, initial, onBack, onFinish, finishLabel = 'Finish', preselect = false, zebra: sharedZebra,
 }: Props) {
   const { kioskMove } = useKioskAuth();
+  const backend = labelBackend();
+  // The type cards this device can offer; with one (the web: USB) there is
+  // no choice to show.
+  const types = typeCards(backend.deviceWord).filter((t) => backend.printerTypes.includes(t.type));
   // Always called (hooks can't be conditional); holds nothing when unused.
   const ownZebra = useZebraPrinter();
   const zebra = sharedZebra ?? ownZebra;
   const sync = useSyncStatus();
-  const [type, setType] = useState<PrinterType>(initial?.printer.type ?? 'usb');
+  const [type, setType] = useState<PrinterType>(
+    initial && backend.printerTypes.includes(initial.printer.type) ? initial.printer.type : backend.printerTypes[0],
+  );
   const [known, setKnown] = useState<UsbDeviceLike[]>([]);
   const [scan, setScan] = useState<PrinterScan | null>(null);
   const [scanError, setScanError] = useState('');
@@ -229,7 +245,7 @@ export default function PrinterStep({
     }
     if (!live()) return;
     if (!ident) {
-      put('answers', { state: 'fail', detail: noAnswer(failure, p) });
+      put('answers', { state: 'fail', detail: noAnswer(failure, p, backend.deviceWord) });
       setRunning(null);
       return;
     }
@@ -246,7 +262,7 @@ export default function PrinterStep({
     // fonts aren't in its code).
     let planFonts: string[] | null = null;
     try {
-      const plan = await getLabelPlan({ dpi: ident.dpi, kind: labelKind });
+      const plan = await backend.getPlan({ dpi: ident.dpi, kind: labelKind });
       const picked = plan.template ? ts.find((t) => t.id === plan.template?.id) : undefined;
       if (!plan.template) fontTemplates = [];
       else if (picked) fontTemplates = [picked];
@@ -417,7 +433,7 @@ export default function PrinterStep({
     setSaving(true);
     setSaveError('');
     try {
-      await putLabelStation({
+      await backend.saveSettings({
         label_kind: labelKind,
         printer: {
           type: printer.kind, ip: printer.kind === 'network' ? printer.ip : null,
@@ -432,7 +448,7 @@ export default function PrinterStep({
     } catch (err) {
       const code = codeOf(err);
       setSaveError(code === 'not_label_station'
-        ? "This laptop isn't set up as a Label Station yet. Go back and pick the site again."
+        ? `This ${backend.deviceWord} isn't set up as a Label Station yet. Go back and pick the site again.`
         : `Couldn't save the printer settings (${code}). Try again.`);
     } finally {
       if (mounted.current) setSaving(false);
@@ -448,15 +464,17 @@ export default function PrinterStep({
       <p className="page-hint">
         This station prints {KIND_LABEL[labelKind]} labels. Pick its printer, then check it&apos;s ready.
       </p>
-      <div className="setup-cards" role="listbox" aria-label="Printer types">
-        {TYPES.map((t) => (
-          <button key={t.type} type="button" role="option" aria-selected={type === t.type}
-                  className="setup-card" onClick={() => chooseType(t.type)}>
-            <div className="setup-card-title">{t.title}</div>
-            <div className="setup-card-meta">{t.meta}</div>
-          </button>
-        ))}
-      </div>
+      {types.length > 1 && (
+        <div className="setup-cards" role="listbox" aria-label="Printer types">
+          {types.map((t) => (
+            <button key={t.type} type="button" role="option" aria-selected={type === t.type}
+                    className="setup-card" onClick={() => chooseType(t.type)}>
+              <div className="setup-card-title">{t.title}</div>
+              <div className="setup-card-meta">{t.meta}</div>
+            </button>
+          ))}
+        </div>
+      )}
 
       {type === 'usb' && (
         !zebra.supported ? (
@@ -491,7 +509,7 @@ export default function PrinterStep({
           )}
           {scan?.state === 'failed' && (
             <p className="form-error" role="alert">
-              The scan couldn&apos;t run: this laptop&apos;s network address isn&apos;t known yet. Type the
+              The scan couldn&apos;t run: this {backend.deviceWord}&apos;s network address isn&apos;t known yet. Type the
               printer&apos;s IP address instead.
             </p>
           )}

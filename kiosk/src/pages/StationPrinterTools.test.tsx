@@ -70,7 +70,9 @@ vi.mock('../components/setup/PrinterStep', () => ({
 }));
 
 import { writeKioskSetup } from '../lib/kioskSetup';
+import { readWebLabelSettings, writeWebLabelSettings } from '../lib/webLabelSettings';
 import PrinterTools from './PrinterTools';
+import StationPrinterTools from './StationPrinterTools';
 
 const VOCAB: LabelVocab[] = [
   { kind: 'size', key: '4x2', label: '4" x 2"', description: '', meta: { width_in: 4, height_in: 2 }, sort_order: 1, is_active: true, usage_count: 0 },
@@ -299,4 +301,42 @@ it('an RFID Station laptop and a web kiosk keep the USB-only tools', async () =>
   renderPage();
   expect(screen.getByRole('button', { name: 'Connect via USB' })).toBeTruthy();
   await waitFor(() => expect(api.fetchLabelVocab).toHaveBeenCalled());
+});
+
+it('on the web saves offsets to this kiosk', async () => {
+  // PrinterTools' web routing is Task 6's; the page itself is the same one.
+  delete window.__KIOSK_CONFIG__;
+  const usbSettings: LabelStationSettings = {
+    ...SETTINGS, printer: { type: 'usb', ip: null, model: 'ZD421', serial: 'Z1' },
+  };
+  writeWebLabelSettings(usbSettings);
+  station.settings = usbSettings;
+  station.zebra.connected = true;
+  render(<MemoryRouter><StationPrinterTools /></MemoryRouter>);
+  // no network printer to switch to from a browser
+  expect(screen.getByText(/^Switch to another USB printer\./)).toBeTruthy();
+  await screen.findByText('Ready');
+  await userEvent.click(screen.getByRole('button', { name: 'Print test label' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Test label alignment' });
+  const h = within(dialog).getByLabelText('Horizontal offset');
+  fireEvent.change(h, { target: { value: '10' } });
+  fireEvent.blur(h);
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Save offsets' }));
+  expect(await within(dialog).findByText(/Offsets saved/)).toBeTruthy();
+  expect(readWebLabelSettings()).toEqual({ ...usbSettings, offset_x: 10, offset_y: -2 });
+  expect(api.putLabelStation).not.toHaveBeenCalled();
+  expect(station.reload).toHaveBeenCalled();
+});
+
+it("on the web Change printer is USB only and isn't Kiosk Setup's", async () => {
+  delete window.__KIOSK_CONFIG__;
+  station.settings = { ...SETTINGS, printer: { type: 'usb', ip: null, model: 'ZD421', serial: 'Z1' } };
+  station.zebra.connected = true;
+  render(<MemoryRouter><StationPrinterTools /></MemoryRouter>);
+  expect(screen.getByText("Switch to another USB printer. The printer checks run before it's saved.")).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Change printer' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Change printer' });
+  expect(within(dialog).getByText("Pick the station's printer and run the printer checks. A printer at a "
+    + "different DPI regenerates the move's labels.")).toBeTruthy();
+  expect(within(dialog).queryByText(/Kiosk Setup/)).toBeNull();
 });

@@ -4,11 +4,12 @@
  *   (`alignmentTestZpl`, previewed with `alignmentInsets`) at 4x2 or 2x1
  *   (4x2 for a Top station, 2x1 for Front) at the printer's DPI;
  * - a mock-data label: the template the station's plan picks at the
- *   printer's DPI (`GET /edge/labels/plan`, the one its labels print
- *   with), filled with the portal's fixed mock values by the portal's own
- *   renderer (`POST /kiosk/labels/test-render`). The kiosk never fills
- *   placeholders itself, and a template's own sample values never reach
- *   it. When the plan can't be read, picks none, or picks a template that
+ *   printer's DPI (`labelBackend().getPlan`: the edge's `GET
+ *   /edge/labels/plan` on a laptop, the browser build's plan on the web —
+ *   the one its labels print with), filled with the portal's fixed mock
+ *   values by the portal's own renderer (`POST /kiosk/labels/test-render`).
+ *   The kiosk never fills placeholders itself, and a template's own sample
+ *   values never reach it. When the plan can't be read, picks none, or picks a template that
  *   wasn't downloaded: "Generic Rack and RU" for Top, the Front template
  *   for Front, at the printer's DPI; a template only at another DPI is
  *   skipped with a note.
@@ -28,8 +29,9 @@ import {
 } from '@portal/lib/printLabels';
 
 import {
-  ApiError, getLabelPlan, postTestRender, type KioskLabelTemplate, type LabelKind,
+  ApiError, postTestRender, type KioskLabelTemplate, type LabelKind,
 } from '../../lib/api';
+import { labelBackend } from '../../lib/labelBackend';
 import { mockTemplateFor, withPrintMode, type StationPrinter } from '../../lib/stationPrinter';
 import { ChoiceCard } from '../printers/ChoiceCard';
 import { alignmentInsets } from '../printers/AlignmentTestModal';
@@ -81,7 +83,7 @@ export default function TestLabelModal({
   useEffect(() => {
     let live = true;
     setPlanId(undefined);
-    getLabelPlan({ dpi, kind: labelKind })
+    labelBackend().getPlan({ dpi, kind: labelKind })
       .then((plan) => { if (live) setPlanId(plan.template?.id ?? null); })
       .catch(() => { if (live) setPlanId(null); });
     return () => { live = false; };
