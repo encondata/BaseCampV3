@@ -1525,7 +1525,7 @@ class ImportJob(Base):
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     # who queued the job to write its data (the commit routes set it with phase "commit"). NULL
     # when nobody has: never committed, a move setup (its creator queues it), or queued before
-    # migration 0118. The finished / failed notice then goes to created_by alone.
+    # migration 0119. The finished / failed notice then goes to created_by alone.
     committed_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     filename: Mapped[str]
     file_key: Mapped[str] = mapped_column(server_default="")

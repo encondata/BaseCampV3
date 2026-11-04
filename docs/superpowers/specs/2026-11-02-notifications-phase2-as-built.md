@@ -128,7 +128,7 @@ Jimmy answered the open questions on 2026-11-04. The fixes are planned in `docs/
 4. **The 500-recipient cap:** keep it as built. The system has 25 users at most, so the cap is never reached.
 5. **Clients and truck events:** keep the "No access" rows.
 6. **Failed move setup:** keep the link to a fresh wizard.
-7. **From-To imports:** the notice goes to the person who committed the import, and to the uploader too when that's someone else. Migration 0118 adds `import_jobs.committed_by`, which both commit routes set (From-To import and Bulk update assets). A move setup's job is committed by the person who started it.
+7. **From-To imports:** the notice goes to the person who committed the import, and to the uploader too when that's someone else. Migration 0119 adds `import_jobs.committed_by`, which both commit routes set (From-To import and Bulk update assets). A move setup's job is committed by the person who started it.
 8. **What a job left out:** Jimmy needs to see what failed in the portal, during the upload and import. The pages already show it, so nothing changes:
    - Bulk update assets marks each row Update, No change, Needs a match, Error or Skipped before Apply, then shows each row's result, with a CSV download.
    - Move setup's Assets step shows the same per-row report as the From-To page before the move is created. Its finish screen lists every row as Added, Updated or Skipped, with the row's message and a CSV download.
@@ -150,7 +150,7 @@ What breaks if an old slot runs on 0116:
 - The old worker doesn't touch `wiki_watches`.
 - New code on 0115 runs, but wiki watches stay invisible until 0116.
 
-Answer 7's migration 0118 only adds a nullable column, so an old slot keeps working on it.
+Answer 7's migration 0119 only adds a nullable column, so an old slot keeps working on it.
 
 Migration numbering: `project-plans` also has a 0110, and `notif-phase1` is unmerged. Whichever branch merges later renumbers.
 

@@ -232,8 +232,8 @@ async def test_same_person_gets_one_notice(db):
     assert (only.person_id, only.kind) == (me.id, "bulk_action_finished")
 
 
-async def test_recipients_before_0118_is_the_uploader(db):
-    """A job queued before migration 0118 has no committer (nor has a move setup, which its
+async def test_recipients_before_0119_is_the_uploader(db):
+    """A job queued before migration 0119 has no committer (nor has a move setup, which its
     creator queues): its uploader is told, as it always was."""
     me = await mk_person(db)
     done = _done(created_by=me.id, committed_by=None)

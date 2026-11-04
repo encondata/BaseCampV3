@@ -1,8 +1,8 @@
-"""Migration 0118 (notifications Phase 2, answer 7): `import_jobs.committed_by`, the person who
+"""Migration 0119 (notifications Phase 2, answer 7): `import_jobs.committed_by`, the person who
 queued a job to write its data.
 
 The shape at head and the model are read on the shared test database. The upgrade and the
-rollback run on a throwaway database (`<SS_TEST_DB>_m0118`) so the shared one stays at head.
+rollback run on a throwaway database (`<SS_TEST_DB>_m0119`) so the shared one stays at head.
 
 Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-as-built.md (Answers, 7)"""
 
@@ -18,7 +18,7 @@ from serversherpa.config import get_settings
 from serversherpa.db.models import ImportJob, Person
 from tests.test_migration_0099_kiosk_config import _alembic
 
-THROWAWAY_DB = os.environ.get("SS_TEST_DB", "serversherpa_test") + "_m0118"
+THROWAWAY_DB = os.environ.get("SS_TEST_DB", "serversherpa_test") + "_m0119"
 
 
 # ── the shape at head, on the shared database ──────────────────────
@@ -97,21 +97,21 @@ def _has_column(conn) -> bool:
                       "WHERE table_name = 'import_jobs' AND column_name = 'committed_by'") == 1
 
 
-# a job its person uploaded, with no committer named (the only kind there is before 0118)
+# a job its person uploaded, with no committer named (the only kind there is before 0119)
 UPLOADED = ("INSERT INTO import_jobs (kind, filename, created_by) "
             "VALUES ('asset_bulk_update', 'a.csv', %s) RETURNING id")
 
 
 def test_upgrade_adds_the_column_and_the_downgrade_drops_it(throwaway_url):
     sync = _sync(throwaway_url)
-    _alembic(throwaway_url, "upgrade", "0117")
+    _alembic(throwaway_url, "upgrade", "0118")
     with psycopg.connect(sync, autocommit=True) as conn:
         assert not _has_column(conn)
         person = _one(conn, "INSERT INTO people (first_name, last_name) "
                             "VALUES ('Person', 'A') RETURNING id")
         queued_before = _one(conn, UPLOADED, (person,))
 
-    _alembic(throwaway_url, "upgrade", "0118")
+    _alembic(throwaway_url, "upgrade", "0119")
     with psycopg.connect(sync, autocommit=True) as conn:
         assert _has_column(conn)
         # a job from before the upgrade has no committer, and a new one need name none
@@ -127,7 +127,7 @@ def test_upgrade_adds_the_column_and_the_downgrade_drops_it(throwaway_url):
             conn.execute("UPDATE import_jobs SET committed_by = %s WHERE id = %s",
                          (uuid.uuid4(), queued_before))
 
-    _alembic(throwaway_url, "downgrade", "0117")
+    _alembic(throwaway_url, "downgrade", "0118")
     with psycopg.connect(sync, autocommit=True) as conn:
         assert not _has_column(conn)
         # the jobs stay, and so does who uploaded them
@@ -135,7 +135,7 @@ def test_upgrade_adds_the_column_and_the_downgrade_drops_it(throwaway_url):
             [(queued_before, person), (queued_after, person)])
 
     # and forward again: the column comes back empty
-    _alembic(throwaway_url, "upgrade", "0118")
+    _alembic(throwaway_url, "upgrade", "0119")
     with psycopg.connect(sync, autocommit=True) as conn:
         assert _has_column(conn)
         assert _one(conn, "SELECT count(*) FROM import_jobs WHERE committed_by IS NOT NULL") == 0

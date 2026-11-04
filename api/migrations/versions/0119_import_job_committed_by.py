@@ -16,8 +16,8 @@ Rolling back drops the column: a job still queued then tells its uploader alone.
 
 Design: docs/superpowers/specs/2026-11-02-notifications-phase2-as-built.md (Answers, 7)
 
-Revision ID: 0118
-Revises: 0117
+Revision ID: 0119
+Revises: 0118
 Create Date: 2026-11-04
 """
 from collections.abc import Sequence
@@ -26,8 +26,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
-revision: str = "0118"
-down_revision: str | None = "0117"
+revision: str = "0119"
+down_revision: str | None = "0118"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

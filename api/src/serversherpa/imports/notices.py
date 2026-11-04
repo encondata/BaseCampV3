@@ -8,7 +8,7 @@ session of its own, so a failure here can never undo the work.
 A From-To file can be uploaded by one person and committed by another, so `recipients` names
 both: the committer (`import_jobs.committed_by`, set by the commit route) first, then the
 uploader (`created_by`). A job with no committer (a move setup, which its creator queues, or one
-queued before migration 0118) tells its uploader alone, and one person who did both is told once.
+queued before migration 0119) tells its uploader alone, and one person who did both is told once.
 
 Nothing is sent for:
 - a validate pass (`writes_data`): it writes nothing, and the person is reviewing it on screen;
@@ -60,7 +60,7 @@ NOTIFIED_STATUSES = ("completed", "failed")
 class JobDone:
     """How one job ended, as the worker read it back from the row once its final state was
     committed. `created_by` is who uploaded it and `committed_by` who queued it to write (null
-    for a move setup and for a job queued before migration 0118). `initiative_id` is the row's:
+    for a move setup and for a job queued before migration 0119). `initiative_id` is the row's:
     a move setup sets it only at the very end. `rows_left_out` is a From-To import's count of
     rows it read but did not import (`count_left_out`); the other jobs leave it 0."""
     job_id: uuid.UUID
@@ -85,7 +85,7 @@ def writes_data(kind: str, phase: str) -> bool:
 def recipients(done: JobDone) -> list[uuid.UUID]:
     """Who hears how the job ended: the person who committed it, then the uploader when that's
     someone else. Either can be missing (no committer on a move setup or a job queued before
-    migration 0118; no uploader on a job nobody started) and is left out; one person who did
+    migration 0119; no uploader on a job nobody started) and is left out; one person who did
     both is listed once. Empty when nobody is left."""
     people: list[uuid.UUID] = []
     for person_id in (done.committed_by, done.created_by):
