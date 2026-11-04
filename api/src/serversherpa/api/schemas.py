@@ -3366,6 +3366,9 @@ class StatusRuleExecutionItem(BaseModel):
     rule_name: str
     processed_scan_id: uuid.UUID | None
     conditions_met: bool
+    # What the scan matched and how (engine.match_entry); None on
+    # executions logged before the engine recorded it.
+    match: dict | None
     actions_applied: list
     error: str | None
     executed_at: datetime

@@ -5034,6 +5034,9 @@ export interface StatusRuleSchema {
 export interface StatusRuleExecution {
   id: number; rule_id: string | null; rule_name: string;
   processed_scan_id: string | null; conditions_met: boolean;
+  /** What the scan matched and how (match_type, matched_on, the entity's id/name/tags);
+   *  null on executions logged before the engine recorded it. */
+  match: Record<string, unknown> | null;
   actions_applied: { action_type: string; applied: boolean; reason?: string }[];
   error: string | null; executed_at: string; duration_ms: number;
   scanned_value: string | null; scan_status: string | null;

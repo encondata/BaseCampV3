@@ -1,4 +1,5 @@
-"""Matching ladder: ID (uuid / legacy) → RFID → serial → name.
+"""Matching ladder: ID (uuid / legacy) → RFID → serial → name; an RFID
+read matches RFID tags only.
 Multiple hits at a tier = ambiguous → None (stop, don't fall through).
 Archived entities never match."""
 
@@ -21,12 +22,12 @@ async def _asset(db, **over):
 async def test_uuid_matches_asset_id(db):
     a = await _asset(db, serial_number="SN-1")
     got = await match_scan(db, str(a.id))
-    assert got == Match("asset", a.id)
+    assert got == Match("asset", a.id, "id")
 
 
 async def test_legacy_id_matches_numeric_value(db):
     a = await _asset(db, legacy_id=4471)
-    assert await match_scan(db, "4471") == Match("asset", a.id)
+    assert await match_scan(db, "4471") == Match("asset", a.id, "legacy_id")
 
 
 async def test_rfid_matches_across_tables_in_order(db):
@@ -35,19 +36,19 @@ async def test_rfid_matches_across_tables_in_order(db):
     p = Person(first_name="Badge", last_name="Holder", rfid_tag="E280BBB")
     db.add(p)
     await db.flush()
-    assert await match_scan(db, "e280aaa") == Match("container", c.id)
-    assert await match_scan(db, "E280BBB") == Match("person", p.id)
+    assert await match_scan(db, "e280aaa") == Match("container", c.id, "rfid_tag")
+    assert await match_scan(db, "E280BBB") == Match("person", p.id, "rfid_tag")
 
 
 async def test_rfid_beats_serial(db):
     by_serial = await _asset(db, serial_number="COLLIDE")
     by_rfid = await _asset(db, rfid_tag="COLLIDE")
-    assert await match_scan(db, "COLLIDE") == Match("asset", by_rfid.id)
+    assert await match_scan(db, "COLLIDE") == Match("asset", by_rfid.id, "rfid_tag")
 
 
 async def test_serial_single_hit_matches(db):
     a = await _asset(db, serial_number="SN-77")
-    assert await match_scan(db, "sn-77") == Match("asset", a.id)
+    assert await match_scan(db, "sn-77") == Match("asset", a.id, "serial_number")
 
 
 async def test_duplicate_serial_is_ambiguous_not_name_fallthrough(db):
@@ -60,7 +61,7 @@ async def test_duplicate_serial_is_ambiguous_not_name_fallthrough(db):
 
 async def test_name_fallback_single_hit(db):
     a = await _asset(db, name="Rack 12 switch")
-    assert await match_scan(db, "Rack 12 switch") == Match("asset", a.id)
+    assert await match_scan(db, "Rack 12 switch") == Match("asset", a.id, "name")
 
 
 async def test_archived_entities_never_match(db):
@@ -76,7 +77,7 @@ async def test_person_rfid_matches_case_insensitively(db):
     p = Person(first_name="Badge", last_name="Holder", rfid_tag="E280CCC")
     db.add(p)
     await db.flush()
-    assert await match_scan(db, "e280ccc") == Match("person", p.id)
+    assert await match_scan(db, "e280ccc") == Match("person", p.id, "rfid_tag")
 
 
 async def test_duplicate_name_is_ambiguous(db):
@@ -100,11 +101,23 @@ async def test_rfid_read_matches_tag_before_legacy_id(db):
     by_legacy = await _asset(db, legacy_id=100222)
     by_rfid = await _asset(db, rfid_tag="000000000000000000100222")
     assert (await match_scan(db, "000000000000000000100222", scan_type="rfid")
-            == Match("asset", by_rfid.id))
-    assert await match_scan(db, "100222") == Match("asset", by_legacy.id)
+            == Match("asset", by_rfid.id, "rfid_tag"))
+    assert await match_scan(db, "100222") == Match("asset", by_legacy.id, "legacy_id")
 
 
-async def test_rfid_read_never_matches_legacy_id(db):
-    await _asset(db, legacy_id=100230)
-    assert await match_scan(db, "000000000000000000100230",
-                            scan_type="rfid") is None
+async def test_rfid_read_matches_nothing_but_a_tag(db):
+    a = await _asset(db, legacy_id=100230, serial_number="SN-RF",
+                     name="Rack 7 switch")
+    for value in ("000000000000000000100230", str(a.id), "SN-RF", "Rack 7 switch"):
+        assert await match_scan(db, value, scan_type="rfid") is None, value
+
+
+async def test_rfid_read_matches_container_and_badge_tags(db):
+    c = Container(name="Crate 4", rfid_tag="E280DDD")
+    p = Person(first_name="Badge", last_name="Two", rfid_tag="E280EEE")
+    db.add_all([c, p])
+    await db.flush()
+    assert (await match_scan(db, "e280ddd", scan_type="rfid")
+            == Match("container", c.id, "rfid_tag"))
+    assert (await match_scan(db, "E280EEE", scan_type="rfid")
+            == Match("person", p.id, "rfid_tag"))

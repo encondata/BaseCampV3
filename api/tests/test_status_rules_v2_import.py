@@ -145,7 +145,7 @@ async def test_end_to_end_imported_rule_fires(db, tmp_path):
     rule = (await db.scalars(select(StatusRule).where(
         StatusRule.name == "RFID 1 - Exiting Cage"))).one()
     rule.enabled = True
-    a = Asset(serial_number="SN-E2E", status="racked",
+    a = Asset(serial_number="SN-E2E", rfid_tag="SN-E2E", status="racked",
               location_detail="R4 RU10")
     scan = RawScan(scanned_value="SN-E2E", scan_type="rfid",
                    status="rfid_1_cage_exit", scanned_at=datetime.now(UTC))

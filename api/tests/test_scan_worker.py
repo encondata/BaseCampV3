@@ -26,8 +26,9 @@ def _fresh(monkeypatch):
     invalidate_cache()
 
 
-def _raw(value, *, status="rfid_4_into_cage", attempted=None):
-    return RawScan(scanned_value=value, scan_type="rfid", status=status,
+def _raw(value, *, status="rfid_4_into_cage", attempted=None,
+         scan_type="barcode"):
+    return RawScan(scanned_value=value, scan_type=scan_type, status=status,
                    scanned_at=datetime.now(UTC),
                    match_attempted_at=attempted)
 
@@ -182,7 +183,7 @@ async def test_worker_off_move_scan_is_a_sighting(db):
 async def test_worker_rfid_read_matches_tag_not_legacy_id(db):
     by_legacy = Asset(legacy_id=100222)
     by_rfid = Asset(rfid_tag="000000000000000000100222")
-    scan = _raw("000000000000000000100222")
+    scan = _raw("000000000000000000100222", scan_type="rfid")
     db.add_all([by_legacy, by_rfid, scan])
     await db.commit()
 
@@ -191,3 +192,31 @@ async def test_worker_rfid_read_matches_tag_not_legacy_id(db):
     async with get_sessionmaker()() as check:
         processed = (await check.scalars(select(ProcessedScan))).one()
         assert processed.asset_id == by_rfid.id
+        ex = (await check.scalars(select(StatusRuleExecution))).all()
+        assert ex == []      # no rule for this status — nothing logged
+
+
+async def test_worker_rfid_read_never_falls_back_to_serial(db):
+    db.add(Asset(serial_number="SN-ONLY"))
+    scan = _raw("SN-ONLY", scan_type="rfid")
+    db.add(scan)
+    await db.commit()
+
+    assert await worker.process_raw_scan(get_sessionmaker(), scan.id) == "unmatched"
+
+
+async def test_worker_logs_the_match_on_each_execution(db):
+    a = Asset(serial_number="SN-LOG", rfid_tag="E280LOG")
+    db.add_all([a, StatusRule(name="Into cage", trigger_status="rfid_4_into_cage",
+                              trigger_match_type="asset")])
+    scan = _raw("E280LOG", scan_type="rfid")
+    db.add(scan)
+    await db.commit()
+
+    assert await worker.process_raw_scan(get_sessionmaker(), scan.id) == "matched"
+
+    async with get_sessionmaker()() as check:
+        ex = (await check.scalars(select(StatusRuleExecution))).one()
+        match = ex.actions_applied[0]["match"]
+        assert (match["match_type"], match["matched_on"], match["id"]) == (
+            "asset", "rfid_tag", str(a.id))

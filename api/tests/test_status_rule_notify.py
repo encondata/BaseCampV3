@@ -158,9 +158,10 @@ async def _guards() -> list[tuple]:
 
 
 async def _outcomes(rule_id) -> list[list[dict]]:
-    """What each of the rule's executions applied, oldest first."""
+    """What each of the rule's executions applied (after the leading match
+    entry), oldest first."""
     async with get_sessionmaker()() as s:
-        return [ex.actions_applied for ex in await s.scalars(
+        return [ex.actions_applied[1:] for ex in await s.scalars(
             select(StatusRuleExecution).where(StatusRuleExecution.rule_id == rule_id)
             .order_by(StatusRuleExecution.id))]
 
@@ -466,7 +467,7 @@ async def test_an_off_move_sighting_tells_the_stations_move(db):
     for has nobody to tell when the rule asks only for watchers and was read at no site, and
     that skip never rolls the sighting back."""
     s = await _scene(db)
-    lost = Asset(serial_number="SN-L", status="unknown")
+    lost = Asset(serial_number="SN-L", rfid_tag="SN-L", status="unknown")
     db.add(lost)
     await db.commit()
     rule = await _add_rule(db, "Rule A", _notify(watchers=True), conditions=(OFF_MOVE,))
@@ -481,7 +482,7 @@ async def test_an_off_move_sighting_tells_the_stations_move(db):
     assert (event.subject_type, event.subject_id) == ("initiative", s.initiative)
     assert (event.item["title"], event.item["line"]) == ("Rule A: SN-L", "Initiative A · Site A")
 
-    stray = Asset(serial_number="SN-S", status="unknown")
+    stray = Asset(serial_number="SN-S", rfid_tag="SN-S", status="unknown")
     nowhere = RawScan(scanned_value="SN-S", scan_type="rfid", status=STATUS,
                       scanned_at=datetime.now(UTC), off_move=True)
     db.add_all([stray, nowhere])
@@ -688,7 +689,7 @@ async def test_rollback_leaves_nothing(db):
     s = await _scene(db)
     await _add_rule(db, "Rule A", _notify(watchers=True),
                     ("set_asset_status", {"status": "no-such-status"}))
-    raw = RawScan(scanned_value="SN-A", scan_type="rfid", status=STATUS,
+    raw = RawScan(scanned_value="SN-A", scan_type="barcode", status=STATUS,
                   scanned_at=datetime.now(UTC), site_id=s.site)
     db.add(raw)
     await db.commit()

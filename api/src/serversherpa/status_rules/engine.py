@@ -140,10 +140,32 @@ async def _build_context(db: AsyncSession, scan: ProcessedScan, *,
     return ctx
 
 
+def match_entry(ctx: Context, matched_on: str | None) -> dict:
+    """The execution log's record of what the scan matched and how: the
+    first entry of every execution's actions_applied, as {"match": ...}.
+    `matched_on` is the field the scanned value hit (id, legacy_id,
+    rfid_tag, serial_number, name) or manual for a portal status edit."""
+    scan = ctx.scan
+    match = {"match_type": scan.match_type, "matched_on": matched_on,
+             "scan_type": scan.scan_type, "scanned_value": scan.scanned_value}
+    if scan.match_type == "asset" and ctx.asset is not None:
+        a = ctx.asset
+        match.update(id=str(a.id), name=a.name, serial_number=a.serial_number,
+                     asset_id=str(a.legacy_id) if a.legacy_id is not None else None,
+                     rfid_tag=a.rfid_tag)
+    elif scan.match_type == "container" and ctx.container is not None:
+        c = ctx.container
+        match.update(id=str(c.id), name=c.name, rfid_tag=c.rfid_tag)
+    elif scan.match_type == "person" and ctx.person is not None:
+        p = ctx.person
+        match.update(id=str(p.id), name=p.display_name, rfid_tag=p.rfid_tag)
+    return {"match": match}
+
+
 async def apply_rules(db: AsyncSession, scan: ProcessedScan, *,
                       initiative_asset: InitiativeAsset | None = None,
-                      off_move_initiative_id: uuid.UUID | None = None
-                      ) -> int:
+                      off_move_initiative_id: uuid.UUID | None = None,
+                      matched_on: str | None = None) -> int:
     """Evaluate and apply all enabled rules for this scan's
     (status, match_type). Pass `initiative_asset` to anchor the rule
     context to a specific initiative-asset row (a manual status edit)
@@ -165,6 +187,7 @@ async def apply_rules(db: AsyncSession, scan: ProcessedScan, *,
         return 0
     ctx = await _build_context(db, scan, initiative_asset=initiative_asset,
                                off_move_initiative_id=off_move_initiative_id)
+    match = match_entry(ctx, matched_on)
     for rule in rules:
         started = time.monotonic()
         # Name the rule for its actions. Set on every pass, so a rule's
@@ -172,7 +195,7 @@ async def apply_rules(db: AsyncSession, scan: ProcessedScan, *,
         ctx.rule_id, ctx.rule_name = rule["id"], rule["name"]
         met = all(evaluate_condition(ctx.get(f), op, v)
                   for f, op, v in rule["conditions"])
-        applied: list[dict] = []
+        applied: list[dict] = [match]
         if met:
             for action_type, params in rule["actions"]:
                 try:

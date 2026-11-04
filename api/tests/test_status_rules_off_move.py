@@ -72,7 +72,7 @@ async def _scene(db):
     elsewhere = Initiative(name="Elsewhere", initiative_type="move",
                            status="in_progress",
                            scheduled_start=datetime.now(UTC))
-    asset = Asset(serial_number="SN-OFF", status="unknown")
+    asset = Asset(serial_number="SN-OFF", rfid_tag="E280OFF", status="unknown")
     db.add_all([station, elsewhere, asset])
     await db.flush()
     db.add(InitiativeAsset(initiative_id=elsewhere.id, asset_id=asset.id,
@@ -101,7 +101,7 @@ async def _runs(db, scan):
 
 
 def _raw(*, off_move, initiative_id=None):
-    return RawScan(scanned_value="SN-OFF", scan_type="rfid", status=STATUS,
+    return RawScan(scanned_value="E280OFF", scan_type="rfid", status=STATUS,
                    scanned_at=datetime.now(UTC), off_move=off_move,
                    initiative_id=initiative_id)
 
@@ -138,7 +138,7 @@ async def test_off_move_sightings_run_only_rules_that_ask(db, seen):
         db, sighting, off_move_initiative_id=station.id) == 1
     assert await _runs(db, sighting) == [("Asks", True)]
     execution = (await db.scalars(select(StatusRuleExecution))).one()
-    assert execution.actions_applied == [
+    assert execution.actions_applied[1:] == [
         {"action_type": "spy", "applied": True}]
     # the rule ran in the station's move, not the one the asset belongs to
     assert [(c["rule_name"], c["initiative_id"]) for c in seen] == [
@@ -313,7 +313,7 @@ async def test_worker_normal_scan_keeps_its_in_progress_move(db, seen):
 
 
 async def test_worker_a_failing_off_move_rule_rolls_the_sighting_back(db):
-    asset = Asset(serial_number="SN-OFF", status="unknown")
+    asset = Asset(serial_number="SN-OFF", rfid_tag="E280OFF", status="unknown")
     rule = _rule("Boom", conditions=(ASKS,), actions=(
         ("set_asset_status", {"status": "not-a-key"}),))
     raw = _raw(off_move=True)
