@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Response, UploadFile
 from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
@@ -35,7 +35,7 @@ from sqlalchemy.orm import selectinload
 from serversherpa.access.defaults import SUPER_ADMIN_RANK
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import (
-    AuthContext, CurrentUser, DbSession, require_permission, require_rank,
+    AuthContext, CurrentUser, DbSession, client_ip, require_permission, require_rank,
 )
 from serversherpa.api.routes.attachments import MAX_IMAGE_BYTES, _sniff_image
 from serversherpa.api.schemas import (
@@ -48,6 +48,7 @@ from serversherpa.api.schemas import (
     LabelGeneratePreviewOut, LabelGeneratePreviewTemplateOut, LabelGeneratePreviewTypeOut,
     LabelImageOut, LabelImageRasterIn,
     LabelPlaceholderCreateIn, LabelPlaceholderOut, LabelPlaceholderUpdateIn,
+    LabelPrinterEventIn,
     LabelRunCreateIn, LabelRunOut, LabelSamplePeopleItemOut, LabelSamplePersonOut,
     LabelTemplateChildOut, LabelTemplateCloneIn, LabelTemplateCreateIn,
     LabelTemplateDeactivateSummaryOut, LabelTemplateDeleteIn, LabelTemplateDeleteSummaryOut,
@@ -55,6 +56,7 @@ from serversherpa.api.schemas import (
     LabelTemplateOut, LabelTemplateReplaceIn, LabelTemplateSaveOut, LabelTemplateTreeOut,
     LabelTemplateUpdateIn, LabelTemplateVersionDetailOut, LabelTemplateVersionNoteIn,
     LabelTemplateVersionOut,
+    LabelTestRenderIn, LabelTestRenderOut,
     LabelVocabCreateIn, LabelVocabOut, LabelVocabUpdateIn,
     LabelZplPreviewIn,
 )
@@ -87,6 +89,7 @@ from serversherpa.labels.generate.payloads import (
 )
 from serversherpa.labels.generate.select import candidate_templates
 from serversherpa.labels.kiosk_templates import family_name
+from serversherpa.labels.mock_render import MockRenderError, render_mock_label
 from serversherpa.labels.model import Design, DesignError, ImageEl, parse_design
 from serversherpa.labels.tokens import apply_placeholders
 from serversherpa.labels.zpl import GF_MAX_BYTES, box_dots, image_box_dots
@@ -1271,6 +1274,73 @@ async def preview_zpl(
     except Exception:
         raise _err(502, "labelary_unavailable") from None
     return Response(png, media_type="image/png")
+
+
+@router.post("/test-render", response_model=LabelTestRenderOut)
+async def label_test_render(
+    body: LabelTestRenderIn, db: DbSession,
+    _actor: AuthContext = require_permission("labels", "view"),
+) -> LabelTestRenderOut:
+    """One mock-data test label for a printer's test print: the template
+    filled with the same fixed sample values the Label Station uses
+    (labels/mock_render.py) and rendered by the label generator's own
+    `render_label`. Any active template a printer can print: not an Old
+    child and not a builder parent (404 `template_not_found`), ZPL only
+    (422 `not_zpl`), at the template's own DPI (422 `dpi_mismatch`, with
+    `template_dpi_key`); a design that can't convert is 422
+    `template_unconvertible`. A read made through POST: a read-only freeze
+    doesn't stop it (deps.py READ_ONLY_EXEMPT_PATHS)."""
+    template = await db.get(LabelTemplate, body.template_id)
+    if (template is None or not template.is_active or template.is_old
+            or template.is_tree_parent):
+        raise _err(404, "template_not_found")
+    if template.language_key != "zpl":
+        raise _err(422, "not_zpl")
+    if template.dpi_key != body.dpi_key:
+        raise _err(422, "dpi_mismatch", template_dpi_key=template.dpi_key)
+    try:
+        zpl = await render_mock_label(db, template)
+    except MockRenderError:
+        raise _err(422, "template_unconvertible") from None
+    return LabelTestRenderOut(zpl=zpl, template_name=template.name)
+
+
+@router.post("/printer-events", status_code=204)
+async def record_printer_event(
+    body: LabelPrinterEventIn, request: Request, db: DbSession,
+    actor: AuthContext = require_permission("labels", "view"),
+) -> None:
+    """Record printer maintenance the portal performed over WebUSB. The
+    work itself is browser-to-printer and never touches the server, so
+    this endpoint exists purely to leave a trail: one audit_log row against
+    a `label_printer` entity keyed by the printer's serial (null when the
+    browser never reported one), which surfaces on the portal's /audit page
+    and in the actor's own /auth/me/activity. The portal twin of
+    POST /kiosk/printer-events, which has a kiosk Device to hang the row on.
+
+    `event` is an enum so later printer maintenance becomes another member
+    rather than another endpoint; `factory_reset` is its only member today.
+    Failures are recorded as well as successes: `outcome="failed"` carries
+    the step it died on and the message the operator saw. Null-valued
+    fields are left out of `changes` rather than stored as nulls, so the
+    audit viewer's change table shows only what actually happened.
+
+    Read-only mode does NOT block this (see READ_ONLY_EXEMPT_PATHS): the
+    physical reset already happened, and refusing to record it during a
+    maintenance freeze loses the trail this endpoint exists to create.
+    """
+    changes = {"outcome": body.outcome,
+               "printer_model": body.printer_model,
+               "printer_firmware": body.printer_firmware,
+               "printer_serial": body.printer_serial,
+               "calibrated": body.calibrated,
+               "failed_step": body.failed_step,
+               "error": body.error}
+    audit(db, actor_id=actor.person.id, entity_type="label_printer",
+          entity_id=body.printer_serial, action=f"printer_{body.event}",
+          changes={k: v for k, v in changes.items() if v is not None},
+          ip=client_ip(request))
+    await db.commit()
 
 
 @router.delete("/templates/{template_id}", status_code=204)

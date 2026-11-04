@@ -25,6 +25,8 @@ vi.mock('../lib/api', async (importActual) => ({
 const printer = vi.hoisted(() => ({
   supported: true, connected: false, productName: null as string | null, notice: null,
   clearNotice: vi.fn(), connect: vi.fn(async () => undefined), disconnect: vi.fn(async () => undefined),
+  connectTo: vi.fn(async (_device: unknown) => undefined),
+  knownDevices: vi.fn(async (): Promise<unknown[]> => []),
   send: vi.fn(async (_zpl: string) => undefined), waitForIdle: vi.fn(async (_n: number, onQueued?: (q: number) => void) => { onQueued?.(0); }),
   // ~HI: a 203 DPI printer (the fixtures' labels) unless a test says otherwise
   identify: vi.fn(async (): Promise<{ dpi: number } | null> => ({ dpi: 203 })),
@@ -105,6 +107,8 @@ beforeEach(() => {
   cache.inis.clear(); cache.bundles.clear();
   printer.connected = false; printer.productName = null; printer.send.mockClear(); printer.connect.mockClear();
   printer.identify.mockReset(); printer.identify.mockResolvedValue({ dpi: 203 });
+  printer.connectTo.mockClear();
+  printer.knownDevices.mockReset(); printer.knownDevices.mockResolvedValue([]);
   api.listInitiatives.mockResolvedValue([ini('i1', 'NAP11'), ini('i2', 'Done move', 'completed')]);
   api.listLabelVocab.mockResolvedValue(vocab);
   api.listInitiativeAssets.mockResolvedValue(ROWS);
@@ -186,6 +190,63 @@ it('printer card: connect button calls the hook; unsupported browsers get an exp
   expect(screen.getByText('USB printing needs Chrome or Edge on a secure (https or localhost) address.')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Connect via USB' })).toBeNull();
   printer.supported = true;
+});
+
+it('Step 3 links to Labels › Printers', () => {
+  renderPage();
+  const step = screen.getByRole('region', { name: 'Printer' });
+  const link = within(step).getByRole('link', { name: 'Printer tools' });
+  expect(link.getAttribute('href')).toBe('/labels/printers');
+  // the last thing in the card, connected or not
+  expect(step.querySelector('.plabels-step-body')!.lastElementChild!.contains(link)).toBe(true);
+  cleanup();
+  printer.connected = true; printer.productName = 'ZD421';
+  renderPage();
+  const connectedStep = screen.getByRole('region', { name: 'Printer' });
+  expect(connectedStep.querySelector('.plabels-step-body')!.lastElementChild!.contains(
+    within(connectedStep).getByRole('link', { name: 'Printer tools' }))).toBe(true);
+});
+
+it('Step 3 offers known printers while disconnected', async () => {
+  const zd = { productName: 'ZD421' };
+  const unnamed = {};
+  printer.knownDevices.mockResolvedValue([zd, unnamed]);
+  renderPage();
+  const step = screen.getByRole('region', { name: 'Printer' });
+  expect(await within(step).findByText('Known printers:')).toBeTruthy();
+  expect(within(step).getByRole('button', { name: 'Connect Zebra printer' })).toBeTruthy();
+  // right after the Connect via USB button
+  const connect = within(step).getByRole('button', { name: 'Connect via USB' });
+  expect(connect.nextElementSibling?.classList.contains('zp-known')).toBe(true);
+  await userEvent.click(within(step).getByRole('button', { name: 'Connect ZD421' }));
+  expect(printer.connectTo).toHaveBeenCalledTimes(1);
+  expect(printer.connectTo).toHaveBeenCalledWith(zd);
+  expect(printer.connect).not.toHaveBeenCalled();
+});
+
+it('Step 3 shows no known printers when there are none, or while connected', async () => {
+  renderPage();
+  await waitFor(() => expect(printer.knownDevices).toHaveBeenCalled());
+  expect(screen.queryByText('Known printers:')).toBeNull();
+  cleanup();
+  printer.knownDevices.mockResolvedValue([{ productName: 'ZD421' }]);
+  printer.connected = true; printer.productName = 'ZD421';
+  renderPage();
+  await waitFor(() => expect(printer.knownDevices).toHaveBeenCalledTimes(2));
+  expect(screen.queryByText('Known printers:')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Connect ZD421' })).toBeNull();
+});
+
+it('the known printers reload after a disconnect', async () => {
+  printer.connected = true; printer.productName = 'ZD421';
+  const { rerender } = renderPage();
+  await waitFor(() => expect(printer.knownDevices).toHaveBeenCalledTimes(1));
+  // a printer allowed during this visit: not in the list at mount, in it after the disconnect
+  printer.knownDevices.mockResolvedValue([{ productName: 'ZD621' }]);
+  printer.connected = false; printer.productName = null;
+  rerender(<MemoryRouter><PrintLabels /></MemoryRouter>);
+  await waitFor(() => expect(printer.knownDevices).toHaveBeenCalledTimes(2));
+  expect(await screen.findByRole('button', { name: 'Connect ZD621' })).toBeTruthy();
 });
 
 it('Print is gated and prints selected labels in display order with settings applied', async () => {

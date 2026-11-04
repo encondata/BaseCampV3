@@ -17,29 +17,36 @@ import { parseDirectory, type DirectoryListing } from '../../labels/zebraUsb';
 import DataTable from '../DataTable';
 import { RowActionsMenu } from '../hardware/RowActionsMenu';
 
-export type FontState = 'installed' | 'missing' | 'printer-only';
+export type FontState = 'installed' | 'missing' | 'damaged' | 'printer-only';
 
-/** Library fonts by installed/missing on E: (where templates name them),
- *  resident fonts by present/missing on E: or Z: (Zebra keeps its built-in
- *  fonts on Z:; they are never installed, so they have no library state),
- *  and the E: objects the library doesn't have. Nothing is known before
- *  the E: listing is read; a Z: listing not passed counts as empty. */
-export function fontStates(library: Pick<LabelFont, 'name' | 'resident'>[], listing: DirectoryListing | null, zListing: DirectoryListing | null = null) {
+/** Library fonts by installed/missing/damaged on E: (where templates name
+ *  them), resident fonts by present/missing on E: or Z: (Zebra keeps its
+ *  built-in fonts on Z:; they are never installed, so they have no library
+ *  state), and the E: objects the library doesn't have. A library font on E:
+ *  whose size isn't the library file's is damaged: a download cut short
+ *  leaves a smaller file under the right name. A font without a known size
+ *  (none passed, or 0) has nothing to compare, so it is never damaged.
+ *  `sizesOnE` is every E: object's size by upper-case name, for the reason a
+ *  font reads damaged. Nothing is known before the E: listing is read; a Z:
+ *  listing not passed counts as empty. */
+export function fontStates(library: (Pick<LabelFont, 'name' | 'resident'> & { size_bytes?: number })[], listing: DirectoryListing | null, zListing: DirectoryListing | null = null) {
   const names = (l: DirectoryListing | null) => new Set((l?.objects ?? []).map((o) => o.name.toUpperCase()));
   const onE = names(listing);
   const onZ = names(zListing);
+  const sizeOnE = new Map((listing?.objects ?? []).map((o) => [o.name.toUpperCase(), o.bytes]));
   const lib: Record<string, FontState> = {};
   const resident: Record<string, 'installed' | 'missing'> = {};
   if (listing) {
     for (const f of library) {
       const name = f.name.toUpperCase();
       if (f.resident) resident[name] = onE.has(name) || onZ.has(name) ? 'installed' : 'missing';
-      else lib[name] = onE.has(name) ? 'installed' : 'missing';
+      else if (!onE.has(name)) lib[name] = 'missing';
+      else lib[name] = f.size_bytes && sizeOnE.get(name) !== f.size_bytes ? 'damaged' : 'installed';
     }
   }
   const libNames = new Set(library.map((f) => f.name.toUpperCase()));
   const printerOnly = (listing?.objects ?? []).filter((o) => !libNames.has(o.name.toUpperCase())).map((o) => ({ name: o.name, bytes: o.bytes }));
-  return { library: lib, resident, printerOnly };
+  return { library: lib, resident, printerOnly, sizesOnE: Object.fromEntries(sizeOnE) as Record<string, number> };
 }
 
 /** Push one library font to the printer's E: drive: a `~DY` header, then
@@ -59,6 +66,32 @@ export async function installFont(
   await printer.sendBytes(bytes, onProgress);
   await new Promise((r) => setTimeout(r, 500));
 }
+
+/** The batch button's words (Android/iOS's): "Install 2 missing fonts",
+ *  "Reinstall 1 damaged font", or "Install 1 missing font, reinstall 1
+ *  damaged font"; with nothing to install it keeps "Install all missing". */
+export function fontBatchLabel(missing: number, damaged: number): string {
+  const fonts = (n: number, kind: string) => `${n} ${kind} font${n === 1 ? '' : 's'}`;
+  if (missing === 0 && damaged === 0) return 'Install all missing';
+  if (damaged === 0) return `Install ${fonts(missing, 'missing')}`;
+  if (missing === 0) return `Reinstall ${fonts(damaged, 'damaged')}`;
+  return `Install ${fonts(missing, 'missing')}, reinstall ${fonts(damaged, 'damaged')}`;
+}
+
+/** What the directory re-read after a push says went wrong with [font], in
+ *  the printer's own numbers; null when it reads installed. */
+function installProblem(font: Pick<LabelFont, 'name' | 'resident' | 'size_bytes'>, after: DirectoryListing | null): string | null {
+  if (!after) return "Couldn't read the printer's E: drive to confirm the install.";
+  const { library, sizesOnE } = fontStates([font], after);
+  const name = font.name.toUpperCase();
+  if (library[name] === 'installed') return null;
+  if (library[name] === 'damaged') return `Installed, but the printer reports ${sizesOnE[name].toLocaleString()} bytes, not ${font.size_bytes.toLocaleString()}.`;
+  return `The printer didn't list ${font.name} after the install.`;
+}
+
+/** A library font's chip: its words and color class. */
+const stateChip = (state: FontState): [string, string] =>
+  state === 'installed' ? ['Installed', 'c-green'] : state === 'damaged' ? ['Damaged', 'c-red'] : ['Missing', 'c-amber'];
 
 const kb = (bytes: number) => `${Math.round(bytes / 1024).toLocaleString()} KB`;
 const NAME_HINT = 'Use up to 8 letters, digits, or underscores plus .TTF';
@@ -97,14 +130,16 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose, busy, uploading, batching]);
 
-  const readDirectory = useCallback(async () => {
-    if (!printerRef.current.connected) { setListing(null); return; }
+  const readDirectory = useCallback(async (): Promise<DirectoryListing | null> => {
+    if (!printerRef.current.connected) { setListing(null); return null; }
     try {
       const parsed = parseDirectory(await printerRef.current.query(directoryQuery()));
       setListing(parsed);
       setListError(parsed ? '' : "Couldn't read the printer's E: drive.");
+      return parsed;
     } catch (err) {
       setListError(err instanceof Error ? err.message : "Couldn't read the printer's E: drive.");
+      return null;
     }
   }, [printer.connected]);
 
@@ -119,8 +154,10 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
     try {
       await installFont(printerRef.current, f, onFetchBytes,
         (sent, total) => setProgress((p) => ({ ...p, [f.id]: { sent, total } })));
-      await readDirectory();
-      setProgress((p) => ({ ...p, [f.id]: 'done' }));
+      // The row says what the re-read listing says: a push that landed at
+      // the wrong size, or not at all, is not "Installed ✓".
+      const problem = installProblem(f, await readDirectory());
+      setProgress((p) => ({ ...p, [f.id]: problem ? { error: problem } : 'done' }));
     } catch (err) {
       setProgress((p) => ({ ...p, [f.id]: { error: err instanceof Error ? err.message : 'Install failed' } }));
     } finally {
@@ -131,7 +168,10 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
   const installAllMissing = async () => {
     setBatching(true);
     try {
-      for (const f of fonts ?? []) if (states.library[f.name.toUpperCase()] === 'missing') await install(f);
+      for (const f of fonts ?? []) {
+        const state = states.library[f.name.toUpperCase()];
+        if (state === 'missing' || state === 'damaged') await install(f);
+      }
     } finally {
       setBatching(false);
     }
@@ -207,7 +247,8 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
         <span className="zp-chips" key="u">{f.used_by.length === 0 ? <span className="cell-sub">—</span> : f.used_by.map((u) => <span key={u.template_id} className="chip tag">{u.template_name}</span>)}</span>,
         <span className="mono" key="t">{relativeTime(f.created_at)}</span>,
         <span key="p">{f.resident ? <span className="chip c-slate" title="Zebra printers ship this font; it is never installed from here.">Built in on Zebra printers</span>
-          : state && !progress[f.id] ? <span className={`chip ${state === 'installed' ? 'c-green' : 'c-amber'}`}>{state === 'installed' ? 'Installed' : 'Missing'}</span> : progressCell(f)}</span>,
+          : state && !progress[f.id] ? <span className={`chip ${stateChip(state)[1]}`}
+              title={state === 'damaged' ? `Printer: ${states.sizesOnE[f.name.toUpperCase()].toLocaleString()} bytes · library: ${f.size_bytes.toLocaleString()} bytes` : undefined}>{stateChip(state)[0]}</span> : progressCell(f)}</span>,
         // Items are pre-gated: an unreachable action isn't passed at all, so
         // a row with nothing to offer renders no trigger. `busy`/`batching`
         // disable rather than drop, keeping the trigger steady mid-install.
@@ -215,7 +256,7 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
           <RowActionsMenu actions={[
             ...(printer.connected && state && !f.resident ? [{
               key: 'install',
-              label: state === 'installed' ? 'Reinstall' : 'Install',
+              label: state === 'installed' || state === 'damaged' ? 'Reinstall' : 'Install',
               onSelect: () => void install(f),
               disabled: busy || batching,
             }] : []),
@@ -243,6 +284,7 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
   }));
 
   const missingCount = Object.values(states.library).filter((s) => s === 'missing').length;
+  const damagedCount = Object.values(states.library).filter((s) => s === 'damaged').length;
 
   return (
     <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy && !uploading && !batching) onClose(); }}>
@@ -304,8 +346,8 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
                 {printer.connected && listing && (
                   <div className="zp-actions">
                     <span className="cell-sub">{listing.bytesFree !== null ? `${kb(listing.bytesFree)} free` : ''}</span>
-                    <button type="button" className="mini-btn" disabled={busy || batching} onClick={() => void readDirectory()}>Refresh</button>
-                    <button type="button" className="mini-btn" disabled={busy || batching || missingCount === 0} onClick={() => void installAllMissing()}>Install all missing</button>
+                    <button type="button" className="mini-btn" disabled={busy || batching} onClick={() => { setProgress({}); void readDirectory(); }}>Refresh</button>
+                    <button type="button" className="mini-btn" disabled={busy || batching || missingCount + damagedCount === 0} onClick={() => void installAllMissing()}>{fontBatchLabel(missingCount, damagedCount)}</button>
                   </div>
                 )}
               </div>

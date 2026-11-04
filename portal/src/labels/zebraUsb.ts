@@ -21,6 +21,7 @@ export interface UsbEndpointLike {
 export interface UsbDeviceLike {
   readonly opened: boolean;
   readonly productName?: string;
+  readonly serialNumber?: string;
   readonly configuration: { interfaces: { alternate: { endpoints: UsbEndpointLike[] } }[] } | null;
   open(): Promise<void>;
   close(): Promise<void>;

@@ -5921,6 +5921,41 @@ export async function getLabelFontMetrics(id: string): Promise<LabelFontMetrics>
   return resp.json();
 }
 
+// ── Printer maintenance (Labels → Printers › Factory Reset) ──────────
+
+/** POST /labels/printer-events body. The API forbids any other key (a 422
+ *  would drop the audit row), so this is exactly its schema. The reset
+ *  itself is browser-to-printer over WebUSB; this only leaves the trail.
+ *  `printer_serial` is the WebUSB serial, null when the browser has none. */
+export interface LabelPrinterEvent {
+  event: 'factory_reset';
+  outcome: 'completed' | 'failed';
+  printer_model: string | null;
+  printer_firmware: string | null;
+  printer_serial: string | null;
+  calibrated: boolean;
+  failed_step: string | null;
+  error: string | null;
+}
+
+/** Reports printer maintenance so it lands on /audit. Resolves to whether
+ *  it was recorded and NEVER throws or rejects: the printer work already
+ *  happened, so a server that is down or unreachable must not break the
+ *  flow that is reporting it — the caller shows a "couldn't record this"
+ *  line and carries on. (The kiosk's `postPrinterEvent`, minus the device.) */
+export async function postLabelPrinterEvent(body: LabelPrinterEvent): Promise<boolean> {
+  try {
+    const resp = await apiFetch('/labels/printer-events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** A design kind compiles `design` (any JSON object: a schema 1 design or
  *  the builder's schema 2 one); `samples` are a schema 2 design's sample
  *  values, printed over the portal's mock values for `label_type` (the
@@ -5942,6 +5977,21 @@ export async function compileLabel(body: {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** POST /labels/test-render: one printable template row (a DPI child, or an
+ *  older single row) at its own DPI, filled with the portal's fixed sample
+ *  values. The API refuses any other key in the body (a 422 list), so this
+ *  sends exactly these two. Errors are `{ detail: { code } }`:
+ *  `template_not_found`, `not_zpl`, `dpi_mismatch`, `template_unconvertible`. */
+export async function renderTestLabel(templateId: string, dpiKey: string): Promise<{ zpl: string; template_name: string }> {
+  const resp = await apiFetch('/labels/test-render', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ template_id: templateId, dpi_key: dpiKey }),
   });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();

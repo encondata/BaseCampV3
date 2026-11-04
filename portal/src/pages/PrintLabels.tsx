@@ -46,6 +46,7 @@ import {
   type LabelStatus, type PrintSettings,
 } from '../lib/printLabels';
 import { useZebraPrinter } from '../lib/useZebraPrinter';
+import type { UsbDeviceLike } from '../labels/zebraUsb';
 import ComboBox from '../components/ComboBox';
 import OfflineCacheModal from '../components/labels/OfflineCacheModal';
 import PrintAssetList from '../components/labels/PrintAssetList';
@@ -57,6 +58,7 @@ import '../styles/directory.css';
 import '../styles/dashboard.css';
 import '../styles/reports.css';
 import '../styles/labels.css';
+import '../styles/printers.css';   /* zp-known: the known-printers row */
 
 const LABEL_DELAY_MS = 100;
 /** The id of Custom's one send when no asset is ticked (no row has it). */
@@ -171,6 +173,21 @@ export default function PrintLabels() {
   const dpiUnreadable = printer.connected && printerRead === null;
   const printerDpi = printer.connected ? (printerRead ?? pickedDpi) : null;
   const pickDpi = (dpi: string) => { setPickedDpi(dpi); writeGenerateDpi(dpi); };
+
+  // The printers this browser already allowed: Labels › Printers' "Known
+  // printers" row, read on mount and again after a disconnect, so a printer
+  // allowed during this visit shows up once it is no longer the held one.
+  // `knownRead` only suppresses a re-read while connected: the first run
+  // always reads, even on a page that mounts connected.
+  const [known, setKnown] = useState<UsbDeviceLike[]>([]);
+  const knownRead = useRef(false);
+  useEffect(() => {
+    if (printer.connected && knownRead.current) return undefined;
+    knownRead.current = true;
+    let cancelled = false;
+    printer.knownDevices().then((devices) => { if (!cancelled) setKnown(devices); }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [printer.connected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Printer notices flow into the page's strip.
   useEffect(() => {
@@ -772,7 +789,16 @@ export default function PrintLabels() {
           ) : (
             <button type="button" className="btn-solid" onClick={() => void printer.connect()}>Connect via USB</button>
           )}
+          {!printer.connected && known.length > 0 && (
+            <div className="zp-known">
+              <span className="cell-sub">Known printers:</span>
+              {known.map((d, i) => (
+                <button key={d.serialNumber ?? d.productName ?? String(i)} type="button" className="mini-btn" onClick={() => void printer.connectTo(d)}>Connect {d.productName || 'Zebra printer'}</button>
+              ))}
+            </div>
+          )}
           <p className="page-hint">Requires a Zebra printer connected via USB. Make sure the printer is turned on before connecting.</p>
+          <p className="page-hint"><Link to="/labels/printers">Printer tools</Link></p>
         </StepCard>
 
         <StepCard step="Step 5" title="Ready to print"

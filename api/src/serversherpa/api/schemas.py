@@ -4979,6 +4979,47 @@ class LabelZplPreviewIn(BaseModel):
     font_ids: list[uuid.UUID] = Field(default_factory=list, max_length=16)
 
 
+class LabelTestRenderIn(BaseModel):
+    """POST /labels/test-render: which template to fill with mock values,
+    at the DPI of the printer it is for (the template's own: 422
+    `dpi_mismatch` otherwise)."""
+    model_config = ConfigDict(extra="forbid")
+
+    template_id: uuid.UUID
+    dpi_key: str = Field(min_length=1, max_length=40)
+
+
+class LabelTestRenderOut(BaseModel):
+    """One mock-data test label, rendered by the portal's render_label."""
+    zpl: str
+    template_name: str
+
+
+class LabelPrinterEventIn(BaseModel):
+    """POST /labels/printer-events: one piece of printer maintenance the
+    portal performed over WebUSB, the twin of `KioskPrinterEventIn` without
+    a kiosk. `event` is an enum with a single member today
+    (`factory_reset`) so later maintenance becomes another member rather
+    than another endpoint.
+
+    `printer_model` / `printer_firmware` are whatever `~HI` reported and
+    `printer_serial` is the WebUSB `serialNumber`; each is null when the
+    printer or the browser never said. `failed_step` and `error` describe a
+    run that did not finish, and are null for one that did. `error` is a
+    message meant for a human, capped so a runaway device string cannot
+    bloat the audit log."""
+    model_config = ConfigDict(extra="forbid")
+
+    event: Literal["factory_reset"]
+    outcome: Literal["completed", "failed"]
+    printer_model: str | None = Field(default=None, max_length=120)
+    printer_firmware: str | None = Field(default=None, max_length=120)
+    printer_serial: str | None = Field(default=None, max_length=120)
+    calibrated: bool = False
+    failed_step: str | None = Field(default=None, max_length=60)
+    error: str | None = Field(default=None, max_length=500)
+
+
 class LabelImageOut(BaseModel):
     """A static image in the label image library (ID badge templates): the
     original upload's upright pixel size, type and bytes."""
