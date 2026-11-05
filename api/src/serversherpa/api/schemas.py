@@ -3705,8 +3705,8 @@ class KioskStationKeyOut(BaseModel):
     key: str
 
 
-# a laptop kiosk's station type (devices.station_type; migration 0105)
-StationType = Literal["label", "rfid", "timeclock"]
+# a laptop kiosk's station type (devices.station_type; migrations 0105, 0120)
+StationType = Literal["label", "rfid", "timeclock", "dock"]
 
 
 class KioskSetupIn(BaseModel):
@@ -3918,7 +3918,7 @@ class KioskStationScanBatchOut(KioskScanBatchOut):
 
 
 class KioskStationHeartbeatIn(BaseModel):
-    """An RFID Station's telemetry beat under its station key. `reader` is
+    """An RFID or Dock Station's telemetry beat under its station key. `reader` is
     deliberately loose: validated by KioskReaderReport inside the route so a
     bad one never fails the beat."""
 

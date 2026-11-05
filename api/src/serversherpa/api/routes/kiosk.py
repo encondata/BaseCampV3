@@ -93,7 +93,7 @@ from serversherpa.services import move_password as move_password_service
 from serversherpa.services import station_keys
 from serversherpa.services import timeclock
 from serversherpa.services.audit import audit, diff, snapshot
-from serversherpa.services.device_online import is_rfid_station
+from serversherpa.services.device_online import is_reader_station
 from serversherpa.services.fixed_readers import apply_reader_report
 from serversherpa.services.kiosk_registration import (  # noqa: F401 (re-exported)
     REGISTRATION_SOON,
@@ -529,13 +529,13 @@ async def heartbeat(
     # Config and scan-type sync serve only the kiosk this sign-in session
     # belongs to: a kiosk session (move-password ones included) is bound to
     # the serial of its first beat, and never syncs for any other serial,
-    # sign-in or not. Portal sessions never sync. A station-keyed RFID
+    # sign-in or not. Portal sessions never sync. A station-keyed RFID or Dock
     # Station syncs config only on /kiosk/station/heartbeat (scan type still comes
     # back to its own session).
     own_kiosk = await _bind_kiosk_session(db, actor, device)
     # Reader telemetry (and so config) rides the station heartbeat only for
-    # an RFID Station; a keyed Label Station has no station heartbeat.
-    if own_kiosk and (device.station_key_hash is None or not is_rfid_station(device)):
+    # an RFID or Dock Station; a keyed Label Station has no station heartbeat.
+    if own_kiosk and (device.station_key_hash is None or not is_reader_station(device)):
         sync = await _sync_config(db, device, body.config, body.config_changed_at,
                                   body.config_applied_version, now=now,
                                   actor_id=actor.person.id)
@@ -687,9 +687,9 @@ LABEL_STATION_SCAN_STATUS = "labeled"
 
 
 def is_station(device: Device) -> bool:
-    """A kiosk set up as an RFID, Label or Time Clock Station; each holds a
-    station key (deps.station_device scopes the routes by type). RFID and
-    Label Stations are laptops; a Time Clock Station may also be an Android,
+    """A kiosk set up as an RFID, Label, Time Clock or Dock Station; each holds a
+    station key (deps.station_device scopes the routes by type). RFID, Label and
+    Dock Stations are laptops; a Time Clock Station may also be an Android,
     Zebra or iOS kiosk (station_keys.station_sub_type_ok)."""
     return (station_keys.station_sub_type_ok(device)
             and device.station_type in station_keys.STATION_TYPES)
@@ -697,7 +697,7 @@ def is_station(device: Device) -> bool:
 
 async def allowed_scan_types(db: AsyncSession, device: Device) -> list[StatusValue]:
     """The scan types this kiosk may be set to, by Kiosk Setup's rule: the
-    active asset status values, and on an RFID Station only those whose
+    active asset status values, and on an RFID or Dock Station only those whose
     label contains "RFID" (any case); a Label Station only Labeled. None
     without a current move."""
     if device.current_initiative_id is None:
@@ -705,7 +705,7 @@ async def allowed_scan_types(db: AsyncSession, device: Device) -> list[StatusVal
     types = await _active_scan_types(db)
     if device.station_type == "label":
         return [t for t in types if t.key == LABEL_STATION_SCAN_STATUS]
-    if is_rfid_station(device):
+    if is_reader_station(device):
         types = [t for t in types if "rfid" in t.label.lower()]
     return types
 
@@ -816,7 +816,7 @@ async def kiosk_setup(
         if site is None or site.archived_at is not None:
             raise _err(422, "bad_site")
         site_role = "other"
-    if body.station_type == "rfid":
+    if body.station_type in station_keys.READER_STATION_TYPES:
         if body.reader is None:
             raise _err(422, "reader_required")
         if device.sub_type != "laptop":
@@ -845,9 +845,9 @@ async def kiosk_setup(
             await station_keys.revoke(db, device, actor_id=actor.person.id,
                                       reason="move_change")
 
-    if body.station_type == "rfid":
+    if body.station_type in station_keys.READER_STATION_TYPES:
         reader = body.reader
-        _stamp("station_type", "rfid")
+        _stamp("station_type", body.station_type)
         _stamp("rfid_reader_ip", str(reader.ip))
         _stamp("rfid_reader_serial", reader.serial)
         _stamp("rfid_reader_model", reader.model)
@@ -862,8 +862,8 @@ async def kiosk_setup(
         # a Label or Time Clock Station keeps its station key unless the
         # type or move changed (revoked above)
     elif device.station_type is not None:
-        # set up again as a regular kiosk: no longer a Label, RFID or Time
-        # Clock Station, and no paired reader (its key was revoked above as
+        # set up again as a regular kiosk: no longer a Label, RFID, Time
+        # Clock or Dock Station, and no paired reader (its key was revoked above as
         # a type change), so it can be someone's personal phone again
         _stamp("station_type", None)
         for field in ("rfid_reader_ip", "rfid_reader_serial",
@@ -898,15 +898,15 @@ async def issue_station_key(
     body: KioskStationKeyIn, db: DbSession,
     actor: AuthContext = require_permission("kiosk", "view"),
 ) -> KioskStationKeyOut:
-    """Issue (or replace) this RFID, Label or Time Clock Station's key. The raw key is
+    """Issue (or replace) this RFID, Label, Time Clock or Dock Station's key. The raw key is
     returned once; only its sha256 is stored. A move-password session may
     issue only for the move the kiosk is set up for (never for a Time Clock
     Station set up with no move)."""
     device = await db.scalar(select(Device).where(Device.serial == body.serial))
     if device is None or device.device_type != "kiosk":
         raise _err(404, "device_not_found")
-    # the code stays not_rfid_station for old edges, though a Label Station
-    # and a Time Clock Station now qualify too; only a Time Clock Station
+    # the code stays not_rfid_station for old edges, though a Label, Time
+    # Clock or Dock Station now qualifies too; only a Time Clock Station
     # may hold a key with no move
     if not is_station(device) or (device.current_initiative_id is None
                                   and device.station_type != station_keys.TIMECLOCK):
@@ -1441,7 +1441,7 @@ async def _station_sync_device(
     types: tuple[str, ...] = station_keys.UPLOAD_STATION_TYPES,
 ) -> Device:
     """Station sync serves only the move the key was issued for, and by
-    default only an RFID or Label Station (a Time Clock key is 403
+    default only an RFID, Label or Dock Station (a Time Clock key is 403
     wrong_station_type). A Time Clock key, where `types` admits one, may
     leave `initiative_id` out (its move is optional); any other key must
     name its own move (absent is `move_locked`)."""
@@ -1492,7 +1492,7 @@ async def station_sync_people(
     the same accepted-risk note as /kiosk/sync/people, served under the
     station key instead of a person session. A Time Clock key may call it
     too, with `initiative_id` left out or equal to its key move (it looks
-    up whoever badges in); an RFID or Label key must name its move."""
+    up whoever badges in); an RFID, Label or Dock key must name its move."""
     await _station_sync_device(request, db, serial, initiative_id,
                                types=station_keys.STATION_TYPES)
     return await _people_body(db)
@@ -1504,10 +1504,10 @@ async def station_sync_client_assets(
     initiative_id: uuid.UUID = Query(...),
 ) -> KioskClientAssetsSyncOut:
     """Station-key twin of /sync/client-assets, for the key move only. It
-    feeds the RFID Station's off-move alarm, so a Label Station's key is
-    refused."""
+    feeds the RFID or Dock Station's off-move alarm, so a Label Station's key
+    is refused."""
     device = await _station_sync_device(request, db, serial, initiative_id)
-    if device.station_type != "rfid":
+    if device.station_type not in station_keys.READER_STATION_TYPES:
         raise _err(403, "not_rfid_station")
     return await _client_assets_body(db, initiative_id)
 
@@ -1685,7 +1685,7 @@ async def station_ingest_scans(
     body: KioskStationScanBatchIn, request: Request, db: DbSession,
 ) -> KioskStationScanBatchOut:
     """Scans an unattended laptop kiosk uploads under its station
-    key (RFID scans from an RFID Station; Labeled barcode scans from a
+    key (RFID scans from an RFID or Dock Station; Labeled barcode scans from a
     Label Station, which never records off-move scans) (`Authorization: Station <key>`), no person session needed. Stored
     exactly like `POST /kiosk/scans` but with no operator. The key covers
     one move: a scan for any other is `move_locked`, and one for that move
@@ -1722,7 +1722,7 @@ async def station_ingest_scans(
 async def station_heartbeat(
     body: KioskStationHeartbeatIn, request: Request, db: DbSession,
 ) -> KioskStationHeartbeatOut:
-    """An RFID Station's telemetry under its station key
+    """An RFID or Dock Station's telemetry under its station key
     (`Authorization: Station <key>`), no person session needed. Stamps
     `last_seen_at` (and `version` when sent) and applies the paired reader's
     snapshot with no person actor. It never renews registration and never
@@ -1740,7 +1740,8 @@ async def station_heartbeat(
                              .execution_options(populate_existing=True))
     if (device is None or device.station_key_hash is None
             or device.station_key_hash != key_hash
-            or device.sub_type != "laptop" or device.station_type != "rfid"):
+            or device.sub_type != "laptop"
+            or device.station_type not in station_keys.READER_STATION_TYPES):
         raise HTTPException(status_code=401, detail={"code": "station_key_invalid"},
                             headers={"WWW-Authenticate": "Bearer"})
     now = datetime.now(UTC)
@@ -2866,7 +2867,7 @@ KIOSK_SOUND_MAX_BYTES = 2 * 1024 * 1024   # matches the kiosk's MAX_SOUND_BYTES
 async def _kiosk_caller(request: Request, db: AsyncSession,
                         serial: str | None) -> tuple[AuthContext | None, Device | None]:
     """Who is calling a kiosk-sound route: a person session with kiosk:view
-    (`Authorization: Bearer ...`), or an RFID Station's key
+    (`Authorization: Bearer ...`), or an RFID or Dock Station's key
     (`Authorization: Station <key>`) for the kiosk `serial` (a Label
     Station's key is 403 not_rfid_station). Returns
     (actor, None) or (None, device). The session path runs the same checks
@@ -2880,8 +2881,8 @@ async def _kiosk_caller(request: Request, db: AsyncSession,
             raise HTTPException(status_code=401, detail={"code": "station_key_invalid"},
                                 headers={"WWW-Authenticate": "Bearer"})
         device = await station_device(request, db, serial)
-        if device.station_type != "rfid":
-            # sounds feed the RFID Station's alarm: a Label Station's key is refused
+        if device.station_type not in station_keys.READER_STATION_TYPES:
+            # sounds feed the RFID or Dock Station's alarm: a Label Station's key is refused
             raise _err(403, "not_rfid_station")
         await enforce_read_only_config(db, request)
         return None, device

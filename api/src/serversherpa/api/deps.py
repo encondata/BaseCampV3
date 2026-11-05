@@ -488,13 +488,13 @@ async def station_device(
 ) -> Device:
     """The kiosk Device `serial` when the request carries its station key
     (`Authorization: Station <key>`) and the kiosk is still a station laptop
-    (RFID, Label or Time Clock). A bad, missing or revoked key, or a kiosk
+    (RFID, Label, Time Clock or Dock). A bad, missing or revoked key, or a kiosk
     that is no longer a station laptop, is one 401 `station_key_invalid`.
     The key is never logged.
 
     `types` scopes the route: a valid key on a registered kiosk whose
     station type is not in it is a 403 `wrong_station_type`, and the key is
-    kept (the default, RFID and Label, is the scan-upload routes; a Time
+    kept (the default, RFID, Label and Dock, is the scan-upload routes; a Time
     Clock key is refused there).
 
     A matching key on a kiosk whose registration has lapsed (or was never

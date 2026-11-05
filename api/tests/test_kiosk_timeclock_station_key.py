@@ -34,9 +34,11 @@ async def _timeclock_station(db):
 
 
 def test_station_type_constants():
-    assert station_keys.STATION_TYPES == ("rfid", "label", "timeclock")
-    assert station_keys.UPLOAD_STATION_TYPES == ("rfid", "label")
+    assert station_keys.STATION_TYPES == ("rfid", "label", "timeclock", "dock")
+    assert station_keys.UPLOAD_STATION_TYPES == ("rfid", "label", "dock")
+    assert station_keys.READER_STATION_TYPES == ("rfid", "dock")
     assert station_keys.TIMECLOCK == "timeclock"
+    assert station_keys.DOCK == "dock"
 
 
 async def test_migration_allows_timeclock_station_type(db):
