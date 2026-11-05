@@ -84,11 +84,12 @@ export function subTypeLabel(type: string | null): string {
 }
 
 /** Every station type's name: the one map the device list and the kiosk
- *  details page share. The Type column shortens RFID Station to "RFID". */
+ *  details page share. The Type column shortens RFID Station to "RFID" and
+ *  Dock Station to "Dock". */
 export const STATION_LABELS: Record<string, string> = {
-  rfid: 'RFID Station', label: 'Label Station', timeclock: 'Time Clock',
+  rfid: 'RFID Station', label: 'Label Station', timeclock: 'Time Clock', dock: 'Dock Station',
 };
-const STATION_SHORT_LABELS: Record<string, string> = { rfid: 'RFID' };
+const STATION_SHORT_LABELS: Record<string, string> = { rfid: 'RFID', dock: 'Dock' };
 
 /** A station type's full name ("Time Clock"); a dash when there is none. */
 export function stationLabel(type: string | null | undefined): string {
@@ -96,9 +97,9 @@ export function stationLabel(type: string | null | undefined): string {
   return STATION_LABELS[type] ?? type;
 }
 
-/** The Type column text: a station kiosk reads "RFID · Laptop" / "Label
- *  Station · Laptop" / "Time Clock · Laptop"; any other kiosk keeps its
- *  plain sub-type label. */
+/** The Type column text: a station kiosk reads "RFID · Laptop" / "Dock ·
+ *  Laptop" / "Label Station · Laptop" / "Time Clock · Laptop"; any other
+ *  kiosk keeps its plain sub-type label. */
 export function stationTypeLabel(d: Pick<DeviceItem, 'station_type' | 'sub_type'>): string {
   if (d.station_type == null) return subTypeLabel(d.sub_type);
   const name = STATION_SHORT_LABELS[d.station_type] ?? stationLabel(d.station_type);

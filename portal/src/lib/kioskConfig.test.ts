@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { DeviceConfigHistoryItem } from './api';
 import {
-  DEFAULT_CONFIG, KIOSK_ONLINE_MS, applicableSections, configFor, kioskOnline, labelStationOf,
-  sectionSource, soundLabel, syncLine, withSection,
+  DEFAULT_CONFIG, KIOSK_ONLINE_MS, applicableSections, configFor, isReaderStation, isRfidStation,
+  kioskOnline, labelStationOf, sectionSource, soundLabel, syncLine, withSection,
 } from './kioskConfig';
 
 const NOW = Date.parse('2026-10-17T12:00:00Z');
@@ -59,13 +59,32 @@ describe('sectionSource', () => {
 });
 
 describe('applicableSections', () => {
-  it('adds the alarm only on a laptop RFID Station and platform sections on their platforms', () => {
+  it('adds the alarm only on a laptop RFID or Dock Station and platform sections on their platforms', () => {
     const core = ['appearance', 'sound', 'checkpoints', 'developer'];
     expect(applicableSections({ sub_type: 'web', station_type: null })).toEqual(core);
     expect(applicableSections({ sub_type: 'laptop', station_type: 'label' })).toEqual(core);
     expect(applicableSections({ sub_type: 'laptop', station_type: 'rfid' })).toEqual([...core, 'alarm']);
+    expect(applicableSections({ sub_type: 'laptop', station_type: 'dock' })).toEqual([...core, 'alarm']);
+    expect(applicableSections({ sub_type: 'android', station_type: 'dock' })).toEqual([...core, 'android_rfid']);
     expect(applicableSections({ sub_type: 'zebra', station_type: null })).toEqual([...core, 'android_rfid']);
     expect(applicableSections({ sub_type: 'ios', station_type: null })).toEqual([...core, 'ios']);
+  });
+});
+
+describe('isReaderStation', () => {
+  it('is a laptop set up as an RFID or Dock Station, nothing else', () => {
+    expect(isReaderStation({ sub_type: 'laptop', station_type: 'rfid' })).toBe(true);
+    expect(isReaderStation({ sub_type: 'laptop', station_type: 'dock' })).toBe(true);
+    expect(isReaderStation({ sub_type: 'android', station_type: 'dock' })).toBe(false);
+    expect(isReaderStation({ sub_type: 'android', station_type: 'rfid' })).toBe(false);
+    expect(isReaderStation({ sub_type: 'laptop', station_type: 'label' })).toBe(false);
+    expect(isReaderStation({ sub_type: 'laptop', station_type: 'timeclock' })).toBe(false);
+    expect(isReaderStation({ sub_type: 'laptop', station_type: null })).toBe(false);
+  });
+
+  it('leaves isRfidStation to the RFID Station alone', () => {
+    expect(isRfidStation({ sub_type: 'laptop', station_type: 'rfid' })).toBe(true);
+    expect(isRfidStation({ sub_type: 'laptop', station_type: 'dock' })).toBe(false);
   });
 });
 

@@ -5136,7 +5136,7 @@ export interface DeviceItem {
   current_initiative_id: string | null; current_initiative_name: string | null;
   session_person_id: string | null; session_person_name: string | null;
   session_login_method: string | null; session_started_at: string | null;
-  station_type?: 'label' | 'rfid' | 'timeclock' | null;
+  station_type?: 'label' | 'rfid' | 'timeclock' | 'dock' | null;
   rfid_reader?: DeviceRfidReader | null;
   /** Clear Setup pending since (null = nothing pending) and who asked. */
   setup_clear_requested_at: string | null; setup_clear_requested_by_name: string | null;
@@ -5303,7 +5303,7 @@ export interface DeviceSetup {
   initiative_id: string | null; initiative_name: string | null;
   site_id: string | null; site_name: string | null;
   site_role: 'source' | 'destination' | null;
-  station_type: 'label' | 'rfid' | 'timeclock' | null;
+  station_type: 'label' | 'rfid' | 'timeclock' | 'dock' | null;
   scan_status: string | null; scan_status_label: string | null;
 }
 
@@ -5327,7 +5327,7 @@ export interface DeviceDetail extends DeviceItem {
    *  older fixtures stay valid. */
   personal_person?: PersonalPerson | null;
   personal_biometric?: PersonalBiometric | null;
-  /** A Label, RFID or Time Clock station, or a kiosk holding a station key:
+  /** A Label, RFID, Dock or Time Clock station, or a kiosk holding a station key:
    *  never anyone's personal phone. Optional so older fixtures stay valid. */
   shared_station?: boolean;
 }
@@ -6857,7 +6857,7 @@ export async function updateNotificationSettings(
  * comment: it names none).
  * Errors carry `detail.code`: 409 `already_watching`; 404 `thing_not_found`,
  * `watch_not_found`, `group_not_found`; 422 `invalid_thing` (a device that is not
- * covered too: a kiosk that is not an RFID Station, a router that is not
+ * covered too: a kiosk that is not an RFID or Dock Station, a router that is not
  * approved), `invalid_kind` (any events named for a wiki thing too),
  * `kinds_required`; 423 `read_only_mode`. */
 
@@ -6865,7 +6865,7 @@ export async function updateNotificationSettings(
  *  folder or page of one (`wiki_node`). */
 export type WikiThing = 'wiki_space' | 'wiki_node';
 
-/** The things a watch can be on. A device is an RFID Station kiosk, a fixed reader
+/** The things a watch can be on. A device is an RFID or Dock Station kiosk, a fixed reader
  *  or an approved router (the ones that check in on their own). */
 export type WatchThing = 'initiative' | 'site' | 'truck' | 'device' | WikiThing;
 

@@ -8,6 +8,7 @@ import { useEffect, useState, type CSSProperties } from 'react';
 import ComboBox from '../../ComboBox';
 import { ApiError, setDeviceScanType, type DeviceDetail } from '../../../lib/api';
 import { stationLabel } from '../../../lib/devices';
+import { isReaderStation } from '../../../lib/kioskConfig';
 
 const ROLE_LABELS: Record<string, string> = { source: 'Source', destination: 'Destination' };
 
@@ -95,9 +96,9 @@ export default function KioskSetupTab({ detail: d, canEdit, onSaved }: {
                     {busy ? 'Saving…' : 'Save'}
                   </button>
                 </div>
-                {d.sub_type === 'laptop' && setup.station_type === 'rfid' && (
+                {isReaderStation({ sub_type: d.sub_type, station_type: setup.station_type }) && (
                   <p className="set-note" style={{ padding: 0, marginTop: 8 }}>
-                    An RFID Station offers only scan types whose name includes RFID.
+                    An RFID or Dock Station offers only scan types whose name includes RFID.
                   </p>
                 )}
               </div>

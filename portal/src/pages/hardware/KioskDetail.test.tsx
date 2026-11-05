@@ -309,6 +309,23 @@ it('changes the scan type from the Setup & move tab', async () => {
   await waitFor(() => expect(api.setDeviceScanType).toHaveBeenCalledWith('k1', 'received'));
 });
 
+it.each([
+  ['an RFID Station', { sub_type: 'laptop', station_type: 'rfid' }, true],
+  ['a Dock Station', { sub_type: 'laptop', station_type: 'dock' }, true],
+  ['a Label Station', { sub_type: 'laptop', station_type: 'label' }, false],
+  ['an Android kiosk set up as a Dock Station', { sub_type: 'android', station_type: 'dock' }, false],
+] as [string, Partial<DeviceDetail>, boolean][])('the Setup & move tab of %s says whether only RFID scan types are offered', async (_name, over, shown) => {
+  const base = detail();
+  api.getDevice.mockResolvedValue(detail({
+    rfid_reader: null, ...over, setup: { ...base.setup, station_type: over.station_type ?? null },
+  }));
+  renderAt('/hardware/kiosks/k1/setup');
+  await screen.findByText('Initech ORD1 to AUS1 Migration');
+  await screen.findByRole('combobox', { name: 'Scan type' });
+  const note = screen.queryByText('An RFID or Dock Station offers only scan types whose name includes RFID.');
+  expect(note !== null).toBe(shown);
+});
+
 it('history list: column floors, shared template, sideways-scroll card', async () => {
   renderAt('/hardware/kiosks/k1/history');
   const row = (await screen.findByText('Appearance › Flash length: 350 → 600')).closest('.dir-row') as HTMLElement;
@@ -729,6 +746,18 @@ it('an RFID Station has a Watch button in its header, and a click watches the de
   expect(await within(actions).findByRole('button', { name: 'Watching' })).not.toBeNull();
 });
 
+it('a Dock Station has a Watch button in its header too, and its Settings tab has the alarm card', async () => {
+  const base = detail();
+  api.getDevice.mockResolvedValue(detail({
+    station_type: 'dock', rfid_reader: null, setup: { ...base.setup, station_type: 'dock' },
+  }));
+  renderAt('/hardware/kiosks/k1/settings');
+  await screen.findByRole('heading', { name: /Kiosk 97F0/ });
+  expect(await within(headerActions()!).findByRole('button', { name: 'Watch' })).not.toBeNull();
+  expect(api.getWatchState).toHaveBeenCalledWith('device', 'k1');
+  expect(await screen.findByRole('heading', { name: 'Off-move alarm' })).not.toBeNull();
+});
+
 it('the Watch button shows for everyone who can open the page, not only those who can edit', async () => {
   auth.maxRank = 40;
   auth.can = (_r, a) => a === 'view';
@@ -749,6 +778,7 @@ it.each([
   ['a web kiosk', { sub_type: 'web', station_type: null }],
   ['a Label Station', { station_type: 'label' }],
   ['a Time Clock', { station_type: 'timeclock' }],
+  ['an Android kiosk set up as a Dock Station', { sub_type: 'android', station_type: 'dock' }],
 ] as [string, Partial<DeviceDetail>][])('%s has no Watch button, since nothing can be heard about it', async (_name, over) => {
   const base = detail();
   api.getDevice.mockResolvedValue(detail({

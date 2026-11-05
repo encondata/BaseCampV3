@@ -187,13 +187,17 @@ export function withSection(
 type PlatformBits = Pick<DeviceDetail, 'sub_type' | 'station_type'>;
 
 export const isRfidStation = (d: PlatformBits) => d.sub_type === 'laptop' && d.station_type === 'rfid';
+/** A laptop set up as an RFID or Dock Station: the two kinds that read tags, get the off-move
+ *  alarm and are checked for going offline (the API's `is_reader_station`). */
+export const isReaderStation = (d: PlatformBits) =>
+  d.sub_type === 'laptop' && (d.station_type === 'rfid' || d.station_type === 'dock');
 export const isAndroid = (d: PlatformBits) => d.sub_type === 'android' || d.sub_type === 'zebra';
 export const isIos = (d: PlatformBits) => d.sub_type === 'ios';
 
 /** The settings sections that apply to this kiosk (spec §3's last column). */
 export function applicableSections(d: PlatformBits): SectionKey[] {
   const out: SectionKey[] = ['appearance', 'sound', 'checkpoints', 'developer'];
-  if (isRfidStation(d)) out.push('alarm');
+  if (isReaderStation(d)) out.push('alarm');
   if (isAndroid(d)) out.push('android_rfid');
   if (isIos(d)) out.push('ios');
   return out;

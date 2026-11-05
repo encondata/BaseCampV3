@@ -18,7 +18,7 @@
  * it away, and so does the list arriving after all. Below, the events editor.
  *
  * Only the devices people can watch are offered: the ones notifications check, which check
- * in on their own (an RFID Station, a fixed reader, an approved router). Each shows its kind
+ * in on their own (an RFID or Dock Station, a fixed reader, an approved router). Each shows its kind
  * beside its name, and a search matches the kind too.
  *
  * Wiki is the one picker that searches the server as the text is typed (the ComboBox's
@@ -56,8 +56,8 @@ import {
   type DeviceItem, type NotificationGroupDetail, type NotificationKindSetting, type WatchIn,
   type WikiSearchHit, type WikiThing,
 } from '../../lib/api';
-import { routerDisplayName } from '../../lib/devices';
-import { isRfidStation } from '../../lib/kioskConfig';
+import { routerDisplayName, stationLabel } from '../../lib/devices';
+import { isReaderStation } from '../../lib/kioskConfig';
 import { THING_LABELS, watchErrorMessage, wikiNodeLabel } from '../../lib/watches';
 import ComboBox, { type ComboOption } from '../ComboBox';
 import ChoiceField from './ChoiceField';
@@ -130,12 +130,12 @@ function nodeOption(hit: WikiSearchHit): ComboOption {
 
 /** A device as the Device picker offers it, or null when people can't watch it. Only the devices
  *  notifications check can be watched (the API's `covered`, services/device_online.py), the
- *  ones that check in on their own: an RFID Station (a laptop kiosk set up as one), a fixed
+ *  ones that check in on their own: an RFID or Dock Station (a laptop kiosk set up as one), a fixed
  *  reader, an approved router. The API refuses any other (422 `invalid_thing`). A router is
  *  named as the Routers list names it. */
 function watchableDevice(d: DeviceItem): PickerItem | null {
   if (d.device_type === 'kiosk') {
-    return isRfidStation(d) ? { id: d.id, name: d.name, sub: 'RFID Station' } : null;
+    return isReaderStation(d) ? { id: d.id, name: d.name, sub: stationLabel(d.station_type) } : null;
   }
   if (d.device_type === 'fixed_reader') return { id: d.id, name: d.name, sub: 'Fixed Reader' };
   if (d.device_type === 'router' && d.approval_state === 'approved') {
