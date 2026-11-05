@@ -1,6 +1,7 @@
 /** Step 6: seed from a snapshot, or start empty with a first super admin. */
 import ComboBox from '@portal/components/ComboBox';
 
+import { Toggle } from '../../../components/AppsMail';
 import { arrowNav } from '../../../lib/arrowNav';
 import { snapshotLabel } from '../../environments/labels';
 import type { FlowState } from '../flowState';
@@ -95,6 +96,14 @@ export default function DataStep({ state, set, errors, ctx }: StepProps) {
             </p>
           )}
           {errors.adminPassword && <p className="form-error sirdar-span2" id="flow-admin-password-error" role="alert">{errors.adminPassword}</p>}
+          <div className="sirdar-span2">
+            <Toggle label="Seed starter content" checked={state.seedContent} onChange={(v) => set({ seedContent: v })} />
+            <p className="page-hint">
+              The first deploy loads the label builder's fonts and templates
+              {state.apps.learn ? ', and the sample learning documents' : ''}. Zebra's TT0003M_.TTF still goes in by
+              hand (Label builder › Fonts).
+            </p>
+          </div>
         </>
       )}
     </div>

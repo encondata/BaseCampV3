@@ -27,7 +27,7 @@ it('lists every choice and never a secret', () => {
 });
 
 it('Publish off is shown; apps that are off are left out', () => {
-  renderStep({ publish: false, apps: { wiki: false, kiosk: true, status: true, mailpit: true } });
+  renderStep({ publish: false, apps: { wiki: false, kiosk: true, learn: false, status: true, mailpit: true } });
   expect(screen.getByText('Set up by hand')).toBeTruthy();
   expect(screen.getByText('API, Portal, Kiosk, Status page, Mailpit')).toBeTruthy();
 });

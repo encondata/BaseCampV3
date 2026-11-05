@@ -142,7 +142,7 @@ it('creates and deploys an SSH environment end to end', async () => {
     name: 'qa', type: 'custom', target: 'ssh:lab', proxy_ip: '10.10.48.6',
     first_admin: { first_name: 'Ada', last_name: 'Lovelace', email: 'ada@test.example.com', password_mode: 'typed',
                    password: 'Correct-Horse-9' } }));
-  expect(api.startDeployment).toHaveBeenCalledWith('qa', { mode: 'update' });
+  expect(api.startDeployment).toHaveBeenCalledWith('qa', { mode: 'update', seed_content: true });
 });
 
 it('an API error goes back to its step', async () => {

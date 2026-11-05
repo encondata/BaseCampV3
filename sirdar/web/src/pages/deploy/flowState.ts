@@ -2,11 +2,16 @@
  *  step's checks (the API's rules mirrored so a step can answer before a
  *  round trip; the API stays the authority), the create body, the traffic
  *  plan, and which step an API error belongs to. Pure: no React, no I/O. */
+import {
+  SECRET_HELP, SECRET_RE, appsOn, appsProblem, mailBody, mailProblem, parseDigests, type AppSwitches, type OptionalApp,
+} from '../../lib/appRules';
 import { ipv4Problem, nameProblem, refProblem } from '../../lib/envRules';
 import type {
   DeployTarget, DoAccount, DoAccountKey, EnvType, EnvironmentDefaults, Integrations, NewEnvironmentBody, Snapshot,
 } from '../../lib/sirdarApi';
 import { gbOf, isDoTarget, isVmTarget, mbOf, sshTargets } from '../environments/labels';
+
+export { OPTIONAL_APPS, type OptionalApp } from '../../lib/appRules';
 
 export type FlowStep = 'environment' | 'servers' | 'target' | 'extras' | 'traffic' | 'data' | 'review';
 export const FLOW_STEPS: [FlowStep, string][] = [
@@ -31,10 +36,6 @@ export const CONNECT_TYPE: Record<EnvType, 'blue' | 'dev' | 'beta' | 'custom'> =
   production: 'blue', dev: 'dev', beta: 'beta', custom: 'custom',
 };
 export type Servers = 'single' | 'bluegreen';
-export type OptionalApp = 'wiki' | 'kiosk' | 'status' | 'mailpit';
-export const OPTIONAL_APPS: [OptionalApp, string][] = [
-  ['wiki', 'Wiki'], ['kiosk', 'Kiosk'], ['status', 'Status page'], ['mailpit', 'Mailpit'],
-];
 export type TargetKind = 'esxi' | 'proxmox' | 'digitalocean' | 'ssh';
 export const targetKind = (id: string): TargetKind | null =>
   (isVmTarget(id) ? (id as 'esxi' | 'proxmox') : isDoTarget(id) ? 'digitalocean'
@@ -53,11 +54,15 @@ export interface FlowState {
   doAccount: DoAccountKey; dropletSize: string; dbSize: string; dbStandby: boolean; acmeStaging: boolean;
   autoActivate: boolean;
   publish: boolean;
-  apps: Record<OptionalApp, boolean>;
+  apps: AppSwitches;
   mailMode: 'mailpit' | 'smtp'; smtpHost: string; smtpPort: string; smtpUsername: string; smtpPassword: string;
   smtpFrom: string; smtpStarttls: boolean;
   aiKey: string;
+  /** The kiosk signing digests as typed, one per line. */
+  digests: string;
   dataMode: 'empty' | 'snapshot'; snapshotId: string;
+  /** Empty start: step 20 seeds starter content. */
+  seedContent: boolean;
   adminFirst: string; adminLast: string; adminEmail: string; adminPasswordMode: 'typed' | 'invite';
   adminPassword: string; adminConfirm: string;
 }
@@ -88,10 +93,10 @@ export function initialState(ctx: FlowContext): FlowState {
     doAccount: account, dropletSize: d.do.droplet_size, dbSize: d.do.db_size, dbStandby: d.do.db_standby,
     acmeStaging: false, autoActivate: false,
     publish: !!(ctx.integrations?.cloudflare.configured && ctx.integrations?.npm.configured),
-    apps: { wiki: true, kiosk: true, status: true, mailpit: true },
+    apps: { wiki: true, kiosk: true, learn: true, status: true, mailpit: true },
     mailMode: 'mailpit', smtpHost: '', smtpPort: String(d.mail.smtp_port), smtpUsername: '', smtpPassword: '',
-    smtpFrom: '', smtpStarttls: true, aiKey: '',
-    dataMode: 'empty', snapshotId: '',
+    smtpFrom: '', smtpStarttls: true, aiKey: '', digests: '',
+    dataMode: 'empty', snapshotId: '', seedContent: true,
     adminFirst: '', adminLast: '', adminEmail: '', adminPasswordMode: 'typed', adminPassword: '', adminConfirm: '',
   };
 }
@@ -133,7 +138,7 @@ export function withRules(s: FlowState, ctx: FlowContext): FlowState {
 }
 
 export type Field = 'type' | 'name' | 'gitRef' | 'baseDomain' | 'servers' | 'target' | 'proxyIp' | 'bindIp'
-  | 'machine' | 'cloud' | 'hosting' | 'publish' | 'apps' | 'mail' | 'aiKey' | 'data' | 'adminName' | 'adminEmail'
+  | 'machine' | 'cloud' | 'hosting' | 'publish' | 'apps' | 'mail' | 'digests' | 'aiKey' | 'data' | 'adminName' | 'adminEmail'
   | 'adminPassword' | 'form';
 export type Errors = Partial<Record<Field, string>>;
 const only = (e: Errors): Errors => Object.fromEntries(Object.entries(e).filter(([, v]) => v)) as Errors;
@@ -168,14 +173,9 @@ function networkOf(cidr: string): string {
 const DROPLET_SIZE_RE = /^[a-z0-9][a-z0-9-]{2,39}$/;
 const DB_SIZE_RE = /^db-[a-z0-9][a-z0-9-]{2,36}$/;
 const DOMAIN_RE = /^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
-const HOST_RE = /^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/;
 const EMAIL_RE = /^[^@\s]{1,64}@[^@\s]+\.[^@\s.]{2,}$/;
-const USER_RE = /^[^\s"'$#`\\]{1,254}$/;
-/** envfile.SECRET_VALUE_RE: what an optional secret in the .env may hold. */
-const SECRET_RE = /^[A-Za-z0-9._~+/=:@%^*!?,;-]{1,1024}$/;
 /** Control characters and line/paragraph separators (first_admins._clean refuses them). */
 const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
-const SECRET_HELP = "can't be saved. Use letters, numbers and ._~+/=:@%^*!?,;- only, with no spaces or quotes.";
 
 const whole = (raw: string) => (/^\d+$/.test(raw.trim()) ? Number(raw) : NaN);
 const inRange = (n: number, [low, high]: [number, number]) => n >= low && n <= high;
@@ -237,18 +237,9 @@ export function stepErrors(step: FlowStep, s: FlowState, ctx: FlowContext): Erro
       });
     }
     case 'extras': {
-      const errors: Errors = {};
-      if (s.mailMode === 'mailpit' && !s.apps.mailpit)
-        errors.apps = 'Mail goes to Mailpit unless SMTP is set up: turn Mailpit on, or choose SMTP.';
-      if (s.mailMode === 'smtp') {
-        const port = whole(s.smtpPort);
-        errors.mail = !HOST_RE.test(s.smtpHost.trim()) ? "Enter the SMTP server's host name or address."
-          : !inRange(port, [1, 65535]) ? 'Use an SMTP port from 1 to 65535.'
-          : s.smtpUsername && !USER_RE.test(s.smtpUsername) ? "That SMTP user name can't be used: no spaces, quotes, $, # or backslashes."
-          : s.smtpPassword && !SECRET_RE.test(s.smtpPassword) ? `That SMTP password ${SECRET_HELP}`
-          : !EMAIL_RE.test(s.smtpFrom.trim()) || !USER_RE.test(s.smtpFrom.trim()) || CONTROL_RE.test(s.smtpFrom)
-            ? 'Enter the address mail is sent from, like noreply@example.com.' : '';
-      }
+      const errors: Errors = { apps: appsProblem(s) };
+      if (s.mailMode === 'smtp') errors.mail = mailProblem(s);
+      if (s.apps.kiosk) errors.digests = parseDigests(s.digests).problem;
       if (s.aiKey && !SECRET_RE.test(s.aiKey)) errors.aiKey = `That key ${SECRET_HELP}`;
       return only(errors);
     }
@@ -284,12 +275,11 @@ export function buildBody(s: FlowState, ctx: FlowContext): NewEnvironmentBody {
     name: s.name.trim(), type: s.type, target: s.target, git_ref: s.gitRef.trim(),
     ...(s.baseDomain.trim() ? { base_domain: s.baseDomain.trim().toLowerCase() } : {}),
     ports: ports(ctx),
-    apps: OPTIONAL_APPS.map(([a]) => a).filter((a) => s.apps[a]),
-    mail: s.mailMode === 'smtp'
-      ? { mode: 'smtp', host: s.smtpHost.trim(), port: Number(s.smtpPort), ...(s.smtpUsername ? { username: s.smtpUsername } : {}),
-          ...(s.smtpPassword ? { password: s.smtpPassword } : {}), from_address: s.smtpFrom.trim(), starttls: s.smtpStarttls }
-      : { mode: 'mailpit' },
+    apps: appsOn(s.apps),
+    mail: mailBody(s),
     ...(s.aiKey ? { secrets: { SS_ANTHROPIC_API_KEY: s.aiKey } } : {}),
+    ...(s.apps.kiosk && parseDigests(s.digests).digests.length
+      ? { kiosk_signing_digests: parseDigests(s.digests).digests } : {}),
   };
   if (s.dataMode === 'snapshot') body.snapshot_id = s.snapshotId;
   else {
@@ -340,7 +330,8 @@ export const CODE_FIELD: Record<string, Field> = {
   do_account_not_configured: 'cloud', do_invalid: 'cloud', do_slots_invalid: 'cloud', do_size_invalid: 'cloud',
   do_db_size_invalid: 'cloud', db_standby_size_invalid: 'cloud',
   auto_activate_not_allowed: 'hosting',
-  apps_invalid: 'apps', mailpit_required: 'apps',
+  apps_invalid: 'apps', learn_needs_wiki: 'apps', mailpit_required: 'apps',
+  signing_digest_invalid: 'digests',
   mail_invalid: 'mail', smtp_host_invalid: 'mail', smtp_port_invalid: 'mail', smtp_username_invalid: 'mail',
   smtp_password_invalid: 'mail', smtp_from_invalid: 'mail', smtp_required_for_first_admin: 'data',
   secret_invalid: 'aiKey', secret_not_editable: 'aiKey',
@@ -353,7 +344,7 @@ export const FIELD_STEP: Record<Field, FlowStep> = {
   type: 'environment', name: 'environment', gitRef: 'environment', baseDomain: 'environment',
   servers: 'servers',
   target: 'target', proxyIp: 'target', bindIp: 'target', machine: 'target', cloud: 'target',
-  hosting: 'extras', publish: 'extras', apps: 'extras', mail: 'extras', aiKey: 'extras',
+  hosting: 'extras', publish: 'extras', apps: 'extras', mail: 'extras', digests: 'extras', aiKey: 'extras',
   data: 'data', adminName: 'data', adminEmail: 'data', adminPassword: 'data',
   form: 'review',
 };

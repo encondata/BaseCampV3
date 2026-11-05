@@ -368,7 +368,11 @@ const MESSAGES: Record<string, string> = {
   first_admin_not_set: 'This environment has no first admin to change.',
   first_admin_done: 'The first admin was already created; change their password in the portal.',
   // optional apps and mail
-  apps_invalid: 'Choose the apps from Wiki, Kiosk, Status page and Mailpit.',
+  apps_invalid: 'Choose the apps from Wiki, Kiosk, Learning, Status page and Mailpit.',
+  learn_needs_wiki: 'The learning site needs the wiki: turn the wiki on, or turn learning off.',
+  signing_digest_invalid: 'Each kiosk signing digest is a SHA-256: 64 hex characters, colons allowed.',
+  digests_not_allowed: 'An adopted environment keeps the signing digests its own .env has (SS_KIOSK_SIGNING_DIGESTS).',
+  seed_content_not_allowed: 'Only the first deploy of an environment that starts empty can seed starter content.',
   mailpit_required: 'Mail goes to Mailpit unless SMTP is set up: turn Mailpit on, or choose SMTP.',
   mail_invalid: 'Choose Mailpit or SMTP for mail.',
   apps_not_allowed: "An adopted environment runs the apps its own .env lists (STACK_APPS).",
@@ -591,6 +595,8 @@ export interface Environment {
   apps: string[];
   /** Where its mail goes. */
   mail: EnvMail;
+  /** SHA-256 digests of the kiosk app's signing certificates (SS_KIOSK_SIGNING_DIGESTS). */
+  kiosk_signing_digests: string[];
   /** What Sirdar manages for it in Cloudflare and Nginx Proxy Manager. */
   managed_records: ManagedRecordRef[];
   last_deployment: DeploymentSummary | null; created_at: string; updated_at: string;
@@ -665,6 +671,8 @@ export interface NewEnvironmentBody {
   apps?: string[];
   /** Where its mail goes (the API's default: Mailpit). */
   mail?: NewMail;
+  /** The kiosk app's signing certificate digests. */
+  kiosk_signing_digests?: string[];
   /** Optional secrets set at create (write-only), like SS_ANTHROPIC_API_KEY. */
   secrets?: Record<string, string>;
 }
@@ -681,6 +689,8 @@ export interface EnvironmentPatch {
   retiring?: boolean; confirm_name?: string;
   auto_activate?: boolean;
   do?: DoSizes;
+  /** The optional apps it runs, its mail (Settings sends the SMTP password as secrets.SS_SMTP_PASSWORD) and the kiosk signing digests. */
+  apps?: string[]; mail?: NewMail; kiosk_signing_digests?: string[];
 }
 export interface DeploymentBody {
   mode: DeployMode | 'publish' | 'teardown' | 'vm_restore'; git_ref?: string; confirm_name?: string;
@@ -696,6 +706,8 @@ export interface DeploymentBody {
   snapshot?: boolean;
   /** DigitalOcean production Delete: "delete production <name>". */
   confirm_production?: string;
+  /** A first Update that starts empty: end with step 20 Seed starter content. */
+  seed_content?: boolean;
 }
 export interface RetryBody { from_step?: number; confirm_name?: string; confirm_production?: string }
 export type SnapshotStatus = 'pending' | 'ready' | 'failed';
