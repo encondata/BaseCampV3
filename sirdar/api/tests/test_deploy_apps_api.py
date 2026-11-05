@@ -102,6 +102,20 @@ async def test_create_refusals(client, db, target, body, code):
     assert (resp.status_code, resp.json()["detail"]["code"]) == (422, code)
 
 
+@pytest.mark.parametrize("extra", [
+    {"secrets": {"SS_SMTP_PASSWORD": SMTP_PASSWORD}},
+    {"mail": {"mode": "mailpit", "password": SMTP_PASSWORD}},
+])
+async def test_create_on_mailpit_refuses_an_smtp_password(client, db, target, leak_guard, extra):
+    leak_guard += [SMTP_PASSWORD]
+    h = await auth_headers(client, db)
+    resp = await client.post(URL, headers=h, json={**NEW, **extra})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "smtp_password_without_smtp",
+                                     "field": "secrets.SS_SMTP_PASSWORD"}
+    assert await db.scalar(select(Environment).where(Environment.name == "qa1")) is None
+
+
 async def test_adopt_takes_no_secrets(client, db, target):
     h = await auth_headers(client, db)
     resp = await client.post(URL, headers=h, json={

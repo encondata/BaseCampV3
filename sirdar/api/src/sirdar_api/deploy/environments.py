@@ -310,6 +310,10 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     except app_rules.AppsError as e:
         raise EnvError(e.code, **e.extra) from None
     extra_secrets = check_optional_secrets(secrets or {})
+    if not mail_spec["smtp_host"] and (
+            extra_secrets.get("SS_SMTP_PASSWORD")
+            or (isinstance(mail, dict) and mail.get("password"))):
+        _refuse_password_without_smtp()        # Mailpit sends no SMTP password
     if mail_spec["smtp_password"]:
         extra_secrets["SS_SMTP_PASSWORD"] = mail_spec["smtp_password"]
     admin_spec = None
@@ -511,8 +515,8 @@ async def _update_apps_and_mail(db: AsyncSession, env: Environment, fields: dict
     """PATCH apps and mail, checked as create checks them: the apps given (or
     kept) against the mail given (or kept). Production keeps SMTP while its
     first admin is pending. Mailpit clears the SMTP columns and the SMTP
-    password, and refuses a new one. A new SMTP host (any case) or user name
-    without a new password drops the stored one: it was never meant for that
+    password, and refuses a new one. SMTP from Mailpit, a new SMTP host (any
+    case) or user name without a new password drops any stored one: it was never meant for that
     server. `sent_password` is secrets.SS_SMTP_PASSWORD from the same PATCH.
     Returns (whether the apps changed, an SMTP password to store)."""
     before_apps, before_mail = list(env.apps), _mail_of(env)
@@ -531,8 +535,8 @@ async def _update_apps_and_mail(db: AsyncSession, env: Environment, fields: dict
     if not mail_spec["smtp_host"] and (
             sent_password or (isinstance(mail_in, dict) and mail_in.get("password"))):
         _refuse_password_without_smtp()
-    retargeted = bool(before_host and mail_spec["smtp_host"] and (
-        mail_spec["smtp_host"].lower() != before_host.lower()
+    retargeted = bool(mail_spec["smtp_host"] and (
+        not before_host or mail_spec["smtp_host"].lower() != before_host.lower()
         or mail_spec["smtp_username"] != before_user))
     await _set_apps_and_mail(db, env, apps_on, mail_spec)
     if apps_on != before_apps:

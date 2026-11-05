@@ -207,6 +207,23 @@ async def test_clearing_the_password_on_the_way_to_mailpit_names_it_once(client,
     assert await _changes(db) == [{"changed": ["mail", "secrets.SS_SMTP_PASSWORD"]}]
 
 
+async def test_mailpit_to_a_new_smtp_server_drops_a_stale_password(client, db, target,
+                                                                  leak_guard):
+    leak_guard += [SMTP_PASSWORD]
+    h = await auth_headers(client, db)
+    await client.post(URL, headers=h, json=NEW)
+    env = await db.scalar(select(Environment).where(Environment.name == "qa1"))
+    db.add(EnvironmentSecret(environment_id=env.id, key="SS_SMTP_PASSWORD",
+                             value_enc=vault.encrypt(get_settings(), SMTP_PASSWORD)))
+    await db.commit()
+    resp = await client.patch(f"{URL}/qa1", headers=h, json={"mail": SMTP})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["mail"]["password_set"] is False
+    assert resp.json()["secrets_set"]["SS_SMTP_PASSWORD"] is False
+    assert await _stored_password(db, env) is None
+    assert await _changes(db) == [{"changed": ["mail", "secrets.SS_SMTP_PASSWORD"]}]
+
+
 async def test_digests_are_normalized_and_kept(client, db, target):
     h = await auth_headers(client, db)
     await client.post(URL, headers=h, json=NEW)
