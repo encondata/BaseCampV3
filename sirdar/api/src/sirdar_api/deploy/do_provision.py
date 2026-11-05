@@ -961,7 +961,7 @@ class DoProvisioner:
     async def _certificate(self, api: DigitalOceanApi, ctx: DoContext, out: Output, *,
                            record_date: bool = True) -> dict:
         """The certificate to serve (recorded; renewed at 14 days or fewer, or now
-        when it lacks a wanted name).
+        when it lacks a wanted name or covers one no longer wanted).
         record_date: its expiry becomes cert_not_after now; step 19 passes
         False and records the date of what the load balancer then serves."""
         records = await load_records(ctx.env_id)
@@ -995,16 +995,23 @@ class DoProvisioner:
                    default=None)
         now = self._now()
         when = certs.not_after(best) if best else None
-        # A certificate that lacks a wanted name (the bare name, added after it
-        # was issued) is due now, not 14 days before it expires.
-        missing = sorted(set(ctx.names) - set(best.get("dns_names") or [])) if best else []
-        if (when is not None and not missing
+        # A certificate that lacks a wanted name (the bare name, an app turned
+        # on after it was issued) or covers one no longer wanted (an app turned
+        # off: is_ours wants the names exactly) is due now, not 14 days before
+        # it expires.
+        covered = set(best.get("dns_names") or []) if best else set()
+        missing = sorted(set(ctx.names) - covered) if best else []
+        extra = sorted(covered - set(ctx.names)) if best else []
+        if (when is not None and not missing and not extra
                 and certs.days_left(when, now) > certs.SIRDAR_RENEW_DAYS):
             out(f"Certificate {best['name']}: valid until {when:%Y-%m-%d}.\n")
         else:
             if missing:
                 out(f"Certificate {best['name']} doesn't cover {', '.join(missing)}; "
                     "Sirdar replaces it.\n")
+            if extra:
+                out(f"Certificate {best['name']} also covers {', '.join(extra)}, which this "
+                    "environment no longer serves; Sirdar replaces it.\n")
             if ctx.cloudflare is None:
                 raise StepFailed("Cloudflare isn't set up, so Sirdar can't prove to Let's Encrypt "
                                  "that it owns these names. Add it in Settings › Integrations, "
