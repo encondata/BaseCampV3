@@ -5,10 +5,20 @@
 # case for the five public names: 5 × (5 tries × 5 s + 4 waits × 10 s)
 # = 325 s, inside the step's 10 minutes.
 # On a LAN Blue/Green app VM each name carries its own port (no Caddy).
+# A checkout from before the learning site runs without it (render.yml), so
+# its name isn't tried.
 - name: Smoke test (slot)
   hosts: target
   gather_facts: false
   tasks:
+    - name: Does this checkout's ss-stack know the learning site?
+      ansible.builtin.command:
+        argv: [grep, -qE, "^ +([a-z]+[|])*learn([|][a-z]+)*[)]", "{{ ss_stack }}"]
+      register: knows_learn
+      changed_when: false
+      failed_when: false
+      when: ss_stack is defined and 'learn' in public_hosts | map(attribute='service')
+
     - name: Each public name answers through Caddy
       ansible.builtin.uri:
         url: "http://127.0.0.1:{{ item.port | default(slot_port | default(80)) }}{{ item.path }}"
@@ -22,6 +32,8 @@
       until: answer is not failed
       retries: "{{ slot_smoke_retries | default(4) }}"
       delay: "{{ slot_smoke_delay | default(10) }}"
-      loop: "{{ public_hosts }}"
+      loop: >-
+        {{ public_hosts | rejectattr('service', 'eq', 'learn') | list
+           if knows_learn is not skipped and knows_learn.rc != 0 else public_hosts }}
       loop_control:
         label: "{{ item.hostname }}"

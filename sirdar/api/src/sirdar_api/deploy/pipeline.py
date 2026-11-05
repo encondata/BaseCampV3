@@ -87,9 +87,7 @@ from sirdar_api.deploy import (
     vms,
     vmsteps,
 )
-from sirdar_api.deploy import (
-    apps as app_rules,
-)
+from sirdar_api.deploy import apps as app_rules
 from sirdar_api.deploy.redact import Redactor
 from sirdar_api.deploy.runner import (
     CANCEL_GRACE_SECONDS,
@@ -1006,8 +1004,13 @@ async def _seeded_failed(deployment_id: uuid.UUID, env_id: uuid.UUID) -> None:
             return
         status = env.status
         if dep.cloud or dep.bluegreen:
-            # seed is planned only for an Update: after_success never refuses one
-            await (do_envs if dep.cloud else lan_slots).after_success(s, env, dep)
+            try:
+                await (do_envs if dep.cloud else lan_slots).after_success(s, env, dep)
+            except do_envs.DoEnvError as e:
+                # The slot emptied meanwhile: nothing to record. The
+                # deployment stays failed, closed once.
+                log.warning("deployment %s: step 20 failed and %s", deployment_id, e.code)
+                return
         else:
             env.current_sha, env.image_tag = dep.sha, envfile.image_tag(dep.sha)
         env.status, env.updated_at = status, _now()

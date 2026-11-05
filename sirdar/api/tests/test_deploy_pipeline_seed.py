@@ -272,3 +272,37 @@ async def test_a_failed_seed_on_lan_bluegreen_records_the_live_commit(
         "orange", SHA, envfile.image_tag(SHA))
     retried, _, env = await _retry_seed(db, dep.id, env.id, fake_runner)
     assert (retried.status, env.current_sha, env.status) == ("succeeded", SHA, "ready")
+
+
+async def test_a_failed_seed_whose_slot_emptied_stays_failed_once(
+        db, secrets_key, ssh_server, monkeypatch, fake_provisioner, fake_runner,
+        fake_publisher):
+    """after_success refusing (the slot emptied meanwhile) is logged: the
+    deployment keeps step 20's failure, not a second close as unexpected."""
+    from sirdar_api.deploy import do_envs, lan_slots
+
+    from .integration_helpers import configure, configure_esxi
+    from .lan_helpers import lan_built, make_bluegreen_environment
+    monkeypatch.setattr(vms, "VM_SSH_PORT", ssh_server.port)
+    await configure_esxi(db)
+    await configure(db, cloudflare=True, npm=True)
+    await trust_fake(db, ssh_server)
+    fake_provisioner.effects["provision"] = lan_built()
+    fake_provisioner.outcomes["provision"] = VmOutcome()
+    env = await make_bluegreen_environment(db)
+    fake_runner.results["seed"] = RunResult(status="failed", rc=2)
+
+    async def refuse(*_a, **_k):
+        raise do_envs.DoEnvError("slot_not_deployed", slot="orange")
+
+    monkeypatch.setattr(lan_slots, "after_success", refuse)
+    dep = await pipeline.create_deployment(db, env, mode="update", git_ref="main", sha=SHA,
+                                           actor_id=None, vm=True, bluegreen=True,
+                                           slot="orange", go_live=True, seed_content=True)
+    await db.commit()
+    pipeline.launch(dep.id)
+    await pipeline.wait(dep.id)
+    dep, steps_, env = await _load(dep.id)
+    assert (dep.status, dep.failed_step, steps_[-1].key) == ("failed", 20, "seed")
+    assert dep.error != pipeline.UNEXPECTED
+    assert steps_[-1].status == "failed"
