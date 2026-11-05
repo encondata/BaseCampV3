@@ -4,12 +4,12 @@ the recent/drafts lists.
 
 What a caller sees: live (not deleted) nodes they have a level on — and,
 where they only have view, never a page that has no published version
-(the lists leave it out, and reading it is a 404 `not_published`, as the
-page's content read answers). Every list serializes through `nodes_out`,
-so a listing costs a fixed number of statements however long it is. A
-node the caller can't view is a 404, a viewable one they lack the level
-on is a 403, and a tree operation that can't be done (`tree.TreeError`)
-is a 422 with its code.
+(the lists leave it out, and reading it, or listing what's under it, is a
+404 `not_published`, as the page's content read answers). Every list
+serializes through `nodes_out`, so a listing costs a fixed number of
+statements however long it is. A node the caller can't view is a 404, a
+viewable one they lack the level on is a 403, and a tree operation that
+can't be done (`tree.TreeError`) is a 422 with its code.
 """
 from __future__ import annotations
 
@@ -145,6 +145,10 @@ async def list_tree(key: str, ctx: WikiContext,
             ctx.ix, await ctx.db.get(WikiNode, parent_id), "view")
         if parent.space_id != space.id:
             raise not_found()
+        # get_node's rule and answer: a page never published isn't there for
+        # a view-only reader, so neither is what's under it
+        if not (await visible_nodes(ctx, [parent]))[0]:
+            raise err(404, "not_published", "This page hasn't been published yet.")
     children = (await ctx.db.scalars(
         select(WikiNode)
         .where(WikiNode.space_id == space.id,

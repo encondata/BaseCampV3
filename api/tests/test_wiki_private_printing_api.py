@@ -339,6 +339,41 @@ async def test_printing_source_the_caller_cannot_view_is_masked(client, db):
     assert body["printing_from"] == {"node_id": folder["id"], "title": "Secret folder"}
 
 
+async def test_printing_source_a_view_only_reader_cannot_see_is_masked(client, db):
+    """A page never published isn't there for a view-only reader (the tree
+    leaves it out, and reading it is 404 `not_published`), so a page under it
+    that inherits its printing value names it "…" with no id."""
+    ctx = await _setup(client, db)
+    h, space = ctx["owner"], ctx["space"]
+    parent = await _create(client, h, space, "Reorganization plan", kind="page")
+    page = await _create(client, h, space, "Leaf", kind="page", parent=parent)
+    await publish_via_db(db, page["id"])
+    await _printing(client, h, parent["id"], False)
+    assert _code(await _get(client, ctx["viewer"], parent["id"], expect=404)) == "not_published"
+
+    body = await _get(client, ctx["viewer"], page["id"])
+    assert body["my_level"] == "view"
+    assert body["can_print"] is False
+    assert body["printing_from"] == {"node_id": None, "title": "…"}
+    assert "Reorganization plan" not in str(body)
+    # a listing names it the same way
+    resp = await client.get("/wiki/recent", headers=ctx["viewer"],
+                            params={"space": space["key"]})
+    assert resp.status_code == 200, resp.text
+    recent = {n["title"]: n["printing_from"] for n in resp.json()}
+    assert recent["Leaf"] == {"node_id": None, "title": "…"}
+    assert "Reorganization plan" not in resp.text
+
+    # anyone who sees drafts still gets its name, and so does the reader once it's published
+    for who in ("editor", "owner"):
+        body = await _get(client, ctx[who], page["id"])
+        assert body["printing_from"] == {"node_id": parent["id"],
+                                         "title": "Reorganization plan"}, who
+    await publish_via_db(db, parent["id"])
+    body = await _get(client, ctx["viewer"], page["id"])
+    assert body["printing_from"] == {"node_id": parent["id"], "title": "Reorganization plan"}
+
+
 async def test_library_setting_drives_can_print_and_is_validated(client, db):
     ctx = await _setup(client, db)
     h, space = ctx["owner"], ctx["space"]

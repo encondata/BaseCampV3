@@ -168,6 +168,29 @@ async def test_unpublished_page_found_by_title_for_editors_only(client, db):
     assert hits == []
 
 
+async def test_breadcrumbs_leave_out_a_page_a_view_only_reader_cannot_see(client, db):
+    """A view-only reader can't see a page never published, so a published
+    page under it is found without that page in its breadcrumbs (no
+    placeholder), until it's published. Anyone who sees drafts still gets it."""
+    s = await _setup(client, db)
+    space = s["space"]
+    folder = await _create(client, s["owner"], space, "Guides")
+    parent = await _create(client, s["owner"], space, "Reorganization plan",
+                           kind="page", parent=folder)
+    child = await _create(client, s["owner"], space, "Org chart", kind="page", parent=parent)
+    await _set_draft(db, child["id"], _doc("reticulating splines carefully"))
+    await publish_via_api(client, s["owner"], child["id"])
+
+    hits = await _search(client, s["viewer"], "reticulating")
+    assert [(h["node"]["id"], h["breadcrumbs"]) for h in hits] == [(child["id"], ["Guides"])]
+    for who in ("editor", "owner"):
+        hits = await _search(client, s[who], "reticulating")
+        assert [h["breadcrumbs"] for h in hits] == [["Guides", "Reorganization plan"]], who
+    await publish_via_api(client, s["owner"], parent["id"])
+    hits = await _search(client, s["viewer"], "reticulating")
+    assert [h["breadcrumbs"] for h in hits] == [["Guides", "Reorganization plan"]]
+
+
 # ── filters ──────────────────────────────────────────────────────────
 
 

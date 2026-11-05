@@ -235,6 +235,48 @@ async def test_view_only_tree_hides_unpublished_pages_and_broken_inheritance(cli
     assert draft["id"]
 
 
+async def test_view_only_tree_under_a_never_published_page_is_not_published(client, db):
+    """A page never published isn't there for a view-only reader, so neither
+    is what's under it: listing it answers as reading it does (404
+    `not_published`), with nothing of its children."""
+    s = await _setup(client, db)
+    space = s["space"]
+    page = await _create(client, s["owner"], space, "Reorganization plan", kind="page")
+    child = await _create(client, s["owner"], space, "Org chart", kind="page", parent=page)
+    await publish_via_db(db, child["id"])
+
+    resp = await client.get(f"/wiki/spaces/{space['key']}/tree",
+                            headers=s["viewer"], params={"parent_id": page["id"]})
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"] == {"code": "not_published",
+                                     "message": "This page hasn't been published yet."}
+    assert "Org chart" not in resp.text
+
+    # anyone who sees drafts still lists it, and so does the reader once it's published
+    for who in ("editor", "owner"):
+        assert _titles(await _tree(client, s[who], space, page)) == ["Org chart"], who
+    await publish_via_db(db, page["id"])
+    assert _titles(await _tree(client, s["viewer"], space, page)) == ["Org chart"]
+
+
+async def test_tree_under_an_unviewable_never_published_page_is_not_found(client, db):
+    """The view check runs before the never-published one here too: a caller
+    who can't see the page at all is told it isn't there, as for an id that
+    doesn't exist, never that it hasn't been published."""
+    s = await _setup(client, db)
+    space = s["space"]
+    hidden = await _create(client, s["owner"], space, "Reorganization plan", kind="page")
+    await _break_inheritance(db, hidden["id"], person_id=s["owner_id"])
+
+    resp = await client.get(f"/wiki/spaces/{space['key']}/tree",
+                            headers=s["viewer"], params={"parent_id": hidden["id"]})
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"]["code"] == "not_found"
+    unknown = await client.get(f"/wiki/spaces/{space['key']}/tree",
+                               headers=s["viewer"], params={"parent_id": str(uuid.uuid4())})
+    assert resp.json() == unknown.json()
+
+
 async def test_tree_listing_uses_a_bounded_number_of_statements(client, db):
     s = await _setup(client, db)
     space = s["space"]
@@ -294,6 +336,56 @@ async def test_node_detail_breadcrumbs_hide_unviewable_ancestors(client, db):
         {"id": top["id"], "title": "Top", "kind": "folder"},
         {"id": None, "title": ELLIPSIS, "kind": "folder"},
     ]
+
+
+async def test_parent_id_is_null_for_a_parent_the_reader_cannot_view(client, db):
+    """As a hidden breadcrumb has no id, nor does a hidden parent: nothing in
+    the node names it."""
+    s = await _setup(client, db)
+    space = s["space"]
+    hidden = await _create(client, s["owner"], space, "Hidden")
+    leaf = await _create(client, s["owner"], space, "Leaf", kind="page", parent=hidden)
+    await publish_via_db(db, leaf["id"])
+    await _break_inheritance(db, hidden["id"], person_id=s["owner_id"])
+    db.add(WikiGrant(space_id=uuid.UUID(space["id"]), node_id=uuid.UUID(leaf["id"]),
+                     principal_type="person", principal_id=str(s["viewer_id"]),
+                     level="view"))
+    await db.commit()
+
+    resp = await client.get(f"/wiki/nodes/{leaf['id']}", headers=s["viewer"])
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["parent_id"] is None
+    assert hidden["id"] not in resp.text
+    owner_view = (await client.get(f"/wiki/nodes/{leaf['id']}", headers=s["owner"])).json()
+    assert owner_view["parent_id"] == hidden["id"]
+
+
+async def test_parent_id_is_null_for_a_never_published_parent_page(client, db):
+    """A view-only reader can't see a page never published, so a page under it
+    doesn't name it as its parent, in a read or a listing, until it's
+    published. Anyone who sees drafts still gets it."""
+    s = await _setup(client, db)
+    space = s["space"]
+    parent = await _create(client, s["owner"], space, "Reorganization plan", kind="page")
+    child = await _create(client, s["owner"], space, "Org chart", kind="page", parent=parent)
+    await publish_via_db(db, child["id"])
+
+    resp = await client.get(f"/wiki/nodes/{child['id']}", headers=s["viewer"])
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["parent_id"] is None
+    assert parent["id"] not in resp.text
+    resp = await client.get("/wiki/recent", headers=s["viewer"],
+                            params={"space": space["key"]})
+    assert resp.status_code == 200, resp.text
+    assert {n["title"]: n["parent_id"] for n in resp.json()}["Org chart"] is None
+    assert parent["id"] not in resp.text
+
+    for who in ("editor", "owner"):
+        body = (await client.get(f"/wiki/nodes/{child['id']}", headers=s[who])).json()
+        assert body["parent_id"] == parent["id"], who
+    await publish_via_db(db, parent["id"])
+    body = (await client.get(f"/wiki/nodes/{child['id']}", headers=s["viewer"])).json()
+    assert body["parent_id"] == parent["id"]
 
 
 async def test_view_only_reader_gets_not_published_for_a_never_published_page(client, db):

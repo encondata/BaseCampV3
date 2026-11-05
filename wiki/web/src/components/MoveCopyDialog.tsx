@@ -9,7 +9,7 @@ import { ApiError } from '@portal/lib/api';
 import { useToast } from '@portal/lib/notificationsContext';
 
 import { noteCreated, noteMoved } from '../lib/treeStore';
-import type { NodeCopyIn, NodeMoveIn, NodeOut, SpaceOut } from '../lib/types';
+import type { NodeCopyIn, NodeDetailOut, NodeMoveIn, NodeOut, SpaceOut } from '../lib/types';
 import { copyNode, errorMessage, listSpaces, moveNode } from '../lib/wikiApi';
 import TreePicker, { type Destination } from './TreePicker';
 
@@ -26,6 +26,18 @@ function describe(node: NodeOut, mode: 'move' | 'copy'): string {
   if (node.kind === 'folder') return 'Everything inside is copied too. Pages come across as unpublished drafts.';
   if (node.kind === 'page') return 'The copy is a new, unpublished page with the current draft — its history stays here.';
   return 'The copy is a new file with the current version.';
+}
+
+const isDetail = (node: NodeOut): node is NodeDetailOut => 'breadcrumbs' in node;
+
+/** Where `node` is now, for the picker's "Current location" and the
+ *  nothing-to-move check — unknown (null) when its parent is hidden from the
+ *  mover: the API sends that parent as `parent_id` null, as it does the top
+ *  level, and only a node read's breadcrumbs (an unnamed one above it) tell
+ *  the two apart. A tree row's parent is always one the mover can see. */
+function currentPlace(node: NodeOut): { spaceId: string; parentId: string | null } | null {
+  const hiddenParent = node.parent_id === null && isDetail(node) && node.breadcrumbs.length > 0;
+  return hiddenParent ? null : { spaceId: node.space_id, parentId: node.parent_id };
 }
 
 function failure(err: unknown, mode: 'move' | 'copy', title: string): string {
@@ -69,7 +81,9 @@ export default function MoveCopyDialog({ node, mode, onClose }: Props) {
     return [...list].sort((a, b) => Number(b.id === node.space_id) - Number(a.id === node.space_id));
   }, [spaces, mode, node.my_level, node.space_id]);
 
-  const unchanged = mode === 'move' && !!dest && dest.spaceId === node.space_id && dest.parentId === node.parent_id;
+  const here = currentPlace(node);
+  const unchanged = mode === 'move' && !!dest && !!here
+    && dest.spaceId === here.spaceId && dest.parentId === here.parentId;
 
   const submit = async () => {
     if (!dest || unchanged || busy) return;
@@ -120,7 +134,7 @@ export default function MoveCopyDialog({ node, mode, onClose }: Props) {
                 value={dest}
                 onChange={(d) => { setDest(d); setError(''); }}
                 exclude={node.id}
-                current={mode === 'move' ? { spaceId: node.space_id, parentId: node.parent_id } : undefined}
+                current={mode === 'move' && here ? here : undefined}
                 initiallyOpen={[node.space_id]}
               />
             ) : <p className="page-hint">Loading…</p>}

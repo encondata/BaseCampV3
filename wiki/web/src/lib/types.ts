@@ -147,6 +147,8 @@ export interface NodeOut {
   id: string;
   space_id: string;
   space_key: string;
+  /** Null at the top level, and for a parent the caller can't see (as a
+   *  hidden breadcrumb has no id) — a node read's breadcrumbs tell the two apart. */
   parent_id: string | null;
   kind: NodeKind;
   title: string;

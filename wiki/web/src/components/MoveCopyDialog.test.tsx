@@ -18,7 +18,7 @@ import { ApiError } from '@portal/lib/api';
 import { resetTreeStore } from '../lib/treeStore';
 import type { NodeOut } from '../lib/types';
 import { copyNode, getTree, listSpaces, moveNode } from '../lib/wikiApi';
-import { makeNode, makeSpace } from '../testing/fixtures';
+import { makeDetail, makeNode, makeSpace } from '../testing/fixtures';
 import MoveCopyDialog from './MoveCopyDialog';
 
 const OPS = makeSpace({ my_level: 'edit' });
@@ -94,6 +94,27 @@ describe('MoveCopyDialog', () => {
     await waitFor(() => expect(moveNode).toHaveBeenCalledWith('p1', { parent_id: 'f1' }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(toast).toHaveBeenCalledWith('Moved “Intro” to Guides.');
+  });
+
+  it('marks the top level as where a top-level node is now, so it can\'t be picked to move to', async () => {
+    renderDialog(makeDetail('p1', { title: 'Intro' }), 'move');
+    fireEvent.click(await screen.findByRole('treeitem', { name: 'Operations' }));
+    expect(screen.getByText('Current location')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Move here' })).toHaveProperty('disabled', true);
+  });
+
+  it('moves a node under a parent the mover can\'t see to the top level', async () => {
+    // that parent comes back as parent_id null, as the top level does; the
+    // unnamed breadcrumb above the node tells the two apart
+    const node = makeDetail('p9', {
+      title: 'Org chart', parent_id: null, breadcrumbs: [{ id: null, title: '…', kind: 'folder' }],
+    });
+    vi.mocked(moveNode).mockResolvedValue({ ...node, parent_id: null });
+    renderDialog(node, 'move');
+    fireEvent.click(await screen.findByRole('treeitem', { name: 'Operations' }));
+    expect(screen.queryByText('Current location')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Move here' }));
+    await waitFor(() => expect(moveNode).toHaveBeenCalledWith('p9', { parent_id: null }));
   });
 
   it('copies to another space\'s top level and opens the copy', async () => {
