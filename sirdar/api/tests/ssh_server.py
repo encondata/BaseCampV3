@@ -39,6 +39,12 @@ class FakeSshServer:
     exits: dict = field(default_factory=dict)    # command -> exit status for an override
     stdin_echo: set = field(default_factory=set)  # commands that answer with their stdin
     stdins: list = field(default_factory=list)    # what those commands read
+    acceptor: asyncssh.SSHAcceptor | None = None
+
+    def serve_host_keys(self, *keys: asyncssh.SSHKey) -> None:
+        """Change the host keys new connections are offered, in this order
+        (as a VM gains RSA and ECDSA keys when openssh-server upgrades)."""
+        self.acceptor.update(server_host_keys=list(keys))
 
     @property
     def fingerprint(self) -> str:
@@ -109,7 +115,7 @@ async def ssh_server(tmp_path):
         process_factory=process_factory, encoding=None)
     port = server.sockets[0].getsockname()[1]
     state["fake"] = FakeSshServer(port=port, host_key=host_key, client_key=client_key,
-                                  keys_dir=keys_dir)
+                                  keys_dir=keys_dir, acceptor=server)
     try:
         yield state["fake"]
     finally:

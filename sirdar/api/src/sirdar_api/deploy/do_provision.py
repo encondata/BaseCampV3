@@ -930,9 +930,10 @@ class DoProvisioner:
             # proxy uses is refused before any key is trusted there.
             await vmcommon.check_address(self._settings, ctx.env_id, ip,
                                          host_label="DigitalOcean")
-            expected = known_hosts.fingerprint(asyncssh.import_public_key(host_keys[slot]))
+            key = asyncssh.import_public_key(host_keys[slot])
             await vmcommon.confirm_pin(
-                ip=ip, expected=expected, actor_id=ctx.actor_id, target_id="digitalocean",
+                ip=ip, expected=known_hosts.fingerprint(key), key_type=key.get_algorithm(),
+                actor_id=ctx.actor_id, target_id="digitalocean",
                 tries=self._tries(self._waits["ssh"]), poll=self._poll, sleep=self._sleep,
                 out=out, how="the key Sirdar generated for the droplet",
                 mismatch=(f"{name} answered SSH with a host key Sirdar didn't generate for it. "

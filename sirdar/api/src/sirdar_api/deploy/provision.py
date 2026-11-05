@@ -407,13 +407,13 @@ class ProxmoxProvisioner:
                 break
             await self._sleep(self._poll)
         try:
-            expected = known_hosts.fingerprint(asyncssh.import_public_key(line))
+            key = asyncssh.import_public_key(line)
         except (asyncssh.KeyImportError, ValueError):
             raise StepFailed("The VM's SSH host key, read through its guest agent, isn't a key "
                              "Sirdar can use.") from None
         return await vmcommon.confirm_pin(
-            ip=ip, expected=expected, actor_id=ctx.actor_id,
-            target_id=f"proxmox:{ctx.env_name}", tries=tries, poll=self._poll,
+            ip=ip, expected=known_hosts.fingerprint(key), key_type=key.get_algorithm(),
+            actor_id=ctx.actor_id, target_id=f"proxmox:{ctx.env_name}", tries=tries, poll=self._poll,
             sleep=self._sleep, out=out, how="read through the guest agent",
             mismatch="The VM's live SSH key doesn't match the one its guest agent reports. "
                      "Sirdar pinned nothing.", minutes=self._ssh_wait // 60)
