@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -10,6 +10,15 @@ vi.mock('../../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../lib/api')>();
   return { ...actual, ...apiMock };
 });
+
+// The web kiosk's plan (the browser build's) and the stored template set
+// it is named from; the laptop's plan comes from the edge.
+const local = vi.hoisted(() => ({ plan: vi.fn(), templates: [] as unknown[] }));
+vi.mock('../../lib/webLabels/labelBuild', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/webLabels/labelBuild')>()),
+  requestLabelPlan: local.plan,
+}));
+vi.mock('../../lib/labelTemplates', () => ({ getLabelTemplates: async () => local.templates }));
 
 import { ApiError, type KioskLabelTemplate } from '../../lib/api';
 import { withPrintMode, type StationPrinter } from '../../lib/stationPrinter';
@@ -49,11 +58,15 @@ const shifted = (zpl: string, x: number, y: number, peel = false) => withPrintMo
   zpl, { ...DEFAULT_PRINT_SETTINGS, horizontalOffset: x, verticalOffset: y }, { singleCopy: true }), peel);
 
 beforeEach(() => {
+  // A laptop Label Station: the edge backend. The web case clears this.
+  window.__KIOSK_CONFIG__ = { mode: 'laptop' };
+  local.plan.mockReset().mockResolvedValue(null);
+  local.templates = [];
   apiMock.postTestRender.mockReset().mockResolvedValue({ zpl: '^XA^PW812^FDrendered^FS^XZ', template_name: 'Generic Rack and RU' });
   // An edge without the plan route: the mock label falls back to Generic Rack and RU / Front.
   apiMock.getLabelPlan.mockReset().mockRejectedValue(new ApiError(404, 'unknown_error'));
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); delete window.__KIOSK_CONFIG__; });
 
 function renderModal(over: Partial<Parameters<typeof TestLabelModal>[0]> = {}) {
   const printer = fakePrinter();
@@ -215,4 +228,41 @@ it('waits for the plan before the mock-data label can print', async () => {
   // the alignment label never waits
   await user.click(screen.getByRole('radio', { name: /Alignment label/ }));
   expect((screen.getByRole('button', { name: 'Print test label' }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+it('on the web picks its sample template from the local plan', async () => {
+  delete window.__KIOSK_CONFIG__;
+  const user = userEvent.setup();
+  local.templates = TEMPLATES;
+  local.plan.mockResolvedValue({
+    templateId: 'v203', templateFamily: 'Vegas', notes: [], fonts: [], availableDpis: [], hasAssetData: true,
+    jobs: [],
+  });
+  const { printer } = renderModal();
+  expect(local.plan).toHaveBeenCalledWith({ dpi: 203, kind: 'top' });
+  await user.click(screen.getByRole('radio', { name: /Mock-data label/ }));
+  await screen.findByText(/Vegas · 203 at 203 DPI/);
+  await user.click(screen.getByRole('button', { name: 'Print test label' }));
+  await waitFor(() => expect(printer.sent).toHaveLength(1));
+  expect(apiMock.postTestRender).toHaveBeenCalledWith({ initiative_id: 'i-1', template_id: 'v203', dpi_key: '203' });
+  expect(apiMock.getLabelPlan).not.toHaveBeenCalled();
+});
+
+it('on the web names this kiosk, never the station', async () => {
+  delete window.__KIOSK_CONFIG__;
+  const user = userEvent.setup();
+  local.templates = TEMPLATES;
+  let answer!: (plan: unknown) => void;
+  local.plan.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+  renderModal();
+  const dialog = screen.getByRole('dialog', { name: 'Test labels' });
+  expect(dialog.querySelector('.eyebrow')?.textContent).toBe('Label Printing');
+  expect(within(dialog).getByText(/The offsets are saved on this kiosk\./)).toBeTruthy();
+  await user.click(screen.getByRole('radio', { name: /Mock-data label/ }));
+  expect(screen.getByText("Finding this kiosk's template…")).toBeTruthy();
+  expect(within(dialog).queryByText(/station/i)).toBeNull();
+  answer({
+    templateId: 'v203', templateFamily: 'Vegas', notes: [], fonts: [], availableDpis: [], hasAssetData: true, jobs: [],
+  });
+  await screen.findByText(/Vegas · 203 at 203 DPI/);
 });

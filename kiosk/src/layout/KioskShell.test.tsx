@@ -55,10 +55,23 @@ const laptopSetupMock = vi.hoisted(() => ({
 }));
 vi.mock('../lib/laptopSetup', () => laptopSetupMock);
 
+// The web kiosk's label build status (Task 3's, labelBuild.test.ts): a
+// test can say a build is running. Null is the real (idle) one.
+const buildMock = vi.hoisted(() => ({ status: null as null | Record<string, unknown> }));
+vi.mock('../lib/webLabels/labelBuild', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/webLabels/labelBuild')>();
+  return { ...actual, readWebLabelStatus: () => buildMock.status ?? actual.readWebLabelStatus() };
+});
+const labelApi = vi.hoisted(() => ({ getLabelRunStatus: vi.fn() }));
+vi.mock('../lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/api')>()), ...labelApi,
+}));
+
 import { clearFlash, flash } from '../lib/flash';
 import { getIdentity } from '../lib/identity';
 import { writeKioskSetup } from '../lib/kioskSetup';
 import { writeSetupState } from '../lib/setupState';
+import { writeWebLabelSettings } from '../lib/webLabelSettings';
 import { DEFAULT_PREFERENCES } from '@portal/lib/settings';
 
 import KioskShell from './KioskShell';
@@ -75,6 +88,7 @@ afterEach(() => {
   auth.kioskMove = null;
   auth.setupRedirectPending = false;
   syncMock.status = { phase: 'idle' };
+  buildMock.status = null;
   localStorage.clear();
 });
 
@@ -538,4 +552,81 @@ it('a pending redirect while already on /setup is consumed without navigating', 
   render(clearSetupUi('/setup'));
   expect(await screen.findByText('Setup page')).toBeTruthy();
   expect(auth.consumeSetupRedirect).toHaveBeenCalledTimes(1);
+});
+
+it('web kiosk shows the label takeover while a web build runs', async () => {
+  buildMock.status = {
+    state: 'running', reason: 'setup', total: 10, done: 3, ready: 0, errors: 0, unsupported: 0,
+  };
+  const shell = (path = '/labels/station') => render(
+    <MemoryRouter initialEntries={[path]}><KioskShell><p>body</p></KioskShell></MemoryRouter>,
+  );
+
+  // No printer saved: a kiosk that never prints never sees it.
+  shell();
+  await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  cleanup();
+
+  // A printer saved: the build's progress covers the shell.
+  writeWebLabelSettings({
+    label_kind: 'top', dpi: 203, offset_x: 0, offset_y: 0, peel: false,
+    printer: { type: 'usb', ip: null, model: 'ZD421', serial: 'ZD-1' },
+  });
+  shell();
+  const dialog = await screen.findByRole('alertdialog', { name: 'Preparing labels for this move' });
+  expect(dialog.textContent).toContain('3 of 10');
+  cleanup();
+
+  // Not on Kiosk Setup, which has to stay usable.
+  shell('/setup');
+  await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  cleanup();
+
+  // Signed out: nothing.
+  auth.status = 'anon';
+  shell();
+  await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  cleanup();
+
+  // The web kiosk's status is its own build's, never the edge's.
+  expect(labelApi.getLabelRunStatus).not.toHaveBeenCalled();
+});
+
+it('web kiosk shows no takeover once the build is idle', async () => {
+  buildMock.status = {
+    state: 'idle', reason: 'setup', total: 10, done: 10, ready: 10, errors: 0, unsupported: 0,
+  };
+  writeWebLabelSettings({
+    label_kind: 'top', dpi: 203, offset_x: 0, offset_y: 0, peel: false,
+    printer: { type: 'usb', ip: null, model: 'ZD421', serial: 'ZD-1' },
+  });
+  render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+  await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+});
+
+it('a laptop Label Station with a web printer left in this browser polls only its edge', async () => {
+  window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1', name: 'Kiosk 0001' } };
+  try {
+    buildMock.status = {
+      state: 'running', reason: 'setup', total: 10, done: 3, ready: 0, errors: 0, unsupported: 0,
+    };
+    labelApi.getLabelRunStatus.mockResolvedValue({
+      state: 'idle', reason: null, total: 0, done: 0, ready: 0, errors: 0,
+    });
+    writeWebLabelSettings({
+      label_kind: 'top', dpi: 203, offset_x: 0, offset_y: 0, peel: false,
+      printer: { type: 'usb', ip: null, model: 'ZD421', serial: 'ZD-1' },
+    });
+    writeKioskSetup({ ...SAVED, stationType: 'label' });
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(labelApi.getLabelRunStatus).toHaveBeenCalled();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  } finally {
+    delete window.__KIOSK_CONFIG__;
+  }
 });

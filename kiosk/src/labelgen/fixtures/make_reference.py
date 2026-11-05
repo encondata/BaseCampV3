@@ -17,7 +17,12 @@ so run this with the api venv (the edge venv lacks it), from the repo root:
 `source_hash` is the sha256 the test recomputes over the Python label
 code (see `source_hash` below): when that code changes, the test fails
 until this file is run again. Python files are only read here, never
-edited."""
+edited.
+
+The same hash is also written to kiosk/src/labelgen/sourceHash.ts
+(`SOURCE_HASH`): the web kiosk's label build keys its stored labels on
+it, so a kiosk deploy that changes the generator rebuilds every label.
+reference.test.ts checks the two agree."""
 
 import hashlib
 import json
@@ -38,6 +43,7 @@ from edge.labels import generate  # noqa: E402
 from edge.sync import sync_paths  # noqa: E402
 
 OUT = Path(__file__).resolve().parent / "reference.json"
+HASH_OUT = Path(__file__).resolve().parents[1] / "sourceHash.ts"
 MOVE = "m-1"
 
 
@@ -59,6 +65,25 @@ def source_hash() -> str:
         h.update(path.relative_to(ROOT).as_posix().encode() + b"\n")
         h.update(path.read_bytes() + b"\n")
     return h.hexdigest()
+
+
+def source_hash_ts(digest: str) -> str:
+    """kiosk/src/labelgen/sourceHash.ts: the hash as a TypeScript constant.
+    Not imported by labelgen/index.ts, so the native bundles never change
+    when only the hash does."""
+    return ('/**\n'
+            ' * Written by fixtures/make_reference.py: do not edit by hand.\n'
+            ' *\n'
+            ' * The `source_hash` of fixtures/reference.json (sha256 over the Python\n'
+            ' * label code the reference labels were printed with). The web kiosk\n'
+            ' * keys its stored labels on it (lib/webLabels/labelBuild.ts), so a kiosk\n'
+            ' * deploy carrying a generator made from other Python rebuilds every\n'
+            ' * label. reference.test.ts holds it equal to the fixture\'s.\n'
+            ' *\n'
+            ' * Deliberately NOT imported by labelgen/index.ts: the Android/iOS bundle\n'
+            ' * stays byte-identical when only this hash moves.\n'
+            ' */\n'
+            f"export const SOURCE_HASH = '{digest}';\n")
 
 
 # ── sync-shaped inputs (after test_label_generate.py) ────────────────
@@ -491,10 +516,13 @@ def main() -> None:
         store.conn.close()
     names = [r["name"] for r in results]
     assert len(names) == len(set(names)), "case names must be unique"
-    OUT.write_text(json.dumps({"source_hash": source_hash(), "cases": results},
+    digest = source_hash()
+    OUT.write_text(json.dumps({"source_hash": digest, "cases": results},
                               indent=1, ensure_ascii=False) + "\n")
+    HASH_OUT.write_text(source_hash_ts(digest))
     jobs = sum(len(r["expected"]) for r in results)
     print(f"wrote {OUT.relative_to(ROOT)}: {len(results)} cases, {jobs} labels")
+    print(f"wrote {HASH_OUT.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":

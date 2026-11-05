@@ -157,6 +157,14 @@ async function jsonFrom<T>(resp: Response): Promise<T> {
   return resp.json() as Promise<T>;
 }
 
+/** Like `jsonFrom`, but also hands back the response text it parsed — the
+ *  same `ApiError` mapping on a failed status, `body = JSON.parse(text)`. */
+async function rawJsonFrom<T>(resp: Response): Promise<{ body: T; text: string }> {
+  if (!resp.ok) throw await errorFrom(resp);
+  const text = await resp.text();
+  return { body: JSON.parse(text) as T, text };
+}
+
 // ── auth ────────────────────────────────────────────────────────────
 
 export async function loginRequest(email: string, password: string): Promise<SessionData> {
@@ -518,10 +526,16 @@ export interface KioskLabelTemplatesSync {
   templates: KioskLabelTemplate[];
 }
 
-/** The whole roster in one response — the API does not page it. */
-export async function fetchAssetsSync(initiativeId: string): Promise<KioskAssetsSync> {
+/** The whole roster in one response — the API does not page it. `text`
+ *  is the response body exactly as the API wrote it and `body` is its
+ *  `JSON.parse`: the label generator reads the TEXT (a number like `2.0`
+ *  must not become `2` on a parse-and-stringify round trip), the rest of
+ *  the kiosk reads the parsed rows. */
+export async function fetchAssetsSyncRaw(
+  initiativeId: string,
+): Promise<{ body: KioskAssetsSync; text: string }> {
   const resp = await apiFetch(`/kiosk/sync/assets?initiative_id=${encodeURIComponent(initiativeId)}`);
-  return jsonFrom<KioskAssetsSync>(resp);
+  return rawJsonFrom<KioskAssetsSync>(resp);
 }
 
 export async function fetchPeopleSync(): Promise<KioskPeopleSync> {
@@ -543,13 +557,15 @@ export async function fetchTrucksSync(initiativeId: string): Promise<KioskTrucks
   return jsonFrom<KioskTrucksSync>(resp);
 }
 
-/** The move's label template set — the whole set every time (no delta). */
-export async function fetchLabelTemplatesSync(
+/** The move's label template set — the whole set every time (no delta),
+ *  with the response text kept beside the parsed body like the roster's
+ *  (see `fetchAssetsSyncRaw`). */
+export async function fetchLabelTemplatesSyncRaw(
   initiativeId: string,
-): Promise<KioskLabelTemplatesSync> {
+): Promise<{ body: KioskLabelTemplatesSync; text: string }> {
   const resp = await apiFetch(
     `/kiosk/sync/label-templates?initiative_id=${encodeURIComponent(initiativeId)}`);
-  return jsonFrom<KioskLabelTemplatesSync>(resp);
+  return rawJsonFrom<KioskLabelTemplatesSync>(resp);
 }
 
 // ── scan ingest ─────────────────────────────────────────────────────

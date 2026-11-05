@@ -16,6 +16,10 @@
  * the Move step leads with a **No move** card, after which Site lists
  * every site plus **No site**. Picking a site saves it (no scan type, no
  * move-data download) and goes to Start Time Clock (`/timeclock/station`).
+ * A web kiosk (no laptop edge) walks Move → Site → Scan type → What it
+ * prints: the portal save still happens at the scan type, then Top or
+ * Front is kept on the kiosk itself (`lib/webLabelSettings.ts`) and the
+ * wizard closes. Its printer is chosen later, at the Printing Station.
  * Tap-to-select card pickers (`.setup-card`, mirroring `.kiosk-tile`) —
  * large touch targets, no native `<select>`. Tapping a move or site card
  * selects it and advances to the next step; tapping a scan-type card
@@ -58,6 +62,7 @@ import {
   isSetupComplete, readSetupState, useKioskSetupState, writeSetupState,
 } from '../lib/setupState';
 import { formatSyncedAt, runSync, useSyncStatus } from '../lib/sync';
+import { readWebLabelKind, writeWebLabelKind } from '../lib/webLabelSettings';
 
 /** Shown when Kiosk Setup is reached from another device on the LAN. */
 const LAN_NOTICE = "You're changing the setup of the laptop itself.";
@@ -79,10 +84,11 @@ const STEP_LABEL: Record<Step, string> = {
  *  its path has no Scan type step. The portal saves the same key anyway. */
 const LABEL_STATION_SCAN_STATUS = 'labeled';
 
-/** The steps this kiosk walks. Web mode skips the station type: RFID
- *  needs the laptop edge, and a web kiosk behaves exactly as before. */
+/** The steps this kiosk walks. Web mode skips the station type (RFID
+ *  needs the laptop edge) and ends by asking what it prints, which the
+ *  web kiosk keeps for itself rather than sending to the portal. */
 function pathFor(laptop: boolean, stationType: StationType | ''): Step[] {
-  if (!laptop) return ['move', 'site', 'scan'];
+  if (!laptop) return ['move', 'site', 'scan', 'kind'];
   if (stationType === 'rfid') return ['type', 'reader', 'connect', 'pair', 'network', 'move', 'site', 'scan', 'confirm'];
   if (stationType === 'label') return ['type', 'move', 'site', 'kind', 'printer'];
   if (stationType === 'timeclock') return ['type', 'move', 'site'];
@@ -427,8 +433,12 @@ export default function KioskSetup() {
         }).catch(() => {});
       } else {
         writeSetupState('complete');
-        // An RFID station still has to verify and start its reader.
-        if (station === 'rfid') setStep('confirm'); else setWizardOpen(false);
+        // An RFID station still has to verify and start its reader; a web
+        // kiosk still has to say what it prints (preselecting what it
+        // already prints), after which the wizard closes.
+        if (station === 'rfid') setStep('confirm');
+        else if (!laptop) { setLabelKind(readWebLabelKind()); setStep('kind'); }
+        else setWizardOpen(false);
       }
       // Fire-and-forget: the summary appears immediately and the
       // download reports itself through `.sync-status`. A sync outcome
@@ -597,11 +607,18 @@ export default function KioskSetup() {
 
         {step === 'kind' && (
           <div>
-            <LabelKindStep selected={labelKind}
+            <LabelKindStep selected={labelKind} device={laptop ? 'station' : 'kiosk'}
                            onChoose={(kind) => {
                              kindChosen.current = true;
                              setLabelKind(kind);
-                             setStep('printer');
+                             if (laptop) {
+                               setStep('printer');
+                             } else {
+                               // The setup is already saved and complete: a
+                               // web kiosk only has to remember its kind.
+                               writeWebLabelKind(kind);
+                               setWizardOpen(false);
+                             }
                            }}
                            onBack={back} />
           </div>

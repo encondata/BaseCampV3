@@ -23,11 +23,13 @@ import { useDevMode } from '../lib/devMode';
 import { FEATURES } from '../lib/features';
 import { getIdentity } from '../lib/identity';
 import { stationLabel, useKioskSetup } from '../lib/kioskSetup';
+import { webLabelBackend } from '../lib/labelBackend';
 import { startLaptopConfigSync } from '../lib/laptopConfig';
 import { hydrateLaptopSetup } from '../lib/laptopSetup';
 import { isLaptop, platform } from '../lib/platform';
 import { useEdgeStatus } from '../lib/edgeStatus';
 import { useSyncStatus } from '../lib/sync';
+import { useWebLabelSettings } from '../lib/webLabelSettings';
 
 const REG_CHIP: Record<RegistrationState, string> = {
   ok: 'c-green', soon: 'c-amber', expired: 'c-red', none: 'c-slate',
@@ -72,6 +74,8 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   const [kioskSetup] = useKioskSetup();
   const sync = useSyncStatus();
   const { status: edge } = useEdgeStatus();
+  const webPrinter = useWebLabelSettings();
+  const laptop = isLaptop();
 
   // The RFID dashboard is always dark, like its mockup, whatever the
   // person's theme: applyPreferences runs first (it sets data-theme from
@@ -219,13 +223,20 @@ export default function KioskShell({ children }: { children: ReactNode }) {
       {/* The Asset Not Part Of Move takeover, over every page of an RFID
           Station laptop. Only while signed in: every alarm route needs an
           edge session, so a signed-out page would only poll 401s. */}
-      {authed && isLaptop() && kioskSetup?.stationType === 'rfid' && <OffMoveAlarm />}
+      {authed && laptop && kioskSetup?.stationType === 'rfid' && <OffMoveAlarm />}
       {/* The yellow label regeneration takeover, over every page of a
           Label Station laptop while the edge generates labels. Signed in
           only, for the same reason. Never on Kiosk Setup, which has to stay
           usable while the station is being set up. */}
-      {authed && isLaptop() && kioskSetup?.stationType === 'label' && !onSetup
+      {authed && laptop && kioskSetup?.stationType === 'label' && !onSetup
         && <LabelRegenScreen />}
+      {/* The same takeover on a web kiosk while the browser builds its
+          labels, fed by that build's status (in memory, never the edge).
+          Only once a printer is saved: a kiosk that never prints never
+          builds, and never sees it. Signed in and off Kiosk Setup, as on
+          the laptop. */}
+      {authed && !laptop && webPrinter !== null && !onSetup
+        && <LabelRegenScreen getStatus={webLabelBackend.getStatus} deviceWord={webLabelBackend.deviceWord} />}
     </div>
   );
 }

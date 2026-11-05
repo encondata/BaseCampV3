@@ -19,11 +19,17 @@
  * While open it is on the shared takeover stack (`lib/takeover`):
  * everything outside it is inert, and while it is on top it stops key
  * presses (a keyboard-wedge scan) from reaching the page underneath.
+ *
+ * `getStatus` is where the run's status comes from: the edge by default;
+ * the web kiosk passes its browser build's (same `LabelRunStatus` shape),
+ * and `deviceWord="kiosk"` so the unreachable copy names this kiosk (its
+ * status is in memory and never fails, but it must not say "laptop").
  */
 
 import { useEffect, useId, useRef, useState } from 'react';
 
 import { getLabelRunStatus, type LabelRunStatus } from '../lib/api';
+import type { DeviceWord } from '../lib/printQueue';
 import { openTakeovers, syncInert } from '../lib/takeover';
 
 /** How often the edge is asked about the label run. */
@@ -36,7 +42,15 @@ const TITLES: Record<'setup' | 'updates', string> = {
   updates: 'Label regeneration in progress — updates were detected',
 };
 
-export default function LabelRegenScreen() {
+interface Props {
+  /** Reads the label run's status (default `GET /edge/labels/status`). Pass
+   *  a stable function: a new one starts the polling over. */
+  getStatus?: () => Promise<LabelRunStatus>;
+  /** What the copy calls this device (default 'laptop'). */
+  deviceWord?: DeviceWord;
+}
+
+export default function LabelRegenScreen({ getStatus = getLabelRunStatus, deviceWord = 'laptop' }: Props) {
   const titleId = useId();
   const progressId = useId();
   const [run, setRun] = useState<LabelRunStatus | null>(null);
@@ -48,7 +62,7 @@ export default function LabelRegenScreen() {
     let failingSince: number | null = null;
     const poll = async () => {
       try {
-        const next = await getLabelRunStatus();
+        const next = await getStatus();
         failingSince = null;
         if (!cancelled) {
           setRun(next);
@@ -67,7 +81,7 @@ export default function LabelRegenScreen() {
       cancelled = true;
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, []);
+  }, [getStatus]);
 
   const open = run?.state === 'running';
 
@@ -101,7 +115,7 @@ export default function LabelRegenScreen() {
       <div ref={rootRef} className="label-regen" role="alertdialog" aria-modal="true" tabIndex={-1}
            aria-labelledby={titleId} aria-describedby={progressId}>
         <div className="label-regen-card">
-          <h1 id={titleId} className="label-regen-title">Can't reach this laptop's label service.</h1>
+          <h1 id={titleId} className="label-regen-title">Can't reach this {deviceWord}'s label service.</h1>
           <p id={progressId} className="label-regen-count">Labels may be out of date.</p>
         </div>
       </div>

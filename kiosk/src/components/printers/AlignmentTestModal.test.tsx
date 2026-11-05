@@ -129,4 +129,17 @@ describe('AlignmentTestModal on a Label Station', () => {
     expect(await screen.findByText("Couldn't save the offsets to this station. Try again.")).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Save offsets' }) as HTMLButtonElement).disabled).toBe(false);
   });
+
+  it("on a web kiosk names this kiosk, in the hint and when it couldn't save", async () => {
+    const onSaveOffsets = vi.fn(async (_o: { x: number; y: number }) => { throw new Error('storage'); });
+    render(<AlignmentTestModal vocab={vocab} printerDpi={203} onPrint={async () => undefined} onClose={() => {}}
+                               offsets={{ x: 0, y: 0 }} onSaveOffsets={onSaveOffsets} deviceWord="kiosk" />);
+    expect(screen.getByText(/These are this kiosk's offsets: the Printing Station uses them\./)).toBeTruthy();
+    const v = screen.getByLabelText('Vertical offset');
+    fireEvent.change(v, { target: { value: '9' } });
+    fireEvent.blur(v);
+    await userEvent.click(screen.getByRole('button', { name: 'Save offsets' }));
+    expect(await screen.findByText("Couldn't save the offsets to this kiosk. Try again.")).toBeTruthy();
+    expect(screen.queryByText(/station/)).toBeNull();
+  });
 });

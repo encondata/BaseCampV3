@@ -28,7 +28,7 @@ import { ApiError } from './api';
 import { closeDb, getAll } from './localDb';
 import {
   BACKOFF, clearSent, discardFailed, enqueueScan, expireNoMatch, flushOutbox, loadOutbox,
-  readOutbox, resetOutboxForTest, retryFailed, senderIdle, startSender, stopSender,
+  outboxStatuses, readOutbox, resetOutboxForTest, retryFailed, senderIdle, startSender, stopSender,
   type OutboxRow,
 } from './outbox';
 
@@ -84,6 +84,25 @@ it('enqueues a matched scan as queued and lists newest first', async () => {
   expect(rows[0].client_scan_id).toMatch(/^[0-9a-f-]{36}$/);
   expect(counts).toMatchObject({ queued: 2, accepted: 0, failed: 0 });
   expect(await getAll('outbox')).toHaveLength(2);
+});
+
+it('a scan time given at enqueue is kept; without one it is now', async () => {
+  await enqueueScan({ ...matched('SN-1'), scanned_at: '2026-09-14T11:59:30.000Z' });
+  await enqueueScan(matched('SN-2'));
+  const [now, given] = readOutbox().rows;
+  expect(given.scanned_at).toBe('2026-09-14T11:59:30.000Z');
+  expect(now.scanned_at).toBe('2026-09-14T12:00:00.000Z');
+  expect((await getAll<OutboxRow>('outbox')).map((r) => r.scanned_at).sort())
+    .toEqual(['2026-09-14T11:59:30.000Z', '2026-09-14T12:00:00.000Z']);
+});
+
+it('outboxStatuses reads the whole queue, not just the rows the list renders', async () => {
+  const first = await enqueueScan(matched('SN-0'));
+  for (let i = 1; i <= 205; i += 1) await enqueueScan(matched(`SN-${i}`));
+  expect(readOutbox().rows.some((r) => r.client_scan_id === first.client_scan_id)).toBe(false);
+  const statuses = outboxStatuses([first.client_scan_id, 'never-queued']);
+  expect(statuses.get(first.client_scan_id)).toBe('queued');
+  expect(statuses.has('never-queued')).toBe(false);
 });
 
 it('an unmatched scan is stored as nomatch and is never sent', async () => {

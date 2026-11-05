@@ -96,6 +96,10 @@ export interface OutboxRow {
 export interface EnqueueInput {
   scanned_value: string;
   scan_type: 'rfid' | 'barcode';
+  /** When the scan was taken; now when left out. The web Printing Station
+   *  records a printed label's scan after its label went out, so it passes
+   *  the moment the person scanned. */
+  scanned_at?: string;
   asset: OutboxAsset | null;
   site_id: string;
   initiative_id: string;
@@ -151,6 +155,17 @@ export function readOutbox(): OutboxSnapshot {
   return snapshot;
 }
 
+/** Each of these scans' status, over the whole in-memory queue — not the
+ *  snapshot's newest `LIST_CAP` rows, which a busy station's early scans
+ *  fall out of. An id with no row (never queued, or dropped by "Clear
+ *  sent") is left out. */
+export function outboxStatuses(ids: readonly string[]): Map<string, OutboxStatus> {
+  const wanted = new Set(ids);
+  const found = new Map<string, OutboxStatus>();
+  for (const row of all) if (wanted.has(row.client_scan_id)) found.set(row.client_scan_id, row.status);
+  return found;
+}
+
 export function subscribeOutbox(fn: Listener): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);
@@ -201,7 +216,7 @@ export async function enqueueScan(input: EnqueueInput): Promise<OutboxRow> {
     seq: nextSeq++,
     scanned_value: input.scanned_value,
     scan_type: input.scan_type,
-    scanned_at: new Date().toISOString(),
+    scanned_at: input.scanned_at ?? new Date().toISOString(),
     asset: input.asset,
     matched,
     status: matched ? 'queued' : 'nomatch',
@@ -270,14 +285,20 @@ function scheduleFlush(delay: number): void {
   }, delay);
 }
 
-export function startSender(): void {
-  if (running) return;
+let started: Promise<void> = Promise.resolve();
+
+/** Starts sending; resolves once the queue has been read off disk (at once
+ *  when the sender was already running), so a caller can act on the
+ *  loaded rows — the web Printing Station retries the failed ones. */
+export function startSender(): Promise<void> {
+  if (running) return started;
   running = true;
-  void loadOutbox().then(() => {
+  started = loadOutbox().then(() => {
     sweepInFlight = expireNoMatch().finally(() => { sweepInFlight = null; });
     scheduleFlush(BATCH_DELAY);
   });
   scheduleSweep();
+  return started;
 }
 
 export function stopSender(): void {

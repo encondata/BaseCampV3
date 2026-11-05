@@ -11,6 +11,11 @@
  * `done` with real counts before anything is fetched again
  * (`hydrateSyncStatus`).
  *
+ * The assets and label-template downloads also keep their response TEXT
+ * (`assets_raw`, `label_templates_raw`), written in the same transaction
+ * as the parsed rows: the label generator needs the bodies byte for byte
+ * as the API wrote them, never a re-serialized parse.
+ *
  * After that, the move's label template set comes down as a soft step
  * (`syncLabelTemplates`): a success replaces the `label_templates` store,
  * so a template that stopped matching on the portal is gone; a failure
@@ -26,10 +31,10 @@
 import { useEffect, useSyncExternalStore } from 'react';
 
 import {
-  ApiError, fetchAssetsSync, fetchContainersSync, fetchLabelTemplatesSync, fetchPeopleSync,
+  ApiError, fetchAssetsSyncRaw, fetchContainersSync, fetchLabelTemplatesSyncRaw, fetchPeopleSync,
   fetchTrucksSync,
 } from './api';
-import { count, readMeta, replaceAllMulti } from './localDb';
+import { count, readMeta, replaceAllMulti, type RawBodyRow } from './localDb';
 
 export type SyncPhase = 'idle' | 'running' | 'done' | 'error';
 
@@ -122,13 +127,13 @@ export async function runSync(initiativeId: string, initiativeName: string): Pro
   if (myRun !== currentRun) return;
   setStatus({ ...previous, phase: 'running', error: undefined });
 
-  let assets: Awaited<ReturnType<typeof fetchAssetsSync>>;
+  let assetsRaw: Awaited<ReturnType<typeof fetchAssetsSyncRaw>>;
   let people: Awaited<ReturnType<typeof fetchPeopleSync>>;
   let containers: Awaited<ReturnType<typeof fetchContainersSync>>;
   let trucks: Awaited<ReturnType<typeof fetchTrucksSync>>;
   try {
-    [assets, people, containers, trucks] = await Promise.all([
-      fetchAssetsSync(initiativeId), fetchPeopleSync(), fetchContainersSync(initiativeId),
+    [assetsRaw, people, containers, trucks] = await Promise.all([
+      fetchAssetsSyncRaw(initiativeId), fetchPeopleSync(), fetchContainersSync(initiativeId),
       fetchTrucksSync(initiativeId),
     ]);
   } catch (err) {
@@ -142,14 +147,16 @@ export async function runSync(initiativeId: string, initiativeName: string): Pro
   }
 
   if (myRun !== currentRun) return;
+  const assets = assetsRaw.body;
   try {
     const syncedAt = new Date().toISOString();
-    // assets, people, containers, trucks, and the meta pointer land in
-    // ONE transaction — see `replaceAllMulti` — so a reader (or a reload)
-    // never sees them half-updated.
+    // assets (and their raw text), people, containers, trucks, and the
+    // meta pointer land in ONE transaction — see `replaceAllMulti` — so a
+    // reader (or a reload) never sees them half-updated.
     await replaceAllMulti(
       [
         { store: 'assets', rows: assets.assets },
+        { store: 'assets_raw', rows: [rawBodyRow(initiativeId, assetsRaw.text)] },
         { store: 'people', rows: people.people },
         { store: 'containers', rows: containers.containers },
         { store: 'trucks', rows: trucks.trucks },
@@ -184,6 +191,10 @@ export async function runSync(initiativeId: string, initiativeName: string): Pro
   }
 }
 
+function rawBodyRow(initiativeId: string, text: string): RawBodyRow {
+  return { key: 'body', initiativeId, text };
+}
+
 /** The meta row recording which move the stored template set belongs to. */
 export const LABEL_TEMPLATES_META_KEY = 'label_templates';
 
@@ -201,10 +212,13 @@ async function syncLabelTemplates(
   initiativeId: string, current: () => boolean,
 ): Promise<void> {
   try {
-    const body = await fetchLabelTemplatesSync(initiativeId);
+    const { body, text } = await fetchLabelTemplatesSyncRaw(initiativeId);
     if (!current()) return;
     await replaceAllMulti(
-      [{ store: 'label_templates', rows: body.templates }],
+      [
+        { store: 'label_templates', rows: body.templates },
+        { store: 'label_templates_raw', rows: [rawBodyRow(initiativeId, text)] },
+      ],
       { key: LABEL_TEMPLATES_META_KEY, value: { initiativeId } },
     );
   } catch (err) {
@@ -214,7 +228,10 @@ async function syncLabelTemplates(
       const owner = (await readMeta(LABEL_TEMPLATES_META_KEY))?.initiativeId;
       if (owner === initiativeId) return;
       await replaceAllMulti(
-        [{ store: 'label_templates', rows: [] }],
+        [
+          { store: 'label_templates', rows: [] },
+          { store: 'label_templates_raw', rows: [] },
+        ],
         { key: LABEL_TEMPLATES_META_KEY, value: { initiativeId } },
       );
     } catch (clearErr) {

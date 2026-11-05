@@ -4,11 +4,12 @@
  *   (`alignmentTestZpl`, previewed with `alignmentInsets`) at 4x2 or 2x1
  *   (4x2 for a Top station, 2x1 for Front) at the printer's DPI;
  * - a mock-data label: the template the station's plan picks at the
- *   printer's DPI (`GET /edge/labels/plan`, the one its labels print
- *   with), filled with the portal's fixed mock values by the portal's own
- *   renderer (`POST /kiosk/labels/test-render`). The kiosk never fills
- *   placeholders itself, and a template's own sample values never reach
- *   it. When the plan can't be read, picks none, or picks a template that
+ *   printer's DPI (`labelBackend().getPlan`: the edge's `GET
+ *   /edge/labels/plan` on a laptop, the browser build's plan on the web —
+ *   the one its labels print with), filled with the portal's fixed mock
+ *   values by the portal's own renderer (`POST /kiosk/labels/test-render`).
+ *   The kiosk never fills placeholders itself, and a template's own sample
+ *   values never reach it. When the plan can't be read, picks none, or picks a template that
  *   wasn't downloaded: "Generic Rack and RU" for Top, the Front template
  *   for Front, at the printer's DPI; a template only at another DPI is
  *   skipped with a note.
@@ -20,6 +21,9 @@
  * the horizontal and vertical offsets (dots, may be negative) show with
  * Reprint; offsets carried over from the station's saved settings show from
  * the start. The parent keeps them and saves them with the station.
+ *
+ * On a web kiosk the copy says "this kiosk" where a laptop's says "the
+ * station" (the laptop's strings are unchanged).
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -28,8 +32,9 @@ import {
 } from '@portal/lib/printLabels';
 
 import {
-  ApiError, getLabelPlan, postTestRender, type KioskLabelTemplate, type LabelKind,
+  ApiError, postTestRender, type KioskLabelTemplate, type LabelKind,
 } from '../../lib/api';
+import { labelBackend } from '../../lib/labelBackend';
 import { mockTemplateFor, withPrintMode, type StationPrinter } from '../../lib/stationPrinter';
 import { ChoiceCard } from '../printers/ChoiceCard';
 import { alignmentInsets } from '../printers/AlignmentTestModal';
@@ -57,6 +62,8 @@ interface Props {
 export default function TestLabelModal({
   printer, dpi, labelKind, templates, initiativeId, offsets, peel, onOffsets, onClose,
 }: Props) {
+  // A laptop Label Station's copy, or a web kiosk's ("this kiosk").
+  const web = labelBackend().kind === 'web';
   const [choice, setChoice] = useState<Choice>('alignment');
   const [sizeKey, setSizeKey] = useState<SizeKey>(labelKind === 'front' ? '2x1' : '4x2');
   const [hText, setHText] = useState(String(offsets.x));
@@ -81,7 +88,7 @@ export default function TestLabelModal({
   useEffect(() => {
     let live = true;
     setPlanId(undefined);
-    getLabelPlan({ dpi, kind: labelKind })
+    labelBackend().getPlan({ dpi, kind: labelKind })
       .then((plan) => { if (live) setPlanId(plan.template?.id ?? null); })
       .catch(() => { if (live) setPlanId(null); });
     return () => { live = false; };
@@ -160,11 +167,11 @@ export default function TestLabelModal({
       <div className="modal-card reports-modal-card rgm-card zp-align-card" role="dialog" aria-label="Test labels">
         <div className="modal-head">
           <div className="rgm-head-text">
-            <div className="eyebrow">Label Station</div>
+            <div className="eyebrow">{web ? 'Label Printing' : 'Label Station'}</div>
             <h3>Test labels</h3>
             <p className="page-hint">
               Print an alignment label or a label with sample data, then adjust the offsets and reprint
-              until it lines up. The offsets are saved with the station.
+              until it lines up. {web ? 'The offsets are saved on this kiosk.' : 'The offsets are saved with the station.'}
             </p>
           </div>
           <button type="button" className="modal-close" aria-label="Close" disabled={busy} onClick={onClose}>
@@ -214,7 +221,9 @@ export default function TestLabelModal({
                   <p className="page-hint">{dims.w} × {dims.h} dots at {dpi} DPI</p>
                 </>
               ) : planning ? (
-                <p className="page-hint" role="status">Finding the station&apos;s template…</p>
+                <p className="page-hint" role="status">
+                  {web ? "Finding this kiosk's template…" : "Finding the station's template…"}
+                </p>
               ) : mock.template ? (
                 <p className="page-hint">
                   Prints {mock.template.name} at {dpi} DPI with sample values, filled in by the portal.

@@ -14,3 +14,11 @@ export const LABEL_SECTIONS: LabelSection[] = [
   { id: 'bulk', path: '/labels/bulk', title: 'Bulk Print', blurb: 'Print labels for a whole move, rack, or list.' },
   { id: 'printers', path: '/labels/printers', title: 'Printer Setup / Troubleshooting', blurb: 'Connect, align, and test the label printer.' },
 ];
+
+/** Router state a web kiosk's Printing Station hands Printer Setup when it
+ *  sends a kiosk with no printer saved there: where to come back to. */
+export interface PrinterSetupRouteState { returnTo?: string }
+
+/** Router state Printer Setup hands back: the station was just left, so
+ *  this visit doesn't send the person to Printer Setup again. */
+export interface StationRouteState { fromPrinterSetup?: boolean }

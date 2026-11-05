@@ -22,9 +22,18 @@
  *
  * A Label Station laptop gets `StationPrinterTools` instead: the same
  * tools on the station's saved printer, USB or network.
+ *
+ * A web kiosk is where its printer is saved (Kiosk Setup only asks Top or
+ * Front): with a printer saved, the same `StationPrinterTools` on this
+ * kiosk's own label settings (USB only); with none, the printer step
+ * (`PrinterStep`, the laptop's Kiosk Setup step 5) to save one. A browser
+ * without WebUSB can't do either, so it keeps these generic tools with the
+ * unsupported banner. The Printing Station sends a kiosk with no printer
+ * here with `returnTo`; Finish and Back go back there saying so
+ * (`fromPrinterSetup`), and the station doesn't send it here again.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 
 import type { HostIdentification, HostStatus, PrinterConfiguration, UsbDeviceLike } from '@portal/labels/zebraUsb';
 
@@ -32,11 +41,15 @@ import AlignmentTestModal from '../components/printers/AlignmentTestModal';
 import FactoryResetModal from '../components/printers/FactoryResetModal';
 import PrinterHealth from '../components/printers/PrinterHealth';
 import PrinterSetupModal from '../components/printers/PrinterSetupModal';
+import PrinterStep from '../components/setup/PrinterStep';
 import { fetchLabelVocab, type LabelVocab } from '../lib/api';
 import { useKioskSetup } from '../lib/kioskSetup';
-import { LABEL_SECTIONS } from '../lib/labelSections';
+import {
+  LABEL_SECTIONS, type PrinterSetupRouteState, type StationRouteState,
+} from '../lib/labelSections';
 import { isLaptop } from '../lib/platform';
 import { useZebraPrinter } from '../lib/useZebraPrinter';
+import { readWebLabelKind, useWebLabelSettings } from '../lib/webLabelSettings';
 import StationPrinterTools from './StationPrinterTools';
 
 const SECTION = LABEL_SECTIONS.find((s) => s.id === 'printers')!;
@@ -51,9 +64,50 @@ const TOOLS: { key: Tool; title: string; description: string; action: string; da
   { key: 'reset', title: 'Factory Reset', description: "Restore the printer's factory defaults, then set it up again.", action: 'Reset printer', danger: true },
 ];
 
+/** WebUSB exists in this browser (Chrome or Edge on a secure origin). */
+function hasWebUsb(): boolean {
+  return typeof navigator !== 'undefined' && Boolean((navigator as { usb?: unknown }).usb);
+}
+
 export default function PrinterTools() {
   const [setup] = useKioskSetup();
-  return isLaptop() && setup?.stationType === 'label' ? <StationPrinterTools /> : <UsbPrinterTools />;
+  const webSettings = useWebLabelSettings();
+  if (isLaptop()) return setup?.stationType === 'label' ? <StationPrinterTools /> : <UsbPrinterTools />;
+  if (!hasWebUsb()) return <UsbPrinterTools />;
+  return webSettings ? <StationPrinterTools /> : <WebPrinterSetup />;
+}
+
+/** A web kiosk with no printer saved: the printer step, to save one. The
+ *  step saves through the web label backend; once it has, this page shows
+ *  the saved printer's tools (or goes back to the Printing Station when
+ *  that's where it was opened from). */
+function WebPrinterSetup() {
+  const [setup] = useKioskSetup();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const asked = (location.state as PrinterSetupRouteState | null)?.returnTo;
+  // Only a path in this app: router state can't come from a URL, but a
+  // stray value must never navigate anywhere odd.
+  const returnTo = typeof asked === 'string' && asked.startsWith('/') ? asked : null;
+  const back: StationRouteState = { fromPrinterSetup: true };
+  const goBack = returnTo ? () => navigate(returnTo, { replace: true, state: back }) : undefined;
+
+  return (
+    <div className="portal-page">
+      <div className="eyebrow">Kiosk · Label Printing</div>
+      <h1 className="page-title">{SECTION.title}</h1>
+      <p className="page-hint">{SECTION.blurb}</p>
+      <p><Link className="mini-btn" to="/labels">Back to Label Printing</Link></p>
+      <div className="setup-wizard">
+        {/* The kind was chosen in Kiosk Setup; nothing is saved yet, so
+            no offsets carry over. */}
+        <PrinterStep
+          initiativeId={setup?.initiativeId ?? ''} labelKind={readWebLabelKind()} initial={null}
+          finishLabel="Save printer" onBack={goBack} onFinish={() => goBack?.()}
+        />
+      </div>
+    </div>
+  );
 }
 
 function UsbPrinterTools() {

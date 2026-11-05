@@ -31,3 +31,9 @@ it('tapping a card chooses it and moves on (no Continue button); Back calls thro
   await user.click(screen.getByRole('button', { name: 'Back' }));
   expect(onBack).toHaveBeenCalled();
 });
+
+it('on a web kiosk the question is about the kiosk, not a station', () => {
+  render(<LabelKindStep selected="top" device="kiosk" onChoose={vi.fn()} onBack={vi.fn()} />);
+  expect(screen.getByText('What does this kiosk print?')).toBeTruthy();
+  expect(screen.queryByText('What does this station print?')).toBeNull();
+});

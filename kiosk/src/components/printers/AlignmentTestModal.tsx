@@ -16,7 +16,9 @@
  * On a Label Station the offsets are the station's instead: `offsets`
  * seeds them (x horizontal, y vertical, in dots), `onSaveOffsets` saves
  * them, and localStorage is never read or written. `transform` gets the
- * finished ZPL last (the station's per-label print mode).
+ * finished ZPL last (the station's per-label print mode). `deviceWord:
+ * 'kiosk'` (a web kiosk's printer tools) says "this kiosk" where a
+ * laptop's says "the station".
  */
 import { useEffect, useMemo, useState } from 'react';
 
@@ -26,6 +28,7 @@ import {
 } from '@portal/lib/printLabels';
 
 import type { LabelVocab } from '../../lib/api';
+import type { DeviceWord } from '../../lib/printQueue';
 
 const DEFAULT_SIZE = '4x2';
 
@@ -39,11 +42,13 @@ export function alignmentInsets(widthDots: number, heightDots: number): number[]
 
 export interface StationOffsets { x: number; y: number }
 
-export default function AlignmentTestModal({ vocab, printerDpi, onPrint, onClose, offsets, onSaveOffsets, transform }: {
+export default function AlignmentTestModal({ vocab, printerDpi, onPrint, onClose, offsets, onSaveOffsets, transform, deviceWord }: {
   vocab: LabelVocab[]; printerDpi: number | null; onPrint: (zpl: string) => Promise<void>; onClose: () => void;
   offsets?: StationOffsets; onSaveOffsets?: (o: StationOffsets) => Promise<void>; transform?: (zpl: string) => string;
+  deviceWord?: DeviceWord;
 }) {
   const station = onSaveOffsets !== undefined;
+  const kiosk = deviceWord === 'kiosk';
   const sizes = useMemo(() => vocabOfKind(vocab, 'size'), [vocab]);
   const dpis = useMemo(() => vocabOfKind(vocab, 'dpi'), [vocab]);
   const [sizeKey, setSizeKey] = useState(DEFAULT_SIZE);
@@ -96,7 +101,9 @@ export default function AlignmentTestModal({ vocab, printerDpi, onPrint, onClose
         setSaved({ v: vertical, h: horizontal });
         setNotice({ type: 'success', message: 'Offsets saved — the Printing Station uses them from the next label.' });
       } catch {
-        setNotice({ type: 'error', message: "Couldn't save the offsets to this station. Try again." });
+        setNotice({
+          type: 'error', message: `Couldn't save the offsets to ${kiosk ? 'this kiosk' : 'this station'}. Try again.`,
+        });
       } finally {
         setBusy(false);
       }
@@ -126,7 +133,9 @@ export default function AlignmentTestModal({ vocab, printerDpi, onPrint, onClose
             <h3>Test label alignment</h3>
             <p className="page-hint">
               Prints concentric boxes 25 dots apart so you can dial in the offsets.
-              {station ? " These are the station's offsets: the Printing Station uses them." : ' The same offsets are used by Print Labels.'}
+              {station
+                ? ` These are ${kiosk ? "this kiosk's" : "the station's"} offsets: the Printing Station uses them.`
+                : ' The same offsets are used by Print Labels.'}
             </p>
           </div>
           <button type="button" className="modal-close" aria-label="Close" onClick={onClose}>

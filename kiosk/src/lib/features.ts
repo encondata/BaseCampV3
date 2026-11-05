@@ -30,7 +30,8 @@ export const FEATURES: KioskFeature[] = [
   { id: 'enroll', path: '/enroll', title: 'RFID Enroll', blurb: 'Scan an asset, then scan its RFID tag.' },
   { id: 'containers', path: '/containers', title: 'Containers', blurb: 'Pack and unpack containers by scanning.' },
   { id: 'trucks', path: '/trucks', title: 'Trucks', blurb: 'Load and unload trucks by scanning.' },
-  { id: 'labels', path: '/labels', title: 'Label Printing', blurb: 'Print asset and container labels.' },
+  // Asset labels only for now: container labels come later on every kiosk.
+  { id: 'labels', path: '/labels', title: 'Label Printing', blurb: 'Print asset labels.' },
   { id: 'timeclock', path: '/timeclock', title: 'Timeclock', blurb: 'Clock in and out of a move.' },
   { id: 'settings', path: '/settings', title: 'Settings', blurb: 'Appearance, sound, devices, and more.', alwaysAvailable: true },
 ];

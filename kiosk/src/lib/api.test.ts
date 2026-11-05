@@ -226,3 +226,37 @@ it('logoutRequest posts to /auth/logout?client=kiosk', async () => {
   expect(init?.method).toBe('POST');
   expect(init?.credentials).toBe('include');
 });
+
+it('the raw sync fetchers hand back the response text untouched beside the parsed body', async () => {
+  // `2.0` and the spacing only survive as text; JSON.parse + stringify would lose both.
+  const assetsText = '{"initiative_id":"i 1", "assets":[{"id":"a1","x":2.0}]}';
+  const templatesText = '{"initiative_id":"i 1","templates":[{"id":"lt-1","w":4.0}]}';
+  const fetchMock = vi.fn(async (url: string) => {
+    if (String(url).endsWith('/auth/login')) return json(SESSION);
+    return new Response(
+      String(url).includes('/kiosk/sync/assets') ? assetsText : templatesText, { status: 200 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  await api.loginRequest('a@x', 'pw');
+
+  const assets = await api.fetchAssetsSyncRaw('i 1');
+  const templates = await api.fetchLabelTemplatesSyncRaw('i 1');
+
+  expect(assets.text).toBe(assetsText);
+  expect(assets.body).toEqual({ initiative_id: 'i 1', assets: [{ id: 'a1', x: 2 }] });
+  expect(templates.text).toBe(templatesText);
+  expect(templates.body).toEqual({ initiative_id: 'i 1', templates: [{ id: 'lt-1', w: 4 }] });
+  expect(fetchMock.mock.calls.slice(1).map((c) => (c as unknown as Call)[0])).toEqual([
+    'http://api.test/kiosk/sync/assets?initiative_id=i%201',
+    'http://api.test/kiosk/sync/label-templates?initiative_id=i%201',
+  ]);
+});
+
+it('the raw sync fetchers map a failed status to the same ApiError as the others', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) =>
+    String(url).endsWith('/auth/login') ? json(SESSION) : json({ detail: { code: 'server_error' } }, 500)));
+  await api.loginRequest('a@x', 'pw');
+  await expect(api.fetchAssetsSyncRaw('i-1')).rejects.toMatchObject({ code: 'server_error', status: 500 });
+  await expect(api.fetchLabelTemplatesSyncRaw('i-1'))
+    .rejects.toMatchObject({ code: 'server_error', status: 500 });
+});

@@ -94,6 +94,20 @@ it('first run after setup says the labels are being prepared, with progress', as
   expect(screen.queryByRole('button')).toBeNull();
 });
 
+it('uses the getStatus it is given', async () => {
+  // the web kiosk hands it the browser build's status
+  const getStatus = vi.fn(async () => status({ state: 'running', reason: 'updates', total: 4, done: 1 }));
+  render(<LabelRegenScreen getStatus={getStatus} />);
+  await flush();
+  expect(screen.getByRole('alertdialog', { name: 'Label regeneration in progress — updates were detected' }))
+    .toBeTruthy();
+  expect(getStatus).toHaveBeenCalled();
+  expect(apiMock.getLabelRunStatus).not.toHaveBeenCalled();
+  getStatus.mockResolvedValue(status({ state: 'idle', reason: 'updates', total: 4, done: 4 }));
+  await tick(LABEL_RUN_POLL_MS);
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+});
+
 it('a run for updates says updates were detected', async () => {
   apiMock.getLabelRunStatus.mockResolvedValue(status({ state: 'running', reason: 'updates', total: 10, done: 3 }));
   render(<LabelRegenScreen />);
@@ -160,6 +174,16 @@ it('after 10 s of failed polls it says the label service is unreachable, until a
   apiMock.getLabelRunStatus.mockResolvedValue(status({ state: 'idle', reason: 'updates', total: 4, done: 4 }));
   await tick(LABEL_RUN_POLL_MS);
   expect(screen.queryByRole('alertdialog')).toBeNull();
+});
+
+it("on a web kiosk the unreachable copy names this kiosk's label service", async () => {
+  const getStatus = vi.fn(async () => status({ state: 'running', reason: 'updates', total: 4, done: 1 }));
+  render(<LabelRegenScreen getStatus={getStatus} deviceWord="kiosk" />);
+  await flush();
+  getStatus.mockRejectedValue(new Error('unreadable'));
+  await tick(LABEL_RUN_UNREACHABLE_MS + LABEL_RUN_POLL_MS);
+  expect(screen.getByRole('alertdialog', { name: "Can't reach this kiosk's label service." })).toBeTruthy();
+  expect(screen.queryByText(/laptop/)).toBeNull();
 });
 
 it('the progress bar has no value range while the total is 0', async () => {

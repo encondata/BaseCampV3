@@ -695,6 +695,12 @@
   background: var(--paper); border: 1px solid var(--paper-line); border-radius: 12px;
 }
 .station-printer-note p { margin: 0; }
+/* The web kiosk's header: how many labels are ready, then one line per
+   reason some couldn't be made. */
+.station-label-reasons {
+  flex-basis: 100%; margin: 0; padding-left: 18px;
+  display: grid; gap: 4px; font-size: 13px; color: var(--text-mute);
+}
 .station-result {
   display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px 28px;
   margin: 16px 0; padding: 20px 24px;

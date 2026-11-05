@@ -7,7 +7,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { HostIdentification, HostStatus } from '@portal/labels/zebraUsb';
 
@@ -70,7 +70,9 @@ vi.mock('../components/setup/PrinterStep', () => ({
 }));
 
 import { writeKioskSetup } from '../lib/kioskSetup';
+import { readWebLabelSettings, writeWebLabelSettings } from '../lib/webLabelSettings';
 import PrinterTools from './PrinterTools';
+import StationPrinterTools from './StationPrinterTools';
 
 const VOCAB: LabelVocab[] = [
   { kind: 'size', key: '4x2', label: '4" x 2"', description: '', meta: { width_in: 4, height_in: 2 }, sort_order: 1, is_active: true, usage_count: 0 },
@@ -299,4 +301,96 @@ it('an RFID Station laptop and a web kiosk keep the USB-only tools', async () =>
   renderPage();
   expect(screen.getByRole('button', { name: 'Connect via USB' })).toBeTruthy();
   await waitFor(() => expect(api.fetchLabelVocab).toHaveBeenCalled());
+});
+
+it('on the web saves offsets to this kiosk', async () => {
+  // PrinterTools' web routing is Task 6's; the page itself is the same one.
+  delete window.__KIOSK_CONFIG__;
+  const usbSettings: LabelStationSettings = {
+    ...SETTINGS, printer: { type: 'usb', ip: null, model: 'ZD421', serial: 'Z1' },
+  };
+  writeWebLabelSettings(usbSettings);
+  station.settings = usbSettings;
+  station.zebra.connected = true;
+  render(<MemoryRouter><StationPrinterTools /></MemoryRouter>);
+  // no network printer to switch to from a browser
+  expect(screen.getByText(/^Switch to another USB printer\./)).toBeTruthy();
+  await screen.findByText('Ready');
+  await userEvent.click(screen.getByRole('button', { name: 'Print test label' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Test label alignment' });
+  const h = within(dialog).getByLabelText('Horizontal offset');
+  fireEvent.change(h, { target: { value: '10' } });
+  fireEvent.blur(h);
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Save offsets' }));
+  expect(await within(dialog).findByText(/Offsets saved/)).toBeTruthy();
+  expect(readWebLabelSettings()).toEqual({ ...usbSettings, offset_x: 10, offset_y: -2 });
+  expect(api.putLabelStation).not.toHaveBeenCalled();
+  expect(station.reload).toHaveBeenCalled();
+});
+
+it("on the web Change printer is USB only and isn't Kiosk Setup's", async () => {
+  delete window.__KIOSK_CONFIG__;
+  station.settings = { ...SETTINGS, printer: { type: 'usb', ip: null, model: 'ZD421', serial: 'Z1' } };
+  station.zebra.connected = true;
+  render(<MemoryRouter><StationPrinterTools /></MemoryRouter>);
+  expect(screen.getByText("Switch to another USB printer. The printer checks run before it's saved.")).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Change printer' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Change printer' });
+  expect(within(dialog).getByText("Pick this kiosk's printer and run the printer checks. A printer at a "
+    + "different DPI regenerates the move's labels.")).toBeTruthy();
+  expect(within(dialog).queryByText(/Kiosk Setup/)).toBeNull();
+});
+
+describe('on the web the copy names this kiosk, never a station', () => {
+  beforeEach(() => {
+    delete window.__KIOSK_CONFIG__;
+    station.settings = { ...SETTINGS, printer: { type: 'usb', ip: null, model: 'ZD421', serial: 'Z1' } };
+    station.zebra.connected = true;
+  });
+  const renderWeb = () => render(<MemoryRouter><StationPrinterTools /></MemoryRouter>);
+
+  it('the card and the tool rows', async () => {
+    renderWeb();
+    expect(screen.getByText('Label printer')).toBeTruthy();
+    expect(screen.getByText("Print a calibration label and dial in this kiosk's offsets.")).toBeTruthy();
+    await screen.findByText('Ready');
+    expect(screen.queryByText(/station/i)).toBeNull();
+    await waitFor(() => expect(api.fetchLabelVocab).toHaveBeenCalled());
+  });
+
+  it.each([
+    [true, false, 'Peeler detected, but this kiosk prints in tear-off mode. Run Check printer & fonts to switch.'],
+    [false, true, 'No peeler found, but this kiosk prints in peel-off mode. Run Check printer & fonts to switch.'],
+    [null, true, "Printer doesn't report a peeler, but this kiosk prints in peel-off mode. Run Check printer & fonts to switch."],
+  ])('the Peeler row (printer %s, peel %s)', async (present, peel, text) => {
+    station.settings = { ...station.settings!, peel };
+    station.peeler = present;
+    renderWeb();
+    expect(await screen.findByText(text)).toBeTruthy();
+  });
+
+  it('Check printer & fonts', async () => {
+    renderWeb();
+    await userEvent.click(screen.getByRole('button', { name: 'Check printer' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Check printer & fonts' });
+    expect(within(dialog).getByText("Run the printer checks on this kiosk's printer again and install any fonts "
+      + "the move's templates need.")).toBeTruthy();
+  });
+
+  it('Test Label Alignment', async () => {
+    renderWeb();
+    await screen.findByText('Ready');
+    await userEvent.click(screen.getByRole('button', { name: 'Print test label' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Test label alignment' });
+    expect(within(dialog).getByText(/These are this kiosk's offsets: the Printing Station uses them\./)).toBeTruthy();
+    expect(within(dialog).queryByText(/station's/)).toBeNull();
+  });
+
+  it('no printer saved points at Printer Setup, not Kiosk Setup', () => {
+    station.state = 'no_settings';
+    renderWeb();
+    expect(screen.getByText(/No label printer is saved for this kiosk/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Printer Setup' }).getAttribute('href')).toBe('/labels/printers');
+    expect(screen.queryByRole('link', { name: 'Kiosk Setup' })).toBeNull();
+  });
 });

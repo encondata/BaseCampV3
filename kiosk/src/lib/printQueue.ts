@@ -3,11 +3,12 @@
  * being sent wait their turn, and every job runs strictly one at a time in
  * arrival order.
  *
- * One job: the asset's stored label from the edge → the label with the
- * saved offsets and the saved peel or tear mode, sent straight to the
- * printer → a Labeled scan recorded with the exact value scanned, once per
- * scan on its first label that goes out (its first attempt or a Retry; a
- * Reprint never records).
+ * One job: the asset's stored label (from the laptop's edge, or the web
+ * kiosk's own build — `labelBackend.ts` supplies `getLabel` and
+ * `recordPrinted`) → the label with the saved offsets and the saved peel
+ * or tear mode, sent straight to the printer → a Labeled scan recorded
+ * with the exact value scanned, once per scan on its first label that goes
+ * out (its first attempt or a Retry; a Reprint never records).
  *
  * No status checks before or after a label (Jimmy): in peel mode the
  * printer itself holds the next label until this one is taken.
@@ -16,6 +17,10 @@
  * small warning, and nothing is printed again. Retry resends the very
  * same ZPL the failed attempt built (or fetches the label when it never
  * got that far).
+ *
+ * Copy that names the device says "laptop" by default and "kiosk" with
+ * `deviceWord: 'kiosk'` (the web kiosk), so the laptop's strings stay
+ * exactly what they were.
  */
 
 import { applyPrintSettings, DEFAULT_PRINT_SETTINGS } from '@portal/lib/printLabels';
@@ -50,7 +55,12 @@ export interface QueueEntry {
 /** Newest first. */
 export interface QueueState { entries: QueueEntry[] }
 
-export interface PrintedJob { assetId: string; scannedValue: string; scannedAt: string }
+/** A printed label's scan to record. `asset` is the whole roster asset:
+ *  the web kiosk's outbox row carries it (its list keeps showing the asset
+ *  after a re-sync); the laptop's edge needs only `assetId`. */
+export interface PrintedJob { asset: PrintAsset; assetId: string; scannedValue: string; scannedAt: string }
+
+export type DeviceWord = 'laptop' | 'kiosk';
 
 export interface PrintQueueDeps {
   printer: () => StationPrinter | null;
@@ -61,6 +71,8 @@ export interface PrintQueueDeps {
   onChange: (s: QueueState) => void;
   /** An entry just finished, printed or failed (the page's flash and sound). */
   onSettled?: (entry: QueueEntry) => void;
+  /** What the messages call this device (default 'laptop'). */
+  deviceWord?: DeviceWord;
 }
 
 export interface PrintQueue {
@@ -73,29 +85,52 @@ export const NOT_ON_MOVE_TEXT = "This asset isn't on this move.";
 export const PRINTER_SILENT_TEXT = "The printer didn't answer. Check that it's on and connected.";
 export const REGENERATING_TEXT = 'Labels are being regenerated. Scan again when it finishes.';
 export const NO_SETTINGS_TEXT = "This station's printer settings couldn't be read. Open Kiosk Setup.";
-/** The template is a newer design than this laptop's edge prints. */
-export const NEEDS_UPDATE_TEXT = 'This laptop needs an update to print this template.';
+/** The web kiosk saves its printer in Printer Setup (Label Printing), not
+ *  in Kiosk Setup as the laptop's step 5 does. */
+export const WEB_NO_SETTINGS_TEXT = "This kiosk's printer settings couldn't be read. Open Printer Setup.";
+/** The web kiosk refuses a label while a sync is replacing the move's
+ *  data (`labels_syncing`); its build runs as soon as the sync ends. */
+export const SYNCING_TEXT = 'This kiosk is syncing. Labels will be ready shortly.';
 
-/** What an entry says for each error the edge stores on a label. */
+/** The web kiosk refuses a label while the set-up move's label data isn't
+ *  stored (`labels_not_downloaded`): a kiosk upgraded before its next
+ *  sync, or a move change whose templates download failed. The edge never
+ *  sends it. */
+export function notDownloadedText(word: DeviceWord): string {
+  return `This ${word} doesn't have this move's label data yet. Sync again from Kiosk Setup.`;
+}
+
+/** The template is a newer design than this device's generator prints. */
+export function needsUpdateText(word: DeviceWord): string {
+  return `This ${word} needs an update to print this template.`;
+}
+
+/** The laptop's wording, which the laptop's Printing Station matches on. */
+export const NEEDS_UPDATE_TEXT = needsUpdateText('laptop');
+
+/** What an entry says for each error stored on a label (the edge's and the
+ *  web build's outcomes are the same three). */
 const LABEL_REASONS: Record<string, string> = {
   no_template_at_dpi: "No label for this asset: this move has no active label template at this printer's DPI. "
     + 'Someone with label access needs to activate one on Labels › Templates.',
   template_failed: "No label for this asset: the label template couldn't be built",
-  template_unsupported: NEEDS_UPDATE_TEXT,
 };
 
-export function noLabelText(reason: string | null): string {
+export function noLabelText(reason: string | null, word: DeviceWord = 'laptop'): string {
+  if (reason === 'template_unsupported') return needsUpdateText(word);
   if (reason && Object.hasOwn(LABEL_REASONS, reason)) return LABEL_REASONS[reason];
   return `No label for this asset: ${reason || 'none was generated for it'}`;
 }
 
-function labelErrorText(err: unknown): string {
+function labelErrorText(err: unknown, word: DeviceWord): string {
   if (err instanceof ApiError) {
     if (err.code === 'labels_regenerating') return REGENERATING_TEXT;
-    if (err.code === 'label_not_found') return noLabelText(null);
+    if (err.code === 'labels_syncing') return SYNCING_TEXT;
+    if (err.code === 'labels_not_downloaded') return notDownloadedText(word);
+    if (err.code === 'label_not_found') return noLabelText(null, word);
     return `Couldn't read this asset's label: ${err.code}`;
   }
-  return "Couldn't read this asset's label: the laptop didn't answer.";
+  return `Couldn't read this asset's label: the ${word} didn't answer.`;
 }
 
 const RECORD_REASONS: Record<string, string> = {
@@ -104,8 +139,8 @@ const RECORD_REASONS: Record<string, string> = {
   not_label_station: "this laptop isn't set up as a Label Station",
 };
 
-function recordWarningText(err: unknown): string {
-  const why = err instanceof ApiError ? (RECORD_REASONS[err.code] ?? err.code) : "the laptop didn't answer";
+function recordWarningText(err: unknown, word: DeviceWord): string {
+  const why = err instanceof ApiError ? (RECORD_REASONS[err.code] ?? err.code) : `the ${word} didn't answer`;
   return `Printed, but the scan wasn't recorded: ${why}`;
 }
 
@@ -114,6 +149,7 @@ function recordWarningText(err: unknown): string {
 interface Work { entry: QueueEntry; sent: string | null; recorded: boolean }
 
 export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
+  const word = deps.deviceWord ?? 'laptop';
   const entries: QueueEntry[] = [];        // newest first
   const work = new Map<string, Work>();
   const pending: string[] = [];             // entry ids, arrival order
@@ -148,7 +184,7 @@ export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
     update(entry, { state: 'printing', message: null });
     const settings = deps.settings();
     if (!settings) {
-      update(entry, { state: 'failed', message: NO_SETTINGS_TEXT });
+      update(entry, { state: 'failed', message: word === 'kiosk' ? WEB_NO_SETTINGS_TEXT : NO_SETTINGS_TEXT });
       return;
     }
     if (w.sent === null) {
@@ -156,11 +192,11 @@ export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
       try {
         label = await deps.getLabel(entry.asset.id);
       } catch (err) {
-        update(entry, { state: 'failed', message: labelErrorText(err) });
+        update(entry, { state: 'failed', message: labelErrorText(err, word) });
         return;
       }
       if (!label.zpl) {
-        update(entry, { state: 'failed', message: noLabelText(label.error) });
+        update(entry, { state: 'failed', message: noLabelText(label.error, word) });
         return;
       }
       w.sent = withPrintMode(applyPrintSettings(label.zpl, {
@@ -186,11 +222,12 @@ export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
       w.recorded = true;
       try {
         const id = await deps.recordPrinted({
-          assetId: entry.asset.id, scannedValue: entry.scannedValue, scannedAt: entry.scannedAt,
+          asset: entry.asset, assetId: entry.asset.id, scannedValue: entry.scannedValue,
+          scannedAt: entry.scannedAt,
         });
         entry.clientScanId = typeof id === 'string' ? id : null;
       } catch (err) {
-        entry.recordWarning = recordWarningText(err);
+        entry.recordWarning = recordWarningText(err, word);
       }
     }
     update(entry, { state: 'printed' });

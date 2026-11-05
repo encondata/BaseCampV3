@@ -1,7 +1,8 @@
 /**
  * The Label Station's saved printer, ready to print: reads the station's
- * settings from the edge (`GET /edge/label-station`) and turns them into a
- * `StationPrinter`.
+ * settings (`labelBackend().getSettings()`: the edge's `GET
+ * /edge/label-station` on a laptop, this kiosk's own saved settings on the
+ * web) and turns them into a `StationPrinter`.
  *
  * - Network: straight from the saved IP, through the edge.
  * - USB: connects to the printer this browser already allowed whose
@@ -11,14 +12,20 @@
  *   different printer. Anything else needs the person to pick one
  *   (`connectUsb`, the browser's picker): `needs_usb`.
  * - No settings saved (or none readable): `no_settings`.
+ *
+ * On the web the settings live in this page's own store, so a save from
+ * anywhere (the printer step, the offsets) reloads them here at once; the
+ * laptop's are re-read on `reload()`.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { getLabelStation, type LabelStationSettings } from './api';
+import type { LabelStationSettings } from './api';
 import { useKioskSetup } from './kioskSetup';
+import { labelBackend } from './labelBackend';
 import { networkStationPrinter, usbStationPrinter, type StationPrinter } from './stationPrinter';
 import { useZebraPrinter, type ZebraPrinter } from './useZebraPrinter';
+import { subscribeWebLabelSettings } from './webLabelSettings';
 
 export type StationPrinterState = 'loading' | 'ready' | 'needs_usb' | 'no_settings';
 
@@ -51,7 +58,7 @@ export function useStationPrinter(): UseStationPrinter {
     const live = () => mounted.current && id === loadId.current;
     let next: LabelStationSettings | null = null;
     try {
-      next = await getLabelStation();
+      next = await labelBackend().getSettings();
     } catch {
       next = null;
     }
@@ -82,6 +89,11 @@ export function useStationPrinter(): UseStationPrinter {
       mounted.current = false;
       loadId.current += 1;
     };
+  }, [load]);
+
+  useEffect(() => {
+    if (labelBackend().kind !== 'web') return undefined;
+    return subscribeWebLabelSettings(() => { void load(); });
   }, [load]);
 
   const printer = useMemo<StationPrinter | null>(() => {
