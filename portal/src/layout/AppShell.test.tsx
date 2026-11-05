@@ -65,9 +65,10 @@ vi.mock('../lib/api', () => ({
   onSystemStatusRefresh: vi.fn(() => () => {}),
 }));
 
+const sys = vi.hoisted(() => ({ apps: undefined as undefined | { wiki: boolean; kiosk: boolean; learn: boolean } }));
 vi.mock('../lib/systemStatusContext', () => ({
   useSystemStatus: () => ({
-    status: { read_only: true, read_only_message: 'Cutover', workers_paused: false, banner: 'Hello' },
+    status: { read_only: true, read_only_message: 'Cutover', workers_paused: false, banner: 'Hello', apps: sys.apps },
     refresh: vi.fn(),
   }),
 }));
@@ -92,6 +93,7 @@ beforeEach(() => {
   auth.godMode = false;
   auth.navMode = 'expanded';
   auth.updatePreferences = vi.fn(async () => true);
+  sys.apps = undefined;
 });
 
 afterEach(() => {
@@ -293,4 +295,13 @@ it('the Apps section links to the kiosk and wiki in a new tab; Kiosk needs kiosk
   expect(wiki.getAttribute('href')).toMatch(/^http:\/\/localhost:5176$/);
   expect(nav.queryByText('Kiosk')).toBeNull();
   auth.can = () => true;
+});
+
+it('the Apps section leaves out an app the environment turned off', () => {
+  auth.navMode = 'expanded';
+  sys.apps = { wiki: false, kiosk: true, learn: true };
+  renderShell();
+  const nav = within(document.querySelector('.portal-nav.docked')!);
+  expect(nav.queryByText('Wiki')).toBeNull();
+  expect(nav.getByText('Kiosk')).toBeTruthy();
 });

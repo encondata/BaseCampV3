@@ -17,6 +17,8 @@ import SystemBanners from '../components/SystemBanners';
 import ToastHost from '../components/ToastHost';
 import Topbar from '../components/Topbar';
 import { isNavItemVisible } from '../lib/godmode';
+import { appOn } from '../lib/systemStatus';
+import { useSystemStatus } from '../lib/systemStatusContext';
 import { applyPreferences, nextNavMode, type NavMode } from '../lib/settings';
 import { TopbarProvider, useTopbar } from '../lib/topbar';
 import NavPanel from './NavPanel';
@@ -78,8 +80,10 @@ function AppShellInner({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
   const isGlobal = scope?.global ?? true;
+  const { status } = useSystemStatus();
   const visibleSections = NAV_SECTIONS
-    .map((s) => ({ ...s, items: s.items.filter((i) => isNavItemVisible(i, can, godMode, maxRank, isGlobal)) }))
+    .map((s) => ({ ...s, items: s.items.filter((i) => isNavItemVisible(i, can, godMode, maxRank, isGlobal,
+                                                                         (app) => appOn(status, app))) }))
     .filter((s) => s.items.length > 0);
 
   const [mobile, setMobile] = useState(matchesMobile);

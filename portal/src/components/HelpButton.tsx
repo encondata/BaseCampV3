@@ -1,5 +1,5 @@
 /**
- * The top bar's ? button (wiki:view only): asks the wiki for this screen's
+ * The top bar's ? button (wiki:view, and only while the environment runs the wiki): asks the wiki for this screen's
  * guide (`portal:<pathname>`, see lib/wikiHelp.ts) and opens it in a new
  * tab. With none yet, a small popover says so — and offers wiki admins
  * (wiki:delete) "Link a guide", which opens the wiki's Help links page with
@@ -17,6 +17,8 @@ import { useLocation } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import { apiFetch } from '../lib/api';
+import { appOn } from '../lib/systemStatus';
+import { useSystemStatus } from '../lib/systemStatusContext';
 import { helpContext, helpLinkAdminUrl, lookupHelp, openInNewTab } from '../lib/wikiHelp';
 
 type Guide = { url: string; title: string };
@@ -92,7 +94,9 @@ export default function HelpButton({ onOpen }: {
   const [popState, setPopState] = useState<{ context: string; pop: Pop } | null>(null);
   const [busy, setBusy] = useState(false);
   const [, refresh] = useReducer((n: number) => n + 1, 0);
-  const canView = can('wiki', 'view');
+  const { status } = useSystemStatus();
+  // no guide to show while the environment runs without the wiki (SS_APPS)
+  const canView = can('wiki', 'view') && appOn(status, 'wiki');
   const personId = person?.id ?? null;
   const context = helpContext('portal', pathname);
   const pop = popState?.context === context ? popState.pop : null;

@@ -13,6 +13,8 @@ export interface GodGatedItem {
   godOnly?: boolean;
   minRank?: number;
   globalOnly?: boolean;
+  /** A link to an optional app: hidden while the environment runs it off. */
+  app?: 'wiki' | 'kiosk';
 }
 
 export function isNavItemVisible(
@@ -21,7 +23,9 @@ export function isNavItemVisible(
   godMode: boolean,
   maxRank: number,
   isGlobal: boolean,
+  appOn: (app: 'wiki' | 'kiosk') => boolean = () => true,
 ): boolean {
+  if (item.app && !appOn(item.app)) return false;
   if (item.globalOnly && !isGlobal) return false;
   if (item.minRank !== undefined && maxRank < item.minRank) return false;
   if (item.learningManager) {
