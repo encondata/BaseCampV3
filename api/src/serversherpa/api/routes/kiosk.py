@@ -37,7 +37,8 @@ from serversherpa.api.schemas import (
     KioskLabelContextOut, KioskClientAssetOut, KioskClientAssetsSyncOut, KioskClockInIn,
     KioskClockOutIn, KioskContainerAssetIn, KioskContainerAssetOut,
     KioskContainerAssetRow, KioskContainerOut, KioskContainerRef,
-    KioskContainersSyncOut, KioskContainerStateOut, KioskEdgeMovePassword,
+    KioskContainersSyncOut, KioskContainerStateOut, KioskDockPassAssetOut,
+    KioskDockPassIn, KioskDockPassOut, KioskEdgeMovePassword,
     KioskEdgeMovePasswordsOut, KioskLabelFontOut, KioskLabelFontsOut,
     KioskLabelTemplateOut, KioskLabelTemplatesSyncOut, KioskLearningBlock,
     KioskLearningLinkIn, KioskLearningLinkOut, KioskLearningOverrideIn, KioskLearningOverrideOut,
@@ -60,7 +61,8 @@ from serversherpa.api.schemas import (
 )
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
-    Asset, AssetModel, AuditLog, AuthSession, Client, Container, ContainerAsset, Device, Initiative,
+    Asset, AssetModel, AuditLog, AuthSession, Client, Container, ContainerAsset, Device,
+    DockPass, Initiative,
     InitiativeAsset, KioskPairRequest, KioskSound, LabelFont,
     LabelTemplate, LabelVocab, Person,
     RawScan, Site, StatusValue, TimeEntry, Truck, TruckContainer, UserAccount,
@@ -1888,6 +1890,52 @@ def _container_asset_row(asset: Asset) -> KioskContainerAssetRow:
         serial_number=asset.serial_number, rfid=asset.rfid_tag)
 
 
+async def _current_membership(
+    db: AsyncSession, asset_id: uuid.UUID,
+) -> tuple[ContainerAsset | None, Container | None]:
+    """Where the asset is now, as (membership, the container holding it): at
+    most one row, by the unique constraint on `container_assets.asset_id`."""
+    current = (await db.execute(
+        select(ContainerAsset, Container)
+        .join(Container, Container.id == ContainerAsset.container_id)
+        .where(ContainerAsset.asset_id == asset_id))).first()
+    return current if current else (None, None)
+
+
+async def _pack_asset(
+    db: AsyncSession, container: Container, asset: Asset,
+    membership: ContainerAsset | None, holder: Container | None, *,
+    actor_id: uuid.UUID | None, device: Device, now: datetime,
+    added_at: datetime | None = None, audit_extra: dict | None = None,
+) -> KioskContainerRef | None:
+    """Put `asset` into `container`, which must not already hold it; shared by
+    the Containers screen's pack and the Dock Station's pass. An asset held
+    elsewhere is MOVED: its old membership goes and the container it came
+    from is returned (None when it was in none). `added_at` stamps the new
+    membership when given (else the server default); one
+    `kiosk_container_pack` audit row records it, with `audit_extra` merged
+    into its changes. Does not commit."""
+    moved_from: KioskContainerRef | None = None
+    if membership is not None:
+        moved_from = KioskContainerRef(id=holder.id, name=holder.name)
+        # Delete before insert, and flush, so the unique index on
+        # asset_id never sees both rows at once.
+        await db.delete(membership)
+        await db.flush()
+        holder.updated_at = now
+    row = ContainerAsset(container_id=container.id, asset_id=asset.id, added_by=actor_id)
+    if added_at is not None:
+        row.added_at = added_at
+    db.add(row)
+    container.updated_at = now
+    audit(db, actor_id=actor_id, entity_type="container",
+          entity_id=str(container.id), action="kiosk_container_pack",
+          changes={"asset_id": str(asset.id), "asset_name": asset.name,
+                   "from_container": moved_from.name if moved_from else None,
+                   "device": device.name, **(audit_extra or {})})
+    return moved_from
+
+
 @router.post("/containers/{container_id}/assets",
              response_model=KioskContainerAssetOut)
 async def pack_container_asset(
@@ -1947,12 +1995,7 @@ async def pack_container_asset(
             and await db.get(Initiative, body.initiative_id) is None):
         raise _err(422, "bad_initiative")
 
-    # Where the asset is now: at most one row, by the unique constraint.
-    current = (await db.execute(
-        select(ContainerAsset, Container)
-        .join(Container, Container.id == ContainerAsset.container_id)
-        .where(ContainerAsset.asset_id == asset.id))).first()
-    membership, holder = current if current else (None, None)
+    membership, holder = await _current_membership(db, asset.id)
 
     now = datetime.now(UTC)
     moved_from: KioskContainerRef | None = None
@@ -1962,21 +2005,9 @@ async def pack_container_asset(
         if membership is not None and holder.id == container.id:
             already_there = True
         else:
-            if membership is not None:
-                moved_from = KioskContainerRef(id=holder.id, name=holder.name)
-                # Delete before insert, and flush, so the unique index on
-                # asset_id never sees both rows at once.
-                await db.delete(membership)
-                await db.flush()
-                holder.updated_at = now
-            db.add(ContainerAsset(container_id=container.id, asset_id=asset.id,
-                                  added_by=actor.person.id))
-            container.updated_at = now
-            audit(db, actor_id=actor.person.id, entity_type="container",
-                  entity_id=str(container.id), action="kiosk_container_pack",
-                  changes={"asset_id": str(asset.id), "asset_name": asset.name,
-                           "from_container": moved_from.name if moved_from else None,
-                           "device": device.name})
+            moved_from = await _pack_asset(
+                db, container, asset, membership, holder,
+                actor_id=actor.person.id, device=device, now=now)
     else:
         if membership is None or holder.id != container.id:
             extra = ({"container_id": str(holder.id), "container_name": holder.name}
@@ -2020,6 +2051,122 @@ async def pack_container_asset(
         action=body.action, moved_from=moved_from, already_there=already_there)
     await db.commit()
     return result
+
+
+# ── Dock Station passes (station key) ────────────────────────────────
+
+
+def _dock_pass_replay(stored: DockPass, device: Device) -> KioskDockPassOut:
+    """A pass id already done: this device's stored answer, marked replayed;
+    another device's pass is 409 `pass_conflict`."""
+    if stored.device_id != device.id:
+        raise _err(409, "pass_conflict")
+    return KioskDockPassOut(**stored.reply, replayed=True,
+                            clear_setup=device.setup_clear_id)
+
+
+@router.post("/station/dock/passes", response_model=KioskDockPassOut)
+async def station_dock_pass(
+    body: KioskDockPassIn, request: Request, db: DbSession,
+) -> KioskDockPassOut:
+    """Pack one closed Dock Station pass into its one crate under the
+    laptop's station key (`Authorization: Station <key>`), no person session
+    needed: membership for every asset in it, in ONE transaction. Only a
+    Dock key may call it (403 `wrong_station_type`); read-only mode refuses
+    it (423).
+
+    Idempotent on the laptop's `pass_id`: the answer is stored on a
+    `dock_passes` row, so a retried send gets it back with `replayed` set
+    and changes nothing (another device's pass id is 409 `pass_conflict`).
+
+    The crate must be live (404 `container_not_found`), on the key's move
+    (403 `move_locked`), and that move still active (409 `move_inactive`).
+    Then per asset, each id once in the order sent: unknown or archived is
+    refused `asset_not_found`; off the move's roster is refused
+    `not_on_move`; already in this crate is `already_there`; put in another
+    crate after the pass closed is refused `changed_since_pass`, so a pass
+    held offline never undoes later packing. Anything else is
+    packed by the Containers screen's own rule (`moved` out of another
+    crate, else `packed`), stamped with the pass time and audited with the
+    kiosk's name and no person.
+
+    The pass time is `closed_at` (naive is UTC) but never later than now.
+    Packing only adds, and no `raw_scans` are written: the laptop uploads
+    its reads as scans on its own. The reply carries the pending Clear Setup
+    id, like the heartbeat."""
+    device = await station_device(request, db, body.serial, types=(station_keys.DOCK,))
+    await enforce_read_only_config(db, request)
+    stored = await db.get(DockPass, body.pass_id)
+    if stored is not None:
+        return _dock_pass_replay(stored, device)
+    container = await db.get(Container, body.container_id)
+    if container is None or container.archived_at is not None:
+        raise _err(404, "container_not_found")
+    move = device.station_key_initiative_id
+    if move is None or container.initiative_id != move:
+        raise _err(403, "move_locked")
+    initiative = await db.get(Initiative, move)
+    if (initiative is None or initiative.status in HISTORICAL_INITIATIVE_STATUSES
+            or initiative.archived_at is not None):
+        raise _err(409, "move_inactive")
+
+    now = datetime.now(UTC)
+    closed_at = (body.closed_at if body.closed_at.tzinfo is not None
+                 else body.closed_at.replace(tzinfo=UTC))
+    pass_at = min(closed_at, now)
+    # DO NOTHING on the pass id: a twin of this send racing it waits here for
+    # the first to commit, inserts nothing, and replays the stored answer.
+    claimed = await db.scalar(pg_insert(DockPass).values(
+        id=body.pass_id, device_id=device.id, container_id=container.id,
+        closed_at=closed_at, reply={},
+    ).on_conflict_do_nothing(index_elements=["id"]).returning(DockPass.id))
+    if claimed is None:
+        stored = await db.scalar(select(DockPass).where(DockPass.id == body.pass_id)
+                                 .execution_options(populate_existing=True))
+        return _dock_pass_replay(stored, device)
+
+    asset_ids = list(dict.fromkeys(body.asset_ids))   # each once, in the order sent
+    assets = {a.id: a for a in await db.scalars(
+        select(Asset).where(Asset.id.in_(asset_ids)))}
+    roster = set(await db.scalars(select(InitiativeAsset.asset_id).where(
+        InitiativeAsset.initiative_id == move,
+        InitiativeAsset.asset_id.in_(asset_ids))))
+    results: list[KioskDockPassAssetOut] = []
+    for asset_id in asset_ids:
+        asset = assets.get(asset_id)
+        if asset is None or asset.archived_at is not None:
+            results.append(KioskDockPassAssetOut(
+                asset_id=asset_id, result="refused", reason="asset_not_found"))
+            continue
+        if asset_id not in roster:
+            results.append(KioskDockPassAssetOut(
+                asset_id=asset_id, result="refused", reason="not_on_move"))
+            continue
+        membership, holder = await _current_membership(db, asset_id)
+        if membership is not None and holder.id == container.id:
+            results.append(KioskDockPassAssetOut(asset_id=asset_id, result="already_there"))
+        elif membership is not None and membership.added_at > pass_at:
+            results.append(KioskDockPassAssetOut(
+                asset_id=asset_id, result="refused", reason="changed_since_pass"))
+        else:
+            moved_from = await _pack_asset(
+                db, container, asset, membership, holder, actor_id=None,
+                device=device, now=now, added_at=pass_at,
+                audit_extra={"via": "dock_pass", "pass_id": str(body.pass_id)})
+            results.append(KioskDockPassAssetOut(
+                asset_id=asset_id, result="moved" if moved_from else "packed",
+                moved_from=moved_from))
+
+    out = KioskDockPassOut(
+        pass_id=body.pass_id,
+        container=KioskContainerRef(id=container.id, name=container.name),
+        assets=results, clear_setup=device.setup_clear_id)
+    await db.execute(update(DockPass).where(DockPass.id == body.pass_id).values(
+        reply=out.model_dump(mode="json", include={"pass_id", "container", "assets"})))
+    # last_seen_at only: the kiosk's own configuration did not change.
+    device.last_seen_at = now
+    await db.commit()
+    return out
 
 
 # ── trucks: load / unload (kiosk:view) ───────────────────────────────
