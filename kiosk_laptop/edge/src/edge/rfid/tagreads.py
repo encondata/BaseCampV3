@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from .. import laptop_setup
 from ..db import Store, iso, now_iso
+from ..dock import state as dock_state
 
 _HEX = re.compile(r"[0-9A-F]{1,128}")
 _WHITESPACE = re.compile(r"\s+")
@@ -96,10 +97,10 @@ def parse_events(body) -> tuple[list[dict], int]:
 _INSERT = """
     INSERT INTO raw_tag_reads (received_at, read_at, reader_serial, epc, antenna, peak_rssi,
         reads, channel, phase, event_num, event_type, initiative_id, site_id, scan_status,
-        raw_json)
+        raw_json, dry_run)
     VALUES (:received_at, :read_at, :reader_serial, :epc, :antenna, :peak_rssi,
         :reads, :channel, :phase, :event_num, :event_type, :initiative_id, :site_id,
-        :scan_status, :raw_json)"""
+        :scan_status, :raw_json, :dry_run)"""
 
 _UPSERT = """
     INSERT INTO rfid_tags_seen (epc, first_seen, last_seen, total_reads, last_antenna,
@@ -116,12 +117,16 @@ _UPSERT = """
 
 def store_batch(store: Store, *, reader_serial: str, rows: list[dict],
                 setup: dict | None, received_at: str | None = None) -> int:
-    """Insert every row and upsert the per-tag summary in one transaction."""
+    """Insert every row and upsert the per-tag summary in one transaction.
+    On a Dock Station in dry run every row is stamped `dry_run = 1` (else
+    NULL): whether a read counts as dry run is decided here, when it is read."""
     received_at = received_at or now_iso()
     setup = setup or {}
     context = {"initiative_id": setup.get("initiative_id"), "site_id": setup.get("site_id"),
                "scan_status": setup.get("scan_status")}
     with store.tx() as c:
+        dry = setup.get("station_type") == "dock" and dock_state.settings_in(c)["dry_run"]
+        context["dry_run"] = 1 if dry else None
         for row in rows:
             params = {**row, **context, "reader_serial": reader_serial,
                       "received_at": received_at}

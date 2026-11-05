@@ -13,6 +13,11 @@ off-move sighting). Each raw read becomes at most one pending scan
   WITHOUT advancing the cursor; the next tick tries again.
 - A current-move read that matches nothing goes into `rfid_unmatched`, which
   `recheck_unmatched` re-matches after every successful sync for 24 h.
+- A read a Dock Station took in dry run (`raw_tag_reads.dry_run = 1`, stamped
+  when it was read) still matches and still alarms, but its scan is stored
+  as `upload_state = 'dry_run'`, which the uploader never sends, and a miss
+  is never re-checked: dry-run reads never reach the portal, not even after
+  dry run is turned off.
 - On a reader station (RFID or Dock), a fresh off-move match (received at most
   `alarm.FRESH_S` before the pass) raises the "Asset Not Part Of Move" alarm
   in the pass's own transaction. Late matches (a backlog, the re-check) never
@@ -151,15 +156,17 @@ def _fresh(received_at: str, now: datetime) -> bool:
 _INSERT = """
     INSERT OR IGNORE INTO pending_rfid_scans (raw_read_id, client_scan_id, epc, matched_kind,
         matched_id, off_move, off_move_initiative_id, off_move_initiative_name, scanned_at,
-        initiative_id, site_id, scan_status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+        initiative_id, site_id, scan_status, upload_state, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 
 
 def _insert(c, raw, match: Match, created_at: str) -> int:
+    upload_state = "dry_run" if raw["dry_run"] else "pending"
     return c.execute(_INSERT, (
         raw["id"], str(uuid.uuid4()), raw["epc"], match.kind, match.matched_id, match.off_move,
         match.off_move_initiative_id, match.off_move_initiative_name, raw["received_at"],
-        raw["initiative_id"], raw["site_id"], raw["scan_status"], created_at)).rowcount
+        raw["initiative_id"], raw["site_id"], raw["scan_status"], upload_state,
+        created_at)).rowcount
 
 
 def _cursor(store: Store) -> int:
@@ -171,8 +178,9 @@ def process(store: Store, now: datetime | None = None) -> PassResult:
     """One pass of at most PASS_LIMIT raw reads after the cursor."""
     now = now or datetime.now(UTC)
     last = _cursor(store)
-    rows = store.all("SELECT id, epc, received_at, initiative_id, site_id, scan_status "
-                     "FROM raw_tag_reads WHERE id > ? ORDER BY id LIMIT ?", (last, PASS_LIMIT))
+    rows = store.all("SELECT id, epc, received_at, initiative_id, site_id, scan_status, "
+                     "dry_run FROM raw_tag_reads WHERE id > ? ORDER BY id LIMIT ?",
+                     (last, PASS_LIMIT))
     if not rows:
         return PassResult(0, 0, False)
     setup = laptop_setup.load(store) or {}
@@ -194,7 +202,8 @@ def process(store: Store, now: datetime | None = None) -> PassResult:
                     break  # set up but not synced: stop here, never skip it
             match = _match(indexes, raw["epc"])
             if match is None:
-                misses.append((raw["id"], raw["received_at"]))
+                if not raw["dry_run"]:   # a dry-run miss is never re-checked
+                    misses.append((raw["id"], raw["received_at"]))
             else:
                 matches.append((raw, match))
         advanced = raw["id"]
@@ -260,7 +269,7 @@ def recheck_unmatched(store: Store, *, now: datetime | None = None) -> int:
     created_at = now_iso()
     for epc, match in found.items():
         reads = store.all("SELECT r.id, r.epc, r.received_at, r.initiative_id, r.site_id, "
-                          "r.scan_status FROM rfid_unmatched u "
+                          "r.scan_status, r.dry_run FROM rfid_unmatched u "
                           "JOIN raw_tag_reads r ON r.id = u.raw_read_id WHERE r.epc = ? "
                           "ORDER BY r.id", (epc,))
         for start in range(0, len(reads), PASS_LIMIT):

@@ -219,6 +219,39 @@ SCHEMA_STEPS: list[str] = [
     """
     CREATE TABLE timeclock_displays (token_hash TEXT PRIMARY KEY, created_at TEXT NOT NULL)
     """,
+    # the Dock Station (edge/dock): dry run stamped on each raw read when it is
+    # read (1, else NULL), the laptop's dock settings (one row), its passes with
+    # their tags and the raw reads behind them, and the pass grouper's cursor.
+    # Like the processor's, the cursor starts after any reads already stored.
+    """
+    ALTER TABLE raw_tag_reads ADD COLUMN dry_run INTEGER;
+    CREATE TABLE dock_settings (id INTEGER PRIMARY KEY CHECK (id = 1),
+        dry_run INTEGER NOT NULL, quiet_gap_s INTEGER NOT NULL);
+    CREATE TABLE dock_passes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pass_id TEXT NOT NULL UNIQUE,
+        initiative_id TEXT NOT NULL,
+        opened_at TEXT NOT NULL, last_new_at TEXT NOT NULL,
+        last_new_received_at TEXT NOT NULL, last_received_at TEXT NOT NULL,
+        closed_at TEXT, quiet_gap_s INTEGER,
+        dry_run INTEGER NOT NULL DEFAULT 0,
+        outcome TEXT, container_id TEXT, container_name TEXT,
+        asset_count INTEGER NOT NULL DEFAULT 0,
+        send_state TEXT NOT NULL DEFAULT 'none',
+        packed_count INTEGER NOT NULL DEFAULT 0, moved_count INTEGER NOT NULL DEFAULT 0,
+        refused_count INTEGER NOT NULL DEFAULT 0, refuse_code TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT,
+        waiting_for_internet INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+        sent_at TEXT, created_at TEXT NOT NULL);
+    CREATE INDEX dock_passes_send ON dock_passes (send_state, id);
+    CREATE TABLE dock_pass_tags (pass_id INTEGER NOT NULL, epc TEXT NOT NULL,
+        kind TEXT NOT NULL, matched_id TEXT, label TEXT, first_read_at TEXT NOT NULL,
+        result TEXT, moved_from TEXT, reason TEXT, PRIMARY KEY (pass_id, epc));
+    CREATE TABLE dock_pass_reads (pass_id INTEGER NOT NULL, raw_read_id INTEGER NOT NULL,
+        PRIMARY KEY (pass_id, raw_read_id));
+    CREATE TABLE dock_meta (id INTEGER PRIMARY KEY CHECK (id = 1), last_raw_id INTEGER NOT NULL);
+    INSERT INTO dock_meta (id, last_raw_id) SELECT 1, COALESCE(MAX(id), 0) FROM raw_tag_reads
+    """,
 ]
 
 

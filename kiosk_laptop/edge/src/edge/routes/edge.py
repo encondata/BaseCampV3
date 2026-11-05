@@ -20,7 +20,8 @@ AUTH_TABLES = ("cloud_sessions", "offline_logins", "edge_sessions", "login_failu
 MOVE_TABLES = ("cache", "outbox", "laptop_setup", "rfid_events",
               "raw_tag_reads", "rfid_tags_seen", "station_key", "pending_rfid_scans",
               "rfid_unmatched", "alarm_open", "alarm_last", "station_labels", "label_run",
-              "timeclock_displays")
+              "timeclock_displays", "dock_settings", "dock_passes", "dock_pass_tags",
+              "dock_pass_reads")
 
 
 def _status(request: Request, session: EdgeSession | None) -> dict:
@@ -111,19 +112,23 @@ async def retry(request: Request, _: EdgeSession = Depends(require_session)) -> 
 async def wipe(request: Request, _: EdgeSession = Depends(require_admin)) -> JSONResponse:
     st = request.app.state
     body = await _json_object(request, empty_ok=True)
-    # unsent data: queued kiosk writes and RFID scans not yet uploaded
+    # unsent data: queued kiosk writes, RFID scans not yet uploaded and Dock
+    # passes not yet sent
     pending = outbox.pending_count(st.store) + st.store.one(
-        "SELECT COUNT(*) AS n FROM pending_rfid_scans WHERE upload_state = 'pending'")["n"]
+        "SELECT (SELECT COUNT(*) FROM pending_rfid_scans WHERE upload_state = 'pending') "
+        "+ (SELECT COUNT(*) FROM dock_passes WHERE send_state = 'pending') AS n")["n"]
     if pending and body.get("confirm") != "WIPE":
         raise err(409, "outbox_not_empty", pending=pending)
     with st.store.tx() as c:
         had_label_station = laptop_setup.label_station_in(c) is not None
         for table in AUTH_TABLES + MOVE_TABLES:
             c.execute(f"DELETE FROM {table}")
-        # the processor starts after whatever raw reads remain (none: ids keep counting up)
-        c.execute("INSERT INTO rfid_processing_meta (id, last_raw_id) "
-                  "VALUES (1, (SELECT COALESCE(MAX(id), 0) FROM raw_tag_reads)) "
-                  "ON CONFLICT (id) DO UPDATE SET last_raw_id = excluded.last_raw_id")
+        # the processor and the Dock's pass grouper start after whatever raw
+        # reads remain (none: ids keep counting up)
+        for meta in ("rfid_processing_meta", "dock_meta"):
+            c.execute(f"INSERT INTO {meta} (id, last_raw_id) "
+                      "VALUES (1, (SELECT COALESCE(MAX(id), 0) FROM raw_tag_reads)) "
+                      "ON CONFLICT (id) DO UPDATE SET last_raw_id = excluded.last_raw_id")
         c.execute("UPDATE sync_meta SET initiative_id = NULL, actor_person_id = NULL, "
                   "synced_at = NULL, last_error = NULL WHERE id = 1")
         if had_label_station:  # the config's mirror drops it too
