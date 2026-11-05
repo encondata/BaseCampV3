@@ -72,7 +72,7 @@ def test_publish_and_teardown_plans():
 def test_plans():
     assert [s.number for s in steps.STEPS] == [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 7, 8, 9, 9, 10,
                                                11, 11, 12, 13, 13, 14, 14, 14, 15, 15, 16, 17,
-                                               18, 19]
+                                               18, 19, 20]
     assert [s.number for s in steps.plan_for("update")] == [1, 2, 3, 4, 5, 6, 10]
     build = ["preflight", "bootstrap", "fetch", "render", "build"]
     # a seeded first deploy backs up whatever database is already there
@@ -990,6 +990,43 @@ def test_first_admin_play_pipelines_so_the_password_never_lands_on_disk():
     connection's stdin instead of a temp file on the target."""
     plays = yaml.safe_load((PLAYBOOK_DIR / "first_admin.yml").read_text())
     assert [play.get("vars", {}).get("ansible_pipelining") for play in plays] == [True]
+
+
+def _seed_vars(env_dir: Path, learning: bool) -> dict:
+    return {**_common(env_dir), "seed_learning": learning}
+
+
+@pytest.mark.parametrize("learning", [False, True])
+def test_seed_playbook_runs_the_seed_commands_in_the_api_container(tmp_path, learning):
+    env_dir, env = _target(tmp_path)
+    result, calls = _play(tmp_path, "seed.yml", _seed_vars(env_dir, learning), env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    wanted = ["seed-label-fonts", "seed-label-templates", *(["learning-seed"] if learning else [])]
+    assert [c.split(" -f ")[-1] for c in calls if c.startswith("compose")] == [
+        f"{env_dir}/repo/deploy/stack/api/compose.yml exec -T api serversherpa {cmd}"
+        for cmd in wanted]
+
+
+def test_seed_playbook_stops_at_the_first_failure_with_its_output(tmp_path):
+    env_dir, env = _target(tmp_path)
+    result, calls = _play(tmp_path, "seed.yml", _seed_vars(env_dir, True),
+                          {**env, "FAKE_FAIL": "seed-label-templates"})
+    out = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "Seeding stopped (exit 1)" in out and "fake failure" in out
+    assert not any("learning-seed" in c for c in calls)
+
+
+def test_seed_playbook_explains_an_old_checkout(tmp_path):
+    env_dir, env = _target(tmp_path)
+    old = tmp_path / "old-ss-stack"
+    old.write_text("#!/bin/sh\nexit 2\n")
+    old.chmod(0o755)
+    result, calls = _play(tmp_path, "seed.yml",
+                          {**_seed_vars(env_dir, False), "ss_stack": str(old)}, env)
+    assert result.returncode != 0
+    assert "This commit's ss-stack has no seed command" in result.stdout
+    assert calls == []
 
 
 # ---- LAN Blue/Green (phase 8b): the data VM, its dump and the slot smoke test ----

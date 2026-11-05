@@ -16,6 +16,8 @@
 #   ss-stack revision <env-dir>             print the database's Alembic revision
 #   ss-stack admin   <env-dir> <args…>      serversherpa bootstrap-admin in the running api
 #                                           container; stdin (a password) passes through
+#   ss-stack seed    <env-dir> [--learning] starter content in the running api container: label
+#                                           fonts and templates (--learning: the Learning space too)
 #
 # <env-dir> holds the environment's .env (see env.example) and backups/.
 # With STACK_EXTERNAL_DATA=1 (DigitalOcean) the database is a managed
@@ -45,7 +47,7 @@ cleanup() { if (( ${#CLEANUP[@]} )); then rm -f -- "${CLEANUP[@]}"; fi; }
 trap cleanup EXIT
 
 die() { echo "ss-stack: $*" >&2; exit 1; }
-usage() { sed -n '6,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '6,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 [[ $# -ge 2 ]] || usage
 cmd=$1
@@ -486,6 +488,17 @@ case $cmd in
     # argv; the command's exit code is ss-stack's.
     [[ $# -ge 1 ]] || usage
     dc api exec -T api serversherpa bootstrap-admin "$@"
+    ;;
+  seed)
+    # Starter content (Sirdar's step 20): label fonts and templates and, with
+    # --learning, the wiki Learning space. Each command is idempotent; the
+    # first that fails stops here with its exit code.
+    learning=0
+    if [[ ${1:-} == --learning ]]; then learning=1; shift; fi
+    [[ $# -eq 0 ]] || usage
+    dc api exec -T api serversherpa seed-label-fonts
+    dc api exec -T api serversherpa seed-label-templates
+    if (( learning )); then dc api exec -T api serversherpa learning-seed; fi
     ;;
   *)
     usage

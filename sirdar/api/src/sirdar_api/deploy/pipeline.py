@@ -119,6 +119,9 @@ FIRST_ADMIN_UNREADABLE = ("Sirdar can't read the first admin's password with the
                           "SIRDAR_SECRETS_KEY. Set it again on the environment's Settings tab, "
                           "then retry.")
 KEPT_DUMP = "Keeping the pre-deploy backup from the first attempt"
+# Step 20's log ends with this on success: the one font no seed can fetch.
+SEED_FONT_NOTE = ("Zebra's TT0003M_.TTF isn't seeded: upload it by hand in the portal "
+                  "(Label builder › Fonts).\n")
 RUNNER_DIR_UNWRITABLE = ("Sirdar can't write its runner folder (SIRDAR_RUNNER_DIR). It must "
                          "be owned by uid 10001 with mode 700.")
 
@@ -261,7 +264,8 @@ def plan_of(dep: Deployment) -> list[StepDef]:
     return plan_for(dep.mode, restore=restores(dep.mode, dep.snapshot_id), publish=dep.publish,
                     vm=dep.vm, cloud=dep.cloud, go_live=dep.go_live,
                     snapshot=takes_snapshot(dep), smoke=smokes(dep.mode, dep.slot),
-                    first_admin=dep.first_admin, bluegreen=dep.bluegreen)
+                    first_admin=dep.first_admin, bluegreen=dep.bluegreen,
+                    seed=dep.seed_content)
 
 
 # ---- records -----------------------------------------------------------------
@@ -277,7 +281,8 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                             vm_snapshot: str | None = None, cloud: bool = False,
                             slot: str | None = None, go_live: bool = False,
                             first_admin: bool = False,
-                            bluegreen: bool = False) -> Deployment:
+                            bluegreen: bool = False,
+                            seed_content: bool = False) -> Deployment:
     """Add a running deployment and its step rows. The caller commits, then
     calls launch(). start_step None means the plan's first step (1, or 12
     for a publish job, 15 for a teardown). Raises DeployInProgress (only the
@@ -302,7 +307,9 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
     as on DigitalOcean; NotSupportedOnBlueGreen for the same four modes; it
     never takes a VM snapshot (take_vm_snapshot is dropped). An Update or
     Activate names its slot (DoEnvError slot_required), and any slot given is
-    orange or purple (slot_invalid)."""
+    orange or purple (slot_invalid).
+
+    seed_content: its plan ends with step 20 Seed starter content (an Update that starts empty)."""
     on_do = env.target_id == targets.DO_TARGET
     if on_do and mode in NOT_ON_DIGITALOCEAN:
         raise NotSupportedOnDigitalOcean(mode)
@@ -331,7 +338,8 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
     taking_on_delete = mode == "teardown" and (cloud or bluegreen) and snapshot_id is not None
     plan = plan_for(mode, restore=restores(mode, snapshot_id), publish=publish, vm=vm,
                     cloud=cloud, go_live=go_live, snapshot=taking_on_delete,
-                    smoke=smokes(mode, slot), first_admin=first_admin, bluegreen=bluegreen)
+                    smoke=smokes(mode, slot), first_admin=first_admin, bluegreen=bluegreen,
+                    seed=seed_content)
     if start_step is None:
         start_step = plan[0].number
     if start_step not in {step.number for step in plan}:
@@ -369,7 +377,7 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                      dump_path=dump_path, publish=publish, vm=vm,
                      take_vm_snapshot=take_vm_snapshot, vm_snapshot=vm_snapshot,
                      cloud=cloud, slot=slot, go_live=go_live, first_admin=first_admin,
-                     bluegreen=bluegreen)
+                     bluegreen=bluegreen, seed_content=seed_content)
     try:
         async with db.begin_nested():
             db.add(dep)
@@ -820,6 +828,8 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
     if dep.bluegreen:
         # The first deploy builds the shared database: nothing to dump yet.
         step_vars["dump"] = {"data_new": not await lan_slots.ran(db, env)}
+    # Step 20: the Learning space only where the learning site and the wiki run.
+    step_vars["seed"] = {"seed_learning": "learn" in env.apps and "wiki" in env.apps}
     try:
         text = envfile.render_env(envfile.EnvConfig(
             name=env.name, domain=env.base_domain, image_tag=envfile.image_tag(dep.sha),
@@ -1262,6 +1272,10 @@ async def _run(deployment_id: uuid.UUID) -> None:
                                         .format(email=row.email if row else "the first admin")))
                         # Cleared in the same commit as the step's success.
                         await first_admins.mark_done(db, env.id)
+                    elif step.key == "seed":
+                        await db.execute(
+                            update(DeploymentStep).where(DeploymentStep.id == step.id)
+                            .values(log=DeploymentStep.log + SEED_FONT_NOTE))
                     elif step.key == "restore":
                         await _keep_snapshot_keys(db, env.id, settings, ctx.snapshot_keys)
                     elif step.key == "export":

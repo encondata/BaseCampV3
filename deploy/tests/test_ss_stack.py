@@ -695,3 +695,30 @@ def test_the_smtp_password_never_reaches_argv(env_dir: Path, fake: dict[str, str
         assert "Mail-Secret-1" not in out.stdout + out.stderr
     assert calls(fake)
     assert not any("Mail-Secret-1" in c for c in calls(fake))
+
+
+@pytest.mark.parametrize("args, commands", [
+    ((), ["seed-label-fonts", "seed-label-templates"]),
+    (("--learning",), ["seed-label-fonts", "seed-label-templates", "learning-seed"]),
+])
+def test_seed_runs_the_starter_content_commands_in_the_api_container(
+        env_dir: Path, fake: dict[str, str], args: tuple[str, ...], commands: list[str]) -> None:
+    out = run(fake, "seed", str(env_dir), *args)
+    assert out.returncode == 0, out.stderr
+    assert calls(fake) == [dc(env_dir, "api", f"exec -T api serversherpa {c}") for c in commands]
+
+
+def test_seed_stops_at_the_first_failure_with_its_exit_code(env_dir: Path, fake: dict[str, str],
+                                                            tmp_path: Path) -> None:
+    docker = tmp_path / "bin" / "docker"
+    docker.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\n"
+                      "[[ \"$*\" == *seed-label-fonts* ]] && exit 4\nexit 0\n")
+    out = run(fake, "seed", str(env_dir), "--learning")
+    assert out.returncode == 4
+    assert calls(fake) == [dc(env_dir, "api", "exec -T api serversherpa seed-label-fonts")]
+
+
+def test_seed_takes_only_learning(env_dir: Path, fake: dict[str, str]) -> None:
+    out = run(fake, "seed", str(env_dir), "--everything")
+    assert out.returncode == 2
+    assert calls(fake) == []
