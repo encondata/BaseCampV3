@@ -9,9 +9,10 @@ import pytest
 from sqlalchemy import select
 
 from sirdar_api.db.models import Deployment, Environment
-from sirdar_api.deploy import pipeline, steps
+from sirdar_api.deploy import envfile, pipeline, steps, vms
 from sirdar_api.deploy.runner import RunResult
 from sirdar_api.deploy.steps import STEPS_BY_KEY, StepDef
+from sirdar_api.deploy.vmcommon import VmOutcome
 
 from .api_helpers import auth_headers
 from .deploy_factories import (  # noqa: F401
@@ -145,3 +146,129 @@ async def test_seed_content_only_for_a_first_update(client, db, target):
     resp = await client.post(f"{URL}/qa1/deployments", headers=h,
                              json={"mode": "update", "seed_content": True})
     assert (resp.status_code, resp.json()["detail"]["code"]) == (422, "seed_content_not_allowed")
+
+
+# ---- a failed seed: the new commit is already serving ---------------------------------
+
+async def _retry_seed(db, dep_id, env_id, fake_runner, **kw):
+    """Retry from step 20 alone; it succeeds."""
+    del fake_runner.results["seed"]
+    fake_runner.requests.clear()
+    env = await db.get(Environment, env_id, populate_existing=True)
+    dep = await db.get(Deployment, dep_id, populate_existing=True)
+    retry = await pipeline.create_deployment(
+        db, env, mode="update", git_ref="main", sha=dep.sha, actor_id=None, start_step=20,
+        retry_of=dep_id, seed_content=True, cloud=dep.cloud, vm=dep.vm,
+        bluegreen=dep.bluegreen, slot=dep.slot, go_live=dep.go_live, **kw)
+    await db.commit()
+    pipeline.launch(retry.id)
+    await pipeline.wait(retry.id)
+    assert fake_runner.steps() == ["seed"]
+    return await _load(retry.id)
+
+
+async def test_a_failed_seed_records_the_commit_the_environment_serves(db, fresh, fake_runner,
+                                                                       fake_publisher):
+    fake_runner.results["seed"] = RunResult(status="failed", rc=2)
+    dep_id = await _run(db, fresh)
+    dep, _, env = await _load(dep_id)
+    assert (dep.status, dep.failed_step) == ("failed", 20)
+    assert (env.current_sha, env.image_tag) == (SHA, envfile.image_tag(SHA))
+    retried, _, env = await _retry_seed(db, dep_id, fresh.id, fake_runner)
+    assert (retried.status, env.current_sha, env.status) == ("succeeded", SHA, "ready")
+
+
+async def test_a_failed_seed_then_an_update_requires_the_dump(db, fresh, fake_runner,
+                                                              fake_publisher):
+    fake_runner.results["seed"] = RunResult(status="failed", rc=2)
+    await _run(db, fresh)
+    del fake_runner.results["seed"]
+    fake_runner.requests.clear()
+    env = await db.get(Environment, fresh.id, populate_existing=True)
+    nxt = await pipeline.create_deployment(db, env, mode="update", git_ref="main", sha=SHA,
+                                           actor_id=None)
+    await db.commit()
+    pipeline.launch(nxt.id)
+    await pipeline.wait(nxt.id)
+    dump = next(r for r in fake_runner.requests if r.step == "dump")
+    assert dump.extravars["dump_required"] is True
+
+
+@pytest.fixture
+async def do_fresh(db, deploy_env, secrets_key, ssh_server, monkeypatch, fake_provisioner,
+                   request):
+    from .do_helpers import built, make_do_environment
+    monkeypatch.setattr(vms, "VM_SSH_PORT", ssh_server.port)
+    env = await make_do_environment(db, slots=request.param)
+    await trust_fake(db, ssh_server)
+    fake_provisioner.effects["do_prepare"] = built
+    fake_provisioner.outcomes["do_prepare"] = VmOutcome(sha=SHA)
+    return env
+
+
+@pytest.mark.parametrize("do_fresh", [1, 2], indirect=True)
+async def test_a_failed_seed_on_digitalocean_records_the_live_commit(
+        db, do_fresh, fake_runner, fake_publisher, fake_provisioner):
+    fake_runner.results["seed"] = RunResult(status="failed", rc=2)
+    dep = await pipeline.create_deployment(db, do_fresh, mode="update", git_ref="main", sha="",
+                                           actor_id=None, cloud=True, slot="orange",
+                                           go_live=True, seed_content=True)
+    await db.commit()
+    pipeline.launch(dep.id)
+    await pipeline.wait(dep.id)
+    dep, steps_, env = await _load(dep.id)
+    assert (dep.status, dep.failed_step, steps_[-1].key) == ("failed", 20, "seed")
+    assert (env.active_slot, env.current_sha, env.image_tag) == (
+        "orange", SHA, envfile.image_tag(SHA))
+    retried, _, env = await _retry_seed(db, dep.id, do_fresh.id, fake_runner)
+    assert (retried.status, env.current_sha, env.status) == ("succeeded", SHA, "ready")
+
+
+async def test_a_failed_seed_on_digitalocean_then_an_update_requires_the_dump(
+        db, deploy_env, secrets_key, ssh_server, monkeypatch, fake_provisioner, fake_runner,
+        fake_publisher):
+    from .do_helpers import built, make_do_environment
+    monkeypatch.setattr(vms, "VM_SSH_PORT", ssh_server.port)
+    env = await make_do_environment(db, slots=1)
+    await trust_fake(db, ssh_server)
+    fake_provisioner.effects["do_prepare"] = built
+    fake_provisioner.outcomes["do_prepare"] = VmOutcome(sha=SHA)
+    fake_runner.results["seed"] = RunResult(status="failed", rc=2)
+    for seed in (True, False):
+        env = await db.get(Environment, env.id, populate_existing=True)
+        dep = await pipeline.create_deployment(db, env, mode="update", git_ref="main", sha="",
+                                               actor_id=None, cloud=True, slot="orange",
+                                               go_live=True, seed_content=seed)
+        await db.commit()
+        fake_runner.requests.clear()
+        pipeline.launch(dep.id)
+        await pipeline.wait(dep.id)
+    dump = next(r for r in fake_runner.requests if r.step == "dump")
+    assert dump.extravars["dump_required"] is True
+
+
+async def test_a_failed_seed_on_lan_bluegreen_records_the_live_commit(
+        db, secrets_key, ssh_server, monkeypatch, fake_provisioner, fake_runner,
+        fake_publisher):
+    from .integration_helpers import configure, configure_esxi
+    from .lan_helpers import lan_built, make_bluegreen_environment
+    monkeypatch.setattr(vms, "VM_SSH_PORT", ssh_server.port)
+    await configure_esxi(db)
+    await configure(db, cloudflare=True, npm=True)
+    await trust_fake(db, ssh_server)
+    fake_provisioner.effects["provision"] = lan_built()
+    fake_provisioner.outcomes["provision"] = VmOutcome()
+    env = await make_bluegreen_environment(db)
+    fake_runner.results["seed"] = RunResult(status="failed", rc=2)
+    dep = await pipeline.create_deployment(db, env, mode="update", git_ref="main", sha=SHA,
+                                           actor_id=None, vm=True, bluegreen=True,
+                                           slot="orange", go_live=True, seed_content=True)
+    await db.commit()
+    pipeline.launch(dep.id)
+    await pipeline.wait(dep.id)
+    dep, steps_, env = await _load(dep.id)
+    assert (dep.status, dep.failed_step, steps_[-1].key) == ("failed", 20, "seed")
+    assert (env.active_slot, env.current_sha, env.image_tag) == (
+        "orange", SHA, envfile.image_tag(SHA))
+    retried, _, env = await _retry_seed(db, dep.id, env.id, fake_runner)
+    assert (retried.status, env.current_sha, env.status) == ("succeeded", SHA, "ready")

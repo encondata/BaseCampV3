@@ -66,7 +66,6 @@ from sirdar_api.db.models import (
 )
 from sirdar_api.deploy import (
     ConnectFailed,
-    apps as app_rules,
     certs,
     do_envs,
     do_provision,
@@ -87,6 +86,9 @@ from sirdar_api.deploy import (
     vault,
     vms,
     vmsteps,
+)
+from sirdar_api.deploy import (
+    apps as app_rules,
 )
 from sirdar_api.deploy.redact import Redactor
 from sirdar_api.deploy.runner import (
@@ -985,9 +987,31 @@ IN_PLACE_NOTE = "The droplet already runs the new commit; retry {step}."
 
 def _ran_in_place(env: Environment, dep: Deployment, key: str) -> bool:
     """A one-slot DigitalOcean Update that failed after up (its slot smoke
-    test or Switch traffic): the only droplet already runs the new commit."""
+    test, Switch traffic or Seed starter content): the only droplet already
+    runs the new commit."""
     return (dep.cloud and dep.mode == "update" and dep.slot is not None
-            and len(env.slots or ()) == 1 and key in ("slot_smoke", "go_live"))
+            and len(env.slots or ()) == 1 and key in ("slot_smoke", "go_live", "seed"))
+
+
+async def _seeded_failed(deployment_id: uuid.UUID, env_id: uuid.UUID) -> None:
+    """Step 20 runs last, after the stack is up and traffic moved: when it
+    fails the environment records the commit it serves as a success would
+    (do_envs/lan_slots.after_success, or the plain current_sha), so a later
+    Update takes its pre-deploy dump. Its status stays failed, and Retry
+    runs step 20 again."""
+    async with get_sessionmaker()() as s:
+        dep = await s.get(Deployment, deployment_id)
+        env = await s.get(Environment, env_id)
+        if dep is None or env is None:
+            return
+        status = env.status
+        if dep.cloud or dep.bluegreen:
+            # seed is planned only for an Update: after_success never refuses one
+            await (do_envs if dep.cloud else lan_slots).after_success(s, env, dep)
+        else:
+            env.current_sha, env.image_tag = dep.sha, envfile.image_tag(dep.sha)
+        env.status, env.updated_at = status, _now()
+        await s.commit()
 
 
 async def _serving(env_id: uuid.UUID, sha: str) -> None:
@@ -1225,6 +1249,7 @@ async def _run(deployment_id: uuid.UUID) -> None:
                         # it would need a greenlet.
                         reason = _failure_reason(step, result, bluegreen=dep.bluegreen)
                         in_place = _ran_in_place(env, dep, step.key)
+                        seeding = step.key == "seed"
                         sha = dep.sha
                         note = IN_PLACE_NOTE.format(step=step.name) if in_place else ""
                         if admin_rc is not None and admin_rc >= 0:
@@ -1240,6 +1265,8 @@ async def _run(deployment_id: uuid.UUID) -> None:
                                      append_log=note + "\n" if note else "")
                         if in_place:
                             await _serving(env_id, sha)
+                        if seeding:
+                            await _seeded_failed(deployment_id, env_id)
                         return
                     step.status, step.finished_at = "succeeded", _now()
                     if step.key in ("provision", "do_prepare"):
