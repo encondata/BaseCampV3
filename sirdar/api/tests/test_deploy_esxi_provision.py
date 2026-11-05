@@ -2,6 +2,7 @@ import base64
 import uuid
 from datetime import UTC, datetime
 
+import asyncssh
 import pytest
 import yaml
 from sqlalchemy import select
@@ -124,6 +125,19 @@ async def test_a_second_run_changes_nothing_and_keeps_the_pin(db, esxi_env, esxi
     await run(db, esxi_env, lines=lines)
     assert "create_vm" not in esxi_fake.calls and "copy_disk" not in esxi_fake.calls
     assert "set_size" not in esxi_fake.calls and "is pinned" in "".join(lines)
+
+
+async def test_an_update_after_the_vm_gained_host_keys(db, esxi_env, ssh_server):
+    """openssh-server's upgrade adds RSA and ECDSA keys the server offers
+    first; the generated ed25519 key is still the one checked."""
+    gained = [asyncssh.generate_private_key(a) for a in ("ecdsa-sha2-nistp256", "ssh-rsa")]
+    ssh_server.serve_host_keys(*gained, ssh_server.host_key)
+    await run(db, esxi_env)
+    lines: list[str] = []
+    await run(db, esxi_env, lines=lines)
+    assert f"SSH host key {ssh_server.fingerprint} is pinned.\n" in lines
+    pinned = await known_hosts.lookup(db, "127.0.0.1", ssh_server.port)
+    assert (pinned.key_type, pinned.fingerprint_sha256) == ("ssh-ed25519", ssh_server.fingerprint)
 
 
 async def test_a_lost_record_is_found_by_its_marker(db, esxi_env, esxi_fake):

@@ -6,6 +6,7 @@ import asyncio
 import base64
 import hashlib
 import uuid
+from collections.abc import Sequence
 
 import asyncssh
 from sqlalchemy import delete, func, select
@@ -28,6 +29,22 @@ class HostKeyChanged(Exception):
         self.expected, self.actual, self.key_type = expected, actual, key_type
 
 
+class HostKeyTypeMissing(Exception):
+    """The server offers no host key of the type asked for."""
+
+    def __init__(self, host: str, port: int, algs: Sequence[str]):
+        super().__init__(f"{host}:{port} offers no {', '.join(algs)} host key")
+        self.host, self.port, self.algs = host, port, tuple(algs)
+
+
+def host_key_algs(key_type: str) -> list[str]:
+    """The host key algorithms that fetch a key of key_type (an SSHKey's
+    get_algorithm()). RSA keys sign with SHA-2 or, last, SHA-1."""
+    if key_type == "ssh-rsa":
+        return ["rsa-sha2-512", "rsa-sha2-256", "ssh-rsa"]
+    return [key_type]
+
+
 def fingerprint(key: asyncssh.SSHKey) -> str:
     """OpenSSH-style SHA256 fingerprint: SHA256:<base64, no padding>."""
     digest = hashlib.sha256(key.public_data).digest()
@@ -38,17 +55,38 @@ def unreachable(host: str, port: int) -> ConnectFailed:
     return ConnectFailed(f"Couldn't reach {host}:{port}.")
 
 
-async def fetch_host_key(host: str, port: int) -> asyncssh.SSHKey:
-    """The server's host key, read without authenticating. Never consults
-    ~/.ssh/config, so the container's environment can't redirect it."""
+async def fetch_host_key(host: str, port: int,
+                         algs: Sequence[str] | None = None) -> asyncssh.SSHKey:
+    """The server's host key, read without authenticating: one of `algs`
+    when given (HostKeyTypeMissing when it has none), else the type the
+    server prefers. Never consults ~/.ssh/config, so the container's
+    environment can't redirect it."""
+    options = {"server_host_key_algs": list(algs)} if algs else {}
     try:
         key = await asyncio.wait_for(
-            asyncssh.get_server_host_key(host, port, config=None), FETCH_TIMEOUT)
+            asyncssh.get_server_host_key(host, port, config=None, **options), FETCH_TIMEOUT)
+    except asyncssh.KeyExchangeFailed:
+        if algs:
+            raise HostKeyTypeMissing(host, port, algs) from None
+        raise unreachable(host, port) from None
     except (OSError, TimeoutError, asyncssh.Error):
         raise unreachable(host, port) from None
     if key is None:
         raise unreachable(host, port)
     return key
+
+
+async def fetch_key_of_type(host: str, port: int, key_type: str | None) -> asyncssh.SSHKey:
+    """The live key of key_type, so a pin survives the server gaining keys of
+    other types (an openssh-server upgrade adds RSA and ECDSA keys it offers
+    first). A server with no key of that type answers with the one it
+    prefers, which then won't match. key_type None: the preferred key."""
+    if key_type is None:
+        return await fetch_host_key(host, port)
+    try:
+        return await fetch_host_key(host, port, host_key_algs(key_type))
+    except HostKeyTypeMissing:
+        return await fetch_host_key(host, port)
 
 
 def public_key_text(key: asyncssh.SSHKey) -> str:
@@ -62,10 +100,13 @@ async def lookup(db: AsyncSession, host: str, port: int) -> SshKnownHost | None:
 
 async def trust(db: AsyncSession, host: str, port: int, expected_fingerprint: str,
                 actor_id: uuid.UUID | None, *, ip: str | None = None,
-                target_id: str | None = None) -> SshKnownHost:
+                target_id: str | None = None, key_type: str | None = None) -> SshKnownHost:
     """Store the live key for host:port if it still has the fingerprint the
-    user saw. Queues an audit row; the caller commits."""
-    live = await fetch_host_key(host, port)
+    user saw. key_type: the expected key's type when the caller knows it (a
+    key Sirdar generated), so that type is the one fetched; otherwise the
+    server's preferred key, as the user saw it. Queues an audit row; the
+    caller commits."""
+    live = await fetch_key_of_type(host, port, key_type)
     actual, key_type = fingerprint(live), live.get_algorithm()
     if actual != expected_fingerprint:
         raise HostKeyChanged(host, port, expected_fingerprint, actual, key_type)

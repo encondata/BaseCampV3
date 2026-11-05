@@ -137,6 +137,17 @@ async def test_a_second_run_updates_the_vm_and_keeps_the_pin(db, vm_env, tf, ssh
     assert f"SSH host key {ssh_server.fingerprint} is pinned.\n" in text
 
 
+async def test_a_vm_that_gained_host_keys_pins_the_guest_agent_s_key(db, vm_env, tf, ssh_server):
+    gained = [asyncssh.generate_private_key(a) for a in ("ecdsa-sha2-nistp256", "ssh-rsa")]
+    ssh_server.serve_host_keys(*gained, ssh_server.host_key)
+    await _built(db, vm_env, tf)
+    pinned = await known_hosts.lookup(db, "127.0.0.1", ssh_server.port)
+    assert (pinned.key_type, pinned.fingerprint_sha256) == ("ssh-ed25519", ssh_server.fingerprint)
+    lines: list[str] = []
+    await provisioner(tf).run("provision", await ctx_for(db, vm_env, sha=SHA), lines.append)
+    assert f"SSH host key {ssh_server.fingerprint} is pinned.\n" in "".join(lines)
+
+
 async def test_a_busy_address_stops_before_anything_is_made(db, vm_env, tf, proxmox_fake):
     async def answers(host, port):
         return True
