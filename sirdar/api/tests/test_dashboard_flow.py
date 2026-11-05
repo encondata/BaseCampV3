@@ -388,8 +388,8 @@ async def test_the_soonest_answering_host_wins_and_every_host_is_listed(
         20, "ok", fake_certs.dates[api].isoformat())
     hosts = {h["hostname"]: h for h in cert["hosts"]}
     assert [h["hostname"] for h in cert["hosts"]] == [
-        f"{s}.uat.serversherpa.com" for s in ("api", "portal", "kiosk", "wiki", "spaces",
-                                              "status")]
+        f"{s}.uat.serversherpa.com" for s in ("api", "portal", "kiosk", "wiki", "learn",
+                                              "spaces", "status")]
     assert hosts[portal] == {"hostname": portal, "expires_at": fake_certs.dates[portal]
                              .isoformat(), "days_left": 40, "error": None}
     assert hosts["kiosk.uat.serversherpa.com"] == {
@@ -431,7 +431,7 @@ async def test_checks_are_cached_and_refresh_rechecks(client, db, fake_certs):
     h = await auth_headers(client, db)
     await _dashboard(client, db, h)
     first = sorted(fake_certs.calls)
-    assert len(first) == 12 and len(set(first)) == 12        # both environments, once each
+    assert len(first) == 14 and len(set(first)) == 14        # both environments, once each
     await _dashboard(client, db, h)
     assert sorted(fake_certs.calls) == first
     resp = await client.get("/api/dashboard?refresh=1", headers=h)
@@ -471,7 +471,7 @@ async def test_certificate_checks_start_while_the_cards_are_built(
         return await real(*args, **kw)
     monkeypatch.setattr(service, "_environment_card", slow_card)
     await _dashboard(client, db)
-    assert seen and seen[0] == 6
+    assert seen and seen[0] == 7
 
 
 # ---- the infrastructure tree: every environment, then what Sirdar doesn't manage ------

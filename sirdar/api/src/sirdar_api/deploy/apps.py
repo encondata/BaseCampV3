@@ -1,5 +1,5 @@
 """Which apps an environment runs and where its mail goes (deploy phase 8c).
-API and portal always run; wiki, kiosk, status and mailpit can be turned off
+API and portal always run; wiki, kiosk, learn, status and mailpit can be turned off
 when the environment is created. Mail goes to the environment's own Mailpit
 (nothing leaves the host) or to an SMTP server: ServerSherpa reads SMTP only
 from its environment (SS_SMTP_* in api/src/serversherpa/config.py), so Sirdar
@@ -10,9 +10,9 @@ import re
 
 from sirdar_api.deploy import envfile
 
-OPTIONAL_APPS = ("wiki", "kiosk", "status", "mailpit")
+OPTIONAL_APPS = ("wiki", "kiosk", "learn", "status", "mailpit")
 ALWAYS = ("api", "portal")
-_PUBLIC_APPS = ("wiki", "kiosk", "status")          # their public names go when they're off
+_PUBLIC_APPS = ("wiki", "kiosk", "learn", "status")  # their public names go when they're off
 DEFAULT_SMTP_PORT = 587                             # ServerSherpa's smtp_port default
 _HOST_RE = re.compile(r"(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?")
 # no whitespace, quotes, "$", "#", backslash, backtick or control character:
@@ -91,6 +91,8 @@ def env_extra(env) -> dict[str, str]:
                 "SS_SMTP_USERNAME": env.smtp_username or "",
                 "SS_SMTP_STARTTLS": "true" if env.smtp_starttls else "false",
                 "SS_SMTP_FROM": env.smtp_from}
+    if env.kiosk_signing_digests:
+        out["SS_KIOSK_SIGNING_DIGESTS"] = ",".join(env.kiosk_signing_digests)
     return out
 
 

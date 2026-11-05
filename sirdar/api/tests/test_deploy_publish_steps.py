@@ -15,9 +15,9 @@ from .publish_helpers import PUBLIC_IP, managed, publish_fakes  # noqa: F401
 
 NOW = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
 NAMES = [f"{s}.uat2.serversherpa.com" for s in
-         ("api", "portal", "kiosk", "wiki", "spaces", "status")]
-PORTS = {"api": 8000, "portal": 8091, "kiosk": 8090, "wiki": 8096, "spaces": 9000,
-         "status": 8095}
+         ("api", "portal", "kiosk", "wiki", "learn", "spaces", "status")]
+PORTS = {"api": 8000, "portal": 8091, "kiosk": 8090, "wiki": 8096, "learn": 8092,
+         "spaces": 9000, "status": 8095}
 
 
 @pytest.fixture
@@ -215,7 +215,7 @@ async def test_smoke_passes_and_fails(db, env, publish_fakes):
     sleeps: list = []
     with pytest.raises(StepFailed) as e:
         await _run(db, env, "smoke", _publisher(sleeps, smoke_attempts=2))
-    assert e.value.reason == "1 of 6 public URLs didn't answer: portal."
+    assert e.value.reason == "1 of 7 public URLs didn't answer: portal."
     assert sleeps == [10]
 
 

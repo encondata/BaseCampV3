@@ -204,8 +204,8 @@ async def test_prepare_and_missing_integrations(db, secrets_key):
     await configure(db)
     assert await publish.missing_integrations(db, env) == []
     ctx = await publish.prepare(db, env, get_settings())
-    assert [s.service for s in ctx.services] == ["api", "portal", "kiosk", "wiki", "spaces",
-                                                 "status"]
+    assert [s.service for s in ctx.services] == ["api", "portal", "kiosk", "wiki", "learn",
+                                                 "spaces", "status"]
     assert ctx.services[0] == publish.ServicePlan("api", "api.uat2.serversherpa.com",
                                                   "10.10.48.63", 8000, False)
     assert (ctx.env_name, ctx.proxy_ip) == ("uat2", "10.0.0.2")
@@ -236,7 +236,7 @@ async def test_inspect_reports_every_service(db, secrets_key, publish_fakes):
                                    "public_ip": PUBLIC_IP, "error": None}
     assert state["npm"] == {"configured": True, "url": "http://10.10.48.6:81", "error": None}
     by = {s["service"]: s for s in state["services"]}
-    assert list(by) == ["api", "portal", "kiosk", "wiki", "spaces", "status"]
+    assert list(by) == ["api", "portal", "kiosk", "wiki", "learn", "spaces", "status"]
     assert by["api"]["forward"] == "10.10.48.63:8000"
     assert by["api"]["dns"] == {"state": "claimable", "detail": "A 203.0.113.7, made outside "
                                 "Sirdar.", "origin": None, "record_id": hand_api}

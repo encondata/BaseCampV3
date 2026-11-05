@@ -99,7 +99,7 @@ async def test_a_first_deploy_goes_live(db, do_env, fake_runner, fake_publisher,
     smoke = next(r for r in fake_runner.requests if r.step == "slot_smoke")
     # no spaces: objects live in Spaces, and Caddy has no route for it
     assert [h["hostname"] for h in smoke.extravars["public_hosts"]] == [
-        f"{s}.uat9.serversherpa.com" for s in ("api", "portal", "kiosk", "wiki", "status")]
+        f"{s}.uat9.serversherpa.com" for s in ("api", "portal", "kiosk", "wiki", "learn", "status")]
     assert [h["path"] for h in smoke.extravars["public_hosts"]][0] == "/healthz"
     assert smoke.extravars["block_metadata"] is True
     assert smoke.extravars["external_data"] is True
@@ -115,7 +115,7 @@ async def test_cloud_vars_reach_every_host_step(db, do_env, fake_runner,
     for request in fake_runner.requests:
         assert request.extravars["external_data"] is True, request.step
         assert request.extravars["block_metadata"] is True, request.step
-        assert len(request.extravars["public_hosts"]) == 5, request.step
+        assert len(request.extravars["public_hosts"]) == 6, request.step
 
 
 async def test_every_cloud_secret_is_redacted(db, do_env, fake_runner, fake_publisher,
@@ -386,7 +386,7 @@ async def test_dns_points_at_the_load_balancer_and_never_needs_npm(db, secrets_k
     await publish.HttpPublisher().run("dns", ctx, lines.append)
     made = {r["name"]: r["content"] for r in publish_fakes.cf.records.values()}
     assert made == {**{f"{s}.uat9.serversherpa.com": "203.0.113.50"
-                       for s in ("api", "portal", "kiosk", "wiki", "status")},
+                       for s in ("api", "portal", "kiosk", "wiki", "learn", "status")},
                     "uat9.serversherpa.com": "203.0.113.50"}          # home
     assert lines[0] == "api.uat9.serversherpa.com: created A 203.0.113.50\n"
 

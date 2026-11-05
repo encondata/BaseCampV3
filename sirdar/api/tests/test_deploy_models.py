@@ -424,7 +424,7 @@ async def test_migration_0007_downgrade_refuses_while_vms_are_managed():
     assert b"Can't downgrade below 0007 while Sirdar manages Proxmox VMs" in err.value.stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
         # The refused downgrade rolls back as a whole: still at head.
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0014"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0015"
         assert conn.execute("SELECT count(*) FROM proxmox_vms").fetchone()[0] == 1
         assert conn.execute("SELECT count(*) FROM integrations WHERE kind = 'proxmox'"
                             ).fetchone()[0] == 1
@@ -592,7 +592,7 @@ async def test_migration_0010_downgrade_refuses_while_do_environments_exist():
         _alembic("downgrade", "0009")
     assert b"while Sirdar manages DigitalOcean environments" in err.value.stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0014"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0015"
         conn.execute("DELETE FROM environments WHERE id = %s", (env_id,))
 
 
@@ -649,7 +649,7 @@ def _assert_downgrade_refused() -> None:
         pytest.fail("the downgrade below 0010 wasn't refused")
     assert b"while Sirdar manages DigitalOcean environments" in stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0014"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0015"
 
 
 async def test_migration_0010_downgrade_refuses_with_only_do_resources():
@@ -868,7 +868,7 @@ async def test_migration_0012_round_trip_keeps_single_server_vms():
     finally:
         _alembic("upgrade", "head")
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0014"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0015"
         assert conn.execute("SELECT count(*) FROM proxmox_vms WHERE role = 'main'"
                             ).fetchone()[0] == 1
 
@@ -910,7 +910,7 @@ async def test_migration_0012_downgrade_refuses_with_blue_green_records(what):
         pytest.fail("the downgrade below 0012 wasn't refused")
     assert b"Can't downgrade below 0012 while LAN Blue/Green records exist" in stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0014"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0015"
         assert conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 1
 
 
@@ -950,7 +950,7 @@ async def test_migration_0014_adds_home_to_every_non_production_environment():
             portal(prod)
         _alembic("upgrade", "head")
         with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-            assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0014"
+            assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0015"
             homes = conn.execute(
                 "SELECT e.name, s.host_ip, s.port, s.hostname, s.proxied FROM environment_services s "
                 "JOIN environments e ON e.id = s.environment_id WHERE s.service = 'home' "
@@ -963,5 +963,82 @@ async def test_migration_0014_adds_home_to_every_non_production_environment():
                                 "WHERE service = 'home'").fetchone()[0] == 0
             assert conn.execute("SELECT count(*) FROM environment_services "
                                 "WHERE service = 'portal'").fetchone()[0] == 3
+    finally:
+        _alembic("upgrade", "head")
+
+
+async def test_migration_0015_adds_learn_and_the_new_columns():
+    """Upgrade: learn joins the apps of every environment that runs the wiki
+    (in the canonical order); every environment with a portal row and no
+    learn row gets one on the portal's host: 8092, or the first free port at
+    or above it among its own ports and, on an SSH target, those of the other
+    SSH environments on that host; named learn.<base domain> only where learn
+    is on. Learn without the wiki is refused. Downgrade: the rows, the apps
+    entry and the new columns go."""
+    from sirdar_api.db.engine import dispose_engine
+    await dispose_engine()
+    _alembic("downgrade", "0014")
+    try:
+        with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+            def env(name, target, apps=None):
+                cols, vals = (", apps", ", %s") if apps is not None else ("", "")
+                return conn.execute(
+                    "INSERT INTO environments (name, type, target_id, base_domain, proxy_ip"
+                    f"{cols}) VALUES (%s, 'dev', %s, %s, '10.0.0.2'{vals}) RETURNING id",
+                    (name, target, f"{name}.serversherpa.com",
+                     *([apps] if apps is not None else []))).fetchone()[0]
+
+            def row(env_id, service, host, port, hostname=None):
+                conn.execute(
+                    "INSERT INTO environment_services (environment_id, service, host_ip, port, "
+                    "hostname) VALUES (%s, %s, %s, %s, %s)",
+                    (env_id, service, host, port, hostname))
+
+            a = env("a", "ssh")                                # wiki on (0013's default)
+            row(a, "portal", "10.0.0.5", 8091)
+            row(a, "status", "10.0.0.5", 8092)                 # its own 8092 is taken
+            b = env("b", "ssh:lab", ["kiosk", "mailpit"])      # same SSH host, no wiki
+            row(b, "portal", "10.0.0.5", 8093)
+            c = env("c", "esxi", ["wiki", "mailpit"])          # a VM: shares nothing
+            row(c, "portal", "10.0.0.5", 8092)
+            d = env("d", "ssh")                                # already has a learn row
+            row(d, "portal", "10.0.0.9", 8091)
+            row(d, "learn", "10.0.0.9", 9999, "old.example.com")
+        _alembic("upgrade", "head")
+        with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+            assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0015"
+            apps = dict(conn.execute("SELECT name, apps FROM environments").fetchall())
+            assert apps == {"a": ["wiki", "kiosk", "learn", "status", "mailpit"],
+                            "b": ["kiosk", "mailpit"], "c": ["wiki", "learn", "mailpit"],
+                            "d": ["wiki", "kiosk", "learn", "status", "mailpit"]}
+            learn = conn.execute(
+                "SELECT e.name, s.host_ip, s.port, s.hostname, s.proxied "
+                "FROM environment_services s JOIN environments e ON e.id = s.environment_id "
+                "WHERE s.service = 'learn' ORDER BY e.name").fetchall()
+            assert learn == [("a", "10.0.0.5", 8094, "learn.a.serversherpa.com", False),
+                             ("b", "10.0.0.5", 8095, None, False),
+                             ("c", "10.0.0.5", 8093, "learn.c.serversherpa.com", False),
+                             ("d", "10.0.0.9", 9999, "old.example.com", False)]
+            assert conn.execute("SELECT DISTINCT kiosk_signing_digests FROM environments"
+                                ).fetchall() == [([],)]
+            default = conn.execute(
+                "SELECT column_default FROM information_schema.columns "
+                "WHERE table_name = 'environments' AND column_name = 'apps'").fetchone()[0]
+            assert default.startswith("'{wiki,kiosk,learn,status,mailpit}'")
+            assert conn.execute(
+                "SELECT column_default FROM information_schema.columns "
+                "WHERE table_name = 'deployments' AND column_name = 'seed_content'"
+            ).fetchone()[0] == "false"
+            with pytest.raises(psycopg.errors.CheckViolation):
+                conn.execute("UPDATE environments SET apps = '{learn,mailpit}' WHERE name = 'b'")
+        _alembic("downgrade", "0014")
+        with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+            assert conn.execute("SELECT count(*) FROM environment_services "
+                                "WHERE service = 'learn'").fetchone()[0] == 0
+            assert conn.execute("SELECT apps FROM environments WHERE name = 'a'"
+                                ).fetchone()[0] == ["wiki", "kiosk", "status", "mailpit"]
+            assert conn.execute(
+                "SELECT count(*) FROM information_schema.columns WHERE column_name IN "
+                "('kiosk_signing_digests', 'seed_content')").fetchone()[0] == 0
     finally:
         _alembic("upgrade", "head")

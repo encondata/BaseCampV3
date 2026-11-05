@@ -91,7 +91,7 @@ async def test_the_first_deploy_builds_and_goes_live(db, lan, fake_runner, fake_
     assert (dump.extravars["external_data"], dump.extravars["data_new"]) == (True, True)
     smoke = next(r for r in fake_runner.requests if r.step == "slot_smoke")
     assert {h["service"] for h in smoke.extravars["public_hosts"]} == {
-        "api", "portal", "kiosk", "wiki", "status"}
+        "api", "portal", "kiosk", "wiki", "learn", "status"}
     assert all("port" in h for h in smoke.extravars["public_hosts"])
 
 

@@ -113,7 +113,7 @@ async def test_adopt_takes_no_secrets(client, db, target):
 async def test_defaults_list_the_apps_and_the_smtp_port(client, db):
     h = await auth_headers(client, db)
     body = (await client.get("/api/deploy/environment-defaults", headers=h)).json()
-    assert body["apps"] == {"optional": ["wiki", "kiosk", "status", "mailpit"],
+    assert body["apps"] == {"optional": ["wiki", "kiosk", "learn", "status", "mailpit"],
                             "always": ["api", "portal"]}
     assert body["mail"] == {"smtp_port": 587}
 
@@ -133,17 +133,17 @@ async def test_an_environment_with_nothing_chosen_keeps_every_app_and_mailpit(
     target.overrides[f"{LS} main"] = f"{SHA}\trefs/heads/main\n"
     h = await auth_headers(client, db)
     body = (await client.post(URL, headers=h, json=NEW)).json()
-    assert body["apps"] == ["wiki", "kiosk", "status", "mailpit"]
+    assert body["apps"] == ["wiki", "kiosk", "learn", "status", "mailpit"]
     assert body["mail"]["mode"] == "mailpit" and body["mail"]["password_set"] is False
     assert all(s["hostname"] for s in body["services"] if s["service"] != "mailpit")
     audit = (await db.scalars(select(AuditLog.changes).where(
         AuditLog.action == "deploy.environment_create"))).one()
     assert (audit["apps"], audit["mail"], audit["secrets"]) == (
-        ["wiki", "kiosk", "status", "mailpit"], {"mode": "mailpit"}, [])
+        ["wiki", "kiosk", "learn", "status", "mailpit"], {"mode": "mailpit"}, [])
     resp = await client.post(f"{URL}/qa1/deployments", headers=h, json={"mode": "update"})
     await pipeline.wait(uuid.UUID(resp.json()["id"]))
     values = await _render_values(fake_runner)
-    assert values["STACK_APPS"] == "wiki,kiosk,status,mailpit"
+    assert values["STACK_APPS"] == "wiki,kiosk,learn,status,mailpit"
     assert not any(k.startswith("SS_SMTP_") and k != "SS_SMTP_PASSWORD" for k in values)
     assert values["SS_SMTP_PASSWORD"] == ""
 
@@ -185,7 +185,7 @@ async def test_a_new_base_domain_names_only_the_running_apps(client, db, target)
     names = {s["service"]: s["hostname"] for s in resp.json()["services"]}
     assert names == {"api": "api.qa2.serversherpa.com", "portal": "portal.qa2.serversherpa.com",
                      "home": "qa2.serversherpa.com",
-                     "kiosk": "kiosk.qa2.serversherpa.com", "wiki": None,
+                     "kiosk": "kiosk.qa2.serversherpa.com", "wiki": None, "learn": None,
                      "spaces": "spaces.qa2.serversherpa.com", "status": None, "mailpit": None}
 
 
@@ -328,7 +328,7 @@ async def test_adopt_renders_the_same_mail_back(client, db, target, fake_runner)
 
 async def test_adopt_without_the_keys_runs_every_app_on_mailpit(client, db, target):
     body = (await _adopt(client, db, target)).json()
-    assert body["apps"] == ["wiki", "kiosk", "status", "mailpit"]
+    assert body["apps"] == ["wiki", "kiosk", "learn", "status", "mailpit"]
     assert body["mail"]["mode"] == "mailpit"
 
 

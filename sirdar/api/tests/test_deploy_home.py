@@ -8,7 +8,7 @@ from sirdar_api.deploy import certs, envfile, home
 
 def _env(type_: str = "dev", domain: str = "demo.serversherpa.com"):
     return SimpleNamespace(type=type_, base_domain=domain,
-                           apps=["wiki", "kiosk", "status", "mailpit"])
+                           apps=["wiki", "kiosk", "learn", "status", "mailpit"])
 
 
 def test_every_type_but_production_gets_the_bare_name():
@@ -23,8 +23,8 @@ def test_name_and_target():
 
 
 def test_home_sorts_right_after_portal_and_is_not_a_stack_service():
-    assert home.SERVICE_ORDER == ("api", "portal", "home", "kiosk", "wiki", "spaces", "status",
-                                  "mailpit")
+    assert home.SERVICE_ORDER == ("api", "portal", "home", "kiosk", "wiki", "learn", "spaces",
+                                  "status", "mailpit")
     assert home.HOME not in envfile.SERVICES
 
 
@@ -39,7 +39,7 @@ def test_droplet_names_end_with_the_bare_name_except_on_production():
     assert certs.public_names(_env()) == (
         "api.demo.serversherpa.com", "portal.demo.serversherpa.com",
         "kiosk.demo.serversherpa.com", "wiki.demo.serversherpa.com",
-        "status.demo.serversherpa.com", "demo.serversherpa.com")
+        "learn.demo.serversherpa.com", "status.demo.serversherpa.com", "demo.serversherpa.com")
     assert certs.public_hosts(_env())[-1] == ("home", "demo.serversherpa.com")
     assert "demo.serversherpa.com" not in certs.public_names(_env("production"))
     off = SimpleNamespace(type="dev", base_domain="demo.serversherpa.com", apps=["mailpit"])

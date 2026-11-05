@@ -8,7 +8,7 @@ from sirdar_api.deploy import apps, envfile
 
 
 def test_check_apps():
-    assert apps.check_apps(None) == ["wiki", "kiosk", "status", "mailpit"]
+    assert apps.check_apps(None) == ["wiki", "kiosk", "learn", "status", "mailpit"]
     assert apps.check_apps(["mailpit", "wiki"]) == ["wiki", "mailpit"]      # canonical order
     assert apps.check_apps([]) == []
     for bad in (["api"], "wiki", [1], ["wiki", "nope"]):
@@ -67,7 +67,7 @@ def test_smtp_refusals(change, code):
 
 
 def test_public_services_follow_the_apps():
-    assert apps.public_services(["wiki", "kiosk", "status", "mailpit"]) == envfile.PUBLIC_SERVICES
+    assert apps.public_services(["wiki", "kiosk", "learn", "status", "mailpit"]) == envfile.PUBLIC_SERVICES
     assert apps.public_services([]) == ("api", "portal", "spaces")
     assert apps.public_services(["status"], base=("api", "portal", "kiosk", "wiki", "status")) == (
         "api", "portal", "status")
@@ -75,10 +75,11 @@ def test_public_services_follow_the_apps():
 
 def test_env_extra():
     env = SimpleNamespace(apps=["kiosk"], smtp_host=None, smtp_port=None, smtp_username=None,
-                          smtp_from=None, smtp_starttls=True)
+                          smtp_from=None, smtp_starttls=True, kiosk_signing_digests=[])
     assert apps.env_extra(env) == {"STACK_APPS": "kiosk"}
     env = SimpleNamespace(apps=[], smtp_host="smtp.example.com", smtp_port=587,
-                          smtp_username=None, smtp_from="ops@example.com", smtp_starttls=False)
+                          smtp_username=None, smtp_from="ops@example.com", smtp_starttls=False,
+                          kiosk_signing_digests=[])
     assert apps.env_extra(env) == {
         "STACK_APPS": "none", "SS_SMTP_HOST": "smtp.example.com", "SS_SMTP_PORT": "587",
         "SS_SMTP_USERNAME": "", "SS_SMTP_STARTTLS": "false", "SS_SMTP_FROM": "ops@example.com"}
@@ -96,8 +97,9 @@ def test_an_environment_with_nothing_chosen_runs_every_app_on_mailpit():
     """Existing environments (migration 0013's defaults): every app, Mailpit,
     and no SS_SMTP_* keys (compose keeps its Mailpit defaults)."""
     env = SimpleNamespace(apps=list(apps.OPTIONAL_APPS), smtp_host=None, smtp_port=None,
-                          smtp_username=None, smtp_from=None, smtp_starttls=True)
-    assert apps.env_extra(env) == {"STACK_APPS": "wiki,kiosk,status,mailpit"}
+                          smtp_username=None, smtp_from=None, smtp_starttls=True,
+                          kiosk_signing_digests=[])
+    assert apps.env_extra(env) == {"STACK_APPS": "wiki,kiosk,learn,status,mailpit"}
     assert apps.public(env, password_set=False) == {
         "mode": "mailpit", "host": None, "port": None, "username": None,
         "from_address": None, "starttls": True, "password_set": False}
@@ -108,7 +110,7 @@ def test_smtp_writes_port_and_starttls_with_the_host():
     always written, even at ServerSherpa's own defaults (587, true)."""
     env = SimpleNamespace(apps=["mailpit"], smtp_host="smtp.example.com", smtp_port=587,
                           smtp_username="mailer", smtp_from="ops@example.com",
-                          smtp_starttls=True)
+                          smtp_starttls=True, kiosk_signing_digests=[])
     out = apps.env_extra(env)
     assert (out["SS_SMTP_PORT"], out["SS_SMTP_STARTTLS"]) == ("587", "true")
 
@@ -118,3 +120,12 @@ def test_mail_errors_never_carry_the_password():
         with pytest.raises(apps.AppsError) as e:
             apps.check_mail({**SMTP, **change}, [])
         assert "Mail-Secret-1" not in repr(e.value) + str(e.value.extra)
+
+
+def test_env_extra_writes_the_signing_digests():
+    env = SimpleNamespace(apps=["kiosk", "mailpit"], smtp_host=None, smtp_port=None,
+                          smtp_username=None, smtp_from=None, smtp_starttls=True,
+                          kiosk_signing_digests=["ab" * 32, "cd" * 32])
+    extra = apps.env_extra(env)
+    assert extra["SS_KIOSK_SIGNING_DIGESTS"] == f"{'ab' * 32},{'cd' * 32}"
+    assert set(extra) <= set(envfile.EXTRA_KEYS) | set(envfile.OPTIONAL_SETTINGS)
