@@ -105,7 +105,7 @@ def test_helpers():
     assert envfile.unsafe_value("ok-value") is False
     assert envfile.unsafe_value("a\tb") is True
     assert set(envfile.SERVICES) == set(envfile.DEFAULT_PORTS) == set(envfile.PORT_KEYS)
-    assert envfile.PUBLIC_SERVICES == envfile.SERVICES[:6]
+    assert envfile.PUBLIC_SERVICES == envfile.SERVICES[:7]
     assert set(envfile.HEX_SECRETS) | set(envfile.FERNET_SECRETS) == set(envfile.REQUIRED_SECRETS)
 
 
@@ -233,3 +233,16 @@ def test_apps_and_mail_keys():
     assert "SS_SMTP_PASSWORD" in envfile.OPTIONAL_SECRETS
     assert envfile.EXTRA_KEYS[:6] == ("STACK_APPS", "SS_SMTP_HOST", "SS_SMTP_PORT",
                                       "SS_SMTP_USERNAME", "SS_SMTP_STARTTLS", "SS_SMTP_FROM")
+
+
+def test_learn_has_its_own_port():
+    assert envfile.parse_env(envfile.render_env(_cfg()))["STACK_LEARN_PORT"] == "8092"
+
+
+def test_the_signing_digests_follow_the_optional_secrets():
+    digest = "ab" * 32
+    text = envfile.render_env(_cfg(extra={"SS_KIOSK_SIGNING_DIGESTS": digest}))
+    keys = _keys(text)
+    assert keys.index("SS_KIOSK_SIGNING_DIGESTS") == keys.index("SS_SMTP_PASSWORD") + 1
+    assert envfile.parse_env(text)["SS_KIOSK_SIGNING_DIGESTS"] == digest
+    assert envfile.parse_env(envfile.render_env(_cfg()))["SS_KIOSK_SIGNING_DIGESTS"] == ""

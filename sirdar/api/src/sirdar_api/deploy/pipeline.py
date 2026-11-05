@@ -66,7 +66,6 @@ from sirdar_api.db.models import (
 )
 from sirdar_api.deploy import (
     ConnectFailed,
-    apps as app_rules,
     certs,
     do_envs,
     do_provision,
@@ -88,6 +87,7 @@ from sirdar_api.deploy import (
     vms,
     vmsteps,
 )
+from sirdar_api.deploy import apps as app_rules
 from sirdar_api.deploy.redact import Redactor
 from sirdar_api.deploy.runner import (
     CANCEL_GRACE_SECONDS,
@@ -119,6 +119,9 @@ FIRST_ADMIN_UNREADABLE = ("Sirdar can't read the first admin's password with the
                           "SIRDAR_SECRETS_KEY. Set it again on the environment's Settings tab, "
                           "then retry.")
 KEPT_DUMP = "Keeping the pre-deploy backup from the first attempt"
+# Step 20's log ends with this on success: the one font no seed can fetch.
+SEED_FONT_NOTE = ("Zebra's TT0003M_.TTF isn't seeded: upload it by hand in the portal "
+                  "(Label builder › Fonts).\n")
 RUNNER_DIR_UNWRITABLE = ("Sirdar can't write its runner folder (SIRDAR_RUNNER_DIR). It must "
                          "be owned by uid 10001 with mode 700.")
 
@@ -261,7 +264,8 @@ def plan_of(dep: Deployment) -> list[StepDef]:
     return plan_for(dep.mode, restore=restores(dep.mode, dep.snapshot_id), publish=dep.publish,
                     vm=dep.vm, cloud=dep.cloud, go_live=dep.go_live,
                     snapshot=takes_snapshot(dep), smoke=smokes(dep.mode, dep.slot),
-                    first_admin=dep.first_admin, bluegreen=dep.bluegreen)
+                    first_admin=dep.first_admin, bluegreen=dep.bluegreen,
+                    seed=dep.seed_content)
 
 
 # ---- records -----------------------------------------------------------------
@@ -277,7 +281,8 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                             vm_snapshot: str | None = None, cloud: bool = False,
                             slot: str | None = None, go_live: bool = False,
                             first_admin: bool = False,
-                            bluegreen: bool = False) -> Deployment:
+                            bluegreen: bool = False,
+                            seed_content: bool = False) -> Deployment:
     """Add a running deployment and its step rows. The caller commits, then
     calls launch(). start_step None means the plan's first step (1, or 12
     for a publish job, 15 for a teardown). Raises DeployInProgress (only the
@@ -302,7 +307,9 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
     as on DigitalOcean; NotSupportedOnBlueGreen for the same four modes; it
     never takes a VM snapshot (take_vm_snapshot is dropped). An Update or
     Activate names its slot (DoEnvError slot_required), and any slot given is
-    orange or purple (slot_invalid)."""
+    orange or purple (slot_invalid).
+
+    seed_content: its plan ends with step 20 Seed starter content (an Update that starts empty)."""
     on_do = env.target_id == targets.DO_TARGET
     if on_do and mode in NOT_ON_DIGITALOCEAN:
         raise NotSupportedOnDigitalOcean(mode)
@@ -331,7 +338,8 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
     taking_on_delete = mode == "teardown" and (cloud or bluegreen) and snapshot_id is not None
     plan = plan_for(mode, restore=restores(mode, snapshot_id), publish=publish, vm=vm,
                     cloud=cloud, go_live=go_live, snapshot=taking_on_delete,
-                    smoke=smokes(mode, slot), first_admin=first_admin, bluegreen=bluegreen)
+                    smoke=smokes(mode, slot), first_admin=first_admin, bluegreen=bluegreen,
+                    seed=seed_content)
     if start_step is None:
         start_step = plan[0].number
     if start_step not in {step.number for step in plan}:
@@ -369,7 +377,7 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                      dump_path=dump_path, publish=publish, vm=vm,
                      take_vm_snapshot=take_vm_snapshot, vm_snapshot=vm_snapshot,
                      cloud=cloud, slot=slot, go_live=go_live, first_admin=first_admin,
-                     bluegreen=bluegreen)
+                     bluegreen=bluegreen, seed_content=seed_content)
     try:
         async with db.begin_nested():
             db.add(dep)
@@ -820,6 +828,8 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
     if dep.bluegreen:
         # The first deploy builds the shared database: nothing to dump yet.
         step_vars["dump"] = {"data_new": not await lan_slots.ran(db, env)}
+    # Step 20: the Learning space only where the learning site and the wiki run.
+    step_vars["seed"] = {"seed_learning": "learn" in env.apps and "wiki" in env.apps}
     try:
         text = envfile.render_env(envfile.EnvConfig(
             name=env.name, domain=env.base_domain, image_tag=envfile.image_tag(dep.sha),
@@ -975,9 +985,36 @@ IN_PLACE_NOTE = "The droplet already runs the new commit; retry {step}."
 
 def _ran_in_place(env: Environment, dep: Deployment, key: str) -> bool:
     """A one-slot DigitalOcean Update that failed after up (its slot smoke
-    test or Switch traffic): the only droplet already runs the new commit."""
+    test, Switch traffic or Seed starter content): the only droplet already
+    runs the new commit."""
     return (dep.cloud and dep.mode == "update" and dep.slot is not None
-            and len(env.slots or ()) == 1 and key in ("slot_smoke", "go_live"))
+            and len(env.slots or ()) == 1 and key in ("slot_smoke", "go_live", "seed"))
+
+
+async def _seeded_failed(deployment_id: uuid.UUID, env_id: uuid.UUID) -> None:
+    """Step 20 runs last, after the stack is up and traffic moved: when it
+    fails the environment records the commit it serves as a success would
+    (do_envs/lan_slots.after_success, or the plain current_sha), so a later
+    Update takes its pre-deploy dump. Its status stays failed, and Retry
+    runs step 20 again."""
+    async with get_sessionmaker()() as s:
+        dep = await s.get(Deployment, deployment_id)
+        env = await s.get(Environment, env_id)
+        if dep is None or env is None:
+            return
+        status = env.status
+        if dep.cloud or dep.bluegreen:
+            try:
+                await (do_envs if dep.cloud else lan_slots).after_success(s, env, dep)
+            except do_envs.DoEnvError as e:
+                # The slot emptied meanwhile: nothing to record. The
+                # deployment stays failed, closed once.
+                log.warning("deployment %s: step 20 failed and %s", deployment_id, e.code)
+                return
+        else:
+            env.current_sha, env.image_tag = dep.sha, envfile.image_tag(dep.sha)
+        env.status, env.updated_at = status, _now()
+        await s.commit()
 
 
 async def _serving(env_id: uuid.UUID, sha: str) -> None:
@@ -1215,6 +1252,7 @@ async def _run(deployment_id: uuid.UUID) -> None:
                         # it would need a greenlet.
                         reason = _failure_reason(step, result, bluegreen=dep.bluegreen)
                         in_place = _ran_in_place(env, dep, step.key)
+                        seeding = step.key == "seed"
                         sha = dep.sha
                         note = IN_PLACE_NOTE.format(step=step.name) if in_place else ""
                         if admin_rc is not None and admin_rc >= 0:
@@ -1230,6 +1268,8 @@ async def _run(deployment_id: uuid.UUID) -> None:
                                      append_log=note + "\n" if note else "")
                         if in_place:
                             await _serving(env_id, sha)
+                        if seeding:
+                            await _seeded_failed(deployment_id, env_id)
                         return
                     step.status, step.finished_at = "succeeded", _now()
                     if step.key in ("provision", "do_prepare"):
@@ -1262,6 +1302,10 @@ async def _run(deployment_id: uuid.UUID) -> None:
                                         .format(email=row.email if row else "the first admin")))
                         # Cleared in the same commit as the step's success.
                         await first_admins.mark_done(db, env.id)
+                    elif step.key == "seed":
+                        await db.execute(
+                            update(DeploymentStep).where(DeploymentStep.id == step.id)
+                            .values(log=DeploymentStep.log + SEED_FONT_NOTE))
                     elif step.key == "restore":
                         await _keep_snapshot_keys(db, env.id, settings, ctx.snapshot_keys)
                     elif step.key == "export":

@@ -36,6 +36,12 @@ Remove DNS records, 18 Remove DigitalOcean resources. Reset, Restore backup, Rol
 back and Restore VM snapshot have no DigitalOcean plan. 19 Renew certificate
 is Sirdar's backup renewal, a job of its own (renewals.py).
 
+20 Seed starter content (seed.yml: `ss-stack seed`, label fonts and
+templates, and the Learning space when learn runs) ends a first Update that
+starts empty and asked for it (deployments.seed_content). Step numbers are
+unique in a plan and 11–19 are taken, so it runs last: after Create the first
+admin and after any publish, slot smoke test or switch.
+
 A LAN Blue/Green environment (vm and bluegreen; ESXi or Proxmox, a data VM
 and two app VMs) has plans of its own too. Update is 0 Prepare VM (the data
 VM, then the slot's), 1–5 on the slot's VM, 6 Pre-deploy dump, 7 Prepare
@@ -102,6 +108,7 @@ STEPS: tuple[StepDef, ...] = (
     StepDef(17, "undns", "Remove DNS records", "", 10 * 60, "python"),
     StepDef(18, "do_destroy", "Remove DigitalOcean resources", "", 60 * 60, "vm"),
     StepDef(19, "do_renew", "Renew certificate", "", 30 * 60, "vm"),
+    StepDef(20, "seed", "Seed starter content", "seed.yml", 20 * 60),
 )
 STEPS_BY_KEY = {s.key: s for s in STEPS}
 # A LAN Blue/Green environment's step 0 builds up to two VMs (the data VM,
@@ -193,6 +200,11 @@ def _with_first_admin(keys: tuple[str, ...]) -> tuple[str, ...]:
     return (*keys[:at], "first_admin", *keys[at:])
 
 
+def _with_seed(keys: tuple[str, ...], seed: bool) -> tuple[str, ...]:
+    """Step 20 last: every earlier step has a lower number."""
+    return (*keys, "seed") if seed else keys
+
+
 def _cloud_plan(mode: str, *, restore: bool, publish: bool, vm: bool, go_live: bool,
                 snapshot: bool, smoke: bool = True) -> tuple[str, ...]:
     if publish or vm:
@@ -215,9 +227,11 @@ def _cloud_plan(mode: str, *, restore: bool, publish: bool, vm: bool, go_live: b
 def plan_for(mode: str, *, restore: bool = False, publish: bool = False, vm: bool = False,
              cloud: bool = False, go_live: bool = False, snapshot: bool = False,
              smoke: bool = True, first_admin: bool = False,
-             bluegreen: bool = False) -> list[StepDef]:
+             bluegreen: bool = False, seed: bool = False) -> list[StepDef]:
     if first_admin and (mode != "update" or restore):
         raise ValueError("only an Update that starts empty creates the first admin")
+    if seed and (mode != "update" or restore):
+        raise ValueError("only an Update that starts empty seeds starter content")
     if bluegreen:
         if not vm or cloud:
             raise ValueError("a LAN Blue/Green plan is a VM plan")
@@ -227,13 +241,13 @@ def plan_for(mode: str, *, restore: bool = False, publish: bool = False, vm: boo
                         snapshot=snapshot)
         if first_admin:
             keys = _with_first_admin(keys)
-        return [STEPS_BY_KEY[k] for k in keys]
+        return [STEPS_BY_KEY[k] for k in _with_seed(keys, seed)]
     if cloud:
         keys = _cloud_plan(mode, restore=restore, publish=publish, vm=vm, go_live=go_live,
                            snapshot=snapshot, smoke=smoke)
         if first_admin:
             keys = _with_first_admin(keys)
-        return [STEPS_BY_KEY[k] for k in keys]
+        return [STEPS_BY_KEY[k] for k in _with_seed(keys, seed)]
     if mode == "activate":
         raise ValueError("only a DigitalOcean or LAN Blue/Green environment activates a slot")
     if go_live or snapshot:
@@ -256,4 +270,4 @@ def plan_for(mode: str, *, restore: bool = False, publish: bool = False, vm: boo
         keys = (*keys, *PUBLISH_KEYS)
     if first_admin:
         keys = _with_first_admin(keys)
-    return [STEPS_BY_KEY[k] for k in keys]
+    return [STEPS_BY_KEY[k] for k in _with_seed(keys, seed)]

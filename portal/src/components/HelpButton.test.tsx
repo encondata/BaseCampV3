@@ -17,6 +17,10 @@ const auth = vi.hoisted(() => ({
 }));
 vi.mock('../auth/AuthContext', () => ({ useAuth: () => ({ can: auth.can, person: auth.person }) }));
 vi.mock('../lib/api', () => ({ apiFetch: vi.fn() }));
+const sys = vi.hoisted(() => ({ apps: undefined as undefined | { wiki: boolean; kiosk: boolean; learn: boolean } }));
+vi.mock('../lib/systemStatusContext', () => ({
+  useSystemStatus: () => ({ status: { apps: sys.apps }, loaded: true, refresh: () => {} }),
+}));
 
 import { apiFetch } from '../lib/api';
 import HelpButton, { clearHelpCache } from './HelpButton';
@@ -34,6 +38,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   auth.can = () => true;
   auth.person = { id: 'person-a' };
+  sys.apps = undefined;
 });
 
 function renderAt(path = '/bulk/time') {
@@ -44,6 +49,13 @@ it('is hidden without wiki:view', () => {
   auth.can = (resource, action) => !(resource === 'wiki' && action === 'view');
   renderAt();
   expect(screen.queryByRole('button', { name: LABEL })).toBeNull();
+});
+
+it('is hidden while the wiki is off, and asks nothing', () => {
+  sys.apps = { wiki: false, kiosk: true, learn: true };
+  renderAt();
+  expect(screen.queryByRole('button', { name: LABEL })).toBeNull();
+  expect(apiFetch).not.toHaveBeenCalled();
 });
 
 it('opens this screen’s guide in a new tab', async () => {

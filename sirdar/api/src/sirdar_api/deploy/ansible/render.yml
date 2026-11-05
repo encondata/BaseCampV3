@@ -1,6 +1,9 @@
 # Step 4 — Render config: the environment's .env (mode 600) from Sirdar's
 # record. It arrives base64-encoded so no value is ever read as a template,
-# and it carries every secret, so the task is no_log.
+# and it carries every secret, so the tasks that read it are no_log.
+# A checkout from before the learning site (ss-stack learned learn in
+# 6cc4c8b7; its STACK_APPS check refuses any app it doesn't know) runs
+# without it, so Roll back, Update and adopt to an older commit still start.
 - name: Render config
   hosts: target
   gather_facts: false
@@ -11,9 +14,38 @@
         state: directory
         mode: "0700"
 
+    - name: Which apps the .env runs
+      ansible.builtin.set_fact:
+        stack_apps: >-
+          {{ ((env_file_b64 | b64decode
+               | regex_search('(?m)^STACK_APPS=(.*)$', '\1')) or ['none'])[0]
+             | trim }}
+      no_log: true
+
+    - name: Does this checkout's ss-stack know the learning site?
+      ansible.builtin.command:
+        argv: [grep, -qE, "^ +([a-z]+[|])*learn([|][a-z]+)*[)]", "{{ ss_stack }}"]
+      register: knows_learn
+      changed_when: false
+      failed_when: false
+      when: ss_stack is defined and 'learn' in stack_apps.split(',')
+
+    - name: Run without the learning site when it doesn't
+      ansible.builtin.set_fact:
+        learn_dropped: "{{ knows_learn is not skipped and knows_learn.rc != 0 }}"
+        apps_kept: "{{ stack_apps.split(',') | reject('eq', 'learn') | join(',') or 'none' }}"
+
+    - name: Say so
+      ansible.builtin.debug:
+        msg: This commit predates the learning site, so it runs without it.
+      when: learn_dropped | bool
+
     - name: Write .env
       ansible.builtin.copy:
-        content: "{{ env_file_b64 | b64decode }}"
+        content: >-
+          {{ (env_file_b64 | b64decode
+              | regex_replace('(?m)^STACK_APPS=.*$', 'STACK_APPS=' ~ apps_kept))
+             if learn_dropped | bool else (env_file_b64 | b64decode) }}
         dest: "{{ env_dir }}/.env"
         mode: "0600"
       no_log: true

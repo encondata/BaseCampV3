@@ -74,6 +74,13 @@ class Settings(BaseSettings):
     # Google's attestation revocation list (security/attestation_status.py)
     attestation_status_url: str = "https://android.googleapis.com/attestation/status"
 
+    # ── Optional apps (deploy/stack's STACK_APPS) ──────────
+    # The optional apps this environment runs: comma-separated, lowercase
+    # (wiki, kiosk, learn, status, mailpit). Unset or empty: every app counts
+    # as on (dev, older stacks). "none": none of them is on. The portal hides
+    # its links to an app that is off (GET /system/status → apps).
+    apps: Annotated[list[str], NoDecode] = []
+
     # ── Scans ──────────────────────────────────────────────
     scans_history_default: int = Field(100, ge=1)  # history rows when caller omits limit
 
@@ -191,6 +198,17 @@ class Settings(BaseSettings):
                     f"SS_KIOSK_SIGNING_DIGESTS: {item!r} is not a hex SHA-256 digest")
             digests.append(digest)
         return digests
+
+    @field_validator("apps", mode="before")
+    @classmethod
+    def _split_apps(cls, value):
+        if isinstance(value, str):
+            value = value.split(",")
+        return [str(a).strip().lower() for a in value or [] if str(a).strip()]
+
+    def app_on(self, app: str) -> bool:
+        """Whether an optional app runs: every one when SS_APPS is unset or empty."""
+        return not self.apps or app in self.apps
 
     @property
     def sync_database_url(self) -> str:

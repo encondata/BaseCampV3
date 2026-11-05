@@ -16,6 +16,8 @@
 #   ss-stack revision <env-dir>             print the database's Alembic revision
 #   ss-stack admin   <env-dir> <args…>      serversherpa bootstrap-admin in the running api
 #                                           container; stdin (a password) passes through
+#   ss-stack seed    <env-dir> [--learning] starter content in the running api container: label
+#                                           fonts and templates (--learning: the Learning space too)
 #
 # <env-dir> holds the environment's .env (see env.example) and backups/.
 # With STACK_EXTERNAL_DATA=1 (DigitalOcean) the database is a managed
@@ -26,7 +28,8 @@
 # the LAN for STACK_DB_ALLOW's addresses only (pg_hba.conf, written here).
 # STACK_DB_SSLMODE=disable: the external database is a LAN data VM (no TLS).
 # STACK_APPS lists the optional apps that run (wiki, kiosk, learn, status, mailpit;
-# "none" for none); without it every app runs. API and portal always run.
+# "none" for none); without it every app runs. API and portal always run. The
+# learning site needs the wiki (its documents render there).
 # Sirdar's deploy pipeline runs exactly these commands over SSH.
 set -euo pipefail
 # dumps hold every secret in the database: backups/ and its files are owner-only
@@ -44,7 +47,7 @@ cleanup() { if (( ${#CLEANUP[@]} )); then rm -f -- "${CLEANUP[@]}"; fi; }
 trap cleanup EXIT
 
 die() { echo "ss-stack: $*" >&2; exit 1; }
-usage() { sed -n '6,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '6,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 [[ $# -ge 2 ]] || usage
 cmd=$1
@@ -87,6 +90,9 @@ check_apps() {
       *) die "STACK_APPS has '$app', not one of wiki, kiosk, learn, status, mailpit (lowercase, no spaces)" ;;
     esac
   done
+  if app_on learn && ! app_on wiki; then
+    die "The learning site needs the wiki: turn the wiki on, or turn learning off."
+  fi
 }
 
 # Mail goes to Mailpit unless the .env names an SMTP server.
@@ -348,9 +354,10 @@ case $cmd in
     if app_on status; then
       # The status page leaves out an app that is off (an empty URL); one
       # that runs gets compose's default, never a value from the caller.
-      ( unset STATUS_KIOSK_URL STATUS_WIKI_URL
+      ( unset STATUS_KIOSK_URL STATUS_WIKI_URL STATUS_LEARN_URL
         app_on kiosk || export STATUS_KIOSK_URL=
         app_on wiki || export STATUS_WIKI_URL=
+        app_on learn || export STATUS_LEARN_URL=
         dc status up -d "${WAIT[@]}" )
     else
       dc status down
@@ -481,6 +488,17 @@ case $cmd in
     # argv; the command's exit code is ss-stack's.
     [[ $# -ge 1 ]] || usage
     dc api exec -T api serversherpa bootstrap-admin "$@"
+    ;;
+  seed)
+    # Starter content (Sirdar's step 20): label fonts and templates and, with
+    # --learning, the wiki Learning space. Each command is idempotent; the
+    # first that fails stops here with its exit code.
+    learning=0
+    if [[ ${1:-} == --learning ]]; then learning=1; shift; fi
+    [[ $# -eq 0 ]] || usage
+    dc api exec -T api serversherpa seed-label-fonts
+    dc api exec -T api serversherpa seed-label-templates
+    if (( learning )); then dc api exec -T api serversherpa learning-seed; fi
     ;;
   *)
     usage

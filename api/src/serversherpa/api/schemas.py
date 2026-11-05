@@ -2574,6 +2574,15 @@ class BackgroundStatusOut(BaseModel):
     total: int
 
 
+class AppsStatusOut(BaseModel):
+    """Which optional apps this environment runs (SS_APPS): the portal hides
+    its links to an app that is off."""
+
+    wiki: bool = True
+    kiosk: bool = True
+    learn: bool = True
+
+
 class SystemStatusOut(BaseModel):
     """Public (unauthenticated) portal status — banners + read-only state."""
 
@@ -2586,6 +2595,7 @@ class SystemStatusOut(BaseModel):
     password_reset_ttl_minutes: int = 15
     password_min_length: int = 8
     background: BackgroundStatusOut | None = None
+    apps: AppsStatusOut = Field(default_factory=AppsStatusOut)
 
 
 class AdminConfigOut(BaseModel):

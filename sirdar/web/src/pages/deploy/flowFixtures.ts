@@ -6,7 +6,7 @@ import type { FlowContext } from './flowState';
 
 export const FLOW_DEFAULTS = {
   ...DEFAULTS,
-  apps: { optional: ['wiki', 'kiosk', 'status', 'mailpit'], always: ['api', 'portal'] },
+  apps: { optional: ['wiki', 'kiosk', 'learn', 'status', 'mailpit'], always: ['api', 'portal'] },
   mail: { smtp_port: 587 },
   first_admin: { password_min_length: 8, role: 'super_admin', link_minutes: 240 },
 };

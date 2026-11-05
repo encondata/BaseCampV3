@@ -45,6 +45,17 @@ both modes.
 running api container (Sirdar's step 11, Create the first admin); stdin (a
 typed password) passes through, and its exit code is the command's.
 
+`ss-stack seed <env-dir> [--learning]` runs `serversherpa seed-label-fonts`
+and `seed-label-templates` (with `--learning`, `learning-seed` too) in the
+running api container (Sirdar's step 20, Seed starter content); the first
+command that fails stops it with its exit code.
+
+`STACK_APPS` also reaches the API as `SS_APPS` (the portal hides links to an
+app that is off), and `ss-stack` refuses `learn` without `wiki`.
+`SS_KIOSK_SIGNING_DIGESTS` (comma-separated SHA-256 digests of the kiosk
+app's signing certificates) reaches the API unchanged; empty refuses every
+biometric enroll.
+
 ## Accepted risk: staging CORS
 
 These stacks run the API with `SS_ENV=staging`, and outside production the

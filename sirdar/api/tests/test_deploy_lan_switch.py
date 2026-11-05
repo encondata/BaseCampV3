@@ -326,7 +326,7 @@ async def test_a_database_failure_while_putting_back_says_both(
 
     monkeypatch.setattr(publish, "_managed_hosts", second_call_fails)
     reason = await _fails(db, lan, "purple")
-    assert reason.startswith("1 of 7 public URLs didn't answer: portal.")
+    assert reason.startswith("1 of 8 public URLs didn't answer: portal.")
     assert reason.endswith("Sirdar couldn't put the proxy hosts back: check them in Nginx "
                            "Proxy Manager.")
     assert "hunter2" not in reason
@@ -349,7 +349,7 @@ async def test_one_host_that_cant_be_put_back_is_named(db, lan_home,
 
     publish_fakes.npm.handler = fail_wiki_on_put_back
     reason = await _fails(db, lan, "purple")
-    assert "Sirdar couldn't put 1 of 7 proxy hosts back: check them in Nginx Proxy Manager." \
+    assert "Sirdar couldn't put 1 of 8 proxy hosts back: check them in Nginx Proxy Manager." \
         in reason
     assert "wiki.lan9.serversherpa.com: " in reason
     forwards = _forwards(publish_fakes)

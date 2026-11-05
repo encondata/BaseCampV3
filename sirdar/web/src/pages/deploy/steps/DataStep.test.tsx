@@ -117,3 +117,17 @@ it('without errors the admin fields are not marked invalid', () => {
   for (const label of ['First name', 'Email', 'Password'])
     expect(screen.getByLabelText(label).getAttribute('aria-invalid'), label).toBeNull();
 });
+
+it('starting empty offers Seed starter content, on by default', async () => {
+  const set = renderStep();
+  const toggle = screen.getByLabelText('Seed starter content') as HTMLInputElement;
+  expect(toggle.checked).toBe(true);
+  expect(screen.getByText(/Zebra's TT0003M_\.TTF still goes in by hand \(Label builder › Fonts\)/)).toBeTruthy();
+  await userEvent.click(toggle);
+  expect(set).toHaveBeenCalledWith({ seedContent: false });
+});
+
+it('a snapshot has nothing to seed', () => {
+  renderStep({ dataMode: 'snapshot' });
+  expect(screen.queryByLabelText('Seed starter content')).toBeNull();
+});

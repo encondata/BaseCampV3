@@ -26,8 +26,8 @@ case "$*" in
     cat > "$DOCKER_LOG.stdin" ;;
   *"/status/compose.yml up"*)
     # what the status page is told to check (unset: compose's default)
-    printf 'kiosk=%s wiki=%s\n' "${STATUS_KIOSK_URL-unset}" "${STATUS_WIKI_URL-unset}" \
-      >> "$DOCKER_LOG.status" ;;
+    printf 'kiosk=%s wiki=%s learn=%s\n' "${STATUS_KIOSK_URL-unset}" "${STATUS_WIKI_URL-unset}" \
+      "${STATUS_LEARN_URL-unset}" >> "$DOCKER_LOG.status" ;;
   *pg_restore*)
     cat > "$DOCKER_LOG.stdin"
     [[ -n "${FAKE_FAIL_PG_RESTORE:-}" ]] && exit 1 ;;
@@ -574,11 +574,12 @@ def _status_targets(env: dict[str, str]) -> list[str]:
 
 
 @pytest.mark.parametrize("apps, seen", [
-    ("", "kiosk=unset wiki=unset"),
-    ("wiki,kiosk,status,mailpit", "kiosk=unset wiki=unset"),
-    ("status,mailpit", "kiosk= wiki="),
-    ("wiki,status,mailpit", "kiosk= wiki=unset"),
-    ("kiosk,status,mailpit", "kiosk=unset wiki="),
+    ("", "kiosk=unset wiki=unset learn=unset"),
+    ("wiki,kiosk,learn,status,mailpit", "kiosk=unset wiki=unset learn=unset"),
+    ("wiki,kiosk,status,mailpit", "kiosk=unset wiki=unset learn="),
+    ("status,mailpit", "kiosk= wiki= learn="),
+    ("wiki,status,mailpit", "kiosk= wiki=unset learn="),
+    ("kiosk,status,mailpit", "kiosk=unset wiki= learn="),
 ])
 def test_the_status_page_checks_only_the_apps_that_run(env_dir: Path, fake: dict[str, str],
                                                        apps: str, seen: str) -> None:
@@ -586,7 +587,8 @@ def test_the_status_page_checks_only_the_apps_that_run(env_dir: Path, fake: dict
     out); one that runs keeps compose's default. A caller's own value never
     gets through."""
     _apps(env_dir, f"STACK_APPS={apps}\n")
-    env = {**fake, "STATUS_KIOSK_URL": "https://elsewhere.example", "STATUS_WIKI_URL": "x"}
+    env = {**fake, "STATUS_KIOSK_URL": "https://elsewhere.example", "STATUS_WIKI_URL": "x",
+           "STATUS_LEARN_URL": "y"}
     out = run(env, "up", str(env_dir))
     assert out.returncode == 0, out.stderr
     assert _status_targets(fake) == [seen]
@@ -619,9 +621,20 @@ def test_data_without_mailpit_starts_only_seaweedfs_storage(env_dir: Path,
 
 
 def test_the_learn_site_runs_when_listed(env_dir: Path, fake: dict[str, str]) -> None:
-    _apps(env_dir, SMTP + "STACK_APPS=learn\n")
+    _apps(env_dir, SMTP + "STACK_APPS=wiki,learn\n")
     assert run(fake, "up", str(env_dir)).returncode == 0
-    assert dc(env_dir, "web", f"{WAIT} --scale kiosk=0 --scale wiki=0") in calls(fake)
+    assert dc(env_dir, "web", f"{WAIT} --scale kiosk=0") in calls(fake)
+
+
+@pytest.mark.parametrize("command", ["up", "data"])
+def test_the_learning_site_needs_the_wiki(env_dir: Path, fake: dict[str, str],
+                                          command: str) -> None:
+    _apps(env_dir, SMTP + "STACK_APPS=kiosk,learn,status\n")
+    out = run(fake, command, str(env_dir))
+    assert out.returncode != 0
+    assert ("The learning site needs the wiki: turn the wiki on, or turn learning off."
+            in out.stderr)
+    assert calls(fake) == []
 
 
 def test_a_data_vm_ignores_stack_apps(env_dir: Path, fake: dict[str, str]) -> None:
@@ -682,3 +695,30 @@ def test_the_smtp_password_never_reaches_argv(env_dir: Path, fake: dict[str, str
         assert "Mail-Secret-1" not in out.stdout + out.stderr
     assert calls(fake)
     assert not any("Mail-Secret-1" in c for c in calls(fake))
+
+
+@pytest.mark.parametrize("args, commands", [
+    ((), ["seed-label-fonts", "seed-label-templates"]),
+    (("--learning",), ["seed-label-fonts", "seed-label-templates", "learning-seed"]),
+])
+def test_seed_runs_the_starter_content_commands_in_the_api_container(
+        env_dir: Path, fake: dict[str, str], args: tuple[str, ...], commands: list[str]) -> None:
+    out = run(fake, "seed", str(env_dir), *args)
+    assert out.returncode == 0, out.stderr
+    assert calls(fake) == [dc(env_dir, "api", f"exec -T api serversherpa {c}") for c in commands]
+
+
+def test_seed_stops_at_the_first_failure_with_its_exit_code(env_dir: Path, fake: dict[str, str],
+                                                            tmp_path: Path) -> None:
+    docker = tmp_path / "bin" / "docker"
+    docker.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\n"
+                      "[[ \"$*\" == *seed-label-fonts* ]] && exit 4\nexit 0\n")
+    out = run(fake, "seed", str(env_dir), "--learning")
+    assert out.returncode == 4
+    assert calls(fake) == [dc(env_dir, "api", "exec -T api serversherpa seed-label-fonts")]
+
+
+def test_seed_takes_only_learning(env_dir: Path, fake: dict[str, str]) -> None:
+    out = run(fake, "seed", str(env_dir), "--everything")
+    assert out.returncode == 2
+    assert calls(fake) == []

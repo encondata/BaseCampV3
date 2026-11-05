@@ -1,6 +1,7 @@
 /** Step 7: every choice, then one Deploy (the flow owns the button). No secret is ever shown. */
 import { Link } from 'react-router-dom';
 
+import { parseDigests } from '../../../lib/appRules';
 import { KIND_LABEL, OPTIONAL_APPS, effectiveDomain, targetChoices, targetKind } from '../flowState';
 
 import type { StepProps } from './EnvironmentStep';
@@ -16,6 +17,7 @@ export default function ReviewStep({ state, ctx, problem, created }: StepProps &
   const bg = state.servers === 'bluegreen';
   const servers = bg ? (state.type === 'production' ? 'Blue/Green (blue and green)' : 'Blue/Green (orange and purple)') : 'Single server';
   const snapshot = ctx.snapshots.find((s) => s.id === state.snapshotId);
+  const digests = state.apps.kiosk ? parseDigests(state.digests).digests.length : 0;
   return (
     <>
       <dl className="sirdar-kv">
@@ -35,6 +37,8 @@ export default function ReviewStep({ state, ctx, problem, created }: StepProps &
         <dt>Git ref</dt><dd className="mono">{state.gitRef.trim()}</dd>
         <dt>Base domain</dt><dd className="mono">{effectiveDomain(state, ctx)}</dd>
         <dt>Apps</dt><dd>{apps}</dd>
+        {state.dataMode === 'empty' && <><dt>Seed starter content</dt><dd>{state.seedContent ? 'On' : 'Off'}</dd></>}
+        {digests > 0 && <><dt>Kiosk signing digests</dt><dd>{digests}</dd></>}
         {bg && state.type !== 'production' && <><dt>Activates</dt><dd>{state.autoActivate ? 'Automatically' : 'With Activate'}</dd></>}
         {kind === 'digitalocean' && state.type !== 'production' && (
           <><dt>Certificate</dt><dd>{state.acmeStaging ? "Let's Encrypt staging" : "Let's Encrypt"}</dd></>

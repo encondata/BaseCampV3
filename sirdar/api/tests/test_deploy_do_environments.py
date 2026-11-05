@@ -250,7 +250,7 @@ async def test_env_extra(db):
         "STACK_DROPLET_ID": "4001",
         "SS_CERT_DO_TOKEN": DEV_RENEW_TOKEN, "SS_CERT_LB_ID": "lb-0001",
         "SS_CERT_NAMES": ",".join([*(f"{s}.uat9.serversherpa.com"
-                                     for s in ("api", "portal", "kiosk", "wiki", "status")),
+                                     for s in ("api", "portal", "kiosk", "wiki", "learn", "status")),
                                    "uat9.serversherpa.com"]),
         "SS_CERT_ACME_DIRECTORY": "https://acme-v02.api.letsencrypt.org/directory",
         "SS_CERT_ACME_KEY": acme_b64,

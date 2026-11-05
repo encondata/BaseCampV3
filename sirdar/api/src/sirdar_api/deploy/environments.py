@@ -163,10 +163,13 @@ def _check_target(target_id: str, settings: Settings) -> SshTargetConfig | None:
 
 def _hostname(env: Environment, service: str, domain: str) -> str | None:
     """A service's public name: none for mailpit, nor for an app that is off.
-    home is the base domain itself."""
+    home is the base domain itself. On DigitalOcean the names are the ones
+    its certificate covers (no spaces: objects live in Spaces)."""
     if service == home.HOME:
         return domain if home.wants_home(env) else None
-    return (f"{service}.{domain}" if service in envfile.PUBLIC_SERVICES
+    names = (certs.PUBLIC_SERVICES if env.target_id == targets.DO_TARGET
+             else envfile.PUBLIC_SERVICES)
+    return (f"{service}.{domain}" if service in names
             and app_rules.is_public(env, service) else None)
 
 
@@ -278,6 +281,7 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
                      do: dict | None = None,
                      first_admin: dict | None = None, apps: list[str] | None = None,
                      mail: dict | None = None,
+                     kiosk_signing_digests: list[str] | None = None,
                      secrets: dict | None = None) -> Environment:
     """A new environment (status "new"): default ports unless given, the
     target's host for every service, freshly generated secrets. With a
@@ -294,6 +298,7 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     purple), static addresses, Nginx Proxy Manager as the switch.
     apps: the optional apps it runs (None: all); only those get public
     names. mail: its Mailpit (the default) or an SMTP server (apps.check_mail).
+    kiosk_signing_digests: the kiosk app's signing certificate digests (apps.check_digests).
     secrets: optional secrets (SS_ANTHROPIC_API_KEY, …), vault-encrypted with
     the generated ones; the SMTP password joins them as SS_SMTP_PASSWORD."""
     cfg = await _precheck(db, settings, name=name, type_=type_, target_id=target_id,
@@ -301,9 +306,14 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     try:
         apps_on = app_rules.check_apps(apps)
         mail_spec = app_rules.check_mail(mail, apps_on)
+        digests = app_rules.check_digests(kiosk_signing_digests)
     except app_rules.AppsError as e:
         raise EnvError(e.code, **e.extra) from None
     extra_secrets = check_optional_secrets(secrets or {})
+    if not mail_spec["smtp_host"] and (
+            extra_secrets.get("SS_SMTP_PASSWORD")
+            or (isinstance(mail, dict) and mail.get("password"))):
+        _refuse_password_without_smtp()        # Mailpit sends no SMTP password
     if mail_spec["smtp_password"]:
         extra_secrets["SS_SMTP_PASSWORD"] = mail_spec["smtp_password"]
     admin_spec = None
@@ -361,7 +371,7 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
                                   domain=domain, ports=all_ports, actor_id=actor_id,
                                   snapshot_id=snapshot_id, do=do or {}, apps_on=apps_on,
                                   extra_secrets=extra_secrets)
-        await _set_apps_and_mail(db, env, apps_on, mail_spec)
+        await _set_apps_and_mail(db, env, apps_on, mail_spec, digests)
         if admin_spec is not None:
             await first_admins.put(db, settings, env.id, admin_spec)
         return env
@@ -410,7 +420,7 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         secrets=vault.generate_env_secrets() | extra_secrets, actor_id=actor_id,
         seed_snapshot_id=snapshot_id, publish=publish,
         public_services=app_rules.public_services(apps_on))
-    await _set_apps_and_mail(db, env, apps_on, mail_spec)
+    await _set_apps_and_mail(db, env, apps_on, mail_spec, digests)
     if spec is not None or bluegreen is not None:
         stored = await integrations.config_of(db, target_id)
         add_vm = vms.add_esxi if target_id == targets.ESXI_TARGET else vms.add
@@ -441,16 +451,23 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     return env
 
 
-async def _free_ports(db: AsyncSession, host: str, bind: str) -> dict[str, int]:
-    """Each service's first port at or above its default that no other
-    environment's service on this host listens on (any bind address of
-    theirs or ours being 0.0.0.0, or the same one), unique within this one."""
+async def _used_ports(db: AsyncSession, host: str, bind: str) -> set[int]:
+    """The ports other environments' services on this host listen on that
+    clash with `bind` (any bind address of theirs or ours being 0.0.0.0, or
+    the same one)."""
     rows = await db.execute(
         select(EnvironmentService.port, Environment.bind_ip)
         .join(Environment, Environment.id == EnvironmentService.environment_id)
         .where(EnvironmentService.host_ip == host))
-    used = {port for port, other_bind in rows
+    return {port for port, other_bind in rows
             if DEFAULT_BIND_IP in (bind, other_bind) or other_bind == bind}
+
+
+async def _free_ports(db: AsyncSession, host: str, bind: str) -> dict[str, int]:
+    """Each service's first port at or above its default that no other
+    environment's service on this host listens on (_used_ports), unique
+    within this one."""
+    used = await _used_ports(db, host, bind)
     ports: dict[str, int] = {}
     for service in envfile.SERVICES:
         port = envfile.DEFAULT_PORTS[service]
@@ -461,12 +478,75 @@ async def _free_ports(db: AsyncSession, host: str, bind: str) -> dict[str, int]:
 
 
 async def _set_apps_and_mail(db: AsyncSession, env: Environment, apps_on: list[str],
-                             mail_spec: dict) -> None:
+                             mail_spec: dict, digests: list[str] | None = None) -> None:
     env.apps = apps_on
     (env.smtp_host, env.smtp_port, env.smtp_username, env.smtp_from,
      env.smtp_starttls) = (mail_spec[k] for k in ("smtp_host", "smtp_port", "smtp_username",
                                                   "smtp_from", "smtp_starttls"))
+    if digests is not None:
+        env.kiosk_signing_digests = digests
     await db.flush()
+
+
+def _mail_of(env: Environment) -> dict:
+    """The stored mail in create's shape (apps.check_mail checks it again)."""
+    if not env.smtp_host:
+        return {"mode": "mailpit"}
+    return {"mode": "smtp", "host": env.smtp_host, "port": env.smtp_port,
+            "username": env.smtp_username, "from_address": env.smtp_from,
+            "starttls": env.smtp_starttls}
+
+
+def _refuse_password_without_smtp() -> None:
+    raise EnvError("smtp_password_without_smtp", field="secrets.SS_SMTP_PASSWORD")
+
+
+async def _drop_smtp_password(db: AsyncSession, env: Environment, changed: list[str]) -> None:
+    gone = await db.execute(delete(EnvironmentSecret).where(
+        EnvironmentSecret.environment_id == env.id,
+        EnvironmentSecret.key == "SS_SMTP_PASSWORD"))
+    if gone.rowcount and "secrets.SS_SMTP_PASSWORD" not in changed:
+        changed.append("secrets.SS_SMTP_PASSWORD")
+
+
+async def _update_apps_and_mail(db: AsyncSession, env: Environment, fields: dict,
+                                changed: list[str], sent_password: str | None
+                                ) -> tuple[bool, str | None]:
+    """PATCH apps and mail, checked as create checks them: the apps given (or
+    kept) against the mail given (or kept). Production keeps SMTP while its
+    first admin is pending. Mailpit clears the SMTP columns and the SMTP
+    password, and refuses a new one. SMTP from Mailpit, a new SMTP host (any
+    case) or user name without a new password drops any stored one: it was never meant for that
+    server. `sent_password` is secrets.SS_SMTP_PASSWORD from the same PATCH.
+    Returns (whether the apps changed, an SMTP password to store)."""
+    before_apps, before_mail = list(env.apps), _mail_of(env)
+    before_host, before_user = env.smtp_host, env.smtp_username
+    try:
+        apps_on = (app_rules.check_apps(fields["apps"]) if fields.get("apps") is not None
+                   else before_apps)
+        mail_spec = app_rules.check_mail(
+            fields["mail"] if fields.get("mail") is not None else before_mail, apps_on)
+    except app_rules.AppsError as e:
+        raise EnvError(e.code, **e.extra) from None
+    if (env.type == "production" and not mail_spec["smtp_host"]
+            and await first_admins.pending(db, env.id)):
+        raise EnvError("smtp_required_for_first_admin")
+    mail_in = fields.get("mail")
+    if not mail_spec["smtp_host"] and (
+            sent_password or (isinstance(mail_in, dict) and mail_in.get("password"))):
+        _refuse_password_without_smtp()
+    retargeted = bool(mail_spec["smtp_host"] and (
+        not before_host or mail_spec["smtp_host"].lower() != before_host.lower()
+        or mail_spec["smtp_username"] != before_user))
+    await _set_apps_and_mail(db, env, apps_on, mail_spec)
+    if apps_on != before_apps:
+        changed.append("apps")
+    if _mail_of(env) != before_mail:
+        changed.append("mail")
+    if not mail_spec["smtp_host"] or (
+            retargeted and not mail_spec["smtp_password"] and not sent_password):
+        await _drop_smtp_password(db, env, changed)
+    return apps_on != before_apps, mail_spec["smtp_password"]
 
 
 def _slots_ok(vm) -> bool:
@@ -553,9 +633,16 @@ class AdoptReport:
     ignored_keys: list[str]
 
 
+# Services newer than some hand-built .envs: with no port key, adopt picks
+# the first free port at or above the default (_adopted_late_ports) rather
+# than assume the default is free.
+_LATE_SERVICES = ("learn",)
+
+
 def _adopted_settings(values: dict[str, str]) -> dict:
     """Non-secret settings from an adopted .env. A bad value raises
-    adopt_value_invalid naming the key."""
+    adopt_value_invalid naming the key. A late service (_LATE_SERVICES)
+    without its port key is left out of "ports"."""
     def invalid(key: str) -> EnvError:
         return EnvError("adopt_value_invalid", key=key)
 
@@ -571,6 +658,8 @@ def _adopted_settings(values: dict[str, str]) -> dict:
     ports: dict[str, int] = {}
     for service in envfile.SERVICES:
         key = envfile.PORT_KEYS[service]
+        if service in _LATE_SERVICES and not values.get(key):
+            continue
         raw = values.get(key) or str(envfile.DEFAULT_PORTS[service])
         if not (raw.isascii() and raw.isdecimal()):
             raise invalid(key)
@@ -588,6 +677,23 @@ def _adopted_settings(values: dict[str, str]) -> dict:
     return {"domain": domain, "proxy_ip": proxy, "bind_ip": bind, "ports": ports,
             "keep_dumps": keep_dumps, "spaces_bucket": bucket, "log_level": level,
             "image_tag": tag}
+
+
+async def _adopted_late_ports(db: AsyncSession, host: str, bind: str,
+                              ports: dict[str, int]) -> dict[str, int]:
+    """`ports` with each missing late service on its first port at or above
+    its default that neither this .env nor another environment on the host
+    (_used_ports) uses, in service order."""
+    missing = [s for s in envfile.SERVICES if s not in ports]
+    if missing:
+        used = await _used_ports(db, host, bind) | set(ports.values())
+        for service in missing:
+            port = envfile.DEFAULT_PORTS[service]
+            while port in used:
+                port += 1
+            ports[service] = _check_port(port, service)
+            used.add(port)
+    return {s: ports[s] for s in envfile.SERVICES}
 
 
 def _valid_fernet_key(value: str) -> bool:
@@ -655,11 +761,18 @@ async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
     if missing:
         raise EnvError("adopt_env_incomplete", missing=missing)
     picked = _adopted_settings(values)
+    picked["ports"] = await _adopted_late_ports(db, cfg.host, picked["bind_ip"],
+                                                picked["ports"])
     secrets = _adopted_secrets(values)
     try:
         apps_on, mail_spec = app_rules.from_env(values, picked["domain"])
     except app_rules.AppsError as e:
         raise EnvError(e.code, **e.extra) from None
+    try:
+        digests = app_rules.check_digests(
+            [d for d in values.get("SS_KIOSK_SIGNING_DIGESTS", "").split(",") if d.strip()])
+    except app_rules.AppsError:
+        raise EnvError("adopt_value_invalid", key="SS_KIOSK_SIGNING_DIGESTS") from None
 
     repo = shlex.quote(folder + "/repo")
     head = await ssh.run_command(cfg, db, f"git -C {repo} rev-parse HEAD")
@@ -677,7 +790,7 @@ async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
         spaces_bucket=picked["spaces_bucket"], log_level=picked["log_level"],
         status="ready", current_sha=sha, image_tag=picked["image_tag"], secrets=secrets,
         actor_id=actor_id, public_services=app_rules.public_services(apps_on))
-    await _set_apps_and_mail(db, env, apps_on, mail_spec)
+    await _set_apps_and_mail(db, env, apps_on, mail_spec, digests)
     now = _now()
     dep = Deployment(environment_id=env.id, mode="adopt", git_ref=git_ref, sha=sha,
                      status="adopted", start_step=1, actor_id=actor_id, started_at=now,
@@ -697,7 +810,9 @@ async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
 async def update(db: AsyncSession, settings: Settings, env: Environment,
                  fields: dict) -> list[str]:
     """Apply a PATCH: an absent or None field is kept. Only the optional
-    secrets are editable ("" clears one). Returns the changed names."""
+    secrets are editable ("" clears one). Apps and mail follow create's rules
+    (an SMTP password in mail is stored as SS_SMTP_PASSWORD); a change of apps
+    rebuilds the public names (home aside). Returns the changed names."""
     if await is_deploying(db, env.id):
         raise EnvError("deploy_in_progress")
     changed: list[str] = []
@@ -763,6 +878,22 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
     if fields.get("publish") is not None:
         put("publish", bool(fields["publish"]))
 
+    apps_changed, smtp_password = False, None
+    secrets_in = fields.get("secrets")
+    sent_password = (secrets_in.get("SS_SMTP_PASSWORD")
+                     if isinstance(secrets_in, dict) else None)
+    if fields.get("apps") is not None or fields.get("mail") is not None:
+        apps_changed, smtp_password = await _update_apps_and_mail(
+            db, env, fields, changed, sent_password)
+    elif sent_password and not env.smtp_host:
+        _refuse_password_without_smtp()
+    if fields.get("kiosk_signing_digests") is not None:
+        try:
+            put("kiosk_signing_digests",
+                app_rules.check_digests(fields["kiosk_signing_digests"]))
+        except app_rules.AppsError as e:
+            raise EnvError(e.code, **e.extra) from None
+
     rows = {r.service: r for r in await services_of(db, env.id)}
     service_fields = fields.get("services") or {}
     # home follows portal: it is never edited on its own
@@ -794,12 +925,16 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
     if home_row is not None and "portal" in rows:
         home_row.host_ip, home_row.port = rows["portal"].host_ip, rows["portal"].port
     _check_ports_unique({s: r.port for s, r in rows.items() if s != home.HOME})
-    if env.base_domain != old_domain:
+    if env.base_domain != old_domain or apps_changed:
         for service, row in rows.items():
+            if service == home.HOME and env.base_domain == old_domain:
+                continue                      # the bare name doesn't follow the apps
             row.hostname = _hostname(env, service, env.base_domain)
 
-    secrets = fields.get("secrets") or {}
+    secrets = dict(fields.get("secrets") or {})
     check_optional_secrets(secrets)          # "" still clears one (below)
+    if smtp_password and secrets.get("SS_SMTP_PASSWORD") is None:
+        secrets["SS_SMTP_PASSWORD"] = smtp_password
     if any(v for v in secrets.values()) and not vault.is_configured(settings):
         raise EnvError("secrets_key_missing")
     existing = await secret_keys_of(db, env.id)

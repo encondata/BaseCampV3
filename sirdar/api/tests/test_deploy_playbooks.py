@@ -72,7 +72,7 @@ def test_publish_and_teardown_plans():
 def test_plans():
     assert [s.number for s in steps.STEPS] == [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 7, 8, 9, 9, 10,
                                                11, 11, 12, 13, 13, 14, 14, 14, 15, 15, 16, 17,
-                                               18, 19]
+                                               18, 19, 20]
     assert [s.number for s in steps.plan_for("update")] == [1, 2, 3, 4, 5, 6, 10]
     build = ["preflight", "bootstrap", "fetch", "render", "build"]
     # a seeded first deploy backs up whatever database is already there
@@ -809,7 +809,7 @@ def test_slot_smoke_fits_its_step_with_five_names():
     """The worst case (every name failing every attempt with its full
     timeout) for the five public names stays well inside the step's limit."""
     _, tasks = _tasks("slot_smoke.yml")
-    task = tasks[0]
+    task = next(t for t in tasks if "ansible.builtin.uri" in t)
 
     def default(expr):
         return int(expr.split("default(")[1].split(")")[0])
@@ -990,6 +990,129 @@ def test_first_admin_play_pipelines_so_the_password_never_lands_on_disk():
     connection's stdin instead of a temp file on the target."""
     plays = yaml.safe_load((PLAYBOOK_DIR / "first_admin.yml").read_text())
     assert [play.get("vars", {}).get("ansible_pipelining") for play in plays] == [True]
+
+
+def _seed_vars(env_dir: Path, learning: bool) -> dict:
+    return {**_common(env_dir), "seed_learning": learning}
+
+
+@pytest.mark.parametrize("learning", [False, True])
+def test_seed_playbook_runs_the_seed_commands_in_the_api_container(tmp_path, learning):
+    env_dir, env = _target(tmp_path)
+    result, calls = _play(tmp_path, "seed.yml", _seed_vars(env_dir, learning), env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    wanted = ["seed-label-fonts", "seed-label-templates", *(["learning-seed"] if learning else [])]
+    assert [c.split(" -f ")[-1] for c in calls if c.startswith("compose")] == [
+        f"{env_dir}/repo/deploy/stack/api/compose.yml exec -T api serversherpa {cmd}"
+        for cmd in wanted]
+
+
+def test_seed_playbook_stops_at_the_first_failure_with_its_output(tmp_path):
+    env_dir, env = _target(tmp_path)
+    result, calls = _play(tmp_path, "seed.yml", _seed_vars(env_dir, True),
+                          {**env, "FAKE_FAIL": "seed-label-templates"})
+    out = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "Seeding stopped (exit 1)" in out and "fake failure" in out
+    assert not any("learning-seed" in c for c in calls)
+
+
+def test_seed_playbook_explains_an_old_checkout(tmp_path):
+    env_dir, env = _target(tmp_path)
+    old = tmp_path / "old-ss-stack"
+    old.write_text("#!/bin/sh\nexit 2\n")
+    old.chmod(0o755)
+    result, calls = _play(tmp_path, "seed.yml",
+                          {**_seed_vars(env_dir, False), "ss_stack": str(old)}, env)
+    assert result.returncode != 0
+    assert "This commit's ss-stack has no seed command" in result.stdout
+    assert calls == []
+
+
+# ---- a checkout from before the learning site (ss-stack without learn) ----
+
+PREDATES_LEARN = "This commit predates the learning site, so it runs without it."
+# check_apps as ss-stack had it from a6ceb51e until 6cc4c8b7 added learn
+OLD_SS_STACK = """#!/bin/sh
+check_apps() {
+  for app in $list; do
+    case $app in
+      wiki|kiosk|status|mailpit) ;;
+      none) die "STACK_APPS: none can't be combined with other apps" ;;
+    esac
+  done
+}
+"""
+
+
+def _old_ss_stack(tmp_path: Path) -> Path:
+    old = tmp_path / "old-ss-stack"
+    old.write_text(OLD_SS_STACK)
+    old.chmod(0o755)
+    return old
+
+
+def _render(tmp_path: Path, apps: str, *, old: bool):
+    env_dir, env = _target(tmp_path)
+    secret = "render-SECRET-0123abcd"
+    text = f"STACK_ENV=e2e\nSTACK_APPS={apps}\nPOSTGRES_PASSWORD={secret}\n"
+    extra = {**_common(env_dir), "env_file_b64": base64.b64encode(text.encode()).decode()}
+    if old:
+        extra["ss_stack"] = str(_old_ss_stack(tmp_path))
+    result, _ = _play(tmp_path, "render.yml", extra, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert secret not in result.stdout + result.stderr
+    return result, (env_dir / ".env").read_text()
+
+
+@pytest.mark.parametrize("apps", ["wiki,learn,kiosk", "learn,wiki", "wiki,learn", "none"])
+def test_render_keeps_learn_for_a_checkout_that_knows_it(tmp_path, apps):
+    result, written = _render(tmp_path, apps, old=False)
+    assert f"STACK_APPS={apps}\n" in written
+    assert PREDATES_LEARN not in result.stdout
+
+
+@pytest.mark.parametrize("apps, kept", [("wiki,learn,kiosk", "wiki,kiosk"),
+                                        ("learn,wiki", "wiki"),
+                                        ("wiki,kiosk,learn", "wiki,kiosk"),
+                                        ("wiki,learn,kiosk,learn", "wiki,kiosk")])
+def test_render_drops_learn_for_a_checkout_from_before_it(tmp_path, apps, kept):
+    """Roll back, Update or adopt to a commit whose ss-stack refuses learn:
+    the .env runs without the learning site, and the step says so."""
+    result, written = _render(tmp_path, apps, old=True)
+    assert f"STACK_APPS={kept}\n" in written
+    assert "learn" not in written
+    assert "POSTGRES_PASSWORD=render-SECRET-0123abcd\n" in written
+    assert PREDATES_LEARN in result.stdout
+
+
+@pytest.mark.parametrize("apps", ["wiki,kiosk", "none"])
+def test_render_says_nothing_when_an_old_checkout_runs_no_learn(tmp_path, apps):
+    result, written = _render(tmp_path, apps, old=True)
+    assert f"STACK_APPS={apps}\n" in written
+    assert PREDATES_LEARN not in result.stdout
+
+
+@pytest.mark.parametrize("old", [False, True])
+def test_slot_smoke_skips_learn_for_a_checkout_from_before_it(tmp_path, old):
+    _Answer.status, _Answer.seen = 200, []
+    server = HTTPServer(("127.0.0.1", 0), _Answer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        env_dir, env = _target(tmp_path)
+        hosts = [{"service": "api", "hostname": "api.e2e.serversherpa.com", "path": "/healthz"},
+                 {"service": "learn", "hostname": "learn.e2e.serversherpa.com", "path": "/"}]
+        extra = {**_common(env_dir), "public_hosts": hosts, "slot_port": server.server_port,
+                 "slot_smoke_retries": 1, "slot_smoke_delay": 0}
+        if old:
+            extra["ss_stack"] = str(_old_ss_stack(tmp_path))
+        result, _ = _play(tmp_path, "slot_smoke.yml", extra, env)
+    finally:
+        server.shutdown()
+    assert result.returncode == 0, result.stdout + result.stderr
+    asked = [seen[0] for seen in _Answer.seen]
+    assert "api.e2e.serversherpa.com" in asked
+    assert ("learn.e2e.serversherpa.com" in asked) is not old
 
 
 # ---- LAN Blue/Green (phase 8b): the data VM, its dump and the slot smoke test ----

@@ -7,7 +7,7 @@ import uuid
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
@@ -474,6 +474,10 @@ class MailIn(BaseModel):
     starttls: bool | None = None
 
 
+# One kiosk signing digest as sent (apps.check_digests normalizes it).
+Digest = Annotated[str, Field(max_length=200)]
+
+
 class EnvironmentIn(BaseModel):
     mode: Literal["new", "adopt"]
     name: str = Field(max_length=64)
@@ -499,6 +503,9 @@ class EnvironmentIn(BaseModel):
     # (absent: Mailpit) and optional secrets (write-only)
     apps: list[str] | None = None
     mail: MailIn | None = None
+    # mode "new" only: the kiosk app's signing certificate digests (adopt reads
+    # SS_KIOSK_SIGNING_DIGESTS from the .env)
+    kiosk_signing_digests: list[Digest] | None = Field(default=None, max_length=10)
     secrets: dict[str, str] | None = Field(default=None, repr=False)
 
 
@@ -535,6 +542,12 @@ class EnvironmentPatch(BaseModel):
     auto_activate: bool | None = None
     # DigitalOcean only: grow the droplet and database sizes.
     do: DoPatch | None = None
+    # The optional apps it runs, where its mail goes (create's rules; the SMTP
+    # password: mail.password or secrets.SS_SMTP_PASSWORD) and the kiosk signing
+    # digests. Nothing runs now: the next deploy and publish apply them.
+    apps: list[str] | None = None
+    mail: MailIn | None = None
+    kiosk_signing_digests: list[Digest] | None = Field(default=None, max_length=10)
     # Write-only. No pydantic constraint on the values, so no validation error
     # can describe one; the service answers secret_invalid / secret_not_editable.
     secrets: dict[str, str] | None = None
@@ -629,6 +642,8 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
         raise HTTPException(status_code=422, detail={"code": "apps_not_allowed"})
     if body.mode == "adopt" and body.mail is not None:
         raise HTTPException(status_code=422, detail={"code": "mail_not_allowed"})
+    if body.mode == "adopt" and body.kiosk_signing_digests is not None:
+        raise HTTPException(status_code=422, detail={"code": "digests_not_allowed"})
     if body.mode == "adopt" and body.secrets:
         # An adopted environment keeps the secrets its own .env holds.
         raise HTTPException(status_code=422, detail={"code": "secrets_not_allowed"})
@@ -648,6 +663,7 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
                 first_admin=body.first_admin.model_dump() if body.first_admin else None,
                 apps=body.apps,
                 mail=body.mail.model_dump(exclude_none=True) if body.mail else None,
+                kiosk_signing_digests=body.kiosk_signing_digests,
                 secrets=body.secrets)
         else:
             env, _, report = await environments.adopt(
@@ -746,6 +762,8 @@ async def update_environment(name: str, body: EnvironmentPatch, request: Request
         raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
     fields = body.model_dump(exclude_unset=True)
     fields.pop("confirm_name", None)
+    if body.mail is not None:
+        fields["mail"] = body.mail.model_dump(exclude_none=True)   # as create reads it
     wanted = fields.pop("do", None)
     if wanted is not None:
         fields["do_checked"] = await _checked_sizes(
@@ -843,6 +861,8 @@ class DeploymentIn(BaseModel):
     snapshot: bool | None = None
     # DigitalOcean production Delete: "delete production <name>", typed.
     confirm_production: str | None = Field(default=None, max_length=100)
+    # A first Update that starts empty: end with step 20 Seed starter content.
+    seed_content: bool | None = None
 
 
 class RetryIn(BaseModel):
@@ -987,7 +1007,8 @@ async def _launch(db, env: Environment, request: Request, actor: AuthContext, *,
                   restore_dump: str | None = None, publish: bool = False, vm: bool = False,
                   take_vm_snapshot: bool = False, vm_snapshot: str | None = None,
                   cloud: bool = False, slot: str | None = None, go_live: bool = False,
-                  first_admin: bool = False, bluegreen: bool = False) -> dict:
+                  first_admin: bool = False, bluegreen: bool = False,
+                  seed_content: bool = False) -> dict:
     env_name = env.name           # read now: a lock conflict rolls the session back
     snapshot_id = snapshot.id if snapshot is not None else None
     snapshot_name = snapshot.name if snapshot is not None else None
@@ -1000,7 +1021,8 @@ async def _launch(db, env: Environment, request: Request, actor: AuthContext, *,
                                                vm=vm, take_vm_snapshot=take_vm_snapshot,
                                                vm_snapshot=vm_snapshot, cloud=cloud,
                                                slot=slot, go_live=go_live,
-                                               first_admin=first_admin, bluegreen=bluegreen)
+                                               first_admin=first_admin, bluegreen=bluegreen,
+                                               seed_content=seed_content)
     except pipeline.DeployInProgress:
         raise HTTPException(status_code=409, detail={"code": "deploy_in_progress"}) from None
     except (pipeline.NotSupportedOnDigitalOcean, pipeline.NotSupportedOnBlueGreen) as e:
@@ -1103,12 +1125,14 @@ async def _start_do_update(db, env: Environment, body: DeploymentIn, request: Re
             snapshot = await snapshots.ready_snapshot(db, env.seed_snapshot_id)
         except snapshots.SnapshotError as e:
             raise _snapshot_http(e) from None
+    seed = _seed_requested(body, first=not await _do_ran(db, env), snapshot=snapshot)
     slot = do_envs.target_slot(env)
     return await _launch(db, env, request, actor, action="deploy.deployment_start",
                          mode="update", git_ref=ref,
                          sha=ref.lower() if gitref.is_full_sha(ref) else "", snapshot=snapshot,
                          cloud=True, slot=slot, go_live=do_envs.goes_live(env, slot),
-                         first_admin=snapshot is None and await first_admins.pending(db, env.id))
+                         first_admin=snapshot is None and await first_admins.pending(db, env.id),
+                         seed_content=seed)
 
 
 async def _do_ran(db, env: Environment) -> bool:
@@ -1212,13 +1236,15 @@ async def _start_lan_update(db, env: Environment, body: DeploymentIn, request: R
             snapshot = await snapshots.ready_snapshot(db, env.seed_snapshot_id)
         except snapshots.SnapshotError as e:
             raise _snapshot_http(e) from None
+    seed = _seed_requested(body, first=not await lan_slots.ran(db, env), snapshot=snapshot)
     slot = do_envs.target_slot(env)
     return await _launch(db, env, request, actor, action="deploy.deployment_start",
                          mode="update", git_ref=ref,
                          sha=ref.lower() if gitref.is_full_sha(ref) else "", snapshot=snapshot,
                          publish=env.publish, vm=True, bluegreen=True, slot=slot,
                          go_live=do_envs.goes_live(env, slot),
-                         first_admin=snapshot is None and await first_admins.pending(db, env.id))
+                         first_admin=snapshot is None and await first_admins.pending(db, env.id),
+                         seed_content=seed)
 
 
 async def _lan_snapshot_slot(db, env: Environment) -> str | None:
@@ -1286,6 +1312,15 @@ class ActivateIn(BaseModel):
 
 def _refuse(status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra})
+
+
+def _seed_requested(body: DeploymentIn, *, first: bool, snapshot) -> bool:
+    """seed_content: only a first Update that restores no snapshot seeds."""
+    if not body.seed_content:
+        return False
+    if body.mode != "update" or not first or snapshot is not None:
+        raise _refuse(422, "seed_content_not_allowed")
+    return True
 
 
 async def _activate_lan(db, env: Environment, body: ActivateIn, request: Request,
@@ -1440,6 +1475,8 @@ async def _start_vm_restore(db, env: Environment, name: str, request: Request,
 async def start_deployment(name: str, body: DeploymentIn, request: Request, db: DbSession,
                            actor: AuthContext = require_permission("deploy", "add")):
     _require_mode(actor, body.mode)
+    if body.seed_content and body.mode != "update":
+        raise _refuse(422, "seed_content_not_allowed")
     env = await _environment(db, name)
     on_vm = _on_vm(env)
     if _on_do(env) and body.mode in ("reset", "restore_dump", "vm_restore"):
@@ -1524,6 +1561,7 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
             snapshot = await snapshots.ready_snapshot(db, snapshot_id)
         except snapshots.SnapshotError as e:
             raise _snapshot_http(e) from None
+    seed = _seed_requested(body, first=env.current_sha is None, snapshot=snapshot)
     ref = body.git_ref or env.git_ref
     if on_vm:
         # Step 0 resolves a branch or tag on the VM: it may not exist yet.
@@ -1544,7 +1582,7 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
                          mode=body.mode, git_ref=ref, sha=sha, snapshot=snapshot,
                          publish=env.publish, vm=on_vm, take_vm_snapshot=take,
                          first_admin=body.mode == "update" and snapshot is None
-                         and await first_admins.pending(db, env.id))
+                         and await first_admins.pending(db, env.id), seed_content=seed)
 
 
 @router.get("/environments/{name}/deployments")
@@ -1631,7 +1669,7 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     plan = plan_for(dep.mode, restore=restoring, publish=dep.publish, vm=dep.vm,
                     cloud=dep.cloud, go_live=dep.go_live, snapshot=taking,
                     smoke=pipeline.smokes(dep.mode, dep.slot), first_admin=first_admin,
-                    bluegreen=dep.bluegreen)
+                    bluegreen=dep.bluegreen, seed=dep.seed_content)
     admin_step = STEPS_BY_KEY["first_admin"].number
     if dep.first_admin and not first_admin and from_step == admin_step <= stopped:
         # The admin was created since step 11 stopped: carry on with the step
@@ -1710,7 +1748,8 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
                          take_vm_snapshot=dep.take_vm_snapshot,
                          vm_snapshot=dep.vm_snapshot if dep.mode == "vm_restore" else None,
                          cloud=dep.cloud, slot=dep.slot, go_live=dep.go_live,
-                         first_admin=first_admin, bluegreen=dep.bluegreen)
+                         first_admin=first_admin, bluegreen=dep.bluegreen,
+                         seed_content=dep.seed_content)
 
 
 @router.post("/deployments/{deployment_id}/rollback", status_code=201)

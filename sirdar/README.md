@@ -731,17 +731,32 @@ Existing servers are adopted with **Adopt existing** on the Environments list.
 
 - **Types:** Production, Development, UAT (stored as `beta`) and Custom.
   Production always runs on DigitalOcean, Blue/Green.
-- **Extras › Apps:** the API and Portal always run; Wiki, Kiosk, the Status
-  page and Mailpit can be turned off (`STACK_APPS` in the `.env`). An app that
-  is off gets no hostname, DNS record, proxy host, certificate name, smoke test
-  or status-page card. Turning an app off needs a commit from this release or
-  later: an older git ref runs every app and uses Mailpit.
+- **Extras › Apps:** the API and Portal always run; Wiki, Kiosk, Learning (the
+  worker training site, `learn.<domain>`), the Status page and Mailpit can be
+  turned off (`STACK_APPS` in the `.env`). Learning needs the wiki (its
+  documents render there): turning the wiki off turns Learning off. An app that
+  is off gets no hostname, DNS record, proxy host, certificate name, smoke test,
+  status-page card or portal link (`SS_APPS`). Turning an app off needs a commit
+  from this release or later: an older git ref runs every app and uses Mailpit.
+- **Extras › Kiosk signing digests:** the SHA-256 digests of the kiosk app's
+  signing certificates (release and Play), one per line; written as
+  `SS_KIOSK_SIGNING_DIGESTS`. Kiosk biometric sign-in refuses every enroll
+  without them.
 - **Extras › Mail:** Mailpit (the default) or SMTP (host, port, user, password,
   from address, STARTTLS), written into the `.env` as `SS_SMTP_*`; the password
   is write-only. Mailpit off needs SMTP.
 - **Ports:** SSH environments that share a host get the next free ports; VM,
   DigitalOcean and Blue/Green environments keep the defaults. Change them later
   on the Settings tab.
+- **Settings › Apps & mail:** the same apps, mail and digests, editable after
+  create (locked while a deploy runs; saved with Save settings). Nothing runs
+  on save: the next Update rewrites the `.env`, `ss-stack up` starts or stops
+  the app containers (their volumes are kept), and the publish adds or removes
+  the DNS records and proxy hosts. A DigitalOcean certificate is reissued to
+  cover exactly the running apps. The SMTP password stays under Secrets.
+  Changing the SMTP host or user without entering a new password clears the
+  stored password (it belonged to the old server); Mailpit takes no password,
+  so saving one with Mailpit is refused.
 
 **The first super admin (starting empty).** The Data step asks for the first
 admin's name and email and how they sign in:
@@ -761,6 +776,16 @@ portal can't sign in with), fix them in the **First admin** card on the
 Settings tab and retry from step 11. A production environment that starts
 empty must use SMTP, so the link doesn't sit in Mailpit. Mail goes out through
 the environment's own mail settings: on dev and UAT that's usually Mailpit.
+
+**Starter content (starting empty).** The Data step's **Seed starter content**
+(on by default) adds step 20 "Seed starter content" to the first deploy: in
+the api container it runs `serversherpa seed-label-fonts` and
+`seed-label-templates`, and `learning-seed` when Learning and the wiki run.
+Each command is idempotent; a failure fails the step with the commands' last
+lines, and Retry runs it again. Step 20 is the last step (after any publish or
+switch). Zebra's TT0003M_.TTF is never seeded: upload it by hand
+(Label builder › Fonts). The fonts are downloaded from GitHub, so the
+environment needs outbound HTTPS.
 
 #### LAN Blue/Green (ESXi and Proxmox)
 

@@ -102,6 +102,20 @@ async def test_create_refusals(client, db, target, body, code):
     assert (resp.status_code, resp.json()["detail"]["code"]) == (422, code)
 
 
+@pytest.mark.parametrize("extra", [
+    {"secrets": {"SS_SMTP_PASSWORD": SMTP_PASSWORD}},
+    {"mail": {"mode": "mailpit", "password": SMTP_PASSWORD}},
+])
+async def test_create_on_mailpit_refuses_an_smtp_password(client, db, target, leak_guard, extra):
+    leak_guard += [SMTP_PASSWORD]
+    h = await auth_headers(client, db)
+    resp = await client.post(URL, headers=h, json={**NEW, **extra})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "smtp_password_without_smtp",
+                                     "field": "secrets.SS_SMTP_PASSWORD"}
+    assert await db.scalar(select(Environment).where(Environment.name == "qa1")) is None
+
+
 async def test_adopt_takes_no_secrets(client, db, target):
     h = await auth_headers(client, db)
     resp = await client.post(URL, headers=h, json={
@@ -113,7 +127,7 @@ async def test_adopt_takes_no_secrets(client, db, target):
 async def test_defaults_list_the_apps_and_the_smtp_port(client, db):
     h = await auth_headers(client, db)
     body = (await client.get("/api/deploy/environment-defaults", headers=h)).json()
-    assert body["apps"] == {"optional": ["wiki", "kiosk", "status", "mailpit"],
+    assert body["apps"] == {"optional": ["wiki", "kiosk", "learn", "status", "mailpit"],
                             "always": ["api", "portal"]}
     assert body["mail"] == {"smtp_port": 587}
 
@@ -133,17 +147,17 @@ async def test_an_environment_with_nothing_chosen_keeps_every_app_and_mailpit(
     target.overrides[f"{LS} main"] = f"{SHA}\trefs/heads/main\n"
     h = await auth_headers(client, db)
     body = (await client.post(URL, headers=h, json=NEW)).json()
-    assert body["apps"] == ["wiki", "kiosk", "status", "mailpit"]
+    assert body["apps"] == ["wiki", "kiosk", "learn", "status", "mailpit"]
     assert body["mail"]["mode"] == "mailpit" and body["mail"]["password_set"] is False
     assert all(s["hostname"] for s in body["services"] if s["service"] != "mailpit")
     audit = (await db.scalars(select(AuditLog.changes).where(
         AuditLog.action == "deploy.environment_create"))).one()
     assert (audit["apps"], audit["mail"], audit["secrets"]) == (
-        ["wiki", "kiosk", "status", "mailpit"], {"mode": "mailpit"}, [])
+        ["wiki", "kiosk", "learn", "status", "mailpit"], {"mode": "mailpit"}, [])
     resp = await client.post(f"{URL}/qa1/deployments", headers=h, json={"mode": "update"})
     await pipeline.wait(uuid.UUID(resp.json()["id"]))
     values = await _render_values(fake_runner)
-    assert values["STACK_APPS"] == "wiki,kiosk,status,mailpit"
+    assert values["STACK_APPS"] == "wiki,kiosk,learn,status,mailpit"
     assert not any(k.startswith("SS_SMTP_") and k != "SS_SMTP_PASSWORD" for k in values)
     assert values["SS_SMTP_PASSWORD"] == ""
 
@@ -185,7 +199,7 @@ async def test_a_new_base_domain_names_only_the_running_apps(client, db, target)
     names = {s["service"]: s["hostname"] for s in resp.json()["services"]}
     assert names == {"api": "api.qa2.serversherpa.com", "portal": "portal.qa2.serversherpa.com",
                      "home": "qa2.serversherpa.com",
-                     "kiosk": "kiosk.qa2.serversherpa.com", "wiki": None,
+                     "kiosk": "kiosk.qa2.serversherpa.com", "wiki": None, "learn": None,
                      "spaces": "spaces.qa2.serversherpa.com", "status": None, "mailpit": None}
 
 
@@ -328,7 +342,7 @@ async def test_adopt_renders_the_same_mail_back(client, db, target, fake_runner)
 
 async def test_adopt_without_the_keys_runs_every_app_on_mailpit(client, db, target):
     body = (await _adopt(client, db, target)).json()
-    assert body["apps"] == ["wiki", "kiosk", "status", "mailpit"]
+    assert body["apps"] == ["wiki", "kiosk", "learn", "status", "mailpit"]
     assert body["mail"]["mode"] == "mailpit"
 
 
@@ -369,3 +383,75 @@ async def test_adopt_takes_no_apps_or_mail(client, db, target, extra, code):
     h = await auth_headers(client, db)
     resp = await client.post(URL, headers=h, json={**ADOPT, **extra})
     assert (resp.status_code, resp.json()["detail"]["code"]) == (422, code)
+
+
+DIGEST = "ab" * 32
+
+
+async def test_create_stores_the_signing_digests_and_renders_them(client, db, target,
+                                                                  fake_runner):
+    await trust_fake(db, target)
+    target.overrides[f"{LS} main"] = f"{SHA}\trefs/heads/main\n"
+    h = await auth_headers(client, db)
+    resp = await client.post(URL, headers=h, json={
+        **NEW, "kiosk_signing_digests": ["AB:" * 31 + "AB"]})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["kiosk_signing_digests"] == [DIGEST]
+    dep = await client.post(f"{URL}/qa1/deployments", headers=h, json={"mode": "update"})
+    await pipeline.wait(uuid.UUID(dep.json()["id"]))
+    assert (await _render_values(fake_runner))["SS_KIOSK_SIGNING_DIGESTS"] == DIGEST
+
+
+async def test_create_refuses_a_bad_digest_and_learn_without_the_wiki(client, db, target):
+    h = await auth_headers(client, db)
+    resp = await client.post(URL, headers=h, json={**NEW, "kiosk_signing_digests": ["nope"]})
+    assert (resp.status_code, resp.json()["detail"]) == (
+        422, {"code": "signing_digest_invalid", "index": 0})
+    resp = await client.post(URL, headers=h, json={**NEW, "apps": ["learn", "mailpit"]})
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (422, "learn_needs_wiki")
+
+
+async def test_adopt_reads_learn_its_port_and_the_digests(client, db, target):
+    resp = await _adopt(client, db, target, STACK_APPS="wiki,learn,mailpit",
+                        STACK_LEARN_PORT="8192",
+                        SS_KIOSK_SIGNING_DIGESTS=f"{DIGEST},{'cd' * 32}")
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["apps"] == ["wiki", "learn", "mailpit"]
+    learn = next(s for s in body["services"] if s["service"] == "learn")
+    assert (learn["port"], learn["hostname"]) == (8192, "learn.uat.serversherpa.com")
+    assert body["kiosk_signing_digests"] == [DIGEST, "cd" * 32]
+    assert not {"STACK_LEARN_PORT", "SS_KIOSK_SIGNING_DIGESTS"} & set(body["ignored_keys"])
+
+
+async def test_adopt_refuses_a_bad_digest(client, db, target):
+    resp = await _adopt(client, db, target, SS_KIOSK_SIGNING_DIGESTS="nope")
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "adopt_value_invalid",
+                                     "key": "SS_KIOSK_SIGNING_DIGESTS"}
+
+
+async def test_adopt_refuses_learn_without_the_wiki(client, db, target):
+    resp = await _adopt(client, db, target, STACK_APPS="learn,mailpit")
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (422, "learn_needs_wiki")
+
+
+async def test_adopt_takes_no_digests(client, db, target):
+    h = await auth_headers(client, db)
+    resp = await client.post(URL, headers=h, json={**ADOPT, "kiosk_signing_digests": [DIGEST]})
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (422, "digests_not_allowed")
+
+
+async def test_adopt_without_a_learn_port_picks_a_free_one(client, db, target):
+    # an older hand-built .env: no STACK_LEARN_PORT, and its portal on learn's 8092
+    resp = await _adopt(client, db, target, STACK_LEARN_PORT=None, STACK_PORTAL_PORT="8092")
+    assert resp.status_code == 201, resp.text
+    ports = _ports(resp.json())
+    assert (ports["portal"], ports["learn"]) == (8092, 8093)
+
+
+async def test_adopt_without_a_learn_port_skips_another_environments(client, db, target):
+    await make_environment(db, name="other", host=target.host)     # its learn is on 8092
+    resp = await _adopt(client, db, target, STACK_LEARN_PORT=None)
+    assert resp.status_code == 201, resp.text
+    assert _ports(resp.json())["learn"] == 8093

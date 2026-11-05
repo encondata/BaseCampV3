@@ -149,3 +149,21 @@ def test_no_cleartext_warning_for_https_or_no_token(caplog):
         load_settings({**NTFY_BASE, "STATUS_NTFY_TOPIC": "t", "STATUS_NTFY_TOKEN": "tk"})
         load_settings({**NTFY_BASE, "STATUS_NTFY_TOPIC": "t", "STATUS_NTFY_SERVER": "http://ntfy.internal"})
     assert caplog.records == []
+
+
+def test_learn_is_optional_and_off_by_default():
+    assert "learn" not in [s.key for s in load_settings(BASE).services]
+
+
+def test_learn_follows_the_wiki_when_configured():
+    s = load_settings({**BASE, "STATUS_WIKI_URL": "https://wiki.example.com",
+                       "STATUS_LEARN_URL": "https://learn.example.com/"})
+    assert [(x.key, x.name, x.url) for x in s.services][-2:] == [
+        ("wiki", "Wiki", "https://wiki.example.com"),
+        ("learn", "Learning", "https://learn.example.com"),
+    ]
+
+
+def test_learn_url_must_be_http():
+    with pytest.raises(ConfigError, match="STATUS_LEARN_URL"):
+        load_settings({**BASE, "STATUS_LEARN_URL": "learn.example.com"})

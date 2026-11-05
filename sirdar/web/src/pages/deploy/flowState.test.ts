@@ -29,7 +29,7 @@ describe('initial state', () => {
     expect([s.gitRef, s.bindIp, s.cores, s.memoryGb, s.diskGb, s.dropletSize, s.smtpPort]).toEqual(
       ['main', '0.0.0.0', '4', '8', '64', 's-2vcpu-4gb', '587']);
     expect(s.proxyIp).toBe('10.10.48.6');
-    expect(s.apps).toEqual({ wiki: true, kiosk: true, status: true, mailpit: true });
+    expect(s.apps).toEqual({ wiki: true, kiosk: true, learn: true, status: true, mailpit: true });
     expect(s.publish).toBe(true);
   });
   it('starts Publish off without both integrations', () => {
@@ -91,7 +91,7 @@ describe('checks', () => {
     expect(stepErrors('extras', smtp, ctx)).toEqual({});
     expect(stepErrors('extras', { ...smtp, smtpHost: '' }, ctx).mail).toBe("Enter the SMTP server's host name or address.");
     expect(stepErrors('extras', { ...smtp, smtpPassword: 'has space' }, ctx).mail).toMatch(/can't be saved/);
-    expect(stepErrors('extras', ssh({ apps: { wiki: true, kiosk: true, status: true, mailpit: false } }), ctx).apps)
+    expect(stepErrors('extras', ssh({ apps: { wiki: true, kiosk: true, learn: true, status: true, mailpit: false } }), ctx).apps)
       .toBe('Mail goes to Mailpit unless SMTP is set up: turn Mailpit on, or choose SMTP.');
     expect(stepErrors('extras', ssh({ aiKey: 'with space' }), ctx).aiKey).toMatch(/can't be saved/);
   });
@@ -120,8 +120,8 @@ describe('the create body', () => {
   it('SSH: proxy, bind, publish, default ports, the first admin, no vm', () => {
     expect(buildBody(ssh(), ctx)).toEqual({
       name: 'qa', type: 'custom', target: 'ssh:lab', git_ref: 'main', proxy_ip: '10.10.48.6', bind_ip: '0.0.0.0',
-      publish: true, ports: { api: 8000, portal: 8091, kiosk: 8090, wiki: 8096, spaces: 9000, status: 8095, mailpit: 8025 },
-      apps: ['wiki', 'kiosk', 'status', 'mailpit'], mail: { mode: 'mailpit' },
+      publish: true, ports: { api: 8000, portal: 8091, kiosk: 8090, wiki: 8096, learn: 8092, spaces: 9000, status: 8095, mailpit: 8025 },
+      apps: ['wiki', 'kiosk', 'learn', 'status', 'mailpit'], mail: { mode: 'mailpit' },
       first_admin: { first_name: 'Ada', last_name: 'Lovelace', email: 'ada@test.example.com', password_mode: 'typed',
                      password: 'Correct-Horse-9' },
     });
@@ -153,7 +153,7 @@ describe('the create body', () => {
     expect(prod.do).toEqual({ account: 'production', droplet_size: 's-2vcpu-4gb', db_size: 'db-s-2vcpu-4gb', db_standby: false });
   });
   it('SMTP, apps off and the AI key', () => {
-    const body = buildBody(ssh({ apps: { wiki: false, kiosk: true, status: false, mailpit: false }, mailMode: 'smtp',
+    const body = buildBody(ssh({ apps: { wiki: false, kiosk: true, learn: false, status: false, mailpit: false }, mailMode: 'smtp',
                                  smtpHost: 'smtp.example.com', smtpPort: '2525', smtpUsername: 'mailer',
                                  smtpPassword: 'Mail-Secret-1', smtpFrom: 'ops@example.com', aiKey: 'sk-ant-1' }), ctx);
     expect([body.apps, body.mail, body.secrets]).toEqual([['kiosk'], {
@@ -187,7 +187,7 @@ describe('traffic', () => {
   it('LAN: each public app through NPM to the first server; spaces to the data VM', () => {
     const s = withRules(ssh({ target: 'esxi', servers: 'bluegreen', ipCidr: '10.10.48.70/24', gateway: '10.10.48.1',
                               purpleIpCidr: '10.10.48.71/24', dataIpCidr: '10.10.48.72/24',
-                              apps: { wiki: false, kiosk: true, status: true, mailpit: true } }), ctx);
+                              apps: { wiki: false, kiosk: true, learn: false, status: true, mailpit: true } }), ctx);
     const plan = trafficPlan(s, ctx);
     expect(plan.kind).toBe('proxy');
     expect(plan.rows.map((r) => [r.hostname, r.to])).toEqual([
@@ -199,5 +199,28 @@ describe('traffic', () => {
     const plan = trafficPlan(ssh({ target: 'digitalocean' }), ctx);
     expect(plan.kind).toBe('load_balancer');
     expect(plan.rows.map((r) => r.hostname)).not.toContain('spaces.qa.serversherpa.com');
+  });
+});
+
+describe('learn, digests and seeding', () => {
+  it('learning without the wiki is an Extras error; a bad digest too', () => {
+    const ctx = flowCtx();
+    expect(stepErrors('extras', ssh({ apps: { wiki: false, kiosk: true, learn: true, status: true, mailpit: true } }), ctx).apps)
+      .toBe('The learning site needs the wiki: turn the wiki on, or turn learning off.');
+    expect(stepErrors('extras', ssh({ digests: 'nope' }), ctx).digests)
+      .toBe('Each digest is a SHA-256: 64 hex characters, colons allowed.');
+    expect(stepOfCode('learn_needs_wiki')).toBe('extras');
+    expect(stepOfCode('signing_digest_invalid')).toBe('extras');
+  });
+  it('the body carries learn and the digests', () => {
+    const body = buildBody(ssh({ digests: 'AB:'.repeat(31) + 'AB' }), flowCtx());
+    expect(body.apps).toEqual(['wiki', 'kiosk', 'learn', 'status', 'mailpit']);
+    expect(body.kiosk_signing_digests).toEqual(['ab'.repeat(32)]);
+    expect(buildBody(ssh(), flowCtx())).not.toHaveProperty('kiosk_signing_digests');
+  });
+  it('starts with every app on and seeding on', () => {
+    const s = initialState(flowCtx());
+    expect(s.apps.learn && s.seedContent).toBe(true);
+    expect(s.digests).toBe('');
   });
 });

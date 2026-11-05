@@ -19,7 +19,14 @@ import { join } from 'node:path';
 export function labelgenSources(dir: string): string[] {
   return readdirSync(dir)
     .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && !f.startsWith('._'))
-    .sort();
+    .sort(byCodeUnit);
+}
+
+/** Plain code-unit order, the same as a bare sort, so the hash is unchanged.
+ *  Inlined rather than portal's compareOrdinal: vite.config.ts loads this
+ *  file before the @portal alias exists. */
+function byCodeUnit(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /** The hex sha256 of the generator's sources in `dir`. */

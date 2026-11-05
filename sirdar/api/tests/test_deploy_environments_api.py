@@ -26,7 +26,7 @@ ENV_KEYS = {"id", "name", "type", "target", "base_domain", "env_dir", "git_ref",
             "log_level", "services", "secrets_set", "seed_snapshot", "last_deployment",
             "created_at", "updated_at", "publish", "managed_records", "target_kind", "vm",
             "do", "slots", "active_slot", "auto_activate", "retiring", "first_admin",
-            "machines", "lan_slots", "apps", "mail"}
+            "machines", "lan_slots", "apps", "mail", "kiosk_signing_digests"}
 NEW = {"mode": "new", "name": "qa", "type": "custom", "target": "ssh",
        "proxy_ip": "10.10.48.6"}
 DEFAULTS_URL = "/api/deploy/environment-defaults"
@@ -67,6 +67,7 @@ async def test_environment_defaults(client, db):
                      {"service": "portal", "port": 8091, "public": True},
                      {"service": "kiosk", "port": 8090, "public": True},
                      {"service": "wiki", "port": 8096, "public": True},
+                     {"service": "learn", "port": 8092, "public": True},
                      {"service": "spaces", "port": 9000, "public": True},
                      {"service": "status", "port": 8095, "public": True},
                      {"service": "mailpit", "port": 8025, "public": False}],
@@ -82,7 +83,7 @@ async def test_environment_defaults(client, db):
                "production_slots": ["blue", "green"], "one_slot": ["orange"],
                "two_slots": ["orange", "purple"]},
         "first_admin": {"password_min_length": 8, "role": "super_admin", "link_minutes": 240},
-        "apps": {"optional": ["wiki", "kiosk", "status", "mailpit"], "always": ["api", "portal"]},
+        "apps": {"optional": ["wiki", "kiosk", "learn", "status", "mailpit"], "always": ["api", "portal"]},
         "mail": {"smtp_port": 587}}
 
 
@@ -107,7 +108,7 @@ async def test_create_new_environment(client, db, target, leak_guard):
     assert await _audits(db, "deploy.environment_create") == [{
         "name": "qa", "type": "custom", "target": "ssh", "base_domain": "qa.serversherpa.com",
         "git_ref": "main", "proxy_ip": "10.10.48.6", "bind_ip": "0.0.0.0", "publish": True,
-        "apps": ["wiki", "kiosk", "status", "mailpit"], "mail": {"mode": "mailpit"},
+        "apps": ["wiki", "kiosk", "learn", "status", "mailpit"], "mail": {"mode": "mailpit"},
         "secrets": []}]
     assert (await client.get(f"{URL}/qa", headers=h)).json() == body
     listed = (await client.get(URL, headers=h)).json()["environments"]
