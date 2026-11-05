@@ -29,7 +29,7 @@ from serversherpa.api.schemas import (
     BrandingIn, BrandingOut, LearningSettingsIn, LearningSettingsOut,
     RevokeAllSessionsOut, SecurityConfigIn, SecurityConfigOut,
     AiLookupConfigIn, AiLookupConfigOut,
-    AdminConfigIn, AdminConfigOut, BackgroundStatusOut, LogEntryOut, LogPageOut, SystemProcessOut,
+    AdminConfigIn, AdminConfigOut, AppsStatusOut, BackgroundStatusOut, LogEntryOut, LogPageOut, SystemProcessOut,
     SystemStatusOut,
 )
 from serversherpa.config import get_settings
@@ -102,16 +102,18 @@ async def list_processes(
 
 def _status_from(cfg: dict, background: BackgroundStatusOut | None = None) -> SystemStatusOut:
     banner = cfg["banner_message"].strip() if cfg["banner_enabled"] else ""
+    settings = get_settings()
     return SystemStatusOut(
         read_only=cfg["read_only"],
         read_only_message=cfg["read_only_message"] if cfg["read_only"] else "",
         workers_paused=bool(cfg["read_only"] and cfg["pause_workers"]),
         banner=banner or None,
-        totp_trust_days=get_settings().totp_trust_days,
+        totp_trust_days=settings.totp_trust_days,
         email_enabled=email_enabled(),
-        password_reset_ttl_minutes=get_settings().password_reset_ttl_minutes,
-        password_min_length=get_settings().password_min_length,
-        background=background)
+        password_reset_ttl_minutes=settings.password_reset_ttl_minutes,
+        password_min_length=settings.password_min_length,
+        background=background,
+        apps=AppsStatusOut(**{app: settings.app_on(app) for app in ("wiki", "kiosk", "learn")}))
 
 
 async def _background(db) -> BackgroundStatusOut | None:
