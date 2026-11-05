@@ -3,7 +3,8 @@
  *  round trip; the API stays the authority), the create body, the traffic
  *  plan, and which step an API error belongs to. Pure: no React, no I/O. */
 import {
-  SECRET_HELP, SECRET_RE, appsOn, appsProblem, mailBody, mailProblem, parseDigests, type AppSwitches, type OptionalApp,
+  CONTROL_RE, EMAIL_RE, SECRET_HELP, SECRET_RE, appsOn, appsProblem, mailBody, mailProblem, parseDigests, whole,
+  type AppSwitches, type OptionalApp,
 } from '../../lib/appRules';
 import { ipv4Problem, nameProblem, refProblem } from '../../lib/envRules';
 import type {
@@ -173,11 +174,6 @@ function networkOf(cidr: string): string {
 const DROPLET_SIZE_RE = /^[a-z0-9][a-z0-9-]{2,39}$/;
 const DB_SIZE_RE = /^db-[a-z0-9][a-z0-9-]{2,36}$/;
 const DOMAIN_RE = /^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
-const EMAIL_RE = /^[^@\s]{1,64}@[^@\s]+\.[^@\s.]{2,}$/;
-/** Control characters and line/paragraph separators (first_admins._clean refuses them). */
-const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
-
-const whole = (raw: string) => (/^\d+$/.test(raw.trim()) ? Number(raw) : NaN);
 const inRange = (n: number, [low, high]: [number, number]) => n >= low && n <= high;
 
 function sizeProblem(cores: string, memoryGb: string, diskGb: string, ctx: FlowContext): string {
@@ -271,6 +267,7 @@ export function buildBody(s: FlowState, ctx: FlowContext): NewEnvironmentBody {
   const kind = targetKind(s.target);
   const production = s.type === 'production';
   const twoSlots = s.servers === 'bluegreen';
+  const digests = s.apps.kiosk ? parseDigests(s.digests).digests : [];
   const body: NewEnvironmentBody = {
     name: s.name.trim(), type: s.type, target: s.target, git_ref: s.gitRef.trim(),
     ...(s.baseDomain.trim() ? { base_domain: s.baseDomain.trim().toLowerCase() } : {}),
@@ -278,8 +275,7 @@ export function buildBody(s: FlowState, ctx: FlowContext): NewEnvironmentBody {
     apps: appsOn(s.apps),
     mail: mailBody(s),
     ...(s.aiKey ? { secrets: { SS_ANTHROPIC_API_KEY: s.aiKey } } : {}),
-    ...(s.apps.kiosk && parseDigests(s.digests).digests.length
-      ? { kiosk_signing_digests: parseDigests(s.digests).digests } : {}),
+    ...(digests.length ? { kiosk_signing_digests: digests } : {}),
   };
   if (s.dataMode === 'snapshot') body.snapshot_id = s.snapshotId;
   else {

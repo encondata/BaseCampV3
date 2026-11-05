@@ -20,15 +20,16 @@ const MAILPIT_REQUIRED = 'Mail goes to Mailpit unless SMTP is set up: turn Mailp
 export const DIGEST_HELP = 'Each digest is a SHA-256: 64 hex characters, colons allowed.';
 
 const HOST_RE = /^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/;
-const EMAIL_RE = /^[^@\s]{1,64}@[^@\s]+\.[^@\s.]{2,}$/;
+export const EMAIL_RE = /^[^@\s]{1,64}@[^@\s]+\.[^@\s.]{2,}$/;
 const USER_RE = /^[^\s"'$#`\\]{1,254}$/;
 /** envfile.SECRET_VALUE_RE: what an optional secret in the .env may hold. */
 export const SECRET_RE = /^[A-Za-z0-9._~+/=:@%^*!?,;-]{1,1024}$/;
 export const SECRET_HELP = "can't be saved. Use letters, numbers and ._~+/=:@%^*!?,;- only, with no spaces or quotes.";
-/** Control characters and line/paragraph separators. */
-const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+/** Control characters and line/paragraph separators (first_admins._clean refuses them too). */
+export const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 const DIGEST_RE = /^[0-9a-f]{64}$/;
-const whole = (raw: string) => (/^\d+$/.test(raw.trim()) ? Number(raw) : NaN);
+/** A whole number as typed (NaN for anything else). */
+export const whole = (raw: string) => (/^\d+$/.test(raw.trim()) ? Number(raw) : NaN);
 
 /** One switch flipped, with the rules it brings: the learning site goes off
  *  with the wiki, and mail moves to SMTP when Mailpit goes off. */

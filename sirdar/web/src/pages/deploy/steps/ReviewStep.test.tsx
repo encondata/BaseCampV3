@@ -60,3 +60,31 @@ it('created with no problem (a host-key prompt canceled) still links to the envi
   expect(screen.getByText(/Created qa\. Deploy starts its first deployment\./)).toBeTruthy();
   expect(screen.getByRole('link', { name: 'Open the environment' }).getAttribute('href')).toBe('/deploy/environments/qa');
 });
+
+const D1 = 'a'.repeat(64);
+const D2 = 'B'.repeat(64);
+
+it('an empty start shows Seed starter content On or Off', () => {
+  renderStep({ dataMode: 'empty', seedContent: true });
+  expect(screen.getByText('Seed starter content').nextElementSibling?.textContent).toBe('On');
+  cleanup();
+  renderStep({ dataMode: 'empty', seedContent: false });
+  expect(screen.getByText('Seed starter content').nextElementSibling?.textContent).toBe('Off');
+});
+
+it('a snapshot start has no Seed starter content row', () => {
+  renderStep({ dataMode: 'snapshot', snapshotId: SNAP.id, seedContent: true });
+  expect(screen.queryByText('Seed starter content')).toBeNull();
+});
+
+it('kiosk signing digests are counted while the kiosk runs', () => {
+  const apps = { wiki: true, kiosk: true, learn: false, status: true, mailpit: true };
+  renderStep({ apps, digests: `${D1}\n${D2}\n${D1}` });
+  expect(screen.getByText('Kiosk signing digests').nextElementSibling?.textContent).toBe('2');
+  cleanup();
+  renderStep({ apps, digests: '' });
+  expect(screen.queryByText('Kiosk signing digests')).toBeNull();
+  cleanup();
+  renderStep({ apps: { ...apps, kiosk: false }, digests: D1 });
+  expect(screen.queryByText('Kiosk signing digests')).toBeNull();
+});

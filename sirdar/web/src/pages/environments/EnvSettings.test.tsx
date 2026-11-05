@@ -418,3 +418,38 @@ it('Apps & mail: apps stored in another order are not a change', async () => {
   expect(screen.getByText('Nothing to save.')).toBeTruthy();
   expect(api.updateEnvironment).not.toHaveBeenCalled();
 });
+
+it('Apps & mail: a host that differs only in case keeps the saved password (the API compares lowercased)', async () => {
+  const HINT = 'Changing the server or user clears the saved password; enter it again.';
+  api.getEnvironmentDefaults.mockResolvedValue({ ...DEFAULTS, optional_secrets: [...DEFAULTS.optional_secrets, 'SS_SMTP_PASSWORD'] });
+  open(SMTP_ENV);
+  await userEvent.clear(screen.getByLabelText('SMTP host'));
+  await userEvent.type(screen.getByLabelText('SMTP host'), 'SMTP.Example.COM');
+  expect(screen.queryByText(HINT)).toBeNull();
+  await userEvent.type(screen.getByLabelText('SMTP host'), 'x');
+  expect(screen.getByText(HINT)).toBeTruthy();
+});
+
+it('Apps & mail: digests typed before the kiosk goes off never block Save and stay as stored', async () => {
+  open({ ...ENV, kiosk_signing_digests: ['ab'.repeat(32)] });
+  await userEvent.type(screen.getByLabelText('Kiosk signing digests'), '\nnope');
+  await userEvent.click(screen.getByLabelText('Kiosk'));
+  expect(screen.queryByLabelText('Kiosk signing digests')).toBeNull();
+  await save();
+  await waitFor(() => expect(api.updateEnvironment).toHaveBeenCalledWith('uat', { apps: ['wiki', 'status', 'mailpit'] }));
+});
+
+it('Apps & mail: Mailpit to SMTP sets the SMTP password in the same save', async () => {
+  api.getEnvironmentDefaults.mockResolvedValue({ ...DEFAULTS, optional_secrets: [...DEFAULTS.optional_secrets, 'SS_SMTP_PASSWORD'] });
+  open();
+  expect(screen.queryByText(/SMTP password/)).toBeNull();
+  await userEvent.click(screen.getByRole('radio', { name: 'SMTP' }));
+  await userEvent.type(screen.getByLabelText('SMTP host'), 'smtp.example.com');
+  await userEvent.type(screen.getByLabelText('From address'), 'ops@example.com');
+  await userEvent.click(await within(secret('SMTP password: not set')).findByRole('button', { name: 'Add' }));
+  await userEvent.type(screen.getByLabelText('SMTP password'), 'new-pass');
+  await save();
+  await waitFor(() => expect(api.updateEnvironment).toHaveBeenCalledWith('uat', {
+    mail: { mode: 'smtp', host: 'smtp.example.com', port: 587, from_address: 'ops@example.com', starttls: true },
+    secrets: { SS_SMTP_PASSWORD: 'new-pass' } }));
+});

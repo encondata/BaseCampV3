@@ -123,15 +123,17 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
     setNotice('');
   };
   const setAppsMail = (patch: Partial<AppsMailForm>) => { setForm((f) => ({ ...f, ...patch })); setNotice(''); };
-  // The SMTP password only means something while mail goes through SMTP, saved and in the form.
+  // The SMTP password only means something while the form sends mail through SMTP
+  // (Mailpit to SMTP sets it in the same save).
   const secretKeys = Object.keys(env.secrets_set)
-    .filter((k) => k !== 'SS_SMTP_PASSWORD' || (env.mail?.mode === 'smtp' && form.mailMode === 'smtp'));
+    .filter((k) => k !== 'SS_SMTP_PASSWORD' || form.mailMode === 'smtp');
   // Saving Mailpit drops a stored SMTP password.
   const smtpPasswordToMailpit = env.mail?.mode === 'smtp' && form.mailMode === 'mailpit'
     && (!!env.secrets_set.SS_SMTP_PASSWORD || !!env.mail.password_set);
-  // The API drops the saved SMTP password when the host or user changes without a new one.
+  // The API drops the saved SMTP password when the host (any case) or user changes without a new one.
   const smtpPasswordDropped = form.mailMode === 'smtp' && env.mail?.mode === 'smtp' && !!env.secrets_set.SS_SMTP_PASSWORD
-    && (form.smtpHost.trim() !== (env.mail.host ?? '') || form.smtpUsername !== (env.mail.username ?? ''))
+    && (form.smtpHost.trim().toLowerCase() !== (env.mail.host ?? '').toLowerCase()
+        || form.smtpUsername !== (env.mail.username ?? ''))
     && secretAction.SS_SMTP_PASSWORD !== 'clear'
     && !(secretAction.SS_SMTP_PASSWORD === 'set' && secretValue.SS_SMTP_PASSWORD);
   const ssh = sshTargets(targets).map((t) => ({ value: t.id, label: t.label }));
@@ -187,7 +189,8 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
     }
     put('apps', appsProblem(form));
     if (form.mailMode === 'smtp') put('mail', mailProblem(form));
-    put('digests', parseDigests(form.digests).problem);
+    // Hidden while the kiosk is off: it can't block Save, and the stored digests stay.
+    if (form.apps.kiosk) put('digests', parseDigests(form.digests).problem);
     for (const key of secretKeys) {
       if (!optional.includes(key) || secretAction[key] !== 'set') continue;
       const v = secretValue[key] ?? '';
@@ -241,7 +244,9 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
       patch.mail = mail;
     }
     const digests = parseDigests(form.digests).digests;
-    if (digests.join() !== (env.kiosk_signing_digests ?? []).join()) patch.kiosk_signing_digests = digests;
+    if (form.apps.kiosk && digests.join() !== (env.kiosk_signing_digests ?? []).join()) {
+      patch.kiosk_signing_digests = digests;
+    }
     return patch;
   };
 
