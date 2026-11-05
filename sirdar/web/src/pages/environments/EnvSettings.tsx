@@ -1,12 +1,15 @@
-/** Settings tab: edit the environment record. Changes reach the target on
- *  the next deploy. Optional secrets are write-only. */
+/** Settings tab: edit the environment record — its apps, mail and kiosk signing digests included. Changes reach the target on the next deploy. Optional secrets are write-only. */
 import { useEffect, useState } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
 import ComboBox from '@portal/components/ComboBox';
 import DataTable from '@portal/components/DataTable';
 
+import { AppToggles, DigestsField, MailFields } from '../../components/AppsMail';
 import SecretField, { type SecretAction } from '../../components/SecretField';
+import {
+  appsOn, appsProblem, formOfEnv, mailBody, mailProblem, parseDigests, type AppsMailForm,
+} from '../../lib/appRules';
 import { ipv4Problem, portProblem, refProblem } from '../../lib/envRules';
 import {
   deployErrorText, errorDetail, getEnvironmentDefaults, updateEnvironment,
@@ -22,6 +25,7 @@ import {
 
 /** The bare name (home) follows the portal's address and port: never edited on its own. */
 const editable = (env: Environment) => env.services.filter((s) => s.service !== 'home');
+const SMTP_PORT = 587;   // apps.DEFAULT_SMTP_PORT
 
 const SECRET_LABELS: Record<string, string> = {
   SS_ANTHROPIC_API_KEY: 'Anthropic API key', SS_DB_TESTING_PASSWORD: 'Database testing password',
@@ -37,6 +41,9 @@ const CODE_FIELD: Record<string, string> = {
   service_unknown: 'services', host_ip_managed: 'services', target_kind_locked: 'target',
   vm_cores_invalid: 'machine', vm_memory_invalid: 'machine', vm_disk_invalid: 'machine', vm_disk_shrink: 'machine',
   vm_keep_snapshots_invalid: 'machine',
+  apps_invalid: 'apps', mailpit_required: 'apps', learn_needs_wiki: 'apps', mail_invalid: 'mail',
+  smtp_host_invalid: 'mail', smtp_port_invalid: 'mail', smtp_username_invalid: 'mail', smtp_from_invalid: 'mail',
+  smtp_password_invalid: 'mail', smtp_required_for_first_admin: 'mail', signing_digest_invalid: 'digests',
 };
 
 type Svc = { host_ip: string; port: string };
@@ -47,6 +54,7 @@ function fromEnv(env: Environment) {
     services: Object.fromEntries(editable(env).map((s) => [s.service, { host_ip: s.host_ip, port: String(s.port) }])) as Record<string, Svc>,
     cores: String(env.vm?.cores ?? ''), memory: env.vm ? gbOf(env.vm.memory_mb) : '',
     disk: String(env.vm?.disk_gb ?? ''), keepVm: String(env.vm?.keep_snapshots ?? ''),
+    ...formOfEnv(env.apps, env.mail, env.kiosk_signing_digests, SMTP_PORT),
   };
 }
 type Form = ReturnType<typeof fromEnv>;
@@ -113,8 +121,14 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
     setForm((f) => ({ ...f, services: { ...f.services, [service]: { ...f.services[service], [key]: value } } }));
     setNotice('');
   };
+  const setAppsMail = (patch: Partial<AppsMailForm>) => { setForm((f) => ({ ...f, ...patch })); setNotice(''); };
   // The SMTP password only means something while mail goes through SMTP.
   const secretKeys = Object.keys(env.secrets_set).filter((k) => k !== 'SS_SMTP_PASSWORD' || env.mail?.mode === 'smtp');
+  // The API drops the saved SMTP password when the host or user changes without a new one.
+  const smtpPasswordDropped = form.mailMode === 'smtp' && env.mail?.mode === 'smtp' && !!env.secrets_set.SS_SMTP_PASSWORD
+    && (form.smtpHost.trim() !== (env.mail.host ?? '') || form.smtpUsername !== (env.mail.username ?? ''))
+    && secretAction.SS_SMTP_PASSWORD !== 'clear'
+    && !(secretAction.SS_SMTP_PASSWORD === 'set' && secretValue.SS_SMTP_PASSWORD);
   const ssh = sshTargets(targets).map((t) => ({ value: t.id, label: t.label }));
   const targetOptions = ssh.some((o) => o.value === form.target)
     ? ssh : [{ value: form.target, label: targetLabel(targets, form.target) }, ...ssh];
@@ -166,6 +180,9 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
       const used = editable(env).map((s) => Number(form.services[s.service].port));
       if (new Set(used).size !== used.length) e.services = "Two services can't use the same port.";
     }
+    put('apps', appsProblem(form));
+    if (form.mailMode === 'smtp') put('mail', mailProblem(form));
+    put('digests', parseDigests(form.digests).problem);
     for (const key of secretKeys) {
       if (!optional.includes(key) || secretAction[key] !== 'set') continue;
       const v = secretValue[key] ?? '';
@@ -211,6 +228,14 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
       if (Number(form.keepVm) !== env.vm.keep_snapshots) vm.keep_snapshots = Number(form.keepVm);
       if (Object.keys(vm).length) patch.vm = vm;
     }
+    const apps = appsOn(form.apps);
+    if (apps.join() !== env.apps.join()) patch.apps = apps;
+    const mail = mailBody(form, false);
+    if (JSON.stringify(mail) !== JSON.stringify(mailBody(formOfEnv(env.apps, env.mail, [], SMTP_PORT), false))) {
+      patch.mail = mail;
+    }
+    const digests = parseDigests(form.digests).digests;
+    if (digests.join() !== (env.kiosk_signing_digests ?? []).join()) patch.kiosk_signing_digests = digests;
     return patch;
   };
 
@@ -342,15 +367,29 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
       />
       {errors.services && <p className="form-error" role="alert">{errors.services}</p>}
 
+      <h3 className="sirdar-sub">Apps &amp; mail</h3>
+      <AppToggles form={form} onChange={setAppsMail} error={errors.apps} errorId="env-set-apps-error" disabled={off} />
+      {form.apps.kiosk && (
+        <DigestsField id="env-set-digests" value={form.digests} error={errors.digests} disabled={off}
+                      onChange={(v) => set('digests', v)} />
+      )}
+      <MailFields idPrefix="env-set" form={form} onChange={setAppsMail} error={errors.mail} disabled={off}
+                  showPassword={false} />
+
       <h3 className="sirdar-sub">Secrets</h3>
       <p className="page-hint">Write-only. Sirdar generated the others and never shows them.</p>
       <div className="pf-form">
         {secretKeys.map((key) => (
-          <SecretField key={key} id={`env-secret-${key}`} label={SECRET_LABELS[key] ?? key}
-                       isSet={env.secrets_set[key]} adding={false} action={secretAction[key] ?? 'keep'}
-                       value={secretValue[key] ?? ''} error={errors[`secret:${key}`]} disabled={off || !optional.includes(key)}
-                       onAction={(a) => { setSecretAction((m) => ({ ...m, [key]: a })); setNotice(''); }}
-                       onValue={(v) => setSecretValue((m) => ({ ...m, [key]: v }))} />
+          <div key={key}>
+            <SecretField id={`env-secret-${key}`} label={SECRET_LABELS[key] ?? key}
+                         isSet={env.secrets_set[key]} adding={false} action={secretAction[key] ?? 'keep'}
+                         value={secretValue[key] ?? ''} error={errors[`secret:${key}`]} disabled={off || !optional.includes(key)}
+                         onAction={(a) => { setSecretAction((m) => ({ ...m, [key]: a })); setNotice(''); }}
+                         onValue={(v) => setSecretValue((m) => ({ ...m, [key]: v }))} />
+            {key === 'SS_SMTP_PASSWORD' && smtpPasswordDropped && (
+              <p className="page-hint">Changing the server or user clears the saved password; enter it again.</p>
+            )}
+          </div>
         ))}
       </div>
 

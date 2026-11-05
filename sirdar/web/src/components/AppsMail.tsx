@@ -84,13 +84,14 @@ export function DigestsField({ id, value, onChange, error, disabled }: {
     <div>
       <label className="field-label" htmlFor={id}>Kiosk signing digests</label>
       <textarea id={id} rows={3} value={value} spellCheck={false} disabled={disabled}
-                aria-invalid={error ? true : undefined} aria-describedby={`${id}-hint`}
+                aria-invalid={error ? true : undefined}
+                aria-describedby={error ? `${id}-hint ${id}-error` : `${id}-hint`}
                 onChange={(e) => onChange(e.target.value)} />
       <p className="page-hint" id={`${id}-hint`}>
         SHA-256 digests of the kiosk app's signing certificates (release and Play), one per line. Kiosk biometric
         sign-in enrolls only apps signed with these.
       </p>
-      {error && <p className="form-error" role="alert">{error}</p>}
+      {error && <p className="form-error" id={`${id}-error`} role="alert">{error}</p>}
     </div>
   );
 }

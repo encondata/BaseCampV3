@@ -306,3 +306,76 @@ it('the bare name follows the portal: no row to edit, and it never trips the por
   await waitFor(() => expect(onSaved).toHaveBeenCalled());
   expect(api.updateEnvironment).toHaveBeenCalledWith('uat', { services: { api: { port: 8100 } } });
 });
+
+it('Apps & mail: turning the wiki off turns learning off, and both are saved', async () => {
+  open({ ...ENV, apps: ['wiki', 'kiosk', 'learn', 'status', 'mailpit'] });
+  await userEvent.click(screen.getByLabelText('Wiki'));
+  expect((screen.getByLabelText('Learning') as HTMLInputElement).checked).toBe(false);
+  await save();
+  await waitFor(() => expect(api.updateEnvironment).toHaveBeenCalledWith('uat', { apps: ['kiosk', 'status', 'mailpit'] }));
+  expect(screen.getByText('Saved. The next deploy applies these settings.')).toBeTruthy();
+});
+
+it('Apps & mail: SMTP is checked first and sent without a password', async () => {
+  open();
+  await userEvent.click(screen.getByRole('radio', { name: 'SMTP' }));
+  expect(screen.queryByLabelText('SMTP password')).toBeNull();
+  await save();
+  expect(screen.getByText("Enter the SMTP server's host name or address.")).toBeTruthy();
+  expect(api.updateEnvironment).not.toHaveBeenCalled();
+  await userEvent.type(screen.getByLabelText('SMTP host'), 'smtp.example.com');
+  await userEvent.type(screen.getByLabelText('From address'), 'ops@example.com');
+  await save();
+  await waitFor(() => expect(api.updateEnvironment).toHaveBeenCalledWith('uat', {
+    mail: { mode: 'smtp', host: 'smtp.example.com', port: 587, from_address: 'ops@example.com', starttls: true } }));
+});
+
+it('Apps & mail: the kiosk signing digests are saved normalized', async () => {
+  open();
+  await userEvent.type(screen.getByLabelText('Kiosk signing digests'), 'AB:'.repeat(31) + 'AB');
+  await save();
+  await waitFor(() => expect(api.updateEnvironment).toHaveBeenCalledWith('uat', { kiosk_signing_digests: ['ab'.repeat(32)] }));
+});
+
+it('Apps & mail: an API refusal lands on its field', async () => {
+  api.updateEnvironment.mockRejectedValueOnce(new ApiError(422, 'learn_needs_wiki', { code: 'learn_needs_wiki' }));
+  open();
+  await userEvent.click(screen.getByLabelText('Status page'));
+  await save();
+  expect(await screen.findByText('The learning site needs the wiki: turn the wiki on, or turn learning off.')).toBeTruthy();
+});
+
+it('Apps & mail is locked while a deployment runs', () => {
+  open({ ...ENV, status: 'deploying' });
+  expect((screen.getByLabelText('Kiosk') as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByLabelText('Kiosk signing digests') as HTMLTextAreaElement).disabled).toBe(true);
+});
+
+it('Apps & mail: a new SMTP host or user without a new password says the saved one is cleared', async () => {
+  const HINT = 'Changing the server or user clears the saved password; enter it again.';
+  api.getEnvironmentDefaults.mockResolvedValue({ ...DEFAULTS, optional_secrets: [...DEFAULTS.optional_secrets, 'SS_SMTP_PASSWORD'] });
+  open({ ...ENV, mail: { ...ENV.mail, mode: 'smtp', host: 'smtp.example.com', port: 587, from_address: 'ops@example.com', password_set: true },
+         secrets_set: { ...ENV.secrets_set, SS_SMTP_PASSWORD: true } });
+  expect(screen.queryByText(HINT)).toBeNull();
+  await userEvent.type(screen.getByLabelText('User name'), 'ops');
+  expect(screen.getByText(HINT)).toBeTruthy();
+  await userEvent.clear(screen.getByLabelText('User name'));
+  expect(screen.queryByText(HINT)).toBeNull();
+  await userEvent.type(screen.getByLabelText('SMTP host'), 'x');
+  expect(screen.getByText(HINT)).toBeTruthy();
+  await userEvent.click(await within(secret('SMTP password: set')).findByRole('button', { name: 'Replace' }));
+  await userEvent.type(screen.getByLabelText('SMTP password'), 'new-pass');
+  expect(screen.queryByText(HINT)).toBeNull();
+});
+
+it('Apps & mail: a digest error describes the digests field', async () => {
+  open();
+  await userEvent.type(screen.getByLabelText('Kiosk signing digests'), 'nope');
+  await save();
+  const box = screen.getByLabelText('Kiosk signing digests');
+  expect(box.getAttribute('aria-invalid')).toBe('true');
+  const err = screen.getByText('Each digest is a SHA-256: 64 hex characters, colons allowed.');
+  expect(err.id).toBe('env-set-digests-error');
+  expect(box.getAttribute('aria-describedby')?.split(' ')).toContain('env-set-digests-error');
+  expect(api.updateEnvironment).not.toHaveBeenCalled();
+});
