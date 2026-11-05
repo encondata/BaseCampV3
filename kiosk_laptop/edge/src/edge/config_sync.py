@@ -35,10 +35,10 @@ on the check-ins it already makes, with the web kiosk's rules
   never overlap, so a reply below the applied version means the portal's
   row was recreated (versions restarted): it is taken like any other.
 
-Which check-in carries it: an RFID Station with a station key syncs only on
-its station heartbeat (the portal ignores config on a station-keyed device's
-person heartbeat); otherwise the proxied person heartbeat carries it. One
-config beat at a time (`lock`), so the two never overlap."""
+Which check-in carries it: an RFID or Dock Station with a station key syncs
+only on its station heartbeat (the portal ignores config on a station-keyed
+device's person heartbeat); otherwise the proxied person heartbeat carries
+it. One config beat at a time (`lock`), so the two never overlap."""
 
 import asyncio
 import json

@@ -196,8 +196,9 @@ async def reads(request: Request, tz: str = "UTC") -> dict:
 # The "Asset Not Part Of Move" alarm. Like /events (read) and /stop (write),
 # these need any edge session, online or offline.
 
-def _is_rfid_station(store) -> bool:
-    return (laptop_setup.load(store) or {}).get("station_type") == "rfid"
+def _is_reader_station(store) -> bool:
+    """An RFID or Dock Station: the types that raise and show the alarm."""
+    return (laptop_setup.load(store) or {}).get("station_type") in laptop_setup.READER_TYPES
 
 
 def _int(value) -> int | None:
@@ -207,7 +208,7 @@ def _int(value) -> int | None:
 @router.get("/alarm")
 async def open_alarm(request: Request) -> dict:
     store = request.app.state.store
-    if not _is_rfid_station(store):
+    if not _is_reader_station(store):
         return alarm.empty(alarm.settings(store))
     return alarm.open_alarm(store, datetime.now(UTC))
 

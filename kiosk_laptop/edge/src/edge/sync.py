@@ -58,7 +58,8 @@ def station_sync_paths(initiative_id: str, serial: str,
                        station_type: str | None = None) -> list[tuple[str, str]]:
     """(cache key, station route) pairs: each station read lands under the
     cache key of the person read it stands in for. A Label Station skips
-    the RFID-only lists (their cached copies stay)."""
+    the RFID-only lists (their cached copies stay); an RFID or Dock key
+    reads every list, client assets included (the off-move alarm's)."""
     q = f"serial={quote(serial, safe='')}&initiative_id={quote(initiative_id, safe='')}"
     by_name = {path.split("?", 1)[0].removeprefix("/kiosk/sync/"): path
                for path in sync_paths(initiative_id) if path.startswith("/kiosk/sync/")}

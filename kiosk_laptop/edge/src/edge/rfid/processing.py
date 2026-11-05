@@ -13,7 +13,7 @@ off-move sighting). Each raw read becomes at most one pending scan
   WITHOUT advancing the cursor; the next tick tries again.
 - A current-move read that matches nothing goes into `rfid_unmatched`, which
   `recheck_unmatched` re-matches after every successful sync for 24 h.
-- On an RFID station, a fresh off-move match (received at most
+- On a reader station (RFID or Dock), a fresh off-move match (received at most
   `alarm.FRESH_S` before the pass) raises the "Asset Not Part Of Move" alarm
   in the pass's own transaction. Late matches (a backlog, the re-check) never
   alarm.
@@ -177,7 +177,7 @@ def process(store: Store, now: datetime | None = None) -> PassResult:
         return PassResult(0, 0, False)
     setup = laptop_setup.load(store) or {}
     current = _current_move(setup)
-    alarms_on = setup.get("station_type") == "rfid"
+    alarms_on = setup.get("station_type") in laptop_setup.READER_TYPES
     indexes = None
     matches: list[tuple] = []
     misses: list[tuple] = []

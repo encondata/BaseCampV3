@@ -126,12 +126,12 @@ async def _download_as_station(st, path: str, headers: dict):
 
 
 async def _person_heartbeat(st, person_id: str, target: str, body: bytes, headers: dict):
-    """The person heartbeat with the laptop's config fields (none while an
-    RFID Station holds its key: the station heartbeat syncs then; a Label
-    Station sends no station heartbeat, so it syncs here), and the reply's
-    config, clock and scan type handled."""
+    """The person heartbeat with the laptop's config fields (none while a
+    reader station (RFID or Dock) holds its key: the station heartbeat syncs
+    then; a Label Station sends no station heartbeat, so it syncs here), and
+    the reply's config, clock and scan type handled."""
     async with config_sync.lock(st):
-        station_beats = station_key.has_key(st.store) and station_key.is_rfid_setup(st.store)
+        station_beats = station_key.has_key(st.store) and station_key.is_reader_setup(st.store)
         beat = None if station_beats else config_sync.prepare_beat(st.store)
         if beat is not None:
             body = config_sync.add_fields(body, beat)
