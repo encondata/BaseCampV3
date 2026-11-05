@@ -14,13 +14,13 @@ import '../styles/column-menu.css'; // .pop-menu.colmenu-portaled (the Columns m
 
 /* ── CSV export ─────────────────────────────────────────────────── */
 
-/** Encode one CSV field. Values starting with = + - @ get a leading
- *  single quote (OWASP CSV-injection guard) so Excel/Sheets treat them
- *  as text, not formulas — except purely numeric values ("-5", "+1.5"),
- *  which are legitimate data. Then the usual quote/comma/newline quoting. */
+/** Encode one CSV field. Values starting with = + - @ tab or CR get a
+ *  leading single quote (OWASP CSV-injection guard) so Excel/Sheets treat
+ *  them as text, not formulas — except purely numeric values ("-5", "+1.5"),
+ *  which are legitimate data. Then the usual quote/comma/line-break quoting. */
 export function csvCell(v: string): string {
-  if (/^[=+\-@]/.test(v) && !/^[+-]?\d+(\.\d+)?$/.test(v)) v = `'${v}`;
-  return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+  if (/^[=+\-@\t\r]/.test(v) && !/^[+-]?\d+(\.\d+)?$/.test(v)) v = `'${v}`;
+  return /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
 }
 
 export function exportCsv<T>(

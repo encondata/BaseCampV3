@@ -26,6 +26,31 @@ def test_guard_cell_prefixes_formula_leads_but_not_numbers():
     assert bulk.guard_cell("plain") == "plain"
 
 
+def test_guard_cell_prefixes_tab_and_carriage_return_leads():
+    assert bulk.guard_cell("\t=cmd|calc") == "'\t=cmd|calc"
+    assert bulk.guard_cell("\r=cmd|calc") == "'\r=cmd|calc"
+    assert bulk.guard_cell("\tplain") == "'\tplain"
+    assert bulk.guard_cell("a\tb") == "a\tb"           # only a leading tab counts
+
+
+def test_cell_strips_the_guard_quote_in_front_of_a_tab_or_carriage_return():
+    assert bulk.cell("'\t=cmd") == "\t=cmd"
+    assert bulk.cell("'\r=cmd") == "\r=cmd"
+    assert bulk.cell("\t=cmd") == "=cmd"                # unguarded whitespace still trims
+
+
+def test_csv_and_xlsx_builders_guard_tab_and_carriage_return_and_round_trip():
+    rows = [{"name": "\t=EVIL()", "city": "\r=EVIL()", "notes": "-5"}]
+    csv_text = bulk.build_rows_csv(rows, COLS)
+    assert "'\t=EVIL()" in csv_text and "'\r=EVIL()" in csv_text
+    parsed = bulk.parse_upload("t.csv", csv_text.encode(), COLS, "S")[0][1]
+    assert (parsed["name"], parsed["city"], parsed["notes"]) == ("\t=EVIL()", "\r=EVIL()", "-5")
+
+    blob = bulk.build_rows_xlsx(rows, COLS, "People", [])
+    ws = openpyxl.load_workbook(io.BytesIO(blob))["People"]
+    assert ws["A2"].data_type == "s" and ws["B2"].data_type == "s"
+
+
 def test_check_columns_reports_unknowns_sorted():
     bulk.check_columns(["name", "city"], COLS)
     with pytest.raises(bulk.BulkImportError) as exc:

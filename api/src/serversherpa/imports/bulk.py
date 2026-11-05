@@ -17,7 +17,7 @@ from typing import Any
 MAX_ROWS = 1000
 MAX_BYTES = 5 * 1024 * 1024
 
-FORMULA_LEAD = ("=", "+", "-", "@")
+FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
 _NUMERIC = re.compile(r"^[+-]?\d+(\.\d+)?$")
 
 
@@ -34,8 +34,9 @@ def cell(value: Any) -> str:
     """Spreadsheet cells arrive as str/float/int/bool/None — normalize to
     trimmed text. Integral floats (openpyxl's 89501.0) drop the .0 so
     numeric-looking text columns round-trip. One leading apostrophe in front
-    of a formula lead character is dropped, so our own guarded CSV export
-    (see `guard_cell`) re-uploads as the value it started as."""
+    of a formula lead character is dropped after trimming, so our own guarded
+    CSV export (see `guard_cell`) re-uploads as the value it started as —
+    including a tab or carriage return right behind the apostrophe."""
     if value is None:
         return ""
     if isinstance(value, float) and value.is_integer():
@@ -48,9 +49,9 @@ def cell(value: Any) -> str:
 
 def guard_cell(text: str) -> str:
     """OWASP CSV-injection guard, mirroring the portal's `csvCell`: a cell
-    that opens with = + - @ gets a leading apostrophe so Excel/Sheets read it
-    as text — unless the whole cell is a number, so -119.8138 stays a
-    coordinate."""
+    that opens with = + - @ (or a tab / carriage return) gets a leading
+    apostrophe so Excel/Sheets read it as text — unless the whole cell is a
+    number, so -119.8138 stays a coordinate."""
     if text[:1] in FORMULA_LEAD and not _NUMERIC.match(text):
         return f"'{text}"
     return text

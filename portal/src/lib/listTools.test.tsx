@@ -345,6 +345,16 @@ describe('csvCell formula-injection guard', () => {
     expect(csvCell('-5.25')).toBe('-5.25');
     expect(csvCell('+12')).toBe('+12');
   });
+
+  it('neutralizes tab prefixed values', () => {
+    expect(csvCell('\t=cmd|calc')).toBe("'\t=cmd|calc");
+    expect(csvCell('\tplain')).toBe("'\tplain");
+    expect(csvCell('a\tb')).toBe('a\tb');
+  });
+
+  it('neutralizes carriage-return prefixed values and quotes the line break', () => {
+    expect(csvCell('\r=cmd|calc')).toBe('"\'\r=cmd|calc"');
+  });
 });
 
 describe('ColHead / useFitLabel', () => {
