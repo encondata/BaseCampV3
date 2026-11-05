@@ -39,6 +39,7 @@
 
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { naturalCompare } from '@portal/lib/naturalSort';
 
 import { hslCss, useAppearance } from '../lib/appearance';
 import { flash } from '../lib/flash';
@@ -498,7 +499,7 @@ export default function PrintingStation() {
               {labelCounts.errors > 0 && Object.keys(labelCounts.problems).length > 0 && (
                 <ul className="station-label-reasons">
                   {Object.entries(labelCounts.problems)
-                    .sort(([a], [b]) => reasonRank(a) - reasonRank(b) || a.localeCompare(b))
+                    .sort(([a], [b]) => reasonRank(a) - reasonRank(b) || naturalCompare(a, b))
                     .map(([why, n]) => <li key={why}>{reasonLine(why, n)}</li>)}
                 </ul>
               )}
