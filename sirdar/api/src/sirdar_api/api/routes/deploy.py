@@ -542,6 +542,12 @@ class EnvironmentPatch(BaseModel):
     auto_activate: bool | None = None
     # DigitalOcean only: grow the droplet and database sizes.
     do: DoPatch | None = None
+    # The optional apps it runs, where its mail goes (create's rules; the SMTP
+    # password: mail.password or secrets.SS_SMTP_PASSWORD) and the kiosk signing
+    # digests. Nothing runs now: the next deploy and publish apply them.
+    apps: list[str] | None = None
+    mail: MailIn | None = None
+    kiosk_signing_digests: list[Digest] | None = Field(default=None, max_length=10)
     # Write-only. No pydantic constraint on the values, so no validation error
     # can describe one; the service answers secret_invalid / secret_not_editable.
     secrets: dict[str, str] | None = None
@@ -756,6 +762,8 @@ async def update_environment(name: str, body: EnvironmentPatch, request: Request
         raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
     fields = body.model_dump(exclude_unset=True)
     fields.pop("confirm_name", None)
+    if body.mail is not None:
+        fields["mail"] = body.mail.model_dump(exclude_none=True)   # as create reads it
     wanted = fields.pop("do", None)
     if wanted is not None:
         fields["do_checked"] = await _checked_sizes(

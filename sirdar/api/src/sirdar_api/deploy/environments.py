@@ -163,10 +163,13 @@ def _check_target(target_id: str, settings: Settings) -> SshTargetConfig | None:
 
 def _hostname(env: Environment, service: str, domain: str) -> str | None:
     """A service's public name: none for mailpit, nor for an app that is off.
-    home is the base domain itself."""
+    home is the base domain itself. On DigitalOcean the names are the ones
+    its certificate covers (no spaces: objects live in Spaces)."""
     if service == home.HOME:
         return domain if home.wants_home(env) else None
-    return (f"{service}.{domain}" if service in envfile.PUBLIC_SERVICES
+    names = (certs.PUBLIC_SERVICES if env.target_id == targets.DO_TARGET
+             else envfile.PUBLIC_SERVICES)
+    return (f"{service}.{domain}" if service in names
             and app_rules.is_public(env, service) else None)
 
 
@@ -481,6 +484,46 @@ async def _set_apps_and_mail(db: AsyncSession, env: Environment, apps_on: list[s
     await db.flush()
 
 
+def _mail_of(env: Environment) -> dict:
+    """The stored mail in create's shape (apps.check_mail checks it again)."""
+    if not env.smtp_host:
+        return {"mode": "mailpit"}
+    return {"mode": "smtp", "host": env.smtp_host, "port": env.smtp_port,
+            "username": env.smtp_username, "from_address": env.smtp_from,
+            "starttls": env.smtp_starttls}
+
+
+async def _update_apps_and_mail(db: AsyncSession, env: Environment, fields: dict,
+                                changed: list[str]) -> tuple[bool, str | None]:
+    """PATCH apps and mail, checked as create checks them: the apps given (or
+    kept) against the mail given (or kept). Production keeps SMTP while its
+    first admin is pending. Mailpit clears the SMTP columns and the SMTP
+    password. Returns (whether the apps changed, an SMTP password to store)."""
+    before_apps, before_mail = list(env.apps), _mail_of(env)
+    try:
+        apps_on = (app_rules.check_apps(fields["apps"]) if fields.get("apps") is not None
+                   else before_apps)
+        mail_spec = app_rules.check_mail(
+            fields["mail"] if fields.get("mail") is not None else before_mail, apps_on)
+    except app_rules.AppsError as e:
+        raise EnvError(e.code, **e.extra) from None
+    if (env.type == "production" and not mail_spec["smtp_host"]
+            and await first_admins.pending(db, env.id)):
+        raise EnvError("smtp_required_for_first_admin")
+    await _set_apps_and_mail(db, env, apps_on, mail_spec)
+    if apps_on != before_apps:
+        changed.append("apps")
+    if _mail_of(env) != before_mail:
+        changed.append("mail")
+    if not mail_spec["smtp_host"]:
+        gone = await db.execute(delete(EnvironmentSecret).where(
+            EnvironmentSecret.environment_id == env.id,
+            EnvironmentSecret.key == "SS_SMTP_PASSWORD"))
+        if gone.rowcount:
+            changed.append("secrets.SS_SMTP_PASSWORD")
+    return apps_on != before_apps, mail_spec["smtp_password"]
+
+
 def _slots_ok(vm) -> bool:
     """`vm.slots`: absent, 1 (one server) or 2 (Blue/Green); never True,
     2.0 or "2"."""
@@ -742,7 +785,9 @@ async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
 async def update(db: AsyncSession, settings: Settings, env: Environment,
                  fields: dict) -> list[str]:
     """Apply a PATCH: an absent or None field is kept. Only the optional
-    secrets are editable ("" clears one). Returns the changed names."""
+    secrets are editable ("" clears one). Apps and mail follow create's rules
+    (an SMTP password in mail is stored as SS_SMTP_PASSWORD); a change of apps
+    rebuilds the public names (home aside). Returns the changed names."""
     if await is_deploying(db, env.id):
         raise EnvError("deploy_in_progress")
     changed: list[str] = []
@@ -808,6 +853,16 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
     if fields.get("publish") is not None:
         put("publish", bool(fields["publish"]))
 
+    apps_changed, smtp_password = False, None
+    if fields.get("apps") is not None or fields.get("mail") is not None:
+        apps_changed, smtp_password = await _update_apps_and_mail(db, env, fields, changed)
+    if fields.get("kiosk_signing_digests") is not None:
+        try:
+            put("kiosk_signing_digests",
+                app_rules.check_digests(fields["kiosk_signing_digests"]))
+        except app_rules.AppsError as e:
+            raise EnvError(e.code, **e.extra) from None
+
     rows = {r.service: r for r in await services_of(db, env.id)}
     service_fields = fields.get("services") or {}
     # home follows portal: it is never edited on its own
@@ -839,12 +894,16 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
     if home_row is not None and "portal" in rows:
         home_row.host_ip, home_row.port = rows["portal"].host_ip, rows["portal"].port
     _check_ports_unique({s: r.port for s, r in rows.items() if s != home.HOME})
-    if env.base_domain != old_domain:
+    if env.base_domain != old_domain or apps_changed:
         for service, row in rows.items():
+            if service == home.HOME and env.base_domain == old_domain:
+                continue                      # the bare name doesn't follow the apps
             row.hostname = _hostname(env, service, env.base_domain)
 
-    secrets = fields.get("secrets") or {}
+    secrets = dict(fields.get("secrets") or {})
     check_optional_secrets(secrets)          # "" still clears one (below)
+    if smtp_password and secrets.get("SS_SMTP_PASSWORD") is None:
+        secrets["SS_SMTP_PASSWORD"] = smtp_password
     if any(v for v in secrets.values()) and not vault.is_configured(settings):
         raise EnvError("secrets_key_missing")
     existing = await secret_keys_of(db, env.id)
