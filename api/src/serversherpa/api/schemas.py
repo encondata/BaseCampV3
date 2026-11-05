@@ -3314,6 +3314,58 @@ class WatchStateOut(BaseModel):
     kinds: list[str]
 
 
+# ── asset watches (a person's own, on one asset, heard once) ──
+
+class AssetWatchIn(BaseModel):
+    """Watch an asset on its own, or on an initiative it is on (`initiative_id`), for its next
+    update (`condition` "next_update", with no status) or for a status (`condition` "status",
+    with an active asset status key in `status`). The condition is a plain string so that any
+    other value answers 422 `invalid_condition`, as the spec's errors say."""
+    asset_id: uuid.UUID
+    initiative_id: uuid.UUID | None = None
+    condition: str
+    status: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class AssetWatchPatch(BaseModel):
+    """Change what an asset watch waits for. The watch starts over: a new snapshot, from now."""
+    condition: str
+    status: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class AssetWatchOut(BaseModel):
+    """An asset watch: the asset by its serial number, else its name, else its id, and the
+    initiative it was set on (all three initiative fields null for a watch on the asset itself;
+    `initiative_asset_id` is the asset's row there, null once the asset has left). `status` is
+    the status a "status" watch waits for. `current_status` is the status the watch reads now:
+    the asset's own, or for a watch on an initiative its row's there (null once the row is
+    gone). `link` is where the watch was set: the move asset page, or the asset's page for a
+    watch on the asset or once the row is gone. `created_at` is when it was set or last
+    changed."""
+    id: uuid.UUID
+    asset_id: uuid.UUID
+    asset_name: str
+    initiative_id: uuid.UUID | None
+    initiative_name: str | None
+    initiative_asset_id: uuid.UUID | None
+    condition: Literal["next_update", "status"]
+    status: str | None
+    status_label: str | None
+    current_status: str | None
+    current_status_label: str | None
+    link: str
+    created_at: datetime
+
+
+class AssetWatchStateOut(BaseModel):
+    """Whether the person watches an asset in one place (on its own, or on one initiative),
+    and the watch, for the Watch button."""
+    watching: bool
+    watch: AssetWatchOut | None
+
+
 # ── status rules ─────────────────────────────────────────────────────
 
 class StatusRuleConditionIn(BaseModel):

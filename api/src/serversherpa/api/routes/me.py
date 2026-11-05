@@ -1,6 +1,7 @@
 """Self-service endpoints: my profile (view/edit), my active sessions, my
-notification groups (the list to join from, and join/leave requests) and my
-watches (what I hear about because I watch it, or my groups do)."""
+notification groups (the list to join from, and join/leave requests), my
+watches (what I hear about because I watch it, or my groups do) and my asset
+watches (one asset, for its next update or a status, heard once)."""
 
 import uuid
 from datetime import UTC, datetime
@@ -17,6 +18,10 @@ from serversherpa.api.routes.notifications import _request_out
 from serversherpa.api.routes.wiki.watches import audit_unwatch as audit_wiki_unwatch
 from serversherpa.api.routes.wiki.watches import audit_watch as audit_wiki_watch
 from serversherpa.api.schemas import (
+    AssetWatchIn,
+    AssetWatchOut,
+    AssetWatchPatch,
+    AssetWatchStateOut,
     BiometricKeyOut,
     ChangePasswordIn,
     MembershipRequestCreateIn,
@@ -44,6 +49,15 @@ from serversherpa.db.models import (
     TrustedDevice,
 )
 from serversherpa.db.ordering import natural
+from serversherpa.notifications.asset_watches import (
+    AssetWatchError,
+    add_asset_watch,
+    asset_watch_out,
+    asset_watch_state,
+    change_asset_watch,
+    list_asset_watches,
+    remove_asset_watch,
+)
 from serversherpa.notifications.requests import RequestError, cancel_request, create_request
 from serversherpa.notifications.watches import (
     EVERYTHING,
@@ -360,7 +374,7 @@ async def cancel_my_request(
 # a group's are on the group. A watch on the wiki is the wiki's own as well, so
 # it writes the wiki's audit instead (`wiki_watch`), never a second row here.
 
-def _watch_http(err: WatchError) -> HTTPException:
+def _watch_http(err: WatchError | AssetWatchError) -> HTTPException:
     return HTTPException(status_code=err.status, detail={"code": err.code})
 
 
@@ -467,4 +481,71 @@ async def delete_my_watch(watch_id: uuid.UUID, user: CurrentUser, db: DbSession)
         audit(db, actor_id=user.person.id, entity_type="user_account",
               entity_id=str(user.person.id), action="watch.remove", changes=watch_target(watch))
     await db.delete(watch)
+    await db.commit()
+
+
+# ── asset watches: one asset, for its next update or a status, heard once ───
+# I watch an asset on its own or on an initiative it is on, if I can open it there. The rules
+# live in notifications/asset_watches.py, which audits each write on my account as my other
+# watches are (watch.add, watch.update, watch.remove, with thing "asset"); an AssetWatchError
+# becomes the same {"code"} answer as a WatchError.
+
+@router.get("/asset-watches", response_model=list[AssetWatchOut])
+async def list_my_asset_watches(user: CurrentUser, db: DbSession) -> list[AssetWatchOut]:
+    """My asset watches, newest first. Only those whose asset (or initiative) I can open now
+    are listed; the rest stay stored."""
+    return await list_asset_watches(db, user.person.id)
+
+
+@router.get("/asset-watches/state", response_model=AssetWatchStateOut)
+async def my_asset_watch_state(
+    asset_id: uuid.UUID, user: CurrentUser, db: DbSession,
+    initiative_id: uuid.UUID | None = None,
+) -> AssetWatchStateOut:
+    """Whether I watch this asset in this place, on its own or on `initiative_id`, for the
+    Watch button."""
+    return await asset_watch_state(db, user.person.id, asset_id, initiative_id)
+
+
+@router.post("/asset-watches", response_model=AssetWatchOut, status_code=201)
+async def create_my_asset_watch(
+    body: AssetWatchIn, user: CurrentUser, db: DbSession,
+) -> AssetWatchOut:
+    """Watch an asset for its next update or for a status, on its own or on an initiative it is
+    on. One watch per asset and place: watching again is a 409, and what it waits for is
+    changed on the watch that is there."""
+    try:
+        watch = await add_asset_watch(
+            db, user.person.id, asset_id=body.asset_id, initiative_id=body.initiative_id,
+            condition=body.condition, status=body.status)
+        out = await asset_watch_out(db, watch)
+    except AssetWatchError as err:
+        raise _watch_http(err) from None
+    await db.commit()
+    return out
+
+
+@router.patch("/asset-watches/{watch_id}", response_model=AssetWatchOut)
+async def update_my_asset_watch(
+    watch_id: uuid.UUID, body: AssetWatchPatch, user: CurrentUser, db: DbSession,
+) -> AssetWatchOut:
+    """Change what one of my asset watches waits for. It starts over: a new snapshot of the
+    asset, and a new time."""
+    try:
+        watch = await change_asset_watch(db, user.person.id, watch_id,
+                                         condition=body.condition, status=body.status)
+        out = await asset_watch_out(db, watch)
+    except AssetWatchError as err:
+        raise _watch_http(err) from None
+    await db.commit()
+    return out
+
+
+@router.delete("/asset-watches/{watch_id}", status_code=204)
+async def delete_my_asset_watch(watch_id: uuid.UUID, user: CurrentUser, db: DbSession) -> None:
+    """Stop watching an asset, whether or not I can still open it."""
+    try:
+        await remove_asset_watch(db, user.person.id, watch_id)
+    except AssetWatchError as err:
+        raise _watch_http(err) from None
     await db.commit()
