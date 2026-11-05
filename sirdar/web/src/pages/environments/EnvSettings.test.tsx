@@ -379,3 +379,42 @@ it('Apps & mail: a digest error describes the digests field', async () => {
   expect(box.getAttribute('aria-describedby')?.split(' ')).toContain('env-set-digests-error');
   expect(api.updateEnvironment).not.toHaveBeenCalled();
 });
+
+const SMTP_ENV = {
+  ...ENV, mail: { ...ENV.mail, mode: 'smtp' as const, host: 'smtp.example.com', port: 587, from_address: 'ops@example.com', password_set: true },
+  secrets_set: { ...ENV.secrets_set, SS_SMTP_PASSWORD: true },
+};
+
+it('Apps & mail: switching a saved SMTP environment to Mailpit hides the SMTP password and never sends it', async () => {
+  const NOTE = 'Switching to Mailpit clears the saved SMTP password.';
+  api.getEnvironmentDefaults.mockResolvedValue({ ...DEFAULTS, optional_secrets: [...DEFAULTS.optional_secrets, 'SS_SMTP_PASSWORD'] });
+  open(SMTP_ENV);
+  expect(screen.queryByText(NOTE)).toBeNull();
+  await userEvent.click(await within(secret('SMTP password: set')).findByRole('button', { name: 'Replace' }));
+  await userEvent.type(screen.getByLabelText('SMTP password'), 'typed-pass');
+  await userEvent.click(screen.getByRole('radio', { name: 'Mailpit' }));
+  expect(screen.queryByText(/SMTP password: set/)).toBeNull();
+  expect(screen.queryByLabelText('SMTP password')).toBeNull();
+  expect(screen.getByText(NOTE)).toBeTruthy();
+  await save();
+  await waitFor(() => expect(api.updateEnvironment).toHaveBeenCalledWith('uat', { mail: { mode: 'mailpit' } }));
+});
+
+it('Apps & mail: a refused SMTP password lands on its row', async () => {
+  api.getEnvironmentDefaults.mockResolvedValue({ ...DEFAULTS, optional_secrets: [...DEFAULTS.optional_secrets, 'SS_SMTP_PASSWORD'] });
+  api.updateEnvironment.mockRejectedValueOnce(new ApiError(422, 'smtp_password_without_smtp', { code: 'smtp_password_without_smtp' }));
+  open(SMTP_ENV);
+  await userEvent.click(await within(secret('SMTP password: set')).findByRole('button', { name: 'Replace' }));
+  await userEvent.type(screen.getByLabelText('SMTP password'), 'typed-pass');
+  await save();
+  await waitFor(() => expect(api.updateEnvironment).toHaveBeenCalled());
+  const row = screen.getByLabelText('SMTP password').closest('.sirdar-secret') as HTMLElement;
+  expect(within(row).getByRole('alert')).toBeTruthy();
+});
+
+it('Apps & mail: apps stored in another order are not a change', async () => {
+  open({ ...ENV, apps: ['mailpit', 'status', 'kiosk', 'wiki'] });
+  await save();
+  expect(screen.getByText('Nothing to save.')).toBeTruthy();
+  expect(api.updateEnvironment).not.toHaveBeenCalled();
+});

@@ -44,6 +44,7 @@ const CODE_FIELD: Record<string, string> = {
   apps_invalid: 'apps', mailpit_required: 'apps', learn_needs_wiki: 'apps', mail_invalid: 'mail',
   smtp_host_invalid: 'mail', smtp_port_invalid: 'mail', smtp_username_invalid: 'mail', smtp_from_invalid: 'mail',
   smtp_password_invalid: 'mail', smtp_required_for_first_admin: 'mail', signing_digest_invalid: 'digests',
+  smtp_password_without_smtp: 'secret:SS_SMTP_PASSWORD',
 };
 
 type Svc = { host_ip: string; port: string };
@@ -122,8 +123,12 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
     setNotice('');
   };
   const setAppsMail = (patch: Partial<AppsMailForm>) => { setForm((f) => ({ ...f, ...patch })); setNotice(''); };
-  // The SMTP password only means something while mail goes through SMTP.
-  const secretKeys = Object.keys(env.secrets_set).filter((k) => k !== 'SS_SMTP_PASSWORD' || env.mail?.mode === 'smtp');
+  // The SMTP password only means something while mail goes through SMTP, saved and in the form.
+  const secretKeys = Object.keys(env.secrets_set)
+    .filter((k) => k !== 'SS_SMTP_PASSWORD' || (env.mail?.mode === 'smtp' && form.mailMode === 'smtp'));
+  // Saving Mailpit drops a stored SMTP password.
+  const smtpPasswordToMailpit = env.mail?.mode === 'smtp' && form.mailMode === 'mailpit'
+    && (!!env.secrets_set.SS_SMTP_PASSWORD || !!env.mail.password_set);
   // The API drops the saved SMTP password when the host or user changes without a new one.
   const smtpPasswordDropped = form.mailMode === 'smtp' && env.mail?.mode === 'smtp' && !!env.secrets_set.SS_SMTP_PASSWORD
     && (form.smtpHost.trim() !== (env.mail.host ?? '') || form.smtpUsername !== (env.mail.username ?? ''))
@@ -228,8 +233,9 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
       if (Number(form.keepVm) !== env.vm.keep_snapshots) vm.keep_snapshots = Number(form.keepVm);
       if (Object.keys(vm).length) patch.vm = vm;
     }
+    // Both in OPTIONAL_APPS order: the stored list may come back in any order.
     const apps = appsOn(form.apps);
-    if (apps.join() !== env.apps.join()) patch.apps = apps;
+    if (apps.join() !== appsOn(formOfEnv(env.apps, env.mail, [], SMTP_PORT).apps).join()) patch.apps = apps;
     const mail = mailBody(form, false);
     if (JSON.stringify(mail) !== JSON.stringify(mailBody(formOfEnv(env.apps, env.mail, [], SMTP_PORT), false))) {
       patch.mail = mail;
@@ -375,6 +381,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
       )}
       <MailFields idPrefix="env-set" form={form} onChange={setAppsMail} error={errors.mail} disabled={off}
                   showPassword={false} />
+      {smtpPasswordToMailpit && <p className="page-hint">Switching to Mailpit clears the saved SMTP password.</p>}
 
       <h3 className="sirdar-sub">Secrets</h3>
       <p className="page-hint">Write-only. Sirdar generated the others and never shows them.</p>
