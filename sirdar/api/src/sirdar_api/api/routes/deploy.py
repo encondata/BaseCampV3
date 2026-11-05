@@ -7,7 +7,7 @@ import uuid
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
@@ -474,6 +474,10 @@ class MailIn(BaseModel):
     starttls: bool | None = None
 
 
+# One kiosk signing digest as sent (apps.check_digests normalizes it).
+Digest = Annotated[str, Field(max_length=200)]
+
+
 class EnvironmentIn(BaseModel):
     mode: Literal["new", "adopt"]
     name: str = Field(max_length=64)
@@ -499,6 +503,9 @@ class EnvironmentIn(BaseModel):
     # (absent: Mailpit) and optional secrets (write-only)
     apps: list[str] | None = None
     mail: MailIn | None = None
+    # mode "new" only: the kiosk app's signing certificate digests (adopt reads
+    # SS_KIOSK_SIGNING_DIGESTS from the .env)
+    kiosk_signing_digests: list[Digest] | None = Field(default=None, max_length=10)
     secrets: dict[str, str] | None = Field(default=None, repr=False)
 
 
@@ -629,6 +636,8 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
         raise HTTPException(status_code=422, detail={"code": "apps_not_allowed"})
     if body.mode == "adopt" and body.mail is not None:
         raise HTTPException(status_code=422, detail={"code": "mail_not_allowed"})
+    if body.mode == "adopt" and body.kiosk_signing_digests is not None:
+        raise HTTPException(status_code=422, detail={"code": "digests_not_allowed"})
     if body.mode == "adopt" and body.secrets:
         # An adopted environment keeps the secrets its own .env holds.
         raise HTTPException(status_code=422, detail={"code": "secrets_not_allowed"})
@@ -648,6 +657,7 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
                 first_admin=body.first_admin.model_dump() if body.first_admin else None,
                 apps=body.apps,
                 mail=body.mail.model_dump(exclude_none=True) if body.mail else None,
+                kiosk_signing_digests=body.kiosk_signing_digests,
                 secrets=body.secrets)
         else:
             env, _, report = await environments.adopt(

@@ -26,7 +26,7 @@ ENV_KEYS = {"id", "name", "type", "target", "base_domain", "env_dir", "git_ref",
             "log_level", "services", "secrets_set", "seed_snapshot", "last_deployment",
             "created_at", "updated_at", "publish", "managed_records", "target_kind", "vm",
             "do", "slots", "active_slot", "auto_activate", "retiring", "first_admin",
-            "machines", "lan_slots", "apps", "mail"}
+            "machines", "lan_slots", "apps", "mail", "kiosk_signing_digests"}
 NEW = {"mode": "new", "name": "qa", "type": "custom", "target": "ssh",
        "proxy_ip": "10.10.48.6"}
 DEFAULTS_URL = "/api/deploy/environment-defaults"

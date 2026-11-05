@@ -20,6 +20,7 @@ _HOST_RE = re.compile(r"(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?")
 _BAD = r"@\s\"'$#`\\\x00-\x1f\x7f-\x9f"
 _EMAIL_RE = re.compile(rf"[^{_BAD}]{{1,64}}@[^{_BAD}]+\.[^.{_BAD}]{{2,}}")
 _USER_RE = re.compile(r"[^\s\"'$#`\\]{1,254}")
+_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 
 
 class AppsError(Exception):
@@ -35,7 +36,28 @@ def check_apps(value) -> list[str]:
     if (not isinstance(value, list) or not all(isinstance(a, str) for a in value)
             or set(value) - set(OPTIONAL_APPS)):
         raise AppsError("apps_invalid")
+    if "learn" in value and "wiki" not in value:
+        # learning documents render through the wiki container
+        raise AppsError("learn_needs_wiki")
     return [a for a in OPTIONAL_APPS if a in value]
+
+
+def check_digests(value) -> list[str]:
+    """The kiosk app's signing certificate digests (SS_KIOSK_SIGNING_DIGESTS):
+    each a SHA-256 as 64 hex characters, colons and case ignored; stored
+    lowercase without colons, each once. None: none."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(d, str) for d in value):
+        raise AppsError("signing_digest_invalid")
+    digests: list[str] = []
+    for index, raw in enumerate(value):
+        digest = raw.strip().replace(":", "").lower()
+        if not _DIGEST_RE.fullmatch(digest):
+            raise AppsError("signing_digest_invalid", index=index)
+        if digest not in digests:
+            digests.append(digest)
+    return digests
 
 
 def check_mail(value, apps_on: list[str]) -> dict:

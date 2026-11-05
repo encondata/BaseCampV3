@@ -278,6 +278,7 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
                      do: dict | None = None,
                      first_admin: dict | None = None, apps: list[str] | None = None,
                      mail: dict | None = None,
+                     kiosk_signing_digests: list[str] | None = None,
                      secrets: dict | None = None) -> Environment:
     """A new environment (status "new"): default ports unless given, the
     target's host for every service, freshly generated secrets. With a
@@ -294,6 +295,7 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     purple), static addresses, Nginx Proxy Manager as the switch.
     apps: the optional apps it runs (None: all); only those get public
     names. mail: its Mailpit (the default) or an SMTP server (apps.check_mail).
+    kiosk_signing_digests: the kiosk app's signing certificate digests (apps.check_digests).
     secrets: optional secrets (SS_ANTHROPIC_API_KEY, …), vault-encrypted with
     the generated ones; the SMTP password joins them as SS_SMTP_PASSWORD."""
     cfg = await _precheck(db, settings, name=name, type_=type_, target_id=target_id,
@@ -301,6 +303,7 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     try:
         apps_on = app_rules.check_apps(apps)
         mail_spec = app_rules.check_mail(mail, apps_on)
+        digests = app_rules.check_digests(kiosk_signing_digests)
     except app_rules.AppsError as e:
         raise EnvError(e.code, **e.extra) from None
     extra_secrets = check_optional_secrets(secrets or {})
@@ -361,7 +364,7 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
                                   domain=domain, ports=all_ports, actor_id=actor_id,
                                   snapshot_id=snapshot_id, do=do or {}, apps_on=apps_on,
                                   extra_secrets=extra_secrets)
-        await _set_apps_and_mail(db, env, apps_on, mail_spec)
+        await _set_apps_and_mail(db, env, apps_on, mail_spec, digests)
         if admin_spec is not None:
             await first_admins.put(db, settings, env.id, admin_spec)
         return env
@@ -410,7 +413,7 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         secrets=vault.generate_env_secrets() | extra_secrets, actor_id=actor_id,
         seed_snapshot_id=snapshot_id, publish=publish,
         public_services=app_rules.public_services(apps_on))
-    await _set_apps_and_mail(db, env, apps_on, mail_spec)
+    await _set_apps_and_mail(db, env, apps_on, mail_spec, digests)
     if spec is not None or bluegreen is not None:
         stored = await integrations.config_of(db, target_id)
         add_vm = vms.add_esxi if target_id == targets.ESXI_TARGET else vms.add
@@ -441,16 +444,23 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     return env
 
 
-async def _free_ports(db: AsyncSession, host: str, bind: str) -> dict[str, int]:
-    """Each service's first port at or above its default that no other
-    environment's service on this host listens on (any bind address of
-    theirs or ours being 0.0.0.0, or the same one), unique within this one."""
+async def _used_ports(db: AsyncSession, host: str, bind: str) -> set[int]:
+    """The ports other environments' services on this host listen on that
+    clash with `bind` (any bind address of theirs or ours being 0.0.0.0, or
+    the same one)."""
     rows = await db.execute(
         select(EnvironmentService.port, Environment.bind_ip)
         .join(Environment, Environment.id == EnvironmentService.environment_id)
         .where(EnvironmentService.host_ip == host))
-    used = {port for port, other_bind in rows
+    return {port for port, other_bind in rows
             if DEFAULT_BIND_IP in (bind, other_bind) or other_bind == bind}
+
+
+async def _free_ports(db: AsyncSession, host: str, bind: str) -> dict[str, int]:
+    """Each service's first port at or above its default that no other
+    environment's service on this host listens on (_used_ports), unique
+    within this one."""
+    used = await _used_ports(db, host, bind)
     ports: dict[str, int] = {}
     for service in envfile.SERVICES:
         port = envfile.DEFAULT_PORTS[service]
@@ -461,11 +471,13 @@ async def _free_ports(db: AsyncSession, host: str, bind: str) -> dict[str, int]:
 
 
 async def _set_apps_and_mail(db: AsyncSession, env: Environment, apps_on: list[str],
-                             mail_spec: dict) -> None:
+                             mail_spec: dict, digests: list[str] | None = None) -> None:
     env.apps = apps_on
     (env.smtp_host, env.smtp_port, env.smtp_username, env.smtp_from,
      env.smtp_starttls) = (mail_spec[k] for k in ("smtp_host", "smtp_port", "smtp_username",
                                                   "smtp_from", "smtp_starttls"))
+    if digests is not None:
+        env.kiosk_signing_digests = digests
     await db.flush()
 
 
@@ -553,9 +565,16 @@ class AdoptReport:
     ignored_keys: list[str]
 
 
+# Services newer than some hand-built .envs: with no port key, adopt picks
+# the first free port at or above the default (_adopted_late_ports) rather
+# than assume the default is free.
+_LATE_SERVICES = ("learn",)
+
+
 def _adopted_settings(values: dict[str, str]) -> dict:
     """Non-secret settings from an adopted .env. A bad value raises
-    adopt_value_invalid naming the key."""
+    adopt_value_invalid naming the key. A late service (_LATE_SERVICES)
+    without its port key is left out of "ports"."""
     def invalid(key: str) -> EnvError:
         return EnvError("adopt_value_invalid", key=key)
 
@@ -571,6 +590,8 @@ def _adopted_settings(values: dict[str, str]) -> dict:
     ports: dict[str, int] = {}
     for service in envfile.SERVICES:
         key = envfile.PORT_KEYS[service]
+        if service in _LATE_SERVICES and not values.get(key):
+            continue
         raw = values.get(key) or str(envfile.DEFAULT_PORTS[service])
         if not (raw.isascii() and raw.isdecimal()):
             raise invalid(key)
@@ -588,6 +609,23 @@ def _adopted_settings(values: dict[str, str]) -> dict:
     return {"domain": domain, "proxy_ip": proxy, "bind_ip": bind, "ports": ports,
             "keep_dumps": keep_dumps, "spaces_bucket": bucket, "log_level": level,
             "image_tag": tag}
+
+
+async def _adopted_late_ports(db: AsyncSession, host: str, bind: str,
+                              ports: dict[str, int]) -> dict[str, int]:
+    """`ports` with each missing late service on its first port at or above
+    its default that neither this .env nor another environment on the host
+    (_used_ports) uses, in service order."""
+    missing = [s for s in envfile.SERVICES if s not in ports]
+    if missing:
+        used = await _used_ports(db, host, bind) | set(ports.values())
+        for service in missing:
+            port = envfile.DEFAULT_PORTS[service]
+            while port in used:
+                port += 1
+            ports[service] = _check_port(port, service)
+            used.add(port)
+    return {s: ports[s] for s in envfile.SERVICES}
 
 
 def _valid_fernet_key(value: str) -> bool:
@@ -655,11 +693,18 @@ async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
     if missing:
         raise EnvError("adopt_env_incomplete", missing=missing)
     picked = _adopted_settings(values)
+    picked["ports"] = await _adopted_late_ports(db, cfg.host, picked["bind_ip"],
+                                                picked["ports"])
     secrets = _adopted_secrets(values)
     try:
         apps_on, mail_spec = app_rules.from_env(values, picked["domain"])
     except app_rules.AppsError as e:
         raise EnvError(e.code, **e.extra) from None
+    try:
+        digests = app_rules.check_digests(
+            [d for d in values.get("SS_KIOSK_SIGNING_DIGESTS", "").split(",") if d.strip()])
+    except app_rules.AppsError:
+        raise EnvError("adopt_value_invalid", key="SS_KIOSK_SIGNING_DIGESTS") from None
 
     repo = shlex.quote(folder + "/repo")
     head = await ssh.run_command(cfg, db, f"git -C {repo} rev-parse HEAD")
@@ -677,7 +722,7 @@ async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
         spaces_bucket=picked["spaces_bucket"], log_level=picked["log_level"],
         status="ready", current_sha=sha, image_tag=picked["image_tag"], secrets=secrets,
         actor_id=actor_id, public_services=app_rules.public_services(apps_on))
-    await _set_apps_and_mail(db, env, apps_on, mail_spec)
+    await _set_apps_and_mail(db, env, apps_on, mail_spec, digests)
     now = _now()
     dep = Deployment(environment_id=env.id, mode="adopt", git_ref=git_ref, sha=sha,
                      status="adopted", start_step=1, actor_id=actor_id, started_at=now,

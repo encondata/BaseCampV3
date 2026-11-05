@@ -129,3 +129,32 @@ def test_env_extra_writes_the_signing_digests():
     extra = apps.env_extra(env)
     assert extra["SS_KIOSK_SIGNING_DIGESTS"] == f"{'ab' * 32},{'cd' * 32}"
     assert set(extra) <= set(envfile.EXTRA_KEYS) | set(envfile.OPTIONAL_SETTINGS)
+
+
+def test_learn_needs_the_wiki():
+    assert apps.check_apps(["learn", "wiki"]) == ["wiki", "learn"]
+    with pytest.raises(apps.AppsError) as e:
+        apps.check_apps(["learn", "kiosk"])
+    assert e.value.code == "learn_needs_wiki"
+
+
+def test_signing_digests_are_normalized_and_deduplicated():
+    raw = " " + "AB:" * 31 + "AB "
+    assert apps.check_digests([raw, "ab" * 32, "cd" * 32]) == ["ab" * 32, "cd" * 32]
+    assert apps.check_digests(None) == [] and apps.check_digests([]) == []
+
+
+@pytest.mark.parametrize("value, index", [
+    (["ab" * 31], 0), (["ab" * 32, "zz" * 32], 1), (["ab" * 33], 0), ([""], 0),
+])
+def test_a_bad_signing_digest_names_its_place(value, index):
+    with pytest.raises(apps.AppsError) as e:
+        apps.check_digests(value)
+    assert (e.value.code, e.value.extra) == ("signing_digest_invalid", {"index": index})
+
+
+@pytest.mark.parametrize("value", ["ab" * 32, [1], {"a": "b"}])
+def test_signing_digests_must_be_a_list_of_strings(value):
+    with pytest.raises(apps.AppsError) as e:
+        apps.check_digests(value)
+    assert (e.value.code, e.value.extra) == ("signing_digest_invalid", {})

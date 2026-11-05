@@ -121,6 +121,7 @@ async def environment_out(db: AsyncSession, env: Environment) -> dict:
         "secrets_set": {k: k in keys for k in envfile.OPTIONAL_SECRETS},
         "apps": list(env.apps),
         "mail": app_rules.public(env, password_set="SS_SMTP_PASSWORD" in keys),
+        "kiosk_signing_digests": list(env.kiosk_signing_digests),
         "seed_snapshot": await snapshots.snapshot_ref(db, env.seed_snapshot_id),
         "publish": env.publish,
         "first_admin": first_admins.public(await first_admins.get(db, env.id)),

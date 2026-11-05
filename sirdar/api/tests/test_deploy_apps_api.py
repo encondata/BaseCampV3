@@ -369,3 +369,75 @@ async def test_adopt_takes_no_apps_or_mail(client, db, target, extra, code):
     h = await auth_headers(client, db)
     resp = await client.post(URL, headers=h, json={**ADOPT, **extra})
     assert (resp.status_code, resp.json()["detail"]["code"]) == (422, code)
+
+
+DIGEST = "ab" * 32
+
+
+async def test_create_stores_the_signing_digests_and_renders_them(client, db, target,
+                                                                  fake_runner):
+    await trust_fake(db, target)
+    target.overrides[f"{LS} main"] = f"{SHA}\trefs/heads/main\n"
+    h = await auth_headers(client, db)
+    resp = await client.post(URL, headers=h, json={
+        **NEW, "kiosk_signing_digests": ["AB:" * 31 + "AB"]})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["kiosk_signing_digests"] == [DIGEST]
+    dep = await client.post(f"{URL}/qa1/deployments", headers=h, json={"mode": "update"})
+    await pipeline.wait(uuid.UUID(dep.json()["id"]))
+    assert (await _render_values(fake_runner))["SS_KIOSK_SIGNING_DIGESTS"] == DIGEST
+
+
+async def test_create_refuses_a_bad_digest_and_learn_without_the_wiki(client, db, target):
+    h = await auth_headers(client, db)
+    resp = await client.post(URL, headers=h, json={**NEW, "kiosk_signing_digests": ["nope"]})
+    assert (resp.status_code, resp.json()["detail"]) == (
+        422, {"code": "signing_digest_invalid", "index": 0})
+    resp = await client.post(URL, headers=h, json={**NEW, "apps": ["learn", "mailpit"]})
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (422, "learn_needs_wiki")
+
+
+async def test_adopt_reads_learn_its_port_and_the_digests(client, db, target):
+    resp = await _adopt(client, db, target, STACK_APPS="wiki,learn,mailpit",
+                        STACK_LEARN_PORT="8192",
+                        SS_KIOSK_SIGNING_DIGESTS=f"{DIGEST},{'cd' * 32}")
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["apps"] == ["wiki", "learn", "mailpit"]
+    learn = next(s for s in body["services"] if s["service"] == "learn")
+    assert (learn["port"], learn["hostname"]) == (8192, "learn.uat.serversherpa.com")
+    assert body["kiosk_signing_digests"] == [DIGEST, "cd" * 32]
+    assert not {"STACK_LEARN_PORT", "SS_KIOSK_SIGNING_DIGESTS"} & set(body["ignored_keys"])
+
+
+async def test_adopt_refuses_a_bad_digest(client, db, target):
+    resp = await _adopt(client, db, target, SS_KIOSK_SIGNING_DIGESTS="nope")
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "adopt_value_invalid",
+                                     "key": "SS_KIOSK_SIGNING_DIGESTS"}
+
+
+async def test_adopt_refuses_learn_without_the_wiki(client, db, target):
+    resp = await _adopt(client, db, target, STACK_APPS="learn,mailpit")
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (422, "learn_needs_wiki")
+
+
+async def test_adopt_takes_no_digests(client, db, target):
+    h = await auth_headers(client, db)
+    resp = await client.post(URL, headers=h, json={**ADOPT, "kiosk_signing_digests": [DIGEST]})
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (422, "digests_not_allowed")
+
+
+async def test_adopt_without_a_learn_port_picks_a_free_one(client, db, target):
+    # an older hand-built .env: no STACK_LEARN_PORT, and its portal on learn's 8092
+    resp = await _adopt(client, db, target, STACK_LEARN_PORT=None, STACK_PORTAL_PORT="8092")
+    assert resp.status_code == 201, resp.text
+    ports = _ports(resp.json())
+    assert (ports["portal"], ports["learn"]) == (8092, 8093)
+
+
+async def test_adopt_without_a_learn_port_skips_another_environments(client, db, target):
+    await make_environment(db, name="other", host=target.host)     # its learn is on 8092
+    resp = await _adopt(client, db, target, STACK_LEARN_PORT=None)
+    assert resp.status_code == 201, resp.text
+    assert _ports(resp.json())["learn"] == 8093
