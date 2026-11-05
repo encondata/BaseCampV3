@@ -380,6 +380,7 @@ const MESSAGES: Record<string, string> = {
   smtp_password_invalid:
     "That SMTP password can't be saved. Use letters, numbers and ._~+/=:@%^*!?,;- only, with no spaces or quotes.",
   smtp_from_invalid: 'Enter the address mail is sent from, like noreply@example.com.',
+  smtp_password_without_smtp: "Mail goes to Mailpit, so there's no SMTP password to set.",
   secrets_not_allowed: 'An adopted environment keeps its own secrets; change them on its Settings tab.',
 };
 

@@ -493,13 +493,30 @@ def _mail_of(env: Environment) -> dict:
             "starttls": env.smtp_starttls}
 
 
+def _refuse_password_without_smtp() -> None:
+    raise EnvError("smtp_password_without_smtp", field="secrets.SS_SMTP_PASSWORD")
+
+
+async def _drop_smtp_password(db: AsyncSession, env: Environment, changed: list[str]) -> None:
+    gone = await db.execute(delete(EnvironmentSecret).where(
+        EnvironmentSecret.environment_id == env.id,
+        EnvironmentSecret.key == "SS_SMTP_PASSWORD"))
+    if gone.rowcount and "secrets.SS_SMTP_PASSWORD" not in changed:
+        changed.append("secrets.SS_SMTP_PASSWORD")
+
+
 async def _update_apps_and_mail(db: AsyncSession, env: Environment, fields: dict,
-                                changed: list[str]) -> tuple[bool, str | None]:
+                                changed: list[str], sent_password: str | None
+                                ) -> tuple[bool, str | None]:
     """PATCH apps and mail, checked as create checks them: the apps given (or
     kept) against the mail given (or kept). Production keeps SMTP while its
     first admin is pending. Mailpit clears the SMTP columns and the SMTP
-    password. Returns (whether the apps changed, an SMTP password to store)."""
+    password, and refuses a new one. A new SMTP host (any case) or user name
+    without a new password drops the stored one: it was never meant for that
+    server. `sent_password` is secrets.SS_SMTP_PASSWORD from the same PATCH.
+    Returns (whether the apps changed, an SMTP password to store)."""
     before_apps, before_mail = list(env.apps), _mail_of(env)
+    before_host, before_user = env.smtp_host, env.smtp_username
     try:
         apps_on = (app_rules.check_apps(fields["apps"]) if fields.get("apps") is not None
                    else before_apps)
@@ -510,17 +527,21 @@ async def _update_apps_and_mail(db: AsyncSession, env: Environment, fields: dict
     if (env.type == "production" and not mail_spec["smtp_host"]
             and await first_admins.pending(db, env.id)):
         raise EnvError("smtp_required_for_first_admin")
+    mail_in = fields.get("mail")
+    if not mail_spec["smtp_host"] and (
+            sent_password or (isinstance(mail_in, dict) and mail_in.get("password"))):
+        _refuse_password_without_smtp()
+    retargeted = bool(before_host and mail_spec["smtp_host"] and (
+        mail_spec["smtp_host"].lower() != before_host.lower()
+        or mail_spec["smtp_username"] != before_user))
     await _set_apps_and_mail(db, env, apps_on, mail_spec)
     if apps_on != before_apps:
         changed.append("apps")
     if _mail_of(env) != before_mail:
         changed.append("mail")
-    if not mail_spec["smtp_host"]:
-        gone = await db.execute(delete(EnvironmentSecret).where(
-            EnvironmentSecret.environment_id == env.id,
-            EnvironmentSecret.key == "SS_SMTP_PASSWORD"))
-        if gone.rowcount:
-            changed.append("secrets.SS_SMTP_PASSWORD")
+    if not mail_spec["smtp_host"] or (
+            retargeted and not mail_spec["smtp_password"] and not sent_password):
+        await _drop_smtp_password(db, env, changed)
     return apps_on != before_apps, mail_spec["smtp_password"]
 
 
@@ -854,8 +875,14 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
         put("publish", bool(fields["publish"]))
 
     apps_changed, smtp_password = False, None
+    secrets_in = fields.get("secrets")
+    sent_password = (secrets_in.get("SS_SMTP_PASSWORD")
+                     if isinstance(secrets_in, dict) else None)
     if fields.get("apps") is not None or fields.get("mail") is not None:
-        apps_changed, smtp_password = await _update_apps_and_mail(db, env, fields, changed)
+        apps_changed, smtp_password = await _update_apps_and_mail(
+            db, env, fields, changed, sent_password)
+    elif sent_password and not env.smtp_host:
+        _refuse_password_without_smtp()
     if fields.get("kiosk_signing_digests") is not None:
         try:
             put("kiosk_signing_digests",
