@@ -216,6 +216,18 @@ async def is_deploying(db: AsyncSession, env_id) -> bool:
     return found is not None
 
 
+async def never_deployed(db: AsyncSession, env: Environment) -> bool:
+    """No commit running and no Update that ever succeeded: what a failed
+    first deploy built may be cleaned up (mode cleanup) and the environment
+    kept."""
+    if env.current_sha is not None:
+        return False
+    found = await db.scalar(select(Deployment.id).where(
+        Deployment.environment_id == env.id, Deployment.mode == "update",
+        Deployment.status == "succeeded").limit(1))
+    return found is None
+
+
 # ---- create and adopt --------------------------------------------------------
 
 async def _precheck(db: AsyncSession, settings: Settings, *, name: str, type_: str,

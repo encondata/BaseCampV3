@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sirdar_api.db.models import Deployment, DeploymentStep, Environment, ManagedRecord, User
 from sirdar_api.deploy import apps as app_rules
 from sirdar_api.deploy import envfile, first_admins, lan_slots, snapshots, targets, vms
-from sirdar_api.deploy.environments import secret_keys_of, services_of
+from sirdar_api.deploy.environments import never_deployed, secret_keys_of, services_of
 
 LOG_TAIL_DEFAULT = 8000
 
@@ -111,7 +111,7 @@ async def environment_out(db: AsyncSession, env: Environment) -> dict:
         "machines": [vms.public(m) for m in machines], "lan_slots": lan,
         "do": await _do_out(db, env), "slots": list(env.slots),
         "active_slot": env.active_slot, "auto_activate": env.auto_activate,
-        "retiring": env.retiring,
+        "retiring": env.retiring, "never_deployed": await never_deployed(db, env),
         "base_domain": env.base_domain, "env_dir": envfile.env_dir(env.name),
         "git_ref": env.git_ref, "current_sha": env.current_sha, "image_tag": env.image_tag,
         "status": env.status, "proxy_ip": env.proxy_ip, "bind_ip": env.bind_ip,
