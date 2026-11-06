@@ -7,6 +7,10 @@
  * toolbar/column-menu behavior is covered by lib/listTools.test.tsx and
  * lib/columnMenu.test.tsx.
  *
+ * The assets row menu also carries "Watch…" / "Watching…" (a watch on the asset on this
+ * initiative), for everyone who can open the asset; Edit and Remove stay with
+ * initiatives:change.
+ *
  * Menu items are asserted via `screen`, not `within(row)`: RowActionsMenu
  * portals the open menu to document.body (escaping .dir-list's overflow
  * clipping — see RowActionsMenu.tsx), so once open the items no longer
@@ -23,8 +27,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { ADMIN_RANK } from '../lib/access';
 import { ApiError } from '../lib/api';
 import type {
-  InitiativeAssetRow, InitiativeDetail as InitiativeDetailOut, InitiativePersonRow,
-  UiPreferences,
+  AssetWatch, InitiativeAssetRow, InitiativeDetail as InitiativeDetailOut, InitiativePersonRow,
+  StatusValue, UiPreferences,
 } from '../lib/api';
 import { LIST_FIT } from '../lib/listTools';
 
@@ -83,6 +87,8 @@ const api = vi.hoisted(() => ({
   recheckInitiativePlacement: vi.fn(),
   getWatchState: vi.fn(),            // the header's Watch button
   createMyWatch: vi.fn(),
+  listMyAssetWatches: vi.fn(),       // the assets row menu's Watch… / Watching…
+  createMyAssetWatch: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -168,8 +174,23 @@ const INITIATIVE: InitiativeDetailOut = {
   kiosk_password_set: false,
 };
 
+/** The person's watch of the asset a1 on this initiative (the row ia1), for its next update. */
+const ROW_WATCH: AssetWatch = {
+  id: 'w1', asset_id: 'a1', asset_name: 'SN-0001',
+  initiative_id: 'i1', initiative_name: 'NAP11 Hall Migration', initiative_asset_id: 'ia1',
+  condition: 'next_update', status: null, status_label: null,
+  current_status: 'staged', current_status_label: 'Staged',
+  link: '/initiatives/i1/assets/ia1', created_at: '2026-11-05T12:00:00Z',
+};
+
+const status = (key: string, label: string): StatusValue => ({
+  record_type: 'asset', key, label, description: '', color: '#888888', sort_order: 0,
+  is_active: true, usage_count: null, progress_weight: null,
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
+  Element.prototype.scrollIntoView = vi.fn();   // jsdom has none; the Watch modal's ComboBox scrolls its active option
   auth.can = () => true;
   auth.maxRank = 0;
   prefs.list_view = 'expanded';
@@ -195,6 +216,8 @@ beforeEach(() => {
   api.removeInitiativeAsset.mockResolvedValue(undefined);
   api.removeInitiativePerson.mockResolvedValue(undefined);
   api.getWatchState.mockResolvedValue({ watching: false, watch_id: null, kinds: [] });
+  api.listMyAssetWatches.mockResolvedValue([]);
+  api.createMyAssetWatch.mockResolvedValue(ROW_WATCH);
   learning.getInitiativeLearning.mockResolvedValue({
     stats: { invited: 0, opened: 0, in_progress: 0, complete: 0, overdue: 0 },
     schedule: {
@@ -596,16 +619,175 @@ it('people list: the action track is trigger-sized', async () => {
 
 /* ── permission gate ─────────────────────────────────────────────── */
 
-it('without initiatives:change there is no Actions trigger on either list', async () => {
-  auth.can = (resource: string, action: string) =>
-    !(resource === 'initiatives' && action === 'change');
-  renderPage('assets');
+/** The labels of the open menu's items, in order (the open menu is portaled: `screen`, not the row). */
+const menuItems = () => screen.getAllByRole('menuitem').map((m) => m.textContent);
 
-  const arow = await assetRow();
-  expect(within(arow).queryByRole('button', { name: /Actions/ })).toBeNull();
-  await userEvent.setup().click(screen.getByRole('tab', { name: /^People/ }));
+const cannotChange = (resource: string, action: string) =>
+  !(resource === 'initiatives' && action === 'change');
+const cannotViewAssets = (resource: string, action: string) =>
+  !(resource === 'assets' && action === 'view');
+
+it('without initiatives:change the people list still has no Actions trigger', async () => {
+  auth.can = cannotChange;
+  renderPage('people');
+
   const prow = await personRow();
   expect(within(prow).queryByRole('button', { name: /Actions/ })).toBeNull();
+});
+
+it('without initiatives:change the assets row still has an Actions button, holding only Watch…', async () => {
+  auth.can = cannotChange;
+  const user = userEvent.setup();
+  renderPage('assets');
+
+  const row = await assetRow();
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+
+  expect(menuItems()).toEqual(['Watch…']);
+});
+
+it('an editor sees Edit, Watch… and Remove in the assets row menu, the destructive item last', async () => {
+  const user = userEvent.setup();
+  renderPage('assets');
+
+  const row = await assetRow();
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+
+  expect(menuItems()).toEqual(['Edit', 'Watch…', 'Remove']);
+});
+
+it('without assets:view there is no Watch… (the API would refuse it): an editor keeps Edit and Remove', async () => {
+  auth.can = cannotViewAssets;
+  const user = userEvent.setup();
+  renderPage('assets');
+
+  const row = await assetRow();
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+
+  expect(menuItems()).toEqual(['Edit', 'Remove']);
+});
+
+it('without assets:view and without initiatives:change the row has no Actions trigger, but its track stays so the columns line up', async () => {
+  auth.can = (resource, action) => cannotChange(resource, action) && cannotViewAssets(resource, action);
+  renderPage('assets');
+
+  const row = await assetRow();
+  expect(within(row).queryByRole('button', { name: /Actions/ })).toBeNull();
+  const main = row.querySelector('.row-main') as HTMLElement;
+  const head = (row.closest('.dir-list') as HTMLElement).querySelector('.list-head') as HTMLElement;
+  expect(main.style.gridTemplateColumns.endsWith('88px 30px')).toBe(true);
+  // a cell (and a header spacer) for every track: the header and the rows keep the same columns
+  expect(head.children.length).toBe(main.children.length);
+});
+
+it('without assets:view and without initiatives:change a click on the empty Actions cell expands the row, as anywhere else on it', async () => {
+  auth.can = (resource, action) => cannotChange(resource, action) && cannotViewAssets(resource, action);
+  const user = userEvent.setup();
+  renderPage('assets');
+
+  const row = await assetRow();
+  await user.click(row.querySelector('.idet-assets-actions') as HTMLElement);
+
+  expect(row.classList.contains('open')).toBe(true);
+  expect(within(row).getByRole('tab', { name: 'Move Details' })).toBeTruthy();
+});
+
+it('with a trigger in it, a click beside the trigger in the Actions cell leaves the row closed', async () => {
+  const user = userEvent.setup();
+  renderPage('assets');
+
+  const row = await assetRow();
+  await user.click(row.querySelector('.idet-assets-actions') as HTMLElement);
+
+  expect(row.classList.contains('open')).toBe(false);
+  expect(within(row).queryByRole('tab', { name: 'Move Details' })).toBeNull();
+});
+
+it('for a viewer too the Actions track and its header spacer are there, as for an editor', async () => {
+  auth.can = cannotChange;
+  renderPage('assets');
+
+  const row = await assetRow();
+  const main = row.querySelector('.row-main') as HTMLElement;
+  const head = (row.closest('.dir-list') as HTMLElement).querySelector('.list-head') as HTMLElement;
+  expect(main.style.gridTemplateColumns.endsWith('88px 30px')).toBe(true);
+  expect(head.children.length).toBe(main.children.length);
+  expect(main.querySelector('.idet-assets-actions')).not.toBeNull();
+});
+
+/* ── Watch… on the assets row ────────────────────────────────────── */
+
+it('assets row: the Watch item reads "Watching…" while the person watches the asset on this initiative, and opens the modal on that watch', async () => {
+  api.listMyAssetWatches.mockResolvedValue([ROW_WATCH]);
+  const user = userEvent.setup();
+  renderPage('assets');
+
+  const row = await assetRow();
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await user.click(await screen.findByRole('menuitem', { name: 'Watching…' }));
+
+  const dialog = screen.getByRole('dialog', { name: 'Watch SN-0001' });
+  expect(within(dialog).getByRole('button', { name: 'Save' })).toBeTruthy();
+  expect(within(dialog).getByRole('button', { name: 'Stop watching' })).toBeTruthy();
+});
+
+it('assets row: Actions → Watch… opens the Watch modal for the asset on this initiative, reading the row status', async () => {
+  api.listAssetStatuses.mockResolvedValue([
+    status('active', 'Active'), status('staged', 'Staged'), status('shipped', 'Shipped'),
+  ]);
+  const user = userEvent.setup();
+  renderPage('assets');
+
+  const row = await assetRow();
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Watch…' }));
+
+  // named by the serial number first (the Edit dialog says switch-01)
+  const dialog = await screen.findByRole('dialog', { name: 'Watch SN-0001' });
+  expect(dialog.querySelector('p.page-hint')?.textContent).toMatch(/ On NAP11 Hall Migration\.$/);
+  await user.click(within(dialog).getByRole('button', { name: 'Status becomes' }));
+  // the row is Staged; the asset itself is Active
+  expect(within(dialog).getByText('Its status on this initiative is Staged now.')).toBeTruthy();
+  const picker = within(dialog).getByRole('combobox', { name: 'Status' }) as HTMLInputElement;
+  await waitFor(() => expect(picker.disabled).toBe(false));
+  await user.click(picker);
+  expect(await screen.findByText('Active', { selector: '.kbar-item' })).toBeTruthy();
+  expect(screen.getByText('Shipped', { selector: '.kbar-item' })).toBeTruthy();
+  expect(screen.queryByText('Staged', { selector: '.kbar-item' })).toBeNull();
+});
+
+it('assets row: watching from the modal sets a watch on this asset and initiative, reads the watches again, and the item reads "Watching…"', async () => {
+  api.listMyAssetWatches.mockResolvedValueOnce([]).mockResolvedValue([ROW_WATCH]);
+  const user = userEvent.setup();
+  renderPage('assets');
+
+  const row = await assetRow();
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Watch…' }));
+  await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Watch' }));
+
+  await waitFor(() => expect(api.createMyAssetWatch).toHaveBeenCalledWith({
+    asset_id: 'a1', initiative_id: 'i1', condition: 'next_update', status: null,
+  }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  await waitFor(() => expect(api.listMyAssetWatches).toHaveBeenCalledTimes(2));
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  expect(await screen.findByRole('menuitem', { name: 'Watching…' })).toBeTruthy();
+});
+
+it('a viewer can watch from the assets row: Watch… sets the watch just the same', async () => {
+  auth.can = cannotChange;
+  const user = userEvent.setup();
+  renderPage('assets');
+
+  const row = await assetRow();
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Watch…' }));
+  await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Watch' }));
+
+  await waitFor(() => expect(api.createMyAssetWatch).toHaveBeenCalledWith({
+    asset_id: 'a1', initiative_id: 'i1', condition: 'next_update', status: null,
+  }));
 });
 
 /* ── people edit table (rank-gated, independent of god mode) ─────── */

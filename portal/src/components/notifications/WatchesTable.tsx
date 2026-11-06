@@ -14,18 +14,28 @@
  *    column is there only when some row has actions, so a list nobody may change
  *    has no empty column (as the group page's Members table).
  *
+ * /me also gives it the person's asset watches (`assetWatches`, with their own
+ * `assetActionsFor`), which are rows of the same table after the others, in the order
+ * given. An asset watch is not a `Watch`: it names no events and ends once it has
+ * fired, so its row reads differently. Watching is the asset's name, linked to where
+ * the watch was set, then "on {initiative}" for a watch set on one, and an Asset chip;
+ * Events is what it waits for ("Next update", or "Status becomes {label}", never
+ * "All events"); Via is "You", since a group can't hold one. The group page passes
+ * none, so its table is as it was.
+ *
  * `div.watch-table` scopes the table's themed scrollbar (notifications.css). The
  * table renders no Since column: DataTable has no column menu to switch it on.
  */
 
+import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 
-import type { NotificationKindSetting, Watch } from '../../lib/api';
+import type { AssetWatch, NotificationKindSetting, Watch } from '../../lib/api';
 import { resolveInboxLink } from '../../lib/inboxLinks';
-import { THING_LABELS, eventsText } from '../../lib/watches';
+import { ASSET_THING_LABEL, THING_LABELS, assetWatchEventsText, eventsText } from '../../lib/watches';
 import DataTable, { type DataTableColumn, type DataTableRow } from '../DataTable';
 import { RowActionsMenu, type RowAction } from '../hardware/RowActionsMenu';
-import '../../styles/directory.css';       // .data-table, .chip, .cell-top
+import '../../styles/directory.css';       // .data-table, .chip, .cell-top, .cell-sub
 import '../../styles/notifications.css';   // .watch-table, .watch-thing, .watch-actions
 
 /** A thing's name, linked to its page when it has one, by the rule the inbox opens
@@ -52,16 +62,36 @@ function Watching({ watch }: { watch: Watch }) {
   );
 }
 
-export default function WatchesTable({ watches, kinds, showVia, actionsFor, emptyText }: {
+/** The Watching cell of an asset watch: the asset's name, linked to where the watch was set,
+ *  "on {initiative}" for a watch set on one (secondary text, outside the link), and the Asset
+ *  chip. */
+function AssetWatching({ watch }: { watch: AssetWatch }) {
+  return (
+    <div className="watch-thing">
+      <ThingName name={watch.asset_name} link={watch.link} />
+      {watch.initiative_name && <span className="cell-sub">on {watch.initiative_name}</span>}
+      <span className="chip tag">{ASSET_THING_LABEL}</span>
+    </div>
+  );
+}
+
+export default function WatchesTable({
+  watches, kinds, showVia, actionsFor, emptyText, assetWatches = [], assetActionsFor = () => [],
+}: {
   watches: Watch[];
   /** Every registered kind, to name each watch's events. */
   kinds: NotificationKindSetting[];
   showVia: boolean;
   actionsFor: (watch: Watch) => RowAction[];
   emptyText: string;
+  /** The person's asset watches, listed after `watches`. Only /me has any. */
+  assetWatches?: AssetWatch[];
+  /** The actions of an asset watch's row; none by default. */
+  assetActionsFor?: (watch: AssetWatch) => RowAction[];
 }) {
   const actions = watches.map(actionsFor);
-  const hasActions = actions.some((list) => list.length > 0);
+  const assetActions = assetWatches.map(assetActionsFor);
+  const hasActions = [...actions, ...assetActions].some((list) => list.length > 0);
 
   const columns: DataTableColumn[] = [
     { key: 'watching', label: 'Watching' },
@@ -71,19 +101,37 @@ export default function WatchesTable({ watches, kinds, showVia, actionsFor, empt
     ...(hasActions ? [{ key: 'actions', label: 'Actions', width: '88px' }] : []),
   ];
 
-  const rows: DataTableRow[] = watches.map((watch, i) => ({
-    key: watch.id,
-    cells: [
-      <Watching watch={watch} />,
-      eventsText(watch.kinds, kinds),
-      ...(showVia ? [watch.via.type === 'group' ? (watch.via.name ?? '—') : 'You'] : []),
-      ...(hasActions ? [
-        actions[i].length > 0
-          ? <div className="watch-actions"><RowActionsMenu actions={actions[i]} /></div>
-          : null,
-      ] : []),
-    ],
-  }));
+  /** One row's cells, in the columns above: the Via and Actions cells only where the table has
+   *  the column, and an empty Actions cell for a row with no actions. */
+  const cellsOf = (
+    watching: ReactNode, events: string, via: string, rowActions: RowAction[],
+  ): ReactNode[] => [
+    watching,
+    events,
+    ...(showVia ? [via] : []),
+    ...(hasActions ? [
+      rowActions.length > 0
+        ? <div className="watch-actions"><RowActionsMenu actions={rowActions} /></div>
+        : null,
+    ] : []),
+  ];
+
+  const rows: DataTableRow[] = [
+    ...watches.map((watch, i) => ({
+      key: watch.id,
+      cells: cellsOf(
+        <Watching watch={watch} />,
+        eventsText(watch.kinds, kinds),
+        watch.via.type === 'group' ? (watch.via.name ?? '—') : 'You',
+        actions[i],
+      ),
+    })),
+    // The asset watches' ids are another table's: the key says which, so a row of each can't clash.
+    ...assetWatches.map((watch, i) => ({
+      key: `asset:${watch.id}`,
+      cells: cellsOf(<AssetWatching watch={watch} />, assetWatchEventsText(watch), 'You', assetActions[i]),
+    })),
+  ];
 
   return (
     <div className="watch-table">

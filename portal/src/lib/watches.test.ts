@@ -6,11 +6,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  ApiError, READ_ONLY_MESSAGE, type NotificationCategory, type NotificationKindSetting,
+  ApiError, READ_ONLY_MESSAGE, type AssetWatch, type NotificationCategory, type NotificationKindSetting,
 } from './api';
 import {
-  THING_LABELS, eventsText, isOutOfDate, isWikiWatch, kindsFor, watchErrorMessage, watchToggleMessage,
-  wikiNodeLabel,
+  ASSET_THING_LABEL, THING_LABELS, assetWatchEventsText, assetWatchName, eventsText, isOutOfDate,
+  isWikiWatch, kindsFor, watchErrorMessage, watchToggleMessage, wikiNodeLabel,
 } from './watches';
 
 function kind(
@@ -222,5 +222,65 @@ describe('watchToggleMessage', () => {
       .toBe("Couldn't update your watch.");
     expect(watchToggleMessage(undefined)).toBe("Couldn't update your watch.");
     expect(watchToggleMessage()).toBe("Couldn't update your watch.");
+  });
+});
+
+describe('ASSET_THING_LABEL', () => {
+  it('is what the watch rows call an asset: "Asset" (an asset watch is not one of the THING_LABELS things)', () => {
+    expect(ASSET_THING_LABEL).toBe('Asset');
+    expect(Object.values(THING_LABELS)).not.toContain(ASSET_THING_LABEL);
+  });
+});
+
+describe('assetWatchName', () => {
+  const ASSET = { id: 'a1', serial_number: 'SN-1001', name: 'web-01' };
+
+  it('is the serial number when the asset has one (the page title is its name first, this is not)', () => {
+    expect(assetWatchName(ASSET)).toBe('SN-1001');
+  });
+
+  it('is the name when it has no serial number', () => {
+    expect(assetWatchName({ ...ASSET, serial_number: null })).toBe('web-01');
+  });
+
+  it('is the id when it has neither', () => {
+    expect(assetWatchName({ ...ASSET, serial_number: null, name: null })).toBe('a1');
+  });
+
+  it('reads an empty serial number or name as none, as the API\'s asset_label does', () => {
+    expect(assetWatchName({ ...ASSET, serial_number: '' })).toBe('web-01');
+    expect(assetWatchName({ ...ASSET, serial_number: '', name: '' })).toBe('a1');
+  });
+});
+
+describe('assetWatchEventsText', () => {
+  /** A watch on the asset itself, for its next update. */
+  const WATCH: AssetWatch = {
+    id: 'w1', asset_id: 'a1', asset_name: 'SN-1001',
+    initiative_id: null, initiative_name: null, initiative_asset_id: null,
+    condition: 'next_update', status: null, status_label: null,
+    current_status: 'in_storage', current_status_label: 'In storage',
+    link: '/assets/a1', created_at: '2026-11-05T12:00:00Z',
+  };
+
+  it('says "Next update" for a watch for the next update', () => {
+    expect(assetWatchEventsText(WATCH)).toBe('Next update');
+  });
+
+  it('says "Status becomes" and the status\'s label for a watch for a status', () => {
+    expect(assetWatchEventsText({ ...WATCH, condition: 'status', status: 'shipped', status_label: 'Shipped' }))
+      .toBe('Status becomes Shipped');
+  });
+
+  it('shows a status the API sent no label for as its key', () => {
+    expect(assetWatchEventsText({ ...WATCH, condition: 'status', status: 'shipped', status_label: null }))
+      .toBe('Status becomes shipped');
+  });
+
+  it('is the same on an initiative: where it was set is the Watching cell\'s to say', () => {
+    expect(assetWatchEventsText({
+      ...WATCH, initiative_id: 'i1', initiative_name: 'Initiative A', condition: 'status',
+      status: 'shipped', status_label: 'Shipped',
+    })).toBe('Status becomes Shipped');
   });
 });

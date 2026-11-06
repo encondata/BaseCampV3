@@ -16,6 +16,7 @@ from serversherpa.api.schemas import (
 from serversherpa.db.models import StatusValue
 from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.status.labels import active_statuses
 from serversherpa.status.registry import (
     STATUS_RECORD_TYPES, STATUS_REGISTRY, StatusRecordType,
 )
@@ -104,12 +105,7 @@ async def list_status_values(
         rt = _record_type(record_type)
         if not actor.access.can(rt.resource, "view"):
             raise _err(403, "forbidden")
-        rows = (await db.scalars(
-            select(StatusValue)
-            .where(StatusValue.record_type == rt.id,
-                   StatusValue.is_active.is_(True))
-            .order_by(StatusValue.sort_order, natural(StatusValue.label)))).all()
-        return [StatusValueOut.model_validate(r) for r in rows]
+        return [StatusValueOut.model_validate(r) for r in await active_statuses(db, rt.id)]
 
     # the unfiltered listing spans every record type — that is the Variables
     # page's view, and it is developer-only

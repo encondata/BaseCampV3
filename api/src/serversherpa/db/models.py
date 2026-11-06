@@ -2156,6 +2156,38 @@ class NotificationWatch(Base):
     )
 
 
+class AssetWatch(Base):
+    """A person's watch on one asset, set on the asset itself (`initiative_id` null) or on an
+    initiative it is on (migration 0121). It waits for one condition, the asset's next update
+    (`next_update`) or a status (`status`, which names it), and ends once that happens.
+    `baseline` is the snapshot of the asset taken when the watch was set or last changed
+    (notifications/asset_watches.py `snapshot`), and `created_at` is when. One row per person,
+    asset and place (the unique index counts NULLs as equal, so a second watch on the asset
+    itself collides). A deleted person, asset or initiative takes its watches along."""
+
+    __tablename__ = "asset_watches"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    person_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"))
+    asset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assets.id", ondelete="CASCADE"))
+    initiative_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("initiatives.id", ondelete="CASCADE"))
+    condition: Mapped[str]
+    status: Mapped[str | None]
+    baseline: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    __table_args__ = (
+        CheckConstraint("condition IN ('next_update', 'status')",
+                        name="ck_asset_watches_condition"),
+        CheckConstraint("(condition = 'status') = (status IS NOT NULL)",
+                        name="ck_asset_watches_status"),
+        Index("uq_asset_watches_target", "person_id", "asset_id", "initiative_id",
+              unique=True, postgresql_nulls_not_distinct=True),
+    )
+
+
 class NotificationEvent(Base):
     """Something that happened, waiting to be turned into notifications (migration 0113).
     notifications/events.announce() adds a row in the caller's transaction and never

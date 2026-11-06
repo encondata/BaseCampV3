@@ -11,6 +11,7 @@ import AssetEditModal from '../components/assets/AssetEditModal';
 import AssetLocation from '../components/assets/AssetLocation';
 import AssetMoveHistory from '../components/assets/AssetMoveHistory';
 import NotesFilesPanel from '../components/NotesFilesPanel';
+import AssetWatchButton from '../components/notifications/AssetWatchButton';
 import ScanHistoryTable from '../components/scans/ScanHistoryTable';
 import {
   getAsset, listAssetStatuses, listAssets, listClients, listSites,
@@ -23,6 +24,7 @@ import '../styles/system.css';
 
 import StatusHover from '../components/StatusHover';
 import { displayRfid } from '../lib/format';
+import { assetWatchName } from '../lib/watches';
 
 export default function AssetDetail() {
   const { assetId } = useParams<{ assetId: string }>();
@@ -99,11 +101,14 @@ export default function AssetDetail() {
               .filter(Boolean).join(' · ') || '—'}
           </p>
         </div>
-        {canChange && (
-          <div className="idet-header-actions">
+        <div className="idet-header-actions">
+          {/* Watching is for everyone who can open the page, so it sits outside the gate. */}
+          <AssetWatchButton assetId={asset.id} assetName={assetWatchName(asset)}
+                            currentStatus={asset.status} currentStatusLabel={asset.status_label} />
+          {canChange && (
             <button className="btn-solid" onClick={() => setEditing(true)}>Edit</button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       <div className="segmented" role="tablist">

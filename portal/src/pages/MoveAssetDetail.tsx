@@ -9,6 +9,7 @@ import { Link, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import AssetLocation from '../components/assets/AssetLocation';
 import AssetEditDialog from '../components/initiatives/AssetEditDialog';
+import AssetWatchButton from '../components/notifications/AssetWatchButton';
 import ScanHistoryTable from '../components/scans/ScanHistoryTable';
 import {
   getAsset, getInitiative, listAssetStatuses, listInitiativeAssets,
@@ -21,12 +22,16 @@ import '../styles/system.css';
 
 import StatusHover from '../components/StatusHover';
 import { displayRfid } from '../lib/format';
+import { assetWatchName } from '../lib/watches';
 
 export default function MoveAssetDetail() {
   const { id, rowId } = useParams<{ id: string; rowId: string }>();
   const { can } = useAuth();
   const canChange = can('initiatives', 'change');
   const canViewScans = can('scans', 'view');
+  // A watch on an initiative also needs the asset itself: the API refuses it (404) without this,
+  // and this page, unlike the asset's own, opens with initiatives:view alone.
+  const canViewAssets = can('assets', 'view');
 
   const [initiativeName, setInitiativeName] = useState<string | null>(null);
   const [row, setRow] = useState<InitiativeAssetRow | null>(null);
@@ -111,9 +116,19 @@ export default function MoveAssetDetail() {
               .filter(Boolean).join(' · ') || '—'}
           </p>
         </div>
-        {canChange && (
+        {(canViewAssets || canChange) && (
           <div className="idet-header-actions">
-            <button className="btn-solid" onClick={() => setEditing(true)}>Edit</button>
+            {/* Watching is for everyone who can open the asset, so it sits outside the Edit gate.
+                It watches the asset on this initiative, so it reads the row's status (the move
+                status), not the asset's own. */}
+            {canViewAssets && (
+              <AssetWatchButton assetId={row.asset_id} assetName={assetWatchName(row.asset)}
+                                initiativeId={id!} initiativeName={initiativeName}
+                                currentStatus={row.status} currentStatusLabel={row.status_label} />
+            )}
+            {canChange && (
+              <button className="btn-solid" onClick={() => setEditing(true)}>Edit</button>
+            )}
           </div>
         )}
       </div>

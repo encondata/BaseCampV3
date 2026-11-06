@@ -1120,16 +1120,17 @@ def notification_worker(
     poll_seconds: float = typer.Option(
         5.0, help="Seconds between outbox delivery passes"),
     once: bool = typer.Option(
-        False, help="One status pass, one device check, one event sweep, one summary "
-                    "sweep and one email delivery pass, then exit"),
+        False, help="One status pass, one device check, one asset-watch check, one event "
+                    "sweep, one summary sweep and one email delivery pass, then exit"),
     reload: bool = typer.Option(
         False, help="Dev mode: restart when api/src changes "
                     "(uvicorn-style)"),
 ) -> None:
     """Run the notification worker — delivers the email outbox, announces
-    covered devices that stop checking in, turns announced events into
-    notifications, sends held email as one summary when it is due, sends the
-    hourly password-expiry reminders, and logs periodic status lines."""
+    covered devices that stop checking in, tells people whose asset watches
+    are due, turns announced events into notifications, sends held email as
+    one summary when it is due, sends the hourly password-expiry reminders,
+    and logs periodic status lines."""
 
     if reload and once:
         typer.secho("--once cannot be combined with --reload", fg="red")
@@ -1155,16 +1156,17 @@ def notification_worker(
 
             maker = get_sessionmaker()
             await worker.run_once(maker)
-            # the check and the sweeps before delivery, so what they queue goes out in
-            # this run (the check first, so what it announces is swept now)
+            # the checks and the sweeps before delivery, so what they queue goes out in
+            # this run (the device check first, so what it announces is swept now)
             announced = await worker.run_device_check_once(maker)
+            ended = await worker.run_asset_watches_once(maker)
             written = await worker.run_events_once(maker)
             summaries = await worker.run_summaries_once(maker)
             sent = await deliver_once(maker)
             typer.secho(f"status pass complete; announced {announced} device(s) offline; "
-                        f"wrote {written} notification(s) from events; queued "
-                        f"{summaries} summary email(s); processed {sent} queued email(s)",
-                        fg="green")
+                        f"ended {ended} asset watch(es); wrote {written} notification(s) "
+                        f"from events; queued {summaries} summary email(s); processed "
+                        f"{sent} queued email(s)", fg="green")
         else:
             await worker.run_forever(poll_seconds)
         await dispose_engine()

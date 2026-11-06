@@ -1,13 +1,15 @@
 // @vitest-environment jsdom
 /**
  * /assets/:assetId — Overview keeps identity and location; History carries
- * move history above the scan history that was already there.
+ * move history above the scan history that was already there. The header's Watch button is
+ * for everyone who can open the page, not only for editors; a click opens the Watch modal.
  */
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { AssetItem } from '../lib/api';
+import type { AssetItem, StatusValue } from '../lib/api';
 
 const auth = vi.hoisted(() => ({ perms: new Set<string>(['assets:view', 'assets:change', 'scans:view']) }));
 
@@ -22,12 +24,13 @@ vi.mock('../auth/AuthContext', () => ({
 
 const api = vi.hoisted(() => ({
   getAsset: vi.fn(),
-  listAssetStatuses: vi.fn(async () => []),
+  listAssetStatuses: vi.fn(async (): Promise<StatusValue[]> => []),
   listClients: vi.fn(async () => []),
   listSites: vi.fn(async () => []),
   listAssets: vi.fn(async () => []),
   listAssetMoves: vi.fn(async () => []),
   listAssetScans: vi.fn(async () => []),
+  getAssetWatchState: vi.fn(),       // the header's Watch button
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -44,10 +47,18 @@ const ASSET = {
   archived_at: null, created_at: '2026-08-05T00:00:00Z',
 } as unknown as AssetItem;
 
+const status = (key: string, label: string): StatusValue => ({
+  record_type: 'asset', key, label, description: '', color: '#888888', sort_order: 0,
+  is_active: true, usage_count: null, progress_weight: null,
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
+  Element.prototype.scrollIntoView = vi.fn();   // jsdom has none; the modal's ComboBox scrolls its active option
   auth.perms = new Set(['assets:view', 'assets:change', 'scans:view']);
   api.getAsset.mockResolvedValue(ASSET);
+  api.listAssetStatuses.mockResolvedValue([]);
+  api.getAssetWatchState.mockResolvedValue({ watching: false, watch: null });
 });
 afterEach(cleanup);
 
@@ -102,4 +113,57 @@ it('Overview shows the Location as container and truck links', async () => {
   const c = await screen.findByRole('link', { name: 'ATL1-W1M-DC-01' });
   expect(c.getAttribute('href')).toBe('/logistics/containers?open=c1');
   expect(screen.getByRole('link', { name: 'ATL1-T01' }).getAttribute('href')).toBe('/logistics/trucks/t1');
+});
+
+/* ── the header's Watch button ───────────────────────────────────── */
+
+it('a viewer without assets:change gets the Watch button, and no Edit', async () => {
+  auth.perms = new Set(['assets:view']);
+  renderAt('/assets/a1');
+
+  expect(await screen.findByRole('button', { name: 'Watch' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+  // the state of the asset on its own: no initiative
+  expect(api.getAssetWatchState).toHaveBeenCalledWith('a1', null);
+});
+
+it('for an editor the Watch button comes first in the header actions, then Edit', async () => {
+  renderAt('/assets/a1');
+
+  const watch = await screen.findByRole('button', { name: 'Watch' });
+  const actions = watch.closest('.idet-header-actions') as HTMLElement;
+  expect(actions.closest('.idet-header')).not.toBeNull();
+  expect([...actions.children].map((el) => el.textContent)).toEqual(['Watch', 'Edit']);
+});
+
+it('a click on Watch opens the Watch modal for the asset, named by its serial number', async () => {
+  auth.perms = new Set(['assets:view']);
+  const user = userEvent.setup();
+  renderAt('/assets/a1');
+
+  await user.click(await screen.findByRole('button', { name: 'Watch' }));
+
+  // The page's title is the name (web-01); the notices name it by serial first.
+  const dialog = screen.getByRole('dialog', { name: 'Watch SN-ALPHA' });
+  // not watching yet: a new watch, with no Stop watching
+  expect(within(dialog).getByRole('button', { name: 'Watch' })).toBeTruthy();
+  expect(within(dialog).queryByRole('button', { name: 'Stop watching' })).toBeNull();
+});
+
+it('the modal is given the status the asset has now: it says so, and the picker leaves it out', async () => {
+  api.listAssetStatuses.mockResolvedValue([status('active', 'Active'), status('shipped', 'Shipped')]);
+  auth.perms = new Set(['assets:view']);
+  const user = userEvent.setup();
+  renderAt('/assets/a1');
+
+  await user.click(await screen.findByRole('button', { name: 'Watch' }));
+  const dialog = screen.getByRole('dialog', { name: 'Watch SN-ALPHA' });
+  await user.click(within(dialog).getByRole('button', { name: 'Status becomes' }));
+
+  expect(within(dialog).getByText('Its status is Active now.')).toBeTruthy();
+  const picker = within(dialog).getByRole('combobox', { name: 'Status' }) as HTMLInputElement;
+  await waitFor(() => expect(picker.disabled).toBe(false));
+  await user.click(picker);
+  expect(await screen.findByText('Shipped', { selector: '.kbar-item' })).toBeTruthy();
+  expect(screen.queryByText('Active', { selector: '.kbar-item' })).toBeNull();
 });
