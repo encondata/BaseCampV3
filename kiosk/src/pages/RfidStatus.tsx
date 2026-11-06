@@ -42,7 +42,7 @@ export function displayEpc(epc: string): string {
 
 const pad = (n: number) => String(n).padStart(2, '0');
 /** 24-hour HH:MM:SS, built by hand so no locale turns midnight into 24. */
-function clockText(d: Date): string {
+export function clockText(d: Date): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 function dateText(d: Date): string {

@@ -1095,6 +1095,60 @@
 .portal-shell[data-theme='dark'] .rfid-dash-btn { color: var(--paper-2); }
 .portal-shell[data-theme='dark'] .rfid-dash-btn:disabled { opacity: .5; filter: saturate(.6); }
 
+/* ── Dock screen ─────────────────────────────────────────────────────
+   /dock reuses the RFID dashboard's page and panels (always dark, filling
+   the main column). On top, a strip with the dry-run switch and the quiet
+   gap (the alarm-seconds field plus Save), and an amber banner while dry
+   run is on; below, the open pass beside the wider recent passes, both
+   showing only the rows that fit (they never scroll). A flagged or refused
+   pass gets a red left edge and red outcome text. The pass modal's tables
+   wrap long tags rather than scroll sideways; the card itself scrolls. */
+.dock-dash-controls {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px 40px;
+  flex: none; min-width: 0; margin: 20px 0 0; padding: 14px 20px;
+  background: var(--paper); border: 1px solid var(--paper-line); border-radius: 14px;
+  color: var(--text-dark);
+}
+.dock-dash-controls:disabled .kiosk-switch { opacity: .5; cursor: default; }
+.dock-dash-control { display: flex; align-items: center; gap: 16px; min-width: 0; }
+.dock-dash-control > div:first-child { min-width: 0; }
+.dock-dash-controls > .form-error { flex-basis: 100%; margin: 0; }
+/* The quiet gap's hint as an error: red (a bare .form-error loses to the
+   later .settings-row-hint) and without .rfid-dash .form-error's margin. */
+.dock-dash-controls .settings-row-hint.form-error { color: var(--c-red); margin: 4px 0 0; }
+.dock-dash-banner {
+  flex: none; margin: 14px 0 0; padding: 10px 16px; border-radius: 10px;
+  background: color-mix(in srgb, var(--c-amber) 15%, transparent);
+  border-left: 3px solid var(--c-amber);
+  color: var(--text-dark); font-size: 14px; font-weight: 500;
+}
+.dock-dash-panels { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
+@media (max-width: 900px) { .dock-dash-panels { grid-template-columns: minmax(0, 1fr); } }
+.dock-dash-countdown {
+  margin: 8px 0 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: 24px; font-weight: 600; line-height: 1.2;
+}
+.dock-dash-tags { list-style: none; margin: 0; padding: 0; flex: 1 1 auto; min-height: 0; overflow: hidden; }
+@media (max-width: 900px) { .dock-dash-tags { max-height: 360px; } }
+.dock-dash-tag {
+  display: grid; grid-template-columns: 78px minmax(0, 1fr) max-content;
+  align-items: center; gap: 10px; padding: 8px 0;
+  border-top: 1px solid var(--paper-line); font-size: 13px;
+}
+.dock-dash-tag:first-child { border-top: 0; padding-top: 0; }
+.dock-dash-tag .chip { justify-self: start; }
+.dock-dash-tag-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-dash-tag-label.is-unknown { color: var(--text-mute); }
+.dock-dash-tag-epc { font-family: var(--font-mono); font-size: 12px; color: var(--text-mute); }
+.dock-dash-table { width: 100%; }
+.dock-dash-table td { vertical-align: middle; }
+.dock-dash-table td.dock-dash-action { width: 1%; text-align: right; white-space: nowrap; }
+.dock-dash-table .mini-btn { height: 28px; padding: 0 11px; }
+.dock-dash-table tr.is-flagged td:first-child { box-shadow: inset 3px 0 0 var(--c-red); }
+.dock-dash-table tr.is-flagged .dock-dash-outcome { color: var(--c-red); }
+.portal-shell[data-theme='dark'] .dock-dash-controls { background: var(--surface); }
+.dock-pass-table td { overflow-wrap: anywhere; }
+
 /* ── Settings › Devices ──────────────────────────────────────────────
    One card per device type: two columns on wide screens, one on narrow
    ones; the scanner card (.is-wide) spans the row. Every card is a flex
