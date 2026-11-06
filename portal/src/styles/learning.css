@@ -138,7 +138,7 @@
   border: 1px solid var(--paper-line);
   border-radius: 10px;
 }
-.lrn-slides-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; }
+.lrn-slides-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; }
 .mini-btn.lrn-slides-btn { display: inline-flex; align-items: center; gap: 4px; }
 .lrn-slides-btn svg { width: 16px; height: 16px; flex: none; }
 .lrn-slides-btn:disabled { opacity: 0.45; cursor: default; }
