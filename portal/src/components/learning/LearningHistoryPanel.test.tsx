@@ -31,10 +31,10 @@ const HISTORY: LearningHistory = {
   person: { id: 'p1', name: 'Wes Worker' },
   signoffs: [
     { id: 's1', document_id: 'd1', document: 'Confidentiality', version: 3, language: 'ja',
-      signed_at: '2026-10-20T15:30:00Z', read_seconds: 75, quiz_score: 90,
+      signed_at: '2026-10-20T15:30:00Z', read_seconds: 75, slides_viewed: null, quiz_score: 90,
       initiative_id: 'i1', initiative: 'NAP11 Move' },
     { id: 's2', document_id: 'd2', document: 'Forklift safety', version: 1, language: 'en',
-      signed_at: '2026-09-02T15:30:00Z', read_seconds: 40, quiz_score: null,
+      signed_at: '2026-09-02T15:30:00Z', read_seconds: 40, slides_viewed: null, quiz_score: null,
       initiative_id: null, initiative: null },
   ],
   quiz_attempts: [
@@ -76,6 +76,29 @@ it('lists the sign-offs with version, language, read time and quiz score', async
   const general = screen.getByText('Forklift safety').closest('tr') as HTMLElement;
   expect(within(general).getByText('General')).toBeTruthy();
   expect(screen.getByText('2 sign-offs')).toBeTruthy();
+});
+
+it('shows slides viewed next to the reading time', async () => {
+  api.getLearningHistory.mockResolvedValue({
+    ...HISTORY,
+    signoffs: [{ ...HISTORY.signoffs[0], read_seconds: 60, slides_viewed: 4 }, HISTORY.signoffs[1]],
+  });
+  render(<LearningHistoryPanel personId="p1" personName="Wes Worker" />);
+  await screen.findByText('Confidentiality');
+  const row = screen.getByText('Confidentiality').closest('tr') as HTMLElement;
+  expect(within(row).getByText('1 min · 4 slides')).toBeTruthy();
+  // a Document-style sign-off shows the time alone
+  const plain = screen.getByText('Forklift safety').closest('tr') as HTMLElement;
+  expect(within(plain).getByText('40 s')).toBeTruthy();
+});
+
+it('says 1 slide for a one-slide deck', async () => {
+  api.getLearningHistory.mockResolvedValue({
+    ...HISTORY, signoffs: [{ ...HISTORY.signoffs[0], read_seconds: 30, slides_viewed: 1 }],
+  });
+  render(<LearningHistoryPanel personId="p1" personName="Wes Worker" />);
+  await screen.findByText('Confidentiality');
+  expect(screen.getByText('30 s · 1 slide')).toBeTruthy();
 });
 
 it('switches to quiz attempts, open assignments and overrides', async () => {

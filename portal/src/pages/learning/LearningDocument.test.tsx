@@ -54,11 +54,13 @@ const DOC: Doc = {
   validity_days: 365, resign_rule: 'expired_or_new_version', sign_style: 'typed_name',
   require_scroll: true, min_read_seconds: 60, quiz_enabled: false,
   quiz_pass_percent: null, quiz_max_attempts: null, quiz_fail_action: 'retry',
+  reading_style: 'document', slide_count: null,
   wiki_node_id: 'w1',
   wiki_page: { id: 'w1', title: 'Dress code', published_version_no: 5 },
   has_wiki_changes: true,
   current_version_id: 'v4', current_version_no: 4,
   current_html: '<h4>Every day on site</h4><p>Company shirt, tucked in.</p>',
+  current_slides: null,
   versions: [
     { id: 'v4', version_no: 4, wiki_version_no: 9, title: 'Dress code', change_note: 'Added ESD wrist strap rule',
       published_at: '2026-10-12T15:00:00Z', published_by: { id: 'p1', name: 'Jimmy Henderson' } },
@@ -317,6 +319,22 @@ it('Versions lists the notes and counts; a row shows that version’s HTML', asy
   await user.click(row.querySelector('.row-main') as HTMLElement);
   await waitFor(() => expect(api.getLearningVersion).toHaveBeenCalledWith('d1', 'v3'));
   expect(await screen.findByText('Old shoe wording')).toBeTruthy();
+});
+
+it('previews a Slides document one slide at a time', async () => {
+  api.getLearningDocument.mockResolvedValue({
+    ...DOC, reading_style: 'slides', slide_count: 2, current_html: null,
+    current_slides: ['<h2>Shirts</h2><p>Company shirt.</p>', '<h2>Shoes</h2><p>Safety shoes.</p>'],
+  });
+  const user = userEvent.setup();
+  renderPage();
+  await ready();
+  const paper = screen.getByRole('region', { name: 'Rendered content' });
+  expect(within(paper).getByText('Company shirt.')).toBeTruthy();
+  expect(within(paper).queryByText('Safety shoes.')).toBeNull();
+  expect(within(paper).getByText('1 / 2')).toBeTruthy();
+  await user.click(within(paper).getByRole('button', { name: 'Next' }));
+  expect(within(paper).getByText('Safety shoes.')).toBeTruthy();
 });
 
 it('Sign-offs pages through the list with Load more', async () => {

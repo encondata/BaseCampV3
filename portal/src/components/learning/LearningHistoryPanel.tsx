@@ -15,7 +15,7 @@ import DataTable, { type DataTableColumn } from '../DataTable';
 import {
   downloadCertificate, getLearningHistory, languageName, type LearningHistory,
 } from '../../lib/learning';
-import { dateTime, readTime } from '../../lib/learningDoc';
+import { dateTime, readSummary } from '../../lib/learningDoc';
 import { longDateOf } from '../../lib/format';
 import { parseApiDay } from '../../lib/timeline';
 import { useLearningAccess } from './useLearningAccess';
@@ -111,7 +111,7 @@ export default function LearningHistoryPanel({ personId, personName }: {
         key: s.id,
         cells: [
           <b className="cell-top" key="d">{s.document}</b>, `v${s.version}`, languageName(s.language),
-          dateTime(s.signed_at), readTime(s.read_seconds),
+          dateTime(s.signed_at), readSummary(s.read_seconds, s.slides_viewed),
           s.quiz_score === null ? '—' : `${s.quiz_score}%`, initiativeText(s),
         ],
       }));

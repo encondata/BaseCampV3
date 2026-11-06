@@ -14,10 +14,10 @@ import { useEffect, useState } from 'react';
 
 import {
   languageName, type DocumentPatch, type DocumentSettings, type LearningDocument,
-  type ResignRule, type SignStyle, type TranslationStatusRow,
+  type ReadingStyle, type ResignRule, type SignStyle, type TranslationStatusRow,
 } from '../../lib/learning';
 import {
-  positiveInt, RESIGN_OPTIONS, shortDate, SIGN_STYLES, TRANSLATION_STATUS,
+  positiveInt, READING_STYLES, RESIGN_OPTIONS, shortDate, SIGN_STYLES, TRANSLATION_STATUS,
   validityChoice, validityText, VALIDITY_OPTIONS, type ValidityChoice,
 } from '../../lib/learningDoc';
 import { Switch } from '../Switch';
@@ -108,9 +108,16 @@ export default function DocumentRulesPanel({
   const resign = (value: ResignRule) => { if (value !== shown.resign_rule) void apply({ resign_rule: value }); };
   const signStyle = (value: SignStyle) => { if (value !== shown.sign_style) void apply({ sign_style: value }); };
 
+  const readingStyle = (value: ReadingStyle) => {
+    if (value !== shown.reading_style) void apply({ reading_style: value });
+  };
+  const slides = shown.reading_style === 'slides';
+  const slideCount = doc.slide_count;
+
   const recent = doc.versions.slice(0, 2);
   const resignTitle = RESIGN_OPTIONS.find((o) => o.value === shown.resign_rule)?.title ?? '';
   const styleLabel = SIGN_STYLES.find((s) => s.value === shown.sign_style)?.label ?? '';
+  const readingLabel = READING_STYLES.find((s) => s.value === shown.reading_style)?.label ?? '';
 
   return (
     <div className="lrn-rules">
@@ -180,14 +187,45 @@ export default function DocumentRulesPanel({
       </div>
 
       <div className="lrn-set">
+        <span className="lrn-lbl">Reading style</span>
+        {canChange ? (
+          <div className="segmented" role="group" aria-label="Reading style">
+            {READING_STYLES.map((s) => (
+              <button key={s.value} type="button" aria-pressed={shown.reading_style === s.value}
+                      className={shown.reading_style === s.value ? 'on' : ''}
+                      onClick={() => readingStyle(s.value)}>{s.label}</button>
+            ))}
+          </div>
+        ) : (
+          <p className="lrn-val">{readingLabel}</p>
+        )}
+      </div>
+
+      <div className="lrn-set">
         <span className="lrn-lbl">Reading rules</span>
         {canChange ? (
           <>
-            <div className="lrn-toggle">
-              <span>Must scroll to the end</span>
-              <Switch checked={shown.require_scroll} label="Must scroll to the end"
-                      onChange={(v) => void apply({ require_scroll: v })} />
-            </div>
+            {slides ? (
+              <>
+                <div className="lrn-toggle">
+                  <span>Readers go through every slide before they can sign.</span>
+                  {slideCount !== null && (
+                    <span className="lrn-unit">{slideCount} {slideCount === 1 ? 'slide' : 'slides'}</span>
+                  )}
+                </div>
+                {slideCount === 1 && (
+                  <p className="lrn-hint">
+                    This page has no ## headings, so it shows as one slide. Each ## heading starts a new slide.
+                  </p>
+                )}
+              </>
+            ) : (
+              <div className="lrn-toggle">
+                <span>Must scroll to the end</span>
+                <Switch checked={shown.require_scroll} label="Must scroll to the end"
+                        onChange={(v) => void apply({ require_scroll: v })} />
+              </div>
+            )}
             <div className="lrn-toggle">
               <span>Minimum reading time</span>
               <span className="lrn-toggle-end">
@@ -222,7 +260,8 @@ export default function DocumentRulesPanel({
           </>
         ) : (
           <dl className="kv">
-            <dt>Scroll to the end</dt><dd>{shown.require_scroll ? 'Required' : 'Not required'}</dd>
+            <dt>Reading style</dt><dd>{readingLabel}</dd>
+            {!slides && <><dt>Scroll to the end</dt><dd>{shown.require_scroll ? 'Required' : 'Not required'}</dd></>}
             <dt>Minimum reading</dt>
             <dd>{shown.min_read_seconds === null ? 'Off' : `${shown.min_read_seconds} sec`}</dd>
             <dt>Quiz</dt><dd>{shown.quiz_enabled ? 'On' : 'Off'}</dd>

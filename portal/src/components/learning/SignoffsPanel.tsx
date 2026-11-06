@@ -10,7 +10,7 @@ import { useMemo, useState } from 'react';
 import {
   languageName, listDocumentSignoffs, type DocumentSignoff, type VersionSummary,
 } from '../../lib/learning';
-import { dateTime, readTime } from '../../lib/learningDoc';
+import { dateTime, readSummary } from '../../lib/learningDoc';
 import { usePagedList } from '../../lib/usePagedList';
 import LearningList, { type LearningColumn } from './LearningList';
 
@@ -21,7 +21,7 @@ export const SIGNOFF_COLUMNS = {
   version: { key: 'version', label: 'Version', short: 'Ver.', width: '0.6fr', default: true, min: 70 },
   language: { key: 'language', label: 'Language', short: 'Lang.', width: '0.9fr', default: true, min: 100 },
   signed: { key: 'signed', label: 'Signed', width: '1.3fr', default: true, min: 150 },
-  read: { key: 'read', label: 'Read time', short: 'Read', width: '0.8fr', default: true, min: 90 },
+  read: { key: 'read', label: 'Read time', short: 'Read', width: '1.1fr', default: true, min: 150 },
   quiz: { key: 'quiz', label: 'Quiz score', short: 'Quiz', width: '0.8fr', default: true, min: 80 },
   initiative: { key: 'initiative', label: 'Initiative', width: '1.4fr', default: true, min: 140 },
 };
@@ -54,7 +54,7 @@ export default function SignoffsPanel({ documentId, versions }: {
     { def: SIGNOFF_COLUMNS.version, cell: (s) => <span className="cell-top cell-line">v{s.version_no}</span> },
     { def: SIGNOFF_COLUMNS.language, cell: (s) => <span className="cell-top cell-line">{languageName(s.language)}</span> },
     { def: SIGNOFF_COLUMNS.signed, cell: (s) => <span className="cell-top cell-line">{dateTime(s.signed_at)}</span> },
-    { def: SIGNOFF_COLUMNS.read, cell: (s) => <span className="cell-top cell-line">{readTime(s.read_seconds)}</span> },
+    { def: SIGNOFF_COLUMNS.read, cell: (s) => <span className="cell-top cell-line">{readSummary(s.read_seconds, s.slides_viewed)}</span> },
     { def: SIGNOFF_COLUMNS.quiz, cell: (s) => <span className="cell-top cell-line">{s.quiz_score === null ? '—' : `${s.quiz_score}%`}</span> },
     { def: SIGNOFF_COLUMNS.initiative, cell: (s) => <span className="cell-top cell-line">{s.initiative ?? '—'}</span> },
   ];

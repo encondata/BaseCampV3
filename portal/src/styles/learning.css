@@ -127,6 +127,47 @@
 .lrn-prose th, .lrn-prose td { border: 1px solid var(--paper-line); padding: 4px 8px; }
 .lrn-prose ul, .lrn-prose ol { padding-left: 22px; }
 
+/* The manager's Slides preview: one slide, then Back · dots · "2 / 4" · Next. */
+.lrn-slides { display: flex; flex-direction: column; gap: 10px; border-radius: 12px; }
+.lrn-slides:focus { outline: none; }
+.lrn-slides:focus-visible { outline: 2px solid var(--amber); outline-offset: 4px; }
+.lrn-slide {
+  min-height: 160px;
+  padding: 14px;
+  background: var(--surface-2, var(--paper-2));
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+}
+.lrn-slides-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; }
+.mini-btn.lrn-slides-btn { display: inline-flex; align-items: center; gap: 4px; }
+.lrn-slides-btn svg { width: 16px; height: 16px; flex: none; }
+.lrn-slides-btn:disabled { opacity: 0.45; cursor: default; }
+.lrn-slides-dots { flex: 1 1 auto; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+.lrn-slides-dot {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--paper-line);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-mute);
+  font: inherit;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.lrn-slides-dot:hover { border-color: var(--amber); color: var(--text-dark); }
+.lrn-slides-dot.on { background: var(--amber); border-color: var(--amber); color: var(--ink); font-weight: 500; }
+.lrn-slides-dot:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+.lrn-slides-count {
+  min-width: 44px;
+  text-align: center;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── rules panel ──────────────────────────────────────────── */
 
 .lrn-rules { display: flex; flex-direction: column; gap: 18px; }

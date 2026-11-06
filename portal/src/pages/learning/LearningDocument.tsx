@@ -26,6 +26,7 @@ import PreviewModal from '../../components/learning/PreviewModal';
 import PublishModal from '../../components/learning/PublishModal';
 import QuizEditor from '../../components/learning/QuizEditor';
 import SignoffsPanel from '../../components/learning/SignoffsPanel';
+import SlidesPreview from '../../components/learning/SlidesPreview';
 import TranslationsPanel from '../../components/learning/TranslationsPanel';
 import { useLearningAccess } from '../../components/learning/useLearningAccess';
 import VersionsPanel from '../../components/learning/VersionsPanel';
@@ -247,8 +248,10 @@ export default function LearningDocument() {
             <div className="eyebrow">Version {doc.current_version_no ?? '—'}</div>
             <h2 className="lrn-paper-title">{doc.title}</h2>
             {doc.summary && <p className="page-hint">{doc.summary}</p>}
-            {/* current_html is the server's snapshot, sanitized when it was published */}
-            {doc.current_html
+            {/* current_html / current_slides are the server's snapshot, sanitized when it was published */}
+            {doc.current_slides
+              ? <SlidesPreview slides={doc.current_slides} />
+              : doc.current_html
               ? <div className="lrn-prose" dangerouslySetInnerHTML={{ __html: doc.current_html }} />
               : <p className="page-hint">Nothing is published yet. Publish to snapshot the wiki page as version 1.</p>}
           </section>

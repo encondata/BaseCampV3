@@ -6,7 +6,7 @@
  */
 
 import { ApiError } from './api';
-import type { ResignRule, SignStyle, TranslationStatus } from './learning';
+import type { ReadingStyle, ResignRule, SignStyle, TranslationStatus } from './learning';
 
 /** "Valid for" choices. `custom` is the Custom days option (a number box);
  *  the stored value is validity_days (null = never expires). */
@@ -50,6 +50,11 @@ export const SIGN_STYLES: { value: SignStyle; label: string }[] = [
   { value: 'checkbox', label: 'Checkbox' },
   { value: 'typed_name', label: 'Typed name' },
   { value: 'drawn_signature', label: 'Drawn signature' },
+];
+
+export const READING_STYLES: { value: ReadingStyle; label: string }[] = [
+  { value: 'document', label: 'Document' },
+  { value: 'slides', label: 'Slides' },
 ];
 
 export const TRANSLATION_STATUS: Record<TranslationStatus, { label: string; cls: string }> = {
@@ -135,6 +140,13 @@ export function readTime(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return s ? `${m} min ${s} s` : `${m} min`;
+}
+
+/** "1 min · 4 slides" for a Slides sign-off; the time alone for a Document one. */
+export function readSummary(seconds: number, slidesViewed: number | null): string {
+  const time = readTime(seconds);
+  if (slidesViewed === null) return time;
+  return `${time} · ${slidesViewed} ${slidesViewed === 1 ? 'slide' : 'slides'}`;
 }
 
 /** An id for a quiz choice the server hasn't seen (it keeps ids we send). */

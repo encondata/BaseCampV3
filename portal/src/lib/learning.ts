@@ -63,6 +63,9 @@ function withQuery(path: string, params: Record<string, string | undefined>): st
 
 // ── documents (library) ──────────────────────────────────────────────
 
+/** How the reader shows the document: the whole page, or one slide per `##` section. */
+export type ReadingStyle = 'document' | 'slides';
+
 export interface DocumentSettings {
   summary: string | null;
   validity_days: number | null;
@@ -74,6 +77,7 @@ export interface DocumentSettings {
   quiz_pass_percent: number | null;
   quiz_max_attempts: number | null;
   quiz_fail_action: QuizFailAction;
+  reading_style: ReadingStyle;
 }
 
 /** Create takes the title, the wiki page, and any settings to override. */
@@ -103,6 +107,10 @@ export interface LearningDocument extends DocumentSettings {
   current_version_id: string | null;
   current_version_no: number | null;
   current_html: string | null;
+  /** Slides style only: the sanitized HTML of each slide; null in Document style. */
+  current_slides: string[] | null;
+  /** Slides style only: how many slides the page splits into; null in Document style. */
+  slide_count: number | null;
   versions: VersionSummary[];
   archived_at: string | null;
   created_at: string;
@@ -154,7 +162,10 @@ export const archiveLearningDocument = (id: string) =>
 
 export interface DocumentSignoff {
   id: string; person: PersonRef; version_no: number; language: string; signed_at: string;
-  read_seconds: number; quiz_score: number | null;
+  read_seconds: number;
+  /** Slides a Slides-style reader went through; null for Document style. */
+  slides_viewed: number | null;
+  quiz_score: number | null;
   initiative_id: string | null; initiative: string | null;
 }
 
@@ -525,7 +536,8 @@ export interface LearningHistory {
   person: { id: string; name: string };
   signoffs: {
     id: string; document_id: string; document: string; version: number; language: string;
-    signed_at: string; read_seconds: number; quiz_score: number | null;
+    signed_at: string; read_seconds: number; slides_viewed: number | null;
+    quiz_score: number | null;
     initiative_id: string | null; initiative: string | null;
   }[];
   quiz_attempts: {
