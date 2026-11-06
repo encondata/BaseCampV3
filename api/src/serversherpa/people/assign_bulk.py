@@ -78,6 +78,20 @@ def parse_upload(filename: str, content: bytes) -> list[tuple[int, dict]]:
     return core.parse_upload(filename, content, COLUMNS, SHEET)
 
 
+SAMPLE_ROWS = [{"first_name": "Person", "last_name": "A", "preferred_name": "",
+                "phone": "+1 555 555 0101", "email": "person.a@example.com", "role": ""}]
+
+
+async def build_template_xlsx(db: AsyncSession) -> bytes:
+    """The upload layout with one sample row (blank role = the default) and
+    a Reference sheet listing the active role labels."""
+    roles = list(await db.scalars(
+        select(StatusValue.label).where(StatusValue.record_type == WORK_TYPE,
+                                        StatusValue.is_active.is_(True))
+        .order_by(StatusValue.sort_order)))
+    return core.build_rows_xlsx(SAMPLE_ROWS, COLUMNS, SHEET, [("Roles", roles)])
+
+
 def _valid_decision(d: Any) -> bool:
     if not isinstance(d, dict) or not all(k in DECISION_FIELDS for k in d):
         return False
