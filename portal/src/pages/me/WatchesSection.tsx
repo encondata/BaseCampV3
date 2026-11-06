@@ -25,8 +25,9 @@
  * rules as any other stop. The two lists are asked for together and one's failure never takes
  * the other's answer away: if the asset watches can't be loaded the other watches are still
  * listed, with one fixed sentence (whatever went wrong) in an error line of its own, which goes
- * when a load goes through (a reload that fails keeps the asset watches that are there); if
- * the watches can't be loaded, nothing is listed.
+ * when a load goes through (a reload that fails keeps the asset watches that are there). With no
+ * row to list, that line stands alone: the empty line would say they watch nothing, which can't
+ * be known. If the watches can't be loaded, nothing is listed.
  *
  * Until both first answers have landed the list says nothing, not even that it is empty
  * (a half-loaded list would read as an empty one), and the count beside the title, which
@@ -236,7 +237,8 @@ export default function WatchesSection({ kinds }: { kinds: NotificationKindSetti
         {loadFailed && <p className="pf-error set-hint">Could not load your watches.</p>}
         {assetsFailed && <p className="pf-error set-hint" role="alert">Could not load your asset watches.</p>}
         {actionError && <p className="pf-error set-hint" role="alert">{actionError}</p>}
-        {watches && assetWatches && (
+        {/* Nothing listed after a failed asset watches load: its error line alone, no empty line. */}
+        {watches && assetWatches && !(assetsFailed && count === 0) && (
           <WatchesTable watches={watches} kinds={kinds} showVia actionsFor={actionsFor}
                         assetWatches={assetWatches} assetActionsFor={assetActionsFor}
                         emptyText={EMPTY} />

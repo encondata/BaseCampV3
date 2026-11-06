@@ -129,6 +129,7 @@ it('is the house ghost button with the eye, "Watch" and not pressed, when the pe
   expect(watch.type).toBe('button');
   expect(watch.className).toBe('btn-ghost watch-btn');
   expect(watch.getAttribute('aria-pressed')).toBe('false');
+  expect(watch.getAttribute('aria-haspopup')).toBe('dialog');     // a click opens the Watch modal
   expect(watch.disabled).toBe(false);
   expect(watch.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
   expect(watch.textContent).toBe('Watch');
@@ -165,9 +166,29 @@ it('a click opens the Watch modal for the asset, and watches nothing yet', async
   expect(api.deleteMyAssetWatch).not.toHaveBeenCalled();
 });
 
-it('opens the modal in the enclosing portal shell, outside the header\'s action row, so its buttons keep their size', async () => {
-  // `.idet-header-actions .mini-btn` resizes any mini-btn inside the row (initiatives.css); the
-  // shell holds the theme tokens.
+it('opens the modal in the enclosing portal page, outside the header\'s action row: the house header styles apply and its buttons keep their size', async () => {
+  // `.portal-page .eyebrow` and `.portal-page .page-hint` style the modal's header
+  // (portal-theme.css); `.idet-header-actions .mini-btn` resizes any mini-btn inside the row
+  // (initiatives.css).
+  const user = userEvent.setup();
+  render(
+    <div className="portal-shell">
+      <div className="portal-page">
+        <div className="idet-header-actions">{view()}</div>
+      </div>
+    </div>,
+  );
+
+  await user.click(await screen.findByRole('button', { name: 'Watch' }));
+
+  const page = document.querySelector('.portal-page') as HTMLElement;
+  expect(dialog().closest('.portal-page')).toBe(page);
+  expect(dialog().closest('.idet-header-actions')).toBeNull();
+  expect(page.querySelector('.idet-header-actions')?.contains(dialog())).toBe(false);
+});
+
+it('opens the modal in the enclosing portal shell when there is no portal page, still outside the header\'s action row', async () => {
+  // the shell holds the theme tokens
   const user = userEvent.setup();
   render(
     <div className="portal-shell">
@@ -183,7 +204,7 @@ it('opens the modal in the enclosing portal shell, outside the header\'s action 
   expect(shell.querySelector('.idet-header-actions')?.contains(dialog())).toBe(false);
 });
 
-it('opens the modal under the page when there is no portal shell', async () => {
+it('opens the modal under the page when there is neither a portal page nor a portal shell', async () => {
   const user = userEvent.setup();
   const { container } = render(view());
 

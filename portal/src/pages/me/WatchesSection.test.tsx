@@ -1283,13 +1283,15 @@ it.each([
   expect(screen.queryByText("Couldn't update your watch.")).toBeNull();
 });
 
-it('a failed asset watches load with no other watch is told, and the list is empty, not missing', async () => {
+it('a failed asset watches load with no other watch is told alone: no empty line, which would say they watch nothing', async () => {
   api.listMyAssetWatches.mockRejectedValue(new ApiError(500, 'server_error'));
   renderSection();
 
   expect(await screen.findByText(ASSETS_FAILED)).toBeTruthy();
-  expect(await screen.findByText(EMPTY)).toBeTruthy();
-  expect(document.querySelector('.badge-count')?.textContent).toBe('0');
+  // both answers are in (the count waits for them), and still no empty line
+  await waitFor(() => expect(document.querySelector('.badge-count')?.textContent).toBe('0'));
+  expect(screen.queryByText(EMPTY)).toBeNull();
+  expect(screen.queryByRole('table')).toBeNull();
 });
 
 it('when the watches themselves can\'t be loaded nothing is listed, the asset watches included', async () => {

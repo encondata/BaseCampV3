@@ -680,6 +680,29 @@ it('without assets:view and without initiatives:change the row has no Actions tr
   expect(head.children.length).toBe(main.children.length);
 });
 
+it('without assets:view and without initiatives:change a click on the empty Actions cell expands the row, as anywhere else on it', async () => {
+  auth.can = (resource, action) => cannotChange(resource, action) && cannotViewAssets(resource, action);
+  const user = userEvent.setup();
+  renderPage('assets');
+
+  const row = await assetRow();
+  await user.click(row.querySelector('.idet-assets-actions') as HTMLElement);
+
+  expect(row.classList.contains('open')).toBe(true);
+  expect(within(row).getByRole('tab', { name: 'Move Details' })).toBeTruthy();
+});
+
+it('with a trigger in it, a click beside the trigger in the Actions cell leaves the row closed', async () => {
+  const user = userEvent.setup();
+  renderPage('assets');
+
+  const row = await assetRow();
+  await user.click(row.querySelector('.idet-assets-actions') as HTMLElement);
+
+  expect(row.classList.contains('open')).toBe(false);
+  expect(within(row).queryByRole('tab', { name: 'Move Details' })).toBeNull();
+});
+
 it('for a viewer too the Actions track and its header spacer are there, as for an editor', async () => {
   auth.can = cannotChange;
   renderPage('assets');

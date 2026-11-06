@@ -716,7 +716,7 @@ export default function InitiativeDetail() {
   /** What a row's Actions menu offers: Edit for editors, Watch… for anyone who can open the
    *  asset (assets:view — a watch on an initiative needs the asset too), and Remove, the
    *  destructive one, last. Someone with neither gets an empty list, which draws no trigger;
-   *  the cell and its track stay, so the columns line up. */
+   *  the cell and its track stay, so the columns line up, and a click there opens the row. */
   const assetRowActions = (a: InitiativeAssetRow): RowAction[] => {
     const edit: RowAction = {
       key: 'edit', label: 'Edit', disabled: assetsBusy,
@@ -954,6 +954,7 @@ export default function InitiativeDetail() {
                 <VirtualRows rows={visibleAssets}
                   renderRow={(a, vp) => {
                     const open = openAssetId === a.id;
+                    const rowActions = assetRowActions(a);
                     return (
                       <div key={a.id} className={`dir-row ${open ? 'open' : ''}`} {...vp}
                            style={{ ...vp?.style, minWidth: assetsRowStyle.minWidth }}>
@@ -966,10 +967,12 @@ export default function InitiativeDetail() {
                           ))}
                           {/* The row toggles its expansion on click, so the cell
                               swallows clicks that land beside the trigger (the
-                              trigger stops its own). */}
+                              trigger stops its own). With no trigger the cell is
+                              the row's, like any other. */}
                           <div className="cell idet-assets-actions"
-                               onClick={(e) => e.stopPropagation()}>
-                            <RowActionsMenu actions={assetRowActions(a)} />
+                               onClick={rowActions.length > 0
+                                 ? (e) => e.stopPropagation() : undefined}>
+                            <RowActionsMenu actions={rowActions} />
                           </div>
                           <div className="cell chevron-cell">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"

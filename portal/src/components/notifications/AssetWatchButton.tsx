@@ -10,11 +10,13 @@
  * (Save, Stop watching). What the modal saves or stops is what the button then shows, with no
  * read again: `onSaved` hands over the watch, or null once it was stopped (or found ended).
  *
- * The modal is portaled to the enclosing .portal-shell (document.body without one), as the other
- * popovers are: the button sits in a page's header action row, whose rules (`.idet-header-actions
- * .mini-btn`) would resize the buttons of a dialog opened inside it. The theme tokens are
- * declared on the shell. An answer or a save that comes back after the page has moved to another
- * asset or place is not this button's to show, and a modal left open on the old one is closed.
+ * The modal is portaled to the enclosing .portal-page, out of the page header's action row, whose
+ * rules (`.idet-header-actions .mini-btn`) would resize the buttons of a dialog opened inside it,
+ * but still under the page's header styles (`.portal-page .eyebrow`, `.portal-page .page-hint`),
+ * as a modal a row menu opens is. Without a page it goes to the enclosing .portal-shell, where the
+ * theme tokens are declared, and without one to document.body. An answer or a save that comes
+ * back after the page has moved to another asset or place is not this button's to show, and a
+ * modal left open on the old one is closed.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -62,12 +64,14 @@ export default function AssetWatchButton({
   if (!state) return null;
 
   const watching = state.watch !== null;
-  const host = buttonRef.current?.closest<HTMLElement>('.portal-shell') ?? document.body;
+  const button = buttonRef.current;
+  const host = button?.closest<HTMLElement>('.portal-page')
+    ?? button?.closest<HTMLElement>('.portal-shell') ?? document.body;
 
   return (
     <>
       <button ref={buttonRef} type="button" className={`btn-ghost watch-btn${watching ? ' on' : ''}`}
-              aria-pressed={watching} onClick={() => setOpen(true)}>
+              aria-pressed={watching} aria-haspopup="dialog" onClick={() => setOpen(true)}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
              strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" />
