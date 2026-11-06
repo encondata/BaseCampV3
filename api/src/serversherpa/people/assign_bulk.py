@@ -16,14 +16,17 @@ settled."""
 
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.access.resolver import can_touch_rank
 from serversherpa.db.models import (
     ContactProfile,
+    Initiative,
     InitiativePerson,
     Partner,
     Person,
@@ -36,8 +39,10 @@ from serversherpa.db.models import (
 )
 from serversherpa.imports import bulk as core
 from serversherpa.imports.bulk import BulkImportError
+from serversherpa.learning import assign as learning_assign
 from serversherpa.people.bulk_import import _worker_query, name_keys, normalize_phone
 from serversherpa.people.contact_format import format_phone, lower_email
+from serversherpa.services.audit import audit, diff, snapshot
 
 COLUMNS = ["first_name", "last_name", "preferred_name", "phone", "email", "role"]
 SHEET = "Workers"
@@ -491,6 +496,8 @@ def _profile_partner(ref: dict, row: dict, partner_id: uuid.UUID,
 def _contact_partner(ref: dict, cand: Candidate) -> uuid.UUID:
     """The partner a profile-less contact is on file with."""
     return _first_partner(ref["partner_names"], cand.partner_contact_of)
+
+
 def _duplicate_errors(rows: list[dict]) -> None:
     """One person on two rows, or two new workers sharing an email, errors
     every row involved."""
@@ -513,3 +520,211 @@ def _duplicate_errors(rows: list[dict]) -> None:
             for r in group:
                 r["errors"].append(
                     f"Email {email} appears on more than one new worker (rows {nums}).")
+
+
+# ── commit ──────────────────────────────────────────────────────────
+
+# the unique indexes a concurrent write can trip between preview and commit
+RACE_REASONS = {"initiative_people_uniq": "duplicate_worker",
+                "people_email_uniq": "email_taken"}
+
+
+async def commit_rows(db: AsyncSession, actor_id: uuid.UUID, initiative_id: uuid.UUID,
+                      partner_id: uuid.UUID, site_id: uuid.UUID,
+                      numbered: list[tuple[int, dict]], *, actor_rank: int,
+                      decisions: dict[int, dict], source_label: str) -> dict:
+    """All-or-nothing: re-runs the preview with the same decisions, refuses
+    (rows_invalid, nothing written) unless it can commit, then in one
+    transaction creates new workers, writes the Updates chosen, makes
+    matched non-workers workers, and assigns everyone to the initiative.
+    Worker status is never changed.
+
+    Counts are one per row: `created` (a new worker, assigned), `assigned`
+    (an existing person added to the initiative), `updated` (already on it,
+    with their details or assignment updated) and `already_assigned`
+    (nothing written). Row actions use the BulkApplySummary words: created
+    and assigned rows are "created", updated rows "updated", the rest
+    "unchanged"."""
+    job = await db.get(Initiative, initiative_id)
+    if job is None:
+        raise BulkImportError("initiative_not_found")
+
+    ref = await load_reference(db, initiative_id, partner_id)
+    preview = await preview_rows(db, initiative_id, partner_id, site_id, numbered,
+                                 actor_id=actor_id, actor_rank=actor_rank,
+                                 decisions=decisions, ref=ref, internal=True)
+    if not preview["can_commit"]:
+        for r in preview["rows"]:
+            r.pop("_writes", None)
+        raise BulkImportError("rows_invalid", rows=preview["rows"])
+
+    now = datetime.now(UTC)
+    counts = {"assigned": 0, "created": 0, "updated": 0, "already_assigned": 0}
+    applied: list[dict] = []
+    try:
+        for r in preview["rows"]:
+            writes = r.pop("_writes")
+            changes: dict = {}
+            if not writes["commits"]:
+                result = "already_assigned"
+            elif r["create"]:
+                person = await _create_worker(db, actor_id, r, ref, partner_id, source_label)
+                r["person_id"] = str(person.id)
+                await _add_to_team(db, actor_id, initiative_id, person.id, site_id,
+                                   r["role_key"])
+                result = "created"
+            else:
+                person_id = uuid.UUID(r["person_id"])
+                update = decisions.get(r["row"], {}).get("change") == "update"
+                changes = await _update_person(db, actor_id, r, ref, partner_id,
+                                               writes["profile_partner_id"], update, now)
+                tp = ref["team"].get(person_id)
+                if tp is None:
+                    await _add_to_team(db, actor_id, initiative_id, person_id, site_id,
+                                       r["role_key"])
+                    result = "assigned"
+                else:
+                    if update and any(f["kind"] == "assignment" for f in r["flags"]):
+                        changes |= _move_assignment(db, actor_id, initiative_id, tp,
+                                                    site_id, r["role_key"], ref, now)
+                    result = "updated"
+            counts[result] += 1
+            applied.append({
+                "row": r["row"], "name": r["person_name"] or r["name"],
+                "person_id": r["person_id"],
+                "action": {"created": "created", "assigned": "created",
+                           "updated": "updated"}.get(result, "unchanged"),
+                "diff": {k: {"old": v["from"], "new": v["to"]} for k, v in changes.items()}
+                or None})
+
+        job.updated_at = now
+        audit(db, actor_id=actor_id, entity_type="initiative", entity_id=str(initiative_id),
+              action="bulk_import", changes={**counts, "source": source_label})
+        await db.commit()
+    except IntegrityError as exc:
+        # autoflush can surface a concurrent write at any query, not only at
+        # commit(); only the two unique indexes a race can trip are friendly
+        # errors. The constraint name lives on asyncpg's own exception, which
+        # SQLAlchemy chains on as `exc.orig.__cause__`.
+        await db.rollback()
+        cause = exc.orig.__cause__ if exc.orig is not None else None
+        reason = RACE_REASONS.get(getattr(cause, "constraint_name", None))
+        if reason is None:
+            raise
+        raise BulkImportError("rows_invalid", reason=reason) from None
+    except BulkImportError:
+        await db.rollback()
+        raise
+    return {**counts, "rows": applied}
+
+
+async def _create_worker(db: AsyncSession, actor_id: uuid.UUID, r: dict, ref: dict,
+                         partner_id: uuid.UUID, source_label: str) -> Person:
+    """A new worker from the row, as the workers import writes one. A phone
+    that can't be parsed is left off, and so is an email someone holds."""
+    c = r["cells"]
+    email = lower_email(c.get("email") or "")
+    fields = {
+        "first_name": (c.get("first_name") or "").strip(),
+        "last_name": (c.get("last_name") or "").strip(),
+        "preferred_name": (c.get("preferred_name") or "").strip() or None,
+        "phone": format_phone((c.get("phone") or "").strip()),
+        "email": email if email and email not in ref["emails_all"] else None,
+    }
+    fields = {k: v for k, v in fields.items() if v}
+    person = Person(**fields, source="import", source_ref=source_label, created_by=actor_id)
+    db.add(person)
+    await db.flush()
+    db.add(WorkerProfile(person_id=person.id, created_by=actor_id, partner_id=partner_id,
+                         status="active"))
+    db.add(PersonRole(person_id=person.id, role="worker", granted_by=actor_id))
+    changes = {k: {"from": None, "to": v} for k, v in fields.items()}
+    changes["status"] = {"from": None, "to": "active"}
+    if ref["partner"] is not None:
+        changes["partner"] = {"from": None, "to": ref["partner"].name}
+    changes["worker_role"] = {"from": None, "to": "granted"}
+    audit(db, actor_id=actor_id, entity_type="worker", entity_id=str(person.id),
+          action="create", changes=changes)
+    return person
+
+
+async def _update_person(db: AsyncSession, actor_id: uuid.UUID, r: dict, ref: dict,
+                         partner_id: uuid.UUID, profile_partner_id: uuid.UUID | None,
+                         update: bool, now: datetime) -> dict:
+    """The Updates chosen for a matched person, a profile when they have
+    none, and the worker role when they aren't a worker; one `worker`
+    `update` audit entry with what changed (from/to). Returns the changes."""
+    cand = ref["people"][r["person_id"]]
+    person, profile = cand.person, cand.profile
+    kinds = {f["kind"] for f in r["flags"]}
+    changes: dict = {}
+
+    if update and "contact" in kinds:
+        phone = format_phone((r["cells"].get("phone") or "").strip())
+        if phone and normalize_phone(phone) != normalize_phone(person.phone or ""):
+            changes["phone"] = {"from": person.phone, "to": phone}
+            person.phone = phone
+        email = lower_email(r["cells"].get("email") or "")
+        owner = ref["emails_all"].get(email)
+        if (email and email != lower_email(person.email or "")
+                and owner in (None, r["person_id"])):
+            changes["email"] = {"from": person.email, "to": email}
+            person.email = email
+
+    if profile is None:
+        profile = cand.profile = WorkerProfile(
+            person_id=person.id, created_by=actor_id, partner_id=profile_partner_id,
+            status="active")
+        db.add(profile)
+        if profile_partner_id is not None:
+            changes["partner"] = {"from": None,
+                                  "to": ref["partner_names"].get(profile_partner_id)}
+    elif update and "partner" in kinds and profile.partner_id != partner_id:
+        changes["partner"] = {"from": ref["partner_names"].get(profile.partner_id),
+                              "to": ref["partner_names"].get(partner_id)}
+        profile.partner_id = partner_id
+        profile.updated_at = now
+
+    if not cand.is_worker:
+        # a revoked role is history: grant a new one, as the workers import does
+        db.add(PersonRole(person_id=person.id, role="worker", granted_by=actor_id))
+        changes["worker_role"] = {"from": None, "to": "granted"}
+
+    if changes:
+        person.updated_at = now
+        audit(db, actor_id=actor_id, entity_type="worker", entity_id=str(person.id),
+              action="update", changes=changes)
+    return changes
+
+
+async def _add_to_team(db: AsyncSession, actor_id: uuid.UUID, initiative_id: uuid.UUID,
+                       person_id: uuid.UUID, site_id: uuid.UUID, role_key: str) -> None:
+    db.add(InitiativePerson(initiative_id=initiative_id, person_id=person_id,
+                            site_worked_id=site_id, work_type=role_key))
+    # flushed so the learning rules see the row; the assignments commit or
+    # roll back with the whole import
+    await db.flush()
+    await learning_assign.assign_on_add(db, initiative_id, person_id, actor_id)
+    audit(db, actor_id=actor_id, entity_type="initiative", entity_id=str(initiative_id),
+          action="person_add", changes={"person_id": {"from": None, "to": str(person_id)}})
+
+
+def _move_assignment(db: AsyncSession, actor_id: uuid.UUID, initiative_id: uuid.UUID,
+                     tp: InitiativePerson, site_id: uuid.UUID, role_key: str, ref: dict,
+                     now: datetime) -> dict:
+    """Update on an `assignment` flag: the picked site and the row's role.
+    Returns the change for the summary (names, not ids)."""
+    fields = ["site_worked_id", "work_type"]
+    before = snapshot(tp, fields)
+    old_site, old_role = tp.site_worked_id, tp.work_type
+    tp.site_worked_id, tp.work_type, tp.updated_at = site_id, role_key, now
+    audit(db, actor_id=actor_id, entity_type="initiative", entity_id=str(initiative_id),
+          action="person_update", changes=diff(before, snapshot(tp, fields)))
+    out: dict = {}
+    if old_site != site_id:
+        out["site"] = {"from": ref["site_names"].get(old_site),
+                       "to": ref["site_names"].get(site_id)}
+    if old_role != role_key:
+        out["role"] = {"from": ref["role_labels"].get(old_role, old_role),
+                       "to": ref["role_labels"].get(role_key, role_key)}
+    return out

@@ -2,9 +2,10 @@
 import uuid
 
 import pytest
-from sqlalchemy import func
+from sqlalchemy import func, select
 
 from serversherpa.db.models import (
+    AuditLog,
     Client,
     ContactProfile,
     Initiative,
@@ -741,3 +742,287 @@ async def test_unparseable_phone_on_file_shows_raw(db, ctx):
     row = (await preview(db, ctx, cells("Ana", "Lopez", phone="512-555-0199",
                                         email="ana@example.com")))["rows"][0]
     assert flag(row, "contact")["lines"][0] == {"label": "Phone on file", "value": "ext 12"}
+
+
+# ── commit ──────────────────────────────────────────────────────────
+
+async def commit(db, ctx, actor, *rows, decisions=None, actor_rank=60):
+    numbered = [(i + 2, r) for i, r in enumerate(rows)]
+    return await ab.commit_rows(
+        db, actor.id, ctx.job.id, ctx.partner.id, ctx.site.id, numbered,
+        actor_rank=actor_rank, decisions=decisions or {}, source_label="crew.xlsx")
+
+
+async def team_row(db, job, person):
+    return await db.scalar(select(InitiativePerson).where(
+        InitiativePerson.initiative_id == job.id, InitiativePerson.person_id == person.id))
+
+
+async def audits(db, **where):
+    q = select(AuditLog).order_by(AuditLog.at)
+    for key, value in where.items():
+        q = q.where(getattr(AuditLog, key) == value)
+    return list(await db.scalars(q))
+
+
+async def test_commit_refuses_undecided(db, ctx, seeded_user):
+    people_before = await db.scalar(select(func.count()).select_from(Person))
+    with pytest.raises(BulkImportError) as exc:
+        await commit(db, ctx, seeded_user, cells("Zed", "Nobody", email="zed@example.com"))
+    assert exc.value.code == "rows_invalid"
+    assert exc.value.extra["rows"][0]["action"] == "attention"
+    assert await db.scalar(select(func.count()).select_from(Person)) == people_before
+    assert await db.scalar(select(func.count()).select_from(InitiativePerson)) == 0
+
+
+async def test_commit_creates_worker_formatted_phone_lower_email(db, ctx, seeded_user):
+    out = await commit(db, ctx, seeded_user,
+                       cells("Person", "D", preferred="Dee", phone="(512) 555-1212",
+                             email="Person.D@Example.com"),
+                       decisions={2: {"person": "new"}})
+    assert out["created"] == 1 and out["assigned"] == 0
+    person = await db.scalar(select(Person).where(Person.last_name == "D"))
+    assert person.email == "person.d@example.com"
+    assert person.phone == "+1 512 555 1212"
+    assert person.preferred_name == "Dee"
+    assert person.source == "import" and person.source_ref == "crew.xlsx"
+    profile = await db.get(WorkerProfile, person.id)
+    assert profile.partner_id == ctx.partner.id and profile.status == "active"
+    roles = list(await db.scalars(select(PersonRole).where(
+        PersonRole.person_id == person.id, PersonRole.role == "worker",
+        PersonRole.revoked_at.is_(None))))
+    assert len(roles) == 1 and roles[0].granted_by == seeded_user.id
+    tp = await team_row(db, ctx.job, person)
+    assert tp.site_worked_id == ctx.site.id and tp.work_type == "tech"
+    (entry,) = await audits(db, entity_type="worker", action="create")
+    assert entry.entity_id == str(person.id)
+    assert entry.changes["email"] == {"from": None, "to": "person.d@example.com"}
+    assert entry.changes["partner"] == {"from": None, "to": "Vend Picked"}
+    assert entry.changes["worker_role"] == {"from": None, "to": "granted"}
+    assert out["rows"] == [{"row": 2, "name": "Person D", "person_id": str(person.id),
+                            "action": "created", "diff": None}]
+
+
+async def test_commit_create_drops_invalid_phone_and_taken_email(db, ctx, seeded_user):
+    holder = Person(first_name="Staff", last_name="Holder", email="taken@example.com")
+    db.add(holder)
+    await db.commit()
+    await commit(db, ctx, seeded_user, cells("New", "Person", phone="12-34",
+                                              email="Taken@example.com"),
+                 decisions={2: {"person": "new",
+                                "acknowledged": ["shared_contact", "phone_invalid"]}})
+    person = await db.scalar(select(Person).where(Person.first_name == "New"))
+    assert person.email is None and person.phone is None
+
+
+async def test_commit_update_writes_contact_and_partner(db, ctx, seeded_user):
+    other = await mk_partner(db, "Vend Other")
+    w = await mk_worker(db, "Ana", "Lopez", email="ana@example.com", phone="+1 512 555 0102")
+    await mk_profile(db, w, other)
+    out = await commit(db, ctx, seeded_user,
+                       cells("Ana", "Lopez", phone="512.555.0199", email="Ana.New@Example.com"),
+                       decisions={2: {"change": "update"}})
+    await db.refresh(w)
+    assert w.phone == "+1 512 555 0199" and w.email == "ana.new@example.com"
+    profile = await db.get(WorkerProfile, w.id)
+    await db.refresh(profile)
+    assert profile.partner_id == ctx.partner.id
+    assert (await team_row(db, ctx.job, w)).work_type == "tech"
+    (entry,) = await audits(db, entity_type="worker", action="update")
+    assert entry.changes == {
+        "phone": {"from": "+1 512 555 0102", "to": "+1 512 555 0199"},
+        "email": {"from": "ana@example.com", "to": "ana.new@example.com"},
+        "partner": {"from": "Vend Other", "to": "Vend Picked"}}
+    assert out["assigned"] == 1
+    assert out["rows"][0]["action"] == "created"
+    assert out["rows"][0]["diff"]["partner"] == {"old": "Vend Other", "new": "Vend Picked"}
+
+
+async def test_commit_ignore_leaves_record(db, ctx, seeded_user):
+    other = await mk_partner(db, "Vend Other")
+    w = await mk_worker(db, "Ana", "Lopez", email="ana@example.com", phone="+1 512 555 0102")
+    await mk_profile(db, w, other)
+    out = await commit(db, ctx, seeded_user,
+                       cells("Ana", "Lopez", phone="512.555.0199", email="ana.new@example.com"),
+                       decisions={2: {"change": "ignore"}})
+    await db.refresh(w)
+    assert w.phone == "+1 512 555 0102" and w.email == "ana@example.com"
+    profile = await db.get(WorkerProfile, w.id)
+    await db.refresh(profile)
+    assert profile.partner_id == other.id
+    assert await team_row(db, ctx.job, w) is not None
+    assert await audits(db, entity_type="worker", action="update") == []
+    assert out["rows"][0]["diff"] is None
+
+
+async def test_commit_update_skips_email_held_by_other(db, ctx, seeded_user):
+    holder = Person(first_name="Staff", last_name="Holder", email="taken@example.com")
+    db.add(holder)
+    await db.commit()
+    w = await good_worker(db, ctx)
+    await commit(db, ctx, seeded_user,
+                 cells("Ana", "Lopez", phone="512 555 0199", email="TAKEN@example.com"),
+                 decisions={2: {"change": "update"}})
+    await db.refresh(w)
+    assert w.email == "ana@example.com" and w.phone == "+1 512 555 0199"
+    (entry,) = await audits(db, entity_type="worker", action="update")
+    assert set(entry.changes) == {"phone"}
+
+
+async def test_commit_partner_contact_becomes_worker(db, ctx, seeded_user):
+    c = await mk_partner_contact(db, "Casey", "Contact", ctx.partner,
+                                 email="casey@example.com")
+    out = await commit(db, ctx, seeded_user, cells("Casey", "Contact", email="casey@example.com"))
+    role = await db.scalar(select(PersonRole).where(
+        PersonRole.person_id == c.id, PersonRole.role == "worker"))
+    assert role is not None and role.revoked_at is None and role.granted_by == seeded_user.id
+    profile = await db.get(WorkerProfile, c.id)
+    assert profile.partner_id == ctx.partner.id and profile.status == "active"
+    assert await team_row(db, ctx.job, c) is not None
+    (entry,) = await audits(db, entity_type="worker", action="update")
+    assert entry.entity_id == str(c.id)
+    assert entry.changes == {"partner": {"from": None, "to": "Vend Picked"},
+                             "worker_role": {"from": None, "to": "granted"}}
+    assert out["assigned"] == 1
+
+
+async def test_commit_revoked_worker_gets_new_role(db, ctx, seeded_user):
+    c = await mk_worker(db, "Casey", "Contact", email="casey@example.com", revoked=True)
+    db.add(ContactProfile(person_id=c.id, partner_id=ctx.partner.id))
+    await db.commit()
+    await commit(db, ctx, seeded_user, cells("Casey", "Contact", email="casey@example.com"))
+    roles = list(await db.scalars(select(PersonRole).where(
+        PersonRole.person_id == c.id, PersonRole.role == "worker")))
+    assert len(roles) == 2
+    assert sum(r.revoked_at is None for r in roles) == 1
+
+
+async def test_commit_live_worker_without_profile_gets_one(db, ctx, seeded_user):
+    w = await mk_worker(db, "Ana", "Lopez", email="ana@example.com")
+    await commit(db, ctx, seeded_user, cells("Ana", "Lopez", email="ana@example.com"))
+    profile = await db.get(WorkerProfile, w.id)
+    assert profile is not None and profile.partner_id == ctx.partner.id
+    roles = list(await db.scalars(select(PersonRole).where(
+        PersonRole.person_id == w.id, PersonRole.role == "worker")))
+    assert len(roles) == 1
+
+
+async def test_commit_assignment_update_moves_site_and_role(db, ctx, seeded_user):
+    w = await good_worker(db, ctx)
+    west = await mk_site(db, "DC West")
+    await assign(db, ctx.job, w, west, "tech")
+    out = await commit(db, ctx, seeded_user,
+                       cells("Ana", "Lopez", email="ana@example.com", role="lead"),
+                       decisions={2: {"change": "update"}})
+    tp = await team_row(db, ctx.job, w)
+    await db.refresh(tp)
+    assert tp.site_worked_id == ctx.site.id and tp.work_type == "lead"
+    (entry,) = await audits(db, entity_type="initiative", action="person_update")
+    assert entry.changes == {"site_worked_id": {"from": str(west.id), "to": str(ctx.site.id)},
+                             "work_type": {"from": "tech", "to": "lead"}}
+    assert await audits(db, action="person_add") == []
+    assert out["updated"] == 1 and out["assigned"] == 0
+    assert out["rows"][0]["action"] == "updated"
+
+
+async def test_commit_already_assigned_contact_update(db, ctx, seeded_user):
+    w = await good_worker(db, ctx)
+    await assign(db, ctx.job, w, ctx.site, "tech")
+    out = await commit(db, ctx, seeded_user,
+                       cells("Ana", "Lopez", email="ana.new@example.com"),
+                       decisions={2: {"change": "update"}})
+    await db.refresh(w)
+    assert w.email == "ana.new@example.com"
+    assert await audits(db, action="person_add") == []
+    assert await audits(db, action="person_update") == []
+    assert out["updated"] == 1 and out["already_assigned"] == 0
+
+
+async def test_commit_status_never_changes(db, ctx, seeded_user):
+    w = await good_worker(db, ctx, status="blacklist")
+    await commit(db, ctx, seeded_user,
+                 cells("Ana", "Lopez", phone="512 555 0199", email="ana@example.com"),
+                 decisions={2: {"change": "update", "acknowledged": ["status"]}})
+    profile = await db.get(WorkerProfile, w.id)
+    await db.refresh(profile)
+    assert profile.status == "blacklist"
+    (entry,) = await audits(db, entity_type="worker", action="update")
+    assert "status" not in entry.changes
+
+
+async def test_reupload_is_all_already_assigned(db, ctx, seeded_user):
+    await good_worker(db, ctx)
+    rows = (cells("Ana", "Lopez", email="ana@example.com"),
+            cells("Person", "D", phone="(512) 555-1212", email="Person.D@Example.com"))
+    await commit(db, ctx, seeded_user, *rows, decisions={3: {"person": "new"}})
+    out = await preview(db, ctx, *rows)
+    assert [r["action"] for r in out["rows"]] == ["already_assigned", "already_assigned"]
+    assert out["can_commit"] is False
+    with pytest.raises(BulkImportError) as exc:
+        await commit(db, ctx, seeded_user, *rows)
+    assert exc.value.code == "rows_invalid"
+
+
+async def test_commit_audits(db, ctx, seeded_user):
+    a = await good_worker(db, ctx)
+    b = await good_worker(db, ctx, first="Bo", last="Ng", email="bo@example.com",
+                          phone="+1 512 555 0103")
+    on_team = await good_worker(db, ctx, first="Cy", last="Oh", email="cy@example.com",
+                                phone="+1 512 555 0104")
+    await assign(db, ctx.job, on_team, ctx.site, "tech")
+    out = await commit(db, ctx, seeded_user,
+                       cells("Ana", "Lopez", email="ana@example.com"),
+                       cells("Bo", "Ng", email="bo@example.com"),
+                       cells("Cy", "Oh", email="cy@example.com"),
+                       cells("New", "Person", email="new@example.com"),
+                       decisions={5: {"person": "new"}})
+    assert {k: out[k] for k in ("assigned", "created", "updated", "already_assigned")} == {
+        "assigned": 2, "created": 1, "updated": 0, "already_assigned": 1}
+    assert [r["action"] for r in out["rows"]] == ["created", "created", "unchanged", "created"]
+    adds = await audits(db, entity_type="initiative", action="person_add")
+    new = await db.scalar(select(Person).where(Person.first_name == "New"))
+    assert sorted(e.changes["person_id"]["to"] for e in adds) == sorted(
+        [str(a.id), str(b.id), str(new.id)])
+    assert all(e.entity_id == str(ctx.job.id) for e in adds)
+    (bulk,) = await audits(db, action="bulk_import", entity_type="initiative")
+    assert bulk.entity_id == str(ctx.job.id) and bulk.actor_person_id == seeded_user.id
+    assert bulk.changes == {"assigned": 2, "created": 1, "updated": 0,
+                            "already_assigned": 1, "source": "crew.xlsx"}
+
+
+async def test_commit_duplicate_assignment_race_is_rows_invalid(db, ctx, seeded_user,
+                                                               monkeypatch):
+    w = await good_worker(db, ctx)
+    await assign(db, ctx.job, w, ctx.site, "tech")
+    real = ab.load_reference
+
+    async def stale(*args, **kwargs):
+        ref = await real(*args, **kwargs)
+        ref["team"] = {}           # as if the preview ran before someone added Ana
+        return ref
+
+    monkeypatch.setattr(ab, "load_reference", stale)
+    with pytest.raises(BulkImportError) as exc:
+        await commit(db, ctx, seeded_user, cells("Ana", "Lopez", email="ana@example.com"))
+    assert exc.value.code == "rows_invalid"
+    assert exc.value.extra == {"reason": "duplicate_worker"}
+
+
+async def test_commit_email_race_is_rows_invalid(db, ctx, seeded_user, monkeypatch):
+    holder = Person(first_name="Staff", last_name="Holder", email="taken@example.com")
+    db.add(holder)
+    await db.commit()
+    real = ab.load_reference
+
+    async def stale(*args, **kwargs):
+        ref = await real(*args, **kwargs)
+        ref["emails_all"] = {}     # as if the email was taken after the preview
+        return ref
+
+    monkeypatch.setattr(ab, "load_reference", stale)
+    with pytest.raises(BulkImportError) as exc:
+        await commit(db, ctx, seeded_user, cells("New", "Person", email="taken@example.com"),
+                     decisions={2: {"person": "new"}})
+    assert exc.value.code == "rows_invalid"
+    assert exc.value.extra == {"reason": "email_taken"}
+    assert await db.scalar(select(Person).where(Person.first_name == "New")) is None
