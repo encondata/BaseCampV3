@@ -189,7 +189,15 @@ async def test_phone_match_digits(db, seeded_user):
     ref = await ref_for(db)
     pid, by, value = ab.match_row(ref, cells("Nobody", "Here", phone="(512) 555-1212"))
     assert (pid, by) == (str(p.id), "phone")
-    assert value == "(512) 555-1212"
+    assert value == "+1 512 555 1212"
+
+
+async def test_phone_match_value_is_formatted(db, seeded_user):
+    p = await mk_worker(db, "Person", "D", phone="+31 6 2074 6385")
+    ref = await ref_for(db)
+    assert ab.match_row(ref, cells("Nobody", "Here", phone="+31620746385")) == (
+        str(p.id), "phone", "+31 6 20746385")
+
 
 
 async def test_partner_contact_matches(db, seeded_user):

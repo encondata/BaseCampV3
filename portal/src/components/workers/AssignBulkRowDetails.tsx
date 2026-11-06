@@ -2,8 +2,8 @@
  * AssignBulkRowDetails — the Details cell of one AssignBulkUpload preview
  * line: the row's errors (.pf-error), each flag's sentence (amber for a
  * discrepancy, red when a pick is needed) with its "Label: value" lines in
- * a .bulk-diff block, the flag buttons (Update / Ignore, Accept, Ignore)
- * with a pressed state for the current choice, then the worker dropdown
+ * a .bulk-diff block and its own buttons under it (Update / Ignore, Accept,
+ * Ignore) with a pressed state for the current choice, then the worker dropdown
  * (+ Create new worker first, then every matchable person with their
  * partner) and the Role dropdown. Both menus are portaled so the preview
  * table keeps its sideways scroll. Pure rendering; the pane owns the
@@ -45,9 +45,9 @@ export default function AssignBulkRowDetails({
   const n = row.row;
   const roleId = useId();
   const acknowledged = decision.acknowledged ?? [];
-  const hasChange = row.flags.some((f) => CHANGE_KINDS.includes(f.kind));
-  const ackKinds = row.flags.map((f) => f.kind).filter((k) => IGNORE_KINDS.includes(k));
-  const nameDiffers = row.flags.some((f) => f.kind === 'name_differs');
+  // One Update / Ignore choice answers every change flag on the row, so its
+  // buttons sit under the last of them; other buttons sit under their own flag.
+  const lastChangeKind = row.flags.filter((f) => CHANGE_KINDS.includes(f.kind)).at(-1)?.kind;
 
   const setChange = (change: 'update' | 'ignore') => {
     const next = { ...decision };
@@ -77,7 +77,7 @@ export default function AssignBulkRowDetails({
     <>
       {row.errors.map((e, i) => <span key={`${i}-${e}`} className="pf-error">{e}</span>)}
       {row.flags.map((f) => (
-        <div key={f.kind}>
+        <div key={f.kind} className="bulk-flag">
           <span className={`pf-error${PICK_KINDS.includes(f.kind) ? '' : ' bulk-warn'}`}>
             {FLAG_TEXT[f.kind]}
           </span>
@@ -87,12 +87,8 @@ export default function AssignBulkRowDetails({
               {f.other_person && <span>Shared with: {f.other_person}</span>}
             </div>
           )}
-        </div>
-      ))}
-      {(hasChange || nameDiffers || ackKinds.length > 0) && (
-        <div className="bulk-actions bulk-choice">
-          {hasChange && (
-            <>
+          {f.kind === lastChangeKind && (
+            <div className="bulk-actions bulk-choice">
               <button type="button" className="mini-btn" disabled={disabled}
                       aria-label={`Update row ${n}`} {...pressed(decision.change === 'update')}
                       onClick={() => setChange('update')}>
@@ -104,26 +100,30 @@ export default function AssignBulkRowDetails({
                       onClick={() => setChange('ignore')}>
                 Ignore
               </button>
-            </>
+            </div>
           )}
-          {nameDiffers && (
-            <button type="button" className="mini-btn" disabled={disabled}
-                    aria-label={`Accept the name on row ${n}`}
-                    {...pressed(acknowledged.includes('name_differs'))}
-                    onClick={() => toggleAck('name_differs')}>
-              Accept
-            </button>
+          {f.kind === 'name_differs' && (
+            <div className="bulk-actions bulk-choice">
+              <button type="button" className="mini-btn" disabled={disabled}
+                      aria-label={`Accept the name on row ${n}`}
+                      {...pressed(acknowledged.includes('name_differs'))}
+                      onClick={() => toggleAck('name_differs')}>
+                Accept
+              </button>
+            </div>
           )}
-          {ackKinds.map((k) => (
-            <button key={k} type="button" className="mini-btn" disabled={disabled}
-                    aria-label={`Ignore ${IGNORE_LABEL[k]} on row ${n}`}
-                    {...pressed(acknowledged.includes(k))}
-                    onClick={() => toggleAck(k)}>
-              Ignore
-            </button>
-          ))}
+          {IGNORE_KINDS.includes(f.kind) && (
+            <div className="bulk-actions bulk-choice">
+              <button type="button" className="mini-btn" disabled={disabled}
+                      aria-label={`Ignore ${IGNORE_LABEL[f.kind]} on row ${n}`}
+                      {...pressed(acknowledged.includes(f.kind))}
+                      onClick={() => toggleAck(f.kind)}>
+                Ignore
+              </button>
+            </div>
+          )}
         </div>
-      )}
+      ))}
       <div className="bulk-pick">
         <ComboBox
           portal

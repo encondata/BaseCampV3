@@ -79,6 +79,8 @@
 /* a discrepancy's sentence reads amber; a needed pick stays .pf-error red */
 .bulk-preview .pf-error.bulk-warn { color: var(--c-amber, #a36207); }
 .bulk-choice { margin: 6px 0; }
+/* each flag sits apart from the next, its buttons directly under it */
+.bulk-flag + .bulk-flag { margin-top: 8px; }
 /* the chosen Update / Ignore / Accept — tokens follow the theme */
 .bulk-choice .mini-btn[aria-pressed='true'] {
   background: rgba(var(--accent-rgb), 0.14);

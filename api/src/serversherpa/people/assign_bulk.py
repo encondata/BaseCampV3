@@ -241,7 +241,8 @@ def match_row(ref: dict, cells: dict) -> tuple[str | None, str | None, str | Non
     """(person_id, matched_by, matched_value): name first, then email, then
     phone. A key that finds two or more people is no match for that key and
     the search moves on. matched_value is the name as written (spaces
-    squashed), the lowercased email, or the phone cell as written."""
+    squashed), the lowercased email, or the formatted phone (the cell as
+    written when it cannot be parsed)."""
     first, last = cells.get("first_name", ""), cells.get("last_name", "")
     preferred = cells.get("preferred_name", "")
     name_hits: set[str] = set()
@@ -260,7 +261,7 @@ def match_row(ref: dict, cells: dict) -> tuple[str | None, str | None, str | Non
 
     phone_cell = (cells.get("phone") or "").strip()
     if (phone := normalize_phone(phone_cell)) and (pid := _one(ref["by_phone"].get(phone))):
-        return pid, "phone", phone_cell
+        return pid, "phone", format_phone(phone_cell) or phone_cell
     return None, None, None
 
 
