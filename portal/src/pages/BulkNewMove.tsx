@@ -28,7 +28,7 @@ import {
 } from '../lib/api';
 import { formFromInitiative, type InitiativeFormState } from '../lib/initiatives';
 import {
-  EMPTY_LOOKUPS, initialCrates, initialTrucks, MOVE_SETUP_NO_ACCESS, MOVE_SETUP_PERMISSIONS,
+  crateEstimate, EMPTY_LOOKUPS, initialCrates, initialTrucks, MOVE_SETUP_NO_ACCESS, MOVE_SETUP_PERMISSIONS,
   MOVE_SETUP_STEPS, type CratesValue, type MoveSetupLookups, type SkippableSection,
   type TrucksValue,
 } from '../lib/moveSetup';
@@ -93,8 +93,19 @@ function MoveSetupWizard() {
   const origin = lookups.sites.find((s) => s.id === form.origin_site_id) ?? null;
   const destination = lookups.sites.find((s) => s.id === form.destination_site_id) ?? null;
   // the crate/truck steps open prefilled from the site codes, once; Back keeps edits
+  // the From-To check's estimate fills the crate count until someone types one
+  const estimate = crateEstimate(assetJob);
+  const countTyped = useRef(false);
   useEffect(() => {
-    if (step === 2 && crates === null) setCrates(initialCrates(origin, destination));
+    if (step === 2) {
+      const fill = !countTyped.current && estimate ? String(estimate.crates) : null;
+      if (crates === null) {
+        const fresh = initialCrates(origin, destination);
+        setCrates(fill ? { ...fresh, count: fill } : fresh);
+      } else if (fill && crates.count !== fill) {
+        setCrates({ ...crates, count: fill });
+      }
+    }
     if (step === 3 && trucks === null) setTrucks(initialTrucks(origin, destination));
   }, [step]);   // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -149,8 +160,13 @@ function MoveSetupWizard() {
                       onBack={back} onSkip={skip('assets')} onNext={next} />
         )}
         {step === 2 && draft && crates && (
-          <CratesStep draft={draft} value={crates}
-                      setValue={(v) => { include('crates'); setCrates(v); }}
+          <CratesStep draft={draft} value={crates} estimate={estimate}
+                      setValue={(v) => {
+                        if (v.count !== crates.count) {
+                          countTyped.current = !estimate || v.count !== String(estimate.crates);
+                        }
+                        include('crates'); setCrates(v);
+                      }}
                       skipped={skipped.has('crates')}
                       containerTypes={lookups.containerTypes} onDraft={setDraft}
                       onBack={back} onSkip={skip('crates')} onNext={next} />

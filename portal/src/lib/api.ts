@@ -3721,9 +3721,17 @@ export interface ImportRowDetail {
   suggested_model?: string;
 }
 
+/** Create a move in steps: the From-To check's starting crate count
+ *  (imports/crate_estimate.py). */
+export interface CrateEstimate {
+  crates: number; uncapped: number; needed: number; devices: number; ru: number;
+  over_10u: number; unknown_size: number; racks: number; nodes: number;
+}
+
 export interface ImportJobResults {
   summary: Record<string, number>;
   details: ImportRowDetail[];
+  crate_estimate?: CrateEstimate;
 }
 
 export interface ImportJobOut {

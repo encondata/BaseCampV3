@@ -405,7 +405,8 @@ async def clean_db():
               ('storage','Storage','Disk shelves, arrays, tape.',2,'#6d4fc4'),
               ('network','Network','Switches, routers, firewalls.',3,'#0f7c86'),
               ('power','Power','PDUs, UPSes.',4,'#a36207'),
-              ('other','Other','Anything that does not fit the other categories.',5,'#51606f')
+              ('rack','Rack','Rack frames and cabinets; shipped standalone, never crated.',5,'#7a5c3e'),
+              ('other','Other','Anything that does not fit the other categories.',6,'#51606f')
         """))
         # system_config is editable seed data — restore 0024 defaults
         await session.execute(text("DELETE FROM system_config"))

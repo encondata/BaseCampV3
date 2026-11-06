@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { ApiError, type ImportJobResults } from './api';
+import { ApiError, type CrateEstimate, type ImportJobOut, type ImportJobResults } from './api';
 import { formFromInitiative } from './initiatives';
 import {
-  assetSummary, cratesBody, createdCount, initialCrates, missingMoveFields, MOVE_SETUP_ERRORS,
+  assetSummary, crateEstimate, cratesBody, createdCount, estimateSentence, initialCrates, missingMoveFields, MOVE_SETUP_ERRORS,
   MOVE_SETUP_STEPS, moveSetupError, movePayload, setupReasons,
 } from './moveSetup';
 
@@ -67,4 +67,33 @@ it('turns the import details into the per-row summary', () => {
   expect(out.rows[1]).toMatchObject({ row: 3, name: 'sn-2', action: 'skipped', asset_id: null });
   expect(createdCount(1, 'crate')).toBe('1 crate created');
   expect(createdCount(3, 'truck')).toBe('3 trucks created');
+});
+
+const EST: CrateEstimate = { crates: 24, uncapped: 24, needed: 19, devices: 212, ru: 318,
+                             over_10u: 0, unknown_size: 0, racks: 0, nodes: 0 };
+
+describe('crate estimate', () => {
+  it('reads the estimate only from a finished check', () => {
+    const job = (status: string) => ({ status, results: { summary: {}, details: [], crate_estimate: EST } }) as unknown as ImportJobOut;
+    expect(crateEstimate(job('completed'))).toBe(EST);
+    expect(crateEstimate(job('running'))).toBeNull();
+    expect(crateEstimate(null)).toBeNull();
+  });
+
+  it('says where the number came from', () => {
+    expect(estimateSentence(EST)).toBe('Estimated 24 crates from 212 devices (318U) + 25%.');
+    expect(estimateSentence({ ...EST, racks: 3, nodes: 1, unknown_size: 5 })).toBe(
+      'Estimated 24 crates from 212 devices (318U) + 25%; 3 racks and 1 node left out; '
+      + '5 devices of unknown size counted as 2U.');
+  });
+
+  it('says when the cap cut the estimate', () => {
+    expect(estimateSentence({ ...EST, crates: 500, uncapped: 563 })).toContain(
+      'The full estimate is 563, over the 500 limit.');
+  });
+
+  it('explains a zero', () => {
+    expect(estimateSentence({ ...EST, crates: 0, uncapped: 0, devices: 0, ru: 0, racks: 2 }))
+      .toBe("Estimated 0 crates: the From-To only lists 2 racks, which don't go in crates.");
+  });
 });
