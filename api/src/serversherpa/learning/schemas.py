@@ -605,6 +605,10 @@ class AssignmentReadOut(BaseModel):
     has_quiz: bool
     quiz_passed: bool
     signed_at: datetime | None      # set once the assignment is signed (review mode)
+    reading_style: str
+    slides: list[str] | None        # presigned HTML per slide, Slides style only
+    slide_count: int | None
+    slide_reached: int | None       # furthest slide read at this version and language
 
 
 class HistoryInitiativeOut(BaseModel):

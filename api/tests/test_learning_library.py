@@ -448,7 +448,6 @@ async def test_reading_style_defaults_to_document_and_patches(client, db, seeded
     doc = await _create(client, hdrs, page)
     url = f"/learning/documents/{doc['id']}"
     assert doc["reading_style"] == "document"
-    # slide_count and current_slides are filled once slides can be split
     assert doc["slide_count"] is None and doc["current_slides"] is None
 
     resp = await client.patch(url, headers=hdrs, json={"reading_style": "slides"})
@@ -471,6 +470,32 @@ async def test_reading_style_defaults_to_document_and_patches(client, db, seeded
     assert made["reading_style"] == "slides"
     await _create(client, hdrs, await _node(db, space, "Bad"), title="Bad",
                   expect=422, reading_style="deck")
+
+
+async def test_slides_document_reports_its_slides(client, db, seeded_user, renderer):
+    hdrs = await _manager(db, client)
+    space = await _space(db)
+    page = await _node(db, space, "Dress code")
+    await _publish_wiki(db, page, _doc("Wear boots."))
+    slides = await _create(client, hdrs, page, reading_style="slides")
+    await _publish(client, hdrs, slides["id"])
+    # the stored HTML is what's split; give the version a second section
+    version = await db.get(LearningDocumentVersion, uuid.UUID(
+        (await client.get(f"/learning/documents/{slides['id']}", headers=hdrs)
+         ).json()["current_version_id"]))
+    version.content_html = "<p>Intro</p><h2>Shirt</h2><p>Company shirt.</p>"
+    await db.commit()
+    body = (await client.get(f"/learning/documents/{slides['id']}", headers=hdrs)).json()
+    assert body["slide_count"] == 2 and len(body["current_slides"]) == 2
+    assert body["current_slides"][1].startswith("<h2>Shirt</h2>")
+
+    # a Document-style document, published or not, reports neither
+    forklifts = await _node(db, space, "Forklifts")
+    await _publish_wiki(db, forklifts, _doc("Mind the forks."))
+    other = await _create(client, hdrs, forklifts, title="Forklifts")
+    await _publish(client, hdrs, other["id"])
+    body = (await client.get(f"/learning/documents/{other['id']}", headers=hdrs)).json()
+    assert body["slide_count"] is None and body["current_slides"] is None
 
 
 async def test_non_manager_forbidden(client, db, seeded_user, renderer):

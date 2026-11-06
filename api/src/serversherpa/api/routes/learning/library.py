@@ -36,6 +36,7 @@ from serversherpa.learning.schemas import (
     WikiPageOption,
     WikiPageRef,
 )
+from serversherpa.learning.slides import split_slides
 
 router = APIRouter()
 
@@ -87,6 +88,9 @@ async def _document_out(db, document: LearningDocument) -> DocumentOut:
                                 if wiki_version else None)
         has_changes = wiki_version is not None and (
             current is None or current.wiki_version_id != wiki_version.id)
+    current_html = await html_with_images(db, current) if current else None
+    slides = (split_slides(current_html)
+              if current_html is not None and document.reading_style == "slides" else None)
     return DocumentOut(
         id=document.id, title=document.title,
         **{key: getattr(document, key) for key in SETTING_FIELDS},
@@ -94,7 +98,8 @@ async def _document_out(db, document: LearningDocument) -> DocumentOut:
         has_wiki_changes=has_changes,
         current_version_id=document.current_version_id,
         current_version_no=current.version_no if current else None,
-        current_html=await html_with_images(db, current) if current else None,
+        current_html=current_html,
+        slide_count=len(slides) if slides is not None else None, current_slides=slides,
         versions=[VersionSummary(**_summary(v, people)) for v in versions],
         archived_at=document.archived_at, created_at=document.created_at,
         updated_at=document.updated_at)

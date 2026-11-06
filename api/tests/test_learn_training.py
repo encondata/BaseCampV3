@@ -13,9 +13,10 @@ from PIL import Image
 from sqlalchemy import select
 
 from serversherpa.db.models import EmailOutbox, Notification, Person
-from serversherpa.learning import sessions
+from serversherpa.learning import sessions, worker
 from serversherpa.learning.models import (
     LearningAssignment,
+    LearningDocumentVersion,
     LearningPacket,
     LearningPacketItem,
     LearningQuizAttempt,
@@ -523,3 +524,78 @@ async def test_read_signed_assignment_reports_signed_at(client, db, seeded_user)
     after = (await client.get(f"/learn/assignments/{row.id}", headers=hdrs)).json()
     assert after["signed_at"] == signed["signed_at"]
     assert after["version_no"] == 1
+
+
+# ── slides ───────────────────────────────────────────────────────────
+
+
+async def _set_html(db, doc, html):
+    version = await db.get(LearningDocumentVersion, doc.current_version_id)
+    version.content_html = html
+    await db.commit()
+
+
+async def test_read_slides_document_returns_slides(client, db, seeded_user):
+    doc = await _plain_doc(db, reading_style="slides")
+    await _set_html(db, doc, "<p>Intro</p><h2>A</h2><p>a</p>")
+    wanda, hdrs = await _learner(db)
+    row = await _assign(db, wanda, doc)
+    body = (await client.get(f"/learn/assignments/{row.id}", headers=hdrs)).json()
+    assert body["reading_style"] == "slides"
+    assert body["slides"] == ["<p>Intro</p>", "<h2>A</h2><p>a</p>"]
+    assert body["slide_count"] == 2 and body["slide_reached"] is None
+
+
+async def test_read_slides_reports_reached_for_the_served_version_and_language(
+        client, db, seeded_user):
+    doc = await _plain_doc(db, reading_style="slides")
+    await _set_html(db, doc, "<h2>A</h2><p>a</p><h2>B</h2><p>b</p>")
+    version_id = doc.current_version_id
+    db.add(LearningTranslation(version_id=version_id, language="ja", status="published",
+                               title="ja", content_html="<h2>あ</h2><h2>い</h2><h2>う</h2>"))
+    wanda, hdrs = await _learner(db)
+    row = await _assign(db, wanda, doc)
+    row.slide_reached, row.slide_version_id, row.slide_language = 2, version_id, "en"
+    await db.commit()
+
+    en = (await client.get(f"/learn/assignments/{row.id}", headers=hdrs)).json()
+    assert en["slide_count"] == 2 and en["slide_reached"] == 2
+    # progress was made in English: the Japanese read starts over, with its own slides
+    ja = (await client.get(f"/learn/assignments/{row.id}?lang=ja", headers=hdrs)).json()
+    assert ja["slide_count"] == 3 and ja["slide_reached"] is None
+    assert ja["slides"] == ["<h2>あ</h2>", "<h2>い</h2>", "<h2>う</h2>"]
+    # an unpublished language falls back to English, and so does the progress
+    ko = (await client.get(f"/learn/assignments/{row.id}?lang=ko", headers=hdrs)).json()
+    assert ko["language"] == "en" and ko["slide_reached"] == 2
+
+
+async def test_read_document_style_has_no_slides(client, db, seeded_user):
+    doc = await _plain_doc(db)
+    await _set_html(db, doc, "<p>Intro</p><h2>A</h2><p>a</p>")
+    wanda, hdrs = await _learner(db)
+    row = await _assign(db, wanda, doc)
+    body = (await client.get(f"/learn/assignments/{row.id}", headers=hdrs)).json()
+    assert body["reading_style"] == "document" and body["slides"] is None
+    assert body["slide_count"] is None and body["slide_reached"] is None
+
+
+async def test_served_html_and_effective_reached(db, seeded_user):
+    doc = await _plain_doc(db)
+    await _set_html(db, doc, "<p>English</p>")
+    version = await db.get(LearningDocumentVersion, doc.current_version_id)
+    db.add(LearningTranslation(version_id=version.id, language="ja", status="published",
+                               title="ja", content_html="<p>日本語</p>"))
+    db.add(LearningTranslation(version_id=version.id, language="ko", status="draft",
+                               title="ko", content_html="<p>한국어</p>"))
+    await db.commit()
+    assert await worker.served_html(db, version, "ja") == ("<p>日本語</p>", "ja")
+    assert await worker.served_html(db, version, "ko") == ("<p>English</p>", "en")
+    assert await worker.served_html(db, version, None) == ("<p>English</p>", "en")
+
+    wanda, _ = await _learner(db)
+    row = await _assign(db, wanda, doc)
+    assert worker.effective_reached(row, version.id, "en") is None
+    row.slide_reached, row.slide_version_id, row.slide_language = 3, version.id, "en"
+    assert worker.effective_reached(row, version.id, "en") == 3
+    assert worker.effective_reached(row, version.id, "ja") is None
+    assert worker.effective_reached(row, uuid.uuid4(), "en") is None

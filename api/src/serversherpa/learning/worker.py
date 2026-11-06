@@ -41,6 +41,7 @@ from serversherpa.learning.models import (
     LearningTranslation,
 )
 from serversherpa.learning.render import html_with_images
+from serversherpa.learning.slides import split_slides
 from serversherpa.services.timezone import stored_day
 
 ENGLISH = "en"
@@ -298,6 +299,27 @@ async def history(db: AsyncSession, person_id: uuid.UUID) -> list[dict]:
 # ── reading ──────────────────────────────────────────────────────────
 
 
+async def served_html(db: AsyncSession, version: LearningDocumentVersion,
+                      lang: str | None) -> tuple[str, str]:
+    """The stored HTML (no presigned images) a read in `lang` is given, and
+    the language it is in: the version's published translation, else the
+    version's own English."""
+    translation = await published_translation(db, version.id, lang)
+    if translation:
+        return translation.content_html, lang
+    return version.content_html, ENGLISH
+
+
+def effective_reached(assignment: LearningAssignment, version_id: uuid.UUID,
+                      language: str) -> int | None:
+    """The furthest slide reached, only while it was reached at this version
+    and in this language: a new version, or another language (whose slides
+    may be split differently), starts over."""
+    if assignment.slide_version_id == version_id and assignment.slide_language == language:
+        return assignment.slide_reached
+    return None
+
+
 async def read(db: AsyncSession, assignment: LearningAssignment, lang: str | None) -> dict:
     """The assignment as the worker reads it; the first read starts the
     reading clock (`opened_at`)."""
@@ -310,17 +332,24 @@ async def read(db: AsyncSession, assignment: LearningAssignment, lang: str | Non
     if assignment.status == "assigned":
         assignment.status = "opened"
     has_quiz = await quiz.has_quiz(db, document)
+    html = await html_with_images(db, version, translation.content_html if translation else None)
+    language = lang if translation else ENGLISH
+    slides = split_slides(html) if document.reading_style == "slides" else None
     return {
         "title": translation.title if translation else version.title,
-        "html": await html_with_images(
-            db, version, translation.content_html if translation else None),
-        "language": lang if translation else ENGLISH,
+        "html": html,
+        "language": language,
         "fallback": bool(lang) and lang != ENGLISH and translation is None,
         "version_no": version.version_no, "change_note": version.change_note,
         "sign_style": document.sign_style, "require_scroll": document.require_scroll,
         "min_read_seconds": document.min_read_seconds, "has_quiz": has_quiz,
         "quiz_passed": has_quiz and await quiz.passed(db, assignment.id) is not None,
         "signed_at": assignment.signed_at if assignment.status == "signed" else None,
+        "reading_style": document.reading_style,
+        "slides": slides,
+        "slide_count": len(slides) if slides is not None else None,
+        "slide_reached": (effective_reached(assignment, version.id, language)
+                          if slides is not None else None),
     }
 
 
