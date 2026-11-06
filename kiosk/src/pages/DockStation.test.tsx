@@ -323,6 +323,49 @@ describe('DockStation', () => {
     expect(crateName().textContent).toBe('Crate C');
   });
 
+  it('a flagged newest crate goes red and names every flagged crate when its run is alone', async () => {
+    // B stands between them unflagged: the run ending at C is C alone.
+    api.getDock.mockResolvedValue(overview({
+      open: openPass({
+        crates: [
+          crate({ conflict: true }),
+          crate({ epc: '0000000000000000000000C2', label: 'Crate B', first_read_at: at(14, 4, 59) }),
+          crate({ epc: '0000000000000000000000C3', label: 'Crate C', first_read_at: at(14, 5, 0), conflict: true }),
+        ],
+      }),
+    }));
+    await renderPage();
+    expect(cardIs('flag')).toBe(true);
+    expect(crateName().textContent).toBe('More than one crate');
+    expect(crateMeta()).toBe('Crate A and Crate C were read together');
+  });
+
+  it('while the newest crate is flagged nothing says it will pack', async () => {
+    const a = crate({ conflict: true });
+    const b = crate({ epc: '0000000000000000000000C2', label: 'Crate B', first_read_at: at(14, 4, 59), conflict: true });
+    api.getDock.mockResolvedValue(overview({
+      open: openPass({
+        crates: [a, b], added_count: 2,
+        tags: [
+          asset({ epc: '000000000000000000001001', first_read_at: at(14, 4, 58), in_window: true, crate_label: 'Crate A' }),
+          asset({ epc: '000000000000000000001002', first_read_at: at(14, 4, 59), in_window: true, crate_label: 'Crate B' }),
+          asset({ epc: '000000000000000000001003', first_read_at: at(14, 4, 40), in_window: false }),
+        ],
+      }),
+    }));
+    await renderPage();
+    const rows = listRows();
+    expect(rows.map((r) => r.querySelector('.chip')?.textContent))
+      .toEqual(['More than one crate', 'More than one crate', 'Outside window']);
+    expect(rows[0].querySelector('.chip')?.classList.contains('c-red')).toBe(true);
+    expect(rows[0].querySelector('.dock-row-crate')?.textContent).toBe('Crate B');
+    expect(countValue()).toBe('2');
+    const value = countCard().querySelector('.dock-stat-value');
+    expect(value?.classList.contains('is-muted')).toBe(true);
+    expect(value?.classList.contains('is-bump')).toBe(false);
+    expect(countSub()).toBe('More than one crate · nothing will be packed');
+  });
+
   it('the count card shows added_count and where they go', async () => {
     api.getDock.mockResolvedValueOnce(overview({
       open: openPass({ crates: [crate()], added_count: 2 }),
@@ -495,6 +538,37 @@ describe('DockStation', () => {
     expect(cardIs('flag')).toBe(true);
     expect(crateName().textContent).toBe('More than one crate');
     expect(crateMeta()).toBe('Crate A and Crate B were read together. Nothing was packed.');
+  });
+
+  it("a burst's crate result wins over its No crate read leftover", async () => {
+    // A split burst writes its groups by first read: a trailing straggler
+    // makes the leftover the top pass, though the crate packed.
+    const older = passRow({ id: 9, container_name: 'Crate A' });
+    const leftover = passRow({ id: 11, status: 'flagged', flag: 'no_crate', container_name: null, asset_count: 1 });
+    const crateB = passRow({ id: 10, status: 'would_pack', dry_run: true, container_name: 'Crate B', asset_count: 3 });
+    api.getDock.mockResolvedValueOnce(overview({ passes: [older] }))
+      .mockResolvedValue(overview({ passes: [leftover, crateB, older] }));
+    await renderPage();
+    await tick(1000);
+    expect(cardIs('would')).toBe(true);
+    expect(crateName().textContent).toBe('Crate B');
+    expect(crateMeta()).toBe('Would pack 3 devices · dry run, nothing sent');
+    expect(countValue()).toBe('3');
+    expect(countSub()).toBe('would go into Crate B');
+    // the leftover still stands out in Recent passes
+    expect(rowOf('Flagged: No crate read').classList.contains('is-flagged')).toBe(true);
+  });
+
+  it('a No crate read leftover flashes when it is the only new pass', async () => {
+    api.getDock.mockResolvedValueOnce(overview({ passes: [passRow({ id: 9 })] }))
+      .mockResolvedValue(overview({
+        passes: [passRow({ id: 11, status: 'flagged', flag: 'no_crate', container_name: null, asset_count: 2 }),
+          passRow({ id: 9 })],
+      }));
+    await renderPage();
+    await tick(1000);
+    expect(cardIs('flag')).toBe(true);
+    expect(crateName().textContent).toBe('No crate read');
   });
 
   it('a result follows its pass until it is sent', async () => {

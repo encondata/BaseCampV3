@@ -85,21 +85,44 @@ function andList(names: string[]): string {
  *  for an unnamed one. */
 const crateText = (c: DockCrate) => c.label ?? displayEpc(c.epc);
 
-/** The crates the newest crate will be flagged with, itself included: the
- *  run of flagged crates that ends at it (none when it isn't flagged), each
- *  name once. */
+/** The flagged crates read together, by name, each once: the run of flagged
+ *  crates that ends at the newest, or every flagged crate when that run
+ *  names fewer than two (an unflagged crate was read between them, or the
+ *  newest isn't flagged). */
 function flaggedWith(crates: DockCrate[]): string[] {
-  const names: string[] = [];
-  for (let i = crates.length - 1; i >= 0 && crates[i].conflict; i -= 1) names.unshift(crateText(crates[i]));
-  return [...new Set(names)];
+  const run: string[] = [];
+  for (let i = crates.length - 1; i >= 0 && crates[i].conflict; i -= 1) run.unshift(crateText(crates[i]));
+  const names = [...new Set(run)];
+  return names.length > 1 ? names : [...new Set(crates.filter((c) => c.conflict).map(crateText))];
+}
+
+/** Whether an added asset's crate will be flagged More than one crate, so
+ *  nothing in it packs: its crate by label, or for an unnamed crate when
+ *  every unnamed crate is flagged. */
+function inFlaggedCrate(tag: DockOpenTag, crates: DockCrate[]): boolean {
+  if (!tag.in_window) return false;
+  if (tag.crate_label !== null) return crates.some((c) => c.conflict && c.label === tag.crate_label);
+  const unnamed = crates.filter((c) => c.label === null);
+  return unnamed.length > 0 && unnamed.every((c) => c.conflict);
+}
+
+/** A newly decided pass that the last answer didn't list, to show on the
+ *  crate card: the newest that isn't a No crate read leftover (a burst's
+ *  crate is written before a straggler's leftover, so the leftover can be on
+ *  top though the crate packed), or the leftover when that's all there is. */
+function newlyDecided(passes: DockPassRow[], before: DockPassRow[]): DockPassRow | null {
+  const fresh = passes.filter((p) => !before.some((b) => b.id === p.id));
+  return fresh.find((p) => !(p.status === 'flagged' && p.flag === 'no_crate')) ?? fresh[0] ?? null;
 }
 
 /** No crate (or several), or the portal turned the pass away. */
 const standsOut = (p: DockPassRow) => p.status === 'flagged' || p.status === 'refused';
 
-/** An asset's status in the open burst, from the edge's window test. */
-function assetChip(tag: DockOpenTag, dryRun: boolean): { label: string; tone: string } {
+/** An asset's status in the open burst, from the edge's window test; inside
+ *  a crate that will be flagged, it won't pack. */
+function assetChip(tag: DockOpenTag, dryRun: boolean, flagged: boolean): { label: string; tone: string } {
   if (tag.in_window === null) return { label: 'Waiting for crate', tone: 'c-slate' };
+  if (flagged) return { label: 'More than one crate', tone: 'c-red' };
   if (tag.in_window) return { label: dryRun ? 'Would add' : 'Adding', tone: 'c-green' };
   return { label: 'Outside window', tone: 'c-red' };
 }
@@ -159,15 +182,6 @@ function resultCard(p: DockPassRow, flagged: string[]): CrateCard {
       return { look: 'idle', name: p.container_name ?? 'Nothing to pack', meta: p.container_name ? 'Nothing to pack' : '' };
   }
 }
-
-// ── icons (inline, currentColor), as the mockup draws them ──────────
-const svg = (children: ReactNode, width = 2) => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={width}
-       strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{children}</svg>
-);
-const CRATE_ICON = svg(<><path d="M21 8 12 3 3 8v8l9 5 9-5z" /><path d="m3 8 9 5 9-5M12 13v8" /></>);
-const SERVER_ICON = svg(<><rect x="3" y="3.5" width="18" height="7" rx="1.5" /><rect x="3" y="13.5" width="18" height="7" rx="1.5" /><path d="M7 7h.01M7 17h.01" /></>, 2.2);
-const RFID_ICON = svg(<><path d="M5 12a7 7 0 0 1 7-7M8.5 12A3.5 3.5 0 0 1 12 8.5" /><circle cx="12" cy="12" r="1.2" fill="currentColor" /><path d="M19 12a7 7 0 0 1-7 7M15.5 12a3.5 3.5 0 0 1-3.5 3.5" /></>);
 
 export default function DockStation() {
   const [setup] = useKioskSetup();
@@ -261,15 +275,15 @@ export default function DockStation() {
         setUnreachable(false);
         if (gen === settingsGen.current) setSettings(o.settings);
         if (pressGen === controlGen.current) setControl(o.control);
-        // A newly read crate takes the card from a result. Otherwise a pass
-        // at the top that the last answer didn't list was just decided; the
-        // first answer only says which passes were already there.
+        // A newly read crate takes the card from a result. Otherwise passes
+        // the last answer didn't list were just decided; the first answer
+        // only says which passes were already there.
         const before = lastOverview.current;
         lastOverview.current = o;
-        const top = o.passes[0];
+        const decided = before ? newlyDecided(o.passes, before.passes) : null;
         if (o.open && o.open.crates.length > 0) showResult(null);
-        else if (before && top && !before.passes.some((p) => p.id === top.id)) {
-          showResult(top, before.open ? flaggedWith(before.open.crates) : []);
+        else if (before && decided) {
+          showResult(decided, before.open ? flaggedWith(before.open.crates) : []);
         }
       } catch {
         // The last overview stays on screen, under a line saying it's stale.
@@ -379,12 +393,13 @@ export default function DockStation() {
     card = resultCard(decided, result.flagged);
   } else if (open && newest) {
     const flagged = newest.conflict ? flaggedWith(open.crates) : [];
-    card = flagged.length > 1
-      ? { look: 'flag', name: 'More than one crate', meta: `${andList(flagged)} were read together` }
-      : {
-        look: 'found', name: crateText(newest),
-        meta: `Tag ${displayEpc(newest.epc)} · read at ${clockText(new Date(newest.first_read_at))}`,
-      };
+    const found = `Tag ${displayEpc(newest.epc)} · read at ${clockText(new Date(newest.first_read_at))}`;
+    card = newest.conflict
+      ? {
+        look: 'flag', name: 'More than one crate',
+        meta: flagged.length > 1 ? `${andList(flagged)} were read together` : found,
+      }
+      : { look: 'found', name: crateText(newest), meta: found };
     const span = 2 * open.window_s;
     card.bar = {
       seconds: Math.ceil(open.seconds_left),
@@ -404,16 +419,19 @@ export default function DockStation() {
   }
 
   // The count: a green or amber result's assets, else those inside the
-  // newest crate's window.
+  // newest crate's window, muted while that crate will be flagged.
   let added = 0;
   let addedSub: string;
+  let nothingPacks = false;
   if (decided && card.look !== 'flag' && decided.container_name) {
     added = decided.asset_count;
     addedSub = decided.status === 'would_pack'
       ? `would go into ${decided.container_name}` : `in ${decided.container_name}`;
   } else if (open && newest) {
     added = open.added_count;
-    addedSub = dryRun ? `would go into ${crateText(newest)}` : `in ${crateText(newest)}`;
+    nothingPacks = newest.conflict;
+    if (nothingPacks) addedSub = 'More than one crate · nothing will be packed';
+    else addedSub = dryRun ? `would go into ${crateText(newest)}` : `in ${crateText(newest)}`;
   } else {
     addedSub = open ? 'waiting for a crate tag' : 'no crate yet';
   }
@@ -432,7 +450,7 @@ export default function DockStation() {
       <div className="dock-top">
         <section className={`dock-card dock-crate is-${card.look}`} aria-labelledby="dock-crate-label">
           <div className="dock-card-label">
-            {CRATE_ICON}<span id="dock-crate-label">Crate</span>
+            {ICON.crate}<span id="dock-crate-label">Crate</span>
             {settings?.dry_run && <span className="chip c-amber dock-label-chip">Dry run</span>}
           </div>
           <div className="dock-crate-row">
@@ -456,9 +474,10 @@ export default function DockStation() {
         </section>
 
         <section className="dock-card dock-stat" aria-labelledby="dock-stat-label">
-          <div className="dock-card-label">{SERVER_ICON}<span id="dock-stat-label">Assets added to crate</span></div>
+          <div className="dock-card-label">{ICON.server}<span id="dock-stat-label">Assets added to crate</span></div>
           {/* Keyed on the count: a new count is a new element, which replays the bump. */}
-          <div key={added} className={added === 0 ? 'dock-stat-value is-zero' : 'dock-stat-value is-bump'}>
+          <div key={added} className={`dock-stat-value ${
+            added === 0 ? 'is-zero' : nothingPacks ? 'is-muted' : 'is-bump'}`}>
             {added}
           </div>
           <div className="dock-stat-sub">{addedSub}</div>
@@ -478,7 +497,7 @@ export default function DockStation() {
             {overview === null && <p className="dock-empty">Checking…</p>}
             {overview !== null && rows.length === 0 && (
               <div className="dock-empty">
-                {RFID_ICON}
+                {ICON.rfid}
                 {state === 'reading' || state === 'loading'
                   ? 'Devices appear here as they pass the curtain.' : 'The reader is not reading.'}
               </div>
@@ -490,7 +509,7 @@ export default function DockStation() {
                 </thead>
                 <tbody>
                   {rows.map((t, i) => {
-                    const chip = assetChip(t, dryRun);
+                    const chip = assetChip(t, dryRun, inFlaggedCrate(t, open.crates));
                     const into = rowCrate(t, open.crates);
                     return (
                       // The newest row flashes once as it arrives.
@@ -523,7 +542,7 @@ export default function DockStation() {
           <div className="dock-list-wrap">
             {passes === null && <p className="dock-empty">Checking…</p>}
             {passes !== null && passes.length === 0 && (
-              <div className="dock-empty">{CRATE_ICON}No passes yet.</div>
+              <div className="dock-empty">{ICON.crate}No passes yet.</div>
             )}
             {passes !== null && passes.length > 0 && (
               <table className="dock-list dock-recent-list">

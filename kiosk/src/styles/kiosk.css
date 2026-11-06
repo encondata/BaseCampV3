@@ -1200,7 +1200,8 @@
   font-size: clamp(60px, min(5.2vw, 9.3vh), 100px); font-weight: 600; line-height: .95;
   letter-spacing: -0.03em; font-variant-numeric: tabular-nums;
 }
-.dock-stat-value.is-zero { color: color-mix(in srgb, var(--text-mute) 40%, transparent); }
+/* muted too while the newest crate will be flagged: none of them pack */
+.dock-stat-value:is(.is-zero, .is-muted) { color: color-mix(in srgb, var(--text-mute) 40%, transparent); }
 .dock-stat-value.is-bump { animation: dock-bump .45s ease; }
 @keyframes dock-bump { 0% { transform: scale(1); } 35% { transform: scale(1.06); color: var(--c-green); } 100% { transform: scale(1); } }
 .dock-stat-sub { font-size: clamp(14px, 0.83vw, 16px); color: var(--text-mute); }
