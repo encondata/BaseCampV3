@@ -42,6 +42,9 @@ from edge.rfid import processing, station_key
 INTERVAL_S = 1.0
 BATCH = 500
 _IDLE_SLACK = timedelta(seconds=1)   # received_at's resolution
+# the latest read time a pass can close from: one past it would overflow
+# `last_new_at + gap`, roll the tick back and stall the cursor for good
+_LATEST = datetime.max.replace(tzinfo=UTC) - timedelta(seconds=state.GAP_RANGE[1]) - _IDLE_SLACK
 
 # match kind -> the index its item is in (off-move matches carry their item)
 _SOURCES = {"asset": "assets", "container": "containers", "person": "people"}
@@ -79,13 +82,16 @@ def _stamp(value: datetime) -> str:
 def read_time(raw) -> datetime:
     """When the reader read it: `read_at` (the reader's `...22.512+0000` form
     included, no offset read as UTC) in UTC, else its `received_at` when
-    `read_at` is missing or unparseable."""
+    `read_at` is missing, unparseable or too close to the end of time to
+    close a pass from."""
     value = raw["read_at"]
     if isinstance(value, str):
         try:
-            return _utc(datetime.fromisoformat(value))
+            parsed = _utc(datetime.fromisoformat(value))
         except (ValueError, OverflowError):
-            pass
+            parsed = None
+        if parsed is not None and parsed <= _LATEST:
+            return parsed
     return _utc(datetime.fromisoformat(raw["received_at"]))
 
 

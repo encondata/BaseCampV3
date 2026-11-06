@@ -290,6 +290,25 @@ def test_read_time_parsing_and_fallback(store):
     assert p["outcome"] == "pack" and when(p["closed_at"]) == at(7)
 
 
+def test_read_time_too_late_to_close_falls_back(store):
+    received = "2026-10-16T14:03:30+00:00"
+    fallback = datetime(2026, 10, 16, 14, 3, 30, tzinfo=UTC)
+    for late in ("9999-12-31T23:59:59.999+0000", "0001-01-01T00:00:00+0100"):
+        assert grouper.read_time({"read_at": late, "received_at": received}) == fallback
+    assert grouper.read_time({"read_at": "9999-12-31T23:58:00+0000", "received_at": received}) \
+        == datetime(9999, 12, 31, 23, 58, tzinfo=UTC)     # room for the longest gap
+
+    dock(store)
+    post(store, [tag_event("AA01", timestamp="9999-12-31T23:59:59.999+0000")], 0)
+    last = read(store, "CC01", 1)
+    assert group(store, 3).scanned == 2 and cursor(store) == last
+    [p] = passes(store)
+    assert when(p["opened_at"]) == at(0) and when(p["last_new_at"]) == at(1)
+    assert group(store, 10).closed == 1
+    [p] = passes(store)
+    assert p["outcome"] == "pack" and when(p["closed_at"]) == at(6)
+
+
 def test_idle_close_waits_gap_plus_one_second(store):
     dock(store)
     batch(store, [("AA01", 0), ("CC01", 1.5)])    # received at 14:00:01
@@ -338,18 +357,22 @@ def test_not_dock_setup_skips_reads(store):
     laptop_setup.save(store, SETUP, "rfid")
     batch(store, [("AA01", 0), ("CC01", 1)], setup=rfid)
     last = read(store, "AA02", 2, setup=rfid)
-    assert group(store, 3) == grouper.GroupResult(scanned=0, closed=0, to_send=0, waiting=False)
-    assert cursor(store) == last and passes(store) == []
-    laptop_setup.save(store, SETUP, "dock")       # same move: no pass data to clear
-    group(store, 20)
+    laptop_setup.save(store, SETUP, "dock")       # same move, straight from RFID: no tick
+    assert group(store, 20) == grouper.GroupResult(scanned=0, closed=0, to_send=0,
+                                                   waiting=False)
     assert cursor(store) == last and passes(store) == []
     batch(store, [("AA03", 30), ("CC02", 30.5)])  # read on the Dock
     group(store, 40)
     [p] = passes(store)
     assert [t[0] for t in tags(store, p)] == ["AA03", "CC02"]
     assert outcomes(store) == [("pack", "c-2", 1, "pending")]
+    as_station(store, "rfid")                     # off a Dock the grouper skips by itself
+    last = read(store, "AA01", 50, setup=rfid)
+    assert group(store, 60) == grouper.GroupResult(scanned=0, closed=0, to_send=0,
+                                                   waiting=False)
+    assert cursor(store) == last and len(passes(store)) == 1
     store.run("UPDATE laptop_setup SET setup_json = ? WHERE id = 1",
               (json.dumps({**DOCK, "initiative_id": None}),))     # a Dock with no move
-    last = read(store, "AA01", 50, setup=None)
-    group(store, 60)
+    last = read(store, "AA01", 70, setup=None)
+    group(store, 80)
     assert cursor(store) == last and len(passes(store)) == 1

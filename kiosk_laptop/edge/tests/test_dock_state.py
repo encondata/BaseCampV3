@@ -149,6 +149,10 @@ async def test_pass_data_cleared_on_setup_changes(app, client):
     laptop_setup.save(store, {"initiative_id": "m-2"}, "rfid")      # same move, not a Dock
     assert pass_counts(store) == [0, 0, 0]
     assert state.settings(store) == {"dry_run": False, "quiet_gap_s": 9}
+    rfid_read = read(store, "AA01", setup={"initiative_id": "m-2", "station_type": "rfid"})
+    add_pass(store, raw_id=rfid_read)
+    laptop_setup.save(store, {"initiative_id": "m-2"}, "dock")      # same move, now a Dock
+    assert pass_counts(store) == [0, 0, 0] and dock_cursor(store) == rfid_read
     add_pass(store)
     laptop_setup.clear(store)                                       # Clear Setup
     assert pass_counts(store) == [0, 0, 0]

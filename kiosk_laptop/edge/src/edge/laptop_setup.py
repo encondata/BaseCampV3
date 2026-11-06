@@ -13,8 +13,10 @@ Setup or a change of station type; the config document's `label_station`
 section mirrors them (config_sync), marked dirty whenever they change.
 
 A Dock Station's passes are dropped with the alarm state when the move
-changes or the laptop is set up as another station type; Clear Setup also
-drops its dock settings (edge.dock.state).
+changes, when the laptop is set up as another station type, and when it
+becomes a Dock from another type (the grouper then starts after the newest
+read, so reads taken as another station never land in a pass); Clear Setup
+also drops its dock settings (edge.dock.state).
 
 Every Label Station setup leaves the settings unconfirmed (`label_unconfirmed`
 in the shared setup, never in `label_station`) until setup step 5 saves them
@@ -53,8 +55,10 @@ def save(store: Store, result: dict, station_type: str | None) -> dict:
         moved = previous.get("initiative_id") != setup["initiative_id"]
         if moved:
             alarm.clear_state(c)   # the old move's alarms mean nothing on the new one
-        if moved or setup["station_type"] != "dock":
-            dock_state.clear_passes(c)   # passes belong to one move's Dock
+        if moved or setup["station_type"] != "dock" or previous.get("station_type") != "dock":
+            # passes belong to one move's Dock, and the grouper starts after the
+            # reads taken before this laptop became that Dock
+            dock_state.clear_passes(c)
         # a Label Station set up again keeps its printer; any other change drops it
         kept = previous.get("station_type") == "label" and setup["station_type"] == "label"
         setup["label_station"] = previous.get("label_station") if kept else None

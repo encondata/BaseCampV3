@@ -7,9 +7,10 @@ Settings (one `dock_settings` row; none reads as `DEFAULTS`):
   uploaded, not even after it is turned off. On by default.
 - `quiet_gap_s`: a pass closes once no new tag has been read for this long.
 
-Pass data is cleared with the alarm tables: on a move change or a change to
-another station type (`clear_passes`), and by Clear Setup (`reset`, which
-drops the settings too). Wipe empties the same tables itself.
+Pass data is cleared with the alarm tables: on a move change, a change to
+another station type or a change to a Dock from another type
+(`clear_passes`), and by Clear Setup (`reset`, which drops the settings too).
+Wipe empties the same tables itself.
 
 Imports only `edge.db`, so `laptop_setup` and `tagreads` can import it."""
 

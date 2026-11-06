@@ -121,12 +121,12 @@ def indexes(store: Store, move_id: str) -> dict[str, dict[str, dict]] | None:
     return found
 
 
-def match(indexes: dict[str, dict[str, dict]], epc: str) -> Match | None:
+def match(move_indexes: dict[str, dict[str, dict]], epc: str) -> Match | None:
     for name, kind in (("assets", "asset"), ("containers", "container"), ("people", "person")):
-        item = indexes[name].get(epc)
+        item = move_indexes[name].get(epc)
         if item is not None:
             return Match(kind, str(item["id"]))
-    item = indexes["client-assets"].get(epc)
+    item = move_indexes["client-assets"].get(epc)
     if item is not None:
         move = item.get("initiative_id")
         return Match("asset", str(item["id"]), 1, str(move) if move is not None else None,
