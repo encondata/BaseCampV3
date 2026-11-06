@@ -74,25 +74,25 @@ def test_open_pass_counts_down_to_its_close(app):
     body = views.overview(store, at(3))
     assert body["passes"] == [] and body["settings"] == {"dry_run": False, "quiet_gap_s": 5}
     assert body["open"] == {
-        "id": p["id"], "opened_at": p["opened_at"], "seconds_left": 3.0,
+        "id": p["id"], "opened_at": p["opened_at"], "seconds_left": 8.0,
         "crate_count": 1, "asset_count": 2,
         "tags": [{"epc": "AA01", "kind": "asset", "label": "Server 1"},
                  {"epc": "CC01", "kind": "container", "label": "Crate 1"},
                  {"epc": "FF99", "kind": "unknown", "label": None},
                  {"epc": "AA02", "kind": "asset", "label": "SN2"}]}
-    assert views.overview(store, at(1))["open"]["seconds_left"] == 5.0
-    assert views.overview(store, at(4.5))["open"]["seconds_left"] == 1.5
-    assert views.overview(store, at(6))["open"]["seconds_left"] == 0
+    assert views.overview(store, at(1))["open"]["seconds_left"] == 10.0   # 2W
+    assert views.overview(store, at(4.5))["open"]["seconds_left"] == 6.5
+    assert views.overview(store, at(11))["open"]["seconds_left"] == 0
     assert views.overview(store, at(500))["open"]["seconds_left"] == 0   # never negative
 
 
-def test_seconds_left_follows_the_quiet_gap_setting(app):
+def test_seconds_left_follows_the_window_setting(app):
     store = app.state.store
     dock(store)
     read(store, "AA01", 0)
     group(store, 1)
     state.save_settings(store, quiet_gap_s=20)
-    assert views.overview(store, at(5))["open"]["seconds_left"] == 15.0
+    assert views.overview(store, at(5))["open"]["seconds_left"] == 35.0
 
 
 def test_open_pass_counts_distinct_crates_and_assets(app):

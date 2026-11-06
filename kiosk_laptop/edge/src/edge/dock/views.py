@@ -2,6 +2,7 @@
 (settings, the open pass, the newest closed passes) and one closed pass's
 detail (its tags with what packing did, every read behind it).
 
+The open pass is the grouper's open burst, not yet decided into passes.
 Plain reads of the edge's own tables; nothing here touches the network or
 changes a row. `overview` takes `now` so the open pass's countdown can be
 pinned in tests. An open pass has no detail yet (the overview shows it
@@ -45,13 +46,13 @@ def _pass_row(row) -> dict:
 
 def _distinct(tags, kind: str) -> int:
     """How many different crates or assets the tags matched (as the grouper
-    counts them when it closes the pass)."""
+    counts them when it decides a pass)."""
     return len({t["matched_id"] for t in tags if t["kind"] == kind})
 
 
-def _open_pass(store: Store, gap_s: int, now: datetime) -> dict | None:
-    """The pass still open (always the newest), with the seconds left before
-    it closes if no new tag is read."""
+def _open_pass(store: Store, window_s: int, now: datetime) -> dict | None:
+    """The burst still open (always the newest row), with the seconds left
+    before it is decided if no new tag is read: 2W after its last new tag."""
     row = store.one("SELECT id, opened_at, last_new_received_at FROM dock_passes "
                     "WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1")
     if row is None:
@@ -60,7 +61,7 @@ def _open_pass(store: Store, gap_s: int, now: datetime) -> dict | None:
     tags = store.all("SELECT epc, kind, label, matched_id FROM dock_pass_tags "
                      "WHERE pass_id = ? ORDER BY rowid", (row["id"],))
     return {"id": row["id"], "opened_at": row["opened_at"],
-            "seconds_left": round(max(0.0, gap_s - elapsed), 3),
+            "seconds_left": round(max(0.0, 2 * window_s - elapsed), 3),
             "crate_count": _distinct(tags, "container"),
             "asset_count": _distinct(tags, "asset"),
             "tags": [{"epc": t["epc"], "kind": t["kind"], "label": t["label"]} for t in tags]}

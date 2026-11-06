@@ -1,5 +1,5 @@
 """The Dock Station's laptop store (dock station spec §3): its settings (dry run
-on and a 5 s quiet gap by default), dry run stamped on each raw read when it is
+on and a 5 s window by default), dry run stamped on each raw read when it is
 read, dry-run reads' scans never uploaded (not even after dry run is turned
 off), the uploader held while dry run is on, and pass data cleared with the
 alarm tables on a move change, Clear Setup and Wipe."""
@@ -189,4 +189,28 @@ def test_upgrade_keeps_reads_and_starts_the_dock_cursor_after_them(tmp_path, mon
     assert dry_runs(store) == [None, None]
     assert dock_cursor(store) == 2
     assert state.settings(store) == state.DEFAULTS
+    store.close()
+
+
+def test_upgrade_gives_decided_passes_their_anchor(tmp_path, monkeypatch):
+    from edge import db
+    steps = db.SCHEMA_STEPS
+    step = next(i for i, sql in enumerate(steps) if "anchor_at" in sql)
+    monkeypatch.setattr(db, "SCHEMA_STEPS", steps[:step])    # the image before this step
+    old = Store(tmp_path / "edge.db")
+    for pass_id, closed_at in (("p-closed", "2026-10-16T14:00:06.900+00:00"), ("p-open", None)):
+        old.run("INSERT INTO dock_passes (pass_id, initiative_id, opened_at, last_new_at, "
+                "last_new_received_at, last_received_at, closed_at, created_at) "
+                "VALUES (?, ?, '2026-10-16T14:00:00.000+00:00', "
+                "'2026-10-16T14:00:01.900+00:00', '2026-10-16T14:00:01+00:00', "
+                "'2026-10-16T14:00:03+00:00', ?, 'now')", (pass_id, MOVE, closed_at))
+    old.close()
+    monkeypatch.setattr(db, "SCHEMA_STEPS", steps)
+    store = Store(tmp_path / "edge.db")
+    closed, open_ = (store.one("SELECT * FROM dock_passes WHERE pass_id = ?", (p,))
+                     for p in ("p-closed", "p-open"))
+    assert (closed["anchor_at"], closed["anchor_received_at"]) \
+        == (closed["last_new_at"], closed["last_new_received_at"]) \
+        == ("2026-10-16T14:00:01.900+00:00", "2026-10-16T14:00:01+00:00")
+    assert (open_["anchor_at"], open_["anchor_received_at"]) == (None, None)
     store.close()
