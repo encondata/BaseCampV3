@@ -42,6 +42,10 @@ It uses the house modal shell (`NotificationModal` / `StandardModal`):
 - **Events:** "Next update", or "Status becomes {label}".
 - **Via:** "You".
 - **Actions:** "Change…" (opens the modal) and "Stop watching".
+- **(my calls, during the build)**
+  - The list and its count wait for both answers, and the count includes asset rows.
+  - If the asset watches can't be loaded, the section shows "Could not load your asset watches." and still lists the other watches.
+  - If the other watches can't be loaded, the section shows nothing, as before.
 
 ### The notification
 
