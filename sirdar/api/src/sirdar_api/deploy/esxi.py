@@ -2,7 +2,7 @@
 licensed ESXi 7 host through the vSphere API with pyVmomi. That covers the
 connection test, VMs found by instance UUID or name, the empty VM step 0
 creates, the seed disk copy, sizing, cloud-init guestinfo, power, VMware
-Tools' view of the guest, VM snapshots and destroy.
+Tools' view of the guest, autostart with the host, VM snapshots and destroy.
 
 One seam: connect(cfg) yields an EsxiApi. The real PyvmomiEsxi runs every
 SOAP call on a one-thread executor of its own (pyVmomi blocks, and its stub
@@ -28,6 +28,7 @@ from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Protocol
 from urllib.parse import urlsplit
 
@@ -146,6 +147,12 @@ class CreateSpec:
     extra_config: dict[str, str] = field(repr=False)
 
 
+@dataclass(frozen=True)
+class AutostartChange:
+    vm: bool        # the VM's autostart entry was added or changed
+    host: bool      # the host's Autostart switch was turned on
+
+
 class EsxiApi(Protocol):
     async def about(self) -> About: ...
     async def license_editions(self) -> list[str]: ...
@@ -165,6 +172,7 @@ class EsxiApi(Protocol):
     async def set_size(self, uuid: str, cores: int, memory_mb: int) -> None: ...
     async def set_extra_config(self, uuid: str, values: dict[str, str]) -> None: ...
     async def power_on(self, uuid: str) -> None: ...
+    async def set_autostart(self, uuid: str) -> AutostartChange: ...
     async def shutdown_guest(self, uuid: str) -> None: ...
     async def power_off(self, uuid: str) -> None: ...
     async def guest(self, uuid: str) -> Guest: ...
@@ -648,6 +656,40 @@ class PyvmomiEsxi:
     async def power_on(self, uuid: str) -> None:
         await self._do("start the VM", lambda: self._wait(self._vm(uuid).PowerOnVM_Task(),
                                                           "start the VM"))
+
+    async def set_autostart(self, uuid: str) -> AutostartChange:
+        """The VM powers on when the host starts and shuts its guest down when
+        the host stops, so it comes back after a reboot. The host's Autostart
+        switch is turned on when it's off (no VM starts with the host without
+        it); its other defaults and other VMs' entries are left alone. A VM
+        already in a start order, or with its own delays, keeps them."""
+        def run():
+            vm = self._vm(uuid)
+            _, host = self._host()
+            manager = host.configManager.autoStartManager
+            config = manager.config
+            host_on = bool(config.defaults and config.defaults.enabled)
+            entry = next((p for p in config.powerInfo or ()
+                          if getattr(p.key, "_moId", None) == vm._moId), None)
+            vm_ok = (entry is not None
+                     and str(entry.startAction or "").lower() == "poweron"
+                     and str(entry.stopAction or "").lower() == "guestshutdown")
+            if host_on and vm_ok:
+                return AutostartChange(vm=False, host=False)
+            spec = vim.host.AutoStartManager.Config()
+            if not host_on:
+                spec.defaults = vim.host.AutoStartManager.SystemDefaults(enabled=True)
+            if not vm_ok:
+                kept = entry if entry is not None else SimpleNamespace(
+                    startOrder=-1, startDelay=-1, stopDelay=-1,
+                    waitForHeartbeat="systemDefault")
+                spec.powerInfo = [vim.host.AutoStartManager.AutoPowerInfo(
+                    key=vm, startOrder=kept.startOrder, startDelay=kept.startDelay,
+                    waitForHeartbeat=kept.waitForHeartbeat, startAction="powerOn",
+                    stopDelay=kept.stopDelay, stopAction="guestShutdown")]
+            manager.ReconfigureAutostart(spec=spec)
+            return AutostartChange(vm=not vm_ok, host=not host_on)
+        return await self._do("set the VM to start with ESXi", run)
 
     async def shutdown_guest(self, uuid: str) -> None:
         await self._do("shut down the guest", lambda: self._vm(uuid).ShutdownGuest())

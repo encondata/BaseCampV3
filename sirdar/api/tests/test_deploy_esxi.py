@@ -449,3 +449,85 @@ async def test_tools_unavailable_or_invalid_state_while_quiescing_falls_back(fau
         await api.take_snapshot("52aa", "s", "", quiesce=False)
     assert not isinstance(e.value, esxi.QuiesceFailed)
     pool.shutdown()
+
+
+class _AutoStart:
+    """The host's autoStartManager: its config, and every spec it was sent."""
+
+    def __init__(self, *, enabled, power_info=()):
+        self.config = SimpleNamespace(defaults=SimpleNamespace(enabled=enabled),
+                                      powerInfo=list(power_info))
+        self.specs = []
+
+    def ReconfigureAutostart(self, spec):
+        self.specs.append(spec)
+
+
+def _autostart_client(manager, vm):
+    api, pool = _client()
+    host = SimpleNamespace(configManager=SimpleNamespace(autoStartManager=manager))
+    api._vm = lambda uuid: vm
+    api._host = lambda: (None, host)
+    return api, pool
+
+
+async def test_autostart_adds_the_vm_and_turns_the_host_s_switch_on():
+    vm = vim.VirtualMachine("vm-12")
+    manager = _AutoStart(enabled=False)
+    api, pool = _autostart_client(manager, vm)
+    assert await api.set_autostart("52aa") == esxi.AutostartChange(vm=True, host=True)
+    [spec] = manager.specs
+    assert spec.defaults.enabled is True
+    [entry] = spec.powerInfo
+    assert (entry.key, entry.startAction, entry.stopAction, entry.startOrder,
+            entry.startDelay, entry.stopDelay, entry.waitForHeartbeat) == (
+        vm, "powerOn", "guestShutdown", -1, -1, -1, "systemDefault")
+    pool.shutdown()
+
+
+async def test_autostart_already_set_sends_nothing():
+    """ESXi reports the actions capitalized; a VM already in a start order
+    keeps it."""
+    vm = vim.VirtualMachine("vm-12")
+    entry = SimpleNamespace(key=vim.VirtualMachine("vm-12"), startAction="PowerOn",
+                            stopAction="GuestShutdown", startOrder=2, startDelay=30,
+                            stopDelay=-1, waitForHeartbeat="systemDefault")
+    manager = _AutoStart(enabled=True, power_info=[entry])
+    api, pool = _autostart_client(manager, vm)
+    assert await api.set_autostart("52aa") == esxi.AutostartChange(vm=False, host=False)
+    assert manager.specs == []
+    pool.shutdown()
+
+
+async def test_autostart_keeps_the_order_and_leaves_the_host_s_defaults_alone():
+    vm = vim.VirtualMachine("vm-12")
+    other = SimpleNamespace(key=vim.VirtualMachine("vm-99"), startAction="PowerOn",
+                            stopAction="PowerOff", startOrder=1, startDelay=-1,
+                            stopDelay=-1, waitForHeartbeat="systemDefault")
+    mine = SimpleNamespace(key=vim.VirtualMachine("vm-12"), startAction="PowerOn",
+                           stopAction="SystemDefault", startOrder=3, startDelay=60,
+                           stopDelay=-1, waitForHeartbeat="yes")
+    manager = _AutoStart(enabled=True, power_info=[other, mine])
+    api, pool = _autostart_client(manager, vm)
+    assert await api.set_autostart("52aa") == esxi.AutostartChange(vm=True, host=False)
+    [spec] = manager.specs
+    assert spec.defaults is None
+    [entry] = spec.powerInfo                       # the other VM isn't sent
+    assert (entry.key, entry.startAction, entry.stopAction, entry.startOrder,
+            entry.startDelay, entry.waitForHeartbeat) == (
+        vm, "powerOn", "guestShutdown", 3, 60, "yes")
+    pool.shutdown()
+
+
+async def test_an_autostart_fault_is_our_copy():
+    vm = vim.VirtualMachine("vm-12")
+    manager = _AutoStart(enabled=False)
+
+    def refuse(spec):
+        raise vim.fault.NoPermission()
+    manager.ReconfigureAutostart = refuse
+    api, pool = _autostart_client(manager, vm)
+    with pytest.raises(EsxiError) as e:
+        await api.set_autostart("52aa")
+    assert e.value.reason == "The ESXi user isn't allowed to set the VM to start with ESXi."
+    pool.shutdown()

@@ -18,6 +18,7 @@ from pyVmomi import vim
 from sirdar_api.deploy import esxi
 from sirdar_api.deploy.esxi import (
     About,
+    AutostartChange,
     DatastoreInfo,
     DiskInfo,
     EsxiError,
@@ -80,6 +81,8 @@ class FakeEsxi:
         self.shutdown_stalls = False
         self.boot_ips: tuple = ("127.0.0.1",)          # what Tools reports once a VM runs
         self.logins: list[tuple[str, str]] = []
+        self.autostart_on = False                      # the host's Autostart switch
+        self.autostart: dict[str, tuple[str, str]] = {}  # uuid -> (start, stop action)
         self._ids = itertools.count(10)
 
     # ---- set-up helpers ----------------------------------------------------------
@@ -235,6 +238,15 @@ class FakeEsxi:
         if vm.power_state == "poweredOn":
             raise EsxiError(esxi.fault_reason(vim.fault.InvalidPowerState(), "start the VM"))
         vm.power_state, vm.tools_running, vm.ipv4 = "poweredOn", True, tuple(self.boot_ips)
+
+    async def set_autostart(self, uuid: str) -> AutostartChange:
+        self._call("set_autostart")
+        self._vm(uuid)
+        wanted = ("powerOn", "guestShutdown")
+        change = AutostartChange(vm=self.autostart.get(uuid) != wanted,
+                                 host=not self.autostart_on)
+        self.autostart[uuid], self.autostart_on = wanted, True
+        return change
 
     async def shutdown_guest(self, uuid: str) -> None:
         self._call("shutdown_guest")

@@ -298,6 +298,7 @@ class EsxiProvisioner:
         else:
             await self._build(api, ctx, info, out)
         await self._start(api, uuid_, out)
+        await self._autostart(api, uuid_, vm.name, out)
         ip = await self._address(api, uuid_, out, vm)
         if grows:
             # The grown VM is back up (Tools answer, so it can quiesce).
@@ -331,6 +332,7 @@ class EsxiProvisioner:
         out(f"{vm.name} is built; leaving it as it is.\n")
         uuid_ = info.instance_uuid
         await self._start(api, uuid_, out)
+        await self._autostart(api, uuid_, vm.name, out)
         ip = await self._address(api, uuid_, out, vm)
         await vmcommon.settle_address(
             self._settings, model=EsxiVm, env_id=ctx.env_id, previous_ip=vm.ip, ip=ip,
@@ -498,6 +500,15 @@ class EsxiProvisioner:
         if info is not None and info.power_state != "poweredOn":
             await api.power_on(uuid_)
             out("Started the VM.\n")
+
+    async def _autostart(self, api: EsxiApi, uuid_: str, name: str, out: Output) -> None:
+        """The VM comes back after ESXi restarts. Every run sets it, so a VM
+        built before this (or changed by hand) is set on its next Update."""
+        change = await api.set_autostart(uuid_)
+        if change.host:
+            out("Turned on ESXi's Autostart, so VMs set to start with the host do.\n")
+        if change.vm:
+            out(f"Set {name} to start when ESXi starts and shut down when it stops.\n")
 
     async def _address(self, api: EsxiApi, uuid_: str, out: Output, vm: EsxiVmState) -> str:
         out("Waiting for VMware Tools to report the VM's address.\n")

@@ -675,3 +675,49 @@ async def test_a_half_copied_disk_another_vm_uses_is_never_deleted(db, esxi_env,
                               "Detach it there, then retry.")
     assert DISK in esxi_fake.files and thief.disks[0].path == DISK
     assert "delete_disk" not in esxi_fake.calls
+
+
+# ---- autostart: the VM comes back after ESXi restarts -----------------------------
+
+async def test_a_new_vm_starts_with_the_host_and_the_host_s_switch_is_turned_on(db, esxi_env,
+                                                                               esxi_fake):
+    lines: list[str] = []
+    await run(db, esxi_env, lines=lines)
+    vm = esxi_fake.by_name("ss-uat3")
+    assert esxi_fake.autostart == {vm.instance_uuid: ("powerOn", "guestShutdown")}
+    assert esxi_fake.autostart_on
+    assert "Turned on ESXi's Autostart, so VMs set to start with the host do.\n" in lines
+    assert "Set ss-uat3 to start when ESXi starts and shut down when it stops.\n" in lines
+
+
+async def test_an_autostart_already_set_logs_nothing(db, esxi_env, esxi_fake):
+    await run(db, esxi_env)
+    lines: list[str] = []
+    await run(db, esxi_env, lines=lines)
+    assert "set_autostart" in esxi_fake.calls
+    assert not any("Autostart" in line or "start when ESXi" in line for line in lines)
+
+
+async def test_a_vm_left_as_built_still_gets_autostart(db, esxi_env, esxi_fake):
+    """An environment built before autostart picks it up on its next Update."""
+    await run(db, esxi_env)
+    esxi_fake.autostart.clear()
+    esxi_fake.autostart_on = False
+    dep = Deployment(id=uuid.uuid4(), environment_id=esxi_env.id, mode="update",
+                     git_ref="main", sha=SHA, status="succeeded", start_step=0, vm=True)
+    db.add(dep)
+    await db.commit()
+    ctx = await esxi_provision.prepare(db, esxi_env, dep, get_settings(), as_built=True)
+    lines: list[str] = []
+    await provisioner().run("provision", ctx, lines.append)
+    assert "ss-uat3 is built; leaving it as it is.\n" in lines
+    assert esxi_fake.autostart_on and len(esxi_fake.autostart) == 1
+    assert "Set ss-uat3 to start when ESXi starts and shut down when it stops.\n" in lines
+
+
+async def test_an_autostart_esxi_refuses_fails_the_step(db, esxi_env, esxi_fake):
+    esxi_fake.fail["set_autostart"] = EsxiError(
+        "The ESXi user isn't allowed to set the VM to start with ESXi.")
+    with pytest.raises(StepFailed) as e:
+        await run(db, esxi_env)
+    assert e.value.reason == "The ESXi user isn't allowed to set the VM to start with ESXi."
