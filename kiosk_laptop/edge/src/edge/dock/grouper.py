@@ -28,7 +28,9 @@ reader's own read time. W is the Window setting (`quiet_gap_s` in
   `no_crate` pass. People, off-move assets and unknown tags join the
   earliest group whose window holds one of their reads (else that last
   pass), and never pack or merge. Ambiguity is flagged, never guessed: an
-  asset packed into the wrong crate is the worst outcome.
+  asset packed into the wrong crate is the worst outcome. The window test
+  and the grouping (`crate_windows`, `crate_groups`) are shared with the
+  Dock screen's view of the open burst, so the screen agrees with them.
 - A crate group's pass closes at its first anchor + W, the no-crate pass at
   the burst's last new read + 2W.
 - A pass is dry run when any of its own reads was taken in dry run or dry
@@ -44,6 +46,7 @@ is synchronous and short, and never touches the network."""
 
 import uuid
 from bisect import bisect_left
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
@@ -204,18 +207,17 @@ def _near(times: list[datetime], at: datetime, w: timedelta) -> bool:
     return i < len(times) and times[i] <= at + w
 
 
-def _split(tags, reads: dict[str, list], w: timedelta) -> list[_Split]:
-    """The burst's tags as the passes it is decided into, in the order they
-    are written: by first read, a crate group before the leftover on a tie.
-    `reads` holds each tag's (read time, raw read) pairs."""
-    times = {epc: sorted(t for t, _ in rs) for epc, rs in reads.items()}
-    anchors = []   # (first read time, its received_at, crate epc), in anchor order
-    for tag in tags:
-        if tag["kind"] == "container":
-            t, raw = min(reads[tag["epc"]], key=lambda r: r[0])
-            anchors.append((t, iso(raw["received_at"]), tag["epc"]))
-    anchors.sort(key=lambda a: a[0])
-    index = {epc: i for i, (_, _, epc) in enumerate(anchors)}
+def crate_windows(times: list[datetime], anchors: list[datetime], w: timedelta) -> list[int]:
+    """The crate windows that hold a tag, as indexes into `anchors` (the
+    crates' first reads, sorted): those within `w` of one of its sorted read
+    `times`, inclusive. Also what the Dock screen's open pass shows."""
+    return [i for i, a in enumerate(anchors) if _near(times, a, w)]
+
+
+def crate_groups(anchors: list[datetime], hits: Iterable[list[int]], w: timedelta) -> list[int]:
+    """Each anchor's crate group, as the index of the group's earliest
+    anchor: anchors within 2W of the next chain into one group, and an asset
+    whose windows (`hits`, from `crate_windows`) span several merges them."""
     root = list(range(len(anchors)))   # union-find: a group's root is its earliest anchor
 
     def find(i: int) -> int:
@@ -227,18 +229,32 @@ def _split(tags, reads: dict[str, list], w: timedelta) -> list[_Split]:
         i, j = find(i), find(j)
         root[max(i, j)] = min(i, j)
 
-    def near(epc: str) -> list[int]:
-        """The anchors within W of one of the tag's reads."""
-        return [i for i, (a, _, _) in enumerate(anchors) if _near(times[epc], a, w)]
-
     for i in range(1, len(anchors)):   # crates chained within 2W: one group
-        if anchors[i][0] - anchors[i - 1][0] <= 2 * w:
+        if anchors[i] - anchors[i - 1] <= 2 * w:
             join(i - 1, i)
-    hits = {tag["epc"]: near(tag["epc"]) for tag in tags if tag["kind"] == "asset"}
-    for found in hits.values():        # an asset in several groups merges them
+    for found in hits:                 # an asset in several groups merges them
         for i in found[1:]:
             join(found[0], i)
-    groups = {r: _Split(anchors[r][:2]) for r in sorted({find(i) for i in index.values()})}
+    return [find(i) for i in range(len(anchors))]
+
+
+def _split(tags, reads: dict[str, list], w: timedelta) -> list[_Split]:
+    """The burst's tags as the passes it is decided into, in the order they
+    are written: by first read, a crate group before the leftover on a tie.
+    `reads` holds each tag's (read time, raw read) pairs."""
+    times = {epc: sorted(t for t, _ in rs) for epc, rs in reads.items()}
+    anchors = []   # (first read time, its received_at, crate epc), in anchor order
+    for tag in tags:
+        if tag["kind"] == "container":
+            t, raw = min(reads[tag["epc"]], key=lambda r: r[0])
+            anchors.append((t, iso(raw["received_at"]), tag["epc"]))
+    anchors.sort(key=lambda a: a[0])
+    starts = [a for a, _, _ in anchors]
+    index = {epc: i for i, (_, _, epc) in enumerate(anchors)}
+    hits = {tag["epc"]: crate_windows(times[tag["epc"]], starts, w)
+            for tag in tags if tag["kind"] == "asset"}
+    root = crate_groups(starts, hits.values(), w)
+    groups = {r: _Split(anchors[r][:2]) for r in sorted(set(root))}
     left = _Split(None)
     for tag in tags:
         epc = tag["epc"]
@@ -247,8 +263,8 @@ def _split(tags, reads: dict[str, list], w: timedelta) -> list[_Split]:
         elif tag["kind"] == "asset":
             found = hits[epc]
         else:   # people, off-move, unknown: never merge, join the earliest group
-            found = near(epc)
-        g = groups[min(find(i) for i in found)] if found else left
+            found = crate_windows(times[epc], starts, w)
+        g = groups[min(root[i] for i in found)] if found else left
         g.tags.append(tag)
         g.reads.extend(reads[epc])
     out = list(groups.values()) + ([left] if left.tags else [])

@@ -2,16 +2,18 @@
 (settings, the open pass, the newest closed passes) and one closed pass's
 detail (its tags with what packing did, every read behind it).
 
-The open pass is the grouper's open burst, not yet decided into passes.
+The open pass is the grouper's open burst, not yet decided into passes,
+shown with the grouper's own window test and the move's cached assets.
 Plain reads of the edge's own tables; nothing here touches the network or
 changes a row. `overview` takes `now` so the open pass's countdown can be
 pinned in tests. An open pass has no detail yet (the overview shows it
 whole), so `detail` answers None for it, as for an unknown id."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from edge.db import Store
 from edge.dock import grouper, state
+from edge.rfid import processing
 
 RECENT = 50                          # closed passes the overview lists
 FLAGS = ("no_crate", "many_crates")  # the outcomes the screen flags
@@ -50,21 +52,75 @@ def _distinct(tags, kind: str) -> int:
     return len({t["matched_id"] for t in tags if t["kind"] == kind})
 
 
+def _ms(t: datetime) -> str:
+    """A read time as the screen gets it: UTC ISO with milliseconds."""
+    return t.isoformat(timespec="milliseconds")
+
+
+def _serial(assets: dict[str, dict], tag) -> str | None:
+    """An asset tag's serial number from the move's cached assets, while the
+    tag still belongs to the asset it was matched to (a sync can move it)."""
+    item = assets.get(tag["epc"])
+    if item is None or str(item.get("id")) != tag["matched_id"]:
+        return None
+    return item.get("serial_number") or None
+
+
 def _open_pass(store: Store, window_s: int, now: datetime) -> dict | None:
     """The burst still open (always the newest row), with the seconds left
-    before it is decided if no new tag is read: 2W after its last new tag."""
-    row = store.one("SELECT id, opened_at, last_new_received_at FROM dock_passes "
+    before it is decided if no new tag is read: 2W after its last new tag.
+
+    It is shown as deciding it now would split it, with the grouper's own
+    window test: the crates read so far by first read (their anchors),
+    `conflict` when a crate group would be flagged (two crates within 2W, or
+    an asset in two of their windows) and `added_count`, the assets in the
+    newest crate's window. Each asset tag has its serial, `in_window` (None
+    until a crate is read) and the newest crate whose window holds it. The
+    same few queries whatever the number of reads."""
+    row = store.one("SELECT id, initiative_id, opened_at, last_new_received_at FROM dock_passes "
                     "WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1")
     if row is None:
         return None
     elapsed = (now - datetime.fromisoformat(row["last_new_received_at"])).total_seconds()
     tags = store.all("SELECT epc, kind, label, matched_id FROM dock_pass_tags "
                      "WHERE pass_id = ? ORDER BY rowid", (row["id"],))
+    times: dict[str, list[datetime]] = {}   # epc -> its read times, sorted
+    for r in store.all("SELECT r.epc, r.read_at, r.received_at FROM dock_pass_reads pr "
+                       "JOIN raw_tag_reads r ON r.id = pr.raw_read_id WHERE pr.pass_id = ?",
+                       (row["id"],)):
+        times.setdefault(r["epc"], []).append(grouper.read_time(r))
+    for read_times in times.values():
+        read_times.sort()
+    w = timedelta(seconds=window_s)
+    crates = sorted((t for t in tags if t["kind"] == "container"),
+                    key=lambda t: times[t["epc"]][0])
+    anchors = [times[t["epc"]][0] for t in crates]
+    hits = {t["epc"]: grouper.crate_windows(times[t["epc"]], anchors, w)
+            for t in tags if t["kind"] == "asset"}
+    groups = grouper.crate_groups(anchors, hits.values(), w)
+    newest = len(anchors) - 1
+    assets = (processing.indexes(store, row["initiative_id"]) or {}).get("assets", {})
+    shown = []
+    for t in tags:
+        tag = {"epc": t["epc"], "kind": t["kind"], "label": t["label"],
+               "first_read_at": _ms(times[t["epc"]][0]),
+               "serial": None, "in_window": None, "crate_label": None}
+        if t["kind"] == "asset":
+            found = hits[t["epc"]]
+            tag.update(serial=_serial(assets, t), in_window=bool(found) if anchors else None,
+                       crate_label=crates[max(found)]["label"] if found else None)
+        shown.append(tag)
     return {"id": row["id"], "opened_at": row["opened_at"],
             "seconds_left": round(max(0.0, 2 * window_s - elapsed), 3),
+            "window_s": window_s,
             "crate_count": _distinct(tags, "container"),
             "asset_count": _distinct(tags, "asset"),
-            "tags": [{"epc": t["epc"], "kind": t["kind"], "label": t["label"]} for t in tags]}
+            "crates": [{"epc": t["epc"], "label": t["label"], "first_read_at": _ms(a)}
+                       for t, a in zip(crates, anchors)],
+            "conflict": len(set(groups)) < len(groups),
+            "added_count": len({t["matched_id"] for t in tags
+                                if t["kind"] == "asset" and newest in hits[t["epc"]]}),
+            "tags": shown}
 
 
 def overview(store: Store, now: datetime) -> dict:
@@ -95,6 +151,6 @@ def detail(store: Store, pass_id: int) -> dict | None:
     return {"pass": _pass_row(row),
             "tags": [dict(t) for t in tags],
             "reads": [{"id": r["id"],
-                       "read_at": grouper.read_time(r).isoformat(timespec="milliseconds"),
+                       "read_at": _ms(grouper.read_time(r)),
                        "epc": r["epc"], "kind": r["kind"], "antenna": r["antenna"],
                        "peak_rssi": r["peak_rssi"]} for r in reads]}

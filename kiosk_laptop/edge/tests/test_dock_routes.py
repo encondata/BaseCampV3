@@ -74,12 +74,22 @@ def test_open_pass_counts_down_to_its_close(app):
     body = views.overview(store, at(3))
     assert body["passes"] == [] and body["settings"] == {"dry_run": False, "quiet_gap_s": 5}
     assert body["open"] == {
-        "id": p["id"], "opened_at": p["opened_at"], "seconds_left": 8.0,
-        "crate_count": 1, "asset_count": 2,
-        "tags": [{"epc": "AA01", "kind": "asset", "label": "Server 1"},
-                 {"epc": "CC01", "kind": "container", "label": "Crate 1"},
-                 {"epc": "FF99", "kind": "unknown", "label": None},
-                 {"epc": "AA02", "kind": "asset", "label": "SN2"}]}
+        "id": p["id"], "opened_at": p["opened_at"], "seconds_left": 8.0, "window_s": 5,
+        "crate_count": 1, "asset_count": 2, "conflict": False, "added_count": 2,
+        "crates": [{"epc": "CC01", "label": "Crate 1",
+                    "first_read_at": "2026-10-16T14:00:01.000+00:00"}],
+        "tags": [{"epc": "AA01", "kind": "asset", "label": "Server 1",
+                  "first_read_at": "2026-10-16T14:00:00.000+00:00", "serial": "SN1",
+                  "in_window": True, "crate_label": "Crate 1"},
+                 {"epc": "CC01", "kind": "container", "label": "Crate 1",
+                  "first_read_at": "2026-10-16T14:00:01.000+00:00", "serial": None,
+                  "in_window": None, "crate_label": None},
+                 {"epc": "FF99", "kind": "unknown", "label": None,
+                  "first_read_at": "2026-10-16T14:00:01.000+00:00", "serial": None,
+                  "in_window": None, "crate_label": None},
+                 {"epc": "AA02", "kind": "asset", "label": "SN2",
+                  "first_read_at": "2026-10-16T14:00:01.500+00:00", "serial": "SN2",
+                  "in_window": True, "crate_label": "Crate 1"}]}
     assert views.overview(store, at(1))["open"]["seconds_left"] == 10.0   # 2W
     assert views.overview(store, at(4.5))["open"]["seconds_left"] == 6.5
     assert views.overview(store, at(11))["open"]["seconds_left"] == 0
@@ -111,8 +121,10 @@ async def test_overview_route_serves_the_open_pass(app, client):
     group(store, 2)
     body = (await client.get("/edge/dock", headers=make_session(app))).json()
     assert set(body) == {"settings", "open", "passes", "control"} and body["passes"] == []
-    assert set(body["open"]) == {"id", "opened_at", "seconds_left", "crate_count",
-                                 "asset_count", "tags"}
+    assert set(body["open"]) == {"id", "opened_at", "seconds_left", "window_s", "crate_count",
+                                 "asset_count", "crates", "conflict", "added_count", "tags"}
+    assert all(set(t) == {"epc", "kind", "label", "first_read_at", "serial", "in_window",
+                          "crate_label"} for t in body["open"]["tags"])
     assert body["open"]["seconds_left"] == 0   # the pass is long past on the real clock
     assert body["open"]["crate_count"] == 1 and body["open"]["asset_count"] == 1
 
