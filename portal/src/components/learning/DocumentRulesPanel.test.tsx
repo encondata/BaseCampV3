@@ -60,17 +60,17 @@ it('Document style keeps the scroll toggle and shows no slide line', () => {
   expect(screen.queryByText(/every slide/)).toBeNull();
 });
 
-it('one-slide note when the page has no ## headings', () => {
+it('one-slide note when the page shows as one slide', () => {
   renderPanel({ ...SLIDES, slide_count: 1, current_slides: ['<p>1</p>'] });
   expect(screen.getByText('1 slide')).toBeTruthy();
   expect(screen.getByText(
-    'This page has no ## headings, so it shows as one slide. Each ## heading starts a new slide.',
+    'This page shows as one slide. Each ## heading starts a new slide.',
   )).toBeTruthy();
 });
 
 it('no note about headings when there are several slides', () => {
   renderPanel(SLIDES);
-  expect(screen.queryByText(/no ## headings/)).toBeNull();
+  expect(screen.queryByText(/shows as one slide/)).toBeNull();
 });
 
 it('view-only shows Reading style in the summary', () => {

@@ -340,7 +340,7 @@ it('previews a Slides document one slide at a time', async () => {
 it('Sign-offs pages through the list with Load more', async () => {
   const item = (n: number) => ({
     id: `s${n}`, person: { id: `p${n}`, name: `Worker ${n}` }, version_no: 4, language: 'en',
-    signed_at: '2026-10-20T15:00:00Z', read_seconds: 75, quiz_score: null,
+    signed_at: '2026-10-20T15:00:00Z', read_seconds: 75, slides_viewed: null, quiz_score: null,
     initiative_id: null, initiative: null,
   });
   api.listDocumentSignoffs.mockImplementation(async (_id: string, opts: { offset?: number; limit?: number } = {}) => ({
@@ -465,7 +465,7 @@ it('leaving Custom days untouched shows no error', async () => {
 it('Sign-offs drops a row repeated across pages', async () => {
   const item = (n: number) => ({
     id: `s${n}`, person: { id: `p${n}`, name: `Worker ${n}` }, version_no: 4, language: 'en',
-    signed_at: '2026-10-20T15:00:00Z', read_seconds: 75, quiz_score: null,
+    signed_at: '2026-10-20T15:00:00Z', read_seconds: 75, slides_viewed: null, quiz_score: null,
     initiative_id: null, initiative: null,
   });
   api.listDocumentSignoffs.mockImplementation(async (_id: string, opts: { offset?: number } = {}) => ({

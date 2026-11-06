@@ -35,3 +35,12 @@ it('shows slides viewed next to the reading time', async () => {
   // a Document-style sign-off shows the time alone
   expect(screen.getByText('1 min 15 s')).toBeTruthy();
 });
+
+it('a sign-off without slides_viewed (an older response) shows the time alone', async () => {
+  const { slides_viewed: _, ...older } = row('s3', 'Older Reader', 90, null);
+  api.listDocumentSignoffs.mockResolvedValue({ total: 1, version_counts: {}, items: [older] });
+  render(<SignoffsPanel documentId="d1" versions={[]} />);
+  await screen.findByText('Older Reader');
+  expect(screen.getByText('1 min 30 s')).toBeTruthy();
+  expect(screen.queryByText(/slides?$/)).toBeNull();
+});

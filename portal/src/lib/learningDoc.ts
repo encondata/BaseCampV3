@@ -142,10 +142,11 @@ export function readTime(seconds: number): string {
   return s ? `${m} min ${s} s` : `${m} min`;
 }
 
-/** "1 min · 4 slides" for a Slides sign-off; the time alone for a Document one. */
-export function readSummary(seconds: number, slidesViewed: number | null): string {
+/** "1 min · 4 slides" for a Slides sign-off; the time alone for a Document
+ *  one (null, or missing from a response that predates slides). */
+export function readSummary(seconds: number, slidesViewed: number | null | undefined): string {
   const time = readTime(seconds);
-  if (slidesViewed === null) return time;
+  if (slidesViewed == null) return time;
   return `${time} · ${slidesViewed} ${slidesViewed === 1 ? 'slide' : 'slides'}`;
 }
 

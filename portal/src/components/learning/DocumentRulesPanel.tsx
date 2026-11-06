@@ -215,7 +215,7 @@ export default function DocumentRulesPanel({
                 </div>
                 {slideCount === 1 && (
                   <p className="lrn-hint">
-                    This page has no ## headings, so it shows as one slide. Each ## heading starts a new slide.
+                    This page shows as one slide. Each ## heading starts a new slide.
                   </p>
                 )}
               </>
