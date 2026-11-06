@@ -136,7 +136,7 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
   const restoring = !!dep && dep.steps.some((s) => s.key === 'restore');
   // A failed first deploy (or a clean-up that stopped partway) can remove what it built instead of retrying.
   const mayCleanUp = !!dep && isLatest === true && env.never_deployed && (dep.mode === 'update' || dep.mode === 'cleanup')
-    && RETRYABLE.includes(dep.status) && can('deploy', 'change');
+    && RETRYABLE.includes(dep.status) && can('deploy', 'add') && can('deploy', 'change');
   // Production keeps Delete's rules: it must be retiring first.
   const cleanUpBlocked = onDo(env) && env.type === 'production' && !env.retiring;
 

@@ -562,7 +562,7 @@ it('a failed cleanup offers Clean up again', async () => {
   expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
 });
 
-it('Clean up is hidden once deployed, when not the latest, while running, for other modes, or without deploy:change', async () => {
+it('Clean up is hidden once deployed, when not the latest, while running, for other modes, or without deploy:add and deploy:change', async () => {
   const cases: [Parameters<typeof show>[0], typeof FAILED][] = [
     [{ env: { ...NEVER_DEPLOYED_ENV, never_deployed: false } }, FAILED],
     [{ env: NEVER_DEPLOYED_ENV, isLatest: false }, FAILED],
@@ -581,6 +581,12 @@ it('Clean up is hidden once deployed, when not the latest, while running, for ot
   }
   perms.change = false;
   api.getDeployment.mockResolvedValue(FAILED);
+  show({ env: NEVER_DEPLOYED_ENV });
+  await screen.findByRole('heading', { level: 2 });
+  expect(cleanUpSection()).toBeNull();
+  cleanup();
+  perms.change = true;
+  perms.add = false;                       // the dialog and the API need deploy:add too
   show({ env: NEVER_DEPLOYED_ENV });
   await screen.findByRole('heading', { level: 2 });
   expect(cleanUpSection()).toBeNull();

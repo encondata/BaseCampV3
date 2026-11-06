@@ -92,10 +92,14 @@ export default function CleanupModal({ env, keep, onStarted, onClose }: {
               <div className="eyebrow">Deployments</div>
               <h3 id="sirdar-cleanup-title">{keep ? `Clean up ${env.name}` : `Remove ${env.name}`}</h3>
               {keep ? (
-                <p className="page-hint">
-                  Removes the servers, VMs, cloud resources, proxy hosts and DNS records this attempt made. The
-                  {' '}environment and its settings stay, and Deploy starts fresh.
-                </p>
+                <>
+                  <p className="page-hint">
+                    Removes the servers, VMs, cloud resources, proxy hosts and DNS records this attempt made. The
+                    {' '}environment and its settings stay, and Deploy starts fresh.
+                  </p>
+                  {/* Still retiring afterwards, so Deploy is refused until it isn't. */}
+                  {production && <p className="page-hint">Afterwards, un-retire it in Settings before deploying.</p>}
+                </>
               ) : (
                 <p className="page-hint">
                   Removes the servers, VMs, cloud resources, proxy hosts and DNS records this attempt made, and deletes

@@ -102,3 +102,15 @@ it('Cancel closes it', async () => {
   await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
   expect(onClose).toHaveBeenCalled();
 });
+
+it('production, keep settings: says to un-retire it before deploying; not for Remove everything or other types', () => {
+  const sentence = 'Afterwards, un-retire it in Settings before deploying.';
+  let dialog = show(true, { ...NEW_PROD, retiring: true }).dialog;
+  expect(within(dialog).getByText(sentence)).toBeTruthy();
+  cleanup();
+  dialog = show(false, { ...NEW_PROD, retiring: true }).dialog;
+  expect(within(dialog).queryByText(sentence)).toBeNull();
+  cleanup();
+  dialog = show(true).dialog;
+  expect(within(dialog).queryByText(sentence)).toBeNull();
+});
