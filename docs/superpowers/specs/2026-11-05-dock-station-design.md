@@ -279,7 +279,7 @@ Plan: `docs/superpowers/plans/2026-11-06-dock-window-controls-theme.md`. Its dec
   - The overview carries `control`, the last button pressed. It lives in memory and is null after an edge restart. It isn't the reader's state: the screen reads that from `/edge/rfid/status`.
 - **Theme:** KioskShell no longer forces a theme on any route. The RFID dashboard, the Dock screen and the Dock modal use only theme tokens. The Dock strip's disabled buttons stay readable in both themes.
 - **Known behaviors, put to Jimmy:**
-  - A burst ends 2W after its last **new** tag. So an asset that's still being re-read when the crate tag is first read more than 2W later is flagged "No crate read", and the crate shows "Nothing to pack".
+  - A burst ends 2W after its last **new** tag. **Decided (Jimmy, 2026-11-06): keep it.** "This is a read once type scenario": each tag is read once as its crate passes the curtain, so re-reads don't hold a pass open. So an asset that's still being re-read when the crate tag is first read more than 2W later is flagged "No crate read", and the crate shows "Nothing to pack".
   - Reads the reader posts between Stop's decision and the reader actually stopping open a new burst. That can show a duplicate "Would pack" or a stray "No crate read".
   - A crate parked in the curtain gets a fresh window about every 2W + 1 s.
 
