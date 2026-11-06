@@ -345,7 +345,8 @@ export default function DockStation() {
         {saveFailed && <p className="form-error" role="alert">Couldn&apos;t save. Try again.</p>}
         {controlError && (
           <p className="form-error" role="alert">
-            {readerErrorText(controlError.err, status?.reader?.ip ?? '')
+            {/* No reader status yet (a stuck reader answers busy) leaves no IP to name. */}
+            {readerErrorText(controlError.err, status?.reader?.ip || 'the reader')
               ?? `Couldn't ${controlError.action} the reader (${codeOf(controlError.err)}).`}
           </p>
         )}

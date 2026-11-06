@@ -535,6 +535,18 @@ describe('DockStation', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
+  it('a failed Stop names the reader when no reader status has landed yet', async () => {
+    // A hung reader call holds the edge's pair lock, so the status answers busy and stays null.
+    api.getReaderStatus.mockReset().mockRejectedValue(new ApiError(503, 'busy'));
+    api.controlDock.mockRejectedValueOnce(new ApiError(502, 'reader_unreachable'));
+    await renderPage();
+    expect(readerShown().textContent).toBe('Unreachable');
+    fireEvent.click(readerBtn('Stop'));
+    await flush();
+    expect(screen.getByRole('alert').textContent).toBe("Can't reach the reader.");
+    expect(screen.queryByText(/Can't reach \./)).toBeNull();
+  });
+
   it('the reader is checked again 5 s after the previous check settles', async () => {
     let release: (s: ReaderStatus) => void = () => {};
     api.getReaderStatus.mockReturnValueOnce(new Promise<ReaderStatus>((r) => { release = r; }));
