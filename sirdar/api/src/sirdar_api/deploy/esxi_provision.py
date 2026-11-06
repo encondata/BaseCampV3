@@ -39,6 +39,7 @@ from sirdar_api.deploy import (
 from sirdar_api.deploy.esxi import EsxiApi, EsxiError, QuiesceFailed, SnapshotInfo, VmInfo
 from sirdar_api.deploy.integrations import EsxiConfig, IntegrationError
 from sirdar_api.deploy.publish import StepFailed
+from sirdar_api.deploy.steps import REMOVING_MODES
 from sirdar_api.deploy.vmcommon import Output, VmOutcome, VmPrepareError
 
 TOOLS_WAIT_SECONDS = 5 * 60
@@ -152,7 +153,7 @@ async def prepare(db: AsyncSession, env: Environment, dep: Deployment, settings:
     # Only a build delivers the host key: a teardown never decrypts it, and a
     # key that won't decrypt stops only the build that needs it (_create).
     private = None
-    if row.host_key_private_enc is not None and dep.mode != "teardown":
+    if row.host_key_private_enc is not None and dep.mode not in REMOVING_MODES:
         with suppress(vault.SecretsKeyMissing, vault.SecretUnreadable):
             private = vault.decrypt(settings, row.host_key_private_enc)
     return EsxiVmContext(env_id=env.id, env_name=env.name, deployment_id=dep.id,

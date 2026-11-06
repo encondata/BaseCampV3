@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sirdar_api.config import get_settings
 from sirdar_api.db.engine import get_sessionmaker
 from sirdar_api.db.models import Deployment, DoEnvironment, DoResource, Environment
-from sirdar_api.deploy import certs, do_accounts, do_api, environments, pipeline
+from sirdar_api.deploy import certs, do_accounts, do_api, environments, pipeline, steps
 from sirdar_api.deploy.do_provision import https_certificate
 from sirdar_api.services.audit import audit
 
@@ -62,7 +62,7 @@ async def _held_back(db: AsyncSession, env_id, now: datetime) -> bool:
     if await environments.is_deploying(db, env_id):
         return True
     last = await _latest(db, env_id, renew=False)
-    if last is not None and last.mode == "teardown" \
+    if last is not None and last.mode in steps.REMOVING_MODES \
             and last.status in pipeline.RETRYABLE_STATUSES:
         return True
     renew = await _latest(db, env_id, renew=True)

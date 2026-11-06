@@ -334,15 +334,19 @@ def _firewall_matches(live: dict, body: dict) -> bool:
 
 # ---- the provisioner ---------------------------------------------------------------------
 
-Remote = Callable[[SshTargetConfig, str, str | None], Awaitable[int | None]]
+Remote = Callable[..., Awaitable[int | None]]  # (cfg, command, stdin, *, log=None, tries=5)
 
 
-async def _ssh_remote(cfg: SshTargetConfig, command: str, stdin: str | None) -> int | None:
+async def _ssh_remote(cfg: SshTargetConfig, command: str, stdin: str | None, *,
+                      log: Output | None = None,
+                      tries: int = ssh.CONNECT_TRIES) -> int | None:
     """One command on a pinned droplet; `stdin` carries any secret. None when
-    it didn't finish in SQL_TIMEOUT. Errors are StepFailed with our copy."""
+    it didn't finish in SQL_TIMEOUT. Errors are StepFailed with our copy.
+    `tries`: 1 inside a loop that already waits."""
     async with get_sessionmaker()() as s:
         try:
-            result = await ssh.run_command(cfg, s, command, input=stdin, timeout=SQL_TIMEOUT)
+            result = await ssh.run_command(cfg, s, command, input=stdin, timeout=SQL_TIMEOUT,
+                                          tries=tries, log=log)
         except ConnectFailed as e:
             raise StepFailed(e.reason) from None
         except (ssh.HostKeyUnknown, ssh.HostKeyMismatch):
@@ -946,14 +950,15 @@ class DoProvisioner:
         name = do_envs.droplet_name(ctx.env_name, ctx.slot)
         ip, _ = do_api.droplet_ips(droplets[ctx.slot])
         cfg = self._slot_config(ctx, ctx.slot, ip)
-        if await self._remote(cfg, _READY, None) != 0:
+        if await self._remote(cfg, _READY, None, log=out) != 0:
             raise StepFailed(f"cloud-init didn't finish setting up {name} (psql is missing). "
                              "Retry from step 0.")
         sql = pgauth.setup_sql(role=do_envs.DB_USER, database=do_envs.DB_NAME,
                                verifier=pgauth.scram_sha256(ctx.db_password))
         command = psql_command(database["host"], database["port"])
         ca_b64 = base64.b64encode(database["ca"].encode()).decode()
-        code = await self._remote(cfg, command, f"{database['admin']}\n{ca_b64}\n{sql}")
+        code = await self._remote(cfg, command, f"{database['admin']}\n{ca_b64}\n{sql}",
+                                 log=out)
         if code != 0:
             raise StepFailed("The managed database didn't accept Sirdar's setup (psql exited "
                              f"{code}). Retry from step 0.")
@@ -1203,7 +1208,7 @@ class DoProvisioner:
             raise StepFailed(f"{name} has no public address, so Sirdar can't check it.")
         cfg = self._slot_config(ctx, ctx.slot, ip)
         for _ in range(self._tries(self._waits["health"])):
-            if await self._remote(cfg, _HEALTHZ, None) == 0:
+            if await self._remote(cfg, _HEALTHZ, None, log=out, tries=1) == 0:
                 out(f"{name} answers /healthz.\n")
                 return
             await self._sleep(self._poll)

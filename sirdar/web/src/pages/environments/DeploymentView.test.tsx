@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -21,7 +21,7 @@ import type { Environment } from '../../lib/sirdarApi';
 
 import DeploymentView, { POLL_MS } from './DeploymentView';
 import {
-  DO_ENV, ENV, FAILED, LAN_ENV, PROD_ENV, PX_ENV, RESET_FAILED, RESTORE_FAILED, ROLLBACKABLE, RUNNING, RUNNING_MORE, SNAP, SUCCEEDED,
+  CLEANUP, CLEANUP_FAILED, DO_ENV, ENV, FAILED, NEVER_DEPLOYED_ENV, PUBLISHING, TEARDOWN, LAN_ENV, PROD_ENV, PX_ENV, RESET_FAILED, RESTORE_FAILED, ROLLBACKABLE, RUNNING, RUNNING_MORE, SNAP, SUCCEEDED,
   VM_ROLLBACKABLE,
 } from './testData';
 
@@ -518,4 +518,105 @@ it('Blue/Green offers no Roll back: activate the other slot instead', async () =
   show({ id: 'd4', env: LAN_ENV });
   await screen.findByText(/migrate exited 1/);
   expect(screen.queryByRole('heading', { name: 'Roll back' })).toBeNull();
+});
+
+const cleanUpSection = () => screen.queryByRole('heading', { name: 'Clean up' });
+
+it('a failed first deploy offers Clean up beside Retry: keep settings starts a cleanup the view follows', async () => {
+  api.getDeployment.mockResolvedValue(FAILED);
+  api.startDeployment.mockResolvedValue(CLEANUP);
+  const { onRetried } = show({ env: NEVER_DEPLOYED_ENV });
+  expect(await screen.findByRole('heading', { name: 'Clean up' })).toBeTruthy();
+  expect(screen.getByText('This environment has never deployed. Remove what this attempt built:')).toBeTruthy();
+  expect(screen.getByText('Removes the servers, VMs, cloud resources, proxy hosts and DNS records this attempt made. '
+    + 'The environment and its settings stay, and Deploy starts fresh.')).toBeTruthy();
+  expect(screen.getByText('The same, and the environment is deleted from Sirdar.')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Clean up and keep settings' }).className).toBe('btn-solid');
+  expect(screen.getByRole('button', { name: 'Remove everything' }).className).toBe('btn-solid btn-danger');
+  await user.click(screen.getByRole('button', { name: 'Clean up and keep settings' }));
+  const dialog = screen.getByRole('dialog', { name: 'Clean up uat' });
+  await user.type(within(dialog).getByLabelText('Type uat to confirm'), 'uat');
+  await user.click(within(dialog).getByRole('button', { name: 'Clean up' }));
+  await waitFor(() => expect(onRetried).toHaveBeenCalledWith(CLEANUP));
+  expect(api.startDeployment).toHaveBeenCalledWith('uat', { mode: 'cleanup', confirm_name: 'uat' });
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+it('Remove everything opens the teardown dialog', async () => {
+  api.getDeployment.mockResolvedValue(FAILED);
+  api.startDeployment.mockResolvedValue(TEARDOWN);
+  const { onRetried } = show({ env: NEVER_DEPLOYED_ENV });
+  await user.click(await screen.findByRole('button', { name: 'Remove everything' }));
+  const dialog = screen.getByRole('dialog', { name: 'Remove uat' });
+  await user.type(within(dialog).getByLabelText('Type uat to confirm'), 'uat');
+  await user.click(within(dialog).getByRole('button', { name: 'Remove everything' }));
+  await waitFor(() => expect(onRetried).toHaveBeenCalledWith(TEARDOWN));
+  expect(api.startDeployment).toHaveBeenCalledWith('uat', { mode: 'teardown', confirm_name: 'uat' });
+});
+
+it('a failed cleanup offers Clean up again', async () => {
+  api.getDeployment.mockResolvedValue(CLEANUP_FAILED);
+  show({ id: 'd9', env: NEVER_DEPLOYED_ENV });
+  expect(await screen.findByRole('heading', { name: 'Clean up' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+});
+
+it('Clean up is hidden once deployed, when not the latest, while running, for other modes, or without deploy:add and deploy:change', async () => {
+  const cases: [Parameters<typeof show>[0], typeof FAILED][] = [
+    [{ env: { ...NEVER_DEPLOYED_ENV, never_deployed: false } }, FAILED],
+    [{ env: NEVER_DEPLOYED_ENV, isLatest: false }, FAILED],
+    [{ env: NEVER_DEPLOYED_ENV, isLatest: null }, FAILED],
+    [{ env: NEVER_DEPLOYED_ENV }, RUNNING],
+    [{ env: NEVER_DEPLOYED_ENV }, { ...TEARDOWN, status: 'failed' }],
+    [{ env: NEVER_DEPLOYED_ENV }, { ...PUBLISHING, status: 'failed' }],
+    [{ env: NEVER_DEPLOYED_ENV }, RESET_FAILED],
+  ];
+  for (const [props, d] of cases) {
+    api.getDeployment.mockResolvedValue(d);
+    show(props);
+    await screen.findByRole('heading', { level: 2 });
+    expect(cleanUpSection()).toBeNull();
+    cleanup();
+  }
+  perms.change = false;
+  api.getDeployment.mockResolvedValue(FAILED);
+  show({ env: NEVER_DEPLOYED_ENV });
+  await screen.findByRole('heading', { level: 2 });
+  expect(cleanUpSection()).toBeNull();
+  cleanup();
+  perms.change = true;
+  perms.add = false;                       // the dialog and the API need deploy:add too
+  show({ env: NEVER_DEPLOYED_ENV });
+  await screen.findByRole('heading', { level: 2 });
+  expect(cleanUpSection()).toBeNull();
+});
+
+it('production that is not retiring: Clean up says so and both buttons are off', async () => {
+  const prod: Environment = { ...PROD_ENV, current_sha: null, never_deployed: true, status: 'failed', active_slot: null };
+  api.getDeployment.mockResolvedValue({ ...FAILED, cloud: true });
+  show({ env: prod });
+  expect(await screen.findByText('Mark this environment retiring in Settings first.')).toBeTruthy();
+  expect((screen.getByRole('button', { name: 'Clean up and keep settings' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('button', { name: 'Remove everything' }) as HTMLButtonElement).disabled).toBe(true);
+  cleanup();
+  show({ env: { ...prod, retiring: true } });
+  await screen.findByRole('heading', { name: 'Clean up' });
+  expect(screen.queryByText('Mark this environment retiring in Settings first.')).toBeNull();
+  expect((screen.getByRole('button', { name: 'Clean up and keep settings' }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+it('retrying a production cleanup needs the name and the production phrase, as a Delete does', async () => {
+  const prod: Environment = {
+    ...PROD_ENV, current_sha: null, never_deployed: true, status: 'failed', active_slot: null, retiring: true };
+  api.getDeployment.mockResolvedValue({ ...CLEANUP_FAILED, cloud: true, environment: 'prod' });
+  api.retryDeployment.mockResolvedValue({ ...CLEANUP, id: 'd10' });
+  show({ id: 'd9', env: prod });
+  const btn = (await screen.findByRole('button', { name: 'Retry' })) as HTMLButtonElement;
+  await user.type(screen.getByLabelText('Type prod to confirm'), 'prod');
+  expect(btn.disabled).toBe(true);
+  await user.type(screen.getByLabelText('Type delete production prod to confirm'), 'delete production prod');
+  await user.click(btn);
+  await waitFor(() => expect(api.retryDeployment).toHaveBeenCalledWith('d9', {
+    from_step: 15, confirm_name: 'prod', confirm_production: 'delete production prod' }));
 });

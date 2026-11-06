@@ -9,7 +9,7 @@ test records its result whatever happens next)."""
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.db.engine import get_sessionmaker
@@ -140,13 +140,18 @@ async def unresolved_switch(db: AsyncSession, env_id) -> str | None:
     latest Switch traffic didn't end cleanly, else None. Unclean: Sirdar
     stopped or was canceled during it (the put-back may not have finished),
     it timed out (the same), or it failed and couldn't put every proxy host
-    back. A later Switch traffic that succeeds resolves it."""
+    back. A later Switch traffic that succeeds resolves it, and so does a
+    cleanup that succeeded since (its unproxy step removed the proxy hosts)."""
+    cleaned = (select(func.max(Deployment.created_at))
+               .where(Deployment.environment_id == env_id, Deployment.mode == "cleanup",
+                      Deployment.status == "succeeded").scalar_subquery())
     row = (await db.execute(
         select(Deployment.slot, Deployment.error, DeploymentStep.status, DeploymentStep.log,
                DeploymentStep.number, DeploymentStep.name)
         .join(DeploymentStep, DeploymentStep.deployment_id == Deployment.id)
         .where(Deployment.environment_id == env_id, DeploymentStep.key == "lan_switch",
-               DeploymentStep.status.in_(_SWITCH_ENDED))
+               DeploymentStep.status.in_(_SWITCH_ENDED),
+               or_(cleaned.is_(None), Deployment.created_at > cleaned))
         .order_by(Deployment.created_at.desc(), DeploymentStep.finished_at.desc().nulls_last())
         .limit(1))).first()
     if row is None:

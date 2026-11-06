@@ -51,8 +51,12 @@ def fingerprint(key: asyncssh.SSHKey) -> str:
     return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
 
 
-def unreachable(host: str, port: int) -> ConnectFailed:
-    return ConnectFailed(f"Couldn't reach {host}:{port}.")
+class Unreachable(ConnectFailed):
+    """The host didn't answer: the one connect failure worth retrying."""
+
+
+def unreachable(host: str, port: int) -> Unreachable:
+    return Unreachable(f"Couldn't reach {host}:{port}.")
 
 
 async def fetch_host_key(host: str, port: int,

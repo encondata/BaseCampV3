@@ -424,7 +424,7 @@ async def test_migration_0007_downgrade_refuses_while_vms_are_managed():
     assert b"Can't downgrade below 0007 while Sirdar manages Proxmox VMs" in err.value.stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
         # The refused downgrade rolls back as a whole: still at head.
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0015"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0016"
         assert conn.execute("SELECT count(*) FROM proxmox_vms").fetchone()[0] == 1
         assert conn.execute("SELECT count(*) FROM integrations WHERE kind = 'proxmox'"
                             ).fetchone()[0] == 1
@@ -592,7 +592,7 @@ async def test_migration_0010_downgrade_refuses_while_do_environments_exist():
         _alembic("downgrade", "0009")
     assert b"while Sirdar manages DigitalOcean environments" in err.value.stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0015"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0016"
         conn.execute("DELETE FROM environments WHERE id = %s", (env_id,))
 
 
@@ -649,7 +649,7 @@ def _assert_downgrade_refused() -> None:
         pytest.fail("the downgrade below 0010 wasn't refused")
     assert b"while Sirdar manages DigitalOcean environments" in stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0015"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0016"
 
 
 async def test_migration_0010_downgrade_refuses_with_only_do_resources():
@@ -868,7 +868,7 @@ async def test_migration_0012_round_trip_keeps_single_server_vms():
     finally:
         _alembic("upgrade", "head")
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0015"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0016"
         assert conn.execute("SELECT count(*) FROM proxmox_vms WHERE role = 'main'"
                             ).fetchone()[0] == 1
 
@@ -910,7 +910,7 @@ async def test_migration_0012_downgrade_refuses_with_blue_green_records(what):
         pytest.fail("the downgrade below 0012 wasn't refused")
     assert b"Can't downgrade below 0012 while LAN Blue/Green records exist" in stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0015"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0016"
         assert conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 1
 
 
@@ -950,7 +950,7 @@ async def test_migration_0014_adds_home_to_every_non_production_environment():
             portal(prod)
         _alembic("upgrade", "head")
         with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-            assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0015"
+            assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0016"
             homes = conn.execute(
                 "SELECT e.name, s.host_ip, s.port, s.hostname, s.proxied FROM environment_services s "
                 "JOIN environments e ON e.id = s.environment_id WHERE s.service = 'home' "
@@ -1006,7 +1006,7 @@ async def test_migration_0015_adds_learn_and_the_new_columns():
             row(d, "learn", "10.0.0.9", 9999, "old.example.com")
         _alembic("upgrade", "head")
         with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-            assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0015"
+            assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0016"
             apps = dict(conn.execute("SELECT name, apps FROM environments").fetchall())
             assert apps == {"a": ["wiki", "kiosk", "learn", "status", "mailpit"],
                             "b": ["kiosk", "mailpit"], "c": ["wiki", "learn", "mailpit"],

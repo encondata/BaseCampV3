@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
 from cryptography.fernet import Fernet
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy import update as sql_update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -214,6 +214,23 @@ async def is_deploying(db: AsyncSession, env_id) -> bool:
     found = await db.scalar(select(Deployment.id).where(
         Deployment.environment_id == env_id, Deployment.status == "running").limit(1))
     return found is not None
+
+
+# Modes that load or serve data once they succeed: any of them makes an
+# environment deployed. Cleanup, publish, renew, teardown and snapshot don't.
+DEPLOYED_MODES = ("update", "reset", "restore_dump", "rollback", "vm_restore", "activate")
+
+
+async def never_deployed(db: AsyncSession, env: Environment) -> bool:
+    """No run in DEPLOYED_MODES ever succeeded and never adopted: what a
+    failed first deploy built may be cleaned up (mode cleanup) and the
+    environment kept. current_sha isn't asked: a first Update that failed at
+    smoke, go_live or seed may already have recorded the commit it serves."""
+    found = await db.scalar(select(Deployment.id).where(
+        Deployment.environment_id == env.id,
+        or_(and_(Deployment.mode.in_(DEPLOYED_MODES), Deployment.status == "succeeded"),
+            Deployment.mode == "adopt")).limit(1))
+    return found is None
 
 
 # ---- create and adopt --------------------------------------------------------

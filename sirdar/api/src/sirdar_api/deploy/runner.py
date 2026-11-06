@@ -184,6 +184,7 @@ class AnsibleRunner:
             f"-o HostKeyAlgorithms={target.host_key_algorithms}",
             "-o IdentitiesOnly=yes",
             "-o ServerAliveInterval=30", "-o ServerAliveCountMax=10",
+            "-o ConnectTimeout=15",                # a dropped connect fails fast, then retries
         ])
         return {
             # ansible-runner starts "ansible-playbook" through PATH (its
@@ -195,6 +196,7 @@ class AnsibleRunner:
             "ANSIBLE_HOME": str(run_dir / "home"),
             "ANSIBLE_LOCAL_TEMP": str(run_dir / "tmp"),
             "ANSIBLE_SSH_ARGS": ssh_args,
+            "ANSIBLE_SSH_RETRIES": "5",
             "ANSIBLE_HOST_KEY_CHECKING": "True",
             "ANSIBLE_PIPELINING": "False",
             "ANSIBLE_TIMEOUT": "30",

@@ -157,6 +157,20 @@ async def mark_done(db: AsyncSession, env_id: uuid.UUID) -> None:
         row.password_enc, row.done_at, row.updated_at = None, now, now
 
 
+async def reset(db: AsyncSession, env_id: uuid.UUID) -> None:
+    """A cleanup made the environment empty again: step 11 creates the first
+    admin on its next first deploy. A typed password step 11 already used
+    stays cleared (needs_password), so the user sets a new one."""
+    row = await get(db, env_id)
+    if row is not None and row.done_at is not None:
+        row.done_at, row.updated_at = None, datetime.now(UTC)
+
+
+def needs_password(row: EnvironmentFirstAdmin) -> bool:
+    """Pending with a typed password Sirdar no longer has (after a cleanup)."""
+    return row.done_at is None and row.password_mode == "typed" and row.password_enc is None
+
+
 def exit_code(data: dict) -> int:
     """bootstrap-admin's exit code, as first_admin.yml reported it."""
     try:
@@ -174,4 +188,5 @@ def public(row: EnvironmentFirstAdmin | None) -> dict | None:
     if row is None:
         return None
     return {"first_name": row.first_name, "last_name": row.last_name, "email": row.email,
-            "password_mode": row.password_mode, "done": row.done_at is not None}
+            "password_mode": row.password_mode, "done": row.done_at is not None,
+            "needs_password": needs_password(row)}

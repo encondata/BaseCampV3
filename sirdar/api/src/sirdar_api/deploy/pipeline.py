@@ -67,6 +67,7 @@ from sirdar_api.db.models import (
 from sirdar_api.deploy import (
     ConnectFailed,
     certs,
+    cleanup,
     do_envs,
     do_provision,
     envfile,
@@ -98,7 +99,13 @@ from sirdar_api.deploy.runner import (
     RunResult,
     RunTarget,
 )
-from sirdar_api.deploy.steps import STEPS_BY_KEY, StepDef, plan_for, timeout_of
+from sirdar_api.deploy.steps import (
+    REMOVING_MODES,
+    STEPS_BY_KEY,
+    StepDef,
+    plan_for,
+    timeout_of,
+)
 from sirdar_api.services.audit import audit
 
 log = logging.getLogger(__name__)
@@ -390,7 +397,7 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
         db.add(DeploymentStep(deployment_id=dep.id, number=step.number, key=step.key,
                               name=step.name,
                               status="skipped" if step.number < start_step else "pending"))
-    if mode == "teardown":
+    if mode in REMOVING_MODES:
         env.status, env.updated_at = "deleting", _now()
     elif mode not in KEEPS_STATUS:
         env.status, env.updated_at = "deploying", _now()
@@ -735,7 +742,7 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
     if not needs_host:
         return _Context(target=None, common={"env_name": env.name}, env_file_b64="",
                         redactor=Redactor(_redaction_values(more_secrets)))
-    if not dep.sha and dep.mode != "teardown":   # the .env names the commit's image
+    if not dep.sha and dep.mode not in REMOVING_MODES:   # the .env names the commit's image
         raise PrepareError(NO_COMMIT_ACTIVATE if dep.mode == "activate" else NO_COMMIT)
     try:
         # DigitalOcean and LAN Blue/Green: the slot this deployment works on
@@ -1324,7 +1331,7 @@ async def _run(deployment_id: uuid.UUID) -> None:
             current = None
             now = _now()
             dep.status, dep.finished_at = "succeeded", now
-            if dep.mode == "teardown" and dep.cloud:
+            if dep.mode in REMOVING_MODES and dep.cloud:
                 left = await db.scalar(select(func.count()).select_from(DoResource)
                                        .where(DoResource.environment_id == env.id))
                 if left:
@@ -1347,6 +1354,16 @@ async def _run(deployment_id: uuid.UUID) -> None:
                       entity_type="environment", entity_id=env.name,
                       changes={"environment": env.name, "deployment": str(dep.id)})
                 await db.delete(env)
+            elif dep.mode == "cleanup":
+                # Delete's steps removed what the deploys built; the
+                # environment and its settings stay, as never deployed.
+                # A failure inside reset ends the deployment with no failed
+                # step (not retryable): a fresh Clean up, still offered, is the way out.
+                await cleanup.reset(db, get_settings(), env, actor_id=dep.actor_id)
+                audit(db, actor_id=dep.actor_id, action="deploy.environment_cleanup",
+                      entity_type="environment", entity_id=env.name,
+                      changes={"environment": env.name, "deployment": str(dep.id)})
+                env.status = "new"
             elif (dep.cloud or dep.bluegreen) and dep.mode in ("update", "activate"):
                 try:
                     await (do_envs if dep.cloud else lan_slots).after_success(db, env, dep)
