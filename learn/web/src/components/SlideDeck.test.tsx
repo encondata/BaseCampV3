@@ -14,7 +14,8 @@ const recorder = () => vi.fn(async (n: number) => n);
 
 function deck(over: Partial<Parameters<typeof SlideDeck>[0]> = {}) {
   const onReach = over.onReach ?? recorder();
-  render(<SlideDeck slides={SLIDES} reached={null} review={false} lang="en" dir="ltr" {...over} onReach={onReach} />);
+  render(<SlideDeck slides={SLIDES} reached={null} review={false} lang="en" dir="ltr" timeLeft={0}
+                    {...over} onReach={onReach} />);
   return onReach;
 }
 
@@ -49,8 +50,36 @@ describe('SlideDeck', () => {
     expect(await screen.findByText('three')).toBeTruthy();
     expect(onReach).toHaveBeenLastCalledWith(2);
     expect(next().disabled).toBe(true);
-    // every slide seen: the deck says nothing more, the reader takes over
+    // every slide seen, no reading time left
     expect(screen.queryByText(/^Go through every slide/)).toBeNull();
+    expect(screen.getByText('All slides seen. You can sign now.')).toBeTruthy();
+  });
+
+  it('after the last slide, counts down the reading time left, then says it can be signed', async () => {
+    const onReach = recorder();
+    const { rerender } = render(
+      <SlideDeck slides={SLIDES} reached={2} review={false} lang="en" dir="ltr" timeLeft={75} onReach={onReach} />);
+    expect(screen.getByText('You can sign in 1:15')).toBeTruthy();
+    expect(screen.queryByText(/^Go through every slide/)).toBeNull();
+    expect(screen.queryByText('All slides seen. You can sign now.')).toBeNull();
+    rerender(<SlideDeck slides={SLIDES} reached={2} review={false} lang="en" dir="ltr" timeLeft={9} onReach={onReach} />);
+    expect(screen.getByText('You can sign in 0:09')).toBeTruthy();
+    rerender(<SlideDeck slides={SLIDES} reached={2} review={false} lang="en" dir="ltr" timeLeft={0} onReach={onReach} />);
+    expect(screen.getByText('All slides seen. You can sign now.')).toBeTruthy();
+    expect(screen.queryByText(/^You can sign in/)).toBeNull();
+  });
+
+  it('while slides are left, the reading time is not mentioned', async () => {
+    deck({ timeLeft: 75 });
+    await act(async () => {});
+    expect(screen.getByText('Go through every slide to sign. (1 of 3 seen)')).toBeTruthy();
+    expect(screen.queryByText(/^You can sign/)).toBeNull();
+  });
+
+  it('when signing is not next (the quiz comes first), nothing after the last slide', () => {
+    deck({ reached: 2, timeLeft: null });
+    expect(screen.queryByText(/^You can sign/)).toBeNull();
+    expect(screen.queryByText('All slides seen. You can sign now.')).toBeNull();
   });
 
   it('opens at the furthest slide reached and allows jumping back', async () => {
@@ -102,6 +131,7 @@ describe('SlideDeck', () => {
     await act(async () => {});
     expect(onReach).toHaveBeenCalledWith(0);
     expect(screen.queryByText(/^Go through every slide/)).toBeNull();
+    expect(screen.getByText('All slides seen. You can sign now.')).toBeTruthy();
   });
 
   it('a failed save offers Try again, which reports the slide on screen', async () => {
@@ -128,6 +158,7 @@ describe('SlideDeck', () => {
     expect(screen.getByText('two')).toBeTruthy();
     expect(onReach).not.toHaveBeenCalled();
     expect(screen.queryByText(/^Go through every slide/)).toBeNull();
+    expect(screen.queryByText(/^All slides seen/)).toBeNull();
   });
 
   it('review mode opens at the first slide, wherever the reading stopped', () => {

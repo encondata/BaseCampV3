@@ -16,7 +16,9 @@
  *
  *  A Slides document shows one slide at a time (SlideDeck) in place of the
  *  scroll box, and going through every slide stands in for the scroll: the
- *  sign-off says why while slides are left, and "Take the quiz" waits for
+ *  sign-off says why while slides are left, the deck's status line (not
+ *  the "Read to the end" line) counts down the reading time after the last
+ *  slide and says when it can be signed, and "Take the quiz" waits for
  *  the last slide so the quiz can't be a way to start before reading. A
  *  passed quiz doesn't bypass the slides (progress belongs to the version
  *  and language read, so a language change starts it over).
@@ -217,7 +219,7 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
 
       {deck ? (
         <SlideDeck slides={deck} reached={doc.slide_reached} review={review} lang={doc.language}
-                   dir={rtl ? 'rtl' : 'ltr'} onReach={reach} />
+                   dir={rtl ? 'rtl' : 'ltr'} timeLeft={needsQuiz ? null : left} onReach={reach} />
       ) : (
         <div ref={box} className="learn-doc" role="region" aria-label={t('reader.body')} tabIndex={0}
              lang={doc.language} dir={rtl ? 'rtl' : 'ltr'} onScroll={checkEnd} onLoadCapture={checkFit}>
@@ -226,7 +228,8 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
         </div>
       )}
 
-      {!review && !needsQuiz && !alreadyRead && (deck || doc.require_scroll || minSeconds > 0) && scrolled && left <= 0 && (
+      {/* a Slides document says this in the deck's status line */}
+      {!review && !deck && !needsQuiz && !alreadyRead && (doc.require_scroll || minSeconds > 0) && scrolled && left <= 0 && (
         <p className="learn-readdone">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
                strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="m8 12.5 3 3 5-6" /></svg>

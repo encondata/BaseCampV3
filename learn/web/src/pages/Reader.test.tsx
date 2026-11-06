@@ -422,7 +422,9 @@ describe('Reader', () => {
 
       await user.click(screen.getByRole('button', { name: 'Next' }));
       await screen.findByText('Doors');
-      expect(await screen.findByText(/^Read to the end · /)).toBeTruthy();
+      // no minimum reading time: ready at once, said once (in the deck, not the reader's line)
+      expect(await screen.findByText('All slides seen. You can sign now.')).toBeTruthy();
+      expect(screen.queryByText(/^Read to the end/)).toBeNull();
       await user.click(sign);
       expect(await screen.findByText('training page')).toBeTruthy();
       expect(JSON.parse(String(signs(fetchMock)[0][1]?.body))).toMatchObject({ scrolled_to_end: true, version_no: 2 });
@@ -436,6 +438,36 @@ describe('Reader', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Sign and continue' }));
       expect(await screen.findByText('training page')).toBeTruthy();
       expect(reachCalls(fetchMock)).toHaveLength(0);
+    });
+
+    it('Slides: after the last slide, counts down the reading time, then says it can be signed', async () => {
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+      const fetchMock = slidesApi({ slide_reached: 2, min_read_seconds: 90 });
+      renderReader();
+      expect(await screen.findByText('Doors')).toBeTruthy();
+      expect(screen.getByText('You can sign in 1:30')).toBeTruthy();
+      await fillIn();
+      await act(async () => { vi.advanceTimersByTime(30_000); });
+      expect(screen.getByText('You can sign in 1:00')).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Sign and continue' }));
+      expect(screen.getByText('Keep reading: you can sign in 1:00.')).toBeTruthy();
+      expect(signs(fetchMock)).toHaveLength(0);
+
+      await act(async () => { vi.advanceTimersByTime(60_000); });
+      expect(screen.getByText('All slides seen. You can sign now.')).toBeTruthy();
+      expect(screen.queryByText(/^You can sign in/)).toBeNull();
+      expect(screen.queryByText(/^Read to the end/)).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Sign and continue' }));
+      expect(await screen.findByText('training page')).toBeTruthy();
+    });
+
+    it('Slides: a passed quiz, every slide seen: ready to sign', async () => {
+      slidesApi({ has_quiz: true, quiz_passed: true, slide_reached: 2, min_read_seconds: 90 });
+      renderReader();
+      expect(await screen.findByText('Doors')).toBeTruthy();
+      // read before the quiz: the reading time doesn't start over
+      expect(screen.getByText('All slides seen. You can sign now.')).toBeTruthy();
+      expect(screen.queryByText(/^Read to the end/)).toBeNull();
     });
 
     it('a single slide: reaching it on opening is enough to sign', async () => {
@@ -465,6 +497,8 @@ describe('Reader', () => {
       const quiz = await screen.findByRole('link', { name: 'Take the quiz' });
       expect(quiz.getAttribute('href')).toBe(`/training/${ID}/quiz`);
       expect(screen.queryByText(/^Go through every slide/)).toBeNull();
+      // the quiz comes before signing: nothing says it can be signed yet
+      expect(screen.queryByText(/^All slides seen/)).toBeNull();
     });
 
     it('a passed quiz does not stand in for the slides', async () => {

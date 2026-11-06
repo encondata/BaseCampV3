@@ -1,6 +1,8 @@
 /** A Slides document, one slide at a time: the slide, then one row (Back,
  *  a numbered dot per slide, "2 / 4", Next) and a status line saying what
- *  is still needed.
+ *  is still needed: the slides left ("2 of 4 seen"), then the reading time
+ *  left ("You can sign in 1:15"), then "All slides seen. You can sign now."
+ *  (nothing after the slides when the quiz comes first).
  *
  *  Next always goes to the following slide. The furthest slide reached
  *  grows by one per Next and is reported first: the server refuses
@@ -14,9 +16,10 @@
  *  there is no status line. */
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 
+import { mmss } from '../lib/format';
 import { t } from '../lib/i18n';
 
-export default function SlideDeck({ slides, reached, review, lang, dir, onReach }: {
+export default function SlideDeck({ slides, reached, review, lang, dir, timeLeft, onReach }: {
   slides: string[];
   /** The furthest slide the server recorded (0-based), null before any. */
   reached: number | null;
@@ -24,6 +27,9 @@ export default function SlideDeck({ slides, reached, review, lang, dir, onReach 
   /** The slides' language and direction (the document's, not the screen's). */
   lang: string;
   dir: 'ltr' | 'rtl';
+  /** Seconds of reading time left before signing (the Reader's clock), or
+   *  null when signing isn't next (the quiz comes first). */
+  timeLeft: number | null;
   /** Report reaching slide `n`: the server's `slide_reached`, or null when the call failed. */
   onReach: (n: number) => Promise<number | null>;
 }) {
@@ -88,10 +94,13 @@ export default function SlideDeck({ slides, reached, review, lang, dir, onReach 
     else if (e.key === backward) { e.preventDefault(); prev(); }
   };
 
+  const counting = !review && !failed && far >= last && timeLeft !== null && timeLeft > 0;
   const status = review ? ''
     : failed ? t('slides.saveFailed')
     : far < last ? t('slides.progress', { seen: Math.max(far, at) + 1, n })
-    : '';
+    : timeLeft === null ? ''
+    : counting ? t('slides.signIn', { time: mmss(timeLeft) })
+    : t('slides.allSeen');
   return (
     <section className="learn-slides" role="region" aria-label={t('slides.region')} tabIndex={0} dir={dir} onKeyDown={onKey}>
       {/* the server sanitizes the HTML and snapshots the version */}
@@ -125,10 +134,13 @@ export default function SlideDeck({ slides, reached, review, lang, dir, onReach 
         </button>
       </div>
 
-      {/* always mounted while it can speak, so a screen reader hears it change */}
+      {/* always mounted while it can speak, so a screen reader hears it change;
+          quiet while the countdown ticks, so it isn't read out every second */}
       {!review && (
         <div className="learn-slides-statusrow">
-          <p className={`learn-slides-status${failed ? ' bad' : ''}`} aria-live="polite">{status}</p>
+          <p className={`learn-slides-status${failed ? ' bad' : ''}`} aria-live={counting ? 'off' : 'polite'}>
+            {status}
+          </p>
           {failed && (
             <button type="button" className="learn-link" onClick={() => void retry()}>{t('slides.retry')}</button>
           )}

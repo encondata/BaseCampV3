@@ -132,6 +132,8 @@ export const he: Dictionary = {
   'slides.progress': 'עברו על כל השקופיות כדי לחתום. (נצפו {seen} מתוך {n})',
   'slides.saveFailed': 'לא הצלחנו לשמור את המקום שלכם. בדקו את החיבור ונסו שוב.',
   'slides.retry': 'ניסיון נוסף',
+  'slides.signIn': 'אפשר יהיה לחתום בעוד {time}',
+  'slides.allSeen': 'צפיתם בכל השקופיות. אפשר לחתום עכשיו.',
 
   'sign.mustAgree': 'סמנו את התיבה כדי לאשר שקראתם ואתם מסכימים.',
   'sign.nameRequired': 'הקלידו את שמכם המלא כדי לחתום.',
