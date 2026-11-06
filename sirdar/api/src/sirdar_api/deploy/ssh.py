@@ -299,7 +299,8 @@ async def _connect(cfg: SshTargetConfig, pinned: PinnedHost,
         ), CONNECT_TIMEOUT + 5)
     except asyncssh.PermissionDenied:
         raise ConnectFailed(_AUTH_FAILED) from None
-    except asyncssh.HostKeyNotVerifiable:
+    except (asyncssh.HostKeyNotVerifiable, asyncssh.KeyExchangeFailed):
+        # KeyExchangeFailed: the server no longer offers the pinned key's type.
         raise _HostKeyRejected("The server's host key changed during the test. Try again.") \
             from None
     except (OSError, TimeoutError, asyncssh.Error):

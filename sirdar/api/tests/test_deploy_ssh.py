@@ -284,3 +284,24 @@ async def test_run_command_unknown_host_raises_with_live_fingerprint(db, ssh_ser
         await ssh.run_command(ssh_config(ssh_server), db, "uname -srm")
     assert exc.value.fingerprint == ssh_server.fingerprint
     assert ssh_server.commands == []
+
+
+async def test_run_command_when_server_drops_the_stored_key_type(db, ssh_server, monkeypatch):
+    rsa = asyncssh.generate_private_key("ssh-rsa")
+    db.add(SshKnownHost(host="127.0.0.1", port=ssh_server.port, key_type="ssh-rsa",
+                        fingerprint_sha256=known_hosts.fingerprint(rsa),
+                        public_key=known_hosts.public_key_text(rsa)))
+    await db.commit()
+    naps: list[float] = []
+
+    async def nap(seconds):
+        naps.append(seconds)
+    monkeypatch.setattr(ssh.asyncio, "sleep", nap)
+    ssh_server.connections = 0
+    with pytest.raises(ssh.HostKeyMismatch) as exc:
+        await ssh.run_command(ssh_config(ssh_server), db, "uname -srm")
+    e = exc.value
+    assert (e.expected, e.actual, e.key_type) == (
+        known_hosts.fingerprint(rsa), ssh_server.fingerprint, "ssh-ed25519")
+    assert naps == [] and ssh_server.connections == 3   # login, typed fetch (none), preferred fetch
+    assert ssh_server.commands == []
