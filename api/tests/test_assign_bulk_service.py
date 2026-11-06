@@ -644,3 +644,43 @@ async def test_rows_carry_only_wire_keys(db, ctx):
     assert all(set(r) == wire for r in out["rows"])
     assert all(set(f) == {"kind", "decided", "lines", "other_person"}
                for r in out["rows"] for f in r["flags"])
+
+
+async def test_contact_update_only_row_is_committable(db, ctx):
+    w = await good_worker(db, ctx)
+    await assign(db, ctx.job, w, ctx.site, "tech")
+    row_cells = cells("Ana", "Lopez", email="ana.new@example.com")
+    out = await preview(db, ctx, row_cells)
+    assert out["rows"][0]["action"] == "attention" and out["can_commit"] is False
+    out = await preview(db, ctx, row_cells, decisions={2: {"change": "update"}})
+    assert out["rows"][0]["action"] == "already_assigned"
+    assert out["can_commit"] is True
+    out = await preview(db, ctx, row_cells, decisions={2: {"change": "ignore"}})
+    assert out["rows"][0]["action"] == "already_assigned"
+    assert out["can_commit"] is False
+
+
+async def boss_on_team(db, ctx):
+    boss = await good_worker(db, ctx, email="boss@example.com")
+    db.add(PersonRole(person_id=boss.id, role="developer"))      # rank 100
+    db.add(UserAccount(person_id=boss.id, email="boss@example.com", password_hash="x"))
+    await db.commit()
+    west = await mk_site(db, "DC West")
+    await assign(db, ctx.job, boss, west, "tech")
+    return boss
+
+
+async def test_rank_guard_skips_assignment_only_update(db, ctx):
+    await boss_on_team(db, ctx)
+    row = (await preview(db, ctx, cells("Ana", "Lopez", email="boss@example.com"),
+                         decisions={2: {"change": "update"}}))["rows"][0]
+    assert kinds(row) == ["assignment"]
+    assert row["errors"] == [] and row["action"] == "assign"
+
+
+async def test_rank_guard_blocks_person_field_update_with_assignment(db, ctx):
+    await boss_on_team(db, ctx)
+    row = (await preview(db, ctx, cells("Ana", "Lopez", email="boss.new@example.com"),
+                         decisions={2: {"change": "update"}}))["rows"][0]
+    assert kinds(row) == ["assignment", "contact"]
+    assert row["errors"] == ["Your rank is too low to update this person."]

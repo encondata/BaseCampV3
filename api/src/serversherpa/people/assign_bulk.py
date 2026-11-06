@@ -398,7 +398,9 @@ async def preview_rows(db: AsyncSession, initiative_id: uuid.UUID, partner_id: u
                                other_person=name))
 
         kinds = {f["kind"] for f in flags}
-        if (change == "update" and pid is not None and kinds & set(CHANGE_KINDS)
+        # person-field edits only, as the workers import guards them; moving
+        # someone's site or role on the initiative is not guarded
+        if (change == "update" and pid is not None and kinds & {"contact", "partner"}
                 and pid != str(actor_id) and pid in ref["account_ids"]
                 and not can_touch_rank(actor_rank, ref["max_rank"].get(pid, 0))):
             errors.append("Your rank is too low to update this person.")
@@ -433,7 +435,8 @@ async def preview_rows(db: AsyncSession, initiative_id: uuid.UUID, partner_id: u
         else:
             r["action"] = "assign"
         r["_writes"] = r["action"] in ("assign", "create") or (
-            "assignment" in kinds and change == "update")
+            r["action"] == "already_assigned" and change == "update"
+            and bool(kinds & set(CHANGE_KINDS)))
 
     counts = {a: sum(r["action"] == a for r in rows) for a in ACTIONS}
     writes = [r.pop("_writes") for r in rows]
