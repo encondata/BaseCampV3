@@ -110,6 +110,8 @@ it('previews automatically and splits rows into Matched and No match found', asy
   expect(within(rowEl('Matched', 3)).getByText('person.b@example.com')).toBeTruthy();
   expect(rowEl('Matched', 6).className).toBe('bulk-row-unchanged');
   expect(within(rowEl('Matched', 6)).getByText('Already assigned')).toBeTruthy();
+  expect(rowEl('Matched', 4).className).toBe('bulk-row-update');
+  expect(within(rowEl('Matched', 4)).getByText('Needs a decision')).toBeTruthy();
   expect(rowEl('No match found', 5).className).toBe('bulk-row-error');
   expect(within(rowEl('No match found', 5)).getByText('Needs a match')).toBeTruthy();
   expect(screen.getByText(
@@ -213,7 +215,7 @@ it('commit shows the apply summary', async () => {
   }));
   const summary = await screen.findByRole('table', { name: 'Apply summary' });
   expect(within(summary).getByText('Person 3')).toBeTruthy();
-  expect(screen.getByText('1 assigned · 1 created · 0 updated · 1 already assigned')).toBeTruthy();
+  expect(screen.queryByText(/already assigned$/)).toBeNull();
   expect(screen.getByRole('link', { name: 'Open the initiative' }).getAttribute('href')).toBe('/initiatives/job1');
   expect(screen.queryByRole('table', { name: 'Matched' })).toBeNull();
 });
@@ -258,4 +260,23 @@ it('a newer re-preview wins over an older one', async () => {
   resolveOld(preview([row(2, { name: 'Stale', person_name: 'Stale' })]));
   await new Promise((r) => setTimeout(r, 0));
   expect(screen.queryByText('Stale')).toBeNull();
+});
+
+it('appends "(becomes a worker)" to the action', async () => {
+  api.previewAssignBulkFile.mockResolvedValue(preview([row(2, { becomes_worker: true })]));
+  await upload();
+  expect(within(rowEl('Matched', 2)).getByText('Assign (becomes a worker)')).toBeTruthy();
+});
+
+it('Ignore on a status flag adds acknowledged', async () => {
+  api.previewAssignBulkFile.mockResolvedValue(preview([
+    row(2, { action: 'attention', flags: [flag('status', { lines: [{ label: 'Status on file', value: 'Inactive' }] })] }),
+  ]));
+  await upload();
+  const r2 = rowEl('Matched', 2);
+  expect(within(r2).getByText('Needs a decision')).toBeTruthy();
+  fireEvent.click(within(r2).getByRole('button', { name: 'Ignore the status on row 2' }));
+  await waitFor(() => expect(api.previewAssignBulk).toHaveBeenCalledWith('job1', expect.objectContaining({
+    decisions: { 2: { acknowledged: ['status'] } },
+  })));
 });

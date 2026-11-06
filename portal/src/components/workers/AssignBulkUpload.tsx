@@ -35,19 +35,26 @@ const discrepancy = (r: AssignRow) =>
 const needsMatch = (r: AssignRow) =>
   r.flags.some((f) => !f.decided && f.kind === 'needs_match');
 
+/** An attention row's state, by precedence: Needs a match > Discrepancy >
+ *  Needs a decision (a name, status, contact or role answer is pending). */
+function attention(r: AssignRow): 'match' | 'discrepancy' | 'decision' {
+  return needsMatch(r) ? 'match' : discrepancy(r) ? 'discrepancy' : 'decision';
+}
+const ATTENTION_LABEL = { match: 'Needs a match', discrepancy: 'Discrepancy', decision: 'Needs a decision' };
+
 function actionLabel(r: AssignRow): string {
   const base = r.action === 'assign' ? 'Assign'
     : r.action === 'create' ? 'Create'
       : r.action === 'already_assigned' ? 'Already assigned'
         : r.action === 'error' ? 'Error'
-          : discrepancy(r) ? 'Discrepancy' : 'Needs a match';
+          : ATTENTION_LABEL[attention(r)];
   return r.becomes_worker ? `${base} (becomes a worker)` : base;
 }
 
 function rowClass(r: AssignRow): string {
   if (r.action === 'assign' || r.action === 'create') return 'bulk-row-create';
   if (r.action === 'already_assigned') return 'bulk-row-unchanged';
-  if (r.action === 'attention' && discrepancy(r)) return 'bulk-row-update';
+  if (r.action === 'attention' && attention(r) !== 'match') return 'bulk-row-update';
   return 'bulk-row-error';
 }
 
@@ -251,20 +258,14 @@ export default function AssignBulkUpload({ jobId, siteId, partnerId }: Props) {
       {error && <p className="pf-error">{error}</p>}
 
       {result && jobId && (
-        <>
-          <p className="set-note">
-            {`${result.assigned} assigned · ${result.created} created · ${result.updated} updated · `
-              + `${result.already_assigned} already assigned`}
-          </p>
-          <BulkApplySummary
-            result={result}
-            entityLabel="Worker"
-            linkFor={(r) => (r.person_id ? `/people/workers/${r.person_id}` : null)}
-            filename="assign-workers-summary"
-            openTo={`/initiatives/${jobId}`}
-            openLabel="Open the initiative"
-          />
-        </>
+        <BulkApplySummary
+          result={result}
+          entityLabel="Worker"
+          linkFor={(r) => (r.person_id ? `/people/workers/${r.person_id}` : null)}
+          filename="assign-workers-summary"
+          openTo={`/initiatives/${jobId}`}
+          openLabel="Open the initiative"
+        />
       )}
 
       {preview && (
