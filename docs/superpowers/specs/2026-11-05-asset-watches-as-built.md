@@ -2,7 +2,7 @@
 
 Companion to `2026-11-05-asset-watches-design.md`. It records what was built, every call I made on Jimmy's behalf (he asked for no more questions on 2026-11-05), the wording to check, what was left as it is, and how to deploy.
 
-- **Branch:** `asset-watches`, from main 81a20707, with main 4a75457a merged in (130c70f4). Not merged into main.
+- **Branch:** `asset-watches`, from main 81a20707. Main was merged in three times: 4a75457a (130c70f4), 36fc1115 (19e3587f) and c6391d03 (65ede763). Merged into main on 2026-11-06 after the checks under Verification passed.
 - **Plan:** `docs/superpowers/plans/2026-11-05-asset-watches.md`. Built in 5 tasks, each reviewed, then a whole-branch review on the most capable model, one fix round and its re-review.
 - **Migration:** 0121 (`asset_watches`, one new table), on Dock Station's 0120. Its downgrade drops the table.
 
@@ -86,7 +86,7 @@ These are in the order I made them.
     - the /me count badge can read 0 beside the load error
     
     Cost: polish later.
-22. **Main merged into the branch, and the migration renumbered.** Main took 0120 for Dock Station while this was being built. I merged main into the branch, with no conflicts, and renumbered `asset_watches` to 0121 on top of Dock's 0120, so main can take the branch as it is. Cost: none.
+22. **Main merged into the branch, and the migration renumbered.** Main took 0120 for Dock Station while this was being built. I merged main into the branch, with no conflicts, and renumbered `asset_watches` to 0121 on top of Dock's 0120, so main can take the branch as it is. Main moved twice more before the merge: 36fc1115 brought the wiki's section links, and c6391d03 brought Sirdar's failed-deploy cleanup and the Dock screen redesign. Both came in with no conflicts and no new API migration, and neither changed `api/`. Cost: none.
 
 ## Wording added (please check)
 
@@ -145,11 +145,13 @@ These were deferred from the reviews. Each has a ledger reason, and none blocks.
 
 ## Deploy
 
-1. Migration 0121 (`ss-stack revision` should read 0121 afterward). The dev DB is at 0119, so this also applies Dock Station's 0120.
+1. Migration 0121 (`ss-stack revision` should read 0121 afterward), on top of Dock Station's 0120. Where 0120 isn't applied yet, `alembic upgrade head` applies both.
 2. Restart the API and the notification worker. The worker log shows the asset-watch check each minute.
 3. Build the portal.
 
 There is no backfill and no change to existing data. Rolling back to 0120 drops the table, and with it any watches that were set. Dock Station's 0120 stays.
+
+On dev (2026-11-06): dumped at 0120 to `api/backups/dev-06NOV26-pre-asset-watches.sql`, then upgraded to 0121.
 
 ## Verification
 
@@ -159,12 +161,23 @@ There is no backfill and no change to existing data. Rolling back to 0120 drops 
 
   | Check | Result |
   |---|---|
+  | Full API suite | 8,253 passed, 2 skipped, 0 failed, in 2 h 23 min |
   | Asset-watch, notification, /me and Dock Station API tests | 163 passed |
   | Migration chain | `alembic heads` lists 0121 only |
   | Migration round trip | Down to 0120 drops `asset_watches` and keeps Dock's `dock_passes`. Back up to 0121 restores the table, its unique index and both checks. |
   | Portal | 7,547 passed, build OK |
   | Kiosk | 1,812 passed, build OK |
   | Learn | 137 passed, build OK |
+
+- **After main came in again** (19e3587f, then 65ede763). Neither merge changed `api/`, so 65ede763's `api/` is the same as ee5c5c96's, and the full API suite above covers it. Sirdar's web app imports the portal's API client (`@portal/lib/api`), which this branch changed, so it was added to the 65ede763 runs.
+
+  | App | 19e3587f | 65ede763 |
+  |---|---|---|
+  | Portal | 7,547 passed, build OK | 7,547 passed, build OK |
+  | Kiosk | 1,812 passed, build OK | 1,838 passed, build OK |
+  | Wiki | 844 passed, build OK | 844 passed, build OK |
+  | Learn | 137 passed, build OK | 137 passed, build OK |
+  | Sirdar web | not run | 744 passed, build OK |
 
 - **Live check:** run on a scratch copy of the dev DB, signed in as claude-dev on localhost.
   - **Next update** was set on HNL23L9's asset page. A status edit to RFID 3 - Staging fired "HNL23L9: status set to RFID 3 - Staging by Claude Dev", with the body lines as above and a link to the asset page. The watch ended.
@@ -173,7 +186,8 @@ There is no backfill and no change to existing data. Rolling back to 0120 drops 
 ## Found along the way (not this branch)
 
 - **naturalSort guardrail:** `portal/src/styles/naturalSort.test.ts` failed on main from web-kiosk-labels (2026-11-04). It flagged `kiosk/src/lib/webLabels/labelgenHash.ts:22` and `kiosk/src/pages/PrintingStation.tsx:501`. Main has since fixed it (89ac4130, in the Sirdar merge 75b3842c), and the merged branch's portal suite passes in full.
-- **Kiosk test error:** one kiosk run on the merged branch logged an unhandled `window is not defined` after all 1,812 tests passed.
+- **Kiosk test error:** some kiosk runs log an unhandled `window is not defined` after every test has passed, and the run exits 1.
   - **Where:** `kiosk/src/components/SoundPanel.tsx:74`, as `src/pages/Settings.test.tsx` tore down. A sound-list promise settled after its test had ended.
-  - **When:** that run had the API suite loading the machine.
-  - **Since:** it didn't recur in a second full kiosk run or in three runs of that file. This branch changes no kiosk code.
+  - **How often:** 2 of the 4 full kiosk runs on this branch (on ee5c5c96 and 65ede763), and 1 of 4 runs of main's own kiosk suite (c6391d03, without this branch). Three runs of that file alone were clean.
+  - **Not this branch:** it happens on main without it, and this branch changes no kiosk code.
+- **Dev DB reverted to 0119:** a DB testing-mode session ran 2026-11-05 18:28–21:28 CST and ended with Revert. That restored its starting snapshot, which undid Dock Station's 0120 on dev. Dev was back at 0120 before this merged.
