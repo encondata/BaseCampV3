@@ -637,6 +637,18 @@ async def test_partner_contact_becomes_worker(db, ctx):
     assert {"id": str(c.id), "label": "Casey Contact", "detail": "Vend Picked"} in out["people"]
 
 
+async def test_already_assigned_contact_does_not_become_worker(db, ctx):
+    c = await mk_partner_contact(db, "Casey", "Contact", ctx.partner,
+                                 email="casey@example.com")
+    await assign(db, ctx.job, c, ctx.site, "tech")
+    out = await preview(db, ctx, cells("Casey", "Contact", email="casey@example.com"),
+                        internal=True)
+    row = out["rows"][0]
+    assert row["flags"] == [] and row["action"] == "already_assigned"
+    assert row["_writes"]["commits"] is False
+    assert row["becomes_worker"] is False
+
+
 async def test_update_blocked_for_higher_rank_account(db, ctx):
     boss = await good_worker(db, ctx, email="boss@example.com")
     db.add(PersonRole(person_id=boss.id, role="developer"))      # rank 100
@@ -737,10 +749,10 @@ async def test_partner_contact_of_other_partner_flags_partner(db, ctx):
     assert f["decided"] is False and row["action"] == "attention"
     assert f["lines"] == [{"label": "Partner on file", "value": "Vend Bee"},
                           {"label": "Partner picked", "value": "Vend Picked"}]
-    assert row["becomes_worker"] is True
+    assert row["becomes_worker"] is False          # nothing commits while undecided
     upd = (await preview(db, ctx, row_cells, decisions={2: {"change": "update"}},
                          internal=True))["rows"][0]
-    assert upd["action"] == "assign"
+    assert upd["action"] == "assign" and upd["becomes_worker"] is True
     assert upd["_writes"]["profile_partner_id"] == ctx.partner.id
     ign = (await preview(db, ctx, row_cells, decisions={2: {"change": "ignore"}},
                          internal=True))["rows"][0]

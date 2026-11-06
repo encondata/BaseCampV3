@@ -20,6 +20,7 @@
 .bulk-intro { margin-top: 18px; max-width: 360px; }
 /* three side-by-side pickers (/bulk/assign-workers) */
 .bulk-intro.bulk-intro-3 { display: grid; grid-template-columns: repeat(3, minmax(180px, 260px)); gap: 12px; max-width: none; }
+@media (max-width: 640px) { .bulk-intro.bulk-intro-3 { grid-template-columns: 1fr; } }
 
 /* ── bulk import pane ─────────────────────────────────────────── */
 

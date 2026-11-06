@@ -142,7 +142,7 @@ export default function AssignBulkRowDetails({
           inputId={roleId}
           ariaLabel={`Role for row ${n}`}
           options={roleOptions}
-          value={decision.role ?? row.role_key}
+          value={decision.role ?? row.role_key ?? ''}
           placeholder="Pick a role…"
           disabled={disabled}
           onChange={(key) => { if (key) onChange({ ...decision, role: key }); }}

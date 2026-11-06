@@ -476,6 +476,8 @@ async def preview_rows(db: AsyncSession, initiative_id: uuid.UUID, partner_id: u
             and bool(kinds & set(CHANGE_KINDS)))
         r["_writes"] = {"commits": commits,
                         "profile_partner_id": _profile_partner(ref, r, partner_id, change)}
+        # "(becomes a worker)" only on a row this commit would write
+        r["becomes_worker"] = r["becomes_worker"] and commits
 
     counts = {a: sum(r["action"] == a for r in rows) for a in ACTIONS}
     writes = [r["_writes"]["commits"] for r in rows]

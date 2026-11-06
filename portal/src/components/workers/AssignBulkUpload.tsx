@@ -27,6 +27,21 @@ import AssignBulkRowDetails, { CHANGE_KINDS } from './AssignBulkRowDetails';
 
 interface Base { cells: Record<string, string>[]; rows: number[] }
 
+/** How a row was matched, as the Matched by column shows it; the wire keys stay. */
+const MATCHED_BY: Record<NonNullable<AssignRow['matched_by']>, string> = {
+  name: 'Name', email: 'Email', phone: 'Phone', pick: 'Picked',
+};
+
+/** Decisions minus every Update/Ignore answer: a new initiative, site or
+ *  partner raises new flags, and an old answer must not settle them. */
+function withoutChanges(d: AssignDecisions): AssignDecisions {
+  const out: AssignDecisions = {};
+  for (const [n, { change: _change, ...rest }] of Object.entries(d)) {
+    if (Object.keys(rest).length > 0) out[n] = rest;
+  }
+  return out;
+}
+
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** An undecided contact / partner / assignment flag — the row reads "Discrepancy". */
@@ -123,17 +138,16 @@ export default function AssignBulkUpload({ jobId, siteId, partnerId }: Props) {
       const next = await previewAssignBulk(jobId, posted(base, nextDecisions));
       if (mine === seq.current) setPreview(next);
     } catch (err) {
-      if (mine === seq.current) {
-        setPreview(null);
-        setError(mapError(err));
-      }
+      // the last good preview stays up, so a new decision can retry
+      if (mine === seq.current) setError(mapError(err));
     } finally {
       setPending((p) => p - 1);
     }
   };
 
   // A new file previews it; a picker change with a file already parsed
-  // re-previews by JSON with the same cells and decisions. A cleared
+  // re-previews by JSON with the same cells and decisions, less any
+  // Update/Ignore (they answered the old pickers' flags). A cleared
   // picker hides the (now meaningless) preview until all three are set.
   useEffect(() => {
     if (!file) return;
@@ -143,7 +157,7 @@ export default function AssignBulkUpload({ jobId, siteId, partnerId }: Props) {
       setBusy(false);
       return;
     }
-    if (base) void rerun(decisions);
+    if (base) void rerun(withoutChanges(decisions));
     else void previewFile(file);
   }, [file, jobId, siteId, partnerId]);   // base/decisions are read as of this render on purpose
 
@@ -221,7 +235,7 @@ export default function AssignBulkUpload({ jobId, siteId, partnerId }: Props) {
               r.row,
               nameCell(r),
               r.matched_by
-                ? <>{r.matched_by}{r.matched_value && <span className="bulk-sub mono">{r.matched_value}</span>}</>
+                ? <>{MATCHED_BY[r.matched_by]}{r.matched_value && <span className="bulk-sub mono">{r.matched_value}</span>}</>
                 : '—',
               actionLabel(r),
               <AssignBulkRowDetails

@@ -280,3 +280,49 @@ it('Ignore on a status flag adds acknowledged', async () => {
     decisions: { 2: { acknowledged: ['status'] } },
   })));
 });
+
+it('a picker change drops Update/Ignore but keeps acknowledgements, picks and roles', async () => {
+  const view = await upload();
+  fireEvent.click(screen.getByRole('button', { name: 'Update row 3' }));
+  await waitFor(() => expect(api.previewAssignBulk).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByRole('button', { name: 'Accept the name on row 4' }));
+  await waitFor(() => expect(api.previewAssignBulk).toHaveBeenLastCalledWith('job1', expect.objectContaining({
+    decisions: { 3: { change: 'update' }, 4: { acknowledged: ['name_differs'] } },
+  })));
+  fireEvent.focus(within(rowEl('Matched', 2)).getByLabelText('Role for row 2'));
+  fireEvent.mouseDown(await screen.findByText('Lead'));
+  await waitFor(() => expect(api.previewAssignBulk).toHaveBeenCalledTimes(3));
+  view.rerenderWith({ partnerId: 'pa2' });
+  await waitFor(() => expect(api.previewAssignBulk).toHaveBeenLastCalledWith('job1', expect.objectContaining({
+    partner_id: 'pa2', decisions: { 2: { role: 'lead' }, 4: { acknowledged: ['name_differs'] } },
+  })));
+  await waitFor(() => expect(
+    screen.getByRole('button', { name: 'Update row 3' }).getAttribute('aria-pressed')).toBe('false'));
+});
+
+it('a failed re-preview keeps the rows up with the error, and the next decision retries', async () => {
+  await upload();
+  const { ApiError } = await import('../../lib/api');
+  api.previewAssignBulk.mockRejectedValueOnce(new ApiError(422, 'invalid_decisions'));
+  fireEvent.click(screen.getByRole('button', { name: 'Update row 3' }));
+  expect(await screen.findByText('The preview is out of date — upload the file again.')).toBeTruthy();
+  expect(screen.getByRole('table', { name: 'Matched' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Accept the name on row 4' }));
+  await waitFor(() => expect(api.previewAssignBulk).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(
+    screen.queryByText('The preview is out of date — upload the file again.')).toBeNull());
+  expect(screen.getByRole('table', { name: 'Matched' })).toBeTruthy();
+});
+
+it('shows Matched by as Name / Email / Phone / Picked', async () => {
+  api.previewAssignBulkFile.mockResolvedValue(preview([
+    row(2, { matched_by: 'name' }), row(3, { matched_by: 'email' }),
+    row(4, { matched_by: 'phone' }), row(5, { matched_by: 'pick', matched_value: null }),
+  ]));
+  await upload();
+  expect(within(rowEl('Matched', 2)).getByText('Name')).toBeTruthy();
+  expect(within(rowEl('Matched', 3)).getByText('Email')).toBeTruthy();
+  expect(within(rowEl('Matched', 4)).getByText('Phone')).toBeTruthy();
+  expect(within(rowEl('Matched', 5)).getByText('Picked')).toBeTruthy();
+  expect(within(rowEl('Matched', 5)).queryByText('pick')).toBeNull();
+});

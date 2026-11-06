@@ -1767,8 +1767,8 @@ export interface AssignRow {
   person_name: string | null;
   create: boolean;
   becomes_worker: boolean;
-  role_key: string;
-  role_label: string;
+  role_key: string | null;
+  role_label: string | null;
   flags: AssignFlag[];
   action: AssignRowAction;
   errors: string[];
