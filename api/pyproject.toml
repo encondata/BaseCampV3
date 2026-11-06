@@ -52,7 +52,7 @@ where = ["src"]
 "serversherpa.reports.learning_compliance" = ["templates/*.html"]
 "serversherpa.wiki" = ["assets/*.png"]
 "serversherpa.mail" = ["templates/*"]
-"serversherpa.learning" = ["templates/*.html"]
+"serversherpa.learning" = ["templates/*.html", "seed_images/*.webp"]
 # vegas_v2.json is the Vegas Destination design seed-label-templates loads
 "serversherpa.labels" = ["fixtures/*.json"]
 # the pinned Google hardware attestation roots (security/key_attestation.py)

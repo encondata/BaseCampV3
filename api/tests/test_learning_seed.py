@@ -1,7 +1,7 @@
 """`serversherpa learning-seed`: the Learning space, sample pages,
 documents (published v1), packets and the Everyone rule — created once,
 idempotent on a second run. The render server is the library tests'
-httpx MockTransport stand-in."""
+httpx MockTransport stand-in; object storage is a dict."""
 import asyncio
 
 import pytest
@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from serversherpa.cli import app
 from serversherpa.config import get_settings
-from serversherpa.db.models import WikiGrant, WikiNode, WikiPage, WikiSpace
+from serversherpa.db.models import WikiGrant, WikiNode, WikiPage, WikiPageAsset, WikiSpace
 from serversherpa.learning.models import (
     LearningDocument,
     LearningDocumentVersion,
@@ -21,11 +21,31 @@ from serversherpa.learning.models import (
     LearningQuizQuestion,
     LearningRule,
 )
-from serversherpa.learning.seed import seed
+from serversherpa.learning.seed import IMAGES, seed
 from serversherpa.learning.seed_content import DOCUMENTS, SAMPLE_NOTICE, empty_text_nodes
+from serversherpa.services import storage
 from tests.test_learning_library import renderer, service_token  # noqa: F401
 
 runner = CliRunner()
+
+DRESS_SLIDES = ["dress-code-01.webp", "dress-code-02.webp", "dress-code-03.webp",
+                "dress-code-04.webp"]
+
+
+@pytest.fixture(autouse=True)
+def stored(monkeypatch):
+    """Fake object storage: key → (bytes, content type). Set `.down` to
+    make every upload fail."""
+    class Stored(dict):
+        down = False
+    objects = Stored()
+
+    async def put_object(key, data, content_type):
+        if objects.down:
+            raise OSError("storage down")
+        objects[key] = (data, content_type)
+    monkeypatch.setattr(storage, "put_object", put_object)
+    return objects
 
 
 @pytest.fixture
@@ -85,8 +105,11 @@ async def test_seed_creates_space_pages_documents_packets_rule(db, renderer):  #
         assert page.doc_type == "Policy" and page.published_version_id is not None
         assert empty_text_nodes(page.draft_json) == 0
         first = page.draft_json["content"][0]
-        assert first["type"] == "callout"
-        assert first["content"][0]["content"][0]["text"] == SAMPLE_NOTICE
+        if seeded.title == "Dress code":     # the company's own slides, not a sample
+            assert first["type"] == "paragraph"
+        else:
+            assert first["type"] == "callout"
+            assert first["content"][0]["content"][0]["text"] == SAMPLE_NOTICE
         assert 3 <= sum(1 for n in page.draft_json["content"] if n["type"] == "heading") <= 5
         version = await db.get(LearningDocumentVersion, document.current_version_id)
         assert (version.version_no, version.title) == (1, seeded.title)
@@ -98,8 +121,7 @@ async def test_seed_creates_space_pages_documents_packets_rule(db, renderer):  #
         365, "expired_or_new_version", "typed_name", True, 60, False)
     dress_headings = [n["content"][0]["text"] for n in (await db.get(
         WikiPage, dress.wiki_node_id)).draft_json["content"] if n["type"] == "heading"]
-    assert dress_headings[:3] == ["Every day on site", "Data hall floor",
-                                  "Client-specific rules"]
+    assert dress_headings == ["Shirt and name badge", "Pants and footwear", "Before you enter"]
     for title in ("Confidentiality", "Work expectations"):
         assert (documents[title].validity_days, documents[title].resign_rule) == (
             365, "expired_or_new_version")
@@ -143,16 +165,44 @@ async def test_seed_creates_space_pages_documents_packets_rule(db, renderer):  #
     assert rule.conditions == [{"field": "everyone", "values": []}]
 
 
-async def test_seed_is_idempotent(db, renderer):  # noqa: F811
+async def test_dress_code_slides_are_the_page_s_own_images(db, renderer, stored):  # noqa: F811
+    await seed(db, actor_id=None)
+    await db.commit()
+    document = await db.scalar(select(LearningDocument).where(
+        LearningDocument.title == "Dress code"))
+    page = await db.get(WikiPage, document.wiki_node_id)
+    images = [n["attrs"] for n in page.draft_json["content"] if n["type"] == "wikiImage"]
+    assert [i["caption"] for i in images] == [
+        "Datacenter dress code", "Shirt and name badge", "Pants and footwear",
+        "Before you enter: your dress code checklist"]
+    assets = {str(a.id): a for a in await db.scalars(select(WikiPageAsset))}
+    slides = [assets[i["assetId"]] for i in images]
+    assert [a.filename for a in slides] == DRESS_SLIDES
+    for asset in slides:
+        assert asset.node_id == page.node_id and asset.content_type == "image/webp"
+        data, content_type = stored[asset.storage_key]
+        assert data == (IMAGES / asset.filename).read_bytes()
+        assert content_type == "image/webp" and asset.size_bytes == len(data)
+    assert len(stored) == 4         # no other seeded page has images
+
+    version = await db.get(LearningDocumentVersion, document.current_version_id)
+    assert [str(i) for i in version.image_asset_ids] == [i["assetId"] for i in images]
+    assert (document.summary, version.change_note) == (
+        "What to wear for every visit.", "First version.")
+
+
+async def test_seed_is_idempotent(db, renderer, stored):  # noqa: F811
     await seed(db, actor_id=None)
     await db.commit()
     before = await _counts(db)
     assert before["documents"] == 6 and before["versions"] == 6
+    uploads = dict(stored)
 
     again = await seed(db, actor_id=None)
     await db.commit()
     assert again.total == 0
     assert await _counts(db) == before
+    assert stored == uploads
 
 
 async def test_seed_leaves_edited_pages_and_a_new_wiki_version_alone(db, renderer):  # noqa: F811
@@ -176,6 +226,20 @@ def test_render_server_down_exits_1_and_writes_nothing(renderer, cli_db):  # noq
     assert result.exit_code == 1
     assert "render server" in result.output
     assert "Nothing was changed" in result.output
+
+    async def spaces():
+        async with cli_db()() as db:
+            return await db.scalar(select(func.count()).select_from(WikiSpace).where(
+                WikiSpace.key == "learning"))
+    assert asyncio.run(spaces()) == 0
+
+
+def test_storage_down_exits_1_and_adds_nothing(renderer, cli_db, stored):  # noqa: F811
+    stored.down = True
+    result = runner.invoke(app, ["learning-seed"])
+    assert result.exit_code == 1
+    assert "Object storage refused a sample image (OSError)" in result.output
+    assert "Nothing was added" in result.output
 
     async def spaces():
         async with cli_db()() as db:
