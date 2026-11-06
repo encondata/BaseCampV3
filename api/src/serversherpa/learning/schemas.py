@@ -156,7 +156,7 @@ class DocumentOut(BaseModel):
     quiz_max_attempts: int | None
     quiz_fail_action: str
     reading_style: str
-    # slides only; the current snapshot split at its horizontal rules
+    # slides only; the current snapshot split at its top-level <h2> headings
     slide_count: int | None = None
     current_slides: list[str] | None = None
     wiki_node_id: uuid.UUID | None

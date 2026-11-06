@@ -555,18 +555,18 @@ async def test_read_slides_reports_reached_for_the_served_version_and_language(
                                title="ja", content_html="<h2>あ</h2><h2>い</h2><h2>う</h2>"))
     wanda, hdrs = await _learner(db)
     row = await _assign(db, wanda, doc)
-    row.slide_reached, row.slide_version_id, row.slide_language = 2, version_id, "en"
+    row.slide_reached, row.slide_version_id, row.slide_language = 1, version_id, "en"
     await db.commit()
 
     en = (await client.get(f"/learn/assignments/{row.id}", headers=hdrs)).json()
-    assert en["slide_count"] == 2 and en["slide_reached"] == 2
+    assert en["slide_count"] == 2 and en["slide_reached"] == 1
     # progress was made in English: the Japanese read starts over, with its own slides
     ja = (await client.get(f"/learn/assignments/{row.id}?lang=ja", headers=hdrs)).json()
     assert ja["slide_count"] == 3 and ja["slide_reached"] is None
     assert ja["slides"] == ["<h2>あ</h2>", "<h2>い</h2>", "<h2>う</h2>"]
     # an unpublished language falls back to English, and so does the progress
     ko = (await client.get(f"/learn/assignments/{row.id}?lang=ko", headers=hdrs)).json()
-    assert ko["language"] == "en" and ko["slide_reached"] == 2
+    assert ko["language"] == "en" and ko["slide_reached"] == 1
 
 
 async def test_read_document_style_has_no_slides(client, db, seeded_user):
@@ -594,11 +594,14 @@ async def test_served_html_and_effective_reached(db, seeded_user):
 
     wanda, _ = await _learner(db)
     row = await _assign(db, wanda, doc)
-    assert worker.effective_reached(row, version.id, "en") is None
+    assert worker.effective_reached(row, version.id, "en", 5) == -1
     row.slide_reached, row.slide_version_id, row.slide_language = 3, version.id, "en"
-    assert worker.effective_reached(row, version.id, "en") == 3
-    assert worker.effective_reached(row, version.id, "ja") is None
-    assert worker.effective_reached(row, uuid.uuid4(), "en") is None
+    assert worker.effective_reached(row, version.id, "en", 5) == 3
+    assert worker.effective_reached(row, version.id, "ja", 5) == -1
+    assert worker.effective_reached(row, uuid.uuid4(), "en", 5) == -1
+    # a deck that no longer has the slide reached starts over
+    assert worker.effective_reached(row, version.id, "en", 3) == -1
+    assert worker.effective_reached(row, version.id, "en", 4) == 3
 
 
 # ── slide progress and the sign gate ─────────────────────────────────
@@ -659,6 +662,24 @@ async def test_slides_reach_refusals(client, db, seeded_user):
     await _sign(client, hdrs, row)
     done = await _reach(client, hdrs, row, 0)
     assert done.status_code == 409 and done.json()["detail"]["code"] == "already_signed"
+
+
+async def test_slides_reach_refused_while_locked(client, db, seeded_user):
+    first, second = await _plain_doc(db, "First"), await _slides_doc(db)
+    packet = LearningPacket(name="Ordered", enforce_order=True)
+    db.add(packet)
+    await db.flush()
+    db.add_all([LearningPacketItem(packet_id=packet.id, document_id=first.id, position=0),
+                LearningPacketItem(packet_id=packet.id, document_id=second.id, position=1)])
+    await db.commit()
+    move = await _initiative(db)
+    wanda, hdrs = await _learner(db)
+    await _assign(db, wanda, first, initiative=move, packet=packet)
+    later = await _assign(db, wanda, second, initiative=move, packet=packet)
+    r = await _reach(client, hdrs, later, 0)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "locked"
+    later = await _fresh(db, later)
+    assert later.opened_at is None and later.slide_reached is None
 
 
 async def test_sign_slides_requires_last_slide(client, db, seeded_user):
@@ -733,6 +754,33 @@ async def test_slide_progress_is_per_language(client, db, seeded_user):
     assert r.status_code == 200, r.text
     signoff = await db.scalar(select(LearningSignoff))
     assert signoff.language == "ja" and signoff.slides_viewed == 2
+
+
+async def test_slide_progress_resets_when_a_translation_shrinks(client, db, seeded_user):
+    doc = await _slides_doc(db)
+    ja = LearningTranslation(version_id=doc.current_version_id, language="ja",
+                             status="published", title="ja",
+                             content_html="<h2>あ</h2><h2>い</h2><h2>う</h2>")
+    db.add(ja)
+    await db.commit()
+    wanda, hdrs = await _learner(db)
+    row = await _assign(db, wanda, doc, opened_ago=600)
+    for n in range(3):
+        assert (await _reach(client, hdrs, row, n, language="ja")).status_code == 200
+    # the translation is edited and republished in place, one slide shorter
+    ja.content_html = "<h2>あ</h2><h2>い</h2>"
+    await db.commit()
+    shown = (await client.get(f"/learn/assignments/{row.id}?lang=ja", headers=hdrs)).json()
+    assert shown["slide_count"] == 2 and shown["slide_reached"] is None
+    sign = {**SIGN, "scrolled_to_end": False, "language": "ja"}
+    r = await client.post(f"/learn/assignments/{row.id}/sign", headers=hdrs, json=sign)
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "slides_required"
+    assert (await _reach(client, hdrs, row, 0, language="ja")).json() == {
+        "slide_reached": 0, "slide_count": 2}
+    assert (await _reach(client, hdrs, row, 1, language="ja")).json()["slide_reached"] == 1
+    r = await client.post(f"/learn/assignments/{row.id}/sign", headers=hdrs, json=sign)
+    assert r.status_code == 200, r.text
+    assert (await db.scalar(select(LearningSignoff))).slides_viewed == 2
 
 
 async def test_unpublished_language_reaches_and_signs_in_english(client, db, seeded_user):

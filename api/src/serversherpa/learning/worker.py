@@ -311,13 +311,19 @@ async def served_html(db: AsyncSession, version: LearningDocumentVersion,
 
 
 def effective_reached(assignment: LearningAssignment, version_id: uuid.UUID,
-                      language: str) -> int | None:
-    """The furthest slide reached, only while it was reached at this version
-    and in this language: a new version, or another language (whose slides
-    may be split differently), starts over."""
-    if assignment.slide_version_id == version_id and assignment.slide_language == language:
-        return assignment.slide_reached
-    return None
+                      language: str, count: int) -> int:
+    """The furthest slide reached (-1 for none) in the served deck of `count`
+    slides, only while it was reached at this version and in this language:
+    a new version, or another language (whose slides may be split
+    differently), starts over. A published translation can be edited and
+    republished in place for the same version, so the deck can change under
+    stored progress: progress past a shrunk deck resets (else the last slide
+    could never be reached again), while a grown deck keeps progress by index."""
+    reached = assignment.slide_reached
+    if (reached is None or reached >= count or assignment.slide_version_id != version_id
+            or assignment.slide_language != language):
+        return -1
+    return reached
 
 
 def _start_reading(assignment: LearningAssignment) -> None:
@@ -353,9 +359,17 @@ async def read(db: AsyncSession, assignment: LearningAssignment, lang: str | Non
         "reading_style": document.reading_style,
         "slides": slides,
         "slide_count": len(slides) if slides is not None else None,
-        "slide_reached": (effective_reached(assignment, version.id, language)
-                          if slides is not None else None),
+        "slide_reached": _reached_or_none(assignment, version.id, language, slides),
     }
+
+
+def _reached_or_none(assignment: LearningAssignment, version_id: uuid.UUID, language: str,
+                     slides: list[str] | None) -> int | None:
+    """`slide_reached` as the Reader is given it: None for no progress."""
+    if slides is None:
+        return None
+    reached = effective_reached(assignment, version_id, language, len(slides))
+    return reached if reached >= 0 else None
 
 
 async def reach_slide(db: AsyncSession, person_id: uuid.UUID, assignment_id: uuid.UUID,
@@ -382,10 +396,10 @@ async def reach_slide(db: AsyncSession, person_id: uuid.UUID, assignment_id: uui
     count = slide_count(html)
     if n >= count:
         raise _err(422, "slide_out_of_range")
-    reached = effective_reached(assignment, version.id, served)
-    if n > (-1 if reached is None else reached) + 1:
+    reached = effective_reached(assignment, version.id, served, count)
+    if n > reached + 1:
         raise _err(422, "slide_not_reached")
-    assignment.slide_reached = max(-1 if reached is None else reached, n)
+    assignment.slide_reached = max(reached, n)
     assignment.slide_version_id = version.id
     assignment.slide_language = served
     _start_reading(assignment)
@@ -449,7 +463,8 @@ async def sign(db: AsyncSession, person_id: uuid.UUID, assignment_id: uuid.UUID,
     if document.reading_style == "slides":
         # the slides stand in for the scroll
         slides_viewed = slide_count(html)
-        if effective_reached(assignment, version.id, language) != slides_viewed - 1:
+        reached = effective_reached(assignment, version.id, language, slides_viewed)
+        if reached != slides_viewed - 1:
             raise _err(422, "slides_required")
     elif document.require_scroll and not scrolled_to_end:
         raise _err(422, "scroll_required")

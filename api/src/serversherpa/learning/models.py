@@ -228,7 +228,7 @@ class LearningAssignment(Base):
     quiz_locked_at: Mapped[datetime | None]
     # attempts a manager unlock forgave: they no longer count toward the limit
     quiz_attempts_forgiven: Mapped[int] = mapped_column(Integer, server_default=text("0"))
-    # slides: the furthest slide reached (1-based), and the version and
+    # slides: the furthest slide reached (0-based), and the version and
     # language that position was counted in
     slide_reached: Mapped[int | None]
     slide_version_id: Mapped[uuid.UUID | None] = mapped_column(

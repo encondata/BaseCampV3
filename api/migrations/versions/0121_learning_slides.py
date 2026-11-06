@@ -2,9 +2,10 @@
 
 `learning_documents.reading_style` (default 'document') says whether a worker
 reads the page top to bottom or steps through it as slides. A slide deck is
-the page's own content split at its horizontal rules, so nothing is stored per
-slide; the assignment remembers how far a worker got instead:
-`learning_assignments.slide_reached` (1-based, null = not started),
+the page's own content split at its top-level <h2> headings (the editor's ##
+headings), so nothing is stored per slide; the assignment remembers how far a
+worker got instead:
+`learning_assignments.slide_reached` (0-based, null = not started),
 `slide_version_id` (the version that position was counted in, cleared if the
 version is deleted) and `slide_language` (the translation it was counted in).
 
