@@ -1,13 +1,15 @@
 """What the kiosk's Dock screen reads (dock station spec): the overview
-(settings, the open pass, the newest closed passes) and one closed pass's
+(the open pass, the newest closed passes) and one closed pass's
 detail (its tags with what packing did, every read behind it).
 
 The open pass is the grouper's open burst, not yet decided into passes,
 shown with the grouper's own window test and the move's cached assets.
-Plain reads of the edge's own tables; nothing here touches the network or
-changes a row. `overview` takes `now` so the open pass's countdown can be
-pinned in tests. An open pass has no detail yet (the overview shows it
-whole), so `detail` answers None for it, as for an unknown id."""
+Nothing in it counts down: the grouper decides it once the reader's clock
+passes its settle time or, with no more reads, once the laptop's clock has
+(edge.dock.grouper). Plain reads of the edge's own tables; nothing here
+touches the network or changes a row. An open pass has no detail yet (the
+overview shows it whole), so `detail` answers None for it, as for an
+unknown id."""
 
 from datetime import datetime, timedelta
 
@@ -21,8 +23,9 @@ FLAGS = ("no_crate", "many_crates")  # the outcomes the screen flags
 
 def _status(row) -> str:
     """The first that applies: `flagged` (no crate or several), `nothing`,
-    `would_pack` (a dry run, so nothing was or will be sent), `waiting` (to be
-    sent), `packed` (sent) or `refused` (the portal turned it away)."""
+    `would_pack` (decided from reads taken in dry run, before it was removed,
+    so nothing was or will be sent), `waiting` (to be sent), `packed` (sent)
+    or `refused` (the portal turned it away)."""
     if row["outcome"] in FLAGS:
         return "flagged"
     if row["outcome"] == "nothing":
@@ -66,9 +69,8 @@ def _serial(assets: dict[str, dict], tag) -> str | None:
     return item.get("serial_number") or None
 
 
-def _open_pass(store: Store, window_s: int, now: datetime) -> dict | None:
-    """The burst still open (always the newest row), with the seconds left
-    before it is decided if no new tag is read: 2W after its last new tag.
+def _open_pass(store: Store, window_s: int) -> dict | None:
+    """The burst still open (always the newest row), not yet decided.
 
     It is shown as deciding it now would split it, with the grouper's own
     window test: the crates read so far by first read (their anchors), each
@@ -79,11 +81,10 @@ def _open_pass(store: Store, window_s: int, now: datetime) -> dict | None:
     the newest crate's window. Each asset tag has its serial, `in_window`
     (None until a crate is read) and the newest crate whose window holds it.
     The same few queries whatever the number of reads."""
-    row = store.one("SELECT id, initiative_id, opened_at, last_new_received_at FROM dock_passes "
+    row = store.one("SELECT id, initiative_id, opened_at FROM dock_passes "
                     "WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1")
     if row is None:
         return None
-    elapsed = (now - datetime.fromisoformat(row["last_new_received_at"])).total_seconds()
     tags = store.all("SELECT epc, kind, label, matched_id FROM dock_pass_tags "
                      "WHERE pass_id = ? ORDER BY rowid", (row["id"],))
     times: dict[str, list[datetime]] = {}   # epc -> its read times, sorted
@@ -117,8 +118,6 @@ def _open_pass(store: Store, window_s: int, now: datetime) -> dict | None:
                        crate_label=crates[max(found)]["label"] if found else None)
         shown.append(tag)
     return {"id": row["id"], "opened_at": row["opened_at"],
-            "seconds_left": round(max(0.0, 2 * window_s - elapsed), 3),
-            "window_s": window_s,
             "crate_count": _distinct(tags, "container"),
             "asset_count": _distinct(tags, "asset"),
             "crates": [{"epc": t["epc"], "label": t["label"], "first_read_at": _ms(a),
@@ -129,14 +128,12 @@ def _open_pass(store: Store, window_s: int, now: datetime) -> dict | None:
             "tags": shown}
 
 
-def overview(store: Store, now: datetime) -> dict:
-    """The settings, the open pass (or None) and the newest `RECENT` closed
-    passes, newest first."""
-    settings = state.settings(store)
+def overview(store: Store) -> dict:
+    """The open pass (or None) and the newest `RECENT` closed passes, newest
+    first."""
     closed = store.all("SELECT * FROM dock_passes WHERE closed_at IS NOT NULL "
                        "ORDER BY id DESC LIMIT ?", (RECENT,))
-    return {"settings": settings,
-            "open": _open_pass(store, settings["quiet_gap_s"], now),
+    return {"open": _open_pass(store, state.WINDOW_S),
             "passes": [_pass_row(r) for r in closed]}
 
 

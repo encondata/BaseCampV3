@@ -32,13 +32,13 @@ def stamp(seconds: float) -> str:
     return at(seconds).isoformat(timespec="milliseconds")
 
 
-def open_pass(store, seconds: float) -> dict:
-    return views.overview(store, at(seconds))["open"]
+def open_pass(store) -> dict:
+    return views.overview(store)["open"]
 
 
-def shown(store, seconds: float, *fields) -> dict:
+def shown(store, *fields) -> dict:
     """epc -> the given fields of each tag in the open burst."""
-    return {t["epc"]: tuple(t[f] for f in fields) for t in open_pass(store, seconds)["tags"]}
+    return {t["epc"]: tuple(t[f] for f in fields) for t in open_pass(store)["tags"]}
 
 
 def test_open_pass_shows_the_spec_example(store):
@@ -46,8 +46,7 @@ def test_open_pass_shows_the_spec_example(store):
     for epc, s in (("AA01", 0), ("CC01", 2), ("AA02", 6), ("AA03", 8)):
         read(store, epc, s)
     group(store, 8)
-    body = open_pass(store, 9)
-    assert body["window_s"] == 5
+    body = open_pass(store)
     assert body["crates"] == [{"epc": "CC01", "label": "Crate 1", "first_read_at": stamp(2),
                                "conflict": False}]
     assert body["conflict"] is False and body["added_count"] == 2
@@ -63,23 +62,35 @@ def test_open_pass_shows_the_spec_example(store):
          "serial": None, "in_window": False, "crate_label": None}]
 
 
+def test_open_pass_has_no_countdown(store):
+    dock(store)
+    batch(store, [("AA01", 0), ("CC01", 2)])
+    group(store, 2)
+    body = open_pass(store)
+    assert "seconds_left" not in body and "window_s" not in body
+    assert set(body) == {"id", "opened_at", "crate_count", "asset_count", "crates", "conflict",
+                         "added_count", "tags"}
+    assert [c["epc"] for c in body["crates"]] == ["CC01"] and body["conflict"] is False
+    assert body["added_count"] == 1 and [t["epc"] for t in body["tags"]] == ["AA01", "CC01"]
+
+
 def test_open_pass_before_a_crate_is_read(store):
     dock(store, people=[JANE])
     batch(store, [("AA01", 0), ("BB01", 0.5), ("AA02", 1)])
     group(store, 1)
-    body = open_pass(store, 2)
+    body = open_pass(store)
     assert body["crates"] == [] and body["conflict"] is False and body["added_count"] == 0
     fields = ("kind", "serial", "in_window", "crate_label")
-    assert shown(store, 2, *fields) == {"AA01": ("asset", "SN1", None, None),
-                                        "BB01": ("person", None, None, None),
-                                        "AA02": ("asset", "SN2", None, None)}
+    assert shown(store, *fields) == {"AA01": ("asset", "SN1", None, None),
+                                     "BB01": ("person", None, None, None),
+                                     "AA02": ("asset", "SN2", None, None)}
     read(store, "CC01", 4)                        # the crate: each asset is in its window or not
     group(store, 4)
-    assert shown(store, 5, *fields) == {"AA01": ("asset", "SN1", True, "Crate 1"),
-                                        "BB01": ("person", None, None, None),
-                                        "AA02": ("asset", "SN2", True, "Crate 1"),
-                                        "CC01": ("container", None, None, None)}
-    assert open_pass(store, 5)["added_count"] == 2
+    assert shown(store, *fields) == {"AA01": ("asset", "SN1", True, "Crate 1"),
+                                     "BB01": ("person", None, None, None),
+                                     "AA02": ("asset", "SN2", True, "Crate 1"),
+                                     "CC01": ("container", None, None, None)}
+    assert open_pass(store)["added_count"] == 2
 
 
 def test_open_pass_serials_come_from_the_move_cache(store):
@@ -87,29 +98,29 @@ def test_open_pass_serials_come_from_the_move_cache(store):
     batch(store, [("AA01", 0), ("AA02", 0.5), ("AA03", 0.7), ("EE01", 1)])
     group(store, 1)
     # off-move (EE01) is not one of the move's assets: no serial, like a person
-    assert shown(store, 2, "serial") == {"AA01": ("SN1",), "AA02": ("SN2",), "AA03": (None,),
-                                         "EE01": (None,)}
+    assert shown(store, "serial") == {"AA01": ("SN1",), "AA02": ("SN2",), "AA03": (None,),
+                                      "EE01": (None,)}
     set_cache(store, "assets", {"initiative_id": MOVE, "assets": [
         {**ASSETS[0], "serial_number": "SN1-B"},             # re-synced with a new serial
         {**ASSETS[1], "rfid": "AA09"},                       # its tag moved to another asset
         {"id": "a-9", "asset_id": "A-9", "serial_number": "SN9", "rfid": "AA02"},
         {**ASSETS[2], "serial_number": "SN3"}]})
-    assert shown(store, 2, "serial") == {"AA01": ("SN1-B",), "AA02": (None,), "AA03": ("SN3",),
-                                         "EE01": (None,)}
+    assert shown(store, "serial") == {"AA01": ("SN1-B",), "AA02": (None,), "AA03": ("SN3",),
+                                      "EE01": (None,)}
     store.run("DELETE FROM cache")                # the move's data gone: still answers
-    assert shown(store, 2, "serial") == {"AA01": (None,), "AA02": (None,), "AA03": (None,),
-                                         "EE01": (None,)}
+    assert shown(store, "serial") == {"AA01": (None,), "AA02": (None,), "AA03": (None,),
+                                      "EE01": (None,)}
 
 
 @pytest.mark.parametrize("reads", [
     [("AA01", 0), ("CC01", 2), ("AA02", 6), ("AA03", 8)],                    # the spec's example
     [("AA01", 0), ("CC01", 5), ("AA02", 10), ("AA03", 10.2)],                # W either side
-    [("AA01", 0), ("CC01", 2), ("AA02", 8), ("CC02", 15), ("AA03", 16)],     # two crates apart
+    [("AA01", 0), ("CC01", 2), ("AA02", 8), ("AA03", 12), ("CC02", 15)],     # two crates apart
     [("CC01", 0), ("AA01", 1), ("CC02", 7), ("AA02", 8), ("AA03", 13.5)],    # two within 2W
     [("CC01", 0), ("AA01", 1), ("AA02", 6), ("AA01", 10), ("CC02", 11),      # an asset in both
      ("AA03", 12)],                                                          # windows
     [("CC01", 0), ("CC02", 7)],                                              # crates only
-    [("CC01", 0), ("CC02", 7), ("AA01", 12), ("CC03", 20), ("AA02", 21)],    # flagged, then
+    [("CC01", 0), ("CC02", 7), ("AA01", 12), ("AA02", 16), ("CC03", 20)],    # flagged, then
 ], ids=["spec", "edges", "apart", "within_2w", "shared_asset", "crates_only",  # one apart
         "flagged_then_apart"])
 def test_open_pass_window_status_matches_the_decision(store, reads):
@@ -118,8 +129,8 @@ def test_open_pass_window_status_matches_the_decision(store, reads):
         read(store, epc, s)
     last = reads[-1][1]
     group(store, last)
-    body = open_pass(store, last)
-    assert group(store, last + 11).closed          # decided: 2W + 1 s after the last read
+    body = open_pass(store)
+    assert group(store, last + 11).closed          # decided: at most 2W + 1 s after the last read
     landed = {t[0]: (p["outcome"], p["container_name"])
               for p in passes(store) for t in tags(store, p) if t[1] == "asset"}
     crates = {t[0]: p["outcome"] for p in passes(store) for t in tags(store, p)
@@ -138,49 +149,50 @@ def test_open_pass_window_status_matches_the_decision(store, reads):
 
 
 def test_open_pass_reports_crates_and_conflict(store):
-    dock(store)
+    dock(store, people=[JANE])
 
-    def crates(seconds):
+    def crates():
         return [(c["epc"], c["label"], c["first_read_at"], c["conflict"])
-                for c in open_pass(store, seconds)["crates"]]
+                for c in open_pass(store)["crates"]]
 
     # 7 s apart, posted newest first: listed by first read, flagged together
     batch(store, [("CC02", 7), ("CC01", 0), ("AA01", 1), ("AA02", 8)])
     group(store, 8)
-    assert crates(9) == [("CC01", "Crate 1", stamp(0), True), ("CC02", "Crate 2", stamp(7), True)]
-    body = open_pass(store, 9)
+    assert crates() == [("CC01", "Crate 1", stamp(0), True), ("CC02", "Crate 2", stamp(7), True)]
+    body = open_pass(store)
     assert body["conflict"] is True and body["added_count"] == 1     # AA02, in Crate 2's window
-    assert shown(store, 9, "in_window", "crate_label")["AA01"] == (True, "Crate 1")
-    assert shown(store, 9, "in_window", "crate_label")["AA02"] == (True, "Crate 2")
+    assert shown(store, "in_window", "crate_label")["AA01"] == (True, "Crate 1")
+    assert shown(store, "in_window", "crate_label")["AA02"] == (True, "Crate 2")
 
     # 13 s apart: decided separately
     batch(store, [("CC01", 100), ("AA02", 108), ("CC02", 113)])
     group(store, 113)
-    assert crates(114) == [("CC01", "Crate 1", stamp(100), False),
-                           ("CC02", "Crate 2", stamp(113), False)]
-    body = open_pass(store, 114)
+    assert crates() == [("CC01", "Crate 1", stamp(100), False),
+                        ("CC02", "Crate 2", stamp(113), False)]
+    body = open_pass(store)
     assert body["conflict"] is False and body["added_count"] == 1    # W after Crate 2, inclusive
-    assert shown(store, 114, "crate_label")["AA02"] == ("Crate 2",)
+    assert shown(store, "crate_label")["AA02"] == ("Crate 2",)
 
     # exactly 2W apart: flagged
     batch(store, [("CC01", 200), ("CC02", 210)])
     group(store, 210)
-    assert open_pass(store, 211)["conflict"] is True
-    assert [c[3] for c in crates(211)] == [True, True]
+    assert open_pass(store)["conflict"] is True
+    assert [c[3] for c in crates()] == [True, True]
 
     # 11 s apart, but an asset read in both windows flags them, as the decision does
-    batch(store, [("CC01", 300), ("AA01", 301), ("AA01", 310), ("CC02", 311)])
+    # (Jane walking through at 307 keeps the burst open for Crate 2)
+    batch(store, [("CC01", 300), ("AA01", 301), ("BB01", 307), ("AA01", 310), ("CC02", 311)])
     group(store, 311)
-    body = open_pass(store, 312)
+    body = open_pass(store)
     assert body["conflict"] is True and body["added_count"] == 1
-    assert shown(store, 312, "crate_label")["AA01"] == ("Crate 2",)   # the newest holding it
-    assert [c[3] for c in crates(312)] == [True, True]
+    assert shown(store, "crate_label")["AA01"] == ("Crate 2",)   # the newest holding it
+    assert [c[3] for c in crates()] == [True, True]
 
     # a flagged pair, then a crate apart from them: only the pair is flagged
-    batch(store, [("CC01", 400), ("CC02", 407), ("AA01", 412), ("CC03", 420), ("AA02", 421)])
-    group(store, 421)
-    body = open_pass(store, 422)
-    assert [c[3] for c in crates(422)] == [True, True, False]
+    batch(store, [("CC01", 400), ("CC02", 407), ("AA01", 412), ("AA02", 416), ("CC03", 420)])
+    group(store, 420)
+    body = open_pass(store)
+    assert [c[3] for c in crates()] == [True, True, False]
     assert body["conflict"] is True and body["added_count"] == 1     # AA02, in Crate 3
 
 
@@ -194,7 +206,7 @@ def test_open_pass_counts_crates_like_the_decision(store):
         {**CRATES[0], "rfid_tag": "CC09"}, *CRATES[1:]]})
     read(store, "CC09", 3)
     group(store, 3)
-    body = open_pass(store, 4)
+    body = open_pass(store)
     assert [(c["epc"], c["label"], c["conflict"]) for c in body["crates"]] == [
         ("CC01", "Crate 1", False), ("CC09", "Crate 1", False)]
     assert body["conflict"] is False and body["crate_count"] == 1
@@ -210,10 +222,10 @@ def test_open_pass_read_times_near_the_ends_of_time(store):
     post(store, [tag_event("CC01", timestamp="9999-12-31T23:59:59.999+0000")], 0)
     post(store, [tag_event("AA01", timestamp="0001-01-01T00:00:00+0000")], 1)
     group(store, 1)
-    body = open_pass(store, 2)
+    body = open_pass(store)
     assert body["crates"] == [{"epc": "CC01", "label": "Crate 1", "first_read_at": stamp(0),
                                "conflict": False}]
-    assert shown(store, 2, "first_read_at", "in_window", "crate_label") == {
+    assert shown(store, "first_read_at", "in_window", "crate_label") == {
         "CC01": (stamp(0), None, None), "AA01": (stamp(1), True, "Crate 1")}
     assert body["added_count"] == 1
     group(store, 12)
@@ -227,11 +239,11 @@ def test_open_pass_with_many_reads(store, tmp_path):
     def counted(s):
         """The open pass and how many statements the overview ran (its move
         indexes already warm)."""
-        views.overview(s, at(9))
+        views.overview(s)
         seen = []
         s.conn.set_trace_callback(seen.append)
         try:
-            return open_pass(s, 9), len(seen)
+            return open_pass(s), len(seen)
         finally:
             s.conn.set_trace_callback(None)
 
@@ -247,6 +259,6 @@ def test_open_pass_with_many_reads(store, tmp_path):
         (many_body, many_n), (few_body, few_n) = counted(store), counted(few)
         assert many_body == few_body and many_n == few_n
         assert many_body["added_count"] == 1
-        assert shown(store, 9, "in_window")["AA03"] == (False,)
+        assert shown(store, "in_window")["AA03"] == (False,)
     finally:
         few.close()

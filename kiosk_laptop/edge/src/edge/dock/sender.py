@@ -10,9 +10,9 @@ crates pack on the portal in the order they went through the curtain. A
 resend reuses the pass's `pass_id`, so the portal never packs a pass twice
 (a replay gets its first answer back).
 
-Nothing is sent off a Dock setup, without a key, or while dry run is on
-(dry run is a dry run: nothing reaches the portal), checked again after an
-internet probe, which takes a while.
+Nothing is sent off a Dock setup or without a key, checked again after an
+internet probe, which takes a while. (A pass decided from reads taken in dry
+run, before it was removed, is never `pending`, so it is never sent.)
 
 The body carries the pass's crate, its distinct asset ids in first-read
 order, and its close time moved by the portal's clock offset from the last
@@ -48,7 +48,6 @@ from datetime import UTC, datetime, timedelta
 
 from edge import config_sync
 from edge.db import Store, iso
-from edge.dock import state as dock_state
 from edge.rfid import station_key
 from edge.rfid.uploader import GAPS, PAUSE_S, PROBE_AFTER, WAIT_S, _code, probe_200
 from edge.upstream import CloudOffline
@@ -126,8 +125,7 @@ class DockSender:
             return await self._send()
 
     def _may_send(self) -> bool:
-        return station_key.is_dock_setup(self.store) and not dock_state.dry_run_on(self.store) \
-            and station_key.has_key(self.store)
+        return station_key.is_dock_setup(self.store) and station_key.has_key(self.store)
 
     async def _send(self) -> bool:
         if not self._may_send():
@@ -140,7 +138,7 @@ class DockSender:
                 self._set(p, waiting_for_internet=1, next_attempt_at=self._at(WAIT_S))
                 return False
             self._set(p, waiting_for_internet=0)
-            if not self._may_send():   # dry run or the setup changed while it probed
+            if not self._may_send():   # the setup changed while it probed
                 return False
         body = self._body(p)
         try:

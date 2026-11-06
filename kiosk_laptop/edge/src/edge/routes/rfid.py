@@ -125,8 +125,8 @@ async def start_reader(st, session: EdgeSession) -> dict:
 
 
 async def stop_reader(st, session: EdgeSession) -> dict:
-    """Stop the paired reader, for /stop and the Dock screen's Pause and
-    Stop. It raises as `start_reader` does."""
+    """Stop the paired reader, for /stop and the Dock screen's Stop. It
+    raises as `start_reader` does."""
     async with st.pair_lock:
         token = _token(st)
         try:

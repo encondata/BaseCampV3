@@ -1,8 +1,8 @@
-"""POST /edge/dock/control: the Dock screen's Start, Pause and Stop (dock
-station spec, "Start, Pause, Stop"). Start starts the reader, Pause stops it
-and leaves the open burst to its own rule, Stop stops it and decides the
-open burst at once, before the reader answers or even when it doesn't. The
-button pressed is remembered as the overview's `control`."""
+"""POST /edge/dock/control: the Dock screen's Start and Stop (dock station spec,
+"Start, Pause, Stop", Pause removed since). Start starts the reader, Stop
+stops it and decides the open burst at once, before the reader answers or
+even when it doesn't. The button pressed is remembered as the overview's
+`control`; any other action, Pause included, is refused."""
 
 import asyncio
 from datetime import UTC, datetime
@@ -15,7 +15,7 @@ from tests.test_dock_grouper import T0, batch, decided, dock, group, passes, rea
 from tests.test_rfid_pairing import code, use_reader
 from tests.test_rfid_reader_control import paired
 
-ACTIONS = ("start", "pause", "stop")
+ACTIONS = ("start", "stop")
 
 
 async def control(client, headers, action):
@@ -54,17 +54,15 @@ async def test_bad_action_is_422(app, client):
     transport = app.state.reader_transport
     seen = len(transport.requests)
     h = make_session(app)
-    for body in ({"action": "jump"}, {}, [1]):
+    for body in ({"action": "jump"}, {"action": "pause"}, {}, [1]):
         r = await client.post("/edge/dock/control", json=body, headers=h)
         assert r.status_code == 422 and code(r) == "bad_request", body
     assert len(transport.requests) == seen
     assert await overview_control(client, h) is None
 
 
-async def test_start_and_pause_drive_the_reader_and_are_remembered(app, client):
+async def test_start_drives_the_reader_and_is_remembered(app, client):
     reader = await paired(app, client)
-    store = app.state.store
-    dock(store)
     h = make_session(app, name="Ann Lee")
     assert await overview_control(client, h) is None
     r = await control(client, h, "start")
@@ -74,14 +72,7 @@ async def test_start_and_pause_drive_the_reader_and_are_remembered(app, client):
     latest = (await client.get("/edge/rfid/events", headers=h)).json()["events"]
     started = [e for e in latest if e["kind"] == "reader_started"]
     assert started and started[0]["detail"] == "FX9600 · Started by Ann Lee"
-    open_burst(store)
-    before = reader.stops
-    r = await control(client, h, "pause")
-    assert r.status_code == 200
-    assert r.json() == {"reading": False, "control": "pause", "decided": 0}
-    assert reader.stops == before + 1
-    assert [p["closed_at"] for p in passes(store)] == [None]   # left to its own rule
-    assert await overview_control(client, h) == "pause"
+    assert await overview_control(client, h) == "start"
 
 
 async def test_start_needs_an_online_session(app, client):
@@ -91,10 +82,9 @@ async def test_start_needs_an_online_session(app, client):
     assert r.status_code == 503 and code(r) == "edge_offline"
     assert reader.starts == []
     assert await overview_control(client, offline) == "start"   # remembered all the same
-    for action in ("pause", "stop"):
-        r = await control(client, offline, action)
-        assert r.status_code == 200, action
-        assert r.json() == {"reading": False, "control": action, "decided": 0}, action
+    r = await control(client, offline, "stop")
+    assert r.status_code == 200
+    assert r.json() == {"reading": False, "control": "stop", "decided": 0}
 
 
 async def test_stop_decides_the_open_burst_at_once(app, client):
@@ -162,3 +152,16 @@ async def test_stop_decides_whatever_the_reader_path_raises(app, client, monkeyp
     with pytest.raises(RuntimeError):
         await control(client, make_session(app), "stop")
     assert decided(store) == [("pack", "c-1", ["a-1"])]
+
+
+async def test_pause_is_refused(app, client):
+    reader = await paired(app, client)
+    transport = app.state.reader_transport
+    h = make_session(app)
+    r = await control(client, h, "start")
+    assert r.status_code == 200
+    seen, stops = len(transport.requests), reader.stops
+    r = await control(client, h, "pause")
+    assert r.status_code == 422 and code(r) == "bad_request"
+    assert len(transport.requests) == seen and reader.stops == stops   # the reader is not called
+    assert await overview_control(client, h) == "start"                # and control is unchanged

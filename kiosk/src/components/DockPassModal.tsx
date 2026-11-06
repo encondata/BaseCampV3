@@ -1,7 +1,7 @@
 /**
  * One closed Dock pass in full (the Dock screen's Details): what packing did
  * with each asset, and every read behind the pass (time, tag, what it
- * matched, antenna, signal), so the window and the antennas can be tuned.
+ * matched, antenna, signal), so the antennas can be tuned.
  * Loads GET /edge/dock/passes/{id}, and again every 2 s while the pass is
  * waiting to be sent, so it shows the portal's answer once it lands; a
  * failed first load says so and the modal still closes. Escape, the scrim

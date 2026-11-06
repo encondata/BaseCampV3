@@ -223,6 +223,8 @@ SCHEMA_STEPS: list[str] = [
     # read (1, else NULL), the laptop's dock settings (one row), its passes with
     # their tags and the raw reads behind them, and the pass grouper's cursor.
     # Like the processor's, the cursor starts after any reads already stored.
+    # (Dry run and the settings are gone since; the columns and the table stay
+    # for laptops upgraded with reads stamped, see edge/dock/state.py.)
     """
     ALTER TABLE raw_tag_reads ADD COLUMN dry_run INTEGER;
     CREATE TABLE dock_settings (id INTEGER PRIMARY KEY CHECK (id = 1),

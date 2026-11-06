@@ -14,10 +14,11 @@ import pytest
 
 from edge import laptop_setup
 from edge.db import iso
-from edge.dock import sender, state
+from edge.dock import sender
 from edge.dock.sender import DockSender
 from edge.rfid import station_key
 from edge.rfid.uploader import GAPS, PAUSE_S, WAIT_S
+from tests.test_dock_grouper import legacy_settings
 
 RAW = "stationkey-dock-sender-SECRET-0123"
 PATH = "/kiosk/station/dock/passes"
@@ -47,10 +48,9 @@ async def _down():
     return False
 
 
-def dock(app, *, dry_run=False, key=True):
-    """A Dock setup on MOVE, dry run off unless asked, with a station key."""
+def dock(app, *, key=True):
+    """A Dock setup on MOVE, with a station key."""
     laptop_setup.save(app.state.store, {"initiative_id": MOVE}, "dock")
-    state.save_settings(app.state.store, dry_run=dry_run)
     if key:
         station_key.store_key(app.state.store, app.state.keys, RAW)
 
@@ -317,25 +317,18 @@ async def test_probe_gate_after_five_failures(app, cloud):
     assert r["send_state"] == "sent" and r["waiting_for_internet"] == 0
 
 
-@pytest.mark.parametrize("change", ["dry_run", "not_dock"])
-async def test_nothing_goes_when_the_setup_changes_during_the_probe(app, cloud, change):
+async def test_nothing_goes_when_the_setup_changes_during_the_probe(app, cloud):
     dock(app)
     store = app.state.store
-    p = add_pass(store, [(ids(1)[0], CLOSED)], attempts=5)
+    add_pass(store, [(ids(1)[0], CLOSED)], attempts=5)
     route = cloud.post(PATH).mock(side_effect=packed_all)
 
     async def probe():
-        if change == "dry_run":
-            state.save_settings(store, dry_run=True)
-        else:
-            laptop_setup.save(store, {"initiative_id": MOVE}, "rfid")
+        laptop_setup.save(store, {"initiative_id": MOVE}, "rfid")
         return True
 
     assert await make(app, probe=probe).send_once() is False
     assert not route.called
-    if change == "dry_run":
-        r = one(store, p)
-        assert r["send_state"] == "pending" and r["attempts"] == 5
 
 
 async def test_under_five_attempts_never_probes(app, cloud):
@@ -347,15 +340,6 @@ async def test_under_five_attempts_never_probes(app, cloud):
         raise AssertionError("probed")
 
     assert await make(app, probe=boom).send_once() is True
-
-
-async def test_idle_while_dry_run_on(app, cloud):
-    dock(app, dry_run=True)
-    p = add_pass(app.state.store, [(ids(1)[0], CLOSED)])
-    route = cloud.post(PATH).mock(side_effect=packed_all)
-    assert await make(app).send_once() is False
-    assert not route.called
-    assert one(app.state.store, p) == p
 
 
 async def test_idle_without_key(app, cloud):
@@ -429,3 +413,15 @@ async def test_background_runs_sender_and_wake_starts_it(app, cloud):
         assert len(calls) == 4
     finally:
         await bg.stop()
+
+
+async def test_live_pack_is_sent_with_legacy_settings_row(app, cloud):
+    dock(app)
+    store = app.state.store
+    legacy_settings(store)                        # a laptop upgraded with dry run on
+    p = add_pass(store, [(ids(1)[0], CLOSED)])
+    assert p["send_state"] == "pending"
+    route = cloud.post(PATH).mock(side_effect=packed_all)
+    assert await make(app).send_once() is True
+    assert route.call_count == 1
+    assert one(store, p)["send_state"] == "sent"

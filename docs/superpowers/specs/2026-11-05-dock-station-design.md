@@ -279,11 +279,13 @@ Plan: `docs/superpowers/plans/2026-11-06-dock-window-controls-theme.md`. Its dec
   - The overview carries `control`, the last button pressed. It lives in memory and is null after an edge restart. It isn't the reader's state: the screen reads that from `/edge/rfid/status`.
 - **Theme:** KioskShell no longer forces a theme on any route. The RFID dashboard, the Dock screen and the Dock modal use only theme tokens. The Dock strip's disabled buttons stay readable in both themes.
 - **Known behaviors, put to Jimmy:**
-  - A burst ends 2W after its last **new** tag. So an asset that's still being re-read when the crate tag is first read more than 2W later is flagged "No crate read", and the crate shows "Nothing to pack".
+  - A burst ends 2W after its last **new** tag. **Decided (Jimmy, 2026-11-06): keep it.** "This is a read once type scenario": each tag is read once as its crate passes the curtain, so re-reads don't hold a pass open. So an asset that's still being re-read when the crate tag is first read more than 2W later is flagged "No crate read", and the crate shows "Nothing to pack".
   - Reads the reader posts between Stop's decision and the reader actually stopping open a new burst. That can show a duplicate "Would pack" or a stray "No crate read".
   - A crate parked in the curtain gets a fresh window about every 2W + 1 s.
 
 ## Dock screen redesign (2026-11-06)
+
+*Superseded in part by "Changes after the second test" below: the countdown, the 6 s result, Paused, Dry run and Window are gone.*
 
 Jimmy approved a mockup that follows the Truck Packing kiosk: `docs/mockups/dock-station-kiosk.html` (untracked, main checkout). Plan: `docs/superpowers/plans/2026-11-06-dock-screen-redesign.md`.
 
@@ -293,3 +295,81 @@ Jimmy approved a mockup that follows the Truck Packing kiosk: `docs/mockups/dock
 - **Recent passes** keeps today's copy and details. The Moved column is gone, as in the mockup; moves still show in the pass details.
 - **Bottom row:** Dry run and Window settings, then Start, Pause and Stop.
 - **Edge:** `/edge/dock`'s `open` adds `window_s`, `crates[]` (with a per-crate `conflict`), `conflict`, `added_count`, and per tag `first_read_at`, `serial`, `in_window` and `crate_label`. These come from the grouper's own `crate_windows` / `crate_groups`, so the screen agrees with the decision.
+
+## Changes after the second test (2026-11-06, Jimmy)
+
+These replace the countdown, the dry run, the Window setting and Pause above. Where they disagree with an earlier section, this one wins.
+
+Jimmy: "the crate scan doesn't start a timer. when the crate tag is scanned we look at a 5 second window around that scan to find the assets to add to the container, no timer." And: "remove the dry run, window time box and … the pause button."
+
+### The rule
+
+- **When a crate tag is read, every asset read within 5 seconds before or after that read goes into the crate.** The crate's first read is the one that counts. The window is fixed at 5 seconds; it is no longer a setting.
+- **Nothing on the screen counts down.** The crate card has no "Finishing in" bar and no timed result.
+
+### What's removed
+
+- **Dry run.** The switch, the setting and its chip are gone. Every crate packs into the portal, and the Dock's reads go up as scans, the same as the RFID station's. Reads taken in dry run before this change keep their stamp, so they still never upload. Passes decided from them keep their "Would pack" label in Recent passes and the pass details, so the history stays truthful.
+- **The Window box.** The window is always 5 s.
+- **Pause.** The screen has Start and Stop only. Stop still stops the reader and finishes the open crate at once with what's been read. Stop is never disabled.
+
+### The screen
+
+- **Crate card:**
+  - Shows "Scanning" until a crate tag is read, then the crate's name.
+  - Once the crate is decided, the card shows the result: green "Packed" when the portal confirms it, the crate's name with "Waiting to send" until then, and red for "No crate read" or "More than one crate".
+  - The result stays until the next tag is read. Any tag counts, because a tag that belonged to the crate would already have been part of it. No timer is involved.
+- **"Assets added to crate" and "In this crate":** both fill in as devices are read. While a result holds the card, the list keeps that crate's devices as last shown.
+- **Bottom row:** Start and Stop.
+
+### Calls I made (Jimmy approved them with "Build it")
+
+- **Two crate tags within 10 s of each other** have overlapping windows, so both crates and their devices are flagged "More than one crate" and nothing in them is packed. This is unchanged from before.
+- **Devices with no crate tag within 5 s** are flagged "No crate read" and aren't packed.
+
+### When the laptop decides (my ruling, not shown on screen)
+
+I told Jimmy the portal would get the crate 5 s after the scan. That's wrong: to honor the 10 s rule above, the laptop has to wait 10 s after the newest crate tag to know no second crate came that close.
+
+So the open burst is decided once the reader's clock passes **the later of** these two times:
+
+- the newest crate's first read + 10 s
+- the newest new tag's first read + 5 s
+
+In the usual case, a crate with its devices read within ±5 s and then a quiet dock, that's 10 s after the crate scan. With no crate, it's 5 s after the last device, and the devices become "No crate read".
+
+This replaces "2W after the last new tag". Re-reads still never hold a burst open: tags are read once at the curtain (Jimmy, round 2).
+
+When no further reads arrive, the laptop clock decides instead: the time above, moved onto the laptop's clock using the newest new read time and the arrival of the newest new tag taken in, plus 1 s. If tags arrive out of order those are two different tags; the arrival is then the later one, so the decision comes late, never early.
+
+**If this is wrong,** dropping the 10 s check would bring the decision down to 5–10 s after the scan.
+
+## Implementation notes for the second-test changes (2026-11-06)
+
+Plan: `docs/superpowers/plans/2026-11-06-dock-no-timer.md`.
+
+**What the trial laptop will feel:** from this build on, every Dock read uploads as a scan and every crate packs in the portal. Reads taken in dry run before the upgrade stay unsent, and their passes keep reading "Would pack".
+
+- **Edge settings:**
+  - `edge.dock.state` is now `WINDOW_S = 5`, `clear_passes` and `reset`.
+  - Nothing reads the `dock_settings` table any more. It stays in the schema, and Clear Setup still empties it.
+  - `tagreads` never stamps `dry_run`. `processing` still files a stamped read as `upload_state = 'dry_run'`, and a pass is dry run only when one of its own reads is stamped.
+  - The uploader's and the sender's Dock dry-run gates are gone. Passes still store `quiet_gap_s` (now 5), which the sender's laptop-clock fallback reads.
+- **Edge routes:** `PUT /edge/dock/settings` is removed. `POST /edge/dock/control` takes `start` or `stop`; `pause` is a 422 that touches neither the reader nor `control`. The overview is `{open, passes, control}`.
+- **Grouper:**
+  - `settle(b, w)` is `max(last_crate_at + 2W, last_new_at + W)`, or `last_new_at + W` with no crate. `last_crate_at` is loaded from `dock_pass_tags.first_read_at`, so a restart in the middle of a burst gives the same time.
+  - A read with `t > settle` decides the burst. With no more reads, the idle path decides at `last_new_received_at + (settle - last_new_at) + 1 s`.
+  - Membership (`_split`, `crate_windows`, `crate_groups`) is unchanged. A no-crate leftover closes at `last_new_at + W`.
+  - `_EDGE` is now 2W + 1 s.
+- **Kiosk:**
+  - A decided pass's result and the burst's device rows, as last polled, hold the crate card until a poll's open burst has any tag. Nothing on the screen is timed.
+  - The held rows follow the pass: Added, Adding, Not packed, No crate read, or More than one crate.
+  - A Stopped or Unreachable chip shows on a held result.
+  - Waiting to send uses the crate-found look; it turns green only once Packed.
+  - The bottom row is Start and Stop.
+- **Known, not fixed:**
+  - If the decision comes from the next burst's first read, the result never takes the card: that read is "the next tag". The pass is still in Recent passes.
+  - Refused assets inside a Packed pass still read Added on the held rows. Recent passes and the details show which ones were refused.
+  - An unnamed crate's held result shows "—" and a count of 0. Containers on a move normally have names.
+  - Right after Stop, the held rows can miss a read from the last second; the count is correct.
+  - An asset re-read late in one burst, close to the next burst's crate, isn't flagged. Tags are read once at the curtain, so this shouldn't come up.

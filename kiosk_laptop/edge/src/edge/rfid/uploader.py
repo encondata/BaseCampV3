@@ -3,9 +3,8 @@
 The same queue carries a Label Station's Labeled scans (`scan_type`
 'barcode', queued by POST /edge/labels/printed); NULL is an RFID scan.
 
-A Dock Station in dry run sends nothing: the uploader holds every row
-(no request, no attempt spent) until dry run is turned off. Scans of reads
-taken in dry run are `upload_state = 'dry_run'` and never go at all.
+Scans of reads a Dock Station took in dry run, before dry run was removed,
+are `upload_state = 'dry_run'` and never go at all.
 
 Every 5 s (and right after the processor inserts) the oldest due `pending`
 rows, at most 50, go to `POST /kiosk/station/scans` under the station key,
@@ -46,7 +45,6 @@ from datetime import UTC, datetime
 import httpx
 
 from edge.db import Store, iso
-from edge.dock import state as dock_state
 from edge.rfid import station_key
 from edge.upstream import CloudOffline
 
@@ -139,15 +137,12 @@ class Uploader:
 
     async def drain_once(self) -> int:
         """Send at most one batch; the number of scans sent (0 when nothing
-        went out: a Dock in dry run, nothing due, no key, or waiting for
-        internet)."""
+        went out: nothing due, no key, or waiting for internet)."""
         async with self.lock:
             self.last_ok = False
             return await self._drain()
 
     async def _drain(self) -> int:
-        if station_key.is_dock_setup(self.store) and dock_state.dry_run_on(self.store):
-            return 0   # dry run is a dry run: nothing reaches the portal
         rows = self.due_rows()
         if not rows:
             return 0
