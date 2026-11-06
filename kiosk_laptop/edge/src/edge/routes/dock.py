@@ -6,7 +6,6 @@ from the control's reader calls, they only read and write the laptop's own
 store."""
 
 import re
-from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request
 
@@ -24,7 +23,7 @@ CONTROLS = ("start", "stop")
 @router.get("")
 async def overview(request: Request) -> dict:
     st = request.app.state
-    return {**views.overview(st.store, datetime.now(UTC)), "control": st.dock_control}
+    return {**views.overview(st.store), "control": st.dock_control}
 
 
 @router.get("/passes/{pass_id}")

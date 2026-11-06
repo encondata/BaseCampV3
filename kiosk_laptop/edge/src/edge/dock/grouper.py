@@ -5,16 +5,22 @@ id order, at most `BATCH` rows, and groups the setup move's reads by the
 reader's own read time. W is the fixed window `state.WINDOW_S` (5 s).
 
 - Reads gather into a burst: the open `dock_passes` row. Any tag opens one,
-  and read order inside it doesn't matter. A burst ends once no NEW tag has
-  been read for 2W: a re-read of a tag already in it is linked to it but
-  never keeps it open, so a crate parked in the curtain still ends it. The
-  next read after that decides the burst and opens the next one.
+  and read order inside it doesn't matter. A burst ends once the reader's
+  clock passes its settle time (`settle`): 2W after its newest crate's
+  first read, or W after its newest NEW tag's first read when that is later
+  (a straggler) or the burst holds no crate. No read after that can fall in
+  one of its crates' windows or chain with them. A re-read of a tag already
+  in it is linked to it but never moves the settle time (tags are read once
+  at the curtain), so a crate parked in the curtain still ends it. The
+  first read past the settle time decides the burst and opens the next one.
 - Times are the reader's `read_at`, so a backlog the reader posts in one
   batch splits exactly as it would have live. A read with no usable
   `read_at` falls back to its `received_at`.
-- An open burst with no further reads is decided on the laptop clock at
-  `last_received_at + 2W + 1 s` (the second covers `received_at`'s
-  one-second resolution, so it is never decided early).
+- An open burst with no further reads is decided on the laptop clock: its
+  settle time moved onto that clock by the newest new tag's own read and
+  arrival times, `last_new_received_at + (settle - last_new_at) + 1 s`, so it
+  holds however far off the reader's clock is. The second covers
+  `received_at`'s one-second resolution, so it is never decided early.
 - The Dock screen's Stop (`decide_now`) groups the backlog, then decides the
   open burst at once with what has been read. A read that arrives after
   that, even one read before it, opens a new burst.
@@ -31,7 +37,7 @@ reader's own read time. W is the fixed window `state.WINDOW_S` (5 s).
   and the grouping (`crate_windows`, `crate_groups`) are shared with the
   Dock screen's view of the open burst, so the screen agrees with them.
 - A crate group's pass closes at its first anchor + W, the no-crate pass at
-  the burst's last new read + 2W.
+  the burst's last new read + W.
 - A pass is dry run (and reads "Would pack") only when one of its own reads
   is stamped `dry_run`: reads taken before dry run was removed. Nothing new
   is stamped, so only such a pass is never sent; every other `pack` waits to
@@ -60,8 +66,8 @@ INTERVAL_S = 1.0
 BATCH = 500
 _IDLE_SLACK = timedelta(seconds=1)   # received_at's resolution
 # the read times a burst can be decided from: one outside them would overflow
-# `last_new_at + 2W` or a window's `anchor - W`, roll the tick back and stall
-# the cursor for good
+# its settle time (up to 2W on) or a window's `anchor - W`, roll the tick back
+# and stall the cursor for good
 _EDGE = timedelta(seconds=2 * state.WINDOW_S) + _IDLE_SLACK
 _EARLIEST = datetime.min.replace(tzinfo=UTC) + _EDGE
 _LATEST = datetime.max.replace(tzinfo=UTC) - _EDGE
@@ -86,6 +92,7 @@ class _Burst:
     last_new_received_at: str
     last_received_at: str
     epcs: set[str]
+    last_crate_at: datetime | None = None   # the newest crate tag's first read
     changed: bool = False
 
 
@@ -161,10 +168,13 @@ def _open_burst(c) -> _Burst | None:
                     "FROM dock_passes ORDER BY id DESC LIMIT 1").fetchone()
     if row is None or row["closed_at"] is not None:
         return None
-    epcs = {r["epc"] for r in c.execute("SELECT epc FROM dock_pass_tags WHERE pass_id = ?",
-                                        (row["id"],))}
+    tags = c.execute("SELECT epc, kind, first_read_at FROM dock_pass_tags WHERE pass_id = ?",
+                     (row["id"],)).fetchall()
+    crates = [datetime.fromisoformat(t["first_read_at"]) for t in tags
+              if t["kind"] == "container"]
     return _Burst(row["id"], datetime.fromisoformat(row["last_new_at"]),
-                  row["last_new_received_at"], row["last_received_at"], epcs)
+                  row["last_new_received_at"], row["last_received_at"],
+                  {t["epc"] for t in tags}, max(crates, default=None))
 
 
 def _open(c, move: str, t: datetime, raw) -> _Burst:
@@ -179,7 +189,8 @@ def _open(c, move: str, t: datetime, raw) -> _Burst:
 
 def _add(c, b: _Burst, raw, t: datetime, indexes: dict[str, dict[str, dict]]) -> None:
     """Link one read to the open burst. Only a tag new to the burst is
-    classified and moves the burst's last new read on."""
+    classified and moves the burst's last new read (and, for a crate, its
+    newest crate read) on."""
     received = iso(raw["received_at"])
     if raw["epc"] not in b.epcs:
         kind, matched_id, label = classify(indexes, raw["epc"])
@@ -189,6 +200,8 @@ def _add(c, b: _Burst, raw, t: datetime, indexes: dict[str, dict[str, dict]]) ->
         b.epcs.add(raw["epc"])
         b.last_new_at = max(b.last_new_at, t)
         b.last_new_received_at = received
+        if kind == "container":
+            b.last_crate_at = t if b.last_crate_at is None else max(b.last_crate_at, t)
     c.execute("INSERT OR IGNORE INTO dock_pass_reads (pass_id, raw_read_id) VALUES (?, ?)",
               (b.id, raw["id"]))
     b.last_received_at = max(b.last_received_at, received)
@@ -199,6 +212,16 @@ def _save(c, b: _Burst) -> None:
     c.execute("UPDATE dock_passes SET last_new_at = ?, last_new_received_at = ?, "
               "last_received_at = ? WHERE id = ?",
               (_stamp(b.last_new_at), b.last_new_received_at, b.last_received_at, b.id))
+
+
+def settle(b: _Burst, w: timedelta) -> datetime:
+    """When the burst is decided, on the reader's clock: 2W after its newest
+    crate's first read, or W after its newest new tag's when that is later
+    or it holds no crate. A crate's first read here is the first one taken
+    in: an earlier read of it taken in later only makes the true anchor
+    earlier, so this is never early."""
+    end = b.last_new_at + w
+    return end if b.last_crate_at is None else max(b.last_crate_at + 2 * w, end)
 
 
 def _near(times: list[datetime], at: datetime, w: timedelta) -> bool:
@@ -306,7 +329,7 @@ def _decide(c, b: _Burst, w_s: int) -> tuple[int, int]:
         crate_id = crate_name = anchor_at = anchor_received_at = None
         if g.anchor is None:
             outcome = "no_crate" if assets else "nothing"
-            closed = b.last_new_at + 2 * w
+            closed = b.last_new_at + w
         else:
             anchor, anchor_received_at = g.anchor
             anchor_at, closed = _stamp(anchor), anchor + w
@@ -344,7 +367,7 @@ def group(store: Store, now: datetime | None = None, *, decide: bool = False) ->
                 _set_cursor(c, newest)   # never grouped later, not even on a Dock
             return GroupResult(0, 0, 0, False)
         w_s = state.WINDOW_S
-        burst_gap = timedelta(seconds=2 * w_s)   # a burst ends 2W after its last new tag
+        w = timedelta(seconds=w_s)
         rows = c.execute("SELECT id, epc, read_at, received_at, initiative_id "
                          "FROM raw_tag_reads WHERE id > ? ORDER BY id LIMIT ?",
                          (last, BATCH)).fetchall()
@@ -359,7 +382,7 @@ def group(store: Store, now: datetime | None = None, *, decide: bool = False) ->
                         waiting = True
                         break  # set up but not synced: stop here, never skip it
                 t = read_time(raw)
-                if current is not None and t - current.last_new_at > burst_gap:
+                if current is not None and t > settle(current, w):
                     decided, sends = _decide(c, current, w_s)
                     closed, to_send, current = closed + decided, to_send + sends, None
                 if current is None:
@@ -368,7 +391,8 @@ def group(store: Store, now: datetime | None = None, *, decide: bool = False) ->
             advanced = raw["id"]   # another move's read (or none) is skipped
             scanned += 1
         if current is not None:
-            idle_at = datetime.fromisoformat(current.last_received_at) + burst_gap + _IDLE_SLACK
+            idle_at = (datetime.fromisoformat(current.last_new_received_at)
+                       + (settle(current, w) - current.last_new_at) + _IDLE_SLACK)
             if not waiting and len(rows) < BATCH and (decide or now >= idle_at):
                 decided, sends = _decide(c, current, w_s)
                 closed, to_send = closed + decided, to_send + sends

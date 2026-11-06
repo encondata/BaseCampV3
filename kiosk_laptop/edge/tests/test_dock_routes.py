@@ -1,12 +1,11 @@
 """/edge/dock: what the kiosk's Dock screen polls (dock station spec): the
 overview (the open pass, the newest closed passes) and a pass's detail (tags
-with what packing did, every read). Session-gated like /edge/rfid; the views
-take `now` so the open pass's countdown is pinned."""
+with what packing did, every read). Session-gated like /edge/rfid."""
 
 from edge.dock import views
 from tests.conftest import make_session
 from tests.fake_reader import tag_event
-from tests.test_dock_grouper import (at, batch, dock, group, legacy_settings, passes, post, read,
+from tests.test_dock_grouper import (batch, dock, group, legacy_settings, passes, post, read,
                                      reader_time, stamp_dry_run)
 
 
@@ -61,18 +60,18 @@ async def test_overview_with_nothing_yet(app, client):
     assert r.json() == {"open": None, "passes": [], "control": None}
 
 
-def test_open_pass_counts_down_to_its_close(app):
+def test_open_pass_shows_the_burst_so_far(app):
     store = app.state.store
     dock(store)
     batch(store, [("AA01", 0), ("CC01", 1), ("FF99", 1), ("AA02", 1.5)], received=1)
     group(store, 2)
     [p] = passes(store)
     assert p["closed_at"] is None
-    body = views.overview(store, at(3))
+    body = views.overview(store)
     assert body["passes"] == [] and "settings" not in body
     assert body["open"] == {
-        "id": p["id"], "opened_at": p["opened_at"], "seconds_left": 8.0, "window_s": 5,
-        "crate_count": 1, "asset_count": 2, "conflict": False, "added_count": 2,
+        "id": p["id"], "opened_at": p["opened_at"], "crate_count": 1, "asset_count": 2,
+        "conflict": False, "added_count": 2,
         "crates": [{"epc": "CC01", "label": "Crate 1",
                     "first_read_at": "2026-10-16T14:00:01.000+00:00", "conflict": False}],
         "tags": [{"epc": "AA01", "kind": "asset", "label": "Server 1",
@@ -87,10 +86,6 @@ def test_open_pass_counts_down_to_its_close(app):
                  {"epc": "AA02", "kind": "asset", "label": "SN2",
                   "first_read_at": "2026-10-16T14:00:01.500+00:00", "serial": "SN2",
                   "in_window": True, "crate_label": "Crate 1"}]}
-    assert views.overview(store, at(1))["open"]["seconds_left"] == 10.0   # 2W
-    assert views.overview(store, at(4.5))["open"]["seconds_left"] == 6.5
-    assert views.overview(store, at(11))["open"]["seconds_left"] == 0
-    assert views.overview(store, at(500))["open"]["seconds_left"] == 0   # never negative
 
 
 def test_open_pass_counts_distinct_crates_and_assets(app):
@@ -98,8 +93,8 @@ def test_open_pass_counts_distinct_crates_and_assets(app):
     dock(store)
     batch(store, [("CC01", 0), ("CC02", 0.2), ("AA01", 0.4)])
     group(store, 1)
-    assert views.overview(store, at(2))["open"]["crate_count"] == 2
-    assert views.overview(store, at(2))["open"]["asset_count"] == 1
+    assert views.overview(store)["open"]["crate_count"] == 2
+    assert views.overview(store)["open"]["asset_count"] == 1
 
 
 async def test_overview_route_serves_the_open_pass(app, client):
@@ -109,20 +104,19 @@ async def test_overview_route_serves_the_open_pass(app, client):
     group(store, 2)
     body = (await client.get("/edge/dock", headers=make_session(app))).json()
     assert set(body) == {"open", "passes", "control"} and body["passes"] == []
-    assert set(body["open"]) == {"id", "opened_at", "seconds_left", "window_s", "crate_count",
-                                 "asset_count", "crates", "conflict", "added_count", "tags"}
+    assert set(body["open"]) == {"id", "opened_at", "crate_count", "asset_count", "crates",
+                                 "conflict", "added_count", "tags"}
     assert all(set(t) == {"epc", "kind", "label", "first_read_at", "serial", "in_window",
                           "crate_label"} for t in body["open"]["tags"])
     assert [set(c) for c in body["open"]["crates"]] == [
         {"epc", "label", "first_read_at", "conflict"}]
-    assert body["open"]["seconds_left"] == 0   # the pass is long past on the real clock
     assert body["open"]["crate_count"] == 1 and body["open"]["asset_count"] == 1
 
 
 def test_one_closed_pass_per_status(app):
     store = app.state.store
     rows = seed_passes(store)
-    body = views.overview(store, at(1000))
+    body = views.overview(store)
     assert body["open"] is None
     assert [p["id"] for p in body["passes"]] == [r["id"] for r in reversed(rows)]   # newest first
     got = {p["status"]: p for p in body["passes"]}
@@ -151,7 +145,7 @@ def test_a_dry_run_pass_is_would_pack_whatever_its_send_state(app):
     store = app.state.store
     rows = seed_passes(store)
     store.run("UPDATE dock_passes SET send_state = 'sent' WHERE id = ?", (rows[3]["id"],))
-    got = {p["id"]: p["status"] for p in views.overview(store, at(1000))["passes"]}
+    got = {p["id"]: p["status"] for p in views.overview(store)["passes"]}
     assert got[rows[3]["id"]] == "would_pack"
 
 
@@ -161,7 +155,7 @@ def test_only_the_newest_fifty_closed_passes(app):
     dock(store)
     read(store, "AA01", 10_000)
     group(store, 10_001)   # an open pass on top: not a row in the list
-    body = views.overview(store, at(10_002))
+    body = views.overview(store)
     ids = [p["id"] for p in body["passes"]]
     assert ids == list(range(55, 5, -1)) and len(ids) == 50
     assert body["open"]["id"] == 56

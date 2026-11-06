@@ -1,10 +1,11 @@
-"""The Dock Station's pass grouper (dock station spec, "The crate window"):
-reads gather into a burst that ends 2W after its last NEW tag, timed by the
-reader's own read_at (re-reads never keep it open). Deciding a burst anchors
-each crate at its first read: an asset read within W of it packs into it,
-crates within 2W of each other are flagged together, and an asset in no
-crate's window is flagged "No crate read". Ambiguity is flagged, never
-guessed. W = 5 s throughout."""
+"""The Dock Station's pass grouper (dock station spec, "The crate window"
+and "When the laptop decides"): reads gather into a burst that ends 2W after
+its newest crate's first read, or W after its newest NEW tag when that is
+later or there is no crate, timed by the reader's own read_at (re-reads
+never keep it open). Deciding a burst anchors each crate at its first read:
+an asset read within W of it packs into it, crates within 2W of each other
+are flagged together, and an asset in no crate's window is flagged "No crate
+read". Ambiguity is flagged, never guessed. W = 5 s throughout."""
 
 import json
 import uuid
@@ -129,8 +130,8 @@ def test_spec_example_packs_the_crate_window(store):
     ids = [read(store, epc, s) for epc, s in (("AA01", 0), ("CC01", 2), ("AA02", 6), ("AA03", 8))]
     group(store, 8)
     [burst] = passes(store)
-    assert group(store, 18).closed == 0                      # 8 + 2W + 1 s not yet
-    assert group(store, 19) == grouper.GroupResult(scanned=0, closed=2, to_send=1, waiting=False)
+    assert group(store, 13).closed == 0                      # AA03 + W + 1 s not yet
+    assert group(store, 14) == grouper.GroupResult(scanned=0, closed=2, to_send=1, waiting=False)
     pack, left = passes(store)
     assert decided(store) == [("pack", "c-1", ["a-1", "a-2"]), ("no_crate", None, ["a-3"])]
     assert pack["id"] == burst["id"] and pack["pass_id"] == burst["pass_id"] != left["pass_id"]
@@ -143,30 +144,32 @@ def test_spec_example_packs_the_crate_window(store):
                                  ("AA02", "asset", "a-2", "SN2")]
     assert tags(store, left) == [("AA03", "asset", "a-3", "A-3")]
     assert read_ids(store, pack) == ids[:3] and read_ids(store, left) == ids[3:]
-    assert left["anchor_at"] is None and when(left["closed_at"]) == at(18)
+    assert left["anchor_at"] is None and when(left["closed_at"]) == at(13)
     assert (left["send_state"], when(left["opened_at"])) == ("none", at(8))
 
 
 def test_one_burst_packs_each_crate_on_its_own(store):
     dock(store)
+    # AA02 and AA03 each hold the burst open W on, so Crate 2 joins it 13 s
+    # after Crate 1
     ids = [read(store, epc, s) for epc, s in
-           (("AA01", 0), ("CC01", 2), ("AA02", 8), ("CC02", 15), ("AA03", 16))]
-    assert group(store, 26).closed == 0
-    assert group(store, 27) == grouper.GroupResult(scanned=0, closed=3, to_send=2, waiting=False)
+           (("AA01", 0), ("CC01", 2), ("AA02", 8), ("AA03", 12), ("CC02", 15))]
+    assert group(store, 25).closed == 0
+    assert group(store, 26) == grouper.GroupResult(scanned=0, closed=3, to_send=2, waiting=False)
     assert decided(store) == [("pack", "c-1", ["a-1"]), ("no_crate", None, ["a-2"]),
                               ("pack", "c-2", ["a-3"])]
     first, left, second = passes(store)
-    assert [when(p["closed_at"]) for p in (first, left, second)] == [at(7), at(26), at(20)]
+    assert [when(p["closed_at"]) for p in (first, left, second)] == [at(7), at(20), at(20)]
     assert first["id"] < left["id"] < second["id"]
-    assert [when(p["opened_at"]) for p in (first, left, second)] == [at(0), at(8), at(15)]
+    assert [when(p["opened_at"]) for p in (first, left, second)] == [at(0), at(8), at(12)]
     assert [p["send_state"] for p in (first, left, second)] == ["pending", "none", "pending"]
     assert [read_ids(store, p) for p in (first, left, second)] \
         == [ids[:2], [ids[2]], ids[3:]] and cursor(store) == ids[-1]
     assert len({p["pass_id"] for p in (first, left, second)}) == 3
     for p in (first, left, second):                # the burst's own columns on every pass
         assert uuid.UUID(p["pass_id"]).version == 4 and p["initiative_id"] == MOVE
-        assert when(p["last_new_at"]) == at(16) and p["quiet_gap_s"] == 5
-        assert p["last_new_received_at"] == p["last_received_at"] == iso(at(16))
+        assert when(p["last_new_at"]) == at(15) and p["quiet_gap_s"] == 5
+        assert p["last_new_received_at"] == p["last_received_at"] == iso(at(15))
     assert [p["anchor_received_at"] for p in (first, left, second)] \
         == [iso(at(2)), None, iso(at(15))]
 
@@ -230,18 +233,112 @@ def test_an_asset_read_in_two_crate_windows_flags_both(store):
     assert [p["send_state"] for p in passes(store)] == ["none"]
 
 
-def test_burst_ends_two_windows_after_its_last_new_tag(store):
+def test_quiet_dock_decides_ten_seconds_after_the_crate(store):
+    dock(store)
+    for epc, s in (("AA01", 0), ("CC01", 2), ("AA02", 6)):
+        read(store, epc, s)
+    assert group(store, 2 + 10 + 1 - 0.001).closed == 0     # the crate + 2W + 1 s, not yet
+    [p] = passes(store)
+    assert p["closed_at"] is None
+    assert group(store, 2 + 10 + 1).closed == 1
+    assert decided(store) == [("pack", "c-1", ["a-1", "a-2"])]
+
+
+def test_crate_last_decides_ten_after_it(store):
+    dock(store)
+    for epc, s in (("AA01", 0), ("AA02", 1), ("CC01", 3)):
+        read(store, epc, s)
+    assert group(store, 3 + 10 + 1 - 0.001).closed == 0
+    assert group(store, 3 + 10 + 1).closed == 1
+    assert decided(store) == [("pack", "c-1", ["a-1", "a-2"])]
+
+
+def test_no_crate_decides_five_after_last_device(store):
+    dock(store)
+    read(store, "AA01", 0)
+    read(store, "AA02", 2)
+    assert group(store, 2 + 5 + 1 - 0.001).closed == 0      # the last device + W + 1 s
+    assert group(store, 2 + 5 + 1).closed == 1
+    assert decided(store) == [("no_crate", None, ["a-1", "a-2"])]
+    [p] = passes(store)
+    assert when(p["closed_at"]) == at(7)
+
+
+def test_straggler_extends_and_is_no_crate(store):
+    dock(store)
+    for epc, s in (("AA01", 0), ("CC01", 1), ("AA02", 7)):
+        read(store, epc, s)
+        group(store, s)
+    assert group(store, 1 + 10 + 1).closed == 0             # past the crate's 2W: AA02 holds it
+    assert passes(store)[0]["closed_at"] is None
+    assert group(store, 7 + 5 + 1 - 0.001).closed == 0
+    assert group(store, 7 + 5 + 1).closed == 2
+    assert decided(store) == [("pack", "c-1", ["a-1"]), ("no_crate", None, ["a-2"])]
+    _, left = passes(store)
+    assert when(left["closed_at"]) == at(12)                # the straggler + W
+
+
+def test_read_after_settle_opens_new_burst(store):
+    dock(store)
+    for epc, s in (("CC01", 0), ("AA01", 2)):
+        read(store, epc, s)
+        group(store, s)
+    late = read(store, "AA02", 10.5)                        # past the crate + 2W (10 s), live
+    assert group(store, 10.5).closed == 1
+    assert decided(store) == [("pack", "c-1", ["a-1"])]
+    _, second = passes(store)
+    assert second["closed_at"] is None and when(second["opened_at"]) == at(10.5)
+    assert tags(store, second) == [("AA02", "asset", "a-2", "SN2")]
+    assert read_ids(store, second) == [late]
+
+
+def test_read_at_settle_joins(store):
+    dock(store)
+    read(store, "CC01", 0)
+    group(store, 0)
+    read(store, "CC02", 10)                                 # exactly the crate + 2W: inclusive
+    assert group(store, 10).closed == 0
+    [p] = passes(store)
+    assert [t[0] for t in tags(store, p)] == ["CC01", "CC02"]
+    assert group(store, 10 + 10 + 1).closed == 1
+    assert decided(store) == [("many_crates", None, [])]
+
+
+def test_idle_decision_follows_arrival_when_reader_clock_is_off(store):
+    dock(store)
+    behind = 3 * 3600                                       # the reader's clock, 3 h slow
+    for epc, s in (("AA01", 0), ("CC01", 2), ("AA02", 6)):
+        post(store, [tag_event(epc, timestamp=reader_time(s - behind))], s)
+    assert group(store, 2 + 10 + 1 - 0.001).closed == 0     # the crate's arrival + 2W + 1 s
+    assert group(store, 2 + 10 + 1).closed == 1
+    assert decided(store) == [("pack", "c-1", ["a-1", "a-2"])]
+
+
+def test_reread_never_extends(store):
+    dock(store)
+    read(store, "CC01", 0)
+    read(store, "AA01", 1)
+    group(store, 1)
+    for s in (1 + 0.5 * n for n in range(1, 18)):           # 1.5 .. 9.5 s
+        batch(store, [("CC01", s), ("AA01", s)])
+        group(store, s)
+    assert group(store, 0 + 10 + 1 - 0.001).closed == 0
+    assert group(store, 0 + 10 + 1).closed == 1
+    assert decided(store) == [("pack", "c-1", ["a-1"])]
+
+
+def test_burst_without_a_crate_ends_w_after_its_last_new_tag(store):
     dock(store)
     ids = [read(store, epc, s) for epc, s in
-           (("AA01", 0), ("AA02", 10), ("AA01", 15), ("AA01", 19), ("AA03", 20.5))]
-    assert group(store, 20.5).closed == 1
+           (("AA01", 0), ("AA02", 4), ("AA01", 6), ("AA01", 8.5), ("AA03", 9.5))]
+    assert group(store, 9.5).closed == 1
     first, second = passes(store)
     assert decided(store) == [("no_crate", None, ["a-1", "a-2"])]
     assert read_ids(store, first) == ids[:4]
-    assert when(first["last_new_at"]) == at(10) and when(first["closed_at"]) == at(20)
-    assert first["last_new_received_at"] == iso(at(10))
-    assert first["last_received_at"] == iso(at(19))           # re-reads still raise it
-    assert second["closed_at"] is None and when(second["opened_at"]) == at(20.5)
+    assert when(first["last_new_at"]) == at(4) and when(first["closed_at"]) == at(9)
+    assert first["last_new_received_at"] == iso(at(4))
+    assert first["last_received_at"] == iso(at(8))            # re-reads still raise it
+    assert second["closed_at"] is None and when(second["opened_at"]) == at(9.5)
     assert tags(store, second) == [("AA03", "asset", "a-3", "A-3")]
     assert read_ids(store, second) == ids[4:]
 
@@ -344,7 +441,7 @@ def test_backlog_batch_splits_like_live(store, tmp_path):
         batch(backlog, reads, received=70)        # one post, one received_at
         assert group(backlog, 70) == grouper.GroupResult(scanned=6, closed=3, to_send=2,
                                                          waiting=False)
-        assert group(backlog, 80).closed == 0     # the idle rule: received_at + 2W + 1 s
+        assert group(backlog, 80).closed == 0     # idle: CC03's received_at + 2W + 1 s
         assert group(backlog, 81).closed == 1
         assert decided(backlog) == expected
         assert times(backlog) == times(store)
@@ -418,7 +515,7 @@ def test_idle_decision_waits_two_windows_plus_one_second(store):
     dock(store)
     batch(store, [("AA01", 0), ("CC01", 1.5)])    # received at 14:00:01
     assert passes(store) == []
-    group(store, 11)                              # last_received_at + 2W
+    group(store, 11)                              # the crate's received_at + 2W
     [p] = passes(store)
     assert p["last_received_at"] == iso(at(1)) and p["closed_at"] is None
     assert group(store, 12).closed == 1           # + 2W + 1 s
@@ -441,7 +538,7 @@ def test_decide_now_groups_the_backlog_first(store, tmp_path, monkeypatch):
     monkeypatch.setattr(grouper, "BATCH", 2)
     dock(store)
     batch(store, [("CC01", 0), ("AA01", 0.5), ("AA02", 1), ("AA03", 1.5), ("AA01", 2)])
-    # three ticks (2 + 2 + 1 reads), long before the idle decision at 2 + 2W + 1 s
+    # three ticks (2 + 2 + 1 reads), long before the idle decision (at 11.5 s)
     assert grouper.decide_now(store, now=at(2)) == grouper.GroupResult(
         scanned=5, closed=1, to_send=1, waiting=False)
     assert decided(store) == [("pack", "c-1", ["a-1", "a-2", "a-3"])]
