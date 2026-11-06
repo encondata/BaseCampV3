@@ -4,6 +4,7 @@
 import asyncio
 
 import asyncssh
+import pytest
 
 from sirdar_api.deploy import known_hosts, ssh
 
@@ -178,3 +179,34 @@ async def test_command_finished_before_drop_keeps_its_result(db, ssh_server):
     assert result.exit_status == 0 and result.stdout == "Linux 6.8.0-45-generic x86_64\n"
     assert later.exit_status == 0
     assert ssh_server.connections == 2 and lines == [RECONNECT]
+
+
+async def test_silent_server_times_out_then_reconnects(db, ssh_server):
+    """The pooled connection's server stops answering (no FIN, no reset):
+    the next command gives up within its timeout and the one after
+    reconnects."""
+    await _trust(db, ssh_server)
+    cfg, lines = ssh_config(ssh_server), []
+    async with ssh.SshPool() as pool:
+        with ssh.using_pool(pool):
+            assert (await ssh.run_command(cfg, db, "uname -srm")).exit_status == 0
+            ssh_server.server_conns[0]._transport.pause_reading()      # blackholed
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            stuck = await ssh.run_command(cfg, db, "uname -srm", timeout=0.5, log=lines.append)
+            assert loop.time() - started < 3
+            # Let the server see the client's close, or the fixture's wait_closed hangs.
+            ssh_server.server_conns[0]._transport.resume_reading()
+            again = await ssh.run_command(cfg, db, "uname -srm", log=lines.append)
+    assert (stuck.exit_status, stuck.stdout) == (None, "")
+    assert again.exit_status == 0
+    assert ssh_server.connections == 2 and lines == [RECONNECT]
+
+
+async def test_closed_pool_refuses_new_connections(db, ssh_server):
+    await _trust(db, ssh_server)
+    async with ssh.SshPool() as pool:
+        pass
+    with pytest.raises(RuntimeError):
+        await pool.connection(ssh_config(ssh_server), db)
+    assert ssh_server.connections == 0

@@ -86,7 +86,8 @@ class ControlDir:
             for sock in self.path.iterdir():
                 with suppress(OSError, subprocess.SubprocessError):
                     subprocess.run(
-                        ["ssh", "-O", "exit", "-o", f"ControlPath={sock}", "x"],
+                        ["ssh", "-F", "/dev/null", "-O", "exit", "-o", f"ControlPath={sock}",
+                         "x"],
                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL, timeout=5, check=False)
         shutil.rmtree(self.path, ignore_errors=True)

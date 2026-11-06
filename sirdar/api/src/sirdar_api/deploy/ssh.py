@@ -19,6 +19,8 @@ from sirdar_api.deploy import Check, ConnectFailed, ConnectResult, known_hosts
 CONNECT_TIMEOUT = 15
 CONNECT_TRIES = 5            # the office network drops many outbound port-22 connections
 CONNECT_RETRY_DELAY = 3.0
+KEEPALIVE_INTERVAL = 30
+KEEPALIVE_COUNT_MAX = 3
 COMMAND_TIMEOUT = 10
 RUN_TIMEOUT = 60
 OUTPUT_LIMIT = 256 * 1024
@@ -299,6 +301,8 @@ async def _connect(cfg: SshTargetConfig, pinned: PinnedHost,
             # Pin the stored key: (trusted host keys, trusted CA keys, revoked keys).
             known_hosts=([pinned.key], [], []),
             agent_path=None, config=None, connect_timeout=CONNECT_TIMEOUT,
+            # A pooled connection can sit idle; notice a silently dead one.
+            keepalive_interval=KEEPALIVE_INTERVAL, keepalive_count_max=KEEPALIVE_COUNT_MAX,
         ), CONNECT_TIMEOUT + 5)
     except asyncssh.PermissionDenied:
         raise ConnectFailed(_AUTH_FAILED) from None
@@ -343,11 +347,13 @@ class SshPool:
         self._locks: dict[tuple, asyncio.Lock] = {}
         self._lost: set[tuple] = set()
         self._closing: list[asyncssh.SSHClientConnection] = []
+        self._closed = False
 
     async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *exc) -> None:
+        self._closed = True
         conns = [conn for conn, _ in self._conns.values()] + self._closing
         self._conns.clear()
         self._closing = []
@@ -365,6 +371,8 @@ class SshPool:
         stored = await known_hosts.lookup(db, cfg.host, cfg.port)
         key = (cfg.host, cfg.port, cfg.user, stored.fingerprint_sha256 if stored else None)
         async with self._locks.setdefault(key, asyncio.Lock()):
+            if self._closed:               # never an untracked connection after exit
+                raise RuntimeError("The SSH pool is closed.")
             held = self._conns.get(key)
             if held is not None:
                 if not held[0].is_closed():
@@ -373,6 +381,9 @@ class SshPool:
             if key in self._lost and log:
                 log(f"Lost the SSH connection to {cfg.host}; reconnecting.\n")
             held = await open_pinned(cfg, db, tries=tries, log=log)
+            if self._closed:               # the pool exited while this one opened
+                held[0].close()
+                raise RuntimeError("The SSH pool is closed.")
             self._lost.discard(key)
             self._conns[key] = held
             return held
@@ -430,13 +441,16 @@ async def _run_pooled(pool: SshPool, cfg: SshTargetConfig, db: AsyncSession, com
                       log: Callable[[str], None] | None) -> CommandResult:
     """run_command on the pool's connection. A dropped connection (or one
     that refuses new channels) is discarded and the command is never re-run
-    (it may have half-run); a timeout keeps the connection but closes the
+    (it may have half-run). A channel that doesn't open in time means the
+    server stopped answering, so that connection is discarded too. A command
+    timeout keeps the connection but closes the
     command's channel, so timeouts don't use up the server's MaxSessions."""
     conn, _ = await pool.connection(cfg, db, tries=tries, log=log)
     try:
-        process = await conn.create_process(command, errors="replace", input=input)
+        process = await asyncio.wait_for(
+            conn.create_process(command, errors="replace", input=input), timeout)
     except (OSError, asyncssh.ConnectionLost, asyncssh.DisconnectError,
-            asyncssh.ChannelOpenError):
+            asyncssh.ChannelOpenError):   # TimeoutError too: a server that stopped answering
         pool.discard(conn)
         return CommandResult(None, "")
     except asyncssh.Error:
