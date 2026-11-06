@@ -18,6 +18,7 @@ Notifications Phase 2 left assets out of watches because no single place in the 
 - **Move asset page** (`/initiatives/:id/assets/:rowId`): the same button. It watches the asset on that initiative.
 - **Assets list:** each row's Actions ▾ menu gets "Watch…". It reads "Watching…" while the user has a watch on the asset itself, and either one opens the modal.
 - **Initiative page, asset list:** each row's Actions ▾ menu gets the same "Watch…" / "Watching…" item, for the asset on that initiative. **(my call)** Viewers without `initiatives:change` now get the Actions button too, holding only Watch.
+- **(my calls, during the build)** On the initiative list and the move asset page, Watch shows only to people with `assets:view`. A watch set on an initiative also needs the asset, and the move asset page's route needs only `initiatives:view`. The row menu order is Edit, Watch…, Remove, with the destructive item last as in the other row menus.
 
 ### The Watch modal
 
