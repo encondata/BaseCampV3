@@ -113,7 +113,7 @@ it('previews automatically and splits rows into Matched and No match found', asy
   expect(rowEl('No match found', 5).className).toBe('bulk-row-error');
   expect(within(rowEl('No match found', 5)).getByText('Needs a match')).toBeTruthy();
   expect(screen.getByText(
-    '1 matched · 1 discrepancy · 0 to create · 1 needs a match · 1 already assigned · 0 errors',
+    '4 matched · 1 discrepancy · 0 to create · 1 needs a match · 1 already assigned · 0 errors',
   )).toBeTruthy();
 
   // changing a picker re-previews by JSON with the same cells
@@ -218,14 +218,33 @@ it('commit shows the apply summary', async () => {
   expect(screen.queryByRole('table', { name: 'Matched' })).toBeNull();
 });
 
-it('a commit error is mapped and clears the preview', async () => {
-  api.previewAssignBulkFile.mockResolvedValue(preview([row(2, {})]));
+it('a commit error keeps the file and decisions, shows the error and re-previews by JSON', async () => {
+  api.previewAssignBulkFile.mockResolvedValue(preview([row(2, {}), row(3, {})]));
+  api.previewAssignBulk.mockResolvedValue(preview([row(2, {}), row(3, {})]));
   await upload();
+  fireEvent.focus(within(rowEl('Matched', 2)).getByLabelText('Role for row 2'));
+  fireEvent.mouseDown(await screen.findByText('Lead'));
+  await waitFor(() => expect(api.previewAssignBulk).toHaveBeenCalledTimes(1));
   const { ApiError } = await import('../../lib/api');
-  api.commitAssignBulk.mockRejectedValue(new ApiError(409, 'site_archived'));
-  fireEvent.click(screen.getByRole('button', { name: 'Assign 1 worker (0 new)' }));
-  expect(await screen.findByText('That site is archived — pick another.')).toBeTruthy();
-  expect(screen.queryByRole('table', { name: 'Matched' })).toBeNull();
+  api.commitAssignBulk.mockRejectedValue(new ApiError(422, 'rows_invalid'));
+  api.previewAssignBulk.mockResolvedValue(preview([
+    row(2, {}), row(3, { action: 'error', errors: ['Rank guard'] }),
+  ]));
+  fireEvent.click(await screen.findByRole('button', { name: 'Assign 2 workers (0 new)' }));
+  expect(await screen.findByText('Some rows still need attention — resolve them and try again.')).toBeTruthy();
+  await waitFor(() => expect(api.previewAssignBulk).toHaveBeenCalledTimes(2));
+  expect(api.previewAssignBulk).toHaveBeenLastCalledWith('job1', expect.objectContaining({
+    row_numbers: [2, 3], decisions: { 2: { role: 'lead' } },
+  }));
+  expect(await screen.findByText('Rank guard')).toBeTruthy();
+  expect(screen.getByText('Some rows still need attention — resolve them and try again.')).toBeTruthy();
+  expect(screen.getByText('workers.xlsx')).toBeTruthy();
+  expect(api.previewAssignBulkFile).toHaveBeenCalledTimes(1);
+});
+
+it('"matched" in the count line is the Matched panel row count', async () => {
+  await upload();
+  expect(screen.getByText(/^4 matched · /)).toBeTruthy();
 });
 
 it('a newer re-preview wins over an older one', async () => {

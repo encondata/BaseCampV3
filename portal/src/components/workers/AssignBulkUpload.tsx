@@ -104,13 +104,14 @@ export default function AssignBulkUpload({ jobId, siteId, partnerId }: Props) {
     }
   };
 
-  /** JSON re-preview with the current decisions; a newer request wins. */
-  const rerun = async (nextDecisions: AssignDecisions) => {
+  /** JSON re-preview with the current decisions; a newer request wins.
+   *  `keepError` leaves a failed import's message up while it refreshes. */
+  const rerun = async (nextDecisions: AssignDecisions, keepError = false) => {
     if (!base || !jobId || !siteId || !partnerId) return;
     setDecisions(nextDecisions);
     const mine = ++seq.current;
     setPending((p) => p + 1);
-    setError('');
+    if (!keepError) setError('');
     try {
       const next = await previewAssignBulk(jobId, posted(base, nextDecisions));
       if (mine === seq.current) setPreview(next);
@@ -181,12 +182,11 @@ export default function AssignBulkUpload({ jobId, siteId, partnerId }: Props) {
       if (fileRef.current) fileRef.current.value = '';
       setResult(applied);
     } catch (err) {
+      // The file, cells and decisions stay; the preview is stale, so it is
+      // re-run by JSON to show the server's current view of every row.
       setError(mapError(err));
-      setPreview(null);   // stale after a failed commit — a fresh upload previews again
-      setBase(null);
-      setFile(null);
-      setDecisions({});
-      if (fileRef.current) fileRef.current.value = '';
+      setPreview(null);
+      void rerun(decisions, true);
     } finally {
       setBusy(false);
     }
@@ -276,7 +276,7 @@ export default function AssignBulkUpload({ jobId, siteId, partnerId }: Props) {
             </button>
           </div>
           <p className="set-note">
-            {`${counts.assign} matched · ${plural(discrepancies, 'discrepancy', 'discrepancies')} · `
+            {`${rows.filter((r) => r.table === 'matched').length} matched · ${plural(discrepancies, 'discrepancy', 'discrepancies')} · `
               + `${counts.create} to create · ${plural(unmatched, 'needs a match', 'need a match')} · `
               + `${counts.already_assigned} already assigned · ${plural(counts.error, 'error', 'errors')}`}
           </p>
