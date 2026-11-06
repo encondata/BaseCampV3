@@ -41,7 +41,7 @@ from serversherpa.learning.models import (
     LearningTranslation,
 )
 from serversherpa.learning.render import html_with_images
-from serversherpa.learning.slides import split_slides
+from serversherpa.learning.slides import slide_count, split_slides
 from serversherpa.services.timezone import stored_day
 
 ENGLISH = "en"
@@ -320,26 +320,31 @@ def effective_reached(assignment: LearningAssignment, version_id: uuid.UUID,
     return None
 
 
+def _start_reading(assignment: LearningAssignment) -> None:
+    """The first read (or first slide) starts the reading clock."""
+    if assignment.opened_at is None:
+        assignment.opened_at = _now()
+    if assignment.status == "assigned":
+        assignment.status = "opened"
+
+
 async def read(db: AsyncSession, assignment: LearningAssignment, lang: str | None) -> dict:
     """The assignment as the worker reads it; the first read starts the
     reading clock (`opened_at`)."""
     await require_unlocked(db, assignment)
     document = await db.get(LearningDocument, assignment.document_id)
     version = await _shown_version(db, assignment, document)
-    translation = await published_translation(db, version.id, lang)
-    if assignment.opened_at is None:
-        assignment.opened_at = _now()
-    if assignment.status == "assigned":
-        assignment.status = "opened"
+    stored, language = await served_html(db, version, lang)
+    translation = await published_translation(db, version.id, language)
+    _start_reading(assignment)
     has_quiz = await quiz.has_quiz(db, document)
-    html = await html_with_images(db, version, translation.content_html if translation else None)
-    language = lang if translation else ENGLISH
+    html = await html_with_images(db, version, stored)
     slides = split_slides(html) if document.reading_style == "slides" else None
     return {
         "title": translation.title if translation else version.title,
         "html": html,
         "language": language,
-        "fallback": bool(lang) and lang != ENGLISH and translation is None,
+        "fallback": bool(lang) and lang != ENGLISH and language == ENGLISH,
         "version_no": version.version_no, "change_note": version.change_note,
         "sign_style": document.sign_style, "require_scroll": document.require_scroll,
         "min_read_seconds": document.min_read_seconds, "has_quiz": has_quiz,
@@ -351,6 +356,40 @@ async def read(db: AsyncSession, assignment: LearningAssignment, lang: str | Non
         "slide_reached": (effective_reached(assignment, version.id, language)
                           if slides is not None else None),
     }
+
+
+async def reach_slide(db: AsyncSession, person_id: uuid.UUID, assignment_id: uuid.UUID,
+                      n: int, *, version_no: int, language: str) -> dict:
+    """Record that slide `n` (0-based) of a Slides document was shown. Slides
+    are reached one at a time: `n` may be at most one past the furthest
+    reached, so the sign-off proves every slide was shown in turn. Going
+    back, or asking for one already reached, keeps the furthest. Progress is
+    kept for the version and language shown (see `effective_reached`).
+    Refusals, in order: 404, 409 `already_signed` / `locked` /
+    `version_changed` / `not_slides`, then 422 `slide_out_of_range` /
+    `slide_not_reached`."""
+    assignment = await own_assignment(db, person_id, assignment_id, for_update=True)
+    if assignment.status == "signed":
+        raise _err(409, "already_signed")
+    await require_unlocked(db, assignment)
+    document = await db.get(LearningDocument, assignment.document_id)
+    version = await _shown_version(db, assignment, document)
+    if version.version_no != version_no:
+        raise _err(409, "version_changed")
+    if document.reading_style != "slides":
+        raise _err(409, "not_slides")
+    html, served = await served_html(db, version, language)
+    count = slide_count(html)
+    if n >= count:
+        raise _err(422, "slide_out_of_range")
+    reached = effective_reached(assignment, version.id, served)
+    if n > (-1 if reached is None else reached) + 1:
+        raise _err(422, "slide_not_reached")
+    assignment.slide_reached = max(-1 if reached is None else reached, n)
+    assignment.slide_version_id = version.id
+    assignment.slide_language = served
+    _start_reading(assignment)
+    return {"slide_reached": assignment.slide_reached, "slide_count": count}
 
 
 # ── signing ──────────────────────────────────────────────────────────
@@ -381,7 +420,9 @@ async def sign(db: AsyncSession, person_id: uuid.UUID, assignment_id: uuid.UUID,
     newer one was published since, the worker didn't read what they would
     sign. Refusals, in order: 404, 409 `already_signed` / `locked` /
     `version_changed`, then 422 `must_agree`, `name_required`, `signature_required` /
-    `signature_invalid`, `scroll_required`, `quiz_required`, `read_time`."""
+    `signature_invalid`, `scroll_required` (Document style) or `slides_required`
+    (Slides style: the last slide must have been reached, in order, at this
+    version and language), `quiz_required`, `read_time`."""
     found = await own_assignment(db, person_id, assignment_id)
     # one sign-off at a time per person and scope (see completion.lock)
     await completion.lock(db, person_id, found.initiative_id)
@@ -402,7 +443,15 @@ async def sign(db: AsyncSession, person_id: uuid.UUID, assignment_id: uuid.UUID,
         raise _err(422, "name_required")
     if document.sign_style == "drawn_signature":
         signature = _signature(signature_png_b64)
-    if document.require_scroll and not scrolled_to_end:
+    # the language read: English unless that translation is published
+    html, language = await served_html(db, version, language)
+    slides_viewed = None
+    if document.reading_style == "slides":
+        # the slides stand in for the scroll
+        slides_viewed = slide_count(html)
+        if effective_reached(assignment, version.id, language) != slides_viewed - 1:
+            raise _err(422, "slides_required")
+    elif document.require_scroll and not scrolled_to_end:
         raise _err(422, "scroll_required")
     quiz_score = None
     if await quiz.has_quiz(db, document):
@@ -415,16 +464,13 @@ async def sign(db: AsyncSession, person_id: uuid.UUID, assignment_id: uuid.UUID,
         raise _err(422, "read_time",
                    seconds_left=math.ceil(document.min_read_seconds - elapsed))
 
-    # the language read: English unless that translation is published
-    if await published_translation(db, version.id, language) is None:
-        language = ENGLISH
     signoff = LearningSignoff(
         assignment_id=assignment.id, person_id=person_id, document_id=document.id,
         version_id=version.id, initiative_id=assignment.initiative_id, language=language,
         typed_name=name if document.sign_style == "typed_name" else None,
         signature_png=signature, read_seconds=int(elapsed), scrolled_to_end=scrolled_to_end,
-        quiz_score=quiz_score, ip=ip, user_agent=(user_agent or "")[:500] or None,
-        signed_at=now)
+        quiz_score=quiz_score, slides_viewed=slides_viewed, ip=ip,
+        user_agent=(user_agent or "")[:500] or None, signed_at=now)
     db.add(signoff)
     await db.flush()
     assignment.status = "signed"

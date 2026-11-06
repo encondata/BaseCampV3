@@ -81,13 +81,15 @@ async def _assignment(db, person, doc, initiative=None, *, status="assigned", op
 
 
 async def _sign(db, person, doc, *, initiative=None, days_ago=0, quiz_score=None,
-                signature=None, language="en", version_id=None, read_seconds=75, signed_at=None):
+                signature=None, language="en", version_id=None, read_seconds=75, signed_at=None,
+                slides_viewed=None):
     row = LearningSignoff(
         person_id=person.id, document_id=doc.id, version_id=version_id or doc.current_version_id,
         initiative_id=initiative.id if initiative else None, language=language,
         typed_name=None if signature else f"{person.first_name} {person.last_name}",
         signature_png=signature, read_seconds=read_seconds, scrolled_to_end=True,
-        quiz_score=quiz_score, signed_at=signed_at or _now() - timedelta(days=days_ago))
+        quiz_score=quiz_score, slides_viewed=slides_viewed,
+        signed_at=signed_at or _now() - timedelta(days=days_ago))
     db.add(row)
     await db.commit()
     return row
@@ -337,7 +339,7 @@ async def test_history_scoped(client, db, seeded_user):
     move = await _initiative(db, "Acme move")
     admin = await _person(db, "Ada", "Admin")
     await _sign(db, worker, doc, initiative=move, quiz_score=88, read_seconds=140,
-                signature=_png())
+                signature=_png(), slides_viewed=5)
     assignment = await _assignment(db, worker, doc, move, status="signed", signed=_now())
     db.add(LearningQuizAttempt(assignment_id=assignment.id, score_percent=60, passed=False,
                                answers={}, created_at=_now() - timedelta(hours=1)))
@@ -355,6 +357,7 @@ async def test_history_scoped(client, db, seeded_user):
     assert signoff["document"] == "Acme NDA" and signoff["version"] == 1
     assert signoff["language"] == "en" and signoff["read_seconds"] == 140
     assert signoff["quiz_score"] == 88 and signoff["signed_at"]
+    assert signoff["slides_viewed"] == 5
     assert "signature_png" not in signoff
     assert [a["score_percent"] for a in body["quiz_attempts"]] == [88, 60]
     assert body["quiz_attempts"][0]["document"] == "Acme NDA"

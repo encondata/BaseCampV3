@@ -599,3 +599,184 @@ async def test_served_html_and_effective_reached(db, seeded_user):
     assert worker.effective_reached(row, version.id, "en") == 3
     assert worker.effective_reached(row, version.id, "ja") is None
     assert worker.effective_reached(row, uuid.uuid4(), "en") is None
+
+
+# ── slide progress and the sign gate ─────────────────────────────────
+
+SLIDES_HTML = "<p>Intro</p><h2>A</h2><p>a</p><h2>B</h2><p>b</p>"
+
+
+async def _slides_doc(db, html=SLIDES_HTML, **settings):
+    doc = await _plain_doc(db, reading_style="slides", **settings)
+    await _set_html(db, doc, html)
+    return doc
+
+
+async def _reach(client, hdrs, row, n, *, version_no=1, language="en"):
+    return await client.post(f"/learn/assignments/{row.id}/slides/{n}", headers=hdrs,
+                             json={"version_no": version_no, "language": language})
+
+
+async def test_slides_reach_one_at_a_time(client, db, seeded_user):
+    doc = await _slides_doc(db)
+    wanda, hdrs = await _learner(db)
+    row = await _assign(db, wanda, doc)
+    v = (await client.get(f"/learn/assignments/{row.id}", headers=hdrs)).json()["version_no"]
+    url = f"/learn/assignments/{row.id}/slides"
+    body = {"version_no": v, "language": "en"}
+
+    skip = await client.post(f"{url}/1", headers=hdrs, json=body)
+    assert skip.status_code == 422 and skip.json()["detail"]["code"] == "slide_not_reached"
+    first = await client.post(f"{url}/0", headers=hdrs, json=body)
+    assert first.json() == {"slide_reached": 0, "slide_count": 3}
+    assert (await client.post(f"{url}/1", headers=hdrs, json=body)).json()["slide_reached"] == 1
+    # going back keeps the furthest; asking for a reached slide again is harmless
+    assert (await client.post(f"{url}/0", headers=hdrs, json=body)).json()["slide_reached"] == 1
+    assert (await client.post(f"{url}/1", headers=hdrs, json=body)).json()["slide_reached"] == 1
+    out = await client.post(f"{url}/3", headers=hdrs, json=body)
+    assert out.status_code == 422 and out.json()["detail"]["code"] == "slide_out_of_range"
+    assert (await client.post(f"{url}/-1", headers=hdrs, json=body)).status_code == 422
+    assert (await client.get(f"/learn/assignments/{row.id}",
+                             headers=hdrs)).json()["slide_reached"] == 1
+    # the first slide opens the assignment like a read does
+    assert (await _fresh(db, row)).status == "opened"
+
+
+async def test_slides_reach_refusals(client, db, seeded_user):
+    doc = await _slides_doc(db)
+    wanda, hdrs = await _learner(db)
+    _, otto_hdrs = await _learner(db, "Otto", "Other")
+    row = await _assign(db, wanda, doc)
+    assert (await _reach(client, otto_hdrs, row, 0)).status_code == 404
+    assert (await _reach(client, hdrs, row, 0, version_no=7)).json()["detail"]["code"] \
+        == "version_changed"
+    assert (await _reach(client, hdrs, row, 0, language="xx-")).status_code == 422
+    for n in range(3):
+        assert (await _reach(client, hdrs, row, n)).status_code == 200
+    row = await _fresh(db, row)
+    row.opened_at = datetime.now(UTC) - timedelta(seconds=600)
+    await db.commit()
+    await _sign(client, hdrs, row)
+    done = await _reach(client, hdrs, row, 0)
+    assert done.status_code == 409 and done.json()["detail"]["code"] == "already_signed"
+
+
+async def test_sign_slides_requires_last_slide(client, db, seeded_user):
+    doc = await _slides_doc(db)
+    wanda, hdrs = await _learner(db)
+    row = await _assign(db, wanda, doc, opened_ago=600)
+    for n in (0, 1):
+        assert (await _reach(client, hdrs, row, n)).status_code == 200
+    r = await client.post(f"/learn/assignments/{row.id}/sign", headers=hdrs,
+                          json={**SIGN, "scrolled_to_end": False})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "slides_required"
+    assert await db.scalar(select(LearningSignoff.id)) is None
+    assert (await _reach(client, hdrs, row, 2)).status_code == 200
+    # the slides stand in for the scroll: scrolled_to_end stays False and it signs
+    r = await client.post(f"/learn/assignments/{row.id}/sign", headers=hdrs,
+                          json={**SIGN, "scrolled_to_end": False})
+    assert r.status_code == 200, r.text
+    assert (await db.scalar(select(LearningSignoff))).slides_viewed == 3
+
+
+async def test_slides_ignore_require_scroll(client, db, seeded_user):
+    doc = await _slides_doc(db, require_scroll=True)
+    wanda, hdrs = await _learner(db)
+    row = await _assign(db, wanda, doc, opened_ago=600)
+    for n in range(3):
+        await _reach(client, hdrs, row, n)
+    r = await client.post(f"/learn/assignments/{row.id}/sign", headers=hdrs,
+                          json={**SIGN, "scrolled_to_end": False})
+    assert r.status_code == 200, r.text
+
+
+async def test_slide_progress_restarts_on_new_version(client, db, seeded_user):
+    doc = await _slides_doc(db)
+    wanda, hdrs = await _learner(db)
+    row = await _assign(db, wanda, doc, opened_ago=600)
+    for n in range(3):
+        assert (await _reach(client, hdrs, row, n)).status_code == 200
+    version = await _publish(db, doc)
+    version.content_html = SLIDES_HTML
+    await db.commit()
+    shown = (await client.get(f"/learn/assignments/{row.id}", headers=hdrs)).json()
+    assert shown["version_no"] == 2 and shown["slide_reached"] is None
+    r = await client.post(f"/learn/assignments/{row.id}/sign", headers=hdrs,
+                          json={**SIGN, "scrolled_to_end": False, "version_no": 2})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "slides_required"
+    old = await _reach(client, hdrs, row, 0, version_no=1)
+    assert old.status_code == 409 and old.json()["detail"]["code"] == "version_changed"
+    assert (await _reach(client, hdrs, row, 0, version_no=2)).json()["slide_reached"] == 0
+
+
+async def test_slide_progress_is_per_language(client, db, seeded_user):
+    doc = await _slides_doc(db)
+    db.add(LearningTranslation(version_id=doc.current_version_id, language="ja",
+                               status="published", title="ja",
+                               content_html="<h2>あ</h2><h2>い</h2>"))
+    await db.commit()
+    wanda, hdrs = await _learner(db)
+    row = await _assign(db, wanda, doc, opened_ago=600)
+    for n in range(3):
+        assert (await _reach(client, hdrs, row, n)).status_code == 200
+    ja = (await client.get(f"/learn/assignments/{row.id}?lang=ja", headers=hdrs)).json()
+    assert ja["slide_reached"] is None and ja["slide_count"] == 2
+    sign = {**SIGN, "scrolled_to_end": False, "language": "ja"}
+    r = await client.post(f"/learn/assignments/{row.id}/sign", headers=hdrs, json=sign)
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "slides_required"
+    # the English slide 2 doesn't exist in Japanese
+    far = await _reach(client, hdrs, row, 2, language="ja")
+    assert far.status_code == 422 and far.json()["detail"]["code"] == "slide_out_of_range"
+    for n in range(2):
+        assert (await _reach(client, hdrs, row, n, language="ja")).status_code == 200
+    r = await client.post(f"/learn/assignments/{row.id}/sign", headers=hdrs, json=sign)
+    assert r.status_code == 200, r.text
+    signoff = await db.scalar(select(LearningSignoff))
+    assert signoff.language == "ja" and signoff.slides_viewed == 2
+
+
+async def test_unpublished_language_reaches_and_signs_in_english(client, db, seeded_user):
+    doc = await _slides_doc(db)
+    db.add(LearningTranslation(version_id=doc.current_version_id, language="ko",
+                               status="draft", title="ko", content_html="<h2>가</h2>"))
+    await db.commit()
+    wanda, hdrs = await _learner(db)
+    row = await _assign(db, wanda, doc, opened_ago=600)
+    for n in range(3):
+        assert (await _reach(client, hdrs, row, n, language="ko")).json()["slide_count"] == 3
+    r = await client.post(f"/learn/assignments/{row.id}/sign", headers=hdrs,
+                          json={**SIGN, "scrolled_to_end": False, "language": "ko"})
+    assert r.status_code == 200, r.text
+    signoff = await db.scalar(select(LearningSignoff))
+    assert signoff.language == "en" and signoff.slides_viewed == 3
+
+
+async def test_document_style_ignores_slides(client, db, seeded_user):
+    doc = await _slides_doc(db)
+    wanda, hdrs = await _learner(db)
+    row = await _assign(db, wanda, doc, opened_ago=600)
+    doc.reading_style, doc.require_scroll = "document", True
+    await db.commit()
+    r = await client.post(f"/learn/assignments/{row.id}/sign", headers=hdrs,
+                          json={**SIGN, "scrolled_to_end": False})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "scroll_required"
+    r = await client.post(f"/learn/assignments/{row.id}/sign", headers=hdrs, json=SIGN)
+    assert r.status_code == 200, r.text
+    assert (await db.scalar(select(LearningSignoff))).slides_viewed is None
+    other = await _plain_doc(db, "Plain")
+    plain = await _assign(db, wanda, other)
+    no = await _reach(client, hdrs, plain, 0)
+    assert no.status_code == 409 and no.json()["detail"]["code"] == "not_slides"
+
+
+async def test_one_slide_document_signs_after_slide_zero(client, db, seeded_user):
+    doc = await _slides_doc(db, html="<p>Just this</p>")
+    wanda, hdrs = await _learner(db)
+    row = await _assign(db, wanda, doc, opened_ago=600)
+    r = await client.post(f"/learn/assignments/{row.id}/sign", headers=hdrs,
+                          json={**SIGN, "scrolled_to_end": False})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "slides_required"
+    assert (await _reach(client, hdrs, row, 0)).json() == {"slide_reached": 0, "slide_count": 1}
+    r = await client.post(f"/learn/assignments/{row.id}/sign", headers=hdrs,
+                          json={**SIGN, "scrolled_to_end": False})
+    assert r.status_code == 200, r.text

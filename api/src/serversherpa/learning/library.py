@@ -344,7 +344,7 @@ async def list_signoffs(db: AsyncSession, document_id: uuid.UUID, *,
              else sum(counts.values()))
     query = (select(LearningSignoff.id, LearningSignoff.language, LearningSignoff.signed_at,
                     LearningSignoff.read_seconds, LearningSignoff.quiz_score,
-                    LearningSignoff.initiative_id,
+                    LearningSignoff.slides_viewed, LearningSignoff.initiative_id,
                     LearningDocumentVersion.version_no, Person.id, Person.preferred_name,
                     Person.first_name, Person.last_name, Initiative.name)
              .join(LearningDocumentVersion,
@@ -361,8 +361,9 @@ async def list_signoffs(db: AsyncSession, document_id: uuid.UUID, *,
         "person": {"id": pid, "name": f"{preferred or first} {last}"},
         "version_no": version_no, "language": language, "signed_at": signed_at,
         "read_seconds": read_seconds, "quiz_score": quiz_score,
+        "slides_viewed": slides_viewed,
         "initiative_id": initiative_id, "initiative": initiative_name}
-        for (sid, language, signed_at, read_seconds, quiz_score, initiative_id,
+        for (sid, language, signed_at, read_seconds, quiz_score, slides_viewed, initiative_id,
              version_no, pid, preferred, first, last, initiative_name)
         in (await db.execute(query)).all()]
     return {"total": total, "version_counts": counts, "items": items}

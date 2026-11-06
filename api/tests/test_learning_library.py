@@ -707,11 +707,13 @@ async def test_signoffs_list_pages_and_counts(client, db, seeded_user, renderer)
             person_id=person.id, document_id=uuid.UUID(doc["id"]),
             version_id=uuid.UUID(version["id"]), language="en", typed_name=name,
             signature_png=b"png", read_seconds=40 + i, scrolled_to_end=True,
-            quiz_score=None, signed_at=now - timedelta(days=3 - i)))
+            quiz_score=None, slides_viewed=7 if name == "Cy" else None,
+            signed_at=now - timedelta(days=3 - i)))
     await db.commit()
 
     body = (await client.get(url, headers=hdrs)).json()
     assert body["total"] == 3
+    assert [r["slides_viewed"] for r in body["items"]] == [7, None, None]
     assert body["version_counts"] == {v1["id"]: 2, v2["id"]: 1}
     assert [(r["person"]["name"], r["version_no"]) for r in body["items"]] == [
         ("Cyrus W", 2), ("Bob W", 1), ("Ann W", 1)]

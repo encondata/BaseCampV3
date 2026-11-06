@@ -430,7 +430,8 @@ async def history(db: AsyncSession, person: Person, *, initiative_names: bool = 
     signoffs = [{
         "id": s.id, "document_id": s.document_id, "document": title, "version": number,
         "language": s.language, "signed_at": s.signed_at, "read_seconds": s.read_seconds,
-        "quiz_score": s.quiz_score, "initiative_id": s.initiative_id}
+        "quiz_score": s.quiz_score, "slides_viewed": s.slides_viewed,
+        "initiative_id": s.initiative_id}
         for s, title, number in (await db.execute(
             select(LearningSignoff, LearningDocument.title, LearningDocumentVersion.version_no)
             .options(defer(LearningSignoff.signature_png))

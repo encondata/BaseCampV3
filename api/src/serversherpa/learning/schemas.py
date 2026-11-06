@@ -129,6 +129,7 @@ class DocumentSignoffOut(BaseModel):
     signed_at: datetime
     read_seconds: int
     quiz_score: int | None
+    slides_viewed: int | None       # slides in the sign-off's language; null = read as a document
     initiative_id: uuid.UUID | None
     initiative: str | None
 
@@ -611,6 +612,18 @@ class AssignmentReadOut(BaseModel):
     slide_reached: int | None       # furthest slide read at this version and language
 
 
+class SlideReachIn(BaseModel):
+    # the version and language the Reader is showing, so a slide reached in a
+    # stale version is a 409 `version_changed`, not progress on the new one
+    version_no: int = Field(ge=1)
+    language: Lang
+
+
+class SlideReachOut(BaseModel):
+    slide_reached: int              # the furthest slide read, 0-based
+    slide_count: int
+
+
 class HistoryInitiativeOut(BaseModel):
     id: uuid.UUID
     name: str
@@ -876,6 +889,7 @@ class HistorySignoffOut(BaseModel):
     signed_at: datetime
     read_seconds: int
     quiz_score: int | None
+    slides_viewed: int | None
     initiative_id: uuid.UUID | None
     initiative: str | None
 

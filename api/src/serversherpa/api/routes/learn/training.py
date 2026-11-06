@@ -4,7 +4,7 @@ assignment, its quiz and signing it (serversherpa.learning.worker, .quiz,
 anyone else's is a 404."""
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Path, Query, Request
 
 from serversherpa.api.deps import DbSession, rate_limit_ip
 from serversherpa.api.routes.kiosk import _inet_or_none
@@ -19,6 +19,8 @@ from serversherpa.learning.schemas import (
     QuizResultOut,
     SignIn,
     SignOut,
+    SlideReachIn,
+    SlideReachOut,
     TrainingOut,
 )
 from serversherpa.learning.sessions import CurrentLearner
@@ -55,6 +57,15 @@ async def read_assignment(assignment_id: uuid.UUID, actor: CurrentLearner, db: D
     assignment = await worker.own_assignment(db, actor.person_id, assignment_id,
                                              for_update=True)
     out = await worker.read(db, assignment, lang)
+    await db.commit()
+    return out
+
+
+@router.post("/assignments/{assignment_id}/slides/{n}", response_model=SlideReachOut)
+async def reach_slide(assignment_id: uuid.UUID, body: SlideReachIn, actor: CurrentLearner,
+                      db: DbSession, n: int = Path(ge=0)) -> dict:
+    out = await worker.reach_slide(db, actor.person_id, assignment_id, n,
+                                   version_no=body.version_no, language=body.language)
     await db.commit()
     return out
 
