@@ -236,14 +236,55 @@ async def pinned_host_key(db: AsyncSession, host: str, port: int, *, tries: int 
                       public_key=stored.public_key)
 
 
+class _HostKeyRejected(ConnectFailed):
+    """The login refused the server's key (it isn't the pinned one)."""
+
+
+async def _login_pinned(cfg: SshTargetConfig, pinned: PinnedHost, *, tries: int,
+                        log: Callable[[str], None] | None = None
+                        ) -> asyncssh.SSHClientConnection:
+    client_key = await load_client_key(cfg)
+    return await with_connect_retry(
+        cfg.host, cfg.port, lambda: _connect(cfg, pinned, client_key), tries=tries, log=log)
+
+
+async def open_pinned(cfg: SshTargetConfig, db: AsyncSession, *, tries: int = CONNECT_TRIES,
+                      log: Callable[[str], None] | None = None
+                      ) -> tuple[asyncssh.SSHClientConnection, PinnedHost]:
+    """Log in with the stored host key pinned: one connection when the key
+    still matches. The live key is fetched only to explain a refusal
+    (HostKeyUnknown with no stored key, HostKeyMismatch when it changed)."""
+    stored = await known_hosts.lookup(db, cfg.host, cfg.port)
+    if stored is None:
+        await pinned_host_key(db, cfg.host, cfg.port, tries=tries, log=log)   # raises HostKeyUnknown
+        raise ConnectFailed("The host's key was trusted while connecting. Try again.")
+    try:
+        key = asyncssh.import_public_key(stored.public_key)
+    except (asyncssh.KeyImportError, ValueError):
+        raise ConnectFailed("Sirdar's saved key for this host is unreadable. "
+                            "Forget the host and trust it again.") from None
+    pinned = PinnedHost(key=key, key_type=stored.key_type,
+                        fingerprint=stored.fingerprint_sha256, public_key=stored.public_key)
+    try:
+        return await _login_pinned(cfg, pinned, tries=tries, log=log), pinned
+    except _HostKeyRejected as rejected:
+        live = await with_connect_retry(
+            cfg.host, cfg.port,
+            lambda: known_hosts.fetch_key_of_type(cfg.host, cfg.port, stored.key_type),
+            tries=tries, log=log)
+        actual = known_hosts.fingerprint(live)
+        if actual == stored.fingerprint_sha256:
+            raise rejected from None
+        raise HostKeyMismatch(cfg.host, cfg.port, stored.fingerprint_sha256, actual,
+                              live.get_algorithm()) from None
+
+
 async def connect_pinned(cfg: SshTargetConfig, pinned: PinnedHost, *,
                          tries: int = CONNECT_TRIES,
                          log: Callable[[str], None] | None = None
                          ) -> asyncssh.SSHClientConnection:
     """Log in, accepting only the pinned host key."""
-    client_key = await load_client_key(cfg)
-    return await with_connect_retry(
-        cfg.host, cfg.port, lambda: _connect(cfg, pinned, client_key), tries=tries, log=log)
+    return await _login_pinned(cfg, pinned, tries=tries, log=log)
 
 
 async def _connect(cfg: SshTargetConfig, pinned: PinnedHost,
@@ -259,7 +300,7 @@ async def _connect(cfg: SshTargetConfig, pinned: PinnedHost,
     except asyncssh.PermissionDenied:
         raise ConnectFailed(_AUTH_FAILED) from None
     except asyncssh.HostKeyNotVerifiable:
-        raise ConnectFailed("The server's host key changed during the test. Try again.") \
+        raise _HostKeyRejected("The server's host key changed during the test. Try again.") \
             from None
     except (OSError, TimeoutError, asyncssh.Error):
         raise known_hosts.unreachable(cfg.host, cfg.port) from None
@@ -294,8 +335,7 @@ async def run_command(cfg: SshTargetConfig, db: AsyncSession, command: str, *,
     OUTPUT_LIMIT) for the caller to parse. Callers quote every argument and
     never log the output. `input` goes to the command's stdin (for secrets:
     never argv). `tries` caps the connection attempts; `log` hears each retry."""
-    pinned = await pinned_host_key(db, cfg.host, cfg.port, tries=tries, log=log)
-    conn = await connect_pinned(cfg, pinned, tries=tries, log=log)
+    conn, _ = await open_pinned(cfg, db, tries=tries, log=log)
     async with conn:
         try:
             result = await asyncio.wait_for(

@@ -170,7 +170,13 @@ async def test_ssh_remote_passes_tries_through(monkeypatch):
 
 
 async def test_run_command_with_one_try(monkeypatch, nap):
-    calls = _script(monkeypatch, [known_hosts.unreachable(HOST, PORT)] * 5)
+    _script(monkeypatch, [])
+    calls: list[int] = []
+
+    async def connect(*args, **kw):
+        calls.append(1)
+        raise OSError("down")
+    monkeypatch.setattr(ssh.asyncssh, "connect", connect)
     with pytest.raises(ConnectFailed):
         await ssh.run_command(CFG, None, "true", tries=1)
     assert len(calls) == 1 and nap.naps == []
