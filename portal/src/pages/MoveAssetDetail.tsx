@@ -29,6 +29,9 @@ export default function MoveAssetDetail() {
   const { can } = useAuth();
   const canChange = can('initiatives', 'change');
   const canViewScans = can('scans', 'view');
+  // A watch on an initiative also needs the asset itself: the API refuses it (404) without this,
+  // and this page, unlike the asset's own, opens with initiatives:view alone.
+  const canViewAssets = can('assets', 'view');
 
   const [initiativeName, setInitiativeName] = useState<string | null>(null);
   const [row, setRow] = useState<InitiativeAssetRow | null>(null);
@@ -113,17 +116,21 @@ export default function MoveAssetDetail() {
               .filter(Boolean).join(' · ') || '—'}
           </p>
         </div>
-        <div className="idet-header-actions">
-          {/* Watching is for everyone who can open the page, so it sits outside the gate. It
-              watches the asset on this initiative, so it reads the row's status (the move
-              status), not the asset's own. */}
-          <AssetWatchButton assetId={row.asset_id} assetName={assetWatchName(row.asset)}
-                            initiativeId={id!} initiativeName={initiativeName}
-                            currentStatus={row.status} currentStatusLabel={row.status_label} />
-          {canChange && (
-            <button className="btn-solid" onClick={() => setEditing(true)}>Edit</button>
-          )}
-        </div>
+        {(canViewAssets || canChange) && (
+          <div className="idet-header-actions">
+            {/* Watching is for everyone who can open the asset, so it sits outside the Edit gate.
+                It watches the asset on this initiative, so it reads the row's status (the move
+                status), not the asset's own. */}
+            {canViewAssets && (
+              <AssetWatchButton assetId={row.asset_id} assetName={assetWatchName(row.asset)}
+                                initiativeId={id!} initiativeName={initiativeName}
+                                currentStatus={row.status} currentStatusLabel={row.status_label} />
+            )}
+            {canChange && (
+              <button className="btn-solid" onClick={() => setEditing(true)}>Edit</button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="init-panel">

@@ -2,8 +2,9 @@
 /**
  * /initiatives/:id/assets/:rowId — the parent-asset panel's Location links
  * to the asset's container and truck. The header's Watch button is for everyone who can open
- * the page, not only for editors: it watches the asset on this initiative, and the status it
- * reads is the row's (the move status), not the asset's own.
+ * the page and the asset (assets:view: a watch on an initiative needs the asset too), not only
+ * for editors: it watches the asset on this initiative, and the status it reads is the row's
+ * (the move status), not the asset's own.
  */
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -115,6 +116,29 @@ it('for an editor the Watch button comes first in the header actions, then Edit'
   const watch = await screen.findByRole('button', { name: 'Watch' });
   const actions = watch.closest('.idet-header-actions') as HTMLElement;
   expect([...actions.children].map((el) => el.textContent)).toEqual(['Watch', 'Edit']);
+});
+
+it('without assets:view there is no Watch button (a watch on an initiative needs the asset too): an editor keeps Edit', async () => {
+  auth.can = (resource, action) => resource !== 'scans' && !(resource === 'assets' && action === 'view');
+  renderPage();
+
+  const edit = await screen.findByRole('button', { name: 'Edit' });
+  const actions = edit.closest('.idet-header-actions') as HTMLElement;
+  expect([...actions.children].map((el) => el.textContent)).toEqual(['Edit']);
+  expect(screen.queryByRole('button', { name: 'Watch' })).toBeNull();
+  // the button is not even mounted, so no read of a watch state the person cannot use
+  expect(api.getAssetWatchState).not.toHaveBeenCalled();
+});
+
+it('without assets:view and without initiatives:change the header has no actions row at all', async () => {
+  auth.can = (resource, action) => resource !== 'scans'
+    && !(resource === 'assets' && action === 'view')
+    && !(resource === 'initiatives' && action === 'change');
+  renderPage();
+
+  const heading = await screen.findByRole('heading', { name: 'switch-01' });
+  expect((heading.closest('.idet-header') as HTMLElement).querySelector('.idet-header-actions')).toBeNull();
+  expect(api.getAssetWatchState).not.toHaveBeenCalled();
 });
 
 it('it reads the watch of the asset on this initiative, not on its own', async () => {
