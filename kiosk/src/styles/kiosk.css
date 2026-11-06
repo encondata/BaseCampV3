@@ -1070,7 +1070,7 @@
 .rfid-dash-btn.is-stop { background: var(--c-red); }
 .rfid-dash-btn:hover:not(:disabled) { filter: brightness(1.08); }
 .rfid-dash-btn:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
-.rfid-dash-btn:disabled { opacity: .35; cursor: not-allowed; }
+.rfid-dash-btn:disabled { opacity: .5; filter: saturate(.6); cursor: not-allowed; }
 .rfid-dash-btn-icon { display: inline-flex; flex: none; }
 .rfid-dash-btn-icon svg { width: 40px; height: 40px; }
 .rfid-dash-btn-text { display: grid; gap: 4px; }
@@ -1086,24 +1086,24 @@
 .rfid-dash-tiles { flex: none; }
 @media (max-width: 900px) { .rfid-dash { height: auto; } }
 
-/* Always dark (KioskShell forces data-theme="dark" on this route): the
-   page is the near-black --paper-2, cards a step lighter (--surface) with
-   the theme's subtle border, tile icons in the accent, and big saturated
-   START / STOP. The dimmed button stays readable. */
+/* Dark theme refinements: on the near-black --paper-2 page the cards sit a
+   step lighter (--surface) with the theme's subtle border, and START /
+   STOP take the page's near-black for their text on the bright green and
+   red. */
 .portal-shell[data-theme='dark'] .rfid-dash-tile,
 .portal-shell[data-theme='dark'] .rfid-dash-panel { background: var(--surface); }
 .portal-shell[data-theme='dark'] .rfid-dash-btn { color: var(--paper-2); }
-.portal-shell[data-theme='dark'] .rfid-dash-btn:disabled { opacity: .5; filter: saturate(.6); }
 
 /* ── Dock screen ─────────────────────────────────────────────────────
-   /dock reuses the RFID dashboard's page and panels (always dark, filling
-   the main column). On top, a strip with the dry-run switch and the quiet
-   gap (the alarm-seconds field plus Save), an amber banner while dry run
-   is on and a red line while the edge can't be reached; below, the open
-   pass beside the wider recent passes, both showing only the rows that fit
-   (they never scroll). A flagged or refused pass gets a red left edge and
-   red outcome text. The pass modal's tables wrap long tags rather than
-   scroll sideways; the card itself scrolls. */
+   /dock reuses the RFID dashboard's page and panels (filling the main
+   column, in the kiosk's light or dark theme). On top, a strip with the
+   dry-run switch and the quiet gap (the alarm-seconds field plus Save),
+   an amber banner while dry run is on and a red line while the edge can't
+   be reached; below, the open pass beside the wider recent passes, both
+   showing only the rows that fit (they never scroll). A flagged or
+   refused pass gets a red left edge and red outcome text. The pass
+   modal's tables wrap long tags rather than scroll sideways; the card
+   itself scrolls. */
 .dock-dash-controls {
   display: flex; flex-wrap: wrap; align-items: center; gap: 12px 40px;
   flex: none; min-width: 0; margin: 20px 0 0; padding: 14px 20px;

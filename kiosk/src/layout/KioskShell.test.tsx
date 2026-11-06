@@ -3,7 +3,7 @@
  *  route and nothing for /. */
 import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useSearchParams } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 // applyPreferences reads prefers-reduced-motion; jsdom has no matchMedia.
@@ -492,26 +492,27 @@ it('signed in, the shell loads the laptop\'s shared setup; signed out it does no
   expect(laptopSetupMock.hydrateLaptopSetup).not.toHaveBeenCalled();
 });
 
-function GoHome() {
-  const navigate = useNavigate();
-  return <button type="button" onClick={() => navigate('/')}>go home</button>;
-}
-
-it('/rfid_status renders dark even when the person prefers light, and restores on leaving', async () => {
-  auth.preferences = { ...DEFAULT_PREFERENCES, theme: 'light' };
-  render(
-    <MemoryRouter initialEntries={['/rfid_status']}>
-      <KioskShell><GoHome /></KioskShell>
-    </MemoryRouter>,
-  );
-  const shell = document.querySelector('.portal-shell') as HTMLElement;
-  expect(shell.getAttribute('data-theme')).toBe('dark');
-  await userEvent.setup().click(screen.getByRole('button', { name: 'go home' }));
-  expect(shell.getAttribute('data-theme')).toBe('light');
-  auth.preferences = null;
+it('/rfid_status and /dock follow the person\'s theme', () => {
+  try {
+    for (const theme of ['light', 'dark'] as const) {
+      auth.preferences = { ...DEFAULT_PREFERENCES, theme };
+      for (const path of ['/rfid_status', '/dock']) {
+        render(
+          <MemoryRouter initialEntries={[path]}>
+            <KioskShell><div /></KioskShell>
+          </MemoryRouter>,
+        );
+        expect(document.querySelector('.portal-shell')?.getAttribute('data-theme'), `${path} ${theme}`)
+          .toBe(theme);
+        cleanup();
+      }
+    }
+  } finally {
+    auth.preferences = null;
+  }
 });
 
-it('a Dock laptop mounts the off-move alarm, and /dock renders dark like /rfid_status', () => {
+it('a Dock laptop mounts the off-move alarm', () => {
   window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1', name: 'Kiosk 0001' } };
   auth.preferences = { ...DEFAULT_PREFERENCES, theme: 'light' };
   try {
@@ -522,7 +523,7 @@ it('a Dock laptop mounts the off-move alarm, and /dock renders dark like /rfid_s
         <KioskShell><p>body</p></KioskShell>
       </MemoryRouter>,
     );
-    expect(document.querySelector('.portal-shell')?.getAttribute('data-theme')).toBe('dark');
+    expect(document.querySelector('.portal-shell')?.getAttribute('data-theme')).toBe('light');
     expect(alarmApi.getOffMoveAlarm).toHaveBeenCalled();
     cleanup();
     alarmApi.getOffMoveAlarm.mockClear();

@@ -3,14 +3,15 @@
  * land, and what someone on the dock watches while tuning: the pass still
  * open, filling in live with the time left before it closes; the newest
  * closed passes with their outcome, each opening its full detail; and the
- * dry-run switch and quiet gap, both saved on the laptop's edge. Always
- * dark and filling the screen like the RFID Reader dashboard, whose panels
- * it reuses; both panels show only the rows that fit. The overview
- * refreshes 1 s after the previous refresh settles (never overlapping);
- * while refreshes fail, a red line says the station can't be reached and the
- * last overview stays under it. Web mode, or a setup that isn't a Dock,
- * goes home; a new laptop browser with no setup yet shows nothing until
- * the laptop's has loaded (KioskShell looks for it), then decides.
+ * dry-run switch and quiet gap, both saved on the laptop's edge. It fills
+ * the screen like the RFID Reader dashboard, whose panels it reuses, in the
+ * kiosk's light or dark theme; both panels show only the rows that fit.
+ * The overview refreshes 1 s after the previous refresh settles (never
+ * overlapping); while refreshes fail, a red line says the station can't be
+ * reached and the last overview stays under it. Web mode, or a setup that
+ * isn't a Dock, goes home; a new laptop browser with no setup yet shows
+ * nothing until the laptop's has loaded (KioskShell looks for it), then
+ * decides.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';

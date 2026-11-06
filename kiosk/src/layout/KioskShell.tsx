@@ -77,12 +77,6 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   const webPrinter = useWebLabelSettings();
   const laptop = isLaptop();
 
-  // The RFID dashboard and the Dock screen are always dark, like the
-  // dashboard's mockup, whatever the person's theme: applyPreferences runs
-  // first (it sets data-theme from the preference), then the forced theme
-  // overrides it. Leaving the route re-runs the effect, so the preference
-  // is applied again.
-  const forceDark = location.pathname === '/rfid_status' || location.pathname === '/dock';
   const onSetup = location.pathname === '/setup' || location.pathname.startsWith('/setup/');
   // Clear Setup from the portal: whoever is signed in goes to Kiosk Setup,
   // once. The flag lives above the router and the shell remounts as routes
@@ -97,10 +91,7 @@ export default function KioskShell({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     applyPreferences(preferences ?? DEFAULT_PREFERENCES);
-    if (forceDark) {
-      document.querySelector<HTMLElement>('.portal-shell')?.setAttribute('data-theme', 'dark');
-    }
-  }, [preferences, forceDark]);
+  }, [preferences]);
 
   // A laptop's browsers share its finished setup (GET /edge/setup needs a
   // signed-in edge session): a phone on the LAN starts set up, not blank.
