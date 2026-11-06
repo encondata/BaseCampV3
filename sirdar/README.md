@@ -214,6 +214,16 @@ started are never retried. The Settings Test button tries once. Ansible's host
 steps retry too (`ANSIBLE_SSH_RETRIES=5`, `ConnectTimeout=15`), by Ansible's
 own rules.
 
+**One connection per server.** A deployment keeps one SSH connection open
+per server for its own commands, and Ansible shares one connection per host
+across all of the deployment's steps (`ControlMaster`, `ControlPersist=15m`,
+pipelining; control sockets in a private folder under `/tmp`). Both are closed
+when the deployment ends, however it ends. Some networks block an address
+after a few new SSH connections in a row, so fewer connections keep a deploy
+under that limit. If a kept connection drops, the next command reconnects
+and the log says `Lost the SSH connection to <host>; reconnecting.` A command
+whose connection dropped is never run again.
+
 ### Deploy pipeline (environments)
 
 Sirdar deploys ServerSherpa environments (the five Compose stacks in
