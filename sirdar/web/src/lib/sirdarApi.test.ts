@@ -328,7 +328,7 @@ it('vm_name_taken names the VM name already in use', () => {
 
 it('the apps and mail codes read as the plan words them', () => {
   const text = (code: string) => sirdar.errorText(new ApiError(422, code, { code }), '__none__');
-  expect(text('apps_invalid')).toBe('Choose the apps from Wiki, Kiosk, Status page and Mailpit.');
+  expect(text('apps_invalid')).toBe('Choose the apps from Wiki, Kiosk, Learning, Status page and Mailpit.');
   expect(text('mailpit_required')).toBe('Mail goes to Mailpit unless SMTP is set up: turn Mailpit on, or choose SMTP.');
   expect(text('mail_invalid')).toBe('Choose Mailpit or SMTP for mail.');
   expect(text('smtp_host_invalid')).toBe("Enter the SMTP server's host name or address.");

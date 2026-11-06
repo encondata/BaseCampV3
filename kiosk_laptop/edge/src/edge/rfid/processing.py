@@ -13,7 +13,12 @@ off-move sighting). Each raw read becomes at most one pending scan
   WITHOUT advancing the cursor; the next tick tries again.
 - A current-move read that matches nothing goes into `rfid_unmatched`, which
   `recheck_unmatched` re-matches after every successful sync for 24 h.
-- On an RFID station, a fresh off-move match (received at most
+- A read a Dock Station took in dry run (`raw_tag_reads.dry_run = 1`, stamped
+  when it was read) still matches and still alarms, but its scan is stored
+  as `upload_state = 'dry_run'`, which the uploader never sends, and a miss
+  is never re-checked: dry-run reads never reach the portal, not even after
+  dry run is turned off.
+- On a reader station (RFID or Dock), a fresh off-move match (received at most
   `alarm.FRESH_S` before the pass) raises the "Asset Not Part Of Move" alarm
   in the pass's own transaction. Late matches (a backlog, the re-check) never
   alarm.
@@ -105,7 +110,7 @@ def _index(store: Store, name: str, move_id: str) -> dict[str, dict] | None:
     return index
 
 
-def _indexes(store: Store, move_id: str) -> dict[str, dict[str, dict]] | None:
+def indexes(store: Store, move_id: str) -> dict[str, dict[str, dict]] | None:
     """Every source for the move, or None while any one isn't cached yet."""
     found = {}
     for name in _SOURCES:
@@ -116,12 +121,12 @@ def _indexes(store: Store, move_id: str) -> dict[str, dict[str, dict]] | None:
     return found
 
 
-def _match(indexes: dict[str, dict[str, dict]], epc: str) -> Match | None:
+def match(move_indexes: dict[str, dict[str, dict]], epc: str) -> Match | None:
     for name, kind in (("assets", "asset"), ("containers", "container"), ("people", "person")):
-        item = indexes[name].get(epc)
+        item = move_indexes[name].get(epc)
         if item is not None:
             return Match(kind, str(item["id"]))
-    item = indexes["client-assets"].get(epc)
+    item = move_indexes["client-assets"].get(epc)
     if item is not None:
         move = item.get("initiative_id")
         return Match("asset", str(item["id"]), 1, str(move) if move is not None else None,
@@ -151,15 +156,17 @@ def _fresh(received_at: str, now: datetime) -> bool:
 _INSERT = """
     INSERT OR IGNORE INTO pending_rfid_scans (raw_read_id, client_scan_id, epc, matched_kind,
         matched_id, off_move, off_move_initiative_id, off_move_initiative_name, scanned_at,
-        initiative_id, site_id, scan_status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+        initiative_id, site_id, scan_status, upload_state, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 
 
 def _insert(c, raw, match: Match, created_at: str) -> int:
+    upload_state = "dry_run" if raw["dry_run"] else "pending"
     return c.execute(_INSERT, (
         raw["id"], str(uuid.uuid4()), raw["epc"], match.kind, match.matched_id, match.off_move,
         match.off_move_initiative_id, match.off_move_initiative_name, raw["received_at"],
-        raw["initiative_id"], raw["site_id"], raw["scan_status"], created_at)).rowcount
+        raw["initiative_id"], raw["site_id"], raw["scan_status"], upload_state,
+        created_at)).rowcount
 
 
 def _cursor(store: Store) -> int:
@@ -171,14 +178,15 @@ def process(store: Store, now: datetime | None = None) -> PassResult:
     """One pass of at most PASS_LIMIT raw reads after the cursor."""
     now = now or datetime.now(UTC)
     last = _cursor(store)
-    rows = store.all("SELECT id, epc, received_at, initiative_id, site_id, scan_status "
-                     "FROM raw_tag_reads WHERE id > ? ORDER BY id LIMIT ?", (last, PASS_LIMIT))
+    rows = store.all("SELECT id, epc, received_at, initiative_id, site_id, scan_status, "
+                     "dry_run FROM raw_tag_reads WHERE id > ? ORDER BY id LIMIT ?",
+                     (last, PASS_LIMIT))
     if not rows:
         return PassResult(0, 0, False)
     setup = laptop_setup.load(store) or {}
     current = _current_move(setup)
-    alarms_on = setup.get("station_type") == "rfid"
-    indexes = None
+    alarms_on = setup.get("station_type") in laptop_setup.READER_TYPES
+    move_indexes = None
     matches: list[tuple] = []
     misses: list[tuple] = []
     advanced = last
@@ -187,16 +195,17 @@ def process(store: Store, now: datetime | None = None) -> PassResult:
     for raw in rows:
         move = raw["initiative_id"]
         if move and move == current:
-            if indexes is None:
-                indexes = _indexes(store, current)
-                if indexes is None:
+            if move_indexes is None:
+                move_indexes = indexes(store, current)
+                if move_indexes is None:
                     waiting = True
                     break  # set up but not synced: stop here, never skip it
-            match = _match(indexes, raw["epc"])
-            if match is None:
-                misses.append((raw["id"], raw["received_at"]))
+            hit = match(move_indexes, raw["epc"])
+            if hit is None:
+                if not raw["dry_run"]:   # a dry-run miss is never re-checked
+                    misses.append((raw["id"], raw["received_at"]))
             else:
-                matches.append((raw, match))
+                matches.append((raw, hit))
         advanced = raw["id"]
         scanned += 1
     if advanced == last:
@@ -206,11 +215,11 @@ def process(store: Store, now: datetime | None = None) -> PassResult:
     raised: list[dict] = []
     with store.tx() as c:
         to_alarm = []
-        for raw, match in matches:
-            added = _insert(c, raw, match, created_at)
+        for raw, hit in matches:
+            added = _insert(c, raw, hit, created_at)
             inserted += added
-            if added and alarms_on and match.off_move and _fresh(raw["received_at"], now):
-                to_alarm.append(_alarm_item(match))
+            if added and alarms_on and hit.off_move and _fresh(raw["received_at"], now):
+                to_alarm.append(_alarm_item(hit))
         if to_alarm:
             # an alarm failure rolls back only the alarm, never the pass
             c.execute("SAVEPOINT alarm")
@@ -249,25 +258,26 @@ def recheck_unmatched(store: Store, *, now: datetime | None = None) -> int:
                   (current,))
     if current is None:
         return 0
-    indexes = _indexes(store, current)
-    if indexes is None:
+    move_indexes = indexes(store, current)
+    if move_indexes is None:
         return 0
     # one lookup per distinct tag: a stray tag in range leaves many reads behind
     epcs = store.all("SELECT DISTINCT r.epc FROM rfid_unmatched u "
                      "JOIN raw_tag_reads r ON r.id = u.raw_read_id")
-    found = {row["epc"]: m for row in epcs if (m := _match(indexes, row["epc"])) is not None}
+    found = {row["epc"]: m for row in epcs
+             if (m := match(move_indexes, row["epc"])) is not None}
     inserted = 0
     created_at = now_iso()
-    for epc, match in found.items():
+    for epc, hit in found.items():
         reads = store.all("SELECT r.id, r.epc, r.received_at, r.initiative_id, r.site_id, "
-                          "r.scan_status FROM rfid_unmatched u "
+                          "r.scan_status, r.dry_run FROM rfid_unmatched u "
                           "JOIN raw_tag_reads r ON r.id = u.raw_read_id WHERE r.epc = ? "
                           "ORDER BY r.id", (epc,))
         for start in range(0, len(reads), PASS_LIMIT):
             chunk = reads[start:start + PASS_LIMIT]
             with store.tx() as c:
                 for raw in chunk:
-                    inserted += _insert(c, raw, match, created_at)
+                    inserted += _insert(c, raw, hit, created_at)
                 c.executemany("DELETE FROM rfid_unmatched WHERE raw_read_id = ?",
                               [(raw["id"],) for raw in chunk])
     return inserted

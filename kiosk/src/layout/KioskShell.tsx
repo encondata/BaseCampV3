@@ -22,7 +22,7 @@ import { kioskVersion } from '../lib/config';
 import { useDevMode } from '../lib/devMode';
 import { FEATURES } from '../lib/features';
 import { getIdentity } from '../lib/identity';
-import { stationLabel, useKioskSetup } from '../lib/kioskSetup';
+import { isReaderStation, stationLabel, useKioskSetup } from '../lib/kioskSetup';
 import { webLabelBackend } from '../lib/labelBackend';
 import { startLaptopConfigSync } from '../lib/laptopConfig';
 import { hydrateLaptopSetup } from '../lib/laptopSetup';
@@ -77,11 +77,6 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   const webPrinter = useWebLabelSettings();
   const laptop = isLaptop();
 
-  // The RFID dashboard is always dark, like its mockup, whatever the
-  // person's theme: applyPreferences runs first (it sets data-theme from
-  // the preference), then the forced theme overrides it. Leaving the route
-  // re-runs the effect, so the preference is applied again.
-  const forceDark = location.pathname === '/rfid_status';
   const onSetup = location.pathname === '/setup' || location.pathname.startsWith('/setup/');
   // Clear Setup from the portal: whoever is signed in goes to Kiosk Setup,
   // once. The flag lives above the router and the shell remounts as routes
@@ -96,10 +91,7 @@ export default function KioskShell({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     applyPreferences(preferences ?? DEFAULT_PREFERENCES);
-    if (forceDark) {
-      document.querySelector<HTMLElement>('.portal-shell')?.setAttribute('data-theme', 'dark');
-    }
-  }, [preferences, forceDark]);
+  }, [preferences]);
 
   // A laptop's browsers share its finished setup (GET /edge/setup needs a
   // signed-in edge session): a phone on the LAN starts set up, not blank.
@@ -221,9 +213,9 @@ export default function KioskShell({ children }: { children: ReactNode }) {
           Scanning page but has to paint over the shell, not inside it. */}
       <ScanFlash />
       {/* The Asset Not Part Of Move takeover, over every page of an RFID
-          Station laptop. Only while signed in: every alarm route needs an
-          edge session, so a signed-out page would only poll 401s. */}
-      {authed && laptop && kioskSetup?.stationType === 'rfid' && <OffMoveAlarm />}
+          Station or Dock laptop. Only while signed in: every alarm route
+          needs an edge session, so a signed-out page would only poll 401s. */}
+      {authed && laptop && isReaderStation(kioskSetup?.stationType) && <OffMoveAlarm />}
       {/* The yellow label regeneration takeover, over every page of a
           Label Station laptop while the edge generates labels. Signed in
           only, for the same reason. Never on Kiosk Setup, which has to stay

@@ -1,4 +1,4 @@
-"""Kiosk-attached fixed readers: an RFID Station's heartbeat may carry a
+"""Kiosk-attached fixed readers: an RFID or Dock Station's heartbeat may carry a
 `reader` snapshot, which upserts one `fixed_reader` Device keyed by serial.
 
 apply_reader_report never raises out to the heartbeat route: a bad or
@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import Device
+from serversherpa.services import station_keys
 from serversherpa.services.audit import audit
 
 log = logging.getLogger(__name__)
@@ -55,7 +56,8 @@ async def apply_reader_report(
 ) -> Device | None:
     serial = _safe_serial(report)
     try:
-        if kiosk.station_type != "rfid" or not kiosk.rfid_reader_serial:
+        if (kiosk.station_type not in station_keys.READER_STATION_TYPES
+                or not kiosk.rfid_reader_serial):
             return None
         parsed = KioskReaderReport.model_validate(report)
         if parsed.serial.lower() != kiosk.rfid_reader_serial.lower():

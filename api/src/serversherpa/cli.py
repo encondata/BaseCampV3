@@ -262,6 +262,7 @@ def seed_demo_warehouse() -> None:
 
 
 EXIT_RENDER_DOWN = 1
+EXIT_STORAGE_DOWN = 1
 
 
 @app.command()
@@ -281,7 +282,11 @@ def learning_seed(
             LearningRenderRejected,
             LearningRenderUnavailable,
         )
-        from serversherpa.learning.seed import check_render_server, seed
+        from serversherpa.learning.seed import (
+            SeedStorageUnavailable,
+            check_render_server,
+            seed,
+        )
 
         try:
             try:
@@ -308,6 +313,12 @@ def learning_seed(
                     typer.secho(f"The wiki render server failed part-way: {exc}\n"
                                 "Nothing was changed.", fg="red", err=True)
                     return EXIT_RENDER_DOWN
+                except SeedStorageUnavailable as exc:
+                    await db.rollback()
+                    typer.secho(f"Object storage refused a sample image ({exc}). Check the "
+                                "storage settings, then run this again. Nothing was added.",
+                                fg="red", err=True)
+                    return EXIT_STORAGE_DOWN
                 await db.commit()
             if result.total == 0:
                 typer.secho("The Learning space is already set up. Nothing to add.",

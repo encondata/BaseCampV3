@@ -212,15 +212,19 @@ class Environment(Base):
     active_slot: Mapped[str | None]
     auto_activate: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     retiring: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
-    # The Deploy page flow (migration 0013): the optional apps it runs, and
-    # its SMTP server (smtp_host NULL: its own Mailpit).
+    # The Deploy page flow (migration 0013; learn: 0015): the optional apps it
+    # runs, and its SMTP server (smtp_host NULL: its own Mailpit).
     apps: Mapped[list[str]] = mapped_column(
-        ARRAY(Text), server_default=text("'{wiki,kiosk,status,mailpit}'"))
+        ARRAY(Text), server_default=text("'{wiki,kiosk,learn,status,mailpit}'"))
     smtp_host: Mapped[str | None]
     smtp_port: Mapped[int | None] = mapped_column(Integer)
     smtp_username: Mapped[str | None]
     smtp_from: Mapped[str | None]
     smtp_starttls: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
+    # SHA-256 digests of the kiosk app's signing certificates (migration 0015):
+    # lowercase hex, rendered as SS_KIOSK_SIGNING_DIGESTS. Not a secret.
+    kiosk_signing_digests: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), server_default=text("'{}'"))
     created_by: Mapped[uuid.UUID | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
@@ -310,6 +314,9 @@ class Deployment(Base):
     go_live: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     # Fresh start (migration 0011): its plan has step 11, Create the first admin.
     first_admin: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    # Its plan ends with step 20, Seed starter content (migration 0015): a first
+    # Update that starts empty and asked for it. Retries keep it.
+    seed_content: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     # LAN Blue/Green (migration 0012): its plan is a LAN Blue/Green plan;
     # `slot` and `go_live` mean what they mean on DigitalOcean.
     bluegreen: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))

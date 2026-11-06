@@ -17,7 +17,7 @@ import { kioskUrl, wikiUrl } from '../lib/appLinks';
 /** `href` marks a link to another app (the kiosk, the wiki): it opens in a
  *  new tab instead of routing; `to` then only serves as the item key. An
  *  empty `resource` means every signed-in user sees the item. */
-export interface NavItem { to: string; label: string; resource: string; icon: ReactNode; godOnly?: boolean; minRank?: number; globalOnly?: boolean; learningManager?: boolean; end?: boolean; href?: string }
+export interface NavItem { to: string; label: string; resource: string; icon: ReactNode; godOnly?: boolean; minRank?: number; globalOnly?: boolean; learningManager?: boolean; end?: boolean; href?: string; app?: 'wiki' | 'kiosk' }
 export interface NavSection { label: string; icon: ReactNode; items: NavItem[] }
 
 export const NAV_SECTIONS: NavSection[] = [
@@ -810,6 +810,7 @@ export const NAV_SECTIONS: NavSection[] = [
         href: kioskUrl(),
         label: 'Kiosk',
         resource: 'kiosk',
+        app: 'kiosk',
         icon: (
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
                strokeLinecap="round" strokeLinejoin="round">
@@ -823,6 +824,7 @@ export const NAV_SECTIONS: NavSection[] = [
         href: wikiUrl(),
         label: 'Wiki',
         resource: 'wiki',
+        app: 'wiki',
         icon: (
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
                strokeLinecap="round" strokeLinejoin="round">

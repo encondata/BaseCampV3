@@ -973,6 +973,23 @@ class ContainerAsset(Base):
     last_validated_at: Mapped[datetime | None]
 
 
+class DockPass(Base):
+    """A finished pass a Dock Station laptop sent (migration 0120), kept so a
+    retried send gets the same reply. `id` is the laptop's own pass id, not
+    generated here."""
+
+    __tablename__ = "dock_passes"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    device_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("devices.id", ondelete="CASCADE"))
+    container_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("containers.id", ondelete="SET NULL"))
+    closed_at: Mapped[datetime]
+    reply: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
 class RawScan(Base):
     """One unprocessed scan from a kiosk/reader — the inbox. The future
     matcher moves rows to processed_scans (true move: copy + delete);
@@ -1206,8 +1223,8 @@ class Device(Base):
         ForeignKey("people.id", ondelete="SET NULL"))
     session_login_method: Mapped[str | None]
     session_started_at: Mapped[datetime | None]
-    # kiosk station type ('label' | 'rfid' | 'timeclock'; 0105) and the paired RFID reader;
-    # set by POST /kiosk/setup, never by the heartbeat (migration 0088)
+    # kiosk station type ('label' | 'rfid' | 'timeclock' | 'dock'; 0105, 0120) and the
+    # paired RFID reader; set by POST /kiosk/setup, never by the heartbeat (migration 0088)
     station_type: Mapped[str | None]
     rfid_reader_ip: Mapped[str | None] = mapped_column(INET)
     rfid_reader_serial: Mapped[str | None]

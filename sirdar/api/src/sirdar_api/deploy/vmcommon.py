@@ -171,12 +171,13 @@ async def forget_pin(ip: str, actor_id: uuid.UUID | None, target_id: str) -> boo
     return False
 
 
-async def confirm_pin(*, ip: str, expected: str, actor_id: uuid.UUID | None, target_id: str,
+async def confirm_pin(*, ip: str, expected: str, key_type: str, actor_id: uuid.UUID | None, target_id: str,
                       tries: int, poll: int, sleep: Callable[[float], Awaitable[None]],
                       out: Output, how: str, mismatch: str,
                       minutes: int | None = None) -> bool:
-    """Pin `expected` for ip:22 with known_hosts.trust, which re-reads the live
-    key and refuses a mismatch; retried while SSH isn't up. True when this run
+    """Pin `expected` (a `key_type` key) for ip:22 with known_hosts.trust,
+    which re-reads the live key of that type and refuses a mismatch; retried
+    while SSH isn't up. True when this run
     made the pin (there was none before). `minutes` is the wait the timeout
     message names (by default tries * poll)."""
     port = vms.VM_SSH_PORT
@@ -188,7 +189,8 @@ async def confirm_pin(*, ip: str, expected: str, actor_id: uuid.UUID | None, tar
                     await ssh.pinned_host_key(s, ip, port)
                     out(f"SSH host key {expected} is pinned.\n")
                     return False
-                await known_hosts.trust(s, ip, port, expected, actor_id, target_id=target_id)
+                await known_hosts.trust(s, ip, port, expected, actor_id, target_id=target_id,
+                                        key_type=key_type)
                 await s.commit()
                 changed = " (it changed)" if stored is not None else ""
                 out(f"Pinned {ip}'s SSH host key {expected}, {how}{changed}.\n")

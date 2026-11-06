@@ -190,11 +190,12 @@ class PinnedHost:
 
 
 async def pinned_host_key(db: AsyncSession, host: str, port: int) -> PinnedHost:
-    """Fetch the live host key and compare it with the trusted one. Raises
-    HostKeyUnknown, HostKeyMismatch or ConnectFailed; never logs in."""
-    live = await known_hosts.fetch_host_key(host, port)
-    actual, key_type = known_hosts.fingerprint(live), live.get_algorithm()
+    """Fetch the live host key of the trusted key's type and compare it with
+    the trusted one. Raises HostKeyUnknown, HostKeyMismatch or ConnectFailed;
+    never logs in."""
     stored = await known_hosts.lookup(db, host, port)
+    live = await known_hosts.fetch_key_of_type(host, port, stored.key_type if stored else None)
+    actual, key_type = known_hosts.fingerprint(live), live.get_algorithm()
     if stored is None:
         raise HostKeyUnknown(host, port, key_type, actual)
     if stored.fingerprint_sha256 != actual:

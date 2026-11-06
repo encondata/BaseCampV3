@@ -29,6 +29,7 @@ async def test_status_is_public_and_defaults_off(client):
         "email_enabled": False, "password_reset_ttl_minutes": 15,
         "password_min_length": get_settings().password_min_length,
         "background": None,
+        "apps": {"wiki": True, "kiosk": True, "learn": True},
     }
 
 
@@ -79,7 +80,7 @@ async def test_put_merges_trims_and_audits(client, db, seeded_user):
                       "totp_trust_days": 7, "email_enabled": False,
                       "password_reset_ttl_minutes": 15,
                       "password_min_length": get_settings().password_min_length,
-                      "background": None}
+                      "background": None, "apps": {"wiki": True, "kiosk": True, "learn": True}}
 
 
 async def test_status_hides_read_only_message_until_mode_is_on(client, db, seeded_user):

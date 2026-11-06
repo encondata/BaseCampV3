@@ -105,6 +105,9 @@ def _prepare_environment() -> None:
     # opts in with the `email_on` fixture (which still uses a fake sender).
     os.environ["SS_SMTP_HOST"] = ""
     os.environ["SS_SMTP_FROM"] = ""
+    # Every optional app is on unless a test says otherwise (a developer's
+    # .env may list fewer).
+    os.environ["SS_APPS"] = ""
     get_settings.cache_clear()
 
     subprocess.run(

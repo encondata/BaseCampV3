@@ -328,6 +328,7 @@ describe('station labels', () => {
     expect(stationLabel('rfid')).toBe('RFID Station');
     expect(stationLabel('label')).toBe('Label Station');
     expect(stationLabel('timeclock')).toBe('Time Clock');
+    expect(stationLabel('dock')).toBe('Dock Station');
     expect(stationLabel(null)).toBe('\u2014');
     expect(stationLabel('future')).toBe('future');
   });
@@ -335,6 +336,7 @@ describe('station labels', () => {
   it('the Type column reads "Time Clock \u00b7 Laptop" for a Time Clock laptop', () => {
     expect(stationTypeLabel({ station_type: 'timeclock', sub_type: 'laptop' })).toBe('Time Clock \u00b7 Laptop');
     expect(stationTypeLabel({ station_type: 'rfid', sub_type: 'laptop' })).toBe('RFID \u00b7 Laptop');
+    expect(stationTypeLabel({ station_type: 'dock', sub_type: 'laptop' })).toBe('Dock \u00b7 Laptop');
     expect(stationTypeLabel({ station_type: 'label', sub_type: 'laptop' })).toBe('Label Station \u00b7 Laptop');
   });
 });

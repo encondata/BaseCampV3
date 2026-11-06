@@ -110,15 +110,17 @@ const device = (id: string, name: string, over: Partial<DeviceItem> = {}): Devic
 const laptop = (station: DeviceItem['station_type']): Partial<DeviceItem> =>
   ({ device_type: 'kiosk', sub_type: 'laptop', station_type: station });
 
-// The devices notifications cover (A, B, C: an RFID Station, a fixed reader, an approved router)
+// The devices notifications cover (A, M, B, C: an RFID Station, a Dock Station, a fixed reader, an approved router)
 // among those they do not. Device C's hostname is what the Routers list makes readable.
 const DEVICES: DeviceItem[] = [
   device('dev-d', 'Device D', laptop('label')),
   device('dev-a', 'Device A', laptop('rfid')),
+  device('dev-m', 'Device M', laptop('dock')),
   device('dev-e', 'Device E', laptop('timeclock')),
   device('dev-f', 'Device F', laptop(null)),
   device('dev-b', 'Device B'),
   device('dev-g', 'Device G', { device_type: 'kiosk', sub_type: 'android', station_type: 'rfid' }),
+  device('dev-n', 'Device N', { device_type: 'kiosk', sub_type: 'android', station_type: 'dock' }),
   device('dev-h', 'Device H', { device_type: 'kiosk', sub_type: 'web' }),
   device('dev-i', 'device_i', { device_type: 'router', approval_state: 'pending' }),
   device('dev-c', 'device_c', { device_type: 'router', approval_state: 'approved' }),
@@ -338,12 +340,13 @@ it('the options of Device come from listDevices, only for the devices notificati
   await openPicker(user, 'Device');
   await screen.findByText('Device A', { selector: '.kbar-item' });
 
-  // An RFID Station, a fixed reader and an approved router, in the order the list gave them:
-  // not another kiosk (a Label Station, a Time Clock, a laptop with no station type, an Android
-  // one whose station type reads rfid, a web kiosk), nor a router that is pending, revoked or
+  // An RFID Station, a Dock Station, a fixed reader and an approved router, in the order the list
+  // gave them: not another kiosk (a Label Station, a Time Clock, a laptop with no station type, an
+  // Android one whose station type reads rfid or dock, a web kiosk), nor a router that is pending, revoked or
   // not an agent's, nor a device of any other type
   expect(offered()).toEqual([
     ['Device A', 'RFID Station'],
+    ['Device M', 'Dock Station'],
     ['Device B', 'Fixed Reader'],
     ['Device C', 'Router'],
   ]);

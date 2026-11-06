@@ -80,7 +80,8 @@ export default function DeployFlow({ targets, reloadTargets }: { targets: Deploy
   }, [ctx]);
 
   async function start(name: string) {
-    const dep = await startDeployment(name, { mode: 'update' });
+    const seed = state?.dataMode === 'empty' && state.seedContent;
+    const dep = await startDeployment(name, { mode: 'update', ...(seed ? { seed_content: true } : {}) });
     navigate(`/deploy/environments/${encodeURIComponent(name)}?deployment=${encodeURIComponent(dep.id)}`);
   }
 

@@ -15,7 +15,8 @@ Covered devices are the only ones notifications check and people can watch: the 
 in on their own, whether or not anyone is using them. Phone, tablet and web kiosks beat only
 while someone is signed in, Label Stations update only when they upload scans, Time Clock
 stations only on a clock-in or clock-out, and a router that is pending or revoked reports
-nothing, so a quiet stretch from any of them is not an outage.
+nothing, so a quiet stretch from any of them is not an outage. RFID and Dock Stations send a
+telemetry beat of their own, so they are covered.
 
 Spec: docs/superpowers/specs/2026-11-02-notifications-phase2-design.md (section 5, Device offline)
 """
@@ -27,6 +28,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import ColumnElement, and_, false, func, or_
 
 from serversherpa.db.models import Device
+from serversherpa.services import station_keys
 
 # A device is online while the time since its `last_seen_at` is at most its threshold.
 KIOSK_ONLINE = timedelta(minutes=3)      # kiosks check in every minute: three missed beats
@@ -41,11 +43,18 @@ def is_rfid_station(device: Device) -> bool:
     return device.sub_type == "laptop" and device.station_type == "rfid"
 
 
+def is_reader_station(device: Device) -> bool:
+    """A laptop kiosk set up as an RFID or Dock Station: the stations with a paired reader,
+    which send their own telemetry beat."""
+    return (device.sub_type == "laptop"
+            and device.station_type in station_keys.READER_STATION_TYPES)
+
+
 def covered(device: Device) -> bool:
-    """Whether notifications check this device and people can watch it: an RFID Station, any
-    fixed reader, or an approved router."""
+    """Whether notifications check this device and people can watch it: an RFID or Dock
+    Station, any fixed reader, or an approved router."""
     if device.device_type == "kiosk":
-        return is_rfid_station(device)
+        return is_reader_station(device)
     if device.device_type == "fixed_reader":
         return True
     return device.device_type == "router" and device.approval_state == "approved"
@@ -56,7 +65,7 @@ def covered_clause() -> ColumnElement[bool]:
     covered), so `~covered_clause()` finds the devices that are not."""
     return func.coalesce(or_(
         and_(Device.device_type == "kiosk", Device.sub_type == "laptop",
-             Device.station_type == "rfid"),
+             Device.station_type.in_(station_keys.READER_STATION_TYPES)),
         Device.device_type == "fixed_reader",
         and_(Device.device_type == "router", Device.approval_state == "approved"),
     ), false())
@@ -107,11 +116,12 @@ def device_link(device: Device) -> str:
 
 
 def kind_label(device: Device, vocab: Mapping[str, str]) -> str:
-    """What a notification calls this kind of device: "RFID Station" for an RFID Station, else
-    the device-type vocabulary's label ("Fixed Reader", "Router"). `vocab` maps a device type to
-    its label; one it lacks shows as its key rather than failing the caller."""
-    if device.device_type == "kiosk" and is_rfid_station(device):
-        return "RFID Station"
+    """What a notification calls this kind of device: "RFID Station" for an RFID Station,
+    "Dock Station" for a Dock Station, else the device-type vocabulary's label ("Fixed
+    Reader", "Router"). `vocab` maps a device type to its label; one it lacks shows as its
+    key rather than failing the caller."""
+    if device.device_type == "kiosk" and is_reader_station(device):
+        return "Dock Station" if device.station_type == station_keys.DOCK else "RFID Station"
     return vocab.get(device.device_type, device.device_type)
 
 

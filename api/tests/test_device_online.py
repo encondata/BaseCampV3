@@ -31,6 +31,7 @@ from serversherpa.services.device_online import (
     device_list_link,
     display_name,
     is_offline,
+    is_reader_station,
     is_rfid_station,
     kind_label,
 )
@@ -111,12 +112,37 @@ async def test_the_sql_rule_is_the_same_rule(db):
     assert set((await db.scalars(select(Device.id).where(~covered_clause()))).all()) == other_ids
 
 
+def _dock(**fields) -> Device:
+    """A Dock Station: a laptop kiosk set up with station type dock."""
+    return _device("kiosk", **{"sub_type": "laptop", "station_type": "dock", **fields})
+
+
+async def test_dock_station_is_covered_and_named(db):
+    dock = _dock()
+    assert is_reader_station(dock) is True
+    assert is_reader_station(_station()) is True
+    assert is_reader_station(_device("kiosk", sub_type="laptop", station_type="label")) is False
+    android_dock = _device("kiosk", sub_type="android", station_type="dock")
+    assert is_reader_station(android_dock) is False
+    # a Dock Station is not an RFID Station, whatever else it shares with one
+    assert is_rfid_station(dock) is False
+    assert covered(dock) is True
+    assert covered(android_dock) is False
+    db.add_all([dock, android_dock])
+    await db.commit()
+    covered_ids = set((await db.scalars(select(Device.id).where(covered_clause()))).all())
+    assert dock.id in covered_ids and android_dock.id not in covered_ids
+    assert kind_label(dock, {}) == "Dock Station"
+    assert kind_label(_station(), {}) == "RFID Station"
+    assert kind_label(android_dock, {"kiosk": "Kiosk"}) == "Kiosk"
+
+
 def test_is_rfid_station_moved_here():
     assert is_rfid_station(_station()) is True
     assert is_rfid_station(_device("kiosk", sub_type="laptop", station_type="label")) is False
     assert is_rfid_station(_device("kiosk", sub_type="android", station_type="rfid")) is False
-    # the kiosk routes use this one, not a copy of it
-    assert kiosk_routes.is_rfid_station is is_rfid_station
+    # the kiosk routes use the reader-station rule, not a copy of it
+    assert kiosk_routes.is_reader_station is is_reader_station
 
 
 # ── when a device reads as offline ─────────────────────────────────

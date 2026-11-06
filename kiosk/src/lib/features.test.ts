@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 
 import {
-  FEATURES, TIMECLOCK_STATION_FEATURE, featureAvailable, homeFeatures,
+  DOCK_FEATURE, FEATURES, TIMECLOCK_STATION_FEATURE, featureAvailable, homeFeatures,
 } from './features';
 
 const setup = FEATURES.find((f) => f.id === 'setup')!;
@@ -65,4 +65,13 @@ it('a Time Clock station shows Time Clock, Kiosk Setup and Settings', () => {
     blurb: 'Start the time clock for workers.',
   });
   expect(homeFeatures(false, 'timeclock')).toBe(FEATURES);
+});
+
+it('a Dock shows Dock, RFID Reader, Kiosk Setup and Settings', () => {
+  expect(homeFeatures(true, 'dock').map((f) => f.id)).toEqual(['dock', 'rfid', 'setup', 'settings']);
+  expect(DOCK_FEATURE).toEqual({
+    id: 'dock', path: '/dock', title: 'Dock',
+    blurb: 'Watch crates pass the curtain and what each one packed.',
+  });
+  expect(homeFeatures(false, 'dock')).toBe(FEATURES);
 });

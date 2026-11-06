@@ -1,18 +1,20 @@
 """The station key (rfid scan processing spec §3): a portal-issued secret
-that lets an unattended station (RFID, Label or Time Clock) sync its move
-and upload scans, or punch the time clock, with nobody signed in.
+that lets an unattended station (RFID, Label, Time Clock or Dock) sync its
+move and upload scans, or punch the time clock, with nobody signed in.
 
-Issued by `POST /kiosk/station-key` as the person who just saved an RFID or
-Label Kiosk Setup (or, when that failed, retried by the background loop at
-most once a minute while someone signed in here has a usable cloud session
-and the setup is still a station). Stored only encrypted with edge.key;
-cleared on every new setup (it covered the previous one), a Clear Setup
-from the portal, and Wipe.
+Issued by `POST /kiosk/station-key` as the person who just saved an RFID,
+Label, Time Clock or Dock Kiosk Setup (or, when that failed, retried by the
+background loop at most once a minute while someone signed in here has a
+usable cloud session and the setup is still a station). Stored only
+encrypted with edge.key; cleared on every new setup (it covered the
+previous one), a Clear Setup from the portal, and Wipe.
 
 `is_station_setup` (any station type) gates the key, sync and upload
-paths; `is_rfid_setup` stays RFID-only for the reader-specific code, and
-`is_timeclock_setup` marks the Time Clock Station (a key with or without a
-move, a people-only sync, the /edge/timeclock routes).
+paths; `is_reader_setup` (an RFID or Dock Station, the two that pair a
+reader) gates the reader-specific code: the reader snapshot, the station
+heartbeat and the off-move alarm. `is_rfid_setup` and `is_dock_setup` are
+each one type, and `is_timeclock_setup` marks the Time Clock Station (a key
+with or without a move, a people-only sync, the /edge/timeclock routes).
 
 A 403 `kiosk_not_registered` on any station route (the laptop's kiosk
 registration lapsed) keeps the key: renewing on the portal's Kiosk Devices
@@ -131,13 +133,26 @@ def _resume(store: Store) -> None:
         events.record(store, EVENT_KIND, RESUMED_TITLE)
 
 
-STATION_TYPES = ("rfid", "label", "timeclock")
+STATION_TYPES = ("rfid", "label", "timeclock", "dock")
+
+
+def is_reader_setup(store: Store) -> bool:
+    """An RFID or Dock Station setup: the types that pair a reader (the
+    reader-specific paths)."""
+    station = _station(store)
+    return station is not None and station[0] in laptop_setup.READER_TYPES
 
 
 def is_rfid_setup(store: Store) -> bool:
-    """An RFID Station setup (the reader-specific paths)."""
+    """An RFID Station setup."""
     station = _station(store)
     return station is not None and station[0] == "rfid"
+
+
+def is_dock_setup(store: Store) -> bool:
+    """A Dock Station setup."""
+    station = _station(store)
+    return station is not None and station[0] == "dock"
 
 
 def is_timeclock_setup(store: Store) -> bool:
@@ -147,7 +162,7 @@ def is_timeclock_setup(store: Store) -> bool:
 
 
 def is_station_setup(store: Store) -> bool:
-    """An RFID, Label or Time Clock Station setup: one that holds a station key."""
+    """An RFID, Label, Time Clock or Dock Station setup: one that holds a station key."""
     return _station(store) is not None
 
 

@@ -162,8 +162,10 @@ def test_upgrade_starts_after_existing_reads(tmp_path, monkeypatch):
     step = next(i for i, sql in enumerate(steps) if "rfid_processing_meta" in sql)
     monkeypatch.setattr(db, "SCHEMA_STEPS", steps[:step])    # the image before this step
     s = Store(tmp_path / "edge.db")
-    seed_rows, _ = parse_events([tag_event("AA01"), tag_event("AA01")])
-    store_batch(s, reader_serial="R1", rows=seed_rows, setup=SETUP, received_at=RECEIVED)
+    for _ in range(2):   # that image's reads (today's store_batch names newer columns)
+        s.run("INSERT INTO raw_tag_reads (received_at, reader_serial, epc, initiative_id, "
+              "site_id, scan_status, raw_json) VALUES (?, 'R1', 'AA01', ?, ?, ?, '{}')",
+              (RECEIVED, SETUP["initiative_id"], SETUP["site_id"], SETUP["scan_status"]))
     s.close()
     monkeypatch.setattr(db, "SCHEMA_STEPS", steps)
     s = Store(tmp_path / "edge.db")                          # upgrade: the new step runs

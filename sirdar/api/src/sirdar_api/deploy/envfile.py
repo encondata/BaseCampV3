@@ -11,9 +11,9 @@ from dataclasses import dataclass, field
 
 ENV_ROOT = "/opt/serversherpa"
 
-SERVICES = ("api", "portal", "kiosk", "wiki", "spaces", "status", "mailpit")
-PUBLIC_SERVICES = ("api", "portal", "kiosk", "wiki", "spaces", "status")
-DEFAULT_PORTS = {"api": 8000, "portal": 8091, "kiosk": 8090, "wiki": 8096,
+SERVICES = ("api", "portal", "kiosk", "wiki", "learn", "spaces", "status", "mailpit")
+PUBLIC_SERVICES = ("api", "portal", "kiosk", "wiki", "learn", "spaces", "status")
+DEFAULT_PORTS = {"api": 8000, "portal": 8091, "kiosk": 8090, "wiki": 8096, "learn": 8092,
                  "spaces": 9000, "status": 8095, "mailpit": 8025}
 PORT_KEYS = {s: f"STACK_{s.upper()}_PORT" for s in SERVICES}
 
@@ -24,6 +24,9 @@ OPTIONAL_SECRETS = ("SS_ANTHROPIC_API_KEY", "SS_DB_TESTING_PASSWORD", "SS_SMTP_P
 # "$" (compose interpolation), "#", backslash or backtick.
 SECRET_VALUE_RE = re.compile(r"[A-Za-z0-9._~+/=:@%^*!?,;-]{1,1024}")
 SECRET_KEYS = REQUIRED_SECRETS + OPTIONAL_SECRETS
+# Settings that aren't secrets, written right after the optional secrets ("" when
+# unset): the kiosk app's signing certificate digests (apps.env_extra fills it).
+OPTIONAL_SETTINGS = ("SS_KIOSK_SIGNING_DIGESTS",)
 FERNET_SECRETS = ("SS_TOTP_ENCRYPTION_KEY",)
 HEX_SECRETS = tuple(k for k in REQUIRED_SECRETS if k not in FERNET_SECRETS)
 
@@ -58,7 +61,8 @@ EXTRA_KEYS = (
 KNOWN_KEYS = (
     "STACK_ENV", "STACK_DOMAIN", "STACK_IMAGE_TAG", "STACK_REPO_DIR", "STACK_PROXY_IP",
     "STACK_BIND_IP", *(PORT_KEYS[s] for s in SERVICES), "STACK_KEEP_DUMPS",
-    *REQUIRED_SECRETS, "SS_SPACES_BUCKET", "SS_LOG_LEVEL", *OPTIONAL_SECRETS, *EXTRA_KEYS,
+    *REQUIRED_SECRETS, "SS_SPACES_BUCKET", "SS_LOG_LEVEL", *OPTIONAL_SECRETS,
+    *OPTIONAL_SETTINGS, *EXTRA_KEYS,
 )
 
 _KEY_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
@@ -100,7 +104,7 @@ class EnvConfig:
     spaces_bucket: str
     log_level: str
     secrets: dict[str, str] = field(repr=False)
-    # EXTRA_KEYS only, written after the optional secrets in this order
+    # EXTRA_KEYS (written after the optional settings, in this order) and OPTIONAL_SETTINGS
     extra: dict[str, str] = field(default_factory=dict, repr=False)
 
 
@@ -121,9 +125,10 @@ def render_env(cfg: EnvConfig) -> str:
         "SS_SPACES_BUCKET": cfg.spaces_bucket,
         "SS_LOG_LEVEL": cfg.log_level,
         **{k: cfg.secrets.get(k, "") for k in OPTIONAL_SECRETS},
+        **{k: cfg.extra.get(k, "") for k in OPTIONAL_SETTINGS},
     }
     for key, value in cfg.extra.items():
-        if key not in EXTRA_KEYS:
+        if key not in EXTRA_KEYS and key not in OPTIONAL_SETTINGS:
             raise RenderError(f"unknown key {key}")
         values[key] = value
     for key, value in values.items():

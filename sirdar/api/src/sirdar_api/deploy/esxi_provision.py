@@ -100,6 +100,10 @@ class EsxiVmState:
     def host_fingerprint(self) -> str:
         return known_hosts.fingerprint(asyncssh.import_public_key(self.host_key_public))
 
+    @property
+    def host_key_type(self) -> str:
+        return asyncssh.import_public_key(self.host_key_public).get_algorithm()
+
 
 @dataclass(frozen=True)
 class EsxiVmContext:
@@ -516,7 +520,8 @@ class EsxiProvisioner:
 
     async def _pin(self, ctx: EsxiVmContext, ip: str, out: Output) -> bool:
         return await vmcommon.confirm_pin(
-            ip=ip, expected=ctx.vm.host_fingerprint, actor_id=ctx.actor_id,
+            ip=ip, expected=ctx.vm.host_fingerprint, key_type=ctx.vm.host_key_type,
+            actor_id=ctx.actor_id,
             target_id=f"esxi:{ctx.env_name}", tries=max(1, self._ssh_wait // self._poll),
             poll=self._poll, sleep=self._sleep, out=out,
             how="the key Sirdar generated for the VM",

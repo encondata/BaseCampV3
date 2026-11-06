@@ -1,6 +1,7 @@
 """Sample content for `serversherpa learning-seed`: the wiki pages (as
 ProseMirror JSON), their learning-document settings, quiz questions and
-packets. Every page opens with the same "replace this text" callout.
+packets. Every sample page opens with the same "replace this text"
+callout; Dress code is the company's own slides, so it has none.
 
 The node helpers are copied from the wiki guide scripts' wikidoc.py (the
 CLI never imports from .superpowers). Inline text uses **bold** markers
@@ -49,9 +50,24 @@ def callout(variant: str, *paras: str) -> dict:
             "content": [p(x) for x in paras]}
 
 
-def doc(*nodes: dict) -> dict:
-    """A page: the sample notice first, then `nodes`."""
-    return {"type": "doc", "content": [callout("info", SAMPLE_NOTICE), *nodes]}
+def image(filename: str, caption: str) -> dict:
+    """An image from `seed_images/`. The seed uploads it as the page's own
+    asset and swaps the `file:` id for the asset's (`image_files`)."""
+    return {"type": "wikiImage",
+            "attrs": {"alt": caption, "assetId": "file:" + filename, "caption": caption}}
+
+
+def doc(*nodes: dict, sample: bool = True) -> dict:
+    """A page: the sample notice first (unless not `sample`), then `nodes`."""
+    notice = [callout("info", SAMPLE_NOTICE)] if sample else []
+    return {"type": "doc", "content": [*notice, *nodes]}
+
+
+def image_nodes(node: dict) -> list[dict]:
+    """The `wikiImage` nodes in `node` that still name a `seed_images/` file."""
+    if node.get("type") == "wikiImage":
+        return [node] if str(node["attrs"]["assetId"]).startswith("file:") else []
+    return [n for c in node.get("content", []) for n in image_nodes(c)]
 
 
 def empty_text_nodes(node: dict) -> int:
@@ -62,24 +78,25 @@ def empty_text_nodes(node: dict) -> int:
 
 # ── the pages ────────────────────────────────────────────────────────
 
+# the dress code slides; every word below is on them
 DRESS_CODE = doc(
-    p("What to wear on every client site, and why it matters."),
-    h2("Every day on site"),
-    bullets(
-        "Company shirt, tucked in, with your badge visible above the waist.",
-        "Long pants. No shorts, leggings or ripped denim.",
-        "Closed-toe safety shoes. Steel toe where the site requires it.",
-    ),
-    h2("Data hall floor"),
-    bullets(
-        "No loose jewelry, lanyards that hang below the chest, or untied long hair.",
-        "ESD wrist strap when you handle open equipment.",
-    ),
-    h2("Client-specific rules"),
-    p("Some clients add their own rules. You'll see them in that client's site rules packet."),
-    h2("If you are not sure"),
-    p("Ask your lead before you start. Being turned away at the door costs you and the crew "
-      "more time than a quick question does."),
+    p("What to wear for every visit."),
+    image("dress-code-01.webp", "Datacenter dress code"),
+    bullets("Long pants", "Closed-toe shoes", "Solid-color collared shirt",
+            "Name badge on the right chest"),
+    h2("Shirt and name badge"),
+    image("dress-code-02.webp", "Shirt and name badge"),
+    bullets("**Solid-color collared shirt.** No logos, branding or patterns.",
+            "**Name badge on the right chest.** Wear your badge where it is easy to see."),
+    h2("Pants and footwear"),
+    image("dress-code-03.webp", "Pants and footwear"),
+    bullets("**Long pants.** Wear full-length pants. No shorts.",
+            "**Closed-toe shoes.** Keep your toes fully covered. No sandals or open-toe shoes."),
+    h2("Before you enter"),
+    image("dress-code-04.webp", "Before you enter: your dress code checklist"),
+    bullets("Long pants", "Closed-toe shoes", "Solid-color collared shirt with no branding",
+            "Name badge on your right chest"),
+    sample=False,
 )
 
 CONFIDENTIALITY = doc(
@@ -224,9 +241,10 @@ YEAR = 365
 
 DOCUMENTS: tuple[SeedDoc, ...] = (
     SeedDoc("Standard onboarding", "Dress code", DRESS_CODE,
-            "What to wear on every client site, and why it matters.",
+            "What to wear for every visit.",
             {"validity_days": YEAR, "resign_rule": "expired_or_new_version",
-             "sign_style": "typed_name", "require_scroll": True, "min_read_seconds": 60}),
+             "sign_style": "typed_name", "require_scroll": True, "min_read_seconds": 60},
+            change_note="First version."),
     SeedDoc("Standard onboarding", "Confidentiality", CONFIDENTIALITY,
             "How we handle what we see and hear at client sites.",
             {"validity_days": YEAR, "resign_rule": "expired_or_new_version"}),

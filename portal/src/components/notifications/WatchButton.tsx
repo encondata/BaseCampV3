@@ -1,6 +1,6 @@
 /**
  * WatchButton — the Watch / Watching toggle in the header of an initiative, a
- * site, a truck or an RFID Station kiosk page. It is the wiki's page watch button
+ * site, a truck or an RFID or Dock Station kiosk page. It is the wiki's page watch button
  * (wiki/web/src/components/WatchButton.tsx) for the person's own watch: it reads
  * whether they watch the thing themselves (a group's watch of it does not count),
  * renders nothing until that is known, and a failure to read it counts as not

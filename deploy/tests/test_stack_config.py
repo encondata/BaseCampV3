@@ -19,7 +19,7 @@ ENV = "uat"                      # STACK_ENV in env.example
 DOMAIN = "uat.serversherpa.com"  # STACK_DOMAIN in env.example
 PROXY_IP = "10.0.0.2"            # STACK_PROXY_IP in env.example
 TAG = "local"                    # STACK_IMAGE_TAG in env.example
-PUBLIC = ("api", "portal", "kiosk", "wiki", "spaces", "status")
+PUBLIC = ("api", "portal", "kiosk", "wiki", "learn", "spaces", "status")
 WORKERS = {
     "import-worker": ["serversherpa", "import-worker"],
     "log-service": ["serversherpa", "log-service"],
@@ -194,23 +194,25 @@ def test_web_apps_point_at_the_stack() -> None:
     assert status["STATUS_PUBLIC_URL"] == f"https://status.{DOMAIN}"
 
 
-@pytest.mark.parametrize("given, kiosk, wiki", [
-    ({}, f"https://kiosk.{DOMAIN}", f"https://wiki.{DOMAIN}"),
-    ({"STATUS_KIOSK_URL": "", "STATUS_WIKI_URL": ""}, "", ""),
+@pytest.mark.parametrize("given, kiosk, wiki, learn", [
+    ({}, f"https://kiosk.{DOMAIN}", f"https://wiki.{DOMAIN}", f"https://learn.{DOMAIN}"),
+    ({"STATUS_KIOSK_URL": "", "STATUS_WIKI_URL": "", "STATUS_LEARN_URL": ""}, "", "", ""),
 ])
 def test_the_status_page_targets_follow_ss_stack(given: dict[str, str], kiosk: str,
-                                                 wiki: str) -> None:
-    """ss-stack sets STATUS_KIOSK_URL / STATUS_WIKI_URL empty for an app
-    that is off (STACK_APPS); unset, each is the app's public URL."""
+                                                 wiki: str, learn: str) -> None:
+    """ss-stack sets STATUS_KIOSK_URL / STATUS_WIKI_URL / STATUS_LEARN_URL
+    empty for an app that is off (STACK_APPS); unset, each is the app's
+    public URL."""
     env = {k: v for k, v in os.environ.items()
-           if k not in ("STATUS_KIOSK_URL", "STATUS_WIKI_URL")}
+           if k not in ("STATUS_KIOSK_URL", "STATUS_WIKI_URL", "STATUS_LEARN_URL")}
     out = subprocess.run(
         ["docker", "compose", "--env-file", str(ENV_EXAMPLE), "-f",
          str(STACK_DIR / "status" / "compose.yml"), "config", "--format", "json"],
         capture_output=True, text=True, env={**env, **given})
     assert out.returncode == 0, out.stderr
     status = json.loads(out.stdout)["services"]["status"]["environment"]
-    assert (status["STATUS_KIOSK_URL"], status["STATUS_WIKI_URL"]) == (kiosk, wiki)
+    assert (status["STATUS_KIOSK_URL"], status["STATUS_WIKI_URL"],
+            status["STATUS_LEARN_URL"]) == (kiosk, wiki, learn)
 
 
 def test_env_example_secrets_are_placeholders() -> None:
@@ -302,3 +304,18 @@ def test_the_proxy_routes_the_learn_site() -> None:
     caddyfile = (STACK_DIR / "proxy" / "Caddyfile").read_text()
     assert "@learn host learn.{$STACK_DOMAIN}" in caddyfile
     assert "reverse_proxy @learn learn:8080 {" in caddyfile
+
+
+def test_the_api_reads_the_apps_and_the_signing_digests_from_the_env_file(tmp_path) -> None:
+    env = rendered("api")["services"]["api"]["environment"]
+    assert (env["SS_APPS"], env["SS_KIOSK_SIGNING_DIGESTS"]) == ("", "")
+    digest = "ab" * 32
+    env_file = tmp_path / ".env"
+    env_file.write_text(ENV_EXAMPLE.read_text() + (
+        f"STACK_APPS=wiki,learn,mailpit\nSS_KIOSK_SIGNING_DIGESTS={digest}\n"))
+    out = subprocess.run(
+        ["docker", "compose", "--env-file", str(env_file), "-f", str(STACK_DIR / "api/compose.yml"),
+         "config", "--format", "json"], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    got = json.loads(out.stdout)["services"]["api"]["environment"]
+    assert (got["SS_APPS"], got["SS_KIOSK_SIGNING_DIGESTS"]) == ("wiki,learn,mailpit", digest)

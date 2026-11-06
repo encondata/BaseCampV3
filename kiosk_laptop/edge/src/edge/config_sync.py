@@ -35,10 +35,10 @@ on the check-ins it already makes, with the web kiosk's rules
   never overlap, so a reply below the applied version means the portal's
   row was recreated (versions restarted): it is taken like any other.
 
-Which check-in carries it: an RFID Station with a station key syncs only on
-its station heartbeat (the portal ignores config on a station-keyed device's
-person heartbeat); otherwise the proxied person heartbeat carries it. One
-config beat at a time (`lock`), so the two never overlap."""
+Which check-in carries it: an RFID or Dock Station with a station key syncs
+only on its station heartbeat (the portal ignores config on a station-keyed
+device's person heartbeat); otherwise the proxied person heartbeat carries
+it. One config beat at a time (`lock`), so the two never overlap."""
 
 import asyncio
 import json
@@ -314,6 +314,13 @@ def add_fields(body: bytes, beat: Beat) -> bytes:
         data.pop(key, None)
     data.update(beat.fields)
     return json.dumps(data).encode()
+
+
+def server_offset_ms(store: Store) -> int | None:
+    """The portal's clock minus the edge's, in milliseconds, from the last
+    check-in reply that carried `server_time`; None until one has."""
+    row = store.one("SELECT server_offset_ms FROM device_config WHERE id = 1")
+    return row["server_offset_ms"] if row is not None else None
 
 
 def handle_reply(store: Store, beat: Beat, data) -> None:

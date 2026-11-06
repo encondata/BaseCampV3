@@ -46,6 +46,11 @@ x-ss-env: &ss-env
   SS_WIKI_RENDER_URL: http://wiki:8080
   SS_ANTHROPIC_API_KEY: ${SS_ANTHROPIC_API_KEY:-}
   SS_DB_TESTING_PASSWORD: ${SS_DB_TESTING_PASSWORD:-}
+  # the optional apps that run (the portal hides links to the others); empty: every app
+  SS_APPS: ${STACK_APPS:-}
+  # comma-separated SHA-256 digests of the kiosk app's signing certificates
+  # (release and Play): biometric sign-in enrolls only apps signed with these
+  SS_KIOSK_SIGNING_DIGESTS: ${SS_KIOSK_SIGNING_DIGESTS:-}
   # uvicorn honors X-Forwarded-For only from NPM, so callers can't spoof
   # their client IP past the per-IP rate limits
   FORWARDED_ALLOW_IPS: ${STACK_PROXY_IP:?set STACK_PROXY_IP}
@@ -61,6 +66,7 @@ x-ss-service: &ss-service
     - "portal.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
     - "kiosk.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
     - "wiki.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
+    - "learn.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
     - "spaces.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
     - "status.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
   restart: unless-stopped

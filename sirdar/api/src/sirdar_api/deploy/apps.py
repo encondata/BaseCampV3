@@ -1,5 +1,5 @@
 """Which apps an environment runs and where its mail goes (deploy phase 8c).
-API and portal always run; wiki, kiosk, status and mailpit can be turned off
+API and portal always run; wiki, kiosk, learn, status and mailpit can be turned off
 when the environment is created. Mail goes to the environment's own Mailpit
 (nothing leaves the host) or to an SMTP server: ServerSherpa reads SMTP only
 from its environment (SS_SMTP_* in api/src/serversherpa/config.py), so Sirdar
@@ -10,9 +10,9 @@ import re
 
 from sirdar_api.deploy import envfile
 
-OPTIONAL_APPS = ("wiki", "kiosk", "status", "mailpit")
+OPTIONAL_APPS = ("wiki", "kiosk", "learn", "status", "mailpit")
 ALWAYS = ("api", "portal")
-_PUBLIC_APPS = ("wiki", "kiosk", "status")          # their public names go when they're off
+_PUBLIC_APPS = ("wiki", "kiosk", "learn", "status")  # their public names go when they're off
 DEFAULT_SMTP_PORT = 587                             # ServerSherpa's smtp_port default
 _HOST_RE = re.compile(r"(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?")
 # no whitespace, quotes, "$", "#", backslash, backtick or control character:
@@ -20,6 +20,7 @@ _HOST_RE = re.compile(r"(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?")
 _BAD = r"@\s\"'$#`\\\x00-\x1f\x7f-\x9f"
 _EMAIL_RE = re.compile(rf"[^{_BAD}]{{1,64}}@[^{_BAD}]+\.[^.{_BAD}]{{2,}}")
 _USER_RE = re.compile(r"[^\s\"'$#`\\]{1,254}")
+_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 
 
 class AppsError(Exception):
@@ -35,7 +36,28 @@ def check_apps(value) -> list[str]:
     if (not isinstance(value, list) or not all(isinstance(a, str) for a in value)
             or set(value) - set(OPTIONAL_APPS)):
         raise AppsError("apps_invalid")
+    if "learn" in value and "wiki" not in value:
+        # learning documents render through the wiki container
+        raise AppsError("learn_needs_wiki")
     return [a for a in OPTIONAL_APPS if a in value]
+
+
+def check_digests(value) -> list[str]:
+    """The kiosk app's signing certificate digests (SS_KIOSK_SIGNING_DIGESTS):
+    each a SHA-256 as 64 hex characters, colons and case ignored; stored
+    lowercase without colons, each once. None: none."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(d, str) for d in value):
+        raise AppsError("signing_digest_invalid")
+    digests: list[str] = []
+    for index, raw in enumerate(value):
+        digest = raw.strip().replace(":", "").lower()
+        if not _DIGEST_RE.fullmatch(digest):
+            raise AppsError("signing_digest_invalid", index=index)
+        if digest not in digests:
+            digests.append(digest)
+    return digests
 
 
 def check_mail(value, apps_on: list[str]) -> dict:
@@ -91,6 +113,8 @@ def env_extra(env) -> dict[str, str]:
                 "SS_SMTP_USERNAME": env.smtp_username or "",
                 "SS_SMTP_STARTTLS": "true" if env.smtp_starttls else "false",
                 "SS_SMTP_FROM": env.smtp_from}
+    if env.kiosk_signing_digests:
+        out["SS_KIOSK_SIGNING_DIGESTS"] = ",".join(env.kiosk_signing_digests)
     return out
 
 

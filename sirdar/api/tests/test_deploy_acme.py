@@ -32,6 +32,7 @@ async def _nap(_s):
 def test_names_and_helpers():
     assert NAMES == ("api.uat9.serversherpa.com", "portal.uat9.serversherpa.com",
                      "kiosk.uat9.serversherpa.com", "wiki.uat9.serversherpa.com",
+                     "learn.uat9.serversherpa.com",
                      "status.uat9.serversherpa.com")
     key = acme._load_key(acme.new_key_pem())
     assert set(acme.jwk(key)) == {"crv", "kty", "x", "y"}

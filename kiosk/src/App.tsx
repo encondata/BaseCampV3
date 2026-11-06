@@ -10,6 +10,7 @@ import { useKioskSetup } from './lib/kioskSetup';
 import { LABEL_SECTIONS, type LabelSection } from './lib/labelSections';
 import { isLaptop } from './lib/platform';
 import Containers from './pages/Containers';
+import DockStation from './pages/DockStation';
 import Enroll from './pages/Enroll';
 import FeaturePage from './pages/FeaturePage';
 import KioskSetup from './pages/KioskSetup';
@@ -57,6 +58,10 @@ export default function App() {
               on a laptop RFID station. The page itself sends web mode, or a
               laptop with no paired reader, home. */}
           <Route path="/rfid_status" element={<KioskGuard><KioskShell><RfidStatus /></KioskShell></KioskGuard>} />
+          {/* The Dock screen — where a Dock laptop's Home tile and Kiosk
+              Setup land. The page itself sends web mode, or a setup that
+              isn't a Dock, home. */}
+          <Route path="/dock" element={<KioskGuard><KioskShell><DockStation /></KioskShell></KioskGuard>} />
           {/* Start Time Clock — the Time Clock station's Home tile and where
               its Kiosk Setup lands. Signed in like /rfid_status: it arms
               this browser as the station's display, then signs out. That

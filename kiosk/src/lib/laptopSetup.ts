@@ -8,8 +8,12 @@
  * Laptop mode only: a web kiosk keeps its own browser-local setup.
  */
 
+import { useSyncExternalStore } from 'react';
+
 import { getEdgeSetup, type EdgeSetup } from './api';
-import { readKioskSetup, writeKioskSetup, type KioskSetupSelection } from './kioskSetup';
+import {
+  isReaderStation, readKioskSetup, writeKioskSetup, type KioskSetupSelection,
+} from './kioskSetup';
 import { isLaptop } from './platform';
 import { isSetupComplete, readSetupState, writeSetupState } from './setupState';
 import { runSync } from './sync';
@@ -60,8 +64,11 @@ export function selectionFromEdge(setup: EdgeSetup | null): KioskSetupSelection 
     initiativeId: initiative_id, initiativeName: initiative_name, siteId: site_id,
     siteName: site_name, siteRole: site_role, scanStatus: scan_status, scanLabel: scan_status_label,
   };
-  if (station_type === 'label' || station_type === 'rfid') selection.stationType = station_type;
-  if (station_type === 'rfid' && reader && str(reader.ip) && str(reader.serial) && str(reader.model)) {
+  if (station_type === 'label' || station_type === 'rfid' || station_type === 'dock') {
+    selection.stationType = station_type;
+  }
+  if (isReaderStation(selection.stationType) && reader && str(reader.ip) && str(reader.serial)
+      && str(reader.model)) {
     selection.reader = { ip: reader.ip, serial: reader.serial, model: reader.model };
   }
   return selection;
@@ -87,6 +94,28 @@ function fetchShared(): Promise<EdgeSetup | null> {
   return inFlight;
 }
 
+// Until a look for the laptop's setup has finished in this page load (and
+// while another is running), a browser with no setup of its own may be
+// about to get one: a station's screen waits instead of going home.
+let looked = false;
+let looking = 0;
+const settledListeners = new Set<() => void>();
+
+/** True once a look for the laptop's setup has finished and none is
+ *  running: a browser with no setup by then isn't getting the laptop's. */
+export function laptopSetupSettled(): boolean {
+  return looked && looking === 0;
+}
+
+export function subscribeLaptopSetupSettled(fn: () => void): () => void {
+  settledListeners.add(fn);
+  return () => settledListeners.delete(fn);
+}
+
+export function useLaptopSetupSettled(): boolean {
+  return useSyncExternalStore(subscribeLaptopSetupSettled, laptopSetupSettled);
+}
+
 /** Loads the laptop's setup when this browser has none (or an incomplete
  *  one). True when it did. Never throws.
  *
@@ -94,6 +123,18 @@ function fetchShared(): Promise<EdgeSetup | null> {
  *  limited to that move, so the laptop's setup for any other move is never
  *  taken (checked once the edge has answered). */
 export async function hydrateLaptopSetup(lockedMove: string | null = null): Promise<boolean> {
+  looking += 1;
+  settledListeners.forEach((fn) => fn());
+  try {
+    return await hydrate(lockedMove);
+  } finally {
+    looking -= 1;
+    looked = true;
+    settledListeners.forEach((fn) => fn());
+  }
+}
+
+async function hydrate(lockedMove: string | null): Promise<boolean> {
   if (!isLaptop() || hasLocalSetup()) return false;
   const shared = await fetchShared();
   const selection = selectionFromEdge(shared);

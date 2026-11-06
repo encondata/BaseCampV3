@@ -100,9 +100,11 @@ def _redacted_error(exc: ReaderError, token: str | None):
 START_ONGOING = re.compile(r"start currently ongoing", re.I)
 
 
-@router.post("/start", dependencies=[Depends(online)])
-async def start(request: Request, session: EdgeSession = Depends(require_session)) -> dict:
-    st = request.app.state
+async def start_reader(st, session: EdgeSession) -> dict:
+    """Start the paired reader, for /start and the Dock screen's Start (each
+    checks the session is online first). A reader already reading counts as
+    started. No pairing is 409 reader_required, and a reader error is raised
+    as its HTTP error with the token redacted from its message."""
     async with st.pair_lock:
         token = _token(st)
         try:
@@ -122,9 +124,9 @@ async def start(request: Request, session: EdgeSession = Depends(require_session
     return {"reading": True}
 
 
-@router.post("/stop")
-async def stop(request: Request, session: EdgeSession = Depends(require_session)) -> dict:
-    st = request.app.state
+async def stop_reader(st, session: EdgeSession) -> dict:
+    """Stop the paired reader, for /stop and the Dock screen's Pause and
+    Stop. It raises as `start_reader` does."""
     async with st.pair_lock:
         token = _token(st)
         try:
@@ -137,6 +139,16 @@ async def stop(request: Request, session: EdgeSession = Depends(require_session)
     events.record(st.store, "reader_stopped", "Reader stopped",
                   f"Stopped by {session.person_name}")
     return {"reading": False}
+
+
+@router.post("/start", dependencies=[Depends(online)])
+async def start(request: Request, session: EdgeSession = Depends(require_session)) -> dict:
+    return await start_reader(request.app.state, session)
+
+
+@router.post("/stop")
+async def stop(request: Request, session: EdgeSession = Depends(require_session)) -> dict:
+    return await stop_reader(request.app.state, session)
 
 
 def connected_antennas(antennas) -> list[str]:
@@ -196,8 +208,9 @@ async def reads(request: Request, tz: str = "UTC") -> dict:
 # The "Asset Not Part Of Move" alarm. Like /events (read) and /stop (write),
 # these need any edge session, online or offline.
 
-def _is_rfid_station(store) -> bool:
-    return (laptop_setup.load(store) or {}).get("station_type") == "rfid"
+def _is_reader_station(store) -> bool:
+    """An RFID or Dock Station: the types that raise and show the alarm."""
+    return (laptop_setup.load(store) or {}).get("station_type") in laptop_setup.READER_TYPES
 
 
 def _int(value) -> int | None:
@@ -207,7 +220,7 @@ def _int(value) -> int | None:
 @router.get("/alarm")
 async def open_alarm(request: Request) -> dict:
     store = request.app.state.store
-    if not _is_rfid_station(store):
+    if not _is_reader_station(store):
         return alarm.empty(alarm.settings(store))
     return alarm.open_alarm(store, datetime.now(UTC))
 

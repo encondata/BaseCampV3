@@ -11,7 +11,13 @@ import pytest
 from sqlalchemy import select
 
 from sirdar_api.config import get_settings
-from sirdar_api.db.models import DoEnvironment, DoResource, DoSlot, EnvironmentSecret
+from sirdar_api.db.models import (
+    DoEnvironment,
+    DoResource,
+    DoSlot,
+    Environment,
+    EnvironmentSecret,
+)
 from sirdar_api.deploy import do_envs, known_hosts, vault, vmcommon, vms
 from sirdar_api.deploy.publish import StepFailed
 from sirdar_api.deploy.vmcommon import VmPrepareError
@@ -77,7 +83,7 @@ async def test_the_first_run_builds_everything(db, do_build):
     assert b.env.spaces_bucket in b.cloud.spaces.buckets
     (cert,) = fake.certificates.values()
     assert sorted(cert["dns_names"]) == sorted(
-        [*(f"{s}.uat9.serversherpa.com" for s in ("api", "portal", "kiosk", "wiki", "status")),
+        [*(f"{s}.uat9.serversherpa.com" for s in ("api", "portal", "kiosk", "wiki", "learn", "status")),
          "uat9.serversherpa.com"])
     (lb,) = fake.load_balancers.values()
     assert lb["droplet_ids"] == [] and lb["vpc_uuid"] == database["private_network_uuid"]
@@ -939,3 +945,27 @@ async def test_a_certificate_without_the_bare_name_is_replaced_now(db, do_build)
     (lb,) = fake.load_balancers.values()
     https = next(r for r in lb["forwarding_rules"] if r["entry_protocol"] == "https")
     assert https["certificate_id"] == new["id"]
+
+
+async def test_a_certificate_with_a_name_no_longer_served_is_replaced_now(db, do_build):
+    await do_build.run()
+    fake = do_build.cloud.do
+    (old,) = fake.certificates.values()
+    old["dns_names"] = [*old["dns_names"], "blog.uat9.serversherpa.com"]
+    await do_build.run()
+    (new,) = fake.certificates.values()                 # the old one is retired
+    assert new["id"] != old["id"] and "blog.uat9.serversherpa.com" not in new["dns_names"]
+    assert (f"Certificate {old['name']} also covers blog.uat9.serversherpa.com, which this "
+            "environment no longer serves; Sirdar replaces it.") in do_build.log()
+
+
+async def test_turning_apps_off_replaces_the_certificate(db, do_build):
+    await do_build.run()
+    env = await db.get(Environment, do_build.env.id, populate_existing=True)
+    env.apps = ["kiosk", "status", "mailpit"]
+    await db.commit()
+    await do_build.run()
+    (new,) = do_build.cloud.do.certificates.values()
+    assert not {"wiki.uat9.serversherpa.com", "learn.uat9.serversherpa.com"} & set(
+        new["dns_names"])
+    assert "kiosk.uat9.serversherpa.com" in new["dns_names"]

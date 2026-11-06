@@ -3,9 +3,13 @@
  * (StationTypeStep): a Label Station goes straight on; an RFID Station
  * first finds, connects to, and pairs a Zebra FX reader (ReaderStep,
  * ConnectStep, PairStep — under components/setup/), then a Network check
- * (NetworkCheckStep). Every path then continues the same way: pick a move, then which of that move's sites this
+ * (NetworkCheckStep); a Dock Station walks the same reader steps. Every
+ * path then continues the same way: pick a move, then which of that move's sites this
  * kiosk is at ("step 1A" — the move's source or destination site), then
  * a scan type, and stamp this kiosk's Device row (POST /kiosk/setup).
+ * An RFID Station or a Dock offers only RFID scan types and ends at
+ * Confirm & verify, whose Start Reader opens `/rfid_status` — or, for a
+ * Dock, its pass screen `/dock`.
  * A Label Station has no scan type: its setup is saved right after Site
  * (always Labeled), then it picks what it prints (LabelKindStep) and its
  * printer (PrinterStep); setup only counts as complete once the printer
@@ -54,7 +58,8 @@ import {
 } from '../lib/api';
 import { getIdentity } from '../lib/identity';
 import {
-  readerLabel, stationLabel, useKioskSetup, type KioskSetupSelection, type StationType,
+  isReaderStation, readerLabel, stationLabel, useKioskSetup, type KioskSetupSelection,
+  type StationType,
 } from '../lib/kioskSetup';
 import { isLaptop, platform } from '../lib/platform';
 import { dismissSetupClearNotice, useSetupClearNotice } from '../lib/setupClear';
@@ -86,10 +91,11 @@ const LABEL_STATION_SCAN_STATUS = 'labeled';
 
 /** The steps this kiosk walks. Web mode skips the station type (RFID
  *  needs the laptop edge) and ends by asking what it prints, which the
- *  web kiosk keeps for itself rather than sending to the portal. */
+ *  web kiosk keeps for itself rather than sending to the portal. An RFID
+ *  Station and a Dock walk the same reader path. */
 function pathFor(laptop: boolean, stationType: StationType | ''): Step[] {
   if (!laptop) return ['move', 'site', 'scan', 'kind'];
-  if (stationType === 'rfid') return ['type', 'reader', 'connect', 'pair', 'network', 'move', 'site', 'scan', 'confirm'];
+  if (isReaderStation(stationType)) return ['type', 'reader', 'connect', 'pair', 'network', 'move', 'site', 'scan', 'confirm'];
   if (stationType === 'label') return ['type', 'move', 'site', 'kind', 'printer'];
   if (stationType === 'timeclock') return ['type', 'move', 'site'];
   return ['type', 'move', 'site', 'scan'];
@@ -152,9 +158,9 @@ export default function KioskSetup() {
   const labelLoad = useRef(0);
   useEffect(() => { stepRef.current = step; }, [step]);
   const sync = useSyncStatus();
-  // An RFID station only offers scan types with RFID in the name.
+  // An RFID station or a Dock only offers scan types with RFID in the name.
   const scanTypes = options
-    ? (stationType === 'rfid' && laptop
+    ? (isReaderStation(stationType) && laptop
       ? options.scan_types.filter((t) => t.label.toLowerCase().includes('rfid'))
       : options.scan_types)
     : [];
@@ -389,7 +395,7 @@ export default function KioskSetup() {
     setSubmitError('');
     try {
       const identity = getIdentity();
-      // The edge adds the paired reader itself for an RFID station.
+      // The edge adds the paired reader itself for an RFID station or a Dock.
       const station = laptop && stationType ? stationType : undefined;
       const result = await submitKioskSetup({
         serial: identity.serial, initiative_id: initiativeId, site_id: chosenSiteId,
@@ -404,7 +410,7 @@ export default function KioskSetup() {
         scanStatus: result.scan_status ?? '', scanLabel: result.scan_status_label ?? '',
       };
       if (station) saved.stationType = station;
-      if (station === 'rfid') {
+      if (isReaderStation(station)) {
         // Only a reader this run actually paired; the Pair step can't be
         // passed without one.
         const reader = paired?.reader;
@@ -433,10 +439,10 @@ export default function KioskSetup() {
         }).catch(() => {});
       } else {
         writeSetupState('complete');
-        // An RFID station still has to verify and start its reader; a web
-        // kiosk still has to say what it prints (preselecting what it
-        // already prints), after which the wizard closes.
-        if (station === 'rfid') setStep('confirm');
+        // An RFID station or a Dock still has to verify and start its
+        // reader; a web kiosk still has to say what it prints (preselecting
+        // what it already prints), after which the wizard closes.
+        if (isReaderStation(station)) setStep('confirm');
         else if (!laptop) { setLabelKind(readWebLabelKind()); setStep('kind'); }
         else setWizardOpen(false);
       }
@@ -488,7 +494,7 @@ export default function KioskSetup() {
           {laptop && selection.stationType && (
             <p>
               Station: <b>{stationLabel(selection.stationType, platform().label)}</b>
-              {selection.stationType === 'rfid' && selection.reader && (
+              {isReaderStation(selection.stationType) && selection.reader && (
                 <> · reader <b>{readerLabel(selection.reader)}</b></>
               )}
             </p>
@@ -601,7 +607,11 @@ export default function KioskSetup() {
                 : null}
               onBack={() => setStep('scan')}
               onPairAgain={() => setStep('reader')}
-              onStarted={() => { setWizardOpen(false); navigate('/rfid_status'); }} />
+              onStarted={() => {
+                setWizardOpen(false);
+                // A Dock opens on its pass screen; an RFID Station on its dashboard.
+                navigate(stationType === 'dock' ? '/dock' : '/rfid_status');
+              }} />
           </div>
         )}
 
@@ -758,7 +768,7 @@ export default function KioskSetup() {
                 );
               })}
             </div>
-            {scanTypes.length === 0 && stationType === 'rfid' && laptop && (
+            {scanTypes.length === 0 && isReaderStation(stationType) && laptop && (
               <p className="page-hint">
                 No RFID scan types are set up. Add an active status value with RFID in its name
                 on the portal&apos;s Variables page.

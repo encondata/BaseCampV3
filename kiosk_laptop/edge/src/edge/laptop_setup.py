@@ -2,14 +2,21 @@
 phone on the LAN loads the laptop's setup instead of starting blank.
 
 Saved after the cloud accepts `/kiosk/setup`: the fields the kiosk caches
-(move, site and role, scan type with its label, station type) plus, for an
-RFID station, the paired reader's summary (never its token). Wipe clears it.
+(move, site and role, scan type with its label, station type) plus, for a
+reader station (RFID or Dock), the paired reader's summary (never its
+token). Wipe clears it.
 
 A Label Station's label settings (`label_station`: label kind, printer, DPI,
 offsets and peel-off printing) are saved with PUT /edge/label-station once the setup exists.
 They survive setting up again as a Label Station and are dropped by Clear
 Setup or a change of station type; the config document's `label_station`
 section mirrors them (config_sync), marked dirty whenever they change.
+
+A Dock Station's passes are dropped with the alarm state when the move
+changes, when the laptop is set up as another station type, and when it
+becomes a Dock from another type (the grouper then starts after the newest
+read, so reads taken as another station never land in a pass); Clear Setup
+also drops its dock settings (edge.dock.state).
 
 Every Label Station setup leaves the settings unconfirmed (`label_unconfirmed`
 in the shared setup, never in `label_station`) until setup step 5 saves them
@@ -21,8 +28,11 @@ import json
 from collections.abc import Callable
 
 from edge.db import Store, now_iso
+from edge.dock import state as dock_state
 from edge.rfid import alarm, pairing
 
+STATION_TYPES = ("label", "rfid", "timeclock", "dock")
+READER_TYPES = ("rfid", "dock")   # the station types that pair an RFID reader
 LABEL_KINDS = ("top", "front")
 PRINTER_TYPES = ("usb", "network")
 MAX_TEXT = 128          # a printer's model or serial
@@ -35,16 +45,20 @@ SETUP_FIELDS = ("initiative_id", "initiative_name", "site_id", "site_name", "sit
 
 def save(store: Store, result: dict, station_type: str | None) -> dict:
     setup = {key: result.get(key) for key in SETUP_FIELDS}
-    setup["station_type"] = (station_type if station_type in ("label", "rfid", "timeclock")
-                             else None)
-    reader = pairing.cloud_reader(store) if setup["station_type"] == "rfid" else None
+    setup["station_type"] = station_type if station_type in STATION_TYPES else None
+    reader = pairing.cloud_reader(store) if setup["station_type"] in READER_TYPES else None
     setup["reader"] = reader
     setup["updated_at"] = now_iso()
     with store.tx() as c:
         row = c.execute("SELECT setup_json FROM laptop_setup WHERE id = 1").fetchone()
         previous = json.loads(row["setup_json"]) if row else {}
-        if previous.get("initiative_id") != setup["initiative_id"]:
+        moved = previous.get("initiative_id") != setup["initiative_id"]
+        if moved:
             alarm.clear_state(c)   # the old move's alarms mean nothing on the new one
+        if moved or setup["station_type"] != "dock" or previous.get("station_type") != "dock":
+            # passes belong to one move's Dock, and the grouper starts after the
+            # reads taken before this laptop became that Dock
+            dock_state.clear_passes(c)
         # a Label Station set up again keeps its printer; any other change drops it
         kept = previous.get("station_type") == "label" and setup["station_type"] == "label"
         setup["label_station"] = previous.get("label_station") if kept else None
@@ -78,11 +92,13 @@ def _with_defaults(settings):
 
 def clear(store: Store) -> None:
     """Forget the shared setup (Clear Setup from the portal, or Wipe), and
-    with it the setup move's off-move alarms."""
+    with it the setup move's off-move alarms and the Dock's passes and
+    settings."""
     with store.tx() as c:
         had = label_station_in(c) is not None
         c.execute("DELETE FROM laptop_setup")
         alarm.clear_state(c)
+        dock_state.reset(c)
         if had:
             _note_config(c)
 

@@ -28,20 +28,28 @@ export interface KioskSetupSelection {
   /** What the laptop station is. Absent in web mode and in selections
    *  saved before station types existed — both stay valid. */
   stationType?: StationType;
-  /** The paired reader, for an RFID station. */
+  /** The paired reader, for an RFID station or a Dock. */
   reader?: ReaderSummary;
 }
 
-export type StationType = 'label' | 'rfid' | 'timeclock';
+export type StationType = 'label' | 'rfid' | 'timeclock' | 'dock';
+
+/** A station with a paired Zebra FX reader: an RFID Station or a Dock. Both
+ *  walk the reader steps in Kiosk Setup, offer only RFID scan types, and
+ *  get the off-move alarm. */
+export function isReaderStation(stationType: StationType | '' | undefined): boolean {
+  return stationType === 'rfid' || stationType === 'dock';
+}
 
 export interface ReaderSummary { ip: string; serial: string; model: string }
 
-/** "RFID · Laptop" / "Label Station · Laptop" / "Time Clock · Laptop"; the
- *  bare mode label when no station type was saved. */
+/** "RFID · Laptop" / "Label Station · Laptop" / "Time Clock · Laptop" /
+ *  "Dock · Laptop"; the bare mode label when no station type was saved. */
 export function stationLabel(stationType: StationType | undefined, modeLabel: string): string {
   if (stationType === 'rfid') return `RFID · ${modeLabel}`;
   if (stationType === 'label') return `Label Station · ${modeLabel}`;
   if (stationType === 'timeclock') return `Time Clock · ${modeLabel}`;
+  if (stationType === 'dock') return `Dock · ${modeLabel}`;
   return modeLabel;
 }
 
@@ -61,8 +69,9 @@ function isReader(value: unknown): value is ReaderSummary {
 function normalize(selection: KioskSetupSelection): KioskSetupSelection {
   const { stationType, reader, ...rest } = selection;
   const out: KioskSetupSelection = { ...rest };
-  if (stationType === 'label' || stationType === 'rfid' || stationType === 'timeclock') out.stationType = stationType;
-  if (out.stationType === 'rfid' && isReader(reader)) out.reader = reader;
+  if (stationType === 'label' || stationType === 'rfid' || stationType === 'timeclock'
+      || stationType === 'dock') out.stationType = stationType;
+  if (isReaderStation(out.stationType) && isReader(reader)) out.reader = reader;
   return out;
 }
 

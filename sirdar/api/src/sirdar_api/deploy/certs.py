@@ -25,7 +25,7 @@ from sirdar_api.deploy.integrations import CloudflareConfig
 SIRDAR_RENEW_DAYS = 14
 WORKER_RENEW_DAYS = 30
 DNS_WAIT = 15                     # seconds for Cloudflare's answer to settle
-PUBLIC_SERVICES = ("api", "portal", "kiosk", "wiki", "status")
+PUBLIC_SERVICES = ("api", "portal", "kiosk", "wiki", "learn", "status")
 CHALLENGE_COMMENT = "Managed by Sirdar (ACME challenge)"
 
 

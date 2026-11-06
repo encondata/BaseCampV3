@@ -1,7 +1,7 @@
 /**
  * useDeviceWatches — the person's own watches of devices, for the row menus of the
  * Fixed Readers and Routers lists. A fixed reader or an approved router has no page
- * of its own, so no Watch button (an RFID Station's page has one): its row menu offers
+ * of its own, so no Watch button (an RFID or Dock Station's page has one): its row menu offers
  * "Watch" or "Stop watching" instead, and this hook is what that menu asks.
  *
  * The person's watches are read once (GET /auth/me/watches), and only their own watches

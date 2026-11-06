@@ -1,3 +1,4 @@
+import asyncio
 import dataclasses
 
 import httpx
@@ -5,6 +6,7 @@ import httpx
 from edge import outbox
 from edge.app import create_app
 from edge.background import Background
+from tests.test_dock_grouper import batch, dock, passes
 
 
 async def _done():
@@ -64,3 +66,24 @@ async def test_a_wake_during_a_tick_is_not_lost(settings, cloud):
     finally:
         await bg.stop()
     assert len(ticks) >= 2                         # woke at once, not after 30 s
+
+
+async def test_dock_loop_wakes_the_pass_sender(app):
+    store = app.state.store
+    dock(store)
+    batch(store, [("AA01", 0), ("CC01", 1)])     # long ago: closable on the first group
+    bg = Background(app.state)
+
+    async def idle(now):
+        return None
+
+    bg.tick = idle
+    bg.start()
+    try:
+        assert bg._dock_task is not None
+        await asyncio.wait_for(app.state.dock_send_wake.wait(), timeout=5)
+    finally:
+        await bg.stop()
+    assert bg._dock_task.cancelled()
+    [p] = passes(store)
+    assert (p["outcome"], p["send_state"]) == ("pack", "pending")

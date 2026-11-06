@@ -115,12 +115,12 @@ async def _read(state, serial: str) -> dict:
 
 async def build_snapshot(state, *, now: datetime | None = None) -> dict | None:
     """The reader snapshot, or None when there is no pairing or this laptop
-    isn't an RFID Station."""
+    isn't a reader station (RFID or Dock)."""
     now = now or datetime.now(UTC)
     store = state.store
     setup = laptop_setup.load(store)
     row = pairing.current_row(store)
-    if row is None or not setup or setup.get("station_type") != "rfid":
+    if row is None or not setup or setup.get("station_type") not in laptop_setup.READER_TYPES:
         return None
     serial = row["serial"]
     snap: dict = {"serial": serial, "make": "Zebra"}
@@ -142,13 +142,13 @@ async def build_snapshot(state, *, now: datetime | None = None) -> dict | None:
 
 
 def current_snapshot(state, *, now: datetime | None = None) -> dict | None:
-    """The snapshot for the heartbeat: only an RFID Station's, and only one
-    taken in the last 3 minutes."""
+    """The snapshot for the heartbeat: only a reader station's (RFID or
+    Dock), and only one taken in the last 3 minutes."""
     snap = getattr(state, "reader_snapshot", None)
     if not isinstance(snap, dict):
         return None
     setup = laptop_setup.load(state.store)
-    if not setup or setup.get("station_type") != "rfid":
+    if not setup or setup.get("station_type") not in laptop_setup.READER_TYPES:
         return None
     try:
         taken = datetime.fromisoformat(snap["taken_at"])
@@ -161,8 +161,9 @@ def current_snapshot(state, *, now: datetime | None = None) -> dict | None:
 
 async def send_station_heartbeat(state, snap: dict | None) -> None:
     """The station heartbeat: serial, version and `snap` (left out when None)
-    under the station key. Nothing is sent without a key or from a Label
-    Station (the portal's station heartbeat is RFID-only). Never raises:
+    under the station key. Nothing is sent without a key or from a Label or
+    Time Clock Station (the portal's station heartbeat is for the reader
+    stations, RFID and Dock only). Never raises:
     offline or any failure is logged (status or exception type only; the
     key is never logged). `request_as_station` handles 401 (drop the key),
     403 `kiosk_not_registered` (pause) and 200 (resume); a 200 carrying
@@ -176,12 +177,12 @@ async def send_station_heartbeat(state, snap: dict | None) -> None:
         body["version"] = version
     if snap is not None:
         body["reader"] = snap
-    # RFID Stations only: the portal refuses a Label Station's key here, and
-    # a refusal drops the key. A Label Station's config rides the person
-    # heartbeat instead (routes/proxy.py).
-    if not station_key.has_key(state.store) or not station_key.is_rfid_setup(state.store):
+    # Reader stations (RFID, Dock) only: the portal refuses a Label Station's
+    # key here, and a refusal drops the key. A Label Station's config rides
+    # the person heartbeat instead (routes/proxy.py).
+    if not station_key.has_key(state.store) or not station_key.is_reader_setup(state.store):
         return
-    # the laptop's kiosk config syncs here on a station-keyed RFID laptop (config_sync.py)
+    # the laptop's kiosk config syncs here on a station-keyed reader laptop (config_sync.py)
     async with config_sync.lock(state):
         beat = config_sync.prepare_beat(state.store)
         body.update(beat.fields)

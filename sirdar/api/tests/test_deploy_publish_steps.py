@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import ManagedRecord
-from sirdar_api.deploy import publish
+from sirdar_api.deploy import environments, publish
 from sirdar_api.deploy.publish import CERT, DNS, PROXY, StepFailed
 
 from .deploy_factories import make_environment, secrets_key  # noqa: F401
@@ -15,9 +15,9 @@ from .publish_helpers import PUBLIC_IP, managed, publish_fakes  # noqa: F401
 
 NOW = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
 NAMES = [f"{s}.uat2.serversherpa.com" for s in
-         ("api", "portal", "kiosk", "wiki", "spaces", "status")]
-PORTS = {"api": 8000, "portal": 8091, "kiosk": 8090, "wiki": 8096, "spaces": 9000,
-         "status": 8095}
+         ("api", "portal", "kiosk", "wiki", "learn", "spaces", "status")]
+PORTS = {"api": 8000, "portal": 8091, "kiosk": 8090, "wiki": 8096, "learn": 8092,
+         "spaces": 9000, "status": 8095}
 
 
 @pytest.fixture
@@ -215,7 +215,7 @@ async def test_smoke_passes_and_fails(db, env, publish_fakes):
     sleeps: list = []
     with pytest.raises(StepFailed) as e:
         await _run(db, env, "smoke", _publisher(sleeps, smoke_attempts=2))
-    assert e.value.reason == "1 of 6 public URLs didn't answer: portal."
+    assert e.value.reason == "1 of 7 public URLs didn't answer: portal."
     assert sleeps == [10]
 
 
@@ -616,3 +616,17 @@ async def test_a_wildcard_still_blocks_a_service_name(db, env, publish_fakes):  
     assert "  api.uat2.serversherpa.com: The wildcard *.uat2.serversherpa.com covers" \
         in e.value.reason
     assert publish_fakes.cf.writes() == []
+
+
+async def test_an_app_turned_off_loses_its_dns_record_and_proxy_host(db, env, publish_fakes):
+    await _run(db, env, "dns")
+    await _run(db, env, "proxy")
+    await environments.update(db, get_settings(), env, {"apps": ["kiosk", "status", "mailpit"]})
+    await db.commit()
+    await _run(db, env, "dns")
+    await _run(db, env, "proxy")
+    gone = {"wiki.uat2.serversherpa.com", "learn.uat2.serversherpa.com"}
+    assert {r["name"] for r in publish_fakes.cf.records.values()} == set(NAMES) - gone
+    assert {h["domain_names"][0] for h in publish_fakes.npm.hosts.values()} == set(NAMES) - gone
+    rows = await db.scalars(select(ManagedRecord).execution_options(populate_existing=True))
+    assert not {r.service for r in rows} & {"wiki", "learn"}

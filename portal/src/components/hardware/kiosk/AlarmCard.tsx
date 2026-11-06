@@ -1,4 +1,4 @@
-/** Settings › Off-move alarm (laptop RFID Stations only): how long the
+/** Settings › Off-move alarm (laptop RFID and Dock Stations only): how long the
  *  alarm sounds when a tag from outside the move is read. Its sound is a
  *  slot on the Sound card and is shown here for reference. */
 

@@ -33,6 +33,7 @@ export const ENV: Environment = {
   seed_snapshot: null, first_admin: null, publish: false, managed_records: [],
   apps: ['wiki', 'kiosk', 'status', 'mailpit'],
   mail: { mode: 'mailpit', host: null, port: null, username: null, from_address: null, starttls: true, password_set: false },
+  kiosk_signing_digests: [],
   slots: [], active_slot: null, auto_activate: false, retiring: false, do: null,
   last_deployment: ADOPTED, created_at: '2026-10-03T12:00:00Z', updated_at: '2026-10-03T12:00:00Z',
 };
@@ -55,6 +56,7 @@ export const DEFAULTS: EnvironmentDefaults = {
   services: [
     { service: 'api', port: 8000, public: true }, { service: 'portal', port: 8091, public: true },
     { service: 'kiosk', port: 8090, public: true }, { service: 'wiki', port: 8096, public: true },
+    { service: 'learn', port: 8092, public: true },
     { service: 'spaces', port: 9000, public: true }, { service: 'status', port: 8095, public: true },
     { service: 'mailpit', port: 8025, public: false },
   ],
@@ -65,7 +67,7 @@ export const DEFAULTS: EnvironmentDefaults = {
         limits: { cores: [1, 64], memory_mb: [2048, 262144], disk_gb: [20, 4096], keep_snapshots: [1, 10] } },
   do: DO_DEFAULTS,
   first_admin: { password_min_length: 8, role: 'super_admin', link_minutes: 240 },
-  apps: { optional: ['wiki', 'kiosk', 'status', 'mailpit'], always: ['api', 'portal'] },
+  apps: { optional: ['wiki', 'kiosk', 'learn', 'status', 'mailpit'], always: ['api', 'portal'] },
   mail: { smtp_port: 587 },
 };
 

@@ -2574,6 +2574,15 @@ class BackgroundStatusOut(BaseModel):
     total: int
 
 
+class AppsStatusOut(BaseModel):
+    """Which optional apps this environment runs (SS_APPS): the portal hides
+    its links to an app that is off."""
+
+    wiki: bool = True
+    kiosk: bool = True
+    learn: bool = True
+
+
 class SystemStatusOut(BaseModel):
     """Public (unauthenticated) portal status — banners + read-only state."""
 
@@ -2586,6 +2595,7 @@ class SystemStatusOut(BaseModel):
     password_reset_ttl_minutes: int = 15
     password_min_length: int = 8
     background: BackgroundStatusOut | None = None
+    apps: AppsStatusOut = Field(default_factory=AppsStatusOut)
 
 
 class AdminConfigOut(BaseModel):
@@ -3747,8 +3757,8 @@ class KioskStationKeyOut(BaseModel):
     key: str
 
 
-# a laptop kiosk's station type (devices.station_type; migration 0105)
-StationType = Literal["label", "rfid", "timeclock"]
+# a laptop kiosk's station type (devices.station_type; migrations 0105, 0120)
+StationType = Literal["label", "rfid", "timeclock", "dock"]
 
 
 class KioskSetupIn(BaseModel):
@@ -3960,7 +3970,7 @@ class KioskStationScanBatchOut(KioskScanBatchOut):
 
 
 class KioskStationHeartbeatIn(BaseModel):
-    """An RFID Station's telemetry beat under its station key. `reader` is
+    """An RFID or Dock Station's telemetry beat under its station key. `reader` is
     deliberately loose: validated by KioskReaderReport inside the route so a
     bad one never fails the beat."""
 
@@ -4321,6 +4331,45 @@ class KioskContainerAssetOut(BaseModel):
     action: Literal["pack", "unpack"]
     moved_from: KioskContainerRef | None = None
     already_there: bool = False
+
+
+class KioskDockPassIn(BaseModel):
+    """One closed Dock Station pass, sent under the station key: the asset
+    ids the laptop matched in it, to pack into its one crate.
+
+    `pass_id` is the laptop's own id for the pass; a retried send with the
+    same id gets the first answer back. `closed_at` is when the pass closed,
+    already corrected to server time by the laptop (a naive value is read
+    as UTC); no membership newer than it is overwritten."""
+
+    serial: str = Field(min_length=1, max_length=120)
+    pass_id: uuid.UUID
+    container_id: uuid.UUID
+    closed_at: datetime
+    asset_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+
+
+class KioskDockPassAssetOut(BaseModel):
+    """What a pass did with one asset. `moved_from` is set for `moved`;
+    `reason` for `refused`."""
+
+    asset_id: uuid.UUID
+    result: Literal["packed", "moved", "already_there", "refused"]
+    moved_from: KioskContainerRef | None = None
+    reason: Literal["asset_not_found", "not_on_move", "changed_since_pass"] | None = None
+
+
+class KioskDockPassOut(BaseModel):
+    """The answer to one pass, per asset in the order sent (each id once).
+    `replayed` means the pass id was already done and this is the stored
+    answer; `clear_setup` is the device's pending Clear Setup id, as on the
+    station heartbeat."""
+
+    pass_id: uuid.UUID
+    container: KioskContainerRef
+    assets: list[KioskDockPassAssetOut]
+    replayed: bool = False
+    clear_setup: uuid.UUID | None = None
 
 
 # ── kiosk trucks (load / unload) ──

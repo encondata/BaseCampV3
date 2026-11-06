@@ -1,0 +1,43 @@
+# Step 20 — Seed starter content: a first deploy that starts empty (and asked
+# for it) loads the label builder's fonts and templates and, when the learning
+# site and the wiki run, the sample learning documents, with `ss-stack seed`
+# in its api container. Each command is idempotent, so Retry runs the whole
+# step again. On a failure the step's log ends with the commands' last lines.
+- name: Seed starter content
+  hosts: target
+  gather_facts: false
+  tasks:
+    - name: Does this checkout's ss-stack have the seed command?
+      ansible.builtin.command:
+        argv: [grep, -q, "^  seed)", "{{ ss_stack }}"]
+      register: knows_seed
+      changed_when: false
+      failed_when: false
+
+    - name: Stop when it doesn't
+      ansible.builtin.fail:
+        msg: >-
+          This commit's ss-stack has no seed command, so Sirdar can't seed starter
+          content. Deploy a newer commit.
+      when: knows_seed.rc != 0
+
+    - name: ss-stack seed
+      ansible.builtin.command:
+        argv: >-
+          {{ [ss_stack, 'seed', env_dir] + (['--learning'] if seed_learning | bool else []) }}
+      register: seeded
+      changed_when: seeded.rc == 0
+      failed_when: false
+
+    - name: What the seed commands printed
+      ansible.builtin.debug:
+        msg: "{{ seeded.stdout_lines | default([]) }}"
+      when: seeded.rc == 0
+
+    - name: Stop when a seed command failed
+      ansible.builtin.fail:
+        msg: >-
+          Seeding stopped (exit {{ seeded.rc }}). Its last lines:
+          {{ ((seeded.stdout_lines | default([])) + (seeded.stderr_lines | default([])))[-20:]
+             | join(' / ') }}
+      when: seeded.rc != 0

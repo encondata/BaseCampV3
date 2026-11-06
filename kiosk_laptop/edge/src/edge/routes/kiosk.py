@@ -68,8 +68,8 @@ async def printer_events(request: Request,
 def with_station(body: bytes, store) -> tuple[bytes, str | None]:
     """The browser picks the station type; the edge alone supplies the reader
     (from its current pairing), whatever the browser sent. Returns the body
-    and the station type. No pairing for `rfid` is 422 `reader_required`,
-    as the cloud answers it."""
+    and the station type. No pairing for `rfid` or `dock` (the reader
+    stations) is 422 `reader_required`, as the cloud answers it."""
     try:
         data = json.loads(body) if body else None
     except ValueError:
@@ -78,7 +78,7 @@ def with_station(body: bytes, store) -> tuple[bytes, str | None]:
         return body, None
     data.pop("reader", None)
     station = data.get("station_type")
-    if station == "rfid":
+    if station in laptop_setup.READER_TYPES:
         reader = pairing.cloud_reader(store)
         if reader is None:
             raise err(422, "reader_required")
@@ -90,6 +90,8 @@ def _station_name(station: str | None) -> str:
     """The setup event's station text."""
     if station == "rfid":
         return "RFID Station"
+    if station == "dock":
+        return "Dock Station"
     if station == "timeclock":
         return "Time Clock Station"
     return "Label Station"
@@ -102,14 +104,16 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
     that follows then reads what the edge just stored. The result is also
     kept for every browser (GET /edge/setup), and a Label Station drops the
     reader pairing — the reader row (password index, token) stays, so
-    pairing it again later reuses them. Any new setup drops the station
-    key (it covered the previous setup); an RFID, Label or Time Clock
-    Station then asks the portal for a new one for this setup, and a failed issue is retried by
-    the background loop. A Time Clock Station may have no move (its sync
-    target is then empty, and no "Move loaded" event is recorded) and,
-    like a Label Station, drops the reader pairing; it uploads no scans,
-    so every pending one is rejected `station_changed`. Every setup
-    revokes the Time Clock's armed screens (they go with the key)."""
+    pairing it again later reuses them. A Dock Station keeps the reader
+    pairing and its pending scans, like an RFID Station. Any new setup
+    drops the station key (it covered the previous setup); an RFID, Label,
+    Time Clock or Dock Station then asks the portal for a new one for this
+    setup, and a failed issue is retried by the background loop. A Time
+    Clock Station may have no move (its sync target is then empty, and no
+    "Move loaded" event is recorded) and, like a Label Station, drops the
+    reader pairing; it uploads no scans, so every pending one is rejected
+    `station_changed`. Every setup revokes the Time Clock's armed screens
+    (they go with the key)."""
     st = request.app.state
     body, station = with_station(await request.body(), st.store)
     body = rewrite_body("/kiosk/setup", body, st.identity)

@@ -1,8 +1,8 @@
-"""Station keys (RFID, Label and Time Clock Stations): a per-device secret an
-unattended laptop kiosk uses to call the station routes as itself. RFID and
-Label Stations upload scans with it; a Time Clock key is refused there
-(deps.station_device scopes each route by station type). Only the sha256 is stored; the raw key is returned
-once, at issue, and never logged or audited. Spec §3.
+"""Station keys (RFID, Label, Time Clock and Dock Stations): a per-device secret an
+unattended laptop kiosk uses to call the station routes as itself. RFID, Label and
+Dock Stations upload scans with it; a Time Clock key is refused there
+(deps.station_device scopes each route by station type). Only the sha256 is stored;
+the raw key is returned once, at issue, and never logged or audited. Spec §3.
 
 Callers commit; audit rows ride the caller's transaction."""
 
@@ -19,12 +19,16 @@ from serversherpa.db.models import Device
 from serversherpa.services.audit import audit
 
 TIMECLOCK = "timeclock"
+DOCK = "dock"
 # every laptop station type that may hold a station key
-STATION_TYPES: tuple[str, ...] = ("rfid", "label", TIMECLOCK)
+STATION_TYPES: tuple[str, ...] = ("rfid", "label", TIMECLOCK, DOCK)
 # the station types the scan-upload routes (sync, scans, heartbeat, sounds) serve
-UPLOAD_STATION_TYPES: tuple[str, ...] = ("rfid", "label")
+UPLOAD_STATION_TYPES: tuple[str, ...] = ("rfid", "label", DOCK)
+# the laptop stations with a paired reader: they alone send reader telemetry and read the
+# client assets and sounds that feed the off-move alarm
+READER_STATION_TYPES: tuple[str, ...] = ("rfid", DOCK)
 # kiosk sub_types that may hold a Time Clock key besides the laptop (every
-# station type); RFID and Label Stations stay laptop-only
+# station type); RFID, Label and Dock Stations stay laptop-only
 TIMECLOCK_SUB_TYPES: tuple[str, ...] = ("android", "zebra", "ios")
 
 

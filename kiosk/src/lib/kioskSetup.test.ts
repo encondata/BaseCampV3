@@ -6,6 +6,7 @@ import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 
 import {
   clearKioskSetup,
+  isReaderStation,
   stationLabel,
   readKioskSetup,
   useKioskSetup,
@@ -128,4 +129,26 @@ it('empty ids are only valid for a Time Clock station', () => {
 
 it('stationLabel names a Time Clock', () => {
   expect(stationLabel('timeclock', 'Laptop')).toBe('Time Clock · Laptop');
+});
+
+it('stationLabel names a Dock', () => {
+  expect(stationLabel('dock', 'Laptop')).toBe('Dock · Laptop');
+});
+
+it('a stored Dock selection with its reader round-trips', () => {
+  const dock = {
+    ...SELECTION, stationType: 'dock' as const,
+    reader: { ip: '10.0.0.5', serial: '1234ABCD', model: 'FX9600' },
+  };
+  writeKioskSetup(dock);
+  expect(readKioskSetup()).toEqual(dock);
+});
+
+it('isReaderStation is true for an RFID Station and a Dock only', () => {
+  expect(isReaderStation('rfid')).toBe(true);
+  expect(isReaderStation('dock')).toBe(true);
+  expect(isReaderStation('label')).toBe(false);
+  expect(isReaderStation('timeclock')).toBe(false);
+  expect(isReaderStation('')).toBe(false);
+  expect(isReaderStation(undefined)).toBe(false);
 });

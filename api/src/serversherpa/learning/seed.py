@@ -8,16 +8,21 @@ It publishes each page in the wiki and snapshots it as the document's v1,
 which needs the wiki render server (the snapshot's HTML is rendered once,
 `render.py`); `check_render_server` finds out before anything is written.
 The Acme and forklift packets get no rule: client ids differ per install,
-so those rules are added in the portal.
+so those rules are added in the portal. A page's images (`seed_images/`)
+are uploaded to object storage as that page's own assets when the page
+is first published.
 
 Nothing here commits; the CLI does."""
+import copy
+import mimetypes
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import WikiGrant, WikiNode, WikiPage, WikiSpace
+from serversherpa.db.models import WikiGrant, WikiNode, WikiPage, WikiPageAsset, WikiSpace
 from serversherpa.learning import LEARNING_SPACE_KEY, library, packets, quiz, rules
 from serversherpa.learning.models import (
     LearningDocument,
@@ -35,13 +40,20 @@ from serversherpa.learning.seed_content import (
     SPACE,
     SeedDoc,
     empty_text_nodes,
+    image_nodes,
 )
+from serversherpa.services import storage
 from serversherpa.wiki import pages, tree
 from serversherpa.wiki.content import EMPTY_DOC
 from serversherpa.wiki.spaces import create_space
 
 # learning admins author the pages, so they manage the space
 ADMIN_ROLE = "learning_admin"
+IMAGES = Path(__file__).parent / "seed_images"
+
+
+class SeedStorageUnavailable(Exception):
+    """A page image couldn't be uploaded to object storage."""
 
 
 @dataclass
@@ -100,6 +112,33 @@ async def _folders(db: AsyncSession, space: WikiSpace, actor_id: uuid.UUID | Non
     return folders
 
 
+async def _with_images(db: AsyncSession, space: WikiSpace, node: WikiNode, content: dict,
+                       actor_id: uuid.UUID | None) -> dict:
+    """`content` with each `seed_images/` file uploaded as `node`'s own
+    asset and its image nodes pointing at that asset. Raises
+    SeedStorageUnavailable when storage refuses an upload."""
+    content = copy.deepcopy(content)
+    uploaded: dict[str, str] = {}
+    for image in image_nodes(content):
+        filename = image["attrs"]["assetId"].removeprefix("file:")
+        if filename not in uploaded:
+            data = (IMAGES / filename).read_bytes()
+            content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            asset_id = uuid.uuid4()
+            key = f"wiki/{space.id}/{asset_id}/{filename}"
+            try:
+                await storage.put_object(key, data, content_type)
+            except storage.STORAGE_ERRORS as exc:
+                raise SeedStorageUnavailable(storage.loggable(exc)) from exc
+            db.add(WikiPageAsset(id=asset_id, node_id=node.id, storage_key=key,
+                                 filename=filename, content_type=content_type,
+                                 size_bytes=len(data), uploaded_by=actor_id))
+            uploaded[filename] = str(asset_id)
+        image["attrs"]["assetId"] = uploaded[filename]
+    await db.flush()
+    return content
+
+
 async def _page(db: AsyncSession, space: WikiSpace, folder: WikiNode, seed: SeedDoc,
                 actor_id: uuid.UUID | None, result: SeedResult) -> WikiNode:
     """The published page, created if missing. An existing page is left
@@ -113,7 +152,8 @@ async def _page(db: AsyncSession, space: WikiSpace, folder: WikiNode, seed: Seed
     page = await db.get(WikiPage, node.id)
     if page.published_version_id is None:
         if page.draft_json is None:
-            content = pages.check_doc(seed.content)
+            content = pages.check_doc(await _with_images(db, space, node, seed.content,
+                                                         actor_id))
             assert empty_text_nodes(content) == 0, seed.title
             page.draft_json = content
             page.draft_text = pages.doc_text(content)
@@ -189,7 +229,8 @@ async def _rule(db: AsyncSession, packet_by_name: dict[str, LearningPacket],
 async def seed(db: AsyncSession, *, actor_id: uuid.UUID | None) -> SeedResult:
     """Create whatever of the sample Learning space is missing. Raises
     LearningRenderUnavailable / LearningRenderRejected when a page can't
-    be rendered (the caller rolls back)."""
+    be rendered, SeedStorageUnavailable when a page image can't be
+    uploaded (the caller rolls back)."""
     result = SeedResult()
     space = await _space(db, actor_id, result)
     folders = await _folders(db, space, actor_id, result)
