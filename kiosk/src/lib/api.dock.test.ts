@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-/** The Dock screen's edge calls: the overview, one pass's detail, and the
- *  settings save, with their paths, methods and body. */
+/** The Dock screen's edge calls: the overview, one pass's detail, the
+ *  settings save and the Start / Pause / Stop control, with their paths,
+ *  methods and body. */
 import { beforeEach, expect, it, vi } from 'vitest';
 
 import * as api from './api';
@@ -32,6 +33,7 @@ const OVERVIEW: api.DockOverview = {
     tags: [{ epc: 'E200001', kind: 'container', label: 'Crate 12' }],
   },
   passes: [PASS],
+  control: null,
 };
 
 it('getDock reads the overview from GET /edge/dock', async () => {
@@ -74,4 +76,14 @@ it('saveDockSettings surfaces invalid_dock_settings', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => json({ detail: { code: 'invalid_dock_settings' } }, 422)));
   await expect(api.saveDockSettings({ quiet_gap_s: 0 }))
     .rejects.toMatchObject({ status: 422, code: 'invalid_dock_settings' });
+});
+
+it('controlDock posts the action to POST /edge/dock/control and returns the result', async () => {
+  const result: api.DockControlResult = { reading: false, control: 'stop', decided: 2 };
+  const fetchMock = vi.fn(async () => json(result));
+  vi.stubGlobal('fetch', fetchMock);
+  expect(await api.controlDock('stop')).toEqual(result);
+  expect(lastCall(fetchMock)).toEqual({
+    url: 'http://api.test/edge/dock/control', method: 'POST', body: { action: 'stop' },
+  });
 });

@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 /** The Dock screen: the open pass and its countdown, recent passes and
  *  their outcome copy, the pass-detail modal, the dry-run switch, the
- *  quiet gap, and its 1 s poll. */
+ *  Window, the reader's Start / Pause / Stop and its state, the 1 s
+ *  overview poll and the 5 s reader check. */
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -9,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({
   getDock: vi.fn(), getDockPass: vi.fn(), saveDockSettings: vi.fn(), getEdgeSetup: vi.fn(),
+  controlDock: vi.fn(), getReaderStatus: vi.fn(),
 }));
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>();
@@ -19,8 +21,8 @@ vi.mock('../lib/sync', async (importOriginal) => ({
 }));
 
 import {
-  ApiError, type DockOverview, type DockPassDetail, type DockPassRow, type DockPassTag,
-  type EdgeSetup,
+  ApiError, type DockControl, type DockControlResult, type DockOverview, type DockPassDetail,
+  type DockPassRow, type DockPassTag, type EdgeSetup, type ReaderStatus,
 } from '../lib/api';
 import { writeKioskSetup } from '../lib/kioskSetup';
 import { hydrateLaptopSetup } from '../lib/laptopSetup';
@@ -50,7 +52,13 @@ const passRow = (over: Partial<DockPassRow> = {}): DockPassRow => ({
 });
 
 const overview = (over: Partial<DockOverview> = {}): DockOverview => ({
-  settings: { dry_run: true, quiet_gap_s: 5 }, open: null, passes: [], ...over,
+  settings: { dry_run: true, quiet_gap_s: 5 }, open: null, passes: [], control: null, ...over,
+});
+
+const READER = { ip: '10.10.48.119', serial: '1234ABCD', model: 'FX9600', endpoint_url: null };
+/** A reachable reader, not reading unless told. */
+const readerStatus = (over: Partial<ReaderStatus> = {}): ReaderStatus => ({
+  reader: READER, reachable: true, reading: false, radio: 'on', antennas: ['1', '2'], ...over,
 });
 
 const passTag = (over: Partial<DockPassTag>): DockPassTag => ({
@@ -90,8 +98,14 @@ async function renderPage() {
 }
 
 const dryRun = () => screen.getByRole('switch', { name: 'Dry run' });
-const gapInput = () => screen.getByLabelText('Quiet gap') as HTMLInputElement;
+const windowInput = () => screen.getByLabelText('Window') as HTMLInputElement;
 const saveBtn = () => screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement;
+const readerGroup = () => screen.getByRole('group', { name: 'Reader' });
+const readerShown = () => readerGroup().querySelector('.rfid-dash-state') as HTMLElement;
+const readerBtn = (name: 'Start' | 'Pause' | 'Stop') =>
+  within(readerGroup()).getByRole('button', { name }) as HTMLButtonElement;
+/** Whether Start, Pause and Stop are enabled. */
+const enabled = () => (['Start', 'Pause', 'Stop'] as const).map((n) => !readerBtn(n).disabled);
 const BANNER = 'Dry run · nothing is sent to the portal.';
 const UNREACHABLE = "Can't reach the station. Retrying…";
 /** The Recent passes row whose Crate cell (or other cell) holds `text`. */
@@ -108,6 +122,10 @@ beforeEach(() => {
   api.saveDockSettings.mockReset().mockImplementation(
     async (s: object) => ({ dry_run: true, quiet_gap_s: 5, ...s }));
   api.getEdgeSetup.mockReset().mockResolvedValue(null);
+  api.getReaderStatus.mockReset().mockResolvedValue(readerStatus());
+  api.controlDock.mockReset().mockImplementation(
+    async (action: DockControl): Promise<DockControlResult> =>
+      ({ reading: action === 'start', control: action, decided: 0 }));
 });
 afterEach(() => {
   cleanup();
@@ -303,36 +321,236 @@ describe('DockStation', () => {
     expect(screen.queryByText(BANNER)).toBeNull();
   });
 
-  it('Quiet gap: Save is enabled once the value differs and saves it', async () => {
+  it('Window: Save is enabled once the value differs and saves it', async () => {
     await renderPage();
-    expect(gapInput().value).toBe('5');
+    expect(windowInput().value).toBe('5');
     expect(saveBtn().disabled).toBe(true);
-    fireEvent.change(gapInput(), { target: { value: '8' } });
+    fireEvent.change(windowInput(), { target: { value: '8' } });
     expect(saveBtn().disabled).toBe(false);
     fireEvent.click(saveBtn());
     await flush();
     expect(api.saveDockSettings).toHaveBeenCalledWith({ quiet_gap_s: 8 });
-    expect(gapInput().value).toBe('8');
+    expect(windowInput().value).toBe('8');
     expect(saveBtn().disabled).toBe(true);
   });
 
-  it('Quiet gap: an out-of-range value shows the hint as an error and saves nothing', async () => {
+  it('Window: an out-of-range value shows the hint as an error and saves nothing', async () => {
     await renderPage();
-    fireEvent.change(gapInput(), { target: { value: '0' } });
+    fireEvent.change(windowInput(), { target: { value: '0' } });
     fireEvent.click(saveBtn());
     await flush();
     expect(api.saveDockSettings).not.toHaveBeenCalled();
     expect(screen.getByText('1–60 seconds').classList.contains('form-error')).toBe(true);
-    expect(gapInput().getAttribute('aria-invalid')).toBe('true');
+    expect(windowInput().getAttribute('aria-invalid')).toBe('true');
+  });
+
+  it('Window: the label, the hint, and 1–60 seconds as the error', async () => {
+    await renderPage();
+    const hint = () => document.getElementById(windowInput().getAttribute('aria-describedby') ?? '');
+    expect(windowInput().id).toBe('dock-window');
+    expect(hint()?.textContent).toBe('Seconds before and after the crate tag');
+    expect(hint()?.classList.contains('form-error')).toBe(false);
+    expect(windowInput().getAttribute('aria-invalid')).toBeNull();
+    fireEvent.change(windowInput(), { target: { value: '61' } });
+    fireEvent.click(saveBtn());
+    await flush();
+    expect(hint()?.textContent).toBe('1–60 seconds');
+    expect(hint()?.classList.contains('form-error')).toBe(true);
+    expect(screen.queryByText('Seconds before and after the crate tag')).toBeNull();
+    expect(windowInput().getAttribute('aria-invalid')).toBe('true');
+    // typing again puts the hint back
+    fireEvent.change(windowInput(), { target: { value: '6' } });
+    expect(hint()?.textContent).toBe('Seconds before and after the crate tag');
+    expect(windowInput().getAttribute('aria-invalid')).toBeNull();
   });
 
   it('a failed save says so', async () => {
     api.saveDockSettings.mockRejectedValue(new ApiError(422, 'invalid_dock_settings'));
     await renderPage();
-    fireEvent.change(gapInput(), { target: { value: '8' } });
+    fireEvent.change(windowInput(), { target: { value: '8' } });
     fireEvent.click(saveBtn());
     await flush();
     expect(screen.getByText("Couldn't save. Try again.")).toBeTruthy();
+  });
+
+  it('shows the reader as Reading, Paused or Stopped', async () => {
+    let answer: (s: ReaderStatus) => void = () => {};
+    api.getReaderStatus.mockReturnValueOnce(new Promise<ReaderStatus>((r) => { answer = r; }));
+    await renderPage();
+    expect(readerShown().textContent).toBe('Checking…');
+    expect(readerShown().classList.contains('is-loading')).toBe(true);
+    await act(async () => { answer(readerStatus({ reading: true })); await vi.advanceTimersByTimeAsync(0); });
+    expect(readerShown().textContent).toBe('Reading');
+    expect(readerShown().classList.contains('is-reading')).toBe(true);
+    cleanup();
+
+    // Not reading: the last Dock button says whether it was paused.
+    const cases: [DockControl | null, string, string][] = [
+      ['pause', 'Paused', 'is-paused'], ['stop', 'Stopped', 'is-stopped'],
+      [null, 'Stopped', 'is-stopped'], ['start', 'Stopped', 'is-stopped'],
+    ];
+    for (const [control, text, tone] of cases) {
+      api.getDock.mockResolvedValue(overview({ control }));
+      await renderPage();
+      expect(readerShown().textContent).toBe(text);
+      expect(readerShown().classList.contains(tone)).toBe(true);
+      cleanup();
+    }
+
+    api.getReaderStatus.mockRejectedValue(new ApiError(0, 'network'));
+    await renderPage();
+    expect(readerShown().textContent).toBe('Unreachable');
+    expect(readerShown().classList.contains('is-unreachable')).toBe(true);
+  });
+
+  it('Start, Pause and Stop send their action and check the reader again', async () => {
+    // The edge remembers the last button, as the overview's control.
+    let edgeControl: DockControl | null = null;
+    api.getDock.mockImplementation(async () => overview({ control: edgeControl }));
+    api.controlDock.mockImplementation(async (action: DockControl) => {
+      edgeControl = action;
+      return { reading: action === 'start', control: action, decided: 0 };
+    });
+    await renderPage();
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(1);
+
+    api.getReaderStatus.mockResolvedValue(readerStatus({ reading: true }));
+    fireEvent.click(readerBtn('Start'));
+    await flush();
+    expect(api.controlDock).toHaveBeenLastCalledWith('start');
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(2);
+    expect(readerShown().textContent).toBe('Reading');
+
+    api.getReaderStatus.mockResolvedValue(readerStatus());
+    fireEvent.click(readerBtn('Pause'));
+    await flush();
+    expect(api.controlDock).toHaveBeenLastCalledWith('pause');
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(3);
+    expect(readerShown().textContent).toBe('Paused');
+
+    fireEvent.click(readerBtn('Stop'));
+    await flush();
+    expect(api.controlDock).toHaveBeenLastCalledWith('stop');
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(4);
+    expect(readerShown().textContent).toBe('Stopped');
+    expect(api.controlDock).toHaveBeenCalledTimes(3);
+  });
+
+  it('a poll that began before a press never shows the old button', async () => {
+    let release: (o: DockOverview) => void = () => {};
+    api.getReaderStatus.mockResolvedValue(readerStatus({ reading: true }));
+    api.getDock.mockResolvedValueOnce(overview({ control: 'start' }))
+      .mockReturnValueOnce(new Promise<DockOverview>((r) => { release = r; }))
+      .mockResolvedValue(overview({ control: 'pause' }));
+    await renderPage();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });   // second poll, in flight
+    expect(api.getDock).toHaveBeenCalledTimes(2);
+    api.getReaderStatus.mockResolvedValue(readerStatus());
+    fireEvent.click(readerBtn('Pause'));
+    await flush();
+    expect(readerShown().textContent).toBe('Paused');
+    await act(async () => { release(overview({ control: 'start' })); await vi.advanceTimersByTimeAsync(0); });
+    expect(readerShown().textContent).toBe('Paused');
+  });
+
+  it('Start and Pause follow the reader; Stop is always enabled', async () => {
+    api.getReaderStatus.mockReturnValueOnce(new Promise<ReaderStatus>(() => {}));
+    await renderPage();
+    expect(readerShown().textContent).toBe('Checking…');
+    expect(enabled()).toEqual([false, false, true]);
+    cleanup();
+
+    api.getReaderStatus.mockResolvedValue(readerStatus({ reading: true }));
+    await renderPage();
+    expect(readerShown().textContent).toBe('Reading');
+    expect(enabled()).toEqual([false, true, true]);
+    cleanup();
+
+    api.getReaderStatus.mockResolvedValue(readerStatus());
+    await renderPage();
+    expect(readerShown().textContent).toBe('Stopped');
+    expect(enabled()).toEqual([true, false, true]);
+    cleanup();
+
+    api.getReaderStatus.mockRejectedValue(new ApiError(0, 'network'));
+    await renderPage();
+    expect(readerShown().textContent).toBe('Unreachable');
+    expect(enabled()).toEqual([false, false, true]);
+  });
+
+  it('Stop stays enabled while another call runs', async () => {
+    const finish: Partial<Record<DockControl, (r: DockControlResult) => void>> = {};
+    api.controlDock.mockImplementation((action: DockControl) =>
+      new Promise<DockControlResult>((r) => { finish[action] = r; }));
+    await renderPage();
+    fireEvent.click(readerBtn('Start'));
+    await flush();
+    expect(readerShown().textContent).toBe('Starting…');
+    expect(readerShown().classList.contains('is-loading')).toBe(true);
+    expect(enabled()).toEqual([false, false, true]);
+
+    fireEvent.click(readerBtn('Stop'));
+    await flush();
+    expect(api.controlDock).toHaveBeenLastCalledWith('stop');
+    expect(readerShown().textContent).toBe('Stopping…');
+    fireEvent.click(readerBtn('Stop'));
+    await flush();
+    expect(api.controlDock).toHaveBeenCalledTimes(2);
+
+    // Start answering first leaves Stop's call showing.
+    await act(async () => {
+      finish.start?.({ reading: true, control: 'start', decided: 0 });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(readerShown().textContent).toBe('Stopping…');
+    await act(async () => {
+      finish.stop?.({ reading: false, control: 'stop', decided: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(readerShown().textContent).toBe('Stopped');
+    expect(enabled()).toEqual([true, false, true]);
+
+    // Stop works again once its call has settled.
+    fireEvent.click(readerBtn('Stop'));
+    await flush();
+    expect(api.controlDock).toHaveBeenCalledTimes(3);
+  });
+
+  it('a failed Stop says what went wrong', async () => {
+    api.controlDock.mockRejectedValueOnce(new ApiError(502, 'reader_unreachable'))
+      .mockRejectedValueOnce(new ApiError(500, 'boom'));
+    await renderPage();
+    fireEvent.click(readerBtn('Stop'));
+    await flush();
+    expect(screen.getByRole('alert').textContent).toBe("Can't reach 10.10.48.119.");
+    expect(screen.getByRole('alert').classList.contains('form-error')).toBe(true);
+    fireEvent.click(readerBtn('Stop'));
+    await flush();
+    expect(screen.getByRole('alert').textContent).toBe("Couldn't stop the reader (boom).");
+    // shown until the next press
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(screen.getByRole('alert').textContent).toBe("Couldn't stop the reader (boom).");
+    fireEvent.click(readerBtn('Stop'));
+    await flush();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('the reader is checked again 5 s after the previous check settles', async () => {
+    let release: (s: ReaderStatus) => void = () => {};
+    api.getReaderStatus.mockReturnValueOnce(new Promise<ReaderStatus>((r) => { release = r; }));
+    await renderPage();
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(1);
+    await act(async () => { release(readerStatus({ reading: true })); await vi.advanceTimersByTimeAsync(4999); });
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(1);
+    // A busy edge didn't ask the reader: what's shown stays.
+    api.getReaderStatus.mockResolvedValue(readerStatus({ reachable: false, reading: false, busy: true }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(2);
+    expect(readerShown().textContent).toBe('Reading');
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(3);
   });
 
   it('Details opens the pass: every read, what packing did, and closes', async () => {
@@ -514,13 +732,20 @@ describe('DockStation', () => {
     );
     await flush();
     const first = api.getDock.mock.calls.length;   // the double mount polls twice
+    const firstCheck = api.getReaderStatus.mock.calls.length;   // and checks twice
     await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
     expect(api.getDock).toHaveBeenCalledTimes(first + 1);
     await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
     expect(api.getDock).toHaveBeenCalledTimes(first + 2);
-    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(firstCheck + 1);
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-    expect(api.getDock).toHaveBeenCalledTimes(first + 2);
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(firstCheck + 2);
+    const polls = api.getDock.mock.calls.length;
+    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(api.getDock).toHaveBeenCalledTimes(polls);
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(firstCheck + 2);
   });
 
   it('polls again 1 s after the previous poll settles, never overlapping', async () => {
@@ -536,7 +761,7 @@ describe('DockStation', () => {
     expect(api.getDock).toHaveBeenCalledTimes(2);
   });
 
-  it('stops polling on unmount', async () => {
+  it('stops polling and checking the reader on unmount', async () => {
     const { unmount } = render(
       <MemoryRouter initialEntries={['/dock']}>
         <Routes><Route path="/dock" element={<DockStation />} /></Routes>
@@ -546,5 +771,6 @@ describe('DockStation', () => {
     unmount();
     await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
     expect(api.getDock).toHaveBeenCalledTimes(1);
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(1);
   });
 });

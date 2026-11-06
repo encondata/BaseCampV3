@@ -59,7 +59,8 @@ const svg = (children: ReactNode) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{children}</svg>
 );
-const ICON = {
+/** Shared with the Dock screen's Start / Pause / Stop. */
+export const ICON = {
   tag: svg(<><path d="M3 12V4h8l10 10-8 8L3 12z" /><circle cx="7.5" cy="8.5" r="1.5" /></>),
   barcode: svg(<path d="M4 5v14M7 5v14M11 5v14M14 5v14M17 5v14M20 5v14" />),
   clock: svg(<><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>),
@@ -73,6 +74,9 @@ const ICON = {
   ),
   square: (
     <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor" /></svg>
+  ),
+  pause: (
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor" /><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor" /></svg>
   ),
 };
 

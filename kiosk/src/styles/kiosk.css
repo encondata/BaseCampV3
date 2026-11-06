@@ -1097,8 +1097,9 @@
 /* ── Dock screen ─────────────────────────────────────────────────────
    /dock reuses the RFID dashboard's page and panels (filling the main
    column, in the kiosk's light or dark theme). On top, a strip with the
-   dry-run switch and the quiet gap (the alarm-seconds field plus Save),
-   an amber banner while dry run is on and a red line while the edge can't
+   reader's state and compact Start / Pause / Stop buttons, then the
+   dry-run switch and the Window (the alarm-seconds field plus Save), an
+   amber banner while dry run is on and a red line while the edge can't
    be reached; below, the open pass beside the wider recent passes, both
    showing only the rows that fit (they never scroll). A flagged or
    refused pass gets a red left edge and red outcome text. The pass
@@ -1110,13 +1111,39 @@
   background: var(--paper); border: 1px solid var(--paper-line); border-radius: 14px;
   color: var(--text-dark);
 }
-.dock-dash-controls:disabled .kiosk-switch { opacity: .5; cursor: default; }
+.dock-dash-reader { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; }
+/* Wide enough for Unreachable, so the buttons never shift under a press
+   as the state's word changes. */
+.dock-dash-reader .rfid-dash-state { font-size: 16px; font-weight: 600; min-width: 9em; }
+.dock-dash-reader .rfid-dash-state.is-paused { color: var(--c-amber); }
+.dock-dash-reader .rfid-dash-btn { min-height: 52px; padding: 10px 18px; gap: 10px; border-radius: 12px; }
+.dock-dash-reader .rfid-dash-btn-icon svg { width: 22px; height: 22px; }
+.dock-dash-reader .rfid-dash-btn-title { font-size: 18px; }
+.rfid-dash-btn.is-pause { background: var(--c-amber); }
+/* Disabled: the strip's quiet page tone with muted text rather than the
+   dashboard's faded fill, which reads about 2:1 in light; the label stays
+   readable in both themes (and wins over the dark text refinement). */
+.dock-dash-reader .rfid-dash-btn:disabled {
+  background: var(--paper-2); border-color: var(--paper-line); color: var(--text-mute);
+  opacity: 1; filter: none;
+}
+.dock-dash-settings {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px 40px;
+  min-width: 0; margin: 0; padding: 0; border: 0;
+}
+.dock-dash-settings:disabled .kiosk-switch { opacity: .5; cursor: default; }
 .dock-dash-control { display: flex; align-items: center; gap: 16px; min-width: 0; }
 .dock-dash-control > div:first-child { min-width: 0; }
 .dock-dash-controls > .form-error { flex-basis: 100%; margin: 0; }
-/* The quiet gap's hint as an error: red (a bare .form-error loses to the
+/* The Window's hint as an error: red (a bare .form-error loses to the
    later .settings-row-hint) and without .rfid-dash .form-error's margin. */
-.dock-dash-controls .settings-row-hint.form-error { color: var(--c-red); margin: 4px 0 0; }
+.dock-dash-settings .settings-row-hint.form-error { color: var(--c-red); margin: 4px 0 0; }
+/* The Window's Save while disabled takes the reader buttons' disabled
+   look: .mini-btn's faded --surface fill all but vanishes on the dark
+   strip. Here only; .mini-btn elsewhere is unchanged. */
+.dock-dash-settings .mini-btn:disabled {
+  background: var(--paper-2); border-color: var(--paper-line); color: var(--text-mute); opacity: 1;
+}
 .dock-dash-banner {
   flex: none; margin: 14px 0 0; padding: 10px 16px; border-radius: 10px;
   background: color-mix(in srgb, var(--c-amber) 15%, transparent);
