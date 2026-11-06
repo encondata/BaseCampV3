@@ -176,6 +176,7 @@ body { background: #FFF9F2; }
 .learn-slide h1, .learn-slide h2, .learn-slide h3, .learn-slide h4 { font-size: 15px; font-weight: 500; margin: 14px 0 4px; color: var(--l-ink) }
 .learn-slide > :first-child { margin-block-start: 0 }
 .learn-slide img { display: block; max-inline-size: 100%; block-size: auto; border-radius: 8px }
+.learn-slide figure { margin: 0 0 8px }
 .learn-slide table { border-collapse: collapse; max-inline-size: 100% }
 .learn-slide th, .learn-slide td { border: 1px solid var(--l-line); padding: 4px 8px }
 .learn-slides-row { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap }
