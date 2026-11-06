@@ -77,7 +77,7 @@ def test_open_pass_counts_down_to_its_close(app):
         "id": p["id"], "opened_at": p["opened_at"], "seconds_left": 8.0, "window_s": 5,
         "crate_count": 1, "asset_count": 2, "conflict": False, "added_count": 2,
         "crates": [{"epc": "CC01", "label": "Crate 1",
-                    "first_read_at": "2026-10-16T14:00:01.000+00:00"}],
+                    "first_read_at": "2026-10-16T14:00:01.000+00:00", "conflict": False}],
         "tags": [{"epc": "AA01", "kind": "asset", "label": "Server 1",
                   "first_read_at": "2026-10-16T14:00:00.000+00:00", "serial": "SN1",
                   "in_window": True, "crate_label": "Crate 1"},
@@ -125,6 +125,8 @@ async def test_overview_route_serves_the_open_pass(app, client):
                                  "asset_count", "crates", "conflict", "added_count", "tags"}
     assert all(set(t) == {"epc", "kind", "label", "first_read_at", "serial", "in_window",
                           "crate_label"} for t in body["open"]["tags"])
+    assert [set(c) for c in body["open"]["crates"]] == [
+        {"epc", "label", "first_read_at", "conflict"}]
     assert body["open"]["seconds_left"] == 0   # the pass is long past on the real clock
     assert body["open"]["crate_count"] == 1 and body["open"]["asset_count"] == 1
 

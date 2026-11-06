@@ -71,12 +71,14 @@ def _open_pass(store: Store, window_s: int, now: datetime) -> dict | None:
     before it is decided if no new tag is read: 2W after its last new tag.
 
     It is shown as deciding it now would split it, with the grouper's own
-    window test: the crates read so far by first read (their anchors),
-    `conflict` when a crate group would be flagged (two crates within 2W, or
-    an asset in two of their windows) and `added_count`, the assets in the
-    newest crate's window. Each asset tag has its serial, `in_window` (None
-    until a crate is read) and the newest crate whose window holds it. The
-    same few queries whatever the number of reads."""
+    window test: the crates read so far by first read (their anchors), each
+    with `conflict` when its group would be flagged `many_crates` (two
+    different crates in it, chained within 2W or by an asset in both their
+    windows, counted by what they matched as the decision counts them), the
+    burst's `conflict` when any crate's is, and `added_count`, the assets in
+    the newest crate's window. Each asset tag has its serial, `in_window`
+    (None until a crate is read) and the newest crate whose window holds it.
+    The same few queries whatever the number of reads."""
     row = store.one("SELECT id, initiative_id, opened_at, last_new_received_at FROM dock_passes "
                     "WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1")
     if row is None:
@@ -98,6 +100,10 @@ def _open_pass(store: Store, window_s: int, now: datetime) -> dict | None:
     hits = {t["epc"]: grouper.crate_windows(times[t["epc"]], anchors, w)
             for t in tags if t["kind"] == "asset"}
     groups = grouper.crate_groups(anchors, hits.values(), w)
+    held: dict[int, set[str]] = {}   # group -> the crates in it (two tags on one crate: one)
+    for t, g in zip(crates, groups):
+        held.setdefault(g, set()).add(t["matched_id"])
+    flagged = [len(held[g]) > 1 for g in groups]
     newest = len(anchors) - 1
     assets = (processing.indexes(store, row["initiative_id"]) or {}).get("assets", {})
     shown = []
@@ -115,9 +121,9 @@ def _open_pass(store: Store, window_s: int, now: datetime) -> dict | None:
             "window_s": window_s,
             "crate_count": _distinct(tags, "container"),
             "asset_count": _distinct(tags, "asset"),
-            "crates": [{"epc": t["epc"], "label": t["label"], "first_read_at": _ms(a)}
-                       for t, a in zip(crates, anchors)],
-            "conflict": len(set(groups)) < len(groups),
+            "crates": [{"epc": t["epc"], "label": t["label"], "first_read_at": _ms(a),
+                        "conflict": f} for t, a, f in zip(crates, anchors, flagged)],
+            "conflict": any(flagged),
             "added_count": len({t["matched_id"] for t in tags
                                 if t["kind"] == "asset" and newest in hits[t["epc"]]}),
             "tags": shown}
