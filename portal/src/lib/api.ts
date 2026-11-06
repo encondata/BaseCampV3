@@ -1744,6 +1744,105 @@ export function downloadTeamExport(jobId: string, format: 'csv' | 'xlsx'): Promi
   return downloadAttachment(`${teamBulkBase(jobId)}/export?format=${format}`, `team-export.${format}`);
 }
 
+// ── assign workers from a template (/bulk/assign-workers) ───────────
+
+export type AssignFlagKind =
+  | 'needs_match' | 'role_unknown' | 'name_differs' | 'contact' | 'partner'
+  | 'status' | 'assignment' | 'shared_contact' | 'no_contact' | 'phone_invalid';
+export interface AssignFlag {
+  kind: AssignFlagKind;
+  decided: boolean;
+  lines: { label: string; value: string }[];
+  other_person: string | null;
+}
+export type AssignRowAction = 'assign' | 'create' | 'already_assigned' | 'attention' | 'error';
+export interface AssignRow {
+  row: number;
+  cells: Record<string, string>;
+  name: string;
+  table: 'matched' | 'unmatched';
+  matched_by: 'name' | 'email' | 'phone' | 'pick' | null;
+  matched_value: string | null;
+  person_id: string | null;
+  person_name: string | null;
+  create: boolean;
+  becomes_worker: boolean;
+  role_key: string;
+  role_label: string;
+  flags: AssignFlag[];
+  action: AssignRowAction;
+  errors: string[];
+}
+export interface AssignPreview {
+  rows: AssignRow[];
+  counts: Record<'assign' | 'create' | 'already_assigned' | 'attention' | 'error', number>;
+  people: { id: string; label: string; detail: string }[];
+  roles: { key: string; label: string }[];
+  can_commit: boolean;
+}
+export interface AssignDecision {
+  /** A person id, or "new" to create a new worker. */
+  person?: string;
+  role?: string;
+  change?: 'update' | 'ignore';
+  acknowledged?: AssignFlagKind[];
+}
+/** Keyed by sheet row number. */
+export type AssignDecisions = Record<string, AssignDecision>;
+export interface AssignPosted {
+  rows: Record<string, string>[];
+  row_numbers: number[];
+  partner_id: string;
+  site_id: string;
+  decisions: AssignDecisions;
+}
+export interface AssignCommitResult {
+  assigned: number; created: number; updated: number; already_assigned: number;
+  rows: {
+    row: number;
+    name: string | null;
+    person_id: string | null;
+    action: 'created' | 'updated' | 'unchanged';
+    diff: BulkDiff | null;
+  }[];
+}
+
+const assignBulkBase = (jobId: string) => `/initiatives/${jobId}/people/assign`;
+
+export function downloadAssignTemplate(): Promise<void> {
+  return downloadAttachment('/workers/bulk-import/assign-template', 'assign-workers-template.xlsx');
+}
+
+export async function previewAssignBulkFile(
+  jobId: string, file: File, partnerId: string, siteId: string,
+): Promise<AssignPreview> {
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  fd.append('partner_id', partnerId);
+  fd.append('site_id', siteId);
+  const resp = await apiFetch(`${assignBulkBase(jobId)}/preview`, { method: 'POST', body: fd });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function previewAssignBulk(jobId: string, body: AssignPosted): Promise<AssignPreview> {
+  const resp = await apiFetch(`${assignBulkBase(jobId)}/preview`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function commitAssignBulk(
+  jobId: string, body: AssignPosted & { source: string },
+): Promise<AssignCommitResult> {
+  const resp = await apiFetch(`${assignBulkBase(jobId)}/commit`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 // ── bulk time punches (/bulk/time) ──────────────────────────────────
 
 export type TimeImportField = 'worker' | 'job' | 'site';

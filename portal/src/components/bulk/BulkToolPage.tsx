@@ -19,13 +19,15 @@ interface Props {
   downloads: BulkDownload[];
   /** Optional content (e.g. a job picker) rendered right after the hint, with no heading. */
   intro?: ReactNode;
+  /** Extra class on the intro wrapper (e.g. a multi-column grid). */
+  introClassName?: string;
   /** Overrides the default "Uploads are limited to 1,000 rows and 5 MB…"
    *  note under Download, for tools with a different limit. */
   limitNote?: string;
   children: ReactNode;
 }
 
-export default function BulkToolPage({ title, hint, guide, downloads, intro, limitNote, children }: Props) {
+export default function BulkToolPage({ title, hint, guide, downloads, intro, introClassName, limitNote, children }: Props) {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
 
@@ -40,7 +42,7 @@ export default function BulkToolPage({ title, hint, guide, downloads, intro, lim
       <div className="eyebrow">Bulk Actions</div>
       <h1 className="page-title">{title}</h1>
       <p className="page-hint">{hint}</p>
-      {intro && <div className="bulk-intro">{intro}</div>}
+      {intro && <div className={introClassName ? `bulk-intro ${introClassName}` : 'bulk-intro'}>{intro}</div>}
 
       <section className="bulk-section">
         <p className="eyebrow-sm">Columns</p>
