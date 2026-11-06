@@ -1357,6 +1357,8 @@ async def _run(deployment_id: uuid.UUID) -> None:
             elif dep.mode == "cleanup":
                 # Delete's steps removed what the deploys built; the
                 # environment and its settings stay, as never deployed.
+                # A failure inside reset ends the deployment with no failed
+                # step (not retryable): a fresh Clean up, still offered, is the way out.
                 await cleanup.reset(db, get_settings(), env, actor_id=dep.actor_id)
                 audit(db, actor_id=dep.actor_id, action="deploy.environment_cleanup",
                       entity_type="environment", entity_id=env.name,

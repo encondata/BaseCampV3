@@ -154,13 +154,35 @@ async def test_cleanup_refused_after_a_successful_update(client, db, fresh):
     await _succeeded_update(db, fresh.id)
     assert _code(await _start(client, h, "uat", mode="cleanup", confirm_name="uat")) == (
         409, "cleanup_not_allowed")
-    # A commit is running: deployed, whatever the history says.
-    await db.execute(delete(Deployment).where(Deployment.environment_id == fresh.id))
+
+
+async def test_cleanup_refused_for_an_adopted_environment(client, db, fresh):
+    """Adopted: never Sirdar's to clean up, even with no Update that succeeded."""
+    h = await auth_headers(client, db)
+    db.add(Deployment(environment_id=fresh.id, mode="adopt", git_ref="main", sha=SHA,
+                      status="succeeded", start_step=0))
     await db.execute(update(Environment).where(Environment.id == fresh.id)
                      .values(current_sha=SHA))
     await db.commit()
     assert _code(await _start(client, h, "uat", mode="cleanup", confirm_name="uat")) == (
         409, "cleanup_not_allowed")
+
+
+async def test_cleanup_allowed_when_a_failed_first_update_set_the_commit(client, db, fresh):
+    """A first Update that failed at smoke, go_live or seed may already have
+    recorded its commit (pipeline._serving, _seeded_failed): still never
+    deployed."""
+    h = await auth_headers(client, db)
+    db.add(Deployment(environment_id=fresh.id, mode="update", git_ref="main", sha=SHA,
+                      status="failed", start_step=1))
+    await db.execute(update(Environment).where(Environment.id == fresh.id)
+                     .values(current_sha=SHA, image_tag="t1"))
+    await db.commit()
+    await _cleanup_started(client, h, "uat", ["teardown", "unproxy", "undns"])
+    got = (await client.get(f"{URL}/uat", headers=h)).json()
+    assert (got["status"], got["never_deployed"]) == ("new", True)
+    env = await db.get(Environment, fresh.id, populate_existing=True)
+    assert (env.current_sha, env.image_tag) == (None, None)
 
 
 async def test_cleanup_needs_name(client, db, fresh):
@@ -270,6 +292,11 @@ async def test_environment_out_never_deployed(client, db, fresh):
     assert await never() is True
     db.add(Deployment(environment_id=fresh.id, mode="update", git_ref="main", sha=SHA,
                       status="failed", start_step=1))
+    await db.commit()
+    assert await never() is True
+    # A failed first Update that recorded its commit: still never deployed.
+    await db.execute(update(Environment).where(Environment.id == fresh.id)
+                     .values(current_sha=SHA))
     await db.commit()
     assert await never() is True
     await _succeeded_update(db, fresh.id)

@@ -40,7 +40,7 @@ Jimmy asked for two things:
 
 ## A. When the buttons show
 
-- **Condition (my call, after the builder check).** An environment is "never deployed" when `env.current_sha IS NULL` and it has **no succeeded deployment of mode `update`**. This is read from the `deployments` table on every target.
+- **Condition (my call, after the builder check).** An environment is "never deployed" when it has **no succeeded `update` and was never adopted** (no deployment of mode `adopt`). This is read from the `deployments` table on every target; `current_sha` isn't asked, because a first Update that failed at smoke, go_live or seed may already have recorded the commit it serves.
   - It covers a first deploy that failed after Start services, the first-admin step or the seed step, for example at DNS, proxy or smoke. Those environments hold only throwaway data, so both buttons are offered.
   - Slot columns (`lan_slots.sha`, `do_slots.sha`) are **not** used: step 10 writes them before the deploy succeeds.
 - **Placement (my call for the failed-cleanup case).** The deployment view of the environment's **latest** deployment shows a "Clean up" section next to Retry when:
@@ -54,7 +54,7 @@ Jimmy asked for two things:
   - Button 1: **Clean up and keep settings**. Helper line: "Removes the servers, VMs, cloud resources, proxy hosts and DNS records this attempt made. The environment and its settings stay, and Deploy starts fresh."
   - Button 2: **Remove everything**. Helper line: "The same, and the environment is deleted from Sirdar."
 - **Confirmation.** Each button opens a confirm dialog. It uses the existing modal header pattern and rounded corners, and asks for the environment name typed, the same gate as Delete environment (`confirm_name`).
-  - There's no snapshot choice: a never-deployed environment has no data. The API already skips the snapshot when `current_sha` is null; the Blue/Green rule likewise only snapshots once a slot ran.
+  - There's no snapshot choice: a never-deployed environment has no data. A cleanup never takes a snapshot, on any target.
   - **Production (Jimmy, 2026-11-05: "Same as Delete today"):** both buttons keep production's Delete rules for every attempt, including retries:
     - the environment is marked retiring first;
     - no slot is active;

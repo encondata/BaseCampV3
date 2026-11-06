@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
 from cryptography.fernet import Fernet
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy import update as sql_update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -217,14 +217,14 @@ async def is_deploying(db: AsyncSession, env_id) -> bool:
 
 
 async def never_deployed(db: AsyncSession, env: Environment) -> bool:
-    """No commit running and no Update that ever succeeded: what a failed
-    first deploy built may be cleaned up (mode cleanup) and the environment
-    kept."""
-    if env.current_sha is not None:
-        return False
+    """No Update that ever succeeded and never adopted: what a failed first
+    deploy built may be cleaned up (mode cleanup) and the environment kept.
+    current_sha isn't asked: a first Update that failed at smoke, go_live or
+    seed may already have recorded the commit it serves."""
     found = await db.scalar(select(Deployment.id).where(
-        Deployment.environment_id == env.id, Deployment.mode == "update",
-        Deployment.status == "succeeded").limit(1))
+        Deployment.environment_id == env.id,
+        or_(and_(Deployment.mode == "update", Deployment.status == "succeeded"),
+            Deployment.mode == "adopt")).limit(1))
     return found is None
 
 
