@@ -8,14 +8,15 @@ asset list needs. Each write is audited on the person's account, as their other 
 Spec: docs/superpowers/specs/2026-11-05-asset-watches-design.md (What counts, Data and API,
 Link)"""
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import delete, event, func, select, update
+from sqlalchemy import delete, event, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 
-from serversherpa.db.engine import get_engine
+from serversherpa.db.engine import get_engine, get_sessionmaker
 from serversherpa.db.models import (
     Asset,
     AssetWatch,
@@ -286,6 +287,55 @@ async def test_asset_the_person_cannot_open_is_not_found(client, db):
     assert await _count(db) == 1
 
 
+async def test_a_watch_on_an_initiative_needs_the_asset_too(client, db):
+    """A watch on an initiative needs the asset's page as well as the initiative's: the check asks
+    both when it fires, so no watch can be set that it would end without a notice. Another
+    client's asset on their own client's move answers as any asset they can't open does."""
+    client_a, client_b = Client(name="Client A"), Client(name="Client B")
+    db.add_all([client_a, client_b])
+    await db.commit()
+    theirs = await _asset(db, "SN-A", client_id=client_a.id)
+    other = await _asset(db, "SN-B", client_id=client_b.id)
+    move = await _move(db, "Move A", client_id=client_a.id)
+    await _row(db, move, theirs)
+    await _row(db, move, other)
+    person = await _login(db, client, "A", "client_viewer", client_id=client_a.id)
+
+    resp = await _post(client, person, other.id, move.id)
+    assert (resp.status_code, _code(resp)) == (404, "thing_not_found")
+    assert "SN-B" not in resp.text
+    # the same answer as for an asset that isn't there
+    missing = await _post(client, person, uuid.uuid4(), move.id)
+    assert (missing.status_code, missing.json()) == (resp.status_code, resp.json())
+    # their own client's asset on the same move is theirs to watch there
+    assert (await _post(client, person, theirs.id, move.id)).status_code == 201
+    assert await _count(db) == 1
+
+
+async def test_a_watch_on_an_initiative_whose_asset_i_cannot_open_is_out_of_sight(client, db):
+    """One already stored (set before the asset became another client's) stays stored, out of
+    sight: not listed, no Watch state, and not to be changed."""
+    client_a, client_b = Client(name="Client A"), Client(name="Client B")
+    db.add_all([client_a, client_b])
+    await db.commit()
+    other = await _asset(db, "SN-B", client_id=client_b.id)
+    move = await _move(db, "Move A", client_id=client_a.id)
+    await _row(db, move, other)
+    person = await _login(db, client, "A", "client_viewer", client_id=client_a.id)
+    watch = AssetWatch(person_id=person.id, asset_id=other.id, initiative_id=move.id,
+                       condition="next_update",
+                       baseline=(await snapshot(db, [other.id]))[other.id])
+    db.add(watch)
+    await db.commit()
+
+    assert await _list(client, person) == []
+    assert await _state(client, person, other.id, move.id) == NOT_WATCHING
+    resp = await _patch(client, person, watch.id, "status", "in_transit")
+    assert (resp.status_code, _code(resp)) == (404, "watch_not_found")
+    assert "SN-B" not in resp.text
+    assert await _count(db) == 1
+
+
 # ── changing and stopping one ───────────────────────────────────────
 
 async def test_patch_takes_a_new_snapshot_and_time(client, db):
@@ -366,6 +416,43 @@ async def test_delete_then_delete_again_is_not_found(client, db):
         resp = await _delete(client, me, watch_id)
         assert (resp.status_code, _code(resp)) == (404, "watch_not_found")
     assert list(await db.scalars(select(AssetWatch.id))) == [uuid.UUID(theirs)]
+
+
+async def _until_a_connection_waits_on_a_lock() -> None:
+    """Wait until a connection to this database is blocked on a lock: the request under test,
+    waiting on the watch's row. The limit only ends a hang."""
+    async def poll():
+        while True:
+            async with get_sessionmaker()() as s:
+                if await s.scalar(text(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE datname = current_database() AND wait_event_type = 'Lock'")):
+                    return
+            await asyncio.sleep(0.02)
+
+    await asyncio.wait_for(poll(), timeout=10)
+
+
+async def test_a_change_racing_the_check_finds_the_watch_gone(client, db):
+    """The asset-watch check claims watches FOR UPDATE SKIP LOCKED and deletes the ones that end.
+    A PATCH or DELETE that comes in meanwhile waits on the watch's row, then finds it gone: 404
+    `watch_not_found`, not a 500, and no audit of a change nobody made."""
+    me = await _login(db, client, "A")
+    asset = await _asset(db)
+    for call in (lambda watch_id: _patch(client, me, watch_id, "status", "in_transit"),
+                 lambda watch_id: _delete(client, me, watch_id)):
+        watch_id = uuid.UUID((await _post(client, me, asset.id)).json()["id"])
+        async with get_sessionmaker()() as check:          # the check, holding its claim
+            await check.execute(select(AssetWatch).where(AssetWatch.id == watch_id)
+                                .with_for_update())
+            request = asyncio.create_task(call(watch_id))
+            await _until_a_connection_waits_on_a_lock()
+            await check.execute(delete(AssetWatch).where(AssetWatch.id == watch_id))
+            await check.commit()
+        resp = await asyncio.wait_for(request, timeout=10)
+        assert (resp.status_code, _code(resp)) == (404, "watch_not_found")
+    # only the two watches being set were audited
+    assert [row.action for row in await _audits(db, me.id)] == ["watch.add", "watch.add"]
 
 
 async def test_a_watch_i_can_no_longer_open_can_still_be_stopped(client, db):

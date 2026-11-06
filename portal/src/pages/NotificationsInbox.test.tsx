@@ -190,7 +190,7 @@ it('All | Unread is a pressed-state segmented control; Unread asks for unread on
   await waitFor(() => expect(lastQuery()).toMatchObject({ unreadOnly: false }));
 });
 
-it('the category picker is the house dropdown: All categories plus the eleven, and a pick filters the server', async () => {
+it('the category picker is the house dropdown: All categories plus the twelve, and a pick filters the server', async () => {
   const user = userEvent.setup();
   renderPage();
   const picker = screen.getByRole('combobox', { name: 'Category' }) as HTMLInputElement;
@@ -201,8 +201,8 @@ it('the category picker is the house dropdown: All categories plus the eleven, a
   expect(within(document.querySelector('.combo-menu') as HTMLElement).getAllByRole('button').map((b) => b.textContent))
     .toEqual([
       'All categories', 'Approvals & requests', 'Reports & labels', 'Wiki', 'Learning',
-      'Initiatives', 'Project plans', 'Trucks', 'Devices', 'Status rules', 'Bulk actions',
-      'Account security',
+      'Initiatives', 'Assets', 'Project plans', 'Trucks', 'Devices', 'Status rules',
+      'Bulk actions', 'Account security',
     ]);
 
   await user.click(screen.getByRole('button', { name: 'Wiki' }));

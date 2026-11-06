@@ -6,12 +6,13 @@ notification worker's check compares with the asset as it is now. `asset_label`,
 `asset_watch_link` and `watched_status` say how a watch names its asset, where it links and
 which status it reads, for the routes and the check alike.
 
-A watch on the asset needs what the asset's page needs (`assets:view` and the asset's client
-scope). One on an initiative needs what the initiative's asset list needs (`initiatives:view` and
-the initiative's scope), and the asset has to be on that initiative. Both are asked of the one
-test every notification asks (notifications/access.py), so the routes and the check agree.
-Access is not stored: a watch whose owner can't open its asset or initiative stays in place and
-is not listed until they can again.
+A watch needs what the asset's page needs (`assets:view` and the asset's client scope). One on an
+initiative also needs what the initiative's asset list needs (`initiatives:view` and the
+initiative's scope), and the asset has to be on that initiative. Both are asked of the one test
+every notification asks (notifications/access.py), and the check asks the same when a watch fires
+(asset_watch_check.py), so setting, listing and firing agree: no watch can be set that would end
+without a notice for want of access. Access is not stored: a watch whose owner can't open its
+asset or initiative stays in place and is not listed until they can again.
 
 Each write is audited on the person's account, as their other watches are (`watch.add`,
 `watch.update` and `watch.remove`, with thing "asset"). Like notify() and audit(), nothing here
@@ -169,36 +170,43 @@ def watched_status(taken: Mapping | None, initiative_id: uuid.UUID | None) -> st
 
 # ── who can open a watch ────────────────────────────────────────────
 
-def _opens(asset_id: uuid.UUID, initiative_id: uuid.UUID | None) -> Thing:
-    """What a watch's owner has to be able to open: the asset, for a watch set on it, else the
-    initiative, whose asset list is where the watch was set."""
+def _opens(asset_id: uuid.UUID, initiative_id: uuid.UUID | None) -> tuple[Thing, ...]:
+    """What a watch's owner has to be able to open: the asset, and for a watch set on an
+    initiative that initiative too, whose asset list is where the watch was set."""
     if initiative_id is None:
-        return Thing("asset", asset_id)
-    return Thing("initiative", initiative_id)
+        return (Thing("asset", asset_id),)
+    return (Thing("asset", asset_id), Thing("initiative", initiative_id))
 
 
 async def _can_open(db: AsyncSession, person_id: uuid.UUID, asset_id: uuid.UUID,
                     initiative_id: uuid.UUID | None) -> bool:
-    return person_id in await viewers(db, _opens(asset_id, initiative_id), [person_id])
+    """Whether the person can open everything a watch in this place needs (`_opens`) now."""
+    access = await resolve_access_many(db, [person_id])
+    for thing in _opens(asset_id, initiative_id):
+        if person_id not in await viewers(db, thing, [person_id], access=access):
+            return False
+    return True
 
 
 async def _visible(db: AsyncSession, person_id: uuid.UUID,
                    watches: Sequence[AssetWatch]) -> list[AssetWatch]:
-    """The watches whose asset, or initiative, the person can open now, by the rule its page
-    uses (notifications/access.py), asked once per kind of thing however many there are."""
+    """The watches whose asset, and initiative for one set there, the person can open now, by
+    the rule each page uses (notifications/access.py), asked once per kind of thing however many
+    there are."""
     if not watches:
         return []
     ids: dict[str, list[uuid.UUID]] = defaultdict(list)
     for watch in watches:
-        thing = _opens(watch.asset_id, watch.initiative_id)
-        ids[thing.type].append(thing.id)
+        for thing in _opens(watch.asset_id, watch.initiative_id):
+            ids[thing.type].append(thing.id)
     access = await resolve_access_many(db, [person_id])
     seen: set[Thing] = set()
     for thing_type, thing_ids in ids.items():
         theirs = (await visible_among(db, thing_type, thing_ids, [person_id],
                                       access=access)).get(person_id, frozenset())
         seen.update(Thing(thing_type, thing_id) for thing_id in theirs)
-    return [watch for watch in watches if _opens(watch.asset_id, watch.initiative_id) in seen]
+    return [watch for watch in watches
+            if seen.issuperset(_opens(watch.asset_id, watch.initiative_id))]
 
 
 # ── setting, changing and stopping one ──────────────────────────────
@@ -218,8 +226,11 @@ async def _existing(db: AsyncSession, person_id: uuid.UUID, asset_id: uuid.UUID,
 
 
 async def _own(db: AsyncSession, person_id: uuid.UUID, watch_id: uuid.UUID) -> AssetWatch:
-    """One of the person's own watches. Anyone else's (or none) is 404 `watch_not_found`."""
-    watch = await db.get(AssetWatch, watch_id)
+    """One of the person's own watches, locked until the caller commits. Anyone else's (or none)
+    is 404 `watch_not_found`. The lock keeps it from the asset-watch check, which claims watches
+    FOR UPDATE SKIP LOCKED and deletes those that end: a change that comes in while the check
+    holds it waits, then finds it gone (404, never a write to a deleted row)."""
+    watch = await db.get(AssetWatch, watch_id, with_for_update=True)
     if watch is None or watch.person_id != person_id:
         raise AssetWatchError(404, "watch_not_found")
     return watch
@@ -266,11 +277,10 @@ async def add_asset_watch(db: AsyncSession, person_id: uuid.UUID, *, asset_id: u
     the condition, the status. It flushes, audits `watch.add` and never commits.
 
     404 `thing_not_found` when the asset or the initiative is missing or the person can't open
-    it; for an asset that isn't on the initiative, 422 `not_on_initiative` if they can open the
-    asset and 404 `thing_not_found` if not, so a refusal tells nothing of an asset they can't
-    see. 422 for a condition or status that doesn't make a watch (`_check`). 409
-    `already_watching` when they already watch the asset there, including when a concurrent
-    request wins the insert."""
+    it (a watch on an initiative needs both), so a refusal tells nothing of an asset they can't
+    see. 422 `not_on_initiative` for an asset they can open that isn't on the initiative. 422
+    for a condition or status that doesn't make a watch (`_check`). 409 `already_watching` when
+    they already watch the asset there, including when a concurrent request wins the insert."""
     # The same answer for a thing that isn't there and one the person can't open, so a 404
     # tells nothing about the thing.
     if not await _can_open(db, person_id, asset_id, initiative_id):
@@ -278,9 +288,9 @@ async def add_asset_watch(db: AsyncSession, person_id: uuid.UUID, *, asset_id: u
     taken = (await snapshot(db, [asset_id])).get(asset_id)
     current = watched_status(taken, initiative_id)
     if current is None:
-        # The asset is gone since the check above, or isn't on the initiative. Only someone who
-        # can open the asset learns that it is there, though not on the initiative.
-        if taken is None or not await _can_open(db, person_id, asset_id, None):
+        # The asset is gone since the check above, or isn't on the initiative: they can open
+        # it, so they may learn that it is there, though not on the initiative.
+        if taken is None:
             raise AssetWatchError(404, "thing_not_found")
         raise AssetWatchError(422, "not_on_initiative")
     await _check(db, condition, status, current)
@@ -410,8 +420,9 @@ async def asset_watch_out(db: AsyncSession, watch: AssetWatch) -> AssetWatchOut:
 
 
 async def list_asset_watches(db: AsyncSession, person_id: uuid.UUID) -> list[AssetWatchOut]:
-    """The person's asset watches, newest first. Only those whose asset, or initiative, they can
-    open now are listed; the rest stay stored and are listed again once they can."""
+    """The person's asset watches, newest first. Only those whose asset, and initiative for one
+    set there, they can open now are listed; the rest stay stored and are listed again once they
+    can."""
     watches = (await db.scalars(
         select(AssetWatch).where(AssetWatch.person_id == person_id)
         .order_by(AssetWatch.created_at.desc(), AssetWatch.id))).all()

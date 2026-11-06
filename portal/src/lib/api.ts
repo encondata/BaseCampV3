@@ -55,7 +55,7 @@ export type NotificationSound = 'none' | 'chime' | 'ping' | 'pop' | 'bell';
 
 /** Mirrors notifications/kinds.py CATEGORIES. */
 export type NotificationCategory =
-  'approvals' | 'reports' | 'wiki' | 'learning' | 'initiatives' | 'plans' | 'trucks'
+  'approvals' | 'reports' | 'wiki' | 'learning' | 'initiatives' | 'assets' | 'plans' | 'trucks'
   | 'devices' | 'status_rules' | 'bulk_actions' | 'security';
 
 /** What the person has chosen about notifications, on their account: the

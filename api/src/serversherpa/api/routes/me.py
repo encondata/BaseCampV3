@@ -485,15 +485,16 @@ async def delete_my_watch(watch_id: uuid.UUID, user: CurrentUser, db: DbSession)
 
 
 # ── asset watches: one asset, for its next update or a status, heard once ───
-# I watch an asset on its own or on an initiative it is on, if I can open it there. The rules
-# live in notifications/asset_watches.py, which audits each write on my account as my other
-# watches are (watch.add, watch.update, watch.remove, with thing "asset"); an AssetWatchError
-# becomes the same {"code"} answer as a WatchError.
+# I watch an asset on its own or on an initiative it is on, if I can open the asset, and the
+# initiative too for a watch there. The rules live in notifications/asset_watches.py, which
+# audits each write on my account as my other watches are (watch.add, watch.update,
+# watch.remove, with thing "asset"); an AssetWatchError becomes the same {"code"} answer as a
+# WatchError.
 
 @router.get("/asset-watches", response_model=list[AssetWatchOut])
 async def list_my_asset_watches(user: CurrentUser, db: DbSession) -> list[AssetWatchOut]:
-    """My asset watches, newest first. Only those whose asset (or initiative) I can open now
-    are listed; the rest stay stored."""
+    """My asset watches, newest first. Only those whose asset (and initiative, for one set
+    there) I can open now are listed; the rest stay stored."""
     return await list_asset_watches(db, user.person.id)
 
 

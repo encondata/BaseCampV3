@@ -17,13 +17,13 @@ afterEach(cleanup);
 
 const ON: SwitchPair = { inbox: true, email: true };
 const DEFAULTS: Record<string, SwitchPair> = {
-  approvals: ON, reports: ON, wiki: ON, learning: ON, initiatives: ON, plans: ON, trucks: ON,
-  devices: ON, status_rules: ON, bulk_actions: ON,
+  approvals: ON, reports: ON, wiki: ON, learning: ON, initiatives: ON, assets: ON, plans: ON,
+  trucks: ON, devices: ON, status_rules: ON, bulk_actions: ON,
 };
 
 const LABELS = [
-  'Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Initiatives', 'Project plans',
-  'Trucks', 'Devices', 'Status rules', 'Bulk actions',
+  'Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Initiatives', 'Assets',
+  'Project plans', 'Trucks', 'Devices', 'Status rules', 'Bulk actions',
 ];
 
 type Extra = { defaults?: Record<string, SwitchPair> | null; own?: NotifSwitches;
@@ -54,7 +54,7 @@ const row = (label: string) => screen.getByRole('row', { name: new RegExp(label)
 it('lists one row per category in registry order, with the design\'s descriptions', () => {
   person();
   const rows = screen.getAllByRole('row').slice(1);   // the first is the header
-  expect(rows).toHaveLength(11);
+  expect(rows).toHaveLength(12);
   [...LABELS, 'Account security'].forEach((label, i) => {
     expect(within(rows[i]).getByText(label)).toBeTruthy();
   });
@@ -64,6 +64,7 @@ it('lists one row per category in registry order, with the design\'s description
     'Page updates, comments, mentions, reviews and exports',
     'Learning completed or overdue, quizzes locked',
     'Initiative status changes',
+    'Notifications from your asset watches',
     "Plan tasks assigned to you, coming due or overdue, and the owner's overdue digest",
     'Truck status changes',
     'Devices going offline',
@@ -88,7 +89,7 @@ it('names every switch "{Channel} for {Category}"', () => {
 
 it('person mode: every row follows the company default and says so', () => {
   person();
-  expect(screen.getAllByText('Company default')).toHaveLength(10);
+  expect(screen.getAllByText('Company default')).toHaveLength(11);
   expect(screen.queryByText('Your choice')).toBeNull();
   expect(screen.queryByRole('button', { name: 'Use company default' })).toBeNull();
 });
@@ -126,7 +127,7 @@ it('person mode: a switch the person changed says "Your choice" and offers the w
   expect(reports.queryByText('Company default')).toBeNull();
   expect(sw('Email', 'Reports & labels').checked).toBe(false);
   // the other rows still follow the default
-  expect(screen.getAllByText('Company default')).toHaveLength(9);
+  expect(screen.getAllByText('Company default')).toHaveLength(10);
   expect(screen.getAllByRole('button', { name: 'Use company default' })).toHaveLength(1);
 });
 
@@ -213,7 +214,7 @@ it('defaults mode: no state line and no way back, the row is the default itself'
   expect(screen.queryByText('Company default')).toBeNull();
   expect(screen.queryByText('Your choice')).toBeNull();
   expect(screen.queryByRole('button', { name: 'Use company default' })).toBeNull();
-  expect(screen.getAllByRole('checkbox')).toHaveLength(20);
+  expect(screen.getAllByRole('checkbox')).toHaveLength(22);
   expect(sw('Email', 'Reports & labels').checked).toBe(true);
 });
 
@@ -278,7 +279,7 @@ it('emailEnabled=null (not known yet) blocks nothing', () => {
 it('while the defaults are still loading every switch is disabled and says nothing', () => {
   person({ defaults: null, own: { reports: { email: false } } });
   const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
-  expect(boxes).toHaveLength(20);
+  expect(boxes).toHaveLength(22);
   expect(boxes.every((b) => b.disabled)).toBe(true);
   expect(boxes.every((b) => !b.checked)).toBe(true);
   expect(boxes.every((b) => reason(b) === null)).toBe(true);
@@ -320,7 +321,7 @@ it('uses house controls only: every checkbox is inside a .switch, and there is n
     <SwitchGrid mode="person" defaults={DEFAULTS} emailEnabled onChange={() => {}}
                 own={{ reports: { email: false }, wiki: { inbox: false } }} />);
   const boxes = [...container.querySelectorAll('input[type="checkbox"]')];
-  expect(boxes).toHaveLength(20);
+  expect(boxes).toHaveLength(22);
   expect(boxes.every((b) => b.closest('label.switch'))).toBe(true);
   expect(container.querySelector('select')).toBeNull();
   expect(container.querySelector('input[type="time"]')).toBeNull();
