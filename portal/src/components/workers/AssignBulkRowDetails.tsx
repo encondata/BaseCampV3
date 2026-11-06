@@ -78,7 +78,7 @@ export default function AssignBulkRowDetails({
       {row.errors.map((e, i) => <span key={`${i}-${e}`} className="pf-error">{e}</span>)}
       {row.flags.map((f) => (
         <div key={f.kind} className="bulk-flag">
-          <span className={`pf-error${PICK_KINDS.includes(f.kind) ? '' : ' bulk-warn'}`}>
+          <span className={`pf-error${!PICK_KINDS.includes(f.kind) ? ' bulk-warn' : f.decided ? ' bulk-done' : ''}`}>
             {FLAG_TEXT[f.kind]}
           </span>
           {(f.lines.length > 0 || f.other_person) && (

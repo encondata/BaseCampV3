@@ -193,6 +193,21 @@ it('a new pick keeps the Ignore on a sheet-row flag and drops the one about the 
   })));
 });
 
+it('an unknown role reads red until a role is picked, then muted', async () => {
+  const withRole = (decided: boolean) => preview([
+    row(2, { action: decided ? 'assign' : 'attention', role_key: decided ? 'lead' : null,
+             role_label: decided ? 'Lead' : null, flags: [flag('role_unknown', { decided })] }),
+  ]);
+  api.previewAssignBulkFile.mockResolvedValue(withRole(false));
+  await upload();
+  const text = () => within(rowEl('Matched', 2)).getByText('The role in the sheet is not a known role. Pick one.');
+  expect(text().className).not.toContain('bulk-done');
+  cleanup();
+  api.previewAssignBulkFile.mockResolvedValue(withRole(true));
+  await upload();
+  expect(text().className).toContain('bulk-done');
+});
+
 it('role dropdown sends the picked role', async () => {
   await upload();
   fireEvent.focus(within(rowEl('Matched', 2)).getByLabelText('Role for row 2'));
