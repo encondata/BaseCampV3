@@ -9,6 +9,7 @@ secrets) stays. A saved SSH target's host and pin are the user's: never
 touched. Every write is in the caller's session; the caller audits and
 commits, so a failure leaves the environment as it was."""
 
+import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import select, update
@@ -34,32 +35,35 @@ _DO_LEARNED = ("vpc_ip_range", "lb_ip", "db_host", "db_port", "db_admin_password
                "db_ca_cert", "spaces_key_id", "spaces_secret_enc", "cert_not_after")
 
 
-async def reset(db: AsyncSession, settings: Settings, env: Environment) -> None:
+async def reset(db: AsyncSession, settings: Settings, env: Environment, *,
+                actor_id: uuid.UUID | None = None) -> None:
+    """`actor_id`: who ran the cleanup, for the pin-forget audit rows."""
     now = datetime.now(UTC)
     env.current_sha, env.image_tag, env.active_slot = None, None, None
     env.updated_at = now
     saved = {cfg.host for _, cfg in targets.ssh_configs(settings)}
     if env.target_id == targets.DO_TARGET:
-        await _reset_do(db, settings, env, saved, now)
+        await _reset_do(db, settings, env, saved, now, actor_id)
     elif targets.is_vm_target(env.target_id):
-        await _reset_vms(db, settings, env, saved, now)
+        await _reset_vms(db, settings, env, saved, now, actor_id)
     await first_admins.reset(db, env.id)
     await db.flush()
 
 
-async def _forget(db: AsyncSession, ips, saved: set[str], target_id: str) -> None:
+async def _forget(db: AsyncSession, ips, saved: set[str], target_id: str,
+                  actor_id: uuid.UUID | None) -> None:
     for ip in sorted(set(ips) - saved):
-        await known_hosts.forget(db, ip, vms.VM_SSH_PORT, None, target_id=target_id)
+        await known_hosts.forget(db, ip, vms.VM_SSH_PORT, actor_id, target_id=target_id)
 
 
 async def _reset_do(db: AsyncSession, settings: Settings, env: Environment, saved: set[str],
-                    now: datetime) -> None:
+                    now: datetime, actor_id: uuid.UUID | None) -> None:
     slots = await do_envs.slots_of(db, env.id)
     ips = {r.public_ip for r in slots.values() if r.public_ip}
     # Step 18 forgot these unless another environment's droplet has the address.
     others = set(await db.scalars(select(DoSlot.public_ip).where(
         DoSlot.environment_id != env.id, DoSlot.public_ip.in_(ips or {""}))))
-    await _forget(db, ips - others, saved, "digitalocean")
+    await _forget(db, ips - others, saved, "digitalocean", actor_id)
     for slot, row in slots.items():
         row.droplet_id = row.public_ip = row.private_ip = None
         row.sha = row.image_tag = row.last_check_ok = row.last_check_at = None
@@ -74,17 +78,20 @@ async def _reset_do(db: AsyncSession, settings: Settings, env: Environment, save
 
 
 async def _reset_vms(db: AsyncSession, settings: Settings, env: Environment, saved: set[str],
-                     now: datetime) -> None:
+                     now: datetime, actor_id: uuid.UUID | None) -> None:
     machines = await vms.machines(db, env)
     # Step 0 refuses a saved SSH target's address, so these are only ever the VMs'.
-    await _forget(db, {m.ip for m in machines if m.ip}, saved, f"{env.target_id}:{env.name}")
+    await _forget(db, {m.ip for m in machines if m.ip}, saved, f"{env.target_id}:{env.name}",
+                  actor_id)
     for vm in machines:
         if isinstance(vm, EsxiVm):
             vm.moref = vm.instance_uuid = vm.vm_path = None
-            # cloud-init delivers it to the new VM, so its fingerprint is known first.
-            private, public = vms.new_host_keypair(env.name)
-            vm.host_key_public = public
-            vm.host_key_private_enc = vault.encrypt(settings, private)
+            if vm.host_key_private_enc is None:
+                # Delivered to a VM that is gone (as on DigitalOcean): cloud-init
+                # gives the next VM a new one, so its fingerprint is known first.
+                private, public = vms.new_host_keypair(env.name)
+                vm.host_key_public = public
+                vm.host_key_private_enc = vault.encrypt(settings, private)
         else:
             vm.vmid = None
         vm.created = False

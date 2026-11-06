@@ -3,15 +3,18 @@ deployed: what step 0 recorded goes (droplets, VM ids, learned addresses,
 slot commits, pins, VM snapshot records), a key a fresh build delivers is
 made again, the first admin is pending again, and the user's settings stay."""
 
+import uuid
+
 import asyncssh
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from sirdar_api.config import get_settings
 from sirdar_api.db.engine import get_sessionmaker
 from sirdar_api.db.models import (
     AuditLog,
     Deployment,
+    DeploymentStep,
     DoEnvironment,
     DoSlot,
     Environment,
@@ -27,6 +30,7 @@ from sirdar_api.deploy import (
     esxi_provision,
     first_admins,
     known_hosts,
+    lan_slots,
     pipeline,
     provision,
     vault,
@@ -204,10 +208,20 @@ async def test_cleanup_resets_proxmox_vm(db, px_env, fake_runner, fake_publisher
     assert (await _load(first))[0].status == "succeeded"
     before = await db.get(ProxmoxVm, (px_env.id, "main"), populate_existing=True)
     login_key = before.ssh_public_key
-    dep_id = await _vm_start(db, px_env, mode="cleanup", sha="")
-    dep, steps, env = await _load(dep_id)
+    actor = uuid.uuid4()
+    dep = await pipeline.create_deployment(db, px_env, mode="cleanup", git_ref="main", sha="",
+                                           actor_id=actor, vm=True)
+    await db.commit()
+    pipeline.launch(dep.id)
+    await pipeline.wait(dep.id)
+    dep, steps, env = await _load(dep.id)
     assert dep.status == "succeeded", [(s.key, s.status, s.log) for s in steps]
     assert fake_provisioner.calls[-1] == "destroy"
+    async with get_sessionmaker()() as s:
+        forgot = list(await s.scalars(select(AuditLog).where(
+            AuditLog.action == "deploy.host_forget")))
+    assert [(a.actor_id, a.changes["host"], a.changes["target"]) for a in forgot] == [
+        (actor, "127.0.0.1", "proxmox:uat3")]
     assert (env.status, env.current_sha, env.image_tag) == ("new", None, None)
     vm = await db.get(ProxmoxVm, (px_env.id, "main"), populate_existing=True)
     assert (vm.vmid, vm.created) == (None, False)
@@ -312,6 +326,8 @@ async def test_cleanup_resets_bluegreen(db, lan, fake_runner, fake_publisher, fa
     pipeline.launch(dep.id)
     await pipeline.wait(dep.id)
     assert (await _load(dep.id))[2].active_slot == "orange"
+    async with get_sessionmaker()() as s:
+        keys = {m.role: m.host_key_public for m in await vms.machines(s, lan)}
     dep_id = await _cleanup(db, lan, vm=True, bluegreen=True, slot="orange")
     dep, steps, env = await _load(dep_id)
     assert dep.status == "succeeded", [(s.key, s.status, s.log) for s in steps]
@@ -325,6 +341,8 @@ async def test_cleanup_resets_bluegreen(db, lan, fake_runner, fake_publisher, fa
     for m in machines:
         assert (m.moref, m.instance_uuid, m.created) == (None, None, False), m.role
         assert m.host_key_private_enc is not None, m.role
+        # never delivered (lan_built keeps the private half): the same key, as on DO
+        assert m.host_key_public == keys[m.role], m.role
         assert m.ip_cidr is not None
     assert len(slots) == 2
     for row in slots:
@@ -333,6 +351,46 @@ async def test_cleanup_resets_bluegreen(db, lan, fake_runner, fake_publisher, fa
     services = await _services(env.id)
     assert services["spaces"] == DATA
     assert {ip for svc, ip in services.items() if svc != "spaces"} == {ORANGE}
+
+
+async def _interrupted_switch(db, lan) -> None:
+    """orange live, purple deployed, then an Activate of purple whose Switch
+    traffic was interrupted: NPM may point at purple."""
+    for slot, go_live in (("orange", True), ("purple", False), ("purple", True)):
+        dep = await pipeline.create_deployment(
+            db, lan, mode="activate" if (slot, go_live) == ("purple", True) else "update",
+            git_ref="main", sha=SHA, actor_id=None, vm=True, bluegreen=True, slot=slot,
+            go_live=go_live)
+        await db.commit()
+        pipeline.launch(dep.id)
+        await pipeline.wait(dep.id)
+    await db.execute(update(DeploymentStep).where(DeploymentStep.deployment_id == dep.id,
+                                                  DeploymentStep.key == "lan_switch")
+                     .values(status="interrupted"))
+    await db.commit()
+
+
+async def test_an_interrupted_switch_still_blocks_without_a_cleanup(db, lan, fake_runner,
+                                                                     fake_publisher):
+    await _interrupted_switch(db, lan)
+    assert await lan_slots.unresolved_switch(db, lan.id) == "purple"
+
+
+async def test_a_cleanup_resolves_an_interrupted_switch(db, lan, fake_runner, fake_publisher):
+    await _interrupted_switch(db, lan)
+    dep_id = await _cleanup(db, lan, vm=True, bluegreen=True, slot="orange")
+    assert (await _load(dep_id))[0].status == "succeeded"
+    assert await lan_slots.unresolved_switch(db, lan.id) is None
+
+
+async def test_a_failed_cleanup_leaves_an_interrupted_switch_blocking(db, lan, fake_runner,
+                                                                      fake_publisher,
+                                                                      fake_provisioner):
+    await _interrupted_switch(db, lan)
+    fake_provisioner.fail["destroy"] = "ESXi refused."
+    dep_id = await _cleanup(db, lan, vm=True, bluegreen=True, slot="orange")
+    assert (await _load(dep_id))[0].status == "failed"
+    assert await lan_slots.unresolved_switch(db, lan.id) == "purple"
 
 
 # ---- SSH targets and the first admin ----------------------------------------------------
