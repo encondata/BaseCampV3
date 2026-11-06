@@ -47,7 +47,7 @@ REMINDER_INTERVAL_SECONDS = 3600
 LEARNING_INTERVAL_SECONDS = 60
 PLANS_INTERVAL_SECONDS = 60
 DEVICE_CHECK_INTERVAL_SECONDS = 60
-ASSET_WATCH_INTERVAL = 60
+ASSET_WATCH_INTERVAL_SECONDS = 60
 EVENTS_INTERVAL_SECONDS = 60
 SUMMARY_INTERVAL_SECONDS = 60
 ATTESTATION_STATUS_INTERVAL_SECONDS = 86_400
@@ -138,7 +138,8 @@ async def run_device_check(maker, state: dict) -> None:
 
 
 async def run_asset_watches(maker, state: dict) -> None:
-    """One asset-watch check; a failure is logged once per outage, never raised."""
+    """One asset-watch check; a failure is logged once per outage, never raised
+    (each watch's own failure is already logged inside)."""
     try:
         ended = await run_asset_watches_once(maker)
         state["failed"] = False
@@ -220,7 +221,7 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
         last_learning = time.monotonic() - LEARNING_INTERVAL_SECONDS
         last_plans = time.monotonic() - PLANS_INTERVAL_SECONDS
         last_devices = time.monotonic() - DEVICE_CHECK_INTERVAL_SECONDS
-        last_asset_watches = time.monotonic() - ASSET_WATCH_INTERVAL
+        last_asset_watches = time.monotonic() - ASSET_WATCH_INTERVAL_SECONDS
         last_events = time.monotonic() - EVENTS_INTERVAL_SECONDS
         last_summaries = time.monotonic() - SUMMARY_INTERVAL_SECONDS
         last_attestation = time.monotonic() - ATTESTATION_STATUS_INTERVAL_SECONDS
@@ -269,7 +270,7 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
                 await run_device_check(maker, devices_state)
                 last_devices = now
             # before the summaries too, so an email it holds can join a summary due now
-            if now - last_asset_watches >= ASSET_WATCH_INTERVAL:
+            if now - last_asset_watches >= ASSET_WATCH_INTERVAL_SECONDS:
                 await run_asset_watches(maker, asset_watches_state)
                 last_asset_watches = now
             # before the summaries, so an email it holds can join a summary due now

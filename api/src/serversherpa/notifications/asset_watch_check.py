@@ -20,12 +20,15 @@ transaction:
    by; a watch whose person has lost either since ends without a notice. The text is written for
    its person: it names a container or a truck only to someone whose Assets list shows one
    (assets/placement.py), and an initiative only to someone who can open it.
-4. **End** every watch that was due, told or not (an Inbox switch that is off writes nothing),
-   and commit once: a check that fails keeps nothing, and the next one starts over.
+4. **End** every watch that was due, told or not (an Inbox switch that is off writes nothing).
+   Each one is told and ended in a savepoint of its own (`_end`): one that fails is rolled back,
+   logged (once, until it ends) and kept for the next check, and the rest go on. The check
+   commits once: one that fails as a whole keeps nothing, and the next one starts over.
 
 Spec: docs/superpowers/specs/2026-11-05-asset-watches-design.md (What counts, How it's checked,
 When it fires, Notice wording)"""
 
+import logging
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -57,6 +60,12 @@ from serversherpa.notifications.asset_watches import (
 from serversherpa.notifications.inbox import notify
 from serversherpa.services.timezone import DEFAULT_TIMEZONE
 from serversherpa.status.labels import status_fields, status_labels
+
+logger = logging.getLogger("serversherpa.notifications.asset_watch_check")
+
+# Watches whose last try failed: each is logged once until it ends. Only the exception's class
+# is logged: its text can carry SQL parameters.
+_failing: set[uuid.UUID] = set()
 
 
 def watch_time(at: datetime) -> str:
@@ -352,14 +361,27 @@ async def _claim(db: AsyncSession) -> list[AssetWatch]:
         .with_for_update(skip_locked=True)))
 
 
-async def _tell(db: AsyncSession, due: Sequence[AssetWatch],
-                snapshots: Mapping[uuid.UUID, Mapping], at: datetime) -> None:
-    """Send each due watch's notice to its person, if their account is in use and they can still
-    open its asset, and its initiative too for a watch set on one. Everyone's access is resolved
-    once, and asked once per kind of thing however many watches there are."""
+@dataclass(frozen=True)
+class _Audience:
+    """Who may be told of the due watches, loaded once for all of them: the people whose account
+    is in use, their access, the assets and the initiatives each of them can open (notifications/
+    access.py), and what the notices name."""
+
+    active: set[uuid.UUID]
+    access: Mapping[uuid.UUID, AccessInfo]
+    assets: Mapping[uuid.UUID, frozenset[uuid.UUID]]
+    initiatives: Mapping[uuid.UUID, frozenset[uuid.UUID]]
+    names: _Names
+
+
+async def _audience(db: AsyncSession, due: Sequence[AssetWatch],
+                    snapshots: Mapping[uuid.UUID, Mapping]) -> _Audience | None:
+    """Everything `_tell` asks of the due watches' people, or None when no account among them is
+    in use: there is nobody to tell. Everyone's access is resolved once, and asked once per kind
+    of thing however many watches there are."""
     active = await active_ids(db, [watch.person_id for watch in due])
     if not active:
-        return
+        return None
     access = await resolve_access_many(db, active)
     names = await _names(db, due, snapshots)
     assets = await visible_among(db, "asset", [watch.asset_id for watch in due], active,
@@ -367,26 +389,55 @@ async def _tell(db: AsyncSession, due: Sequence[AssetWatch],
     initiatives = await visible_among(db, "initiative",
                                       [uuid.UUID(ref) for ref in names.initiatives], active,
                                       access=access)
+    return _Audience(active, access, assets, initiatives, names)
+
+
+async def _tell(db: AsyncSession, watch: AssetWatch, current: Mapping | None,
+                audience: _Audience | None, at: datetime) -> None:
+    """Send the watch's notice to its person, if their account is in use and they can still open
+    its asset, and its initiative too for a watch set on one."""
+    if audience is None or current is None or watch.person_id not in audience.active:
+        return
+    if watch.asset_id not in audience.assets.get(watch.person_id, frozenset()):
+        return
+    opens = audience.initiatives.get(watch.person_id, frozenset())
+    if watch.initiative_id is not None and watch.initiative_id not in opens:
+        return
+    sight = _sight(audience.access[watch.person_id], watch.person_id, opens)
+    title, body = _notice(watch, current, audience.names, sight, at)
+    link = asset_watch_link(watch, _row_id(current, watch.initiative_id))
+    await notify(db, watch.person_id, "asset_watch", title, body=body, link=link)
+
+
+async def _end(db: AsyncSession, due: Sequence[AssetWatch],
+               snapshots: Mapping[uuid.UUID, Mapping], at: datetime) -> list[uuid.UUID]:
+    """Tell and end each due watch, each in a savepoint of its own: one that fails is rolled back
+    and logged (once, until it ends), stays for the next check, and the rest go on. Returns the
+    ids of the watches that ended."""
+    audience = await _audience(db, due, snapshots)
+    ended: list[uuid.UUID] = []
     for watch in due:
-        current = snapshots.get(watch.asset_id)
-        if current is None or watch.person_id not in active:
+        watch_id = watch.id         # read now: a watch is never read after a rollback
+        try:
+            async with db.begin_nested():
+                await _tell(db, watch, snapshots.get(watch.asset_id), audience, at)
+                await db.delete(watch)
+        except Exception as exc:  # noqa: BLE001 — one watch's failure must not stop the rest
+            if watch_id not in _failing:
+                logger.warning("could not end asset watch %s — retrying (%s)", watch_id,
+                               type(exc).__name__)
+            _failing.add(watch_id)
             continue
-        if watch.asset_id not in assets.get(watch.person_id, frozenset()):
-            continue
-        opens = initiatives.get(watch.person_id, frozenset())
-        if watch.initiative_id is not None and watch.initiative_id not in opens:
-            continue
-        sight = _sight(access[watch.person_id], watch.person_id, opens)
-        title, body = _notice(watch, current, names, sight, at)
-        link = asset_watch_link(watch, _row_id(current, watch.initiative_id))
-        await notify(db, watch.person_id, "asset_watch", title, body=body, link=link)
+        ended.append(watch_id)
+    return ended
 
 
 async def run_asset_watches_once(maker: async_sessionmaker, *,
                                  now: datetime | None = None) -> int:
-    """One check. Returns how many watches ended: every one that was due, whether its person was
-    told or not. `now` (aware) is the moment of the check, which a notice gives for a change
-    that isn't a scan; it defaults to the current time."""
+    """One check. Returns how many watches ended: each one that was due, whether its person was
+    told or not, except one that failed, which waits for the next check. `now` (aware) is the
+    moment of the check, which a notice gives for a change that isn't a scan; it defaults to the
+    current time."""
     now = datetime.now(UTC) if now is None else now
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
@@ -394,9 +445,7 @@ async def run_asset_watches_once(maker: async_sessionmaker, *,
         watches = await _claim(db)
         snapshots = await snapshot(db, [watch.asset_id for watch in watches])
         due = [watch for watch in watches if _due(watch, snapshots.get(watch.asset_id))]
-        if due:
-            await _tell(db, due, snapshots, now)
-            for watch in due:
-                await db.delete(watch)
+        ended = await _end(db, due, snapshots, now) if due else []
         await db.commit()
-    return len(due)
+    _failing.difference_update(ended)
+    return len(ended)

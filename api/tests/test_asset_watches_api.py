@@ -211,9 +211,11 @@ async def test_status_watch_refuses_the_current_status(client, db):
 async def test_bad_status_and_status_on_next_update_are_invalid(client, db):
     me = await _login(db, client, "A")
     asset = await _asset(db)
-    await db.execute(update(StatusValue)
-                     .where(StatusValue.record_type == "asset", StatusValue.key == "historical")
-                     .values(is_active=False))
+    retired = await db.execute(update(StatusValue)
+                               .where(StatusValue.record_type == "asset",
+                                      StatusValue.key == "historical")
+                               .values(is_active=False))
+    assert retired.rowcount == 1        # there is such a status to retire: not a made-up key
     await db.commit()
 
     # a key no status has, a key of another vocabulary, and an asset status retired from use

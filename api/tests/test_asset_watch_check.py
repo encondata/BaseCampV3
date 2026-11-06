@@ -13,6 +13,7 @@ When it fires, Notice wording)
 Plan: docs/superpowers/plans/2026-11-05-asset-watches.md (Review Focus, Task 2)"""
 
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -44,6 +45,7 @@ from tests.test_notification_event_sweep import _log, _notifications, _person
 NOW = datetime(2026, 11, 5, 20, 5, tzinfo=UTC)          # Nov 5, 15:05 EST
 SET_AT = datetime(2026, 11, 5, 19, 0, tzinfo=UTC)       # Nov 5, 14:00 EST
 KIND = "asset_watch"
+LOGGER = "serversherpa.notifications.asset_watch_check"
 
 
 # ── the world ───────────────────────────────────────────────────────
@@ -285,6 +287,27 @@ async def test_the_container_comes_before_the_truck_and_a_scan_before_both(db):
     assert sorted(await _titles(person)) == ["SN-1: packed into Crate 1", "SN-2: scanned"]
 
 
+async def test_the_truck_comes_before_the_initiatives_and_they_before_the_status(db):
+    person = await _person(db, "A")
+    truck = await _truck(db, "Truck 7")
+    loaded, joined = await _asset(db, "SN-1"), await _asset(db, "SN-2")
+    move_a, move_b = await _move(db, "Move A"), await _move(db, "Move B")
+    crate = await _crate(db, loaded, "Crate 1")
+    row = await _row(db, move_a, joined, status="racked")
+    await _arm(db, person, loaded)
+    await _arm(db, person, joined, move_a)
+    # the first's crate goes onto a truck as it joins a move; the second joins another move as
+    # its status on the watched one changes
+    db.add(TruckContainer(truck_id=truck.id, container_id=crate.id))
+    await db.commit()
+    await _row(db, move_a, loaded)
+    await _row(db, move_b, joined)
+    await _set(db, row, status="on_truck")
+
+    assert await _check() == 2
+    assert sorted(await _titles(person)) == ["SN-1: loaded on Truck 7", "SN-2: added to Move B"]
+
+
 async def test_roster_titles(db):
     person = await _person(db, "A")
     joining, leaving = await _asset(db, "SN-1"), await _asset(db, "SN-2")
@@ -448,6 +471,41 @@ async def test_body_lines_and_times(db):
     }
 
 
+async def test_status_becomes_body_on_an_initiative(db):
+    """A Status becomes watch set on an initiative, in full: the title names the initiative, "Now"
+    reads the status there, and "Last scan" is there only when a scan came in after the watch
+    was set."""
+    person = await _person(db, "A")
+    site_a, site_b = await _site(db, "Site A"), await _site(db, "Site B")
+    truck = await _truck(db, "Truck 7")
+    scanned = await _asset(db, "SN-1", site_id=site_a.id)
+    await _crate(db, scanned, "Crate 1", truck=truck)
+    quiet = await _asset(db, "SN-2", site_id=site_a.id, location_detail="Dock 2")
+    await _scan(db, quiet, site=site_b, at=datetime(2026, 11, 5, 18, 30, tzinfo=UTC))
+    move = await _move(db, "Move A")
+    scanned_row = await _row(db, move, scanned, status="racked")
+    quiet_row = await _row(db, move, quiet, status="racked")
+    await _arm(db, person, scanned, move, status="on_truck", at=SET_AT)
+    await _arm(db, person, quiet, move, status="on_truck", at=SET_AT)
+
+    await _scan(db, scanned, site=site_b, at=datetime(2026, 11, 5, 20, 1, tzinfo=UTC))
+    await _set(db, scanned_row, status="on_truck")
+    await _set(db, quiet_row, status="on_truck")
+
+    assert await _check() == 2
+    notices = {note.title: note.body.split("\n") for note in await _notifications(person)}
+    assert notices == {
+        "SN-1 is now On Truck on Move A": [
+            "Now: On Truck · Site A · Crate 1 · on Truck 7",
+            "Last scan: scanned at Site B · Nov 5, 15:01 EST",
+            "You set this watch on Nov 5, 14:00 EST for status On Truck."],
+        # its only scan came before the watch was set: no Last scan line
+        "SN-2 is now On Truck on Move A": [
+            "Now: On Truck · Site A · Dock 2",
+            "You set this watch on Nov 5, 14:00 EST for status On Truck."],
+    }
+
+
 def test_watch_time_is_24_hour_in_the_reference_zone():
     assert watch_time(datetime(2026, 11, 5, 20, 5, tzinfo=UTC)) == "Nov 5, 15:05 EST"
     assert watch_time(datetime(2026, 7, 1, 13, 7, tzinfo=UTC)) == "Jul 1, 09:07 EDT"
@@ -566,6 +624,25 @@ async def test_a_watch_on_an_initiative_needs_its_asset_too(db):
     assert await _notifications(viewer) == []
 
 
+async def test_a_watch_on_an_initiative_they_can_no_longer_open_ends_silently(db):
+    """The other half: they can still open the asset, but the initiative the watch was set on is
+    another client's now, so the watch ends without a notice."""
+    client_a, client_b = Client(name="Client A"), Client(name="Client B")
+    db.add_all([client_a, client_b])
+    await db.commit()
+    viewer = await _person(db, "Viewer", role="client_viewer", client_id=client_a.id)
+    asset = await _asset(db, client_id=client_a.id)
+    move = await _move(db, "Move A", client_id=client_a.id)
+    row = await _row(db, move, asset, status="racked")
+    await _arm(db, viewer, asset, move)
+    await _set(db, move, client_id=client_b.id)         # they can still open the asset, not it
+    await _set(db, row, status="on_truck")
+
+    assert await _check() == 1
+    assert await _watch_ids() == set()
+    assert await _notifications(viewer) == []
+
+
 async def test_inbox_switch_off_still_ends_the_watch(db):
     person = await _person(db, "A", prefs={"notif": {"switches": {"assets": {"inbox": False}}}})
     asset = await _asset(db)
@@ -612,6 +689,46 @@ async def test_two_runs_at_once_notify_once(db, monkeypatch):
     assert await asyncio.wait_for(asyncio.gather(
         run_asset_watches_once(maker, now=later), run_asset_watches_once(maker, now=later)),
         timeout=30) == [0, 0]
+
+
+async def test_a_watch_that_fails_is_kept_and_the_rest_go_on(db, monkeypatch, caplog):
+    """One watch whose notice can't be sent is rolled back on its own and kept for the next
+    check, logged once (its id and the error's class) until it ends; the others are told and
+    end."""
+    failing, fine = await _person(db, "A"), await _person(db, "B")
+    asset = await _asset(db)
+    stuck = await _arm(db, failing, asset)              # the older: claimed and tried first
+    await _arm(db, fine, asset)
+    await _set(db, asset, location_detail="Dock 2")
+    real = asset_watch_check.notify
+
+    async def breaks_for_one(session, person_id, *args, **kwargs):
+        row = await real(session, person_id, *args, **kwargs)
+        if person_id == failing.id:                     # written, then a failure
+            raise RuntimeError("password=hunter2")
+        return row
+
+    monkeypatch.setattr(asset_watch_check, "notify", breaks_for_one)
+    caplog.set_level(logging.WARNING, logger=LOGGER)
+
+    assert await _check() == 1
+    assert await _watch_ids() == {stuck.id}
+    assert await _titles(fine) == ["SN-1: record updated"]
+    assert await _notifications(failing) == []          # what it wrote went with its savepoint
+    [warning] = [record.getMessage() for record in caplog.records if record.name == LOGGER]
+    assert str(stuck.id) in warning and "RuntimeError" in warning
+    assert "hunter2" not in caplog.text                 # the class only, never the text
+
+    # still failing a minute later: kept, and not logged again
+    assert await _check(NOW + timedelta(minutes=1)) == 0
+    assert await _watch_ids() == {stuck.id}
+    assert len([record for record in caplog.records if record.name == LOGGER]) == 1
+
+    # once it goes through, it is told and ends as any other
+    monkeypatch.setattr(asset_watch_check, "notify", real)
+    assert await _check(NOW + timedelta(minutes=2)) == 1
+    assert await _watch_ids() == set()
+    assert await _titles(failing) == ["SN-1: record updated"]
 
 
 async def test_now_must_be_timezone_aware(db):

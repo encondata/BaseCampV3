@@ -289,7 +289,7 @@ async def test_run_forever_runs_the_device_check_then_the_event_sweep_then_the_s
     monkeypatch.setattr(worker_mod, "run_asset_watches_once", fake_asset_watches)
     monkeypatch.setattr(worker_mod, "run_events_once", fake_events)
     monkeypatch.setattr(worker_mod, "run_summaries_once", fake_summaries)
-    assert worker_mod.ASSET_WATCH_INTERVAL == 60
+    assert worker_mod.ASSET_WATCH_INTERVAL_SECONDS == 60
     caplog.set_level(logging.INFO, logger="serversherpa.notifications.worker")
     task = asyncio.create_task(run_forever(poll_seconds=0.05))
     try:
@@ -346,7 +346,7 @@ async def test_asset_watch_check_errors_do_not_kill_the_loop(db, monkeypatch, ca
         raise RuntimeError("db down")
 
     monkeypatch.setattr(worker_mod, "run_asset_watches_once", boom)
-    monkeypatch.setattr(worker_mod, "ASSET_WATCH_INTERVAL", 0)
+    monkeypatch.setattr(worker_mod, "ASSET_WATCH_INTERVAL_SECONDS", 0)
     caplog.set_level(logging.WARNING, logger="serversherpa.notifications.worker")
     task = asyncio.create_task(run_forever(poll_seconds=0.05))
     try:
