@@ -288,13 +288,14 @@ class CommandResult:
 
 async def run_command(cfg: SshTargetConfig, db: AsyncSession, command: str, *,
                       timeout: float = RUN_TIMEOUT, input: str | None = None,
+                      tries: int = CONNECT_TRIES,
                       log: Callable[[str], None] | None = None) -> CommandResult:
     """Run one command on a pinned host and return its stdout (capped at
     OUTPUT_LIMIT) for the caller to parse. Callers quote every argument and
     never log the output. `input` goes to the command's stdin (for secrets:
-    never argv). `log` hears each connection retry."""
-    pinned = await pinned_host_key(db, cfg.host, cfg.port, log=log)
-    conn = await connect_pinned(cfg, pinned, log=log)
+    never argv). `tries` caps the connection attempts; `log` hears each retry."""
+    pinned = await pinned_host_key(db, cfg.host, cfg.port, tries=tries, log=log)
+    conn = await connect_pinned(cfg, pinned, tries=tries, log=log)
     async with conn:
         try:
             result = await asyncio.wait_for(

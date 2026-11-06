@@ -126,3 +126,51 @@ def test_runner_sets_ssh_retries(tmp_path):
     env = AnsibleRunner(str(tmp_path)).envvars(tmp_path / "run-x", _target())
     assert env["ANSIBLE_SSH_RETRIES"] == "5"
     assert "-o ConnectTimeout=15" in env["ANSIBLE_SSH_ARGS"]
+
+
+# Loops that already wait don't stack Sirdar's retries inside each attempt.
+
+async def test_confirm_pin_checks_the_pin_with_one_try(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from sirdar_api.deploy import vmcommon
+    seen: list[dict] = []
+
+    async def lookup(db, host, port):
+        return STORED
+
+    async def pinned(db, host, port, **kw):
+        seen.append(kw)
+
+    @asynccontextmanager
+    async def session():
+        yield None
+    monkeypatch.setattr(known_hosts, "lookup", lookup)
+    monkeypatch.setattr(ssh, "pinned_host_key", pinned)
+    monkeypatch.setattr(vmcommon, "get_sessionmaker", lambda: session)
+    made = await vmcommon.confirm_pin(
+        ip=HOST, expected=STORED.fingerprint_sha256, key_type="ssh-ed25519", actor_id=None,
+        target_id="t", tries=3, poll=0, sleep=None, out=lambda _: None, how="h", mismatch="m")
+    assert made is False and seen == [{"tries": 1}]
+
+
+async def test_ssh_remote_passes_tries_through(monkeypatch):
+    from sirdar_api.deploy import do_provision
+    seen: list[dict] = []
+
+    async def run(cfg, s, command, **kw):
+        seen.append(kw)
+        return ssh.CommandResult(0, "")
+    monkeypatch.setattr(ssh, "run_command", run)
+    lines: list[str] = []
+    await do_provision._ssh_remote(CFG, "true", None, log=lines.append)
+    await do_provision._ssh_remote(CFG, "true", None, tries=1)
+    assert [kw["tries"] for kw in seen] == [ssh.CONNECT_TRIES, 1]
+    assert seen[0]["log"] == lines.append          # step 0's log hears the retries
+
+
+async def test_run_command_with_one_try(monkeypatch, nap):
+    calls = _script(monkeypatch, [known_hosts.unreachable(HOST, PORT)] * 5)
+    with pytest.raises(ConnectFailed):
+        await ssh.run_command(CFG, None, "true", tries=1)
+    assert len(calls) == 1 and nap.naps == []

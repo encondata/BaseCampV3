@@ -186,7 +186,7 @@ async def confirm_pin(*, ip: str, expected: str, key_type: str, actor_id: uuid.U
             stored = await known_hosts.lookup(s, ip, port)
             try:
                 if stored is not None and stored.fingerprint_sha256 == expected:
-                    await ssh.pinned_host_key(s, ip, port)
+                    await ssh.pinned_host_key(s, ip, port, tries=1)   # this loop retries
                     out(f"SSH host key {expected} is pinned.\n")
                     return False
                 await known_hosts.trust(s, ip, port, expected, actor_id, target_id=target_id,

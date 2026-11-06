@@ -334,17 +334,19 @@ def _firewall_matches(live: dict, body: dict) -> bool:
 
 # ---- the provisioner ---------------------------------------------------------------------
 
-Remote = Callable[..., Awaitable[int | None]]       # (cfg, command, stdin, *, log=None)
+Remote = Callable[..., Awaitable[int | None]]  # (cfg, command, stdin, *, log=None, tries=5)
 
 
 async def _ssh_remote(cfg: SshTargetConfig, command: str, stdin: str | None, *,
-                      log: Output | None = None) -> int | None:
+                      log: Output | None = None,
+                      tries: int = ssh.CONNECT_TRIES) -> int | None:
     """One command on a pinned droplet; `stdin` carries any secret. None when
-    it didn't finish in SQL_TIMEOUT. Errors are StepFailed with our copy."""
+    it didn't finish in SQL_TIMEOUT. Errors are StepFailed with our copy.
+    `tries`: 1 inside a loop that already waits."""
     async with get_sessionmaker()() as s:
         try:
             result = await ssh.run_command(cfg, s, command, input=stdin, timeout=SQL_TIMEOUT,
-                                          log=log)
+                                          tries=tries, log=log)
         except ConnectFailed as e:
             raise StepFailed(e.reason) from None
         except (ssh.HostKeyUnknown, ssh.HostKeyMismatch):
@@ -1206,7 +1208,7 @@ class DoProvisioner:
             raise StepFailed(f"{name} has no public address, so Sirdar can't check it.")
         cfg = self._slot_config(ctx, ctx.slot, ip)
         for _ in range(self._tries(self._waits["health"])):
-            if await self._remote(cfg, _HEALTHZ, None, log=out) == 0:
+            if await self._remote(cfg, _HEALTHZ, None, log=out, tries=1) == 0:
                 out(f"{name} answers /healthz.\n")
                 return
             await self._sleep(self._poll)

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from sirdar_api.config import get_settings
-from sirdar_api.deploy import do_accounts, outbound
+from sirdar_api.deploy import do_accounts, outbound, ssh
 
 from .deploy_factories import secrets_key  # noqa: F401
 from .fake_acme import FakeAcme
@@ -86,9 +86,12 @@ class Remote:
     def __init__(self):
         self.calls: list[tuple[str, str, str | None]] = []
         self.codes: dict[str, int] = {}
+        self.tries: list[tuple[str, int]] = []       # (command, connection tries)
 
-    async def __call__(self, cfg, command: str, stdin: str | None, *, log=None) -> int:
+    async def __call__(self, cfg, command: str, stdin: str | None, *, log=None,
+                       tries: int = ssh.CONNECT_TRIES) -> int:
         self.calls.append((cfg.host, command, stdin))
+        self.tries.append((command, tries))
         return next((code for key, code in self.codes.items() if key in command), 0)
 
 

@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import select, update
 
 from sirdar_api.db.models import DoResource, Environment
-from sirdar_api.deploy import do_envs, do_provision, known_hosts, smoke, spaces, targets, vms
+from sirdar_api.deploy import do_envs, do_provision, known_hosts, smoke, spaces, ssh, targets, vms
 from sirdar_api.deploy.do_api import DoError
 from sirdar_api.deploy.publish import StepFailed
 
@@ -79,6 +79,17 @@ async def test_switch_traffic_to_the_slot(db, do_build):
     assert all(r.url.host == fake.load_balancers[_lb(fake)["id"]]["ip"] for r in seen)
     assert all(r.extensions["sni_hostname"] == r.headers["host"] for r in seen)
     assert "traffic now goes to orange" in do_build.log()
+
+
+async def test_health_loop_tries_each_check_once(db, do_build):
+    """The /healthz wait already loops, so each check is one SSH attempt;
+    step 0's one-off commands keep Sirdar's retries."""
+    await do_build.run()
+    do_build.cloud.smoke, _ = _answer(200)
+    await do_build.run("go_live", slot="orange")
+    tries = do_build.remote.tries
+    assert {t for c, t in tries if c == do_provision._HEALTHZ} == {1}
+    assert {t for c, t in tries if c != do_provision._HEALTHZ} == {ssh.CONNECT_TRIES}
 
 
 async def test_switch_adds_the_new_droplet_before_dropping_the_old(db, do_build):
