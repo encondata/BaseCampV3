@@ -3,7 +3,8 @@
  * WatchesSection — "What you watch" on /me › Notifications: the person's own
  * watches and their groups', how to change the events of their own or stop
  * watching, and the "everywhere" button that watches (or edits) chosen events
- * across everything they can see.
+ * across everything they can see. The person's asset watches are rows of the same
+ * table, after the others: Change… (the Watch asset dialog) and Stop watching.
  */
 
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
@@ -11,13 +12,23 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import { ApiError, READ_ONLY_MESSAGE, type NotificationKindSetting, type Watch } from '../../lib/api';
+import {
+  ApiError, READ_ONLY_MESSAGE, type AssetWatch, type NotificationKindSetting, type StatusValue,
+  type Watch,
+} from '../../lib/api';
 
 const api = vi.hoisted(() => ({
   listMyWatches: vi.fn(),
   createMyWatch: vi.fn(),
   updateMyWatch: vi.fn(),
   deleteMyWatch: vi.fn(),
+  // the person's asset watches, and what the Watch asset dialog calls
+  listMyAssetWatches: vi.fn(),
+  createMyAssetWatch: vi.fn(),
+  updateMyAssetWatch: vi.fn(),
+  deleteMyAssetWatch: vi.fn(),
+  getAssetWatchState: vi.fn(),
+  listAssetStatuses: vi.fn(),
 }));
 vi.mock('../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/api')>()),
@@ -87,6 +98,40 @@ const groupPage: Watch = {
   created_at: '2026-11-02T06:00:00Z',
 };
 
+// The person's asset watches as the API lists them (newest first): the asset's name, where the watch
+// was set (`link`), what it waits for, and the status the watch reads now. An asset watch is not a
+// `Watch`: it names no events, and it is always the person's own.
+const ASSET_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const MOVE_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const ROW_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+
+/** A watch of an asset on its own, for its next update. */
+const ownAsset: AssetWatch = {
+  id: 'aw-asset', asset_id: ASSET_ID, asset_name: 'SN-1001',
+  initiative_id: null, initiative_name: null, initiative_asset_id: null,
+  condition: 'next_update', status: null, status_label: null,
+  current_status: 'in_storage', current_status_label: 'In storage',
+  link: `/assets/${ASSET_ID}`, created_at: '2026-11-05T12:00:00Z',
+};
+/** A watch of an asset on an initiative, for a status. */
+const ownAssetOnMove: AssetWatch = {
+  ...ownAsset, id: 'aw-move', asset_name: 'SN-2002',
+  initiative_id: MOVE_ID, initiative_name: 'NAP11 Move', initiative_asset_id: ROW_ID,
+  condition: 'status', status: 'shipped', status_label: 'Shipped',
+  current_status: 'in_transit', current_status_label: 'In transit',
+  link: `/initiatives/${MOVE_ID}/assets/${ROW_ID}`, created_at: '2026-11-05T11:00:00Z',
+};
+
+const status = (key: string, label: string): StatusValue => ({
+  record_type: 'asset', key, label, description: '', color: '#888888', sort_order: 0,
+  is_active: true, usage_count: null, progress_weight: null,
+});
+// As GET /status-values?record_type=asset lists them, for the Watch asset dialog's picker.
+const STATUSES = [
+  status('in_storage', 'In storage'), status('in_transit', 'In transit'),
+  status('shipped', 'Shipped'), status('delivered', 'Delivered'),
+];
+
 const HINT = 'Things you watch and the ones your groups watch. '
   + 'What reaches you still follows your switches and schedule.';
 const EMPTY = "You aren't watching anything yet. Use Watch on a page to start.";
@@ -100,14 +145,27 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  Element.prototype.scrollIntoView = vi.fn();   // jsdom has none; ComboBox scrolls its active option
   api.listMyWatches.mockReset();
   api.createMyWatch.mockReset();
   api.updateMyWatch.mockReset();
   api.deleteMyWatch.mockReset();
+  api.listMyAssetWatches.mockReset();
+  api.createMyAssetWatch.mockReset();
+  api.updateMyAssetWatch.mockReset();
+  api.deleteMyAssetWatch.mockReset();
+  api.getAssetWatchState.mockReset();
+  api.listAssetStatuses.mockReset();
   api.listMyWatches.mockResolvedValue([]);
   api.createMyWatch.mockResolvedValue(ownEverything);
   api.updateMyWatch.mockResolvedValue(ownInitiative);
   api.deleteMyWatch.mockResolvedValue(undefined);
+  api.listMyAssetWatches.mockResolvedValue([]);
+  api.createMyAssetWatch.mockResolvedValue(ownAsset);
+  api.updateMyAssetWatch.mockResolvedValue(ownAsset);
+  api.deleteMyAssetWatch.mockResolvedValue(undefined);
+  api.getAssetWatchState.mockResolvedValue({ watching: false, watch: null });
+  api.listAssetStatuses.mockResolvedValue(STATUSES);
 });
 afterEach(cleanup);
 
@@ -813,4 +871,471 @@ it('does not show the result of a list call that was overtaken by a later one', 
 
   expect(screen.getByRole('button', { name: 'Edit events everywhere…' })).toBeTruthy();
   expect(screen.queryByText(EMPTY)).toBeNull();
+});
+
+// ── asset watches ───────────────────────────────────────────────────────
+
+/** The Watch asset dialog's own pieces. */
+const watchDialog = (name: string) => screen.getByRole('dialog', { name });
+const statusPicker = () => screen.getByRole('combobox', { name: 'Status' }) as HTMLInputElement;
+/** What the open status picker offers, by name (the menu portals out of the dialog). */
+const offered = () => [...document.querySelectorAll('.combo-menu .kbar-item')].map((o) => o.textContent);
+
+it('asks for the asset watches once, with the person\'s watches, when it mounts', async () => {
+  api.listMyAssetWatches.mockResolvedValue([ownAsset]);
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  expect(api.listMyAssetWatches).toHaveBeenCalledTimes(1);
+  expect(api.listMyWatches).toHaveBeenCalledTimes(1);
+  expect(api.createMyAssetWatch).not.toHaveBeenCalled();
+  expect(api.updateMyAssetWatch).not.toHaveBeenCalled();
+  expect(api.deleteMyAssetWatch).not.toHaveBeenCalled();
+});
+
+it('an asset row: the name linked to where the watch was set, the Asset chip, Next update, You', async () => {
+  api.listMyAssetWatches.mockResolvedValue([ownAsset]);
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  expect(screen.getByRole('link', { name: 'SN-1001' }).getAttribute('href')).toBe(`/assets/${ASSET_ID}`);
+  const row = rowOf('SN-1001');
+  expect(within(row).getByText('Asset').classList.contains('chip')).toBe(true);
+  expect(within(row).getByText('Next update')).toBeTruthy();
+  expect(within(row).getByText('You')).toBeTruthy();
+  // an asset watch names no events, so it is not an "All events" watch
+  expect(within(row).queryByText('All events')).toBeNull();
+  expect(within(row).queryByText(/^on /)).toBeNull();
+});
+
+it('an asset row on an initiative adds "on {initiative}", links to the move asset page and reads Status becomes {label}', async () => {
+  api.listMyAssetWatches.mockResolvedValue([ownAssetOnMove]);
+  renderSection();
+  await screen.findByText('SN-2002');
+
+  expect(screen.getByRole('link', { name: 'SN-2002' }).getAttribute('href'))
+    .toBe(`/initiatives/${MOVE_ID}/assets/${ROW_ID}`);
+  const row = rowOf('SN-2002');
+  expect(within(row).getByText('on NAP11 Move')).toBeTruthy();
+  expect(within(row).getByText('Status becomes Shipped')).toBeTruthy();
+  expect(within(row).getByText('You')).toBeTruthy();
+  expect(within(row).queryByText('All events')).toBeNull();
+});
+
+it('lists the asset watches after every other row, in the API\'s order (newest first), and counts them', async () => {
+  api.listMyWatches.mockResolvedValue([ownInitiative, groupSite, ownEverything]);
+  api.listMyAssetWatches.mockResolvedValue([ownAsset, ownAssetOnMove]);
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  const rows = screen.getAllByRole('row').slice(1);
+  expect(rows.map((r) => within(r).queryByRole('link')?.textContent ?? 'Everything'))
+    .toEqual(['Initiative A', 'Site A', 'Everything', 'SN-1001', 'SN-2002']);
+  expect(document.querySelector('.badge-count')?.textContent).toBe('5');
+  expect(screen.getAllByRole('columnheader').map((h) => h.textContent))
+    .toEqual(['Watching', 'Events', 'Via', 'Actions']);
+});
+
+it('with only asset watches the list is not called empty, and they are counted', async () => {
+  api.listMyAssetWatches.mockResolvedValue([ownAsset]);
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  expect(screen.queryByText(EMPTY)).toBeNull();
+  expect(document.querySelector('.badge-count')?.textContent).toBe('1');
+});
+
+it('says nothing about the list, not even how many, until the asset watches are in too', async () => {
+  const pending = deferred<AssetWatch[]>();
+  api.listMyWatches.mockResolvedValue([ownInitiative]);
+  api.listMyAssetWatches.mockReturnValue(pending.promise);
+  renderSection();
+  await loaded();
+  await waitFor(() => expect(api.listMyWatches).toHaveBeenCalled());
+  await act(async () => { await Promise.resolve(); });       // the watches' answer is in
+
+  expect(screen.queryByRole('table')).toBeNull();
+  expect(screen.queryByText(EMPTY)).toBeNull();
+  expect(screen.queryByText('Initiative A')).toBeNull();
+  expect(document.querySelector('.badge-count')).toBeNull();
+
+  await act(async () => { pending.resolve([ownAsset]); });
+
+  expect(screen.getByText('Initiative A')).toBeTruthy();
+  expect(screen.getByText('SN-1001')).toBeTruthy();
+  expect(document.querySelector('.badge-count')?.textContent).toBe('2');
+});
+
+it('an asset row\'s menu is "Change…" and "Stop watching" (destructive)', async () => {
+  const user = userEvent.setup();
+  api.listMyAssetWatches.mockResolvedValue([ownAsset]);
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  await user.click(within(rowOf('SN-1001')).getByRole('button', { name: /Actions/ }));
+
+  expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Change…', 'Stop watching']);
+  expect(screen.getByRole('menuitem', { name: 'Stop watching' }).className).toContain('danger');
+  expect(screen.getByRole('menuitem', { name: 'Change…' }).className).not.toContain('danger');
+});
+
+it('"Stop watching" on an asset row deletes that asset watch, then loads both lists again', async () => {
+  const user = userEvent.setup();
+  api.listMyWatches.mockResolvedValue([ownInitiative]);
+  api.listMyAssetWatches.mockResolvedValueOnce([ownAsset, ownAssetOnMove])
+    .mockResolvedValueOnce([ownAssetOnMove]);
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  await pickAction(user, 'SN-1001', 'Stop watching');
+
+  expect(api.deleteMyAssetWatch).toHaveBeenCalledTimes(1);
+  expect(api.deleteMyAssetWatch).toHaveBeenCalledWith('aw-asset');
+  expect(api.deleteMyWatch).not.toHaveBeenCalled();
+  await waitFor(() => expect(screen.queryByText('SN-1001')).toBeNull());
+  expect(api.listMyAssetWatches).toHaveBeenCalledTimes(2);
+  expect(api.listMyWatches).toHaveBeenCalledTimes(2);
+  expect(screen.getByText('SN-2002')).toBeTruthy();
+  expect(screen.getByText('Initiative A')).toBeTruthy();
+  expect(document.querySelector('.badge-count')?.textContent).toBe('2');
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+it('with asset rows beside it, "Stop watching" on a watch still deletes a watch, not an asset watch', async () => {
+  const user = userEvent.setup();
+  api.listMyWatches.mockResolvedValueOnce([ownInitiative]).mockResolvedValueOnce([]);
+  api.listMyAssetWatches.mockResolvedValue([ownAsset]);
+  renderSection();
+  await screen.findByText('Initiative A');
+
+  await pickAction(user, 'Initiative A', 'Stop watching');
+
+  expect(api.deleteMyWatch).toHaveBeenCalledWith('w-ini');
+  expect(api.deleteMyAssetWatch).not.toHaveBeenCalled();
+  await waitFor(() => expect(screen.queryByText('Initiative A')).toBeNull());
+  expect(screen.getByText('SN-1001')).toBeTruthy();
+});
+
+it('an asset watch that is already gone is simply gone: no error, the lists are loaded again', async () => {
+  const user = userEvent.setup();
+  api.deleteMyAssetWatch.mockRejectedValue(new ApiError(404, 'watch_not_found'));
+  api.listMyAssetWatches.mockResolvedValueOnce([ownAsset]).mockResolvedValueOnce([]);
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  await pickAction(user, 'SN-1001', 'Stop watching');
+
+  expect(await screen.findByText(EMPTY)).toBeTruthy();
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(api.listMyAssetWatches).toHaveBeenCalledTimes(2);
+});
+
+it('a failed asset stop says why in the section\'s error line, and loads the lists again to show what is true', async () => {
+  const user = userEvent.setup();
+  api.deleteMyAssetWatch.mockRejectedValue(new ApiError(500, 'server_error'));
+  api.listMyAssetWatches.mockResolvedValue([ownAsset]);
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  await pickAction(user, 'SN-1001', 'Stop watching');
+
+  const error = await screen.findByRole('alert');
+  expect(error.textContent).toBe('Request failed (server_error).');
+  expect(error.classList.contains('pf-error')).toBe(true);
+  expect(api.listMyAssetWatches).toHaveBeenCalledTimes(2);
+  expect(api.listMyWatches).toHaveBeenCalledTimes(2);
+  expect(screen.getByText('SN-1001')).toBeTruthy();
+});
+
+it('an asset stop refused by read-only maintenance shows the server\'s own message', async () => {
+  const user = userEvent.setup();
+  api.deleteMyAssetWatch.mockRejectedValue(
+    new ApiError(423, 'read_only_mode', { code: 'read_only_mode' }, READ_ONLY_MESSAGE));
+  api.listMyAssetWatches.mockResolvedValue([ownAsset]);
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  await pickAction(user, 'SN-1001', 'Stop watching');
+
+  expect((await screen.findByRole('alert')).textContent).toBe(READ_ONLY_MESSAGE);
+});
+
+it('an asset watch being stopped cannot be stopped twice, or changed meanwhile', async () => {
+  const user = userEvent.setup();
+  const pending = deferred<void>();
+  api.listMyAssetWatches.mockResolvedValue([ownAsset]);
+  api.deleteMyAssetWatch.mockReturnValue(pending.promise);
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  await pickAction(user, 'SN-1001', 'Stop watching');
+  await user.click(within(rowOf('SN-1001')).getByRole('button', { name: /Actions/ }));
+
+  expect((screen.getByRole('menuitem', { name: 'Stop watching' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('menuitem', { name: 'Change…' }) as HTMLButtonElement).disabled).toBe(true);
+  await user.click(screen.getByRole('menuitem', { name: 'Stop watching' }));
+  expect(api.deleteMyAssetWatch).toHaveBeenCalledTimes(1);
+
+  await act(async () => { pending.resolve(); });
+});
+
+it('stopping an asset watch does not lock a watch that happens to have the same id', async () => {
+  const user = userEvent.setup();
+  const pending = deferred<void>();
+  api.listMyWatches.mockResolvedValue([ownInitiative]);
+  api.listMyAssetWatches.mockResolvedValue([{ ...ownAsset, id: ownInitiative.id }]);
+  api.deleteMyAssetWatch.mockReturnValue(pending.promise);
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  await pickAction(user, 'SN-1001', 'Stop watching');
+  await user.click(within(rowOf('Initiative A')).getByRole('button', { name: /Actions/ }));
+
+  expect((screen.getByRole('menuitem', { name: 'Stop watching' }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByRole('menuitem', { name: 'Choose events…' }) as HTMLButtonElement).disabled).toBe(false);
+
+  await act(async () => { pending.resolve(); });
+});
+
+it('"Change…" opens the Watch asset dialog on that watch: Save, Cancel and Stop watching, on its own choice', async () => {
+  const user = userEvent.setup();
+  api.listMyAssetWatches.mockResolvedValue([ownAsset]);
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  await pickAction(user, 'SN-1001', 'Change…');
+
+  const dialog = watchDialog('Watch SN-1001');
+  expect(dialog.querySelector('.eyebrow')?.textContent).toBe('Watch asset');
+  expect(within(dialog).getByRole('heading', { name: 'Watch SN-1001', level: 3 })).toBeTruthy();
+  const footer = dialog.querySelector('.modal-foot') as HTMLElement;
+  expect(within(footer).getAllByRole('button').map((b) => b.textContent))
+    .toEqual(['Save', 'Cancel', 'Stop watching']);
+  expect(within(dialog).getByRole('button', { name: 'Next update' }).getAttribute('aria-pressed')).toBe('true');
+  // not the events dialog
+  expect(within(dialog).queryByRole('checkbox')).toBeNull();
+  expect(api.updateMyAssetWatch).not.toHaveBeenCalled();
+});
+
+it('"Change…" on an initiative\'s status watch opens on it: "On {initiative}.", its status, and the status it reads now left out of the picker', async () => {
+  const user = userEvent.setup();
+  api.listMyAssetWatches.mockResolvedValue([ownAssetOnMove]);
+  renderSection();
+  await screen.findByText('SN-2002');
+
+  await pickAction(user, 'SN-2002', 'Change…');
+
+  const dialog = watchDialog('Watch SN-2002');
+  expect(dialog.querySelector('p.page-hint')?.textContent).toContain('On NAP11 Move.');
+  expect(within(dialog).getByRole('button', { name: 'Status becomes' }).getAttribute('aria-pressed')).toBe('true');
+  await waitFor(() => expect(statusPicker().value).toBe('Shipped'));
+  // the status the watch reads now is its row's on the initiative (current_status), not the asset's
+  expect(within(dialog).getByText('Its status on this initiative is In transit now.')).toBeTruthy();
+  await user.click(statusPicker());
+  expect(offered()).toEqual(['In storage', 'Shipped', 'Delivered']);
+});
+
+it('Change… → Status becomes → a status → Save changes that watch, closes the dialog and loads the lists again', async () => {
+  const user = userEvent.setup();
+  const changed: AssetWatch = {
+    ...ownAsset, condition: 'status', status: 'delivered', status_label: 'Delivered',
+  };
+  api.updateMyAssetWatch.mockResolvedValue(changed);
+  api.listMyAssetWatches.mockResolvedValueOnce([ownAsset]).mockResolvedValueOnce([changed]);
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  await pickAction(user, 'SN-1001', 'Change…');
+  const dialog = watchDialog('Watch SN-1001');
+  await user.click(within(dialog).getByRole('button', { name: 'Status becomes' }));
+  await waitFor(() => expect(statusPicker().disabled).toBe(false));
+  await user.click(statusPicker());
+  await user.click(await screen.findByText('Delivered', { selector: '.kbar-item' }));
+  await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+  await waitFor(() => expect(api.updateMyAssetWatch).toHaveBeenCalledTimes(1));
+  expect(api.updateMyAssetWatch).toHaveBeenCalledWith('aw-asset', { condition: 'status', status: 'delivered' });
+  expect(api.createMyAssetWatch).not.toHaveBeenCalled();
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(api.listMyAssetWatches).toHaveBeenCalledTimes(2);
+  expect(api.listMyWatches).toHaveBeenCalledTimes(2);
+  await waitFor(() => expect(within(rowOf('SN-1001')).getByText('Status becomes Delivered')).toBeTruthy());
+});
+
+it('Stop watching in the dialog stops that asset watch, closes it and loads the lists again', async () => {
+  const user = userEvent.setup();
+  api.listMyAssetWatches.mockResolvedValueOnce([ownAsset]).mockResolvedValueOnce([]);
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  await pickAction(user, 'SN-1001', 'Change…');
+  await user.click(within(watchDialog('Watch SN-1001')).getByRole('button', { name: 'Stop watching' }));
+
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(api.deleteMyAssetWatch).toHaveBeenCalledTimes(1);
+  expect(api.deleteMyAssetWatch).toHaveBeenCalledWith('aw-asset');
+  expect(api.deleteMyWatch).not.toHaveBeenCalled();
+  expect(await screen.findByText(EMPTY)).toBeTruthy();
+  expect(api.listMyAssetWatches).toHaveBeenCalledTimes(2);
+});
+
+it('Cancel leaves the Watch asset dialog without saving or loading again', async () => {
+  const user = userEvent.setup();
+  api.listMyAssetWatches.mockResolvedValue([ownAsset]);
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  await pickAction(user, 'SN-1001', 'Change…');
+  await user.click(within(watchDialog('Watch SN-1001')).getByRole('button', { name: 'Cancel' }));
+
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(api.updateMyAssetWatch).not.toHaveBeenCalled();
+  expect(api.listMyAssetWatches).toHaveBeenCalledTimes(1);
+  expect(api.listMyWatches).toHaveBeenCalledTimes(1);
+});
+
+it('a refused asset save stays in the dialog with its reason, and leaves the lists alone', async () => {
+  const user = userEvent.setup();
+  api.updateMyAssetWatch.mockRejectedValue(new ApiError(500, 'server_error'));
+  api.listMyAssetWatches.mockResolvedValue([ownAsset]);
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  await pickAction(user, 'SN-1001', 'Change…');
+  const dialog = watchDialog('Watch SN-1001');
+  await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+  expect((await within(dialog).findByRole('alert')).textContent).toBe('Request failed (server_error).');
+  expect(screen.getByRole('dialog')).toBe(dialog);
+  expect(api.listMyAssetWatches).toHaveBeenCalledTimes(1);
+  expect(api.listMyWatches).toHaveBeenCalledTimes(1);
+});
+
+it('a save for an asset watch the check has ended says so in the dialog, which is a new watch now, and the lists are loaded again', async () => {
+  const user = userEvent.setup();
+  api.updateMyAssetWatch.mockRejectedValue(new ApiError(404, 'watch_not_found'));
+  api.listMyAssetWatches.mockResolvedValueOnce([ownAsset]).mockResolvedValue([]);
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  await pickAction(user, 'SN-1001', 'Change…');
+  const dialog = watchDialog('Watch SN-1001');
+  await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+  expect((await within(dialog).findByRole('alert')).textContent)
+    .toBe('This watch has already ended. Press Watch to set a new one.');
+  expect(within(dialog).getByRole('button', { name: 'Watch' })).toBeTruthy();
+  // the section behind it shows what is true: the watch is gone
+  expect(await screen.findByText(EMPTY)).toBeTruthy();
+  expect(api.listMyAssetWatches).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole('dialog')).toBe(dialog);
+});
+
+it('a stop error goes when a later asset save goes through', async () => {
+  const user = userEvent.setup();
+  api.deleteMyAssetWatch.mockRejectedValue(new ApiError(500, 'server_error'));
+  api.listMyAssetWatches.mockResolvedValue([ownAsset]);
+  renderSection();
+  await screen.findByText('SN-1001');
+  await pickAction(user, 'SN-1001', 'Stop watching');
+  expect((await screen.findByRole('alert')).textContent).toBe('Request failed (server_error).');
+
+  await pickAction(user, 'SN-1001', 'Change…');
+  await user.click(within(watchDialog('Watch SN-1001')).getByRole('button', { name: 'Save' }));
+
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(api.updateMyAssetWatch).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('a failed asset watches load keeps the other watches, and says why in the section\'s error line', async () => {
+  api.listMyWatches.mockResolvedValue([ownInitiative, groupSite]);
+  api.listMyAssetWatches.mockRejectedValue(new ApiError(500, 'server_error'));
+  renderSection();
+
+  await screen.findByText('Initiative A');
+  const error = await screen.findByText('Request failed (server_error).');
+  expect(error.classList.contains('pf-error')).toBe(true);
+  expect(screen.getByText('Site A')).toBeTruthy();
+  expect(document.querySelector('.badge-count')?.textContent).toBe('2');
+  // the watches themselves loaded: neither their failure nor the empty state
+  expect(screen.queryByText('Could not load your watches.')).toBeNull();
+  expect(screen.queryByText(EMPTY)).toBeNull();
+  // and the rows still work
+  expect(within(rowOf('Initiative A')).getByRole('button', { name: /Actions/ })).toBeTruthy();
+});
+
+it('a failed asset watches load with no other watch is told, and the list is empty, not missing', async () => {
+  api.listMyAssetWatches.mockRejectedValue(new ApiError(500, 'server_error'));
+  renderSection();
+
+  expect(await screen.findByText('Request failed (server_error).')).toBeTruthy();
+  expect(await screen.findByText(EMPTY)).toBeTruthy();
+  expect(document.querySelector('.badge-count')?.textContent).toBe('0');
+});
+
+it('when the watches themselves can\'t be loaded nothing is listed, the asset watches included', async () => {
+  api.listMyWatches.mockRejectedValue(new ApiError(500, 'server_error'));
+  api.listMyAssetWatches.mockResolvedValue([ownAsset]);
+  renderSection();
+
+  await screen.findByText('Could not load your watches.');
+  await act(async () => { await Promise.resolve(); });
+
+  expect(screen.queryByRole('table')).toBeNull();
+  expect(screen.queryByText('SN-1001')).toBeNull();
+  expect(screen.queryByText(EMPTY)).toBeNull();
+  expect(document.querySelector('.badge-count')).toBeNull();
+});
+
+it('a failed reload keeps the asset watches that are there, and says why', async () => {
+  const user = userEvent.setup();
+  api.listMyWatches.mockResolvedValue([ownInitiative]);
+  api.listMyAssetWatches.mockResolvedValueOnce([ownAsset])
+    .mockRejectedValueOnce(new ApiError(500, 'server_error'));
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  await pickAction(user, 'Initiative A', 'Stop watching');      // reads both lists again
+
+  expect((await screen.findByRole('alert')).textContent).toBe('Request failed (server_error).');
+  expect(screen.getByText('SN-1001')).toBeTruthy();
+  expect(document.querySelector('.badge-count')?.textContent).toBe('2');
+});
+
+it('the asset watches\' load error goes when a later load goes through', async () => {
+  const user = userEvent.setup();
+  api.listMyWatches.mockResolvedValue([ownInitiative]);
+  api.listMyAssetWatches.mockRejectedValueOnce(new ApiError(500, 'server_error'))
+    .mockResolvedValue([ownAsset]);
+  renderSection();
+  await screen.findByText('Request failed (server_error).');
+  expect(screen.queryByText('SN-1001')).toBeNull();
+
+  await pickAction(user, 'Initiative A', 'Stop watching');      // reads both lists again
+
+  expect(await screen.findByText('SN-1001')).toBeTruthy();
+  expect(screen.queryByText('Request failed (server_error).')).toBeNull();
+});
+
+it('does not show the result of an asset list call that was overtaken by a later one', async () => {
+  const user = userEvent.setup();
+  const first = deferred<AssetWatch[]>();
+  api.listMyWatches.mockResolvedValue([ownInitiative]);
+  api.listMyAssetWatches.mockReturnValueOnce(first.promise).mockResolvedValueOnce([ownAssetOnMove]);
+  renderSection();
+  await loaded();
+
+  // Save an Everything watch while the first asset answer is still out.
+  await user.click(screen.getByRole('button', { name: 'Watch events everywhere…' }));
+  const dialog = screen.getByRole('dialog', { name: 'Everything' });
+  await user.click(within(dialog).getByRole('checkbox', { name: 'Truck status changed' }));
+  await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+  await screen.findByText('SN-2002');
+
+  await act(async () => { first.resolve([ownAsset]); });          // the stale answer, late
+
+  expect(screen.getByText('SN-2002')).toBeTruthy();
+  expect(screen.queryByText('SN-1001')).toBeNull();
 });

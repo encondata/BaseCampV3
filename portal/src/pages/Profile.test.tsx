@@ -10,7 +10,9 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
-import type { BiometricKey, PersonDetail, TotpStatus, TrustedBrowser, UiPreferences, Watch } from '../lib/api';
+import type {
+  AssetWatch, BiometricKey, PersonDetail, TotpStatus, TrustedBrowser, UiPreferences, Watch,
+} from '../lib/api';
 
 type TB = TrustedBrowser;
 
@@ -35,9 +37,10 @@ const api = vi.hoisted(() => ({
   listMyBiometricKeys: vi.fn(async (): Promise<BiometricKey[]> => []),
   forgetMyBiometricKey: vi.fn(async () => {}),
   // MeNotifications (the Notifications tab) loads the person's groups, their
-  // watches and the company notification settings on mount
+  // watches (and asset watches) and the company notification settings on mount
   listMyNotificationGroups: vi.fn(async () => []),
   listMyWatches: vi.fn(async (): Promise<Watch[]> => []),
+  listMyAssetWatches: vi.fn(async (): Promise<AssetWatch[]> => []),
   getNotificationSettings: vi.fn(async () => ({
     defaults: {
       approvals: { inbox: true, email: true }, reports: { inbox: true, email: true },
@@ -118,6 +121,7 @@ afterEach(() => {
   api.listMyTrustedBrowsers.mockImplementation(async () => ({ trust_days: 7, browsers: [] }));
   api.listMyBiometricKeys.mockImplementation(async () => []);
   api.listMyWatches.mockImplementation(async () => []);
+  api.listMyAssetWatches.mockImplementation(async () => []);
   auth.totp = { enrolled: false, enrolled_at: null, required: false, backup_codes_remaining: 0 };
 });
 
@@ -218,6 +222,7 @@ it('/me/notifications lists What you watch under the schedule card', async () =>
   const schedule = screen.getByRole('heading', { name: 'When email reaches you', level: 3 });
   expect(schedule.compareDocumentPosition(watching) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(api.listMyWatches).toHaveBeenCalledTimes(1);
+  expect(api.listMyAssetWatches).toHaveBeenCalledTimes(1);
 });
 
 it('the Profile and Preferences tabs neither show nor load What you watch', async () => {
@@ -231,6 +236,7 @@ it('the Profile and Preferences tabs neither show nor load What you watch', asyn
   expect(screen.queryByRole('region', { name: 'What you watch' })).toBeNull();
 
   expect(api.listMyWatches).not.toHaveBeenCalled();
+  expect(api.listMyAssetWatches).not.toHaveBeenCalled();
 });
 
 it('clicking the Preferences tab navigates to /me/preferences', async () => {

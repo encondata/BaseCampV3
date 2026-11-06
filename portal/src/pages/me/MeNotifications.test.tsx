@@ -12,8 +12,8 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import {
-  ApiError, type MyNotificationGroup, type NotificationKindSetting, type NotificationSettings,
-  type SwitchPair, type UiPreferences, type Watch,
+  ApiError, type AssetWatch, type MyNotificationGroup, type NotificationKindSetting,
+  type NotificationSettings, type SwitchPair, type UiPreferences, type Watch,
 } from '../../lib/api';
 import { LIST_FIT } from '../../lib/listTools';
 
@@ -62,8 +62,9 @@ const api = vi.hoisted(() => ({
   listMyNotificationGroups: vi.fn(),
   requestGroupMembership: vi.fn(),
   cancelMembershipRequest: vi.fn(),
-  // "What you watch" loads the person's watches on mount
+  // "What you watch" loads the person's watches, and their asset watches, on mount
   listMyWatches: vi.fn(),
+  listMyAssetWatches: vi.fn(),
 }));
 vi.mock('../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/api')>()),
@@ -115,9 +116,11 @@ beforeEach(() => {
   api.requestGroupMembership.mockReset();
   api.cancelMembershipRequest.mockReset();
   api.listMyWatches.mockReset();
+  api.listMyAssetWatches.mockReset();
   api.getNotificationSettings.mockResolvedValue(SETTINGS);
   api.listMyNotificationGroups.mockResolvedValue([]);
   api.listMyWatches.mockResolvedValue([]);
+  api.listMyAssetWatches.mockResolvedValue([]);
   auth.notif = {
     sound: 'chime',
     switches: {},
@@ -833,4 +836,44 @@ it('a failed watches load says so, without touching the switch grid or the group
   expect(screen.getByText('Ops')).toBeTruthy();
   expect(screen.queryByText('Could not load notification settings.')).toBeNull();
   expect(screen.queryByText('Could not load notification groups.')).toBeNull();
+});
+
+// A watch of an asset, as GET /auth/me/asset-watches lists it: a row of the same table.
+const ASSET_WATCH: AssetWatch = {
+  id: 'aw1', asset_id: 'a1', asset_name: 'SN-1001',
+  initiative_id: null, initiative_name: null, initiative_asset_id: null,
+  condition: 'next_update', status: null, status_label: null,
+  current_status: 'in_storage', current_status_label: 'In storage',
+  link: '/assets/a1', created_at: '2026-11-05T12:00:00Z',
+};
+
+it('lists the person\'s asset watches in "What you watch", beside their other watches, and loads them once', async () => {
+  api.listMyWatches.mockResolvedValue([WATCH]);
+  api.listMyAssetWatches.mockResolvedValue([ASSET_WATCH]);
+  render(<MeNotifications />);
+  const watching = await screen.findByRole('region', { name: 'What you watch' });
+
+  expect(await within(watching).findByText('Initiative A')).toBeTruthy();
+  expect(within(watching).getByRole('link', { name: 'SN-1001' }).getAttribute('href')).toBe('/assets/a1');
+  expect(within(watching).getByText('Asset')).toBeTruthy();
+  expect(within(watching).getByText('Next update')).toBeTruthy();
+  expect(watching.querySelector('.badge-count')?.textContent).toBe('2');
+  expect(api.listMyAssetWatches).toHaveBeenCalledTimes(1);
+});
+
+it('a failed asset watches load says so and keeps the other watches, the switch grid and the groups', async () => {
+  api.listMyWatches.mockResolvedValue([WATCH]);
+  api.listMyAssetWatches.mockRejectedValue(new ApiError(500, 'server_error'));
+  api.listMyNotificationGroups.mockResolvedValue([G1]);
+  render(<MeNotifications />);
+
+  const watching = await screen.findByRole('region', { name: 'What you watch' });
+  expect(await within(watching).findByText('Initiative A')).toBeTruthy();
+  const error = within(watching).getByText('Request failed (server_error).');
+  expect(error.classList.contains('pf-error')).toBe(true);
+  await loaded();
+  expect(screen.getByText('Ops')).toBeTruthy();
+  expect(screen.queryByText('Could not load notification settings.')).toBeNull();
+  expect(screen.queryByText('Could not load notification groups.')).toBeNull();
+  expect(screen.queryByText('Could not load your watches.')).toBeNull();
 });
