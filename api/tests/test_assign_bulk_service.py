@@ -522,6 +522,30 @@ async def test_already_assigned_same_site_and_role(db, ctx):
     assert out["can_commit"] is False
 
 
+async def test_already_assigned_asks_nothing(db, ctx):
+    """A row with nothing to write skips the questions that would only
+    acknowledge it: no contact, an unreadable phone, a name difference,
+    a status, an unknown role."""
+    w = await good_worker(db, ctx, status="blacklist")
+    await assign(db, ctx.job, w, ctx.site, "tech")
+    for row_cells in (cells("Ana", "Lopez"),
+                      cells("Ana", "Lopez", phone="12-34"),
+                      cells("Ana", "Lopez", role="nope"),
+                      cells("Someone", "Else", email="ana@example.com")):
+        out = await preview(db, ctx, row_cells)
+        row = out["rows"][0]
+        assert row["flags"] == [], row_cells
+        assert row["action"] == "already_assigned" and out["can_commit"] is False
+
+
+async def test_already_assigned_with_a_change_still_asks_everything(db, ctx):
+    w = await good_worker(db, ctx, status="blacklist")
+    await assign(db, ctx.job, w, ctx.site, "tech")
+    out = await preview(db, ctx, cells("Ana", "Lopez", email="ana.new@example.com"))
+    row = out["rows"][0]
+    assert kinds(row) == ["contact", "status"] and row["action"] == "attention"
+
+
 async def test_shared_contact_ack(db, ctx):
     await good_worker(db, ctx)
     await good_worker(db, ctx, first="Ben", last="Kim", email="ben@example.com",

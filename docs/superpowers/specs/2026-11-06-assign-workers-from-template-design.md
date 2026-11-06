@@ -140,7 +140,7 @@ Every flag needs a decision, and **the import button stays disabled until every 
 - **Rank guard:** Update on a person who holds a login account and outranks the importer is a row error, the same rule the workers import uses.
 - **Partner hierarchy:** a worker whose partner is a child of the picked Partner (`partners.parent_id`) still counts as a partner discrepancy. Ignore covers it *(my call)*.
 
-**Already assigned:** the match is already on the initiative at the picked site with the same role. The row is listed in Matched as "Already assigned", and nothing is written. It needs no decision.
+**Already assigned:** the match is already on the initiative at the picked site with the same role. The row is listed in Matched as "Already assigned", and nothing is written. It needs no decision. Unless it also has a contact or partner discrepancy, it raises no flags at all: no contact, an unreadable phone, a name difference, a status or an unknown role are not asked about, because nothing would be written for that row.
 
 ## Create new worker
 

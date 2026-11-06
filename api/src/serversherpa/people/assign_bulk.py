@@ -433,6 +433,13 @@ async def preview_rows(db: AsyncSession, initiative_id: uuid.UUID, partner_id: u
                                [_line("Email", f"in use by {name}; created without it")],
                                other_person=name))
 
+        # Someone already on the initiative with no contact, partner or
+        # assignment change has nothing to write, so the questions that only
+        # acknowledge the row (no contact, phone, name, status, role) are moot.
+        if (pid is not None and uuid.UUID(pid) in ref["team"]
+                and not any(f["kind"] in CHANGE_KINDS for f in flags)):
+            flags = []
+
         kinds = {f["kind"] for f in flags}
         # person-field edits only, as the workers import guards them; moving
         # someone's site or role on the initiative is not guarded
