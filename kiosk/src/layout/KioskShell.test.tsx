@@ -63,8 +63,14 @@ vi.mock('../lib/webLabels/labelBuild', async (importOriginal) => {
   return { ...actual, readWebLabelStatus: () => buildMock.status ?? actual.readWebLabelStatus() };
 });
 const labelApi = vi.hoisted(() => ({ getLabelRunStatus: vi.fn() }));
+// The off-move alarm's poll: a call means the takeover is mounted.
+const alarmApi = vi.hoisted(() => ({
+  getOffMoveAlarm: vi.fn(() => Promise.resolve({
+    mode: 'until_dismissed', timed_seconds: 30, alarms: [], latest_id: null, expires_at: null,
+  })),
+}));
 vi.mock('../lib/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../lib/api')>()), ...labelApi,
+  ...(await importOriginal<typeof import('../lib/api')>()), ...labelApi, ...alarmApi,
 }));
 
 import { clearFlash, flash } from '../lib/flash';
@@ -503,6 +509,32 @@ it('/rfid_status renders dark even when the person prefers light, and restores o
   await userEvent.setup().click(screen.getByRole('button', { name: 'go home' }));
   expect(shell.getAttribute('data-theme')).toBe('light');
   auth.preferences = null;
+});
+
+it('a Dock laptop mounts the off-move alarm, and /dock renders dark like /rfid_status', () => {
+  window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1', name: 'Kiosk 0001' } };
+  auth.preferences = { ...DEFAULT_PREFERENCES, theme: 'light' };
+  try {
+    writeKioskSetup({ ...SAVED, stationType: 'dock',
+                      reader: { ip: '10.0.0.5', serial: '1234ABCD', model: 'FX9600' } });
+    render(
+      <MemoryRouter initialEntries={['/dock']}>
+        <KioskShell><p>body</p></KioskShell>
+      </MemoryRouter>,
+    );
+    expect(document.querySelector('.portal-shell')?.getAttribute('data-theme')).toBe('dark');
+    expect(alarmApi.getOffMoveAlarm).toHaveBeenCalled();
+    cleanup();
+    alarmApi.getOffMoveAlarm.mockClear();
+
+    // A Label Station never polls the alarm.
+    writeKioskSetup({ ...SAVED, stationType: 'label' });
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    expect(alarmApi.getOffMoveAlarm).not.toHaveBeenCalled();
+  } finally {
+    delete window.__KIOSK_CONFIG__;
+    auth.preferences = null;
+  }
 });
 
 it('other routes keep the person\'s theme', () => {

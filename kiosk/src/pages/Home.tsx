@@ -109,6 +109,13 @@ const ICONS: Record<KioskFeature['id'], JSX.Element> = {
   timeclock: CLOCK_ICON,
   // The Time Clock station's tile shows the same clock face.
   clock: CLOCK_ICON,
+  // A dock doorway with the RFID curtain's strips hanging in it.
+  dock: (
+    <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M5 35V6h30v29" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M11 10v20M17 10v20M23 10v20M29 10v20" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+    </svg>
+  ),
   settings: (
     <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <path d="M6 12h20M31 12h3" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />

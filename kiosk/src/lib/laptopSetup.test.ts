@@ -192,3 +192,12 @@ it('a non-Time-Clock setup with nulls is still rejected', () => {
     ...SHARED, initiative_id: null, initiative_name: null,
   } as unknown as EdgeSetup)).toBeNull();
 });
+
+it('a Dock setup maps with its paired reader', () => {
+  expect(selectionFromEdge({ ...SHARED, station_type: 'dock' } as unknown as EdgeSetup)).toEqual({
+    initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration', siteId: 's-2',
+    siteName: 'NAP22 Hall', siteRole: 'destination', scanStatus: 'rfid_1_cage_exit',
+    scanLabel: 'RFID 1 - Cage Exit', stationType: 'dock',
+    reader: { ip: '10.0.0.5', serial: '1234ABCD', model: 'FX9600' },
+  });
+});

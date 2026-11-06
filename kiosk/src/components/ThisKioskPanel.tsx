@@ -10,7 +10,7 @@ import { useKioskAuth } from '../auth/KioskAuthContext';
 import { apiUrl, kioskVersion, portalUrl } from '../lib/config';
 import { ApiError, renameLaptopKiosk } from '../lib/api';
 import { getIdentity, setKioskName, setLaptopName } from '../lib/identity';
-import { readerLabel, stationLabel, useKioskSetup } from '../lib/kioskSetup';
+import { isReaderStation, readerLabel, stationLabel, useKioskSetup } from '../lib/kioskSetup';
 import { isLaptop, platform } from '../lib/platform';
 
 /** What a refused laptop rename says. */
@@ -96,7 +96,7 @@ export default function ThisKioskPanel() {
             <input id="ks-station" value={stationLabel(stationType, platform().label)} readOnly />
           </div>
         )}
-        {stationType === 'rfid' && setup?.reader && (
+        {isReaderStation(stationType) && setup?.reader && (
           <div>
             <label htmlFor="ks-reader">RFID reader</label>
             <input id="ks-reader" value={readerLabel(setup.reader)} readOnly />

@@ -123,6 +123,18 @@ describe('laptop mode', () => {
       .toBe('FX9600 1234ABCD at 10.0.0.5');
   });
 
+  it('a Dock shows its type and its paired reader', () => {
+    writeKioskSetup({
+      initiativeId: 'i-1', initiativeName: 'NAP11', siteId: 's-1', siteName: 'Hall',
+      siteRole: 'source', scanStatus: 'k', scanLabel: 'Dock',
+      stationType: 'dock', reader: { ip: '10.0.0.5', serial: '1234ABCD', model: 'FX9600' },
+    });
+    render(<ThisKioskPanel />);
+    expect((screen.getByLabelText('Station type') as HTMLInputElement).value).toBe('Dock · Laptop');
+    expect((screen.getByLabelText('RFID reader') as HTMLInputElement).value)
+      .toBe('FX9600 1234ABCD at 10.0.0.5');
+  });
+
   it('a Label Station shows its type and no reader', () => {
     writeKioskSetup({
       initiativeId: 'i-1', initiativeName: 'NAP11', siteId: 's-1', siteName: 'Hall',

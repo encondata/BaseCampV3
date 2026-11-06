@@ -364,12 +364,12 @@ export async function getSetupOptions(): Promise<SetupOptions> {
 }
 
 /** `station_type` is sent only by a laptop (Kiosk Setup's first step); for
- *  `rfid` the edge adds the paired reader itself — the browser never sends
- *  reader details. A `timeclock` station may leave out the move, the site,
- *  and the scan type. */
+ *  `rfid` and `dock` the edge adds the paired reader itself — the browser
+ *  never sends reader details. A `timeclock` station may leave out the move,
+ *  the site, and the scan type. */
 export async function submitKioskSetup(body: {
   serial: string; initiative_id: string | null; site_id: string | null; scan_status?: string;
-  station_type?: 'label' | 'rfid' | 'timeclock';
+  station_type?: 'label' | 'rfid' | 'timeclock' | 'dock';
 }): Promise<KioskSetupResult> {
   const resp = await apiFetch('/kiosk/setup', {
     method: 'POST',
@@ -1119,8 +1119,8 @@ export async function pairReader(body: {
 }
 
 /** The laptop's finished Kiosk Setup as the edge keeps it for every
- *  browser (D2): the setup answer's names plus, for an RFID station, the
- *  paired reader's summary. */
+ *  browser (D2): the setup answer's names plus, for an RFID station or a
+ *  Dock, the paired reader's summary. */
 export interface EdgeSetup {
   /** The move, site, and scan fields are null only for a Time Clock station. */
   initiative_id: string | null;
@@ -1130,7 +1130,7 @@ export interface EdgeSetup {
   site_role: 'source' | 'destination' | 'other' | null;
   scan_status: string | null;
   scan_status_label: string | null;
-  station_type: 'label' | 'rfid' | 'timeclock' | null;
+  station_type: 'label' | 'rfid' | 'timeclock' | 'dock' | null;
   reader: { ip: string; serial: string; model: string; versions: Partial<ReaderVersions> } | null;
   /** A Label Station's saved printer settings; null until step 5 saves them. */
   label_station?: LabelStationSettings | null;
@@ -1335,6 +1335,112 @@ export interface ReaderDevice {
 
 export async function getReaderDevice(): Promise<ReaderDevice> {
   return jsonFrom<ReaderDevice>(await apiFetch('/edge/rfid/device'));
+}
+
+// ── Dock station (/dock) ────────────────────────────────────────────
+
+/** What a tag read at the curtain matched on the move. */
+export type DockTagKind = 'asset' | 'container' | 'person' | 'off_move' | 'unknown';
+
+/** A closed pass's outcome, the first that applies: `flagged` (no crate or
+ *  more than one), `nothing`, `would_pack` (dry run: never sent), `waiting`
+ *  (to be sent), `packed` (sent) or `refused` (the portal turned it away). */
+export type DockPassStatus = 'would_pack' | 'waiting' | 'packed' | 'refused' | 'flagged' | 'nothing';
+
+/** The laptop's Dock settings. Dry run is on and the quiet gap 5 seconds
+ *  until changed. */
+export interface DockSettings {
+  dry_run: boolean;
+  /** A pass closes once no new tag has been read for this long (1-60). */
+  quiet_gap_s: number;
+}
+
+/** One tag in a pass; `label` is the asset, crate or person's name, null
+ *  when the tag matched nothing with one. */
+export interface DockTag {
+  epc: string;
+  kind: DockTagKind;
+  label: string | null;
+}
+
+/** The pass still open, filling in as tags are read. `seconds_left` is
+ *  how long until it closes if no new tag is read (3 decimals). */
+export interface DockOpenPass {
+  id: number;
+  opened_at: string;
+  seconds_left: number;
+  crate_count: number;
+  asset_count: number;
+  tags: DockTag[];
+}
+
+/** A closed pass as the list and the detail show it. `flag` is set only
+ *  for a `flagged` pass; `refuse_code` only when the portal refused it. */
+export interface DockPassRow {
+  id: number;
+  opened_at: string;
+  closed_at: string;
+  status: DockPassStatus;
+  flag: 'no_crate' | 'many_crates' | null;
+  dry_run: boolean;
+  container_name: string | null;
+  asset_count: number;
+  moved_count: number;
+  refused_count: number;
+  refuse_code: string | null;
+}
+
+/** GET /edge/dock: the settings, the open pass (null when none) and the
+ *  newest closed passes, newest first. */
+export interface DockOverview {
+  settings: DockSettings;
+  open: DockOpenPass | null;
+  passes: DockPassRow[];
+}
+
+/** A closed pass's tag with what packing did to it: `result`, `moved_from`
+ *  (the crate it left) and `reason` are null until the portal answers, and
+ *  for anything but an asset. */
+export interface DockPassTag extends DockTag {
+  result: 'packed' | 'moved' | 'already_there' | 'refused' | null;
+  moved_from: string | null;
+  reason: string | null;
+}
+
+/** One reader read behind a pass, in id order. */
+export interface DockPassRead {
+  id: number;
+  read_at: string;
+  epc: string;
+  kind: DockTagKind;
+  antenna: number | null;
+  peak_rssi: number | null;
+}
+
+/** GET /edge/dock/passes/{id}. */
+export interface DockPassDetail {
+  pass: DockPassRow;
+  tags: DockPassTag[];
+  reads: DockPassRead[];
+}
+
+export async function getDock(): Promise<DockOverview> {
+  return jsonFrom<DockOverview>(await apiFetch('/edge/dock'));
+}
+
+/** A closed pass; 404 `pass_not_found` for an unknown or still-open one. */
+export async function getDockPass(id: number): Promise<DockPassDetail> {
+  return jsonFrom<DockPassDetail>(await apiFetch(`/edge/dock/passes/${id}`));
+}
+
+/** Saves the given settings, keeping the others; the settings as saved.
+ *  422 `invalid_dock_settings` when a value is out of range. */
+export async function saveDockSettings(s: Partial<DockSettings>): Promise<DockSettings> {
+  return jsonFrom<DockSettings>(await apiFetch('/edge/dock/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(s),
+  }));
 }
 
 // ── Label Station printing (Kiosk Setup steps 4-5) ──────────────────

@@ -9,7 +9,9 @@
  */
 
 import { getEdgeSetup, type EdgeSetup } from './api';
-import { readKioskSetup, writeKioskSetup, type KioskSetupSelection } from './kioskSetup';
+import {
+  isReaderStation, readKioskSetup, writeKioskSetup, type KioskSetupSelection,
+} from './kioskSetup';
 import { isLaptop } from './platform';
 import { isSetupComplete, readSetupState, writeSetupState } from './setupState';
 import { runSync } from './sync';
@@ -60,8 +62,11 @@ export function selectionFromEdge(setup: EdgeSetup | null): KioskSetupSelection 
     initiativeId: initiative_id, initiativeName: initiative_name, siteId: site_id,
     siteName: site_name, siteRole: site_role, scanStatus: scan_status, scanLabel: scan_status_label,
   };
-  if (station_type === 'label' || station_type === 'rfid') selection.stationType = station_type;
-  if (station_type === 'rfid' && reader && str(reader.ip) && str(reader.serial) && str(reader.model)) {
+  if (station_type === 'label' || station_type === 'rfid' || station_type === 'dock') {
+    selection.stationType = station_type;
+  }
+  if (isReaderStation(selection.stationType) && reader && str(reader.ip) && str(reader.serial)
+      && str(reader.model)) {
     selection.reader = { ip: reader.ip, serial: reader.serial, model: reader.model };
   }
   return selection;

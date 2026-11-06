@@ -18,6 +18,11 @@ const CHOICES: { type: StationType; title: string; meta: string }[] = [
     title: 'Time Clock',
     meta: 'Workers clock in and out here. Next: Move (optional) → Site.',
   },
+  {
+    type: 'dock',
+    title: 'Dock Station',
+    meta: 'Packs crates read at an RFID curtain. Next: Select reader → Connect → Pair, then the move.',
+  },
 ];
 
 interface Props {
