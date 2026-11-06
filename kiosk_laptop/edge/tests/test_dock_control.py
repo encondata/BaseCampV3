@@ -1,11 +1,15 @@
 """POST /edge/dock/control: the Dock screen's Start, Pause and Stop (dock
 station spec, "Start, Pause, Stop"). Start starts the reader, Pause stops it
 and leaves the open burst to its own rule, Stop stops it and decides the
-open burst at once, even when the reader doesn't answer. The button pressed
-is remembered as the overview's `control`."""
+open burst at once, before the reader answers or even when it doesn't. The
+button pressed is remembered as the overview's `control`."""
 
+import asyncio
 from datetime import UTC, datetime
 
+import pytest
+
+from edge.routes import dock as dock_routes
 from tests.conftest import make_session
 from tests.test_dock_grouper import T0, batch, decided, dock, group, passes, read
 from tests.test_rfid_pairing import code, use_reader
@@ -128,3 +132,33 @@ async def test_stop_decides_even_when_the_reader_does_not_answer(app, client):
     assert r.status_code == 502 and code(r) == "reader_unreachable"
     assert decided(store) == [("pack", "c-1", ["a-1"]), ("pack", "c-1", ["a-1"])]
     assert await overview_control(client, h) == "stop"
+
+
+async def test_stop_decides_before_the_reader_answers(app, client):
+    await paired(app, client)
+    store = app.state.store
+    dock(store)
+    open_burst(store)
+    h = make_session(app)
+    async with app.state.pair_lock:               # a reader call that hangs
+        task = asyncio.create_task(control(client, h, "stop"))
+        await asyncio.sleep(0.1)
+        assert not task.done()
+        assert decided(store) == [("pack", "c-1", ["a-1"])]
+        assert app.state.dock_send_wake.is_set()
+    r = await asyncio.wait_for(task, 5)
+    assert r.status_code == 200
+    assert r.json() == {"reading": False, "control": "stop", "decided": 1}
+
+
+async def test_stop_decides_whatever_the_reader_path_raises(app, client, monkeypatch):
+    async def broken(st, session):
+        raise RuntimeError("not an HTTP error")
+
+    monkeypatch.setattr(dock_routes, "stop_reader", broken)
+    store = app.state.store
+    dock(store)
+    open_burst(store)
+    with pytest.raises(RuntimeError):
+        await control(client, make_session(app), "stop")
+    assert decided(store) == [("pack", "c-1", ["a-1"])]

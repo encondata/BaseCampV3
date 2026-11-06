@@ -8,7 +8,7 @@ store."""
 import re
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 
 from edge.deps import err, json_object, online, require_session
 from edge.dock import grouper, state, views
@@ -48,10 +48,11 @@ async def save_settings(request: Request) -> dict:
 @router.post("/control")
 async def control(request: Request, session: EdgeSession = Depends(require_session)) -> dict:
     """Start starts the reader. Pause stops it and leaves the open burst to
-    its own rule. Stop stops it and decides the open burst at once, even when
-    the reader doesn't answer (it can get stuck): the reader's error is
-    raised after the decision. The button is remembered as the overview's
-    `control` whatever the reader answers."""
+    its own rule. Stop decides the open burst at once, before it stops the
+    reader, so a stuck reader (or a reader call holding `pair_lock`) never
+    holds the decision up; the reader's error, if any, is raised after it.
+    Reads posted in between open a new burst. The button is remembered as
+    the overview's `control` whatever the reader answers."""
     action = (await json_object(request)).get("action")
     if action not in CONTROLS:
         raise err(422, "bad_request")
@@ -62,12 +63,8 @@ async def control(request: Request, session: EdgeSession = Depends(require_sessi
         return {**await start_reader(st, session), "control": action, "decided": 0}
     if action == "pause":
         return {**await stop_reader(st, session), "control": action, "decided": 0}
-    try:
-        stopped = await stop_reader(st, session)
-    except HTTPException:
-        _decide_now(st)
-        raise
-    return {**stopped, "control": action, "decided": _decide_now(st)}
+    decided = _decide_now(st)
+    return {**await stop_reader(st, session), "control": action, "decided": decided}
 
 
 def _decide_now(st) -> int:
