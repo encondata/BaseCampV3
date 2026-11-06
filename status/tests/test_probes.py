@@ -130,3 +130,24 @@ async def test_other_services_carry_no_payload(portal_service, kiosk_service, wi
 async def test_failed_api_probe_carries_no_payload(api_service):
     respx.get("http://api.test/system/status").respond(500, json={"detail": "x"})
     assert (await run(api_service)).payload is None
+
+
+async def test_every_configured_service_has_a_probe_path():
+    from serversherpa_status.config import SERVICES
+    from serversherpa_status.probes import PROBE_PATHS
+    assert {key for key, *_ in SERVICES} <= PROBE_PATHS.keys()
+
+
+@respx.mock
+async def test_learn_green_when_spa_root_present():
+    from serversherpa_status.config import Service
+    respx.get("http://learn.test/").respond(200, text='<div id="root"></div>')
+    assert (await run(Service("learn", "Learning", "http://learn.test"))).ok
+
+
+@respx.mock
+async def test_learn_red_without_spa_root():
+    from serversherpa_status.config import Service
+    respx.get("http://learn.test/").respond(200, text="Welcome to nginx!")
+    r = await run(Service("learn", "Learning", "http://learn.test"))
+    assert not r.ok and r.detail == "unexpected response body"
