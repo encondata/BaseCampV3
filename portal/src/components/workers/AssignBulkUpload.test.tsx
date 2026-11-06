@@ -253,6 +253,8 @@ it('commit shows the apply summary', async () => {
   }));
   const summary = await screen.findByRole('table', { name: 'Apply summary' });
   expect(within(summary).getByText('Person 3')).toBeTruthy();
+  // the assigned existing person and the new one are both "added", as the rows read
+  expect(screen.getByText('Applied: 2 added · 0 updated · 1 unchanged')).toBeTruthy();
   expect(screen.queryByText(/already assigned$/)).toBeNull();
   expect(screen.getByRole('link', { name: 'Open the initiative' }).getAttribute('href')).toBe('/initiatives/job1');
   expect(screen.queryByRole('table', { name: 'Matched' })).toBeNull();

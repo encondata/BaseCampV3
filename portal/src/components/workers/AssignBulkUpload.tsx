@@ -282,7 +282,10 @@ export default function AssignBulkUpload({ jobId, siteId, partnerId }: Props) {
 
       {result && jobId && (
         <BulkApplySummary
-          result={result}
+          // in the summary's words, as the rows read: new and existing
+          // people put on the initiative are both "added"
+          result={{ rows: result.rows, created: result.created + result.assigned,
+                    updated: result.updated, unchanged: result.already_assigned }}
           entityLabel="Worker"
           linkFor={(r) => (r.person_id ? `/people/workers/${r.person_id}` : null)}
           filename="assign-workers-summary"
