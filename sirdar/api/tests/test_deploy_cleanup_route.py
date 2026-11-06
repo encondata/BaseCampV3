@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import delete, update
 
 from sirdar_api.db.models import Deployment, Environment
-from sirdar_api.deploy import first_admins, lan_slots, pipeline
+from sirdar_api.deploy import environments, first_admins, lan_slots, pipeline
 from sirdar_api.deploy.runner import RunResult
 
 from .api_helpers import auth_headers
@@ -156,6 +156,29 @@ async def test_cleanup_refused_after_a_successful_update(client, db, fresh):
         409, "cleanup_not_allowed")
 
 
+@pytest.mark.parametrize("mode", environments.DEPLOYED_MODES)
+async def test_cleanup_refused_after_any_run_that_loads_or_serves_data(client, db, fresh, mode):
+    """After a served-but-failed first Update, a Reset, Restore backup, Roll
+    back, Restore VM snapshot or Activate that succeeded may hold real data."""
+    h = await auth_headers(client, db)
+    db.add(Deployment(environment_id=fresh.id, mode=mode, git_ref="main", sha=SHA,
+                      status="succeeded", start_step=1))
+    await db.commit()
+    got = (await client.get(f"{URL}/uat", headers=h)).json()
+    assert got["never_deployed"] is False
+    assert _code(await _start(client, h, "uat", mode="cleanup", confirm_name="uat")) == (
+        409, "cleanup_not_allowed")
+
+
+@pytest.mark.parametrize("mode", ["publish", "cleanup"])
+async def test_a_succeeded_publish_or_cleanup_leaves_it_never_deployed(client, db, fresh, mode):
+    h = await auth_headers(client, db)
+    db.add(Deployment(environment_id=fresh.id, mode=mode, git_ref="main", sha=SHA,
+                      status="succeeded", start_step=1))
+    await db.commit()
+    assert (await client.get(f"{URL}/uat", headers=h)).json()["never_deployed"] is True
+
+
 async def test_cleanup_refused_for_an_adopted_environment(client, db, fresh):
     """Adopted: never Sirdar's to clean up, even with no Update that succeeded."""
     h = await auth_headers(client, db)
@@ -257,6 +280,21 @@ async def test_retry_cleanup_refused_after_success(client, db, fresh, fake_runne
     # Nothing left to retry once it succeeded.
     assert _code(await _retry(client, h, retried.id, confirm_name="uat")) == (
         409, "not_retryable")
+
+
+async def test_retry_cleanup_refused_after_a_restore(client, db, fresh, fake_runner):
+    h = await auth_headers(client, db)
+    fake_runner.results["teardown"] = RunResult(status="failed", rc=2)
+    failed = (await _start(client, h, "uat", mode="cleanup", confirm_name="uat")).json()
+    del fake_runner.results["teardown"]
+    dep = await db.get(Deployment, uuid.UUID(failed["id"]), populate_existing=True)
+    # Earlier in history, so the failed cleanup is still the latest run.
+    db.add(Deployment(environment_id=fresh.id, mode="restore_dump", git_ref="main", sha=SHA,
+                      status="succeeded", start_step=1,
+                      created_at=dep.created_at - timedelta(hours=1)))
+    await db.commit()
+    assert _code(await _retry(client, h, dep.id, confirm_name="uat")) == (
+        409, "cleanup_not_allowed")
 
 
 async def test_retry_cleanup_keeps_production_s_rules(client, db, do_ready, fake_provisioner):

@@ -256,8 +256,9 @@ Restore VM snapshot and Delete environment replace or remove data: they need
 `deploy:change` and the environment's name typed back (`confirm_name`).
 
 **Clean up a failed first deploy.** While the latest deployment of an environment
-that has never had a successful Update (and was never adopted; adopted
-environments are never cleaned up) is a failed, cancelled or interrupted
+that never had a successful Update, Reset, Restore backup, Roll back, Restore
+VM snapshot or Activate, and was never adopted (adopted environments are never
+cleaned up), is a failed, cancelled or interrupted
 Update or clean-up, even one that failed at smoke, go-live or seed after
 recording its commit, its deployment page shows a **Clean up** section with two
 choices. Both need the environment's name typed back.
@@ -273,8 +274,8 @@ Production (DigitalOcean only) keeps Delete's rules for both: it must be
 retiring with no active slot, and `delete production <name>` is required.
 After **Clean up and keep settings** production is still retiring, so Deploy is
 refused (`production_retiring`) until it is un-retired in Settings. The API
-refuses `cleanup` with 409 `cleanup_not_allowed` once an Update has succeeded
-or for an adopted environment. An Update is refused with `first_admin_password_needed` until the
+refuses `cleanup` with 409 `cleanup_not_allowed` once any of those has
+succeeded, or for an adopted environment. An Update is refused with `first_admin_password_needed` until the
 typed first admin's password is entered again in Settings › First admin.
 
 **Publishing (DNS + proxy).** With an environment's **Publish** switch on

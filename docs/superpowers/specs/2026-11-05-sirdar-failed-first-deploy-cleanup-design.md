@@ -40,7 +40,7 @@ Jimmy asked for two things:
 
 ## A. When the buttons show
 
-- **Condition (my call, after the builder check).** An environment is "never deployed" when it has **no succeeded `update` and was never adopted** (no deployment of mode `adopt`). This is read from the `deployments` table on every target; `current_sha` isn't asked, because a first Update that failed at smoke, go_live or seed may already have recorded the commit it serves.
+- **Condition (my call, after the builder check).** An environment is "never deployed" when it **never had a successful Update, Reset, Restore backup, Roll back, Restore VM snapshot or Activate, and was never adopted** (no succeeded deployment of mode `update`, `reset`, `restore_dump`, `rollback`, `vm_restore` or `activate`, and none of mode `adopt`; `environments.DEPLOYED_MODES`). This is read from the `deployments` table on every target; `current_sha` isn't asked, because a first Update that failed at smoke, go_live or seed may already have recorded the commit it serves.
   - It covers a first deploy that failed after Start services, the first-admin step or the seed step, for example at DNS, proxy or smoke. Those environments hold only throwaway data, so both buttons are offered.
   - Slot columns (`lan_slots.sha`, `do_slots.sha`) are **not** used: step 10 writes them before the deploy succeeds.
 - **Placement (my call for the failed-cleanup case).** The deployment view of the environment's **latest** deployment shows a "Clean up" section next to Retry when:
