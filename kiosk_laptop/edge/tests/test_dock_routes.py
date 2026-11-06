@@ -296,7 +296,7 @@ async def test_legacy_dry_run_pass_still_would_pack(app, client):
     dock(store)
     legacy_settings(store)
     first = read(store, "AA01", 0)                 # taken before dry run was removed
-    store.run("UPDATE raw_tag_reads SET dry_run = 1 WHERE id = ?", (first,))
+    stamp_dry_run(store, first)
     batch(store, [("CC01", 1), ("AA02", 2)])        # live reads in the same burst
     group(store, 13)
     [p] = passes(store)

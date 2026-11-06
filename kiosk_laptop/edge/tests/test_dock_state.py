@@ -87,8 +87,8 @@ async def test_legacy_dry_run_reads_never_upload(app, cloud):
     with_key(app)
     old = [read(store, "AA01", setup=DOCK, received_at=FRESH),
            read(store, "EE01", setup=DOCK, received_at=FRESH)]
-    read(store, "FF06", setup=DOCK, received_at=FRESH)               # matches nothing
-    stamp_dry_run(store, *old, old[-1] + 1)                          # taken before the change
+    nothing = read(store, "FF06", setup=DOCK, received_at=FRESH)     # matches nothing
+    stamp_dry_run(store, *old, nothing)                              # taken before the change
     assert processing.process(store, now=NOW).inserted == 2
     assert {r["raw_read_id"]: r["upload_state"] for r in pending(store)} \
         == {old[0]: "dry_run", old[1]: "dry_run"}
