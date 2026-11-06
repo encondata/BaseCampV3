@@ -1,26 +1,39 @@
-"""Curtain reads -> Dock passes (dock station spec, pass rules).
+"""Curtain reads -> Dock passes (dock station spec, "The crate window").
 
 A tick reads `raw_tag_reads` after the grouper's own cursor (`dock_meta`) in
-id order, at most `BATCH` rows, and groups the setup move's reads into passes
-by the reader's own read time:
+id order, at most `BATCH` rows, and groups the setup move's reads by the
+reader's own read time. W is the Window setting (`quiet_gap_s` in
+`edge.dock.state`, 5 s by default).
 
-- Any tag opens a pass, and read order inside it doesn't matter. A pass
-  closes once no NEW tag has been read for the quiet gap (`edge.dock.state`,
-  5 s by default): a re-read of a tag already in the pass is linked to it but
-  never keeps it open, so a crate parked in the curtain still closes.
+- Reads gather into a burst: the open `dock_passes` row. Any tag opens one,
+  and read order inside it doesn't matter. A burst ends once no NEW tag has
+  been read for 2W: a re-read of a tag already in it is linked to it but
+  never keeps it open, so a crate parked in the curtain still ends it. The
+  next read after that decides the burst and opens the next one.
 - Times are the reader's `read_at`, so a backlog the reader posts in one
   batch splits exactly as it would have live. A read with no usable
   `read_at` falls back to its `received_at`.
-- An open pass with no further reads closes on the laptop clock at
-  `last_received_at + gap + 1 s` (the second covers `received_at`'s
-  one-second resolution, so it never closes early).
-- A closed pass packs only with exactly one crate of the move and at least
-  one asset of the move. No crate, or two or more, is flagged; people,
-  off-move assets and unknown tags never pack. Ambiguity is flagged, never
-  guessed: an asset packed into the wrong crate is the worst outcome.
-- A pass is dry run when any of its reads was taken in dry run or dry run is
-  on when it closes. Only a live `pack` waits to be sent (`send_state =
-  'pending'`).
+- An open burst with no further reads is decided on the laptop clock at
+  `last_received_at + 2W + 1 s` (the second covers `received_at`'s
+  one-second resolution, so it is never decided early).
+- The Dock screen's Stop (`decide_now`) groups the backlog, then decides the
+  open burst at once with what has been read. A read that arrives after
+  that, even one read before it, opens a new burst.
+- Deciding splits the burst into passes. Each crate tag is anchored at its
+  first read (re-reads never move it). Crates anchored within 2W of the
+  next form one group, and an asset joins every group with a crate within W
+  of one of its reads: an asset in two groups merges them. A group with one
+  crate packs its assets (`pack`, or `nothing` without any), one with two
+  or more is flagged `many_crates`, and assets in no window make one
+  `no_crate` pass. People, off-move assets and unknown tags join the
+  earliest group whose window holds one of their reads (else that last
+  pass), and never pack or merge. Ambiguity is flagged, never guessed: an
+  asset packed into the wrong crate is the worst outcome.
+- A crate group's pass closes at its first anchor + W, the no-crate pass at
+  the burst's last new read + 2W.
+- A pass is dry run when any of its own reads was taken in dry run or dry
+  run is on when its burst is decided. Only a live `pack` waits to be sent
+  (`send_state = 'pending'`).
 - Off a Dock setup, or without a move, the cursor jumps to the newest read,
   so reads taken as another station type never land in a pass later.
 - A setup-move read whose sync data isn't cached yet stops the tick WITHOUT
@@ -30,7 +43,8 @@ Each tick's writes and its cursor move are one transaction. Everything here
 is synchronous and short, and never touches the network."""
 
 import uuid
-from dataclasses import dataclass
+from bisect import bisect_left
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
 
@@ -42,9 +56,12 @@ from edge.rfid import processing, station_key
 INTERVAL_S = 1.0
 BATCH = 500
 _IDLE_SLACK = timedelta(seconds=1)   # received_at's resolution
-# the latest read time a pass can close from: one past it would overflow
-# `last_new_at + gap`, roll the tick back and stall the cursor for good
-_LATEST = datetime.max.replace(tzinfo=UTC) - timedelta(seconds=state.GAP_RANGE[1]) - _IDLE_SLACK
+# the read times a burst can be decided from: one outside them would overflow
+# `last_new_at + 2W` or a window's `anchor - W`, roll the tick back and stall
+# the cursor for good
+_EDGE = timedelta(seconds=2 * state.GAP_RANGE[1]) + _IDLE_SLACK
+_EARLIEST = datetime.min.replace(tzinfo=UTC) + _EDGE
+_LATEST = datetime.max.replace(tzinfo=UTC) - _EDGE
 
 # match kind -> the index its item is in (off-move matches carry their item)
 _SOURCES = {"asset": "assets", "container": "containers", "person": "people"}
@@ -52,22 +69,34 @@ _SOURCES = {"asset": "assets", "container": "containers", "person": "people"}
 
 class GroupResult(NamedTuple):
     scanned: int    # raw reads taken in (0 off a Dock setup: the cursor just jumps)
-    closed: int     # passes closed
+    closed: int     # passes decided (one burst can decide several)
     to_send: int    # of those, live packs now waiting to be sent
     waiting: bool   # stopped at a setup-move read whose data isn't cached
 
 
 @dataclass
-class _Pass:
-    """The open pass while a tick works on it. Read-derived times are kept
+class _Burst:
+    """The open burst while a tick works on it. Read-derived times are kept
     as datetimes, `*_received_at` as `db.iso` strings (they compare as is)."""
     id: int
     last_new_at: datetime
     last_new_received_at: str
     last_received_at: str
-    dry_run: bool
     epcs: set[str]
     changed: bool = False
+
+
+@dataclass
+class _Split:
+    """One pass a burst is decided into: a crate group, anchored at its
+    earliest crate's first read, or the leftover (no anchor)."""
+    anchor: tuple[datetime, str] | None   # (that read's time, its received_at)
+    tags: list = field(default_factory=list)
+    reads: list = field(default_factory=list)   # (read time, raw read)
+
+    @property
+    def opened(self) -> datetime:
+        return min(t for t, _ in self.reads)
 
 
 def _utc(value: datetime) -> datetime:
@@ -82,15 +111,15 @@ def _stamp(value: datetime) -> str:
 def read_time(raw) -> datetime:
     """When the reader read it: `read_at` (the reader's `...22.512+0000` form
     included, no offset read as UTC) in UTC, else its `received_at` when
-    `read_at` is missing, unparseable or too close to the end of time to
-    close a pass from."""
+    `read_at` is missing, unparseable or too close to either end of time to
+    decide a burst from."""
     value = raw["read_at"]
     if isinstance(value, str):
         try:
             parsed = _utc(datetime.fromisoformat(value))
         except (ValueError, OverflowError):
             parsed = None
-        if parsed is not None and parsed <= _LATEST:
+        if parsed is not None and _EARLIEST <= parsed <= _LATEST:
             return parsed
     return _utc(datetime.fromisoformat(raw["received_at"]))
 
@@ -122,87 +151,172 @@ def _set_cursor(c, raw_id: int) -> None:
               "ON CONFLICT (id) DO UPDATE SET last_raw_id = excluded.last_raw_id", (raw_id,))
 
 
-def _open_pass(c) -> _Pass | None:
-    """The open pass, if any: always the newest (a pass opens only once the
-    one before it has closed)."""
-    row = c.execute("SELECT id, closed_at, last_new_at, last_new_received_at, last_received_at, "
-                    "dry_run FROM dock_passes ORDER BY id DESC LIMIT 1").fetchone()
+def _open_burst(c) -> _Burst | None:
+    """The open burst, if any: always the newest row (a burst opens only once
+    the one before it has been decided into its passes)."""
+    row = c.execute("SELECT id, closed_at, last_new_at, last_new_received_at, last_received_at "
+                    "FROM dock_passes ORDER BY id DESC LIMIT 1").fetchone()
     if row is None or row["closed_at"] is not None:
         return None
     epcs = {r["epc"] for r in c.execute("SELECT epc FROM dock_pass_tags WHERE pass_id = ?",
                                         (row["id"],))}
-    return _Pass(row["id"], datetime.fromisoformat(row["last_new_at"]),
-                 row["last_new_received_at"], row["last_received_at"], bool(row["dry_run"]),
-                 epcs)
+    return _Burst(row["id"], datetime.fromisoformat(row["last_new_at"]),
+                  row["last_new_received_at"], row["last_received_at"], epcs)
 
 
-def _open(c, move: str, t: datetime, raw) -> _Pass:
+def _open(c, move: str, t: datetime, raw) -> _Burst:
     received = iso(raw["received_at"])
     pid = c.execute(
         "INSERT INTO dock_passes (pass_id, initiative_id, opened_at, last_new_at, "
         "last_new_received_at, last_received_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (str(uuid.uuid4()), move, _stamp(t), _stamp(t), received, received,
          now_iso())).lastrowid
-    return _Pass(pid, t, received, received, False, set())
+    return _Burst(pid, t, received, received, set())
 
 
-def _add(c, p: _Pass, raw, t: datetime, indexes: dict[str, dict[str, dict]]) -> None:
-    """Link one read to the open pass. Only a tag new to the pass is
-    classified and moves the pass's last new read on."""
+def _add(c, b: _Burst, raw, t: datetime, indexes: dict[str, dict[str, dict]]) -> None:
+    """Link one read to the open burst. Only a tag new to the burst is
+    classified and moves the burst's last new read on."""
     received = iso(raw["received_at"])
-    if raw["epc"] not in p.epcs:
+    if raw["epc"] not in b.epcs:
         kind, matched_id, label = classify(indexes, raw["epc"])
         c.execute("INSERT INTO dock_pass_tags (pass_id, epc, kind, matched_id, label, "
                   "first_read_at) VALUES (?, ?, ?, ?, ?, ?)",
-                  (p.id, raw["epc"], kind, matched_id, label, _stamp(t)))
-        p.epcs.add(raw["epc"])
-        p.last_new_at = max(p.last_new_at, t)
-        p.last_new_received_at = received
+                  (b.id, raw["epc"], kind, matched_id, label, _stamp(t)))
+        b.epcs.add(raw["epc"])
+        b.last_new_at = max(b.last_new_at, t)
+        b.last_new_received_at = received
     c.execute("INSERT OR IGNORE INTO dock_pass_reads (pass_id, raw_read_id) VALUES (?, ?)",
-              (p.id, raw["id"]))
-    p.last_received_at = max(p.last_received_at, received)
-    p.dry_run = p.dry_run or bool(raw["dry_run"])
-    p.changed = True
+              (b.id, raw["id"]))
+    b.last_received_at = max(b.last_received_at, received)
+    b.changed = True
 
 
-def _save(c, p: _Pass) -> None:
+def _save(c, b: _Burst) -> None:
     c.execute("UPDATE dock_passes SET last_new_at = ?, last_new_received_at = ?, "
-              "last_received_at = ?, dry_run = ? WHERE id = ?",
-              (_stamp(p.last_new_at), p.last_new_received_at, p.last_received_at,
-               int(p.dry_run), p.id))
+              "last_received_at = ? WHERE id = ?",
+              (_stamp(b.last_new_at), b.last_new_received_at, b.last_received_at, b.id))
 
 
-def _close(c, p: _Pass, gap_s: int, dry_run_now: bool) -> bool:
-    """Close the pass with its outcome; True when it is a live pack, now
-    waiting to be sent."""
-    rows = c.execute("SELECT kind, matched_id, label FROM dock_pass_tags "
-                     "WHERE pass_id = ? AND kind IN ('asset', 'container')", (p.id,)).fetchall()
-    crates = {r["matched_id"]: r["label"] for r in rows if r["kind"] == "container"}
-    assets = {r["matched_id"] for r in rows if r["kind"] == "asset"}
-    crate_id = crate_name = None
-    if len(crates) > 1:
-        outcome = "many_crates"
-    elif crates and assets:
-        outcome = "pack"
-        [(crate_id, crate_name)] = crates.items()
-    elif assets:
-        outcome = "no_crate"
-    else:
-        outcome = "nothing"
-    p.dry_run = p.dry_run or dry_run_now
-    send = outcome == "pack" and not p.dry_run
-    _save(c, p)
-    c.execute("UPDATE dock_passes SET closed_at = ?, quiet_gap_s = ?, outcome = ?, "
-              "container_id = ?, container_name = ?, asset_count = ?, send_state = ? "
-              "WHERE id = ?",
-              (_stamp(p.last_new_at + timedelta(seconds=gap_s)), gap_s, outcome, crate_id,
-               crate_name, len(assets), "pending" if send else "none", p.id))
-    return send
+def _near(times: list[datetime], at: datetime, w: timedelta) -> bool:
+    """Whether any of the sorted `times` is within `w` of `at` (inclusive)."""
+    i = bisect_left(times, at - w)
+    return i < len(times) and times[i] <= at + w
 
 
-def group(store: Store, now: datetime | None = None) -> GroupResult:
-    """One tick: at most BATCH raw reads after the cursor into passes, then
-    the idle close of a pass nothing more has been read for."""
+def _split(tags, reads: dict[str, list], w: timedelta) -> list[_Split]:
+    """The burst's tags as the passes it is decided into, in the order they
+    are written: by first read, a crate group before the leftover on a tie.
+    `reads` holds each tag's (read time, raw read) pairs."""
+    times = {epc: sorted(t for t, _ in rs) for epc, rs in reads.items()}
+    anchors = []   # (first read time, its received_at, crate epc), in anchor order
+    for tag in tags:
+        if tag["kind"] == "container":
+            t, raw = min(reads[tag["epc"]], key=lambda r: r[0])
+            anchors.append((t, iso(raw["received_at"]), tag["epc"]))
+    anchors.sort(key=lambda a: a[0])
+    index = {epc: i for i, (_, _, epc) in enumerate(anchors)}
+    root = list(range(len(anchors)))   # union-find: a group's root is its earliest anchor
+
+    def find(i: int) -> int:
+        while root[i] != i:
+            i = root[i]
+        return i
+
+    def join(i: int, j: int) -> None:
+        i, j = find(i), find(j)
+        root[max(i, j)] = min(i, j)
+
+    def near(epc: str) -> list[int]:
+        """The anchors within W of one of the tag's reads."""
+        return [i for i, (a, _, _) in enumerate(anchors) if _near(times[epc], a, w)]
+
+    for i in range(1, len(anchors)):   # crates chained within 2W: one group
+        if anchors[i][0] - anchors[i - 1][0] <= 2 * w:
+            join(i - 1, i)
+    hits = {tag["epc"]: near(tag["epc"]) for tag in tags if tag["kind"] == "asset"}
+    for found in hits.values():        # an asset in several groups merges them
+        for i in found[1:]:
+            join(found[0], i)
+    groups = {r: _Split(anchors[r][:2]) for r in sorted({find(i) for i in index.values()})}
+    left = _Split(None)
+    for tag in tags:
+        epc = tag["epc"]
+        if tag["kind"] == "container":
+            found = [index[epc]]
+        elif tag["kind"] == "asset":
+            found = hits[epc]
+        else:   # people, off-move, unknown: never merge, join the earliest group
+            found = near(epc)
+        g = groups[min(find(i) for i in found)] if found else left
+        g.tags.append(tag)
+        g.reads.extend(reads[epc])
+    out = list(groups.values()) + ([left] if left.tags else [])
+    return sorted(out, key=lambda g: (g.opened, g.anchor is None))
+
+
+def _decide(c, b: _Burst, w_s: int, dry_run_now: bool) -> tuple[int, int]:
+    """Decide the burst: split it into its passes and close each with its
+    outcome. The burst's row becomes the first pass, the rest are inserted
+    after it, and each tag moves with every read of it. (passes decided,
+    live packs among them now waiting to be sent)."""
+    w = timedelta(seconds=w_s)
+    tags = c.execute("SELECT epc, kind, matched_id, label FROM dock_pass_tags "
+                     "WHERE pass_id = ? ORDER BY rowid", (b.id,)).fetchall()
+    reads: dict[str, list] = {}
+    for r in c.execute("SELECT r.id, r.epc, r.read_at, r.received_at, r.dry_run "
+                       "FROM dock_pass_reads pr JOIN raw_tag_reads r ON r.id = pr.raw_read_id "
+                       "WHERE pr.pass_id = ? ORDER BY r.id", (b.id,)):
+        reads.setdefault(r["epc"], []).append((read_time(r), r))
+    split = _split(tags, reads, w)
+    _save(c, b)   # the burst's own columns, copied to every pass below
+    sends = 0
+    for n, g in enumerate(split):
+        pid = b.id
+        if n:
+            pid = c.execute(
+                "INSERT INTO dock_passes (pass_id, initiative_id, opened_at, last_new_at, "
+                "last_new_received_at, last_received_at, created_at) "
+                "SELECT ?, initiative_id, opened_at, last_new_at, last_new_received_at, "
+                "last_received_at, ? FROM dock_passes WHERE id = ?",
+                (str(uuid.uuid4()), now_iso(), b.id)).lastrowid
+            c.executemany("UPDATE dock_pass_tags SET pass_id = ? WHERE pass_id = ? AND epc = ?",
+                          [(pid, b.id, tag["epc"]) for tag in g.tags])
+            c.executemany("UPDATE dock_pass_reads SET pass_id = ? "
+                          "WHERE pass_id = ? AND raw_read_id = ?",
+                          [(pid, b.id, raw["id"]) for _, raw in g.reads])
+        crates = {t["matched_id"]: t["label"] for t in g.tags if t["kind"] == "container"}
+        assets = {t["matched_id"] for t in g.tags if t["kind"] == "asset"}
+        crate_id = crate_name = anchor_at = anchor_received_at = None
+        if g.anchor is None:
+            outcome = "no_crate" if assets else "nothing"
+            closed = b.last_new_at + 2 * w
+        else:
+            anchor, anchor_received_at = g.anchor
+            anchor_at, closed = _stamp(anchor), anchor + w
+            if len(crates) > 1:
+                outcome = "many_crates"
+            else:
+                outcome = "pack" if assets else "nothing"
+                [(crate_id, crate_name)] = crates.items()
+        dry_run = dry_run_now or any(raw["dry_run"] for _, raw in g.reads)
+        send = outcome == "pack" and not dry_run
+        sends += send
+        c.execute("UPDATE dock_passes SET opened_at = ?, closed_at = ?, quiet_gap_s = ?, "
+                  "dry_run = ?, outcome = ?, container_id = ?, container_name = ?, "
+                  "asset_count = ?, send_state = ?, anchor_at = ?, anchor_received_at = ? "
+                  "WHERE id = ?",
+                  (_stamp(g.opened), _stamp(closed), w_s, int(dry_run), outcome, crate_id,
+                   crate_name, len(assets), "pending" if send else "none", anchor_at,
+                   anchor_received_at, pid))
+    return len(split), sends
+
+
+def group(store: Store, now: datetime | None = None, *, decide: bool = False) -> GroupResult:
+    """One tick: at most BATCH raw reads after the cursor into bursts (each
+    one that ends decided into its passes), then the idle decision of a
+    burst nothing more has been read for. With `decide`, a tick that read
+    everything available decides the open burst at once, idle or not."""
     now = now or datetime.now(UTC)
     with store.tx() as c:
         row = c.execute("SELECT last_raw_id FROM dock_meta WHERE id = 1").fetchone()
@@ -214,12 +328,12 @@ def group(store: Store, now: datetime | None = None) -> GroupResult:
                 _set_cursor(c, newest)   # never grouped later, not even on a Dock
             return GroupResult(0, 0, 0, False)
         settings = state.settings_in(c)
-        gap_s = settings["quiet_gap_s"]
-        gap = timedelta(seconds=gap_s)
-        rows = c.execute("SELECT id, epc, read_at, received_at, initiative_id, dry_run "
+        w_s = settings["quiet_gap_s"]
+        burst_gap = timedelta(seconds=2 * w_s)   # a burst ends 2W after its last new tag
+        rows = c.execute("SELECT id, epc, read_at, received_at, initiative_id "
                          "FROM raw_tag_reads WHERE id > ? ORDER BY id LIMIT ?",
                          (last, BATCH)).fetchall()
-        current = _open_pass(c)
+        current = _open_burst(c)
         move_indexes = None
         advanced, scanned, closed, to_send, waiting = last, 0, 0, 0, False
         for raw in rows:
@@ -230,22 +344,36 @@ def group(store: Store, now: datetime | None = None) -> GroupResult:
                         waiting = True
                         break  # set up but not synced: stop here, never skip it
                 t = read_time(raw)
-                if current is not None and t - current.last_new_at > gap:
-                    to_send += _close(c, current, gap_s, settings["dry_run"])
-                    closed += 1
-                    current = None
+                if current is not None and t - current.last_new_at > burst_gap:
+                    decided, sends = _decide(c, current, w_s, settings["dry_run"])
+                    closed, to_send, current = closed + decided, to_send + sends, None
                 if current is None:
                     current = _open(c, move, t, raw)
                 _add(c, current, raw, t, move_indexes)
             advanced = raw["id"]   # another move's read (or none) is skipped
             scanned += 1
         if current is not None:
-            idle_at = datetime.fromisoformat(current.last_received_at) + gap + _IDLE_SLACK
-            if not waiting and len(rows) < BATCH and now >= idle_at:
-                to_send += _close(c, current, gap_s, settings["dry_run"])
-                closed += 1
+            idle_at = datetime.fromisoformat(current.last_received_at) + burst_gap + _IDLE_SLACK
+            if not waiting and len(rows) < BATCH and (decide or now >= idle_at):
+                decided, sends = _decide(c, current, w_s, settings["dry_run"])
+                closed, to_send = closed + decided, to_send + sends
             elif current.changed:
                 _save(c, current)
         if advanced != last:
             _set_cursor(c, advanced)
     return GroupResult(scanned, closed, to_send, waiting)
+
+
+def decide_now(store: Store, now: datetime | None = None) -> GroupResult:
+    """The Dock screen's Stop: `group` with `decide`, tick after tick, until
+    one is not a full batch (the backlog grouped, then the open burst decided
+    with what has been read) or is waiting (the burst stays open). Each tick
+    is its own transaction. The counts are summed; `waiting` is the last
+    tick's."""
+    scanned = closed = to_send = 0
+    while True:
+        result = group(store, now, decide=True)
+        scanned, closed, to_send = (scanned + result.scanned, closed + result.closed,
+                                    to_send + result.to_send)
+        if result.scanned < BATCH or result.waiting:
+            return GroupResult(scanned, closed, to_send, result.waiting)

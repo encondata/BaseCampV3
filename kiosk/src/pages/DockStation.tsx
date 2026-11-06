@@ -1,36 +1,63 @@
 /**
  * The Dock screen (/dock) — where a Dock laptop's Home tile and Kiosk Setup
- * land, and what someone on the dock watches while tuning: the pass still
- * open, filling in live with the time left before it closes; the newest
- * closed passes with their outcome, each opening its full detail; and the
- * dry-run switch and quiet gap, both saved on the laptop's edge. Always
- * dark and filling the screen like the RFID Reader dashboard, whose panels
- * it reuses; both panels show only the rows that fit. The overview
- * refreshes 1 s after the previous refresh settles (never overlapping);
- * while refreshes fail, a red line says the station can't be reached and the
- * last overview stays under it. Web mode, or a setup that isn't a Dock,
- * goes home; a new laptop browser with no setup yet shows nothing until
- * the laptop's has loaded (KioskShell looks for it), then decides.
+ * land, and what someone on the dock watches while tuning: the reader's
+ * state (Reading, Paused or Stopped) with Start, Pause and Stop; the pass
+ * still open, filling in live with the time left before it is decided; the
+ * newest closed passes with their outcome, each opening its full detail;
+ * and the dry-run switch and the crate Window, both saved on the laptop's
+ * edge. It fills the screen like the RFID Reader dashboard, whose panels,
+ * state and buttons it reuses, in the kiosk's light or dark theme; both
+ * panels show only the rows that fit. The overview refreshes 1 s after the
+ * previous refresh settles (never overlapping); while refreshes fail, a red
+ * line says the station can't be reached and the last overview stays under
+ * it. The reader is checked 5 s after the previous check settles and right
+ * after each button's call. Web mode, or a setup that isn't a Dock, goes
+ * home; a new laptop browser with no setup yet shows nothing until the
+ * laptop's has loaded (KioskShell looks for it), then decides.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 
 import DockPassModal, { passOutcome } from '../components/DockPassModal';
+import { codeOf, readerErrorText } from '../components/setup/readerSetup';
 import { Switch } from '../components/Switch';
 import {
-  getDock, saveDockSettings,
-  type DockOverview, type DockPassRow, type DockSettings, type DockTag, type DockTagKind,
+  controlDock, getDock, getReaderStatus, saveDockSettings,
+  type DockControl, type DockOverview, type DockPassRow, type DockSettings, type DockTag,
+  type DockTagKind, type ReaderStatus,
 } from '../lib/api';
 import { useKioskSetup } from '../lib/kioskSetup';
 import { useLaptopSetupSettled } from '../lib/laptopSetup';
 import { isLaptop } from '../lib/platform';
+import { readerState, type ReaderState } from '../lib/readerState';
 import { useFitRows } from '../lib/useFitRows';
-import { clockText, displayEpc } from './RfidStatus';
+import { clockText, displayEpc, ICON } from './RfidStatus';
 
 const POLL_MS = 1000;
-const GAP_MIN = 1;
-const GAP_MAX = 60;
+const READER_POLL_MS = 5000;
+const WINDOW_MIN = 1;
+const WINDOW_MAX = 60;
+
+const BUSY_TEXT: Record<DockControl, string> = {
+  start: 'Starting…', pause: 'Pausing…', stop: 'Stopping…',
+};
+
+/** The reader's state as the strip shows it: a running call first, then
+ *  the reader's own state, where a stopped reader reads Paused when Pause
+ *  was the last button. */
+function readerText(state: ReaderState, control: DockControl | null, busy: DockControl | null): {
+  text: string; tone: 'reading' | 'paused' | 'stopped' | 'unreachable' | 'loading';
+} {
+  if (busy) return { text: BUSY_TEXT[busy], tone: 'loading' };
+  switch (state) {
+    case 'loading': return { text: 'Checking…', tone: 'loading' };
+    case 'unreachable': return { text: 'Unreachable', tone: 'unreachable' };
+    case 'reading': return { text: 'Reading', tone: 'reading' };
+    default:
+      return control === 'pause' ? { text: 'Paused', tone: 'paused' } : { text: 'Stopped', tone: 'stopped' };
+  }
+}
 
 /** A tag's kind as a chip: its word and color. */
 function kindChip(kind: DockTagKind): { label: string; tone: string } {
@@ -52,10 +79,10 @@ function listedTags(tags: DockTag[]): DockTag[] {
 }
 
 /** A whole number of seconds in range, or null. */
-function parseGap(text: string): number | null {
+function parseWindow(text: string): number | null {
   if (!/^\d+$/.test(text.trim())) return null;
   const n = Number(text.trim());
-  return n >= GAP_MIN && n <= GAP_MAX ? n : null;
+  return n >= WINDOW_MIN && n <= WINDOW_MAX ? n : null;
 }
 
 function countdownText(secondsLeft: number): string {
@@ -75,25 +102,59 @@ export default function DockStation() {
   const dock = laptop && setup?.stationType === 'dock';
   const [overview, setOverview] = useState<DockOverview | null>(null);
   const [settings, setSettings] = useState<DockSettings | null>(null);
-  /** The quiet gap as typed; null shows the saved value. */
-  const [gapDraft, setGapDraft] = useState<string | null>(null);
-  const [gapInvalid, setGapInvalid] = useState(false);
+  /** The Window as typed; null shows the saved value. */
+  const [windowDraft, setWindowDraft] = useState<string | null>(null);
+  const [windowInvalid, setWindowInvalid] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
   const [detailId, setDetailId] = useState<number | null>(null);
   /** The last refresh failed; cleared by the next one that works. */
   const [unreachable, setUnreachable] = useState(false);
+  const [status, setStatus] = useState<ReaderStatus | null>(null);
+  /** The last reader check failed; cleared by the next one that works. */
+  const [statusFailed, setStatusFailed] = useState(false);
+  /** The last Dock button: pressed here, or as the overview has it. */
+  const [control, setControl] = useState<DockControl | null>(null);
+  /** The button whose call is running (the newest press). */
+  const [busy, setBusy] = useState<DockControl | null>(null);
+  /** The newest press's failure, shown until the next press. */
+  const [controlError, setControlError] = useState<{ action: DockControl; err: unknown } | null>(null);
   const mounted = useRef(true);
   // Bumped when a settings save starts and again when it settles: a refresh
   // that began before either keeps its passes but not its settings, which
   // may predate the save.
   const settingsGen = useRef(0);
+  // The same for a button press and the overview's control.
+  const controlGen = useRef(0);
+  // Only the newest reader check writes, and only the newest press clears
+  // the running state or shows its error.
+  const checkSeq = useRef(0);
+  const pressSeq = useRef(0);
+  // A Stop call is running: another Stop press does nothing.
+  const stopping = useRef(false);
   const tagsBox = useRef<HTMLUListElement>(null);
   const passesBox = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
+  }, []);
+
+  /** Asks the edge for the reader's state while `live()`. A busy answer
+   *  (the edge was mid-call and didn't ask the reader) keeps what's shown,
+   *  as on the RFID dashboard. */
+  const checkReader = useCallback(async (live: () => boolean) => {
+    const id = ++checkSeq.current;
+    const latest = () => live() && id === checkSeq.current;
+    try {
+      const s = await getReaderStatus();
+      if (latest() && !s.busy) {
+        setStatus(s);
+        setStatusFailed(false);
+      }
+    } catch {
+      if (latest()) setStatusFailed(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -104,12 +165,14 @@ export default function DockStation() {
     let timer: number | undefined;
     const tick = async () => {
       const gen = settingsGen.current;
+      const pressGen = controlGen.current;
       try {
         const o = await getDock();
         if (!live) return;
         setOverview(o);
         setUnreachable(false);
         if (gen === settingsGen.current) setSettings(o.settings);
+        if (pressGen === controlGen.current) setControl(o.control);
       } catch {
         // The last overview stays on screen, under a line saying it's stale.
         if (!live) return;
@@ -123,6 +186,22 @@ export default function DockStation() {
       window.clearTimeout(timer);
     };
   }, [dock]);
+
+  useEffect(() => {
+    if (!dock) return undefined;
+    // Its own flag, as the overview's loop: one loop under StrictMode.
+    let live = true;
+    let timer: number | undefined;
+    const tick = async () => {
+      await checkReader(() => live);
+      if (live) timer = window.setTimeout(() => { void tick(); }, READER_POLL_MS);
+    };
+    void tick();
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [dock, checkReader]);
 
   useFitRows(tagsBox, [overview]);
   useFitRows(passesBox, [overview]);
@@ -150,18 +229,47 @@ export default function DockStation() {
     return ok;
   };
 
-  const gapChanged = settings !== null && gapDraft !== null
-    && gapDraft.trim() !== String(settings.quiet_gap_s);
+  const windowChanged = settings !== null && windowDraft !== null
+    && windowDraft.trim() !== String(settings.quiet_gap_s);
 
-  const saveGap = async () => {
-    if (gapDraft === null || !gapChanged || saving) return;
-    const n = parseGap(gapDraft);
+  const saveWindow = async () => {
+    if (windowDraft === null || !windowChanged || saving) return;
+    const n = parseWindow(windowDraft);
     if (n === null) {
-      setGapInvalid(true);
+      setWindowInvalid(true);
       return;
     }
-    if (await save({ quiet_gap_s: n }) && mounted.current) setGapDraft(null);
+    if (await save({ quiet_gap_s: n }) && mounted.current) setWindowDraft(null);
   };
+
+  /** Presses a reader button, then checks the reader before the state goes
+   *  back to the reader's own. Stop runs even while another call does (a
+   *  stuck reader needs it), but never twice at once. */
+  const press = async (action: DockControl) => {
+    if (action === 'stop' && stopping.current) return;
+    if (action === 'stop') stopping.current = true;
+    const id = ++pressSeq.current;
+    const newest = () => mounted.current && id === pressSeq.current;
+    controlGen.current += 1;
+    setControl(action);
+    setBusy(action);
+    setControlError(null);
+    try {
+      await controlDock(action);
+    } catch (err) {
+      if (newest()) setControlError({ action, err });
+    }
+    controlGen.current += 1;
+    await checkReader(() => mounted.current);
+    if (action === 'stop') stopping.current = false;
+    if (newest()) setBusy(null);
+  };
+
+  const state = readerState(status, statusFailed);
+  const shown = readerText(state, control, busy);
+  const startDisabled = busy !== null || state === 'loading' || state === 'unreachable'
+    || state === 'reading';
+  const pauseDisabled = busy !== null || state !== 'reading';
 
   const open = overview?.open ?? null;
   const passes = overview?.passes ?? null;
@@ -170,49 +278,79 @@ export default function DockStation() {
     <div className="portal-page rfid-dash dock-dash">
       <h1 className="sr-only">Dock</h1>
 
-      {/* Disabled until the edge's settings arrive: before that a change
-          would be made against defaults. */}
-      <fieldset className="dock-dash-controls" disabled={settings === null}>
-        <legend className="sr-only">Dock settings</legend>
-        <div className="dock-dash-control">
-          <div>
-            <span className="settings-row-label">Dry run</span>
-            <p className="settings-row-hint">Passes are shown here and nothing is sent to the portal.</p>
-          </div>
-          <Switch on={settings?.dry_run ?? true} aria-label="Dry run"
-                  onChange={(on) => { if (!saving) void save({ dry_run: on }); }} />
-        </div>
-        <div className="dock-dash-control">
-          <div>
-            <label htmlFor="dock-quiet-gap" className="settings-row-label">Quiet gap</label>
-            <p id="dock-quiet-gap-hint"
-               className={gapInvalid ? 'settings-row-hint form-error' : 'settings-row-hint'}>
-              1–60 seconds
-            </p>
-          </div>
-          <span className="alarm-seconds">
-            <input
-              id="dock-quiet-gap"
-              type="number"
-              inputMode="numeric"
-              min={GAP_MIN}
-              max={GAP_MAX}
-              step={1}
-              aria-describedby="dock-quiet-gap-hint"
-              aria-invalid={gapInvalid || undefined}
-              value={gapDraft ?? (settings ? String(settings.quiet_gap_s) : '')}
-              onChange={(e) => { setGapDraft(e.target.value); setGapInvalid(false); }}
-              onKeyDown={(e) => { if (e.key === 'Enter') void saveGap(); }}
-            />
-            <span className="alarm-seconds-unit">s</span>
-            <button type="button" className="mini-btn" disabled={!gapChanged || saving}
-                    onClick={() => void saveGap()}>
-              Save
-            </button>
+      <div className="dock-dash-controls">
+        {/* Outside the settings below, so Stop works before they load. */}
+        <div className="dock-dash-reader" role="group" aria-label="Reader">
+          <span className={`rfid-dash-state is-${shown.tone}`}>
+            <span className="rfid-dash-dot" />{shown.text}
           </span>
+          <button type="button" className="rfid-dash-btn is-start" disabled={startDisabled}
+                  onClick={() => void press('start')}>
+            <span className="rfid-dash-btn-icon">{ICON.play}</span>
+            <span className="rfid-dash-btn-title">Start</span>
+          </button>
+          <button type="button" className="rfid-dash-btn is-pause" disabled={pauseDisabled}
+                  onClick={() => void press('pause')}>
+            <span className="rfid-dash-btn-icon">{ICON.pause}</span>
+            <span className="rfid-dash-btn-title">Pause</span>
+          </button>
+          {/* Never disabled: a reader can get stuck. */}
+          <button type="button" className="rfid-dash-btn is-stop" onClick={() => void press('stop')}>
+            <span className="rfid-dash-btn-icon">{ICON.square}</span>
+            <span className="rfid-dash-btn-title">Stop</span>
+          </button>
         </div>
+        {/* Disabled until the edge's settings arrive: before that a change
+            would be made against defaults. */}
+        <fieldset className="dock-dash-settings" disabled={settings === null}>
+          <legend className="sr-only">Dock settings</legend>
+          <div className="dock-dash-control">
+            <div>
+              <span className="settings-row-label">Dry run</span>
+              <p className="settings-row-hint">Passes are shown here and nothing is sent to the portal.</p>
+            </div>
+            <Switch on={settings?.dry_run ?? true} aria-label="Dry run"
+                    onChange={(on) => { if (!saving) void save({ dry_run: on }); }} />
+          </div>
+          <div className="dock-dash-control">
+            <div>
+              <label htmlFor="dock-window" className="settings-row-label">Window</label>
+              <p id="dock-window-hint"
+                 className={windowInvalid ? 'settings-row-hint form-error' : 'settings-row-hint'}>
+                {windowInvalid ? '1–60 seconds' : 'Seconds before and after the crate tag'}
+              </p>
+            </div>
+            <span className="alarm-seconds">
+              <input
+                id="dock-window"
+                type="number"
+                inputMode="numeric"
+                min={WINDOW_MIN}
+                max={WINDOW_MAX}
+                step={1}
+                aria-describedby="dock-window-hint"
+                aria-invalid={windowInvalid || undefined}
+                value={windowDraft ?? (settings ? String(settings.quiet_gap_s) : '')}
+                onChange={(e) => { setWindowDraft(e.target.value); setWindowInvalid(false); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') void saveWindow(); }}
+              />
+              <span className="alarm-seconds-unit">s</span>
+              <button type="button" className="mini-btn" disabled={!windowChanged || saving}
+                      onClick={() => void saveWindow()}>
+                Save
+              </button>
+            </span>
+          </div>
+        </fieldset>
         {saveFailed && <p className="form-error" role="alert">Couldn&apos;t save. Try again.</p>}
-      </fieldset>
+        {controlError && (
+          <p className="form-error" role="alert">
+            {/* No reader status yet (a stuck reader answers busy) leaves no IP to name. */}
+            {readerErrorText(controlError.err, status?.reader?.ip || 'the reader')
+              ?? `Couldn't ${controlError.action} the reader (${codeOf(controlError.err)}).`}
+          </p>
+        )}
+      </div>
 
       {settings?.dry_run && (
         <p className="dock-dash-banner" role="status">Dry run · nothing is sent to the portal.</p>

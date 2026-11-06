@@ -63,10 +63,11 @@ def add_pass(store, assets, *, closed_at=CLOSED, **cols) -> dict:
         pid = c.execute(
             "INSERT INTO dock_passes (pass_id, initiative_id, opened_at, last_new_at, "
             "last_new_received_at, last_received_at, closed_at, quiet_gap_s, outcome, "
-            "container_id, container_name, asset_count, send_state, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 5, 'pack', ?, 'Crate A', ?, 'pending', ?)",
+            "container_id, container_name, asset_count, send_state, anchor_at, "
+            "anchor_received_at, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 5, 'pack', ?, 'Crate A', ?, 'pending', ?, ?, ?)",
             (pass_id, MOVE, CLOSED, CLOSED, at(T0 - 60), at(T0 - 60), closed_at, CRATE,
-             len({a for a, _ in assets}), at(T0 - 60))).lastrowid
+             len({a for a, _ in assets}), CLOSED, at(T0 - 60), at(T0 - 60))).lastrowid
         c.execute("INSERT INTO dock_pass_tags (pass_id, epc, kind, matched_id, label, "
                   "first_read_at) VALUES (?, 'CC01', 'container', ?, 'Crate A', ?)",
                   (pid, CRATE, CLOSED))
@@ -171,20 +172,35 @@ async def test_unknown_offset_sends_reader_close_time(app, cloud):
 ])
 async def test_close_time_follows_the_laptop_clock_when_the_reader_is_off(
         app, cloud, reader_skew_s, closed_at):
-    """The laptop got the last new read at 13:59:00 (its clock); the reader
-    stamped it `reader_skew_s` away. Quiet gap 5 s, portal offset +1.5 s."""
+    """The laptop got the crate's first read at 13:59:00 (its clock); the
+    reader stamped it `reader_skew_s` away. Window 5 s, portal offset +1.5 s."""
     dock(app)
     store = app.state.store
     store.run("INSERT INTO device_config (id, server_offset_ms) VALUES (1, 1500)")
-    last_new = datetime(2026, 10, 16, 13, 59, 0, 250000, tzinfo=UTC) \
+    anchor = datetime(2026, 10, 16, 13, 59, 0, 250000, tzinfo=UTC) \
         + timedelta(seconds=reader_skew_s)
     add_pass(store, [(ids(1)[0], CLOSED)],
-             last_new_at=last_new.isoformat(timespec="milliseconds"),
-             last_new_received_at=at(T0 - 60),
-             closed_at=(last_new + timedelta(seconds=5)).isoformat(timespec="milliseconds"))
+             anchor_at=anchor.isoformat(timespec="milliseconds"),
+             anchor_received_at=at(T0 - 60),
+             closed_at=(anchor + timedelta(seconds=5)).isoformat(timespec="milliseconds"))
     route = cloud.post(PATH).mock(side_effect=packed_all)
     assert await make(app).send_once() is True
     assert json.loads(route.calls[0].request.content)["closed_at"] == closed_at
+
+
+async def test_close_time_comes_from_the_crate_anchor(app, cloud):
+    """The burst's last new read is 2 hours off the laptop's clock, but the
+    crate's first read agrees with it: the stored close time goes."""
+    dock(app)
+    store = app.state.store
+    store.run("INSERT INTO device_config (id, server_offset_ms) VALUES (1, 1500)")
+    add_pass(store, [(ids(1)[0], CLOSED)],
+             last_new_at="2026-10-16T15:59:00.250+00:00", last_new_received_at=at(T0 - 60),
+             closed_at="2026-10-16T13:59:05.250+00:00")
+    route = cloud.post(PATH).mock(side_effect=packed_all)
+    assert await make(app).send_once() is True
+    assert json.loads(route.calls[0].request.content)["closed_at"] \
+        == "2026-10-16T13:59:06.750+00:00"
 
 
 async def test_one_at_a_time_in_order(app, cloud):

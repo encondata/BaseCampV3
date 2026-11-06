@@ -252,6 +252,15 @@ SCHEMA_STEPS: list[str] = [
     CREATE TABLE dock_meta (id INTEGER PRIMARY KEY CHECK (id = 1), last_raw_id INTEGER NOT NULL);
     INSERT INTO dock_meta (id, last_raw_id) SELECT 1, COALESCE(MAX(id), 0) FROM raw_tag_reads
     """,
+    # the Dock's crate window (edge/dock/grouper.py): each decided pass's anchor,
+    # its crate's first read (the reader's clock) and when the laptop got that
+    # read. Passes decided before this step take their last new read instead
+    """
+    ALTER TABLE dock_passes ADD COLUMN anchor_at TEXT;
+    ALTER TABLE dock_passes ADD COLUMN anchor_received_at TEXT;
+    UPDATE dock_passes SET anchor_at = last_new_at, anchor_received_at = last_new_received_at
+        WHERE closed_at IS NOT NULL
+    """,
 ]
 
 

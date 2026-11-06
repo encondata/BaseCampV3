@@ -18,10 +18,11 @@ The body carries the pass's crate, its distinct asset ids in first-read
 order, and its close time moved by the portal's clock offset from the last
 check-in, so the portal can refuse any asset whose membership changed after
 the pass. While the offset is unknown the close time goes as is. The close
-time is the grouper's (the reader's clock) while the reader stamped the
-pass's last new read within `READER_SKEW_MAX_S` of when the laptop got it;
-otherwise the reader's clock is off (an FX9600 without NTP) and the laptop's
-close goes instead: that read's `received_at` plus the quiet gap.
+time is the grouper's (the crate's first read + the window W, on the
+reader's clock) while the reader stamped that read within
+`READER_SKEW_MAX_S` of when the laptop got it; otherwise the reader's clock
+is off (an FX9600 without NTP) and the laptop's close goes instead: that
+read's `received_at` plus W.
 
 Answers, with the scan uploader's retry rules (edge.rfid.uploader):
 - 200: each asset tag keeps its `result`, `moved_from` (the crate's name)
@@ -72,10 +73,11 @@ def _aware(stored: str) -> datetime:
 
 def _closed_at(p, offset_ms: int | None) -> str:
     """The pass's close time in portal time: UTC ISO with milliseconds. The
-    reader's close while its clock agrees with the laptop's on the last new
-    read, else the laptop's (that read's arrival plus the quiet gap)."""
-    received = _aware(p["last_new_received_at"])
-    if abs(_aware(p["last_new_at"]) - received) <= timedelta(seconds=READER_SKEW_MAX_S):
+    reader's close while its clock agrees with the laptop's on the crate's
+    first read (the pass's anchor), else the laptop's (that read's arrival
+    plus the window)."""
+    received = _aware(p["anchor_received_at"])
+    if abs(_aware(p["anchor_at"]) - received) <= timedelta(seconds=READER_SKEW_MAX_S):
         closed = _aware(p["closed_at"])
     else:
         closed = received + timedelta(seconds=p["quiet_gap_s"])

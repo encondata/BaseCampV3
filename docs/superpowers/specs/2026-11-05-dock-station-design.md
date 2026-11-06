@@ -234,3 +234,51 @@ Built on `dock-station` in 10 tasks plus two review fix rounds and a final fix w
   - The Dock screen says `Can't reach the station. Retrying…` while the edge doesn't answer, and `Checking…` before its first answer.
 - **Live verify (2026-11-06):** run on a clone of the dev DB with the fake FX9600. Every scenario passed: dry run, no crate, two crates, the off-move alarm, and a live pack that moved an asset out of another crate. Only the live reads uploaded as scans.
 - **Before the first live (non-dry-run) trial:** check that the FX9600's clock agrees with the laptop's.
+
+## Changes after the first test (2026-11-06, Jimmy)
+
+These replace the earlier pass rules, the quiet-gap setting, and the dark-only screen.
+
+### The crate window
+
+Jimmy: "a tag being read starts the window that any tags that are read and have a time within 5 seconds of the container are added to the container." The earlier "closes after 5 seconds with no new tags" rule was a misunderstanding.
+
+- **The crate tag anchors the window.** An asset is packed into a crate when any of its reads falls within W seconds before or after the crate tag's **first** read. W is the **Window** setting, default 5 s. Re-reads of the crate don't move its window.
+- **Example** (W = 5): asset A at 0 s, the crate at 2 s, asset B at 6 s, asset C at 8 s. A and B are packed into the crate, because they fall inside -3 to 7 s. C is outside the window, so it's flagged "No crate read".
+- **Assets with no crate within W** are flagged "No crate read" and are not packed.
+- **Two crates whose first reads are within 2W of each other** (10 s by default) have overlapping windows, so an asset between them could belong to either. Those crates, and every asset within W of any of them, are flagged together as "More than one crate". Nothing in that group is packed. Crates further apart are decided separately.
+- **When it's decided:** reads form a burst that ends 2W after the last new tag (10 s by default). At the end of a burst, each crate becomes its own pass: packed, or flagged with its neighbors. The burst's assets that fall in no crate's window become one "No crate read" pass. So a crate is packed about 10 s after its last nearby tag.
+- **Pass time sent to the portal** is the crate's first read + W, on the reader's clock. As before, the laptop clock is used instead when the reader disagrees by more than 60 s.
+- Packing semantics are unchanged: moves, already there, changed since this pass, the off-move alarm and dry run.
+
+### Start, Pause, Stop
+
+Three buttons on the Dock screen, next to Dry run:
+
+- **Start** starts the reader.
+- **Pause** stops the reader and leaves the open burst alone. Whatever was already read is still decided by the window rule.
+- **Stop** stops the reader and decides the open burst at once, using what has been read so far.
+- Stop is always enabled, because a reader can get stuck.
+- The screen shows the reader as Reading, Paused or Stopped.
+
+### Theme
+
+Jimmy: "we always follow theme." The Dock screen and the RFID Reader dashboard now both follow the kiosk's light or dark setting. Nothing forces a theme any more.
+
+## Implementation notes for the 2026-11-06 changes
+
+Plan: `docs/superpowers/plans/2026-11-06-dock-window-controls-theme.md`. Its decisions list also applies.
+
+- **Grouper** (`edge/dock/grouper.py`): reads form a burst. When the burst ends, `_split` anchors each crate at its first read and chains crates whose anchors are within 2W (union-find). Assets with a read in two windows merge those groups. People, off-move and unknown tags go with the earliest group and never cause merging. Each group becomes a pass, plus one leftover pass for the burst's unwindowed assets. A crate with no assets in its window is "Nothing to pack" and keeps its crate name. Window bounds are inclusive.
+- **Schema step:** `dock_passes` gains `anchor_at` and `anchor_received_at`. Older decided passes are backfilled from `last_new_*`.
+- **Reader times:** they fall back to the laptop clock at both ends of the calendar. `_EARLIEST`/`_LATEST` are 2 × 60 s + 1 s in from `datetime.min`/`max`, so no window arithmetic can overflow.
+- **Pass time:** `anchor + W` on the reader's clock. The sender checks skew on `anchor_at` against `anchor_received_at`.
+- **Controls:**
+  - `POST /edge/dock/control {"action": "start"|"pause"|"stop"}` sits behind the edge session.
+  - Stop decides the open burst **before** it stops the reader, so a hung reader can't delay the decision. The reader's error comes back afterwards.
+  - The overview carries `control`, the last button pressed. It lives in memory and is null after an edge restart. It isn't the reader's state: the screen reads that from `/edge/rfid/status`.
+- **Theme:** KioskShell no longer forces a theme on any route. The RFID dashboard, the Dock screen and the Dock modal use only theme tokens. The Dock strip's disabled buttons stay readable in both themes.
+- **Known behaviors, put to Jimmy:**
+  - A burst ends 2W after its last **new** tag. So an asset that's still being re-read when the crate tag is first read more than 2W later is flagged "No crate read", and the crate shows "Nothing to pack".
+  - Reads the reader posts between Stop's decision and the reader actually stopping open a new burst. That can show a duplicate "Would pack" or a stray "No crate read".
+  - A crate parked in the curtain gets a fresh window about every 2W + 1 s.

@@ -5,7 +5,11 @@ Settings (one `dock_settings` row; none reads as `DEFAULTS`):
   Which reads count as dry run is decided when they are read (`tagreads`
   stamps `raw_tag_reads.dry_run`), so reads taken during dry run are never
   uploaded, not even after it is turned off. On by default.
-- `quiet_gap_s`: a pass closes once no new tag has been read for this long.
+- `quiet_gap_s`: the Window W, in whole seconds (the name predates it). An
+  asset packs into a crate when one of its reads is within W of the crate
+  tag's first read, crates whose first reads are within 2W are flagged
+  together, and a burst of reads is decided 2W after its last new tag
+  (`edge.dock.grouper`).
 
 Pass data is cleared with the alarm tables: on a move change, a change to
 another station type or a change to a Dock from another type

@@ -1347,11 +1347,13 @@ export type DockTagKind = 'asset' | 'container' | 'person' | 'off_move' | 'unkno
  *  (to be sent), `packed` (sent) or `refused` (the portal turned it away). */
 export type DockPassStatus = 'would_pack' | 'waiting' | 'packed' | 'refused' | 'flagged' | 'nothing';
 
-/** The laptop's Dock settings. Dry run is on and the quiet gap 5 seconds
+/** The laptop's Dock settings. Dry run is on and the window 5 seconds
  *  until changed. */
 export interface DockSettings {
   dry_run: boolean;
-  /** A pass closes once no new tag has been read for this long (1-60). */
+  /** The window W (1-60 s; Window on screen): an asset packs into a crate
+   *  when it is read within W of the crate tag's first read, and the reads'
+   *  burst is decided 2W after its last new tag. */
   quiet_gap_s: number;
 }
 
@@ -1363,8 +1365,9 @@ export interface DockTag {
   label: string | null;
 }
 
-/** The pass still open, filling in as tags are read. `seconds_left` is
- *  how long until it closes if no new tag is read (3 decimals). */
+/** The burst still open, filling in as tags are read. `seconds_left` is
+ *  how long until it is decided into passes if no new tag is read: 2W
+ *  after its last new tag (3 decimals). */
 export interface DockOpenPass {
   id: number;
   opened_at: string;
@@ -1390,12 +1393,20 @@ export interface DockPassRow {
   refuse_code: string | null;
 }
 
-/** GET /edge/dock: the settings, the open pass (null when none) and the
- *  newest closed passes, newest first. */
+/** The Dock screen's reader buttons. Start starts the reader; Pause stops
+ *  it and leaves the open burst to its own rule; Stop decides the open
+ *  burst at once, then stops the reader. */
+export type DockControl = 'start' | 'pause' | 'stop';
+
+/** GET /edge/dock: the settings, the open pass (null when none), the
+ *  newest closed passes, newest first, and `control`: the last Dock button
+ *  pressed since the edge started (null after a restart). `control` is not
+ *  the reader's own state; GET /edge/rfid/status is. */
 export interface DockOverview {
   settings: DockSettings;
   open: DockOpenPass | null;
   passes: DockPassRow[];
+  control: DockControl | null;
 }
 
 /** A closed pass's tag with what packing did to it: `result`, `moved_from`
@@ -1440,6 +1451,26 @@ export async function saveDockSettings(s: Partial<DockSettings>): Promise<DockSe
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(s),
+  }));
+}
+
+/** POST /edge/dock/control's answer: whether the reader is reading, the
+ *  button, and how many passes Stop decided (0 for Start and Pause). */
+export interface DockControlResult {
+  reading: boolean;
+  control: DockControl;
+  decided: number;
+}
+
+/** Presses a Dock button. The edge remembers it whatever the reader
+ *  answers; a reader error comes back as /edge/rfid/start and /stop raise
+ *  it (502 `reader_unreachable`, 409 `reader_required` when unpaired), after
+ *  Stop has decided the open burst. Start needs an online session. */
+export async function controlDock(action: DockControl): Promise<DockControlResult> {
+  return jsonFrom<DockControlResult>(await apiFetch('/edge/dock/control', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
   }));
 }
 
