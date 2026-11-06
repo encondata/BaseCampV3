@@ -7,9 +7,10 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
+import pytest
 
 from edge import laptop_setup
 from edge.db import iso
@@ -161,6 +162,31 @@ async def test_unknown_offset_sends_reader_close_time(app, cloud):
     assert one(app.state.store, p)["send_state"] == "sent"
 
 
+@pytest.mark.parametrize("reader_skew_s, closed_at", [
+    (30, "2026-10-16T13:59:36.750+00:00"),     # clocks agree: the reader's close
+    (59, "2026-10-16T14:00:05.750+00:00"),     # 59.25 s off: still the reader's
+    (-61, "2026-10-16T13:59:06.500+00:00"),    # 60.75 s off: the laptop's close
+    (-7200, "2026-10-16T13:59:06.500+00:00"),  # reader 2 hours behind
+    (7200, "2026-10-16T13:59:06.500+00:00"),   # reader 2 hours ahead
+])
+async def test_close_time_follows_the_laptop_clock_when_the_reader_is_off(
+        app, cloud, reader_skew_s, closed_at):
+    """The laptop got the last new read at 13:59:00 (its clock); the reader
+    stamped it `reader_skew_s` away. Quiet gap 5 s, portal offset +1.5 s."""
+    dock(app)
+    store = app.state.store
+    store.run("INSERT INTO device_config (id, server_offset_ms) VALUES (1, 1500)")
+    last_new = datetime(2026, 10, 16, 13, 59, 0, 250000, tzinfo=UTC) \
+        + timedelta(seconds=reader_skew_s)
+    add_pass(store, [(ids(1)[0], CLOSED)],
+             last_new_at=last_new.isoformat(timespec="milliseconds"),
+             last_new_received_at=at(T0 - 60),
+             closed_at=(last_new + timedelta(seconds=5)).isoformat(timespec="milliseconds"))
+    route = cloud.post(PATH).mock(side_effect=packed_all)
+    assert await make(app).send_once() is True
+    assert json.loads(route.calls[0].request.content)["closed_at"] == closed_at
+
+
 async def test_one_at_a_time_in_order(app, cloud):
     dock(app)
     store = app.state.store
@@ -273,6 +299,27 @@ async def test_probe_gate_after_five_failures(app, cloud):
     assert await make(app, clock, probe=_up).send_once() is True
     r = one(store, p)
     assert r["send_state"] == "sent" and r["waiting_for_internet"] == 0
+
+
+@pytest.mark.parametrize("change", ["dry_run", "not_dock"])
+async def test_nothing_goes_when_the_setup_changes_during_the_probe(app, cloud, change):
+    dock(app)
+    store = app.state.store
+    p = add_pass(store, [(ids(1)[0], CLOSED)], attempts=5)
+    route = cloud.post(PATH).mock(side_effect=packed_all)
+
+    async def probe():
+        if change == "dry_run":
+            state.save_settings(store, dry_run=True)
+        else:
+            laptop_setup.save(store, {"initiative_id": MOVE}, "rfid")
+        return True
+
+    assert await make(app, probe=probe).send_once() is False
+    assert not route.called
+    if change == "dry_run":
+        r = one(store, p)
+        assert r["send_state"] == "pending" and r["attempts"] == 5
 
 
 async def test_under_five_attempts_never_probes(app, cloud):

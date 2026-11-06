@@ -11,13 +11,17 @@ resend reuses the pass's `pass_id`, so the portal never packs a pass twice
 (a replay gets its first answer back).
 
 Nothing is sent off a Dock setup, without a key, or while dry run is on
-(dry run is a dry run: nothing reaches the portal).
+(dry run is a dry run: nothing reaches the portal), checked again after an
+internet probe, which takes a while.
 
 The body carries the pass's crate, its distinct asset ids in first-read
-order, and its close time (the reader's clock) moved by the portal's clock
-offset from the last check-in, so the portal can refuse any asset whose
-membership changed after the pass. While the offset is unknown the close
-time goes as read.
+order, and its close time moved by the portal's clock offset from the last
+check-in, so the portal can refuse any asset whose membership changed after
+the pass. While the offset is unknown the close time goes as is. The close
+time is the grouper's (the reader's clock) while the reader stamped the
+pass's last new read within `READER_SKEW_MAX_S` of when the laptop got it;
+otherwise the reader's clock is off (an FX9600 without NTP) and the laptop's
+close goes instead: that read's `received_at` plus the quiet gap.
 
 Answers, with the scan uploader's retry rules (edge.rfid.uploader):
 - 200: each asset tag keeps its `result`, `moved_from` (the crate's name)
@@ -52,17 +56,29 @@ log = logging.getLogger("edge.dock.sender")
 
 PATH = "/kiosk/station/dock/passes"
 INTERVAL_S = 5.0
+# a reader clock further off the laptop's than this sends the laptop-clock close
+READER_SKEW_MAX_S = 60
 
 
 def _text(value) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _closed_at(stored: str, offset_ms: int | None) -> str:
-    """The pass's close time in portal time: UTC ISO with milliseconds."""
-    closed = datetime.fromisoformat(stored)
-    if closed.tzinfo is None:
-        closed = closed.replace(tzinfo=UTC)
+def _aware(stored: str) -> datetime:
+    """A stored time; one with no offset is UTC."""
+    value = datetime.fromisoformat(stored)
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value
+
+
+def _closed_at(p, offset_ms: int | None) -> str:
+    """The pass's close time in portal time: UTC ISO with milliseconds. The
+    reader's close while its clock agrees with the laptop's on the last new
+    read, else the laptop's (that read's arrival plus the quiet gap)."""
+    received = _aware(p["last_new_received_at"])
+    if abs(_aware(p["last_new_at"]) - received) <= timedelta(seconds=READER_SKEW_MAX_S):
+        closed = _aware(p["closed_at"])
+    else:
+        closed = received + timedelta(seconds=p["quiet_gap_s"])
     closed += timedelta(milliseconds=offset_ms or 0)
     return closed.astimezone(UTC).isoformat(timespec="milliseconds")
 
@@ -107,9 +123,12 @@ class DockSender:
         async with self.lock:
             return await self._send()
 
+    def _may_send(self) -> bool:
+        return station_key.is_dock_setup(self.store) and not dock_state.dry_run_on(self.store) \
+            and station_key.has_key(self.store)
+
     async def _send(self) -> bool:
-        if not station_key.is_dock_setup(self.store) or dock_state.dry_run_on(self.store) \
-                or not station_key.has_key(self.store):
+        if not self._may_send():
             return False
         p = self.head()
         if p is None or (p["next_attempt_at"] is not None and p["next_attempt_at"] > self._at()):
@@ -119,6 +138,8 @@ class DockSender:
                 self._set(p, waiting_for_internet=1, next_attempt_at=self._at(WAIT_S))
                 return False
             self._set(p, waiting_for_internet=0)
+            if not self._may_send():   # dry run or the setup changed while it probed
+                return False
         body = self._body(p)
         try:
             resp = await station_key.station_request(self.st, "POST", PATH, json=body)
@@ -163,7 +184,7 @@ class DockSender:
                               "ORDER BY first_read_at, rowid", (p["id"],))
         return {"serial": self.st.identity.serial, "pass_id": p["pass_id"],
                 "container_id": p["container_id"],
-                "closed_at": _closed_at(p["closed_at"], config_sync.server_offset_ms(self.store)),
+                "closed_at": _closed_at(p, config_sync.server_offset_ms(self.store)),
                 "asset_ids": list(dict.fromkeys(t["matched_id"] for t in tags))}
 
     def _sent(self, p, answers: dict) -> None:

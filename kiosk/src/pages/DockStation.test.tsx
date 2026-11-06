@@ -8,23 +8,36 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({
-  getDock: vi.fn(), getDockPass: vi.fn(), saveDockSettings: vi.fn(),
+  getDock: vi.fn(), getDockPass: vi.fn(), saveDockSettings: vi.fn(), getEdgeSetup: vi.fn(),
 }));
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>();
   return { ...actual, ...api };
 });
+vi.mock('../lib/sync', async (importOriginal) => ({
+  ...(await importOriginal<object>()), runSync: vi.fn(() => Promise.resolve()),
+}));
 
 import {
   ApiError, type DockOverview, type DockPassDetail, type DockPassRow, type DockPassTag,
+  type EdgeSetup,
 } from '../lib/api';
 import { writeKioskSetup } from '../lib/kioskSetup';
+import { hydrateLaptopSetup } from '../lib/laptopSetup';
 import DockStation from './DockStation';
 
 const SETUP = {
   initiativeId: 'init-1', initiativeName: 'NAP11 Hall Migration',
   siteId: 'site-1', siteName: 'ACC4', siteRole: 'source' as const,
   scanStatus: 'dock_out', scanLabel: 'RFID 2 - Dock Out', stationType: 'dock' as const,
+};
+
+/** The same Dock setup as the laptop's edge serves it to a new browser. */
+const EDGE_DOCK: EdgeSetup = {
+  initiative_id: 'init-1', initiative_name: 'NAP11 Hall Migration', site_id: 'site-1',
+  site_name: 'ACC4', site_role: 'source', scan_status: 'dock_out',
+  scan_status_label: 'RFID 2 - Dock Out', station_type: 'dock', reader: null,
+  updated_at: '2026-11-05T13:00:00+00:00',
 };
 
 /** A local wall-clock time on the test day, as the edge's UTC ISO. */
@@ -94,6 +107,7 @@ beforeEach(() => {
   api.getDockPass.mockReset().mockResolvedValue(detail());
   api.saveDockSettings.mockReset().mockImplementation(
     async (s: object) => ({ dry_run: true, quiet_gap_s: 5, ...s }));
+  api.getEdgeSetup.mockReset().mockResolvedValue(null);
 });
 afterEach(() => {
   cleanup();
@@ -112,6 +126,43 @@ describe('DockStation', () => {
   it('goes home on a setup that is not a Dock', async () => {
     writeKioskSetup({ ...SETUP, stationType: 'rfid' });
     await renderPage();
+    expect(screen.getByText('HOME PAGE')).toBeTruthy();
+    expect(api.getDock).not.toHaveBeenCalled();
+  });
+
+  /** A new browser with no setup: KioskShell's look for the laptop's is
+   *  running, waiting on the edge. Answer it with the returned function. */
+  function lookingForLaptopSetup() {
+    let answer!: (setup: EdgeSetup | null) => void;
+    api.getEdgeSetup.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+    const looked = hydrateLaptopSetup();
+    return async (setup: EdgeSetup | null) => {
+      await act(async () => {
+        answer(setup);
+        await looked;
+      });
+    };
+  }
+
+  it("waits for the laptop's setup on a new browser, then shows the Dock", async () => {
+    localStorage.clear();
+    const answer = lookingForLaptopSetup();
+    await renderPage();
+    expect(screen.queryByText('HOME PAGE')).toBeNull();
+    expect(api.getDock).not.toHaveBeenCalled();
+    await answer(EDGE_DOCK);
+    await flush();
+    expect(screen.queryByText('HOME PAGE')).toBeNull();
+    expect(dryRun()).toBeTruthy();
+    expect(api.getDock).toHaveBeenCalled();
+  });
+
+  it('goes home once the laptop turns out to have no setup', async () => {
+    localStorage.clear();
+    const answer = lookingForLaptopSetup();
+    await renderPage();
+    expect(screen.queryByText('HOME PAGE')).toBeNull();
+    await answer(null);
     expect(screen.getByText('HOME PAGE')).toBeTruthy();
     expect(api.getDock).not.toHaveBeenCalled();
   });

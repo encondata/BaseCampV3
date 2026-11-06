@@ -110,6 +110,37 @@ it('a setup finished locally while the edge answered wins', async () => {
   expect(readKioskSetup()?.initiativeId).toBe('i-9');
 });
 
+it('the look for the laptop\'s setup is settled once one has finished and none is running', async () => {
+  vi.resetModules();
+  const m = await import('./laptopSetup');            // a fresh page load
+  const seen: boolean[] = [];
+  const stop = m.subscribeLaptopSetupSettled(() => seen.push(m.laptopSetupSettled()));
+  expect(m.laptopSetupSettled()).toBe(false);         // nothing looked for yet
+  let answer: (v: unknown) => void = () => {};
+  apiMock.getEdgeSetup.mockReturnValue(new Promise((r) => { answer = r; }));
+  const first = m.hydrateLaptopSetup();
+  expect(m.laptopSetupSettled()).toBe(false);         // still waiting on the edge
+  answer(null);
+  expect(await first).toBe(false);
+  expect(m.laptopSetupSettled()).toBe(true);          // looked: the laptop has none
+  apiMock.getEdgeSetup.mockReturnValue(new Promise((r) => { answer = r; }));
+  const again = m.hydrateLaptopSetup('i-1');          // a later look (a move-password sign-in)
+  expect(m.laptopSetupSettled()).toBe(false);
+  answer(SHARED);
+  expect(await again).toBe(true);
+  expect(m.laptopSetupSettled()).toBe(true);
+  stop();
+  expect(seen).toEqual([false, true, false, true]);
+});
+
+it('web mode settles the look at once', async () => {
+  vi.resetModules();
+  const m = await import('./laptopSetup');
+  window.__KIOSK_CONFIG__ = {};
+  expect(await m.hydrateLaptopSetup()).toBe(false);
+  expect(m.laptopSetupSettled()).toBe(true);
+});
+
 it('a move-password session never takes another move\'s setup', async () => {
   expect(await hydrateLaptopSetup('i-other')).toBe(false);
   expect(apiMock.getEdgeSetup).toHaveBeenCalledTimes(1);

@@ -9,7 +9,8 @@
  * refreshes 1 s after the previous refresh settles (never overlapping);
  * while refreshes fail, a red line says the station can't be reached and the
  * last overview stays under it. Web mode, or a setup that isn't a Dock,
- * goes home.
+ * goes home; a new laptop browser with no setup yet shows nothing until
+ * the laptop's has loaded (KioskShell looks for it), then decides.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -22,6 +23,7 @@ import {
   type DockOverview, type DockPassRow, type DockSettings, type DockTag, type DockTagKind,
 } from '../lib/api';
 import { useKioskSetup } from '../lib/kioskSetup';
+import { useLaptopSetupSettled } from '../lib/laptopSetup';
 import { isLaptop } from '../lib/platform';
 import { useFitRows } from '../lib/useFitRows';
 import { clockText, displayEpc } from './RfidStatus';
@@ -68,7 +70,9 @@ const standsOut = (p: DockPassRow) => p.status === 'flagged' || p.status === 're
 
 export default function DockStation() {
   const [setup] = useKioskSetup();
-  const dock = isLaptop() && setup?.stationType === 'dock';
+  const setupSettled = useLaptopSetupSettled();
+  const laptop = isLaptop();
+  const dock = laptop && setup?.stationType === 'dock';
   const [overview, setOverview] = useState<DockOverview | null>(null);
   const [settings, setSettings] = useState<DockSettings | null>(null);
   /** The quiet gap as typed; null shows the saved value. */
@@ -125,6 +129,7 @@ export default function DockStation() {
 
   const closeDetail = useCallback(() => setDetailId(null), []);
 
+  if (laptop && setup === null && !setupSettled) return null;   // the laptop's may be on its way
   if (!dock) return <Navigate to="/" replace />;
 
   /** Saves one setting; true when the edge took it. */

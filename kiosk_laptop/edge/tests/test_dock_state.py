@@ -177,7 +177,8 @@ async def test_pass_data_cleared_on_setup_changes(app, client):
 def test_upgrade_keeps_reads_and_starts_the_dock_cursor_after_them(tmp_path, monkeypatch):
     from edge import db
     steps = db.SCHEMA_STEPS
-    monkeypatch.setattr(db, "SCHEMA_STEPS", steps[:-1])
+    step = next(i for i, sql in enumerate(steps) if "dock_meta" in sql)
+    monkeypatch.setattr(db, "SCHEMA_STEPS", steps[:step])    # the image before this step
     old = Store(tmp_path / "edge.db")
     for _ in range(2):
         old.run("INSERT INTO raw_tag_reads (received_at, reader_serial, epc, raw_json) "
