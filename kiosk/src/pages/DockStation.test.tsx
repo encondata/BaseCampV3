@@ -152,6 +152,9 @@ const crateMeta = () => crateCard().querySelector('.dock-crate-meta')?.textConte
 const cardIs = (look: string) => crateCard().classList.contains(`is-${look}`);
 /** With no crate and no result, the crate card shows the reader's state. */
 const readerShown = crateName;
+/** The chip in the crate card's label row: the reader's state while a
+ *  result holds the card and the reader isn't reading. */
+const labelChip = () => crateCard().querySelector('.dock-card-label .chip');
 const countCard = () => screen.getByRole('region', { name: 'Assets added to crate' });
 const countValue = () => countCard().querySelector('.dock-stat-value')?.textContent;
 const countSub = () => countCard().querySelector('.dock-stat-sub')?.textContent;
@@ -398,15 +401,12 @@ describe('DockStation', () => {
   });
 
   it('Stopped shows on the crate card with Press Start to read again', async () => {
-    const cases: (DockControl | null)[] = ['stop', null, 'start'];
-    for (const control of cases) {
-      api.getDock.mockResolvedValue(overview({ control }));
-      await renderPage();
-      expect(cardIs('idle')).toBe(true);
-      expect(crateName().textContent).toBe('Stopped');
-      expect(crateMeta()).toBe('Press Start to read again');
-      cleanup();
-    }
+    api.getDock.mockResolvedValue(overview({ control: 'stop' }));
+    await renderPage();
+    expect(cardIs('idle')).toBe(true);
+    expect(crateName().textContent).toBe('Stopped');
+    expect(crateMeta()).toBe('Press Start to read again');
+    expect(labelChip()).toBeNull();   // the card already says it
   });
 
   it('a stopped reader still shows the open crate it left', async () => {
@@ -549,6 +549,152 @@ describe('DockStation', () => {
     expect(listNames()).toEqual(['host-c']);
     await tick(1000);
     expect(cardIs('scanning')).toBe(true);
+  });
+
+  it('a held result shows a reader that is not reading as a chip', async () => {
+    api.getReaderStatus.mockResolvedValue(readerStatus({ reading: true }));
+    api.getDock.mockResolvedValueOnce(overview({
+      open: openPass({ crates: [crate()], tags: [asset({ in_window: true, crate_label: 'Crate A' })], added_count: 1 }),
+    })).mockResolvedValue(overview({ passes: [passRow({ id: 5, status: 'packed', asset_count: 1 })] }));
+    await renderPage();
+    await tick(1000);
+    expect(cardIs('done')).toBe(true);
+    expect(crateMeta()).toBe('Packed 1 device');
+    expect(labelChip()).toBeNull();   // reading
+
+    // the next reader check answers stopped: the result stays, with a chip
+    api.getReaderStatus.mockResolvedValue(readerStatus());
+    await tick(4500);
+    expect(cardIs('done')).toBe(true);
+    expect(crateName().textContent).toBe('Crate A');
+    expect(crateMeta()).toBe('Packed 1 device');
+    expect(labelChip()?.textContent).toBe('Stopped');
+    expect(labelChip()?.classList.contains('c-slate')).toBe(true);
+    expect(listChips()).toEqual(['Added']);
+
+    // nothing while a call runs
+    let finish: (r: DockControlResult) => void = () => {};
+    api.controlDock.mockImplementation(() => new Promise<DockControlResult>((r) => { finish = r; }));
+    fireEvent.click(readerBtn('Stop'));
+    await flush();
+    expect(labelChip()).toBeNull();
+    await act(async () => {
+      finish({ reading: false, control: 'stop', decided: 0 });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(labelChip()?.textContent).toBe('Stopped');
+
+    api.getReaderStatus.mockRejectedValue(new ApiError(0, 'network'));
+    await tick(5000);
+    expect(labelChip()?.textContent).toBe('Unreachable');
+    expect(labelChip()?.classList.contains('c-red')).toBe(true);
+    expect(crateMeta()).toBe('Packed 1 device');
+
+    // reading again: the chip goes, the result stays
+    api.getReaderStatus.mockResolvedValue(readerStatus({ reading: true }));
+    await tick(5000);
+    expect(labelChip()).toBeNull();
+    expect(cardIs('done')).toBe(true);
+    expect(crateMeta()).toBe('Packed 1 device');
+  });
+
+  it("a held No crate read result's devices read No crate read", async () => {
+    api.getDock.mockResolvedValueOnce(overview({
+      open: openPass({
+        tags: [asset(), asset({ epc: '000000000000000000001002', label: 'host-b', first_read_at: at(14, 4, 58) })],
+      }),
+    })).mockResolvedValue(overview({
+      passes: [passRow({ id: 5, status: 'flagged', flag: 'no_crate', container_name: null, asset_count: 2 })],
+    }));
+    await renderPage();
+    expect(listChips()).toEqual(['Waiting for crate', 'Waiting for crate']);
+    await tick(1000);
+    expect(crateName().textContent).toBe('No crate read');
+    expect(listNames()).toEqual(['host-b', 'host-a']);
+    expect(listChips()).toEqual(['No crate read', 'No crate read']);
+    expect(listRows().every((r) => r.querySelector('.chip')?.classList.contains('c-red'))).toBe(true);
+  });
+
+  it("a held refused pass's added devices read Not packed", async () => {
+    api.getDock.mockResolvedValueOnce(overview({
+      open: openPass({
+        crates: [crate()], added_count: 2,
+        tags: [
+          asset({ epc: '000000000000000000001001', label: 'host-a', first_read_at: at(14, 4, 57), in_window: true, crate_label: 'Crate A' }),
+          asset({ epc: '000000000000000000001002', label: 'host-b', first_read_at: at(14, 4, 59), in_window: true, crate_label: 'Crate A' }),
+          asset({ epc: '000000000000000000001003', label: 'host-c', first_read_at: at(14, 4, 40), in_window: false }),
+        ],
+      }),
+    })).mockResolvedValueOnce(overview({
+      passes: [passRow({ id: 5, status: 'waiting', asset_count: 2 })],
+    })).mockResolvedValue(overview({
+      passes: [passRow({ id: 5, status: 'refused', refuse_code: 'move_locked', asset_count: 2 })],
+    }));
+    await renderPage();
+    await tick(1000);
+    expect(crateMeta()).toBe('Waiting to send');
+    expect(listChips()).toEqual(['Adding', 'Adding', 'Outside window']);
+    expect(listRows()[0].querySelector('.chip')?.classList.contains('c-green')).toBe(true);
+    await tick(1000);
+    expect(cardIs('flag')).toBe(true);
+    expect(crateMeta()).toBe('Not packed: crate is on another move');
+    expect(listChips()).toEqual(['Not packed', 'Not packed', 'Outside window']);
+    expect(listRows().every((r) => r.querySelector('.chip')?.classList.contains('c-red'))).toBe(true);
+  });
+
+  it("a held legacy would_pack pass's added devices still read Adding", async () => {
+    api.getDock.mockResolvedValueOnce(overview({
+      open: openPass({ crates: [crate()], tags: [asset({ in_window: true, crate_label: 'Crate A' })], added_count: 1 }),
+    })).mockResolvedValue(overview({
+      passes: [passRow({ id: 5, status: 'would_pack', dry_run: true, asset_count: 1 })],
+    }));
+    await renderPage();
+    await tick(1000);
+    expect(cardIs('would')).toBe(true);
+    expect(listChips()).toEqual(['Adding']);
+    expect(listRows()[0].querySelector('.chip')?.classList.contains('c-green')).toBe(true);
+  });
+
+  it('a held result survives a failed poll and the poll that recovers', async () => {
+    api.getReaderStatus.mockResolvedValue(readerStatus({ reading: true }));
+    api.getDock.mockResolvedValueOnce(overview({
+      open: openPass({ crates: [crate()], tags: [asset({ in_window: true, crate_label: 'Crate A' })], added_count: 1 }),
+    })).mockResolvedValueOnce(overview({ passes: [passRow({ id: 5, status: 'waiting', asset_count: 1 })] }))
+      .mockRejectedValueOnce(new ApiError(0, 'network'))
+      .mockResolvedValue(overview({ passes: [passRow({ id: 5, status: 'packed', asset_count: 1 })] }));
+    await renderPage();
+    await tick(1000);
+    expect(crateMeta()).toBe('Waiting to send');
+    await tick(1000);
+    expect(screen.getByText(UNREACHABLE)).toBeTruthy();
+    expect(crateName().textContent).toBe('Crate A');
+    expect(crateMeta()).toBe('Waiting to send');
+    expect(listNames()).toEqual(['host-a']);
+    await tick(1000);
+    expect(screen.queryByText(UNREACHABLE)).toBeNull();
+    expect(cardIs('done')).toBe(true);
+    expect(crateMeta()).toBe('Packed 1 device');
+    expect(listNames()).toEqual(['host-a']);
+    expect(listChips()).toEqual(['Added']);
+  });
+
+  it("a person's tag clears a held result: any tag does", async () => {
+    api.getReaderStatus.mockResolvedValue(readerStatus({ reading: true }));
+    api.getDock.mockResolvedValueOnce(overview({
+      open: openPass({ crates: [crate()], tags: [asset({ in_window: true, crate_label: 'Crate A' })], added_count: 1 }),
+    })).mockResolvedValueOnce(overview({ passes: [passRow({ id: 5, asset_count: 1 })] }))
+      .mockResolvedValue(overview({
+        passes: [passRow({ id: 5, asset_count: 1 })],
+        open: openPass({ id: 10, tags: [{ ...asset({ epc: '000000000000000000000E01', label: 'Person A' }), kind: 'person' }] }),
+      }));
+    await renderPage();
+    await tick(1000);
+    expect(cardIs('done')).toBe(true);
+    expect(listNames()).toEqual(['host-a']);
+    await tick(1000);
+    expect(cardIs('scanning')).toBe(true);
+    expect(crateMeta()).toBe('Waiting for a crate tag');   // a person isn't a device
+    expect(chipOf(crateList())).toBe('0 devices');
   });
 
   it('a legacy would_pack result keeps its amber card', async () => {
@@ -884,16 +1030,12 @@ describe('DockStation', () => {
     expect(btnSub('Start')).toBe('Reading');
     cleanup();
 
-    // Not reading: Stopped, whatever the last Dock button was.
-    const cases: (DockControl | null)[] = ['stop', null, 'start'];
-    for (const control of cases) {
-      api.getDock.mockResolvedValue(overview({ control }));
-      await renderPage();
-      expect(readerShown().textContent).toBe('Stopped');
-      expect(readerShown().classList.contains('is-stopped')).toBe(true);
-      expect(btnSub('Start')).toBe('Start reading tags');
-      cleanup();
-    }
+    api.getDock.mockResolvedValue(overview({ control: 'stop' }));
+    await renderPage();
+    expect(readerShown().textContent).toBe('Stopped');
+    expect(readerShown().classList.contains('is-stopped')).toBe(true);
+    expect(btnSub('Start')).toBe('Start reading tags');
+    cleanup();
 
     api.getReaderStatus.mockRejectedValue(new ApiError(0, 'network'));
     await renderPage();

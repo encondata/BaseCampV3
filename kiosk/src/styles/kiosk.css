@@ -1143,6 +1143,8 @@
   text-transform: uppercase; color: var(--text-mute);
 }
 .dock-card-label svg { width: clamp(18px, 1.15vw, 22px); height: clamp(18px, 1.15vw, 22px); color: var(--accent); flex: none; }
+/* the reader's state at the label's right end, while a result holds the card */
+.dock-label-chip { margin-left: auto; font-family: var(--font-display); letter-spacing: 0; text-transform: none; }
 
 /* The crate card: dashed accent while scanning, solid accent on a crate
    (and on its decided pass while it waits to be sent), green once packed,

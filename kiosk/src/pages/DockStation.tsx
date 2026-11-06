@@ -7,19 +7,21 @@
  * watching, the card shows its result: the crate and Waiting to send, then
  * green once the portal has it packed, or red. The result holds until the
  * next tag is read; nothing on the card counts down or times out. With the
- * reader not reading it shows Stopped or the reader's state. In the middle,
- * the open burst's assets newest first, each with whether it is inside a
- * crate's window (while a result holds, that burst's assets as last shown,
- * Added once packed), beside the newest closed passes, each opening its
- * full detail. Along the bottom, the big Start and Stop. It fills the main
- * column in the kiosk's light or dark theme; both lists scroll inside their
- * cards. The overview refreshes 1 s after the previous refresh settles
- * (never overlapping); while refreshes fail, a red line says the station
- * can't be reached and the last overview stays under it. The reader is
- * checked 5 s after the previous check settles and right after each
- * button's call. Web mode, or a setup that isn't a Dock, goes home; a new
- * laptop browser with no setup yet shows nothing until the laptop's has
- * loaded (KioskShell looks for it), then decides.
+ * reader not reading it shows Stopped or the reader's state, as a chip
+ * beside the card's label while a result holds it. In the middle, the open
+ * burst's assets newest first, each with whether it is inside a crate's
+ * window (while a result holds, that burst's assets as last shown,
+ * following the pass: Added once packed, Not packed when refused, No crate
+ * read), beside the newest closed passes, each opening its full detail.
+ * Along the bottom, the big Start and Stop. It fills the main column in the
+ * kiosk's light or dark theme; both lists scroll inside their cards. The
+ * overview refreshes 1 s after the previous refresh settles (never
+ * overlapping); while refreshes fail, a red line says the station can't be
+ * reached and the last overview stays under it. The reader is checked 5 s
+ * after the previous check settles and right after each button's call. Web
+ * mode, or a setup that isn't a Dock, goes home; a new laptop browser with
+ * no setup yet shows nothing until the laptop's has loaded (KioskShell looks
+ * for it), then decides.
  */
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
@@ -103,12 +105,22 @@ function newlyDecided(passes: DockPassRow[], before: DockPassRow[]): DockPassRow
 const standsOut = (p: DockPassRow) => p.status === 'flagged' || p.status === 'refused';
 
 /** An asset's status in the open burst, from the edge's window test; inside
- *  a crate that will be flagged, it won't pack. `packed`: its burst's pass
- *  has been sent, so an added asset reads Added. */
-function assetChip(tag: DockOpenTag, flagged: boolean, packed: boolean): { label: string; tone: string } {
-  if (tag.in_window === null) return { label: 'Waiting for crate', tone: 'c-slate' };
+ *  a crate that will be flagged, it won't pack. `held` is the decided pass
+ *  of a result holding the card, as the list has it now: with no crate read
+ *  its assets read No crate read, and an added asset follows it (Added once
+ *  packed, Not packed when refused, Adding while it waits or for a legacy
+ *  dry run). */
+function assetChip(tag: DockOpenTag, flagged: boolean, held: DockPassRow | null): { label: string; tone: string } {
+  if (tag.in_window === null) {
+    return held?.status === 'flagged' && held.flag === 'no_crate'
+      ? { label: 'No crate read', tone: 'c-red' } : { label: 'Waiting for crate', tone: 'c-slate' };
+  }
   if (flagged) return { label: 'More than one crate', tone: 'c-red' };
-  if (tag.in_window) return { label: packed ? 'Added' : 'Adding', tone: 'c-green' };
+  if (tag.in_window) {
+    if (held?.status === 'packed') return { label: 'Added', tone: 'c-green' };
+    if (held?.status === 'refused') return { label: 'Not packed', tone: 'c-red' };
+    return { label: 'Adding', tone: 'c-green' };
+  }
   return { label: 'Outside window', tone: 'c-red' };
 }
 
@@ -137,6 +149,9 @@ interface CrateCard {
   meta: string;
   /** The reader's state, while the card shows it. */
   reader?: ReaderTone;
+  /** Beside the label while a result holds the card: a reader that is
+   *  stopped or can't be reached. */
+  readerChip?: { text: string; tone: 'c-slate' | 'c-red' };
 }
 
 /** A decided pass on the crate card: the crate's found look while it waits
@@ -316,15 +331,18 @@ export default function DockStation() {
   const newest = open && open.crates.length > 0 ? open.crates[open.crates.length - 1] : null;
   // The result follows its pass as the list has it now (sent, refused).
   const decided = result ? (passes?.find((p) => p.id === result.pass.id) ?? result.pass) : null;
-  // The list: a held result's burst, its added assets Added once it's
-  // packed, else the open burst.
+  // The list: a held result's burst, its assets following the pass, else
+  // the open burst.
   const rows = result ? result.rows : open ? listedAssets(open.tags) : [];
   const rowCrates = result ? result.crates : open?.crates ?? [];
-  const packed = decided?.status === 'packed';
 
   let card: CrateCard;
   if (decided && result) {
     card = resultCard(decided, result.flagged);
+    // A held result would hide a reader that stopped or can't be reached.
+    if (shown.tone === 'stopped' || shown.tone === 'unreachable') {
+      card.readerChip = { text: shown.text, tone: shown.tone === 'unreachable' ? 'c-red' : 'c-slate' };
+    }
   } else if (open && newest) {
     const flagged = newest.conflict ? flaggedWith(open.crates) : [];
     const found = `Tag ${displayEpc(newest.epc)} · read at ${clockText(new Date(newest.first_read_at))}`;
@@ -377,7 +395,12 @@ export default function DockStation() {
 
       <div className="dock-top">
         <section className={`dock-card dock-crate is-${card.look}`} aria-labelledby="dock-crate-label">
-          <div className="dock-card-label">{ICON.crate}<span id="dock-crate-label">Crate</span></div>
+          <div className="dock-card-label">
+            {ICON.crate}<span id="dock-crate-label">Crate</span>
+            {card.readerChip && (
+              <span className={`chip ${card.readerChip.tone} dock-label-chip`}>{card.readerChip.text}</span>
+            )}
+          </div>
           <div className="dock-crate-main">
             <div className={card.reader ? `dock-crate-name is-${card.reader}` : 'dock-crate-name'}>
               {card.name}
@@ -422,7 +445,7 @@ export default function DockStation() {
                 </thead>
                 <tbody>
                   {rows.map((t, i) => {
-                    const chip = assetChip(t, inFlaggedCrate(t, rowCrates), packed);
+                    const chip = assetChip(t, inFlaggedCrate(t, rowCrates), result ? decided : null);
                     const into = rowCrate(t, rowCrates);
                     return (
                       // The newest row flashes once as it arrives.
