@@ -12,9 +12,8 @@
  * burst's assets newest first, each with whether it is inside a crate's
  * window (while a result holds, that burst's assets as last shown,
  * following the pass: Added once packed, Not packed when refused, No crate
- * read), beside the newest closed passes, each opening its full detail.
- * Along the bottom, the big Start and Stop. It fills the main column in the
- * kiosk's light or dark theme; both lists scroll inside their cards. The
+ * read). Along the bottom, the big Start and Stop. It fills the main column
+ * in the kiosk's light or dark theme; the list scrolls inside its card. The
  * overview refreshes 1 s after the previous refresh settles (never
  * overlapping); while refreshes fail, a red line says the station can't be
  * reached and the last overview stays under it. The reader is checked 5 s
@@ -27,7 +26,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Navigate } from 'react-router-dom';
 
-import DockPassModal, { passOutcome } from '../components/DockPassModal';
 import { codeOf, readerErrorText } from '../components/setup/readerSetup';
 import {
   controlDock, getDock, getReaderStatus,
@@ -101,12 +99,19 @@ function newlyDecided(passes: DockPassRow[], before: DockPassRow[]): DockPassRow
   return fresh.find((p) => !(p.status === 'flagged' && p.flag === 'no_crate')) ?? fresh[0] ?? null;
 }
 
-/** No crate (or several), or the portal turned the pass away. */
-const standsOut = (p: DockPassRow) => p.status === 'flagged' || p.status === 'refused';
+/** Why the portal turned a whole pass away, from its error code. */
+function refuseText(code: string): string {
+  switch (code) {
+    case 'container_not_found': return 'crate not found in the portal';
+    case 'move_locked': return 'crate is on another move';
+    case 'move_inactive': return 'the move is closed';
+    default: return code;
+  }
+}
 
 /** An asset's status in the open burst, from the edge's window test; inside
  *  a crate that will be flagged, it won't pack. `held` is the decided pass
- *  of a result holding the card, as the list has it now: with no crate read
+ *  of a result holding the card, as the newest overview has it: with no crate read
  *  its assets read No crate read, and an added asset follows it (Added once
  *  packed, Not packed when refused, Adding while it waits or for a legacy
  *  dry run). */
@@ -163,11 +168,15 @@ function resultCard(p: DockPassRow, flagged: string[]): CrateCard {
   const devices = count(p.asset_count, 'device');
   switch (p.status) {
     case 'packed':
-      return { look: 'done', name: crate, meta: p.refused_count > 0 ? passOutcome(p) : `Packed ${devices}` };
-    case 'waiting': return { look: 'found', name: crate, meta: passOutcome(p) };
+      return {
+        look: 'done', name: crate,
+        meta: p.refused_count > 0 ? `Packed · ${p.refused_count} not packed` : `Packed ${devices}`,
+      };
+    case 'waiting': return { look: 'found', name: crate, meta: 'Waiting to send' };
     case 'would_pack':
       return { look: 'would', name: crate, meta: `Would pack ${devices} · dry run, nothing sent` };
-    case 'refused': return { look: 'flag', name: crate, meta: passOutcome(p) };
+    case 'refused':
+      return { look: 'flag', name: crate, meta: p.refuse_code ? `Not packed: ${refuseText(p.refuse_code)}` : 'Not packed' };
     case 'flagged':
       if (p.flag === 'many_crates') {
         return {
@@ -188,7 +197,6 @@ export default function DockStation() {
   const laptop = isLaptop();
   const dock = laptop && setup?.stationType === 'dock';
   const [overview, setOverview] = useState<DockOverview | null>(null);
-  const [detailId, setDetailId] = useState<number | null>(null);
   /** The last refresh failed; cleared by the next one that works. */
   const [unreachable, setUnreachable] = useState(false);
   const [status, setStatus] = useState<ReaderStatus | null>(null);
@@ -296,8 +304,6 @@ export default function DockStation() {
     };
   }, [dock, checkReader]);
 
-  const closeDetail = useCallback(() => setDetailId(null), []);
-
   if (laptop && setup === null && !setupSettled) return null;   // the laptop's may be on its way
   if (!dock) return <Navigate to="/" replace />;
 
@@ -329,7 +335,7 @@ export default function DockStation() {
   const open = overview?.open ?? null;
   const passes = overview?.passes ?? null;
   const newest = open && open.crates.length > 0 ? open.crates[open.crates.length - 1] : null;
-  // The result follows its pass as the list has it now (sent, refused).
+  // The result follows its pass as the newest overview has it (sent, refused).
   const decided = result ? (passes?.find((p) => p.id === result.pass.id) ?? result.pass) : null;
   // The list: a held result's burst, its assets following the pass, else
   // the open burst.
@@ -466,52 +472,6 @@ export default function DockStation() {
             )}
           </div>
         </section>
-
-        <section className="dock-panel" aria-labelledby="dock-recent-title">
-          <div className="dock-panel-head">
-            <div>
-              <h2 id="dock-recent-title" className="dock-panel-title">Recent passes</h2>
-              <p className="dock-panel-sub">Newest first.</p>
-            </div>
-            <span className="chip tag">{count(passes?.length ?? 0, 'pass', 'passes')}</span>
-          </div>
-          <div className="dock-list-wrap">
-            {passes === null && <p className="dock-empty">Checking…</p>}
-            {passes !== null && passes.length === 0 && (
-              <div className="dock-empty">{ICON.crate}No passes yet.</div>
-            )}
-            {passes !== null && passes.length > 0 && (
-              <table className="dock-list dock-recent-list">
-                <thead>
-                  <tr>
-                    <th>Time</th>
-                    <th>Crate</th>
-                    <th className="r">Assets</th>
-                    <th>Outcome</th>
-                    <th aria-label="Details" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {passes.map((p) => (
-                    <tr key={p.id} className={standsOut(p) ? 'is-flagged' : undefined}>
-                      <td className="num">{clockText(new Date(p.opened_at))}</td>
-                      <td className="name">{p.container_name ?? '—'}</td>
-                      <td className="num r">{p.asset_count}</td>
-                      <td className={p.status === 'would_pack' ? 'dock-outcome is-would' : 'dock-outcome'}>
-                        {passOutcome(p)}
-                      </td>
-                      <td className="r">
-                        <button type="button" className="mini-btn" onClick={() => setDetailId(p.id)}>
-                          Details
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </section>
       </div>
 
       {controlError && (
@@ -547,8 +507,6 @@ export default function DockStation() {
           </button>
         </div>
       </div>
-
-      {detailId !== null && <DockPassModal key={detailId} passId={detailId} onClose={closeDetail} />}
     </div>
   );
 }

@@ -285,7 +285,7 @@ Plan: `docs/superpowers/plans/2026-11-06-dock-window-controls-theme.md`. Its dec
 
 ## Dock screen redesign (2026-11-06)
 
-*Superseded in part by "Changes after the second test" below: the countdown, the 6 s result, Paused, Dry run and Window are gone.*
+*Superseded in part by "Changes after the second test" and "Recent passes removed" below: the countdown, the 6 s result, Paused, Dry run, Window, Recent passes and the pass details are gone.*
 
 Jimmy approved a mockup that follows the Truck Packing kiosk: `docs/mockups/dock-station-kiosk.html` (untracked, main checkout). Plan: `docs/superpowers/plans/2026-11-06-dock-screen-redesign.md`.
 
@@ -373,3 +373,12 @@ Plan: `docs/superpowers/plans/2026-11-06-dock-no-timer.md`.
   - An unnamed crate's held result shows "—" and a count of 0. Containers on a move normally have names.
   - Right after Stop, the held rows can miss a read from the last second; the count is correct.
   - An asset re-read late in one burst, close to the next burst's crate, isn't flagged. Tags are read once at the curtain, so this shouldn't come up.
+
+## Recent passes removed (2026-11-06, Jimmy)
+
+Jimmy asked for the Recent passes card to be removed from the Dock screen.
+
+- **In this crate** now spans the whole middle row.
+- **The pass details popup goes too.** Recent passes' Details button was the only way to open it. The screen no longer shows a pass's individual reads, antennas or signal, or which devices the portal refused.
+- **The laptop is unchanged.** It still keeps every pass. `/edge/dock` still lists the newest closed passes, which the screen uses to notice a decision and to follow it until the portal answers. `GET /edge/dock/passes/{id}` stays, so the details can come back without edge work.
+- **A decided crate still shows on the crate card,** held until the next tag, as before. That's now the only place a pass's outcome shows on the Dock.

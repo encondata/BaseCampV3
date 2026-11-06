@@ -1396,7 +1396,7 @@ export interface DockOpenPass {
   tags: DockOpenTag[];
 }
 
-/** A closed pass as the list and the detail show it. `flag` is set only
+/** A closed pass as the overview lists it. `flag` is set only
  *  for a `flagged` pass; `refuse_code` only when the portal refused it. */
 export interface DockPassRow {
   id: number;
@@ -1426,39 +1426,8 @@ export interface DockOverview {
   control: DockControl | null;
 }
 
-/** A closed pass's tag with what packing did to it: `result`, `moved_from`
- *  (the crate it left) and `reason` are null until the portal answers, and
- *  for anything but an asset. */
-export interface DockPassTag extends DockTag {
-  result: 'packed' | 'moved' | 'already_there' | 'refused' | null;
-  moved_from: string | null;
-  reason: string | null;
-}
-
-/** One reader read behind a pass, in id order. */
-export interface DockPassRead {
-  id: number;
-  read_at: string;
-  epc: string;
-  kind: DockTagKind;
-  antenna: number | null;
-  peak_rssi: number | null;
-}
-
-/** GET /edge/dock/passes/{id}. */
-export interface DockPassDetail {
-  pass: DockPassRow;
-  tags: DockPassTag[];
-  reads: DockPassRead[];
-}
-
 export async function getDock(): Promise<DockOverview> {
   return jsonFrom<DockOverview>(await apiFetch('/edge/dock'));
-}
-
-/** A closed pass; 404 `pass_not_found` for an unknown or still-open one. */
-export async function getDockPass(id: number): Promise<DockPassDetail> {
-  return jsonFrom<DockPassDetail>(await apiFetch(`/edge/dock/passes/${id}`));
 }
 
 /** POST /edge/dock/control's answer: whether the reader is reading, the

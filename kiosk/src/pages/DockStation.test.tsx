@@ -1,18 +1,16 @@
 // @vitest-environment jsdom
 /** The Dock screen: the crate card (Scanning, the newest crate, two crates
  *  in red, a decided pass's result held until the next tag, Stopped), the
- *  count card, the crate's running device list (and a held result's), recent
- *  passes and their outcome copy (a legacy dry run's Would pack too), the
- *  pass-detail modal, the reader's Start and Stop and its state, the 1 s
- *  overview poll and the 5 s reader check. No countdown, dry run, Window or
- *  Pause. */
+ *  count card, the crate's running device list (and a held result's), the
+ *  reader's Start and Stop and its state, the 1 s overview poll and the 5 s
+ *  reader check. No countdown, dry run, Window, Pause or Recent passes. */
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({
-  getDock: vi.fn(), getDockPass: vi.fn(), getEdgeSetup: vi.fn(),
+  getDock: vi.fn(), getEdgeSetup: vi.fn(),
   controlDock: vi.fn(), getReaderStatus: vi.fn(),
 }));
 vi.mock('../lib/api', async (importOriginal) => {
@@ -25,8 +23,7 @@ vi.mock('../lib/sync', async (importOriginal) => ({
 
 import {
   ApiError, type DockControl, type DockControlResult, type DockCrate, type DockOpenPass,
-  type DockOpenTag, type DockOverview, type DockPassDetail, type DockPassRow, type DockPassTag,
-  type EdgeSetup, type ReaderStatus,
+  type DockOpenTag, type DockOverview, type DockPassRow, type EdgeSetup, type ReaderStatus,
 } from '../lib/api';
 import { writeKioskSetup } from '../lib/kioskSetup';
 import { hydrateLaptopSetup } from '../lib/laptopSetup';
@@ -96,26 +93,6 @@ const readerStatus = (over: Partial<ReaderStatus> = {}): ReaderStatus => ({
   reader: READER, reachable: true, reading: false, radio: 'on', antennas: ['1', '2'], ...over,
 });
 
-const passTag = (over: Partial<DockPassTag>): DockPassTag => ({
-  epc: '000000000000000000001001', kind: 'asset', label: 'host-a', result: null,
-  moved_from: null, reason: null, ...over,
-});
-
-const detail = (over: Partial<DockPassDetail> = {}): DockPassDetail => ({
-  pass: passRow({ id: 7, status: 'packed', moved_count: 1 }),
-  tags: [
-    passTag({ epc: '0000000000000000000000C1', kind: 'container', label: 'Crate A' }),
-    passTag({ epc: '000000000000000000001001', label: 'host-a', result: 'moved', moved_from: 'Crate B' }),
-    passTag({ epc: '000000000000000000001002', label: 'host-b', result: 'packed' }),
-  ],
-  reads: [
-    { id: 41, read_at: at(14, 3, 22), epc: '000000000000000000001001', kind: 'asset', antenna: 2, peak_rssi: -52 },
-    { id: 42, read_at: at(14, 3, 23), epc: '0000000000000000000000C1', kind: 'container', antenna: 1, peak_rssi: -61 },
-    { id: 43, read_at: at(14, 3, 24), epc: '00000000000000000000BEEF', kind: 'unknown', antenna: null, peak_rssi: null },
-  ],
-  ...over,
-});
-
 async function flush() {
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
 }
@@ -159,7 +136,6 @@ const countCard = () => screen.getByRole('region', { name: 'Assets added to crat
 const countValue = () => countCard().querySelector('.dock-stat-value')?.textContent;
 const countSub = () => countCard().querySelector('.dock-stat-sub')?.textContent;
 const crateList = () => screen.getByRole('region', { name: 'In this crate' });
-const recentList = () => screen.getByRole('region', { name: 'Recent passes' });
 /** A panel's count chip. */
 const chipOf = (panel: HTMLElement) => panel.querySelector('.dock-panel-head .chip')?.textContent;
 /** The crate list's rows, past the header. */
@@ -169,8 +145,6 @@ const listNames = () => listRows().map((r) => r.cells[0].textContent);
 const listChips = () => listRows().map((r) => r.querySelector('.chip')?.textContent);
 const UNREACHABLE = "Can't reach the station. Retrying…";
 const EMPTY_LIST = 'Devices appear here as they pass the curtain.';
-/** The Recent passes row whose Crate cell (or other cell) holds `text`. */
-const rowOf = (text: string) => within(recentList()).getByText(text).closest('tr') as HTMLElement;
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: false });
@@ -179,7 +153,6 @@ beforeEach(() => {
   writeKioskSetup(SETUP);
   window.__KIOSK_CONFIG__ = { mode: 'laptop' };
   api.getDock.mockReset().mockResolvedValue(overview());
-  api.getDockPass.mockReset().mockResolvedValue(detail());
   api.getEdgeSetup.mockReset().mockResolvedValue(null);
   api.getReaderStatus.mockReset().mockResolvedValue(readerStatus());
   api.controlDock.mockReset().mockImplementation(
@@ -418,7 +391,7 @@ describe('DockStation', () => {
     expect(btnSub('Start')).toBe('Start reading tags');
   });
 
-  it('no settings, no Pause, no bar', async () => {
+  it('no settings, no Pause, no bar, no Recent passes', async () => {
     const none = () => {
       expect(screen.queryByRole('switch')).toBeNull();
       expect(screen.queryByText('Dry run')).toBeNull();
@@ -426,6 +399,10 @@ describe('DockStation', () => {
       expect(screen.queryByRole('group', { name: 'Dock settings' })).toBeNull();
       expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull();
       expect(screen.queryByText(/Finishing in/)).toBeNull();
+      // decided passes take the crate card, never a list of their own
+      expect(screen.queryByText('Recent passes')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Details' })).toBeNull();
+      expect(document.querySelectorAll('.dock-panel')).toHaveLength(1);   // In this crate alone
     };
     let first: (o: DockOverview) => void = () => {};
     api.getReaderStatus.mockResolvedValue(readerStatus({ reading: true }));
@@ -723,7 +700,7 @@ describe('DockStation', () => {
       .mockResolvedValue(overview({ passes: [passRow({ id: 4 })] }));
     await renderPage();
     await tick(1000);   // the first answer, after a failed poll
-    expect(rowOf('Crate A')).toBeTruthy();
+    expect(screen.queryByText(UNREACHABLE)).toBeNull();
     expect(cardIs('scanning')).toBe(true);
     await tick(1000);
     expect(cardIs('scanning')).toBe(true);
@@ -811,8 +788,6 @@ describe('DockStation', () => {
     expect(crateMeta()).toBe('Would pack 3 devices · dry run, nothing sent');
     expect(countValue()).toBe('3');
     expect(countSub()).toBe('would go into Crate B');
-    // the leftover still stands out in Recent passes
-    expect(rowOf('Flagged: No crate read').classList.contains('is-flagged')).toBe(true);
   });
 
   it('a No crate read leftover takes the card when it is the only new pass', async () => {
@@ -952,67 +927,6 @@ describe('DockStation', () => {
     api.getReaderStatus.mockResolvedValue(readerStatus());
     await renderPage();
     expect(within(crateList()).getByText('The reader is not reading.')).toBeTruthy();
-  });
-
-  // ── Recent passes ─────────────────────────────────────────────────
-
-  it('each recent pass reads its outcome; flagged and refused rows stand out', async () => {
-    const rows: [Partial<DockPassRow>, string, boolean][] = [
-      [{ status: 'would_pack', container_name: 'Crate W', asset_count: 4, dry_run: true }, 'Would pack 4 into Crate W', false],
-      [{ status: 'waiting' }, 'Waiting to send', false],
-      [{ status: 'packed' }, 'Packed', false],
-      [{ status: 'packed', refused_count: 2 }, 'Packed · 2 not packed', false],
-      [{ status: 'refused', refuse_code: 'container_not_found' }, 'Not packed: crate not found in the portal', true],
-      [{ status: 'refused', refuse_code: 'move_locked' }, 'Not packed: crate is on another move', true],
-      [{ status: 'refused', refuse_code: 'move_inactive' }, 'Not packed: the move is closed', true],
-      [{ status: 'refused', refuse_code: 'http_400' }, 'Not packed: http_400', true],
-      [{ status: 'flagged', flag: 'no_crate', container_name: null }, 'Flagged: No crate read', true],
-      [{ status: 'flagged', flag: 'many_crates', container_name: null }, 'Flagged: More than one crate', true],
-      [{ status: 'nothing', container_name: null, asset_count: 0 }, 'Nothing to pack', false],
-    ];
-    api.getDock.mockResolvedValue(overview({
-      passes: rows.map(([over], i) => passRow({ id: 100 - i, ...over })),
-    }));
-    await renderPage();
-    const panel = recentList();
-    const shown = within(panel).getAllByRole('row').slice(1);   // past the header
-    expect(shown).toHaveLength(rows.length);
-    rows.forEach(([, text, flagged], i) => {
-      expect(shown[i].querySelector('.dock-outcome')?.textContent).toBe(text);
-      expect(shown[i].classList.contains('is-flagged')).toBe(flagged);
-    });
-    // a legacy dry-run pass reads amber
-    expect(shown[0].querySelector('.dock-outcome')?.classList.contains('is-would')).toBe(true);
-    expect(shown[1].querySelector('.dock-outcome')?.classList.contains('is-would')).toBe(false);
-    expect(chipOf(panel)).toBe('11 passes');
-    expect(within(panel).getByText('Newest first.')).toBeTruthy();
-    expect(within(panel).getAllByRole('columnheader').map((h) => h.textContent))
-      .toEqual(['Time', 'Crate', 'Assets', 'Outcome', '']);
-  });
-
-  it('the time cell is the local 24-hour HH:MM:SS', async () => {
-    api.getDock.mockResolvedValue(overview({ passes: [passRow({ opened_at: at(14, 3, 22) })] }));
-    await renderPage();
-    const row = rowOf('Crate A');
-    expect(within(row).getByText('14:03:22')).toBeTruthy();
-    expect(row.textContent).not.toMatch(/AM|PM/);
-    expect(chipOf(recentList())).toBe('1 pass');
-  });
-
-  it('no passes says so', async () => {
-    await renderPage();
-    expect(within(recentList()).getByText('No passes yet.')).toBeTruthy();
-    expect(chipOf(recentList())).toBe('0 passes');
-  });
-
-  it('a legacy would_pack pass still reads Would pack', async () => {
-    api.getDock.mockResolvedValue(overview({
-      passes: [passRow({ id: 3, status: 'would_pack', dry_run: true, container_name: 'Crate W', asset_count: 4 })],
-    }));
-    await renderPage();
-    const outcome = rowOf('Crate W').querySelector('.dock-outcome');
-    expect(outcome?.textContent).toBe('Would pack 4 into Crate W');
-    expect(outcome?.classList.contains('is-would')).toBe(true);
   });
 
   // ── the reader and its buttons ────────────────────────────────────
@@ -1223,156 +1137,13 @@ describe('DockStation', () => {
     expect(api.getReaderStatus).toHaveBeenCalledTimes(3);
   });
 
-  // ── the pass modal ────────────────────────────────────────────────
-
-  it('Details opens the pass: every read, what packing did, and closes', async () => {
-    api.getDock.mockResolvedValue(overview({
-      passes: [passRow({ id: 7, status: 'packed', moved_count: 1 })],
-    }));
-    await renderPage();
-    fireEvent.click(within(rowOf('Crate A')).getByRole('button', { name: 'Details' }));
-    await flush();
-    expect(api.getDockPass).toHaveBeenCalledWith(7);
-    const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('Dock pass')).toBeTruthy();
-    expect(within(dialog).getByText('Pass at 14:03:22')).toBeTruthy();
-    expect(within(dialog).getByText('Moved from Crate B')).toBeTruthy();
-    const read = within(dialog).getByText('1001').closest('tr') as HTMLElement;
-    expect(within(read).getByText('-52 dBm')).toBeTruthy();
-    expect(within(read).getByText('Asset host-a')).toBeTruthy();
-    expect(within(read).getByText('2')).toBeTruthy();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
-    expect(screen.queryByRole('dialog')).toBeNull();
-  });
-
-  it('the pass modal names every match, and Escape closes it', async () => {
-    api.getDockPass.mockResolvedValue(detail({
-      reads: [
-        { id: 1, read_at: at(14, 3, 22), epc: '0000000000000000000000C1', kind: 'container', antenna: 1, peak_rssi: -61 },
-        { id: 2, read_at: at(14, 3, 22), epc: '000000000000000000000E01', kind: 'person', antenna: 1, peak_rssi: -70 },
-        { id: 3, read_at: at(14, 3, 23), epc: '000000000000000000000F01', kind: 'off_move', antenna: 3, peak_rssi: -66 },
-        { id: 4, read_at: at(14, 3, 23), epc: '00000000000000000000BEEF', kind: 'unknown', antenna: null, peak_rssi: null },
-      ],
-    }));
-    api.getDock.mockResolvedValue(overview({ passes: [passRow({ id: 7 })] }));
-    await renderPage();
-    fireEvent.click(within(rowOf('Crate A')).getByRole('button', { name: 'Details' }));
-    await flush();
-    const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('Crate Crate A')).toBeTruthy();
-    expect(within(dialog).getByText('Person')).toBeTruthy();
-    expect(within(dialog).getByText('Off-move asset')).toBeTruthy();
-    expect(within(dialog).getByText('Unknown')).toBeTruthy();
-    fireEvent.keyDown(document, { key: 'Escape' });
-    expect(screen.queryByRole('dialog')).toBeNull();
-  });
-
-  it('the Packing table follows the pass: a legacy dry run, waiting, not sent, and raw results', async () => {
-    const tags = [
-      passTag({ epc: '000000000000000000001001', label: 'host-a', result: 'already_there' }),
-      passTag({ epc: '000000000000000000001002', label: 'host-b', result: 'refused', reason: 'changed_since_pass' }),
-      passTag({ epc: '000000000000000000001003', label: 'host-c', result: 'refused', reason: 'not_on_move' }),
-      passTag({ epc: '000000000000000000001004', label: 'host-d', result: 'refused', reason: 'asset_not_found' }),
-      // a result this build doesn't know is shown as the edge sent it
-      passTag({ epc: '000000000000000000001005', label: 'host-e', result: 'teleported' as DockPassTag['result'] }),
-    ];
-    api.getDock.mockResolvedValue(overview({ passes: [passRow({ id: 7 })] }));
-    const open = async (status: DockPassRow['status']) => {
-      api.getDockPass.mockResolvedValue(detail({ pass: passRow({ id: 7, status }), tags }));
-      fireEvent.click(within(rowOf('Crate A')).getByRole('button', { name: 'Details' }));
-      await flush();
-      const dialog = screen.getByRole('dialog');
-      const result = (label: string) =>
-        (within(dialog).getByText(label).closest('tr') as HTMLTableRowElement).cells[1].textContent;
-      return { dialog, result };
-    };
-    await renderPage();
-
-    let { dialog, result } = await open('packed');
-    expect(result('host-a')).toBe('Already there');
-    expect(result('host-b')).toBe('Not packed: Changed since this pass');
-    expect(result('host-c')).toBe('Not packed: not on this move');
-    expect(result('host-d')).toBe('Not packed: not found in the portal');
-    expect(result('host-e')).toBe('teleported');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
-
-    ({ dialog, result } = await open('would_pack'));
-    expect(result('host-a')).toBe('Would pack');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
-
-    ({ dialog, result } = await open('waiting'));
-    expect(result('host-a')).toBe('Waiting to send');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
-
-    ({ dialog, result } = await open('flagged'));
-    expect(result('host-a')).toBe('Not sent');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
-
-    ({ dialog, result } = await open('refused'));
-    expect(result('host-a')).toBe('Not sent');
-  });
-
-  it('an open modal follows a waiting pass until it is sent', async () => {
-    const tags = [passTag({ epc: '000000000000000000001001', label: 'host-a' })];
-    api.getDockPass
-      .mockResolvedValueOnce(detail({ pass: passRow({ id: 7, status: 'waiting' }), tags }))
-      .mockRejectedValueOnce(new ApiError(0, 'network'))   // a failed refresh keeps what's shown
-      .mockResolvedValue(detail({
-        pass: passRow({ id: 7, status: 'packed' }),
-        tags: [{ ...tags[0], result: 'packed' }],
-      }));
-    api.getDock.mockResolvedValue(overview({ passes: [passRow({ id: 7, status: 'waiting' })] }));
-    await renderPage();
-    fireEvent.click(within(rowOf('Crate A')).getByRole('button', { name: 'Details' }));
-    await flush();
-    const dialog = () => screen.getByRole('dialog');
-    const result = () => (within(dialog()).getByText('host-a').closest('tr') as HTMLTableRowElement).cells[1].textContent;
-    expect(result()).toBe('Waiting to send');
-    await tick(2000);
-    expect(api.getDockPass).toHaveBeenCalledTimes(2);
-    expect(result()).toBe('Waiting to send');
-    expect(within(dialog()).queryByText("Couldn't load this pass.")).toBeNull();
-    await tick(2000);
-    expect(api.getDockPass).toHaveBeenCalledTimes(3);
-    expect(result()).toBe('Packed');
-    expect(within(dialog()).getByText('Pass at 14:03:22').parentElement?.textContent).toContain('Packed');
-    // sent: no more re-reads
-    await tick(10000);
-    expect(api.getDockPass).toHaveBeenCalledTimes(3);
-  });
-
-  it('closing the modal of a waiting pass stops its re-reads', async () => {
-    api.getDockPass.mockResolvedValue(detail({ pass: passRow({ id: 7, status: 'waiting' }) }));
-    api.getDock.mockResolvedValue(overview({ passes: [passRow({ id: 7, status: 'waiting' })] }));
-    await renderPage();
-    fireEvent.click(within(rowOf('Crate A')).getByRole('button', { name: 'Details' }));
-    await flush();
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close' }));
-    await tick(10000);
-    expect(api.getDockPass).toHaveBeenCalledTimes(1);
-  });
-
-  it("a pass that can't be loaded says so, and the modal still closes", async () => {
-    api.getDockPass.mockRejectedValue(new ApiError(404, 'pass_not_found'));
-    api.getDock.mockResolvedValue(overview({ passes: [passRow({ id: 7 })] }));
-    await renderPage();
-    fireEvent.click(within(rowOf('Crate A')).getByRole('button', { name: 'Details' }));
-    await flush();
-    const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText("Couldn't load this pass.")).toBeTruthy();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
-    expect(screen.queryByRole('dialog')).toBeNull();
-  });
-
   // ── Checking…, unreachable and the polls ──────────────────────────
 
-  it('before the first answer both lists say Checking…', async () => {
+  it('before the first answer the list says Checking…', async () => {
     api.getDock.mockReturnValue(new Promise<DockOverview>(() => {}));
     await renderPage();
     expect(within(crateList()).getByText('Checking…')).toBeTruthy();
-    expect(within(recentList()).getByText('Checking…')).toBeTruthy();
     expect(screen.queryByText(EMPTY_LIST)).toBeNull();
-    expect(screen.queryByText('No passes yet.')).toBeNull();
     expect(screen.queryByText(UNREACHABLE)).toBeNull();
   });
 
@@ -1380,7 +1151,7 @@ describe('DockStation', () => {
     api.getDock.mockRejectedValue(new ApiError(0, 'network'));
     await renderPage();
     expect(screen.getByRole('alert').textContent).toBe(UNREACHABLE);
-    expect(screen.getAllByText('Checking…')).toHaveLength(2);
+    expect(within(crateList()).getByText('Checking…')).toBeTruthy();
   });
 
   it('unreachable keeps Stop enabled', async () => {
@@ -1391,7 +1162,6 @@ describe('DockStation', () => {
     expect(screen.getByRole('alert').textContent).toBe(UNREACHABLE);
     expect(readerShown().textContent).toBe('Unreachable');
     expect(within(crateList()).getByText('Checking…')).toBeTruthy();
-    expect(within(recentList()).getByText('Checking…')).toBeTruthy();
     expect(enabled()).toEqual([false, true]);
     fireEvent.click(readerBtn('Stop'));
     await flush();
@@ -1412,15 +1182,17 @@ describe('DockStation', () => {
     expect(enabled()).toEqual([false, true]);
   });
 
-  it('the line clears once a poll works, and a failure keeps the last passes under it', async () => {
-    api.getDock.mockResolvedValueOnce(overview({ passes: [passRow()] }))
+  it('the line clears once a poll works, and a failure keeps the last overview under it', async () => {
+    const o = overview({ open: openPass({ crates: [crate()], tags: [asset()] }) });
+    api.getDock.mockResolvedValueOnce(o)
       .mockRejectedValueOnce(new ApiError(0, 'network'))
-      .mockResolvedValue(overview({ passes: [passRow()] }));
+      .mockResolvedValue(o);
     await renderPage();
     expect(screen.queryByText(UNREACHABLE)).toBeNull();
     await tick(1000);
     expect(screen.getByText(UNREACHABLE)).toBeTruthy();
-    expect(rowOf('Crate A')).toBeTruthy();
+    expect(crateName().textContent).toBe('Crate A');
+    expect(listRows()).toHaveLength(1);
     await tick(1000);
     expect(screen.queryByText(UNREACHABLE)).toBeNull();
   });

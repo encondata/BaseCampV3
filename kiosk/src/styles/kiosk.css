@@ -1119,7 +1119,7 @@
 }
 .dock-work {
   flex: 1 1 auto; min-height: 0;
-  display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: clamp(12px, 1.05vw, 20px);
+  display: grid; grid-template-columns: minmax(0, 1fr);
 }
 /* Start and Stop share the whole row, half each. */
 .dock-bottom {
@@ -1198,7 +1198,7 @@
 @keyframes dock-bump { 0% { transform: scale(1); } 35% { transform: scale(1.06); color: var(--c-green); } 100% { transform: scale(1); } }
 .dock-stat-sub { font-size: clamp(14px, 0.83vw, 16px); color: var(--text-mute); }
 
-/* the two lists in the middle */
+/* the list in the middle */
 .dock-panel {
   display: flex; flex-direction: column; min-width: 0; min-height: 0;
   padding: clamp(14px, 2vh, 22px) clamp(16px, 1.35vw, 26px);
@@ -1245,20 +1245,10 @@
 .dock-crate-list th:nth-child(3) { width: 31%; }   /* a whole 24-character EPC on one line */
 .dock-crate-list th:nth-child(4) { width: 14%; }
 .dock-crate-list th:nth-child(5) { width: 21%; }
-.dock-recent-list th:nth-child(1) { width: 17%; }
-.dock-recent-list th:nth-child(2) { width: 22%; }
-.dock-recent-list th:nth-child(3) { width: 12%; }
-.dock-recent-list th:nth-child(5) { width: clamp(92px, 5.6vw, 108px); }
-.dock-recent-list .mini-btn { height: clamp(28px, 3.6vh, 34px); padding: 0 11px; }
 /* With two or more crates, an added row names its crate under the chip. */
 .dock-row-crate { display: block; margin-top: 3px; font-size: clamp(11.5px, 0.68vw, 13px); color: var(--text-mute); }
 .dock-list tr.is-new td { animation: dock-new 2.4s ease-out; }
 @keyframes dock-new { from { background: color-mix(in srgb, var(--c-green) 16%, transparent); } to { background: transparent; } }
-/* A flagged or refused pass gets a red left edge and red outcome text; a
-   legacy dry run's Would pack reads amber. */
-.dock-list tr.is-flagged td:first-child { box-shadow: inset 5px 0 0 var(--c-red); }
-.dock-list tr.is-flagged .dock-outcome { color: var(--c-red); }
-.dock-list .dock-outcome.is-would { color: var(--c-amber); }
 .dock-empty {
   height: 100%; margin: 0; padding: 20px; box-sizing: border-box;
   display: grid; place-content: center; text-align: center;
@@ -1298,14 +1288,13 @@
 }
 
 /* A narrow screen (a phone on the LAN): the rows stack and the page
-   scrolls; each list keeps a usable height of its own. */
+   scrolls; the list keeps a usable height of its own. */
 @media (max-width: 900px) {
   .portal-page.dock-dash { height: auto; }
   .dock-top, .dock-work, .dock-bottom { grid-template-columns: minmax(0, 1fr); height: auto; }
   .dock-panel { height: 380px; }
   .dock-reader { min-height: 96px; }
 }
-.dock-pass-table td { overflow-wrap: anywhere; }
 
 /* ── Settings › Devices ──────────────────────────────────────────────
    One card per device type: two columns on wide screens, one on narrow

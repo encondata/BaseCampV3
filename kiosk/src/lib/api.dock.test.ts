@@ -50,28 +50,9 @@ it('getDock reads the overview from GET /edge/dock', async () => {
   expect(lastCall(fetchMock)).toEqual({ url: 'http://api.test/edge/dock', method: 'GET', body: undefined });
 });
 
-it('getDockPass reads one pass from GET /edge/dock/passes/{id}', async () => {
-  const detail: api.DockPassDetail = {
-    pass: PASS,
-    // A legacy dry-run pass is never sent, so its tags carry no packing result.
-    tags: [{ epc: 'E200002', kind: 'asset', label: 'Server 4', result: null,
-             moved_from: null, reason: null }],
-    reads: [{ id: 1, read_at: '2026-11-05T14:00:01Z', epc: 'E200002', kind: 'asset', antenna: 2,
-              peak_rssi: -52 }],
-  };
-  const fetchMock = vi.fn(async () => json(detail));
-  vi.stubGlobal('fetch', fetchMock);
-  expect(await api.getDockPass(7)).toEqual(detail);
-  expect(lastCall(fetchMock)).toEqual({ url: 'http://api.test/edge/dock/passes/7', method: 'GET', body: undefined });
-});
-
-it('getDockPass surfaces pass_not_found', async () => {
-  vi.stubGlobal('fetch', vi.fn(async () => json({ detail: { code: 'pass_not_found' } }, 404)));
-  await expect(api.getDockPass(99)).rejects.toMatchObject({ status: 404, code: 'pass_not_found' });
-});
-
-it('there is no Dock settings call', () => {
+it('there is no Dock settings or pass detail call', () => {
   expect('saveDockSettings' in api).toBe(false);
+  expect('getDockPass' in api).toBe(false);
 });
 
 it('controlDock posts the action to POST /edge/dock/control and returns the result', async () => {
