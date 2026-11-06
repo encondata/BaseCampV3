@@ -3,9 +3,12 @@ trusted (known_hosts); the connect step pins that stored key. Error
 reasons are our own copy — asyncssh messages never reach the caller."""
 
 import asyncio
-from collections.abc import Awaitable, Callable
+import contextlib
+from collections.abc import Awaitable, Callable, Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
+from typing import Self
 
 import asyncssh
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +19,8 @@ from sirdar_api.deploy import Check, ConnectFailed, ConnectResult, known_hosts
 CONNECT_TIMEOUT = 15
 CONNECT_TRIES = 5            # the office network drops many outbound port-22 connections
 CONNECT_RETRY_DELAY = 3.0
+KEEPALIVE_INTERVAL = 30
+KEEPALIVE_COUNT_MAX = 3
 COMMAND_TIMEOUT = 10
 RUN_TIMEOUT = 60
 OUTPUT_LIMIT = 256 * 1024
@@ -236,14 +241,55 @@ async def pinned_host_key(db: AsyncSession, host: str, port: int, *, tries: int 
                       public_key=stored.public_key)
 
 
+class _HostKeyRejected(ConnectFailed):
+    """The login refused the server's key (it isn't the pinned one)."""
+
+
+async def _login_pinned(cfg: SshTargetConfig, pinned: PinnedHost, *, tries: int,
+                        log: Callable[[str], None] | None = None
+                        ) -> asyncssh.SSHClientConnection:
+    client_key = await load_client_key(cfg)
+    return await with_connect_retry(
+        cfg.host, cfg.port, lambda: _connect(cfg, pinned, client_key), tries=tries, log=log)
+
+
+async def open_pinned(cfg: SshTargetConfig, db: AsyncSession, *, tries: int = CONNECT_TRIES,
+                      log: Callable[[str], None] | None = None
+                      ) -> tuple[asyncssh.SSHClientConnection, PinnedHost]:
+    """Log in with the stored host key pinned: one connection when the key
+    still matches. The live key is fetched only to explain a refusal
+    (HostKeyUnknown with no stored key, HostKeyMismatch when it changed)."""
+    stored = await known_hosts.lookup(db, cfg.host, cfg.port)
+    if stored is None:
+        await pinned_host_key(db, cfg.host, cfg.port, tries=tries, log=log)   # raises HostKeyUnknown
+        raise ConnectFailed("The host's key was trusted while connecting. Try again.")
+    try:
+        key = asyncssh.import_public_key(stored.public_key)
+    except (asyncssh.KeyImportError, ValueError):
+        raise ConnectFailed("Sirdar's saved key for this host is unreadable. "
+                            "Forget the host and trust it again.") from None
+    pinned = PinnedHost(key=key, key_type=stored.key_type,
+                        fingerprint=stored.fingerprint_sha256, public_key=stored.public_key)
+    try:
+        return await _login_pinned(cfg, pinned, tries=tries, log=log), pinned
+    except _HostKeyRejected as rejected:
+        live = await with_connect_retry(
+            cfg.host, cfg.port,
+            lambda: known_hosts.fetch_key_of_type(cfg.host, cfg.port, stored.key_type),
+            tries=tries, log=log)
+        actual = known_hosts.fingerprint(live)
+        if actual == stored.fingerprint_sha256:
+            raise rejected from None
+        raise HostKeyMismatch(cfg.host, cfg.port, stored.fingerprint_sha256, actual,
+                              live.get_algorithm()) from None
+
+
 async def connect_pinned(cfg: SshTargetConfig, pinned: PinnedHost, *,
                          tries: int = CONNECT_TRIES,
                          log: Callable[[str], None] | None = None
                          ) -> asyncssh.SSHClientConnection:
     """Log in, accepting only the pinned host key."""
-    client_key = await load_client_key(cfg)
-    return await with_connect_retry(
-        cfg.host, cfg.port, lambda: _connect(cfg, pinned, client_key), tries=tries, log=log)
+    return await _login_pinned(cfg, pinned, tries=tries, log=log)
 
 
 async def _connect(cfg: SshTargetConfig, pinned: PinnedHost,
@@ -255,11 +301,14 @@ async def _connect(cfg: SshTargetConfig, pinned: PinnedHost,
             # Pin the stored key: (trusted host keys, trusted CA keys, revoked keys).
             known_hosts=([pinned.key], [], []),
             agent_path=None, config=None, connect_timeout=CONNECT_TIMEOUT,
+            # A pooled connection can sit idle; notice a silently dead one.
+            keepalive_interval=KEEPALIVE_INTERVAL, keepalive_count_max=KEEPALIVE_COUNT_MAX,
         ), CONNECT_TIMEOUT + 5)
     except asyncssh.PermissionDenied:
         raise ConnectFailed(_AUTH_FAILED) from None
-    except asyncssh.HostKeyNotVerifiable:
-        raise ConnectFailed("The server's host key changed during the test. Try again.") \
+    except (asyncssh.HostKeyNotVerifiable, asyncssh.KeyExchangeFailed):
+        # KeyExchangeFailed: the server no longer offers the pinned key's type.
+        raise _HostKeyRejected("The server's host key changed during the test. Try again.") \
             from None
     except (OSError, TimeoutError, asyncssh.Error):
         raise known_hosts.unreachable(cfg.host, cfg.port) from None
@@ -286,6 +335,83 @@ class CommandResult:
     stdout: str = field(repr=False)    # may hold secrets (an adopted .env)
 
 
+class SshPool:
+    """One deployment's SSH connections, one per pinned host: the office
+    network drops repeated connections to one address. Keyed by (host, port,
+    user, stored fingerprint), so a re-trusted key gets a new connection.
+    Every connection is made by open_pinned; leaving the pool closes them
+    all, also on errors and cancellation."""
+
+    def __init__(self) -> None:
+        self._conns: dict[tuple, tuple[asyncssh.SSHClientConnection, PinnedHost]] = {}
+        self._locks: dict[tuple, asyncio.Lock] = {}
+        self._lost: set[tuple] = set()
+        self._closing: list[asyncssh.SSHClientConnection] = []
+        self._closed = False
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        self._closed = True
+        conns = [conn for conn, _ in self._conns.values()] + self._closing
+        self._conns.clear()
+        self._closing = []
+        for conn in conns:                 # close all first, so a cancel mid-wait leaves none open
+            conn.close()
+        for conn in conns:
+            await conn.wait_closed()
+
+    async def connection(self, cfg: SshTargetConfig, db: AsyncSession, *,
+                         tries: int = CONNECT_TRIES,
+                         log: Callable[[str], None] | None = None
+                         ) -> tuple[asyncssh.SSHClientConnection, PinnedHost]:
+        """The open connection for this host, or a new pinned one; a
+        replacement for a lost connection is logged first."""
+        stored = await known_hosts.lookup(db, cfg.host, cfg.port)
+        key = (cfg.host, cfg.port, cfg.user, stored.fingerprint_sha256 if stored else None)
+        async with self._locks.setdefault(key, asyncio.Lock()):
+            if self._closed:               # never an untracked connection after exit
+                raise RuntimeError("The SSH pool is closed.")
+            held = self._conns.get(key)
+            if held is not None:
+                if not held[0].is_closed():
+                    return held
+                self.discard(held[0])
+            if key in self._lost and log:
+                log(f"Lost the SSH connection to {cfg.host}; reconnecting.\n")
+            held = await open_pinned(cfg, db, tries=tries, log=log)
+            if self._closed:               # the pool exited while this one opened
+                held[0].close()
+                raise RuntimeError("The SSH pool is closed.")
+            self._lost.discard(key)
+            self._conns[key] = held
+            return held
+
+    def discard(self, conn: asyncssh.SSHClientConnection) -> None:
+        """Drop a connection that broke; the next connection() for its host
+        opens a new one."""
+        for key, (held, _) in list(self._conns.items()):
+            if held is conn:
+                del self._conns[key]
+                self._lost.add(key)
+        conn.close()
+        self._closing.append(conn)
+
+
+current_pool: ContextVar[SshPool | None] = ContextVar("current_pool", default=None)
+
+
+@contextlib.contextmanager
+def using_pool(pool: SshPool) -> Iterator[SshPool]:
+    """Route run_command through `pool` inside the block."""
+    token = current_pool.set(pool)
+    try:
+        yield pool
+    finally:
+        current_pool.reset(token)
+
+
 async def run_command(cfg: SshTargetConfig, db: AsyncSession, command: str, *,
                       timeout: float = RUN_TIMEOUT, input: str | None = None,
                       tries: int = CONNECT_TRIES,
@@ -293,14 +419,56 @@ async def run_command(cfg: SshTargetConfig, db: AsyncSession, command: str, *,
     """Run one command on a pinned host and return its stdout (capped at
     OUTPUT_LIMIT) for the caller to parse. Callers quote every argument and
     never log the output. `input` goes to the command's stdin (for secrets:
-    never argv). `tries` caps the connection attempts; `log` hears each retry."""
-    pinned = await pinned_host_key(db, cfg.host, cfg.port, tries=tries, log=log)
-    conn = await connect_pinned(cfg, pinned, tries=tries, log=log)
+    never argv). `tries` caps the connection attempts; `log` hears each retry.
+    Inside using_pool the pool's connection is reused and left open."""
+    pool = current_pool.get()
+    if pool is not None:
+        return await _run_pooled(pool, cfg, db, command, timeout=timeout, input=input,
+                                 tries=tries, log=log)
+    conn, _ = await open_pinned(cfg, db, tries=tries, log=log)
     async with conn:
         try:
             result = await asyncio.wait_for(
                 conn.run(command, check=False, errors="replace", input=input), timeout)
         except (OSError, TimeoutError, asyncssh.Error):
+            return CommandResult(None, "")
+    out = result.stdout if isinstance(result.stdout, str) else ""
+    return CommandResult(result.exit_status, out[:OUTPUT_LIMIT])
+
+
+async def _run_pooled(pool: SshPool, cfg: SshTargetConfig, db: AsyncSession, command: str, *,
+                      timeout: float, input: str | None, tries: int,
+                      log: Callable[[str], None] | None) -> CommandResult:
+    """run_command on the pool's connection. A dropped connection (or one
+    that refuses new channels) is discarded and the command is never re-run
+    (it may have half-run). A channel that doesn't open in time means the
+    server stopped answering, so that connection is discarded too. A command
+    timeout keeps the connection but closes the
+    command's channel, so timeouts don't use up the server's MaxSessions."""
+    conn, _ = await pool.connection(cfg, db, tries=tries, log=log)
+    try:
+        process = await asyncio.wait_for(
+            conn.create_process(command, errors="replace", input=input), timeout)
+    except (OSError, asyncssh.ConnectionLost, asyncssh.DisconnectError,
+            asyncssh.ChannelOpenError):   # TimeoutError too: a server that stopped answering
+        pool.discard(conn)
+        return CommandResult(None, "")
+    except asyncssh.Error:
+        return CommandResult(None, "")
+    try:
+        result = await asyncio.wait_for(process.wait(check=False), timeout)
+    except TimeoutError:                   # an OSError subclass: catch it first
+        return CommandResult(None, "")
+    except (OSError, asyncssh.ConnectionLost, asyncssh.DisconnectError):
+        pool.discard(conn)
+        return CommandResult(None, "")
+    except asyncssh.Error:
+        return CommandResult(None, "")
+    finally:
+        process.close()                    # on timeout, cancel and error too
+    if conn.is_closed():                   # asyncssh returns, not raises, when cut off
+        pool.discard(conn)
+        if result.exit_status is None:     # partial output isn't an answer
             return CommandResult(None, "")
     out = result.stdout if isinstance(result.stdout, str) else ""
     return CommandResult(result.exit_status, out[:OUTPUT_LIMIT])

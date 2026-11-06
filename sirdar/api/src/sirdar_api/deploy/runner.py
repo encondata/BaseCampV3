@@ -11,10 +11,12 @@ deleted when the run ends, however it ends. Event files are never written
 outside that folder. Output is passed to on_output raw: the caller redacts."""
 
 import asyncio
+import hashlib
 import json
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -55,6 +57,40 @@ class RunTarget:
     password: str | None = field(default=None, repr=False)
     private_key: str | None = field(default=None, repr=False)   # unencrypted OpenSSH text
     become_password: str | None = field(default=None, repr=False)
+    # The pinned host key's fingerprint; names the shared SSH connection.
+    # Empty means no sharing for this target.
+    fingerprint: str = ""
+
+
+class ControlDir:
+    """A private folder holding the SSH control sockets of one deployment, so
+    every Ansible run on a host reuses one connection. Sockets live under /tmp
+    (a unix socket path must stay short). close() ends the master processes
+    and removes the folder; nothing outlives the deployment."""
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    @classmethod
+    def open(cls) -> "ControlDir":
+        return cls(Path(tempfile.mkdtemp(prefix="sc-", dir="/tmp")))   # mode 700
+
+    def control_path(self, fingerprint: str) -> str:
+        short = hashlib.sha256(fingerprint.encode()).hexdigest()[:12]
+        return f"{self.path}/%C-{short}"
+
+    def close(self) -> None:
+        if not self.path.exists():
+            return
+        with suppress(OSError):
+            for sock in self.path.iterdir():
+                with suppress(OSError, subprocess.SubprocessError):
+                    subprocess.run(
+                        ["ssh", "-F", "/dev/null", "-O", "exit", "-o", f"ControlPath={sock}",
+                         "x"],
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL, timeout=5, check=False)
+        shutil.rmtree(self.path, ignore_errors=True)
 
 
 @dataclass(frozen=True)
@@ -64,6 +100,7 @@ class RunRequest:
     target: RunTarget
     timeout: int
     extravars: dict = field(default_factory=dict, repr=False)
+    control_dir: ControlDir | None = None
 
 
 @dataclass(frozen=True)
@@ -174,11 +211,17 @@ class AnsibleRunner:
             raise
         return run_dir
 
-    def envvars(self, run_dir: Path, target: RunTarget) -> dict[str, str]:
+    def envvars(self, run_dir: Path, target: RunTarget,
+                control_dir: ControlDir | None = None) -> dict[str, str]:
         known = shlex.quote(str(run_dir / "known_hosts"))
+        if control_dir is not None and target.fingerprint:
+            control = ["-o ControlMaster=auto", "-o ControlPersist=15m",
+                       "-o ControlPath=" + shlex.quote(control_dir.control_path(target.fingerprint))]
+        else:
+            control = ["-o ControlMaster=no", "-o ControlPersist=no"]
         ssh_args = " ".join([
             "-F /dev/null",                       # no user or system ssh_config
-            "-o ControlMaster=no", "-o ControlPersist=no",
+            *control,
             f"-o UserKnownHostsFile={known}", "-o GlobalKnownHostsFile=/dev/null",
             "-o StrictHostKeyChecking=yes",
             f"-o HostKeyAlgorithms={target.host_key_algorithms}",
@@ -198,7 +241,7 @@ class AnsibleRunner:
             "ANSIBLE_SSH_ARGS": ssh_args,
             "ANSIBLE_SSH_RETRIES": "5",
             "ANSIBLE_HOST_KEY_CHECKING": "True",
-            "ANSIBLE_PIPELINING": "False",
+            "ANSIBLE_PIPELINING": "True",
             "ANSIBLE_TIMEOUT": "30",
             "ANSIBLE_PYTHON_INTERPRETER": "auto_silent",
             "ANSIBLE_NOCOLOR": "1",
@@ -215,7 +258,7 @@ class AnsibleRunner:
         the process-wide os.environ) before the run starts."""
         import ansible_runner.interface
 
-        overrides = self.envvars(run_dir, request.target)
+        overrides = self.envvars(run_dir, request.target, request.control_dir)
         runner = ansible_runner.interface.init_runner(
             private_data_dir=str(run_dir), playbook=request.playbook, ident="run",
             envvars=overrides, event_handler=event_handler,

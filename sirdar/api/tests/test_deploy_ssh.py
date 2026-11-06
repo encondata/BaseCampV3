@@ -255,3 +255,53 @@ async def test_saved_target_config_connects(db, ssh_server):
     assert result.ok and result.target == "ssh:edge-box"
     assert result.facts["auth"] == "key"
     assert KEY_PASSPHRASE not in repr(cfg)
+
+
+async def test_run_command_opens_one_connection(db, ssh_server):
+    await _trust(db, ssh_server)
+    ssh_server.connections = 0                    # trusting fetched the key once
+    result = await ssh.run_command(ssh_config(ssh_server), db, "uname -srm")
+    assert result.exit_status == 0 and result.stdout == "Linux 6.8.0-45-generic x86_64\n"
+    assert ssh_server.connections == 1
+
+
+async def test_run_command_mismatch_still_names_both_fingerprints(db, ssh_server):
+    other = asyncssh.generate_private_key("ssh-ed25519")
+    db.add(SshKnownHost(host="127.0.0.1", port=ssh_server.port, key_type="ssh-ed25519",
+                        fingerprint_sha256=other.get_fingerprint("sha256"),
+                        public_key=other.export_public_key("openssh").decode().strip()))
+    await db.commit()
+    with pytest.raises(ssh.HostKeyMismatch) as exc:
+        await ssh.run_command(ssh_config(ssh_server), db, "uname -srm")
+    e = exc.value
+    assert (e.expected, e.actual, e.key_type) == (
+        other.get_fingerprint("sha256"), ssh_server.fingerprint, "ssh-ed25519")
+    assert ssh_server.commands == []
+
+
+async def test_run_command_unknown_host_raises_with_live_fingerprint(db, ssh_server):
+    with pytest.raises(ssh.HostKeyUnknown) as exc:
+        await ssh.run_command(ssh_config(ssh_server), db, "uname -srm")
+    assert exc.value.fingerprint == ssh_server.fingerprint
+    assert ssh_server.commands == []
+
+
+async def test_run_command_when_server_drops_the_stored_key_type(db, ssh_server, monkeypatch):
+    rsa = asyncssh.generate_private_key("ssh-rsa")
+    db.add(SshKnownHost(host="127.0.0.1", port=ssh_server.port, key_type="ssh-rsa",
+                        fingerprint_sha256=known_hosts.fingerprint(rsa),
+                        public_key=known_hosts.public_key_text(rsa)))
+    await db.commit()
+    naps: list[float] = []
+
+    async def nap(seconds):
+        naps.append(seconds)
+    monkeypatch.setattr(ssh.asyncio, "sleep", nap)
+    ssh_server.connections = 0
+    with pytest.raises(ssh.HostKeyMismatch) as exc:
+        await ssh.run_command(ssh_config(ssh_server), db, "uname -srm")
+    e = exc.value
+    assert (e.expected, e.actual, e.key_type) == (
+        known_hosts.fingerprint(rsa), ssh_server.fingerprint, "ssh-ed25519")
+    assert naps == [] and ssh_server.connections == 3   # login, typed fetch (none), preferred fetch
+    assert ssh_server.commands == []

@@ -148,9 +148,48 @@ def test_envvars_pin_the_host_key(tmp_path):
     assert env["ANSIBLE_HOST_KEY_CHECKING"] == "True"
     assert env["ANSIBLE_CONFIG"] == str(run_dir / "ansible.cfg")
     assert env["ANSIBLE_HOME"] == str(run_dir / "home")
-    assert env["ANSIBLE_PIPELINING"] == "False"
+    assert env["ANSIBLE_PIPELINING"] == "True"
     assert env["PATH"].split(os.pathsep)[0] == str(
         Path(runner_mod.ansible_playbook_binary()).parent)
+
+
+def test_envvars_with_control_dir(tmp_path):
+    control = runner_mod.ControlDir.open()
+    try:
+        env = AnsibleRunner(str(tmp_path)).envvars(
+            tmp_path / "run-x", _target(fingerprint="SHA256:abc"), control)
+        args = env["ANSIBLE_SSH_ARGS"]
+        assert "-o ControlMaster=auto" in args and "-o ControlPersist=15m" in args
+        assert "ControlMaster=no" not in args
+        path = control.control_path("SHA256:abc")
+        assert f"-o ControlPath={path}" in args
+        assert len(path.replace("%C", "0" * 40)) < 100
+        assert env["ANSIBLE_PIPELINING"] == "True"
+        # No fingerprint, or no control dir: no sharing.
+        for t, c in ((_target(), control), (_target(fingerprint="x"), None)):
+            plain = AnsibleRunner(str(tmp_path)).envvars(tmp_path / "run-x", t, c)
+            assert "-o ControlMaster=no" in plain["ANSIBLE_SSH_ARGS"]
+            assert "ControlPath" not in plain["ANSIBLE_SSH_ARGS"]
+    finally:
+        control.close()
+
+
+def test_control_dir_is_private_and_removed():
+    control = runner_mod.ControlDir.open()
+    assert _mode(control.path) == 0o700
+    (control.path / "stale-socket").write_text("")
+    control.close()
+    assert not control.path.exists()
+    control.close()   # idempotent
+
+
+def test_control_path_differs_by_fingerprint():
+    control = runner_mod.ControlDir.open()
+    try:
+        assert control.control_path("SHA256:a") != control.control_path("SHA256:b")
+        assert control.control_path("SHA256:a") == control.control_path("SHA256:a")
+    finally:
+        control.close()
 
 
 def _fake_init(fn):

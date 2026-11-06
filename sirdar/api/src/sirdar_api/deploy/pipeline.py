@@ -42,7 +42,8 @@ import json
 import logging
 import threading
 import uuid
-from contextlib import suppress
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
@@ -93,6 +94,7 @@ from sirdar_api.deploy.redact import Redactor
 from sirdar_api.deploy.runner import (
     CANCEL_GRACE_SECONDS,
     AnsibleRunner,
+    ControlDir,
     Runner,
     RunnerDirUnwritable,
     RunRequest,
@@ -705,9 +707,15 @@ async def _load_secrets(db: AsyncSession, env_id: uuid.UUID,
 
 async def _run_target(db: AsyncSession, cfg) -> tuple[RunTarget, str | None]:
     """The pinned host key and the client key of a host: its RunTarget and
-    the private key's text (to redact). PrepareError when either is missing."""
+    the private key's text (to redact). PrepareError when either is missing.
+    Inside a deployment's pool the key check is its login: the connection
+    stays open for the steps, so no separate connection fetches the key."""
+    pool = ssh.current_pool.get()
     try:
-        pinned = await ssh.pinned_host_key(db, cfg.host, cfg.port)
+        if pool is not None:
+            _, pinned = await pool.connection(cfg, db)
+        else:
+            pinned = await ssh.pinned_host_key(db, cfg.host, cfg.port)
     except ssh.HostKeyUnknown:
         raise PrepareError(f"Sirdar doesn't trust {cfg.host}:{cfg.port} yet. Trust its host "
                            "key on the Deploy page, then retry.") from None
@@ -726,7 +734,7 @@ async def _run_target(db: AsyncSession, cfg) -> tuple[RunTarget, str | None]:
         known_hosts_line=known_hosts.openssh_line(cfg.host, cfg.port, pinned.public_key),
         host_key_algorithms=known_hosts.host_key_algorithms(pinned.key_type),
         password=cfg.password, private_key=private_key,
-        become_password=cfg.sudo_password or cfg.password)
+        become_password=cfg.sudo_password or cfg.password, fingerprint=pinned.fingerprint)
     return target, private_key
 
 
@@ -1046,7 +1054,8 @@ async def _mark_running(db: AsyncSession, step: DeploymentStep) -> None:
     await db.commit()
 
 
-async def _run_step(runner: Runner, ctx: _Context, step: DeploymentStep) -> RunResult:
+async def _run_step(runner: Runner, ctx: _Context, step: DeploymentStep, *,
+                    control_dir: ControlDir | None = None) -> RunResult:
     definition = STEPS_BY_KEY[step.key]
     buffer = _LogBuffer(ctx.redactor)
     flusher = asyncio.create_task(_flush_loop(step.id, buffer))
@@ -1054,7 +1063,8 @@ async def _run_step(runner: Runner, ctx: _Context, step: DeploymentStep) -> RunR
         return await runner.run(
             RunRequest(step=step.key, playbook=definition.playbook,
                        target=ctx.target_for(step.key),
-                       timeout=definition.timeout, extravars=ctx.vars_for(step.key)),
+                       timeout=definition.timeout, extravars=ctx.vars_for(step.key),
+                       control_dir=control_dir),
             buffer.append)
     except asyncio.CancelledError:
         raise
@@ -1137,10 +1147,34 @@ async def _run_vm_step(provisioner: provision.Provisioner, ctx: _Context,
         await _save_log(step.id, buffer.text())
 
 
+@asynccontextmanager
+async def _connections(deployment_id: uuid.UUID) -> AsyncIterator[ControlDir | None]:
+    """What a deployment holds open: one SSH pool (run_command and the key
+    checks share its connections) and one control folder (each host's
+    Ansible runs share one SSH connection). Both close when the deployment
+    ends, however it ends. A folder that can't be made only costs sharing."""
+    async with ssh.SshPool() as pool:
+        with ssh.using_pool(pool):
+            try:
+                # Not awaited: a cancel here would skip _run's handler.
+                control = ControlDir.open()
+            except OSError:
+                log.warning("deployment %s runs Ansible without a shared SSH connection",
+                            deployment_id)
+                control = None
+            try:
+                yield control
+            finally:
+                if control is not None:
+                    await asyncio.to_thread(control.close)
+
+
 async def _run(deployment_id: uuid.UUID) -> None:
     current: int | None = None                 # number of the step in progress
     env_id: uuid.UUID | None = None
-    async with get_sessionmaker()() as db:
+    # The connections close after the step work and its cleanup, before the
+    # database session.
+    async with get_sessionmaker()() as db, _connections(deployment_id) as control_dir:
         try:
             dep = await db.get(Deployment, deployment_id)
             env = await db.get(Environment, dep.environment_id)
@@ -1239,7 +1273,7 @@ async def _run(deployment_id: uuid.UUID) -> None:
                             provisioner, ctx, step,
                             timeout=timeout_of(step.key, bluegreen=dep.bluegreen))
                     else:
-                        result = await _run_step(runner, ctx, step)
+                        result = await _run_step(runner, ctx, step, control_dir=control_dir)
                     if step.key == "first_admin":
                         # Whatever the result: later steps (12–14) get no
                         # password; the redactor still hides it.

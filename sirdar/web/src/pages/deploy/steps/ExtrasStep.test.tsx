@@ -109,6 +109,8 @@ it('DigitalOcean hosting: standby and the staging certificate; production has no
   renderStep({ target: 'digitalocean' });
   expect(screen.getByLabelText('Standby node')).toBeTruthy();
   expect(screen.getByRole('radio', { name: "Let's Encrypt staging" })).toBeTruthy();
+  expect(screen.getByText(/limit of 50 new certificates a week/)).toBeTruthy();
+  expect(screen.getByText(/use it only to test the deploy itself/)).toBeTruthy();
   cleanup();
   renderStep({ target: 'digitalocean', type: 'production', servers: 'bluegreen' });
   expect(screen.queryByRole('radio', { name: "Let's Encrypt staging" })).toBeNull();
