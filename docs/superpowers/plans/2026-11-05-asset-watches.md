@@ -135,7 +135,7 @@ These five cases are the most likely to bite a real user. Each one gets a test i
 - `def watch_time(at: datetime) -> str` gives "Nov 5, 15:05 EST": 24-hour, in `DEFAULT_TIMEZONE` with the zone abbreviation.
 - The module calls `notify(db, watch.person_id, "asset_watch", title, body=body, link=link)` with the literal kind, so the kinds test's source scan finds it.
 - **Worker:**
-  - Add the constant `ASSET_WATCH_INTERVAL = 60` and a `run_asset_watches(maker, state)` wrapper that logs once per outage, the way the others do.
+  - Add the constant `ASSET_WATCH_INTERVAL_SECONDS = 60` (renamed from `ASSET_WATCH_INTERVAL` in the final fix wave, to match its siblings) and a `run_asset_watches(maker, state)` wrapper that logs once per outage, the way the others do.
   - Seed its timer one interval in the past.
   - Run it after the device check and before the event sweep, so the order the test asserts becomes `["devices", "asset_watches", "events", "summaries"]`.
 - **Stored defaults:** a stored `notifications` config that predates `assets` must read Assets as on for both Inbox and Email. Check how `company.py` merges the stored values with `DEFAULTS`, and pin it with a test.

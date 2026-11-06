@@ -94,6 +94,8 @@ There are no hooks in the writers, and no "since time T" cursors.
 
 - A status that is set and then changed again between two checks (under a minute apart) is missed. A watch for that status stays set.
 - A scan that a failing status rule rolls back shows up once its retry succeeds.
+- Sometimes a notice can describe the wrong scan. This happens when a long transaction commits a scan stamped before a scan the snapshot already held. The watch still fires, because the scan count changed. But the notice describes the newest scan by its stamp, which is the older one. No column orders such rows reliably, so this stays as it is.
+- When one watch's notice fails, only that watch waits for the next run. The others still go out.
 
 ## When it fires
 
