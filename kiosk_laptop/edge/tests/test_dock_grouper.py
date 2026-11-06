@@ -439,6 +439,47 @@ def test_idle_close_waits_for_the_backlog(store, monkeypatch):
     assert outcomes(store) == [("pack", "c-1", 2, "pending")]
 
 
+def test_decide_now_groups_the_backlog_first(store, tmp_path, monkeypatch):
+    monkeypatch.setattr(grouper, "BATCH", 2)
+    dock(store)
+    batch(store, [("CC01", 0), ("AA01", 0.5), ("AA02", 1), ("AA03", 1.5), ("AA01", 2)])
+    # three ticks (2 + 2 + 1 reads), long before the idle decision at 2 + 2W + 1 s
+    assert grouper.decide_now(store, now=at(2)) == grouper.GroupResult(
+        scanned=5, closed=1, to_send=1, waiting=False)
+    assert decided(store) == [("pack", "c-1", ["a-1", "a-2", "a-3"])]
+
+    cold = Store(tmp_path / "cold.db")
+    try:
+        set_setup(cold)                           # a Dock whose move data isn't cached yet
+        as_station(cold, "dock")
+        state.save_settings(cold, dry_run=False)
+        read(cold, "AA01", 0)
+        assert grouper.decide_now(cold, now=at(1)) == grouper.GroupResult(
+            scanned=0, closed=0, to_send=0, waiting=True)
+        assert passes(cold) == []
+    finally:
+        cold.close()
+
+
+def test_late_reads_after_stop_open_a_new_burst(store):
+    dock(store)
+    batch(store, [("AA01", 0), ("CC01", 1)])
+    group(store, 1)
+    assert grouper.decide_now(store, now=at(2)).closed == 1
+    [stopped] = passes(store)
+    stopped_tags, stopped_reads = tags(store, stopped), read_ids(store, stopped)
+    late = read(store, "AA02", 1.5, received=3)  # read before Stop, posted after it
+    group(store, 3)
+    again, late_burst = passes(store)
+    assert again == stopped
+    assert tags(store, again) == stopped_tags and read_ids(store, again) == stopped_reads
+    assert late_burst["closed_at"] is None and when(late_burst["opened_at"]) == at(1.5)
+    assert tags(store, late_burst) == [("AA02", "asset", "a-2", "SN2")]
+    assert read_ids(store, late_burst) == [late]
+    group(store, 14)                              # its own rule: no crate in it
+    assert decided(store) == [("pack", "c-1", ["a-1"]), ("no_crate", None, ["a-2"])]
+
+
 def test_waits_for_move_cache(store):
     set_setup(store)
     as_station(store, "dock")

@@ -61,7 +61,7 @@ async def test_overview_with_nothing_yet(app, client):
     r = await client.get("/edge/dock", headers=make_session(app))
     assert r.status_code == 200
     assert r.json() == {"settings": {"dry_run": True, "quiet_gap_s": 5},
-                        "open": None, "passes": []}
+                        "open": None, "passes": [], "control": None}
 
 
 def test_open_pass_counts_down_to_its_close(app):
@@ -110,7 +110,7 @@ async def test_overview_route_serves_the_open_pass(app, client):
     batch(store, [("AA01", 0), ("CC01", 1)])
     group(store, 2)
     body = (await client.get("/edge/dock", headers=make_session(app))).json()
-    assert set(body) == {"settings", "open", "passes"} and body["passes"] == []
+    assert set(body) == {"settings", "open", "passes", "control"} and body["passes"] == []
     assert set(body["open"]) == {"id", "opened_at", "seconds_left", "crate_count",
                                  "asset_count", "tags"}
     assert body["open"]["seconds_left"] == 0   # the pass is long past on the real clock

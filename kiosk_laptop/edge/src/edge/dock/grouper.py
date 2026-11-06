@@ -16,6 +16,9 @@ reader's own read time. W is the Window setting (`quiet_gap_s` in
 - An open burst with no further reads is decided on the laptop clock at
   `last_received_at + 2W + 1 s` (the second covers `received_at`'s
   one-second resolution, so it is never decided early).
+- The Dock screen's Stop (`decide_now`) groups the backlog, then decides the
+  open burst at once with what has been read. A read that arrives after
+  that, even one read before it, opens a new burst.
 - Deciding splits the burst into passes. Each crate tag is anchored at its
   first read (re-reads never move it). Crates anchored within 2W of the
   next form one group, and an asset joins every group with a crate within W
@@ -309,10 +312,11 @@ def _decide(c, b: _Burst, w_s: int, dry_run_now: bool) -> tuple[int, int]:
     return len(split), sends
 
 
-def group(store: Store, now: datetime | None = None) -> GroupResult:
+def group(store: Store, now: datetime | None = None, *, decide: bool = False) -> GroupResult:
     """One tick: at most BATCH raw reads after the cursor into bursts (each
     one that ends decided into its passes), then the idle decision of a
-    burst nothing more has been read for."""
+    burst nothing more has been read for. With `decide`, a tick that read
+    everything available decides the open burst at once, idle or not."""
     now = now or datetime.now(UTC)
     with store.tx() as c:
         row = c.execute("SELECT last_raw_id FROM dock_meta WHERE id = 1").fetchone()
@@ -350,7 +354,7 @@ def group(store: Store, now: datetime | None = None) -> GroupResult:
             scanned += 1
         if current is not None:
             idle_at = datetime.fromisoformat(current.last_received_at) + burst_gap + _IDLE_SLACK
-            if not waiting and len(rows) < BATCH and now >= idle_at:
+            if not waiting and len(rows) < BATCH and (decide or now >= idle_at):
                 decided, sends = _decide(c, current, w_s, settings["dry_run"])
                 closed, to_send = closed + decided, to_send + sends
             elif current.changed:
@@ -358,3 +362,18 @@ def group(store: Store, now: datetime | None = None) -> GroupResult:
         if advanced != last:
             _set_cursor(c, advanced)
     return GroupResult(scanned, closed, to_send, waiting)
+
+
+def decide_now(store: Store, now: datetime | None = None) -> GroupResult:
+    """The Dock screen's Stop: `group` with `decide`, tick after tick, until
+    one is not a full batch (the backlog grouped, then the open burst decided
+    with what has been read) or is waiting (the burst stays open). Each tick
+    is its own transaction. The counts are summed; `waiting` is the last
+    tick's."""
+    scanned = closed = to_send = 0
+    while True:
+        result = group(store, now, decide=True)
+        scanned, closed, to_send = (scanned + result.scanned, closed + result.closed,
+                                    to_send + result.to_send)
+        if result.scanned < BATCH or result.waiting:
+            return GroupResult(scanned, closed, to_send, result.waiting)
