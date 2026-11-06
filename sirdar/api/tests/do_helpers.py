@@ -87,7 +87,7 @@ class Remote:
         self.calls: list[tuple[str, str, str | None]] = []
         self.codes: dict[str, int] = {}
 
-    async def __call__(self, cfg, command: str, stdin: str | None) -> int:
+    async def __call__(self, cfg, command: str, stdin: str | None, *, log=None) -> int:
         self.calls.append((cfg.host, command, stdin))
         return next((code for key, code in self.codes.items() if key in command), 0)
 

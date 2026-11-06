@@ -3,6 +3,7 @@ trusted (known_hosts); the connect step pins that stored key. Error
 reasons are our own copy — asyncssh messages never reach the caller."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
@@ -13,6 +14,8 @@ from sirdar_api.config import Settings
 from sirdar_api.deploy import Check, ConnectFailed, ConnectResult, known_hosts
 
 CONNECT_TIMEOUT = 15
+CONNECT_TRIES = 5            # the office network drops many outbound port-22 connections
+CONNECT_RETRY_DELAY = 3.0
 COMMAND_TIMEOUT = 10
 RUN_TIMEOUT = 60
 OUTPUT_LIMIT = 256 * 1024
@@ -24,6 +27,26 @@ _UNLOCK_FAILED = "Couldn't unlock the SSH key (check the passphrase)."
 _GB = 1024 * 1024            # KiB per GiB
 MIN_DISK_GB = 10
 MIN_MEMORY_GB = 2
+
+
+async def with_connect_retry[T](host: str, port: int, attempt: Callable[[], Awaitable[T]], *,
+                             tries: int = CONNECT_TRIES,
+                             log: Callable[[str], None] | None = None,
+                             sleep: Callable[[float], Awaitable[None]] | None = None) -> T:
+    """Run `attempt`, trying again when the host didn't answer (Unreachable).
+    Host-key and login failures propagate at once; the last failure is
+    re-raised unchanged."""
+    sleep = sleep or asyncio.sleep
+    for n in range(1, tries + 1):
+        try:
+            return await attempt()
+        except known_hosts.Unreachable:
+            if n == tries:
+                raise
+        if log:
+            log(f"Couldn't reach {host}:{port}; trying again ({n + 1} of {tries}).\n")
+        await sleep(CONNECT_RETRY_DELAY)
+    raise AssertionError("unreachable")        # tries < 1
 
 
 class HostKeyUnknown(Exception):
@@ -189,12 +212,16 @@ class PinnedHost:
     public_key: str            # the stored OpenSSH public key line
 
 
-async def pinned_host_key(db: AsyncSession, host: str, port: int) -> PinnedHost:
+async def pinned_host_key(db: AsyncSession, host: str, port: int, *, tries: int = CONNECT_TRIES,
+                          log: Callable[[str], None] | None = None) -> PinnedHost:
     """Fetch the live host key of the trusted key's type and compare it with
     the trusted one. Raises HostKeyUnknown, HostKeyMismatch or ConnectFailed;
     never logs in."""
     stored = await known_hosts.lookup(db, host, port)
-    live = await known_hosts.fetch_key_of_type(host, port, stored.key_type if stored else None)
+    key_type = stored.key_type if stored else None
+    live = await with_connect_retry(
+        host, port, lambda: known_hosts.fetch_key_of_type(host, port, key_type),
+        tries=tries, log=log)
     actual, key_type = known_hosts.fingerprint(live), live.get_algorithm()
     if stored is None:
         raise HostKeyUnknown(host, port, key_type, actual)
@@ -209,10 +236,18 @@ async def pinned_host_key(db: AsyncSession, host: str, port: int) -> PinnedHost:
                       public_key=stored.public_key)
 
 
-async def connect_pinned(cfg: SshTargetConfig,
-                         pinned: PinnedHost) -> asyncssh.SSHClientConnection:
+async def connect_pinned(cfg: SshTargetConfig, pinned: PinnedHost, *,
+                         tries: int = CONNECT_TRIES,
+                         log: Callable[[str], None] | None = None
+                         ) -> asyncssh.SSHClientConnection:
     """Log in, accepting only the pinned host key."""
     client_key = await load_client_key(cfg)
+    return await with_connect_retry(
+        cfg.host, cfg.port, lambda: _connect(cfg, pinned, client_key), tries=tries, log=log)
+
+
+async def _connect(cfg: SshTargetConfig, pinned: PinnedHost,
+                   client_key: asyncssh.SSHKey | None) -> asyncssh.SSHClientConnection:
     try:
         return await asyncio.wait_for(asyncssh.connect(
             cfg.host, port=cfg.port, username=cfg.user, password=cfg.password,
@@ -232,8 +267,8 @@ async def connect_pinned(cfg: SshTargetConfig,
 
 async def test_connection(cfg: SshTargetConfig, db: AsyncSession, *,
                           target_id: str = "ssh") -> ConnectResult:
-    pinned = await pinned_host_key(db, cfg.host, cfg.port)
-    conn = await connect_pinned(cfg, pinned)
+    pinned = await pinned_host_key(db, cfg.host, cfg.port, tries=1)
+    conn = await connect_pinned(cfg, pinned, tries=1)      # the Test button: one quick attempt
     async with conn:
         checks = await _checks(conn)
     facts = {"host": cfg.host, "port": cfg.port, "user": cfg.user, "auth": cfg.auth_label,
@@ -252,13 +287,14 @@ class CommandResult:
 
 
 async def run_command(cfg: SshTargetConfig, db: AsyncSession, command: str, *,
-                      timeout: float = RUN_TIMEOUT, input: str | None = None) -> CommandResult:
+                      timeout: float = RUN_TIMEOUT, input: str | None = None,
+                      log: Callable[[str], None] | None = None) -> CommandResult:
     """Run one command on a pinned host and return its stdout (capped at
     OUTPUT_LIMIT) for the caller to parse. Callers quote every argument and
     never log the output. `input` goes to the command's stdin (for secrets:
-    never argv)."""
-    pinned = await pinned_host_key(db, cfg.host, cfg.port)
-    conn = await connect_pinned(cfg, pinned)
+    never argv). `log` hears each connection retry."""
+    pinned = await pinned_host_key(db, cfg.host, cfg.port, log=log)
+    conn = await connect_pinned(cfg, pinned, log=log)
     async with conn:
         try:
             result = await asyncio.wait_for(

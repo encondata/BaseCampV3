@@ -835,7 +835,7 @@ async def test_ssh_remote_maps_errors_to_our_copy(db, monkeypatch, error):
     from sirdar_api.deploy import ConnectFailed, do_provision, ssh
     from sirdar_api.deploy.ssh import SshTargetConfig
 
-    async def boom(cfg, s, command, *, input=None, timeout=None):
+    async def boom(cfg, s, command, *, input=None, timeout=None, log=None):
         raise {"connect": ConnectFailed("Couldn't connect to 203.0.113.9."),
                "unknown": ssh.HostKeyUnknown(cfg.host, 22, "raw-" + input, "SHA256:x"),
                "mismatch": ssh.HostKeyMismatch(cfg.host, 22, "SHA256:a", "raw-" + input,
