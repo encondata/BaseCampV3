@@ -67,6 +67,7 @@ from sirdar_api.db.models import (
 from sirdar_api.deploy import (
     ConnectFailed,
     certs,
+    cleanup,
     do_envs,
     do_provision,
     envfile,
@@ -1354,7 +1355,13 @@ async def _run(deployment_id: uuid.UUID) -> None:
                       changes={"environment": env.name, "deployment": str(dep.id)})
                 await db.delete(env)
             elif dep.mode == "cleanup":
-                pass        # Task 3 resets the environment here; it is never deleted
+                # Delete's steps removed what the deploys built; the
+                # environment and its settings stay, as never deployed.
+                await cleanup.reset(db, get_settings(), env)
+                audit(db, actor_id=dep.actor_id, action="deploy.environment_cleanup",
+                      entity_type="environment", entity_id=env.name,
+                      changes={"environment": env.name, "deployment": str(dep.id)})
+                env.status = "new"
             elif (dep.cloud or dep.bluegreen) and dep.mode in ("update", "activate"):
                 try:
                     await (do_envs if dep.cloud else lan_slots).after_success(db, env, dep)

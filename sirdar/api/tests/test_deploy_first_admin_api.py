@@ -53,7 +53,8 @@ async def test_create_stores_it_and_never_echoes_the_password(client, db, target
     assert resp.status_code == 201, resp.text
     assert resp.json()["first_admin"] == {"first_name": "Ada", "last_name": "Lovelace",
                                           "email": "ada@test.example.com",
-                                          "password_mode": "typed", "done": False}
+                                          "password_mode": "typed", "done": False,
+                                          "needs_password": False}
     audit = (await db.scalars(select(AuditLog.changes).where(
         AuditLog.action == "deploy.environment_create"))).one()
     assert audit["first_admin"] == {"email": "ada@test.example.com", "password_mode": "typed"}
