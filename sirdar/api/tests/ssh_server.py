@@ -1,6 +1,7 @@
 """A real in-process asyncssh server for the deploy SSH tests. It accepts
-one user with a password or an authorized ed25519 key and answers the
-connection-check commands with canned output."""
+one user with a password or an authorized ed25519 key (and, playing a VM,
+its cloud-init user with any key) and answers the connection-check
+commands with canned output."""
 
 import asyncio
 from dataclasses import dataclass, field
@@ -11,6 +12,7 @@ import pytest
 
 SSH_USER = "deployer"
 SSH_PASSWORD = "ssh-PW-secret-4242"
+VM_USER = "deploy"                       # vms.VM_USER
 KEY_PASSPHRASE = "open-sesame-SECRET"
 
 OUTPUTS = {
@@ -47,6 +49,7 @@ class FakeSshServer:
     open_sessions: int = 0                        # commands whose channel is still open
     refuse_sessions: bool = False                 # refuse every new channel (ChannelOpenError)
     drop_after: set = field(default_factory=set)  # commands that close the connection on exit
+    passwords: set = field(default_factory=lambda: {SSH_PASSWORD})   # SSH_USER's passwords
 
     def serve_host_keys(self, *keys: asyncssh.SSHKey) -> None:
         """Change the host keys new connections are offered, in this order
@@ -90,12 +93,16 @@ def _server_class(state: dict):
             return True
 
         def validate_password(self, username: str, password: str) -> bool:
-            return username == SSH_USER and password == SSH_PASSWORD
+            return username == SSH_USER and password in state["fake"].passwords
 
         def public_key_auth_supported(self) -> bool:
             return True
 
         def validate_public_key(self, username: str, key: asyncssh.SSHKey) -> bool:
+            if username == VM_USER:
+                # Plays an environment's VM, whose key each test environment
+                # generates: a deployment logs in to check the host key.
+                return True
             return (username == SSH_USER
                     and key.public_data == state["fake"].client_key.public_data)
 

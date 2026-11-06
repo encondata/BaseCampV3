@@ -287,9 +287,9 @@ async def test_after_step_11_the_password_is_not_passed_on(db, do_env, fake_runn
     for name in ("_run_step", "_run_python_step"):
         real = getattr(pipeline, name)
 
-        async def spy(worker, ctx, step, _real=real):
+        async def spy(worker, ctx, step, _real=real, **kw):
             contexts[step.key] = ctx
-            return await _real(worker, ctx, step)
+            return await _real(worker, ctx, step, **kw)
         monkeypatch.setattr(pipeline, name, spy)
     await first_admins.put(db, get_settings(), do_env.id, first_admins.check(ADMIN))
     await db.commit()

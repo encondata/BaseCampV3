@@ -4,9 +4,19 @@ from dataclasses import replace
 
 import pytest
 
+from sirdar_api.config import get_settings
 from sirdar_api.db.engine import get_sessionmaker
 from sirdar_api.db.models import Deployment, Environment, EsxiVm, ProxmoxVm
-from sirdar_api.deploy import envfile, esxi_provision, pipeline, provision, vmcommon, vms
+from sirdar_api.deploy import (
+    do_provision,
+    envfile,
+    esxi_provision,
+    pipeline,
+    provision,
+    ssh,
+    vmcommon,
+    vms,
+)
 from sirdar_api.deploy.provision import VmOutcome
 from sirdar_api.deploy.runner import RunResult
 from sirdar_api.deploy.steps import STEPS_BY_KEY
@@ -75,6 +85,29 @@ async def test_step_0_builds_the_vm_then_the_host_steps_run_on_it(db, vm_env, fa
     render = next(r for r in fake_runner.requests if r.step == "render")
     env_file = base64.b64decode(render.extravars["env_file_b64"]).decode()
     assert f"STACK_IMAGE_TAG={envfile.image_tag(SHA)}\n" in env_file   # step 0's commit
+
+
+async def test_step_0_commands_and_step_1_share_one_ssh_connection(db, vm_env, fake_runner,
+                                                                    fake_provisioner,
+                                                                    ssh_server):
+    """Step 0 runs inside the deployment's pool: its commands on the new VM
+    (the real _ssh_remote) and step 1's host-key check use one connection."""
+    seen = []
+
+    async def up_then_run(ctx):
+        await _vm_up(ctx)
+        async with get_sessionmaker()() as s:
+            cfg = await vms.host_config(s, get_settings(), await s.get(Environment, ctx.env_id))
+        seen.append(ssh.current_pool.get())
+        seen.append(await do_provision._ssh_remote(cfg, "uname -srm", None))
+
+    fake_provisioner.effects["provision"] = up_then_run
+    ssh_server.connections = ssh_server.closed = 0           # trusting fetched the key
+    dep, _, _ = await _load(await _start(db, vm_env))
+    assert dep.status == "succeeded"
+    assert seen[0] is not None and seen[1] == 0
+    assert fake_runner.requests[0].target.fingerprint == ssh_server.fingerprint
+    assert (ssh_server.connections, ssh_server.closed) == (1, 1)
 
 
 async def test_a_vm_without_an_address_stops_at_step_1(db, vm_env, fake_runner,
