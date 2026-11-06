@@ -1,6 +1,6 @@
 /** One deployment: its steps with live logs (polled while it runs), Cancel,
- *  Retry from step and, after a failed Update, Roll back. Logs render as text
- *  only (already redacted server-side). */
+ *  Retry from step and, after a failed Update, Roll back; after a failed first
+ *  deploy, Clean up. Logs render as text only (already redacted server-side). */
 import { useEffect, useRef, useState, type UIEvent } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
@@ -13,6 +13,7 @@ import {
   type Deployment, type Environment,
 } from '../../lib/sirdarApi';
 
+import CleanupModal from './CleanupModal';
 import {
   CHANGE_MODES, DEPLOYMENT_STATUS, RETRY_MODES, RETRYABLE, STEP_STATUS, StatusChip, baseName, deploymentLabel,
   dumpTakenAt, duration, onBluegreen, onDo, retryNeedsName, shortSha, stoppedStep, when,
@@ -46,6 +47,8 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
   const [rollbackConfirm, setRollbackConfirm] = useState('');
   const [vmConfirm, setVmConfirm] = useState('');
   const [retrying, setRetrying] = useState(false);
+  /** The Clean up dialog: keep settings (cleanup) or remove everything (teardown). */
+  const [cleaning, setCleaning] = useState<{ keep: boolean } | null>(null);
   const retryingRef = useRef(false);
   const [actionError, setActionError] = useState('');
   const finished = useRef(onFinished);
@@ -108,7 +111,8 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
   const gated = !!dep && retryNeedsName(dep.mode, env);
   // A production Delete on DigitalOcean also needs "delete production <name>" again.
   const phraseWanted = `delete production ${env.name}`;
-  const phraseNeeded = !!dep && dep.cloud && dep.mode === 'teardown' && env.type === 'production';
+  const phraseNeeded = !!dep && dep.cloud && (dep.mode === 'teardown' || dep.mode === 'cleanup')
+    && env.type === 'production';
   const allowed = !dep || !RETRY_MODES.includes(dep.mode) ? false
     : CHANGE_MODES.includes(dep.mode) ? can('deploy', 'add') && can('deploy', 'change') : can('deploy', 'add');
   const mayRetry = !!dep && RETRYABLE.includes(dep.status) && allowed && stopped !== null;
@@ -130,6 +134,11 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
   // A restoring deployment (Reset with a snapshot, seeded first deploy) already wrote the
   // snapshot's keys into the host .env: retry it rather than follow it with a plain Update.
   const restoring = !!dep && dep.steps.some((s) => s.key === 'restore');
+  // A failed first deploy (or a clean-up that stopped partway) can remove what it built instead of retrying.
+  const mayCleanUp = !!dep && isLatest === true && env.never_deployed && (dep.mode === 'update' || dep.mode === 'cleanup')
+    && RETRYABLE.includes(dep.status) && can('deploy', 'change');
+  // Production keeps Delete's rules: it must be retiring first.
+  const cleanUpBlocked = onDo(env) && env.type === 'production' && !env.retiring;
 
   // Replays exactly the attempt that hit the host-key prompt.
   const run = async (attempt: Attempt) => {
@@ -337,8 +346,32 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
           </div>
         </div>
       )}
+      {mayCleanUp && (
+        <div className="sirdar-rollback">
+          <h3 className="sirdar-sub">Clean up</h3>
+          <p className="page-hint">This environment has never deployed. Remove what this attempt built:</p>
+          {cleanUpBlocked && <p className="page-hint">Mark this environment retiring in Settings first.</p>}
+          <div className="sirdar-actions">
+            <button type="button" className="btn-solid" disabled={cleanUpBlocked || retrying || hostKey.open}
+                    onClick={() => setCleaning({ keep: true })}>Clean up and keep settings</button>
+          </div>
+          <p className="page-hint">
+            Removes the servers, VMs, cloud resources, proxy hosts and DNS records this attempt made. The environment
+            {' '}and its settings stay, and Deploy starts fresh.
+          </p>
+          <div className="sirdar-actions">
+            <button type="button" className="btn-solid btn-danger" disabled={cleanUpBlocked || retrying || hostKey.open}
+                    onClick={() => setCleaning({ keep: false })}>Remove everything</button>
+          </div>
+          <p className="page-hint">The same, and the environment is deleted from Sirdar.</p>
+        </div>
+      )}
       {actionError && <p className="form-error" role="alert">{actionError}</p>}
       {hostKey.modal}
+      {cleaning && (
+        <CleanupModal env={env} keep={cleaning.keep} onClose={() => setCleaning(null)}
+                      onStarted={(started) => { setCleaning(null); onRetried(started); }} />
+      )}
     </section>
   );
 }

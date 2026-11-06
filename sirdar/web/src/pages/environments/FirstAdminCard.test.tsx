@@ -19,7 +19,8 @@ import { ENV } from './testData';
 
 const PENDING: Environment = {
   ...ENV, status: 'failed',
-  first_admin: { first_name: 'Ada', last_name: 'Lovelace', email: 'ada@example.com', password_mode: 'typed', done: false },
+  first_admin: { first_name: 'Ada', last_name: 'Lovelace', email: 'ada@example.com', password_mode: 'typed', done: false,
+                 needs_password: false },
 };
 
 beforeEach(() => {
@@ -163,4 +164,23 @@ it('API errors go to their field; first_admin_done and deploy_in_progress are al
   await save();
   await waitFor(() => expect(within(dialog()).getByRole('alert').textContent)
     .toBe('A deployment of this environment is already running.'));
+});
+
+it('after a clean-up the password is needed again: Change opens with that hint', async () => {
+  const sentence = "Enter the first admin's password again in Settings › First admin. The last attempt used it, "
+    + 'and clean-up removed that admin with the data.';
+  const { onSaved } = show({ ...PENDING, first_admin: { ...PENDING.first_admin!, needs_password: true } });
+  expect(screen.getAllByText(sentence)).toHaveLength(2);   // the card's hint and the open dialog's
+  expect(within(dialog()).getByText(sentence)).toBeTruthy();
+  await userEvent.type(within(dialog()).getByLabelText('Password'), 'n3w-passw0rd');
+  await userEvent.type(within(dialog()).getByLabelText('Confirm password'), 'n3w-passw0rd');
+  await save();
+  await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  expect(api.setFirstAdmin).toHaveBeenCalledWith('uat', expect.objectContaining({ password: 'n3w-passw0rd' }));
+});
+
+it('a needed password does not open Change without deploy:change', () => {
+  perms.change = false;
+  show({ ...PENDING, first_admin: { ...PENDING.first_admin!, needs_password: true } });
+  expect(screen.queryByRole('dialog')).toBeNull();
 });

@@ -29,7 +29,7 @@ export const TYPE_LABEL: Record<string, string> = { dev: 'Dev', beta: 'Beta', cu
 export const MODE_LABEL: Record<string, string> = {
   update: 'Update', reset: 'Reset data', adopt: 'Adopt', snapshot: 'Take snapshot',
   restore_dump: 'Restore backup', rollback: 'Roll back', publish: 'Publish', teardown: 'Delete environment',
-  vm_restore: 'Restore VM snapshot', activate: 'Activate', renew: 'Renew certificate',
+  cleanup: 'Clean up', vm_restore: 'Restore VM snapshot', activate: 'Activate', renew: 'Renew certificate',
 };
 /** A Publish tab entry's state (the API's PublishPlan). */
 export const PUBLISH_STATE: ChipMap = {
@@ -46,11 +46,11 @@ export const SNAPSHOT_STATUS: ChipMap = {
 export const RETRYABLE = ['failed', 'cancelled', 'interrupted'];
 /** Modes that replace data: they need deploy:change and the environment's name typed back
  *  (the API's GATED_MODES). A snapshot job is never retried. */
-export const GATED_MODES = ['reset', 'restore_dump', 'rollback', 'teardown', 'vm_restore'];
+export const GATED_MODES = ['reset', 'restore_dump', 'rollback', 'teardown', 'cleanup', 'vm_restore'];
 /** Modes that need deploy:change (the API's CHANGE_MODES). */
 export const CHANGE_MODES = [...GATED_MODES, 'activate'];
-export const RETRY_MODES = ['update', 'reset', 'restore_dump', 'rollback', 'publish', 'teardown', 'vm_restore',
-  'activate', 'renew'];
+export const RETRY_MODES = ['update', 'reset', 'restore_dump', 'rollback', 'publish', 'teardown', 'cleanup',
+  'vm_restore', 'activate', 'renew'];
 /** Modes a DigitalOcean environment doesn't offer: both slots share the managed database. */
 export const NOT_ON_DO = ['reset', 'restore_dump', 'rollback', 'vm_restore'];
 /** Modes a LAN Blue/Green environment doesn't offer: both app VMs share the data VM. */

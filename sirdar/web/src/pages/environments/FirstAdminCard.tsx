@@ -1,13 +1,16 @@
 /** The Settings tab's First admin card: the super admin step 11 of the first
  *  deploy creates, shown until it has. When the environment refused the typed
  *  password (or the email), Change sets a new one, or an invite instead,
- *  and the deploy is retried from step 11. */
+ *  and the deploy is retried from step 11. After a clean-up removed the admin
+ *  a typed password created, Change opens by itself: the password is needed again. */
 import { useEffect, useRef, useState, type Ref } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
 
 import { arrowNav } from '../../lib/arrowNav';
-import { deployErrorText, setFirstAdmin, type Environment, type NewFirstAdmin } from '../../lib/sirdarApi';
+import {
+  FIRST_ADMIN_PASSWORD_NEEDED, deployErrorText, setFirstAdmin, type Environment, type NewFirstAdmin,
+} from '../../lib/sirdarApi';
 
 type Mode = NewFirstAdmin['password_mode'];
 type Field = 'first' | 'last' | 'email' | 'password' | 'confirm' | 'form';
@@ -32,9 +35,10 @@ export default function FirstAdminCard({ env, disabled, minLength, onSaved }: {
   onSaved: (env: Environment) => void;
 }) {
   const { can } = useAuth();
-  const [changing, setChanging] = useState(false);
-  const [notice, setNotice] = useState('');
   const fa = env.first_admin;
+  const needsPassword = !!fa?.needs_password;
+  const [changing, setChanging] = useState(needsPassword && can('deploy', 'change') && !disabled);
+  const [notice, setNotice] = useState('');
   if (!fa) return null;
 
   return (
@@ -43,10 +47,12 @@ export default function FirstAdminCard({ env, disabled, minLength, onSaved }: {
         <h3>First admin</h3>
         <span className="chip c-amber">Not created yet</span>
       </div>
-      <p className="page-hint">
-        Step 11 of the first deploy creates this super admin. If the environment refused the password or the email,
-        change it here, then retry the deployment from step 11.
-      </p>
+      {needsPassword ? <p className="page-hint">{FIRST_ADMIN_PASSWORD_NEEDED}</p> : (
+        <p className="page-hint">
+          Step 11 of the first deploy creates this super admin. If the environment refused the password or the email,
+          change it here, then retry the deployment from step 11.
+        </p>
+      )}
       <dl className="sirdar-kv">
         <dt>Name</dt><dd>{`${fa.first_name} ${fa.last_name}`}</dd>
         <dt>Email</dt><dd className="mono">{fa.email}</dd>
@@ -64,7 +70,8 @@ export default function FirstAdminCard({ env, disabled, minLength, onSaved }: {
         <FirstAdminModal env={env} minLength={minLength} onClose={() => setChanging(false)}
                          onSaved={(saved) => {
                            setChanging(false);
-                           setNotice('Saved. Retry the deployment from step 11 to create the first admin.');
+                           setNotice(needsPassword ? 'Saved. Deploy creates the first admin.'
+                             : 'Saved. Retry the deployment from step 11 to create the first admin.');
                            onSaved(saved);
                          }} />
       )}
@@ -156,10 +163,12 @@ function FirstAdminModal({ env, minLength, onSaved, onClose }: {
           <div className="rgm-head-text">
             <div className="eyebrow">Settings</div>
             <h3 id="sirdar-firstadmin-title">Change the first admin</h3>
-            <p className="page-hint">
-              The super admin step 11 creates in {env.name}. Set a new password, or send an invite with a set-password
-              link instead. Then retry the deployment from step 11.
-            </p>
+            {fa.needs_password ? <p className="page-hint">{FIRST_ADMIN_PASSWORD_NEEDED}</p> : (
+              <p className="page-hint">
+                The super admin step 11 creates in {env.name}. Set a new password, or send an invite with a set-password
+                link instead. Then retry the deployment from step 11.
+              </p>
+            )}
           </div>
           <button type="button" className="modal-close" aria-label="Close" disabled={busy} onClick={onClose}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
