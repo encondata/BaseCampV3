@@ -15,7 +15,8 @@ import { useEffect, useRef, useState } from 'react';
 
 import {
   ApiError, commitAssignBulk, previewAssignBulk, previewAssignBulkFile,
-  type AssignCommitResult, type AssignDecision, type AssignDecisions, type AssignPosted,
+  type AssignCommitResult, type AssignDecision, type AssignDecisions, type AssignFlagKind,
+  type AssignPosted,
   type AssignPreview, type AssignRow,
 } from '../../lib/api';
 import { ASSIGN_BULK_ERRORS } from '../../lib/assignBulk';
@@ -55,7 +56,9 @@ const needsMatch = (r: AssignRow) =>
 function attention(r: AssignRow): 'match' | 'discrepancy' | 'decision' {
   return needsMatch(r) ? 'match' : discrepancy(r) ? 'discrepancy' : 'decision';
 }
-const ATTENTION_LABEL = { match: 'Needs a match', discrepancy: 'Discrepancy', decision: 'Needs a decision' };
+/** Flags about the sheet row itself, so their Ignore outlives a new pick. */
+const SHEET_ACK_KINDS: AssignFlagKind[] = ['no_contact', 'phone_invalid'];
+const ATTENTION_LABEL ={ match: 'Needs a match', discrepancy: 'Discrepancy', decision: 'Needs a decision' };
 
 function actionLabel(r: AssignRow): string {
   const base = r.action === 'assign' ? 'Assign'
@@ -178,10 +181,16 @@ export default function AssignBulkUpload({ jobId, siteId, partnerId }: Props) {
     else all[String(n)] = next;
     void rerun(all);
   };
-  /** A new pick answers the old match's flags afresh; only the role carries over. */
+  /** A new pick answers the old match's flags afresh. The role carries over,
+   *  and so does an Ignore on a flag about the sheet row itself (no contact,
+   *  unreadable phone), which no pick changes. */
   const pickPerson = (n: number, id: string) => {
-    const role = decisions[String(n)]?.role;
-    decide(n, role ? { person: id, role } : { person: id });
+    const prev = decisions[String(n)] ?? {};
+    const next: AssignDecision = { person: id };
+    if (prev.role) next.role = prev.role;
+    const kept = (prev.acknowledged ?? []).filter((k) => SHEET_ACK_KINDS.includes(k));
+    if (kept.length > 0) next.acknowledged = kept;
+    decide(n, next);
   };
 
   const rows = preview?.rows ?? [];

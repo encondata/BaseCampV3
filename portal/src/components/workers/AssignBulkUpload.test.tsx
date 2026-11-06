@@ -170,6 +170,29 @@ it('picking Create new sends person=new', async () => {
   })));
 });
 
+it('a new pick keeps the Ignore on a sheet-row flag and drops the one about the person', async () => {
+  const withFlags = () => preview([
+    row(5, { table: 'unmatched', matched_by: null, matched_value: null, person_id: null,
+             person_name: null, action: 'attention',
+             flags: [flag('needs_match'), flag('no_contact'), flag('phone_invalid'), flag('status')] }),
+  ]);
+  api.previewAssignBulkFile.mockResolvedValue(withFlags());
+  api.previewAssignBulk.mockResolvedValue(withFlags());
+  await upload();
+  const r5 = () => rowEl('No match found', 5);
+  for (const name of ['Ignore the missing contact on row 5', 'Ignore the phone on row 5',
+                      'Ignore the status on row 5']) {
+    const calls = api.previewAssignBulk.mock.calls.length;
+    fireEvent.click(within(r5()).getByRole('button', { name }));
+    await waitFor(() => expect(api.previewAssignBulk.mock.calls.length).toBe(calls + 1));
+  }
+  fireEvent.focus(within(r5()).getByLabelText('Worker for row 5'));
+  fireEvent.mouseDown(await screen.findByText('+ Create new worker "Person 5"'));
+  await waitFor(() => expect(api.previewAssignBulk).toHaveBeenLastCalledWith('job1', expect.objectContaining({
+    decisions: { 5: { person: 'new', acknowledged: ['no_contact', 'phone_invalid'] } },
+  })));
+});
+
 it('role dropdown sends the picked role', async () => {
   await upload();
   fireEvent.focus(within(rowEl('Matched', 2)).getByLabelText('Role for row 2'));
