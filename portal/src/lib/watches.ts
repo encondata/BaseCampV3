@@ -61,6 +61,16 @@ export function eventsText(kinds: string[], all: NotificationKindSetting[]): str
   return kinds.map((kind) => labels.get(kind) ?? kind).join(', ');
 }
 
+/** The asset as its watch notices name it: its serial number, else its name, else its id (the
+ *  API's own rule, notifications/asset_watches.py `asset_label`, where an empty one counts as
+ *  none). It is the Watch modal's title on the asset pages and in both lists. The title of an
+ *  asset's page puts the name first, so it is not that. */
+export function assetWatchName(
+  asset: { id: string; serial_number: string | null; name: string | null },
+): string {
+  return asset.serial_number || asset.name || asset.id;
+}
+
 /** An asset watch's events as a list cell: "Next update", or "Status becomes" and the status's
  *  label (its key, for one the API sent no label for). */
 export function assetWatchEventsText(w: AssetWatch): string {

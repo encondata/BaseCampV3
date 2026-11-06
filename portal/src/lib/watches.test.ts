@@ -9,8 +9,8 @@ import {
   ApiError, READ_ONLY_MESSAGE, type AssetWatch, type NotificationCategory, type NotificationKindSetting,
 } from './api';
 import {
-  ASSET_THING_LABEL, THING_LABELS, assetWatchEventsText, eventsText, isOutOfDate, isWikiWatch, kindsFor,
-  watchErrorMessage, watchToggleMessage, wikiNodeLabel,
+  ASSET_THING_LABEL, THING_LABELS, assetWatchEventsText, assetWatchName, eventsText, isOutOfDate,
+  isWikiWatch, kindsFor, watchErrorMessage, watchToggleMessage, wikiNodeLabel,
 } from './watches';
 
 function kind(
@@ -229,6 +229,27 @@ describe('ASSET_THING_LABEL', () => {
   it('is what the watch rows call an asset: "Asset" (an asset watch is not one of the THING_LABELS things)', () => {
     expect(ASSET_THING_LABEL).toBe('Asset');
     expect(Object.values(THING_LABELS)).not.toContain(ASSET_THING_LABEL);
+  });
+});
+
+describe('assetWatchName', () => {
+  const ASSET = { id: 'a1', serial_number: 'SN-1001', name: 'web-01' };
+
+  it('is the serial number when the asset has one (the page title is its name first, this is not)', () => {
+    expect(assetWatchName(ASSET)).toBe('SN-1001');
+  });
+
+  it('is the name when it has no serial number', () => {
+    expect(assetWatchName({ ...ASSET, serial_number: null })).toBe('web-01');
+  });
+
+  it('is the id when it has neither', () => {
+    expect(assetWatchName({ ...ASSET, serial_number: null, name: null })).toBe('a1');
+  });
+
+  it('reads an empty serial number or name as none, as the API\'s asset_label does', () => {
+    expect(assetWatchName({ ...ASSET, serial_number: '' })).toBe('web-01');
+    expect(assetWatchName({ ...ASSET, serial_number: '', name: '' })).toBe('a1');
   });
 });
 

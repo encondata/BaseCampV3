@@ -1,17 +1,27 @@
 // @vitest-environment jsdom
 /**
  * /initiatives/:id/assets/:rowId — the parent-asset panel's Location links
- * to the asset's container and truck.
+ * to the asset's container and truck. The header's Watch button is for everyone who can open
+ * the page, not only for editors: it watches the asset on this initiative, and the status it
+ * reads is the row's (the move status), not the asset's own.
  */
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { AssetItem, InitiativeAssetRow } from '../lib/api';
+import type { AssetItem, InitiativeAssetRow, StatusValue } from '../lib/api';
+
+const auth = vi.hoisted(() => {
+  const state: { can: (resource: string, action: string) => boolean } = {
+    can: (resource: string) => resource !== 'scans',
+  };
+  return state;
+});
 
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
-    can: (res: string) => res !== 'scans',
+    can: (resource: string, action = 'view') => auth.can(resource, action),
     godMode: false,
     preferences: { list_prefs: {} },
     updatePreferences: vi.fn(),
@@ -21,8 +31,9 @@ vi.mock('../auth/AuthContext', () => ({
 const api = vi.hoisted(() => ({
   getAsset: vi.fn(),
   getInitiative: vi.fn(),
-  listAssetStatuses: vi.fn(async () => []),
+  listAssetStatuses: vi.fn(async (): Promise<StatusValue[]> => []),
   listInitiativeAssets: vi.fn(),
+  getAssetWatchState: vi.fn(),       // the header's Watch button
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -54,23 +65,94 @@ const ASSET = {
   container_id: 'c1', container_name: 'ATL1-W1M-DC-01', truck_id: 't1', truck_name: 'ATL1-T01',
 } as AssetItem;
 
+const status = (key: string, label: string): StatusValue => ({
+  record_type: 'asset', key, label, description: '', color: '#888888', sort_order: 0,
+  is_active: true, usage_count: null, progress_weight: null,
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
+  Element.prototype.scrollIntoView = vi.fn();   // jsdom has none; the modal's ComboBox scrolls its active option
+  auth.can = (resource: string) => resource !== 'scans';
   api.listInitiativeAssets.mockResolvedValue([ROW]);
   api.getAsset.mockResolvedValue(ASSET);
   api.getInitiative.mockResolvedValue({ id: 'i1', name: 'Move', initiative_type: 'project' });
+  api.listAssetStatuses.mockResolvedValue([]);
+  api.getAssetWatchState.mockResolvedValue({ watching: false, watch: null });
 });
 afterEach(cleanup);
 
 const { default: MoveAssetDetail } = await import('./MoveAssetDetail');
 
-it('the parent-asset Location links to the container and truck', async () => {
-  render(
+function renderPage() {
+  return render(
     <MemoryRouter initialEntries={['/initiatives/i1/assets/ia1']}>
       <Routes><Route path="/initiatives/:id/assets/:rowId" element={<MoveAssetDetail />} /></Routes>
     </MemoryRouter>,
   );
+}
+
+it('the parent-asset Location links to the container and truck', async () => {
+  renderPage();
   const c = await screen.findByRole('link', { name: 'ATL1-W1M-DC-01' });
   expect(c.getAttribute('href')).toBe('/logistics/containers?open=c1');
   expect(screen.getByRole('link', { name: 'ATL1-T01' }).getAttribute('href')).toBe('/logistics/trucks/t1');
+});
+
+/* ── the header's Watch button ───────────────────────────────────── */
+
+it('a viewer without initiatives:change gets the Watch button, and no Edit', async () => {
+  auth.can = (resource, action) => resource !== 'scans' && !(resource === 'initiatives' && action === 'change');
+  renderPage();
+
+  expect(await screen.findByRole('button', { name: 'Watch' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+});
+
+it('for an editor the Watch button comes first in the header actions, then Edit', async () => {
+  renderPage();
+
+  const watch = await screen.findByRole('button', { name: 'Watch' });
+  const actions = watch.closest('.idet-header-actions') as HTMLElement;
+  expect([...actions.children].map((el) => el.textContent)).toEqual(['Watch', 'Edit']);
+});
+
+it('it reads the watch of the asset on this initiative, not on its own', async () => {
+  renderPage();
+  await screen.findByRole('button', { name: 'Watch' });
+
+  expect(api.getAssetWatchState).toHaveBeenCalledTimes(1);
+  expect(api.getAssetWatchState).toHaveBeenCalledWith('a1', 'i1');
+});
+
+it('a click opens the Watch modal for the asset on this initiative: "On {initiative}."', async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole('button', { name: 'Watch' }));
+
+  // named by the serial number first, as the notices name it (the page's title is the name)
+  const dialog = screen.getByRole('dialog', { name: 'Watch SN-0001' });
+  await waitFor(() => expect(dialog.querySelector('p.page-hint')?.textContent).toMatch(/ On Move\.$/));
+});
+
+it('the modal reads the status the row has on this initiative, not the asset\'s own', async () => {
+  api.listAssetStatuses.mockResolvedValue([
+    status('active', 'Active'), status('staged', 'Staged'), status('shipped', 'Shipped'),
+  ]);
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole('button', { name: 'Watch' }));
+  const dialog = screen.getByRole('dialog', { name: 'Watch SN-0001' });
+  await user.click(within(dialog).getByRole('button', { name: 'Status becomes' }));
+
+  // the row is Staged; the asset itself is Active
+  expect(within(dialog).getByText('Its status on this initiative is Staged now.')).toBeTruthy();
+  const picker = within(dialog).getByRole('combobox', { name: 'Status' }) as HTMLInputElement;
+  await waitFor(() => expect(picker.disabled).toBe(false));
+  await user.click(picker);
+  expect(await screen.findByText('Active', { selector: '.kbar-item' })).toBeTruthy();
+  expect(screen.getByText('Shipped', { selector: '.kbar-item' })).toBeTruthy();
+  expect(screen.queryByText('Staged', { selector: '.kbar-item' })).toBeNull();
 });

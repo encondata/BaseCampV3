@@ -20,12 +20,14 @@ import ComboBox, { type ComboOption } from '../components/ComboBox';
 import AssetEditDialog from '../components/initiatives/AssetEditDialog';
 import InitiativeEditModal from '../components/initiatives/InitiativeEditModal';
 import RackViewModal from '../components/initiatives/RackViewModal';
-import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
+import { RowActionsMenu, type RowAction } from '../components/hardware/RowActionsMenu';
 import InlineTextField from '../components/InlineTextField';
 import InitiativeLearningTab from '../components/learning/InitiativeLearningTab';
 import PlanTab from '../components/plans/PlanTab';
 import { useLearningAccess } from '../components/learning/useLearningAccess';
 import NotesFilesPanel from '../components/NotesFilesPanel';
+import { useAssetWatches } from '../components/notifications/useAssetWatches';
+import WatchAssetModal from '../components/notifications/WatchAssetModal';
 import WatchButton from '../components/notifications/WatchButton';
 import ScanHistoryTable from '../components/scans/ScanHistoryTable';
 import {
@@ -89,6 +91,7 @@ import {
 import { VirtualRows } from '../lib/virtualRows';
 import { naturalCompare } from '../lib/sites';
 import { formatMinutes } from '../lib/timeFormat';
+import { assetWatchName } from '../lib/watches';
 import StatusHover from '../components/StatusHover';
 import { useToast } from '../lib/notificationsContext';
 import '../styles/directory.css';
@@ -302,9 +305,15 @@ export default function InitiativeDetail() {
   const [assetsQuery, setAssetsQuery] = useState('');
   const [moveStatuses, setMoveStatuses] = useState<StatusValue[]>([]);
   const [editingAsset, setEditingAsset] = useState<InitiativeAssetRow | null>(null);
+  // The row whose Watch modal is open, and the person's own asset watches: a row menu's
+  // "Watch…" reads "Watching…" for an asset they watch on this initiative.
+  const [watchingAsset, setWatchingAsset] = useState<InitiativeAssetRow | null>(null);
+  const { watchFor, reload: reloadAssetWatches } = useAssetWatches();
   const [assetsBusy, setAssetsBusy] = useState(false);
   const [openAssetId, setOpenAssetId] = useState<string | null>(null);
   const canViewScans = can('scans', 'view');
+  // A watch on an initiative also needs the asset itself: the API refuses it (404) without this.
+  const canViewAssets = can('assets', 'view');
   const [assetsActionError, setAssetsActionError] = useState('');
   // Inline edit-table mode for Assets — a separate toggle from the People
   // section's peopleEditing, gated on maxRank/canChange rather than godMode.
@@ -627,8 +636,9 @@ export default function InitiativeDetail() {
     }
   };
 
+  // The Actions track is there for everyone: a viewer's menu holds Watch….
   const assetsGrid = listGridStyle(
-    assetsShownCols, canChange ? [ACTIONS_TRACK, '30px'] : ['30px'], undefined, listGridScale,
+    assetsShownCols, [ACTIONS_TRACK, '30px'], undefined, listGridScale,
   );
   /** Same drop-the-minimum-while-editing treatment as peopleRowStyle. */
   const assetsRowStyle = {
@@ -701,6 +711,37 @@ export default function InitiativeDetail() {
     if (key === 'location') return <AssetLocation asset={a.asset} className="cell-top cell-line" />;
     const text = moveAssetCellText(a, key);
     return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+  };
+
+  /** What a row's Actions menu offers: Edit for editors, Watch… for anyone who can open the
+   *  asset (assets:view — a watch on an initiative needs the asset too), and Remove, the
+   *  destructive one, last. Someone with neither gets an empty list, which draws no trigger;
+   *  the cell and its track stay, so the columns line up. */
+  const assetRowActions = (a: InitiativeAssetRow): RowAction[] => {
+    const edit: RowAction = {
+      key: 'edit', label: 'Edit', disabled: assetsBusy,
+      onSelect: () => setEditingAsset(a),
+    };
+    const watch: RowAction = {
+      key: 'watch', label: watchFor(a.asset_id, initiative.id) ? 'Watching…' : 'Watch…',
+      onSelect: () => setWatchingAsset(a),
+    };
+    const remove: RowAction = {
+      key: 'remove', label: 'Remove',
+      destructive: true, disabled: assetsBusy,
+      onSelect: () => {
+        const label = a.asset.name
+          ?? a.asset.serial_number ?? 'this asset';
+        if (!confirm(
+          `Remove "${label}" from this initiative?`)) return;
+        void runAssets(() => removeInitiativeAsset(a.id));
+      },
+    };
+    return [
+      ...(canChange ? [edit] : []),
+      ...(canViewAssets ? [watch] : []),
+      ...(canChange ? [remove] : []),
+    ];
   };
 
   return (
@@ -899,7 +940,7 @@ export default function InitiativeDetail() {
                                   onSort={(dir) => setAssetsSort(c.key, dir)} />
                     </ColHead>
                   ))}
-                  {canChange && <span className="col-head" aria-hidden="true" />}
+                  <span className="col-head" aria-hidden="true" />
                   <span className="col-head" aria-hidden="true" />
                 </div>
 
@@ -923,31 +964,13 @@ export default function InitiativeDetail() {
                               ? ' idet-col-center' : ''}`}
                                  key={c.key}>{assetCellFor(a, c.key)}</div>
                           ))}
-                          {canChange && (
-                            // The row toggles its expansion on click, so the
-                            // cell swallows clicks that land beside the trigger
-                            // (the trigger stops its own).
-                            <div className="cell idet-assets-actions"
-                                 onClick={(e) => e.stopPropagation()}>
-                              <RowActionsMenu actions={[
-                                {
-                                  key: 'edit', label: 'Edit', disabled: assetsBusy,
-                                  onSelect: () => setEditingAsset(a),
-                                },
-                                {
-                                  key: 'remove', label: 'Remove',
-                                  destructive: true, disabled: assetsBusy,
-                                  onSelect: () => {
-                                    const label = a.asset.name
-                                      ?? a.asset.serial_number ?? 'this asset';
-                                    if (!confirm(
-                                      `Remove "${label}" from this initiative?`)) return;
-                                    void runAssets(() => removeInitiativeAsset(a.id));
-                                  },
-                                },
-                              ]} />
-                            </div>
-                          )}
+                          {/* The row toggles its expansion on click, so the cell
+                              swallows clicks that land beside the trigger (the
+                              trigger stops its own). */}
+                          <div className="cell idet-assets-actions"
+                               onClick={(e) => e.stopPropagation()}>
+                            <RowActionsMenu actions={assetRowActions(a)} />
+                          </div>
                           <div className="cell chevron-cell">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                                  strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
@@ -1302,6 +1325,19 @@ export default function InitiativeDetail() {
             const rows = await listInitiativeAssets(id);
             setAssets(rows);
           }}
+        />
+      )}
+
+      {watchingAsset && (
+        // The asset on this initiative: it reads the row's status, not the asset's own.
+        // The modal loads its own status list.
+        <WatchAssetModal
+          assetId={watchingAsset.asset_id} assetName={assetWatchName(watchingAsset.asset)}
+          initiativeId={initiative.id} initiativeName={initiative.name}
+          currentStatus={watchingAsset.status} currentStatusLabel={watchingAsset.status_label}
+          watch={watchFor(watchingAsset.asset_id, initiative.id) ?? null}
+          onClose={() => setWatchingAsset(null)}
+          onSaved={() => reloadAssetWatches()}
         />
       )}
 

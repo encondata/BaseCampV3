@@ -9,6 +9,7 @@ import { Link, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import AssetLocation from '../components/assets/AssetLocation';
 import AssetEditDialog from '../components/initiatives/AssetEditDialog';
+import AssetWatchButton from '../components/notifications/AssetWatchButton';
 import ScanHistoryTable from '../components/scans/ScanHistoryTable';
 import {
   getAsset, getInitiative, listAssetStatuses, listInitiativeAssets,
@@ -21,6 +22,7 @@ import '../styles/system.css';
 
 import StatusHover from '../components/StatusHover';
 import { displayRfid } from '../lib/format';
+import { assetWatchName } from '../lib/watches';
 
 export default function MoveAssetDetail() {
   const { id, rowId } = useParams<{ id: string; rowId: string }>();
@@ -111,11 +113,17 @@ export default function MoveAssetDetail() {
               .filter(Boolean).join(' · ') || '—'}
           </p>
         </div>
-        {canChange && (
-          <div className="idet-header-actions">
+        <div className="idet-header-actions">
+          {/* Watching is for everyone who can open the page, so it sits outside the gate. It
+              watches the asset on this initiative, so it reads the row's status (the move
+              status), not the asset's own. */}
+          <AssetWatchButton assetId={row.asset_id} assetName={assetWatchName(row.asset)}
+                            initiativeId={id!} initiativeName={initiativeName}
+                            currentStatus={row.status} currentStatusLabel={row.status_label} />
+          {canChange && (
             <button className="btn-solid" onClick={() => setEditing(true)}>Edit</button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       <div className="init-panel">
