@@ -282,7 +282,7 @@ class Deployment(Base):
     environment_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("environments.id", ondelete="CASCADE"))
     # update | reset | adopt | snapshot | restore_dump | rollback | publish | teardown
-    # | vm_restore | activate | renew
+    # | vm_restore | activate | renew | cleanup
     mode: Mapped[str]
     git_ref: Mapped[str]
     sha: Mapped[str]

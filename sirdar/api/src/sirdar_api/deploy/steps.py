@@ -59,7 +59,10 @@ from typing import Literal
 
 PLAYBOOK_DIR = Path(__file__).resolve().parent / "ansible"
 MODES = ("update", "reset", "snapshot", "restore_dump", "rollback", "publish", "teardown",
-         "vm_restore", "activate", "renew")
+         "vm_restore", "activate", "renew", "cleanup")
+# Modes that remove what a deployment built: cleanup runs Delete's steps and
+# keeps the environment.
+REMOVING_MODES = ("teardown", "cleanup")
 # Modes that change what runs on the host: they publish afterwards when asked.
 PUBLISHING_MODES = ("update", "reset", "restore_dump", "rollback")
 PUBLISH_KEYS = ("dns", "proxy", "smoke")
@@ -228,6 +231,10 @@ def plan_for(mode: str, *, restore: bool = False, publish: bool = False, vm: boo
              cloud: bool = False, go_live: bool = False, snapshot: bool = False,
              smoke: bool = True, first_admin: bool = False,
              bluegreen: bool = False, seed: bool = False) -> list[StepDef]:
+    if mode == "cleanup":
+        if snapshot:
+            raise ValueError("a cleanup never takes a snapshot")
+        mode = "teardown"
     if first_admin and (mode != "update" or restore):
         raise ValueError("only an Update that starts empty creates the first admin")
     if seed and (mode != "update" or restore):
