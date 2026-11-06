@@ -8,6 +8,7 @@
  *  the kiosk can mount a portal React module. PairPanel is mocked. */
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { gsap } from 'gsap';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -50,13 +51,23 @@ function renderLogin() {
 }
 
 beforeEach(() => {
+  // The kiosk honors reduced motion, and these tests ask for it. jsdom has no matchMedia, so the
+  // gsap shake after a failed sign-in would otherwise run here, and with no layout gsap re-inserts
+  // the shaken form to read its transform. That silently drops the focus of the field inside: a
+  // password typed at that moment went to <body>, and the next sign-in sent an empty one.
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: query === '(prefers-reduced-motion: reduce)', media: query,
+    addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
+  }));
   localStorage.clear();
   seenOnApproved.length = 0;
   api.getSystemStatus.mockResolvedValue({ read_only: false, read_only_message: '', workers_paused: false, banner: null });
   auth.login.mockResolvedValue({});
   auth.loginWithMovePassword.mockResolvedValue({});
 });
-afterEach(() => { cleanup(); vi.clearAllMocks(); edgeMock.status = null; });
+afterEach(() => {
+  cleanup(); vi.clearAllMocks(); vi.restoreAllMocks(); vi.unstubAllGlobals(); edgeMock.status = null;
+});
 
 it('renders the shared light sign-in scene around its own form', () => {
   const { container } = renderLogin();
@@ -168,6 +179,32 @@ it('a wrong or inactive move password shows the matching message', async () => {
   await userEvent.type(screen.getByLabelText('Move password'), 'again');
   await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
   expect(await screen.findByText('Too many tries. Wait a few minutes.')).toBeTruthy();
+});
+
+async function failOneMoveSignIn() {
+  auth.loginWithMovePassword.mockRejectedValue(new ApiError(401, 'invalid_move_password'));
+  renderLogin();
+  await openMoveForm();
+  await userEvent.type(screen.getByLabelText('Move password'), 'nope');
+  await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+  expect(await screen.findByText("That move password isn't right.")).toBeTruthy();
+}
+
+it('a failed sign-in shakes the form', async () => {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: false, media: query,
+    addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
+  }));
+  const shake = vi.spyOn(gsap, 'fromTo').mockReturnValue({} as ReturnType<typeof gsap.fromTo>);
+  await failOneMoveSignIn();
+  expect(shake).toHaveBeenCalledTimes(1);
+  expect(shake.mock.calls[0][0]).toBe(document.querySelector('.form-wrap'));
+});
+
+it('a failed sign-in leaves the form still when the kiosk asks for reduced motion', async () => {
+  const shake = vi.spyOn(gsap, 'fromTo').mockReturnValue({} as ReturnType<typeof gsap.fromTo>);
+  await failOneMoveSignIn();
+  expect(shake).not.toHaveBeenCalled();
 });
 
 it('a move whose kiosk identity may not use kiosks gets the move wording', async () => {
