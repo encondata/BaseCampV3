@@ -64,7 +64,7 @@ Anything recorded about the asset after the watch was set:
 
 ## How it's checked
 
-The notification worker runs an asset-watch check **once a minute**, after the device check and before the event sweep, so a notice arrives within about a minute **(my call)**.
+The notification worker runs an asset-watch check **once a minute**, after the device check and before the event sweep, so a notice arrives within about a minute **(my call)**. `notification-worker --once` runs it too, in the same order, and its summary line counts the watches that ended.
 
 ### The snapshot
 
@@ -192,6 +192,9 @@ They live beside the person's other watch routes in `api/routes/me.py` and use t
 **Access:**
 - A watch on the asset itself needs what `GET /assets/{id}` needs: `assets:view` plus the asset's client scope.
 - A watch on an initiative needs what the initiative's asset list needs: `initiatives:view` plus the initiative's scope. The asset must be on that initiative.
+- **(my call, during the build)** A watch on an initiative also needs the asset itself to be one the person can open. That's the same rule the check applies before it sends. Without it, a watch could be set and then end without a notice.
+  - It applies on POST (404 `thing_not_found`), on PATCH, in the list and in the state endpoint.
+  - It also means nobody can watch another client's asset just because it appears on a shared initiative's list.
 
 **`AssetWatchOut`:** `{id, asset_id, asset_name, initiative_id, initiative_name, initiative_asset_id, condition, status, status_label, current_status, current_status_label, link, created_at}`. `current_status` is the asset's own status for a watch on the asset, and the row status for a watch on an initiative. The /me Change flow uses it to leave that status out of the picker.
 
@@ -201,7 +204,7 @@ They live beside the person's other watch routes in `api/routes/me.py` and use t
 
 - A new category, `assets` ("Assets"), placed after `initiatives`.
   - It is configurable like the others: add it to `CONFIGURABLE_CATEGORIES` and to the stored defaults, with Inbox and Email on.
-  - It shows on the /me switch grid and on the Defaults tab.
+  - It shows on the /me switch grid and on the Defaults tab, with the description "Notifications from your asset watches" **(my call, during the build: modeled on "Notifications from status rules")**.
 - One kind, `asset_watch` ("Asset watch"), sent with `notify()`. It is neither watchable nor an Everything kind.
 
 ## Not in this build
