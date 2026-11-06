@@ -68,10 +68,17 @@ export default function SoundPanel() {
   const [settings, setSettings] = useSoundSettings();
   const [uploads, setUploads] = useState<UploadedSound[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // A read that settles after the panel has closed changes nothing. Set on
+  // mount as well as cleared on unmount, so StrictMode's dev-mode remount
+  // doesn't leave the panel deaf to its own reads.
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   const refresh = () => {
-    listUploadedSounds().then(setUploads).catch(
-      () => setError("Couldn't read this kiosk's uploaded sounds."));
+    listUploadedSounds().then(
+      (rows) => { if (alive.current) setUploads(rows); },
+      () => { if (alive.current) setError("Couldn't read this kiosk's uploaded sounds."); },
+    );
   };
 
   useEffect(refresh, []);
