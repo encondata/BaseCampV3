@@ -220,3 +220,17 @@ Settled during the builder check:
   `rfid`, which would drop a Dock laptop's station key, and
   `processing.alarms_on` is RFID-only.
 - **The migration is 0120**, or the next free number at merge time.
+
+## Implementation notes (2026-11-06)
+
+Built on `dock-station` in 10 tasks plus two review fix rounds and a final fix wave. Plan: `docs/superpowers/plans/2026-11-05-dock-station.md` (its "Decisions this plan makes" list also applies).
+
+- **API:** station type `dock` (migration 0120 widens `ck_devices_station_type` and creates `dock_passes`, which stores each answered pass so a replay returns the same reply). `station_keys.READER_STATION_TYPES = ("rfid", "dock")` drives every reader-only gate. `POST /kiosk/station/dock/passes` takes `{serial, pass_id, container_id, closed_at, asset_ids}` and answers per asset `packed | moved | already_there | refused` (`asset_not_found`, `not_on_move`, `changed_since_pass`). It shares `_current_membership` / `_pack_asset` with the Containers route. New memberships get `added_at` = the pass time.
+- **Edge:** `edge/dock/` holds `state` (settings, clearing), `grouper` (1 s loop), `sender` and `views`. `/edge/dock`, `/edge/dock/passes/{id}` and `PUT /edge/dock/settings` sit behind the edge session. Dry run is stamped on each raw read at ingest, and dry-run reads' scans are stored as `upload_state = 'dry_run'`, which never uploads.
+- **Changed in review:**
+  - Switching a laptop to Dock from another station type moves the dock cursor past every earlier read.
+  - A reader time near `datetime.max` falls back to the laptop time.
+  - The sender sends the reader-clock pass time only when the reader is within 60 s of the laptop. Otherwise it sends the laptop-clock time, so a wrong FX9600 clock can't refuse every move or switch off the "Changed since this pass" guard.
+  - The Dock screen says `Can't reach the station. Retrying…` while the edge doesn't answer, and `Checking…` before its first answer.
+- **Live verify (2026-11-06):** run on a clone of the dev DB with the fake FX9600. Every scenario passed: dry run, no crate, two crates, the off-move alarm, and a live pack that moved an asset out of another crate. Only the live reads uploaded as scans.
+- **Before the first live (non-dry-run) trial:** check that the FX9600's clock agrees with the laptop's.
