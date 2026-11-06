@@ -439,11 +439,13 @@ async def preview_rows(db: AsyncSession, initiative_id: uuid.UUID, partner_id: u
             "flags": flags, "errors": errors,
             "_on_team": pid is not None and uuid.UUID(pid) in ref["team"],
             "_change": change,
+            "_email_write": _email_write(ref, pid, create, email, change),
         })
 
     _duplicate_errors(rows)
     for r in rows:
         on_team, change = r.pop("_on_team"), r.pop("_change")
+        r.pop("_email_write")
         kinds = {f["kind"] for f in r["flags"]}
         if r["errors"]:
             r["action"] = "error"
@@ -498,28 +500,48 @@ def _contact_partner(ref: dict, cand: Candidate) -> uuid.UUID:
     return _first_partner(ref["partner_names"], cand.partner_contact_of)
 
 
+def _email_write(ref: dict, pid: str | None, create: bool, email: str,
+                 change: str | None) -> str | None:
+    """The email this row's commit would write, or None: a new worker's
+    email nobody holds, or an Update that changes the person's email to one
+    nobody else holds (the same rules `_create_worker` / `_update_person`
+    apply)."""
+    if not email:
+        return None
+    owner = ref["emails_all"].get(email)
+    if create:
+        return email if owner is None else None
+    if pid is None or change != "update":
+        return None
+    on_file = lower_email(ref["people"][pid].person.email or "")
+    return email if email != on_file and owner in (None, pid) else None
+
+
 def _duplicate_errors(rows: list[dict]) -> None:
-    """One person on two rows, or two new workers sharing an email, errors
-    every row involved."""
+    """One person on two rows, or two rows that would write the same email,
+    errors every row involved, so the commit can't trip the unique email
+    index on its own rows."""
     by_person: dict[str, list[dict]] = {}
-    by_new_email: dict[str, list[dict]] = {}
+    by_email: dict[str, list[dict]] = {}
     for r in rows:
         if r["person_id"]:
             by_person.setdefault(r["person_id"], []).append(r)
-        elif r["create"] and (email := lower_email(r["cells"].get("email") or "")):
-            by_new_email.setdefault(email, []).append(r)
+        if email := r["_email_write"]:
+            by_email.setdefault(email, []).append(r)
     for group in by_person.values():
         if len(group) > 1:
             nums = ", ".join(str(r["row"]) for r in group)
             for r in group:
                 r["errors"].append(
                     f"{r['person_name']} appears on more than one row ({nums}).")
-    for email, group in by_new_email.items():
+    for email, group in by_email.items():
         if len(group) > 1:
             nums = ", ".join(str(r["row"]) for r in group)
+            msg = (f"Email {email} appears on more than one new worker (rows {nums})."
+                   if all(r["create"] for r in group)
+                   else f"Email {email} appears on more than one row ({nums}).")
             for r in group:
-                r["errors"].append(
-                    f"Email {email} appears on more than one new worker (rows {nums}).")
+                r["errors"].append(msg)
 
 
 # ── commit ──────────────────────────────────────────────────────────

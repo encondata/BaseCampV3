@@ -590,6 +590,43 @@ async def test_two_new_rows_same_email_error(db, ctx):
     assert [r["action"] for r in out["rows"]] == ["error", "error", "create", "create"]
 
 
+async def test_two_updates_same_new_email_error(db, ctx):
+    await good_worker(db, ctx)
+    await good_worker(db, ctx, first="Bo", last="Ng", email="bo@example.com",
+                      phone="+1 512 555 0103")
+    out = await preview(db, ctx, cells("Ana", "Lopez", email="shared@example.com"),
+                        cells("Bo", "Ng", email="Shared@Example.com"),
+                        decisions={2: {"change": "update"}, 3: {"change": "update"}})
+    msg = "Email shared@example.com appears on more than one row (2, 3)."
+    assert [r["errors"] for r in out["rows"]] == [[msg], [msg]]
+    assert out["can_commit"] is False
+    # Ignore on one row means only one row writes the email
+    out = await preview(db, ctx, cells("Ana", "Lopez", email="shared@example.com"),
+                        cells("Bo", "Ng", email="shared@example.com"),
+                        decisions={2: {"change": "update"}, 3: {"change": "ignore"}})
+    assert [r["errors"] for r in out["rows"]] == [[], []]
+
+
+async def test_new_and_update_same_email_error(db, ctx):
+    await good_worker(db, ctx)
+    out = await preview(db, ctx, cells("Ana", "Lopez", email="fresh@example.com"),
+                        cells("New", "Person", email="fresh@example.com"),
+                        decisions={2: {"change": "update"}, 3: {"person": "new"}})
+    msg = "Email fresh@example.com appears on more than one row (2, 3)."
+    assert [r["errors"] for r in out["rows"]] == [[msg], [msg]]
+    assert [r["action"] for r in out["rows"]] == ["error", "error"]
+
+
+async def test_two_new_rows_held_email_is_not_duplicate(db, ctx):
+    db.add(Person(first_name="Staff", last_name="Holder", email="held@example.com"))
+    await db.commit()
+    ack = {"person": "new", "acknowledged": ["shared_contact"]}
+    out = await preview(db, ctx, cells("A", "One", email="held@example.com"),
+                        cells("B", "Two", email="held@example.com"),
+                        decisions={2: ack, 3: ack})
+    assert [r["errors"] for r in out["rows"]] == [[], []]     # neither writes it
+
+
 async def test_partner_contact_becomes_worker(db, ctx):
     c = await mk_partner_contact(db, "Casey", "Contact", ctx.partner,
                                  email="casey@example.com")
@@ -1025,4 +1062,18 @@ async def test_commit_email_race_is_rows_invalid(db, ctx, seeded_user, monkeypat
                      decisions={2: {"person": "new"}})
     assert exc.value.code == "rows_invalid"
     assert exc.value.extra == {"reason": "email_taken"}
+    assert await db.scalar(select(Person).where(Person.first_name == "New")) is None
+
+
+async def test_commit_new_and_update_same_email_refused_before_write(db, ctx, seeded_user):
+    w = await good_worker(db, ctx)
+    with pytest.raises(BulkImportError) as exc:
+        await commit(db, ctx, seeded_user, cells("Ana", "Lopez", email="fresh@example.com"),
+                     cells("New", "Person", email="fresh@example.com"),
+                     decisions={2: {"change": "update"}, 3: {"person": "new"}})
+    assert exc.value.code == "rows_invalid"
+    assert "reason" not in exc.value.extra          # never reaches email_taken
+    assert [r["action"] for r in exc.value.extra["rows"]] == ["error", "error"]
+    await db.refresh(w)
+    assert w.email == "ana@example.com"
     assert await db.scalar(select(Person).where(Person.first_name == "New")) is None
