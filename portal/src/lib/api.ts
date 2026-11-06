@@ -6999,6 +6999,108 @@ export async function deleteGroupWatch(groupId: string, watchId: string): Promis
   if (!resp.ok) throw await errorFrom(resp);
 }
 
+/* ── asset watches: a person's own, on one asset, heard once ─────────────
+ * Mirrors api/src/serversherpa/api/schemas.py AssetWatchIn, AssetWatchPatch,
+ * AssetWatchOut and AssetWatchStateOut. A person watches one asset, on its own or
+ * on an initiative it is on, for its next update or for a status; they get one
+ * notice when that happens, and the watch ends. One watch per person, asset and
+ * place.
+ * Errors carry `detail.code`: 409 `already_watching`; 404 `thing_not_found`,
+ * `watch_not_found`; 422 `not_on_initiative`, `invalid_condition`,
+ * `status_required`, `invalid_status`, `already_at_status`; 423 `read_only_mode`. */
+
+/** What an asset watch waits for: the asset's next update, or a status. */
+export type AssetWatchCondition = 'next_update' | 'status';
+
+/** An asset watch. `asset_name` is the asset's serial number, else its name, else its id.
+ *  The three initiative fields are null for a watch on the asset itself;
+ *  `initiative_asset_id` is the asset's row on the initiative, null once it has left.
+ *  `status` (and its label) is what a "status" watch waits for: null for "next_update".
+ *  `current_status` (and its label) is the status the watch reads now: the asset's own, or
+ *  for a watch on an initiative its row's there (null once the row is gone). `link` is where
+ *  the watch was set: the move asset page, or the asset's own page (for a watch on the asset,
+ *  and once the row is gone). `created_at` is when it was set or last changed. */
+export interface AssetWatch {
+  id: string;
+  asset_id: string;
+  asset_name: string;
+  initiative_id: string | null;
+  initiative_name: string | null;
+  initiative_asset_id: string | null;
+  condition: AssetWatchCondition;
+  status: string | null;
+  status_label: string | null;
+  current_status: string | null;
+  current_status_label: string | null;
+  link: string;
+  created_at: string;
+}
+
+/** Watch an asset on its own (no `initiative_id`), or on an initiative it is on. A "status"
+ *  watch names an active asset status; a "next_update" watch names none (422 `invalid_status`
+ *  otherwise). */
+export interface AssetWatchIn {
+  asset_id: string;
+  initiative_id?: string | null;
+  condition: AssetWatchCondition;
+  status?: string | null;
+}
+
+/** Whether the person watches an asset in one place, and the watch, for the Watch button. */
+export interface AssetWatchState {
+  watching: boolean;
+  watch: AssetWatch | null;
+}
+
+/** The person's asset watches, newest first (GET /auth/me/asset-watches). Only those whose
+ *  asset (and initiative, for one set there) they can open now are listed. */
+export async function listMyAssetWatches(): Promise<AssetWatch[]> {
+  const resp = await apiFetch('/auth/me/asset-watches');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Whether the person watches this asset in this place, on its own or on `initiativeId`
+ *  (GET /auth/me/asset-watches/state). */
+export async function getAssetWatchState(
+  assetId: string, initiativeId?: string | null,
+): Promise<AssetWatchState> {
+  const qs = new URLSearchParams({ asset_id: assetId });
+  if (initiativeId) qs.set('initiative_id', initiativeId);
+  const resp = await apiFetch(`/auth/me/asset-watches/state?${qs.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Watch an asset (POST /auth/me/asset-watches). One watch for each asset and place: 409
+ *  `already_watching` when there is one, and what it waits for is changed with
+ *  `updateMyAssetWatch`. */
+export async function createMyAssetWatch(body: AssetWatchIn): Promise<AssetWatch> {
+  const resp = await apiFetch('/auth/me/asset-watches', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Change what one of the person's asset watches waits for (PATCH /auth/me/asset-watches/{id}).
+ *  The watch starts over: a new snapshot of the asset, and a new `created_at`. */
+export async function updateMyAssetWatch(
+  id: string, body: { condition: AssetWatchCondition; status?: string | null },
+): Promise<AssetWatch> {
+  const resp = await apiFetch(`/auth/me/asset-watches/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Stop watching an asset (DELETE /auth/me/asset-watches/{id}). */
+export async function deleteMyAssetWatch(id: string): Promise<void> {
+  const resp = await apiFetch(`/auth/me/asset-watches/${id}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
 /* ── the wiki, for the group watch picker ────────────────────────────────
  * The wiki's API (api/src/serversherpa/api/routes/wiki) is on the same API and
  * takes the portal's session; every /wiki route needs `wiki:view` (403 without
