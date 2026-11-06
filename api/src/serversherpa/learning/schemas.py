@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 ResignRule = Literal["every_initiative", "expired_or_new_version"]
 SignStyle = Literal["checkbox", "typed_name", "drawn_signature"]
 QuizFailAction = Literal["retry", "lock"]
+ReadingStyle = Literal["document", "slides"]
 
 # the wiki's own limits: a node title, a publish note
 Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
@@ -18,7 +19,7 @@ Note = Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)]
 
 # settings that can't be cleared (NOT NULL columns)
 _NOT_NULL = ("title", "wiki_node_id", "resign_rule", "sign_style", "require_scroll",
-             "quiz_enabled", "quiz_fail_action")
+             "quiz_enabled", "quiz_fail_action", "reading_style")
 
 
 # ── documents ────────────────────────────────────────────────────────
@@ -40,6 +41,7 @@ class DocumentSettings(BaseModel):
     quiz_pass_percent: int | None = Field(default=None, ge=1, le=100)
     quiz_max_attempts: int | None = Field(default=None, ge=1)
     quiz_fail_action: QuizFailAction = "retry"
+    reading_style: ReadingStyle = "document"
 
     @model_validator(mode="after")
     def _quiz(self):
@@ -76,6 +78,7 @@ class DocumentPatchIn(BaseModel):
     quiz_pass_percent: int | None = Field(default=None, ge=1, le=100)
     quiz_max_attempts: int | None = Field(default=None, ge=1)
     quiz_fail_action: QuizFailAction | None = None
+    reading_style: ReadingStyle | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -151,6 +154,10 @@ class DocumentOut(BaseModel):
     quiz_pass_percent: int | None
     quiz_max_attempts: int | None
     quiz_fail_action: str
+    reading_style: str
+    # slides only; the current snapshot split at its horizontal rules
+    slide_count: int | None = None
+    current_slides: list[str] | None = None
     wiki_node_id: uuid.UUID | None
     # the linked wiki page, null once it's trashed, purged or moved out
     wiki_page: WikiPageRef | None

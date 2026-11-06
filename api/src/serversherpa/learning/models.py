@@ -49,6 +49,8 @@ class LearningDocument(Base):
     quiz_pass_percent: Mapped[int | None]
     quiz_max_attempts: Mapped[int | None]
     quiz_fail_action: Mapped[str] = mapped_column(server_default="retry")
+    # document | slides: read top to bottom, or stepped through as slides
+    reading_style: Mapped[str] = mapped_column(server_default="document")
     current_version_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("learning_document_versions.id", ondelete="SET NULL",
                    use_alter=True, name="learning_documents_current_version_fk"))
@@ -226,6 +228,12 @@ class LearningAssignment(Base):
     quiz_locked_at: Mapped[datetime | None]
     # attempts a manager unlock forgave: they no longer count toward the limit
     quiz_attempts_forgiven: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    # slides: the furthest slide reached (1-based), and the version and
+    # language that position was counted in
+    slide_reached: Mapped[int | None]
+    slide_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learning_document_versions.id", ondelete="SET NULL"))
+    slide_language: Mapped[str | None]
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     created_at: Mapped[datetime] = _now()
 
@@ -254,6 +262,7 @@ class LearningSignoff(Base):
     read_seconds: Mapped[int]
     scrolled_to_end: Mapped[bool] = mapped_column(Boolean)
     quiz_score: Mapped[int | None]
+    slides_viewed: Mapped[int | None]       # null = read as a document
     ip: Mapped[str | None]
     user_agent: Mapped[str | None]
     signed_at: Mapped[datetime] = _now()

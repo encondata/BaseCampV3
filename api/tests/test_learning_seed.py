@@ -116,6 +116,10 @@ async def test_seed_creates_space_pages_documents_packets_rule(db, renderer):  #
         assert version.content_html
 
     dress = documents["Dress code"]
+    assert dress.reading_style == "slides"
+    for title, document in documents.items():
+        if title != "Dress code":
+            assert document.reading_style == "document", title
     assert (dress.validity_days, dress.resign_rule, dress.sign_style, dress.require_scroll,
             dress.min_read_seconds, dress.quiz_enabled) == (
         365, "expired_or_new_version", "typed_name", True, 60, False)

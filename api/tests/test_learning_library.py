@@ -439,6 +439,40 @@ async def test_patch_validates_settings_and_archive(client, db, seeded_user, ren
     assert "learning_document_update" in actions
 
 
+async def test_reading_style_defaults_to_document_and_patches(client, db, seeded_user,
+                                                               renderer):
+    hdrs = await _manager(db, client)
+    space = await _space(db)
+    page = await _node(db, space, "Dress code")
+    await _publish_wiki(db, page, _doc("Wear boots."))
+    doc = await _create(client, hdrs, page)
+    url = f"/learning/documents/{doc['id']}"
+    assert doc["reading_style"] == "document"
+    # slide_count and current_slides are filled once slides can be split
+    assert doc["slide_count"] is None and doc["current_slides"] is None
+
+    resp = await client.patch(url, headers=hdrs, json={"reading_style": "slides"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["reading_style"] == "slides"
+    assert (await client.get(url, headers=hdrs)).json()["reading_style"] == "slides"
+    audit_changes = await db.scalar(select(AuditLog.changes).where(
+        AuditLog.entity_type == "learning_document", AuditLog.entity_id == doc["id"],
+        AuditLog.action == "learning_document_update"))
+    assert "reading_style" in audit_changes
+
+    for bad in ({"reading_style": "deck"}, {"reading_style": None}):
+        resp = await client.patch(url, headers=hdrs, json=bad)
+        assert resp.status_code == 422, (bad, resp.text)
+    assert (await client.get(url, headers=hdrs)).json()["reading_style"] == "slides"
+
+    # a new document can start as slides
+    made = await _create(client, hdrs, await _node(db, space, "Forklifts"),
+                         title="Forklifts", reading_style="slides")
+    assert made["reading_style"] == "slides"
+    await _create(client, hdrs, await _node(db, space, "Bad"), title="Bad",
+                  expect=422, reading_style="deck")
+
+
 async def test_non_manager_forbidden(client, db, seeded_user, renderer):
     hdrs = await _manager(db, client)
     space = await _space(db)

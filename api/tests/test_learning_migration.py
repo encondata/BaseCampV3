@@ -76,6 +76,20 @@ async def test_document_defaults_and_checks(db):
     await db.rollback()
 
 
+async def test_reading_style_defaults_and_check(db):
+    """Migration 0121: documents read as 'document' unless set to 'slides'."""
+    doc = await db.scalar(text(
+        "INSERT INTO learning_documents (title) VALUES ('d') RETURNING id"))
+    assert await db.scalar(text(
+        "SELECT reading_style FROM learning_documents WHERE id = :i"), {"i": doc}) == "document"
+    await db.execute(text(
+        "UPDATE learning_documents SET reading_style = 'slides' WHERE id = :i"), {"i": doc})
+    with pytest.raises(IntegrityError):
+        await db.execute(text(
+            "INSERT INTO learning_documents (title, reading_style) VALUES ('x', 'deck')"))
+    await db.rollback()
+
+
 async def test_assignment_unique_only_while_open(db):
     """Two open (assigned/opened) rows for one key conflict; a signed or a
     cancelled one beside an open one doesn't."""
