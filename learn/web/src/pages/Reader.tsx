@@ -237,7 +237,8 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
       {review ? (
         <Link className="learn-cta" to={back}>{t('reader.back')}</Link>
       ) : needsQuiz && deck && !allSeen ? (
-        <p className="learn-fine">{t('slides.progress', { seen: (slideReached ?? 0) + 1, n: deck.length })}</p>
+        // the quiz waits for the last slide; the deck's status line says how far there is to go
+        null
       ) : needsQuiz ? (
         <Link className="learn-cta" to={`/training/${encodeURIComponent(id)}/quiz`}>{t('reader.takeQuiz')}</Link>
       ) : (

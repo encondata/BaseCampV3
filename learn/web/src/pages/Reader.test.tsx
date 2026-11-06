@@ -397,7 +397,7 @@ describe('Reader', () => {
       expect(screen.queryByText('Shoes')).toBeNull();
       expect(screen.queryByRole('region', { name: 'Document text' })).toBeNull();
       expect(screen.getByRole('region', { name: 'Slides' })).toBeTruthy();
-      await screen.findAllByText('Go through every slide to sign. (1 of 3 seen)');
+      expect(await screen.findAllByText('Go through every slide to sign. (1 of 3 seen)')).toHaveLength(1);
       const [url, init] = reachCalls(fetchMock)[0];
       expect(String(url)).toBe(`http://localhost:8000/learn/assignments/${ID}/slides/0`);
       expect(JSON.parse(String(init?.body))).toEqual({ version_no: 2, language: 'en' });
@@ -444,10 +444,13 @@ describe('Reader', () => {
       renderReader();
       expect(await screen.findByText('Shoes')).toBeTruthy();
       expect(screen.queryByRole('link', { name: 'Take the quiz' })).toBeNull();
-      expect(screen.getAllByText('Go through every slide to sign. (2 of 3 seen)').length).toBeGreaterThan(0);
+      // said once, in the deck's status line; the quiz slot stays empty until the last slide
+      expect(screen.getAllByText('Go through every slide to sign. (2 of 3 seen)')).toHaveLength(1);
+      expect(screen.queryByRole('button', { name: 'Sign and continue' })).toBeNull();
       await user.click(screen.getByRole('button', { name: 'Next' }));
       const quiz = await screen.findByRole('link', { name: 'Take the quiz' });
       expect(quiz.getAttribute('href')).toBe(`/training/${ID}/quiz`);
+      expect(screen.queryByText(/^Go through every slide/)).toBeNull();
     });
 
     it('a passed quiz does not stand in for the slides', async () => {
