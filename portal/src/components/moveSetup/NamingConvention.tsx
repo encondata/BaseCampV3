@@ -1,7 +1,7 @@
 /** The convention, count and start fields plus the live preview and clash
  *  line — shared by the crate and truck steps. Pure presentation: the step
  *  owns the value, the generated names, and the server's clashes. */
-import type { ChangeEvent } from 'react';
+import type { ChangeEvent, ReactNode } from 'react';
 
 import { clashSentence, namesPreview, type NamingValue } from '../../lib/namingConvention';
 
@@ -17,11 +17,13 @@ interface Props {
   clashes: string[];
   checking: boolean;
   disabled?: boolean;
+  /** Under the fields, e.g. the crate step's estimate line. */
+  countHint?: ReactNode;
 }
 
 export default function NamingConvention({
   idPrefix, noun, max, value, onChange, onCountBlur, names, error, clashes, checking,
-  disabled = false,
+  disabled = false, countHint,
 }: Props) {
   const set = (key: keyof NamingValue) => (e: ChangeEvent<HTMLInputElement>) =>
     onChange({ ...value, [key]: e.target.value });
@@ -46,6 +48,7 @@ export default function NamingConvention({
                  disabled={disabled} onChange={set('start')} />
         </div>
       </div>
+      {countHint}
       <div className="ms-names" aria-live="polite">
         <span className="eyebrow">Preview</span>
         {error ? <p className="pf-error">{error}</p>

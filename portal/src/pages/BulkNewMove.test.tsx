@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { MoveSetupDraft, SiteItem, StatusValue } from '../lib/api';
+import type { CrateEstimate, ImportJobOut, MoveSetupDraft, SiteItem, StatusValue } from '../lib/api';
 
 const denied = vi.hoisted(() => new Set<string>());      // resource:action pairs refused
 vi.mock('../auth/AuthContext', () => ({
@@ -20,6 +20,7 @@ const api = vi.hoisted(() => ({
   listShippingTypes: vi.fn(), listContainerTypes: vi.fn(),
   getNextInitiativeColor: vi.fn(), createMoveSetup: vi.fn(), patchMoveSetup: vi.fn(),
   getMoveSetup: vi.fn(), deleteMoveSetup: vi.fn(), createMoveFromSetup: vi.fn(),
+  uploadMoveSetupAssets: vi.fn(), getMoveSetupCheck: vi.fn(),
 }));
 vi.mock('../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../lib/api')>()), ...api,
@@ -125,6 +126,64 @@ it('Skip this step saves the skip and moves on, with crates prefilled from the s
   await heading('Step 3 of 5 · Crates');
   expect(api.patchMoveSetup).toHaveBeenCalledWith('d1', { skip: ['assets'] });
   expect((screen.getByLabelText('Naming convention') as HTMLInputElement).value).toBe('CRT-SJC-DAL-xxx');
+});
+
+function checked(crates: number): ImportJobOut {
+  const crate_estimate: CrateEstimate = { crates, uncapped: crates, needed: crates, devices: 9,
+    ru: 18, over_10u: 0, unknown_size: 0, racks: 0, nodes: 0 };
+  return {
+    id: `c${crates}`, initiative_id: null, kind: 'move_assets', filename: 'ft.csv', options: {},
+    phase: 'validate', status: 'completed', total_rows: 9, processed_rows: 9, created_count: 9,
+    updated_count: 0, error_count: 0, error: null, created_at: '', started_at: null, finished_at: null,
+    results: { summary: { created: 9 }, details: [], crate_estimate },
+  } as ImportJobOut;
+}
+
+async function uploadFt(user: ReturnType<typeof userEvent.setup>) {
+  const input = document.querySelector('input[type=file]') as HTMLInputElement;
+  await user.upload(input, new File(['Serial Number\nSN-1\n'], 'ft.csv', { type: 'text/csv' }));
+  await user.click(screen.getByRole('button', { name: 'Check file' }));
+}
+
+it('the crate count starts from the From-To estimate and follows it until a count is typed', async () => {
+  const user = userEvent.setup();
+  api.uploadMoveSetupAssets.mockResolvedValueOnce(checked(4)).mockResolvedValueOnce(checked(6))
+    .mockResolvedValueOnce(checked(8));
+  mount();
+  await heading('Step 1 of 5 · The move');
+  await fillMove(user);
+  await user.click(screen.getByRole('button', { name: 'Next' }));
+  await heading('Step 2 of 5 · From-To assets');
+  await uploadFt(user);
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByRole('button', { name: 'Next' }));
+  await heading('Step 3 of 5 · Crates');
+  const count = () => screen.getByLabelText('Count') as HTMLInputElement;
+  expect(count().value).toBe('4');
+  expect(screen.getByText(/^Estimated 4 crates from 9 devices/)).toBeTruthy();
+
+  // a new file before any count is typed: the count follows the estimate
+  await user.click(screen.getByRole('button', { name: 'Back' }));
+  await heading('Step 2 of 5 · From-To assets');
+  await user.click(screen.getByRole('button', { name: "Upload a different file" }));
+  await uploadFt(user);
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByRole('button', { name: 'Next' }));
+  await heading('Step 3 of 5 · Crates');
+  expect(count().value).toBe('6');
+
+  // a typed count is kept; the newer estimate is offered instead
+  await user.clear(count());
+  await user.type(count(), '10');
+  await user.click(screen.getByRole('button', { name: 'Back' }));
+  await heading('Step 2 of 5 · From-To assets');
+  await user.click(screen.getByRole('button', { name: "Upload a different file" }));
+  await uploadFt(user);
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByRole('button', { name: 'Next' }));
+  await heading('Step 3 of 5 · Crates');
+  expect(count().value).toBe('10');
+  expect(screen.getByRole('button', { name: 'Use estimate (8)' })).toBeTruthy();
 });
 
 it('leaving with a draft open asks first, and Discard deletes the draft', async () => {

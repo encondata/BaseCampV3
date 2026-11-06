@@ -34,7 +34,7 @@ from serversherpa.assets.bulk_update import KIND as ASSET_BULK_UPDATE
 from serversherpa.assets.bulk_update import apply_job
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import ImportJob
-from serversherpa.imports import move_setup
+from serversherpa.imports import crate_estimate, move_setup
 from serversherpa.imports.jobs import claim_next, requeue_stale, sweep_stale
 from serversherpa.imports.move_assets import parse_row, run_import
 from serversherpa.imports.notices import JobDone, count_left_out, notify_job_done, writes_data
@@ -168,7 +168,13 @@ async def process_job(db: AsyncSession, job: ImportJob) -> None:
     job.created_count = summary["created"]
     job.updated_count = summary["updated"]
     job.error_count = summary["errors"]
-    job.results = {"summary": summary, "details": result["details"]}
+    results = {"summary": summary, "details": result["details"]}
+    if job.initiative_id is None and not write and not result["cancelled"]:
+        # a Create-a-move-in-steps check: the Crates step starts from this.
+        # Worked out before job.results is set: its query autoflushes, and
+        # JSONB edited in place after a flush is never written.
+        results["crate_estimate"] = await crate_estimate.estimate(db, result["details"])
+    job.results = results
     job.progress_at = datetime.now(UTC)
     _finish(job, "cancelled" if result["cancelled"] else "completed")
     await db.commit()

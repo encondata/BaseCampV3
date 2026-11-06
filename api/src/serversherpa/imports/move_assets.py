@@ -373,6 +373,8 @@ async def run_import(
 
         asset = assets.get(serial)
         asset_created = False
+        # the model the row ends up with (crate estimate); None = unknown
+        model_id = getattr(asset, "model_id", None)
         match_method = "existing_asset" if asset is not None else "none"
         make_model_final = ""
 
@@ -432,6 +434,7 @@ async def run_import(
                         "suggested_make": mk,
                         "suggested_model": md})
                     return
+            model_id = getattr(model_obj, "id", None)
             if write:
                 asset = Asset(
                     serial_number=serial, name=r["asset_name"],
@@ -488,7 +491,8 @@ async def run_import(
             "asset_created": asset_created,
             "serial_generated": r["serial_generated"],
             "match_method": match_method,
-            "make_model_final": make_model_final})
+            "make_model_final": make_model_final,
+            "model_id": str(model_id) if model_id else None})
 
     every = progress_every or BATCH_SIZE       # read at call time: tests patch BATCH_SIZE
     for r in rows:
