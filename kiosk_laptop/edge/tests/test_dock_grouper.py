@@ -200,6 +200,14 @@ def test_crates_exactly_two_windows_apart_are_flagged(store):
     assert decided(store) == [("many_crates", None, ["a-1"])]
 
 
+def test_crates_exactly_two_windows_apart_chain_without_a_shared_asset(store):
+    dock(store)
+    for epc, s in (("CC01", 0), ("AA01", 1), ("AA02", 9), ("CC02", 10)):
+        read(store, epc, s)                       # each asset is in one window only
+    group(store, 21)
+    assert decided(store) == [("many_crates", None, ["a-1", "a-2"])]
+
+
 def test_an_asset_read_in_two_crate_windows_flags_both(store):
     dock(store)
     for epc, s in (("CC01", 0), ("AA01", 1), ("AA02", 6), ("AA01", 10), ("CC02", 11),
@@ -293,7 +301,8 @@ def test_closed_while_dry_run_on_is_dry(store):
     dock(store)
     batch(store, [("AA01", 0), ("CC01", 1)])      # live reads
     group(store, 2)
-    assert passes(store)[0]["dry_run"] == 0
+    assert passes(store)[0]["closed_at"] is None
+    assert [r["dry_run"] for r in store.all("SELECT dry_run FROM raw_tag_reads")] == [None, None]
     state.save_settings(store, dry_run=True)
     assert group(store, 12).to_send == 0
     [p] = passes(store)
@@ -378,10 +387,14 @@ def test_read_time_too_late_to_close_falls_back(store):
     received = "2026-10-16T14:03:30+00:00"
     fallback = datetime(2026, 10, 16, 14, 3, 30, tzinfo=UTC)
     for late in ("9999-12-31T23:58:00+0000", "9999-12-31T23:59:59.999+0000",
-                 "0001-01-01T00:00:00+0100"):
+                 "0001-01-01T00:00:00+0100", "0001-01-01T00:00:00+0000",
+                 "0001-01-01T00:00:02.000+0000", "0001-01-01T00:02:00.999+0000"):
         assert grouper.read_time({"read_at": late, "received_at": received}) == fallback
+    # room for 2 x the widest window + 1 s at either end of time
     assert grouper.read_time({"read_at": "9999-12-31T23:57:58+0000", "received_at": received}) \
-        == datetime(9999, 12, 31, 23, 57, 58, tzinfo=UTC)  # room for 2 x the widest window + 1 s
+        == datetime(9999, 12, 31, 23, 57, 58, tzinfo=UTC)
+    assert grouper.read_time({"read_at": "0001-01-01T00:02:01+0000", "received_at": received}) \
+        == datetime(1, 1, 1, 0, 2, 1, tzinfo=UTC)
 
     dock(store)
     post(store, [tag_event("AA01", timestamp="9999-12-31T23:59:59.999+0000")], 0)
@@ -392,6 +405,15 @@ def test_read_time_too_late_to_close_falls_back(store):
     assert group(store, 12).closed == 1
     [p] = passes(store)
     assert p["outcome"] == "pack" and when(p["closed_at"]) == at(6)
+
+    post(store, [tag_event("CC02", timestamp="0001-01-01T00:00:00+0000")], 30)  # a crate, and
+    last = post(store, [tag_event("AA02", timestamp="0001-01-01T00:00:02.000+0000")], 31)  # W on
+    assert group(store, 31).scanned == 2 and cursor(store) == last
+    assert group(store, 42).closed == 1           # grouped by received_at: no stall
+    first, second = passes(store)
+    assert (second["outcome"], second["container_id"]) == ("pack", "c-2")
+    assert when(second["anchor_at"]) == at(30) and when(second["closed_at"]) == at(35)
+    assert when(second["opened_at"]) == at(30)
 
 
 def test_idle_decision_waits_two_windows_plus_one_second(store):

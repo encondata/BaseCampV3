@@ -53,10 +53,12 @@ from edge.rfid import processing, station_key
 INTERVAL_S = 1.0
 BATCH = 500
 _IDLE_SLACK = timedelta(seconds=1)   # received_at's resolution
-# the latest read time a pass can close from: one past it would overflow
-# `last_new_at + 2W`, roll the tick back and stall the cursor for good
-_LATEST = datetime.max.replace(tzinfo=UTC) - timedelta(seconds=2 * state.GAP_RANGE[1]) \
-    - _IDLE_SLACK
+# the read times a burst can be decided from: one outside them would overflow
+# `last_new_at + 2W` or a window's `anchor - W`, roll the tick back and stall
+# the cursor for good
+_EDGE = timedelta(seconds=2 * state.GAP_RANGE[1]) + _IDLE_SLACK
+_EARLIEST = datetime.min.replace(tzinfo=UTC) + _EDGE
+_LATEST = datetime.max.replace(tzinfo=UTC) - _EDGE
 
 # match kind -> the index its item is in (off-move matches carry their item)
 _SOURCES = {"asset": "assets", "container": "containers", "person": "people"}
@@ -106,15 +108,15 @@ def _stamp(value: datetime) -> str:
 def read_time(raw) -> datetime:
     """When the reader read it: `read_at` (the reader's `...22.512+0000` form
     included, no offset read as UTC) in UTC, else its `received_at` when
-    `read_at` is missing, unparseable or too close to the end of time to
-    close a pass from."""
+    `read_at` is missing, unparseable or too close to either end of time to
+    decide a burst from."""
     value = raw["read_at"]
     if isinstance(value, str):
         try:
             parsed = _utc(datetime.fromisoformat(value))
         except (ValueError, OverflowError):
             parsed = None
-        if parsed is not None and parsed <= _LATEST:
+        if parsed is not None and _EARLIEST <= parsed <= _LATEST:
             return parsed
     return _utc(datetime.fromisoformat(raw["received_at"]))
 
