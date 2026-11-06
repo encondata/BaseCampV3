@@ -1095,88 +1095,260 @@
 .portal-shell[data-theme='dark'] .rfid-dash-btn { color: var(--paper-2); }
 
 /* ── Dock screen ─────────────────────────────────────────────────────
-   /dock reuses the RFID dashboard's page and panels (filling the main
-   column, in the kiosk's light or dark theme). On top, a strip with the
-   reader's state and compact Start / Pause / Stop buttons, then the
-   dry-run switch and the Window (the alarm-seconds field plus Save), an
-   amber banner while dry run is on and a red line while the edge can't
-   be reached; below, the open pass beside the wider recent passes, both
-   showing only the rows that fit (they never scroll). A flagged or
-   refused pass gets a red left edge and red outcome text. The pass
-   modal's tables wrap long tags rather than scroll sideways; the card
-   itself scrolls. */
-.dock-dash-controls {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 12px 40px;
-  flex: none; min-width: 0; margin: 20px 0 0; padding: 14px 20px;
-  background: var(--paper); border: 1px solid var(--paper-line); border-radius: 14px;
+   /dock, laid out like the Truck Packing kiosk mockup (a 1920x1080 stage)
+   and filling the main column: a flex column with the crate and count
+   cards along the top, the crate's running device list beside Recent
+   passes in the middle (the part that grows), and the settings card plus
+   the big Start / Pause / Stop along the bottom. Sizes follow the screen
+   (vw for widths and type, vh for the rows) from a 1366x768 laptop up to
+   the mockup's own. Both lists scroll inside their cards, never the page,
+   with chrome.css's themed slim scrollbar sized for a finger. Tokens only,
+   so it follows the person's light or dark theme. The red line while the
+   edge can't be reached sits above the cards; a failed save or button
+   press sits above the bottom row. Below 900px the rows stack and the page
+   scrolls. The pass modal's tables wrap long tags rather than scroll
+   sideways; the card itself scrolls. */
+.portal-page.dock-dash {
+  display: flex; flex-direction: column; gap: clamp(12px, 1.85vh, 20px);
+  height: 100%; min-height: 560px; box-sizing: border-box;
+  padding: clamp(14px, 2.6vh, 28px) clamp(18px, 2.1vw, 40px) clamp(12px, 2.2vh, 24px);
+}
+.dock-top {
+  flex: none; height: clamp(136px, 18.5vh, 200px);
+  display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: clamp(12px, 1.05vw, 20px);
+}
+.dock-work {
+  flex: 1 1 auto; min-height: 0;
+  display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: clamp(12px, 1.05vw, 20px);
+}
+/* The settings card takes the mockup's 600 of 1840 px, the buttons the rest. */
+.dock-bottom {
+  flex: none; height: clamp(96px, 10.7vh, 116px);
+  display: grid; grid-template-columns: minmax(0, 0.49fr) minmax(0, 1fr); gap: clamp(12px, 1.05vw, 20px);
+}
+.dock-unreachable { display: flex; flex: none; margin: 0; font-size: 14px; font-weight: 500; }
+.dock-alerts { flex: none; display: grid; gap: 4px; }
+.dock-alerts .form-error { margin: 0; font-size: 14px; }
+
+/* the two cards along the top */
+.dock-card {
+  min-width: 0; min-height: 0; display: grid; align-content: space-between;
+  padding: clamp(14px, 2vh, 22px) clamp(18px, 1.35vw, 26px);
+  background: var(--paper); border: 1px solid var(--paper-line); border-radius: 16px;
   color: var(--text-dark);
 }
-.dock-dash-reader { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; }
-/* Wide enough for Unreachable, so the buttons never shift under a press
-   as the state's word changes. */
-.dock-dash-reader .rfid-dash-state { font-size: 16px; font-weight: 600; min-width: 9em; }
-.dock-dash-reader .rfid-dash-state.is-paused { color: var(--c-amber); }
-.dock-dash-reader .rfid-dash-btn { min-height: 52px; padding: 10px 18px; gap: 10px; border-radius: 12px; }
-.dock-dash-reader .rfid-dash-btn-icon svg { width: 22px; height: 22px; }
-.dock-dash-reader .rfid-dash-btn-title { font-size: 18px; }
+.dock-card-label {
+  display: flex; align-items: center; gap: 10px; min-width: 0;
+  font-family: var(--font-mono); font-size: clamp(11px, 0.68vw, 13px); letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-mute);
+}
+.dock-card-label svg { width: clamp(18px, 1.15vw, 22px); height: clamp(18px, 1.15vw, 22px); color: var(--accent); flex: none; }
+.dock-label-chip { margin-left: auto; font-family: var(--font-display); letter-spacing: 0; text-transform: none; }
+
+/* The crate card: dashed accent while scanning, solid accent on a crate,
+   then green / amber / red for a decided pass (red too for a crate that
+   will be flagged), plain while the reader isn't reading. */
+.dock-crate { transition: border-color .2s, background .2s; }
+.dock-crate.is-scanning { border: 2px dashed rgba(var(--accent-rgb), .7); background: rgba(var(--accent-rgb), .05); }
+.dock-crate.is-found { border: 2px solid var(--accent); }
+.dock-crate.is-done { border: 2px solid var(--c-green); background: color-mix(in srgb, var(--c-green) 6%, var(--paper)); }
+.dock-crate.is-would { border: 2px solid var(--c-amber); background: color-mix(in srgb, var(--c-amber) 6%, var(--paper)); }
+.dock-crate.is-flag { border: 2px solid var(--c-red); background: color-mix(in srgb, var(--c-red) 5%, var(--paper)); }
+.dock-crate-row { display: flex; align-items: flex-end; justify-content: space-between; gap: clamp(14px, 1.25vw, 24px); min-width: 0; }
+.dock-crate-main { min-width: 0; }
+.dock-crate-name {
+  font-size: clamp(34px, 2.9vw, 56px); font-weight: 600; line-height: 1.05; letter-spacing: -0.01em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dock-crate:is(.is-scanning, .is-idle) .dock-crate-name { color: var(--text-mute); font-weight: 400; }
+.dock-crate.is-idle .dock-crate-name.is-unreachable { color: var(--c-red); }
+.dock-crate.is-done .dock-crate-name { color: var(--c-green); }
+.dock-crate.is-would .dock-crate-name { color: var(--c-amber); }
+.dock-crate.is-flag .dock-crate-name { color: var(--c-red); }
+.dock-crate-meta {
+  margin-top: 8px; min-height: 1.35em; font-family: var(--font-mono); font-size: clamp(12.5px, 0.78vw, 15px);
+  color: var(--text-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Scanning: a pulsing green dot and an ellipsis that counts up. */
+.dock-pulse {
+  display: inline-block; width: clamp(12px, 0.94vw, 18px); height: clamp(12px, 0.94vw, 18px);
+  margin-right: clamp(10px, 0.94vw, 18px); border-radius: 50%; background: var(--c-green);
+  vertical-align: middle; animation: dock-pulse 1.2s ease-in-out infinite;
+}
+@keyframes dock-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--c-green) 45%, transparent); }
+  50% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--c-green) 0%, transparent); }
+}
+.dock-dots::after { content: ''; animation: dock-dots 1.4s steps(4, end) infinite; }
+@keyframes dock-dots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } }
+@media (prefers-reduced-motion: reduce) {
+  .dock-pulse { animation: none; }
+  .dock-dots::after { animation: none; content: '…'; }
+}
+/* the open burst's countdown to its decision (2W after its last new tag) */
+.dock-window { flex: none; width: clamp(180px, 15.6vw, 300px); }
+.dock-window-label {
+  display: flex; justify-content: space-between; margin-bottom: 8px;
+  font-family: var(--font-mono); font-size: clamp(12px, 0.73vw, 14px); color: var(--text-mute);
+}
+.dock-window-bar { height: 12px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--paper-line); overflow: hidden; }
+.dock-window-bar > span { display: block; height: 100%; background: var(--accent); transition: width .25s linear; }
+
+/* the count: a muted zero, and a bump each time it changes */
+.dock-stat-value {
+  justify-self: start; transform-origin: left center;
+  font-size: clamp(60px, min(5.2vw, 9.3vh), 100px); font-weight: 600; line-height: .95;
+  letter-spacing: -0.03em; font-variant-numeric: tabular-nums;
+}
+.dock-stat-value.is-zero { color: color-mix(in srgb, var(--text-mute) 40%, transparent); }
+.dock-stat-value.is-bump { animation: dock-bump .45s ease; }
+@keyframes dock-bump { 0% { transform: scale(1); } 35% { transform: scale(1.06); color: var(--c-green); } 100% { transform: scale(1); } }
+.dock-stat-sub { font-size: clamp(14px, 0.83vw, 16px); color: var(--text-mute); }
+
+/* the two lists in the middle */
+.dock-panel {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  padding: clamp(14px, 2vh, 22px) clamp(16px, 1.35vw, 26px);
+  background: var(--paper); border: 1px solid var(--paper-line); border-radius: 16px; color: var(--text-dark);
+}
+.dock-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: clamp(10px, 1.5vh, 16px); }
+.dock-panel-title { margin: 0; font-size: clamp(17px, 1.05vw, 20px); font-weight: 600; }
+.dock-panel-sub { margin: 2px 0 0; font-size: clamp(12.5px, 0.73vw, 14px); color: var(--text-mute); }
+.dock-list-wrap {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--paper-line); border-radius: 12px; background: var(--surface);
+}
+/* chrome.css's themed bar, wide enough for a finger, its track starting
+   below the sticky header. */
+.dock-dash .dock-list-wrap::-webkit-scrollbar { width: 18px; }
+.dock-dash .dock-list-wrap::-webkit-scrollbar-track { margin-block: 44px 10px; }
+.dock-dash .dock-list-wrap::-webkit-scrollbar-thumb {
+  border-width: 5px; min-height: 60px; background-color: color-mix(in srgb, var(--text-mute) 55%, transparent);
+}
+/* Fixed columns so a long tag or name wraps in its cell instead of
+   pushing Status out of the card. */
+.dock-list { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: clamp(13px, 0.885vw, 17px); }
+.dock-list th {
+  position: sticky; top: 0; z-index: 1;
+  text-align: left; font-family: var(--font-mono); font-size: clamp(10px, 0.6vw, 11.5px); font-weight: 400;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--text-mute);
+  padding: clamp(9px, 1.1vh, 12px) clamp(10px, 0.83vw, 16px);
+  background: var(--surface-2); border-bottom: 1px solid var(--paper-line);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dock-list td {
+  padding: clamp(9px, 1.3vh, 14px) clamp(10px, 0.83vw, 16px);
+  border-bottom: 1px solid var(--paper-line); vertical-align: middle; overflow-wrap: anywhere;
+}
+.dock-list tr:last-child td { border-bottom: 0; }
+.dock-list td.mono { font-family: var(--font-mono); font-size: clamp(11.5px, 0.78vw, 15px); color: var(--text-mute); }
+.dock-list td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; overflow-wrap: normal; }
+.dock-list :is(th, td).r { text-align: right; }
+.dock-list .name { font-weight: 500; }
+.dock-list td .chip { font-size: clamp(11.5px, 0.68vw, 13px); }
+.dock-crate-list th:nth-child(1) { width: 20%; }
+.dock-crate-list th:nth-child(2) { width: 14%; }
+.dock-crate-list th:nth-child(3) { width: 31%; }   /* a whole 24-character EPC on one line */
+.dock-crate-list th:nth-child(4) { width: 14%; }
+.dock-crate-list th:nth-child(5) { width: 21%; }
+.dock-recent-list th:nth-child(1) { width: 17%; }
+.dock-recent-list th:nth-child(2) { width: 22%; }
+.dock-recent-list th:nth-child(3) { width: 12%; }
+.dock-recent-list th:nth-child(5) { width: clamp(92px, 5.6vw, 108px); }
+.dock-recent-list .mini-btn { height: clamp(28px, 3.6vh, 34px); padding: 0 11px; }
+/* With two or more crates, an added row names its crate under the chip. */
+.dock-row-crate { display: block; margin-top: 3px; font-size: clamp(11.5px, 0.68vw, 13px); color: var(--text-mute); }
+.dock-list tr.is-new td { animation: dock-new 2.4s ease-out; }
+@keyframes dock-new { from { background: color-mix(in srgb, var(--c-green) 16%, transparent); } to { background: transparent; } }
+/* A flagged or refused pass gets a red left edge and red outcome text; a
+   dry run's Would pack reads amber. */
+.dock-list tr.is-flagged td:first-child { box-shadow: inset 5px 0 0 var(--c-red); }
+.dock-list tr.is-flagged .dock-outcome { color: var(--c-red); }
+.dock-list .dock-outcome.is-would { color: var(--c-amber); }
+.dock-empty {
+  height: 100%; margin: 0; padding: 20px; box-sizing: border-box;
+  display: grid; place-content: center; text-align: center;
+  color: var(--text-mute); font-size: clamp(14px, 0.885vw, 17px);
+}
+.dock-empty svg { display: block; width: clamp(36px, 2.5vw, 48px); height: clamp(36px, 2.5vw, 48px); margin: 0 auto 12px; opacity: .45; }
+
+/* the settings card: Dry run over Window */
+.dock-settings {
+  display: grid; grid-template-rows: 1fr 1fr; min-width: 0; min-height: 0; margin: 0;
+  padding: 4px clamp(16px, 1.15vw, 22px);
+  background: var(--paper); border: 1px solid var(--paper-line); border-radius: 16px; color: var(--text-dark);
+}
+.dock-set-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+.dock-set-row + .dock-set-row { border-top: 1px solid var(--paper-line); }
+.dock-set-text { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 12px; min-width: 0; }
+.dock-set-title { font-size: clamp(15px, 0.885vw, 17px); font-weight: 600; }
+.dock-set-hint { font-size: clamp(12px, 0.68vw, 13px); color: var(--text-mute); }
+.dock-set-hint.form-error { color: var(--c-red); margin: 0; }
+.dock-settings .kiosk-switch { width: 60px; height: 32px; }
+.dock-settings .kiosk-switch-knob { top: 4px; left: 4px; width: 24px; height: 24px; }
+.dock-settings .kiosk-switch.on .kiosk-switch-knob { transform: translateX(28px); }
+.dock-settings:disabled .kiosk-switch { opacity: .5; cursor: default; }
+.dock-win { display: flex; align-items: center; gap: 8px; flex: none; }
+.dock-win input {
+  width: 64px; height: clamp(32px, 4.4vh, 38px); padding: 0 12px; box-sizing: border-box;
+  border-radius: 10px; border: 1px solid var(--paper-line); background: var(--surface); color: var(--text-dark);
+  font-family: var(--font-mono); font-size: clamp(15px, 0.94vw, 18px);
+  appearance: textfield; -moz-appearance: textfield;
+}
+.dock-win input::-webkit-inner-spin-button,
+.dock-win input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.dock-win input:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .25); }
+.dock-win input[aria-invalid='true'] { border-color: var(--c-red); }
+.dock-win input:disabled { opacity: .5; }
+.dock-win .mini-btn { height: clamp(32px, 4.4vh, 38px); }
+/* Save while disabled takes the buttons' disabled look: .mini-btn's faded
+   --surface fill all but vanishes on a dark card. Here only. */
+.dock-win .mini-btn:disabled {
+  background: var(--surface-2); border-color: var(--paper-line); color: var(--text-mute); opacity: 1;
+}
+
+/* the big Start / Pause / Stop (the RFID dashboard's buttons, row-high) */
+.dock-reader { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: clamp(12px, 1.05vw, 20px); min-width: 0; }
+.dock-reader .rfid-dash-btn {
+  height: 100%; min-height: 0; min-width: 0;
+  padding: clamp(10px, 1.5vh, 18px) clamp(14px, 1.15vw, 22px); gap: clamp(12px, 1.15vw, 22px);
+}
+.dock-reader .rfid-dash-btn-icon svg { width: clamp(30px, 2.3vw, 44px); height: clamp(30px, 2.3vw, 44px); }
+.dock-reader .rfid-dash-btn-title { font-size: clamp(22px, 1.56vw, 30px); }
+.dock-reader .rfid-dash-btn-sub { font-size: clamp(12px, 0.73vw, 14px); }
 .rfid-dash-btn.is-pause { background: var(--c-amber); }
-/* Disabled: the strip's quiet page tone with muted text rather than the
-   dashboard's faded fill, which reads about 2:1 in light; the label stays
-   readable in both themes (and wins over the dark text refinement). */
-.dock-dash-reader .rfid-dash-btn:disabled {
-  background: var(--paper-2); border-color: var(--paper-line); color: var(--text-mute);
+/* Disabled: the quiet surface with muted text rather than the dashboard's
+   faded fill, which reads about 2:1 in light; the label stays readable in
+   both themes (and wins over the dark text refinement). */
+.dock-reader .rfid-dash-btn:disabled {
+  background: var(--surface-2); border-color: var(--paper-line); color: var(--text-mute);
   opacity: 1; filter: none;
 }
-.dock-dash-settings {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 12px 40px;
-  min-width: 0; margin: 0; padding: 0; border: 0;
+
+/* Dark theme: on the near-black --paper-2 page the cards sit a step lighter
+   (--surface) and the boxes inside them back down to --surface-2, as on the
+   RFID dashboard; the decided looks tint --surface. */
+.portal-shell[data-theme='dark'] :is(.dock-card, .dock-panel, .dock-settings) { background: var(--surface); }
+.portal-shell[data-theme='dark'] .dock-list-wrap { background: var(--surface-2); }
+.portal-shell[data-theme='dark'] .dock-list th { background: var(--surface); }
+.portal-shell[data-theme='dark'] .dock-win input { background: var(--surface-2); }
+.portal-shell[data-theme='dark'] .dock-crate.is-scanning { background: rgba(var(--accent-rgb), .06); }
+.portal-shell[data-theme='dark'] .dock-crate.is-done { background: color-mix(in srgb, var(--c-green) 8%, var(--surface)); }
+.portal-shell[data-theme='dark'] .dock-crate.is-would { background: color-mix(in srgb, var(--c-amber) 8%, var(--surface)); }
+.portal-shell[data-theme='dark'] .dock-crate.is-flag { background: color-mix(in srgb, var(--c-red) 8%, var(--surface)); }
+.portal-shell[data-theme='dark'] .dock-reader .rfid-dash-btn:disabled {
+  background: color-mix(in srgb, var(--text-mute) 12%, var(--surface)); border-color: transparent;
 }
-.dock-dash-settings:disabled .kiosk-switch { opacity: .5; cursor: default; }
-.dock-dash-control { display: flex; align-items: center; gap: 16px; min-width: 0; }
-.dock-dash-control > div:first-child { min-width: 0; }
-.dock-dash-controls > .form-error { flex-basis: 100%; margin: 0; }
-/* The Window's hint as an error: red (a bare .form-error loses to the
-   later .settings-row-hint) and without .rfid-dash .form-error's margin. */
-.dock-dash-settings .settings-row-hint.form-error { color: var(--c-red); margin: 4px 0 0; }
-/* The Window's Save while disabled takes the reader buttons' disabled
-   look: .mini-btn's faded --surface fill all but vanishes on the dark
-   strip. Here only; .mini-btn elsewhere is unchanged. */
-.dock-dash-settings .mini-btn:disabled {
-  background: var(--paper-2); border-color: var(--paper-line); color: var(--text-mute); opacity: 1;
+
+/* A narrow screen (a phone on the LAN): the rows stack and the page
+   scrolls; each list keeps a usable height of its own. */
+@media (max-width: 900px) {
+  .portal-page.dock-dash { height: auto; }
+  .dock-top, .dock-work, .dock-bottom { grid-template-columns: minmax(0, 1fr); height: auto; }
+  .dock-panel { height: 380px; }
+  .dock-reader { min-height: 96px; }
 }
-.dock-dash-banner {
-  flex: none; margin: 14px 0 0; padding: 10px 16px; border-radius: 10px;
-  background: color-mix(in srgb, var(--c-amber) 15%, transparent);
-  border-left: 3px solid var(--c-amber);
-  color: var(--text-dark); font-size: 14px; font-weight: 500;
-}
-/* Polls failing: the RFID dashboard's red Unreachable state as a line. */
-.dock-dash-unreachable { display: flex; flex: none; margin: 14px 0 0; font-size: 14px; font-weight: 500; }
-.dock-dash-panels { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
-@media (max-width: 900px) { .dock-dash-panels { grid-template-columns: minmax(0, 1fr); } }
-.dock-dash-countdown {
-  margin: 8px 0 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums;
-  font-size: 24px; font-weight: 600; line-height: 1.2;
-}
-.dock-dash-tags { list-style: none; margin: 0; padding: 0; flex: 1 1 auto; min-height: 0; overflow: hidden; }
-@media (max-width: 900px) { .dock-dash-tags { max-height: 360px; } }
-.dock-dash-tag {
-  display: grid; grid-template-columns: 78px minmax(0, 1fr) max-content;
-  align-items: center; gap: 10px; padding: 8px 0;
-  border-top: 1px solid var(--paper-line); font-size: 13px;
-}
-.dock-dash-tag:first-child { border-top: 0; padding-top: 0; }
-.dock-dash-tag .chip { justify-self: start; }
-.dock-dash-tag-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dock-dash-tag-label.is-unknown { color: var(--text-mute); }
-.dock-dash-tag-epc { font-family: var(--font-mono); font-size: 12px; color: var(--text-mute); }
-.dock-dash-table { width: 100%; }
-.dock-dash-table td { vertical-align: middle; }
-.dock-dash-table td.dock-dash-action { width: 1%; text-align: right; white-space: nowrap; }
-.dock-dash-table .mini-btn { height: 28px; padding: 0 11px; }
-.dock-dash-table tr.is-flagged td:first-child { box-shadow: inset 3px 0 0 var(--c-red); }
-.dock-dash-table tr.is-flagged .dock-dash-outcome { color: var(--c-red); }
-.portal-shell[data-theme='dark'] .dock-dash-controls { background: var(--surface); }
 .dock-pass-table td { overflow-wrap: anywhere; }
 
 /* ── Settings › Devices ──────────────────────────────────────────────

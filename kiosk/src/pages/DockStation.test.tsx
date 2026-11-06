@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
-/** The Dock screen: the open pass and its countdown, recent passes and
- *  their outcome copy, the pass-detail modal, the dry-run switch, the
- *  Window, the reader's Start / Pause / Stop and its state, the 1 s
- *  overview poll and the 5 s reader check. */
+/** The Dock screen: the crate card (Scanning, the newest crate and its
+ *  countdown, two crates in red, a decided pass's result for 6 s, Paused /
+ *  Stopped), the count card, the crate's running device list, recent
+ *  passes and their outcome copy, the pass-detail modal, the dry-run
+ *  switch, the Window, the reader's Start / Pause / Stop and its state, the
+ *  1 s overview poll and the 5 s reader check. */
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -21,8 +23,9 @@ vi.mock('../lib/sync', async (importOriginal) => ({
 }));
 
 import {
-  ApiError, type DockControl, type DockControlResult, type DockOverview, type DockPassDetail,
-  type DockPassRow, type DockPassTag, type EdgeSetup, type ReaderStatus,
+  ApiError, type DockControl, type DockControlResult, type DockCrate, type DockOpenPass,
+  type DockOpenTag, type DockOverview, type DockPassDetail, type DockPassRow, type DockPassTag,
+  type EdgeSetup, type ReaderStatus,
 } from '../lib/api';
 import { writeKioskSetup } from '../lib/kioskSetup';
 import { hydrateLaptopSetup } from '../lib/laptopSetup';
@@ -55,6 +58,37 @@ const overview = (over: Partial<DockOverview> = {}): DockOverview => ({
   settings: { dry_run: true, quiet_gap_s: 5 }, open: null, passes: [], control: null, ...over,
 });
 
+/** A crate read in the open burst. */
+const crate = (over: Partial<DockCrate> = {}): DockCrate => ({
+  epc: '0000000000000000000000C1', label: 'Crate A', first_read_at: at(14, 4, 58),
+  conflict: false, ...over,
+});
+
+/** An asset read in the open burst, before any crate. */
+const asset = (over: Partial<DockOpenTag> = {}): DockOpenTag => ({
+  epc: '000000000000000000001001', kind: 'asset', label: 'host-a', first_read_at: at(14, 4, 57),
+  serial: 'SN-1001', in_window: null, crate_label: null, ...over,
+});
+
+/** The open burst; its crates go into its tags too, as the edge lists them. */
+const openPass = (over: Partial<DockOpenPass> = {}): DockOpenPass => {
+  const crates = over.crates ?? [];
+  const tags = over.tags ?? [];
+  return {
+    id: 9, opened_at: at(14, 4, 57), seconds_left: 8, window_s: 5,
+    crate_count: crates.length, asset_count: tags.filter((t) => t.kind === 'asset').length,
+    conflict: crates.some((c) => c.conflict), added_count: 0, ...over,
+    crates,
+    tags: [
+      ...crates.map((c): DockOpenTag => ({
+        epc: c.epc, kind: 'container', label: c.label, first_read_at: c.first_read_at,
+        serial: null, in_window: null, crate_label: null,
+      })),
+      ...tags,
+    ],
+  };
+};
+
 const READER = { ip: '10.10.48.119', serial: '1234ABCD', model: 'FX9600', endpoint_url: null };
 /** A reachable reader, not reading unless told. */
 const readerStatus = (over: Partial<ReaderStatus> = {}): ReaderStatus => ({
@@ -85,6 +119,10 @@ async function flush() {
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
 }
 
+async function tick(ms: number) {
+  await act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+}
+
 async function renderPage() {
   render(
     <MemoryRouter initialEntries={['/dock']}>
@@ -101,15 +139,33 @@ const dryRun = () => screen.getByRole('switch', { name: 'Dry run' });
 const windowInput = () => screen.getByLabelText('Window') as HTMLInputElement;
 const saveBtn = () => screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement;
 const readerGroup = () => screen.getByRole('group', { name: 'Reader' });
-const readerShown = () => readerGroup().querySelector('.rfid-dash-state') as HTMLElement;
 const readerBtn = (name: 'Start' | 'Pause' | 'Stop') =>
   within(readerGroup()).getByRole('button', { name }) as HTMLButtonElement;
+/** A reader button's line under its title. */
+const btnSub = (name: 'Start' | 'Pause' | 'Stop') =>
+  readerBtn(name).querySelector('.rfid-dash-btn-sub')?.textContent;
 /** Whether Start, Pause and Stop are enabled. */
 const enabled = () => (['Start', 'Pause', 'Stop'] as const).map((n) => !readerBtn(n).disabled);
-const BANNER = 'Dry run · nothing is sent to the portal.';
+const crateCard = () => screen.getByRole('region', { name: 'Crate' });
+const crateName = () => crateCard().querySelector('.dock-crate-name') as HTMLElement;
+const crateMeta = () => crateCard().querySelector('.dock-crate-meta')?.textContent;
+/** The card's look: is-scanning, is-found, is-done, is-would, is-flag or is-idle. */
+const cardIs = (look: string) => crateCard().classList.contains(`is-${look}`);
+/** With no crate and no result, the crate card shows the reader's state. */
+const readerShown = crateName;
+const countCard = () => screen.getByRole('region', { name: 'Assets added to crate' });
+const countValue = () => countCard().querySelector('.dock-stat-value')?.textContent;
+const countSub = () => countCard().querySelector('.dock-stat-sub')?.textContent;
+const crateList = () => screen.getByRole('region', { name: 'In this crate' });
+const recentList = () => screen.getByRole('region', { name: 'Recent passes' });
+/** A panel's count chip. */
+const chipOf = (panel: HTMLElement) => panel.querySelector('.dock-panel-head .chip')?.textContent;
+/** The crate list's rows, past the header. */
+const listRows = () => within(crateList()).getAllByRole('row').slice(1) as HTMLTableRowElement[];
 const UNREACHABLE = "Can't reach the station. Retrying…";
+const EMPTY_LIST = 'Devices appear here as they pass the curtain.';
 /** The Recent passes row whose Crate cell (or other cell) holds `text`. */
-const rowOf = (text: string) => screen.getByText(text).closest('tr') as HTMLElement;
+const rowOf = (text: string) => within(recentList()).getByText(text).closest('tr') as HTMLElement;
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: false });
@@ -185,60 +241,392 @@ describe('DockStation', () => {
     expect(api.getDock).not.toHaveBeenCalled();
   });
 
-  it('the open pass counts down in whole seconds and lists its tags', async () => {
+  // ── the crate card and the count ──────────────────────────────────
+
+  it('the crate card says Scanning and Waiting for a crate tag with no crate', async () => {
+    api.getReaderStatus.mockResolvedValue(readerStatus({ reading: true }));
+    api.getDock.mockResolvedValueOnce(overview())
+      .mockResolvedValue(overview({
+        open: openPass({ tags: [asset(), asset({ epc: '000000000000000000001002', label: 'host-b' })] }),
+      }));
+    await renderPage();
+    expect(cardIs('scanning')).toBe(true);
+    expect(crateName().textContent).toBe('Scanning');
+    expect(crateName().querySelector('.dock-dots')).toBeTruthy();   // the animated ellipsis
+    expect(crateMeta()).toBe('Waiting for a crate tag');
+    expect(crateCard().querySelector('.dock-window')).toBeNull();
+    expect(countValue()).toBe('0');
+    expect(countSub()).toBe('no crate yet');
+
+    // devices read, still no crate
+    await tick(1000);
+    expect(cardIs('scanning')).toBe(true);
+    expect(crateMeta()).toBe('2 devices read · waiting for a crate tag');
+    expect(countValue()).toBe('0');
+    expect(countSub()).toBe('waiting for a crate tag');
+  });
+
+  it("names the newest crate and counts down to the burst's decision", async () => {
+    api.getReaderStatus.mockResolvedValue(readerStatus({ reading: true }));
+    api.getDock.mockResolvedValueOnce(overview({
+      open: openPass({ seconds_left: 2.4, window_s: 5, crates: [crate()], tags: [asset()] }),
+    })).mockResolvedValueOnce(overview({
+      open: openPass({
+        seconds_left: 7.5, window_s: 5,
+        crates: [crate(), crate({ epc: '0000000000000000000000C2', label: 'Crate B', first_read_at: at(14, 4, 59) })],
+      }),
+    })).mockResolvedValue(overview({
+      // an unnamed crate goes by its trimmed tag; at zero the bar is empty
+      open: openPass({ seconds_left: 0, window_s: 5, crates: [crate({ label: null })] }),
+    }));
+    await renderPage();
+    expect(cardIs('found')).toBe(true);
+    expect(crateName().textContent).toBe('Crate A');
+    expect(crateMeta()).toBe('Tag C1 · read at 14:04:58');
+    const bar = () => crateCard().querySelector('.dock-window') as HTMLElement;
+    expect(within(bar()).getByText('Finishing in')).toBeTruthy();
+    expect(within(bar()).getByText('3 s')).toBeTruthy();
+    // 2.4 s of 2W = 10 s
+    expect((bar().querySelector('.dock-window-bar > span') as HTMLElement).style.width).toBe('24%');
+
+    await tick(1000);
+    expect(crateName().textContent).toBe('Crate B');
+    expect(crateMeta()).toBe('Tag C2 · read at 14:04:59');
+    expect(within(bar()).getByText('8 s')).toBeTruthy();
+    expect(cardIs('flag')).toBe(false);
+
+    await tick(1000);
+    expect(crateName().textContent).toBe('C1');
+    expect(within(bar()).getByText('0 s')).toBeTruthy();
+    expect((bar().querySelector('.dock-window-bar > span') as HTMLElement).style.width).toBe('0%');
+  });
+
+  it('two crates within 2W turn the card red', async () => {
+    const a = crate({ conflict: true });
+    const b = crate({ epc: '0000000000000000000000C2', label: 'Crate B', first_read_at: at(14, 4, 59), conflict: true });
+    api.getDock.mockResolvedValueOnce(overview({ open: openPass({ seconds_left: 6, crates: [a, b] }) }))
+      // only an older pair is flagged: the newest crate stands on its own
+      .mockResolvedValue(overview({
+        open: openPass({
+          crates: [a, b, crate({ epc: '0000000000000000000000C3', label: 'Crate C', first_read_at: at(14, 5, 0) })],
+        }),
+      }));
+    await renderPage();
+    expect(cardIs('flag')).toBe(true);
+    expect(crateName().textContent).toBe('More than one crate');
+    expect(crateMeta()).toBe('Crate A and Crate B were read together');
+    expect(within(crateCard()).getByText('6 s')).toBeTruthy();   // still counting down to the decision
+
+    await tick(1000);
+    expect(cardIs('flag')).toBe(false);
+    expect(cardIs('found')).toBe(true);
+    expect(crateName().textContent).toBe('Crate C');
+  });
+
+  it('the count card shows added_count and where they go', async () => {
+    api.getDock.mockResolvedValueOnce(overview({
+      open: openPass({ crates: [crate()], added_count: 2 }),
+    })).mockResolvedValueOnce(overview({
+      settings: { dry_run: false, quiet_gap_s: 5 },
+      open: openPass({ crates: [crate()], added_count: 3 }),
+    })).mockResolvedValue(overview({
+      settings: { dry_run: false, quiet_gap_s: 5 },
+      open: openPass({ crates: [crate({ label: null })], added_count: 3 }),
+    }));
+    await renderPage();
+    expect(countValue()).toBe('2');
+    expect(countSub()).toBe('would go into Crate A');
+    await tick(1000);
+    expect(countValue()).toBe('3');
+    expect(countSub()).toBe('in Crate A');
+    await tick(1000);
+    expect(countSub()).toBe('in C1');
+  });
+
+  it('a new count bumps', async () => {
+    api.getDock.mockResolvedValueOnce(overview({ open: openPass({ crates: [crate()], added_count: 1 }) }))
+      .mockResolvedValue(overview({ open: openPass({ crates: [crate()], added_count: 2 }) }));
+    await renderPage();
+    const first = countCard().querySelector('.dock-stat-value');
+    expect(first?.classList.contains('is-bump')).toBe(true);
+    await tick(1000);
+    const second = countCard().querySelector('.dock-stat-value');
+    expect(second).not.toBe(first);   // a fresh element replays the animation
+    expect(second?.classList.contains('is-bump')).toBe(true);
+    await tick(1000);
+    expect(countCard().querySelector('.dock-stat-value')).toBe(second);   // the same count: no replay
+  });
+
+  it('a zero count is the muted zero, never bumped', async () => {
+    await renderPage();
+    const value = countCard().querySelector('.dock-stat-value');
+    expect(value?.classList.contains('is-zero')).toBe(true);
+    expect(value?.classList.contains('is-bump')).toBe(false);
+  });
+
+  it('Paused and Stopped show on the crate card with Press Start to read again', async () => {
+    const cases: [DockControl | null, string][] = [['pause', 'Paused'], ['stop', 'Stopped'], [null, 'Stopped']];
+    for (const [control, text] of cases) {
+      api.getDock.mockResolvedValue(overview({ control }));
+      await renderPage();
+      expect(cardIs('idle')).toBe(true);
+      expect(crateName().textContent).toBe(text);
+      expect(crateMeta()).toBe('Press Start to read again');
+      cleanup();
+    }
+  });
+
+  it('a paused reader still shows the open crate it left', async () => {
     api.getDock.mockResolvedValue(overview({
-      open: {
-        id: 9, opened_at: at(14, 4, 58), seconds_left: 2.4, crate_count: 1, asset_count: 1,
+      control: 'pause', open: openPass({ seconds_left: 4, crates: [crate()] }),
+    }));
+    await renderPage();
+    expect(cardIs('found')).toBe(true);
+    expect(crateName().textContent).toBe('Crate A');
+    expect(btnSub('Start')).toBe('Start reading tags');
+  });
+
+  it('a Dry run chip sits on the crate card while dry run is on', async () => {
+    api.getDock.mockResolvedValueOnce(overview())
+      .mockResolvedValue(overview({ settings: { dry_run: false, quiet_gap_s: 5 } }));
+    await renderPage();
+    expect(within(crateCard()).getByText('Dry run').classList.contains('chip')).toBe(true);
+    await tick(1000);
+    expect(within(crateCard()).queryByText('Dry run')).toBeNull();
+  });
+
+  // ── a decided pass's result ───────────────────────────────────────
+
+  it('a pass decided while watching flashes once', async () => {
+    api.getReaderStatus.mockResolvedValue(readerStatus({ reading: true }));
+    const first = passRow({ id: 1, container_name: 'Crate A' });
+    const decided = passRow({
+      id: 2, status: 'would_pack', dry_run: true, container_name: 'Crate B', asset_count: 3,
+    });
+    api.getDock.mockResolvedValueOnce(overview({ passes: [first] }))
+      .mockResolvedValue(overview({ passes: [decided, first] }));
+    await renderPage();
+    // listed when the page opened: no flash
+    expect(cardIs('scanning')).toBe(true);
+
+    await tick(1000);
+    expect(cardIs('would')).toBe(true);
+    expect(crateName().textContent).toBe('Crate B');
+    expect(crateMeta()).toBe('Would pack 3 devices · dry run, nothing sent');
+    expect(countValue()).toBe('3');
+    expect(countSub()).toBe('would go into Crate B');
+    await tick(5999);   // polls keep landing with it on top
+    expect(cardIs('would')).toBe(true);
+    await tick(1);
+    expect(cardIs('scanning')).toBe(true);
+    expect(crateName().textContent).toBe('Scanning');
+    expect(countValue()).toBe('0');
+    await tick(10000);
+    expect(cardIs('scanning')).toBe(true);
+  });
+
+  it('passes listed on the first answer never flash, even after polls failed', async () => {
+    api.getReaderStatus.mockResolvedValue(readerStatus({ reading: true }));
+    api.getDock.mockRejectedValueOnce(new ApiError(0, 'network'))
+      .mockResolvedValueOnce(overview({ passes: [passRow({ id: 4 })] }))
+      .mockResolvedValue(overview({ passes: [passRow({ id: 4 })] }));
+    await renderPage();
+    await tick(1000);
+    expect(rowOf('Crate A')).toBeTruthy();
+    expect(cardIs('scanning')).toBe(true);
+    await tick(1000);
+    expect(cardIs('scanning')).toBe(true);
+  });
+
+  it('a first pass after an empty list flashes', async () => {
+    api.getDock.mockResolvedValueOnce(overview())
+      .mockResolvedValue(overview({ passes: [passRow({ id: 1, status: 'packed', asset_count: 1 })] }));
+    await renderPage();
+    await tick(1000);
+    expect(cardIs('done')).toBe(true);
+    expect(crateName().textContent).toBe('Crate A');
+    expect(crateMeta()).toBe('Packed 1 device');
+    expect(countSub()).toBe('in Crate A');
+  });
+
+  it('each outcome has its look on the crate card', async () => {
+    const cases: [Partial<DockPassRow>, string, string, string][] = [
+      [{ status: 'packed', asset_count: 4 }, 'done', 'Crate A', 'Packed 4 devices'],
+      [{ status: 'packed', asset_count: 4, refused_count: 1 }, 'done', 'Crate A', 'Packed · 1 not packed'],
+      [{ status: 'waiting' }, 'done', 'Crate A', 'Waiting to send'],
+      [{ status: 'refused', refuse_code: 'move_locked' }, 'flag', 'Crate A', 'Not packed: crate is on another move'],
+      [{ status: 'flagged', flag: 'no_crate', container_name: null, asset_count: 2 }, 'flag',
+        'No crate read', '2 devices read with no crate tag. Nothing was packed.'],
+      [{ status: 'nothing', asset_count: 0 }, 'idle', 'Crate A', 'Nothing to pack'],
+    ];
+    for (const [over, look, name, meta] of cases) {
+      api.getDock.mockResolvedValueOnce(overview())
+        .mockResolvedValue(overview({ passes: [passRow({ id: 5, ...over })] }));
+      await renderPage();
+      await tick(1000);
+      expect(cardIs(look)).toBe(true);
+      expect(crateName().textContent).toBe(name);
+      expect(crateMeta()).toBe(meta);
+      cleanup();
+    }
+  });
+
+  it('a red result leaves the count to the open burst', async () => {
+    api.getDock.mockResolvedValueOnce(overview())
+      .mockResolvedValue(overview({
+        passes: [passRow({ id: 5, status: 'flagged', flag: 'no_crate', container_name: null })],
+      }));
+    await renderPage();
+    await tick(1000);
+    expect(cardIs('flag')).toBe(true);
+    expect(countValue()).toBe('0');
+    expect(countSub()).toBe('no crate yet');
+  });
+
+  it('More than one crate names the crates the burst read together', async () => {
+    const a = crate({ conflict: true });
+    const b = crate({ epc: '0000000000000000000000C2', label: 'Crate B', first_read_at: at(14, 4, 59), conflict: true });
+    api.getDock.mockResolvedValueOnce(overview({ open: openPass({ crates: [a, b] }) }))
+      .mockResolvedValue(overview({
+        passes: [passRow({ id: 5, status: 'flagged', flag: 'many_crates', container_name: null })],
+      }));
+    await renderPage();
+    await tick(1000);
+    expect(cardIs('flag')).toBe(true);
+    expect(crateName().textContent).toBe('More than one crate');
+    expect(crateMeta()).toBe('Crate A and Crate B were read together. Nothing was packed.');
+  });
+
+  it('a result follows its pass until it is sent', async () => {
+    api.getDock.mockResolvedValueOnce(overview())
+      .mockResolvedValueOnce(overview({ passes: [passRow({ id: 5, status: 'waiting', asset_count: 2 })] }))
+      .mockResolvedValue(overview({ passes: [passRow({ id: 5, status: 'packed', asset_count: 2 })] }));
+    await renderPage();
+    await tick(1000);
+    expect(crateMeta()).toBe('Waiting to send');
+    await tick(1000);
+    expect(crateMeta()).toBe('Packed 2 devices');
+  });
+
+  it('a crate read during a result takes the card', async () => {
+    api.getDock.mockResolvedValueOnce(overview())
+      .mockResolvedValueOnce(overview({ passes: [passRow({ id: 5 })] }))
+      .mockResolvedValue(overview({
+        passes: [passRow({ id: 5 })],
+        open: openPass({ crates: [crate({ epc: '0000000000000000000000C9', label: 'Crate Z' })] }),
+      }));
+    await renderPage();
+    await tick(1000);
+    expect(cardIs('done')).toBe(true);
+    await tick(1000);
+    expect(cardIs('found')).toBe(true);
+    expect(crateName().textContent).toBe('Crate Z');
+    // once its burst is gone too, the old result doesn't come back
+    api.getDock.mockResolvedValue(overview({ passes: [passRow({ id: 5 })] }));
+    await tick(1000);
+    expect(cardIs('done')).toBe(false);
+  });
+
+  // ── In this crate ─────────────────────────────────────────────────
+
+  it("In this crate lists the burst's assets newest first with serial, tag, read time and status", async () => {
+    api.getDock.mockResolvedValueOnce(overview({
+      open: openPass({
         tags: [
-          { epc: '0000000000000000000000C1', kind: 'container', label: 'Crate A' },
-          { epc: '000000000000000000001001', kind: 'asset', label: 'host-a' },
-          { epc: '00000000000000000000BEEF', kind: 'unknown', label: null },
+          asset({ epc: '000000000000000000001001', label: 'host-a', serial: 'SN-A', first_read_at: at(14, 4, 50) }),
+          asset({ epc: '000000000000000000001002', label: 'host-b', serial: null, first_read_at: at(14, 4, 55) }),
+          { ...asset({ epc: '000000000000000000000E01', label: 'Person A' }), kind: 'person' },
+          { ...asset({ epc: '00000000000000000000BEEF', label: null }), kind: 'unknown' },
         ],
-      },
-    }));
-    await renderPage();
-    const panel = screen.getByRole('region', { name: 'Open pass' });
-    expect(within(panel).getByText('Closes in 3 s')).toBeTruthy();
-    expect(within(panel).getByText('Crate A')).toBeTruthy();
-    expect(within(panel).getByText('host-a')).toBeTruthy();
-    expect(within(panel).getByText('Unknown tag')).toBeTruthy();
-    expect(within(panel).getByText('BEEF')).toBeTruthy();
-    expect(within(panel).getByText('1 crate · 1 asset')).toBeTruthy();
-    expect(within(panel).queryByText('Waiting for tags…')).toBeNull();
-  });
-
-  it('the open pass lists crates first, then the other tags newest first', async () => {
-    api.getDock.mockResolvedValue(overview({
-      open: {
-        id: 9, opened_at: at(14, 4, 58), seconds_left: 3, crate_count: 1, asset_count: 2,
+      }),
+    })).mockResolvedValueOnce(overview({
+      settings: { dry_run: true, quiet_gap_s: 5 },
+      open: openPass({
+        crates: [crate()],
         tags: [
-          { epc: '000000000000000000001001', kind: 'asset', label: 'host-a' },
-          { epc: '0000000000000000000000C1', kind: 'container', label: 'Crate A' },
-          { epc: '00000000000000000000BEEF', kind: 'unknown', label: null },
-          { epc: '000000000000000000001002', kind: 'asset', label: 'host-b' },
+          asset({ epc: '000000000000000000001001', label: 'host-a', serial: 'SN-A', first_read_at: at(14, 4, 50), in_window: false }),
+          asset({ epc: '000000000000000000001002', label: 'host-b', serial: null, first_read_at: at(14, 4, 55), in_window: true, crate_label: 'Crate A' }),
         ],
-      },
+      }),
+    })).mockResolvedValue(overview({
+      settings: { dry_run: false, quiet_gap_s: 5 },
+      open: openPass({
+        crates: [crate()],
+        tags: [
+          asset({ epc: '000000000000000000001002', label: 'host-b', serial: null, first_read_at: at(14, 4, 55), in_window: true, crate_label: 'Crate A' }),
+        ],
+      }),
     }));
     await renderPage();
-    const panel = screen.getByRole('region', { name: 'Open pass' });
-    const labels = [...panel.querySelectorAll('.dock-dash-tag-label')].map((el) => el.textContent);
-    expect(labels).toEqual(['Crate A', 'host-b', 'Unknown tag', 'host-a']);
+    // assets only (no crates, people or unknown tags), newest first, no crate yet
+    let rows = listRows();
+    expect(rows).toHaveLength(2);
+    expect([...rows[0].cells].map((c) => c.textContent)).toEqual(['host-b', '—', '1002', '14:04:55', 'Waiting for crate']);
+    expect([...rows[1].cells].map((c) => c.textContent)).toEqual(['host-a', 'SN-A', '1001', '14:04:50', 'Waiting for crate']);
+    expect(rows[0].querySelector('.chip')?.classList.contains('c-slate')).toBe(true);
+    expect(rows[0].classList.contains('is-new')).toBe(true);
+    expect(rows[1].classList.contains('is-new')).toBe(false);
+    expect(chipOf(crateList())).toBe('2 devices');
+    expect(within(crateList()).getByText('Devices read at the curtain, newest first.')).toBeTruthy();
+    expect(within(crateList()).getAllByRole('columnheader').map((h) => h.textContent))
+      .toEqual(['Device', 'Serial', 'Tag', 'Read', 'Status']);
+
+    // a crate read: inside its window or outside it (dry run)
+    await tick(1000);
+    rows = listRows();
+    expect(rows[0].cells[4].textContent).toBe('Would add');
+    expect(rows[0].querySelector('.chip')?.classList.contains('c-green')).toBe(true);
+    expect(rows[1].cells[4].textContent).toBe('Outside window');
+    expect(rows[1].querySelector('.chip')?.classList.contains('c-red')).toBe(true);
+
+    // live
+    await tick(1000);
+    rows = listRows();
+    expect(rows[0].cells[4].textContent).toBe('Adding');
+    expect(chipOf(crateList())).toBe('1 device');
   });
 
-  it('an open pass at zero seconds says Closing…', async () => {
+  it('with more than one crate each added row names its crate', async () => {
+    const b = crate({ epc: '0000000000000000000000C2', label: null, first_read_at: at(14, 5, 20) });
     api.getDock.mockResolvedValue(overview({
-      open: { id: 9, opened_at: at(14, 4, 58), seconds_left: 0, crate_count: 0, asset_count: 2, tags: [] },
+      settings: { dry_run: false, quiet_gap_s: 5 },
+      open: openPass({
+        crates: [crate(), b],
+        tags: [
+          asset({ epc: '000000000000000000001001', first_read_at: at(14, 4, 58), in_window: true, crate_label: 'Crate A' }),
+          // an unnamed crate goes by its trimmed tag
+          asset({ epc: '000000000000000000001002', first_read_at: at(14, 5, 19), in_window: true, crate_label: null }),
+          asset({ epc: '000000000000000000001003', first_read_at: at(14, 5, 10), in_window: false }),
+        ],
+      }),
     }));
     await renderPage();
-    expect(screen.getByText('Closing…')).toBeTruthy();
-    expect(screen.getByText('0 crates · 2 assets')).toBeTruthy();
+    const status = listRows().map((r) => r.cells[4].textContent);
+    expect(status).toEqual(['AddingC2', 'Outside window', 'AddingCrate A']);
+    expect(listRows()[2].querySelector('.dock-row-crate')?.textContent).toBe('Crate A');
   });
 
-  it('no open pass says Waiting for tags…', async () => {
+  it('one crate: added rows name no crate', async () => {
+    api.getDock.mockResolvedValue(overview({
+      open: openPass({ crates: [crate()], tags: [asset({ in_window: true, crate_label: 'Crate A' })] }),
+    }));
     await renderPage();
-    const panel = screen.getByRole('region', { name: 'Open pass' });
-    expect(within(panel).getByText('Waiting for tags…')).toBeTruthy();
+    expect(listRows()[0].querySelector('.dock-row-crate')).toBeNull();
   });
+
+  it('an empty crate list says where devices appear, or that the reader is not reading', async () => {
+    api.getReaderStatus.mockResolvedValue(readerStatus({ reading: true }));
+    await renderPage();
+    expect(within(crateList()).getByText(EMPTY_LIST)).toBeTruthy();
+    expect(chipOf(crateList())).toBe('0 devices');
+    cleanup();
+
+    api.getReaderStatus.mockResolvedValue(readerStatus());
+    await renderPage();
+    expect(within(crateList()).getByText('The reader is not reading.')).toBeTruthy();
+  });
+
+  // ── Recent passes ─────────────────────────────────────────────────
 
   it('each recent pass reads its outcome; flagged and refused rows stand out', async () => {
     const rows: [Partial<DockPassRow>, string, boolean][] = [
@@ -258,13 +646,20 @@ describe('DockStation', () => {
       passes: rows.map(([over], i) => passRow({ id: 100 - i, ...over })),
     }));
     await renderPage();
-    const panel = screen.getByRole('region', { name: 'Recent passes' });
+    const panel = recentList();
     const shown = within(panel).getAllByRole('row').slice(1);   // past the header
     expect(shown).toHaveLength(rows.length);
     rows.forEach(([, text, flagged], i) => {
-      expect(shown[i].querySelector('.dock-dash-outcome')?.textContent).toBe(text);
+      expect(shown[i].querySelector('.dock-outcome')?.textContent).toBe(text);
       expect(shown[i].classList.contains('is-flagged')).toBe(flagged);
     });
+    // a dry-run pass reads amber
+    expect(shown[0].querySelector('.dock-outcome')?.classList.contains('is-would')).toBe(true);
+    expect(shown[1].querySelector('.dock-outcome')?.classList.contains('is-would')).toBe(false);
+    expect(chipOf(panel)).toBe('11 passes');
+    expect(within(panel).getByText('Newest first.')).toBeTruthy();
+    expect(within(panel).getAllByRole('columnheader').map((h) => h.textContent))
+      .toEqual(['Time', 'Crate', 'Assets', 'Outcome', '']);
   });
 
   it('the time cell is the local 24-hour HH:MM:SS', async () => {
@@ -273,18 +668,28 @@ describe('DockStation', () => {
     const row = rowOf('Crate A');
     expect(within(row).getByText('14:03:22')).toBeTruthy();
     expect(row.textContent).not.toMatch(/AM|PM/);
+    expect(chipOf(recentList())).toBe('1 pass');
   });
 
-  it('Dry run: the banner shows while on, and the switch saves the change', async () => {
+  it('no passes says so', async () => {
+    await renderPage();
+    expect(within(recentList()).getByText('No passes yet.')).toBeTruthy();
+    expect(chipOf(recentList())).toBe('0 passes');
+  });
+
+  // ── settings ──────────────────────────────────────────────────────
+
+  it('Dry run: the switch saves the change, and the hint says nothing is sent', async () => {
     api.getDock.mockResolvedValueOnce(overview())
       .mockResolvedValue(overview({ settings: { dry_run: false, quiet_gap_s: 5 } }));
     await renderPage();
-    expect(screen.getByText(BANNER)).toBeTruthy();
+    expect(screen.getByText('Nothing is sent to the portal.')).toBeTruthy();
+    expect(within(crateCard()).getByText('Dry run')).toBeTruthy();
     expect(dryRun().getAttribute('aria-checked')).toBe('true');
     fireEvent.click(dryRun());
     await flush();
     expect(api.saveDockSettings).toHaveBeenCalledWith({ dry_run: false });
-    expect(screen.queryByText(BANNER)).toBeNull();
+    expect(within(crateCard()).queryByText('Dry run')).toBeNull();
     expect(dryRun().getAttribute('aria-checked')).toBe('false');
   });
 
@@ -294,13 +699,13 @@ describe('DockStation', () => {
       .mockReturnValueOnce(new Promise<DockOverview>((r) => { release = r; }))
       .mockResolvedValue(overview({ settings: { dry_run: false, quiet_gap_s: 5 } }));
     await renderPage();
-    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });   // second poll, in flight
+    await tick(1000);   // second poll, in flight
     expect(api.getDock).toHaveBeenCalledTimes(2);
     fireEvent.click(dryRun());
     await flush();
-    expect(screen.queryByText(BANNER)).toBeNull();
+    expect(within(crateCard()).queryByText('Dry run')).toBeNull();
     await act(async () => { release(overview()); await vi.advanceTimersByTimeAsync(0); });
-    expect(screen.queryByText(BANNER)).toBeNull();
+    expect(within(crateCard()).queryByText('Dry run')).toBeNull();
     expect(dryRun().getAttribute('aria-checked')).toBe('false');
   });
 
@@ -311,14 +716,21 @@ describe('DockStation', () => {
     await flush();
     expect(api.saveDockSettings).toHaveBeenCalledWith({ dry_run: false });
     expect(dryRun().getAttribute('aria-checked')).toBe('true');
-    expect(screen.getByText(BANNER)).toBeTruthy();
+    expect(within(crateCard()).getByText('Dry run')).toBeTruthy();
     expect(screen.getByText("Couldn't save. Try again.")).toBeTruthy();
   });
 
-  it('no banner while dry run is off', async () => {
+  it('no Dry run chip while dry run is off', async () => {
     api.getDock.mockResolvedValue(overview({ settings: { dry_run: false, quiet_gap_s: 5 } }));
     await renderPage();
-    expect(screen.queryByText(BANNER)).toBeNull();
+    expect(within(crateCard()).queryByText('Dry run')).toBeNull();
+  });
+
+  it('the settings wait for the edge before they can be changed', async () => {
+    api.getDock.mockReturnValue(new Promise<DockOverview>(() => {}));
+    await renderPage();
+    expect((screen.getByRole('group', { name: 'Dock settings' }) as HTMLFieldSetElement).disabled).toBe(true);
+    expect(readerBtn('Stop').disabled).toBe(false);
   });
 
   it('Window: Save is enabled once the value differs and saves it', async () => {
@@ -373,15 +785,19 @@ describe('DockStation', () => {
     expect(screen.getByText("Couldn't save. Try again.")).toBeTruthy();
   });
 
+  // ── the reader and its buttons ────────────────────────────────────
+
   it('shows the reader as Reading, Paused or Stopped', async () => {
     let answer: (s: ReaderStatus) => void = () => {};
     api.getReaderStatus.mockReturnValueOnce(new Promise<ReaderStatus>((r) => { answer = r; }));
     await renderPage();
     expect(readerShown().textContent).toBe('Checking…');
     expect(readerShown().classList.contains('is-loading')).toBe(true);
+    expect(cardIs('idle')).toBe(true);
     await act(async () => { answer(readerStatus({ reading: true })); await vi.advanceTimersByTimeAsync(0); });
-    expect(readerShown().textContent).toBe('Reading');
+    expect(readerShown().textContent).toBe('Scanning');
     expect(readerShown().classList.contains('is-reading')).toBe(true);
+    expect(btnSub('Start')).toBe('Reading');
     cleanup();
 
     // Not reading: the last Dock button says whether it was paused.
@@ -394,6 +810,7 @@ describe('DockStation', () => {
       await renderPage();
       expect(readerShown().textContent).toBe(text);
       expect(readerShown().classList.contains(tone)).toBe(true);
+      expect(btnSub('Start')).toBe('Start reading tags');
       cleanup();
     }
 
@@ -401,6 +818,13 @@ describe('DockStation', () => {
     await renderPage();
     expect(readerShown().textContent).toBe('Unreachable');
     expect(readerShown().classList.contains('is-unreachable')).toBe(true);
+  });
+
+  it('the buttons carry their lines', async () => {
+    await renderPage();
+    expect(btnSub('Start')).toBe('Start reading tags');
+    expect(btnSub('Pause')).toBe('Stop reading, keep this crate');
+    expect(btnSub('Stop')).toBe('Stop reading, finish this crate now');
   });
 
   it('Start, Pause and Stop send their action and check the reader again', async () => {
@@ -419,7 +843,8 @@ describe('DockStation', () => {
     await flush();
     expect(api.controlDock).toHaveBeenLastCalledWith('start');
     expect(api.getReaderStatus).toHaveBeenCalledTimes(2);
-    expect(readerShown().textContent).toBe('Reading');
+    expect(readerShown().textContent).toBe('Scanning');
+    expect(btnSub('Start')).toBe('Reading');
 
     api.getReaderStatus.mockResolvedValue(readerStatus());
     fireEvent.click(readerBtn('Pause'));
@@ -443,7 +868,7 @@ describe('DockStation', () => {
       .mockReturnValueOnce(new Promise<DockOverview>((r) => { release = r; }))
       .mockResolvedValue(overview({ control: 'pause' }));
     await renderPage();
-    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });   // second poll, in flight
+    await tick(1000);   // second poll, in flight
     expect(api.getDock).toHaveBeenCalledTimes(2);
     api.getReaderStatus.mockResolvedValue(readerStatus());
     fireEvent.click(readerBtn('Pause'));
@@ -462,7 +887,7 @@ describe('DockStation', () => {
 
     api.getReaderStatus.mockResolvedValue(readerStatus({ reading: true }));
     await renderPage();
-    expect(readerShown().textContent).toBe('Reading');
+    expect(readerShown().textContent).toBe('Scanning');
     expect(enabled()).toEqual([false, true, true]);
     cleanup();
 
@@ -528,7 +953,7 @@ describe('DockStation', () => {
     await flush();
     expect(screen.getByRole('alert').textContent).toBe("Couldn't stop the reader (boom).");
     // shown until the next press
-    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    await tick(10000);
     expect(screen.getByRole('alert').textContent).toBe("Couldn't stop the reader (boom).");
     fireEvent.click(readerBtn('Stop'));
     await flush();
@@ -552,18 +977,20 @@ describe('DockStation', () => {
     api.getReaderStatus.mockReturnValueOnce(new Promise<ReaderStatus>((r) => { release = r; }));
     await renderPage();
     expect(api.getReaderStatus).toHaveBeenCalledTimes(1);
-    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    await tick(10000);
     expect(api.getReaderStatus).toHaveBeenCalledTimes(1);
     await act(async () => { release(readerStatus({ reading: true })); await vi.advanceTimersByTimeAsync(4999); });
     expect(api.getReaderStatus).toHaveBeenCalledTimes(1);
     // A busy edge didn't ask the reader: what's shown stays.
     api.getReaderStatus.mockResolvedValue(readerStatus({ reachable: false, reading: false, busy: true }));
-    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    await tick(1);
     expect(api.getReaderStatus).toHaveBeenCalledTimes(2);
-    expect(readerShown().textContent).toBe('Reading');
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(readerShown().textContent).toBe('Scanning');
+    await tick(5000);
     expect(api.getReaderStatus).toHaveBeenCalledTimes(3);
   });
+
+  // ── the pass modal ────────────────────────────────────────────────
 
   it('Details opens the pass: every read, what packing did, and closes', async () => {
     api.getDock.mockResolvedValue(overview({
@@ -668,16 +1095,16 @@ describe('DockStation', () => {
     const dialog = () => screen.getByRole('dialog');
     const result = () => (within(dialog()).getByText('host-a').closest('tr') as HTMLTableRowElement).cells[1].textContent;
     expect(result()).toBe('Waiting to send');
-    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    await tick(2000);
     expect(api.getDockPass).toHaveBeenCalledTimes(2);
     expect(result()).toBe('Waiting to send');
     expect(within(dialog()).queryByText("Couldn't load this pass.")).toBeNull();
-    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    await tick(2000);
     expect(api.getDockPass).toHaveBeenCalledTimes(3);
     expect(result()).toBe('Packed');
     expect(within(dialog()).getByText('Pass at 14:03:22').parentElement?.textContent).toContain('Packed');
     // sent: no more re-reads
-    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    await tick(10000);
     expect(api.getDockPass).toHaveBeenCalledTimes(3);
   });
 
@@ -688,7 +1115,7 @@ describe('DockStation', () => {
     fireEvent.click(within(rowOf('Crate A')).getByRole('button', { name: 'Details' }));
     await flush();
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close' }));
-    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    await tick(10000);
     expect(api.getDockPass).toHaveBeenCalledTimes(1);
   });
 
@@ -704,12 +1131,14 @@ describe('DockStation', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('before the first answer both panels say Checking…', async () => {
+  // ── Checking…, unreachable and the polls ──────────────────────────
+
+  it('before the first answer both lists say Checking…', async () => {
     api.getDock.mockReturnValue(new Promise<DockOverview>(() => {}));
     await renderPage();
-    expect(within(screen.getByRole('region', { name: 'Open pass' })).getByText('Checking…')).toBeTruthy();
-    expect(within(screen.getByRole('region', { name: 'Recent passes' })).getByText('Checking…')).toBeTruthy();
-    expect(screen.queryByText('Waiting for tags…')).toBeNull();
+    expect(within(crateList()).getByText('Checking…')).toBeTruthy();
+    expect(within(recentList()).getByText('Checking…')).toBeTruthy();
+    expect(screen.queryByText(EMPTY_LIST)).toBeNull();
     expect(screen.queryByText('No passes yet.')).toBeNull();
     expect(screen.queryByText(UNREACHABLE)).toBeNull();
   });
@@ -721,16 +1150,45 @@ describe('DockStation', () => {
     expect(screen.getAllByText('Checking…')).toHaveLength(2);
   });
 
+  it('unreachable keeps Stop enabled', async () => {
+    // The edge doesn't answer at all: neither the overview nor the reader.
+    api.getDock.mockRejectedValue(new ApiError(0, 'network'));
+    api.getReaderStatus.mockRejectedValue(new ApiError(0, 'network'));
+    await renderPage();
+    expect(screen.getByRole('alert').textContent).toBe(UNREACHABLE);
+    expect(readerShown().textContent).toBe('Unreachable');
+    expect(within(crateList()).getByText('Checking…')).toBeTruthy();
+    expect(within(recentList()).getByText('Checking…')).toBeTruthy();
+    expect(enabled()).toEqual([false, false, true]);
+    fireEvent.click(readerBtn('Stop'));
+    await flush();
+    expect(api.controlDock).toHaveBeenCalledWith('stop');
+    cleanup();
+
+    // It stops answering mid-crate: the last overview stays under the line.
+    api.getDock.mockReset()
+      .mockResolvedValueOnce(overview({ open: openPass({ crates: [crate()], tags: [asset()] }) }))
+      .mockRejectedValue(new ApiError(0, 'network'));
+    api.getReaderStatus.mockResolvedValueOnce(readerStatus({ reading: true }))
+      .mockRejectedValue(new ApiError(0, 'network'));
+    await renderPage();
+    await tick(5000);
+    expect(screen.getByText(UNREACHABLE)).toBeTruthy();
+    expect(crateName().textContent).toBe('Crate A');
+    expect(listRows()).toHaveLength(1);
+    expect(enabled()).toEqual([false, false, true]);
+  });
+
   it('the line clears once a poll works, and a failure keeps the last passes under it', async () => {
     api.getDock.mockResolvedValueOnce(overview({ passes: [passRow()] }))
       .mockRejectedValueOnce(new ApiError(0, 'network'))
       .mockResolvedValue(overview({ passes: [passRow()] }));
     await renderPage();
     expect(screen.queryByText(UNREACHABLE)).toBeNull();
-    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    await tick(1000);
     expect(screen.getByText(UNREACHABLE)).toBeTruthy();
     expect(rowOf('Crate A')).toBeTruthy();
-    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    await tick(1000);
     expect(screen.queryByText(UNREACHABLE)).toBeNull();
   });
 
@@ -745,19 +1203,37 @@ describe('DockStation', () => {
     await flush();
     const first = api.getDock.mock.calls.length;   // the double mount polls twice
     const firstCheck = api.getReaderStatus.mock.calls.length;   // and checks twice
-    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    await tick(1000);
     expect(api.getDock).toHaveBeenCalledTimes(first + 1);
-    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    await tick(1000);
     expect(api.getDock).toHaveBeenCalledTimes(first + 2);
-    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    await tick(3000);
     expect(api.getReaderStatus).toHaveBeenCalledTimes(firstCheck + 1);
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    await tick(5000);
     expect(api.getReaderStatus).toHaveBeenCalledTimes(firstCheck + 2);
     const polls = api.getDock.mock.calls.length;
     unmount();
-    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    await tick(10000);
     expect(api.getDock).toHaveBeenCalledTimes(polls);
     expect(api.getReaderStatus).toHaveBeenCalledTimes(firstCheck + 2);
+  });
+
+  it('a result under StrictMode flashes and clears like any other', async () => {
+    api.getReaderStatus.mockResolvedValue(readerStatus({ reading: true }));
+    api.getDock.mockResolvedValueOnce(overview()).mockResolvedValueOnce(overview())
+      .mockResolvedValue(overview({ passes: [passRow({ id: 3 })] }));
+    render(
+      <StrictMode>
+        <MemoryRouter initialEntries={['/dock']}>
+          <Routes><Route path="/dock" element={<DockStation />} /></Routes>
+        </MemoryRouter>
+      </StrictMode>,
+    );
+    await flush();
+    await tick(1000);
+    expect(cardIs('done')).toBe(true);
+    await tick(6000);
+    expect(cardIs('scanning')).toBe(true);
   });
 
   it('polls again 1 s after the previous poll settles, never overlapping', async () => {
@@ -765,11 +1241,11 @@ describe('DockStation', () => {
     api.getDock.mockReturnValueOnce(new Promise<DockOverview>((r) => { release = r; }));
     await renderPage();
     expect(api.getDock).toHaveBeenCalledTimes(1);
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    await tick(5000);
     expect(api.getDock).toHaveBeenCalledTimes(1);
     await act(async () => { release(overview()); await vi.advanceTimersByTimeAsync(999); });
     expect(api.getDock).toHaveBeenCalledTimes(1);
-    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    await tick(1);
     expect(api.getDock).toHaveBeenCalledTimes(2);
   });
 
@@ -781,7 +1257,7 @@ describe('DockStation', () => {
     );
     await flush();
     unmount();
-    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    await tick(10000);
     expect(api.getDock).toHaveBeenCalledTimes(1);
     expect(api.getReaderStatus).toHaveBeenCalledTimes(1);
   });

@@ -1,13 +1,17 @@
 /**
  * The Dock screen (/dock) — where a Dock laptop's Home tile and Kiosk Setup
- * land, and what someone on the dock watches while tuning: the reader's
- * state (Reading, Paused or Stopped) with Start, Pause and Stop; the pass
- * still open, filling in live with the time left before it is decided; the
- * newest closed passes with their outcome, each opening its full detail;
- * and the dry-run switch and the crate Window, both saved on the laptop's
- * edge. It fills the screen like the RFID Reader dashboard, whose panels,
- * state and buttons it reuses, in the kiosk's light or dark theme; both
- * panels show only the rows that fit. The overview refreshes 1 s after the
+ * land, laid out like the Truck Packing kiosk. Along the top, the crate
+ * card and the count of assets inside its window. The card shows Scanning…
+ * until a crate tag is read, then the newest crate with the time left
+ * before its burst is decided (red when that crate will be flagged More
+ * than one crate), and for 6 s after each newly decided pass its result;
+ * with the reader not reading it shows Paused, Stopped or the reader's
+ * state. In the middle, the open burst's assets newest first, each with
+ * whether it is inside a crate's window, beside the newest closed passes,
+ * each opening its full detail. Along the bottom, the dry-run switch and the
+ * crate Window, both saved on the laptop's edge, then the big Start / Pause /
+ * Stop. It fills the main column in the kiosk's light or dark theme; both
+ * lists scroll inside their cards. The overview refreshes 1 s after the
  * previous refresh settles (never overlapping); while refreshes fail, a red
  * line says the station can't be reached and the last overview stays under
  * it. The reader is checked 5 s after the previous check settles and right
@@ -16,7 +20,7 @@
  * laptop's has loaded (KioskShell looks for it), then decides.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Navigate } from 'react-router-dom';
 
 import DockPassModal, { passOutcome } from '../components/DockPassModal';
@@ -24,18 +28,19 @@ import { codeOf, readerErrorText } from '../components/setup/readerSetup';
 import { Switch } from '../components/Switch';
 import {
   controlDock, getDock, getReaderStatus, saveDockSettings,
-  type DockControl, type DockOverview, type DockPassRow, type DockSettings, type DockTag,
-  type DockTagKind, type ReaderStatus,
+  type DockControl, type DockCrate, type DockOpenTag, type DockOverview, type DockPassRow,
+  type DockSettings, type ReaderStatus,
 } from '../lib/api';
 import { useKioskSetup } from '../lib/kioskSetup';
 import { useLaptopSetupSettled } from '../lib/laptopSetup';
 import { isLaptop } from '../lib/platform';
 import { readerState, type ReaderState } from '../lib/readerState';
-import { useFitRows } from '../lib/useFitRows';
 import { clockText, displayEpc, ICON } from './RfidStatus';
 
 const POLL_MS = 1000;
 const READER_POLL_MS = 5000;
+/** How long a newly decided pass's result holds the crate card. */
+const RESULT_MS = 6000;
 const WINDOW_MIN = 1;
 const WINDOW_MAX = 60;
 
@@ -43,11 +48,13 @@ const BUSY_TEXT: Record<DockControl, string> = {
   start: 'Starting…', pause: 'Pausing…', stop: 'Stopping…',
 };
 
-/** The reader's state as the strip shows it: a running call first, then
- *  the reader's own state, where a stopped reader reads Paused when Pause
- *  was the last button. */
+type ReaderTone = 'reading' | 'paused' | 'stopped' | 'unreachable' | 'loading';
+
+/** The reader's state as the crate card shows it: a running call first,
+ *  then the reader's own state, where a stopped reader reads Paused when
+ *  Pause was the last button. */
 function readerText(state: ReaderState, control: DockControl | null, busy: DockControl | null): {
-  text: string; tone: 'reading' | 'paused' | 'stopped' | 'unreachable' | 'loading';
+  text: string; tone: ReaderTone;
 } {
   if (busy) return { text: BUSY_TEXT[busy], tone: 'loading' };
   switch (state) {
@@ -59,25 +66,6 @@ function readerText(state: ReaderState, control: DockControl | null, busy: DockC
   }
 }
 
-/** A tag's kind as a chip: its word and color. */
-function kindChip(kind: DockTagKind): { label: string; tone: string } {
-  switch (kind) {
-    case 'container': return { label: 'Crate', tone: 'c-blue' };
-    case 'asset': return { label: 'Asset', tone: 'c-green' };
-    case 'person': return { label: 'Person', tone: 'c-slate' };
-    case 'off_move': return { label: 'Off-move', tone: 'c-red' };
-    default: return { label: 'Unknown', tone: 'tag' };
-  }
-}
-
-/** The open pass's tags as listed: crates first (the pass's destination is
- *  never the row cut off), then everything else newest first (so a tag just
- *  read isn't either). */
-function listedTags(tags: DockTag[]): DockTag[] {
-  return [...tags.filter((t) => t.kind === 'container'),
-    ...tags.filter((t) => t.kind !== 'container').reverse()];
-}
-
 /** A whole number of seconds in range, or null. */
 function parseWindow(text: string): number | null {
   if (!/^\d+$/.test(text.trim())) return null;
@@ -85,15 +73,101 @@ function parseWindow(text: string): number | null {
   return n >= WINDOW_MIN && n <= WINDOW_MAX ? n : null;
 }
 
-function countdownText(secondsLeft: number): string {
-  const s = Math.ceil(secondsLeft);
-  return s > 0 ? `Closes in ${s} s` : 'Closing…';
+const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** "A", "A and B", "A, B and C". */
+function andList(names: string[]): string {
+  if (names.length < 2) return names[0] ?? '';
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
-const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+/** A crate as the screen names it: its container's name, or its trimmed tag
+ *  for an unnamed one. */
+const crateText = (c: DockCrate) => c.label ?? displayEpc(c.epc);
+
+/** The crates the newest crate will be flagged with, itself included: the
+ *  run of flagged crates that ends at it (none when it isn't flagged), each
+ *  name once. */
+function flaggedWith(crates: DockCrate[]): string[] {
+  const names: string[] = [];
+  for (let i = crates.length - 1; i >= 0 && crates[i].conflict; i -= 1) names.unshift(crateText(crates[i]));
+  return [...new Set(names)];
+}
 
 /** No crate (or several), or the portal turned the pass away. */
 const standsOut = (p: DockPassRow) => p.status === 'flagged' || p.status === 'refused';
+
+/** An asset's status in the open burst, from the edge's window test. */
+function assetChip(tag: DockOpenTag, dryRun: boolean): { label: string; tone: string } {
+  if (tag.in_window === null) return { label: 'Waiting for crate', tone: 'c-slate' };
+  if (tag.in_window) return { label: dryRun ? 'Would add' : 'Adding', tone: 'c-green' };
+  return { label: 'Outside window', tone: 'c-red' };
+}
+
+/** The crate an added asset is going into, named only when the burst has
+ *  more than one: the edge's crate label, or for an unnamed crate its
+ *  trimmed tag while only one crate is unnamed (two leave it unknown). */
+function rowCrate(tag: DockOpenTag, crates: DockCrate[]): string | null {
+  if (!tag.in_window || crates.length < 2) return null;
+  if (tag.crate_label !== null) return tag.crate_label;
+  const unnamed = crates.filter((c) => c.label === null);
+  return unnamed.length === 1 ? displayEpc(unnamed[0].epc) : null;
+}
+
+/** The open burst's assets, newest first read first (later tags first on a
+ *  tie). */
+function listedAssets(tags: DockOpenTag[]): DockOpenTag[] {
+  return tags.filter((t) => t.kind === 'asset').reverse()
+    .sort((a, b) => Date.parse(b.first_read_at) - Date.parse(a.first_read_at));
+}
+
+type CardLook = 'scanning' | 'found' | 'done' | 'would' | 'flag' | 'idle';
+
+interface CrateCard {
+  look: CardLook;
+  name: ReactNode;
+  meta: string;
+  /** The reader's state, while the card shows it. */
+  reader?: ReaderTone;
+  /** The open burst's countdown to its decision. */
+  bar?: { seconds: number; pct: number };
+}
+
+/** A decided pass on the crate card: green when packed (or on its way),
+ *  amber for a dry run, red when flagged or refused, neutral for nothing to
+ *  pack. `flagged` names the crates of a More than one crate pass. */
+function resultCard(p: DockPassRow, flagged: string[]): CrateCard {
+  const crate = p.container_name ?? '—';
+  const devices = count(p.asset_count, 'device');
+  switch (p.status) {
+    case 'packed':
+      return { look: 'done', name: crate, meta: p.refused_count > 0 ? passOutcome(p) : `Packed ${devices}` };
+    case 'waiting': return { look: 'done', name: crate, meta: passOutcome(p) };
+    case 'would_pack':
+      return { look: 'would', name: crate, meta: `Would pack ${devices} · dry run, nothing sent` };
+    case 'refused': return { look: 'flag', name: crate, meta: passOutcome(p) };
+    case 'flagged':
+      if (p.flag === 'many_crates') {
+        return {
+          look: 'flag', name: 'More than one crate',
+          meta: flagged.length > 1
+            ? `${andList(flagged)} were read together. Nothing was packed.` : 'Nothing was packed.',
+        };
+      }
+      return { look: 'flag', name: 'No crate read', meta: `${devices} read with no crate tag. Nothing was packed.` };
+    default:
+      return { look: 'idle', name: p.container_name ?? 'Nothing to pack', meta: p.container_name ? 'Nothing to pack' : '' };
+  }
+}
+
+// ── icons (inline, currentColor), as the mockup draws them ──────────
+const svg = (children: ReactNode, width = 2) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={width}
+       strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{children}</svg>
+);
+const CRATE_ICON = svg(<><path d="M21 8 12 3 3 8v8l9 5 9-5z" /><path d="m3 8 9 5 9-5M12 13v8" /></>);
+const SERVER_ICON = svg(<><rect x="3" y="3.5" width="18" height="7" rx="1.5" /><rect x="3" y="13.5" width="18" height="7" rx="1.5" /><path d="M7 7h.01M7 17h.01" /></>, 2.2);
+const RFID_ICON = svg(<><path d="M5 12a7 7 0 0 1 7-7M8.5 12A3.5 3.5 0 0 1 12 8.5" /><circle cx="12" cy="12" r="1.2" fill="currentColor" /><path d="M19 12a7 7 0 0 1-7 7M15.5 12a3.5 3.5 0 0 1-3.5 3.5" /></>);
 
 export default function DockStation() {
   const [setup] = useKioskSetup();
@@ -119,6 +193,9 @@ export default function DockStation() {
   const [busy, setBusy] = useState<DockControl | null>(null);
   /** The newest press's failure, shown until the next press. */
   const [controlError, setControlError] = useState<{ action: DockControl; err: unknown } | null>(null);
+  /** A pass decided while watching, holding the crate card for RESULT_MS:
+   *  its row as first seen, and the crates its burst read together. */
+  const [result, setResult] = useState<{ pass: DockPassRow; flagged: string[] } | null>(null);
   const mounted = useRef(true);
   // Bumped when a settings save starts and again when it settles: a refresh
   // that began before either keeps its passes but not its settings, which
@@ -132,12 +209,23 @@ export default function DockStation() {
   const pressSeq = useRef(0);
   // A Stop call is running: another Stop press does nothing.
   const stopping = useRef(false);
-  const tagsBox = useRef<HTMLUListElement>(null);
-  const passesBox = useRef<HTMLDivElement>(null);
+  // The last overview that landed: a pass at the top of the next one that
+  // it didn't list was decided while watching.
+  const lastOverview = useRef<DockOverview | null>(null);
+  const resultTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; };
+    return () => {
+      mounted.current = false;
+      window.clearTimeout(resultTimer.current);
+    };
+  }, []);
+
+  const showResult = useCallback((pass: DockPassRow | null, flagged: string[] = []) => {
+    window.clearTimeout(resultTimer.current);
+    setResult(pass && { pass, flagged });
+    if (pass) resultTimer.current = window.setTimeout(() => setResult(null), RESULT_MS);
   }, []);
 
   /** Asks the edge for the reader's state while `live()`. A busy answer
@@ -173,6 +261,16 @@ export default function DockStation() {
         setUnreachable(false);
         if (gen === settingsGen.current) setSettings(o.settings);
         if (pressGen === controlGen.current) setControl(o.control);
+        // A newly read crate takes the card from a result. Otherwise a pass
+        // at the top that the last answer didn't list was just decided; the
+        // first answer only says which passes were already there.
+        const before = lastOverview.current;
+        lastOverview.current = o;
+        const top = o.passes[0];
+        if (o.open && o.open.crates.length > 0) showResult(null);
+        else if (before && top && !before.passes.some((p) => p.id === top.id)) {
+          showResult(top, before.open ? flaggedWith(before.open.crates) : []);
+        }
       } catch {
         // The last overview stays on screen, under a line saying it's stale.
         if (!live) return;
@@ -185,7 +283,7 @@ export default function DockStation() {
       live = false;
       window.clearTimeout(timer);
     };
-  }, [dock]);
+  }, [dock, showResult]);
 
   useEffect(() => {
     if (!dock) return undefined;
@@ -202,9 +300,6 @@ export default function DockStation() {
       window.clearTimeout(timer);
     };
   }, [dock, checkReader]);
-
-  useFitRows(tagsBox, [overview]);
-  useFitRows(passesBox, [overview]);
 
   const closeDetail = useCallback(() => setDetailId(null), []);
 
@@ -273,54 +368,231 @@ export default function DockStation() {
 
   const open = overview?.open ?? null;
   const passes = overview?.passes ?? null;
+  const dryRun = settings?.dry_run ?? true;
+  const rows = open ? listedAssets(open.tags) : [];
+  const newest = open && open.crates.length > 0 ? open.crates[open.crates.length - 1] : null;
+  // The result follows its pass as the list has it now (sent, refused).
+  const decided = result ? (passes?.find((p) => p.id === result.pass.id) ?? result.pass) : null;
+
+  let card: CrateCard;
+  if (decided && result) {
+    card = resultCard(decided, result.flagged);
+  } else if (open && newest) {
+    const flagged = newest.conflict ? flaggedWith(open.crates) : [];
+    card = flagged.length > 1
+      ? { look: 'flag', name: 'More than one crate', meta: `${andList(flagged)} were read together` }
+      : {
+        look: 'found', name: crateText(newest),
+        meta: `Tag ${displayEpc(newest.epc)} · read at ${clockText(new Date(newest.first_read_at))}`,
+      };
+    const span = 2 * open.window_s;
+    card.bar = {
+      seconds: Math.ceil(open.seconds_left),
+      pct: span > 0 ? Math.max(0, Math.min(100, Math.round((open.seconds_left * 100) / span))) : 0,
+    };
+  } else if (state === 'reading' && !busy) {
+    card = {
+      look: 'scanning', reader: 'reading',
+      name: <><span className="dock-pulse" aria-hidden="true" /><span className="dock-dots">Scanning</span></>,
+      meta: rows.length > 0 ? `${count(rows.length, 'device')} read · waiting for a crate tag` : 'Waiting for a crate tag',
+    };
+  } else {
+    card = {
+      look: 'idle', reader: shown.tone, name: shown.text,
+      meta: shown.tone === 'paused' || shown.tone === 'stopped' ? 'Press Start to read again' : '',
+    };
+  }
+
+  // The count: a green or amber result's assets, else those inside the
+  // newest crate's window.
+  let added = 0;
+  let addedSub: string;
+  if (decided && card.look !== 'flag' && decided.container_name) {
+    added = decided.asset_count;
+    addedSub = decided.status === 'would_pack'
+      ? `would go into ${decided.container_name}` : `in ${decided.container_name}`;
+  } else if (open && newest) {
+    added = open.added_count;
+    addedSub = dryRun ? `would go into ${crateText(newest)}` : `in ${crateText(newest)}`;
+  } else {
+    addedSub = open ? 'waiting for a crate tag' : 'no crate yet';
+  }
 
   return (
-    <div className="portal-page rfid-dash dock-dash">
+    <div className="portal-page dock-dash">
       <h1 className="sr-only">Dock</h1>
 
-      <div className="dock-dash-controls">
-        {/* Outside the settings below, so Stop works before they load. */}
-        <div className="dock-dash-reader" role="group" aria-label="Reader">
-          <span className={`rfid-dash-state is-${shown.tone}`}>
-            <span className="rfid-dash-dot" />{shown.text}
-          </span>
-          <button type="button" className="rfid-dash-btn is-start" disabled={startDisabled}
-                  onClick={() => void press('start')}>
-            <span className="rfid-dash-btn-icon">{ICON.play}</span>
-            <span className="rfid-dash-btn-title">Start</span>
-          </button>
-          <button type="button" className="rfid-dash-btn is-pause" disabled={pauseDisabled}
-                  onClick={() => void press('pause')}>
-            <span className="rfid-dash-btn-icon">{ICON.pause}</span>
-            <span className="rfid-dash-btn-title">Pause</span>
-          </button>
-          {/* Never disabled: a reader can get stuck. */}
-          <button type="button" className="rfid-dash-btn is-stop" onClick={() => void press('stop')}>
-            <span className="rfid-dash-btn-icon">{ICON.square}</span>
-            <span className="rfid-dash-btn-title">Stop</span>
-          </button>
+      {/* The RFID dashboard's Unreachable look: red, with its dot. */}
+      {unreachable && (
+        <p className="rfid-dash-state is-unreachable dock-unreachable" role="alert">
+          <span className="rfid-dash-dot" />Can&apos;t reach the station. Retrying…
+        </p>
+      )}
+
+      <div className="dock-top">
+        <section className={`dock-card dock-crate is-${card.look}`} aria-labelledby="dock-crate-label">
+          <div className="dock-card-label">
+            {CRATE_ICON}<span id="dock-crate-label">Crate</span>
+            {settings?.dry_run && <span className="chip c-amber dock-label-chip">Dry run</span>}
+          </div>
+          <div className="dock-crate-row">
+            <div className="dock-crate-main">
+              <div className={card.reader ? `dock-crate-name is-${card.reader}` : 'dock-crate-name'}>
+                {card.name}
+              </div>
+              <div className="dock-crate-meta">{card.meta}</div>
+            </div>
+            {card.bar && (
+              <div className="dock-window">
+                <div className="dock-window-label">
+                  <span>Finishing in</span><span>{card.bar.seconds} s</span>
+                </div>
+                <div className="dock-window-bar" aria-hidden="true">
+                  <span style={{ width: `${card.bar.pct}%` }} />
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="dock-card dock-stat" aria-labelledby="dock-stat-label">
+          <div className="dock-card-label">{SERVER_ICON}<span id="dock-stat-label">Assets added to crate</span></div>
+          {/* Keyed on the count: a new count is a new element, which replays the bump. */}
+          <div key={added} className={added === 0 ? 'dock-stat-value is-zero' : 'dock-stat-value is-bump'}>
+            {added}
+          </div>
+          <div className="dock-stat-sub">{addedSub}</div>
+        </section>
+      </div>
+
+      <div className="dock-work">
+        <section className="dock-panel" aria-labelledby="dock-list-title">
+          <div className="dock-panel-head">
+            <div>
+              <h2 id="dock-list-title" className="dock-panel-title">In this crate</h2>
+              <p className="dock-panel-sub">Devices read at the curtain, newest first.</p>
+            </div>
+            <span className="chip tag">{count(rows.length, 'device')}</span>
+          </div>
+          <div className="dock-list-wrap">
+            {overview === null && <p className="dock-empty">Checking…</p>}
+            {overview !== null && rows.length === 0 && (
+              <div className="dock-empty">
+                {RFID_ICON}
+                {state === 'reading' || state === 'loading'
+                  ? 'Devices appear here as they pass the curtain.' : 'The reader is not reading.'}
+              </div>
+            )}
+            {rows.length > 0 && open && (
+              <table className="dock-list dock-crate-list">
+                <thead>
+                  <tr><th>Device</th><th>Serial</th><th>Tag</th><th>Read</th><th className="r">Status</th></tr>
+                </thead>
+                <tbody>
+                  {rows.map((t, i) => {
+                    const chip = assetChip(t, dryRun);
+                    const into = rowCrate(t, open.crates);
+                    return (
+                      // The newest row flashes once as it arrives.
+                      <tr key={t.epc} className={i === 0 ? 'is-new' : undefined}>
+                        <td className="name">{t.label ?? '—'}</td>
+                        <td className="mono">{t.serial ?? '—'}</td>
+                        <td className="mono" title={t.epc}>{displayEpc(t.epc)}</td>
+                        <td className="num">{clockText(new Date(t.first_read_at))}</td>
+                        <td className="r">
+                          <span className={`chip ${chip.tone}`}>{chip.label}</span>
+                          {into && <span className="dock-row-crate">{into}</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </section>
+
+        <section className="dock-panel" aria-labelledby="dock-recent-title">
+          <div className="dock-panel-head">
+            <div>
+              <h2 id="dock-recent-title" className="dock-panel-title">Recent passes</h2>
+              <p className="dock-panel-sub">Newest first.</p>
+            </div>
+            <span className="chip tag">{count(passes?.length ?? 0, 'pass', 'passes')}</span>
+          </div>
+          <div className="dock-list-wrap">
+            {passes === null && <p className="dock-empty">Checking…</p>}
+            {passes !== null && passes.length === 0 && (
+              <div className="dock-empty">{CRATE_ICON}No passes yet.</div>
+            )}
+            {passes !== null && passes.length > 0 && (
+              <table className="dock-list dock-recent-list">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Crate</th>
+                    <th className="r">Assets</th>
+                    <th>Outcome</th>
+                    <th aria-label="Details" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {passes.map((p) => (
+                    <tr key={p.id} className={standsOut(p) ? 'is-flagged' : undefined}>
+                      <td className="num">{clockText(new Date(p.opened_at))}</td>
+                      <td className="name">{p.container_name ?? '—'}</td>
+                      <td className="num r">{p.asset_count}</td>
+                      <td className={p.status === 'would_pack' ? 'dock-outcome is-would' : 'dock-outcome'}>
+                        {passOutcome(p)}
+                      </td>
+                      <td className="r">
+                        <button type="button" className="mini-btn" onClick={() => setDetailId(p.id)}>
+                          Details
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </section>
+      </div>
+
+      {(saveFailed || controlError) && (
+        <div className="dock-alerts">
+          {saveFailed && <p className="form-error" role="alert">Couldn&apos;t save. Try again.</p>}
+          {controlError && (
+            <p className="form-error" role="alert">
+              {/* No reader status yet (a stuck reader answers busy) leaves no IP to name. */}
+              {readerErrorText(controlError.err, status?.reader?.ip || 'the reader')
+                ?? `Couldn't ${controlError.action} the reader (${codeOf(controlError.err)}).`}
+            </p>
+          )}
         </div>
+      )}
+
+      <div className="dock-bottom">
         {/* Disabled until the edge's settings arrive: before that a change
             would be made against defaults. */}
-        <fieldset className="dock-dash-settings" disabled={settings === null}>
+        <fieldset className="dock-settings" disabled={settings === null}>
           <legend className="sr-only">Dock settings</legend>
-          <div className="dock-dash-control">
-            <div>
-              <span className="settings-row-label">Dry run</span>
-              <p className="settings-row-hint">Passes are shown here and nothing is sent to the portal.</p>
+          <div className="dock-set-row">
+            <div className="dock-set-text">
+              <span className="dock-set-title">Dry run</span>
+              <span className="dock-set-hint">Nothing is sent to the portal.</span>
             </div>
             <Switch on={settings?.dry_run ?? true} aria-label="Dry run"
                     onChange={(on) => { if (!saving) void save({ dry_run: on }); }} />
           </div>
-          <div className="dock-dash-control">
-            <div>
-              <label htmlFor="dock-window" className="settings-row-label">Window</label>
-              <p id="dock-window-hint"
-                 className={windowInvalid ? 'settings-row-hint form-error' : 'settings-row-hint'}>
+          <div className="dock-set-row">
+            <div className="dock-set-text">
+              <label htmlFor="dock-window" className="dock-set-title">Window</label>
+              <span id="dock-window-hint" className={windowInvalid ? 'dock-set-hint form-error' : 'dock-set-hint'}>
                 {windowInvalid ? '1–60 seconds' : 'Seconds before and after the crate tag'}
-              </p>
+              </span>
             </div>
-            <span className="alarm-seconds">
+            <span className="dock-win">
               <input
                 id="dock-window"
                 type="number"
@@ -334,7 +606,6 @@ export default function DockStation() {
                 onChange={(e) => { setWindowDraft(e.target.value); setWindowInvalid(false); }}
                 onKeyDown={(e) => { if (e.key === 'Enter') void saveWindow(); }}
               />
-              <span className="alarm-seconds-unit">s</span>
               <button type="button" className="mini-btn" disabled={!windowChanged || saving}
                       onClick={() => void saveWindow()}>
                 Save
@@ -342,102 +613,37 @@ export default function DockStation() {
             </span>
           </div>
         </fieldset>
-        {saveFailed && <p className="form-error" role="alert">Couldn&apos;t save. Try again.</p>}
-        {controlError && (
-          <p className="form-error" role="alert">
-            {/* No reader status yet (a stuck reader answers busy) leaves no IP to name. */}
-            {readerErrorText(controlError.err, status?.reader?.ip || 'the reader')
-              ?? `Couldn't ${controlError.action} the reader (${codeOf(controlError.err)}).`}
-          </p>
-        )}
-      </div>
 
-      {settings?.dry_run && (
-        <p className="dock-dash-banner" role="status">Dry run · nothing is sent to the portal.</p>
-      )}
-      {/* The RFID dashboard's Unreachable look: red, with its dot. */}
-      {unreachable && (
-        <p className="rfid-dash-state is-unreachable dock-dash-unreachable" role="alert">
-          <span className="rfid-dash-dot" />Can&apos;t reach the station. Retrying…
-        </p>
-      )}
-
-      <div className="rfid-dash-panels dock-dash-panels">
-        <section className="rfid-dash-panel" aria-labelledby="dock-open-title">
-          <h2 id="dock-open-title" className="rfid-dash-panel-title">Open pass</h2>
-          {overview === null && <p className="rfid-dash-empty">Checking…</p>}
-          {overview !== null && open === null && (
-            <p className="rfid-dash-empty">Waiting for tags…</p>
-          )}
-          {open && (
-            <>
-              <p className="dock-dash-countdown">{countdownText(open.seconds_left)}</p>
-              <p className="rfid-dash-panel-sub">
-                {count(open.crate_count, 'crate')} · {count(open.asset_count, 'asset')}
-              </p>
-              <ul className="dock-dash-tags" ref={tagsBox}>
-                {listedTags(open.tags).map((t) => {
-                  const chip = kindChip(t.kind);
-                  return (
-                    <li key={t.epc} data-fit-row className="dock-dash-tag">
-                      <span className={`chip ${chip.tone}`}>{chip.label}</span>
-                      <span className={t.label ? 'dock-dash-tag-label' : 'dock-dash-tag-label is-unknown'}>
-                        {t.label ?? 'Unknown tag'}
-                      </span>
-                      <span className="dock-dash-tag-epc" title={t.epc}>{displayEpc(t.epc)}</span>
-                    </li>
-                  );
-                })}
-              </ul>
-            </>
-          )}
-        </section>
-
-        <section className="rfid-dash-panel" aria-labelledby="dock-recent-title">
-          <h2 id="dock-recent-title" className="rfid-dash-panel-title">Recent passes</h2>
-          <p className="rfid-dash-panel-sub">Newest first.</p>
-          <div className="local-table-wrap" ref={passesBox}>
-            <table className="local-table dock-dash-table">
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Crate</th>
-                  <th>Assets</th>
-                  <th>Outcome</th>
-                  <th>Moved</th>
-                  <th aria-label="Details" />
-                </tr>
-              </thead>
-              <tbody>
-                {passes === null && (
-                  <tr>
-                    <td colSpan={6} className="rfid-dash-empty">Checking…</td>
-                  </tr>
-                )}
-                {passes !== null && passes.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="rfid-dash-empty">No passes yet.</td>
-                  </tr>
-                )}
-                {passes?.map((p) => (
-                  <tr key={p.id} data-fit-row className={standsOut(p) ? 'is-flagged' : undefined}>
-                    <td className="mono">{clockText(new Date(p.opened_at))}</td>
-                    <td>{p.container_name ?? '—'}</td>
-                    <td className="mono">{p.asset_count}</td>
-                    <td className="dock-dash-outcome">{passOutcome(p)}</td>
-                    {/* Only a sent pass has moved anything. */}
-                    <td className="mono">{p.status === 'packed' ? p.moved_count : '—'}</td>
-                    <td className="dock-dash-action">
-                      <button type="button" className="mini-btn" onClick={() => setDetailId(p.id)}>
-                        Details
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
+        {/* Outside the settings above, so Stop works before they load. */}
+        <div className="dock-reader" role="group" aria-label="Reader">
+          <button type="button" className="rfid-dash-btn is-start" aria-label="Start"
+                  aria-describedby="dock-start-sub" disabled={startDisabled} onClick={() => void press('start')}>
+            <span className="rfid-dash-btn-icon">{ICON.play}</span>
+            <span className="rfid-dash-btn-text">
+              <span className="rfid-dash-btn-title">Start</span>
+              <span id="dock-start-sub" className="rfid-dash-btn-sub">
+                {state === 'reading' ? 'Reading' : 'Start reading tags'}
+              </span>
+            </span>
+          </button>
+          <button type="button" className="rfid-dash-btn is-pause" aria-label="Pause"
+                  aria-describedby="dock-pause-sub" disabled={pauseDisabled} onClick={() => void press('pause')}>
+            <span className="rfid-dash-btn-icon">{ICON.pause}</span>
+            <span className="rfid-dash-btn-text">
+              <span className="rfid-dash-btn-title">Pause</span>
+              <span id="dock-pause-sub" className="rfid-dash-btn-sub">Stop reading, keep this crate</span>
+            </span>
+          </button>
+          {/* Never disabled: a reader can get stuck. */}
+          <button type="button" className="rfid-dash-btn is-stop" aria-label="Stop"
+                  aria-describedby="dock-stop-sub" onClick={() => void press('stop')}>
+            <span className="rfid-dash-btn-icon">{ICON.square}</span>
+            <span className="rfid-dash-btn-text">
+              <span className="rfid-dash-btn-title">Stop</span>
+              <span id="dock-stop-sub" className="rfid-dash-btn-sub">Stop reading, finish this crate now</span>
+            </span>
+          </button>
+        </div>
       </div>
 
       {detailId !== null && <DockPassModal key={detailId} passId={detailId} onClose={closeDetail} />}
