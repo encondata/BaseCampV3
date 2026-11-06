@@ -30,6 +30,7 @@ from edge.outbox import OutboxWorker
 from edge.labels.runner import LabelRunner
 from edge.printers import Printers
 from edge.routes import auth as auth_routes
+from edge.routes import dock as dock_routes
 from edge.routes import edge as edge_routes
 from edge.routes import kiosk as kiosk_routes
 from edge.routes import labels as label_routes
@@ -133,6 +134,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     app.include_router(edge_routes.router)
     app.include_router(kiosk_routes.router)
     app.include_router(rfid_routes.router)
+    app.include_router(dock_routes.router)
     app.include_router(printer_routes.router)
     app.include_router(label_routes.router)
     app.include_router(timeclock_routes.router)
