@@ -285,6 +285,8 @@ Plan: `docs/superpowers/plans/2026-11-06-dock-window-controls-theme.md`. Its dec
 
 ## Dock screen redesign (2026-11-06)
 
+*Superseded in part by "Changes after the second test" below: the countdown, the 6 s result, Paused, Dry run and Window are gone.*
+
 Jimmy approved a mockup that follows the Truck Packing kiosk: `docs/mockups/dock-station-kiosk.html` (untracked, main checkout). Plan: `docs/superpowers/plans/2026-11-06-dock-screen-redesign.md`.
 
 - **Crate card:** shows Scanning… until a crate is read, then the newest crate with a "Finishing in" bar. It turns red, naming the crates, when that crate's group will be "More than one crate". For 6 s after a decision it shows the newest new pass, preferring a crate's pass over a burst's "No crate read" leftover. It shows Paused or Stopped otherwise.
@@ -338,6 +340,36 @@ In the usual case, a crate with its devices read within ±5 s and then a quiet d
 
 This replaces "2W after the last new tag". Re-reads still never hold a burst open: tags are read once at the curtain (Jimmy, round 2).
 
-When no further reads arrive, the laptop clock decides instead: the time above, moved onto the laptop's clock using the newest new tag's own read and arrival times, plus 1 s.
+When no further reads arrive, the laptop clock decides instead: the time above, moved onto the laptop's clock using the newest new read time and the arrival of the newest new tag taken in, plus 1 s. If tags arrive out of order those are two different tags; the arrival is then the later one, so the decision comes late, never early.
 
 **If this is wrong,** dropping the 10 s check would bring the decision down to 5–10 s after the scan.
+
+## Implementation notes for the second-test changes (2026-11-06)
+
+Plan: `docs/superpowers/plans/2026-11-06-dock-no-timer.md`.
+
+**What the trial laptop will feel:** from this build on, every Dock read uploads as a scan and every crate packs in the portal. Reads taken in dry run before the upgrade stay unsent, and their passes keep reading "Would pack".
+
+- **Edge settings:**
+  - `edge.dock.state` is now `WINDOW_S = 5`, `clear_passes` and `reset`.
+  - Nothing reads the `dock_settings` table any more. It stays in the schema, and Clear Setup still empties it.
+  - `tagreads` never stamps `dry_run`. `processing` still files a stamped read as `upload_state = 'dry_run'`, and a pass is dry run only when one of its own reads is stamped.
+  - The uploader's and the sender's Dock dry-run gates are gone. Passes still store `quiet_gap_s` (now 5), which the sender's laptop-clock fallback reads.
+- **Edge routes:** `PUT /edge/dock/settings` is removed. `POST /edge/dock/control` takes `start` or `stop`; `pause` is a 422 that touches neither the reader nor `control`. The overview is `{open, passes, control}`.
+- **Grouper:**
+  - `settle(b, w)` is `max(last_crate_at + 2W, last_new_at + W)`, or `last_new_at + W` with no crate. `last_crate_at` is loaded from `dock_pass_tags.first_read_at`, so a restart in the middle of a burst gives the same time.
+  - A read with `t > settle` decides the burst. With no more reads, the idle path decides at `last_new_received_at + (settle - last_new_at) + 1 s`.
+  - Membership (`_split`, `crate_windows`, `crate_groups`) is unchanged. A no-crate leftover closes at `last_new_at + W`.
+  - `_EDGE` is now 2W + 1 s.
+- **Kiosk:**
+  - A decided pass's result and the burst's device rows, as last polled, hold the crate card until a poll's open burst has any tag. Nothing on the screen is timed.
+  - The held rows follow the pass: Added, Adding, Not packed, No crate read, or More than one crate.
+  - A Stopped or Unreachable chip shows on a held result.
+  - Waiting to send uses the crate-found look; it turns green only once Packed.
+  - The bottom row is Start and Stop.
+- **Known, not fixed:**
+  - If the decision comes from the next burst's first read, the result never takes the card: that read is "the next tag". The pass is still in Recent passes.
+  - Refused assets inside a Packed pass still read Added on the held rows. Recent passes and the details show which ones were refused.
+  - An unnamed crate's held result shows "—" and a count of 0. Containers on a move normally have names.
+  - Right after Stop, the held rows can miss a read from the last second; the count is correct.
+  - An asset re-read late in one burst, close to the next burst's crate, isn't flagged. Tags are read once at the curtain, so this shouldn't come up.

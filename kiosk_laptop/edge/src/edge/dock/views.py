@@ -5,7 +5,8 @@ detail (its tags with what packing did, every read behind it).
 The open pass is the grouper's open burst, not yet decided into passes,
 shown with the grouper's own window test and the move's cached assets.
 Nothing in it counts down: the grouper decides it once the reader's clock
-passes its settle time. Plain reads of the edge's own tables; nothing here
+passes its settle time or, with no more reads, once the laptop's clock has
+(edge.dock.grouper). Plain reads of the edge's own tables; nothing here
 touches the network or changes a row. An open pass has no detail yet (the
 overview shows it whole), so `detail` answers None for it, as for an
 unknown id."""

@@ -17,10 +17,12 @@ reader's own read time. W is the fixed window `state.WINDOW_S` (5 s).
   batch splits exactly as it would have live. A read with no usable
   `read_at` falls back to its `received_at`.
 - An open burst with no further reads is decided on the laptop clock: its
-  settle time moved onto that clock by the newest new tag's own read and
-  arrival times, `last_new_received_at + (settle - last_new_at) + 1 s`, so it
-  holds however far off the reader's clock is. The second covers
-  `received_at`'s one-second resolution, so it is never decided early.
+  settle time moved onto that clock by the newest new read time and the
+  arrival of the newest new tag taken in, `last_new_received_at + (settle -
+  last_new_at) + 1 s`, so it holds however far off the reader's clock is.
+  Read out of order, those are two different tags and the arrival is the
+  later one, so it is late, never early. The second covers `received_at`'s
+  one-second resolution, so it is never decided early.
 - The Dock screen's Stop (`decide_now`) groups the backlog, then decides the
   open burst at once with what has been read. A read that arrives after
   that, even one read before it, opens a new burst.

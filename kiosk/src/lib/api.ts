@@ -1381,7 +1381,7 @@ export interface DockCrate {
 
 /** The burst still open, filling in as tags are read; an asset packs into
  *  a crate read within 5 s of it. The edge decides it into passes 10 s
- *  after its newest crate's first read or 5 s after its newest tag's,
+ *  after its newest crate's first read or 5 s after its newest new tag's,
  *  whichever is later, and doesn't say when. `crates` are in first-read
  *  order; `conflict` is set when any crate's is, and `added_count` counts
  *  the assets inside the newest crate's window. */
