@@ -2,7 +2,7 @@ import { getSchema } from '@tiptap/core';
 import { Node as PMNode } from '@tiptap/pm/model';
 import { describe, expect, it } from 'vitest';
 
-import { buildToc, headingIdsOf, slugify } from './toc';
+import { buildToc, headingIdsOf, sectionHashTarget, sectionLinkTarget, slugify } from './toc';
 import { wikiExtensions } from './schema';
 
 const heading = (level: number, text: string) => ({
@@ -96,5 +96,27 @@ describe('buildToc', () => {
     expect(toc).toEqual([{ level: 2, text: 'See page', id: 'h-see-page' }]);
     const pm = PMNode.fromJSON(getSchema(wikiExtensions()), linked);
     expect(headingIdsOf(pm).map((h) => h.id)).toEqual(['h-see-page']);
+  });
+});
+
+describe('section links', () => {
+  const PAGE = '99e015d8-3319-4ada-9582-b9d979567fde';
+
+  it('reads the heading id from a link to this page', () => {
+    expect(sectionLinkTarget(`/n/${PAGE}#h-the-bulk-way`, PAGE)).toBe('h-the-bulk-way');
+    expect(sectionLinkTarget(`/n/${PAGE.toUpperCase()}#h-step-2-2`, PAGE)).toBe('h-step-2-2');
+  });
+
+  it('is null for another page, a plain page link, or a hash that is not a heading', () => {
+    expect(sectionLinkTarget(`/n/4fa04d95-6bb6-470c-80fb-ffb77a80651a#h-x`, PAGE)).toBeNull();
+    expect(sectionLinkTarget(`/n/${PAGE}`, PAGE)).toBeNull();
+    expect(sectionLinkTarget(`/n/${PAGE}#comment-abc`, PAGE)).toBeNull();
+    expect(sectionLinkTarget('https://example.com/#h-x', PAGE)).toBeNull();
+  });
+
+  it('reads the heading id from a location hash', () => {
+    expect(sectionHashTarget('#h-troubleshooting')).toBe('h-troubleshooting');
+    expect(sectionHashTarget('#comment-abc')).toBeNull();
+    expect(sectionHashTarget('')).toBeNull();
   });
 });

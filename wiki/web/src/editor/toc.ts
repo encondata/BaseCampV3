@@ -101,6 +101,19 @@ function decorate(doc: PMNode): DecorationSet {
     (h) => Decoration.node(h.pos, h.pos + h.size, { id: h.id })));
 }
 
+/** The heading id a link points at on the page being shown. A stored link
+ *  can only be an internal route (see ALLOWED_HREF), so a section link is
+ *  `/n/<this page>#h-…`; anything else is a link away. */
+export function sectionLinkTarget(href: string, pageId: string): string | null {
+  const match = /^\/n\/([0-9a-f-]{36})#(h-[a-z0-9-]+)$/i.exec(href);
+  return match && match[1].toLowerCase() === pageId.toLowerCase() ? match[2] : null;
+}
+
+/** The heading id in a location hash (`#h-…`), or null. */
+export function sectionHashTarget(hash: string): string | null {
+  return /^#(h-[a-z0-9-]+)$/i.exec(hash)?.[1] ?? null;
+}
+
 const headingIdsKey = new PluginKey<DecorationSet>('wikiHeadingIds');
 
 /** Gives every rendered heading its table-of-contents id. */
