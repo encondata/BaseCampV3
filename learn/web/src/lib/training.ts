@@ -1,6 +1,6 @@
 /** The signed-in worker's calls: their training and history, one assignment to read,
- *  its quiz and the sign-off. All go through `learnFetch`; a failure is an
- *  ApiError (status + detail.code), a network failure code `network`. */
+ *  its quiz, the slides reached and the sign-off. All go through `learnFetch`;
+ *  a failure is an ApiError (status + detail.code), a network failure code `network`. */
 import { ApiError } from '@portal/lib/api';
 
 import { learnFetch } from './session';
@@ -41,6 +41,14 @@ export interface AssignmentRead {
   quiz_passed: boolean;
   /** Set once signed: the document is then read-only, at the version signed. */
   signed_at: string | null;
+  /** Slides: one section at a time, in place of the scroll box. */
+  reading_style: 'document' | 'slides';
+  /** Slides style only (else null): the served text split into slides. */
+  slides: string[] | null;
+  slide_count: number | null;
+  /** The furthest slide reached (0-based) at this version and language;
+   *  null before any, or after either changed. */
+  slide_reached: number | null;
 }
 
 /** One sign-off in the worker's history, newest first. */
@@ -77,6 +85,12 @@ export interface SignBody {
   scrolled_to_end: boolean;
   /** The version shown; a newer one published meanwhile is a 409. */
   version_no?: number;
+}
+
+/** Where the server has the worker in a Slides document. */
+export interface SlideReached {
+  slide_reached: number;
+  slide_count: number;
 }
 
 export interface SignResult {
@@ -130,3 +144,8 @@ export const submitQuiz = (id: string, answers: Record<string, string[]>) =>
 
 export const signAssignment = (id: string, body: SignBody) =>
   post<SignResult>(`/learn/assignments/${seg(id)}/sign`, body);
+
+/** Record that slide `n` (0-based) was shown, at the version and language
+ *  read. Only the next unseen slide (or one already seen) is accepted. */
+export const reachSlide = (id: string, n: number, body: { version_no: number; language: string }) =>
+  post<SlideReached>(`/learn/assignments/${seg(id)}/slides/${n}`, body);

@@ -123,10 +123,20 @@ export const he: Dictionary = {
   'reader.back': 'חזרה',
   'reader.versionChanged': 'המסמך עודכן זה עתה. קראו את הגרסה החדשה ואז חתמו.',
 
+  'slides.region': 'שקופיות',
+  'slides.back': 'הקודמת',
+  'slides.next': 'הבאה',
+  'slides.count': '{k} מתוך {n}',
+  'slides.goTo': 'מעבר לשקופית {k}',
+  'slides.notReached': 'עוד לא הגעתם לכאן',
+  'slides.progress': 'עברו על כל השקופיות כדי לחתום. (נצפו {seen} מתוך {n})',
+  'slides.saveFailed': 'לא הצלחנו לשמור את המקום שלכם. בדקו את החיבור ונסו שוב.',
+
   'sign.mustAgree': 'סמנו את התיבה כדי לאשר שקראתם ואתם מסכימים.',
   'sign.nameRequired': 'הקלידו את שמכם המלא כדי לחתום.',
   'sign.signatureRequired': 'ציירו את החתימה שלכם כדי לחתום.',
   'sign.scrollRequired': 'גללו קודם עד סוף המסמך.',
+  'sign.slidesRequired': 'עברו קודם על כל השקופיות.',
   'sign.readTime': 'המשיכו לקרוא: אפשר יהיה לחתום בעוד {time}.',
   'sign.signatureInvalid': 'לא ניתן היה לשמור את החתימה. נקו אותה וציירו שוב.',
 

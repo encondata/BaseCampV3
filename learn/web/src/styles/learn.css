@@ -164,6 +164,52 @@ body { background: #FFF9F2; }
 .learn-doc img { max-inline-size: 100%; block-size: auto }
 .learn-doc table { border-collapse: collapse; max-inline-size: 100% }
 .learn-doc th, .learn-doc td { border: 1px solid var(--l-line); padding: 4px 8px }
+/* Slides style: one slide in the document's place, then Back · dots · "2 / 4" · Next.
+   The slide grows with its content (the page scrolls, not the slide). */
+.learn-slides { display: flex; flex-direction: column; gap: 10px; border-radius: 14px }
+.learn-slides:focus { outline: none }
+.learn-slides:focus-visible { outline: 3px solid var(--l-ink); outline-offset: 4px }
+.learn-slide {
+  min-block-size: 220px; background: #fff; border: 1px solid var(--l-line); border-radius: 14px; padding: 14px;
+  font-size: 14px; line-height: 1.65; color: #434b57; overflow-wrap: anywhere;
+}
+.learn-slide h1, .learn-slide h2, .learn-slide h3, .learn-slide h4 { font-size: 15px; font-weight: 500; margin: 14px 0 4px; color: var(--l-ink) }
+.learn-slide > :first-child { margin-block-start: 0 }
+.learn-slide img { display: block; max-inline-size: 100%; block-size: auto; border-radius: 8px }
+.learn-slide table { border-collapse: collapse; max-inline-size: 100% }
+.learn-slide th, .learn-slide td { border: 1px solid var(--l-line); padding: 4px 8px }
+.learn-slides-row { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap }
+.learn-slides-row svg { inline-size: 18px; block-size: 18px; flex: none }
+/* the arrows point the way the slides read */
+.learn-slides[dir='rtl'] .learn-slides-row svg { transform: scaleX(-1) }
+.learn-slides-back {
+  display: inline-flex; align-items: center; gap: 4px; min-block-size: 44px; padding-block: 0; padding-inline: 10px 14px;
+  border: 1px solid var(--l-line); border-radius: 12px; background: #fff; color: var(--l-ink);
+  font: inherit; font-size: 14px; cursor: pointer;
+}
+.learn-slides-back:disabled { opacity: .45; cursor: default }
+.learn-cta.learn-slides-next {
+  display: inline-flex; align-items: center; gap: 4px; inline-size: auto;
+  min-block-size: 44px; padding-block: 0; padding-inline: 18px 12px;
+}
+.learn-slides-dots { flex: 1 1 auto; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px }
+.learn-slides-dot {
+  inline-size: 34px; block-size: 34px; border-radius: 50%; padding: 0; box-sizing: border-box;
+  border: 2px solid var(--l-line); background: transparent; color: var(--l-mute);
+  font: inherit; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; cursor: pointer;
+}
+.learn-slides-dot.seen { border-color: var(--l-orange); color: #B45309 }
+.learn-slides-dot.current { background: var(--l-orange); border-color: var(--l-orange); color: #1a1205 }
+.learn-slides-dot:disabled { opacity: .45; cursor: not-allowed }
+.learn-slides-back:focus-visible, .learn-slides-dot:focus-visible { outline: 3px solid var(--l-ink); outline-offset: 2px }
+.learn-slides-count { min-inline-size: 44px; text-align: center; white-space: nowrap; font-size: 13px; color: var(--l-mute); font-variant-numeric: tabular-nums }
+.learn-slides-status { margin: 0; min-block-size: 18px; font-size: 13px; color: var(--l-mute) }
+.learn-slides-status.bad { color: var(--l-red) }
+/* a phone: the dots take their own line above Back · count · Next */
+@media (max-width: 520px) {
+  .learn-slides-dots { order: -1; flex-basis: 100% }
+  .learn-slides-count { flex: 1 }
+}
 .learn-readdone { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; color: var(--l-green) }
 .learn-readdone svg { inline-size: 16px; block-size: 16px }
 .learn-agree { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; line-height: 1.5 }

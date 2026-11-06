@@ -122,10 +122,20 @@ export const ko: Dictionary = {
   'reader.back': '뒤로',
   'reader.versionChanged': '이 문서가 방금 업데이트되었습니다. 새 버전을 읽은 후 서명해 주세요.',
 
+  'slides.region': '슬라이드',
+  'slides.back': '이전',
+  'slides.next': '다음',
+  'slides.count': '{k} / {n}',
+  'slides.goTo': '슬라이드 {k}(으)로 이동',
+  'slides.notReached': '아직 도달하지 않았습니다',
+  'slides.progress': '서명하려면 모든 슬라이드를 넘겨 보세요. ({n}개 중 {seen}개 확인)',
+  'slides.saveFailed': '현재 위치를 저장하지 못했습니다. 연결 상태를 확인하고 다시 시도하세요.',
+
   'sign.mustAgree': '읽고 동의했다는 뜻으로 확인란을 선택하세요.',
   'sign.nameRequired': '서명하려면 전체 이름을 입력하세요.',
   'sign.signatureRequired': '서명을 그려 주세요.',
   'sign.scrollRequired': '먼저 문서 끝까지 스크롤하세요.',
+  'sign.slidesRequired': '먼저 모든 슬라이드를 넘겨 보세요.',
   'sign.readTime': '계속 읽어 주세요. {time} 후에 서명할 수 있습니다.',
   'sign.signatureInvalid': '서명을 저장하지 못했습니다. 지우고 다시 그려 주세요.',
 

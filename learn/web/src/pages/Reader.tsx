@@ -14,6 +14,13 @@
  *  published meanwhile the server refuses (409 `version_changed`) and the
  *  page loads the new version to read.
  *
+ *  A Slides document shows one slide at a time (SlideDeck) in place of the
+ *  scroll box, and going through every slide stands in for the scroll: the
+ *  sign-off says why while slides are left, and "Take the quiz" waits for
+ *  the last slide so the quiz can't be a way to start before reading. A
+ *  passed quiz doesn't bypass the slides (progress belongs to the version
+ *  and language read, so a language change starts it over).
+ *
  *  A signed document opens read-only (from the list or the history): the
  *  header, a "You signed this on …" notice and the text at the version
  *  that was signed, then Back — no agreement, signature, quiz or timer. */
@@ -24,13 +31,14 @@ import { ApiError } from '@portal/lib/api';
 
 import LoadState from '../components/LoadState';
 import SignaturePad from '../components/SignaturePad';
+import SlideDeck from '../components/SlideDeck';
 import type { MessageKey } from '../i18n/en';
 import { errorKey } from '../lib/errors';
 import { mmss, signedDay } from '../lib/format';
 import { isUuid } from '../lib/ids';
 import { getLang, isRtl, t, useLang } from '../lib/i18n';
 import { useMarkSigned } from '../lib/learner';
-import { getAssignment, getTraining, signAssignment, type AssignmentRead } from '../lib/training';
+import { getAssignment, getTraining, reachSlide, signAssignment, type AssignmentRead } from '../lib/training';
 import { useLoad } from '../lib/useLoad';
 
 type Reason = { key: MessageKey; vars?: Record<string, string | number> };
@@ -67,7 +75,12 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
   // newer version came in since, which the worker hasn't read yet (the
   // pass is per assignment, not per version)
   const alreadyRead = doc.has_quiz && doc.quiz_passed && !changed;
-  const scrolled = reached || fits || alreadyRead;
+  // Slides style: the furthest slide the server has recorded, and whether
+  // that is the last one
+  const deck = doc.reading_style === 'slides' && doc.slides ? doc.slides : null;
+  const [slideReached, setSlideReached] = useState(doc.slide_reached);
+  const allSeen = !!deck && slideReached === deck.length - 1;
+  const scrolled = deck ? allSeen : reached || fits || alreadyRead;
   // the server's own clock said "not yet": hold off until then
   const [holdUntil, setHoldUntil] = useState(0);
   const [agreed, setAgreed] = useState(false);
@@ -116,7 +129,8 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
       !agreed ? { key: 'sign.mustAgree' }
       : typed && !name.trim() ? { key: 'sign.nameRequired' }
       : draws && !drawn ? { key: 'sign.signatureRequired' }
-      : doc.require_scroll && !scrolled ? { key: 'sign.scrollRequired' }
+      : deck && !allSeen ? { key: 'sign.slidesRequired' }
+      : !deck && doc.require_scroll && !scrolled ? { key: 'sign.scrollRequired' }
       : left > 0 ? { key: 'sign.readTime', vars: { time: mmss(left) } }
       : null;
     setReason(why);
@@ -142,6 +156,7 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
       if (code === 'quiz_required') { navigate(`/training/${id}/quiz`, { replace: true }); return; }
       if (code === 'version_changed') { onVersionChanged(); return; }
       if (code === 'scroll_required') { setReason({ key: 'sign.scrollRequired' }); return; }
+      if (code === 'slides_required') { setReason({ key: 'sign.slidesRequired' }); return; }
       if (code === 'read_time') {
         const left = (err as ApiError).detail as { seconds_left?: unknown } | undefined;
         const secs = Math.max(1, Number(left?.seconds_left) || 1);
@@ -154,6 +169,23 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
         : code === 'name_required' ? 'sign.nameRequired'
         : code === 'signature_required' ? 'sign.signatureRequired'
         : errorKey(err) });
+    }
+  };
+
+  /** Report a slide reached; the server's answer, or null when it refused
+   *  or couldn't be reached (the deck then stays put and says so). */
+  const reach = async (n: number): Promise<number | null> => {
+    try {
+      const out = await reachSlide(id, n, { version_no: doc.version_no, language: doc.language });
+      setSlideReached((r) => Math.max(r ?? -1, out.slide_reached));
+      return out.slide_reached;
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : '';
+      // the same as signing: a newer version loads to read, a sign-off
+      // made elsewhere goes back to the list
+      if (code === 'version_changed') onVersionChanged();
+      if (code === 'already_signed') navigate('/training', { replace: true });
+      return null;
     }
   };
 
@@ -183,13 +215,18 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
       {doc.fallback && <p className="learn-banner">{t('reader.fallback')}</p>}
       {!review && doc.change_note && <p className="learn-banner">{t('reader.changed', { note: doc.change_note })}</p>}
 
-      <div ref={box} className="learn-doc" role="region" aria-label={t('reader.body')} tabIndex={0}
-           lang={doc.language} dir={rtl ? 'rtl' : 'ltr'} onScroll={checkEnd} onLoadCapture={checkFit}>
-        {/* the server sanitizes the HTML and snapshots the version */}
-        <div dangerouslySetInnerHTML={{ __html: doc.html }} />
-      </div>
+      {deck ? (
+        <SlideDeck slides={deck} reached={doc.slide_reached} review={review} lang={doc.language}
+                   dir={rtl ? 'rtl' : 'ltr'} onReach={reach} />
+      ) : (
+        <div ref={box} className="learn-doc" role="region" aria-label={t('reader.body')} tabIndex={0}
+             lang={doc.language} dir={rtl ? 'rtl' : 'ltr'} onScroll={checkEnd} onLoadCapture={checkFit}>
+          {/* the server sanitizes the HTML and snapshots the version */}
+          <div dangerouslySetInnerHTML={{ __html: doc.html }} />
+        </div>
+      )}
 
-      {!review && !needsQuiz && !alreadyRead && (doc.require_scroll || minSeconds > 0) && scrolled && left <= 0 && (
+      {!review && !needsQuiz && !alreadyRead && (deck || doc.require_scroll || minSeconds > 0) && scrolled && left <= 0 && (
         <p className="learn-readdone">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
                strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="m8 12.5 3 3 5-6" /></svg>
@@ -199,6 +236,8 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
 
       {review ? (
         <Link className="learn-cta" to={back}>{t('reader.back')}</Link>
+      ) : needsQuiz && deck && !allSeen ? (
+        <p className="learn-fine">{t('slides.progress', { seen: (slideReached ?? 0) + 1, n: deck.length })}</p>
       ) : needsQuiz ? (
         <Link className="learn-cta" to={`/training/${encodeURIComponent(id)}/quiz`}>{t('reader.takeQuiz')}</Link>
       ) : (

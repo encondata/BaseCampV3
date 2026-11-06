@@ -20,6 +20,7 @@ const DOC: AssignmentRead = {
   title: 'Acme site rules', html: '<h2>Badges</h2><p>Wear your badge.</p>', language: 'en', fallback: false,
   version_no: 2, change_note: null, sign_style: 'typed_name', require_scroll: true,
   min_read_seconds: null, has_quiz: false, quiz_passed: false, signed_at: null,
+  reading_style: 'document', slides: null, slide_count: null, slide_reached: null,
 };
 
 const TRAINING = {
@@ -357,6 +358,155 @@ describe('Reader', () => {
     );
     expect(screen.getByText('training page')).toBeTruthy();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  describe('Slides style', () => {
+    const SLIDES: Partial<Doc> = {
+      reading_style: 'slides', slides: ['<h2>Badges</h2>', '<h2>Shoes</h2>', '<h2>Doors</h2>'],
+      slide_count: 3, slide_reached: null,
+    };
+
+    /** The assignment GET, the slide POSTs (recorded as told) and the sign POST. */
+    function slidesApi(over: Partial<Doc> = {}, sign: () => Response = () => json(200, {
+      signoff_id: 's-1', signed_at: '2026-11-05T10:00:00Z', complete: false,
+    })) {
+      const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.endsWith('/learn/training')) return json(200, TRAINING);
+        const at = url.match(/\/slides\/(\d+)$/);
+        if (init?.method === 'POST' && at) return json(200, { slide_reached: Number(at[1]), slide_count: 3 });
+        if (init?.method === 'POST') return sign();
+        return json(200, { ...DOC, ...SLIDES, ...over });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      return fetchMock;
+    }
+    const reachCalls = (m: ReturnType<typeof slidesApi>) =>
+      m.mock.calls.filter(([u, init]) => init?.method === 'POST' && /\/slides\/\d+$/.test(String(u)));
+    const signs = (m: ReturnType<typeof slidesApi>) =>
+      m.mock.calls.filter(([u, init]) => init?.method === 'POST' && String(u).endsWith('/sign'));
+
+    async function fillIn() {
+      fireEvent.click(await screen.findByRole('checkbox'));
+      fireEvent.change(screen.getByLabelText('Type your full name to sign'), { target: { value: 'Kenji Watanabe' } });
+    }
+
+    it('shows one slide at a time in place of the scroll box, and reports the first slide', async () => {
+      const fetchMock = slidesApi();
+      renderReader();
+      expect(await screen.findByText('Badges')).toBeTruthy();
+      expect(screen.queryByText('Shoes')).toBeNull();
+      expect(screen.queryByRole('region', { name: 'Document text' })).toBeNull();
+      expect(screen.getByRole('region', { name: 'Slides' })).toBeTruthy();
+      await screen.findAllByText('Go through every slide to sign. (1 of 3 seen)');
+      const [url, init] = reachCalls(fetchMock)[0];
+      expect(String(url)).toBe(`http://localhost:8000/learn/assignments/${ID}/slides/0`);
+      expect(JSON.parse(String(init?.body))).toEqual({ version_no: 2, language: 'en' });
+    });
+
+    it('Slides: sign says go through every slide first until the last slide', async () => {
+      const fetchMock = slidesApi();
+      const user = userEvent.setup();
+      renderReader();
+      await fillIn();
+      const sign = screen.getByRole('button', { name: 'Sign and continue' });
+      expect((sign as HTMLButtonElement).disabled).toBe(false);
+      await user.click(sign);
+      expect(screen.getByText('Go through every slide first.')).toBeTruthy();
+      expect(signs(fetchMock)).toHaveLength(0);
+
+      await user.click(screen.getByRole('button', { name: 'Next' }));
+      await screen.findByText('Shoes');
+      await user.click(sign);
+      expect(screen.getByText('Go through every slide first.')).toBeTruthy();
+      expect(signs(fetchMock)).toHaveLength(0);
+
+      await user.click(screen.getByRole('button', { name: 'Next' }));
+      await screen.findByText('Doors');
+      expect(await screen.findByText(/^Read to the end · /)).toBeTruthy();
+      await user.click(sign);
+      expect(await screen.findByText('training page')).toBeTruthy();
+      expect(JSON.parse(String(signs(fetchMock)[0][1]?.body))).toMatchObject({ scrolled_to_end: true, version_no: 2 });
+    });
+
+    it('resumes at the furthest slide reached, ready to sign when that was the last', async () => {
+      const fetchMock = slidesApi({ slide_reached: 2 });
+      renderReader();
+      expect(await screen.findByText('Doors')).toBeTruthy();
+      await fillIn();
+      fireEvent.click(screen.getByRole('button', { name: 'Sign and continue' }));
+      expect(await screen.findByText('training page')).toBeTruthy();
+      expect(reachCalls(fetchMock)).toHaveLength(0);
+    });
+
+    it('Slides: quiz link appears only after the last slide', async () => {
+      slidesApi({ has_quiz: true, quiz_passed: false, slide_reached: 1 });
+      const user = userEvent.setup();
+      renderReader();
+      expect(await screen.findByText('Shoes')).toBeTruthy();
+      expect(screen.queryByRole('link', { name: 'Take the quiz' })).toBeNull();
+      expect(screen.getAllByText('Go through every slide to sign. (2 of 3 seen)').length).toBeGreaterThan(0);
+      await user.click(screen.getByRole('button', { name: 'Next' }));
+      const quiz = await screen.findByRole('link', { name: 'Take the quiz' });
+      expect(quiz.getAttribute('href')).toBe(`/training/${ID}/quiz`);
+    });
+
+    it('a passed quiz does not stand in for the slides', async () => {
+      // e.g. the worker switched language after the quiz: progress starts over
+      const fetchMock = slidesApi({ has_quiz: true, quiz_passed: true, slide_reached: 0 });
+      renderReader();
+      await fillIn();
+      fireEvent.click(screen.getByRole('button', { name: 'Sign and continue' }));
+      expect(screen.getByText('Go through every slide first.')).toBeTruthy();
+      expect(signs(fetchMock)).toHaveLength(0);
+    });
+
+    it('Slides: slides_required from the server shows the same reason', async () => {
+      slidesApi({ slide_reached: 2 }, () => json(422, { detail: { code: 'slides_required' } }));
+      renderReader();
+      await fillIn();
+      fireEvent.click(screen.getByRole('button', { name: 'Sign and continue' }));
+      expect(await screen.findByText('Go through every slide first.')).toBeTruthy();
+    });
+
+    it('a version published while going through the slides loads the new one', async () => {
+      let version = 2;
+      vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.endsWith('/learn/training')) return json(200, TRAINING);
+        const at = url.match(/\/slides\/(\d+)$/);
+        if (init?.method === 'POST' && at) {
+          if (at[1] === '0') return json(200, { slide_reached: 0, slide_count: 3 });
+          version = 3;
+          return json(409, { detail: { code: 'version_changed' } });
+        }
+        return json(200, { ...DOC, ...SLIDES, version_no: version,
+          slides: version === 3 ? ['<p>New rules.</p>', '<p>More.</p>'] : SLIDES.slides, slide_count: version === 3 ? 2 : 3 });
+      }));
+      renderReader();
+      await screen.findByText('Badges');
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+      expect(await screen.findByText('New rules.')).toBeTruthy();
+      expect(screen.getByText('This document was just updated. Read the new version, then sign.')).toBeTruthy();
+      expect(screen.getByText('1 / 2')).toBeTruthy();
+    });
+
+    it('a signed slides document opens at slide 1 with free navigation and nothing reported', async () => {
+      const fetchMock = slidesApi({ signed_at: '2026-11-04T15:00:00Z', slide_reached: 2 });
+      renderReader();
+      expect(await screen.findByText('Badges')).toBeTruthy();
+      expect((screen.getByRole('button', { name: 'Go to slide 3' }) as HTMLButtonElement).disabled).toBe(false);
+      expect(screen.queryByText(/^Go through every slide/)).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Sign and continue' })).toBeNull();
+      await act(async () => {});
+      expect(reachCalls(fetchMock)).toHaveLength(0);
+    });
+
+    it('Document style still uses the scroll box', async () => {
+      api();
+      renderReader();
+      expect(await screen.findByRole('region', { name: 'Document text' })).toBeTruthy();
+      expect(screen.queryByRole('region', { name: 'Slides' })).toBeNull();
+    });
   });
 
   describe('a signed document (review)', () => {

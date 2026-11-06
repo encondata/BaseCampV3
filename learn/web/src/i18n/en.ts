@@ -122,10 +122,20 @@ export const en = {
   'reader.back': 'Back',
   'reader.versionChanged': 'This document was just updated. Read the new version, then sign.',
 
+  'slides.region': 'Slides',
+  'slides.back': 'Back',
+  'slides.next': 'Next',
+  'slides.count': '{k} / {n}',
+  'slides.goTo': 'Go to slide {k}',
+  'slides.notReached': 'Not reached yet',
+  'slides.progress': 'Go through every slide to sign. ({seen} of {n} seen)',
+  'slides.saveFailed': "Couldn't save your place. Check your connection and try again.",
+
   'sign.mustAgree': "Tick the box to say you've read it and agree.",
   'sign.nameRequired': 'Type your full name to sign.',
   'sign.signatureRequired': 'Draw your signature to sign.',
   'sign.scrollRequired': 'Scroll to the end of the document first.',
+  'sign.slidesRequired': 'Go through every slide first.',
   'sign.readTime': 'Keep reading: you can sign in {time}.',
   'sign.signatureInvalid': "That signature couldn't be saved. Clear it and draw it again.",
 

@@ -122,10 +122,20 @@ export const ja: Dictionary = {
   'reader.back': '戻る',
   'reader.versionChanged': 'この文書は更新されたばかりです。新しい版を読んでから署名してください。',
 
+  'slides.region': 'スライド',
+  'slides.back': '前へ',
+  'slides.next': '次へ',
+  'slides.count': '{k} / {n}',
+  'slides.goTo': 'スライド {k} へ移動',
+  'slides.notReached': 'まだここまで進んでいません',
+  'slides.progress': '署名するには、すべてのスライドを見てください。（{n} 枚中 {seen} 枚表示済み）',
+  'slides.saveFailed': '現在の位置を保存できませんでした。接続を確認して、もう一度お試しください。',
+
   'sign.mustAgree': '読んで同意したことを示すため、チェックボックスをオンにしてください。',
   'sign.nameRequired': '署名するため、氏名をフルネームで入力してください。',
   'sign.signatureRequired': '署名を書いてください。',
   'sign.scrollRequired': '先に資料の最後までスクロールしてください。',
+  'sign.slidesRequired': '先にすべてのスライドを見てください。',
   'sign.readTime': '引き続きお読みください。{time} 後に署名できます。',
   'sign.signatureInvalid': '署名を保存できませんでした。消去してもう一度書いてください。',
 
