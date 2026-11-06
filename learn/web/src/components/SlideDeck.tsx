@@ -6,7 +6,7 @@
  *  grows by one per Next and is reported first: the server refuses
  *  anything further ahead and its answer is what the dots show, so when
  *  the call fails (offline, a refusal) the deck stays on the slide it was
- *  on and says so. Any slide up to the furthest reached opens from its dot.
+ *  on and says so, with a Try again button. Any slide up to the furthest reached opens from its dot.
  *  The arrow keys move like Back and Next, the way the text reads (in
  *  right-to-left text the left arrow goes forward).
  *
@@ -72,6 +72,13 @@ export default function SlideDeck({ slides, reached, review, lang, dir, onReach 
     setAt(to);
   };
   const prev = () => { if (at > 0) setAt(at - 1); };
+  // the slide on screen again: a one-slide deck whose opening report failed
+  // has no Next to tap
+  const retry = async () => {
+    if (pending.current) return;
+    pending.current = true;
+    try { await report(at); } finally { pending.current = false; }
+  };
 
   const onKey = (e: KeyboardEvent<HTMLElement>) => {
     if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
@@ -119,7 +126,14 @@ export default function SlideDeck({ slides, reached, review, lang, dir, onReach 
       </div>
 
       {/* always mounted while it can speak, so a screen reader hears it change */}
-      {!review && <p className={`learn-slides-status${failed ? ' bad' : ''}`} aria-live="polite">{status}</p>}
+      {!review && (
+        <div className="learn-slides-statusrow">
+          <p className={`learn-slides-status${failed ? ' bad' : ''}`} aria-live="polite">{status}</p>
+          {failed && (
+            <button type="button" className="learn-link" onClick={() => void retry()}>{t('slides.retry')}</button>
+          )}
+        </div>
+      )}
     </section>
   );
 }

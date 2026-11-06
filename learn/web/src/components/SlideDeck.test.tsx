@@ -95,6 +95,28 @@ describe('SlideDeck', () => {
     expect(onReach.mock.calls.map(([n]) => n)).toEqual([0, 0, 1]);
   });
 
+  it('a single slide: reported on opening, nothing further to go to', async () => {
+    const onReach = deck({ slides: ['<p>only</p>'] });
+    expect(screen.getByText('only')).toBeTruthy();
+    expect(next().disabled).toBe(true);
+    await act(async () => {});
+    expect(onReach).toHaveBeenCalledWith(0);
+    expect(screen.queryByText(/^Go through every slide/)).toBeNull();
+  });
+
+  it('a failed save offers Try again, which reports the slide on screen', async () => {
+    const onReach = vi.fn(async (_n: number): Promise<number | null> => null);
+    deck({ slides: ['<p>only</p>'], onReach });
+    await act(async () => {});
+    expect(screen.getByText("Couldn't save your place. Check your connection and try again.")).toBeTruthy();
+    // a one-slide deck has no Next to tap: the line brings its own button
+    onReach.mockImplementation(async (n: number) => n);
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(onReach.mock.calls.map(([n]) => n)).toEqual([0, 0]);
+    expect(screen.queryByText(/^Couldn't save your place/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
+
   it('review mode: every dot enabled, nothing reported', async () => {
     const onReach = deck({ review: true, reached: null });
     await act(async () => {});

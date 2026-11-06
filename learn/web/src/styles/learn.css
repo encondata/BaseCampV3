@@ -203,6 +203,8 @@ body { background: #FFF9F2; }
 .learn-slides-dot:disabled { opacity: .45; cursor: not-allowed }
 .learn-slides-back:focus-visible, .learn-slides-dot:focus-visible { outline: 3px solid var(--l-ink); outline-offset: 2px }
 .learn-slides-count { min-inline-size: 44px; text-align: center; white-space: nowrap; font-size: 13px; color: var(--l-mute); font-variant-numeric: tabular-nums }
+.learn-slides-statusrow { display: flex; align-items: center; flex-wrap: wrap; gap: 0 8px }
+.learn-slides-statusrow .learn-link { align-self: center; padding-inline: 4px }
 .learn-slides-status { margin: 0; min-block-size: 18px; font-size: 13px; color: var(--l-mute) }
 .learn-slides-status.bad { color: var(--l-red) }
 /* a phone: the dots take their own line above Back · count · Next */

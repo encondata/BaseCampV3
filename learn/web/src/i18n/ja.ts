@@ -130,6 +130,7 @@ export const ja: Dictionary = {
   'slides.notReached': 'まだここまで進んでいません',
   'slides.progress': '署名するには、すべてのスライドを見てください。（{n} 枚中 {seen} 枚表示済み）',
   'slides.saveFailed': '現在の位置を保存できませんでした。接続を確認して、もう一度お試しください。',
+  'slides.retry': 'もう一度試す',
 
   'sign.mustAgree': '読んで同意したことを示すため、チェックボックスをオンにしてください。',
   'sign.nameRequired': '署名するため、氏名をフルネームで入力してください。',

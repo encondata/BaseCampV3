@@ -130,6 +130,7 @@ export const en = {
   'slides.notReached': 'Not reached yet',
   'slides.progress': 'Go through every slide to sign. ({seen} of {n} seen)',
   'slides.saveFailed': "Couldn't save your place. Check your connection and try again.",
+  'slides.retry': 'Try again',
 
   'sign.mustAgree': "Tick the box to say you've read it and agree.",
   'sign.nameRequired': 'Type your full name to sign.',

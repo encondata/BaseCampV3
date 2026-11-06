@@ -130,6 +130,7 @@ export const ko: Dictionary = {
   'slides.notReached': '아직 도달하지 않았습니다',
   'slides.progress': '서명하려면 모든 슬라이드를 넘겨 보세요. ({n}개 중 {seen}개 확인)',
   'slides.saveFailed': '현재 위치를 저장하지 못했습니다. 연결 상태를 확인하고 다시 시도하세요.',
+  'slides.retry': '다시 시도',
 
   'sign.mustAgree': '읽고 동의했다는 뜻으로 확인란을 선택하세요.',
   'sign.nameRequired': '서명하려면 전체 이름을 입력하세요.',

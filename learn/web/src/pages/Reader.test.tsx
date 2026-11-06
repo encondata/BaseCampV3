@@ -438,6 +438,20 @@ describe('Reader', () => {
       expect(reachCalls(fetchMock)).toHaveLength(0);
     });
 
+    it('a single slide: reaching it on opening is enough to sign', async () => {
+      const fetchMock = slidesApi({ slides: ['<p>Only.</p>'], slide_count: 1, slide_reached: null });
+      renderReader();
+      expect(await screen.findByText('Only.')).toBeTruthy();
+      await fillIn();
+      // the opening report lands before the worker signs
+      await act(async () => {});
+      expect(reachCalls(fetchMock)).toHaveLength(1);
+      fireEvent.click(screen.getByRole('button', { name: 'Sign and continue' }));
+      expect(screen.queryByText('Go through every slide first.')).toBeNull();
+      expect(await screen.findByText('training page')).toBeTruthy();
+      expect(JSON.parse(String(signs(fetchMock)[0][1]?.body))).toMatchObject({ scrolled_to_end: true, version_no: 2 });
+    });
+
     it('Slides: quiz link appears only after the last slide', async () => {
       slidesApi({ has_quiz: true, quiz_passed: false, slide_reached: 1 });
       const user = userEvent.setup();
