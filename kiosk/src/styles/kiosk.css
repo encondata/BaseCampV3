@@ -1098,11 +1098,12 @@
 /* ── Dock screen ─────────────────────────────────────────────────────
    /dock reuses the RFID dashboard's page and panels (always dark, filling
    the main column). On top, a strip with the dry-run switch and the quiet
-   gap (the alarm-seconds field plus Save), and an amber banner while dry
-   run is on; below, the open pass beside the wider recent passes, both
-   showing only the rows that fit (they never scroll). A flagged or refused
-   pass gets a red left edge and red outcome text. The pass modal's tables
-   wrap long tags rather than scroll sideways; the card itself scrolls. */
+   gap (the alarm-seconds field plus Save), an amber banner while dry run
+   is on and a red line while the edge can't be reached; below, the open
+   pass beside the wider recent passes, both showing only the rows that fit
+   (they never scroll). A flagged or refused pass gets a red left edge and
+   red outcome text. The pass modal's tables wrap long tags rather than
+   scroll sideways; the card itself scrolls. */
 .dock-dash-controls {
   display: flex; flex-wrap: wrap; align-items: center; gap: 12px 40px;
   flex: none; min-width: 0; margin: 20px 0 0; padding: 14px 20px;
@@ -1122,6 +1123,8 @@
   border-left: 3px solid var(--c-amber);
   color: var(--text-dark); font-size: 14px; font-weight: 500;
 }
+/* Polls failing: the RFID dashboard's red Unreachable state as a line. */
+.dock-dash-unreachable { display: flex; flex: none; margin: 14px 0 0; font-size: 14px; font-weight: 500; }
 .dock-dash-panels { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
 @media (max-width: 900px) { .dock-dash-panels { grid-template-columns: minmax(0, 1fr); } }
 .dock-dash-countdown {

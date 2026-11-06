@@ -6,8 +6,10 @@
  * dry-run switch and quiet gap, both saved on the laptop's edge. Always
  * dark and filling the screen like the RFID Reader dashboard, whose panels
  * it reuses; both panels show only the rows that fit. The overview
- * refreshes 1 s after the previous refresh settles (never overlapping).
- * Web mode, or a setup that isn't a Dock, goes home.
+ * refreshes 1 s after the previous refresh settles (never overlapping);
+ * while refreshes fail, a red line says the station can't be reached and the
+ * last overview stays under it. Web mode, or a setup that isn't a Dock,
+ * goes home.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -17,7 +19,7 @@ import DockPassModal, { passOutcome } from '../components/DockPassModal';
 import { Switch } from '../components/Switch';
 import {
   getDock, saveDockSettings,
-  type DockOverview, type DockPassRow, type DockSettings, type DockTagKind,
+  type DockOverview, type DockPassRow, type DockSettings, type DockTag, type DockTagKind,
 } from '../lib/api';
 import { useKioskSetup } from '../lib/kioskSetup';
 import { isLaptop } from '../lib/platform';
@@ -28,13 +30,24 @@ const POLL_MS = 1000;
 const GAP_MIN = 1;
 const GAP_MAX = 60;
 
-const KIND_CHIP: Record<DockTagKind, { label: string; tone: string }> = {
-  container: { label: 'Crate', tone: 'c-blue' },
-  asset: { label: 'Asset', tone: 'c-green' },
-  person: { label: 'Person', tone: 'c-slate' },
-  off_move: { label: 'Off-move', tone: 'c-red' },
-  unknown: { label: 'Unknown', tone: 'tag' },
-};
+/** A tag's kind as a chip: its word and color. */
+function kindChip(kind: DockTagKind): { label: string; tone: string } {
+  switch (kind) {
+    case 'container': return { label: 'Crate', tone: 'c-blue' };
+    case 'asset': return { label: 'Asset', tone: 'c-green' };
+    case 'person': return { label: 'Person', tone: 'c-slate' };
+    case 'off_move': return { label: 'Off-move', tone: 'c-red' };
+    default: return { label: 'Unknown', tone: 'tag' };
+  }
+}
+
+/** The open pass's tags as listed: crates first (the pass's destination is
+ *  never the row cut off), then everything else newest first (so a tag just
+ *  read isn't either). */
+function listedTags(tags: DockTag[]): DockTag[] {
+  return [...tags.filter((t) => t.kind === 'container'),
+    ...tags.filter((t) => t.kind !== 'container').reverse()];
+}
 
 /** A whole number of seconds in range, or null. */
 function parseGap(text: string): number | null {
@@ -64,7 +77,9 @@ export default function DockStation() {
   const [saving, setSaving] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
   const [detailId, setDetailId] = useState<number | null>(null);
-  const alive = useRef(true);
+  /** The last refresh failed; cleared by the next one that works. */
+  const [unreachable, setUnreachable] = useState(false);
+  const mounted = useRef(true);
   // Bumped when a settings save starts and again when it settles: a refresh
   // that began before either keeps its passes but not its settings, which
   // may predate the save.
@@ -72,32 +87,38 @@ export default function DockStation() {
   const tagsBox = useRef<HTMLUListElement>(null);
   const passesBox = useRef<HTMLDivElement>(null);
 
-  const refresh = useCallback(async () => {
-    const gen = settingsGen.current;
-    try {
-      const o = await getDock();
-      if (!alive.current) return;
-      setOverview(o);
-      if (gen === settingsGen.current) setSettings(o.settings);
-    } catch {
-      // A failed refresh keeps the last overview on screen.
-    }
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
   }, []);
 
   useEffect(() => {
     if (!dock) return undefined;
-    alive.current = true;
+    // This run's own flag, not a shared ref: a run that was cleaned up (a
+    // StrictMode double mount, an unmount) never writes or schedules again.
+    let live = true;
     let timer: number | undefined;
     const tick = async () => {
-      await refresh();
-      if (alive.current) timer = window.setTimeout(() => { void tick(); }, POLL_MS);
+      const gen = settingsGen.current;
+      try {
+        const o = await getDock();
+        if (!live) return;
+        setOverview(o);
+        setUnreachable(false);
+        if (gen === settingsGen.current) setSettings(o.settings);
+      } catch {
+        // The last overview stays on screen, under a line saying it's stale.
+        if (!live) return;
+        setUnreachable(true);
+      }
+      timer = window.setTimeout(() => { void tick(); }, POLL_MS);
     };
     void tick();
     return () => {
-      alive.current = false;
+      live = false;
       window.clearTimeout(timer);
     };
-  }, [dock, refresh]);
+  }, [dock]);
 
   useFitRows(tagsBox, [overview]);
   useFitRows(passesBox, [overview]);
@@ -114,13 +135,13 @@ export default function DockStation() {
     let ok = false;
     try {
       const saved = await saveDockSettings(next);
-      if (alive.current) setSettings(saved);
+      if (mounted.current) setSettings(saved);
       ok = true;
     } catch {
-      if (alive.current) setSaveFailed(true);
+      if (mounted.current) setSaveFailed(true);
     }
     settingsGen.current += 1;
-    if (alive.current) setSaving(false);
+    if (mounted.current) setSaving(false);
     return ok;
   };
 
@@ -134,7 +155,7 @@ export default function DockStation() {
       setGapInvalid(true);
       return;
     }
-    if (await save({ quiet_gap_s: n }) && alive.current) setGapDraft(null);
+    if (await save({ quiet_gap_s: n }) && mounted.current) setGapDraft(null);
   };
 
   const open = overview?.open ?? null;
@@ -191,10 +212,17 @@ export default function DockStation() {
       {settings?.dry_run && (
         <p className="dock-dash-banner" role="status">Dry run · nothing is sent to the portal.</p>
       )}
+      {/* The RFID dashboard's Unreachable look: red, with its dot. */}
+      {unreachable && (
+        <p className="rfid-dash-state is-unreachable dock-dash-unreachable" role="alert">
+          <span className="rfid-dash-dot" />Can&apos;t reach the station. Retrying…
+        </p>
+      )}
 
       <div className="rfid-dash-panels dock-dash-panels">
         <section className="rfid-dash-panel" aria-labelledby="dock-open-title">
           <h2 id="dock-open-title" className="rfid-dash-panel-title">Open pass</h2>
+          {overview === null && <p className="rfid-dash-empty">Checking…</p>}
           {overview !== null && open === null && (
             <p className="rfid-dash-empty">Waiting for tags…</p>
           )}
@@ -204,10 +232,9 @@ export default function DockStation() {
               <p className="rfid-dash-panel-sub">
                 {count(open.crate_count, 'crate')} · {count(open.asset_count, 'asset')}
               </p>
-              {/* Newest first, so a tag just read is never the row cut off. */}
               <ul className="dock-dash-tags" ref={tagsBox}>
-                {[...open.tags].reverse().map((t) => {
-                  const chip = KIND_CHIP[t.kind] ?? KIND_CHIP.unknown;
+                {listedTags(open.tags).map((t) => {
+                  const chip = kindChip(t.kind);
                   return (
                     <li key={t.epc} data-fit-row className="dock-dash-tag">
                       <span className={`chip ${chip.tone}`}>{chip.label}</span>
@@ -239,6 +266,11 @@ export default function DockStation() {
                 </tr>
               </thead>
               <tbody>
+                {passes === null && (
+                  <tr>
+                    <td colSpan={6} className="rfid-dash-empty">Checking…</td>
+                  </tr>
+                )}
                 {passes !== null && passes.length === 0 && (
                   <tr>
                     <td colSpan={6} className="rfid-dash-empty">No passes yet.</td>

@@ -3,6 +3,7 @@
  *  their outcome copy, the pass-detail modal, the dry-run switch, the
  *  quiet gap, and its 1 s poll. */
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -79,6 +80,7 @@ const dryRun = () => screen.getByRole('switch', { name: 'Dry run' });
 const gapInput = () => screen.getByLabelText('Quiet gap') as HTMLInputElement;
 const saveBtn = () => screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement;
 const BANNER = 'Dry run · nothing is sent to the portal.';
+const UNREACHABLE = "Can't reach the station. Retrying…";
 /** The Recent passes row whose Crate cell (or other cell) holds `text`. */
 const rowOf = (text: string) => screen.getByText(text).closest('tr') as HTMLElement;
 
@@ -134,6 +136,24 @@ describe('DockStation', () => {
     expect(within(panel).getByText('BEEF')).toBeTruthy();
     expect(within(panel).getByText('1 crate · 1 asset')).toBeTruthy();
     expect(within(panel).queryByText('Waiting for tags…')).toBeNull();
+  });
+
+  it('the open pass lists crates first, then the other tags newest first', async () => {
+    api.getDock.mockResolvedValue(overview({
+      open: {
+        id: 9, opened_at: at(14, 4, 58), seconds_left: 3, crate_count: 1, asset_count: 2,
+        tags: [
+          { epc: '000000000000000000001001', kind: 'asset', label: 'host-a' },
+          { epc: '0000000000000000000000C1', kind: 'container', label: 'Crate A' },
+          { epc: '00000000000000000000BEEF', kind: 'unknown', label: null },
+          { epc: '000000000000000000001002', kind: 'asset', label: 'host-b' },
+        ],
+      },
+    }));
+    await renderPage();
+    const panel = screen.getByRole('region', { name: 'Open pass' });
+    const labels = [...panel.querySelectorAll('.dock-dash-tag-label')].map((el) => el.textContent);
+    expect(labels).toEqual(['Crate A', 'host-b', 'Unknown tag', 'host-a']);
   });
 
   it('an open pass at zero seconds says Closing…', async () => {
@@ -351,6 +371,46 @@ describe('DockStation', () => {
     expect(result('host-a')).toBe('Not sent');
   });
 
+  it('an open modal follows a waiting pass until it is sent', async () => {
+    const tags = [passTag({ epc: '000000000000000000001001', label: 'host-a' })];
+    api.getDockPass
+      .mockResolvedValueOnce(detail({ pass: passRow({ id: 7, status: 'waiting' }), tags }))
+      .mockRejectedValueOnce(new ApiError(0, 'network'))   // a failed refresh keeps what's shown
+      .mockResolvedValue(detail({
+        pass: passRow({ id: 7, status: 'packed' }),
+        tags: [{ ...tags[0], result: 'packed' }],
+      }));
+    api.getDock.mockResolvedValue(overview({ passes: [passRow({ id: 7, status: 'waiting' })] }));
+    await renderPage();
+    fireEvent.click(within(rowOf('Crate A')).getByRole('button', { name: 'Details' }));
+    await flush();
+    const dialog = () => screen.getByRole('dialog');
+    const result = () => (within(dialog()).getByText('host-a').closest('tr') as HTMLTableRowElement).cells[1].textContent;
+    expect(result()).toBe('Waiting to send');
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(api.getDockPass).toHaveBeenCalledTimes(2);
+    expect(result()).toBe('Waiting to send');
+    expect(within(dialog()).queryByText("Couldn't load this pass.")).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(api.getDockPass).toHaveBeenCalledTimes(3);
+    expect(result()).toBe('Packed');
+    expect(within(dialog()).getByText('Pass at 14:03:22').parentElement?.textContent).toContain('Packed');
+    // sent: no more re-reads
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(api.getDockPass).toHaveBeenCalledTimes(3);
+  });
+
+  it('closing the modal of a waiting pass stops its re-reads', async () => {
+    api.getDockPass.mockResolvedValue(detail({ pass: passRow({ id: 7, status: 'waiting' }) }));
+    api.getDock.mockResolvedValue(overview({ passes: [passRow({ id: 7, status: 'waiting' })] }));
+    await renderPage();
+    fireEvent.click(within(rowOf('Crate A')).getByRole('button', { name: 'Details' }));
+    await flush();
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(api.getDockPass).toHaveBeenCalledTimes(1);
+  });
+
   it("a pass that can't be loaded says so, and the modal still closes", async () => {
     api.getDockPass.mockRejectedValue(new ApiError(404, 'pass_not_found'));
     api.getDock.mockResolvedValue(overview({ passes: [passRow({ id: 7 })] }));
@@ -361,6 +421,55 @@ describe('DockStation', () => {
     expect(within(dialog).getByText("Couldn't load this pass.")).toBeTruthy();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('before the first answer both panels say Checking…', async () => {
+    api.getDock.mockReturnValue(new Promise<DockOverview>(() => {}));
+    await renderPage();
+    expect(within(screen.getByRole('region', { name: 'Open pass' })).getByText('Checking…')).toBeTruthy();
+    expect(within(screen.getByRole('region', { name: 'Recent passes' })).getByText('Checking…')).toBeTruthy();
+    expect(screen.queryByText('Waiting for tags…')).toBeNull();
+    expect(screen.queryByText('No passes yet.')).toBeNull();
+    expect(screen.queryByText(UNREACHABLE)).toBeNull();
+  });
+
+  it('a failing poll says the station can\'t be reached', async () => {
+    api.getDock.mockRejectedValue(new ApiError(0, 'network'));
+    await renderPage();
+    expect(screen.getByRole('alert').textContent).toBe(UNREACHABLE);
+    expect(screen.getAllByText('Checking…')).toHaveLength(2);
+  });
+
+  it('the line clears once a poll works, and a failure keeps the last passes under it', async () => {
+    api.getDock.mockResolvedValueOnce(overview({ passes: [passRow()] }))
+      .mockRejectedValueOnce(new ApiError(0, 'network'))
+      .mockResolvedValue(overview({ passes: [passRow()] }));
+    await renderPage();
+    expect(screen.queryByText(UNREACHABLE)).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(screen.getByText(UNREACHABLE)).toBeTruthy();
+    expect(rowOf('Crate A')).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(screen.queryByText(UNREACHABLE)).toBeNull();
+  });
+
+  it('runs one poll loop under StrictMode, and none after unmount', async () => {
+    const { unmount } = render(
+      <StrictMode>
+        <MemoryRouter initialEntries={['/dock']}>
+          <Routes><Route path="/dock" element={<DockStation />} /></Routes>
+        </MemoryRouter>
+      </StrictMode>,
+    );
+    await flush();
+    const first = api.getDock.mock.calls.length;   // the double mount polls twice
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(api.getDock).toHaveBeenCalledTimes(first + 1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(api.getDock).toHaveBeenCalledTimes(first + 2);
+    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(api.getDock).toHaveBeenCalledTimes(first + 2);
   });
 
   it('polls again 1 s after the previous poll settles, never overlapping', async () => {

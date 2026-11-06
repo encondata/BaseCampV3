@@ -2,9 +2,10 @@
  * One closed Dock pass in full (the Dock screen's Details): what packing did
  * with each asset, and every read behind the pass (time, tag, what it
  * matched, antenna, signal), so the quiet gap and the antennas can be tuned.
- * Loads GET /edge/dock/passes/{id} once; a failed load says so and the
- * modal still closes. Escape, the scrim and the close button close it; a
- * long pass scrolls inside the card.
+ * Loads GET /edge/dock/passes/{id}, and again every 2 s while the pass is
+ * waiting to be sent, so it shows the portal's answer once it lands; a
+ * failed first load says so and the modal still closes. Escape, the scrim
+ * and the close button close it; a long pass scrolls inside the card.
  */
 
 import { useEffect, useState } from 'react';
@@ -13,6 +14,9 @@ import {
   getDockPass, type DockPassDetail, type DockPassRow, type DockPassTag, type DockTagKind,
 } from '../lib/api';
 import { clockText, displayEpc } from '../pages/RfidStatus';
+
+/** How often a pass still waiting to be sent is read again. */
+const REFRESH_MS = 2000;
 
 /** Why the portal turned a whole pass away, from its error code. */
 function refuseText(code: string): string {
@@ -88,11 +92,28 @@ export default function DockPassModal({ passId, onClose }: { passId: number; onC
 
   useEffect(() => {
     let live = true;
-    getDockPass(passId).then(
-      (d) => { if (live) setDetail(d); },
-      () => { if (live) setFailed(true); },
-    );
-    return () => { live = false; };
+    let loaded = false;
+    let timer: number | undefined;
+    const load = async () => {
+      try {
+        const d = await getDockPass(passId);
+        if (!live) return;
+        loaded = true;
+        setDetail(d);
+        // A pass waiting to be sent changes once the portal answers it.
+        if (d.pass.status === 'waiting') timer = window.setTimeout(() => { void load(); }, REFRESH_MS);
+      } catch {
+        if (!live) return;
+        // A failed first load says so; a failed refresh keeps what's shown.
+        if (loaded) timer = window.setTimeout(() => { void load(); }, REFRESH_MS);
+        else setFailed(true);
+      }
+    };
+    void load();
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
   }, [passId]);
 
   useEffect(() => {
