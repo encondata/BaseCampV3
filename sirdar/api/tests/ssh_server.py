@@ -41,6 +41,8 @@ class FakeSshServer:
     stdins: list = field(default_factory=list)    # what those commands read
     acceptor: asyncssh.SSHAcceptor | None = None
     connections: int = 0                          # accepted TCP connections, host-key fetches too
+    closed: int = 0                               # connections that have since closed
+    server_conns: list = field(default_factory=list)  # server-side ends, to drop from a test
 
     def serve_host_keys(self, *keys: asyncssh.SSHKey) -> None:
         """Change the host keys new connections are offered, in this order
@@ -66,6 +68,10 @@ def _server_class(state: dict):
     class _Server(asyncssh.SSHServer):
         def connection_made(self, conn) -> None:
             state["fake"].connections += 1
+            state["fake"].server_conns.append(conn)
+
+        def connection_lost(self, exc) -> None:
+            state["fake"].closed += 1
 
         def begin_auth(self, username: str) -> bool:
             return True
