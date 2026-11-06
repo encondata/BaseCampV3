@@ -8,28 +8,36 @@ on the page. Rows match live workers (`bulk_import._worker_query`) and
 partner contacts (non-archived people with a partner `contact_profiles`
 row); nobody else. The match order is fixed: name first (first + last or
 preferred + last, see `bulk_import.name_keys`), then email, then phone. A
-key that finds two or more people counts as no match for that key."""
+key that finds two or more people counts as no match for that key.
+
+The preview raises flags (see the spec's "Flags and decisions"); each is
+settled by the row's decision, and nothing commits until every row is
+settled."""
 
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from serversherpa.access.resolver import can_touch_rank
 from serversherpa.db.models import (
     ContactProfile,
     InitiativePerson,
     Partner,
     Person,
+    PersonRole,
+    Role,
     Site,
     StatusValue,
+    UserAccount,
     WorkerProfile,
 )
 from serversherpa.imports import bulk as core
 from serversherpa.imports.bulk import BulkImportError
 from serversherpa.people.bulk_import import _worker_query, name_keys, normalize_phone
-from serversherpa.people.contact_format import lower_email
+from serversherpa.people.contact_format import format_phone, lower_email
 
 COLUMNS = ["first_name", "last_name", "preferred_name", "phone", "email", "role"]
 SHEET = "Workers"
@@ -42,6 +50,10 @@ ACKNOWLEDGEABLE = ("name_differs", "status", "shared_contact", "no_contact", "ph
 
 def _squash(text: str) -> str:
     return " ".join((text or "").split()).casefold()
+
+
+def _full_name(first: str | None, last: str | None) -> str:
+    return " ".join(f"{first or ''} {last or ''}".split())
 
 
 # ── parsing ─────────────────────────────────────────────────────────
@@ -165,14 +177,32 @@ async def load_reference(db: AsyncSession, initiative_id: uuid.UUID,
     team = {tp.person_id: tp for tp in await db.scalars(
         select(InitiativePerson).where(InitiativePerson.initiative_id == initiative_id))}
     # every person, archived included: the unique email index covers them all
-    emails_all = {lower_email(email): str(pid) for pid, email in (await db.execute(
-        select(Person.id, Person.email).where(Person.email.is_not(None)))).all()}
+    emails_all: dict[str, str] = {}
+    email_owner_names: dict[str, str] = {}
+    for pid, email, first, last in (await db.execute(
+            select(Person.id, Person.email, Person.first_name, Person.last_name)
+            .where(Person.email.is_not(None)))).all():
+        emails_all[lower_email(email)] = str(pid)
+        email_owner_names[str(pid)] = _full_name(first, last)
     site_names = dict((await db.execute(select(Site.id, Site.name))).all())
+    role_labels = {r.key: r.label for r in await db.scalars(
+        select(StatusValue).where(StatusValue.record_type == WORK_TYPE))}
+    status_labels = {r.key: r.label for r in await db.scalars(
+        select(StatusValue).where(StatusValue.record_type == "worker"))}
+    # the workers import's rank guard: people who can log in, and their rank
+    account_ids = {str(pid) for pid in await db.scalars(select(UserAccount.person_id))}
+    max_rank = {str(pid): rank for pid, rank in (await db.execute(
+        select(PersonRole.person_id, func.max(Role.rank))
+        .join(Role, Role.name == PersonRole.role)
+        .where(PersonRole.revoked_at.is_(None))
+        .group_by(PersonRole.person_id))).all()}
     return {
         "people": people, "by_name": by_name, "by_email": by_email, "by_phone": by_phone,
         "roles": roles, "role_index": role_index, "team": team, "emails_all": emails_all,
         "partner": await db.get(Partner, partner_id),
         "site_names": site_names, "partner_names": partner_names,
+        "email_owner_names": email_owner_names, "role_labels": role_labels,
+        "status_labels": status_labels, "account_ids": account_ids, "max_rank": max_rank,
     }
 
 
@@ -208,3 +238,236 @@ def match_row(ref: dict, cells: dict) -> tuple[str | None, str | None, str | Non
     if (phone := normalize_phone(phone_cell)) and (pid := _one(ref["by_phone"].get(phone))):
         return pid, "phone", phone_cell
     return None, None, None
+
+
+# ── preview ─────────────────────────────────────────────────────────
+
+DASH = "—"
+CHANGE_KINDS = ("contact", "partner", "assignment")
+ACTIONS = ("assign", "create", "already_assigned", "attention", "error")
+
+
+def _flag(kind: str, decided: bool, lines: list[dict] | None = None,
+          other_person: str | None = None) -> dict:
+    return {"kind": kind, "decided": decided, "lines": lines or [],
+            "other_person": other_person}
+
+
+def _line(label: str, value: str | None) -> dict:
+    return {"label": label, "value": value or DASH}
+
+
+def _person_name(ref: dict, pid: str) -> str:
+    p = ref["people"][pid].person
+    return _full_name(p.first_name, p.last_name)
+
+
+def _resolve_role(ref: dict, cells: dict, decision: dict) -> tuple[str | None, dict | None]:
+    """(role key or None, role_unknown flag or None). The decision wins over
+    the sheet; a blank sheet role is tech."""
+    picked = decision.get("role")
+    picked = picked if picked in ref["roles"] else None
+    raw = (cells.get("role") or "").strip()
+    sheet = ref["role_index"].get(_squash(raw)) if raw else DEFAULT_ROLE
+    if sheet is None:
+        return picked, _flag("role_unknown", picked is not None,
+                             [_line("Role in sheet", raw)])
+    return picked or sheet, None
+
+
+def _existing_flags(ref: dict, pid: str, cells: dict, matched_by: str | None,
+                    phone_fmt: str | None, email: str, role_key: str | None,
+                    partner_id: uuid.UUID, site_id: uuid.UUID, decided) -> list[dict]:
+    cand = ref["people"][pid]
+    p = cand.person
+    flags: list[dict] = []
+
+    if matched_by in ("email", "phone"):
+        row_keys = name_keys(cells.get("first_name", ""), cells.get("last_name", ""),
+                             cells.get("preferred_name", ""))
+        if not row_keys & name_keys(p.first_name, p.last_name, p.preferred_name or ""):
+            flags.append(_flag("name_differs", decided("name_differs"), [
+                _line("Name in sheet", _full_name(cells.get("first_name"),
+                                                  cells.get("last_name"))),
+                _line("Name on file", _full_name(p.first_name, p.last_name))]))
+
+    lines: list[dict] = []
+    if phone_fmt and normalize_phone(phone_fmt) != normalize_phone(p.phone or ""):
+        lines += [_line("Phone on file", p.phone), _line("Phone in sheet", phone_fmt)]
+    if email and email != lower_email(p.email or ""):
+        lines += [_line("Email on file", p.email), _line("Email in sheet", email)]
+        owner = ref["emails_all"].get(email)
+        if owner and owner != pid:
+            lines.append(_line("Email", "Not updated: in use by "
+                               + ref["email_owner_names"][owner]))
+    if lines:
+        flags.append(_flag("contact", decided("contact"), lines))
+
+    profile = cand.profile
+    if profile is not None and profile.partner_id != partner_id:
+        flags.append(_flag("partner", decided("partner"), [
+            _line("Partner on file", ref["partner_names"].get(profile.partner_id)),
+            _line("Partner picked", ref["partner"].name if ref["partner"] else None)]))
+    if profile is not None and profile.status and profile.status != "active":
+        flags.append(_flag("status", decided("status"), [
+            _line("Status on file", ref["status_labels"].get(profile.status, profile.status))]))
+
+    tp = ref["team"].get(uuid.UUID(pid))
+    if tp is not None:
+        lines = []
+        if tp.site_worked_id != site_id:
+            lines += [_line("Site on file", ref["site_names"].get(tp.site_worked_id)),
+                      _line("Site picked", ref["site_names"].get(site_id))]
+        if role_key is not None and tp.work_type != role_key:
+            lines += [_line("Role on file", ref["role_labels"].get(tp.work_type, tp.work_type)),
+                      _line("Role picked", ref["role_labels"].get(role_key))]
+        if lines:
+            flags.append(_flag("assignment", decided("assignment"), lines))
+
+    others = set(ref["by_email"].get(email, [])) if email else set()
+    if digits := normalize_phone(cells.get("phone") or ""):
+        others |= set(ref["by_phone"].get(digits, []))
+    others.discard(pid)
+    if others:
+        flags.append(_flag("shared_contact", decided("shared_contact"),
+                           other_person=min(_person_name(ref, o) for o in others)))
+    return flags
+
+
+async def preview_rows(db: AsyncSession, initiative_id: uuid.UUID, partner_id: uuid.UUID,
+                       site_id: uuid.UUID, numbered: list[tuple[int, dict]], *,
+                       actor_id: uuid.UUID, actor_rank: int,
+                       decisions: dict[int, dict] | None = None,
+                       ref: dict | None = None) -> dict:
+    """Each row matched, flagged and settled against its decision. A row's
+    action is `attention` while any flag is undecided; `can_commit` only
+    when nothing needs attention or errors and something would be written."""
+    ref = ref or await load_reference(db, initiative_id, partner_id)
+    decisions = decisions or {}
+    rows: list[dict] = []
+    for n, cells in numbered:
+        decision = decisions.get(n, {})
+        acknowledged = set(decision.get("acknowledged") or ())
+        change = decision.get("change")
+
+        def decided(kind: str, change=change, acknowledged=acknowledged) -> bool:
+            return change in CHANGES if kind in CHANGE_KINDS else kind in acknowledged
+
+        errors: list[str] = []
+        if not (cells.get("first_name") or "").strip():
+            errors.append("First name is required.")
+        if not (cells.get("last_name") or "").strip():
+            errors.append("Last name is required.")
+
+        auto_pid, matched_by, matched_value = match_row(ref, cells)
+        pid, create = auto_pid, False
+        picked = decision.get("person")
+        if picked == "new":
+            pid, create, matched_by, matched_value = None, True, None, None
+        elif picked is not None:
+            if picked not in ref["people"]:
+                errors.append("The chosen person no longer exists. Pick again.")
+                pid, matched_by, matched_value = None, None, None
+            elif picked != auto_pid:
+                pid, matched_by, matched_value = picked, "pick", None
+
+        flags: list[dict] = []
+        if pid is None and not create and picked is None:
+            flags.append(_flag("needs_match", False))
+
+        role_key, role_flag = _resolve_role(ref, cells, decision)
+        if role_flag:
+            flags.append(role_flag)
+
+        phone_raw = (cells.get("phone") or "").strip()
+        phone_fmt = format_phone(phone_raw)
+        email = lower_email(cells.get("email") or "")
+        if phone_raw and phone_fmt is None:
+            flags.append(_flag("phone_invalid", decided("phone_invalid"),
+                               [_line("Phone in sheet", phone_raw)]))
+        if not phone_raw and not email:
+            flags.append(_flag("no_contact", decided("no_contact")))
+
+        if pid is not None:
+            flags += _existing_flags(ref, pid, cells, matched_by, phone_fmt, email,
+                                     role_key, partner_id, site_id, decided)
+        elif create and email and (owner := ref["emails_all"].get(email)):
+            name = ref["email_owner_names"][owner]
+            flags.append(_flag("shared_contact", decided("shared_contact"),
+                               [_line("Email", f"in use by {name}; created without it")],
+                               other_person=name))
+
+        kinds = {f["kind"] for f in flags}
+        if (change == "update" and pid is not None and kinds & set(CHANGE_KINDS)
+                and pid != str(actor_id) and pid in ref["account_ids"]
+                and not can_touch_rank(actor_rank, ref["max_rank"].get(pid, 0))):
+            errors.append("Your rank is too low to update this person.")
+
+        cand = ref["people"].get(pid) if pid else None
+        rows.append({
+            "row": n, "cells": dict(cells),
+            "name": _full_name(cells.get("first_name"), cells.get("last_name")),
+            "table": "matched" if auto_pid else "unmatched",
+            "matched_by": matched_by, "matched_value": matched_value,
+            "person_id": pid, "person_name": _person_name(ref, pid) if pid else None,
+            "create": create, "becomes_worker": bool(cand and not cand.is_worker),
+            "role_key": role_key,
+            "role_label": ref["role_labels"].get(role_key) if role_key else None,
+            "flags": flags, "errors": errors,
+            "_on_team": pid is not None and uuid.UUID(pid) in ref["team"],
+            "_change": change,
+        })
+
+    _duplicate_errors(rows)
+    for r in rows:
+        on_team, change = r.pop("_on_team"), r.pop("_change")
+        kinds = {f["kind"] for f in r["flags"]}
+        if r["errors"]:
+            r["action"] = "error"
+        elif any(not f["decided"] for f in r["flags"]):
+            r["action"] = "attention"
+        elif r["create"]:
+            r["action"] = "create"
+        elif on_team and ("assignment" not in kinds or change == "ignore"):
+            r["action"] = "already_assigned"
+        else:
+            r["action"] = "assign"
+        r["_writes"] = r["action"] in ("assign", "create") or (
+            "assignment" in kinds and change == "update")
+
+    counts = {a: sum(r["action"] == a for r in rows) for a in ACTIONS}
+    writes = [r.pop("_writes") for r in rows]
+    people = sorted(
+        ({"id": pid, "label": _person_name(ref, pid), "detail": cand.partner_name or ""}
+         for pid, cand in ref["people"].items()),
+        key=lambda p: (p["label"].casefold(), p["detail"].casefold(), p["id"]))
+    return {
+        "rows": rows, "counts": counts, "people": people,
+        "roles": [{"key": r.key, "label": r.label} for r in ref["roles"].values()],
+        "can_commit": bool(rows) and not counts["attention"] and not counts["error"]
+        and any(writes),
+    }
+
+
+def _duplicate_errors(rows: list[dict]) -> None:
+    """One person on two rows, or two new workers sharing an email, errors
+    every row involved."""
+    by_person: dict[str, list[dict]] = {}
+    by_new_email: dict[str, list[dict]] = {}
+    for r in rows:
+        if r["person_id"]:
+            by_person.setdefault(r["person_id"], []).append(r)
+        elif r["create"] and (email := lower_email(r["cells"].get("email") or "")):
+            by_new_email.setdefault(email, []).append(r)
+    for group in by_person.values():
+        if len(group) > 1:
+            nums = ", ".join(str(r["row"]) for r in group)
+            for r in group:
+                r["errors"].append(
+                    f"{r['person_name']} appears on more than one row ({nums}).")
+    for email, group in by_new_email.items():
+        if len(group) > 1:
+            nums = ", ".join(str(r["row"]) for r in group)
+            for r in group:
+                r["errors"].append(
+                    f"Email {email} appears on more than one new worker (rows {nums}).")
