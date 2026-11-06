@@ -49,7 +49,7 @@ it('renders the empty state until tools are added', () => {
 it('lists the sites card when the viewer can add sites', () => {
   render(<MemoryRouter><BulkActions /></MemoryRouter>);
   expect(screen.getByText('Add or update sites in bulk')).toBeTruthy();
-  expect(screen.getAllByRole('button', { name: 'Open' })).toHaveLength(8);
+  expect(screen.getAllByRole('button', { name: 'Open' })).toHaveLength(9);
 });
 
 it('lists the workers card only when the viewer can add workers', () => {
@@ -164,4 +164,13 @@ it('lists the "Convert Raw F-T" card for initiatives:change and links it to /bul
     "Upload a customer's raw F-T, match its columns to ours, and download a file ready for the From-To import.")).toBeTruthy();
   fireEvent.click(within(card).getByRole('button', { name: 'Open' }));
   expect(screen.getByText('convert raw ft page')).toBeTruthy();
+});
+
+it('lists the assign-workers card only with initiatives change plus workers add and change', () => {
+  render(<MemoryRouter><BulkActions /></MemoryRouter>);
+  expect(screen.getByText('Assign workers from a template')).toBeTruthy();
+  cleanup();
+  authMock.denied.add('workers:change');
+  render(<MemoryRouter><BulkActions /></MemoryRouter>);
+  expect(screen.queryByText('Assign workers from a template')).toBeNull();
 });

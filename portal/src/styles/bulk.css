@@ -18,6 +18,9 @@
 /* BulkToolPage's optional intro under the hint (the job picker on
    /bulk/initiative-people) — a .bulk-file-row, kept to a field's width */
 .bulk-intro { margin-top: 18px; max-width: 360px; }
+/* three side-by-side pickers (/bulk/assign-workers) */
+.bulk-intro.bulk-intro-3 { display: grid; grid-template-columns: repeat(3, minmax(180px, 260px)); gap: 12px; max-width: none; }
+@media (max-width: 640px) { .bulk-intro.bulk-intro-3 { grid-template-columns: 1fr; } }
 
 /* ── bulk import pane ─────────────────────────────────────────── */
 
@@ -68,3 +71,23 @@
 .ftc-target { display: flex; align-items: center; gap: 8px; min-width: 200px; }
 .ftc-target .combo-wrap { flex: 1; min-width: 0; }
 .ftc-target .chip { flex: none; }
+
+/* ── /bulk/assign-workers Details cell ────────────────────────── */
+
+/* a muted second line (the matched value under "Matched by", the Role label) */
+.bulk-sub { display: block; color: var(--text-mute); }
+/* a discrepancy's sentence reads amber; a needed pick stays .pf-error red */
+.bulk-preview .pf-error.bulk-warn { color: var(--c-amber, #a36207); }
+/* a pick that has been made (a role chosen for an unknown one) goes quiet */
+.bulk-preview .pf-error.bulk-done { color: var(--text-mute); }
+.bulk-choice { margin: 6px 0; }
+/* each flag sits apart from the next, its buttons directly under it */
+.bulk-flag + .bulk-flag { margin-top: 8px; }
+/* the chosen Update / Ignore / Accept — tokens follow the theme */
+.bulk-choice .mini-btn[aria-pressed='true'] {
+  background: rgba(var(--accent-rgb), 0.14);
+  border-color: var(--amber);
+  color: var(--text-dark);
+}
+.bulk-pick { max-width: 280px; margin-top: 6px; }
+.bulk-role { display: flex; flex-direction: column; gap: 4px; }

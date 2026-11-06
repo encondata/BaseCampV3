@@ -40,7 +40,7 @@ from serversherpa.learning import assign as learning_assign
 from serversherpa.learning import codes as learning_codes
 from serversherpa.learning.invites import send_markers as learning_send_markers
 from serversherpa.notifications.status_changes import announce_initiative_status_changed
-from serversherpa.people import team_bulk
+from serversherpa.people import assign_bulk, team_bulk
 from serversherpa.racks.recheck import recheck_placement
 from serversherpa.scans.manual import record_status_edit, stamp_rule_failure
 from serversherpa.services import move_password as move_password_service
@@ -713,6 +713,100 @@ async def team_bulk_commit(
             db, actor.person.id, initiative_id, numbered, overrides=overrides, skip=skip,
             approved_updates=approved, source_label=str(body.get("source") or "upload"))
     except team_bulk.BulkImportError as exc:
+        raise bulk_http_error(exc) from None
+
+
+# ── assign workers from a template ──────────────────────────────────
+
+async def _assign_job(db: DbSession, initiative_id: uuid.UUID, actor: AuthContext) -> None:
+    """The team bulk gates, plus worker authority: the commit creates
+    workers and edits existing people, so both preview and commit need
+    workers:add and workers:change."""
+    await _bulk_job(db, initiative_id, actor)
+    if not (actor.access.can("workers", "add") and actor.access.can("workers", "change")):
+        raise _err(403, "forbidden")
+
+
+def _uuid_field(value: object) -> uuid.UUID:
+    if not isinstance(value, str):
+        raise assign_bulk.BulkImportError("invalid_json")
+    try:
+        return uuid.UUID(value)
+    except ValueError:
+        raise assign_bulk.BulkImportError("invalid_json") from None
+
+
+async def _assign_body(request: Request) -> tuple[list, uuid.UUID, uuid.UUID, dict, dict]:
+    """(numbered rows, partner id, site id, decisions, raw body). Multipart =
+    a first file preview with `file`, `partner_id` and `site_id` (no
+    decisions yet); JSON = a re-preview or commit that re-posts the
+    preview's cells with the spreadsheet row numbers."""
+    try:
+        if request.headers.get("content-type", "").startswith("multipart/"):
+            form = await request.form()
+            upload = form.get("file")
+            if upload is None or isinstance(upload, str):
+                raise assign_bulk.BulkImportError("missing_file")
+            partner_id = _uuid_field(form.get("partner_id"))
+            site_id = _uuid_field(form.get("site_id"))
+            numbered = assign_bulk.parse_upload(upload.filename or "", await upload.read())
+            return numbered, partner_id, site_id, {}, {}
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise assign_bulk.BulkImportError("invalid_json")
+        partner_id = _uuid_field(body.get("partner_id"))
+        site_id = _uuid_field(body.get("site_id"))
+        numbered = assign_bulk.number_posted_rows(body.get("rows"), body.get("row_numbers"))
+        decisions = assign_bulk.parse_decisions(body.get("decisions"))
+        return numbered, partner_id, site_id, decisions, body
+    except assign_bulk.BulkImportError as exc:
+        raise bulk_http_error(exc) from None
+    except ValueError:
+        raise _err(422, "invalid_json") from None
+
+
+async def _assign_partner_site(db: DbSession, partner_id: uuid.UUID, site_id: uuid.UUID) -> None:
+    partner = await db.get(Partner, partner_id)
+    if partner is None:
+        raise _err(404, "partner_not_found")
+    if partner.archived_at is not None:
+        raise _err(409, "partner_archived")
+    site = await db.get(Site, site_id)
+    if site is None:
+        raise _err(404, "site_not_found")
+    if site.archived_at is not None:
+        raise _err(409, "site_archived")
+
+
+@router.post("/{initiative_id}/people/assign/preview")
+async def assign_preview(
+    initiative_id: uuid.UUID, request: Request, db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> dict:
+    await _assign_job(db, initiative_id, actor)
+    numbered, partner_id, site_id, decisions, _ = await _assign_body(request)
+    await _assign_partner_site(db, partner_id, site_id)
+    return await assign_bulk.preview_rows(
+        db, initiative_id, partner_id, site_id, numbered, actor_id=actor.person.id,
+        actor_rank=actor.access.max_rank, decisions=decisions)
+
+
+@router.post("/{initiative_id}/people/assign/commit")
+async def assign_commit(
+    initiative_id: uuid.UUID, request: Request, db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> dict:
+    await _assign_job(db, initiative_id, actor)
+    if not request.headers.get("content-type", "").startswith("application/json"):
+        raise _err(422, "invalid_json")
+    numbered, partner_id, site_id, decisions, body = await _assign_body(request)
+    await _assign_partner_site(db, partner_id, site_id)
+    try:
+        return await assign_bulk.commit_rows(
+            db, actor.person.id, initiative_id, partner_id, site_id, numbered,
+            actor_rank=actor.access.max_rank, decisions=decisions,
+            source_label=str(body.get("source") or "upload"))
+    except assign_bulk.BulkImportError as exc:
         raise bulk_http_error(exc) from None
 
 
