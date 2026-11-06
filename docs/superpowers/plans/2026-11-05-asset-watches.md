@@ -22,7 +22,7 @@
 - **API tests:** run from `api/` with `SS_TEST_DB=serversherpa_test_asset_watches PYTHONPATH=src .venv/bin/pytest -q -p no:cacheprovider <files>`.
 - **Portal tests:** run from `portal/` with `npx vitest run <files>`. Finish each portal task with `npm run build`.
 - **Copy:** user-facing copy is American English and comes verbatim from the spec. Times are 24-hour ("15:05"), never AM/PM.
-- **Migration:** `0120`, with `down_revision = "0119"`, file `api/migrations/versions/0120_asset_watches.py`.
+- **Migration:** `0121`, with `down_revision = "0120"`, file `api/migrations/versions/0121_asset_watches.py`. It was 0120 on 0119 until main's Dock Station took 0120.
 - **Transactions:**
   - `notify()` and the service functions never commit. Routes commit.
   - The check runs one session and one transaction per run, and claims rows `FOR UPDATE SKIP LOCKED`.
@@ -51,7 +51,7 @@ These five cases are the most likely to bite a real user. Each one gets a test i
 ### Task 1: Table, service and routes
 
 **Files:**
-- Create: `api/migrations/versions/0120_asset_watches.py`
+- Create: `api/migrations/versions/0121_asset_watches.py`
 - Modify: `api/src/serversherpa/db/models.py` (add `AssetWatch` next to `NotificationWatch`)
 - Create: `api/src/serversherpa/notifications/asset_watches.py`
 - Modify: `api/src/serversherpa/api/schemas.py` (add `AssetWatchIn`, `AssetWatchPatch`, `AssetWatchOut`, `AssetWatchStateOut`)
@@ -114,7 +114,7 @@ These five cases are the most likely to bite a real user. Each one gets a test i
   - Validate in the spec's order: access, then initiative row, then condition, then status.
   - The asset statuses are the active `status_values` for record type `asset`. Use the existing helper that serves `/status-values`.
   - Status labels come from `status/labels.py`.
-- [ ] **Step 5: Run Task 1's tests, plus `tests/test_me*.py` and `tests/test_notification_watches*.py`, and see them pass.** Also check the migration: run `alembic heads` from `api/` and confirm the single head is 0120.
+- [ ] **Step 5: Run Task 1's tests, plus `tests/test_me*.py` and `tests/test_notification_watches*.py`, and see them pass.** Also check the migration: run `alembic heads` from `api/` and confirm the single head is 0121.
 - [ ] **Step 6: Commit**, with the message "feat(notifications): asset watches table, service and routes" and the trailer.
 
 ### Task 2: The check, the notice and the Assets category

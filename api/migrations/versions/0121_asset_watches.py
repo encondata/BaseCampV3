@@ -17,8 +17,8 @@ Nothing is backfilled. Rolling back drops the table, watches and all.
 
 Design: docs/superpowers/specs/2026-11-05-asset-watches-design.md (Data and API)
 
-Revision ID: 0120
-Revises: 0119
+Revision ID: 0121
+Revises: 0120
 Create Date: 2026-11-05
 """
 from collections.abc import Sequence
@@ -27,8 +27,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
-revision: str = "0120"
-down_revision: str | None = "0119"
+revision: str = "0121"
+down_revision: str | None = "0120"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

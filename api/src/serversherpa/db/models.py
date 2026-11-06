@@ -2158,7 +2158,7 @@ class NotificationWatch(Base):
 
 class AssetWatch(Base):
     """A person's watch on one asset, set on the asset itself (`initiative_id` null) or on an
-    initiative it is on (migration 0120). It waits for one condition, the asset's next update
+    initiative it is on (migration 0121). It waits for one condition, the asset's next update
     (`next_update`) or a status (`status`, which names it), and ends once that happens.
     `baseline` is the snapshot of the asset taken when the watch was set or last changed
     (notifications/asset_watches.py `snapshot`), and `created_at` is when. One row per person,

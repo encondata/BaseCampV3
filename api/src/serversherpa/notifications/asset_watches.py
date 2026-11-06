@@ -1,5 +1,5 @@
 """Asset watches. A person watches one asset, set on the asset itself or on an initiative it is
-on, for its next update or for a status: `AssetWatch`, migration 0120. Unlike a watch on a thing
+on, for its next update or for a status: `AssetWatch`, migration 0121. Unlike a watch on a thing
 (watches.py), it waits for one condition and then ends. This module validates and stores them,
 lists a person's, and takes the snapshot each one keeps of its asset (`snapshot`), which the
 notification worker's check compares with the asset as it is now. `asset_label`,

@@ -155,7 +155,7 @@ There are no hooks in the writers, and no "since time T" cursors.
 
 ## Data and API
 
-### Migration 0120: `asset_watches`
+### Migration 0121: `asset_watches`
 
 | Column | Type | Notes |
 |---|---|---|
@@ -225,7 +225,7 @@ These are left out:
 
 ## Deploy
 
-1. Migration 0120 (one new table).
+1. Migration 0121 (one new table).
 2. Restart the API and the notification worker.
 3. Build the portal.
 
