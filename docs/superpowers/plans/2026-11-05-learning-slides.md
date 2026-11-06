@@ -17,7 +17,7 @@
 - Every new UI follows light/dark theme; no default browser scrollbars; every keyboard shortcut also has a visible button.
 - Learn UI copy lives in `learn/web/src/i18n/en.ts`; `he.ts`, `ja.ts`, `ko.ts` are typed `Dictionary` (every key required), so every new key gets an entry in all four.
 - Learn imports from the portal only through the `@portal/...` allowlist test (`portalImports`); don't add portal imports.
-- Migration number 0121 (`down_revision = "0120"`); renumber at merge if 0121 is taken.
+- Migration number 0121 (`down_revision = "0120"`); renumbered to 0122 (`down_revision = "0121"`) at merge, since asset watches took 0121.
 - API tests run with an own DB: `SS_TEST_DB=serversherpa_test_slides`. Don't commit `api/src/serversherpa/_dev_reload.py`.
 - `reading_style` values: `"document"` | `"slides"`. New error codes: 422 `slides_required` (sign), 422 `slide_not_reached`, 422 `slide_out_of_range`, 409 `version_changed` and 409 `not_slides` (progress).
 
@@ -34,7 +34,7 @@
 ### Task 1: Reading style setting (DB, model, schemas, seed)
 
 **Files:**
-- Create: `api/migrations/versions/0121_learning_slides.py`
+- Create: `api/migrations/versions/0122_learning_slides.py`
 - Modify: `api/src/serversherpa/learning/models.py` (`LearningDocument`, `LearningAssignment`, `LearningSignoff`)
 - Modify: `api/src/serversherpa/learning/schemas.py` (`DocumentSettings`, `DocumentPatchIn`, `DocumentOut`, `_NOT_NULL`)
 - Modify: `api/src/serversherpa/api/routes/learning/library.py` (`_document_out`)
@@ -67,7 +67,7 @@ In `test_learning_seed.py`, in `test_seed_creates_space_pages_documents_packets_
 Run: `cd api && SS_TEST_DB=serversherpa_test_slides .venv/bin/pytest tests/test_learning_library.py tests/test_learning_seed.py -q -k "reading_style or seed_creates"`
 Expected: FAIL (`reading_style` missing).
 
-- [ ] **Step 3: Migration 0121 and model columns**
+- [ ] **Step 3: Migration 0122 and model columns**
 
 Migration docstring in the house style (what it adds, what downgrade drops, `Design: docs/superpowers/specs/2026-11-05-learning-slides-design.md`). Upgrade adds the four assignment/document/signoff columns above plus the check constraint; downgrade drops them.
 
@@ -87,7 +87,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add api/migrations/versions/0121_learning_slides.py api/src/serversherpa/learning/models.py api/src/serversherpa/learning/schemas.py api/src/serversherpa/api/routes/learning/library.py api/src/serversherpa/learning/seed_content.py api/tests/test_learning_library.py api/tests/test_learning_seed.py
+git add api/migrations/versions/0122_learning_slides.py api/src/serversherpa/learning/models.py api/src/serversherpa/learning/schemas.py api/src/serversherpa/api/routes/learning/library.py api/src/serversherpa/learning/seed_content.py api/tests/test_learning_library.py api/tests/test_learning_seed.py
 git commit -m "feat(learning): reading style setting (document | slides)"
 ```
 

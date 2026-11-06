@@ -77,7 +77,7 @@ async def test_document_defaults_and_checks(db):
 
 
 async def test_reading_style_defaults_and_check(db):
-    """Migration 0121: documents read as 'document' unless set to 'slides'."""
+    """Migration 0122: documents read as 'document' unless set to 'slides'."""
     doc = await db.scalar(text(
         "INSERT INTO learning_documents (title) VALUES ('d') RETURNING id"))
     assert await db.scalar(text(

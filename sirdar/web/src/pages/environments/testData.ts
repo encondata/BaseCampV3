@@ -24,7 +24,7 @@ export const ADOPTED: DeploymentSummary = {
 export const ENV: Environment = {
   id: 'e1', name: 'uat', type: 'dev', target: 'ssh:lab', target_kind: 'ssh', vm: null, machines: [], lan_slots: null,
   base_domain: 'uat.serversherpa.com',
-  env_dir: '/opt/serversherpa/uat', git_ref: 'main', current_sha: SHA, image_tag: 'e73b99ca',
+  env_dir: '/opt/serversherpa/uat', git_ref: 'main', current_sha: SHA, image_tag: 'e73b99ca', never_deployed: false,
   status: 'ready', proxy_ip: '10.10.48.6', bind_ip: '0.0.0.0', keep_dumps: 5,
   spaces_bucket: 'serversherpa', log_level: 'INFO',
   services: [svc('api', 8000), svc('portal', 8091), { ...svc('home', 8091), hostname: 'uat.serversherpa.com' },
@@ -257,6 +257,18 @@ export const PUBLISHING = deployment('running', STARTING, {}, {
 });
 export const TEARDOWN = deployment('running', STARTING, {}, {
   id: 'd7', mode: 'teardown', sha: '', start_step: 15, steps: steps(TEARDOWN_STEPS, STARTING, {}),
+});
+/** uat after a failed first deploy: nothing has run yet. */
+export const NEVER_DEPLOYED_ENV: Environment = {
+  ...ENV, current_sha: null, image_tag: null, never_deployed: true, status: 'failed',
+};
+export const CLEANUP = deployment('running', STARTING, {}, {
+  id: 'd9', mode: 'cleanup', sha: '', start_step: 15, steps: steps(TEARDOWN_STEPS, STARTING, {}),
+});
+const CLEANUP_STOPPED: StepStatus[] = ['failed', 'not_run', 'not_run'];
+export const CLEANUP_FAILED = deployment('failed', CLEANUP_STOPPED, {}, {
+  id: 'd9', mode: 'cleanup', sha: '', start_step: 15, failed_step: 15,
+  steps: steps(TEARDOWN_STEPS, CLEANUP_STOPPED, { 15: 'ssh exited 255\n' }),
 });
 
 /* ---- Proxmox (phase 5) ---- */

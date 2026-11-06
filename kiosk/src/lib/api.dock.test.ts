@@ -29,8 +29,17 @@ const PASS: api.DockPassRow = {
 const OVERVIEW: api.DockOverview = {
   settings: { dry_run: true, quiet_gap_s: 5 },
   open: {
-    id: 8, opened_at: '2026-11-05T14:01:00Z', seconds_left: 3.25, crate_count: 1, asset_count: 2,
-    tags: [{ epc: 'E200001', kind: 'container', label: 'Crate 12' }],
+    id: 8, opened_at: '2026-11-05T14:01:00Z', seconds_left: 3.25, window_s: 5, crate_count: 1,
+    asset_count: 1,
+    crates: [{ epc: 'E200001', label: 'Crate 12', first_read_at: '2026-11-05T14:01:01.250+00:00',
+               conflict: false }],
+    conflict: false, added_count: 1,
+    tags: [
+      { epc: 'E200001', kind: 'container', label: 'Crate 12', first_read_at: '2026-11-05T14:01:01.250+00:00',
+        serial: null, in_window: null, crate_label: null },
+      { epc: 'E200002', kind: 'asset', label: 'Server 4', first_read_at: '2026-11-05T14:01:00.000+00:00',
+        serial: 'SN-4', in_window: true, crate_label: 'Crate 12' },
+    ],
   },
   passes: [PASS],
   control: null,

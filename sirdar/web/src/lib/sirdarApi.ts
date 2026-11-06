@@ -144,6 +144,9 @@ async function sendJson<T>(method: string, path: string, body?: unknown): Promis
   return resp.json();
 }
 
+/** first_admin_password_needed; the First admin card shows it too. */
+export const FIRST_ADMIN_PASSWORD_NEEDED = "Enter the first admin's password again in Settings › First admin. The last "
+  + 'attempt used it, and clean-up removed that admin with the data.';
 const MESSAGES: Record<string, string> = {
   forbidden: "You don't have permission to do that.",
   rank_too_low: 'That person outranks you.',
@@ -331,6 +334,8 @@ const MESSAGES: Record<string, string> = {
   retiring_not_allowed: 'Only a production environment can be marked retiring.',
   production_not_retiring: 'Mark this production environment retiring before deleting it.',
   production_slot_active: 'Deactivate this production environment before deleting it.',
+  cleanup_not_allowed: "This environment has deployed before, so clean-up isn't offered. Use Delete environment in Settings.",
+  first_admin_password_needed: FIRST_ADMIN_PASSWORD_NEEDED,
   confirm_production_mismatch: 'Type "delete production" and the environment\'s name exactly.',
   snapshot_required: 'Deleting production always saves a snapshot first, and that snapshot is missing.',
   not_supported_on_digitalocean: "That isn't offered on DigitalOcean. Activate the other slot to go back.",
@@ -507,9 +512,9 @@ export type EnvStatus = 'new' | 'ready' | 'deploying' | 'failed' | 'deleting';
 /** Modes the Deploy modal starts. */
 export type DeployMode = 'update' | 'reset' | 'restore_dump';
 /** Every mode a deployment record can have (publish: steps 12–14 alone;
- *  teardown: Delete environment). */
-export type DeploymentMode = DeployMode | 'adopt' | 'snapshot' | 'rollback' | 'publish' | 'teardown' | 'vm_restore'
-  | 'activate' | 'renew';
+ *  teardown: Delete environment; cleanup: Clean up, which keeps the environment). */
+export type DeploymentMode = DeployMode | 'adopt' | 'snapshot' | 'rollback' | 'publish' | 'teardown' | 'cleanup'
+  | 'vm_restore' | 'activate' | 'renew';
 export type DeploymentStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'adopted';
 export type StepStatus =
   'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'not_run' | 'cancelled' | 'interrupted';
@@ -521,6 +526,8 @@ export interface NewFirstAdmin {
 }
 export interface EnvFirstAdmin {
   first_name: string; last_name: string; email: string; password_mode: 'typed' | 'invite'; done: boolean;
+  /** A clean-up removed the admin a typed password created: the password must be entered again. */
+  needs_password: boolean;
 }
 /** An environment's mail: Mailpit, or an SMTP server (the password is write-only: only whether one is set). */
 export interface EnvMail {
@@ -581,6 +588,8 @@ export interface Environment {
    *  and what Sirdar built. */
   slots: string[]; active_slot: string | null; auto_activate: boolean; retiring: boolean; do: EnvDo | null;
   git_ref: string; current_sha: string | null; image_tag: string | null; status: EnvStatus;
+  /** No Update has ever succeeded: a failed first deploy offers Clean up. */
+  never_deployed: boolean;
   proxy_ip: string; bind_ip: string; keep_dumps: number; spaces_bucket: string; log_level: string;
   services: EnvService[];
   /** Which optional (write-only) secrets are set. */
@@ -693,7 +702,7 @@ export interface EnvironmentPatch {
   apps?: string[]; mail?: NewMail; kiosk_signing_digests?: string[];
 }
 export interface DeploymentBody {
-  mode: DeployMode | 'publish' | 'teardown' | 'vm_restore'; git_ref?: string; confirm_name?: string;
+  mode: DeployMode | 'publish' | 'teardown' | 'cleanup' | 'vm_restore'; git_ref?: string; confirm_name?: string;
   /** VM environments' update / reset / restore_dump: a VM snapshot first (the API's default: yes once deployed). */
   take_vm_snapshot?: boolean;
   /** vm_restore only: a name from listVmSnapshots. */

@@ -204,6 +204,16 @@ fingerprint, then trust it on the Deploy page; later tests refuse a host whose
 key has changed until you forget the old key and trust the new one. Secrets are
 never shown or logged.
 
+**Connection retries.** Sirdar's own SSH connections (the deploy steps and
+lookups that log in) try up to 5 times, 3 seconds apart, when the host doesn't
+answer. The retry lines (`Couldn't reach <host>:22; trying again (n of 5).`)
+appear in DigitalOcean step 0's log; other callers retry quietly. Waits that
+already loop (a new VM's SSH, a droplet's /healthz) try once per pass. For
+Sirdar's own SSH, host-key mismatches, permission denied and commands that have
+started are never retried. The Settings Test button tries once. Ansible's host
+steps retry too (`ANSIBLE_SSH_RETRIES=5`, `ConnectTimeout=15`), by Ansible's
+own rules.
+
 ### Deploy pipeline (environments)
 
 Sirdar deploys ServerSherpa environments (the five Compose stacks in
@@ -244,6 +254,29 @@ failure stops the deployment; retry re-runs from the failed step. One
 deployment per environment at a time. Reset, Restore backup, Roll back,
 Restore VM snapshot and Delete environment replace or remove data: they need
 `deploy:change` and the environment's name typed back (`confirm_name`).
+
+**Clean up a failed first deploy.** While the latest deployment of an environment
+that never had a successful Update, Reset, Restore backup, Roll back, Restore
+VM snapshot or Activate, and was never adopted (adopted environments are never
+cleaned up), is a failed, cancelled or interrupted
+Update or clean-up, even one that failed at smoke, go-live or seed after
+recording its commit, its deployment page shows a **Clean up** section with two
+choices. Both need the environment's name typed back.
+
+- **Clean up and keep settings** starts a `cleanup` deployment (migration 0016).
+  It runs Delete's removal steps, then resets the environment to new instead of
+  deleting it: DigitalOcean slots and ESXi VMs get fresh host keys where the old
+  ones were delivered, old pins are forgotten, and the first admin is asked for
+  again if the attempt had created one. Deploy starts again at step 0.
+- **Remove everything** is the existing Delete environment.
+
+Production (DigitalOcean only) keeps Delete's rules for both: it must be
+retiring with no active slot, and `delete production <name>` is required.
+After **Clean up and keep settings** production is still retiring, so Deploy is
+refused (`production_retiring`) until it is un-retired in Settings. The API
+refuses `cleanup` with 409 `cleanup_not_allowed` once any of those has
+succeeded, or for an adopted environment. An Update is refused with `first_admin_password_needed` until the
+typed first admin's password is entered again in Settings › First admin.
 
 **Publishing (DNS + proxy).** With an environment's **Publish** switch on
 (the default for new environments; off for adopted ones and for every

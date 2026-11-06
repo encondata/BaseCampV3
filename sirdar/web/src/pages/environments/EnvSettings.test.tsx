@@ -261,6 +261,7 @@ it("DigitalOcean: what Sirdar built can't change here; the DigitalOcean section 
 
 const FIRST_ADMIN = {
   first_name: 'Ada', last_name: 'Lovelace', email: 'ada@example.com', password_mode: 'typed' as const, done: false,
+  needs_password: false,
 };
 
 it('the First admin card shows only while a first admin is still to be created', () => {

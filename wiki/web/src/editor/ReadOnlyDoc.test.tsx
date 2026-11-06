@@ -132,6 +132,46 @@ describe('ReadOnlyDoc', () => {
 
 const para = (...content: object[]) => ({ type: 'doc', content: [{ type: 'paragraph', content }] });
 
+describe('ReadOnlyDoc — section links', () => {
+  const PAGE = '99e015d8-3319-4ada-9582-b9d979567fde';
+  const linked = {
+    type: 'doc',
+    content: [
+      { type: 'paragraph', content: [
+        { type: 'text', text: 'Jump', marks: [{ type: 'link', attrs: { href: `/n/${PAGE}#h-the-bulk-way` } }] },
+        { type: 'text', text: ' or ' },
+        { type: 'text', text: 'away', marks: [{ type: 'link', attrs: { href: '/n/4fa04d95-6bb6-470c-80fb-ffb77a80651a#h-the-bulk-way' } }] },
+      ] },
+      { type: 'heading', attrs: { level: 2, textAlign: null }, content: [{ type: 'text', text: 'The bulk way' }] },
+    ],
+  };
+
+  it('scrolls to a heading on this page instead of following the link', async () => {
+    render(<MemoryRouter><ReadOnlyDoc content={linked} pageId={PAGE} /></MemoryRouter>);
+    const link = (await screen.findByText('Jump')).closest('a')!;
+    const heading = document.getElementById('h-the-bulk-way')!;
+    const scrolled = vi.fn();
+    heading.scrollIntoView = scrolled;
+    const event = new window.MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+    link.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(scrolled).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
+    expect(window.location.hash).toBe('#h-the-bulk-way');
+  });
+
+  it('leaves a link to another page, and a modified click, alone', async () => {
+    render(<MemoryRouter><ReadOnlyDoc content={linked} pageId={PAGE} /></MemoryRouter>);
+    const away = (await screen.findByText('away')).closest('a')!;
+    const plain = new window.MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+    away.addEventListener('click', (e) => e.preventDefault(), { once: true });   // jsdom can't navigate
+    const jump = screen.getByText('Jump').closest('a')!;
+    const withCmd = new window.MouseEvent('click', { bubbles: true, cancelable: true, button: 0, metaKey: true });
+    jump.addEventListener('click', (e) => { expect(e.defaultPrevented).toBe(false); e.preventDefault(); }, { once: true });
+    away.dispatchEvent(plain);
+    jump.dispatchEvent(withCmd);
+  });
+});
+
 describe('ReadOnlyDoc — unverified targets', () => {
   it('never shows a page link\'s stored title while loading or after a failed lookup', async () => {
     let fail!: (e: unknown) => void;

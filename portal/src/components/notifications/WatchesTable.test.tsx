@@ -2,14 +2,16 @@
 /**
  * WatchesTable — a person's watches (and, on the group page, a group's) as a
  * DataTable: what is watched, which events, whose watch it is (optional), and a
- * row-actions menu for the rows that have actions.
+ * row-actions menu for the rows that have actions. /me also gives it the person's
+ * asset watches, which are rows after the others: the asset, what it waits for, and
+ * their own actions.
  */
 
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
-import type { NotificationKindSetting, Watch } from '../../lib/api';
+import type { AssetWatch, NotificationKindSetting, Watch } from '../../lib/api';
 import type { RowAction } from '../hardware/RowActionsMenu';
 import WatchesTable from './WatchesTable';
 
@@ -77,6 +79,25 @@ const wikiPage: Watch = {
   created_at: '2026-11-02T06:00:00Z',
 };
 
+// An asset watch as the API lists it: the asset's name, where the watch was set (`link`) and what it
+// waits for. It is not a `Watch`: it names no events (`kinds`), and it is always the person's own.
+const ASSET_ID = '99999999-9999-4999-8999-999999999999';
+const ROW_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+const assetWatch: AssetWatch = {
+  id: 'aw-1', asset_id: ASSET_ID, asset_name: 'SN-1001',
+  initiative_id: null, initiative_name: null, initiative_asset_id: null,
+  condition: 'next_update', status: null, status_label: null,
+  current_status: 'in_storage', current_status_label: 'In storage',
+  link: `/assets/${ASSET_ID}`, created_at: '2026-11-05T12:00:00Z',
+};
+const assetOnInitiative: AssetWatch = {
+  ...assetWatch, id: 'aw-2', asset_name: 'SN-2002',
+  initiative_id: INI_ID, initiative_name: 'Initiative A', initiative_asset_id: ROW_ID,
+  condition: 'status', status: 'shipped', status_label: 'Shipped',
+  link: `/initiatives/${INI_ID}/assets/${ROW_ID}`, created_at: '2026-11-05T11:00:00Z',
+};
+
 const EMPTY = 'Nothing watched here.';
 
 afterEach(cleanup);
@@ -84,6 +105,7 @@ afterEach(cleanup);
 function setup(over: Partial<{
   watches: Watch[]; kinds: NotificationKindSetting[]; showVia: boolean;
   actionsFor: (w: Watch) => RowAction[];
+  assetWatches: AssetWatch[]; assetActionsFor: (w: AssetWatch) => RowAction[];
 }> = {}) {
   const props = {
     watches: [initiative, site, truck, everything], kinds: KINDS, showVia: true,
@@ -366,4 +388,155 @@ it('shows the empty text, and nothing else, when there are no watches', () => {
   expect(headers()).toEqual(['Watching', 'Events', 'Via']);
   expect(screen.getAllByRole('row')).toHaveLength(2);       // header + the empty line
   expect(screen.queryByRole('link')).toBeNull();
+});
+
+// ── asset rows ──────────────────────────────────────────────────────────
+
+it('lists the asset watches as rows of the same table, after the watches, in the order given', () => {
+  const { container } = setup({ assetWatches: [assetOnInitiative, assetWatch] });
+
+  expect(container.querySelectorAll('table')).toHaveLength(1);
+  const rows = screen.getAllByRole('row').slice(1);
+  expect(rows).toHaveLength(6);
+  expect(rows.map((r) => within(r).queryByRole('link')?.textContent ?? 'Everything'))
+    .toEqual(['Initiative A', 'Site A', 'Truck A', 'Everything', 'SN-2002', 'SN-1001']);
+});
+
+it('shows an asset as its name, linked to where the watch was set, with an Asset chip', () => {
+  setup({ watches: [], assetWatches: [assetWatch, assetOnInitiative] });
+
+  const link = screen.getByRole('link', { name: 'SN-1001' });
+  expect(link.getAttribute('href')).toBe(`/assets/${ASSET_ID}`);
+  expect(link.className).toBe('cell-top');
+  expect(within(row('SN-1001')).getByText('Asset').className).toBe('chip tag');
+
+  expect(screen.getByRole('link', { name: 'SN-2002' }).getAttribute('href'))
+    .toBe(`/initiatives/${INI_ID}/assets/${ROW_ID}`);
+  expect(within(row('SN-2002')).getByText('Asset').className).toBe('chip tag');
+});
+
+it('a watch set on an initiative adds "on {initiative}" after the name, outside the link; one on the asset itself adds nothing', () => {
+  setup({ watches: [], assetWatches: [assetWatch, assetOnInitiative] });
+
+  const on = within(row('SN-2002')).getByText('on Initiative A');
+  expect(on.className).toBe('cell-sub');
+  expect(on.closest('a')).toBeNull();
+  expect(screen.getByRole('link', { name: 'SN-2002' }).textContent).toBe('SN-2002');
+  expect(within(row('SN-1001')).queryByText(/^on /)).toBeNull();
+});
+
+it('an asset row\'s name opens by the inbox\'s rule too: a javascript: link renders no such href', () => {
+  setup({ watches: [], assetWatches: [{ ...assetWatch, link: 'javascript:alert(1)' }] });
+
+  expect(screen.getByRole('link', { name: 'SN-1001' }).getAttribute('href')).toBe('/');
+});
+
+it('Events reads "Next update", or "Status becomes {label}" (its key without a label), never "All events"', () => {
+  setup({
+    watches: [],
+    assetWatches: [
+      assetWatch, assetOnInitiative,
+      { ...assetOnInitiative, id: 'aw-3', asset_name: 'SN-3003', status_label: null },
+    ],
+  });
+
+  expect(cells(row('SN-1001'))[1].textContent).toBe('Next update');
+  expect(cells(row('SN-2002'))[1].textContent).toBe('Status becomes Shipped');
+  expect(cells(row('SN-3003'))[1].textContent).toBe('Status becomes shipped');
+  expect(screen.queryByText('All events')).toBeNull();
+});
+
+it('Via reads "You" for an asset watch, which is always the person\'s own', () => {
+  setup({ watches: [], assetWatches: [assetWatch, assetOnInitiative] });
+
+  expect(cells(row('SN-1001'))[2].textContent).toBe('You');
+  expect(cells(row('SN-2002'))[2].textContent).toBe('You');
+});
+
+it('leaves an asset row\'s Via out when showVia is off', () => {
+  setup({ watches: [], showVia: false, assetWatches: [assetWatch] });
+
+  expect(headers()).toEqual(['Watching', 'Events']);
+  expect(cells(row('SN-1001'))).toHaveLength(2);
+  expect(screen.queryByText('You')).toBeNull();
+});
+
+it('puts a row-actions menu on each asset row that has actions, and none on the others', () => {
+  const onSelect = vi.fn();
+  setup({
+    watches: [],
+    assetWatches: [assetWatch, assetOnInitiative],
+    assetActionsFor: (w) => (w.id === 'aw-1'
+      ? [
+        { key: 'change', label: 'Change…', onSelect: () => onSelect('change', w.id) },
+        { key: 'stop', label: 'Stop watching', destructive: true, onSelect: () => onSelect('stop', w.id) },
+      ]
+      : []),
+  });
+
+  expect(screen.getAllByRole('button', { name: /Actions/ })).toHaveLength(1);
+  expect(within(row('SN-2002')).queryByRole('button', { name: /Actions/ })).toBeNull();
+
+  fireEvent.click(within(row('SN-1001')).getByRole('button', { name: /Actions/ }));
+  expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Change…', 'Stop watching']);
+  expect(screen.getByRole('menuitem', { name: 'Stop watching' }).className).toContain('danger');
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Change…' }));
+  expect(onSelect).toHaveBeenCalledWith('change', 'aw-1');
+});
+
+it('gives the Actions column 88px when only an asset row has actions, and the other rows no menu', () => {
+  const { container } = setup({
+    assetWatches: [assetWatch],
+    assetActionsFor: () => [{ key: 'x', label: 'Do it', onSelect: () => {} }],
+  });
+
+  expect(headers()).toEqual(['Watching', 'Events', 'Via', 'Actions']);
+  expect(([...container.querySelectorAll('col')] as HTMLElement[])[3].style.width).toBe('88px');
+  expect(screen.getAllByRole('button', { name: /Actions/ })).toHaveLength(1);
+  expect(within(row('Initiative A')).queryByRole('button', { name: /Actions/ })).toBeNull();
+});
+
+it('asset rows have no actions, and no Actions column, unless assetActionsFor gives them', () => {
+  setup({ assetWatches: [assetWatch] });
+
+  expect(screen.getByRole('link', { name: 'SN-1001' })).toBeTruthy();   // the row is there
+  expect(headers()).toEqual(['Watching', 'Events', 'Via']);
+  expect(screen.queryByRole('button', { name: /Actions/ })).toBeNull();
+});
+
+it('asks each list\'s own actions for its own rows only: a watch is never an asset watch\'s', () => {
+  const actionsFor = vi.fn((): RowAction[] => []);
+  const assetActionsFor = vi.fn((): RowAction[] => []);
+  setup({ actionsFor, assetActionsFor, assetWatches: [assetWatch, assetOnInitiative] });
+
+  expect(new Set(actionsFor.mock.calls.map((call) => (call as unknown as [Watch])[0].id)))
+    .toEqual(new Set(['w-ini', 'w-site', 'w-truck', 'w-all']));
+  expect(new Set(assetActionsFor.mock.calls.map((call) => (call as unknown as [AssetWatch])[0].id)))
+    .toEqual(new Set(['aw-1', 'aw-2']));
+});
+
+it('shows the empty text only when there is neither a watch nor an asset watch', () => {
+  setup({ watches: [], assetWatches: [assetWatch] });
+  expect(screen.queryByText(EMPTY)).toBeNull();
+  expect(screen.getByRole('link', { name: 'SN-1001' })).toBeTruthy();
+
+  cleanup();
+  setup({ watches: [], assetWatches: [] });
+  expect(screen.getByText(EMPTY)).toBeTruthy();
+  expect(screen.queryByRole('link')).toBeNull();
+});
+
+it('an asset watch and a watch that share an id are two rows under two keys', () => {
+  // the ids are two tables': React would warn of a repeated key, and could drop or repeat a row
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    setup({ watches: [initiative], assetWatches: [{ ...assetWatch, id: initiative.id }] });
+
+    expect(screen.getAllByRole('row').slice(1)).toHaveLength(2);
+    expect(screen.getByRole('link', { name: 'Initiative A' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'SN-1001' })).toBeTruthy();
+    expect(errors.mock.calls.filter((args) => String(args[0]).includes('same key'))).toEqual([]);
+  } finally {
+    errors.mockRestore();
+  }
 });

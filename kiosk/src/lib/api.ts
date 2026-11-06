@@ -1365,16 +1365,45 @@ export interface DockTag {
   label: string | null;
 }
 
+/** A tag in the open burst, as the edge's window test sees it so far:
+ *  its first read, and for an asset its serial number, `in_window` (inside
+ *  any crate's window; null until a crate is read) and `crate_label`, the
+ *  newest crate whose window holds it (null outside every window, and for
+ *  an unnamed crate). */
+export interface DockOpenTag extends DockTag {
+  first_read_at: string;
+  serial: string | null;
+  in_window: boolean | null;
+  crate_label: string | null;
+}
+
+/** A crate tag read in the open burst. `first_read_at` anchors its window;
+ *  `conflict` is set when its group will be decided "More than one crate".
+ *  `label` is null for an unnamed container, and a crate re-tagged during
+ *  the burst is listed once per tag. */
+export interface DockCrate {
+  epc: string;
+  label: string | null;
+  first_read_at: string;
+  conflict: boolean;
+}
+
 /** The burst still open, filling in as tags are read. `seconds_left` is
  *  how long until it is decided into passes if no new tag is read: 2W
- *  after its last new tag (3 decimals). */
+ *  after its last new tag (3 decimals), W being `window_s`. `crates` are
+ *  in first-read order; `conflict` is set when any crate's is, and
+ *  `added_count` counts the assets inside the newest crate's window. */
 export interface DockOpenPass {
   id: number;
   opened_at: string;
   seconds_left: number;
+  window_s: number;
   crate_count: number;
   asset_count: number;
-  tags: DockTag[];
+  crates: DockCrate[];
+  conflict: boolean;
+  added_count: number;
+  tags: DockOpenTag[];
 }
 
 /** A closed pass as the list and the detail show it. `flag` is set only

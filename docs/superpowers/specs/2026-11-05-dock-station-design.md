@@ -282,3 +282,14 @@ Plan: `docs/superpowers/plans/2026-11-06-dock-window-controls-theme.md`. Its dec
   - A burst ends 2W after its last **new** tag. So an asset that's still being re-read when the crate tag is first read more than 2W later is flagged "No crate read", and the crate shows "Nothing to pack".
   - Reads the reader posts between Stop's decision and the reader actually stopping open a new burst. That can show a duplicate "Would pack" or a stray "No crate read".
   - A crate parked in the curtain gets a fresh window about every 2W + 1 s.
+
+## Dock screen redesign (2026-11-06)
+
+Jimmy approved a mockup that follows the Truck Packing kiosk: `docs/mockups/dock-station-kiosk.html` (untracked, main checkout). Plan: `docs/superpowers/plans/2026-11-06-dock-screen-redesign.md`.
+
+- **Crate card:** shows Scanning… until a crate is read, then the newest crate with a "Finishing in" bar. It turns red, naming the crates, when that crate's group will be "More than one crate". For 6 s after a decision it shows the newest new pass, preferring a crate's pass over a burst's "No crate read" leftover. It shows Paused or Stopped otherwise.
+- **Assets added to crate:** counts the devices inside the newest crate's window. It's muted with "More than one crate · nothing will be packed" when that crate is flagged.
+- **In this crate:** the open burst's devices, newest first, with serial, tag, read time and a chip: Waiting for crate, Would add / Adding, Outside window, or More than one crate.
+- **Recent passes** keeps today's copy and details. The Moved column is gone, as in the mockup; moves still show in the pass details.
+- **Bottom row:** Dry run and Window settings, then Start, Pause and Stop.
+- **Edge:** `/edge/dock`'s `open` adds `window_s`, `crates[]` (with a per-crate `conflict`), `conflict`, `added_count`, and per tag `first_read_at`, `serial`, `in_window` and `crate_label`. These come from the grouper's own `crate_windows` / `crate_groups`, so the screen agrees with the decision.

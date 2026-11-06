@@ -517,7 +517,8 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
                 {published.status === 'error' && <p className="pf-error">{published.message}</p>}
                 {published.status === 'unpublished' && <NotPublished canEdit={canEdit} />}
                 {published.status === 'ready' && (
-                  <ReadOnlyDoc content={published.content.content_json} onEditor={setViewEditor} />
+                  <ReadOnlyDoc content={published.content.content_json} pageId={node.id}
+                               onEditor={setViewEditor} />
                 )}
                 {published.status === 'ready' && canComment && (
                   <ReaderCommentBubble container={docRef} onComment={commentOnQuote} />

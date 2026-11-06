@@ -3,8 +3,9 @@
  * /assets — covers the identity columns specifically: "Serial / Name"
  * (the combined cell, default on), plus the separate "Serial" and "Name"
  * columns the Columns picker can swap in, and the backward-compatible
- * hydration of a saved layout that predates all three. Generic
- * toolbar/column-menu/reorder/CSV behavior is covered by
+ * hydration of a saved layout that predates all three. The row menu's "Watch…" /
+ * "Watching…" item, for everyone who can open the list, opens the Watch modal on the asset
+ * itself. Generic toolbar/column-menu/reorder/CSV behavior is covered by
  * lib/listTools.test.tsx and lib/columnMenu.test.tsx.
  */
 
@@ -13,17 +14,20 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { AssetItem, UiPreferences } from '../lib/api';
+import type { AssetItem, AssetWatch, StatusValue, UiPreferences } from '../lib/api';
 import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => {
-  const state: { listPrefs: Record<string, unknown> } = { listPrefs: {} };
+  const state: {
+    can: (resource: string, action: string) => boolean;
+    listPrefs: Record<string, unknown>;
+  } = { can: () => true, listPrefs: {} };
   return state;
 });
 
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
-    can: () => true,
+    can: (resource: string, action = 'view') => auth.can(resource, action),
     godMode: false,
     preferences: {
       accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default',
@@ -42,6 +46,9 @@ const api = vi.hoisted(() => ({
   listClients: vi.fn(),
   listSites: vi.fn(),
   updateAsset: vi.fn(),
+  listMyAssetWatches: vi.fn(),       // the row menu's Watch… / Watching…
+  createMyAssetWatch: vi.fn(),
+  deleteMyAssetWatch: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -60,14 +67,33 @@ const ASSETS: AssetItem[] = [
   },
 ];
 
+/** The person's watch of a1 on its own, for its next update. */
+const WATCH_A1: AssetWatch = {
+  id: 'w1', asset_id: 'a1', asset_name: 'SN-ALPHA',
+  initiative_id: null, initiative_name: null, initiative_asset_id: null,
+  condition: 'next_update', status: null, status_label: null,
+  current_status: 'active', current_status_label: 'Active',
+  link: '/assets/a1', created_at: '2026-11-05T12:00:00Z',
+};
+
+const status = (key: string, label: string): StatusValue => ({
+  record_type: 'asset', key, label, description: '', color: '#888888', sort_order: 0,
+  is_active: true, usage_count: null, progress_weight: null,
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
+  Element.prototype.scrollIntoView = vi.fn();   // jsdom has none; the modal's ComboBox scrolls its active option
+  auth.can = () => true;
   auth.listPrefs = {};
   api.listAssets.mockResolvedValue(ASSETS);
   api.listAssetStatuses.mockResolvedValue([]);
   api.listAssetModels.mockResolvedValue([]);
   api.listClients.mockResolvedValue([]);
   api.listSites.mockResolvedValue([]);
+  api.listMyAssetWatches.mockResolvedValue([]);
+  api.createMyAssetWatch.mockResolvedValue(WATCH_A1);
+  api.deleteMyAssetWatch.mockResolvedValue(undefined);
 });
 
 afterEach(cleanup);
@@ -288,4 +314,133 @@ it('the row ends in its Actions button alone, with no open arrow after it', asyn
   const row = trigger.closest('.row-main') as HTMLElement;
   expect(row.querySelector('.chevron-cell')).toBeNull();
   expect(row.lastElementChild?.contains(trigger)).toBe(true);
+});
+
+/* ── the row menu's Watch… ───────────────────────────────────────── */
+
+/** The labels of the open menu's items, in order (the menu portals out of the row). */
+const menuItems = () => screen.getAllByRole('menuitem').map((m) => m.textContent);
+
+/** Open the first row's Actions menu. */
+const openMenu = async (user: ReturnType<typeof userEvent.setup>) => {
+  await user.click((await screen.findAllByRole('button', { name: /Actions/ }))[0]);
+};
+
+it('the row menu ends with "Watch…": Full details, Edit, then Watch…', async () => {
+  const user = userEvent.setup();
+  mount();
+  await openMenu(user);
+
+  expect(menuItems()).toEqual(['Full details', 'Edit', 'Watch…']);
+});
+
+it('"Watch…" is for everyone who can open the list: a viewer without assets:change gets it, and no Edit', async () => {
+  auth.can = (resource, action) => !(resource === 'assets' && action === 'change');
+  const user = userEvent.setup();
+  mount();
+  await openMenu(user);
+
+  expect(menuItems()).toEqual(['Full details', 'Watch…']);
+});
+
+it('the item reads "Watching…" while the person has a watch on the asset itself', async () => {
+  api.listMyAssetWatches.mockResolvedValue([WATCH_A1]);
+  const user = userEvent.setup();
+  mount();
+  await openMenu(user);
+
+  expect(await screen.findByRole('menuitem', { name: 'Watching…' })).toBeTruthy();
+  expect(screen.queryByRole('menuitem', { name: 'Watch…' })).toBeNull();
+});
+
+it('a watch on the asset on an initiative is not a watch on the asset itself: the item stays "Watch…"', async () => {
+  api.listMyAssetWatches.mockResolvedValue([{
+    ...WATCH_A1, initiative_id: 'i1', initiative_name: 'NAP11 Hall Migration', initiative_asset_id: 'ia1',
+    link: '/initiatives/i1/assets/ia1',
+  }]);
+  const user = userEvent.setup();
+  mount();
+  await waitFor(() => expect(api.listMyAssetWatches).toHaveBeenCalledTimes(1));
+  await screen.findByText('SN-ALPHA');
+  await openMenu(user);
+
+  expect(screen.getByRole('menuitem', { name: 'Watch…' })).toBeTruthy();
+  expect(screen.queryByRole('menuitem', { name: 'Watching…' })).toBeNull();
+});
+
+it('Watch… opens the Watch modal on the asset itself, named by its serial number, without expanding the row', async () => {
+  const user = userEvent.setup();
+  mount();
+  await openMenu(user);
+  await user.click(screen.getByRole('menuitem', { name: 'Watch…' }));
+
+  const dialog = screen.getByRole('dialog', { name: 'Watch SN-ALPHA' });
+  // a new watch, on the asset itself: Watch (no Stop watching) and no "On {initiative}." line
+  expect(within(dialog).getByRole('button', { name: 'Watch' })).toBeTruthy();
+  expect(within(dialog).queryByRole('button', { name: 'Stop watching' })).toBeNull();
+  expect(dialog.querySelector('p.page-hint br')).toBeNull();
+  expect(document.querySelector('.dir-row.open')).toBeNull();
+});
+
+it('the modal is given the status the asset has now: it says so, and the picker leaves it out', async () => {
+  api.listAssetStatuses.mockResolvedValue([status('active', 'Active'), status('shipped', 'Shipped')]);
+  const user = userEvent.setup();
+  mount();
+  await openMenu(user);
+  await user.click(screen.getByRole('menuitem', { name: 'Watch…' }));
+  const dialog = screen.getByRole('dialog', { name: 'Watch SN-ALPHA' });
+  await user.click(within(dialog).getByRole('button', { name: 'Status becomes' }));
+
+  expect(within(dialog).getByText('Its status is Active now.')).toBeTruthy();
+  const picker = within(dialog).getByRole('combobox', { name: 'Status' }) as HTMLInputElement;
+  await waitFor(() => expect(picker.disabled).toBe(false));
+  await user.click(picker);
+  expect(await screen.findByText('Shipped', { selector: '.kbar-item' })).toBeTruthy();
+  expect(screen.queryByText('Active', { selector: '.kbar-item' })).toBeNull();
+});
+
+it('watching from the modal reads the person\'s watches again, and the item then reads "Watching…"', async () => {
+  api.listMyAssetWatches.mockResolvedValueOnce([]).mockResolvedValue([WATCH_A1]);
+  const user = userEvent.setup();
+  mount();
+  await openMenu(user);
+  await user.click(screen.getByRole('menuitem', { name: 'Watch…' }));
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Watch' }));
+
+  await waitFor(() => expect(api.createMyAssetWatch).toHaveBeenCalledWith({
+    asset_id: 'a1', initiative_id: null, condition: 'next_update', status: null,
+  }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  await waitFor(() => expect(api.listMyAssetWatches).toHaveBeenCalledTimes(2));
+  await openMenu(user);
+  expect(await screen.findByRole('menuitem', { name: 'Watching…' })).toBeTruthy();
+});
+
+it('"Watching…" opens the modal on the watch, and stopping it reads the watches again: the item is "Watch…" once more', async () => {
+  api.listMyAssetWatches.mockResolvedValueOnce([WATCH_A1]).mockResolvedValue([]);
+  const user = userEvent.setup();
+  mount();
+  await openMenu(user);
+  await user.click(await screen.findByRole('menuitem', { name: 'Watching…' }));
+
+  const dialog = screen.getByRole('dialog', { name: 'Watch SN-ALPHA' });
+  expect(within(dialog).getByRole('button', { name: 'Save' })).toBeTruthy();
+  await user.click(within(dialog).getByRole('button', { name: 'Stop watching' }));
+
+  await waitFor(() => expect(api.deleteMyAssetWatch).toHaveBeenCalledWith('w1'));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  await waitFor(() => expect(api.listMyAssetWatches).toHaveBeenCalledTimes(2));
+  await openMenu(user);
+  expect(await screen.findByRole('menuitem', { name: 'Watch…' })).toBeTruthy();
+});
+
+it('Cancel closes the modal without reading the watches again', async () => {
+  const user = userEvent.setup();
+  mount();
+  await openMenu(user);
+  await user.click(screen.getByRole('menuitem', { name: 'Watch…' }));
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(api.listMyAssetWatches).toHaveBeenCalledTimes(1);
 });

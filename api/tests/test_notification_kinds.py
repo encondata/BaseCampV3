@@ -17,6 +17,7 @@ def test_categories_order_and_labels():
         ("wiki", "Wiki"),
         ("learning", "Learning"),
         ("initiatives", "Initiatives"),
+        ("assets", "Assets"),
         ("plans", "Project plans"),
         ("trucks", "Trucks"),
         ("devices", "Devices"),
@@ -25,7 +26,8 @@ def test_categories_order_and_labels():
         ("security", "Account security"),
     ]
     assert CATEGORY_KEYS == ("approvals", "reports", "wiki", "learning", "initiatives",
-                             "plans", "trucks", "devices", "status_rules", "bulk_actions", "security")
+                             "assets", "plans", "trucks", "devices", "status_rules",
+                             "bulk_actions", "security")
 
 
 def test_every_kind_has_a_known_category_and_a_label():
@@ -47,6 +49,7 @@ def test_kind_table_matches_the_spec():
         "learning_complete": "learning", "learning_overdue": "learning",
         "learning_quiz_locked": "learning",
         "initiative_status_changed": "initiatives",
+        "asset_watch": "assets",
         "plan_task_assigned": "plans", "plan_task_due": "plans",
         "plan_task_overdue": "plans", "plan_overdue_digest": "plans",
         "truck_status_changed": "trucks",
@@ -55,19 +58,20 @@ def test_kind_table_matches_the_spec():
         "password_expiring": "security", "totp_enrolled": "security",
     }
     assert {k: v.category for k, v in KINDS.items()} == expected
-    # registry order is the order the portal shows: the new kinds follow learning, the plan
-    # kinds beside the initiative's own
-    assert list(KINDS)[-12:] == ["initiative_status_changed", "plan_task_assigned",
-                                 "plan_task_due", "plan_task_overdue", "plan_overdue_digest",
-                                 "truck_status_changed", "device_offline", "status_rule_matched",
-                                 "bulk_action_finished", "bulk_action_failed",
-                                 "password_expiring", "totp_enrolled"]
+    # registry order is the order the portal shows: the new kinds follow learning, the asset
+    # watch and the plan kinds beside the initiative's own
+    assert list(KINDS)[-13:] == ["initiative_status_changed", "asset_watch",
+                                 "plan_task_assigned", "plan_task_due", "plan_task_overdue",
+                                 "plan_overdue_digest", "truck_status_changed", "device_offline",
+                                 "status_rule_matched", "bulk_action_finished",
+                                 "bulk_action_failed", "password_expiring", "totp_enrolled"]
     assert (KINDS["initiative_status_changed"].label, KINDS["truck_status_changed"].label,
             KINDS["device_offline"].label) == (
         "Initiative status changed", "Truck status changed", "Device offline")
     assert (KINDS["bulk_action_finished"].label, KINDS["bulk_action_failed"].label) == (
         "Bulk action finished", "Bulk action failed")
     assert KINDS["status_rule_matched"].label == "Status rule matched"
+    assert KINDS["asset_watch"].label == "Asset watch"
     assert {k: v.label for k, v in KINDS.items() if v.category == "plans"} == {
         "plan_task_assigned": "Assigned to a plan task",
         "plan_task_due": "Plan task due",
@@ -127,8 +131,9 @@ def test_reaches_and_everywhere():
         "status_rule_matched"}
     assert KINDS["truck_status_changed"].watchable is True
     assert KINDS["report_ready"].watchable is False
-    # sent straight to whoever started the job (imports/notices.py): nothing to watch
-    for kind in ("bulk_action_finished", "bulk_action_failed"):
+    # sent straight to whoever started the job (imports/notices.py), or to whoever set the
+    # asset watch (notifications/asset_watch_check.py): nothing to watch
+    for kind in ("bulk_action_finished", "bulk_action_failed", "asset_watch"):
         assert (KINDS[kind].reaches, KINDS[kind].everywhere, KINDS[kind].watchable) == (
             (), False, False), kind
     # the defaults: not watchable, not named by an Everything watch
@@ -183,6 +188,6 @@ def test_every_notify_kind_in_the_codebase_is_registered():
             "wiki_comment", "wiki_export_ready", "learning_overdue", "learning_complete",
             "learning_quiz_locked", "initiative_status_changed", "truck_status_changed",
             "device_offline", "status_rule_matched", "bulk_action_finished",
-            "bulk_action_failed"} <= found
+            "bulk_action_failed", "asset_watch"} <= found
     assert found == set(KINDS), (
         f"unregistered: {sorted(found - set(KINDS))}; never sent: {sorted(set(KINDS) - found)}")

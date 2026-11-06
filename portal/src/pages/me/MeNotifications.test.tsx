@@ -12,8 +12,8 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import {
-  ApiError, type MyNotificationGroup, type NotificationKindSetting, type NotificationSettings,
-  type SwitchPair, type UiPreferences, type Watch,
+  ApiError, type AssetWatch, type MyNotificationGroup, type NotificationKindSetting,
+  type NotificationSettings, type SwitchPair, type UiPreferences, type Watch,
 } from '../../lib/api';
 import { LIST_FIT } from '../../lib/listTools';
 
@@ -62,8 +62,9 @@ const api = vi.hoisted(() => ({
   listMyNotificationGroups: vi.fn(),
   requestGroupMembership: vi.fn(),
   cancelMembershipRequest: vi.fn(),
-  // "What you watch" loads the person's watches on mount
+  // "What you watch" loads the person's watches, and their asset watches, on mount
   listMyWatches: vi.fn(),
+  listMyAssetWatches: vi.fn(),
 }));
 vi.mock('../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/api')>()),
@@ -85,7 +86,8 @@ const kind = (
 const SETTINGS: NotificationSettings = {
   defaults: {
     approvals: ON, reports: { inbox: true, email: false }, wiki: ON, learning: ON,
-    initiatives: ON, plans: ON, trucks: ON, devices: ON, status_rules: ON, bulk_actions: ON,
+    initiatives: ON, assets: ON, plans: ON, trucks: ON, devices: ON, status_rules: ON,
+    bulk_actions: ON,
   },
   critical_kinds: ['report_failed'],
   kinds: [
@@ -114,9 +116,11 @@ beforeEach(() => {
   api.requestGroupMembership.mockReset();
   api.cancelMembershipRequest.mockReset();
   api.listMyWatches.mockReset();
+  api.listMyAssetWatches.mockReset();
   api.getNotificationSettings.mockResolvedValue(SETTINGS);
   api.listMyNotificationGroups.mockResolvedValue([]);
   api.listMyWatches.mockResolvedValue([]);
+  api.listMyAssetWatches.mockResolvedValue([]);
   auth.notif = {
     sound: 'chime',
     switches: {},
@@ -138,8 +142,8 @@ const sw = (channel: 'Inbox' | 'Email', category: string) =>
 const reason = (input: HTMLElement) => input.closest('[title]')?.getAttribute('title') ?? null;
 
 const GRID_CATEGORIES = [
-  'Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Initiatives', 'Project plans',
-  'Trucks', 'Devices', 'Status rules', 'Bulk actions',
+  'Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Initiatives', 'Assets',
+  'Project plans', 'Trucks', 'Devices', 'Status rules', 'Bulk actions',
 ];
 
 /** The grid is inert until the company defaults have arrived. */
@@ -195,8 +199,8 @@ it('the grid follows the company defaults, and says every row does', async () =>
     ...SETTINGS,
     defaults: {
       approvals: ON, reports: { inbox: true, email: false },
-      wiki: { inbox: false, email: false }, learning: ON, initiatives: ON, plans: ON, trucks: ON,
-      devices: ON, status_rules: ON, bulk_actions: ON,
+      wiki: { inbox: false, email: false }, learning: ON, initiatives: ON, assets: ON,
+      plans: ON, trucks: ON, devices: ON, status_rules: ON, bulk_actions: ON,
     },
   });
   render(<MeNotifications />);
@@ -209,7 +213,7 @@ it('the grid follows the company defaults, and says every row does', async () =>
   expect(sw('Inbox', 'Wiki').checked).toBe(false);
   expect(sw('Email', 'Wiki').checked).toBe(false);
   expect(reason(sw('Email', 'Wiki'))).toBe('Turn on Inbox to get email');
-  expect(screen.getAllByText('Company default')).toHaveLength(10);
+  expect(screen.getAllByText('Company default')).toHaveLength(11);
   expect(screen.queryByText('Your choice')).toBeNull();
   expect(auth.updatePreferences).not.toHaveBeenCalled();   // looking changes nothing
 });
@@ -225,7 +229,7 @@ it('the person\'s own values win over the defaults, and the row says "Your choic
   const reports = screen.getByRole('row', { name: /Reports & labels/ });
   expect(within(reports).getByText('Your choice')).toBeTruthy();
   expect(within(screen.getByRole('row', { name: /Wiki/ })).getByText('Your choice')).toBeTruthy();
-  expect(screen.getAllByText('Company default')).toHaveLength(8);
+  expect(screen.getAllByText('Company default')).toHaveLength(9);
   expect(screen.getAllByRole('button', { name: 'Use company default' })).toHaveLength(2);
 });
 
@@ -296,7 +300,7 @@ it('after a save the row says "Your choice", and the company defaults are not fe
 
   await waitFor(() => expect(within(screen.getByRole('row', { name: /Wiki/ })).getByText('Your choice')).toBeTruthy());
   expect(sw('Email', 'Wiki').checked).toBe(false);
-  expect(screen.getAllByText('Company default')).toHaveLength(9);
+  expect(screen.getAllByText('Company default')).toHaveLength(10);
   expect(api.getNotificationSettings).toHaveBeenCalledTimes(1);
   await waitFor(() => expect(screen.getByText('saved')).toBeTruthy());
 });
@@ -832,4 +836,45 @@ it('a failed watches load says so, without touching the switch grid or the group
   expect(screen.getByText('Ops')).toBeTruthy();
   expect(screen.queryByText('Could not load notification settings.')).toBeNull();
   expect(screen.queryByText('Could not load notification groups.')).toBeNull();
+});
+
+// A watch of an asset, as GET /auth/me/asset-watches lists it: a row of the same table.
+const ASSET_WATCH: AssetWatch = {
+  id: 'aw1', asset_id: 'a1', asset_name: 'SN-1001',
+  initiative_id: null, initiative_name: null, initiative_asset_id: null,
+  condition: 'next_update', status: null, status_label: null,
+  current_status: 'in_storage', current_status_label: 'In storage',
+  link: '/assets/a1', created_at: '2026-11-05T12:00:00Z',
+};
+
+it('lists the person\'s asset watches in "What you watch", beside their other watches, and loads them once', async () => {
+  api.listMyWatches.mockResolvedValue([WATCH]);
+  api.listMyAssetWatches.mockResolvedValue([ASSET_WATCH]);
+  render(<MeNotifications />);
+  const watching = await screen.findByRole('region', { name: 'What you watch' });
+
+  expect(await within(watching).findByText('Initiative A')).toBeTruthy();
+  expect(within(watching).getByRole('link', { name: 'SN-1001' }).getAttribute('href')).toBe('/assets/a1');
+  expect(within(watching).getByText('Asset')).toBeTruthy();
+  expect(within(watching).getByText('Next update')).toBeTruthy();
+  expect(watching.querySelector('.badge-count')?.textContent).toBe('2');
+  expect(api.listMyAssetWatches).toHaveBeenCalledTimes(1);
+});
+
+it('a failed asset watches load says so and keeps the other watches, the switch grid and the groups', async () => {
+  api.listMyWatches.mockResolvedValue([WATCH]);
+  api.listMyAssetWatches.mockRejectedValue(new ApiError(500, 'server_error'));
+  api.listMyNotificationGroups.mockResolvedValue([G1]);
+  render(<MeNotifications />);
+
+  const watching = await screen.findByRole('region', { name: 'What you watch' });
+  expect(await within(watching).findByText('Initiative A')).toBeTruthy();
+  const error = within(watching).getByText('Could not load your asset watches.');
+  expect(error.classList.contains('pf-error')).toBe(true);
+  expect(error.getAttribute('role')).toBe('alert');
+  await loaded();
+  expect(screen.getByText('Ops')).toBeTruthy();
+  expect(screen.queryByText('Could not load notification settings.')).toBeNull();
+  expect(screen.queryByText('Could not load notification groups.')).toBeNull();
+  expect(screen.queryByText('Could not load your watches.')).toBeNull();
 });
