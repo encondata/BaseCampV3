@@ -121,3 +121,60 @@ async def test_outside_pool_unchanged(db, ssh_server):
     assert (await ssh.run_command(cfg, db, "uname -srm")).exit_status == 0
     assert (await ssh.run_command(cfg, db, "uname -srm")).exit_status == 0
     assert ssh_server.connections == 2
+
+
+async def test_timeouts_close_their_channels(db, ssh_server):
+    """More timed-out commands than the server's MaxSessions: each closes its
+    channel, so the same connection still runs the next command."""
+    await _trust(db, ssh_server)
+    cfg, slow = ssh_config(ssh_server), "docker --version"
+    ssh_server.delays = {slow: 30}
+    async with ssh.SshPool() as pool:
+        with ssh.using_pool(pool):
+            for _ in range(ssh_server.max_sessions + 2):
+                result = await ssh.run_command(cfg, db, slow, timeout=0.2)
+                assert result.exit_status is None
+            await _until(lambda: ssh_server.open_sessions == 0)
+            ok = await ssh.run_command(cfg, db, "uname -srm")
+    assert ok.exit_status == 0 and ok.stdout == "Linux 6.8.0-45-generic x86_64\n"
+    assert ssh_server.connections == 1
+
+
+async def test_refused_channel_reconnects(db, ssh_server):
+    await _trust(db, ssh_server)
+    cfg, lines = ssh_config(ssh_server), []
+    async with ssh.SshPool() as pool:
+        with ssh.using_pool(pool):
+            assert (await ssh.run_command(cfg, db, "uname -srm")).exit_status == 0
+            ssh_server.refuse_sessions = True
+            refused = await ssh.run_command(cfg, db, "uname -srm", log=lines.append)
+            ssh_server.refuse_sessions = False
+            again = await ssh.run_command(cfg, db, "uname -srm", log=lines.append)
+    assert (refused.exit_status, refused.stdout) == (None, "")
+    assert again.exit_status == 0
+    assert ssh_server.connections == 2 and lines == [RECONNECT]
+
+
+async def test_concurrent_callers_share_one_connection(db, ssh_server):
+    from sirdar_api.db.engine import get_sessionmaker
+    await _trust(db, ssh_server)
+    cfg = ssh_config(ssh_server)
+    async with get_sessionmaker()() as db2, ssh.SshPool() as pool:
+        (first, _), (second, _) = await asyncio.gather(
+            pool.connection(cfg, db), pool.connection(cfg, db2))
+    assert first is second
+    assert ssh_server.connections == 1
+
+
+async def test_command_finished_before_drop_keeps_its_result(db, ssh_server):
+    await _trust(db, ssh_server)
+    cfg, lines = ssh_config(ssh_server), []
+    ssh_server.drop_after = {"uname -srm"}
+    async with ssh.SshPool() as pool:
+        with ssh.using_pool(pool):
+            result = await ssh.run_command(cfg, db, "uname -srm", log=lines.append)
+            await _until(lambda: ssh_server.closed == 1)
+            later = await ssh.run_command(cfg, db, "docker --version", log=lines.append)
+    assert result.exit_status == 0 and result.stdout == "Linux 6.8.0-45-generic x86_64\n"
+    assert later.exit_status == 0
+    assert ssh_server.connections == 2 and lines == [RECONNECT]

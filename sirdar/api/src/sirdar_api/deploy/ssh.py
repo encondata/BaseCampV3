@@ -428,18 +428,30 @@ async def run_command(cfg: SshTargetConfig, db: AsyncSession, command: str, *,
 async def _run_pooled(pool: SshPool, cfg: SshTargetConfig, db: AsyncSession, command: str, *,
                       timeout: float, input: str | None, tries: int,
                       log: Callable[[str], None] | None) -> CommandResult:
-    """run_command on the pool's connection. A dropped connection is
-    discarded and the command is never re-run (it may have half-run); a
-    timeout keeps the connection."""
+    """run_command on the pool's connection. A dropped connection (or one
+    that refuses new channels) is discarded and the command is never re-run
+    (it may have half-run); a timeout keeps the connection but closes the
+    command's channel, so timeouts don't use up the server's MaxSessions."""
     conn, _ = await pool.connection(cfg, db, tries=tries, log=log)
     try:
-        result = await asyncio.wait_for(
-            conn.run(command, check=False, errors="replace", input=input), timeout)
+        process = await conn.create_process(command, errors="replace", input=input)
+    except (OSError, asyncssh.ConnectionLost, asyncssh.DisconnectError,
+            asyncssh.ChannelOpenError):
+        pool.discard(conn)
+        return CommandResult(None, "")
+    except asyncssh.Error:
+        return CommandResult(None, "")
+    try:
+        result = await asyncio.wait_for(process.wait(check=False), timeout)
+    except TimeoutError:                   # an OSError subclass: catch it first
+        return CommandResult(None, "")
     except (OSError, asyncssh.ConnectionLost, asyncssh.DisconnectError):
         pool.discard(conn)
         return CommandResult(None, "")
-    except (TimeoutError, asyncssh.Error):
+    except asyncssh.Error:
         return CommandResult(None, "")
+    finally:
+        process.close()                    # on timeout, cancel and error too
     if conn.is_closed():                   # asyncssh returns, not raises, when cut off
         pool.discard(conn)
         if result.exit_status is None:     # partial output isn't an answer
