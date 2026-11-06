@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-/** The Dock screen's edge calls: the overview, one pass's detail, the
- *  settings save and the Start / Pause / Stop control, with their paths,
- *  methods and body. */
+/** The Dock screen's edge calls: the overview, one pass's detail and the
+ *  Start / Stop control, with their paths, methods and body. The Dock has no
+ *  settings to save. */
 import { beforeEach, expect, it, vi } from 'vitest';
 
 import * as api from './api';
@@ -27,10 +27,8 @@ const PASS: api.DockPassRow = {
 };
 
 const OVERVIEW: api.DockOverview = {
-  settings: { dry_run: true, quiet_gap_s: 5 },
   open: {
-    id: 8, opened_at: '2026-11-05T14:01:00Z', seconds_left: 3.25, window_s: 5, crate_count: 1,
-    asset_count: 1,
+    id: 8, opened_at: '2026-11-05T14:01:00Z', crate_count: 1, asset_count: 1,
     crates: [{ epc: 'E200001', label: 'Crate 12', first_read_at: '2026-11-05T14:01:01.250+00:00',
                conflict: false }],
     conflict: false, added_count: 1,
@@ -55,7 +53,7 @@ it('getDock reads the overview from GET /edge/dock', async () => {
 it('getDockPass reads one pass from GET /edge/dock/passes/{id}', async () => {
   const detail: api.DockPassDetail = {
     pass: PASS,
-    // A dry-run pass is never sent, so its tags carry no packing result.
+    // A legacy dry-run pass is never sent, so its tags carry no packing result.
     tags: [{ epc: 'E200002', kind: 'asset', label: 'Server 4', result: null,
              moved_from: null, reason: null }],
     reads: [{ id: 1, read_at: '2026-11-05T14:00:01Z', epc: 'E200002', kind: 'asset', antenna: 2,
@@ -72,19 +70,8 @@ it('getDockPass surfaces pass_not_found', async () => {
   await expect(api.getDockPass(99)).rejects.toMatchObject({ status: 404, code: 'pass_not_found' });
 });
 
-it('saveDockSettings sends only the given fields with PUT /edge/dock/settings', async () => {
-  const fetchMock = vi.fn(async () => json({ dry_run: false, quiet_gap_s: 5 }));
-  vi.stubGlobal('fetch', fetchMock);
-  expect(await api.saveDockSettings({ dry_run: false })).toEqual({ dry_run: false, quiet_gap_s: 5 });
-  expect(lastCall(fetchMock)).toEqual({
-    url: 'http://api.test/edge/dock/settings', method: 'PUT', body: { dry_run: false },
-  });
-});
-
-it('saveDockSettings surfaces invalid_dock_settings', async () => {
-  vi.stubGlobal('fetch', vi.fn(async () => json({ detail: { code: 'invalid_dock_settings' } }, 422)));
-  await expect(api.saveDockSettings({ quiet_gap_s: 0 }))
-    .rejects.toMatchObject({ status: 422, code: 'invalid_dock_settings' });
+it('there is no Dock settings call', () => {
+  expect('saveDockSettings' in api).toBe(false);
 });
 
 it('controlDock posts the action to POST /edge/dock/control and returns the result', async () => {
@@ -95,4 +82,7 @@ it('controlDock posts the action to POST /edge/dock/control and returns the resu
   expect(lastCall(fetchMock)).toEqual({
     url: 'http://api.test/edge/dock/control', method: 'POST', body: { action: 'stop' },
   });
+  fetchMock.mockImplementation(async () => json({ reading: true, control: 'start', decided: 0 }));
+  await api.controlDock('start');
+  expect(lastCall(fetchMock).body).toEqual({ action: 'start' });
 });

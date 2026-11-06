@@ -1343,19 +1343,10 @@ export async function getReaderDevice(): Promise<ReaderDevice> {
 export type DockTagKind = 'asset' | 'container' | 'person' | 'off_move' | 'unknown';
 
 /** A closed pass's outcome, the first that applies: `flagged` (no crate or
- *  more than one), `nothing`, `would_pack` (dry run: never sent), `waiting`
- *  (to be sent), `packed` (sent) or `refused` (the portal turned it away). */
+ *  more than one), `nothing`, `would_pack` (reads an older build took in
+ *  dry run: never sent), `waiting` (to be sent), `packed` (sent) or
+ *  `refused` (the portal turned it away). */
 export type DockPassStatus = 'would_pack' | 'waiting' | 'packed' | 'refused' | 'flagged' | 'nothing';
-
-/** The laptop's Dock settings. Dry run is on and the window 5 seconds
- *  until changed. */
-export interface DockSettings {
-  dry_run: boolean;
-  /** The window W (1-60 s; Window on screen): an asset packs into a crate
-   *  when it is read within W of the crate tag's first read, and the reads'
-   *  burst is decided 2W after its last new tag. */
-  quiet_gap_s: number;
-}
 
 /** One tag in a pass; `label` is the asset, crate or person's name, null
  *  when the tag matched nothing with one. */
@@ -1388,16 +1379,15 @@ export interface DockCrate {
   conflict: boolean;
 }
 
-/** The burst still open, filling in as tags are read. `seconds_left` is
- *  how long until it is decided into passes if no new tag is read: 2W
- *  after its last new tag (3 decimals), W being `window_s`. `crates` are
- *  in first-read order; `conflict` is set when any crate's is, and
- *  `added_count` counts the assets inside the newest crate's window. */
+/** The burst still open, filling in as tags are read; an asset packs into
+ *  a crate read within 5 s of it. The edge decides it into passes 10 s
+ *  after its newest crate's first read or 5 s after its newest tag's,
+ *  whichever is later, and doesn't say when. `crates` are in first-read
+ *  order; `conflict` is set when any crate's is, and `added_count` counts
+ *  the assets inside the newest crate's window. */
 export interface DockOpenPass {
   id: number;
   opened_at: string;
-  seconds_left: number;
-  window_s: number;
   crate_count: number;
   asset_count: number;
   crates: DockCrate[];
@@ -1422,17 +1412,15 @@ export interface DockPassRow {
   refuse_code: string | null;
 }
 
-/** The Dock screen's reader buttons. Start starts the reader; Pause stops
- *  it and leaves the open burst to its own rule; Stop decides the open
- *  burst at once, then stops the reader. */
-export type DockControl = 'start' | 'pause' | 'stop';
+/** The Dock screen's reader buttons. Start starts the reader; Stop decides
+ *  the open burst at once, then stops the reader. */
+export type DockControl = 'start' | 'stop';
 
-/** GET /edge/dock: the settings, the open pass (null when none), the
- *  newest closed passes, newest first, and `control`: the last Dock button
- *  pressed since the edge started (null after a restart). `control` is not
- *  the reader's own state; GET /edge/rfid/status is. */
+/** GET /edge/dock: the open pass (null when none), the newest closed
+ *  passes, newest first, and `control`: the last Dock button pressed since
+ *  the edge started (null after a restart). `control` is not the reader's
+ *  own state; GET /edge/rfid/status is. */
 export interface DockOverview {
-  settings: DockSettings;
   open: DockOpenPass | null;
   passes: DockPassRow[];
   control: DockControl | null;
@@ -1473,18 +1461,8 @@ export async function getDockPass(id: number): Promise<DockPassDetail> {
   return jsonFrom<DockPassDetail>(await apiFetch(`/edge/dock/passes/${id}`));
 }
 
-/** Saves the given settings, keeping the others; the settings as saved.
- *  422 `invalid_dock_settings` when a value is out of range. */
-export async function saveDockSettings(s: Partial<DockSettings>): Promise<DockSettings> {
-  return jsonFrom<DockSettings>(await apiFetch('/edge/dock/settings', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(s),
-  }));
-}
-
 /** POST /edge/dock/control's answer: whether the reader is reading, the
- *  button, and how many passes Stop decided (0 for Start and Pause). */
+ *  button, and how many passes Stop decided (0 for Start). */
 export interface DockControlResult {
   reading: boolean;
   control: DockControl;

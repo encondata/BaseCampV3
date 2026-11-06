@@ -59,7 +59,7 @@ const svg = (children: ReactNode, width = 2) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={width}
        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{children}</svg>
 );
-/** Shared with the Dock screen: its Start / Pause / Stop, its card labels
+/** Shared with the Dock screen: its Start and Stop, its card labels
  *  (crate, server) and its empty crate list (rfid). */
 export const ICON = {
   tag: svg(<><path d="M3 12V4h8l10 10-8 8L3 12z" /><circle cx="7.5" cy="8.5" r="1.5" /></>),
@@ -75,9 +75,6 @@ export const ICON = {
   ),
   square: (
     <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor" /></svg>
-  ),
-  pause: (
-    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor" /><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor" /></svg>
   ),
   crate: svg(<><path d="M21 8 12 3 3 8v8l9 5 9-5z" /><path d="m3 8 9 5 9-5M12 13v8" /></>),
   server: svg(<><rect x="3" y="3.5" width="18" height="7" rx="1.5" /><rect x="3" y="13.5" width="18" height="7" rx="1.5" /><path d="M7 7h.01M7 17h.01" /></>, 2.2),
