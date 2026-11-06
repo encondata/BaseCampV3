@@ -135,6 +135,8 @@ const STATUSES = [
 const HINT = 'Things you watch and the ones your groups watch. '
   + 'What reaches you still follows your switches and schedule.';
 const EMPTY = "You aren't watching anything yet. Use Watch on a page to start.";
+/** What the section says when the asset watches can't be loaded, whatever the error was. */
+const ASSETS_FAILED = 'Could not load your asset watches.';
 
 /** A promise the test settles by hand. */
 function deferred<T>() {
@@ -1249,14 +1251,15 @@ it('a stop error goes when a later asset save goes through', async () => {
   expect(screen.queryByRole('alert')).toBeNull();
 });
 
-it('a failed asset watches load keeps the other watches, and says why in the section\'s error line', async () => {
+it('a failed asset watches load keeps the other watches, and says so in the section\'s error line', async () => {
   api.listMyWatches.mockResolvedValue([ownInitiative, groupSite]);
   api.listMyAssetWatches.mockRejectedValue(new ApiError(500, 'server_error'));
   renderSection();
 
   await screen.findByText('Initiative A');
-  const error = await screen.findByText('Request failed (server_error).');
+  const error = await screen.findByText(ASSETS_FAILED);
   expect(error.classList.contains('pf-error')).toBe(true);
+  expect(error.getAttribute('role')).toBe('alert');
   expect(screen.getByText('Site A')).toBeTruthy();
   expect(document.querySelector('.badge-count')?.textContent).toBe('2');
   // the watches themselves loaded: neither their failure nor the empty state
@@ -1266,11 +1269,25 @@ it('a failed asset watches load keeps the other watches, and says why in the sec
   expect(within(rowOf('Initiative A')).getByRole('button', { name: /Actions/ })).toBeTruthy();
 });
 
+it.each([
+  ['an answer of the API', new ApiError(500, 'server_error')],
+  ['another answer of the API', new ApiError(403, 'forbidden')],
+  ['no answer at all', new Error('Failed to fetch')],
+])('a failed asset watches load says the same fixed sentence for %s', async (_what, failure) => {
+  api.listMyAssetWatches.mockRejectedValue(failure);
+  renderSection();
+
+  expect((await screen.findByRole('alert')).textContent).toBe(ASSETS_FAILED);
+  // not the sentences of watchErrorMessage, which are worded for an update
+  expect(screen.queryByText(/Request failed/)).toBeNull();
+  expect(screen.queryByText("Couldn't update your watch.")).toBeNull();
+});
+
 it('a failed asset watches load with no other watch is told, and the list is empty, not missing', async () => {
   api.listMyAssetWatches.mockRejectedValue(new ApiError(500, 'server_error'));
   renderSection();
 
-  expect(await screen.findByText('Request failed (server_error).')).toBeTruthy();
+  expect(await screen.findByText(ASSETS_FAILED)).toBeTruthy();
   expect(await screen.findByText(EMPTY)).toBeTruthy();
   expect(document.querySelector('.badge-count')?.textContent).toBe('0');
 });
@@ -1289,7 +1306,7 @@ it('when the watches themselves can\'t be loaded nothing is listed, the asset wa
   expect(document.querySelector('.badge-count')).toBeNull();
 });
 
-it('a failed reload keeps the asset watches that are there, and says why', async () => {
+it('a failed reload keeps the asset watches that are there, and says so', async () => {
   const user = userEvent.setup();
   api.listMyWatches.mockResolvedValue([ownInitiative]);
   api.listMyAssetWatches.mockResolvedValueOnce([ownAsset])
@@ -1299,7 +1316,7 @@ it('a failed reload keeps the asset watches that are there, and says why', async
 
   await pickAction(user, 'Initiative A', 'Stop watching');      // reads both lists again
 
-  expect((await screen.findByRole('alert')).textContent).toBe('Request failed (server_error).');
+  expect((await screen.findByRole('alert')).textContent).toBe(ASSETS_FAILED);
   expect(screen.getByText('SN-1001')).toBeTruthy();
   expect(document.querySelector('.badge-count')?.textContent).toBe('2');
 });
@@ -1310,13 +1327,28 @@ it('the asset watches\' load error goes when a later load goes through', async (
   api.listMyAssetWatches.mockRejectedValueOnce(new ApiError(500, 'server_error'))
     .mockResolvedValue([ownAsset]);
   renderSection();
-  await screen.findByText('Request failed (server_error).');
+  await screen.findByText(ASSETS_FAILED);
   expect(screen.queryByText('SN-1001')).toBeNull();
 
   await pickAction(user, 'Initiative A', 'Stop watching');      // reads both lists again
 
   expect(await screen.findByText('SN-1001')).toBeTruthy();
-  expect(screen.queryByText('Request failed (server_error).')).toBeNull();
+  expect(screen.queryByText(ASSETS_FAILED)).toBeNull();
+});
+
+it('a failed asset stop and a failed reload are told on their own lines: the stop by the API\'s answer, the load by the fixed sentence', async () => {
+  const user = userEvent.setup();
+  api.deleteMyAssetWatch.mockRejectedValue(new ApiError(500, 'server_error'));
+  api.listMyAssetWatches.mockResolvedValueOnce([ownAsset])
+    .mockRejectedValueOnce(new ApiError(500, 'server_error'));
+  renderSection();
+  await screen.findByText('SN-1001');
+
+  await pickAction(user, 'SN-1001', 'Stop watching');
+
+  await waitFor(() => expect(screen.getAllByRole('alert').map((a) => a.textContent))
+    .toEqual([ASSETS_FAILED, 'Request failed (server_error).']));
+  expect(screen.getByText('SN-1001')).toBeTruthy();
 });
 
 it('does not show the result of an asset list call that was overtaken by a later one', async () => {

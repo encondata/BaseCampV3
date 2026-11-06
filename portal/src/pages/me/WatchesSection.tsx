@@ -24,7 +24,7 @@
  * again and takes the last stop's error away), and "Stop watching", which ends it by the same
  * rules as any other stop. The two lists are asked for together and one's failure never takes
  * the other's answer away: if the asset watches can't be loaded the other watches are still
- * listed, with what the API said (watchErrorMessage) in an error line of its own, which goes
+ * listed, with one fixed sentence (whatever went wrong) in an error line of its own, which goes
  * when a load goes through (a reload that fails keeps the asset watches that are there); if
  * the watches can't be loaded, nothing is listed.
  *
@@ -70,10 +70,10 @@ export default function WatchesSection({ kinds }: { kinds: NotificationKindSetti
   // null until the first answer; a failed reload keeps the list that is there.
   const [watches, setWatches] = useState<Watch[] | null>(null);
   // The same for the asset watches, except that a first load that fails leaves it empty (the
-  // other watches still show), with its error.
+  // other watches still show) and says so (`assetsFailed`).
   const [assetWatches, setAssetWatches] = useState<AssetWatch[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
-  const [assetsError, setAssetsError] = useState('');
+  const [assetsFailed, setAssetsFailed] = useState(false);
   const [actionError, setActionError] = useState('');
   const [stopping, setStopping] = useState<Record<string, boolean>>({});
   const [dialog, setDialog] = useState<Dialog | null>(null);
@@ -103,12 +103,12 @@ export default function WatchesSection({ kinds }: { kinds: NotificationKindSetti
         const rows = await listMyAssetWatches();
         if (current()) {
           setAssetWatches(rows);
-          setAssetsError('');
+          setAssetsFailed(false);
         }
-      } catch (err) {
+      } catch {
         if (current()) {
           setAssetWatches((had) => had ?? []);
-          setAssetsError(watchErrorMessage(err));
+          setAssetsFailed(true);
         }
       }
     };
@@ -234,7 +234,7 @@ export default function WatchesSection({ kinds }: { kinds: NotificationKindSetti
           </button>
         </div>
         {loadFailed && <p className="pf-error set-hint">Could not load your watches.</p>}
-        {assetsError && <p className="pf-error set-hint" role="alert">{assetsError}</p>}
+        {assetsFailed && <p className="pf-error set-hint" role="alert">Could not load your asset watches.</p>}
         {actionError && <p className="pf-error set-hint" role="alert">{actionError}</p>}
         {watches && assetWatches && (
           <WatchesTable watches={watches} kinds={kinds} showVia actionsFor={actionsFor}

@@ -869,8 +869,9 @@ it('a failed asset watches load says so and keeps the other watches, the switch 
 
   const watching = await screen.findByRole('region', { name: 'What you watch' });
   expect(await within(watching).findByText('Initiative A')).toBeTruthy();
-  const error = within(watching).getByText('Request failed (server_error).');
+  const error = within(watching).getByText('Could not load your asset watches.');
   expect(error.classList.contains('pf-error')).toBe(true);
+  expect(error.getAttribute('role')).toBe('alert');
   await loaded();
   expect(screen.getByText('Ops')).toBeTruthy();
   expect(screen.queryByText('Could not load notification settings.')).toBeNull();
