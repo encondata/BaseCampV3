@@ -111,7 +111,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     app.state.rfid_wake = asyncio.Event()  # set by the 8091 ingest: run the processor now
     app.state.rfid_upload_wake = asyncio.Event()  # set by the processor: upload now
     app.state.dock_send_wake = asyncio.Event()  # set by the dock grouper: send passes now
-    app.state.dock_control = None  # the Dock screen's last Start/Pause/Stop (routes/dock.py)
+    app.state.dock_control = None  # the Dock screen's last Start/Stop (routes/dock.py)
     outbox.requeue_sending(app.state.store)
     app.state.discovery = Discovery(
         app.state.store, settings.data_dir,

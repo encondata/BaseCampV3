@@ -13,11 +13,11 @@ off-move sighting). Each raw read becomes at most one pending scan
   WITHOUT advancing the cursor; the next tick tries again.
 - A current-move read that matches nothing goes into `rfid_unmatched`, which
   `recheck_unmatched` re-matches after every successful sync for 24 h.
-- A read a Dock Station took in dry run (`raw_tag_reads.dry_run = 1`, stamped
-  when it was read) still matches and still alarms, but its scan is stored
-  as `upload_state = 'dry_run'`, which the uploader never sends, and a miss
-  is never re-checked: dry-run reads never reach the portal, not even after
-  dry run is turned off.
+- A read a Dock Station took in dry run (`raw_tag_reads.dry_run = 1`; dry run
+  has been removed, so only reads taken before that carry the stamp) still
+  matches and still alarms, but its scan is stored as
+  `upload_state = 'dry_run'`, which the uploader never sends, and a miss is
+  never re-checked: those reads never reach the portal.
 - On a reader station (RFID or Dock), a fresh off-move match (received at most
   `alarm.FRESH_S` before the pass) raises the "Asset Not Part Of Move" alarm
   in the pass's own transaction. Late matches (a backlog, the re-check) never

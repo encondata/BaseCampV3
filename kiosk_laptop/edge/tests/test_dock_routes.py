@@ -1,18 +1,19 @@
 """/edge/dock: what the kiosk's Dock screen polls (dock station spec): the
-overview (settings, the open pass, the newest closed passes), a pass's detail
-(tags with what packing did, every read) and the settings save. Session-gated
-like /edge/rfid; the views take `now` so the open pass's countdown is pinned."""
+overview (the open pass, the newest closed passes) and a pass's detail (tags
+with what packing did, every read). Session-gated like /edge/rfid; the views
+take `now` so the open pass's countdown is pinned."""
 
-from edge.dock import state, views
+from edge.dock import views
 from tests.conftest import make_session
 from tests.fake_reader import tag_event
-from tests.test_dock_grouper import at, batch, dock, group, passes, post, read, reader_time
+from tests.test_dock_grouper import (at, batch, dock, group, legacy_settings, passes, post, read,
+                                     reader_time, stamp_dry_run)
 
 
 def seed_passes(store):
     """One closed pass per status, oldest first (100 s apart): flagged with no
-    crate, flagged with two, nothing, would pack (dry run), waiting to send,
-    packed, refused."""
+    crate, flagged with two, nothing, would pack (a read taken in dry run,
+    before it was removed), waiting to send, packed, refused."""
     dock(store)
     plan = [
         (False, [("AA01", 0)]),                                   # no_crate
@@ -24,8 +25,9 @@ def seed_passes(store):
         (False, [("AA03", 0), ("CC03", 0.5)]),                    # refused
     ]
     for n, (dry, reads) in enumerate(plan):
-        state.save_settings(store, dry_run=dry)
-        batch(store, [(epc, 100 * n + s) for epc, s in reads])
+        newest = batch(store, [(epc, 100 * n + s) for epc, s in reads])
+        if dry:
+            stamp_dry_run(store, newest)
         group(store, 100 * n + 20)
     sent, refused = passes(store)[5], passes(store)[6]
     store.run("UPDATE dock_passes SET send_state = 'sent', packed_count = 1, moved_count = 2 "
@@ -45,23 +47,18 @@ def add_closed(store, n):
 async def test_routes_need_a_session(app, client):
     assert (await client.get("/edge/dock")).status_code == 401
     assert (await client.get("/edge/dock/passes/1")).status_code == 401
-    r = await client.put("/edge/dock/settings", json={"dry_run": False})
-    assert r.status_code == 401
-    assert state.settings(app.state.store) == state.DEFAULTS   # nothing was saved
 
 
 async def test_routes_work_offline(app, client):
     h = make_session(app, offline=True)
     assert (await client.get("/edge/dock", headers=h)).status_code == 200
-    r = await client.put("/edge/dock/settings", json={"quiet_gap_s": 9}, headers=h)
-    assert r.status_code == 200 and r.json()["quiet_gap_s"] == 9
+    assert (await client.get("/edge/dock/passes/1", headers=h)).status_code == 404
 
 
 async def test_overview_with_nothing_yet(app, client):
     r = await client.get("/edge/dock", headers=make_session(app))
     assert r.status_code == 200
-    assert r.json() == {"settings": {"dry_run": True, "quiet_gap_s": 5},
-                        "open": None, "passes": [], "control": None}
+    assert r.json() == {"open": None, "passes": [], "control": None}
 
 
 def test_open_pass_counts_down_to_its_close(app):
@@ -72,7 +69,7 @@ def test_open_pass_counts_down_to_its_close(app):
     [p] = passes(store)
     assert p["closed_at"] is None
     body = views.overview(store, at(3))
-    assert body["passes"] == [] and body["settings"] == {"dry_run": False, "quiet_gap_s": 5}
+    assert body["passes"] == [] and "settings" not in body
     assert body["open"] == {
         "id": p["id"], "opened_at": p["opened_at"], "seconds_left": 8.0, "window_s": 5,
         "crate_count": 1, "asset_count": 2, "conflict": False, "added_count": 2,
@@ -96,15 +93,6 @@ def test_open_pass_counts_down_to_its_close(app):
     assert views.overview(store, at(500))["open"]["seconds_left"] == 0   # never negative
 
 
-def test_seconds_left_follows_the_window_setting(app):
-    store = app.state.store
-    dock(store)
-    read(store, "AA01", 0)
-    group(store, 1)
-    state.save_settings(store, quiet_gap_s=20)
-    assert views.overview(store, at(5))["open"]["seconds_left"] == 35.0
-
-
 def test_open_pass_counts_distinct_crates_and_assets(app):
     store = app.state.store
     dock(store)
@@ -120,7 +108,7 @@ async def test_overview_route_serves_the_open_pass(app, client):
     batch(store, [("AA01", 0), ("CC01", 1)])
     group(store, 2)
     body = (await client.get("/edge/dock", headers=make_session(app))).json()
-    assert set(body) == {"settings", "open", "passes", "control"} and body["passes"] == []
+    assert set(body) == {"open", "passes", "control"} and body["passes"] == []
     assert set(body["open"]) == {"id", "opened_at", "seconds_left", "window_s", "crate_count",
                                  "asset_count", "crates", "conflict", "added_count", "tags"}
     assert all(set(t) == {"epc", "kind", "label", "first_read_at", "serial", "in_window",
@@ -288,30 +276,32 @@ async def test_unknown_pass_is_404(app, client):
         assert r.json()["detail"]["code"] == "pass_not_found", bad
 
 
-async def test_settings_save_and_overview_follow(app, client):
-    h = make_session(app)
-    r = await client.put("/edge/dock/settings", json={"quiet_gap_s": 8}, headers=h)
-    assert r.status_code == 200 and r.json() == {"dry_run": True, "quiet_gap_s": 8}
-    r = await client.put("/edge/dock/settings", json={"dry_run": False}, headers=h)
-    assert r.json() == {"dry_run": False, "quiet_gap_s": 8}   # the gap is kept
-    r = await client.put("/edge/dock/settings", json={"dry_run": True, "quiet_gap_s": 60},
-                         headers=h)
-    assert r.json() == {"dry_run": True, "quiet_gap_s": 60}
-    r = await client.put("/edge/dock/settings", json={}, headers=h)
-    assert r.status_code == 200 and r.json() == {"dry_run": True, "quiet_gap_s": 60}
-    assert state.settings(app.state.store) == {"dry_run": True, "quiet_gap_s": 60}
-    assert (await client.get("/edge/dock", headers=h)).json()["settings"] == {
-        "dry_run": True, "quiet_gap_s": 60}
+async def test_overview_has_no_settings(app, client):
+    r = await client.get("/edge/dock", headers=make_session(app))
+    assert r.status_code == 200
+    assert set(r.json()) == {"open", "passes", "control"}
+    assert r.json() == {"open": None, "passes": [], "control": None}
 
 
-async def test_bad_settings_are_422_and_save_nothing(app, client):
+async def test_settings_route_is_gone(app, client):
     h = make_session(app)
-    for bad in ({"dry_run": "yes"}, {"dry_run": 1}, {"quiet_gap_s": 0}, {"quiet_gap_s": 61},
-                {"quiet_gap_s": "5"}, {"quiet_gap_s": True}, {"quiet_gap_s": 5.5},
-                {"dry_run": False, "quiet_gap_s": 99}):
-        r = await client.put("/edge/dock/settings", json=bad, headers=h)
-        assert r.status_code == 422, bad
-        assert r.json()["detail"]["code"] == "invalid_dock_settings", bad
-    assert state.settings(app.state.store) == state.DEFAULTS
-    r = await client.put("/edge/dock/settings", json=[1], headers=h)
-    assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_request"
+    for body in ({"dry_run": False}, {"quiet_gap_s": 9}, {}):
+        r = await client.put("/edge/dock/settings", json=body, headers=h)
+        assert r.status_code in (404, 405), body
+    assert (await client.get("/edge/dock/settings", headers=h)).status_code in (404, 405)
+
+
+async def test_legacy_dry_run_pass_still_would_pack(app, client):
+    store = app.state.store
+    dock(store)
+    legacy_settings(store)
+    first = read(store, "AA01", 0)                 # taken before dry run was removed
+    store.run("UPDATE raw_tag_reads SET dry_run = 1 WHERE id = ?", (first,))
+    batch(store, [("CC01", 1), ("AA02", 2)])        # live reads in the same burst
+    group(store, 13)
+    [p] = passes(store)
+    assert (p["outcome"], p["dry_run"], p["send_state"]) == ("pack", 1, "none")
+    body = (await client.get("/edge/dock", headers=make_session(app))).json()
+    [shown] = body["passes"]
+    assert shown["status"] == "would_pack" and shown["dry_run"] is True
+    assert shown["container_name"] == "Crate 1" and shown["asset_count"] == 2

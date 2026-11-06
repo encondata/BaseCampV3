@@ -1,70 +1,23 @@
-"""The Dock Station's laptop settings and the clearing of its pass data.
+"""The Dock Station's window and the clearing of its pass data.
 
-Settings (one `dock_settings` row; none reads as `DEFAULTS`):
-- `dry_run`: while on, nothing reaches the portal, no passes and no scans.
-  Which reads count as dry run is decided when they are read (`tagreads`
-  stamps `raw_tag_reads.dry_run`), so reads taken during dry run are never
-  uploaded, not even after it is turned off. On by default.
-- `quiet_gap_s`: the Window W, in whole seconds (the name predates it). An
-  asset packs into a crate when one of its reads is within W of the crate
-  tag's first read, crates whose first reads are within 2W are flagged
-  together, and a burst of reads is decided 2W after its last new tag
-  (`edge.dock.grouper`).
+`WINDOW_S` is the Window W, fixed at 5 seconds: an asset packs into a crate
+when one of its reads is within W of the crate tag's first read, and crates
+whose first reads are within 2W are flagged together (`edge.dock.grouper`).
+The Dock has no settings: no dry run (every crate packs and the reads go up
+as scans) and no configurable window. The `dock_settings` table and the
+`dry_run` columns stay in the schema for laptops upgraded from a build that
+had them: nothing reads that table any more, and a read stamped
+`raw_tag_reads.dry_run = 1` back then still never uploads, so its pass still
+reads "Would pack". Nothing new is ever stamped.
 
 Pass data is cleared with the alarm tables: on a move change, a change to
 another station type or a change to a Dock from another type
-(`clear_passes`), and by Clear Setup (`reset`, which drops the settings too).
-Wipe empties the same tables itself.
+(`clear_passes`), and by Clear Setup (`reset`, which drops any legacy
+settings row too). Wipe empties the same tables itself.
 
-Imports only `edge.db`, so `laptop_setup` and `tagreads` can import it."""
+Imports nothing from `edge`, so `laptop_setup` can import it."""
 
-from edge.db import Store
-
-DEFAULTS = {"dry_run": True, "quiet_gap_s": 5}
-GAP_RANGE = (1, 60)
-
-
-def _settings(row) -> dict:
-    if row is None:
-        return dict(DEFAULTS)
-    return {"dry_run": bool(row["dry_run"]), "quiet_gap_s": row["quiet_gap_s"]}
-
-
-def settings(store: Store) -> dict:
-    return _settings(store.one("SELECT dry_run, quiet_gap_s FROM dock_settings WHERE id = 1"))
-
-
-def settings_in(c) -> dict:
-    """The settings, read on an open transaction."""
-    return _settings(c.execute(
-        "SELECT dry_run, quiet_gap_s FROM dock_settings WHERE id = 1").fetchone())
-
-
-def dry_run_on(store: Store) -> bool:
-    return settings(store)["dry_run"]
-
-
-def save_settings(store: Store, *, dry_run: bool | None = None,
-                  quiet_gap_s: int | None = None) -> dict:
-    """Change the given settings, keeping the others; the settings as saved.
-    Raises ValueError naming the bad field (nothing is saved)."""
-    if dry_run is not None and not isinstance(dry_run, bool):
-        raise ValueError("dry_run")
-    if quiet_gap_s is not None and (
-            not isinstance(quiet_gap_s, int) or isinstance(quiet_gap_s, bool)
-            or not GAP_RANGE[0] <= quiet_gap_s <= GAP_RANGE[1]):
-        raise ValueError("quiet_gap_s")
-    with store.tx() as c:
-        saved = settings_in(c)
-        if dry_run is not None:
-            saved["dry_run"] = dry_run
-        if quiet_gap_s is not None:
-            saved["quiet_gap_s"] = quiet_gap_s
-        c.execute("INSERT INTO dock_settings (id, dry_run, quiet_gap_s) VALUES (1, ?, ?) "
-                  "ON CONFLICT (id) DO UPDATE SET dry_run = excluded.dry_run, "
-                  "quiet_gap_s = excluded.quiet_gap_s",
-                  (int(saved["dry_run"]), saved["quiet_gap_s"]))
-    return saved
+WINDOW_S = 5
 
 
 def clear_passes(c) -> None:
@@ -79,6 +32,6 @@ def clear_passes(c) -> None:
 
 
 def reset(c) -> None:
-    """Clear Setup: the passes and the settings (back to DEFAULTS)."""
+    """Clear Setup: the passes and any legacy settings row."""
     clear_passes(c)
     c.execute("DELETE FROM dock_settings")

@@ -2,8 +2,7 @@
 
 A tick reads `raw_tag_reads` after the grouper's own cursor (`dock_meta`) in
 id order, at most `BATCH` rows, and groups the setup move's reads by the
-reader's own read time. W is the Window setting (`quiet_gap_s` in
-`edge.dock.state`, 5 s by default).
+reader's own read time. W is the fixed window `state.WINDOW_S` (5 s).
 
 - Reads gather into a burst: the open `dock_passes` row. Any tag opens one,
   and read order inside it doesn't matter. A burst ends once no NEW tag has
@@ -33,9 +32,10 @@ reader's own read time. W is the Window setting (`quiet_gap_s` in
   Dock screen's view of the open burst, so the screen agrees with them.
 - A crate group's pass closes at its first anchor + W, the no-crate pass at
   the burst's last new read + 2W.
-- A pass is dry run when any of its own reads was taken in dry run or dry
-  run is on when its burst is decided. Only a live `pack` waits to be sent
-  (`send_state = 'pending'`).
+- A pass is dry run (and reads "Would pack") only when one of its own reads
+  is stamped `dry_run`: reads taken before dry run was removed. Nothing new
+  is stamped, so only such a pass is never sent; every other `pack` waits to
+  be sent (`send_state = 'pending'`).
 - Off a Dock setup, or without a move, the cursor jumps to the newest read,
   so reads taken as another station type never land in a pass later.
 - A setup-move read whose sync data isn't cached yet stops the tick WITHOUT
@@ -62,7 +62,7 @@ _IDLE_SLACK = timedelta(seconds=1)   # received_at's resolution
 # the read times a burst can be decided from: one outside them would overflow
 # `last_new_at + 2W` or a window's `anchor - W`, roll the tick back and stall
 # the cursor for good
-_EDGE = timedelta(seconds=2 * state.GAP_RANGE[1]) + _IDLE_SLACK
+_EDGE = timedelta(seconds=2 * state.WINDOW_S) + _IDLE_SLACK
 _EARLIEST = datetime.min.replace(tzinfo=UTC) + _EDGE
 _LATEST = datetime.max.replace(tzinfo=UTC) - _EDGE
 
@@ -271,7 +271,7 @@ def _split(tags, reads: dict[str, list], w: timedelta) -> list[_Split]:
     return sorted(out, key=lambda g: (g.opened, g.anchor is None))
 
 
-def _decide(c, b: _Burst, w_s: int, dry_run_now: bool) -> tuple[int, int]:
+def _decide(c, b: _Burst, w_s: int) -> tuple[int, int]:
     """Decide the burst: split it into its passes and close each with its
     outcome. The burst's row becomes the first pass, the rest are inserted
     after it, and each tag moves with every read of it. (passes decided,
@@ -315,7 +315,7 @@ def _decide(c, b: _Burst, w_s: int, dry_run_now: bool) -> tuple[int, int]:
             else:
                 outcome = "pack" if assets else "nothing"
                 [(crate_id, crate_name)] = crates.items()
-        dry_run = dry_run_now or any(raw["dry_run"] for _, raw in g.reads)
+        dry_run = any(raw["dry_run"] for _, raw in g.reads)
         send = outcome == "pack" and not dry_run
         sends += send
         c.execute("UPDATE dock_passes SET opened_at = ?, closed_at = ?, quiet_gap_s = ?, "
@@ -343,8 +343,7 @@ def group(store: Store, now: datetime | None = None, *, decide: bool = False) ->
             if newest != last:
                 _set_cursor(c, newest)   # never grouped later, not even on a Dock
             return GroupResult(0, 0, 0, False)
-        settings = state.settings_in(c)
-        w_s = settings["quiet_gap_s"]
+        w_s = state.WINDOW_S
         burst_gap = timedelta(seconds=2 * w_s)   # a burst ends 2W after its last new tag
         rows = c.execute("SELECT id, epc, read_at, received_at, initiative_id "
                          "FROM raw_tag_reads WHERE id > ? ORDER BY id LIMIT ?",
@@ -361,7 +360,7 @@ def group(store: Store, now: datetime | None = None, *, decide: bool = False) ->
                         break  # set up but not synced: stop here, never skip it
                 t = read_time(raw)
                 if current is not None and t - current.last_new_at > burst_gap:
-                    decided, sends = _decide(c, current, w_s, settings["dry_run"])
+                    decided, sends = _decide(c, current, w_s)
                     closed, to_send, current = closed + decided, to_send + sends, None
                 if current is None:
                     current = _open(c, move, t, raw)
@@ -371,7 +370,7 @@ def group(store: Store, now: datetime | None = None, *, decide: bool = False) ->
         if current is not None:
             idle_at = datetime.fromisoformat(current.last_received_at) + burst_gap + _IDLE_SLACK
             if not waiting and len(rows) < BATCH and (decide or now >= idle_at):
-                decided, sends = _decide(c, current, w_s, settings["dry_run"])
+                decided, sends = _decide(c, current, w_s)
                 closed, to_send = closed + decided, to_send + sends
             elif current.changed:
                 _save(c, current)

@@ -1,5 +1,5 @@
 """What the kiosk's Dock screen reads (dock station spec): the overview
-(settings, the open pass, the newest closed passes) and one closed pass's
+(the open pass, the newest closed passes) and one closed pass's
 detail (its tags with what packing did, every read behind it).
 
 The open pass is the grouper's open burst, not yet decided into passes,
@@ -21,8 +21,9 @@ FLAGS = ("no_crate", "many_crates")  # the outcomes the screen flags
 
 def _status(row) -> str:
     """The first that applies: `flagged` (no crate or several), `nothing`,
-    `would_pack` (a dry run, so nothing was or will be sent), `waiting` (to be
-    sent), `packed` (sent) or `refused` (the portal turned it away)."""
+    `would_pack` (decided from reads taken in dry run, before it was removed,
+    so nothing was or will be sent), `waiting` (to be sent), `packed` (sent)
+    or `refused` (the portal turned it away)."""
     if row["outcome"] in FLAGS:
         return "flagged"
     if row["outcome"] == "nothing":
@@ -130,13 +131,11 @@ def _open_pass(store: Store, window_s: int, now: datetime) -> dict | None:
 
 
 def overview(store: Store, now: datetime) -> dict:
-    """The settings, the open pass (or None) and the newest `RECENT` closed
-    passes, newest first."""
-    settings = state.settings(store)
+    """The open pass (or None) and the newest `RECENT` closed passes, newest
+    first."""
     closed = store.all("SELECT * FROM dock_passes WHERE closed_at IS NOT NULL "
                        "ORDER BY id DESC LIMIT ?", (RECENT,))
-    return {"settings": settings,
-            "open": _open_pass(store, settings["quiet_gap_s"], now),
+    return {"open": _open_pass(store, state.WINDOW_S, now),
             "passes": [_pass_row(r) for r in closed]}
 
 

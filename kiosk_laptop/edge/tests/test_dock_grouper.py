@@ -14,7 +14,7 @@ import pytest
 
 from edge import laptop_setup
 from edge.db import Store, iso
-from edge.dock import grouper, state
+from edge.dock import grouper
 from edge.rfid.tagreads import parse_events, store_batch
 from tests.fake_reader import tag_event
 from tests.test_rfid_alarm import as_station, client_asset
@@ -47,11 +47,23 @@ def reader_time(seconds: float) -> str:
     return at(seconds).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "+0000"
 
 
-def dock(store, *, dry_run=False, **sources):
-    """A Dock setup on MOVE with its sync data cached; dry run off unless asked."""
+def dock(store, **sources):
+    """A Dock setup on MOVE with its sync data cached."""
     seed(store, **{"assets": ASSETS, "containers": CRATES, **sources})
     as_station(store, "dock")
-    state.save_settings(store, dry_run=dry_run)
+
+
+def legacy_settings(store, *, quiet_gap_s=5):
+    """The `dock_settings` row an older build left, with dry run on."""
+    store.run("INSERT INTO dock_settings (id, dry_run, quiet_gap_s) VALUES (1, 1, ?) "
+              "ON CONFLICT (id) DO UPDATE SET dry_run = 1, quiet_gap_s = excluded.quiet_gap_s",
+              (quiet_gap_s,))
+
+
+def stamp_dry_run(store, *raw_ids):
+    """Stamp reads the way a read taken in dry run, before it was removed, was."""
+    for raw_id in raw_ids:
+        store.run("UPDATE raw_tag_reads SET dry_run = 1 WHERE id = ?", (raw_id,))
 
 
 def post(store, events, received: float, setup=DOCK) -> int:
@@ -274,48 +286,34 @@ def test_other_move_crate_reads_as_unknown(store):
     assert outcomes(store) == [("no_crate", None, 1, "none")]
 
 
-def test_dry_run_pass_is_never_pending(store):
-    dock(store, dry_run=True)
-    batch(store, [("AA01", 0), ("CC01", 1)])
+def test_pass_with_a_legacy_dry_read_is_never_pending(store):
+    dock(store)
+    first = read(store, "AA01", 0)                # taken before dry run was removed
+    stamp_dry_run(store, first)
+    read(store, "CC01", 1)                        # live
     assert group(store, 12).to_send == 0
     [p] = passes(store)
     assert p["outcome"] == "pack" and p["container_id"] == "c-1"
     assert p["dry_run"] == 1 and p["send_state"] == "none"
 
 
-def test_switch_during_open_burst_keeps_its_reads_dry(store):
-    dock(store, dry_run=True)
-    read(store, "AA01", 0)                        # taken in dry run
-    group(store, 1)
-    state.save_settings(store, dry_run=False)
-    read(store, "CC01", 1)                        # live
+def test_burst_after_a_legacy_dry_one_is_live(store):
+    dock(store)
+    stamp_dry_run(store, read(store, "AA01", 0))
+    read(store, "CC01", 1)
     assert group(store, 12).to_send == 0
-    batch(store, [("AA02", 20), ("CC01", 21)])
+    batch(store, [("AA02", 20), ("CC01", 21)])    # nothing new is stamped
     assert group(store, 32).to_send == 1
     first, second = passes(store)
     assert (first["outcome"], first["dry_run"], first["send_state"]) == ("pack", 1, "none")
     assert (second["outcome"], second["dry_run"], second["send_state"]) == ("pack", 0, "pending")
 
 
-def test_closed_while_dry_run_on_is_dry(store):
-    dock(store)
-    batch(store, [("AA01", 0), ("CC01", 1)])      # live reads
-    group(store, 2)
-    assert passes(store)[0]["closed_at"] is None
-    assert [r["dry_run"] for r in store.all("SELECT dry_run FROM raw_tag_reads")] == [None, None]
-    state.save_settings(store, dry_run=True)
-    assert group(store, 12).to_send == 0
-    [p] = passes(store)
-    assert (p["outcome"], p["dry_run"], p["send_state"]) == ("pack", 1, "none")
-
-
 def test_dry_run_is_decided_per_pass(store):
-    dock(store, dry_run=True)
-    read(store, "CC01", 0)                        # taken in dry run
+    dock(store)
+    stamp_dry_run(store, read(store, "CC01", 0))  # taken before dry run was removed
     read(store, "AA01", 1)
-    group(store, 1)
-    state.save_settings(store, dry_run=False)
-    read(store, "AA02", 8)                        # live, same burst
+    read(store, "AA02", 8)                        # same burst
     read(store, "CC02", 12)
     result = group(store, 23)
     assert (result.closed, result.to_send) == (2, 1)
@@ -386,15 +384,15 @@ def test_read_time_parsing_and_fallback(store):
 def test_read_time_too_late_to_close_falls_back(store):
     received = "2026-10-16T14:03:30+00:00"
     fallback = datetime(2026, 10, 16, 14, 3, 30, tzinfo=UTC)
-    for late in ("9999-12-31T23:58:00+0000", "9999-12-31T23:59:59.999+0000",
+    for late in ("9999-12-31T23:59:49+0000", "9999-12-31T23:59:59.999+0000",
                  "0001-01-01T00:00:00+0100", "0001-01-01T00:00:00+0000",
-                 "0001-01-01T00:00:02.000+0000", "0001-01-01T00:02:00.999+0000"):
+                 "0001-01-01T00:00:02.000+0000", "0001-01-01T00:00:10.999+0000"):
         assert grouper.read_time({"read_at": late, "received_at": received}) == fallback
-    # room for 2 x the widest window + 1 s at either end of time
-    assert grouper.read_time({"read_at": "9999-12-31T23:57:58+0000", "received_at": received}) \
-        == datetime(9999, 12, 31, 23, 57, 58, tzinfo=UTC)
-    assert grouper.read_time({"read_at": "0001-01-01T00:02:01+0000", "received_at": received}) \
-        == datetime(1, 1, 1, 0, 2, 1, tzinfo=UTC)
+    # room for 2W + 1 s (11 s) at either end of time
+    assert grouper.read_time({"read_at": "9999-12-31T23:59:48+0000", "received_at": received}) \
+        == datetime(9999, 12, 31, 23, 59, 48, tzinfo=UTC)
+    assert grouper.read_time({"read_at": "0001-01-01T00:00:11+0000", "received_at": received}) \
+        == datetime(1, 1, 1, 0, 0, 11, tzinfo=UTC)
 
     dock(store)
     post(store, [tag_event("AA01", timestamp="9999-12-31T23:59:59.999+0000")], 0)
@@ -452,7 +450,6 @@ def test_decide_now_groups_the_backlog_first(store, tmp_path, monkeypatch):
     try:
         set_setup(cold)                           # a Dock whose move data isn't cached yet
         as_station(cold, "dock")
-        state.save_settings(cold, dry_run=False)
         read(cold, "AA01", 0)
         assert grouper.decide_now(cold, now=at(1)) == grouper.GroupResult(
             scanned=0, closed=0, to_send=0, waiting=True)
@@ -483,7 +480,6 @@ def test_late_reads_after_stop_open_a_new_burst(store):
 def test_waits_for_move_cache(store):
     set_setup(store)
     as_station(store, "dock")
-    state.save_settings(store, dry_run=False)
     start = cursor(store)
     first = read(store, "AA01", 0)
     assert group(store, 1) == grouper.GroupResult(scanned=0, closed=0, to_send=0, waiting=True)
@@ -501,7 +497,6 @@ def test_waits_for_move_cache(store):
 def test_not_dock_setup_skips_reads(store):
     seed(store, assets=ASSETS, containers=CRATES)
     rfid = {**SETUP, "station_type": "rfid"}
-    state.save_settings(store, dry_run=False)
     laptop_setup.save(store, SETUP, "rfid")
     batch(store, [("AA01", 0), ("CC01", 1)], setup=rfid)
     last = read(store, "AA02", 2, setup=rfid)
@@ -524,3 +519,13 @@ def test_not_dock_setup_skips_reads(store):
     last = read(store, "AA01", 70, setup=None)
     group(store, 80)
     assert cursor(store) == last and len(passes(store)) == 1
+
+
+def test_legacy_settings_row_does_not_make_a_pass_dry(store):
+    dock(store)
+    legacy_settings(store, quiet_gap_s=9)
+    batch(store, [("AA01", 0), ("CC01", 1)])
+    assert group(store, 12).to_send == 1
+    [p] = passes(store)
+    assert (p["outcome"], p["dry_run"], p["send_state"], p["quiet_gap_s"]) \
+        == ("pack", 0, "pending", 5)
