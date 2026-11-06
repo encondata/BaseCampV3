@@ -19,6 +19,7 @@ requires workers:view, which vendor_viewer does not hold (access/defaults.py:35)
 from sqlalchemy import select
 
 from serversherpa.db.models import StatusValue, WorkerLevel
+from serversherpa.db.ordering import natural
 
 # Reached only if a status has no status_values row. Both sites.status and
 # worker_profiles.status carry a composite FK into status_values
@@ -37,6 +38,16 @@ async def status_labels(db, record_type: str) -> dict[str, tuple[str, str]]:
     """
     return {s.key: (s.label, s.color) for s in await db.scalars(
         select(StatusValue).where(StatusValue.record_type == record_type))}
+
+
+async def active_statuses(db, record_type: str) -> list[StatusValue]:
+    """One record type's statuses that can still be chosen (is_active), in picker order: what
+    GET /status-values?record_type= serves, so a check against them agrees with every picker.
+    Unlike `status_labels`, a retired status is left out: no new choice may name it."""
+    return list((await db.scalars(
+        select(StatusValue)
+        .where(StatusValue.record_type == record_type, StatusValue.is_active.is_(True))
+        .order_by(StatusValue.sort_order, natural(StatusValue.label)))).all())
 
 
 def status_fields(status: str, labels: dict[str, tuple[str, str]]) -> dict:

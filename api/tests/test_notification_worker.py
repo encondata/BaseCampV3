@@ -1,7 +1,7 @@
-"""notification-worker: heartbeat, the device check, the sweeps and status logs. The idle
-status line reports the email held for a summary. Run_forever smoke tests modeled on
-test_system_registry.py's direct use of the `db` fixture alongside a heartbeat task
-writing through its own session."""
+"""notification-worker: heartbeat, the device check, the asset-watch check, the sweeps and
+status logs. The idle status line reports the email held for a summary. Run_forever smoke
+tests modeled on test_system_registry.py's direct use of the `db` fixture alongside a
+heartbeat task writing through its own session."""
 
 import asyncio
 import logging
@@ -272,6 +272,10 @@ async def test_run_forever_runs_the_device_check_then_the_event_sweep_then_the_s
         calls.append("devices")
         return 2
 
+    async def fake_asset_watches(maker, *, now=None):
+        calls.append("asset_watches")
+        return 4
+
     async def fake_events(maker):
         calls.append("events")
         return 3
@@ -282,24 +286,28 @@ async def test_run_forever_runs_the_device_check_then_the_event_sweep_then_the_s
         return 0
 
     monkeypatch.setattr(worker_mod, "run_device_check_once", fake_devices)
+    monkeypatch.setattr(worker_mod, "run_asset_watches_once", fake_asset_watches)
     monkeypatch.setattr(worker_mod, "run_events_once", fake_events)
     monkeypatch.setattr(worker_mod, "run_summaries_once", fake_summaries)
+    assert worker_mod.ASSET_WATCH_INTERVAL_SECONDS == 60
     caplog.set_level(logging.INFO, logger="serversherpa.notifications.worker")
     task = asyncio.create_task(run_forever(poll_seconds=0.05))
     try:
         # The first loop does other work (the outbox, the reminder and learning sweeps) before
-        # the three under test, and how long that takes depends on the machine: wait until the
+        # the four under test, and how long that takes depends on the machine: wait until the
         # summaries have run, with a limit only to end a hang, rather than for a fixed time.
         await asyncio.wait_for(summaries_ran.wait(), timeout=60)
-        # Then let several more polls go by: none of the three is due again for a minute.
+        # Then let several more polls go by: none of the four is due again for a minute.
         await asyncio.sleep(0.3)
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
     # once each on the first loop: the device check first, so what it announces goes out with
-    # the event sweep right after it; the next are a minute away
-    assert calls == ["devices", "events", "summaries"]
+    # the event sweep after it, and the asset-watch check between them, before the summaries
+    # too, so an email it holds can join a summary due now; the next are a minute away
+    assert calls == ["devices", "asset_watches", "events", "summaries"]
     assert "announced 2 device(s) offline" in caplog.text
+    assert "ended 4 asset watch(es)" in caplog.text
     assert "wrote 3 notification(s) from events" in caplog.text
 
 
@@ -324,6 +332,31 @@ async def test_device_check_errors_do_not_kill_the_loop(db, monkeypatch, caplog)
         await asyncio.gather(task, return_exceptions=True)
     assert len(calls) >= 2
     assert caplog.text.count("could not run the device check") == 1   # once per outage
+    assert "RuntimeError" in caplog.text
+    assert "db down" not in caplog.text          # the class only, never the text
+
+
+async def test_asset_watch_check_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
+    from serversherpa.notifications import worker as worker_mod
+
+    calls = []
+
+    async def boom(maker, *, now=None):
+        calls.append(1)
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(worker_mod, "run_asset_watches_once", boom)
+    monkeypatch.setattr(worker_mod, "ASSET_WATCH_INTERVAL_SECONDS", 0)
+    caplog.set_level(logging.WARNING, logger="serversherpa.notifications.worker")
+    task = asyncio.create_task(run_forever(poll_seconds=0.05))
+    try:
+        await _until(lambda: len(calls) >= 2)
+        assert not task.done()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert len(calls) >= 2
+    assert caplog.text.count("could not run the asset-watch check") == 1   # once per outage
     assert "RuntimeError" in caplog.text
     assert "db down" not in caplog.text          # the class only, never the text
 
@@ -504,10 +537,11 @@ async def test_delivery_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
 
 
 def test_cli_once_runs_the_status_pass_the_sweeps_and_one_delivery_pass(monkeypatch):
-    """`notification-worker --once` checks the devices, turns waiting events
-    into notifications, sends the summaries that are due, then delivers due
-    mail, so what the check announces and the sweeps queue goes out in the
-    same run (CLI surface only: the passes themselves are faked)."""
+    """`notification-worker --once` checks the devices, then the asset watches,
+    turns waiting events into notifications, sends the summaries that are due,
+    then delivers due mail, so what the checks announce and write and the
+    sweeps queue goes out in the same run (CLI surface only: the passes
+    themselves are faked)."""
     from typer.testing import CliRunner
 
     from serversherpa import cli
@@ -523,6 +557,10 @@ def test_cli_once_runs_the_status_pass_the_sweeps_and_one_delivery_pass(monkeypa
     async def fake_devices(maker, *, now=None, state=None):
         calls.append("devices")
         return 1
+
+    async def fake_asset_watches(maker, *, now=None):
+        calls.append("asset_watches")
+        return 2
 
     async def fake_events(maker):
         calls.append("events")
@@ -542,14 +580,16 @@ def test_cli_once_runs_the_status_pass_the_sweeps_and_one_delivery_pass(monkeypa
     monkeypatch.setattr(engine_mod, "get_sessionmaker", lambda: object())
     monkeypatch.setattr(worker_mod, "run_once", fake_status)
     monkeypatch.setattr(worker_mod, "run_device_check_once", fake_devices)
+    monkeypatch.setattr(worker_mod, "run_asset_watches_once", fake_asset_watches)
     monkeypatch.setattr(worker_mod, "run_events_once", fake_events)
     monkeypatch.setattr(worker_mod, "run_summaries_once", fake_summaries)
     monkeypatch.setattr(delivery, "deliver_once", fake_deliver)
     monkeypatch.setattr(cli, "dispose_engine", no_dispose)
     result = CliRunner().invoke(cli.app, ["notification-worker", "--once"])
     assert result.exit_code == 0, result.output
-    assert calls == ["status", "devices", "events", "summaries", "deliver"]
+    assert calls == ["status", "devices", "asset_watches", "events", "summaries", "deliver"]
     assert "announced 1 device(s) offline" in result.output
+    assert "ended 2 asset watch(es)" in result.output
     assert "wrote 4 notification(s) from events" in result.output
     assert "queued 2 summary email(s)" in result.output
     assert "processed 3 queued email(s)" in result.output

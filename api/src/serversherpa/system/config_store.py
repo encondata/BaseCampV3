@@ -87,8 +87,8 @@ DEFAULTS: dict[str, dict] = {
     "notifications": {
         "defaults": {category: {"inbox": True, "email": True}
                      for category in ("approvals", "reports", "wiki", "learning",
-                                      "initiatives", "plans", "trucks", "devices",
-                                      "status_rules", "bulk_actions")},
+                                      "initiatives", "assets", "plans", "trucks",
+                                      "devices", "status_rules", "bulk_actions")},
         "critical_kinds": [],
     },
     # Project plans (plans/settings.py): the calendar a new plan copies (MS

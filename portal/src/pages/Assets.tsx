@@ -16,6 +16,8 @@ import AssetLocation from '../components/assets/AssetLocation';
 import GodDeleteButton from '../components/GodDeleteButton';
 import { RowActionsMenu, type RowAction } from '../components/hardware/RowActionsMenu';
 import NotesFilesPanel from '../components/NotesFilesPanel';
+import { useAssetWatches } from '../components/notifications/useAssetWatches';
+import WatchAssetModal from '../components/notifications/WatchAssetModal';
 import {
   ApiError,
   listAssetModels,
@@ -43,6 +45,7 @@ import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { usePendingDeletes } from '../lib/pendingDeletes';
 import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
+import { assetWatchName } from '../lib/watches';
 import {
   ACTIONS_TRACK,
   applyColumnOrder,
@@ -84,6 +87,8 @@ export default function Assets() {
   const canViewCategories = can('asset_models', 'view');
   const god = useGodEdit();
   const pd = usePendingDeletes(godMode);
+  // The person's own watches of assets: the row menu's "Watch…" reads "Watching…" for one they watch.
+  const { watchFor, reload: reloadWatches } = useAssetWatches();
 
   const [assets, setAssets] = useState<AssetItem[] | null>(null);
   const [statuses, setStatuses] = useState<StatusValue[]>([]);
@@ -126,6 +131,9 @@ export default function Assets() {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  // The asset whose Watch modal is open.
+  const [watchingId, setWatchingId] = useState<string | null>(null);
+  const watchingAsset = assets?.find((a) => a.id === watchingId) ?? null;
 
   const load = async () => {
     try {
@@ -244,12 +252,19 @@ export default function Assets() {
 
   // Actions available for the row's own trailing RowActionsMenu. Full
   // details is always offered; Edit joins it only for editors — the
-  // god-mode delete stays its own control in the expansion.
+  // god-mode delete stays its own control in the expansion. Watch… is for
+  // everyone who can open the list (this page needs assets:view): it reads
+  // Watching… while the person has a watch on the asset itself, and either
+  // way opens the Watch modal.
   const rowActions = (a: AssetItem): RowAction[] => [
     { key: 'details', label: 'Full details', onSelect: () => navigate(`/assets/${a.id}`) },
     ...(canChange
       ? [{ key: 'edit', label: 'Edit', onSelect: () => setEditingId(a.id) }]
       : []),
+    {
+      key: 'watch', label: watchFor(a.id) ? 'Watching…' : 'Watch…',
+      onSelect: () => setWatchingId(a.id),
+    },
   ];
 
   const cellFor = (a: AssetItem, key: string, isDupe = false) => {
@@ -455,6 +470,16 @@ export default function Assets() {
           canChange={canChange}
           onClose={() => setCreating(false)}
           onSaved={() => load()}
+        />
+      )}
+      {watchingAsset && (
+        // The asset on its own (no initiative). The modal loads its own status list.
+        <WatchAssetModal
+          assetId={watchingAsset.id} assetName={assetWatchName(watchingAsset)}
+          currentStatus={watchingAsset.status} currentStatusLabel={watchingAsset.status_label}
+          watch={watchFor(watchingAsset.id) ?? null}
+          onClose={() => setWatchingId(null)}
+          onSaved={() => reloadWatches()}
         />
       )}
     </div>

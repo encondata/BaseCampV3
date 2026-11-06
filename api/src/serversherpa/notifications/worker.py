@@ -7,7 +7,9 @@ overdue notices), the project plan sweep (plans/reminders.py: due-date
 reminders and the owner's overdue digest), the device check
 (notifications/device_check.py: covered devices that stop checking in
 are announced, except for the longest threshold after the worker starts
-and after read-only mode), the event sweep
+and after read-only mode), the asset-watch check
+(notifications/asset_watch_check.py: a watched asset whose watch is due
+tells its person once, and the watch ends), the event sweep
 (notifications/event_sweep.py: announced events become notifications for
 the people they reach) and then the summary sweep
 (notifications/summary.py: email held for a person's quiet hours or day
@@ -31,6 +33,7 @@ from serversherpa.db.models import NotificationHeld
 from serversherpa.learning.scheduler import run_learning_once
 from serversherpa.mail import email_enabled
 from serversherpa.mail.delivery import deliver_once
+from serversherpa.notifications.asset_watch_check import run_asset_watches_once
 from serversherpa.notifications.device_check import keep_quiet, run_device_check_once
 from serversherpa.notifications.event_sweep import run_events_once
 from serversherpa.notifications.password_reminders import run_reminders_once
@@ -44,6 +47,7 @@ REMINDER_INTERVAL_SECONDS = 3600
 LEARNING_INTERVAL_SECONDS = 60
 PLANS_INTERVAL_SECONDS = 60
 DEVICE_CHECK_INTERVAL_SECONDS = 60
+ASSET_WATCH_INTERVAL_SECONDS = 60
 EVENTS_INTERVAL_SECONDS = 60
 SUMMARY_INTERVAL_SECONDS = 60
 ATTESTATION_STATUS_INTERVAL_SECONDS = 86_400
@@ -133,6 +137,23 @@ async def run_device_check(maker, state: dict) -> None:
         logger.info("announced %d device(s) offline", announced)
 
 
+async def run_asset_watches(maker, state: dict) -> None:
+    """One asset-watch check; a failure is logged once per outage, never raised
+    (each watch's own failure is already logged inside)."""
+    try:
+        ended = await run_asset_watches_once(maker)
+        state["failed"] = False
+    except Exception as exc:  # noqa: BLE001 — the loop must never stop
+        # the class only: the text of a DB error can carry SQL parameters
+        if not state["failed"]:
+            logger.warning("could not run the asset-watch check — retrying (%s)",
+                           type(exc).__name__)
+        state["failed"] = True
+        return
+    if ended:
+        logger.info("ended %d asset watch(es)", ended)
+
+
 async def run_events(maker, state: dict) -> None:
     """One event sweep; a failure is logged once per outage, never raised
     (each event's own failure is already logged inside)."""
@@ -180,6 +201,7 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
     learning_state = {"failed": False}
     plans_state = {"failed": False}
     devices_state = {"failed": False}
+    asset_watches_state = {"failed": False}
     events_state = {"failed": False}
     summary_state = {"failed": False}
     heartbeat = start_heartbeat("notification-worker", "worker",
@@ -187,8 +209,8 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
 
     logger.info("notification worker online — email outbox every %.0fs, hourly "
                 "password expiry reminders, learning, plan, event and summary sweeps "
-                "and the device check every minute, daily attestation revocation list",
-                poll_seconds)
+                "and the device and asset-watch checks every minute, daily attestation "
+                "revocation list", poll_seconds)
 
     maker = get_sessionmaker()
     try:
@@ -199,6 +221,7 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
         last_learning = time.monotonic() - LEARNING_INTERVAL_SECONDS
         last_plans = time.monotonic() - PLANS_INTERVAL_SECONDS
         last_devices = time.monotonic() - DEVICE_CHECK_INTERVAL_SECONDS
+        last_asset_watches = time.monotonic() - ASSET_WATCH_INTERVAL_SECONDS
         last_events = time.monotonic() - EVENTS_INTERVAL_SECONDS
         last_summaries = time.monotonic() - SUMMARY_INTERVAL_SECONDS
         last_attestation = time.monotonic() - ATTESTATION_STATUS_INTERVAL_SECONDS
@@ -242,10 +265,14 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
             if now - last_plans >= PLANS_INTERVAL_SECONDS:
                 await run_plans(maker, plans_state)
                 last_plans = now
-            # just before the event sweep, so what it announces goes out this tick
+            # before the event sweep, so what it announces goes out this tick
             if now - last_devices >= DEVICE_CHECK_INTERVAL_SECONDS:
                 await run_device_check(maker, devices_state)
                 last_devices = now
+            # before the summaries too, so an email it holds can join a summary due now
+            if now - last_asset_watches >= ASSET_WATCH_INTERVAL_SECONDS:
+                await run_asset_watches(maker, asset_watches_state)
+                last_asset_watches = now
             # before the summaries, so an email it holds can join a summary due now
             if now - last_events >= EVENTS_INTERVAL_SECONDS:
                 await run_events(maker, events_state)

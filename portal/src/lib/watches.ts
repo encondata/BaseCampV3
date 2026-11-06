@@ -3,11 +3,14 @@
  * called, which events a watch on it can name (the portal side of
  * api/src/serversherpa/notifications/watches.py `kinds_for`), how a watch's
  * events read in a list, what a failed watch call or Watch toggle says, and
- * which failures mean a screen was out of date. The calls themselves are in
- * lib/api.ts.
+ * which failures mean a screen was out of date. An asset watch is not on a
+ * `WatchTarget` thing (it waits for one condition and ends), so it has its own
+ * label and events text below. The calls themselves are in lib/api.ts.
  */
 
-import { ApiError, type NotificationKindSetting, type Watch, type WatchTarget } from './api';
+import {
+  ApiError, type AssetWatch, type NotificationKindSetting, type Watch, type WatchTarget,
+} from './api';
 
 /** What the portal calls each thing a watch can be on. A wiki node is a folder or a
  *  page (`wikiNodeLabel`); this is the page's, for a row the API sent no label for. */
@@ -20,6 +23,10 @@ export const THING_LABELS: Record<WatchTarget, string> = {
   wiki_node: 'Wiki page',
   everything: 'Everything',
 };
+
+/** What the watch rows call an asset: the chip on the Watching cell of an asset watch. It stands
+ *  apart from `THING_LABELS`, which is keyed by what a `Watch` is on. */
+export const ASSET_THING_LABEL = 'Asset';
 
 /** What a wiki node is called by its kind: "Wiki folder" for a folder, else "Wiki page"
  *  (the API's own rule for its `thing_label`: a library has its own label, and a file is
@@ -52,6 +59,22 @@ export function eventsText(kinds: string[], all: NotificationKindSetting[]): str
   if (kinds.length === 0) return 'All events';
   const labels = new Map(all.map((k) => [k.kind, k.label]));
   return kinds.map((kind) => labels.get(kind) ?? kind).join(', ');
+}
+
+/** The asset as its watch notices name it: its serial number, else its name, else its id (the
+ *  API's own rule, notifications/asset_watches.py `asset_label`, where an empty one counts as
+ *  none). It is the Watch modal's title on the asset pages and in both lists. The title of an
+ *  asset's page puts the name first, so it is not that. */
+export function assetWatchName(
+  asset: { id: string; serial_number: string | null; name: string | null },
+): string {
+  return asset.serial_number || asset.name || asset.id;
+}
+
+/** An asset watch's events as a list cell: "Next update", or "Status becomes" and the status's
+ *  label (its key, for one the API sent no label for). */
+export function assetWatchEventsText(w: AssetWatch): string {
+  return w.condition === 'status' ? `Status becomes ${w.status_label ?? w.status}` : 'Next update';
 }
 
 /** The plain sentence for a watch that could not be changed (the wiki's). */

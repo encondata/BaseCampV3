@@ -13,10 +13,10 @@ import {
 const ON = { inbox: true, email: true };
 
 describe('CONFIGURABLE', () => {
-  it('is the ten categories that have switches, in registry order', () => {
+  it('is the eleven categories that have switches, in registry order', () => {
     expect(CONFIGURABLE).toEqual([
-      'approvals', 'reports', 'wiki', 'learning', 'initiatives', 'plans', 'trucks', 'devices',
-      'status_rules', 'bulk_actions',
+      'approvals', 'reports', 'wiki', 'learning', 'initiatives', 'assets', 'plans', 'trucks',
+      'devices', 'status_rules', 'bulk_actions',
     ]);
   });
 
@@ -27,13 +27,14 @@ describe('CONFIGURABLE', () => {
 });
 
 describe('CATEGORY_DESCRIPTIONS', () => {
-  it('has the eleven row descriptions of the design, word for word', () => {
+  it('has the twelve row descriptions of the design, word for word', () => {
     expect(CATEGORY_DESCRIPTIONS).toEqual({
       approvals: 'Group membership requests and decisions, routers waiting for approval',
       reports: 'Reports and label runs, ready or failed',
       wiki: 'Page updates, comments, mentions, reviews and exports',
       learning: 'Learning completed or overdue, quizzes locked',
       initiatives: 'Initiative status changes',
+      assets: 'Notifications from your asset watches',
       plans: "Plan tasks assigned to you, coming due or overdue, and the owner's overdue digest",
       trucks: 'Truck status changes',
       devices: 'Devices going offline',

@@ -34,6 +34,7 @@ CATEGORIES: dict[str, str] = {
     "wiki": "Wiki",
     "learning": "Learning",
     "initiatives": "Initiatives",
+    "assets": "Assets",
     "plans": "Project plans",
     "trucks": "Trucks",
     "devices": "Devices",
@@ -72,6 +73,11 @@ KINDS: dict[str, KindInfo] = {
     # reaches everyone watching the thing, or the things above and around it.
     "initiative_status_changed": KindInfo("initiatives", "Initiative status changed",
                                           reaches=("initiative", "site"), everywhere=True),
+    # Sent with notify() by the asset-watch check (notifications/asset_watch_check.py) to the
+    # person who set the watch, once, when what it waits for happens; then the watch ends. Not
+    # announced and not watchable: an asset watch is its person's own, and the category's
+    # switches are the way out.
+    "asset_watch": KindInfo("assets", "Asset watch"),
     # Project plan messages are personal and reach people with no portal login,
     # so plans/notices.py emails the person directly through the mail outbox;
     # email=False keeps notify() from sending a second copy. It also keeps the

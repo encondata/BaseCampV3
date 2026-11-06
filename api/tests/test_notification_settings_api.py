@@ -18,8 +18,8 @@ from tests.test_sites_api import login
 from tests.test_status_values_write import _make
 
 SETTINGS = "/notifications/settings"
-CONFIGURABLE = ("approvals", "reports", "wiki", "learning", "initiatives", "plans", "trucks",
-                "devices", "status_rules", "bulk_actions")
+CONFIGURABLE = ("approvals", "reports", "wiki", "learning", "initiatives", "assets", "plans",
+                "trucks", "devices", "status_rules", "bulk_actions")
 ON_ON = {"inbox": True, "email": True}
 
 
@@ -237,6 +237,17 @@ async def test_put_sets_the_status_rules_default(client, db, seeded_user):
     assert (await db.get(SystemConfig, "notifications")).data["defaults"] == expected
 
 
+async def test_put_sets_the_assets_default(client, db, seeded_user):
+    """Assets is configurable like the rest: on and on until an admin says otherwise."""
+    admin = await _admin(db, client)
+    assert (await _get(client, admin))["defaults"]["assets"] == ON_ON
+    resp = await _put(client, admin, defaults={"assets": {"inbox": True, "email": False}})
+    assert resp.status_code == 200, resp.text
+    expected = {**{c: ON_ON for c in CONFIGURABLE}, "assets": {"inbox": True, "email": False}}
+    assert resp.json()["defaults"] == expected
+    assert (await db.get(SystemConfig, "notifications")).data["defaults"] == expected
+
+
 async def test_put_waits_for_a_concurrent_save_and_keeps_both(client, db, seeded_user):
     """A partial save is read-merge-write. While another save holds the row (it
     has read it and not yet written) a second one waits, then merges onto what
@@ -259,8 +270,8 @@ async def test_put_waits_for_a_concurrent_save_and_keeps_both(client, db, seeded
     assert resp.json()["defaults"] == {
         "approvals": ON_ON, "reports": {"inbox": False, "email": False},
         "wiki": {"inbox": True, "email": False}, "learning": ON_ON,
-        "initiatives": ON_ON, "plans": ON_ON, "trucks": ON_ON, "devices": ON_ON,
-        "status_rules": ON_ON, "bulk_actions": ON_ON}
+        "initiatives": ON_ON, "assets": ON_ON, "plans": ON_ON, "trucks": ON_ON,
+        "devices": ON_ON, "status_rules": ON_ON, "bulk_actions": ON_ON}
 
 
 async def test_put_rejects_bad_categories(client, db, seeded_user):
@@ -365,7 +376,7 @@ async def test_load_company_settings_out_of_the_box(db):
 
     company = await load_company_settings(db)
     assert CONFIGURABLE_CATEGORIES == CONFIGURABLE
-    # config_store cannot import company (a cycle), so it spells the eight out too
+    # config_store cannot import company (a cycle), so it spells them out too
     assert tuple(DEFAULTS["notifications"]["defaults"]) == CONFIGURABLE_CATEGORIES
     assert DEFAULTS["notifications"]["critical_kinds"] == []
     assert dict(company.defaults) == {c: Switches(True, True) for c in CONFIGURABLE}
@@ -397,11 +408,30 @@ async def test_load_company_settings_ignores_what_it_does_not_know(db):
     assert dict(company.defaults) == {
         "approvals": Switches(False, False), "reports": Switches(True, True),
         "wiki": Switches(True, True), "learning": Switches(True, True),
-        "initiatives": Switches(True, True), "plans": Switches(True, True),
-        "trucks": Switches(True, True),
+        "initiatives": Switches(True, True), "assets": Switches(True, True),
+        "plans": Switches(True, True), "trucks": Switches(True, True),
         "devices": Switches(True, True), "status_rules": Switches(True, True),
         "bulk_actions": Switches(True, True)}
     assert company.critical_kinds == frozenset({"report_failed"})
+
+
+async def test_stored_defaults_without_assets_read_on(client, db, seeded_user):
+    """A section saved before Assets existed names every other category: Assets follows the
+    out-of-the-box default, Inbox and Email on, until an admin sets it. The stored choices
+    beside it are kept."""
+    from serversherpa.notifications.company import Switches, load_company_settings
+
+    off = {"inbox": False, "email": False}
+    before_assets = [c for c in CONFIGURABLE if c != "assets"]
+    db.add(SystemConfig(section="notifications", data={
+        "defaults": {category: off for category in before_assets}, "critical_kinds": []}))
+    await db.commit()
+
+    company = await load_company_settings(db)
+    assert company.defaults["assets"] == Switches(True, True)
+    assert all(company.defaults[c] == Switches(False, False) for c in before_assets)
+    body = await _get(client, await login(client))
+    assert body["defaults"] == {**{c: off for c in before_assets}, "assets": ON_ON}
 
 
 async def test_load_company_settings_survives_a_wrong_shaped_section(db):
