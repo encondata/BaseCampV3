@@ -73,7 +73,8 @@ export default function BulkAssignWorkers() {
         { key: 't-xlsx', label: 'Template (.xlsx)', run: downloadAssignTemplate },
       ]}
     >
-      <AssignBulkUpload key={`${jobId}|${siteId}|${partnerId}`} jobId={jobId} siteId={siteId} partnerId={partnerId} />
+      {/* no remounting key: a picker change re-previews the parsed file by JSON */}
+      <AssignBulkUpload jobId={jobId || null} siteId={siteId || null} partnerId={partnerId || null} />
     </BulkToolPage>
   );
 }

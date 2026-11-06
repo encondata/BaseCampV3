@@ -5,7 +5,7 @@ import type { BulkColumnGuide } from '../components/bulk/BulkToolPage';
 import type { AssignFlagKind } from './api';
 
 export const ASSIGN_COLUMN_GUIDE: BulkColumnGuide[] = [
-  { key: 'first_name', required: true, accepts: 'The worker\'s legal first name.', example: 'Marcus' },
+  { key: 'first_name', required: true, accepts: 'The worker\'s first name.', example: 'Marcus' },
   { key: 'last_name', required: true, accepts: 'The worker\'s last name.', example: 'Reyes' },
   { key: 'preferred_name', required: false, accepts: 'The name they go by, if different from the first name.', example: 'Marc' },
   { key: 'phone', required: false, accepts: 'A phone number. Formatting does not matter.', example: '555-555-0102' },

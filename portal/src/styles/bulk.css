@@ -70,3 +70,19 @@
 .ftc-target { display: flex; align-items: center; gap: 8px; min-width: 200px; }
 .ftc-target .combo-wrap { flex: 1; min-width: 0; }
 .ftc-target .chip { flex: none; }
+
+/* ── /bulk/assign-workers Details cell ────────────────────────── */
+
+/* a muted second line (the matched value under "Matched by", the Role label) */
+.bulk-sub { display: block; color: var(--text-mute); }
+/* a discrepancy's sentence reads amber; a needed pick stays .pf-error red */
+.bulk-preview .pf-error.bulk-warn { color: var(--c-amber, #a36207); }
+.bulk-choice { margin: 6px 0; }
+/* the chosen Update / Ignore / Accept — tokens follow the theme */
+.bulk-choice .mini-btn[aria-pressed='true'] {
+  background: rgba(var(--accent-rgb), 0.14);
+  border-color: var(--amber);
+  color: var(--text-dark);
+}
+.bulk-pick { max-width: 280px; margin-top: 6px; }
+.bulk-role { display: flex; flex-direction: column; gap: 4px; }
