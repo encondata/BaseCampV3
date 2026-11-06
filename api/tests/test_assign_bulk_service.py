@@ -196,7 +196,7 @@ async def test_phone_match_value_is_formatted(db, seeded_user):
     p = await mk_worker(db, "Person", "D", phone="+31 6 2074 6385")
     ref = await ref_for(db)
     assert ab.match_row(ref, cells("Nobody", "Here", phone="+31620746385")) == (
-        str(p.id), "phone", "+31 6 20746385")
+        str(p.id), "phone", "+31 6 2074 6385")
 
 
 

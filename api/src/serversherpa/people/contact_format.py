@@ -18,6 +18,10 @@ def format_phone(text: str, default_region: str = "US") -> str | None:
         return None
     if not phonenumbers.is_valid_number(number):
         return None
+    national = str(number.national_number)
+    if number.country_code == 31 and len(national) == 9 and national.startswith("6"):
+        # Dutch mobiles read "+31 6 2074 6385", not libphonenumber's "+31 6 20746385"
+        return f"+31 6 {national[1:5]} {national[5:]}"
     formatted = phonenumbers.format_number(number, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
     return formatted.replace("-", " ")
 
