@@ -62,7 +62,8 @@ async def test_put_encrypts_and_public_hides_the_password(db, secrets_key):
     assert vault.decrypt(get_settings(), row.password_enc) == TYPED
     assert first_admins.public(row) == {"first_name": "Ada", "last_name": "Lovelace",
                                         "email": "ada@test.example.com",
-                                        "password_mode": "typed", "done": False}
+                                        "password_mode": "typed", "done": False,
+                                        "needs_password": False}
     # Nothing that leaves the module carries the password; the stored
     # ciphertext is what step_vars decrypts.
     assert TYPED not in repr(first_admins.public(row))

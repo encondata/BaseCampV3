@@ -59,11 +59,12 @@ it('dumpTakenAt reads the UTC time out of a dump name or path', () => {
 });
 
 it('labels the publish and delete modes, the deleting status and the publish states', () => {
-  expect([MODE_LABEL.publish, MODE_LABEL.teardown]).toEqual(['Publish', 'Delete environment']);
+  expect([MODE_LABEL.publish, MODE_LABEL.teardown, MODE_LABEL.cleanup])
+    .toEqual(['Publish', 'Delete environment', 'Clean up']);
   expect(ENV_STATUS.deleting).toEqual(['c-amber', 'Deleting']);
-  expect(GATED_MODES).toEqual(['reset', 'restore_dump', 'rollback', 'teardown', 'vm_restore']);
-  expect(RETRY_MODES).toEqual(['update', 'reset', 'restore_dump', 'rollback', 'publish', 'teardown', 'vm_restore',
-    'activate', 'renew']);
+  expect(GATED_MODES).toEqual(['reset', 'restore_dump', 'rollback', 'teardown', 'cleanup', 'vm_restore']);
+  expect(RETRY_MODES).toEqual(['update', 'reset', 'restore_dump', 'rollback', 'publish', 'teardown', 'cleanup',
+    'vm_restore', 'activate', 'renew']);
   expect(Object.keys(PUBLISH_STATE)).toEqual(['ok', 'update', 'create', 'claimable', 'conflict', 'unknown']);
   expect(PUBLISH_STATE.claimable).toEqual(['c-amber', "Not Sirdar's"]);
   expect(PUBLISH_STATE.conflict).toEqual(['c-red', 'Blocked']);

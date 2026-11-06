@@ -49,7 +49,7 @@ from sirdar_api.deploy import (
 )
 from sirdar_api.deploy.ssh import SshTargetConfig
 from sirdar_api.deploy.ssh_targets import SavedSshTarget, TargetError
-from sirdar_api.deploy.steps import STEPS_BY_KEY, plan_for
+from sirdar_api.deploy.steps import REMOVING_MODES, STEPS_BY_KEY, plan_for
 from sirdar_api.services import portal_policy
 from sirdar_api.services.audit import audit
 
@@ -400,7 +400,8 @@ _ENV_STATUS = {"environment_exists": 409, "deploy_in_progress": 409,
                "do_account_not_configured": 409, "production_exists": 409,
                "integration_unreadable": 409, "first_admin_not_set": 404,
                "first_admin_done": 409, "vm_name_taken": 409,
-               "vm_resize_not_supported": 409, "bluegreen_field_locked": 409}
+               "vm_resize_not_supported": 409, "bluegreen_field_locked": 409,
+               "cleanup_not_allowed": 409, "first_admin_password_needed": 409}
 _NAME_CONSTRAINT = "environments_name_key"
 _PRODUCTION_CONSTRAINT = "environments_one_production"
 
@@ -842,8 +843,9 @@ _REF_REASON = {
 
 class DeploymentIn(BaseModel):
     # publish: steps 12–14 for the running commit; teardown: Delete environment;
+    # cleanup: Delete's steps for a never-deployed environment, which stays;
     # vm_restore: a VM environment's VM back to one of its VM snapshots
-    mode: Literal["update", "reset", "restore_dump", "publish", "teardown",
+    mode: Literal["update", "reset", "restore_dump", "publish", "teardown", "cleanup",
                   "vm_restore"] = "update"
     # VM environments, update / reset / restore_dump: take a VM snapshot in step 0
     # (default: yes once deployed).
@@ -859,7 +861,7 @@ class DeploymentIn(BaseModel):
     backup: str | None = Field(default=None, max_length=64)
     # DigitalOcean Delete: save a snapshot first (default yes; production always).
     snapshot: bool | None = None
-    # DigitalOcean production Delete: "delete production <name>", typed.
+    # DigitalOcean production Delete (or cleanup): "delete production <name>", typed.
     confirm_production: str | None = Field(default=None, max_length=100)
     # A first Update that starts empty: end with step 20 Seed starter content.
     seed_content: bool | None = None
@@ -878,11 +880,11 @@ class RollbackIn(BaseModel):
 
 
 # Modes that replace data: deploy:change and the environment's name typed back.
-GATED_MODES = ("reset", "restore_dump", "rollback", "teardown", "vm_restore")
+GATED_MODES = ("reset", "restore_dump", "rollback", "teardown", "cleanup", "vm_restore")
 # Modes that need deploy:change (production's Activate also needs its name typed).
 CHANGE_MODES = (*GATED_MODES, "activate")
 RETRY_MODES = ("update", "reset", "restore_dump", "rollback", "publish", "teardown",
-               "vm_restore", "activate", "renew")
+               "cleanup", "vm_restore", "activate", "renew")
 # Modes a deploy request may ask a VM snapshot for (rollback has its own route).
 VM_SNAPSHOT_MODES = ("update", "reset", "restore_dump")
 
@@ -1174,6 +1176,20 @@ async def _begin_delete_snapshot(db, env: Environment, actor: AuthContext, *,
             raise _snapshot_http(e) from None
 
 
+async def _cleanup_allowed(db, env: Environment) -> None:
+    """A cleanup is only for an environment that has never deployed."""
+    if not await environments.never_deployed(db, env):
+        raise _refuse(409, "cleanup_not_allowed")
+
+
+async def _first_admin_ready(db, env: Environment) -> None:
+    """An Update waits while the first admin's typed password is gone (a
+    cleanup used and cleared it): PUT …/first-admin sets a new one."""
+    row = await first_admins.get(db, env.id)
+    if row is not None and first_admins.needs_password(row):
+        raise _refuse(409, "first_admin_password_needed")
+
+
 async def _production_removable(db, env: Environment, phrase: str | None) -> None:
     """Production's rules for every attempt at Delete, read under the
     production lock (an un-retire takes it too, so neither races the
@@ -1189,28 +1205,29 @@ async def _production_removable(db, env: Environment, phrase: str | None) -> Non
 
 
 async def _start_do_teardown(db, env: Environment, body: DeploymentIn, request: Request,
-                             actor: AuthContext) -> dict:
+                             actor: AuthContext, *, mode: str = "teardown") -> dict:
     """Delete on DigitalOcean: a snapshot first (unless turned off; never for
     production), then DNS records, then everything Sirdar recorded.
-    Production must be retiring, with no active slot, and the phrase typed."""
+    Production must be retiring, with no active slot, and the phrase typed.
+    A cleanup runs the same steps with no snapshot, production's rules too."""
     if not vault.is_configured(get_settings()):
         raise HTTPException(status_code=400, detail={"code": "secrets_key_missing"})
     if env.type == "production":
         await _production_removable(db, env, body.confirm_production)
-        if body.snapshot is False:
+        if mode == "teardown" and body.snapshot is False:
             raise HTTPException(status_code=422, detail={"code": "snapshot_required"})
     await _require_account(db, env)
     await _require_integrations(db, env, teardown=True)
     slot = await _snapshot_slot(db, env)
     snap = None
-    if body.snapshot is not False and env.current_sha is not None:
+    if mode == "teardown" and body.snapshot is not False and env.current_sha is not None:
         cfg = await _host_target(db, env, slot=slot) if slot else None
         if cfg is None:
             raise _snapshot_slot_unreachable(env)
         await _pinned(db, cfg)
         snap = await _begin_delete_snapshot(db, env, actor)
     return await _launch(db, env, request, actor, action="deploy.deployment_start",
-                         mode="teardown", git_ref=env.git_ref, sha=env.current_sha or "",
+                         mode=mode, git_ref=env.git_ref, sha=env.current_sha or "",
                          snapshot=snap, cloud=True, slot=slot)
 
 
@@ -1258,10 +1275,10 @@ async def _lan_snapshot_slot(db, env: Environment) -> str | None:
 
 
 async def _start_lan_teardown(db, env: Environment, body: DeploymentIn, request: Request,
-                              actor: AuthContext) -> dict:
+                              actor: AuthContext, *, mode: str = "teardown") -> dict:
     """Delete on LAN Blue/Green: a snapshot first (unless turned off), taken on
     the live slot's VM against the data VM; then the three VMs, the proxy
-    hosts and the DNS records."""
+    hosts and the DNS records. A cleanup runs the same steps with no snapshot."""
     if not vault.is_configured(get_settings()):
         raise _refuse(400, "secrets_key_missing")
     await _require_vm_host(db, env)
@@ -1270,14 +1287,14 @@ async def _start_lan_teardown(db, env: Environment, body: DeploymentIn, request:
     snap = None
     # The shared database can hold data before anything went live (a slot
     # that ran, the first admin): any slot with a commit counts.
-    if body.snapshot is not False and await lan_slots.ran(db, env):
+    if mode == "teardown" and body.snapshot is not False and await lan_slots.ran(db, env):
         cfg = await _host_target(db, env, slot=slot) if slot else None
         if cfg is None:
             raise _snapshot_slot_unreachable(env)
         await _pinned(db, cfg)
         snap = await _begin_delete_snapshot(db, env, actor, deployed=True)
     return await _launch(db, env, request, actor, action="deploy.deployment_start",
-                         mode="teardown", git_ref=env.git_ref, sha=env.current_sha or "",
+                         mode=mode, git_ref=env.git_ref, sha=env.current_sha or "",
                          snapshot=snap, vm=True, bluegreen=True, slot=slot)
 
 
@@ -1483,11 +1500,14 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
         raise _not_on_do()
     if _on_bg(env) and body.mode in ("reset", "restore_dump", "vm_restore"):
         raise _not_on_bg()
-    # Delete's snapshot switch: DigitalOcean and Blue/Green; the production
-    # phrase: DigitalOcean only (a LAN environment is never production).
-    if (body.snapshot is not None or body.confirm_production is not None) and not (
-            body.mode == "teardown" and (
-                _on_do(env) or (_on_bg(env) and body.confirm_production is None))):
+    # Delete's snapshot switch: DigitalOcean and Blue/Green (a cleanup never
+    # takes one); the production phrase: Delete or a cleanup on DigitalOcean
+    # only (a LAN environment is never production).
+    if body.snapshot is not None and not (body.mode == "teardown"
+                                          and (_on_do(env) or _on_bg(env))):
+        raise HTTPException(status_code=422, detail={"code": "snapshot_not_allowed"})
+    if body.confirm_production is not None and not (body.mode in REMOVING_MODES
+                                                    and _on_do(env)):
         raise HTTPException(status_code=422, detail={"code": "snapshot_not_allowed"})
     if body.mode in GATED_MODES and body.confirm_name != env.name:
         raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
@@ -1504,24 +1524,28 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
             raise HTTPException(status_code=422, detail={"code": "backup_invalid"})
         if body.git_ref is not None:        # it deploys the running commit
             raise HTTPException(status_code=422, detail={"code": "git_ref_not_allowed"})
-    if body.mode in ("publish", "teardown", "vm_restore") and body.git_ref is not None:
+    if body.mode in ("publish", *REMOVING_MODES, "vm_restore") and body.git_ref is not None:
         raise HTTPException(status_code=422, detail={"code": "git_ref_not_allowed"})
     if await environments.is_deploying(db, env.id):
         raise HTTPException(status_code=409, detail={"code": "deploy_in_progress"})
+    if body.mode == "cleanup":
+        await _cleanup_allowed(db, env)
+    if body.mode == "update":
+        await _first_admin_ready(db, env)
     if body.mode == "publish":
         return await _start_publish(db, env, request, actor)
     if body.mode == "vm_restore":
         return await _start_vm_restore(db, env, body.vm_snapshot, request, actor)
     if _on_do(env):
-        if body.mode == "teardown":
-            return await _start_do_teardown(db, env, body, request, actor)
+        if body.mode in REMOVING_MODES:
+            return await _start_do_teardown(db, env, body, request, actor, mode=body.mode)
         return await _start_do_update(db, env, body, request, actor)
-    if _on_bg(env):          # update or teardown: every other mode was answered above
-        if body.mode == "teardown":
-            return await _start_lan_teardown(db, env, body, request, actor)
+    if _on_bg(env):          # update, teardown or cleanup: the rest were answered above
+        if body.mode in REMOVING_MODES:
+            return await _start_lan_teardown(db, env, body, request, actor, mode=body.mode)
         return await _start_lan_update(db, env, body, request, actor)
     await _require_vm_host(db, env)
-    if body.mode == "teardown" and on_vm:
+    if body.mode in REMOVING_MODES and on_vm:
         # Step 15 Destroy VM needs no SSH (nor the VM's key).
         if not vault.is_configured(get_settings()):
             raise HTTPException(status_code=400, detail={"code": "secrets_key_missing"})
@@ -1529,12 +1553,12 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
     else:
         cfg = await _host_target(db, env)        # None: a VM step 0 hasn't built yet
     take = _take_vm_snapshot(env, body.take_vm_snapshot)
-    if body.mode == "teardown":
+    if body.mode in REMOVING_MODES:
         await _require_integrations(db, env, teardown=True)
         if not on_vm:
             await _pinned(db, cfg)
         return await _launch(db, env, request, actor, action="deploy.deployment_start",
-                             mode="teardown", git_ref=env.git_ref, sha=env.current_sha or "",
+                             mode=body.mode, git_ref=env.git_ref, sha=env.current_sha or "",
                              vm=on_vm)
     if env.publish:
         await _require_integrations(db, env)
@@ -1650,9 +1674,13 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
         .order_by(Deployment.created_at.desc()).limit(1))
     if latest is None or latest.id != dep.id:
         raise HTTPException(status_code=409, detail={"code": "retry_not_latest"})
-    production_delete = dep.cloud and dep.mode == "teardown" and env.type == "production"
+    production_delete = dep.cloud and dep.mode in REMOVING_MODES and env.type == "production"
     if production_delete:
         await _production_removable(db, env, body.confirm_production)
+    if dep.mode == "cleanup":
+        await _cleanup_allowed(db, env)
+    if dep.mode == "update":
+        await _first_admin_ready(db, env)
     stopped = await _stopped_step(db, dep.id)
     if stopped is None:
         raise HTTPException(status_code=409, detail={"code": "not_retryable"})
@@ -1718,7 +1746,7 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
         # As at the start: the sign-in keys may have changed since the
         # failed attempt (a snapshot restore), so the VM snapshot's are gone.
         await _vm_snapshot_restorable(db, env, dep.vm_snapshot)
-    if dep.mode == "teardown":
+    if dep.mode in REMOVING_MODES:
         await _require_integrations(db, env, teardown=True)
     elif dep.mode == "publish" or publishing:
         await _require_integrations(db, env)

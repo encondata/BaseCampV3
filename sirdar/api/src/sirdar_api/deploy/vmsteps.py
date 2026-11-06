@@ -14,6 +14,7 @@ from sirdar_api.config import Settings
 from sirdar_api.db.models import Deployment, Environment
 from sirdar_api.deploy import do_provision, esxi_provision, lan_slots, provision, targets, vms
 from sirdar_api.deploy.publish import StepFailed
+from sirdar_api.deploy.steps import REMOVING_MODES
 from sirdar_api.deploy.vmcommon import Output, Provisioner, VmOutcome, VmPrepareError
 
 # The data VM after the app VMs on Destroy: nothing is left using it.
@@ -47,7 +48,7 @@ async def _lan_prepare(db: AsyncSession, env: Environment, dep: Deployment,
     if dep.mode == "vm_restore":
         raise VmPrepareError("A Blue/Green environment has no VM snapshots to restore. "
                              "Activate the other server to go back.")
-    if dep.mode == "teardown":
+    if dep.mode in REMOVING_MODES:
         present = {m.role for m in await vms.machines(db, env)}
         machines = [await host_prepare(db, env, dep, settings, role=role, services=(),
                                        resolve=False)
