@@ -55,11 +55,12 @@ function dateText(d: Date): string {
 }
 
 // ── icons (inline, currentColor) ────────────────────────────────────
-const svg = (children: ReactNode) => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+const svg = (children: ReactNode, width = 2) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={width}
        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{children}</svg>
 );
-/** Shared with the Dock screen's Start / Pause / Stop. */
+/** Shared with the Dock screen: its Start / Pause / Stop, its card labels
+ *  (crate, server) and its empty crate list (rfid). */
 export const ICON = {
   tag: svg(<><path d="M3 12V4h8l10 10-8 8L3 12z" /><circle cx="7.5" cy="8.5" r="1.5" /></>),
   barcode: svg(<path d="M4 5v14M7 5v14M11 5v14M14 5v14M17 5v14M20 5v14" />),
@@ -78,6 +79,9 @@ export const ICON = {
   pause: (
     <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor" /><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor" /></svg>
   ),
+  crate: svg(<><path d="M21 8 12 3 3 8v8l9 5 9-5z" /><path d="m3 8 9 5 9-5M12 13v8" /></>),
+  server: svg(<><rect x="3" y="3.5" width="18" height="7" rx="1.5" /><rect x="3" y="13.5" width="18" height="7" rx="1.5" /><path d="M7 7h.01M7 17h.01" /></>, 2.2),
+  rfid: svg(<><path d="M5 12a7 7 0 0 1 7-7M8.5 12A3.5 3.5 0 0 1 12 8.5" /><circle cx="12" cy="12" r="1.2" fill="currentColor" /><path d="M19 12a7 7 0 0 1-7 7M15.5 12a3.5 3.5 0 0 1-3.5 3.5" /></>),
 };
 
 function eventIcon(ev: RfidEvent): ReactNode {
