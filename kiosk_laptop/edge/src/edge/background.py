@@ -11,14 +11,16 @@ the processor inserts some (it does its own internet probing, spec §4).
 A fourth runs the Label Station's label generation whenever one is
 requested (edge/labels/runner.py). A fifth groups a Dock Station's curtain
 reads into passes every second (edge/dock/grouper.py) and sets
-`dock_send_wake` when a closed pass is waiting to be sent."""
+`dock_send_wake` when a closed pass is waiting to be sent. A sixth sends
+those passes, oldest first and one at a time, every 5 s and at once on that
+wake (edge/dock/sender.py)."""
 
 import asyncio
 import contextlib
 import logging
 import time
 
-from edge.dock import grouper
+from edge.dock import grouper, sender
 from edge.rfid import processing, station_key, uploader
 
 log = logging.getLogger("edge.background")
@@ -35,7 +37,9 @@ class Background:
         self._upload_task: asyncio.Task | None = None
         self._label_task: asyncio.Task | None = None
         self._dock_task: asyncio.Task | None = None
+        self._dock_send_task: asyncio.Task | None = None
         self.uploader = uploader.Uploader(state.store, state)
+        self.dock_sender = sender.DockSender(state.store, state)
 
     async def tick(self, now: float) -> None:
         st = self.state
@@ -129,16 +133,32 @@ class Background:
                 continue
             await asyncio.sleep(grouper.INTERVAL_S)
 
+    async def _dock_send_loop(self) -> None:
+        wake = self.state.dock_send_wake
+        while True:
+            wake.clear()  # before the send: a pass closed during it wakes the next one
+            done = False
+            try:
+                done = await self.dock_sender.send_once()
+            except Exception:
+                log.exception("dock pass send failed")
+            if done:  # a final answer: the next pass may go at once
+                await asyncio.sleep(0)
+                continue
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(wake.wait(), timeout=sender.INTERVAL_S)
+
     def start(self) -> None:
         self._task = asyncio.create_task(self._loop())
         self._process_task = asyncio.create_task(self._process_loop())
         self._upload_task = asyncio.create_task(self._upload_loop())
         self._label_task = asyncio.create_task(self._label_loop())
         self._dock_task = asyncio.create_task(self._dock_loop())
+        self._dock_send_task = asyncio.create_task(self._dock_send_loop())
 
     async def stop(self) -> None:
         for task in (self._task, self._process_task, self._upload_task, self._label_task,
-                     self._dock_task):
+                     self._dock_task, self._dock_send_task):
             if task:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):

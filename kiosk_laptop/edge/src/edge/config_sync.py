@@ -316,6 +316,13 @@ def add_fields(body: bytes, beat: Beat) -> bytes:
     return json.dumps(data).encode()
 
 
+def server_offset_ms(store: Store) -> int | None:
+    """The portal's clock minus the edge's, in milliseconds, from the last
+    check-in reply that carried `server_time`; None until one has."""
+    row = store.one("SELECT server_offset_ms FROM device_config WHERE id = 1")
+    return row["server_offset_ms"] if row is not None else None
+
+
 def handle_reply(store: Store, beat: Beat, data) -> None:
     """A 200 check-in reply: the portal's clock, the report settled, the
     reply's config applied (or merged while a local change is pending), and
