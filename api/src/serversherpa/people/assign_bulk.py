@@ -112,6 +112,11 @@ def parse_decisions(raw: Any) -> dict[int, dict]:
 
 # ── reference data ──────────────────────────────────────────────────
 
+def _first_partner(partner_names: dict, ids: set[uuid.UUID]) -> uuid.UUID:
+    """The alphabetically first of several partners (case-insensitive)."""
+    return min(ids, key=lambda pid: (partner_names.get(pid, "").casefold(), str(pid)))
+
+
 @dataclass
 class Candidate:
     """A person a row may match: a live worker or a partner contact."""
@@ -150,8 +155,8 @@ async def load_reference(db: AsyncSession, initiative_id: uuid.UUID,
         if cand.profile and cand.profile.partner_id:
             cand.partner_name = partner_names.get(cand.profile.partner_id)
         elif cand.partner_contact_of:
-            cand.partner_name = min(
-                partner_names.get(pid, "") for pid in cand.partner_contact_of) or None
+            cand.partner_name = partner_names.get(
+                _first_partner(partner_names, cand.partner_contact_of))
 
     by_name: dict[str, list[str]] = {}
     by_email: dict[str, list[str]] = {}
@@ -293,7 +298,8 @@ def _existing_flags(ref: dict, pid: str, cells: dict, matched_by: str | None,
 
     lines: list[dict] = []
     if phone_fmt and normalize_phone(phone_fmt) != normalize_phone(p.phone or ""):
-        lines += [_line("Phone on file", p.phone), _line("Phone in sheet", phone_fmt)]
+        lines += [_line("Phone on file", format_phone(p.phone or "") or p.phone),
+                  _line("Phone in sheet", phone_fmt)]
     if email and email != lower_email(p.email or ""):
         lines += [_line("Email on file", p.email), _line("Email in sheet", email)]
         owner = ref["emails_all"].get(email)
@@ -304,9 +310,14 @@ def _existing_flags(ref: dict, pid: str, cells: dict, matched_by: str | None,
         flags.append(_flag("contact", decided("contact"), lines))
 
     profile = cand.profile
-    if profile is not None and profile.partner_id != partner_id:
+    on_file: uuid.UUID | None | bool = False      # False: nothing to compare
+    if profile is not None:
+        on_file = profile.partner_id
+    elif cand.partner_contact_of and partner_id not in cand.partner_contact_of:
+        on_file = _contact_partner(ref, cand)
+    if on_file is not False and on_file != partner_id:
         flags.append(_flag("partner", decided("partner"), [
-            _line("Partner on file", ref["partner_names"].get(profile.partner_id)),
+            _line("Partner on file", ref["partner_names"].get(on_file)),
             _line("Partner picked", ref["partner"].name if ref["partner"] else None)]))
     if profile is not None and profile.status and profile.status != "active":
         flags.append(_flag("status", decided("status"), [
@@ -338,10 +349,15 @@ async def preview_rows(db: AsyncSession, initiative_id: uuid.UUID, partner_id: u
                        site_id: uuid.UUID, numbered: list[tuple[int, dict]], *,
                        actor_id: uuid.UUID, actor_rank: int,
                        decisions: dict[int, dict] | None = None,
-                       ref: dict | None = None) -> dict:
+                       ref: dict | None = None, internal: bool = False) -> dict:
     """Each row matched, flagged and settled against its decision. A row's
     action is `attention` while any flag is undecided; `can_commit` only
-    when nothing needs attention or errors and something would be written."""
+    when nothing needs attention or errors and something would be written.
+
+    With `internal=True` (the commit), each row also carries `_writes`:
+    `{"commits": bool, "profile_partner_id": UUID | None}`, where the
+    partner id is set when the commit creates a worker profile (a new
+    worker, or a matched person without one). It never goes on the wire."""
     ref = ref or await load_reference(db, initiative_id, partner_id)
     decisions = decisions or {}
     rows: list[dict] = []
@@ -434,12 +450,17 @@ async def preview_rows(db: AsyncSession, initiative_id: uuid.UUID, partner_id: u
             r["action"] = "already_assigned"
         else:
             r["action"] = "assign"
-        r["_writes"] = r["action"] in ("assign", "create") or (
+        commits = r["action"] in ("assign", "create") or (
             r["action"] == "already_assigned" and change == "update"
             and bool(kinds & set(CHANGE_KINDS)))
+        r["_writes"] = {"commits": commits,
+                        "profile_partner_id": _profile_partner(ref, r, partner_id, change)}
 
     counts = {a: sum(r["action"] == a for r in rows) for a in ACTIONS}
-    writes = [r.pop("_writes") for r in rows]
+    writes = [r["_writes"]["commits"] for r in rows]
+    if not internal:
+        for r in rows:
+            del r["_writes"]
     people = sorted(
         ({"id": pid, "label": _person_name(ref, pid), "detail": cand.partner_name or ""}
          for pid, cand in ref["people"].items()),
@@ -452,6 +473,24 @@ async def preview_rows(db: AsyncSession, initiative_id: uuid.UUID, partner_id: u
     }
 
 
+def _profile_partner(ref: dict, row: dict, partner_id: uuid.UUID,
+                     change: str | None) -> uuid.UUID | None:
+    """The partner a worker profile created at commit gets: None when the
+    person already has a profile."""
+    if row["create"]:
+        return partner_id
+    cand = ref["people"].get(row["person_id"]) if row["person_id"] else None
+    if cand is None or cand.profile is not None:
+        return None
+    if (change == "ignore" and cand.partner_contact_of
+            and partner_id not in cand.partner_contact_of):
+        return _contact_partner(ref, cand)      # keep the partner on file
+    return partner_id
+
+
+def _contact_partner(ref: dict, cand: Candidate) -> uuid.UUID:
+    """The partner a profile-less contact is on file with."""
+    return _first_partner(ref["partner_names"], cand.partner_contact_of)
 def _duplicate_errors(rows: list[dict]) -> None:
     """One person on two rows, or two new workers sharing an email, errors
     every row involved."""

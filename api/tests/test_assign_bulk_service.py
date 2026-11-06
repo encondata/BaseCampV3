@@ -285,11 +285,12 @@ async def ctx(db, seeded_user):
     return Setup(job, partner, site)
 
 
-async def preview(db, ctx, *rows, decisions=None, actor=None, actor_rank=60):
+async def preview(db, ctx, *rows, decisions=None, actor=None, actor_rank=60, internal=False):
     numbered = [(i + 2, r) for i, r in enumerate(rows)]
     return await ab.preview_rows(
         db, ctx.job.id, ctx.partner.id, ctx.site.id, numbered,
-        actor_id=actor or uuid.uuid4(), actor_rank=actor_rank, decisions=decisions)
+        actor_id=actor or uuid.uuid4(), actor_rank=actor_rank, decisions=decisions,
+        internal=internal)
 
 
 def flag(row, kind):
@@ -432,7 +433,7 @@ async def test_contact_phone_on_file_blank_shows_dash(db, ctx):
 
 async def test_contact_email_held_by_other_note(db, ctx):
     await good_worker(db, ctx)
-    gone = await mk_worker(db, "Old", "Owner", email="taken@example.com", archived=True)
+    await mk_worker(db, "Old", "Owner", email="taken@example.com", archived=True)
     row = (await preview(db, ctx, cells("Ana", "Lopez", email="taken@example.com")))["rows"][0]
     assert flag(row, "contact")["lines"] == [
         {"label": "Email on file", "value": "ana@example.com"},
@@ -440,7 +441,6 @@ async def test_contact_email_held_by_other_note(db, ctx):
         {"label": "Email", "value": "Not updated: in use by Old Owner"}]
     # archived, so not matchable: no shared-contact flag
     assert "shared_contact" not in kinds(row)
-    assert gone.id
 
 
 async def test_partner_discrepancy_including_child_partner(db, ctx):
@@ -684,3 +684,60 @@ async def test_rank_guard_blocks_person_field_update_with_assignment(db, ctx):
                          decisions={2: {"change": "update"}}))["rows"][0]
     assert kinds(row) == ["assignment", "contact"]
     assert row["errors"] == ["Your rank is too low to update this person."]
+
+
+
+async def test_partner_contact_of_other_partner_flags_partner(db, ctx):
+    zed = await mk_partner(db, "Vend Zed")
+    bee = await mk_partner(db, "Vend Bee")
+    c = await mk_partner_contact(db, "Casey", "Contact", zed, email="casey@example.com")
+    db.add(ContactProfile(person_id=c.id, partner_id=bee.id))
+    await db.commit()
+    row_cells = cells("Casey", "Contact", email="casey@example.com")
+    row = (await preview(db, ctx, row_cells))["rows"][0]
+    f = flag(row, "partner")
+    assert f["decided"] is False and row["action"] == "attention"
+    assert f["lines"] == [{"label": "Partner on file", "value": "Vend Bee"},
+                          {"label": "Partner picked", "value": "Vend Picked"}]
+    assert row["becomes_worker"] is True
+    upd = (await preview(db, ctx, row_cells, decisions={2: {"change": "update"}},
+                         internal=True))["rows"][0]
+    assert upd["action"] == "assign"
+    assert upd["_writes"]["profile_partner_id"] == ctx.partner.id
+    ign = (await preview(db, ctx, row_cells, decisions={2: {"change": "ignore"}},
+                         internal=True))["rows"][0]
+    assert ign["action"] == "assign"
+    assert ign["_writes"]["profile_partner_id"] == bee.id
+
+
+async def test_internal_writes_profile_partner(db, ctx):
+    c = await mk_partner_contact(db, "Casey", "Contact", ctx.partner,
+                                 email="casey@example.com")
+    w = await good_worker(db, ctx)
+    out = await preview(db, ctx, cells("Casey", "Contact", email="casey@example.com"),
+                        cells("Ana", "Lopez", email="ana@example.com"),
+                        cells("New", "Person", email="new@example.com"),
+                        decisions={4: {"person": "new"}}, internal=True)
+    contact, worker, new = out["rows"]
+    assert contact["person_id"] == str(c.id) and worker["person_id"] == str(w.id)
+    assert contact["_writes"] == {"commits": True, "profile_partner_id": ctx.partner.id}
+    assert worker["_writes"] == {"commits": True, "profile_partner_id": None}
+    assert new["_writes"] == {"commits": True, "profile_partner_id": ctx.partner.id}
+    wire = await preview(db, ctx, cells("Casey", "Contact", email="casey@example.com"))
+    assert "_writes" not in wire["rows"][0]
+
+
+async def test_phone_on_file_is_formatted(db, ctx):
+    await good_worker(db, ctx, phone="512-555-0102")
+    row = (await preview(db, ctx, cells("Ana", "Lopez", phone="512-555-0199",
+                                        email="ana@example.com")))["rows"][0]
+    assert flag(row, "contact")["lines"] == [
+        {"label": "Phone on file", "value": "+1 512 555 0102"},
+        {"label": "Phone in sheet", "value": "+1 512 555 0199"}]
+
+
+async def test_unparseable_phone_on_file_shows_raw(db, ctx):
+    await good_worker(db, ctx, phone="ext 12")
+    row = (await preview(db, ctx, cells("Ana", "Lopez", phone="512-555-0199",
+                                        email="ana@example.com")))["rows"][0]
+    assert flag(row, "contact")["lines"][0] == {"label": "Phone on file", "value": "ext 12"}
