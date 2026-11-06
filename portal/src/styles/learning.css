@@ -225,7 +225,7 @@
   border-color: var(--amber);
   box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
 }
-.lrn-unit { font-size: 12px; color: var(--text-mute); }
+.lrn-unit { font-size: 12px; color: var(--text-mute); white-space: nowrap; flex-shrink: 0; }
 
 /* The re-sign rule: two option cards (radio group). */
 .lrn-opts { display: flex; flex-direction: column; gap: 8px; }
