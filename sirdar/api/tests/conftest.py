@@ -262,13 +262,20 @@ def pg_bin_dir_for_tests() -> str | None:
 
 
 def drop_scratch_databases() -> None:
-    """Drop every scratch database the tests made (sirdar_test_scratch_…)."""
+    """Drop every scratch database and role the tests made (sirdar_test_scratch_…)."""
     with psycopg.connect(_psycopg_url("postgres"), autocommit=True) as conn:
         names = [r[0] for r in conn.execute(
             "SELECT datname FROM pg_database WHERE starts_with(datname, %s)",
             (SCRATCH_PREFIX + "_",)).fetchall()]
         for name in names:
             conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+        # ...and their roles (one per scratch database).
+        roles = [r[0] for r in conn.execute(
+            "SELECT rolname FROM pg_roles WHERE starts_with(rolname, %s)",
+            (SCRATCH_PREFIX + "_",)).fetchall()]
+        for name in roles:
+            conn.execute(f'REVOKE SET ON PARAMETER session_replication_role FROM "{name}"')
+            conn.execute(f'DROP ROLE IF EXISTS "{name}"')
 
 
 @pytest.fixture

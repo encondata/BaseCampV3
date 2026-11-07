@@ -118,35 +118,117 @@ async def test_restores_both_tables(scratch_url, snapshots_dir, tmp_path, good_d
     assert list((snapshots_dir / "incoming").iterdir()) == []
 
 
-async def test_restore_runs_as_the_restricted_owner(scratch_url, snapshots_dir, tmp_path,
-                                                    good_dump):
+def _role(name: str):
+    with psycopg.connect(_psycopg_url("postgres"), autocommit=True) as conn:
+        return conn.execute(
+            "SELECT rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls, "
+            "rolcanlogin FROM pg_roles WHERE rolname = %s", (name,)).fetchone()
+
+
+async def test_restore_runs_as_the_databases_own_role(scratch_url, snapshots_dir, tmp_path,
+                                                      good_dump):
     snap = _snapshot(tmp_path, good_dump)
     name = await scratch.ensure_restored(get_settings(), snap)
-    role = scratch.owner_role()
-    assert role == f"{TEST_DB}_scratch_owner"
+    assert _role(name) == (False, False, False, False, False, True)
     with psycopg.connect(_psycopg_url("postgres"), autocommit=True) as conn:
-        attrs = conn.execute(
-            "SELECT rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls "
-            "FROM pg_roles WHERE rolname = %s", (role,)).fetchone()
-        assert attrs == (False, False, False, False, False)
         owner = conn.execute("SELECT pg_get_userbyid(datdba) FROM pg_database "
                              "WHERE datname = %s", (name,)).fetchone()[0]
-        assert owner == role
+        assert owner == name
     with psycopg.connect(_psycopg_url(name), autocommit=True) as conn:
         owners = {r[0] for r in conn.execute(
             "SELECT DISTINCT pg_get_userbyid(c.relowner) FROM pg_class c "
             "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public'")}
-        assert owners == {role}
+        assert owners == {name}
         ext_owners = {r[0] for r in conn.execute(
             "SELECT pg_get_userbyid(extowner) FROM pg_extension WHERE extname <> 'plpgsql'")}
-        assert ext_owners == {role}
+        assert ext_owners == {name}
     conn = await scratch.connect(get_settings(), name)
     try:
-        assert await conn.fetchval("SELECT current_user") == role
+        assert await conn.fetchval("SELECT current_user") == name
         await conn.execute("SET session_replication_role = replica")   # granted
         assert await conn.fetchval("SHOW session_replication_role") == "replica"
     finally:
         await conn.close()
+
+
+async def _as_role(name: str, database: str):
+    """Log in as scratch database `name`'s role, to `database`."""
+    import asyncpg
+    url = make_url(BASE_URL)
+    return await asyncpg.connect(host=url.host, port=url.port, user=name,
+                                 password=scratch._passwords[name], database=database,
+                                 timeout=10)
+
+
+async def test_a_role_reaches_only_its_own_database(scratch_url, snapshots_dir, tmp_path,
+                                                    good_dump):
+    import asyncpg
+    a = await scratch.ensure_restored(get_settings(), _snapshot(tmp_path, good_dump))
+    b = await scratch.ensure_restored(get_settings(), _snapshot(tmp_path, good_dump))
+    for database in (b, "postgres", "template1"):
+        with pytest.raises(asyncpg.PostgresError):
+            await (await _as_role(a, database)).close()
+    conn = await _as_role(a, a)
+    try:
+        for sql in (f'DROP DATABASE "{b}"', f'ALTER DATABASE "{b}" RENAME TO x',
+                    f'ALTER DATABASE "{b}" SET work_mem = \'7MB\'',
+                    f'ALTER ROLE "{b}" PASSWORD \'x\'', "CREATE ROLE sneaky",
+                    "CREATE DATABASE sneaky"):
+            with pytest.raises(asyncpg.PostgresError):
+                await conn.execute(sql)
+    finally:
+        await conn.close()
+    assert b in _databases()
+
+
+async def test_a_roles_own_settings_never_survive(scratch_url, snapshots_dir, tmp_path,
+                                                  good_dump):
+    snap = _snapshot(tmp_path, good_dump)
+    name = await scratch.ensure_restored(get_settings(), snap)
+
+    async def plant():
+        conn = await scratch.connect(get_settings(), name)
+        try:
+            await conn.execute(f'ALTER ROLE "{name}" SET work_mem = \'7MB\'')
+        finally:
+            await conn.close()
+
+    async def work_mem() -> str:
+        conn = await scratch.connect(get_settings(), name)
+        try:
+            return await conn.fetchval("SHOW work_mem")
+        finally:
+            await conn.close()
+
+    await plant()
+    assert await work_mem() == "7MB"
+    # A restart: the password is unknown, so the role is reset (RESET ALL).
+    scratch.forget_all()
+    assert await work_mem() != "7MB"
+    # A fresh restore: a new role.
+    await plant()
+    await scratch.drop(get_settings(), name)
+    assert _role(name) is None
+    await scratch.ensure_restored(get_settings(), snap)
+    assert await work_mem() != "7MB"
+
+
+async def test_dropping_a_database_drops_its_role(scratch_url, snapshots_dir, tmp_path,
+                                                  good_dump):
+    name = await scratch.ensure_restored(get_settings(), _snapshot(tmp_path, good_dump))
+    assert _role(name) is not None
+    await scratch.drop(get_settings(), name)
+    assert name not in _databases() and _role(name) is None
+    assert name not in scratch._passwords
+
+
+async def test_startup_sweep_removes_leftover_roles(scratch_url):
+    name = scratch.db_name(uuid.uuid4())
+    with psycopg.connect(_psycopg_url("postgres"), autocommit=True) as conn:
+        conn.execute(f'CREATE ROLE "{name}" LOGIN')
+        conn.execute(f'GRANT SET ON PARAMETER session_replication_role TO "{name}"')
+    assert await scratch.sweep_idle(get_settings()) == 0
+    assert _role(name) is None
 
 
 async def test_concurrent_callers_restore_once(scratch_url, snapshots_dir, tmp_path,
@@ -155,9 +237,9 @@ async def test_concurrent_callers_restore_once(scratch_url, snapshots_dir, tmp_p
     calls: list[str] = []
     real_run = scratch._run
 
-    async def counting(settings, tool, args):
+    async def counting(settings, tool, args, **kw):
         calls.append(tool)
-        return await real_run(settings, tool, args)
+        return await real_run(settings, tool, args, **kw)
 
     monkeypatch.setattr(scratch, "_run", counting)
     a, b = await asyncio.gather(scratch.ensure_restored(get_settings(), snap),
@@ -230,7 +312,7 @@ async def test_cancelled_restore_leaves_no_files_or_database(scratch_url, snapsh
     snap = _snapshot(tmp_path, good_dump)
     started = asyncio.Event()
 
-    async def hang(settings, tool, args):
+    async def hang(settings, tool, args, **kw):
         started.set()
         await asyncio.Event().wait()
 
@@ -243,7 +325,50 @@ async def test_cancelled_restore_leaves_no_files_or_database(scratch_url, snapsh
         await task
     assert list((snapshots_dir / "incoming").iterdir()) == []
     assert scratch.db_name(snap.id) not in _databases()
+    assert _role(scratch.db_name(snap.id)) is None
     assert scratch.status(snap.id) == "failed"
+
+
+async def test_a_second_cancel_still_waits_for_the_extract(scratch_url, snapshots_dir,
+                                                           tmp_path, good_dump, monkeypatch):
+    import threading
+    snap = _snapshot(tmp_path, good_dump)
+    entered, release, seen = threading.Event(), threading.Event(), []
+
+    def slow(settings, snap, dest, stop=None):
+        entered.set()
+        release.wait(10)
+        seen.append(stop.is_set())
+        raise scratch._Stopped
+
+    monkeypatch.setattr(scratch, "_extract_dump", slow)
+    task = asyncio.create_task(scratch.ensure_restored(get_settings(), snap))
+    assert await asyncio.to_thread(entered.wait, 10)
+    for _ in range(2):
+        task.cancel()
+        await asyncio.sleep(0.05)
+    assert not task.done()                     # still waiting for the thread
+    assert [p.name[:8] for p in (snapshots_dir / "incoming").iterdir()] == ["scratch-"]
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert seen == [True]
+    assert list((snapshots_dir / "incoming").iterdir()) == []
+
+
+async def test_a_check_hiccup_never_fails_a_ready_database(scratch_url, snapshots_dir,
+                                                           tmp_path, good_dump, monkeypatch):
+    snap = _snapshot(tmp_path, good_dump)
+    name = await scratch.ensure_restored(get_settings(), snap)
+
+    async def down(settings, name):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(scratch, "_exists", down)
+    with pytest.raises(SeedError) as exc:
+        await scratch.ensure_restored(get_settings(), snap)
+    assert exc.value.code == "scratch_unavailable"
+    assert scratch.status(snap.id) == "ready" and name in _databases()
 
 
 def test_a_stopped_extract_writes_nothing(snapshots_dir, tmp_path, good_dump):

@@ -10,12 +10,16 @@ SIRDAR_SCRATCH_IDLE_MINUTES. Which databases are ready, and when each was
 last used, is kept in memory: a browse database this process didn't
 restore is dropped by the next sweep and restored again when asked for.
 
-Snapshots are uploaded, so their dumps are untrusted SQL: the superuser in
-SIRDAR_SCRATCH_URL only creates and drops the databases and sets up one
-restricted login role (PREFIX_owner: no superuser, no CREATEDB/CREATEROLE,
-allowed only to SET session_replication_role). Each scratch database is
-owned by that role, and pg_restore and every browsing connection log in as
-it. Its password is random, made fresh by each process and kept in memory.
+Snapshots are uploaded, so their dumps are untrusted SQL. The superuser
+in SIRDAR_SCRATCH_URL only sets up roles and creates and drops databases.
+Each scratch database has a login role of its own, named like it (no
+superuser, no CREATEDB/CREATEROLE/REPLICATION/BYPASSRLS, allowed only to SET
+session_replication_role), that owns it; CONNECT on it is revoked from
+PUBLIC, as it is on the server's own database and template1, so a role can
+reach only its own database. pg_restore and every browsing connection log
+in as that role. Its password is random, kept in memory, and replaced
+whenever the role is set up again (a new process resets it, with RESET ALL);
+the role is dropped with its database.
 
 The scratch URL holds a password: it is never logged, and the Postgres
 tools get passwords through PGPASSWORD in their own environment only."""
@@ -60,7 +64,8 @@ _state: dict[str, str] = {}           # name -> restoring | ready | failed
 _last_used: dict[str, float] = {}     # name -> time.monotonic() of last use
 _locks: dict[str, asyncio.Lock] = {}
 _tasks: set[asyncio.Task] = set()
-_owner: dict[str, object] = {}        # "password" once the role is set up, "lock"
+_passwords: dict[str, str] = {}      # name -> its role's password
+_setup: dict[str, bool] = {}          # "done" once the server-wide REVOKEs ran
 
 
 @dataclass(frozen=True)
@@ -91,11 +96,8 @@ def forget_all() -> None:
     _state.clear()
     _last_used.clear()
     _locks.clear()
-    _owner.clear()
-
-
-def owner_role() -> str:
-    return f"{PREFIX}_owner"
+    _passwords.clear()
+    _setup.clear()
 
 
 def _parse(settings: Settings) -> _Server | None:
@@ -128,35 +130,6 @@ def _server(settings: Settings) -> _Server:
     return server
 
 
-async def _ensure_owner(settings: Settings) -> str:
-    """Create (or reset) the restricted owner role; its password."""
-    lock = _owner.setdefault("lock", asyncio.Lock())
-    async with lock:  # type: ignore[union-attr]
-        if "password" in _owner:
-            return _owner["password"]  # type: ignore[return-value]
-        password = secrets.token_urlsafe(32)     # [A-Za-z0-9_-]: safe in a literal
-        role = owner_role()
-        attrs = ("LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS "
-                 f"PASSWORD '{password}'")
-        conn = await _admin(settings)
-        try:
-            exists = await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", role)
-            if not exists:
-                try:
-                    await conn.execute(f'CREATE ROLE "{role}" {attrs}')
-                except asyncpg.DuplicateObjectError:
-                    exists = True
-            if exists:
-                await conn.execute(f'ALTER ROLE "{role}" {attrs}')
-            # A later step loads rows with session_replication_role = replica.
-            await conn.execute(
-                f'GRANT SET ON PARAMETER session_replication_role TO "{role}"')
-        finally:
-            await conn.close()
-        _owner["password"] = password
-        return password
-
-
 def _check_name(name: str) -> str:
     if not NAME_RE.fullmatch(name) or not name.startswith(PREFIX + "_"):
         raise ValueError("not a scratch database name")
@@ -179,13 +152,74 @@ async def _admin(settings: Settings) -> asyncpg.Connection:
                                  database=s.database, timeout=10)
 
 
+# Role passwords go to the server as SQL literals (CREATE/ALTER ROLE take no
+# parameters): never raise log_statement on the scratch server.
+_ROLE_ATTRS = "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
+
+
+async def _setup_server(conn: asyncpg.Connection, settings: Settings) -> None:
+    """Once per process: no role but the superuser may connect to the
+    server's own database or template1."""
+    if _setup.get("done"):
+        return
+    await conn.execute(f'REVOKE CONNECT ON DATABASE "{_server(settings).database}", '
+                       'template1 FROM PUBLIC')
+    _setup["done"] = True
+
+
+async def _setup_role(conn: asyncpg.Connection, name: str) -> str:
+    """Create, or reset, database `name`'s own role: restricted attributes,
+    a fresh password, no settings of its own (RESET ALL), allowed to SET
+    session_replication_role (a later step loads rows as replica). Its
+    password."""
+    _check_name(name)
+    password = secrets.token_urlsafe(32)          # [A-Za-z0-9_-]: safe in a literal
+    attrs = f"{_ROLE_ATTRS} PASSWORD '{password}'"
+    exists = await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", name)
+    if not exists:
+        try:
+            await conn.execute(f'CREATE ROLE "{name}" {attrs}')
+        except asyncpg.DuplicateObjectError:
+            exists = True
+    if exists:
+        await conn.execute(f'ALTER ROLE "{name}" {attrs}')
+    await conn.execute(f'ALTER ROLE "{name}" RESET ALL')
+    await conn.execute(f'GRANT SET ON PARAMETER session_replication_role TO "{name}"')
+    _passwords[name] = password
+    return password
+
+
+async def _drop_role(conn: asyncpg.Connection, name: str) -> None:
+    """Drop database `name`'s role (its database must be gone already)."""
+    _check_name(name)
+    _passwords.pop(name, None)
+    if not await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", name):
+        return
+    # The parameter grant is the one thing outside its database it holds.
+    await conn.execute(f'REVOKE SET ON PARAMETER session_replication_role FROM "{name}"')
+    await conn.execute(f'DROP ROLE IF EXISTS "{name}"')
+
+
+async def _role_password(settings: Settings, name: str) -> str:
+    """Database `name`'s role password; reset by the superuser when this
+    process doesn't know it (say, after a restart)."""
+    if name in _passwords:
+        return _passwords[name]
+    conn = await _admin(settings)
+    try:
+        await _setup_server(conn, settings)
+        return await _setup_role(conn, name)
+    finally:
+        await conn.close()
+
+
 async def connect(settings: Settings, name: str) -> asyncpg.Connection:
-    """A connection to scratch database `name` as the restricted owner role
+    """A connection to scratch database `name` as its own restricted role
     (the caller closes it)."""
     s = _server(settings)
     _check_name(name)
-    password = await _ensure_owner(settings)
-    conn = await asyncpg.connect(host=s.host, port=s.port, user=owner_role(),
+    password = await _role_password(settings, name)
+    conn = await asyncpg.connect(host=s.host, port=s.port, user=name,
                                  password=password, database=name, timeout=10)
     _touch(name)
     return conn
@@ -200,18 +234,24 @@ async def _exists(settings: Settings, name: str) -> bool:
 
 
 async def _create_db(settings: Settings, name: str) -> None:
+    """Database `name`, owned by a fresh role of its own; only that role
+    may connect to it."""
     conn = await _admin(settings)
     try:
-        await conn.execute(f'CREATE DATABASE "{_check_name(name)}" '
-                           f'OWNER "{owner_role()}" TEMPLATE template0')
+        await _setup_server(conn, settings)
+        await _setup_role(conn, _check_name(name))
+        await conn.execute(f'CREATE DATABASE "{name}" OWNER "{name}" TEMPLATE template0')
+        await conn.execute(f'REVOKE CONNECT ON DATABASE "{name}" FROM PUBLIC')
     finally:
         await conn.close()
 
 
 async def _drop_db(settings: Settings, name: str) -> None:
+    """Drop database `name` and then its role."""
     conn = await _admin(settings)
     try:
         await conn.execute(f'DROP DATABASE IF EXISTS "{_check_name(name)}" WITH (FORCE)')
+        await _drop_role(conn, name)
     finally:
         await conn.close()
 
@@ -220,17 +260,18 @@ def _tool(settings: Settings, tool: str) -> str:
     return str(Path(settings.pg_bin_dir) / tool) if settings.pg_bin_dir else tool
 
 
-async def _run(settings: Settings, tool: str, args: list[str]) -> tuple[int, str]:
-    """Run a Postgres client tool against the scratch server as the
-    restricted owner role (never the superuser); (exit code, stderr). The
-    password goes in the child's PGPASSWORD only. A cancelled caller kills
-    the child."""
+async def _run(settings: Settings, tool: str, args: list[str], *,
+               role: str) -> tuple[int, str]:
+    """Run a Postgres client tool against the scratch server as scratch
+    database `role`'s own role (never the superuser); (exit code, stderr).
+    The password goes in the child's PGPASSWORD only. A cancelled caller
+    kills the child."""
     s = _server(settings)
-    password = await _ensure_owner(settings)
+    password = await _role_password(settings, role)
     env = {k: os.environ[k] for k in _ENV_KEEP if k in os.environ}
     env.update(PGPASSWORD=password, PGCONNECT_TIMEOUT="10")
     argv = [_tool(settings, tool), "--host", s.host, "--port", str(s.port),
-            "--username", owner_role(), "--no-password", *args]
+            "--username", role, "--no-password", *args]
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv, env=env, stdin=asyncio.subprocess.DEVNULL,
@@ -294,16 +335,21 @@ async def _restore(settings: Settings, snap: Snapshot, name: str) -> None:
             dump = await asyncio.shield(extract)
         except asyncio.CancelledError:
             # The thread can't be cancelled: stop it writing, and wait for it
-            # before the folder is removed.
+            # (through further cancels too) before the folder is removed.
             stop.set()
-            with suppress(BaseException):
-                await extract
+            while not extract.done():
+                try:
+                    await asyncio.shield(extract)
+                except asyncio.CancelledError:
+                    continue
+                except BaseException:  # noqa: BLE001 - _Stopped, or its own failure
+                    break
             raise
-        await _ensure_owner(settings)
         await _drop_db(settings, name)            # whatever an earlier run left
         await _create_db(settings, name)
         code, err = await _run(settings, "pg_restore",
-                               ["--no-owner", "--no-privileges", "--dbname", name, str(dump)])
+                               ["--no-owner", "--no-privileges", "--dbname", name, str(dump)],
+                               role=name)
         if code != 0:
             # stderr may quote the dump's rows: the log only, never the API.
             first = next((ln for ln in err.splitlines() if ln.strip()), "")[:300]
@@ -320,11 +366,20 @@ async def ensure_restored(settings: Settings, snap: Snapshot, purpose: str = "br
     name = db_name(snap.id, purpose)
     _server(settings)                            # scratch_not_configured first
     async with _lock(name):
-        try:
-            if _state.get(name) == "ready" and await _exists(settings, name):
+        # Already ready: a hiccup checking (or a cancel) leaves it be.
+        if _state.get(name) == "ready":
+            try:
+                exists = await _exists(settings, name)
+            except Exception as e:  # noqa: BLE001 - asyncpg's messages may quote the server
+                log.warning("couldn't check scratch database for snapshot %s: %s", snap.id,
+                            type(e).__name__)
+                raise SeedError("scratch_unavailable",
+                                reason="The scratch Postgres can't be reached.") from None
+            if exists:
                 _touch(name)
                 return name
-            _state[name] = "restoring"
+        _state[name] = "restoring"
+        try:
             await _restore(settings, snap, name)
         except BaseException as e:
             _state[name] = "failed"
@@ -423,6 +478,19 @@ async def sweep_idle(settings: Settings) -> int:
             _state.pop(name, None)
             _last_used.pop(name, None)
         dropped += 1
+    # Roles whose database is gone (a crash between the two drops, or an
+    # earlier version's shared owner role).
+    conn = await _admin(settings)
+    try:
+        orphans = [r["rolname"] for r in await conn.fetch(
+            "SELECT rolname FROM pg_roles r WHERE starts_with(rolname, $1) AND NOT EXISTS "
+            "(SELECT 1 FROM pg_database d WHERE d.datname = r.rolname)", f"{PREFIX}_")]
+        for name in orphans:
+            if not NAME_RE.fullmatch(name) or name in _state or _lock(name).locked():
+                continue
+            await _drop_role(conn, name)
+    finally:
+        await conn.close()
     return dropped
 
 
