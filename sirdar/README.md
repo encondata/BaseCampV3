@@ -666,6 +666,130 @@ anything. Uploads are capped at
 `SIRDAR_SNAPSHOT_MAX_BYTES` (default 5 GiB); a reverse proxy in front must
 accept bodies that large too.
 
+**Seed Data.** The **Seed Data** nav item (pages **DB** and **Spaces**) lets you keep
+only part of a snapshot. A **recipe** is a named, saved selection of database
+rows and Spaces files. A new environment can be deployed from a recipe applied
+to a snapshot. Sirdar knows nothing about clients or partners: a recipe is only
+what you ticked.
+
+**Recipes.**
+
+- You tick rows in a table view. Every table view has Check all, Deselect all
+  and shift-click (click one row, shift-click another, and every row between
+  takes the second row's state).
+- A recipe keeps the rows you ticked, by primary key (composite keys work).
+  Tables with nothing ticked come over empty.
+- A table can be marked **All rows**. It then takes every row of whichever
+  snapshot the recipe is applied to, including rows added since. Mark the
+  lookup and settings tables the app needs (roles, permissions, system
+  settings, status values) All rows by hand. A table with no primary key can't
+  be ticked row by row: keep All rows or none.
+- Ticks are exact keys, not rules. Applied to a newer snapshot, a recipe takes
+  the same records. A ticked record that no longer exists is skipped and
+  listed. Records added since are not included.
+- The table view pages, sorts and filters by column value. With a filter on,
+  Check all and Deselect all act on every row that matches, across all pages.
+  With no filter, they act on the whole table.
+
+**Needed rows.** Ticking a row also ticks every row it can't exist without:
+the rows its required (NOT NULL) foreign keys point to, followed all the way
+up. They are listed under **Added because they're needed**, for example
+"partners: Partner A, needed by worker_profiles row for Person D".
+
+- Links go one way only: to the rows a ticked row points at, never to rows
+  that point at it. Ticking a person doesn't tick their user account.
+- A required link into a table with nothing ticked pulls in just the row it
+  needs. If that parent table has no primary key, it is added whole.
+- An optional link to a row that isn't kept comes over empty. Example: a kept
+  site's "created by" points at a person you didn't keep, so it is blank in the
+  new environment.
+- The links come from the snapshot's own foreign keys. Sirdar needs no
+  ServerSherpa-specific knowledge for this.
+
+**Files.** The Spaces page lists the snapshot's files with a **Kept because**
+column. You can tick or untick any file by hand; Check all, Deselect all and
+shift-click work as on the DB page.
+
+- A file is kept when a kept row holds its storage key. The columns are found
+  by name: `storage_key`, `preview_key`, `avatar_key`, `logo_key`, `file_key`,
+  or any name ending in `_storage_key`.
+- A hand untick beats following. A hand tick keeps a file nothing references.
+- Keys inside free text (wiki markdown, JSON) aren't followed. Tick those files
+  by hand.
+- Needed rows and followed files are worked out again each time the recipe is
+  applied. Only the ticks are stored.
+
+**The scratch Postgres.** To browse a snapshot, Sirdar restores its `db.dump`
+into a scratch database and reads the tables from there. It never reads a live
+environment, so it works for a snapshot of an environment that is down or
+deleted.
+
+- Compose runs it as `sirdar-scratch`: a separate Postgres 16 container with
+  its own volume, on an internal network only Sirdar can reach. It needs
+  `SIRDAR_SCRATCH_PASSWORD` (see the Seed Data upgrade note near the end of the install section).
+- Each scratch database gets one restricted role of its own. The sweep drops
+  databases that have sat idle for `SIRDAR_SCRATCH_IDLE_MINUTES` (default 60);
+  one is restored again when asked for. A build uses a scratch database of its
+  own.
+
+**Building a subset snapshot.** Deploying from a recipe builds a subset
+snapshot from the chosen snapshot: the database with only the kept rows,
+`objects.tar` with only the kept files, the same `keys.enc` and its own
+manifest. It is restored through the normal From a snapshot path, so migrations
+run on deploy. It is kept and listed like other snapshots, marked with the
+recipe and source snapshot it came from.
+
+- The build copies the schema, loads only the kept rows with constraint checks
+  deferred, then checks every foreign key. A kept row whose parent isn't kept
+  fails the build and names the row.
+- Sequences carry the source's positions.
+- The build refuses a snapshot whose schema has other schemas, custom
+  functions, always/replica triggers or rules, or extensions off the allowlist
+  (`citext`, `pg_trgm`). It also fails if the subset has unexpected rows or any
+  large object.
+- A table or column the recipe names that the snapshot lacks is skipped and
+  listed with the missing records.
+
+**Passwords.** By default, copied users keep their passwords and 2FA, as a
+snapshot restore does (the snapshot's pepper and TOTP key go with it). The
+option **Make everyone reset their password** changes the subset before it is
+dumped, so the new environment never receives the old secrets:
+
+- on `user_accounts`, the password hash is emptied (nothing can match it),
+  must-change-password is set, and the 2FA secret, confirmation and counter,
+  the failed-login count and the lock are cleared;
+- `password_history`, `totp_backup_codes`, `trusted_devices`, `auth_sessions`,
+  `password_reset_tokens` and `biometric_keys` are emptied;
+- each user then needs a reset link, so this mode needs a first super admin;
+- if the snapshot lacks one of those tables or columns, the build fails and
+  names it.
+
+The limit: the reset clears only those listed tables and columns. It can't
+promise a schema hasn't stored secrets somewhere else. That is why the build
+refuses unsafe schemas (above), and why the list lives in one place in the
+code (`seed/reset.py`) to keep in step with ServerSherpa's models.
+
+**Deploying From a recipe.** The Data step has a third choice, **From a
+recipe**, beside Start empty and From a snapshot.
+
+1. Pick the recipe.
+2. Pick its snapshot as From a snapshot does: an existing snapshot, or take a
+   new one.
+3. The step shows how many of the recipe's ticked records the snapshot has and
+   how many are missing. Nothing blocks the deploy; read the numbers.
+4. Choose Keep passwords and 2FA, or Make everyone reset their password.
+5. Fill in the first super admin (name, email, password or Generate & invite),
+   as Start empty does. It is created by the first deploy, not inserted into
+   the subset.
+
+Deploy builds the subset, then creates the environment. A build still running
+or pending is resumed. Without Seed Data access the choice is locked.
+
+**Permissions.** Seed Data has its own access resource, `seed_data`, granted to
+the same roles as Deploy by default. It governs the nav item and its API.
+Browsing needs `seed_data:view`, saving a recipe `add`, and editing or
+deleting one `change`. Building a subset also needs `deploy:add`.
+
 **Backups and rollback.** Each Update's pre-deploy dump stays in
 `<env-dir>/backups` (the newest `keep_dumps`). Restore backup puts one back
 into an empty database, then migrates and starts the app. It runs the deployed
