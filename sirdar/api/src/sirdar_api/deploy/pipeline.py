@@ -136,6 +136,8 @@ RUNNER_DIR_UNWRITABLE = ("Sirdar can't write its runner folder (SIRDAR_RUNNER_DI
 
 _tasks: dict[uuid.UUID, asyncio.Task] = {}
 _cancel_requested: set[uuid.UUID] = set()
+# A first go-live Update's id -> the Update of the other side it started.
+_follow_ups: dict[uuid.UUID, uuid.UUID] = {}
 
 
 class DeployInProgress(Exception):
@@ -475,9 +477,14 @@ def is_active(deployment_id: uuid.UUID) -> bool:
 
 
 async def wait(deployment_id: uuid.UUID, timeout: float = 30.0) -> None:
+    """Wait for a deployment's task, then for the other side's Update it
+    started (a first go-live: _start_other_side), if any."""
     task = _tasks.get(deployment_id)
     if task is not None:
         await asyncio.wait({task}, timeout=timeout)
+    follow_up = _tasks.get(_follow_ups.get(deployment_id))
+    if follow_up is not None:
+        await asyncio.wait({follow_up}, timeout=timeout)
 
 
 def request_cancel(deployment_id: uuid.UUID) -> bool:
@@ -623,6 +630,15 @@ class _LogBuffer:
         with self._lock:
             joined = "".join(self._parts)
         return self._redact(joined)[-LOG_LIMIT:]
+
+
+def _step_buffer(ctx: "_Context", step: DeploymentStep) -> _LogBuffer:
+    """A step's log buffer, starting with what the step's row already holds
+    (the note _start_other_side puts at the top of the first step)."""
+    buffer = _LogBuffer(ctx.redactor)
+    if step.log:
+        buffer.append(step.log)
+    return buffer
 
 
 async def _save_log(step_id: uuid.UUID, text: str) -> None:
@@ -1057,7 +1073,7 @@ async def _mark_running(db: AsyncSession, step: DeploymentStep) -> None:
 async def _run_step(runner: Runner, ctx: _Context, step: DeploymentStep, *,
                     control_dir: ControlDir | None = None) -> RunResult:
     definition = STEPS_BY_KEY[step.key]
-    buffer = _LogBuffer(ctx.redactor)
+    buffer = _step_buffer(ctx, step)
     flusher = asyncio.create_task(_flush_loop(step.id, buffer))
     try:
         return await runner.run(
@@ -1090,7 +1106,7 @@ async def _run_python_step(publisher: publish.Publisher, ctx: _Context,
     StepFailed reason ends the log; any other error shows only our copy.
     Cancel (and shutdown's interrupt) propagates like an Ansible step's."""
     definition = STEPS_BY_KEY[step.key]
-    buffer = _LogBuffer(ctx.redactor)
+    buffer = _step_buffer(ctx, step)
     flusher = asyncio.create_task(_flush_loop(step.id, buffer))
     try:
         await asyncio.wait_for(publisher.run(step.key, ctx.publishing, buffer.append),
@@ -1121,7 +1137,7 @@ async def _run_vm_step(provisioner: provision.Provisioner, ctx: _Context,
     handling, plus what step 0 found out (the resolved commit, the VM
     snapshot) in the result's data. timeout: the step's own by default."""
     definition = STEPS_BY_KEY[step.key]
-    buffer = _LogBuffer(ctx.redactor)
+    buffer = _step_buffer(ctx, step)
     flusher = asyncio.create_task(_flush_loop(step.id, buffer))
     try:
         outcome = await asyncio.wait_for(provisioner.run(step.key, ctx.vm, buffer.append),
@@ -1172,6 +1188,7 @@ async def _connections(deployment_id: uuid.UUID) -> AsyncIterator[ControlDir | N
 async def _run(deployment_id: uuid.UUID) -> None:
     current: int | None = None                 # number of the step in progress
     env_id: uuid.UUID | None = None
+    succeeded = False
     # The connections close after the step work and its cleanup, before the
     # database session.
     async with get_sessionmaker()() as db, _connections(deployment_id) as control_dir:
@@ -1413,6 +1430,7 @@ async def _run(deployment_id: uuid.UUID) -> None:
                 env.current_sha, env.image_tag = dep.sha, envfile.image_tag(dep.sha)
                 env.status, env.updated_at = "ready", now
             await db.commit()
+            succeeded = True
         except asyncio.CancelledError:
             status = "cancelled" if deployment_id in _cancel_requested else "interrupted"
             with suppress(Exception):
@@ -1430,3 +1448,74 @@ async def _run(deployment_id: uuid.UUID) -> None:
             if env_id is not None:
                 await _close(deployment_id, env_id, current, step_status="failed",
                              dep_status="failed", error=UNEXPECTED, failed_step=current)
+    if succeeded:
+        # After A's success is committed and its session closed: nothing
+        # here may change A's outcome.
+        try:
+            await _start_other_side(deployment_id)
+        except Exception as e:  # noqa: BLE001
+            log.warning("deployment %s: didn't start the other side: %s", deployment_id,
+                        type(e).__name__)
+
+
+FOLLOW_UP_NOTE = ("Sirdar started this deploy after {slot} went live: the first deploy puts "
+                  "the same commit on both sides.\n")
+
+
+async def _start_other_side(deployment_id: uuid.UUID) -> uuid.UUID | None:
+    """A/B environment, first go-live: once an Update that went live
+    succeeded and the other slot has never had a release, start a separate
+    Update of the other slot with the same commit that stays idle (no seed
+    restore, first admin or starter content: the shared database has them).
+    Returns its id, or None when nothing started (a refusal is logged).
+    The other side's own success starts nothing: this side has a release."""
+    async with get_sessionmaker()() as db:
+        dep = await db.get(Deployment, deployment_id, populate_existing=True)
+        if dep is None or dep.status != "succeeded" or dep.mode != "update" \
+                or not (dep.cloud or dep.bluegreen) or not dep.go_live or not dep.slot:
+            return None
+        env = await db.get(Environment, dep.environment_id, populate_existing=True)
+        slots = list(env.slots or ()) if env is not None else []
+        if len(slots) != 2 or dep.slot not in slots:
+            return None
+        other = next(s for s in slots if s != dep.slot)
+        row = await db.get(DoSlot if dep.cloud else VmSlot, (env.id, other),
+                           populate_existing=True)
+        if row is not None and row.sha:
+            return None
+        if not dep.sha:
+            log.warning("deployment %s: didn't start the %s side: %s", deployment_id, other,
+                        "no resolved commit")
+            return None
+        # Read now: a refusal rolls the session back.
+        env_name, slot, sha, git_ref, actor_id = (env.name, dep.slot, dep.sha, dep.git_ref,
+                                                  dep.actor_id)
+        publish_, cloud, bluegreen = dep.publish, dep.cloud, dep.bluegreen
+        try:
+            follow = await create_deployment(db, env, mode="update", git_ref=git_ref, sha=sha,
+                                             actor_id=actor_id, publish=publish_, vm=dep.vm,
+                                             cloud=cloud, bluegreen=bluegreen, slot=other,
+                                             go_live=False)
+        except (DeployInProgress, do_envs.DoEnvError, NotSupportedOnDigitalOcean,
+                NotSupportedOnBlueGreen, ValueError) as e:
+            await db.rollback()
+            log.warning("deployment %s: didn't start the %s side: %s", deployment_id, other,
+                        getattr(e, "code", None) or type(e).__name__)
+            return None
+        first = await db.scalar(select(DeploymentStep).where(
+            DeploymentStep.deployment_id == follow.id, DeploymentStep.status == "pending")
+            .order_by(DeploymentStep.number).limit(1))
+        if first is not None:
+            first.log = FOLLOW_UP_NOTE.format(slot=slot)
+        changes: dict = {"environment": env_name, "mode": "update", "git_ref": git_ref,
+                         "sha": sha, "slot": other, "go_live": False,
+                         "follows": str(deployment_id)}
+        if publish_:
+            changes["publish"] = True
+        audit(db, actor_id=actor_id, action="deploy.deployment_start", entity_type="deployment",
+              entity_id=str(follow.id), changes=changes)
+        await db.commit()
+        follow_id = follow.id
+    _follow_ups[deployment_id] = follow_id
+    launch(follow_id)
+    return follow_id
