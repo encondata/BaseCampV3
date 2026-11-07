@@ -26,13 +26,15 @@ from sirdar_api.api.deps import (
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import SeedRecipe, Snapshot
 from sirdar_api.seed import SeedError, browse, closure, recipes, scratch
+from sirdar_api.seed import files as seed_files
 from sirdar_api.services.audit import audit
 
 log = logging.getLogger(__name__)
 
 # SeedError codes and their HTTP status (anything else answers 400).
 _STATUS = {"scratch_unavailable": 503, "scratch_not_configured": 409, "restore_failed": 409,
-           "no_primary_key": 409, "table_not_found": 404, "column_not_found": 404}
+           "no_primary_key": 409, "table_not_found": 404, "column_not_found": 404,
+           "bundle_unreadable": 409}
 
 
 async def _seed_ready(user: CurrentUser) -> AuthContext:
@@ -156,6 +158,24 @@ async def resolve(snapshot_id: uuid.UUID, body: ResolveIn, db: DbSession):
     tables = {name: sel.model_dump() for name, sel in body.tables.items()}
     async with _browse_conn(db, snapshot_id) as (conn, _):
         return await closure.resolve(conn, tables)
+
+
+@router.get("/snapshots/{snapshot_id}/files")
+async def snapshot_files(snapshot_id: uuid.UUID, recipe_id: uuid.UUID, db: DbSession,
+                         page: int = Query(1, ge=1, le=10**9),
+                         size: int = Query(50, ge=1, le=1000),
+                         filter: str = ""):
+    """The snapshot's files (objects.tar), a page at a time, each kept or
+    not under the recipe: followed from its kept rows, or ticked by hand
+    (an untick by hand beats both), with why."""
+    recipe = await recipes.detail(db, await _recipe(db, recipe_id))
+    snap = await _snapshot(db, snapshot_id)
+    async with _browse_conn(db, snapshot_id) as (conn, _):
+        kept = await seed_files.kept_rows(conn, recipe["tables"])
+        refs = await seed_files.referenced(conn, kept)
+        objects = await seed_files.objects_for(get_settings(), snap)
+    return seed_files.listing(objects, refs, recipe["files"], page=page, size=size,
+                              needle=filter)
 
 
 # --- Recipes: stored in Sirdar's own database, so they need no scratch server.
