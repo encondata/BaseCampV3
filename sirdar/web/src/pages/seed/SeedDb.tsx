@@ -20,7 +20,7 @@ import {
   type KeyFilter, type RecipeSummary, type Resolved, type RowsPage, type ScratchStatus, type SeedTable,
 } from './seedApi';
 import {
-  fromRecipe, pkKey, setAll, setMany, tickedCount, toBody, toggle, type PkObject, type Selection,
+  fromRecipe, pkKey, setAll, setMany, toBody, toggle, type PkObject, type Selection,
 } from './selection';
 
 /** While the snapshot restores into the scratch database, its status is polled this often. */
@@ -89,7 +89,11 @@ export default function SeedDb() {
     else if (status === 'failed') {
       setPhase('failed');
       setError("This snapshot's database couldn't be opened for browsing.");
-    } else setPhase('opening');
+    } else {
+      // restoring, or absent (not started yet): poll again
+      setPhase('opening');
+      setPollTick((t) => t + 1);
+    }
   }, []);
   const open = useCallback((id: string) => {
     setPhase('opening');
@@ -106,9 +110,10 @@ export default function SeedDb() {
     const timer = setTimeout(() => {
       snapshotStatus(id)
         .then((r) => {
+          // absent (Sirdar restarted mid-restore, or the copy was dropped): open
+          // it again; open() lands its answer, which schedules the next poll
           if (r.status === 'absent') { open(id); return; }
           landStatus(id, r.status);
-          if (r.status === 'restoring') setPollTick((t) => t + 1);
         })
         .catch((e) => { if (id === snapRef.current) { setPhase('failed'); setError(seedErrorText(e, "Couldn't open that snapshot.")); } });
     }, OPEN_POLL_MS);
@@ -155,7 +160,7 @@ export default function SeedDb() {
     getRows(snapId, current, {
       page, size: PAGE_SIZE, sort: sort || undefined, dir, filter_col: queryCol, filter: appliedFilter,
     })
-      .then((r) => { if (n === rowsSeq.current) setRows(r); })
+      .then((r) => { if (n === rowsSeq.current) { setRows(r); setError(''); } })
       .catch((e) => {
         if (n !== rowsSeq.current) return;
         if (notOpen(e)) reopen(); else setError(seedErrorText(e, "Couldn't load the rows."));
@@ -169,23 +174,23 @@ export default function SeedDb() {
   }, [rows, filterCol]);
 
   // ---- resolving the selection ------------------------------------------------
-  const body = useMemo(() => toBody(sel), [sel]);
   const resolveSeq = useRef(0);
   useEffect(() => {
     if (phase !== 'ready' || !snapId) return undefined;
     const n = ++resolveSeq.current;
-    if (Object.keys(body).length === 0) { setResolved(null); return undefined; }
     const id = snapId;
     const timer = setTimeout(() => {
+      const body = toBody(sel);
+      if (Object.keys(body).length === 0) { setResolved(null); return; }
       resolveSelection(id, body)
-        .then((r) => { if (n === resolveSeq.current) setResolved(r); })
+        .then((r) => { if (n === resolveSeq.current) { setResolved(r); setError(''); } })
         .catch((e) => {
           if (n !== resolveSeq.current) return;
           if (notOpen(e)) reopen(); else setError(seedErrorText(e, "Couldn't work out the rows this selection needs."));
         });
     }, RESOLVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [body, phase, snapId, reopen]);
+  }, [sel, phase, snapId, reopen]);
 
   // ---- recipes -------------------------------------------------------------------
   const pickRecipe = (id: string) => {
@@ -223,7 +228,11 @@ export default function SeedDb() {
   const allRows = tsel?.mode === 'all';
   const added = useMemo(() => new Set((resolved?.added[current] ?? []).map(pkKey)), [resolved, current]);
   const wholeAdded = !!resolved?.added_tables.some((a) => a.table === current);
-  const activeFilter: KeyFilter = filterCol && filter ? { filter_col: filterCol, filter } : { filter_col: '', filter: '' };
+  const shownFilter = appliedFilter.trim();
+  const activeFilter: KeyFilter = filterCol && shownFilter
+    ? { filter_col: filterCol, filter: shownFilter } : { filter_col: '', filter: '' };
+  /** Bumped by Check all / Deselect all: a fresh RowTable forgets its shift-click anchor. */
+  const [anchorReset, setAnchorReset] = useState(0);
 
   const checkMany = async (on: boolean) => {
     if (!snapId || !current) return;
@@ -231,6 +240,7 @@ export default function SeedDb() {
     try {
       const r = await getKeys(snapId, current, activeFilter);
       setSel((s) => setMany(s, current, r.pks.map(pkKey), on));
+      setAnchorReset((x) => x + 1);
     } catch (e) {
       if (notOpen(e)) reopen(); else setError(seedErrorText(e, "Couldn't load the matching rows."));
     }
@@ -272,7 +282,16 @@ export default function SeedDb() {
     ...resolved.added_tables.map((a) => `Added whole table ${a.table}, needed by ${a.needed_by_table}`),
   ] : [];
 
-  const canSave = recipeId ? can('seed_data', 'change') : can('seed_data', 'add');
+  // a new recipe is created, then filled with a PUT: it takes both
+  /** Rows kept in a table: ticked by hand plus those resolve added (all
+   *  of them for an All rows table or a whole table resolve added). */
+  const keptCount = (t: SeedTable) => {
+    if (sel[t.table]?.mode === 'all' || resolved?.added_tables.some((a) => a.table === t.table)) return t.rows;
+    const kept = new Set(sel[t.table]?.pks ?? []);
+    (resolved?.added[t.table] ?? []).forEach((pk) => kept.add(pkKey(pk)));
+    return Math.min(kept.size, t.rows);
+  };
+  const canSave = recipeId ? can('seed_data', 'change') : can('seed_data', 'add') && can('seed_data', 'change');
 
   return (
     <div className="portal-page sirdar-seed">
@@ -326,7 +345,7 @@ export default function SeedDb() {
                 <button type="button" className="sirdar-seed-pick" onClick={(e) => { e.stopPropagation(); pickTable(t.table); }}>
                   {t.table}
                 </button>,
-                `${tickedCount(sel, t.table, t.rows).toLocaleString()} / ${t.rows.toLocaleString()}`,
+                `${keptCount(t).toLocaleString()} / ${t.rows.toLocaleString()}`,
               ],
             }))}
             emptyText="This snapshot has no tables."
@@ -370,6 +389,7 @@ export default function SeedDb() {
               </div>
 
               <RowTable
+                key={`${current}|${sort}|${dir}|${shownFilter}|${anchorReset}`}
                 ariaLabel={`Rows of ${table.table}`}
                 columns={(rows?.columns ?? []).map((c) => ({
                   key: c.name,

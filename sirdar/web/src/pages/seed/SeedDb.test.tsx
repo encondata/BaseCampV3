@@ -4,7 +4,10 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-vi.mock('@portal/auth/AuthContext', () => ({ useAuth: () => ({ can: () => true }) }));
+const perms = vi.hoisted(() => ({ change: true }));
+vi.mock('@portal/auth/AuthContext', () => ({
+  useAuth: () => ({ can: (_r: string, a: string) => a !== 'change' || perms.change }),
+}));
 const snaps = vi.hoisted(() => ({ listSnapshots: vi.fn() }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...snaps }));
 const api = vi.hoisted(() => ({
@@ -13,6 +16,8 @@ const api = vi.hoisted(() => ({
   getKeys: vi.fn(), resolveSelection: vi.fn(),
 }));
 vi.mock('./seedApi', async (orig) => ({ ...(await orig<typeof import('./seedApi')>()), ...api }));
+
+import { ApiError } from '@portal/lib/api';
 
 import { SNAP, SNAP_TAKING } from '../environments/testData';
 
@@ -33,6 +38,7 @@ const LOGS = {
 const NONE = { added: {}, reasons: [], missing: {}, added_tables: [], missing_tables: [] };
 
 beforeEach(() => {
+  perms.change = true;
   Object.values(api).forEach((f) => f.mockReset());
   snaps.listSnapshots.mockResolvedValue({ snapshots: [SNAP, SNAP_TAKING] });
   api.listRecipes.mockResolvedValue([{ id: 'r1', name: 'Recipe A', notes: '', tables: 1, rows: 1, files: 1, updated_at: '' }]);
@@ -170,4 +176,75 @@ it('polls while the snapshot is restoring', async () => {
   } finally {
     vi.useRealTimers();
   }
+});
+
+it('an absent status re-opens the snapshot and keeps polling until ready', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    api.openSnapshot.mockResolvedValue({ status: 'restoring' });
+    api.snapshotStatus.mockResolvedValueOnce({ status: 'absent' }).mockResolvedValue({ status: 'ready' });
+    render(<MemoryRouter><SeedDb /></MemoryRouter>);
+    await waitFor(() => expect(snaps.listSnapshots).toHaveBeenCalled());
+    await pick('Snapshot', new RegExp(SNAP.name));
+    await vi.advanceTimersByTimeAsync(2000);       // poll 1: absent → open again
+    await waitFor(() => expect(api.openSnapshot).toHaveBeenCalledTimes(2));
+    await vi.advanceTimersByTimeAsync(2000);       // poll 2: ready
+    expect(api.snapshotStatus).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(api.listTables).toHaveBeenCalledWith(SNAP.id));
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('rows answering snapshot_not_open re-open the snapshot, poll, then load', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    api.getRows.mockRejectedValueOnce(new ApiError(409, 'snapshot_not_open'));
+    api.openSnapshot.mockResolvedValueOnce({ status: 'ready' }).mockResolvedValue({ status: 'restoring' });
+    render(<MemoryRouter><SeedDb /></MemoryRouter>);
+    await waitFor(() => expect(snaps.listSnapshots).toHaveBeenCalled());
+    await pick('Snapshot', new RegExp(SNAP.name));
+    await waitFor(() => expect(api.openSnapshot).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(/Opening the snapshot/)).toBeTruthy();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(api.snapshotStatus).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole('checkbox', { name: 'Row Person 1' })).toBeTruthy();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('the tables list counts rows resolve added, and whole tables in full', async () => {
+  api.listTables.mockResolvedValue([
+    { table: 'people', rows: 3, pk: ['id'], file_columns: [] },
+    { table: 'partners', rows: 4, pk: ['id'], file_columns: [] },
+    { table: 'countries', rows: 7, pk: ['id'], file_columns: [] },
+  ]);
+  api.resolveSelection.mockResolvedValue({
+    ...NONE, added: { partners: [{ id: 'p1' }] },
+    added_tables: [{ table: 'countries', needed_by_table: 'sites', via_columns: ['country'] }],
+  });
+  await openPeople();
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Row Person 1' }));
+  const list = screen.getByRole('table', { name: 'Tables' });
+  await waitFor(() => expect(within(list).getByText('1 / 4')).toBeTruthy());
+  expect(within(list).getByText('1 / 3')).toBeTruthy();
+  expect(within(list).getByText('7 / 7')).toBeTruthy();
+});
+
+it('Check all forgets the shift-click anchor', async () => {
+  await openPeople();
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Row Person 1' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Deselect all' }));
+  await waitFor(() => expect((screen.getByRole('checkbox', { name: 'Row Person 1' }) as HTMLInputElement).checked).toBe(true));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Row Person 3' }), { shiftKey: true });
+  // no anchor: only Person 3 is ticked, not 1..3
+  expect((screen.getByRole('checkbox', { name: 'Row Person 2' }) as HTMLInputElement).checked).toBe(false);
+  expect((screen.getByRole('checkbox', { name: 'Row Person 3' }) as HTMLInputElement).checked).toBe(true);
+});
+
+it('a new recipe can only be saved with both add and change', async () => {
+  perms.change = false;
+  await openPeople();
+  expect((screen.getByRole('button', { name: 'Save recipe' }) as HTMLButtonElement).disabled).toBe(true);
 });
