@@ -1,4 +1,5 @@
-# Sirdar — two containers: the app (API + SPA) and its own Postgres.
+# Sirdar — three containers: the app (API + SPA), its own Postgres, and a
+# scratch Postgres that Seed Data restores snapshots into.
 # Normally installed and updated with sirdar/install.sh (see sirdar/README.md).
 # By hand:
 #   cp sirdar/.env.example sirdar/.env   # then edit it
@@ -20,6 +21,8 @@ services:
     env_file: .env
     environment:
       SIRDAR_DATABASE_URL: postgresql+asyncpg://sirdar:${SIRDAR_DB_PASSWORD:?set SIRDAR_DB_PASSWORD in sirdar/.env}@sirdar-db:5432/sirdar
+      # Seed Data restores snapshots into databases of their own here.
+      SIRDAR_SCRATCH_URL: postgresql://postgres:${SIRDAR_SCRATCH_PASSWORD:?set SIRDAR_SCRATCH_PASSWORD in sirdar/.env}@sirdar-scratch:5432/postgres
       # In the container the keys always live at the mount point, even when
       # SIRDAR_DEPLOY_KEYS_DIR in .env names the host folder.
       SIRDAR_DEPLOY_KEYS_DIR: /app/deploy-keys
@@ -51,6 +54,8 @@ services:
     depends_on:
       sirdar-db:
         condition: service_healthy
+      sirdar-scratch:
+        condition: service_healthy
     # The app waits up to 35 s for running deployments to stop on shutdown;
     # Docker's default 10 s grace would kill it first.
     stop_grace_period: 45s
@@ -71,5 +76,26 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # Scratch databases for Seed Data: each snapshot being browsed or cut is
+  # restored into a database of its own, dropped once idle. ServerSherpa's
+  # major version (16), so pg_restore matches the dumps. Separate from
+  # sirdar-db so a large restore can't crowd Sirdar's own data. Nothing in
+  # it needs a backup.
+  sirdar-scratch:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${SIRDAR_SCRATCH_PASSWORD:?set SIRDAR_SCRATCH_PASSWORD in sirdar/.env}
+      POSTGRES_DB: postgres
+    volumes:
+      - sirdar-scratch:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
 volumes:
   sirdar-db:
+  sirdar-scratch:

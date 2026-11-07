@@ -3,6 +3,7 @@ head) and sirdar_test_source (a minimal portal-shaped schema the import
 reads). Both live in the dev sirdar-db container (127.0.0.1:5434).
 Tables are truncated before each test; roles are restored to defaults."""
 
+import functools
 import os
 import subprocess
 from pathlib import Path
@@ -223,3 +224,70 @@ def no_real_hosts():
         mp.setattr(esxi, "_smart_connect", esxi_session)
         yield hits
     assert not hits, f"a test reached real hosts: {', '.join(hits)}"
+
+
+SCRATCH_PREFIX = f"{TEST_DB}_scratch"
+PG16_WRAPPERS = Path(__file__).parent / "pg16"
+
+
+def _major(version_text: str) -> int | None:
+    import re
+    m = re.search(r"(\d+)(?:\.\d+)?", version_text)
+    return int(m.group(1)) if m else None
+
+
+@functools.cache
+def pg_bin_dir_for_tests() -> str | None:
+    """Where the tests' pg_dump/pg_restore are: "" (PATH) when those match
+    the test server's major version, else tests/pg16 (the tools inside the
+    dev sirdar-db container) when that container runs; None = neither."""
+    with psycopg.connect(_psycopg_url("postgres"), autocommit=True) as conn:
+        server = int(conn.execute("SHOW server_version_num").fetchone()[0]) // 10000
+    try:
+        local = _major(subprocess.run(["pg_restore", "--version"], capture_output=True,
+                                      text=True, check=True).stdout)
+    except (OSError, subprocess.CalledProcessError):
+        local = None
+    if local == server:
+        return ""
+    container = os.environ.get("SIRDAR_TEST_PG_CONTAINER", "serversherpa-dev-sirdar-db-1")
+    try:
+        out = subprocess.run(["docker", "exec", container, "pg_restore", "--version"],
+                             capture_output=True, text=True, timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode == 0 and _major(out.stdout) == server:
+        return str(PG16_WRAPPERS)
+    return None
+
+
+def drop_scratch_databases() -> None:
+    """Drop every scratch database the tests made (sirdar_test_scratch_…)."""
+    with psycopg.connect(_psycopg_url("postgres"), autocommit=True) as conn:
+        names = [r[0] for r in conn.execute(
+            "SELECT datname FROM pg_database WHERE starts_with(datname, %s)",
+            (SCRATCH_PREFIX + "_",)).fetchall()]
+        for name in names:
+            conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+
+
+@pytest.fixture
+def scratch_url(monkeypatch):
+    """SIRDAR_SCRATCH_URL at the test Postgres (its `postgres` database);
+    scratch databases are named sirdar_test_scratch_… and dropped afterwards."""
+    from sirdar_api.config import get_settings
+    from sirdar_api.seed import scratch
+
+    bin_dir = pg_bin_dir_for_tests()
+    if bin_dir is None:
+        pytest.skip("no pg_restore matching the test Postgres's major version")
+    url = _psycopg_url("postgres")
+    monkeypatch.setenv("SIRDAR_SCRATCH_URL", url)
+    monkeypatch.setenv("SIRDAR_PG_BIN_DIR", bin_dir)
+    monkeypatch.setattr(scratch, "PREFIX", SCRATCH_PREFIX)
+    scratch.forget_all()
+    get_settings.cache_clear()
+    yield url
+    scratch.forget_all()
+    drop_scratch_databases()
+    get_settings.cache_clear()

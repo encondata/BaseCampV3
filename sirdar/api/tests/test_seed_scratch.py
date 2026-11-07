@@ -1,0 +1,260 @@
+"""The scratch Postgres that Seed Data restores snapshots into (Task 2)."""
+
+import asyncio
+import os
+import subprocess
+import uuid
+from pathlib import Path
+
+import psycopg
+import pytest
+from sqlalchemy.engine import make_url
+
+from sirdar_api.config import get_settings
+from sirdar_api.db.models import Snapshot
+from sirdar_api.deploy import bundle, snapshots
+from sirdar_api.seed import SeedError, scratch
+
+from .api_helpers import auth_headers
+from .bundle_helpers import write_objects_tar
+from .conftest import BASE_URL, TEST_DB, _psycopg_url, pg_bin_dir_for_tests
+from .deploy_factories import secrets_key, snapshots_dir  # noqa: F401
+
+SOURCE = f"{TEST_DB}_seedsrc"
+KEYS = {"SS_PASSWORD_PEPPER": "pepper-for-scratch-tests",
+        "SS_TOTP_ENCRYPTION_KEY": "hNq5Ui0YUe9vAAAMPjYaMxNt3ydN5zZ6cM2P7k1HJ6I="}
+
+
+@pytest.fixture(scope="module")
+def good_dump(tmp_path_factory) -> bytes:
+    """A pg_dump -Fc of two tables, one pointing at the other."""
+    with psycopg.connect(_psycopg_url("postgres"), autocommit=True) as conn:
+        conn.execute(f'DROP DATABASE IF EXISTS "{SOURCE}" WITH (FORCE)')
+        conn.execute(f'CREATE DATABASE "{SOURCE}"')
+    try:
+        with psycopg.connect(_psycopg_url(SOURCE), autocommit=True) as conn:
+            conn.execute("CREATE TABLE sites (id int PRIMARY KEY, name text NOT NULL)")
+            conn.execute("CREATE TABLE racks (id int PRIMARY KEY, "
+                         "site_id int NOT NULL REFERENCES sites(id), name text)")
+            conn.execute("INSERT INTO sites VALUES (1, 'North'), (2, 'South')")
+            conn.execute("INSERT INTO racks VALUES (10, 1, 'A1'), (11, 2, 'B1')")
+        bin_dir = pg_bin_dir_for_tests()
+        if bin_dir is None:
+            pytest.skip("no pg_dump matching the test Postgres's major version")
+        url = make_url(BASE_URL)
+        tool = str(Path(bin_dir) / "pg_dump") if bin_dir else "pg_dump"
+        done = subprocess.run(
+            [tool, "-Fc", "--host", url.host, "--port", str(url.port),
+             "--username", url.username, "--no-password", SOURCE],
+            env={**os.environ, "PGPASSWORD": url.password or ""}, check=True,
+            capture_output=True)
+        assert done.stdout.startswith(b"PGDMP")
+        return done.stdout
+    finally:
+        with psycopg.connect(_psycopg_url("postgres"), autocommit=True) as conn:
+            conn.execute(f'DROP DATABASE IF EXISTS "{SOURCE}" WITH (FORCE)')
+
+
+def _snapshot(tmp_path, dump: bytes) -> Snapshot:
+    """A stored bundle holding `dump`, and a (transient) row for it."""
+    parts = tmp_path / f"parts-{uuid.uuid4().hex}"
+    parts.mkdir()
+    (parts / "db.dump").write_bytes(dump)
+    write_objects_tar(parts / "objects.tar")
+    (parts / "keys").write_bytes(snapshots.encrypt_keys(get_settings(), KEYS))
+    snapshot_id = uuid.uuid4()
+    src = parts / "bundle.tar.gz"
+    bundle.pack(src, source="uat", revision="0089", bucket="serversherpa",
+                db_dump=parts / "db.dump", objects_tar=parts / "objects.tar",
+                keys_file=parts / "keys")
+    snapshots.ensure_dirs(get_settings())
+    stored = snapshots.store_bundle(get_settings(), src, snapshot_id)
+    return Snapshot(id=snapshot_id, name=f"snap-{snapshot_id.hex[:8]}", origin="upload",
+                    source="uat", status="ready", bundle_file=stored.bundle_file,
+                    alembic_revision="0089", size_bytes=stored.size_bytes,
+                    checksum=stored.checksum)
+
+
+def _databases() -> set[str]:
+    with psycopg.connect(_psycopg_url("postgres"), autocommit=True) as conn:
+        return {r[0] for r in conn.execute("SELECT datname FROM pg_database").fetchall()}
+
+
+def _tables(name: str) -> dict[str, int]:
+    with psycopg.connect(_psycopg_url(name), autocommit=True) as conn:
+        return {t: conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+                for t in ("sites", "racks")}
+
+
+def test_db_name():
+    sid = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    assert scratch.db_name(sid) == f"{scratch.PREFIX}_browse_{sid.hex}"
+    assert scratch.db_name(sid, "subset") == f"{scratch.PREFIX}_subset_{sid.hex}"
+    assert len(scratch.db_name(sid, "subset")) <= 63
+
+
+async def test_restores_both_tables(scratch_url, snapshots_dir, tmp_path, good_dump):
+    snap = _snapshot(tmp_path, good_dump)
+    assert scratch.status(snap.id) == "absent"
+    name = await scratch.ensure_restored(get_settings(), snap)
+    assert name == f"{TEST_DB}_scratch_browse_{snap.id.hex}"
+    assert scratch.status(snap.id) == "ready"
+    assert _tables(name) == {"sites": 2, "racks": 2}
+    conn = await scratch.connect(get_settings(), name)
+    try:
+        fks = await conn.fetchval(
+            "SELECT count(*) FROM pg_constraint WHERE contype = 'f'")
+        assert fks == 1
+    finally:
+        await conn.close()
+    # The extracted dump is gone: nothing but the bundle and incoming/ remain.
+    assert sorted(p.name for p in snapshots_dir.iterdir()) == sorted(
+        ["incoming", snap.bundle_file])
+    assert list((snapshots_dir / "incoming").iterdir()) == []
+
+
+async def test_concurrent_callers_restore_once(scratch_url, snapshots_dir, tmp_path,
+                                               good_dump, monkeypatch):
+    snap = _snapshot(tmp_path, good_dump)
+    calls: list[str] = []
+    real_run = scratch._run
+
+    async def counting(settings, tool, args):
+        calls.append(tool)
+        return await real_run(settings, tool, args)
+
+    monkeypatch.setattr(scratch, "_run", counting)
+    a, b = await asyncio.gather(scratch.ensure_restored(get_settings(), snap),
+                                scratch.ensure_restored(get_settings(), snap))
+    assert a == b
+    assert calls.count("pg_restore") == 1
+    assert _tables(a) == {"sites": 2, "racks": 2}
+
+
+async def test_corrupt_dump_fails_and_leaves_no_database(scratch_url, snapshots_dir,
+                                                         tmp_path):
+    snap = _snapshot(tmp_path, b"PGDMP-this-is-not-a-dump")
+    with pytest.raises(SeedError) as exc:
+        await scratch.ensure_restored(get_settings(), snap)
+    assert exc.value.code == "restore_failed"
+    assert scratch.status(snap.id) == "failed"
+    assert scratch.db_name(snap.id) not in _databases()
+
+
+async def test_missing_bundle_fails(scratch_url, snapshots_dir, tmp_path, good_dump):
+    snap = _snapshot(tmp_path, good_dump)
+    (snapshots_dir / snap.bundle_file).unlink()
+    with pytest.raises(SeedError) as exc:
+        await scratch.ensure_restored(get_settings(), snap)
+    assert exc.value.code == "restore_failed"
+    assert scratch.db_name(snap.id) not in _databases()
+
+
+async def test_sweep_drops_idle_and_keeps_fresh(scratch_url, snapshots_dir, tmp_path,
+                                                good_dump):
+    old, fresh = _snapshot(tmp_path, good_dump), _snapshot(tmp_path, good_dump)
+    old_name = await scratch.ensure_restored(get_settings(), old)
+    fresh_name = await scratch.ensure_restored(get_settings(), fresh)
+    scratch._last_used[old_name] -= (get_settings().scratch_idle_minutes + 1) * 60
+    assert await scratch.sweep_idle(get_settings()) == 1
+    names = _databases()
+    assert old_name not in names and fresh_name in names
+    assert (scratch.status(old.id), scratch.status(fresh.id)) == ("absent", "ready")
+
+
+async def test_sweep_drops_browse_databases_left_by_an_earlier_run(
+        scratch_url, snapshots_dir, tmp_path, good_dump):
+    snap = _snapshot(tmp_path, good_dump)
+    name = await scratch.ensure_restored(get_settings(), snap)
+    scratch.forget_all()                      # as after a restart
+    assert await scratch.sweep_idle(get_settings()) == 1
+    assert name not in _databases()
+
+
+async def test_drop_forgets_the_database(scratch_url, snapshots_dir, tmp_path, good_dump):
+    snap = _snapshot(tmp_path, good_dump)
+    name = await scratch.ensure_restored(get_settings(), snap)
+    await scratch.drop(get_settings(), name)
+    assert name not in _databases()
+    assert scratch.status(snap.id) == "absent"
+
+
+async def test_sweep_without_scratch_url_does_nothing(monkeypatch):
+    monkeypatch.setenv("SIRDAR_SCRATCH_URL", "")
+    get_settings.cache_clear()
+    try:
+        assert await scratch.sweep_idle(get_settings()) == 0
+    finally:
+        get_settings.cache_clear()
+
+
+# ---- the API ---------------------------------------------------------------------
+
+async def test_api_answers_409_without_a_scratch_url(client, db, monkeypatch):
+    monkeypatch.setenv("SIRDAR_SCRATCH_URL", "")
+    get_settings.cache_clear()
+    try:
+        headers = await auth_headers(client, db)
+        sid = uuid.uuid4()
+        for method, path in (("POST", f"/api/seed/snapshots/{sid}/open"),
+                             ("GET", f"/api/seed/snapshots/{sid}")):
+            resp = await client.request(method, path, headers=headers)
+            assert resp.status_code == 409, resp.text
+            assert resp.json()["detail"]["code"] == "scratch_not_configured"
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_api_needs_sign_in_first(client, monkeypatch):
+    monkeypatch.setenv("SIRDAR_SCRATCH_URL", "")
+    get_settings.cache_clear()
+    try:
+        resp = await client.get(f"/api/seed/snapshots/{uuid.uuid4()}")
+        assert resp.status_code == 401
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_api_opens_a_snapshot(client, db, scratch_url, snapshots_dir, tmp_path,
+                                    good_dump):
+    snap = _snapshot(tmp_path, good_dump)
+    db.add(snap)
+    await db.commit()
+    headers = await auth_headers(client, db)
+    resp = await client.post(f"/api/seed/snapshots/{snap.id}/open", headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] in ("restoring", "ready")
+    for _ in range(200):
+        resp = await client.get(f"/api/seed/snapshots/{snap.id}", headers=headers)
+        if resp.json()["status"] != "restoring":
+            break
+        await asyncio.sleep(0.05)
+    assert resp.json() == {"status": "ready"}
+    assert (await client.get(f"/api/seed/snapshots/{uuid.uuid4()}",
+                             headers=headers)).status_code == 404
+
+
+@pytest.mark.parametrize("url, runs", [("", False), ("postgresql://u:p@scratch/postgres", True)])
+async def test_app_sweeps_only_with_a_scratch_url(monkeypatch, url, runs):
+    from sirdar_api.api.app import create_app
+
+    events: list[str] = []
+
+    async def fake_loop(settings, seconds=scratch.SWEEP_SECONDS):
+        events.append(f"loop {seconds}")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            events.append("cancelled")
+            raise
+
+    monkeypatch.setattr(scratch, "sweep_loop", fake_loop)
+    monkeypatch.setenv("SIRDAR_SCRATCH_URL", url)
+    get_settings.cache_clear()
+    try:
+        app = create_app()
+        async with app.router.lifespan_context(app):
+            await asyncio.sleep(0)
+    finally:
+        get_settings.cache_clear()
+    assert events == ([f"loop {scratch.SWEEP_SECONDS}", "cancelled"] if runs else [])

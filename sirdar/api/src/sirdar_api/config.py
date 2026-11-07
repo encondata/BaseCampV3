@@ -101,6 +101,15 @@ class Settings(BaseSettings):
     terraform_binary: str = "terraform"
     # Points Terraform at the provider mirror baked into the image (no registry).
     terraform_cli_config: str = "/opt/terraform/terraformrc"
+    # Seed Data: the scratch Postgres that snapshots are restored into for
+    # browsing and cutting subsets (postgresql://user:password@host:port/db,
+    # the db being one to connect to while creating and dropping the scratch
+    # databases). Blank = Seed Data is off. Never logged.
+    scratch_url: str = ""
+    # A browse database nobody has used for this long is dropped.
+    scratch_idle_minutes: int = Field(default=60, gt=0)
+    # Folder holding pg_restore and pg_dump; blank = find them on PATH.
+    pg_bin_dir: str = ""
 
     @field_validator("deploy_do_token", "deploy_aws_secret_access_key",
                      "deploy_ssh_password", "deploy_ssh_key_passphrase", "secrets_key",

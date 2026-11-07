@@ -44,11 +44,17 @@ async def _lifespan(app: FastAPI):
         # Sirdar's backup certificate renewal (DigitalOcean); it never raises.
         from sirdar_api.deploy import renewals
         renewal = asyncio.create_task(renewals.loop(seconds), name="certificate-renewals")
+    from sirdar_api.seed import scratch
+    sweeper = None
+    if scratch.configured(get_settings()):
+        # Seed Data: drops scratch databases nobody has used for a while; it never raises.
+        sweeper = asyncio.create_task(scratch.sweep_loop(get_settings()), name="scratch-sweep")
     yield
-    if renewal is not None:
-        renewal.cancel()
-        with suppress(asyncio.CancelledError):
-            await renewal
+    for task in (renewal, sweeper):
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
     await pipeline.shutdown(timeout=pipeline.SHUTDOWN_SECONDS)   # runs end "interrupted"
     await dispose_engine()
 
@@ -114,7 +120,17 @@ def create_app() -> FastAPI:
         return JSONResponse({"status": "ok" if ok else "db_unreachable"},
                             status_code=200 if ok else 503)
 
-    from sirdar_api.api.routes import access, audit, auth, dashboard, deploy, me, system, users
+    from sirdar_api.api.routes import (
+        access,
+        audit,
+        auth,
+        dashboard,
+        deploy,
+        me,
+        seed,
+        system,
+        users,
+    )
     from sirdar_api.api.routes import integrations as integration_routes
     from sirdar_api.api.routes import settings as settings_routes
 
@@ -128,6 +144,7 @@ def create_app() -> FastAPI:
     api.include_router(deploy.router)
     api.include_router(integration_routes.router)
     api.include_router(dashboard.router)
+    api.include_router(seed.router)
 
     app.include_router(api)
 

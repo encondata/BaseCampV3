@@ -434,6 +434,24 @@ ensure_secrets_key() {  # ensure_secrets_key ENVFILE
   info "Added SIRDAR_SECRETS_KEY (generated) to $target. Back it up with that file: without it Sirdar can't read the environments' stored secrets."
 }
 
+# SIRDAR_SCRATCH_PASSWORD is the scratch Postgres's password (Seed Data).
+# Like SIRDAR_SECRETS_KEY it is generated, never prompted, whenever the .env
+# has no such line (an install from before Seed Data). A present line is left
+# alone: the scratch container's volume already uses that password.
+ensure_scratch_password() {  # ensure_scratch_password ENVFILE
+  local target="$1" tmp
+  grep -q '^SIRDAR_SCRATCH_PASSWORD=' "$target" && return 0
+  tmp=$(mktemp "$target.new.XXXXXX")
+  TMP_FILES+=("$tmp")
+  chmod 600 "$tmp"
+  cat "$target" >"$tmp"
+  [ ! -s "$tmp" ] || [ -z "$(tail -c 1 "$tmp")" ] || printf '\n' >>"$tmp"
+  printf 'SIRDAR_SCRATCH_PASSWORD=%s\n' "$(rand_urlsafe 32)" >>"$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$target"
+  info "Added SIRDAR_SCRATCH_PASSWORD (generated) to $target for the Seed Data scratch Postgres."
+}
+
 # check_key_file KEYSDIR NAME: warn (never fail) when the key file is missing
 # or the container user (uid 10001) could not read it.
 check_key_file() {
@@ -786,6 +804,7 @@ write_env() {
   set_env_key SIRDAR_PORT "$port" "$tmp"
   set_env_key SIRDAR_BIND "$bind" "$tmp"
   set_env_key SIRDAR_DB_PASSWORD "$dbpw" "$tmp"
+  set_env_key SIRDAR_SCRATCH_PASSWORD "$(rand_urlsafe 32)" "$tmp"
   set_env_key SIRDAR_JWT_SECRET "$jwt" "$tmp"
   set_env_key SIRDAR_SOURCE_DATABASE_URL "$source" "$tmp"
   set_env_key SIRDAR_COOKIE_DOMAIN "$cookie" "$tmp"
@@ -809,6 +828,7 @@ write_env() {
     SS_TOTP_ENCRYPTION_KEY "$s_totp" \
     SIRDAR_JWT_SECRET "$s_jwt" \
     SIRDAR_DB_PASSWORD "$s_dbpw" \
+    SIRDAR_SCRATCH_PASSWORD "generated" \
     SIRDAR_SECRETS_KEY "generated (back it up with this file)"
   for dk in "${DEPLOY_KEYS[@]}"; do deploy_row "$dk"; done
   echo
@@ -1801,6 +1821,7 @@ main() {
   if [ -f "$DIR/sirdar/.env" ]; then
     info "Keeping existing $DIR/sirdar/.env"
     ensure_secrets_key "$DIR/sirdar/.env"
+    ensure_scratch_password "$DIR/sirdar/.env"
     add_new_settings "$DIR/sirdar/.env"
   else
     write_env "$DIR/sirdar/.env.example" "$DIR/sirdar/.env"

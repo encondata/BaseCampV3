@@ -44,6 +44,14 @@ RUN set -eu; arch="$(dpkg --print-architecture)"; \
     echo "${pv_sha}  $mirror/$zip" | sha256sum -c -
 COPY sirdar/terraformrc /opt/terraform/terraformrc
 
+# The PostgreSQL apt repository's signing key (apt.postgresql.org), fetched
+# here so the final stage needs no curl.
+FROM python:3.13-slim AS pgdg
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && curl -fsSLo /pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+
 FROM python:3.13-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 SIRDAR_STATIC_DIR=/app/static \
     HOME=/home/sirdar SIRDAR_RUNNER_DIR=/app/runner SIRDAR_SNAPSHOTS_DIR=/app/snapshots \
@@ -51,8 +59,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 SIRDAR_STATIC_DIR=/app/static \
 # Deploy pipeline: ansible-runner drives ansible-playbook (both pip packages,
 # pinned in pyproject.toml), which connects with ssh, and through sshpass for
 # targets that use a password.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends openssh-client sshpass \
+# Seed Data: pg_restore and pg_dump at ServerSherpa's Postgres major version
+# (16), from apt.postgresql.org for this image's Debian release, so they
+# match the snapshots' dumps and the scratch Postgres.
+COPY --from=pgdg /pgdg.asc /usr/share/keyrings/pgdg.asc
+RUN . /etc/os-release \
+ && echo "deb [signed-by=/usr/share/keyrings/pgdg.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+      >/etc/apt/sources.list.d/pgdg.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates openssh-client sshpass \
+      postgresql-client-16 \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app/api
 COPY sirdar/api/pyproject.toml sirdar/api/requirements-esxi.txt ./
