@@ -37,6 +37,7 @@ class Column:
     name: str
     type: str
     is_bytea: bool
+    is_generated: bool          # GENERATED ALWAYS AS (...) STORED: never written, COPY refuses it
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,12 @@ class Table:
             if col.name == name:
                 return col
         raise SeedError("column_not_found")
+
+    @property
+    def stored_columns(self) -> tuple[Column, ...]:
+        """The columns a write names: all but the generated ones, which
+        Postgres computes from the rest."""
+        return tuple(c for c in self.columns if not c.is_generated)
 
 
 def quote(name: str) -> str:
@@ -69,7 +76,7 @@ WHERE n.nspname = $1 AND c.relkind IN ('r', 'p') AND NOT c.relispartition
 """
 _COLUMNS_SQL = """
 SELECT a.attrelid AS oid, a.attname, format_type(a.atttypid, a.atttypmod) AS type,
-       a.atttypid = 'bytea'::regtype AS is_bytea
+       a.atttypid = 'bytea'::regtype AS is_bytea, a.attgenerated <> '' AS is_generated
 FROM pg_attribute a
 WHERE a.attrelid = ANY($1::oid[]) AND a.attnum > 0 AND NOT a.attisdropped
 ORDER BY a.attrelid, a.attnum
@@ -89,7 +96,8 @@ async def _catalog(conn: asyncpg.Connection, only: str | None = None) -> list[Ta
     oids = [r["oid"] for r in rels]
     cols: dict[int, list[Column]] = {}
     for r in await conn.fetch(_COLUMNS_SQL, oids):
-        cols.setdefault(r["oid"], []).append(Column(r["attname"], r["type"], r["is_bytea"]))
+        cols.setdefault(r["oid"], []).append(Column(r["attname"], r["type"], r["is_bytea"],
+                                                 r["is_generated"]))
     pks: dict[int, list[str]] = {}
     for r in await conn.fetch(_PK_SQL, oids):
         pks.setdefault(r["oid"], []).append(r["attname"])

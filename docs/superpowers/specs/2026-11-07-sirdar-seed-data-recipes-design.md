@@ -83,7 +83,7 @@ The mockup Jimmy reviewed is at `.superpowers/brainstorm/62208-1794078203/conten
 
 - **Tables with nothing ticked come over empty.** Any table can be marked **All rows**, a table-level switch beside Check all. An All rows table takes every row of whichever snapshot the recipe is applied to, including rows added since. Lookup and settings tables the app needs (roles, permissions, system settings, status values and the like) are marked All rows in the recipe by hand. The migration version table always comes whole, since it's Sirdar's restore path's business, not data.
 - **Big tables:** the table view pages, sorts, and filters by column value. With a filter on, **Check all** and **Deselect all** act on every row matching the filter, across all pages. With no filter, they act on the whole table. Shift-click works on the rows as shown.
-- **Optional links to rows that aren't kept come over empty.** Example: a kept site's "created by" points at a person not in the recipe; in the new environment that link is blank. Required links (NOT NULL foreign keys) still auto-tick the row they point to, as decided above. A required link into a table marked empty still pulls in just the row it needs.
+- **Optional links to rows that aren't kept come over empty.** Example: a kept site's "created by" points at a person not in the recipe; in the new environment that link is blank. Required links (NOT NULL foreign keys; a generated column, such as ServerSherpa's constant status_record_type, counts as set, since it can't be blanked) still auto-tick the row they point to, as decided above. A required link into a table marked empty still pulls in just the row it needs. Generated columns are never copied: the new database computes them.
 
 ## Non-goals
 

@@ -86,6 +86,20 @@ SCHEMA = [
     ("CREATE TABLE wiki_pages (id int PRIMARY KEY, "
      "parent_id int NOT NULL REFERENCES wiki_pages DEFERRABLE INITIALLY DEFERRED, title text)"),
     "INSERT INTO wiki_pages VALUES (1, 1, 'Home'), (2, 1, 'Guides'), (3, 2, 'Racking')",
+    # ServerSherpa's status columns (migration 0012): a generated constant
+    # that COPY can't carry, in a composite link to status_values; required
+    # (status NOT NULL) and optional (prior_status nullable)
+    ("CREATE TABLE status_values (record_type text, key text, label text, "
+     "PRIMARY KEY (record_type, key))"),
+    ("INSERT INTO status_values VALUES ('site', 'active', 'Active'), ('site', 'old', 'Old'), "
+     "('worker', 'active', 'Active')"),
+    ("CREATE TABLE venues (id int PRIMARY KEY, status text NOT NULL, "
+     "status_record_type text GENERATED ALWAYS AS ('site') STORED, prior_status text, "
+     "CONSTRAINT venues_status_fkey FOREIGN KEY (status_record_type, status) "
+     "REFERENCES status_values (record_type, key), "
+     "CONSTRAINT venues_prior_status_fkey FOREIGN KEY (status_record_type, prior_status) "
+     "REFERENCES status_values (record_type, key))"),
+    "INSERT INTO venues (id, status, prior_status) VALUES (1, 'active', 'old'), (2, 'old', NULL)",
 ]
 
 OBJECTS = {
@@ -811,6 +825,40 @@ async def test_sequences_take_the_sources_positions_last(
     built = await _built(client, db, headers, rid, with_seq, reset_passwords=True)
     assert built.status == "ready", built.notes
     assert seen["last_value"] == 3
+
+
+async def test_generated_columns_are_recomputed_and_their_links_hold(client, db, headers,
+                                                                     source):
+    # venue 1 needs ('site', 'active') through a link with a generated column
+    # (the closure adds it); its prior status ('site', 'old') isn't kept, so
+    # that optional link comes over empty: prior_status NULL, the generated
+    # column left to Postgres
+    rid = await _recipe(client, headers, {"venues": {"mode": "rows", "pks": [{"id": "1"}]}})
+    built = await _built(client, db, headers, rid, source)
+    assert (built.status, built.notes) == ("ready", "")
+    conn = await _restored(built)
+    try:
+        assert await _rows(conn, "venues", "id", "status", "status_record_type",
+                           "prior_status") == [(1, "active", "site", None)]
+        assert await _rows(conn, "status_values", "record_type", "key") == [("site", "active")]
+        for name in ("venues_status_fkey", "venues_prior_status_fkey"):
+            await conn.execute(f"ALTER TABLE venues VALIDATE CONSTRAINT {name}")
+    finally:
+        await conn.close()
+    _scratch_gone(source, built)
+
+
+async def test_all_rows_of_a_table_with_a_generated_column(client, db, headers, source):
+    rid = await _recipe(client, headers, {"status_values": {"mode": "all"},
+                                          "venues": {"mode": "all"}})
+    built = await _built(client, db, headers, rid, source)
+    assert (built.status, built.notes) == ("ready", "")
+    conn = await _restored(built)
+    try:
+        assert await _rows(conn, "venues", "id", "status_record_type", "prior_status") == [
+            (1, "site", "old"), (2, "site", None)]
+    finally:
+        await conn.close()
 
 
 # ---- failures ----------------------------------------------------------------------------

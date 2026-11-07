@@ -548,7 +548,8 @@ async def _copy(src: asyncpg.Connection, dst: asyncpg.Connection, table: str,
 
 
 def _rows_sql(t: Table, rows) -> tuple[str, list]:
-    cols = ", ".join(f"c.{quote(c.name)}" for c in t.columns)
+    # generated columns stay out: COPY refuses them, and the subset computes them
+    cols = ", ".join(f"c.{quote(c.name)}" for c in t.stored_columns)
     sql = f"SELECT {cols} FROM {_ref(t.name)} c"
     if rows == "all":
         return sql, []
@@ -576,7 +577,8 @@ async def _load(src: asyncpg.Connection, dst: asyncpg.Connection, kept: dict) ->
                     continue
                 t = catalog[name]
                 sql, args = _rows_sql(t, rows)
-                counts[name] = await _copy(src, dst, name, [c.name for c in t.columns], sql, args)
+                counts[name] = await _copy(src, dst, name,
+                                           [c.name for c in t.stored_columns], sql, args)
     except asyncpg.PostgresError as e:
         log.warning("loading a subset failed: %s", type(e).__name__)
         raise SeedError("load_failed") from None
@@ -629,7 +631,14 @@ async def _fix_links(dst: asyncpg.Connection) -> None:
             for fk in links:
                 if fk.required:
                     continue
-                cols = [c for c in fk.columns if (fk.table, c) not in not_null]
+                # Empty the link's nullable stored columns only: a generated
+                # one can't be set (Postgres computes it), and one NULL is
+                # enough to switch a composite link off (MATCH SIMPLE). An
+                # optional link always has such a column (closure counts a
+                # generated column as set, so without one it's required).
+                generated = {c.name for c in catalog[fk.table].columns if c.is_generated}
+                cols = [c for c in fk.columns
+                        if (fk.table, c) not in not_null and c not in generated]
                 sets = ", ".join(f"{quote(c)} = NULL" for c in cols)
                 await dst.execute(f"UPDATE {_ref(fk.table)} c SET {sets} {_orphans(fk)}")
         for fk in links:

@@ -70,6 +70,15 @@ SCHEMA = [
     ("CREATE TABLE scans (id int PRIMARY KEY, "
      "serial text NOT NULL REFERENCES devices (serial))"),
     "INSERT INTO scans VALUES (1, 'SN-1')",
+    # a generated constant in a composite link (ServerSherpa's status columns):
+    # Sirdar can't empty it, so the link is required when the rest is NOT NULL
+    ("CREATE TABLE kinds (record_type text, key text, PRIMARY KEY (record_type, key))"),
+    "INSERT INTO kinds VALUES ('gadget', 'new'), ('gadget', 'used')",
+    ("CREATE TABLE gadgets (id int PRIMARY KEY, kind text NOT NULL, "
+     "kind_record_type text GENERATED ALWAYS AS ('gadget') STORED, old_kind text, "
+     "FOREIGN KEY (kind_record_type, kind) REFERENCES kinds (record_type, key), "
+     "FOREIGN KEY (kind_record_type, old_kind) REFERENCES kinds (record_type, key))"),
+    "INSERT INTO gadgets (id, kind, old_kind) VALUES (1, 'new', 'used')",
     "CREATE SCHEMA other",
     "CREATE TABLE other.outside (id int PRIMARY KEY)",
     ("CREATE TABLE other.points_in (id int PRIMARY KEY, "
@@ -138,6 +147,9 @@ async def test_foreign_keys_are_read_from_the_catalog(conn):
     # A composite link with one nullable column is optional.
     assert fks[("members", ("org", "alt_code"))].required is False
     assert fks[("wiki_pages", ("parent_id",))].ref_table == "wiki_pages"
+    # A generated column counts as set: only the other columns decide.
+    assert fks[("gadgets", ("kind_record_type", "kind"))].required is True
+    assert fks[("gadgets", ("kind_record_type", "old_kind"))].required is False
     # Only public tables, at both ends.
     assert all(f.table != "points_in" and f.ref_table != "outside" for f in fks.values())
 

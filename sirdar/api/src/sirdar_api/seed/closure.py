@@ -1,8 +1,10 @@
 """Needed rows: the rows a kept row can't exist without.
 
-A required link is a foreign key whose columns are all NOT NULL; an
-optional link (any nullable column) adds nothing, since it comes over
-empty when its row isn't kept. Links to or from tables outside the public
+A required link is a foreign key whose columns are all NOT NULL or
+generated (a generated column can't be emptied: Postgres computes it, as
+ServerSherpa's constant status_record_type columns); an optional link (any
+other nullable column) adds nothing, since it comes over empty when its
+row isn't kept. Links to or from tables outside the public
 schema are deliberately ignored (Seed Data only browses and copies public). From every kept row the closure follows
 required links up to the rows they point at, transitively, until nothing
 new turns up (so cycles and self-references terminate). An "All rows"
@@ -72,7 +74,7 @@ SELECT cr.relname AS table, pr.relname AS ref_table,
        array(SELECT a.attname FROM unnest(con.confkey) WITH ORDINALITY k(n, o)
              JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.n
              ORDER BY k.o) AS ref_columns,
-       (SELECT bool_and(a.attnotnull) FROM unnest(con.conkey) k(n)
+       (SELECT bool_and(a.attnotnull OR a.attgenerated <> '') FROM unnest(con.conkey) k(n)
         JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.n) AS required
 FROM pg_constraint con
 JOIN pg_class cr ON cr.oid = con.conrelid
