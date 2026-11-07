@@ -165,7 +165,9 @@ async def test_a_role_reaches_only_its_own_database(scratch_url, snapshots_dir, 
     import asyncpg
     a = await scratch.ensure_restored(get_settings(), _snapshot(tmp_path, good_dump))
     b = await scratch.ensure_restored(get_settings(), _snapshot(tmp_path, good_dump))
-    for database in (b, "postgres", "template1"):
+    # postgres and template1 stay open here (a shared cluster: the admin-DB
+    # REVOKE is off in tests and covered by test_setup_locks_the_admin_databases).
+    for database in (b,):
         with pytest.raises(asyncpg.PostgresError):
             await (await _as_role(a, database)).close()
     conn = await _as_role(a, a)
@@ -179,6 +181,36 @@ async def test_a_role_reaches_only_its_own_database(scratch_url, snapshots_dir, 
     finally:
         await conn.close()
     assert b in _databases()
+
+
+class _RecordingConn:
+    def __init__(self):
+        self.sql: list[str] = []
+
+    async def execute(self, sql, *args):
+        self.sql.append(sql)
+
+
+@pytest.mark.parametrize("lock", [True, False])
+async def test_setup_locks_the_admin_databases(monkeypatch, lock):
+    monkeypatch.setenv("SIRDAR_SCRATCH_URL", "postgresql://su:pw@scratch:5432/postgres")
+    monkeypatch.setenv("SIRDAR_SCRATCH_LOCK_ADMIN_DBS", str(lock).lower())
+    get_settings.cache_clear()
+    scratch.forget_all()
+    try:
+        conn = _RecordingConn()
+        await scratch._setup_server(conn, get_settings())
+        await scratch._setup_server(conn, get_settings())          # once per process
+        assert conn.sql == ([
+            'REVOKE CONNECT ON DATABASE "postgres" FROM PUBLIC',
+            'REVOKE CONNECT ON DATABASE "template1" FROM PUBLIC'] if lock else [])
+    finally:
+        scratch.forget_all()
+        get_settings.cache_clear()
+
+
+def test_tests_never_lock_the_shared_clusters_admin_databases():
+    assert get_settings().scratch_lock_admin_dbs is False
 
 
 async def test_a_roles_own_settings_never_survive(scratch_url, snapshots_dir, tmp_path,

@@ -159,11 +159,13 @@ _ROLE_ATTRS = "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSR
 
 async def _setup_server(conn: asyncpg.Connection, settings: Settings) -> None:
     """Once per process: no role but the superuser may connect to the
-    server's own database or template1."""
+    server's own database or template1 (unless SIRDAR_SCRATCH_LOCK_ADMIN_DBS
+    is off, for a server Sirdar shares)."""
     if _setup.get("done"):
         return
-    await conn.execute(f'REVOKE CONNECT ON DATABASE "{_server(settings).database}", '
-                       'template1 FROM PUBLIC')
+    if settings.scratch_lock_admin_dbs:
+        for database in (_server(settings).database, "template1"):
+            await conn.execute(f'REVOKE CONNECT ON DATABASE "{database}" FROM PUBLIC')
     _setup["done"] = True
 
 

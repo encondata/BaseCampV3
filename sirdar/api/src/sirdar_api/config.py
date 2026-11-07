@@ -108,6 +108,10 @@ class Settings(BaseSettings):
     scratch_url: SecretStr = SecretStr("")
     # A browse database nobody has used for this long is dropped.
     scratch_idle_minutes: int = Field(default=60, gt=0)
+    # Revoke CONNECT from PUBLIC on the scratch server's own database and
+    # template1, so a scratch role reaches only its own database. Only for a
+    # server Sirdar has to itself (the tests' shared cluster turns it off).
+    scratch_lock_admin_dbs: bool = True
     # Folder holding pg_restore and pg_dump; blank = find them on PATH.
     pg_bin_dir: str = ""
 

@@ -57,6 +57,8 @@ def _prepare_environment() -> None:
     os.environ["SIRDAR_ENV"] = "development"
     os.environ["SIRDAR_DATABASE_URL"] = _asyncpg_url(TEST_DB)
     os.environ["SIRDAR_SOURCE_DATABASE_URL"] = SOURCE_URL
+    # The test Postgres is a shared dev cluster: never change its grants.
+    os.environ["SIRDAR_SCRATCH_LOCK_ADMIN_DBS"] = "false"
     os.environ["SIRDAR_JWT_SECRET"] = "test-jwt-secret-" + "x" * 32
     os.environ["SS_PASSWORD_PEPPER"] = "test-pepper"
     os.environ["SS_TOTP_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
