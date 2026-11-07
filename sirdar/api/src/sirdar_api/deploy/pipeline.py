@@ -1515,7 +1515,8 @@ async def _start_other_side(deployment_id: uuid.UUID) -> uuid.UUID | None:
         audit(db, actor_id=actor_id, action="deploy.deployment_start", entity_type="deployment",
               entity_id=str(follow.id), changes=changes)
         await db.commit()
-        follow_id = follow.id
-    _follow_ups[deployment_id] = follow_id
-    launch(follow_id)
-    return follow_id
+        # No await between the commit and launch, as in the routes' _launch:
+        # a cancel in between would find no task to stop.
+        _follow_ups[deployment_id] = follow.id
+        launch(follow.id)
+        return follow.id
