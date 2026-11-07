@@ -1450,6 +1450,24 @@ export async function controlDock(action: DockControl): Promise<DockControlResul
   }));
 }
 
+/** GET/PUT /edge/dock/window: the Dock's crate window, in seconds — how far
+ *  either side of a crate tag a read still goes into that crate. Any signed-in
+ *  session reads it; saving needs admin rank (403 `forbidden`), and a value the
+ *  caller's role may not set is 422 `invalid_window`. */
+export interface DockWindow { window_s: number }
+
+export async function getDockWindow(): Promise<DockWindow> {
+  return jsonFrom<DockWindow>(await apiFetch('/edge/dock/window'));
+}
+
+export async function saveDockWindow(window_s: number): Promise<DockWindow> {
+  return jsonFrom<DockWindow>(await apiFetch('/edge/dock/window', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ window_s }),
+  }));
+}
+
 // ── Label Station printing (Kiosk Setup steps 4-5) ──────────────────
 // The kiosk font + test-render routes (kiosk:view, scoped to the move's
 // own templates), and the laptop edge's network printer transport and

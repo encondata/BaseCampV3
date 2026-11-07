@@ -517,3 +517,19 @@ it('settings that sync with the portal say so, not "stored on this kiosk only"',
   expect(screen.getByText(/Testing aid until real setup logic sets this\. Stored on this kiosk only\./))
     .toBeTruthy();
 });
+
+it('the RFID tab shows on a laptop, not in web mode', () => {
+  renderAt('/settings');
+  expect(screen.queryByRole('tab', { name: 'RFID' })).toBeNull();
+  cleanup();
+  window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1', name: 'Kiosk 0001' } };
+  try {
+    renderAt('/settings');
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
+      'Appearance', 'Sound', 'Devices', 'RFID', 'This Kiosk', 'Edge',
+    ]);
+    expect(screen.queryByText('This section is not available yet.')).toBeNull();
+  } finally {
+    delete window.__KIOSK_CONFIG__;
+  }
+});

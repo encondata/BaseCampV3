@@ -19,6 +19,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useKioskAuth } from '../auth/KioskAuthContext';
 import DevicesPanel from '../components/devices/DevicesPanel';
 import EdgePanel from '../components/EdgePanel';
+import RfidPanel from '../components/RfidPanel';
 import HslPicker from '../components/HslPicker';
 import LocalDataInspector from '../components/LocalDataInspector';
 import SoundPanel from '../components/SoundPanel';
@@ -178,6 +179,7 @@ export default function Settings() {
         {active.id === 'this-kiosk' && <ThisKioskPanel />}
         {active.id === 'edge' && <EdgePanel />}
         {active.id === 'devices' && <DevicesPanel />}
+        {active.id === 'rfid' && <RfidPanel />}
         {active.id === 'appearance' && (
           <>
             <div className="settings-row">
@@ -321,7 +323,8 @@ export default function Settings() {
         )}
         {active.id === 'developer' && <LocalDataInspector />}
         {active.id !== 'this-kiosk' && active.id !== 'appearance' && active.id !== 'sound'
-          && active.id !== 'admin' && active.id !== 'edge' && active.id !== 'devices' && (
+          && active.id !== 'admin' && active.id !== 'edge' && active.id !== 'devices'
+          && active.id !== 'rfid' && (
           <div className="kiosk-placeholder">
             <p>This section is not available yet.</p>
           </div>

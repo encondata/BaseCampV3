@@ -67,3 +67,17 @@ it('controlDock posts the action to POST /edge/dock/control and returns the resu
   await api.controlDock('start');
   expect(lastCall(fetchMock).body).toEqual({ action: 'start' });
 });
+
+it('getDockWindow and saveDockWindow hit /edge/dock/window with GET and PUT', async () => {
+  const fetchMock = vi.fn(async () => json({ window_s: 5 }));
+  vi.stubGlobal('fetch', fetchMock);
+  expect(await api.getDockWindow()).toEqual({ window_s: 5 });
+  expect(lastCall(fetchMock)).toEqual({
+    url: 'http://api.test/edge/dock/window', method: 'GET', body: undefined,
+  });
+  fetchMock.mockImplementation(async () => json({ window_s: 7 }));
+  expect(await api.saveDockWindow(7)).toEqual({ window_s: 7 });
+  expect(lastCall(fetchMock)).toEqual({
+    url: 'http://api.test/edge/dock/window', method: 'PUT', body: { window_s: 7 },
+  });
+});
