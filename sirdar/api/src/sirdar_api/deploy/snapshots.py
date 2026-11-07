@@ -305,16 +305,17 @@ async def begin_build(db: AsyncSession, settings: Settings, *, recipe: SeedRecip
                       source: Snapshot, reset_passwords: bool, actor_id) -> Snapshot:
     """The pending row a Seed Data build (seed/build.py) fills in: a subset
     of `source` cut with `recipe`, named "{recipe} from {source}" (cut to
-    64 characters; a taken name gets -2, -3, ... within that, as other
-    snapshot names do)."""
+    64 characters, never ending in a space or a dash; a taken name gets
+    -2, -3, ... within that, as other snapshot names do)."""
     if not vault.is_configured(settings):
         raise SnapshotError("secrets_key_missing")
     if source.status != "ready" or not source.bundle_file:
         raise SnapshotError("snapshot_not_ready")
     await asyncio.to_thread(ensure_dirs, settings)
-    base = f"{recipe.name} from {source.name}"[:64]
+    base = f"{recipe.name} from {source.name}"
     for n in range(1, 100):
-        name = base if n == 1 else f"{base[:63 - len(str(n))]}-{n}"
+        name = (base[:64].rstrip(" -") if n == 1
+                else f"{base[:63 - len(str(n))].rstrip(' -')}-{n}")
         if await _name_taken(db, name):
             continue
         snap = Snapshot(name=name, origin="recipe", source=source.source, status="pending",

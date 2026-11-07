@@ -237,8 +237,10 @@ async def _build(settings: Settings, snapshot_id: uuid.UUID) -> snapshots.Stored
                     await _fix_links(dst)
                     if reset_passwords:
                         await _reset(dst)
-                        # the manifest's rows describe the subset as shipped
+                        # The emptied tables keep no rows now: not in the
+                        # manifest, and their files don't follow them.
                         rows = {t: n for t, n in rows.items() if t not in reset.EMPTY_TABLES}
+                        kept = {t: v for t, v in kept.items() if t not in reset.EMPTY_TABLES}
                     refs = await seed_files.referenced(src, kept)
                 finally:
                     await dst.close()
@@ -302,8 +304,11 @@ async def _dump(settings: Settings, subset_db: str, out: Path) -> None:
 
 async def _copy(src: asyncpg.Connection, dst: asyncpg.Connection, table: str,
                 columns: list[str] | None, sql: str, args: list) -> int:
-    """Stream the rows `sql` selects on `src` into `table` on `dst` (binary
-    COPY, chunk by chunk, nothing on disk); how many rows."""
+    """Stream the rows `sql` selects on `src` into `table` on `dst` (text
+    COPY, chunk by chunk, nothing on disk); how many rows. Text, not
+    binary: binary COPY carries type OIDs (an enum array's element type,
+    a composite's), which differ between two databases even with the same
+    schema."""
     queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_CHUNKS)
 
     async def sink(data) -> None:
@@ -311,7 +316,7 @@ async def _copy(src: asyncpg.Connection, dst: asyncpg.Connection, table: str,
 
     async def produce() -> None:
         try:
-            await src.copy_from_query(sql, *args, output=sink, format="binary")
+            await src.copy_from_query(sql, *args, output=sink, format="text")
         finally:
             await queue.put(None)
 
@@ -322,7 +327,7 @@ async def _copy(src: asyncpg.Connection, dst: asyncpg.Connection, table: str,
     producer = asyncio.create_task(produce())
     try:
         status = await dst.copy_to_table(table, source=chunks(), columns=columns,
-                                         schema_name=SCHEMA, format="binary")
+                                         schema_name=SCHEMA, format="text")
     except BaseException:
         producer.cancel()
         with suppress(BaseException):
@@ -399,12 +404,17 @@ def _orphans(fk: ForeignKey) -> str:
 
 async def _fix_links(dst: asyncpg.Connection) -> None:
     """Optional links to rows that aren't there come over empty; a required
-    one still pointing nowhere fails the build, naming the row."""
+    one still pointing nowhere fails the build, naming the row. Only links
+    between two public tables are verified (what closure follows and the
+    load copies; ServerSherpa has nothing outside public). The UPDATEs run
+    with the schema's triggers off (replica), like the load: the dump is
+    untrusted, and a trigger of its own must not undo the NULLs."""
     try:
         catalog = {t.name: t for t in await _catalog(dst)}
         links = await foreign_keys(dst)
         not_null = {(r["relname"], r["attname"]) for r in await dst.fetch(_NOT_NULL_SQL, SCHEMA)}
         async with dst.transaction():
+            await dst.execute("SET LOCAL session_replication_role = replica")
             for fk in links:
                 if fk.required:
                     continue
@@ -446,16 +456,39 @@ async def _reset(dst: asyncpg.Connection) -> None:
         if name not in catalog:
             raise SeedError("reset_target_missing", note=f"reset_target_missing: {name}")
     cols = list(reset.USER_COLUMNS)
+    values = [reset.USER_COLUMNS[c] for c in cols]
     sets = ", ".join(f"{quote(c)} = ${i + 1}" for i, c in enumerate(cols))
+    # A row the reset missed: a column meant to be NULL that isn't, or one
+    # meant to hold a value that holds another.
+    checks, wanted = [], []
+    for c, v in zip(cols, values, strict=True):
+        if v is None:
+            checks.append(f"{quote(c)} IS NOT NULL")
+        else:
+            wanted.append(v)
+            checks.append(f"{quote(c)} IS DISTINCT FROM ${len(wanted)}")
+    missed = " OR ".join(checks)
     try:
         async with dst.transaction():
-            await dst.execute(f"UPDATE {_ref(reset.USER_TABLE)} SET {sets}",
-                              *[reset.USER_COLUMNS[c] for c in cols])
+            # The dump is untrusted: its triggers stay off (replica) while the
+            # secrets go, as during the load.
+            await dst.execute("SET LOCAL session_replication_role = replica")
+            await dst.execute(f"UPDATE {_ref(reset.USER_TABLE)} SET {sets}", *values)
             for name in reset.EMPTY_TABLES:
                 await dst.execute(f"DELETE FROM {_ref(name)}")
+        # Then read it back: an ALWAYS rule of the dump's (replica mode
+        # switches off ordinary rules and triggers, not those) could have
+        # rewritten the statements. Nothing ships unless every secret is gone.
+        left = await dst.fetchval(
+            f"SELECT count(*) FROM {_ref(reset.USER_TABLE)} WHERE {missed}", *wanted)
+        for name in reset.EMPTY_TABLES:
+            left += await dst.fetchval(f"SELECT count(*) FROM {_ref(name)}")
     except asyncpg.PostgresError as e:
         log.warning("resetting a subset's passwords failed: %s", type(e).__name__)
         raise SeedError("reset_failed") from None
+    if left:
+        log.warning("resetting a subset's passwords left %d row(s) unchanged", left)
+        raise SeedError("reset_failed")
 
 
 # ---- the bundle's other parts ------------------------------------------------------------

@@ -257,9 +257,13 @@ async def _recipe(db, recipe_id: uuid.UUID, *, lock: bool = False) -> SeedRecipe
 
 
 def _clean_name(name: str) -> str:
-    name = name.strip()
+    """A recipe name: runs of whitespace (tabs, newlines too) become one
+    space, the ends are trimmed, and only printable characters remain."""
+    name = " ".join(name.split())
     if not name:
         raise HTTPException(status_code=422, detail={"code": "recipe_name_required"})
+    if not name.isprintable():
+        raise HTTPException(status_code=422, detail={"code": "recipe_name_invalid"})
     return name
 
 

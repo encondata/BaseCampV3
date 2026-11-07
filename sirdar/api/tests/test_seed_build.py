@@ -59,8 +59,8 @@ SCHEMA = [
      "person_id int NOT NULL REFERENCES user_accounts, code_hash text NOT NULL)"),
     "INSERT INTO totp_backup_codes VALUES (1, 1, 'code-1')",
     ("CREATE TABLE trusted_devices (id int PRIMARY KEY, "
-     "person_id int NOT NULL REFERENCES user_accounts, token text)"),
-    "INSERT INTO trusted_devices VALUES (1, 1, 'trust-1')",
+     "person_id int NOT NULL REFERENCES user_accounts, token text, file_key text)"),
+    "INSERT INTO trusted_devices VALUES (1, 1, 'trust-1', 'devices/d1.bin')",
     ("CREATE TABLE auth_sessions (id int PRIMARY KEY, "
      "person_id int NOT NULL REFERENCES user_accounts, token text)"),
     "INSERT INTO auth_sessions VALUES (1, 2, 'sess-1')",
@@ -70,8 +70,11 @@ SCHEMA = [
     ("CREATE TABLE biometric_keys (id int PRIMARY KEY, "
      "person_id int NOT NULL REFERENCES user_accounts, pubkey text)"),
     "INSERT INTO biometric_keys VALUES (1, 2, 'bio-1')",
-    "CREATE TABLE sites (id int PRIMARY KEY, name text NOT NULL, created_by int REFERENCES people)",
-    "INSERT INTO sites VALUES (1, 'North', 3), (2, 'South', NULL)",
+    # an enum array: binary COPY would carry the source's element type OID
+    "CREATE TYPE mood AS ENUM ('ok', 'meh')",
+    ("CREATE TABLE sites (id int PRIMARY KEY, name text NOT NULL, "
+     "created_by int REFERENCES people, tags mood[])"),
+    "INSERT INTO sites VALUES (1, 'North', 3, ARRAY['ok', 'meh']::mood[]), (2, 'South', NULL, NULL)",
     ("CREATE TABLE docs (id int PRIMARY KEY, site_id int NOT NULL REFERENCES sites, "
      "storage_key text)"),
     "INSERT INTO docs VALUES (7, 1, 'docs/plan.pdf'), (8, 2, 'docs/other.pdf')",
@@ -88,7 +91,21 @@ OBJECTS = {
     "docs/plan.pdf": (b"P" * 14, "application/pdf"),
     "docs/other.pdf": (b"O" * 15, None),
     "loose/readme.txt": (b"R" * 17, "text/plain"),
+    "devices/d1.bin": (b"D" * 18, None),
 }
+
+# An untrusted dump's own mischief against the reset: a trigger that keeps
+# the old row (replica mode skips it, as it does an ordinary rule), and an
+# ALWAYS rule that rewrites the UPDATE to nothing (replica mode doesn't
+# switch those off; the read-back catches it).
+TRIGGER = [
+    ("CREATE FUNCTION keep_old() RETURNS trigger LANGUAGE plpgsql AS "
+     "$$ BEGIN RETURN OLD; END $$"),
+    ("CREATE TRIGGER keep_old BEFORE UPDATE ON user_accounts "
+     "FOR EACH ROW EXECUTE FUNCTION keep_old()"),
+]
+RULE = ["CREATE RULE keep_rows AS ON UPDATE TO user_accounts DO INSTEAD NOTHING",
+        "ALTER TABLE user_accounts ENABLE ALWAYS RULE keep_rows"]
 
 SUPERUSER = make_url(BASE_URL).username
 
@@ -107,18 +124,26 @@ def _dump() -> bytes:
 
 @pytest.fixture(scope="module")
 def dumps() -> dict[str, bytes]:
-    """pg_dump -Fc of the fixture schema: whole; without biometric_keys; and
-    also without user_accounts.totp_last_counter."""
+    """pg_dump -Fc of the fixture schema: whole; with the trigger; with the
+    rule; without biometric_keys; and also without
+    user_accounts.totp_last_counter."""
     with psycopg.connect(_psycopg_url("postgres"), autocommit=True) as conn:
         conn.execute(f'DROP DATABASE IF EXISTS "{SOURCE}" WITH (FORCE)')
         conn.execute(f'CREATE DATABASE "{SOURCE}"')
-    try:
+
+    def run(statements: list[str]) -> None:
         with psycopg.connect(_psycopg_url(SOURCE), autocommit=True) as conn:
-            for sql in SCHEMA:
+            for sql in statements:
                 conn.execute(sql)
+
+    try:
+        run(SCHEMA)
         out = {"full": _dump()}
-        with psycopg.connect(_psycopg_url(SOURCE), autocommit=True) as conn:
-            conn.execute("DROP TABLE biometric_keys")
+        run(TRIGGER)
+        out["trigger"] = _dump()
+        run(["DROP TRIGGER keep_old ON user_accounts", "DROP FUNCTION keep_old", *RULE])
+        out["rule"] = _dump()
+        run(["DROP RULE keep_rows ON user_accounts", "DROP TABLE biometric_keys"])
         out["no_table"] = _dump()
         with psycopg.connect(_psycopg_url(SOURCE), autocommit=True) as conn:
             conn.execute("ALTER TABLE user_accounts DROP COLUMN totp_last_counter")
@@ -283,6 +308,7 @@ async def test_subset_holds_exactly_the_kept_rows(client, db, headers, source):
         assert await _rows(conn, "roles") == [(1, "admin"), (2, "staff")]       # all: whole
         assert await _rows(conn, "people", "id", "name", "manager_id") == [(2, "Bob", None)]
         assert await _rows(conn, "sites", "id", "created_by") == [(1, None)]    # optional orphan
+        assert await conn.fetchval("SELECT tags::text[] FROM sites") == ["ok", "meh"]
         assert await _rows(conn, "docs", "id", "site_id") == [(7, 1)]
         # the closure added page 1 (the parent); loaded in any order
         assert await _rows(conn, "wiki_pages", "id", "parent_id") == [(1, 1), (2, 1)]
@@ -363,6 +389,36 @@ async def test_a_name_that_is_taken_gets_a_suffix(client, db, headers, source):
     assert {s.status for s in (first, second, third)} == {"ready"}
 
 
+async def test_a_cut_name_never_ends_in_a_space_or_dash(client, db, headers, source):
+    rid = await _recipe(client, headers, {"roles": {"mode": "all"}}, name="N" * 63)
+    first = await _built(client, db, headers, rid, source)      # char 64 would be the space
+    second = await _built(client, db, headers, rid, source)
+    assert first.name == "N" * 63
+    assert second.name == "N" * 62 + "-2"
+    rid = await _recipe(client, headers, {"roles": {"mode": "all"}}, name="M" * 61)
+    await _built(client, db, headers, rid, source)
+    second = await _built(client, db, headers, rid, source)     # char 62 would be the space
+    assert second.name == "M" * 61 + "-2"
+    rid = await _recipe(client, headers, {"roles": {"mode": "all"}}, name="D" * 63 + "-x")
+    built = await _built(client, db, headers, rid, source)      # char 64 would be the dash
+    assert built.name == "D" * 63
+
+
+async def test_recipe_names_are_cleaned_and_printable(client, db, headers):
+    resp = await client.post("/api/seed/recipes", json={"name": "  Demo \t  basic\n"},
+                             headers=headers)
+    assert resp.status_code == 201 and resp.json()["name"] == "Demo basic"
+    rid = resp.json()["id"]
+    for bad in ("Demo\x01", "Demo\x7f basic", "\u200b"):
+        resp = await client.post("/api/seed/recipes", json={"name": bad}, headers=headers)
+        assert (resp.status_code, resp.json()["detail"]) == (422, {"code": "recipe_name_invalid"}), bad
+        resp = await client.put(f"/api/seed/recipes/{rid}", json={"name": bad}, headers=headers)
+        assert resp.status_code == 422, bad
+    resp = await client.put(f"/api/seed/recipes/{rid}", json={"name": " Renamed   twice "},
+                            headers=headers)
+    assert resp.status_code == 200 and resp.json()["name"] == "Renamed twice"
+
+
 async def test_a_long_name_stays_within_the_limit(client, db, headers, source):
     long = "L" * 70
     rid = await _recipe(client, headers, {"roles": {"mode": "all"}}, name=long)
@@ -395,6 +451,9 @@ async def test_reset_empties_the_listed_tables_and_nulls_the_columns(client, db,
     manifest = bundle.read_head(snapshots.bundle_path(get_settings(), built))[0]
     assert manifest["reset_passwords"] is True
     assert manifest["rows"]["user_accounts"] == 2 and "password_history" not in manifest["rows"]
+    # the emptied tables' files don't follow them (trusted_devices.file_key)
+    assert set(_objects(snapshots.bundle_path(get_settings(), built))) == {
+        "avatars/ann.png", "avatars/bob.png"}
 
 
 async def test_without_reset_the_secrets_stay(client, db, headers, source):
@@ -413,6 +472,37 @@ async def test_without_reset_the_secrets_stay(client, db, headers, source):
             "auth_sessions": 1, "password_reset_tokens": 1, "biometric_keys": 1}
     finally:
         await conn.close()
+    assert set(_objects(snapshots.bundle_path(get_settings(), built))) == {
+        "avatars/ann.png", "avatars/bob.png", "devices/d1.bin"}
+
+
+async def test_reset_ignores_the_dumps_triggers_and_catches_its_rules(
+        client, db, headers, scratch_url, snapshots_dir, tmp_path, dumps):  # noqa: F811
+    rid = await _recipe(client, headers, RESET)
+    with_trigger = _store(tmp_path, dumps["trigger"])
+    with_rule = _store(tmp_path, dumps["rule"])
+    db.add_all([with_trigger, with_rule])
+    await db.commit()
+    # a BEFORE UPDATE trigger returning OLD would keep every secret: replica mode skips it
+    built = await _built(client, db, headers, rid, with_trigger, reset_passwords=True)
+    assert built.status == "ready", built.notes
+    conn = await _restored(built)
+    try:
+        assert await conn.fetchval(
+            "SELECT count(*) FROM user_accounts WHERE password_hash IS NOT NULL "
+            "OR totp_secret_enc IS NOT NULL OR NOT must_change_password") == 0
+        assert await _counts(conn, *reset.EMPTY_TABLES) == {t: 0 for t in reset.EMPTY_TABLES}
+    finally:
+        await conn.close()
+    # an ALWAYS rule rewriting the UPDATE to nothing fires in replica mode too: the
+    # read-back refuses to ship
+    built = await _built(client, db, headers, rid, with_rule, reset_passwords=True)
+    assert (built.status, built.notes) == ("failed", "reset_failed")
+    assert built.bundle_file is None
+    _scratch_gone(with_rule, built)
+    # without the reset, the same dump builds (the rule is just part of its schema)
+    built = await _built(client, db, headers, rid, with_rule)
+    assert built.status == "ready", built.notes
 
 
 async def test_reset_fails_when_a_listed_table_or_column_is_missing(
