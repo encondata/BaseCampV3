@@ -57,6 +57,19 @@ SCHEMA = [
      "DEFERRABLE INITIALLY DEFERRED"),
     ("BEGIN; INSERT INTO cyc_a VALUES (1, 1), (2, 2); "
      "INSERT INTO cyc_b VALUES (1, 1), (2, 2); COMMIT"),
+    # A pk-less parent (rows named only by a UNIQUE column), itself linked up.
+    ("CREATE TABLE codes (code text UNIQUE NOT NULL, "
+     "region_id int NOT NULL REFERENCES regions, note text)"),
+    "INSERT INTO codes VALUES ('A', 1, 'first'), ('B', 2, 'second')",
+    "CREATE TABLE code_uses (id int PRIMARY KEY, code text NOT NULL REFERENCES codes (code))",
+    "INSERT INTO code_uses VALUES (1, 'A')",
+    # A link to a UNIQUE column of a parent with a separate surrogate pk.
+    ("CREATE TABLE devices (id int PRIMARY KEY, serial text UNIQUE NOT NULL, "
+     "name text)"),
+    "INSERT INTO devices VALUES (5, 'SN-1', 'Scanner'), (6, 'SN-2', 'Other')",
+    ("CREATE TABLE scans (id int PRIMARY KEY, "
+     "serial text NOT NULL REFERENCES devices (serial))"),
+    "INSERT INTO scans VALUES (1, 'SN-1')",
     "CREATE SCHEMA other",
     "CREATE TABLE other.outside (id int PRIMARY KEY)",
     ("CREATE TABLE other.points_in (id int PRIMARY KEY, "
@@ -201,6 +214,28 @@ async def test_all_tables_are_complete(conn):
     assert c.added == {} and c.reasons == []
 
 
+async def test_a_needed_row_in_a_pk_less_table_brings_the_whole_table(conn):
+    c = await cl.closure(conn, {"code_uses": {("1",)}})
+    assert c.added_tables == [cl.TableReason("codes", "code_uses", ("code",))]
+    assert "codes" not in c.added
+    # codes is then complete: every one of its rows' required links is followed.
+    assert c.added == {"regions": {("1",), ("2",)}}
+    assert {(r.table, r.needed_by_table, r.needed_by_pk) for r in c.reasons} == {
+        ("regions", "codes", None)}
+    # Nothing needed from it: nothing added.
+    c = await cl.closure(conn, {"code_uses": set()})
+    assert c.added_tables == [] and c.added == {}
+    # Already All rows: not reported again.
+    c = await cl.closure(conn, {"code_uses": {("1",)}, "codes": "all"})
+    assert c.added_tables == []
+
+
+async def test_a_link_to_a_unique_column_reports_the_surrogate_pk(conn):
+    c = await cl.closure(conn, {"scans": {("1",)}})
+    assert c.added == {"devices": {("5",)}}
+    assert _reasons(c) == [("devices", ("5",), "scans", ("1",), ("serial",))]
+
+
 async def test_queries_are_per_link_per_round_not_per_row(conn):
     class Counting:
         def __init__(self, inner):
@@ -249,6 +284,25 @@ async def test_resolve_endpoint(client, opened):
     ]
     assert out["missing"] == {"worker_profiles": [{"id": "99"}],
                               "nope": [{"id": "1"}, {"id": "2"}]}
+    assert out["missing_tables"] == ["nope"]
+    assert out["added_tables"] == []
+
+
+async def test_resolve_reports_whole_tables_and_missing_tables(client, opened):
+    base, h = opened
+    resp = await client.post(f"{base}/resolve", headers=h, json={"tables": {
+        "code_uses": {"mode": "rows", "pks": [{"id": "1"}]},
+        "gone_all": {"mode": "all", "pks": []},
+        "gone_empty": {"mode": "rows", "pks": []}}})
+    assert resp.status_code == 200, resp.text
+    out = resp.json()
+    assert out["added_tables"] == [{"table": "codes", "needed_by_table": "code_uses",
+                                    "via_columns": ["code"]}]
+    assert out["added"] == {"regions": [{"id": "1"}, {"id": "2"}]}
+    assert [(r["needed_by_table"], r["needed_by_pk"], r["needed_by_label"])
+            for r in out["reasons"]] == [("codes", None, None)] * 2
+    assert out["missing_tables"] == ["gone_all", "gone_empty"]
+    assert out["missing"] == {}
 
 
 async def test_resolve_label_falls_back_to_the_pk(client, opened):

@@ -2,11 +2,14 @@
 
 A required link is a foreign key whose columns are all NOT NULL; an
 optional link (any nullable column) adds nothing, since it comes over
-empty when its row isn't kept. From every kept row the closure follows
+empty when its row isn't kept. Links to or from tables outside the public
+schema are deliberately ignored (Seed Data only browses and copies public). From every kept row the closure follows
 required links up to the rows they point at, transitively, until nothing
 new turns up (so cycles and self-references terminate). An "All rows"
 table is complete: nothing is ever added to it, but its rows' own
-required links are followed like any kept row's.
+required links are followed like any kept row's. A needed row in a table
+without a primary key can't be named, so the whole table is added and
+treated as All rows (reported in added_tables).
 
 Primary keys are tuples of the pk values as text (`col::text`, in
 pk-column order), exactly as browse renders them, so a key ticked in the
@@ -45,10 +48,20 @@ class Reason:
     via_columns: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class TableReason:
+    """A whole table added: a kept row needs one of its rows, and it has no
+    primary key to name just that row by."""
+    table: str
+    needed_by_table: str
+    via_columns: tuple[str, ...]
+
+
 @dataclass
 class Closure:
     added: dict[str, set[PK]] = field(default_factory=dict)
     reasons: list[Reason] = field(default_factory=list)
+    added_tables: list[TableReason] = field(default_factory=list)
 
 
 _FK_SQL = """
@@ -98,30 +111,43 @@ def _arrays(keys: set[PK] | list[PK], width: int) -> list[list[str]]:
     return [[k[i] for k in keys] for i in range(width)]
 
 
+def _from(fk: ForeignKey, child: Table, parent: Table,
+          frontier: set[PK] | None) -> tuple[str, list]:
+    """`FROM child c JOIN parent p ON <fk> [WHERE <c in frontier>]` and its
+    bind parameters (frontier None: every row of child)."""
+    join = " AND ".join(f"p.{quote(rc)} = c.{quote(cc)}"
+                        for cc, rc in zip(fk.columns, fk.ref_columns, strict=True))
+    sql = f"FROM {_ref(child.name)} c JOIN {_ref(parent.name)} p ON {join}"
+    if frontier is None:
+        return sql, []
+    return sql + " WHERE " + _in_keys("c", child.pk, 1), _arrays(frontier, len(child.pk))
+
+
 async def _step(conn, fk: ForeignKey, child: Table, parent: Table,
                 frontier: set[PK] | None) -> list[tuple[PK, PK | None]]:
     """(parent pk, child pk) for each parent row the frontier's rows of
     `child` need through `fk` (one child per parent). frontier None: every
     row of child (an All rows table)."""
-    join = " AND ".join(f"p.{quote(rc)} = c.{quote(cc)}"
-                        for cc, rc in zip(fk.columns, fk.ref_columns, strict=True))
     p_keys = [f"p.{quote(c)}" for c in parent.pk]
     c_keys = [f"c.{quote(c)}" for c in (child.pk or ())]
     select = ", ".join([f"{k}::text AS p{i}" for i, k in enumerate(p_keys)]
                        + [f"{k}::text AS c{i}" for i, k in enumerate(c_keys)])
-    sql = (f"SELECT DISTINCT ON ({', '.join(p_keys)}) {select} "
-           f"FROM {_ref(child.name)} c JOIN {_ref(parent.name)} p ON {join}")
-    args: list = []
-    if frontier is not None:
-        sql += " WHERE " + _in_keys("c", child.pk, 1)
-        args = _arrays(frontier, len(child.pk))
-    sql += f" ORDER BY {', '.join(p_keys + c_keys)}"
+    body, args = _from(fk, child, parent, frontier)
+    sql = (f"SELECT DISTINCT ON ({', '.join(p_keys)}) {select} {body} "
+           f"ORDER BY {', '.join(p_keys + c_keys)}")
     out = []
     for r in await conn.fetch(sql, *args):
         pk = tuple(r[f"p{i}"] for i in range(len(p_keys)))
         by = tuple(r[f"c{i}"] for i in range(len(c_keys))) if child.pk else None
         out.append((pk, by))
     return out
+
+
+async def _needs_any(conn, fk: ForeignKey, child: Table, parent: Table,
+                     frontier: set[PK] | None) -> bool:
+    """Whether any of the frontier's rows of `child` has a parent through `fk`."""
+    body, args = _from(fk, child, parent, frontier)
+    return bool((await conn.fetch(f"SELECT EXISTS (SELECT 1 {body}) AS hit", *args))[0]["hit"])
 
 
 async def closure(conn: asyncpg.Connection, kept: Kept) -> Closure:
@@ -132,8 +158,7 @@ async def closure(conn: asyncpg.Connection, kept: Kept) -> Closure:
     for name in kept:
         if name not in catalog:
             raise SeedError("table_not_found")
-    links = [fk for fk in await foreign_keys(conn)
-             if fk.required and catalog[fk.ref_table].pk]   # a pk-less parent can't be named
+    links = [fk for fk in await foreign_keys(conn) if fk.required]
 
     known: dict[str, set[PK]] = {n: set(v) for n, v in kept.items() if v != "all"}
     complete = {n for n, v in kept.items() if v == "all"}
@@ -143,14 +168,23 @@ async def closure(conn: asyncpg.Connection, kept: Kept) -> Closure:
     frontier.update({n: set(v) for n, v in known.items() if v})
     while frontier:
         found: dict[str, set[PK]] = {}
+        whole: set[str] = set()                        # pk-less tables added this round
         for fk in links:
             if fk.table not in frontier or fk.ref_table in complete:
                 continue
             rows = frontier[fk.table]
             if rows is not None and not catalog[fk.table].pk:
                 continue                               # no row of it can be named
-            for pk, by in await _step(conn, fk, catalog[fk.table], catalog[fk.ref_table],
-                                      rows):
+            child, parent = catalog[fk.table], catalog[fk.ref_table]
+            if not parent.pk:
+                # Its rows can't be named, so a needed one brings the whole
+                # table, which is then followed like an All rows table.
+                if await _needs_any(conn, fk, child, parent, rows):
+                    complete.add(fk.ref_table)
+                    whole.add(fk.ref_table)
+                    out.added_tables.append(TableReason(fk.ref_table, fk.table, fk.columns))
+                continue
+            for pk, by in await _step(conn, fk, child, parent, rows):
                 have = known.setdefault(fk.ref_table, set())
                 if pk in have:
                     continue
@@ -158,7 +192,7 @@ async def closure(conn: asyncpg.Connection, kept: Kept) -> Closure:
                 out.added.setdefault(fk.ref_table, set()).add(pk)
                 found.setdefault(fk.ref_table, set()).add(pk)
                 out.reasons.append(Reason(fk.ref_table, pk, fk.table, by, fk.columns))
-        frontier = dict(found)
+        frontier = {**found, **{n: None for n in whole}}
     return out
 
 
@@ -216,17 +250,21 @@ def _pk_obj(t: Table, pk: PK | None) -> dict | None:
 
 
 async def resolve(conn: asyncpg.Connection, tables: dict[str, dict]) -> dict:
-    """{"added", "reasons", "missing"} for a selection
-    {table: {"mode": "rows"|"all", "pks": [pk-object...]}}: ticked keys
-    (or whole tables) the snapshot doesn't have are missing, the rest are
-    kept and their needed rows added."""
+    """{"added", "reasons", "added_tables", "missing", "missing_tables"} for
+    a selection {table: {"mode": "rows"|"all", "pks": [pk-object...]}}:
+    ticked keys the snapshot doesn't have are missing (all of a table's
+    when the table itself is gone, which missing_tables names whatever its
+    mode), the rest are kept and their needed rows (or whole pk-less
+    tables) added."""
     async with conn.transaction(isolation="repeatable_read", readonly=True):
         catalog = {t.name: t for t in await _catalog(conn)}
         kept: Kept = {}
         missing: dict[str, list[dict]] = {}
+        missing_tables: list[str] = []
         for name, sel in tables.items():
             t = catalog.get(name)
             if t is None:
+                missing_tables.append(name)
                 if sel["pks"]:
                     missing[name] = list(sel["pks"])
                 continue
@@ -269,4 +307,7 @@ async def resolve(conn: asyncpg.Connection, tables: dict[str, dict]) -> dict:
             "needed_by_label": (labels[(r.needed_by_table, r.needed_by_pk)]
                                 if r.needed_by_pk is not None else None),
         })
-    return {"added": added, "reasons": reasons, "missing": missing}
+    added_tables = [{"table": a.table, "needed_by_table": a.needed_by_table,
+                     "via_columns": list(a.via_columns)} for a in result.added_tables]
+    return {"added": added, "reasons": reasons, "added_tables": added_tables,
+            "missing": missing, "missing_tables": missing_tables}
