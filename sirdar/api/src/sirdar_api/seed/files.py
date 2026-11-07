@@ -26,6 +26,7 @@ FILE_KEY_SUFFIX = "_storage_key"
 PK = tuple[str, ...]
 _PHRASES = {"avatar_key": "Avatar of", "logo_key": "Logo of"}
 TICKED = "Ticked by hand"
+UNTICKED = "Unticked by hand"
 NONE = "—"
 
 
@@ -74,6 +75,7 @@ async def kept_rows(conn, tables: dict[str, dict]) -> dict:
         if sel["mode"] == "all":
             kept[name] = "all"
             continue
+        # resolve reports ticked keys the snapshot lacks as missing; they aren't kept.
         gone = {tup(name, o) for o in resolved["missing"].get(name, [])}
         kept[name] = {tup(name, o) for o in sel["pks"]} - gone
     for name, objs in resolved["added"].items():
@@ -212,7 +214,9 @@ def listing(objects: list[tuple[str, int]], refs: dict[str, Reason],
     for key, nbytes in matched[start:start + size]:
         ref, hand = refs.get(key), manual.get(key)
         kept = (ref is not None or hand is True) and hand is not False
-        if not kept:
+        if ref is not None and hand is False:
+            text = f"{UNTICKED} ({because(ref.column, ref.label, ref.table)})"
+        elif not kept:
             text = NONE
         elif ref is not None:
             text = because(ref.column, ref.label, ref.table)

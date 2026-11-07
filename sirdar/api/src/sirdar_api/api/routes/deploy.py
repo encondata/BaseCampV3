@@ -50,6 +50,7 @@ from sirdar_api.deploy import (
 from sirdar_api.deploy.ssh import SshTargetConfig
 from sirdar_api.deploy.ssh_targets import SavedSshTarget, TargetError
 from sirdar_api.deploy.steps import REMOVING_MODES, STEPS_BY_KEY, plan_for
+from sirdar_api.seed import files as seed_files
 from sirdar_api.services import portal_policy
 from sirdar_api.services.audit import audit
 
@@ -2019,6 +2020,7 @@ async def delete_snapshot(snapshot_id: uuid.UUID, request: Request, db: DbSessio
           entity_type="snapshot", entity_id=name, ip=client_ip(request),
           changes={"name": name})
     await db.commit()
+    seed_files.forget_objects(snapshot_id)   # Seed Data's cached object list
     if bundle_file is not None:              # only once the row is gone for good
         await asyncio.to_thread(bundle_file.unlink, True)
     return Response(status_code=204)

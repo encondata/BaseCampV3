@@ -229,8 +229,9 @@ async def test_manual_drop_beats_a_reference_and_manual_keep_keeps(client, opene
                         {"avatars/a.png": False, "loose/readme.txt": True})
     got = {f["key"]: (f["kept"], f["because"])
            for f in (await _files(client, base, h, rid, size=100))["files"]}
-    assert got["avatars/a.png"] == (False, "—")
+    assert got["avatars/a.png"] == (False, "Unticked by hand (Avatar of Person A (people))")
     assert got["loose/readme.txt"] == (True, "Ticked by hand")
+    assert got["avatars/b.png"] == (False, "—")               # unreferenced, not kept
     assert got["blobs/x.bin"] == (True, "File on a row (blobs)")
 
 
@@ -280,3 +281,14 @@ async def test_object_list_is_cached_per_snapshot(client, opened, monkeypatch):
     await _files(client, base, h, rid)
     await _files(client, base, h, rid, page=2)
     assert len(calls) == 1
+
+
+async def test_deleting_a_snapshot_forgets_its_object_list(client, db, opened):
+    base, h = opened
+    rid = await _recipe(client, h, {})
+    await _files(client, base, h, rid)
+    snapshot_id = uuid.UUID(base.rsplit("/", 1)[1])
+    assert snapshot_id in sf._objects
+    resp = await client.delete(f"/api/deploy/snapshots/{snapshot_id}", headers=h)
+    assert resp.status_code == 204, resp.text
+    assert snapshot_id not in sf._objects
