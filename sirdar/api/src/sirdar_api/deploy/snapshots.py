@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -354,7 +355,7 @@ async def delete(db: AsyncSession, settings: Settings, snap: Snapshot) -> Path:
 
 def sweep_incoming(settings: Settings) -> int:
     """Remove every *.upload and *.partial a crash left: in incoming/ and
-    beside the bundles. Only for startup, when no upload is in flight.
+    beside the bundles, and Seed Data's scratch-* work folders. Only for startup, when no upload is in flight.
     Sync; a missing folder is fine."""
     removed = 0
     for folder, patterns in ((incoming_dir(settings), ("*.upload", "*.partial")),
@@ -366,6 +367,16 @@ def sweep_incoming(settings: Settings) -> int:
                 if path.is_symlink() or path.is_file():
                     path.unlink(missing_ok=True)
                     removed += 1
+    # Seed Data's work folders (seed/scratch.py): a crashed restore's holds
+    # the snapshot's plaintext db.dump.
+    folder = incoming_dir(settings)
+    if folder.is_dir():
+        for path in folder.glob("scratch-*"):
+            if path.is_symlink() or path.is_file():
+                path.unlink(missing_ok=True)
+            else:
+                shutil.rmtree(path, ignore_errors=True)
+            removed += 1
     return removed
 
 

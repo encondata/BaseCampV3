@@ -33,7 +33,12 @@ def good_dump(tmp_path_factory) -> bytes:
         conn.execute(f'CREATE DATABASE "{SOURCE}"')
     try:
         with psycopg.connect(_psycopg_url(SOURCE), autocommit=True) as conn:
-            conn.execute("CREATE TABLE sites (id int PRIMARY KEY, name text NOT NULL)")
+            # The extensions ServerSherpa uses (trusted: a non-superuser restores them).
+            conn.execute("CREATE EXTENSION citext")
+            conn.execute("CREATE EXTENSION pg_trgm")
+            conn.execute("CREATE TABLE sites (id int PRIMARY KEY, name citext NOT NULL)")
+            conn.execute("CREATE INDEX sites_name_trgm ON sites USING gin "
+                         "(name gin_trgm_ops)")
             conn.execute("CREATE TABLE racks (id int PRIMARY KEY, "
                          "site_id int NOT NULL REFERENCES sites(id), name text)")
             conn.execute("INSERT INTO sites VALUES (1, 'North'), (2, 'South')")
@@ -113,6 +118,37 @@ async def test_restores_both_tables(scratch_url, snapshots_dir, tmp_path, good_d
     assert list((snapshots_dir / "incoming").iterdir()) == []
 
 
+async def test_restore_runs_as_the_restricted_owner(scratch_url, snapshots_dir, tmp_path,
+                                                    good_dump):
+    snap = _snapshot(tmp_path, good_dump)
+    name = await scratch.ensure_restored(get_settings(), snap)
+    role = scratch.owner_role()
+    assert role == f"{TEST_DB}_scratch_owner"
+    with psycopg.connect(_psycopg_url("postgres"), autocommit=True) as conn:
+        attrs = conn.execute(
+            "SELECT rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls "
+            "FROM pg_roles WHERE rolname = %s", (role,)).fetchone()
+        assert attrs == (False, False, False, False, False)
+        owner = conn.execute("SELECT pg_get_userbyid(datdba) FROM pg_database "
+                             "WHERE datname = %s", (name,)).fetchone()[0]
+        assert owner == role
+    with psycopg.connect(_psycopg_url(name), autocommit=True) as conn:
+        owners = {r[0] for r in conn.execute(
+            "SELECT DISTINCT pg_get_userbyid(c.relowner) FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public'")}
+        assert owners == {role}
+        ext_owners = {r[0] for r in conn.execute(
+            "SELECT pg_get_userbyid(extowner) FROM pg_extension WHERE extname <> 'plpgsql'")}
+        assert ext_owners == {role}
+    conn = await scratch.connect(get_settings(), name)
+    try:
+        assert await conn.fetchval("SELECT current_user") == role
+        await conn.execute("SET session_replication_role = replica")   # granted
+        assert await conn.fetchval("SHOW session_replication_role") == "replica"
+    finally:
+        await conn.close()
+
+
 async def test_concurrent_callers_restore_once(scratch_url, snapshots_dir, tmp_path,
                                                good_dump, monkeypatch):
     snap = _snapshot(tmp_path, good_dump)
@@ -137,6 +173,7 @@ async def test_corrupt_dump_fails_and_leaves_no_database(scratch_url, snapshots_
     with pytest.raises(SeedError) as exc:
         await scratch.ensure_restored(get_settings(), snap)
     assert exc.value.code == "restore_failed"
+    assert "detail" not in exc.value.extra        # pg_restore's stderr stays in the log
     assert scratch.status(snap.id) == "failed"
     assert scratch.db_name(snap.id) not in _databases()
 
@@ -179,6 +216,69 @@ async def test_drop_forgets_the_database(scratch_url, snapshots_dir, tmp_path, g
     assert scratch.status(snap.id) == "absent"
 
 
+async def test_sweep_drops_leftover_scratch_databases_of_any_purpose(scratch_url):
+    name = scratch.db_name(uuid.uuid4(), "build")
+    with psycopg.connect(_psycopg_url("postgres"), autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{name}"')
+    assert await scratch.sweep_idle(get_settings()) == 1
+    assert name not in _databases()
+
+
+async def test_cancelled_restore_leaves_no_files_or_database(scratch_url, snapshots_dir,
+                                                             tmp_path, good_dump,
+                                                             monkeypatch):
+    snap = _snapshot(tmp_path, good_dump)
+    started = asyncio.Event()
+
+    async def hang(settings, tool, args):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(scratch, "_run", hang)
+    task = asyncio.create_task(scratch.ensure_restored(get_settings(), snap))
+    await asyncio.wait_for(started.wait(), 10)
+    assert [p.name[:8] for p in (snapshots_dir / "incoming").iterdir()] == ["scratch-"]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert list((snapshots_dir / "incoming").iterdir()) == []
+    assert scratch.db_name(snap.id) not in _databases()
+    assert scratch.status(snap.id) == "failed"
+
+
+def test_a_stopped_extract_writes_nothing(snapshots_dir, tmp_path, good_dump):
+    import threading
+    snap = _snapshot(tmp_path, good_dump)
+    out = tmp_path / "out"
+    out.mkdir()
+    stop = threading.Event()
+    stop.set()
+    with pytest.raises(scratch._Stopped):
+        scratch._extract_dump(get_settings(), snap, out, stop)
+    assert list(out.iterdir()) == []
+
+
+def test_startup_sweep_removes_scratch_work_folders(snapshots_dir):
+    planted = snapshots_dir / "incoming" / "scratch-x"
+    planted.mkdir(parents=True)
+    (planted / "db.dump").write_bytes(b"PGDMP plaintext rows")
+    keep = snapshots_dir / "incoming" / "other-folder"
+    keep.mkdir()
+    assert snapshots.sweep_incoming(get_settings()) == 1
+    assert not planted.exists() and keep.exists()
+
+
+async def test_background_restore_never_sticks_at_restoring(scratch_url, monkeypatch):
+    async def boom(settings, snap, purpose="browse"):
+        raise RuntimeError("scratch server went away")
+
+    monkeypatch.setattr(scratch, "ensure_restored", boom)
+    snap = Snapshot(id=uuid.uuid4(), bundle_file="x.tar.gz")
+    assert scratch.start_restore(get_settings(), snap) == "restoring"
+    await asyncio.gather(*scratch._tasks)
+    assert scratch.status(snap.id) == "failed"
+
+
 async def test_sweep_without_scratch_url_does_nothing(monkeypatch):
     monkeypatch.setenv("SIRDAR_SCRATCH_URL", "")
     get_settings.cache_clear()
@@ -201,6 +301,20 @@ async def test_api_answers_409_without_a_scratch_url(client, db, monkeypatch):
             resp = await client.request(method, path, headers=headers)
             assert resp.status_code == 409, resp.text
             assert resp.json()["detail"]["code"] == "scratch_not_configured"
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_api_answers_409_for_an_unusable_scratch_url(client, db, monkeypatch):
+    monkeypatch.setenv("SIRDAR_SCRATCH_URL", "not a url")
+    get_settings.cache_clear()
+    try:
+        assert not scratch.configured(get_settings())
+        headers = await auth_headers(client, db)
+        resp = await client.get(f"/api/seed/snapshots/{uuid.uuid4()}", headers=headers)
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["code"] == "scratch_not_configured"
+        assert "not a url" not in resp.text
     finally:
         get_settings.cache_clear()
 
@@ -248,7 +362,12 @@ async def test_app_sweeps_only_with_a_scratch_url(monkeypatch, url, runs):
             events.append("cancelled")
             raise
 
+    async def fake_sweep(settings):
+        events.append("startup sweep")
+        return 0
+
     monkeypatch.setattr(scratch, "sweep_loop", fake_loop)
+    monkeypatch.setattr(scratch, "sweep_idle", fake_sweep)
     monkeypatch.setenv("SIRDAR_SCRATCH_URL", url)
     get_settings.cache_clear()
     try:
@@ -257,4 +376,5 @@ async def test_app_sweeps_only_with_a_scratch_url(monkeypatch, url, runs):
             await asyncio.sleep(0)
     finally:
         get_settings.cache_clear()
-    assert events == ([f"loop {scratch.SWEEP_SECONDS}", "cancelled"] if runs else [])
+    assert events == (["startup sweep", f"loop {scratch.SWEEP_SECONDS}", "cancelled"]
+                      if runs else [])

@@ -34,6 +34,9 @@ services:
       SIRDAR_SNAPSHOTS_DIR: /app/snapshots
       # Proxmox environments: one Terraform folder (state included) each.
       SIRDAR_TERRAFORM_DIR: /app/terraform
+    networks:
+      - default
+      - scratch
     volumes:
       # Deploy-page SSH/GCP key files; the container runs as uid 10001.
       - ${SIRDAR_DEPLOY_KEYS_DIR:-./deploy-keys}:/app/deploy-keys:ro
@@ -87,6 +90,10 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${SIRDAR_SCRATCH_PASSWORD:?set SIRDAR_SCRATCH_PASSWORD in sirdar/.env}
       POSTGRES_DB: postgres
+    # Only the app can reach it: its own internal network (no sirdar-db, no
+    # internet), since it runs SQL from uploaded snapshots.
+    networks:
+      - scratch
     volumes:
       - sirdar-scratch:/var/lib/postgresql/data
     healthcheck:
@@ -95,6 +102,11 @@ services:
       timeout: 3s
       retries: 10
     restart: unless-stopped
+
+networks:
+  default:
+  scratch:
+    internal: true
 
 volumes:
   sirdar-db:

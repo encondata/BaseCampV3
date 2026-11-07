@@ -47,6 +47,11 @@ async def _lifespan(app: FastAPI):
     from sirdar_api.seed import scratch
     sweeper = None
     if scratch.configured(get_settings()):
+        try:
+            await scratch.sweep_idle(get_settings())   # what a crash left behind
+        # The scratch Postgres being down must not stop the app starting.
+        except Exception as e:  # noqa: BLE001
+            log.warning("couldn't sweep scratch databases at startup: %s", type(e).__name__)
         # Seed Data: drops scratch databases nobody has used for a while; it never raises.
         sweeper = asyncio.create_task(scratch.sweep_loop(get_settings()), name="scratch-sweep")
     yield

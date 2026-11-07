@@ -105,7 +105,7 @@ class Settings(BaseSettings):
     # browsing and cutting subsets (postgresql://user:password@host:port/db,
     # the db being one to connect to while creating and dropping the scratch
     # databases). Blank = Seed Data is off. Never logged.
-    scratch_url: str = ""
+    scratch_url: SecretStr = SecretStr("")
     # A browse database nobody has used for this long is dropped.
     scratch_idle_minutes: int = Field(default=60, gt=0)
     # Folder holding pg_restore and pg_dump; blank = find them on PATH.

@@ -1,12 +1,14 @@
 """Seed Data: browse a snapshot in the scratch Postgres and cut seed
-snapshots with recipes. Every endpoint needs seed_data:view, and answers
-409 scratch_not_configured while SIRDAR_SCRATCH_URL is blank."""
+snapshots with recipes. The router's guard gives every endpoint its
+seed_data:view check and its 409 scratch_not_configured (SIRDAR_SCRATCH_URL
+blank or unusable); an endpoint that needs more adds require_permission
+for that action only."""
 
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from sirdar_api.api.deps import AuthContext, CurrentUser, DbSession, require_permission
+from sirdar_api.api.deps import AuthContext, CurrentUser, DbSession
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import Snapshot
 from sirdar_api.seed import scratch
@@ -33,8 +35,7 @@ async def _snapshot(db, snapshot_id: uuid.UUID) -> Snapshot:
 
 
 @router.post("/snapshots/{snapshot_id}/open")
-async def open_snapshot(snapshot_id: uuid.UUID, db: DbSession,
-                        actor: AuthContext = require_permission("seed_data", "view")):
+async def open_snapshot(snapshot_id: uuid.UUID, db: DbSession):
     """Restore the snapshot into its browse database (in the background)."""
     snap = await _snapshot(db, snapshot_id)
     if snap.status != "ready" or not snap.bundle_file:
@@ -43,7 +44,6 @@ async def open_snapshot(snapshot_id: uuid.UUID, db: DbSession,
 
 
 @router.get("/snapshots/{snapshot_id}")
-async def snapshot_status(snapshot_id: uuid.UUID, db: DbSession,
-                          actor: AuthContext = require_permission("seed_data", "view")):
+async def snapshot_status(snapshot_id: uuid.UUID, db: DbSession):
     await _snapshot(db, snapshot_id)
     return {"status": scratch.status(snapshot_id)}

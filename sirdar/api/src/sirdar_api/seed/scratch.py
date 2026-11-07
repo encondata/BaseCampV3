@@ -10,15 +10,24 @@ SIRDAR_SCRATCH_IDLE_MINUTES. Which databases are ready, and when each was
 last used, is kept in memory: a browse database this process didn't
 restore is dropped by the next sweep and restored again when asked for.
 
+Snapshots are uploaded, so their dumps are untrusted SQL: the superuser in
+SIRDAR_SCRATCH_URL only creates and drops the databases and sets up one
+restricted login role (PREFIX_owner: no superuser, no CREATEDB/CREATEROLE,
+allowed only to SET session_replication_role). Each scratch database is
+owned by that role, and pg_restore and every browsing connection log in as
+it. Its password is random, made fresh by each process and kept in memory.
+
 The scratch URL holds a password: it is never logged, and the Postgres
-tools get it through PGPASSWORD in their own environment only."""
+tools get passwords through PGPASSWORD in their own environment only."""
 
 import asyncio
 import logging
 import os
 import re
+import secrets
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 from contextlib import suppress
@@ -51,6 +60,7 @@ _state: dict[str, str] = {}           # name -> restoring | ready | failed
 _last_used: dict[str, float] = {}     # name -> time.monotonic() of last use
 _locks: dict[str, asyncio.Lock] = {}
 _tasks: set[asyncio.Task] = set()
+_owner: dict[str, object] = {}        # "password" once the role is set up, "lock"
 
 
 @dataclass(frozen=True)
@@ -81,22 +91,70 @@ def forget_all() -> None:
     _state.clear()
     _last_used.clear()
     _locks.clear()
+    _owner.clear()
+
+
+def owner_role() -> str:
+    return f"{PREFIX}_owner"
+
+
+def _parse(settings: Settings) -> _Server | None:
+    raw = settings.scratch_url.get_secret_value().strip()
+    if not raw:
+        return None
+    try:
+        url = make_url(raw)
+    except Exception:  # noqa: BLE001 - the message would quote the URL
+        return None
+    if not url.drivername.startswith("postgresql") or not url.host:
+        return None
+    try:
+        port = url.port or 5432
+    except ValueError:
+        return None
+    return _Server(host=url.host, port=port, user=url.username or "postgres",
+                   password=url.password or "", database=url.database or "postgres")
 
 
 def configured(settings: Settings) -> bool:
-    return bool(settings.scratch_url.strip())
+    """A usable SIRDAR_SCRATCH_URL (a postgresql:// URL with a host)."""
+    return _parse(settings) is not None
 
 
 def _server(settings: Settings) -> _Server:
-    if not configured(settings):
+    server = _parse(settings)
+    if server is None:
         raise SeedError("scratch_not_configured")
-    try:
-        url = make_url(settings.scratch_url.strip())
-    except Exception:  # noqa: BLE001 - the message would quote the URL
-        raise SeedError("scratch_not_configured") from None
-    return _Server(host=url.host or "localhost", port=url.port or 5432,
-                   user=url.username or "postgres", password=url.password or "",
-                   database=url.database or "postgres")
+    return server
+
+
+async def _ensure_owner(settings: Settings) -> str:
+    """Create (or reset) the restricted owner role; its password."""
+    lock = _owner.setdefault("lock", asyncio.Lock())
+    async with lock:  # type: ignore[union-attr]
+        if "password" in _owner:
+            return _owner["password"]  # type: ignore[return-value]
+        password = secrets.token_urlsafe(32)     # [A-Za-z0-9_-]: safe in a literal
+        role = owner_role()
+        attrs = ("LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS "
+                 f"PASSWORD '{password}'")
+        conn = await _admin(settings)
+        try:
+            exists = await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", role)
+            if not exists:
+                try:
+                    await conn.execute(f'CREATE ROLE "{role}" {attrs}')
+                except asyncpg.DuplicateObjectError:
+                    exists = True
+            if exists:
+                await conn.execute(f'ALTER ROLE "{role}" {attrs}')
+            # A later step loads rows with session_replication_role = replica.
+            await conn.execute(
+                f'GRANT SET ON PARAMETER session_replication_role TO "{role}"')
+        finally:
+            await conn.close()
+        _owner["password"] = password
+        return password
 
 
 def _check_name(name: str) -> str:
@@ -122,11 +180,13 @@ async def _admin(settings: Settings) -> asyncpg.Connection:
 
 
 async def connect(settings: Settings, name: str) -> asyncpg.Connection:
-    """A connection to scratch database `name` (the caller closes it)."""
+    """A connection to scratch database `name` as the restricted owner role
+    (the caller closes it)."""
     s = _server(settings)
     _check_name(name)
-    conn = await asyncpg.connect(host=s.host, port=s.port, user=s.user, password=s.password,
-                                 database=name, timeout=10)
+    password = await _ensure_owner(settings)
+    conn = await asyncpg.connect(host=s.host, port=s.port, user=owner_role(),
+                                 password=password, database=name, timeout=10)
     _touch(name)
     return conn
 
@@ -142,7 +202,8 @@ async def _exists(settings: Settings, name: str) -> bool:
 async def _create_db(settings: Settings, name: str) -> None:
     conn = await _admin(settings)
     try:
-        await conn.execute(f'CREATE DATABASE "{_check_name(name)}" TEMPLATE template0')
+        await conn.execute(f'CREATE DATABASE "{_check_name(name)}" '
+                           f'OWNER "{owner_role()}" TEMPLATE template0')
     finally:
         await conn.close()
 
@@ -160,14 +221,16 @@ def _tool(settings: Settings, tool: str) -> str:
 
 
 async def _run(settings: Settings, tool: str, args: list[str]) -> tuple[int, str]:
-    """Run a Postgres client tool against the scratch server; (exit code,
-    stderr). The password goes in the child's PGPASSWORD only. A cancelled
-    caller kills the child."""
+    """Run a Postgres client tool against the scratch server as the
+    restricted owner role (never the superuser); (exit code, stderr). The
+    password goes in the child's PGPASSWORD only. A cancelled caller kills
+    the child."""
     s = _server(settings)
+    password = await _ensure_owner(settings)
     env = {k: os.environ[k] for k in _ENV_KEEP if k in os.environ}
-    env.update(PGPASSWORD=s.password, PGCONNECT_TIMEOUT="10")
+    env.update(PGPASSWORD=password, PGCONNECT_TIMEOUT="10")
     argv = [_tool(settings, tool), "--host", s.host, "--port", str(s.port),
-            "--username", s.user, "--no-password", *args]
+            "--username", owner_role(), "--no-password", *args]
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv, env=env, stdin=asyncio.subprocess.DEVNULL,
@@ -186,19 +249,30 @@ async def _run(settings: Settings, tool: str, args: list[str]) -> tuple[int, str
 
 # ---- restoring -----------------------------------------------------------------
 
-def _extract_dump(settings: Settings, snap: Snapshot, dest: Path) -> Path:
+class _Stopped(Exception):
+    """The restore was cancelled while the dump was being extracted."""
+
+
+def _extract_dump(settings: Settings, snap: Snapshot, dest: Path,
+                  stop: threading.Event | None = None) -> Path:
     """Write the bundle's db.dump (mode 600) into dest, checking every
-    checksum on the way. Sync: run it in a thread."""
+    checksum on the way. Sync: run it in a thread. Setting `stop` makes it
+    give up (raising _Stopped) before it writes anything more."""
+    stop = stop or threading.Event()
     path = snapshots.bundle_path(settings, snap)
     if not path.is_file():
         raise snapshots.SnapshotError("snapshot_file_missing")
     out = dest / bundle.DB_DUMP
 
     def on_data(name: str, size: int, reader) -> None:
+        if stop.is_set():
+            raise _Stopped
         if name != bundle.DB_DUMP:
             return
         with os.fdopen(bundle._open_private(out), "wb") as f:
             while chunk := reader.read(bundle.CHUNK):
+                if stop.is_set():
+                    raise _Stopped
                 f.write(chunk)
 
     bundle._scan(path, on_data=on_data, max_bytes=4 * settings.snapshot_max_bytes)
@@ -213,15 +287,28 @@ def _work_dir(settings: Settings) -> Path:
 async def _restore(settings: Settings, snap: Snapshot, name: str) -> None:
     work = await asyncio.to_thread(_work_dir, settings)
     try:
-        dump = await asyncio.to_thread(_extract_dump, settings, snap, work)
+        stop = threading.Event()
+        extract = asyncio.ensure_future(
+            asyncio.to_thread(_extract_dump, settings, snap, work, stop))
+        try:
+            dump = await asyncio.shield(extract)
+        except asyncio.CancelledError:
+            # The thread can't be cancelled: stop it writing, and wait for it
+            # before the folder is removed.
+            stop.set()
+            with suppress(BaseException):
+                await extract
+            raise
+        await _ensure_owner(settings)
         await _drop_db(settings, name)            # whatever an earlier run left
         await _create_db(settings, name)
         code, err = await _run(settings, "pg_restore",
                                ["--no-owner", "--no-privileges", "--dbname", name, str(dump)])
         if code != 0:
+            # stderr may quote the dump's rows: the log only, never the API.
             first = next((ln for ln in err.splitlines() if ln.strip()), "")[:300]
-            raise SeedError("restore_failed", reason=f"pg_restore exited with {code}",
-                            detail=first)
+            log.warning("pg_restore into a scratch database exited with %d: %s", code, first)
+            raise SeedError("restore_failed", reason=f"pg_restore exited with {code}")
     finally:
         await asyncio.to_thread(shutil.rmtree, work, True)
 
@@ -233,11 +320,11 @@ async def ensure_restored(settings: Settings, snap: Snapshot, purpose: str = "br
     name = db_name(snap.id, purpose)
     _server(settings)                            # scratch_not_configured first
     async with _lock(name):
-        if _state.get(name) == "ready" and await _exists(settings, name):
-            _touch(name)
-            return name
-        _state[name] = "restoring"
         try:
+            if _state.get(name) == "ready" and await _exists(settings, name):
+                _touch(name)
+                return name
+            _state[name] = "restoring"
             await _restore(settings, snap, name)
         except BaseException as e:
             _state[name] = "failed"
@@ -245,8 +332,8 @@ async def ensure_restored(settings: Settings, snap: Snapshot, purpose: str = "br
             with suppress(Exception):
                 await _drop_db(settings, name)
             if isinstance(e, SeedError):
-                log.warning("scratch restore of snapshot %s failed: %s (%s)", snap.id,
-                            e.extra.get("reason", e.code), e.extra.get("detail", ""))
+                log.warning("scratch restore of snapshot %s failed: %s", snap.id,
+                            e.extra.get("reason", e.code))
                 raise
             if isinstance(e, snapshots.SnapshotError):
                 log.warning("scratch restore of snapshot %s failed: %s", snap.id, e.reason)
@@ -273,12 +360,20 @@ def start_restore(settings: Settings, snap: Snapshot) -> Status:
         if current == "ready":
             _touch(db_name(snap.id))
         return current
-    _state[db_name(snap.id)] = "restoring"
+    name = db_name(snap.id)
+    _state[name] = "restoring"
 
     async def run() -> None:
-        # ensure_restored logs and records the failure.
-        with suppress(SeedError):
+        try:
             await ensure_restored(settings, snap)
+        except SeedError:
+            pass                                  # ensure_restored logged and recorded it
+        except Exception as e:  # noqa: BLE001 - a background task must record, not raise
+            log.warning("scratch restore of snapshot %s failed: %s", snap.id,
+                        type(e).__name__)
+        finally:
+            if _state.get(name) == "restoring" and not _lock(name).locked():
+                _state[name] = "failed"
 
     task = asyncio.create_task(run(), name=f"scratch-restore-{snap.id}")
     _tasks.add(task)
@@ -297,17 +392,19 @@ async def drop(settings: Settings, name: str) -> None:
 
 async def sweep_idle(settings: Settings) -> int:
     """Drop the browse databases unused for SIRDAR_SCRATCH_IDLE_MINUTES, and
-    any this process doesn't know (an earlier run's). How many it dropped."""
+    every scratch database this process doesn't know, whatever its purpose
+    (what an earlier run or a crash left). Runs at startup and then
+    periodically. How many it dropped."""
     if not configured(settings):
         return 0
     conn = await _admin(settings)
     try:
         names = [r["datname"] for r in await conn.fetch(
-            "SELECT datname FROM pg_database WHERE starts_with(datname, $1)",
-            f"{PREFIX}_browse_")]
+            "SELECT datname FROM pg_database WHERE starts_with(datname, $1)", f"{PREFIX}_")]
     finally:
         await conn.close()
     cutoff = time.monotonic() - settings.scratch_idle_minutes * 60
+    browse = f"{PREFIX}_browse_"
     dropped = 0
     for name in names:
         if not NAME_RE.fullmatch(name):
@@ -315,9 +412,12 @@ async def sweep_idle(settings: Settings) -> int:
         lock = _lock(name)
         if lock.locked() or _state.get(name) == "restoring":
             continue
-        last = _last_used.get(name)
-        if last is not None and last >= cutoff:
-            continue
+        if name in _state:
+            if not name.startswith(browse):
+                continue                          # a build in this process: its owner drops it
+            last = _last_used.get(name)
+            if last is not None and last >= cutoff:
+                continue
         async with lock:
             await _drop_db(settings, name)
             _state.pop(name, None)

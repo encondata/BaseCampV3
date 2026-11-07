@@ -955,6 +955,12 @@ To run compose by hand instead, copy `sirdar/.env.example` to `sirdar/.env`,
 fill in every secret, then
 `docker compose -f sirdar/docker-compose.yml --env-file sirdar/.env up -d --build`.
 
+**Upgrade note (Seed Data):** compose now also runs `sirdar-scratch`, a
+scratch Postgres that needs `SIRDAR_SCRATCH_PASSWORD`. The installer adds a
+generated one to an existing `.env`; on a hand-managed install, set it
+(`python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`) in
+`sirdar/.env` before `docker compose up`, or compose refuses to start.
+
 ## Security notes
 
 - `SS_PASSWORD_PEPPER` and `SS_TOTP_ENCRYPTION_KEY` must equal the portal's
