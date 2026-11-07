@@ -212,12 +212,17 @@ to_json() {
   '
 }
 
+# The gateway parsers read their input to the end instead of exiting at the
+# match: an early exit closes the pipe while the writer may still be writing
+# (uutils tr, Ubuntu 26.04's tr, writes the unterminated tail separately), its
+# SIGPIPE fails the pipeline under pipefail, and gateway() drops the result.
+
 # parse_gateway_macos: `route -n get default` on stdin -> the gateway address.
-parse_gateway_macos() { awk '$1 == "gateway:" { print $2; exit }'; }
+parse_gateway_macos() { awk '!found && $1 == "gateway:" { found = 1; gw = $2 } END { if (found) print gw }'; }
 
 # parse_gateway_linux: `ip -j -4 route show default` on stdin -> the first gateway.
 parse_gateway_linux() {
-  tr ',' '\n' | awk -F '"' '$2 == "gateway" { print $4; exit }'
+  tr ',' '\n' | awk -F '"' '!found && $2 == "gateway" { found = 1; gw = $4 } END { if (found) print gw }'
 }
 
 # usable_gateway IP: IP when it is a dotted-quad unicast IPv4 address that is
