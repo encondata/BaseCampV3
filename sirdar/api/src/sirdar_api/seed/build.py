@@ -9,25 +9,35 @@ Its steps, in order:
  1. the source's db.dump is restored into a "build" scratch database;
  2. an empty "subset" scratch database gets the source's schema
     (pg_dump --schema-only | pg_restore), so every constraint, index,
-    sequence and extension is there before any row; a schema with triggers
-    or rules that would fire during the load or the reset (ENABLE ALWAYS or
-    ENABLE REPLICA), or with functions of its own (anything a CHECK, index,
-    generated column, domain or default could call), is refused
+    sequence and extension is there before any row. The extensions are the
+    scratch superuser's: the dump's table of contents (pg_restore -l) says
+    which it needs, each must be allowlisted (scratch.EXTENSIONS, else
+    unsafe_schema), the superuser creates them in the still empty subset
+    database, and the restore runs without the dump's extension entries
+    (pg_restore -L). A schema with triggers or rules that would fire during
+    the load or the reset (ENABLE ALWAYS or ENABLE REPLICA), with functions
+    of its own (anything a CHECK, index, generated column, domain or default
+    could call; an extension's members don't count, and the subset role
+    can't add any, not owning the extensions), with a schema beside public,
+    or with an extension the superuser didn't create, is refused
     (unsafe_schema), see _check_schema;
  3. the kept rows are loaded in one transaction with session_replication_role
     = replica (foreign keys and triggers off, so circular and
     self-referencing links load in any order): All rows tables whole, rows
     tables their ticked plus needed rows, alembic_version whole, every other
-    table empty; sequences take the source's positions;
+    table empty;
  4. every optional link whose row isn't there is set to NULL;
  5. a required link whose row isn't there fails the build (missing_parent);
  6. with reset_passwords, the reset list (seed/reset.py) is applied and
     read back. The reset clears the listed tables and columns; it can't
     guarantee a source schema hasn't stored secrets elsewhere, which is why
     always/replica triggers and rules, and the schema's own functions, are
-    refused in step 2. Then every public table's row count is compared
-    with what the loader put there (unexpected_rows otherwise);
- 7. the subset is dumped (pg_dump -Fc);
+    refused in step 2. Then the sequences take the source's positions (a
+    built-in setval in a CHECK could have parked a number in one), every
+    table's row count is compared with what the loader put there, and no
+    large object may exist (a built-in lo_* in a CHECK could have stashed
+    the row): unexpected_rows otherwise;
+ 7. the subset is dumped (pg_dump -Fc -B, no large objects);
  8. a new objects.tar holds only the kept files, copied member by member
     from the source's (content types as they were);
  9. the source's keys.enc is copied, the manifest is the source's plus
@@ -44,6 +54,7 @@ only ever come from the catalog; values go as bind parameters."""
 import asyncio
 import logging
 import os
+import re
 import shutil
 import tarfile
 import tempfile
@@ -66,36 +77,69 @@ log = logging.getLogger(__name__)
 
 ALEMBIC = "alembic_version"
 SCHEMA_DUMP = "schema.dump"
+SCHEMA_LIST = "schema.list"             # pg_restore -l of it
+SCHEMA_KEEP = "schema.keep"             # the entries to restore (pg_restore -L)
 QUEUE_CHUNKS = 16                       # COPY chunks in flight between the two databases
 
 _tasks: dict[uuid.UUID, asyncio.Task] = {}
 _source_locks: dict[uuid.UUID, asyncio.Lock] = {}   # one build per source at a time
 
+# A pg_restore -l entry: `id; tableoid oid DESC namespace tag owner`.
+_TOC_ENTRY = re.compile(r"^(\d+); +(\d+) +(\d+) +(.*)$")
+# The dump's extension entries, left out of the restore: the superuser has
+# created the extensions already. (`COMMENT - EXTENSION x` is the comment
+# on one; nothing else pg_dump writes starts like these.)
+_TOC_EXTENSION = re.compile(r"^EXTENSION - (\S+)")
+_TOC_EXTENSION_COMMENT = re.compile(r"^COMMENT - EXTENSION ")
+# What a note may say of a name the dump chose (never a row, but no
+# control characters or anything else surprising either).
+_SAFE_NAME = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
 _SEQUENCES_SQL = """
 SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = $1 AND c.relkind = 'S' ORDER BY c.relname
 """
+# Everything the checks below look at lives outside Postgres's own schemas
+# (a dump can't put anything into those).
+_USER_NAMESPACE = "n.nspname NOT IN ('pg_catalog', 'information_schema')"
+# A schema beside public: not one of Postgres's own, not a TOAST or
+# temporary one, not one an allowlisted extension made (none of ours do).
+_SCHEMAS_SQL = f"""
+SELECT n.nspname FROM pg_namespace n
+WHERE {_USER_NAMESPACE} AND n.nspname <> 'public'
+  AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp%'
+  AND NOT EXISTS (
+    SELECT 1 FROM pg_depend d
+    WHERE d.classid = 'pg_namespace'::regclass AND d.objid = n.oid AND d.deptype = 'e'
+      AND d.refclassid = 'pg_extension'::regclass AND d.refobjid = ANY($1::oid[]))
+ORDER BY n.nspname
+"""
+# An extension the superuser didn't create (one the restore made, say).
+_EXTENSIONS_SQL = "SELECT extname FROM pg_extension WHERE NOT (oid = ANY($1::oid[])) ORDER BY 1"
 # Triggers and rules that fire in replica mode: ENABLE ALWAYS ('A') and
 # ENABLE REPLICA ('R'; those fire only then). Constraint triggers are
 # internal; a view's _RETURN rule is how a view works.
-_UNSAFE_TRIGGERS_SQL = """
+_UNSAFE_TRIGGERS_SQL = f"""
 SELECT count(*) FROM pg_trigger t
 JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname = $1 AND NOT t.tgisinternal AND t.tgenabled IN ('A', 'R')
+WHERE {_USER_NAMESPACE} AND NOT t.tgisinternal AND t.tgenabled IN ('A', 'R')
 """
-_UNSAFE_RULES_SQL = """
+_UNSAFE_RULES_SQL = f"""
 SELECT count(*) FROM pg_rewrite r
 JOIN pg_class c ON c.oid = r.ev_class JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname = $1 AND r.rulename <> '_RETURN' AND r.ev_enabled IN ('A', 'R')
+WHERE {_USER_NAMESPACE} AND r.rulename <> '_RETURN' AND r.ev_enabled IN ('A', 'R')
 """
-# Functions, procedures and aggregates of the schema's own (not an
-# extension's members, which citext and pg_trgm put in public too).
-_UNSAFE_FUNCTIONS_SQL = """
+# Functions, procedures and aggregates of the schema's own: anywhere but
+# Postgres's own schemas, and not a member of an extension the superuser
+# created (citext and pg_trgm put theirs in public too).
+_UNSAFE_FUNCTIONS_SQL = f"""
 SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-WHERE n.nspname = $1 AND NOT EXISTS (
+WHERE {_USER_NAMESPACE} AND NOT EXISTS (
   SELECT 1 FROM pg_depend d
-  WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
+  WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e'
+    AND d.refclassid = 'pg_extension'::regclass AND d.refobjid = ANY($1::oid[]))
 """
+_LARGE_OBJECTS_SQL = "SELECT count(*) FROM pg_largeobject_metadata"
 _NOT_NULL_SQL = """
 SELECT c.relname, a.attname FROM pg_attribute a
 JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -257,12 +301,16 @@ async def _build(settings: Settings, snapshot_id: uuid.UUID) -> snapshots.Stored
         try:
             build_db = await scratch.ensure_restored(settings, source, purpose="build")
             subset_db = await scratch.create_blank(settings, snapshot_id, "subset")
-            await _copy_schema(settings, build_db, subset_db, work)
+            trusted, copied = await _copy_schema(settings, build_db, subset_db, work)
             src = await _connect(settings, build_db)
             try:
                 dst = await _connect(settings, subset_db)
                 try:
-                    await _check_schema(dst)
+                    # The check first, even after a failed restore: what it
+                    # finds says more than that pg_restore gave up.
+                    await _check_schema(dst, trusted)
+                    if not copied:
+                        raise SeedError("schema_copy_failed")
                     kept = await seed_files.kept_rows(src, detail["tables"])
                     rows = await _load(src, dst, kept)
                     await _fix_links(dst)
@@ -272,6 +320,7 @@ async def _build(settings: Settings, snapshot_id: uuid.UUID) -> snapshots.Stored
                         # manifest, and their files don't follow them.
                         rows = {t: n for t, n in rows.items() if t not in reset.EMPTY_TABLES}
                         kept = {t: v for t, v in kept.items() if t not in reset.EMPTY_TABLES}
+                    await _sync_sequences(src, dst)
                     await _verify_counts(src, dst, rows)
                     refs = await seed_files.referenced(src, kept)
                 finally:
@@ -308,46 +357,119 @@ def _tool_failed(tool: str, step: str, code: int, err: str) -> SeedError:
     return SeedError(step)
 
 
-async def _copy_schema(settings: Settings, build_db: str, subset_db: str, work: Path) -> None:
-    """The source's schema (no rows, no owners, no grants) into the subset."""
-    dump = work / SCHEMA_DUMP
+def _safe_name(name: str) -> str:
+    """A name of the dump's as a note may carry it."""
+    return name if _SAFE_NAME.fullmatch(name) else "?"
+
+
+def _filter_toc(listing: str) -> tuple[list[str], list[str]]:
+    """Split a pg_restore -l listing into the entries to restore (every
+    line but the extension ones, for pg_restore -L) and the extensions the
+    dump creates, in order. A line that isn't an entry (the header's
+    comments) is kept: pg_restore ignores it."""
+    keep: list[str] = []
+    extensions: list[str] = []
+    for line in listing.splitlines():
+        m = _TOC_ENTRY.match(line.strip())
+        if m is not None:
+            rest = m.group(4)
+            ext = _TOC_EXTENSION.match(rest)
+            if ext is not None:
+                extensions.append(ext.group(1))
+                continue
+            if _TOC_EXTENSION_COMMENT.match(rest):
+                continue
+        keep.append(line)
+    return keep, extensions
+
+
+def _write_private(path: Path, text: str) -> None:
+    with os.fdopen(bundle._open_private(path), "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+async def _copy_schema(settings: Settings, build_db: str, subset_db: str,
+                       work: Path) -> tuple[dict[str, int], bool]:
+    """The source's schema (no rows, no owners, no grants) into the subset,
+    its extensions the superuser's. The dump's table of contents says which
+    extensions it creates; each must be allowlisted (unsafe_schema
+    otherwise), the superuser creates them in the still empty subset
+    database (scratch.create_extensions), and the restore leaves the dump's
+    extension entries out. Returns ({extname: oid} of the extensions to
+    trust, whether pg_restore finished without error); the caller checks
+    the schema either way and fails the build when it didn't."""
+    dump, listing, keep = work / SCHEMA_DUMP, work / SCHEMA_LIST, work / SCHEMA_KEEP
     code, err = await scratch.run_tool(
         settings, "pg_dump", ["-Fc", "--schema-only", "--no-owner", "--no-privileges", build_db],
         role=build_db, stdout_path=dump)
     if code != 0:
         raise _tool_failed("pg_dump", "schema_copy_failed", code, err)
+    code, err = await scratch.run_tool(settings, "pg_restore", ["-l", str(dump)],
+                                       role=subset_db, stdout_path=listing)
+    if code != 0:
+        raise _tool_failed("pg_restore -l", "schema_copy_failed", code, err)
+    entries, extensions = _filter_toc(await asyncio.to_thread(listing.read_text, "utf-8"))
+    for ext in extensions:
+        if ext not in scratch.EXTENSIONS:
+            log.warning("a subset's schema needs an extension that isn't allowlisted")
+            raise SeedError("unsafe_schema", note=f"unsafe_schema: extension {_safe_name(ext)}")
+    await asyncio.to_thread(_write_private, keep, "\n".join(entries) + "\n")
+    trusted = await scratch.create_extensions(settings, subset_db, extensions)
     code, err = await scratch.run_tool(
         settings, "pg_restore",
-        ["--no-owner", "--no-privileges", "--dbname", subset_db, str(dump)], role=subset_db)
-    if code != 0:
-        raise _tool_failed("pg_restore", "schema_copy_failed", code, err)
-    dump.unlink(missing_ok=True)
+        ["--no-owner", "--no-privileges", "-L", str(keep), "--dbname", subset_db, str(dump)],
+        role=subset_db)
+    copied = code == 0
+    if not copied:
+        _tool_failed("pg_restore", "schema_copy_failed", code, err)      # logged here
+    for path in (dump, listing, keep):
+        path.unlink(missing_ok=True)
+    return trusted, copied
 
 
 async def _dump(settings: Settings, subset_db: str, out: Path) -> None:
+    """pg_dump -Fc of the subset: no owners, no grants, no large objects
+    (there are none by now, see _verify_counts; -B makes sure)."""
     code, err = await scratch.run_tool(
-        settings, "pg_dump", ["-Fc", "--no-owner", "--no-privileges", subset_db],
+        settings, "pg_dump", ["-Fc", "-B", "--no-owner", "--no-privileges", subset_db],
         role=subset_db, stdout_path=out)
     if code != 0:
         raise _tool_failed("pg_dump", "dump_failed", code, err)
 
 
-async def _check_schema(dst: asyncpg.Connection) -> None:
-    """Refuse a schema that could act during the load or the reset. The
-    rows go in, the links are fixed and the secrets cleared with
-    session_replication_role = replica, which silences ordinary triggers
-    and rules, but not ENABLE ALWAYS ones, and ENABLE REPLICA ones fire
-    only then; and a function of the schema's own can run during the load
-    from a CHECK constraint, an index expression, a generated column, a
-    domain or a column default. Either way a crafted dump could copy a
-    row's password hash into another kept table as it is loaded or reset,
-    where the read-back can't see it. So any such trigger or rule, and any
-    function that isn't an extension's (ServerSherpa defines none), fails
-    the build (unsafe_schema), whether or not passwords are being reset."""
+async def _check_schema(dst: asyncpg.Connection, trusted: dict[str, int]) -> None:
+    """Refuse a schema that could act during the load or the reset, or
+    that holds more than ServerSherpa's. The rows go in, the links are
+    fixed and the secrets cleared with session_replication_role = replica,
+    which silences ordinary triggers and rules, but not ENABLE ALWAYS ones,
+    and ENABLE REPLICA ones fire only then; and a function of the schema's
+    own can run during the load from a CHECK constraint, an index
+    expression, a generated column, a domain or a column default. Either
+    way a crafted dump could copy a row's password hash into another kept
+    table as it is loaded or reset, where the read-back can't see it. So,
+    in any schema but Postgres's own: a schema beside public
+    (unsafe_schema: schema x), an extension other than those the superuser
+    created (`trusted`, extname -> oid; unsafe_schema: extension x), any
+    such trigger or rule, and any function that isn't a member of a trusted
+    extension (ServerSherpa defines none) fail the build (unsafe_schema),
+    whether or not passwords are being reset. Membership can't be faked:
+    the subset role doesn't own the extensions."""
+    oids = list(trusted.values())
     try:
-        fired = (await dst.fetchval(_UNSAFE_TRIGGERS_SQL, SCHEMA)
-                 + await dst.fetchval(_UNSAFE_RULES_SQL, SCHEMA))
-        functions = await dst.fetchval(_UNSAFE_FUNCTIONS_SQL, SCHEMA)
+        schemas = [r["nspname"] for r in await dst.fetch(_SCHEMAS_SQL, oids)]
+        if schemas:
+            log.warning("a subset's schema has %d schema(s) beside public", len(schemas))
+            raise SeedError("unsafe_schema",
+                            note=f"unsafe_schema: schema {_safe_name(schemas[0])}")
+        extensions = [r["extname"] for r in await dst.fetch(_EXTENSIONS_SQL, oids)]
+        if extensions:
+            log.warning("a subset's schema has %d extension(s) the superuser didn't create",
+                        len(extensions))
+            raise SeedError("unsafe_schema",
+                            note=f"unsafe_schema: extension {_safe_name(extensions[0])}")
+        fired = (await dst.fetchval(_UNSAFE_TRIGGERS_SQL)
+                 + await dst.fetchval(_UNSAFE_RULES_SQL))
+        functions = await dst.fetchval(_UNSAFE_FUNCTIONS_SQL, oids)
     except asyncpg.PostgresError as e:
         log.warning("checking a subset's schema failed: %s", type(e).__name__)
         raise SeedError("load_failed") from None
@@ -361,8 +483,10 @@ async def _verify_counts(src: asyncpg.Connection, dst: asyncpg.Connection,
                          expected: dict[str, int]) -> None:
     """Defense in depth, once the links are fixed and the reset done: every
     public table of the subset holds exactly the rows the loader put there
-    (none, for a table it didn't load or the reset emptied). A table with
-    other rows fails the build (unexpected_rows)."""
+    (none, for a table it didn't load or the reset emptied), and the
+    database holds no large object (a built-in lo_* function in a CHECK
+    could have stashed a row's hash in one as the row loaded; pg_dump would
+    ship it). Otherwise the build fails (unexpected_rows)."""
     names = [t.name for t in await _catalog(dst)]
     if await dst.fetchval("SELECT to_regclass($1)", f"{SCHEMA}.{ALEMBIC}") is not None:
         names.append(ALEMBIC)
@@ -373,6 +497,10 @@ async def _verify_counts(src: asyncpg.Connection, dst: asyncpg.Connection,
                 log.warning("a subset's table %s holds %d row(s), %d were loaded", name,
                             actual, expected.get(name, 0))
                 raise SeedError("unexpected_rows", note=f"unexpected_rows: {name}")
+        objects = await dst.fetchval(_LARGE_OBJECTS_SQL)
+        if objects:
+            log.warning("a subset holds %d large object(s)", objects)
+            raise SeedError("unexpected_rows", note="unexpected_rows: large objects")
     except asyncpg.PostgresError as e:
         log.warning("counting a subset's rows failed: %s", type(e).__name__)
         raise SeedError("load_failed") from None
@@ -430,8 +558,7 @@ def _rows_sql(t: Table, rows) -> tuple[str, list]:
 async def _load(src: asyncpg.Connection, dst: asyncpg.Connection, kept: dict) -> dict[str, int]:
     """Load the kept rows into the subset, foreign keys and triggers off
     for the transaction (session_replication_role = replica, which the
-    subset's own role may set), then the sequences' positions; the rows
-    copied per table."""
+    subset's own role may set); the rows copied per table."""
     catalog = {t.name: t for t in await _catalog(src)}
     for name in kept:
         if name not in catalog:
@@ -450,7 +577,6 @@ async def _load(src: asyncpg.Connection, dst: asyncpg.Connection, kept: dict) ->
                 t = catalog[name]
                 sql, args = _rows_sql(t, rows)
                 counts[name] = await _copy(src, dst, name, [c.name for c in t.columns], sql, args)
-        await _sync_sequences(src, dst)
     except asyncpg.PostgresError as e:
         log.warning("loading a subset failed: %s", type(e).__name__)
         raise SeedError("load_failed") from None
@@ -459,14 +585,21 @@ async def _load(src: asyncpg.Connection, dst: asyncpg.Connection, kept: dict) ->
 
 async def _sync_sequences(src: asyncpg.Connection, dst: asyncpg.Connection) -> None:
     """Every public sequence of the subset takes the source's position, so
-    rows added to the new environment never collide with copied ones."""
-    for r in await src.fetch(_SEQUENCES_SQL, SCHEMA):
-        name = r["relname"]
-        if await dst.fetchval("SELECT to_regclass($1)", f"{SCHEMA}.{name}") is None:
-            continue
-        state = await src.fetchrow(f"SELECT last_value, is_called FROM {_ref(name)}")
-        await dst.execute("SELECT setval($1::regclass, $2, $3)", _ref(name),
-                          state["last_value"], state["is_called"])
+    rows added to the new environment never collide with copied ones. Run
+    after the load, the link fixes and the reset: a CHECK of the dump's
+    calling the built-in setval could have parked a number (a piece of a
+    hash) in a sequence while those ran; the source's position wins."""
+    try:
+        for r in await src.fetch(_SEQUENCES_SQL, SCHEMA):
+            name = r["relname"]
+            if await dst.fetchval("SELECT to_regclass($1)", f"{SCHEMA}.{name}") is None:
+                continue
+            state = await src.fetchrow(f"SELECT last_value, is_called FROM {_ref(name)}")
+            await dst.execute("SELECT setval($1::regclass, $2, $3)", _ref(name),
+                              state["last_value"], state["is_called"])
+    except asyncpg.PostgresError as e:
+        log.warning("setting a subset's sequences failed: %s", type(e).__name__)
+        raise SeedError("load_failed") from None
 
 
 # ---- links ------------------------------------------------------------------------------

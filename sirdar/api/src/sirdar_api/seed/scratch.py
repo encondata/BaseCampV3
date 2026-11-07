@@ -11,7 +11,10 @@ last used, is kept in memory: a browse database this process didn't
 restore is dropped by the next sweep and restored again when asked for.
 
 Snapshots are uploaded, so their dumps are untrusted SQL. The superuser
-in SIRDAR_SCRATCH_URL only sets up roles and creates and drops databases.
+in SIRDAR_SCRATCH_URL only sets up roles, creates and drops databases, and
+creates the allowlisted extensions in a still empty subset database (see
+create_extensions); it never runs a statement of a dump's, and never enters
+a database once a dump has been restored into it.
 Each scratch database has a login role of its own, named like it (no
 superuser, no CREATEDB/CREATEROLE/REPLICATION/BYPASSRLS, allowed only to SET
 session_replication_role), that owns it; CONNECT on it is revoked from
@@ -57,6 +60,13 @@ log = logging.getLogger(__name__)
 PREFIX = "sirdar_scratch"
 PURPOSE_RE = re.compile(r"[a-z]{1,10}")
 NAME_RE = re.compile(r"[a-z0-9_]{1,63}")
+# The extensions a subset may hold: what ServerSherpa's migrations CREATE
+# EXTENSION (0001 citext, 0074 pg_trgm); plpgsql is built in. A dump
+# needing another fails its build (unsafe_schema).
+EXTENSIONS = ("citext", "pg_trgm")
+# A blank database (template0) holds these schemas and the one extension.
+_BLANK_SCHEMAS = {"pg_catalog", "pg_toast", "information_schema", "public"}
+_BLANK_EXTENSIONS = {"plpgsql"}
 SWEEP_SECONDS = 300
 # The environment the Postgres tools run with (plus PGPASSWORD): nothing of
 # Sirdar's own (its database URL, its secrets key) reaches them.
@@ -301,6 +311,39 @@ async def _drop_db(settings: Settings, name: str) -> None:
             await _drop_role(conn, name)
         except Exception as e:  # noqa: BLE001 - the database is gone; the role can wait
             log.warning("scratch role %s couldn't be dropped: %s", name, type(e).__name__)
+    finally:
+        await conn.close()
+
+
+async def create_extensions(settings: Settings, name: str, names: list[str]) -> dict[str, int]:
+    """As the superuser, in the still blank scratch database `name` (just
+    made by create_blank; nothing of a dump restored yet), CREATE EXTENSION
+    each of `names`, which must all be in EXTENSIONS (ValueError otherwise).
+    The superuser owns them, so the database's own role can't ALTER
+    EXTENSION ... ADD a function of the dump's to pass as an extension's.
+    {extname: oid} of every extension the database then holds (plpgsql
+    too): what seed/build.py trusts. SeedError schema_copy_failed when the
+    database isn't blank after all (something else got in first)."""
+    _check_name(name)
+    for ext in names:
+        if ext not in EXTENSIONS:
+            raise ValueError("not an allowlisted extension")
+    s = _server(settings)
+    conn = await asyncpg.connect(host=s.host, port=s.port, user=s.user, password=s.password,
+                                 database=name, timeout=10)
+    try:
+        schemas = {r["nspname"] for r in await conn.fetch("SELECT nspname FROM pg_namespace")}
+        extensions = {r["extname"] for r in await conn.fetch("SELECT extname FROM pg_extension")}
+        relations = await conn.fetchval(
+            "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')")
+        if schemas != _BLANK_SCHEMAS or extensions != _BLANK_EXTENSIONS or relations:
+            log.warning("scratch database %s isn't blank; no extensions created", name)
+            raise SeedError("schema_copy_failed")
+        for ext in names:
+            await conn.execute(f'CREATE EXTENSION "{ext}" WITH SCHEMA public')
+        return {r["extname"]: r["oid"] for r in
+                await conn.fetch("SELECT extname, oid FROM pg_extension ORDER BY extname")}
     finally:
         await conn.close()
 

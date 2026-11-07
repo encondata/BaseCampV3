@@ -126,6 +126,26 @@ CHECK = [
      "$$ BEGIN INSERT INTO public.leaked (hash) VALUES (h); RETURN true; END $$"),
     "ALTER TABLE user_accounts ADD CONSTRAINT stash CHECK (stash(password_hash))",
 ]
+# A placeholder function whose definition a test rewrites, byte for byte,
+# into `ALTER EXTENSION citext ADD FUNCTION public.stash(text)`: a crafted
+# archive making its own function look like an extension's.
+PAD = ["CREATE FUNCTION zz_pad() RETURNS text LANGUAGE sql AS $$ SELECT '" + "p" * 120 + "' $$"]
+SPOOF = "ALTER EXTENSION citext ADD FUNCTION public.stash(text);"
+# A schema of the dump's own beside public, with a table and a function in it.
+HIDDEN = ["CREATE SCHEMA hidden", "CREATE TABLE hidden.stash (hash text)",
+          ("CREATE FUNCTION hidden.keep(h text) RETURNS boolean LANGUAGE sql AS "
+           "$$ SELECT true $$")]
+# Built-ins a CHECK may call with the row's hash: a large object holds it
+# (pg_dump ships large objects by default); a sequence can hold a number.
+LO = [("ALTER TABLE user_accounts ADD CONSTRAINT lo CHECK (password_hash IS NULL OR "
+       "lo_from_bytea(0, convert_to(password_hash, 'UTF8')) >= 0)")]
+# (only under replica mode, which is the build's load and reset: the source
+# itself, and its restore into the build database, keep the sequence at 3)
+SEQ = [("ALTER TABLE user_accounts ADD CONSTRAINT seq CHECK "
+        "(current_setting('session_replication_role') <> 'replica' "
+        "OR setval('public.audit_log_id_seq', 999) > 0)")]
+# A trusted extension ServerSherpa doesn't use (the build role could create it).
+EXT = ["CREATE EXTENSION hstore"]
 
 SUPERUSER = make_url(BASE_URL).username
 
@@ -146,7 +166,9 @@ def _dump() -> bytes:
 def dumps() -> dict[str, bytes]:
     """pg_dump -Fc of the fixture schema: whole; with the ordinary trigger;
     with the ALWAYS rule; with the REPLICA leak trigger; with the leaking
-    CHECK; without biometric_keys; and also without
+    CHECK; that plus the placeholder function (spoof); with a hidden
+    schema; with the large-object CHECK; with the sequence CHECK; with
+    hstore; without biometric_keys; and also without
     user_accounts.totp_last_counter."""
     with psycopg.connect(_psycopg_url("postgres"), autocommit=True) as conn:
         conn.execute(f'DROP DATABASE IF EXISTS "{SOURCE}" WITH (FORCE)')
@@ -169,8 +191,19 @@ def dumps() -> dict[str, bytes]:
         run(["DROP TRIGGER leak ON user_accounts", "DROP FUNCTION leak", "DROP TABLE leaked",
              *CHECK])
         out["check"] = _dump()
-        run(["ALTER TABLE user_accounts DROP CONSTRAINT stash", "DROP FUNCTION stash",
-             "DROP TABLE leaked", "DROP TABLE biometric_keys"])
+        run(PAD)
+        out["spoof"] = _dump()
+        run(["DROP FUNCTION zz_pad", "ALTER TABLE user_accounts DROP CONSTRAINT stash",
+             "DROP FUNCTION stash", "DROP TABLE leaked", *HIDDEN])
+        out["hidden"] = _dump()
+        run(["DROP SCHEMA hidden CASCADE", *LO])
+        out["lo"] = _dump()
+        run(["ALTER TABLE user_accounts DROP CONSTRAINT lo",
+             "SELECT lo_unlink(oid) FROM pg_largeobject_metadata", *SEQ])
+        out["seq"] = _dump()
+        run(["ALTER TABLE user_accounts DROP CONSTRAINT seq", *EXT])
+        out["ext"] = _dump()
+        run(["DROP EXTENSION hstore", "DROP TABLE biometric_keys"])
         out["no_table"] = _dump()
         with psycopg.connect(_psycopg_url(SOURCE), autocommit=True) as conn:
             conn.execute("ALTER TABLE user_accounts DROP COLUMN totp_last_counter")
@@ -325,10 +358,22 @@ def test_reset_list_is_the_agreed_one():
 
 # ---- the subset ------------------------------------------------------------------------
 
-async def test_subset_holds_exactly_the_kept_rows(client, db, headers, source):
+async def test_subset_holds_exactly_the_kept_rows(client, db, headers, source, monkeypatch):
+    dumps_run: list[list[str]] = []
+    real_tool = scratch.run_tool
+
+    async def run_tool(settings, tool, args, **kw):
+        if tool == "pg_dump":
+            dumps_run.append(args)
+        return await real_tool(settings, tool, args, **kw)
+
+    monkeypatch.setattr(scratch, "run_tool", run_tool)
     rid = await _recipe(client, headers, BASIC)
     built = await _built(client, db, headers, rid, source)
     assert (built.status, built.notes) == ("ready", "")
+    # the subset's dump leaves large objects out (the schema copy has none to leave)
+    assert [("-B" in args, "--schema-only" in args) for args in dumps_run] == [
+        (False, True), (True, False)]
     conn = await _restored(built)
     try:
         assert await _rows(conn, "alembic_version") == [("0089",)]
@@ -348,9 +393,13 @@ async def test_subset_holds_exactly_the_kept_rows(client, db, headers, source):
             await conn.execute(f"ALTER TABLE {table} VALIDATE CONSTRAINT {table}_{column}_fkey")
         # sequences keep the source's position: new rows never collide
         assert await conn.fetchval("SELECT last_value FROM audit_log_id_seq") == 3
-        # the extensions came along: their public functions aren't the schema's own
-        assert await conn.fetchval("SELECT count(*) FROM pg_extension "
-                                   "WHERE extname IN ('citext', 'pg_trgm')") == 2
+        # the extensions came along: the subset's dump still creates them, so a
+        # fresh database restoring it (as here, through pg_restore as its own
+        # role) gets them again, its own
+        assert await conn.fetch("SELECT extname, extowner::regrole::text = current_user AS own "
+                                "FROM pg_extension WHERE extname <> 'plpgsql' ORDER BY 1") == [
+            ("citext", True), ("pg_trgm", True)]
+        assert await conn.fetchval("SELECT 'A'::citext = 'a'::citext")
     finally:
         await conn.close()
     _scratch_gone(source, built)
@@ -529,7 +578,7 @@ async def test_an_ordinary_trigger_is_inert_but_its_function_is_refused(
 
     # with the check out of the way: a BEFORE UPDATE trigger returning OLD would
     # keep every secret, and replica mode skips it
-    async def no_check(dst):
+    async def no_check(*args):
         return None
 
     monkeypatch.setattr(build, "_check_schema", no_check)
@@ -609,7 +658,7 @@ async def test_the_reset_is_read_back(client, db, headers, scratch_url, snapshot
                                       tmp_path, dumps, monkeypatch):
     """The second layer: were the schema check ever to miss an ALWAYS rule
     rewriting the UPDATE to nothing, the read-back refuses to ship."""
-    async def no_check(dst):
+    async def no_check(*args):
         return None
 
     monkeypatch.setattr(build, "_check_schema", no_check)
@@ -624,6 +673,144 @@ async def test_the_reset_is_read_back(client, db, headers, scratch_url, snapshot
     # without the reset the rule never fires on anything: the build goes through
     built = await _built(client, db, headers, rid, with_rule)
     assert built.status == "ready", built.notes
+
+
+# ---- extensions, schemas, large objects ------------------------------------------------
+
+def _spoofed(dump: bytes) -> bytes:
+    """`dump` (pg_dump -Fc) with zz_pad's definition replaced, byte for
+    byte, by SPOOF: TOC strings are a sign byte, a 4-byte length and the
+    text, so a same-length text keeps every offset."""
+    i = dump.index(b"CREATE FUNCTION public.zz_pad()")
+    assert dump[i - 5] == 0
+    n = int.from_bytes(dump[i - 4:i], "little")
+    assert len(SPOOF) <= n
+    return dump[:i] + SPOOF.encode().ljust(n) + dump[i + n:]
+
+
+def test_spoofing_keeps_the_archive_the_same_size(dumps):
+    spoofed = _spoofed(dumps["spoof"])
+    assert len(spoofed) == len(dumps["spoof"]) and SPOOF.encode() in spoofed
+    assert b"zz_pad() RETURNS" not in spoofed
+
+
+async def test_the_dump_cannot_extend_an_extension(
+        client, db, headers, scratch_url, snapshots_dir, tmp_path, dumps, monkeypatch):  # noqa: F811
+    """The allowlisted extensions are the superuser's, created before the
+    schema is restored: a crafted archive's `ALTER EXTENSION ... ADD
+    FUNCTION` fails as the subset role, and its function stays the schema's
+    own and is refused. The schema copy's pg_restore is what gets the
+    crafted archive here (the source build database is re-dumped by
+    pg_dump, which never writes such a statement)."""
+    real_tool = scratch.run_tool
+    real_check = build._check_schema
+    seen: dict = {}
+
+    async def run_tool(settings, tool, args, **kw):
+        if tool == "pg_restore" and "--dbname" in args:
+            path = Path(args[-1])
+            path.write_bytes(_spoofed(path.read_bytes()))
+            seen["spoofed"] = True
+        return await real_tool(settings, tool, args, **kw)
+
+    async def check(dst, *args):
+        seen["owners"] = await dst.fetch(
+            "SELECT extname, extowner::regrole::text AS owner FROM pg_extension ORDER BY 1")
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await dst.execute("ALTER EXTENSION citext ADD FUNCTION public.stash(text)")
+        return await real_check(dst, *args)
+
+    monkeypatch.setattr(scratch, "run_tool", run_tool)
+    monkeypatch.setattr(build, "_check_schema", check)
+    rid = await _recipe(client, headers, RESET)
+    spoof = _store(tmp_path, dumps["spoof"])
+    db.add(spoof)
+    await db.commit()
+    built = await _built(client, db, headers, rid, spoof, reset_passwords=True)
+    assert seen["spoofed"]
+    assert (built.status, built.notes) == (
+        "failed", "unsafe_schema: 0 always/replica triggers or rules, 1 functions")
+    assert built.bundle_file is None
+    assert [tuple(r.values()) for r in seen["owners"]] == [
+        ("citext", SUPERUSER), ("pg_trgm", SUPERUSER), ("plpgsql", SUPERUSER)]
+    _scratch_gone(spoof, built)
+
+
+async def test_an_extension_off_the_list_is_refused(
+        client, db, headers, source, tmp_path, dumps, monkeypatch):
+    rid = await _recipe(client, headers, RESET)
+    with_ext = _store(tmp_path, dumps["ext"])
+    db.add(with_ext)
+    await db.commit()
+    built = await _built(client, db, headers, rid, with_ext, reset_passwords=True)
+    assert (built.status, built.notes) == ("failed", "unsafe_schema: extension hstore")
+    assert built.bundle_file is None
+    _scratch_gone(with_ext, built)
+    # and one that turns up in the subset without the superuser having made it
+    real_check = build._check_schema
+
+    async def check(dst, *args):
+        await dst.execute("CREATE EXTENSION hstore")      # trusted: the subset role may
+        return await real_check(dst, *args)
+
+    monkeypatch.setattr(build, "_check_schema", check)
+    built = await _built(client, db, headers, rid, source)
+    assert (built.status, built.notes) == ("failed", "unsafe_schema: extension hstore")
+    _scratch_gone(source, built)
+
+
+async def test_a_schema_beside_public_is_refused(
+        client, db, headers, scratch_url, snapshots_dir, tmp_path, dumps):  # noqa: F811
+    rid = await _recipe(client, headers, RESET)
+    hidden = _store(tmp_path, dumps["hidden"])
+    db.add(hidden)
+    await db.commit()
+    for reset_passwords in (True, False):
+        built = await _built(client, db, headers, rid, hidden, reset_passwords=reset_passwords)
+        assert (built.status, built.notes) == ("failed", "unsafe_schema: schema hidden"), \
+            reset_passwords
+        assert built.bundle_file is None
+        _scratch_gone(hidden, built)
+
+
+async def test_large_objects_a_check_makes_fail_the_build(
+        client, db, headers, scratch_url, snapshots_dir, tmp_path, dumps):  # noqa: F811
+    """lo_from_bytea is a built-in, so the function check can't refuse it;
+    a CHECK calling it with the hash stashes a large object per row as the
+    rows load, which pg_dump would ship. None may be left."""
+    rid = await _recipe(client, headers, RESET)
+    with_lo = _store(tmp_path, dumps["lo"])
+    db.add(with_lo)
+    await db.commit()
+    for reset_passwords in (True, False):
+        built = await _built(client, db, headers, rid, with_lo, reset_passwords=reset_passwords)
+        assert (built.status, built.notes) == ("failed", "unexpected_rows: large objects"), \
+            reset_passwords
+        assert built.bundle_file is None
+        _scratch_gone(with_lo, built)
+
+
+async def test_sequences_take_the_sources_positions_last(
+        client, db, headers, scratch_url, snapshots_dir, tmp_path, dumps, monkeypatch):  # noqa: F811
+    """A CHECK calling setval could park a number in a sequence while the
+    rows load or reset; the source's positions are written after both.
+    (Read in the subset itself, as it is dumped: restoring the dump
+    anywhere fires the CHECK again.)"""
+    seen: dict = {}
+    real_verify = build._verify_counts
+
+    async def verify(src, dst, expected):
+        await real_verify(src, dst, expected)
+        seen["last_value"] = await dst.fetchval("SELECT last_value FROM public.audit_log_id_seq")
+
+    monkeypatch.setattr(build, "_verify_counts", verify)
+    rid = await _recipe(client, headers, RESET)
+    with_seq = _store(tmp_path, dumps["seq"])
+    db.add(with_seq)
+    await db.commit()
+    built = await _built(client, db, headers, rid, with_seq, reset_passwords=True)
+    assert built.status == "ready", built.notes
+    assert seen["last_value"] == 3
 
 
 # ---- failures ----------------------------------------------------------------------------
@@ -784,9 +971,18 @@ async def test_the_load_runs_only_as_the_scratch_roles(client, db, headers, sour
     assert built.status == "ready", built.notes
     as_super = [(d, s) for u, d, s in log if u == SUPERUSER]
     assert as_super, "the superuser creates and drops the databases"
+    subset = next(d for u, d, s in log if s.startswith("COPY_IN "))
     for database, sql in as_super:
-        assert not database.startswith(f"{scratch.PREFIX}_"), (database, sql)
         assert not DATA_SQL.search(sql), sql
+        if database.startswith(f"{scratch.PREFIX}_"):
+            # the one exception: the allowlisted extensions, in the still
+            # empty subset database, before anything of the dump's
+            assert database == subset, (database, sql)
+            assert re.match(r'(CREATE EXTENSION "(citext|pg_trgm)"|SELECT )', sql), sql
+    first_super = next(i for i, (u, d, s) in enumerate(log) if d == subset and u == SUPERUSER)
+    first_own = next(i for i, (u, d, s) in enumerate(log) if d == subset and u == subset)
+    assert first_super < first_own
+    assert all(u != SUPERUSER for u, d, s in log[first_own:] if d == subset)
     copies = [(u, d) for u, d, s in log if s.startswith("COPY_IN ")]
     assert copies and all(u == d and d.startswith(f"{scratch.PREFIX}_subset_") for u, d in copies)
     assert any("session_replication_role" in s and u == d for u, d, s in log)
