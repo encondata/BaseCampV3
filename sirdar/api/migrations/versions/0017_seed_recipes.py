@@ -68,6 +68,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Recipe bundle files stay on disk in SIRDAR_SNAPSHOTS_DIR; remove them by hand.
     op.execute("DELETE FROM role_permissions WHERE resource = 'seed_data'")
     op.execute("""
         DELETE FROM snapshots WHERE origin = 'recipe';

@@ -88,3 +88,24 @@ def test_seed_data_resource_and_grants():
     assert "seed_data" in REGISTRY and REGISTRY["seed_data"].label == "Seed Data"
     for role, grants in DEFAULT_GRANTS.items():
         assert grants["seed_data"] == grants["deploy"], role
+
+
+async def test_row_loads_and_matches_by_pk(db):
+    r = await _recipe(db)
+    db.add_all([
+        SeedRecipeRow(recipe_id=r.id, table_name="t", pk={"a": "1", "b": "2"}),
+        SeedRecipeRow(recipe_id=r.id, table_name="n", pk={"id": 7}),
+    ])
+    await db.commit()
+    db.expire_all()
+    assert (await db.scalar(
+        select(SeedRecipeRow).where(SeedRecipeRow.table_name == "t"))).pk == {"a": "1", "b": "2"}
+    found = await db.scalar(select(SeedRecipeRow).where(SeedRecipeRow.pk == {"a": "1", "b": "2"}))
+    assert found is not None and found.table_name == "t"
+    assert (await db.scalar(
+        select(SeedRecipeRow.pk).where(SeedRecipeRow.table_name == "n"))) == {"id": "7"}
+
+
+def test_nested_pk_value_refused():
+    with pytest.raises(ValueError):
+        SeedRecipeRow(table_name="t", pk={"a": {"b": "1"}})

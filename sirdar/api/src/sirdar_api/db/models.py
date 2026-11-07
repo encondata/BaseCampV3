@@ -431,7 +431,9 @@ class SeedRecipeRow(Base):
 
     @validates("pk")
     def _hashable_pk(self, _key, value):
-        return _FrozenDict(value)
+        if any(isinstance(v, (dict, list)) for v in value.values()):
+            raise ValueError("pk values must be flat text, not nested")
+        return _FrozenDict({str(k): str(v) for k, v in value.items()})
 
 
 class SeedRecipeFile(Base):
