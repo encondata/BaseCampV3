@@ -55,6 +55,18 @@ export function getKeys(id: string, table: string, f: KeyFilter) {
 export const resolveSelection = (id: string, tables: SelectionBody) =>
   sendJson<Resolved>('POST', `${snap(id)}/resolve`, { tables });
 
+export interface SeedFile { key: string; size: number; kept: boolean; because: string }
+export interface FilesPage { files: SeedFile[]; total: number }
+export interface FilesQuery { page: number; size: number; filter?: string }
+
+/** The snapshot's files, a page at a time, kept or not under the saved
+ *  recipe `recipeId`, with why ("Kept because"). */
+export function listFiles(id: string, recipeId: string, q: FilesQuery) {
+  const p = new URLSearchParams({ recipe_id: recipeId, page: String(q.page), size: String(q.size) });
+  if (q.filter) p.set('filter', q.filter);
+  return getJson<FilesPage>(`${snap(id)}/files?${p.toString()}`);
+}
+
 export const listRecipes = () => getJson<RecipeSummary[]>('/seed/recipes');
 export const getRecipe = (id: string) => getJson<Recipe>(`/seed/recipes/${encodeURIComponent(id)}`);
 export const createRecipe = (name: string) => sendJson<Recipe>('POST', '/seed/recipes', { name });

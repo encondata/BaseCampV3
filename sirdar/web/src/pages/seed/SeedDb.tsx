@@ -3,34 +3,30 @@
  *  scratch database first (polled every 2 s while it restores). After each
  *  change the selection is resolved (debounced) and the rows it needs are
  *  listed under "Added because they're needed". */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
 import ComboBox from '@portal/components/ComboBox';
 import DataTable from '@portal/components/DataTable';
 import { Switch } from '@portal/components/Switch';
 
-import { listSnapshots, type Snapshot } from '../../lib/sirdarApi';
 import { snapshotLabel } from '../environments/labels';
 
 import RowTable, { type CheckRow } from './RowTable';
 import {
-  createRecipe, getKeys, getRecipe, getRows, listRecipes, listTables, notOpen, openSnapshot, putRecipe,
-  resolveSelection, seedErrorText, snapshotStatus,
-  type KeyFilter, type RecipeSummary, type Resolved, type RowsPage, type ScratchStatus, type SeedTable,
+  createRecipe, getKeys, getRecipe, getRows, listRecipes, listTables, notOpen, putRecipe,
+  resolveSelection, seedErrorText,
+  type KeyFilter, type RecipeSummary, type Resolved, type RowsPage, type SeedTable,
 } from './seedApi';
 import {
   fromRecipe, pkKey, setAll, setMany, toBody, toggle, type PkObject, type Selection,
 } from './selection';
+import { useScratchSnapshot } from './useScratchSnapshot';
 
-/** While the snapshot restores into the scratch database, its status is polled this often. */
-export const OPEN_POLL_MS = 2000;
 /** A change to the selection is resolved once it has been still this long. */
 export const RESOLVE_DEBOUNCE_MS = 300;
 const FILTER_DEBOUNCE_MS = 300;
 const PAGE_SIZE = 50;
-
-type Phase = 'idle' | 'opening' | 'ready' | 'failed';
 
 const pkText = (pk: PkObject) => Object.values(pk).join(', ');
 const cellText = (v: string | number | null | undefined) => (v === null || v === undefined ? '—' : String(v));
@@ -52,11 +48,6 @@ export default function SeedDb() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  // snapshot
-  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
-  const [snapId, setSnapId] = useState('');
-  const [phase, setPhase] = useState<Phase>('idle');
-  const [pollTick, setPollTick] = useState(0);
   const [tables, setTables] = useState<SeedTable[] | null>(null);
 
   // the table on show
@@ -75,56 +66,13 @@ export default function SeedDb() {
 
   useEffect(() => {
     listRecipes().then(setRecipes).catch((e) => setError(seedErrorText(e, "Couldn't load recipes.")));
-    listSnapshots()
-      .then((r) => setSnapshots(r.snapshots.filter((s) => s.status === 'ready')))
-      .catch((e) => setError(seedErrorText(e, "Couldn't load snapshots.")));
   }, []);
 
   // ---- opening the snapshot ------------------------------------------------
-  const snapRef = useRef(snapId);
-  snapRef.current = snapId;
-  const landStatus = useCallback((id: string, status: ScratchStatus) => {
-    if (id !== snapRef.current) return;
-    if (status === 'ready') setPhase('ready');
-    else if (status === 'failed') {
-      setPhase('failed');
-      setError("This snapshot's database couldn't be opened for browsing.");
-    } else {
-      // restoring, or absent (not started yet): poll again
-      setPhase('opening');
-      setPollTick((t) => t + 1);
-    }
-  }, []);
-  const open = useCallback((id: string) => {
-    setPhase('opening');
-    openSnapshot(id)
-      .then((r) => landStatus(id, r.status))
-      .catch((e) => { if (id === snapRef.current) { setPhase('failed'); setError(seedErrorText(e, "Couldn't open that snapshot.")); } });
-  }, [landStatus]);
-  /** A browse call found the scratch copy gone: open it again. */
-  const reopen = useCallback(() => { if (snapRef.current) open(snapRef.current); }, [open]);
-
-  useEffect(() => {
-    if (phase !== 'opening' || !snapId) return undefined;
-    const id = snapId;
-    const timer = setTimeout(() => {
-      snapshotStatus(id)
-        .then((r) => {
-          // absent (Sirdar restarted mid-restore, or the copy was dropped): open
-          // it again; open() lands its answer, which schedules the next poll
-          if (r.status === 'absent') { open(id); return; }
-          landStatus(id, r.status);
-        })
-        .catch((e) => { if (id === snapRef.current) { setPhase('failed'); setError(seedErrorText(e, "Couldn't open that snapshot.")); } });
-    }, OPEN_POLL_MS);
-    return () => clearTimeout(timer);
-  }, [phase, snapId, pollTick, open, landStatus]);
-
+  const { snapshots, snapId, phase, pickSnapshot: pickSnap, reopen, isCurrent } = useScratchSnapshot(setError);
   const pickSnapshot = (id: string) => {
-    setSnapId(id);
-    snapRef.current = id;
     setTables(null); setRows(null); setResolved(null); setError('');
-    if (id) open(id); else setPhase('idle');
+    pickSnap(id);
   };
 
   useEffect(() => {
@@ -132,12 +80,12 @@ export default function SeedDb() {
     const id = snapId;
     listTables(id)
       .then((ts) => {
-        if (id !== snapRef.current) return;
+        if (!isCurrent(id)) return;
         setTables(ts);
         setCurrent((cur) => (ts.some((t) => t.table === cur) ? cur : ts[0]?.table ?? ''));
       })
       .catch((e) => { if (notOpen(e)) reopen(); else setError(seedErrorText(e, "Couldn't load the tables.")); });
-  }, [phase, snapId, reopen]);
+  }, [phase, snapId, reopen, isCurrent]);
 
   // ---- rows of the table on show --------------------------------------------
   useEffect(() => {
