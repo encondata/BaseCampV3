@@ -1,7 +1,8 @@
 """Sample content for `serversherpa learning-seed`: the wiki pages (as
 ProseMirror JSON), their learning-document settings, quiz questions and
 packets. Every sample page opens with the same "replace this text"
-callout; Dress code is the company's own slides, so it has none.
+callout; Dress code and Labels are the company's own slides, so they
+have none.
 
 The node helpers are copied from the wiki guide scripts' wikidoc.py (the
 CLI never imports from .superpowers). Inline text uses **bold** markers
@@ -96,6 +97,54 @@ DRESS_CODE = doc(
     image("dress-code-04.webp", "Before you enter: your dress code checklist"),
     bullets("Long pants", "Closed-toe shoes", "Solid-color collared shirt with no branding",
             "Name badge on your right chest"),
+    sample=False,
+)
+
+# the label slides, one per heading; every word below is on them
+LABELS = doc(
+    h2("How to read our labels"),
+    image("labels-01.webp", "How to read our labels"),
+    p("**Front label.** Asset identity, source and target."),
+    bullets("**Target** = destination", "**RU** = rack-unit position",
+            "**Source** = starting location"),
+    p("**Top label.** Destination for reinstallation."),
+    bullets("**DH2-R14** = destination rack", "**12** = destination RU"),
+    p("Location information is destination only."),
+    p("**Front label colors only**"),
+    bullets("**White · Normal.** Standard assets included in the move.",
+            "**Yellow · Priority.** Extra care. Move first.",
+            "**Red · Second priority.** Move second, after all yellow-tagged devices are "
+            "removed.",
+            "**Blue · Vendor.** Handled by vendors."),
+    h2("Front label placement"),
+    image("labels-02.webp", "Front label placement"),
+    p("**Front panel. Toward the right.**"),
+    steps("**Apply while in the rack.** Place the front label while the server is still "
+          "installed.",
+          "**Position toward the right.** Apply the label to the right side of the front panel.",
+          "**Keep the power button clear.** Leave the power button visible and accessible."),
+    h2("Top label placement"),
+    image("labels-03.webp", "Top label placement"),
+    p("**Top surface. Front-right corner.**"),
+    steps("**Place at the far right.** On the top of the server, as viewed from the front.",
+          "**Set back from the front.** About 1 in / 2.5 cm from the front edge.",
+          "**Face the label forward.** Keep it readable when standing in front of the server."),
+    h2("Rail label placement"),
+    image("labels-04.webp", "Rail label placement"),
+    p("**Paired rails. Matching label.**"),
+    steps("**Tape the rails as a pair.** Use 2–3 wraps of blue tape near each end.",
+          "**Label the flat section.** Apply the matching top label in the center of one "
+          "rail's flat section.",
+          "**Keep with its server.** Keep the labeled rail pair with the server it belongs to."),
+    h2("RFID tag placement"),
+    image("labels-05.webp", "RFID tag placement"),
+    p("**Top-left attachment. Front-facing flag.**"),
+    steps('**Fold under the middle.** Fold the "Fold Down" third under the middle section to '
+          "create a double-thickness flag.",
+          "**Attach at the top left.** Apply the sticky section on top, about 1 in / 2.5 cm "
+          "from the server's left edge, as viewed from the front.",
+          "**Keep the flag close.** Fold the doubled section over the front edge so it lies "
+          "as close to the server's front face as possible."),
     sample=False,
 )
 
@@ -246,6 +295,12 @@ DOCUMENTS: tuple[SeedDoc, ...] = (
              "sign_style": "typed_name", "require_scroll": True, "min_read_seconds": 60,
              "reading_style": "slides"},
             change_note="First version."),
+    SeedDoc("Standard onboarding", "Labels", LABELS,
+            "How to read our labels, and where front, top, rail and RFID labels go.",
+            {"validity_days": YEAR, "resign_rule": "expired_or_new_version",
+             "sign_style": "typed_name", "require_scroll": True, "min_read_seconds": 60,
+             "reading_style": "slides"},
+            change_note="First version."),
     SeedDoc("Standard onboarding", "Confidentiality", CONFIDENTIALITY,
             "How we handle what we see and hear at client sites.",
             {"validity_days": YEAR, "resign_rule": "expired_or_new_version"}),
@@ -287,7 +342,7 @@ FOLDERS = ("Standard onboarding", "Client site rules", "Extras")
 # (packet name, description, document titles in order)
 PACKETS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("Standard onboarding", "What every worker reviews and signs before working on site.",
-     ("Dress code", "Confidentiality", "Work expectations")),
+     ("Dress code", "Labels", "Confidentiality", "Work expectations")),
     ("Acme site rules", "Site rules and the NDA for Acme initiatives.",
      ("Acme site rules (sample)", "Acme NDA (sample)")),
     ("Forklift safety", "Safe forklift operation, for certified operators.",

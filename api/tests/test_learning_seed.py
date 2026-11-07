@@ -30,6 +30,9 @@ runner = CliRunner()
 
 DRESS_SLIDES = ["dress-code-01.webp", "dress-code-02.webp", "dress-code-03.webp",
                 "dress-code-04.webp"]
+LABEL_SLIDES = [f"labels-0{n}.webp" for n in range(1, 6)]
+LABEL_HEADINGS = ["How to read our labels", "Front label placement", "Top label placement",
+                  "Rail label placement", "RFID tag placement"]
 
 
 @pytest.fixture(autouse=True)
@@ -90,6 +93,7 @@ async def test_seed_creates_space_pages_documents_packets_rule(db, renderer):  #
         WikiNode.space_id == space.id, WikiNode.kind == "page", WikiNode.title != "Learning"))}
     assert parents == {
         "Dress code": folders["Standard onboarding"].id,
+        "Labels": folders["Standard onboarding"].id,
         "Confidentiality": folders["Standard onboarding"].id,
         "Work expectations": folders["Standard onboarding"].id,
         "Acme site rules (sample)": folders["Client site rules"].id,
@@ -107,6 +111,8 @@ async def test_seed_creates_space_pages_documents_packets_rule(db, renderer):  #
         first = page.draft_json["content"][0]
         if seeded.title == "Dress code":     # the company's own slides, not a sample
             assert first["type"] == "paragraph"
+        elif seeded.title == "Labels":       # also theirs, a heading on every slide
+            assert first["type"] == "heading"
         else:
             assert first["type"] == "callout"
             assert first["content"][0]["content"][0]["text"] == SAMPLE_NOTICE
@@ -118,7 +124,7 @@ async def test_seed_creates_space_pages_documents_packets_rule(db, renderer):  #
     dress = documents["Dress code"]
     assert dress.reading_style == "slides"
     for title, document in documents.items():
-        if title != "Dress code":
+        if title not in ("Dress code", "Labels"):
             assert document.reading_style == "document", title
     assert (dress.validity_days, dress.resign_rule, dress.sign_style, dress.require_scroll,
             dress.min_read_seconds, dress.quiz_enabled) == (
@@ -126,6 +132,13 @@ async def test_seed_creates_space_pages_documents_packets_rule(db, renderer):  #
     dress_headings = [n["content"][0]["text"] for n in (await db.get(
         WikiPage, dress.wiki_node_id)).draft_json["content"] if n["type"] == "heading"]
     assert dress_headings == ["Shirt and name badge", "Pants and footwear", "Before you enter"]
+    labels = documents["Labels"]
+    assert (labels.reading_style, labels.validity_days, labels.resign_rule, labels.sign_style,
+            labels.require_scroll, labels.min_read_seconds, labels.quiz_enabled) == (
+        "slides", 365, "expired_or_new_version", "typed_name", True, 60, False)
+    label_headings = [n["content"][0]["text"] for n in (await db.get(
+        WikiPage, labels.wiki_node_id)).draft_json["content"] if n["type"] == "heading"]
+    assert label_headings == LABEL_HEADINGS
     for title in ("Confidentiality", "Work expectations"):
         assert (documents[title].validity_days, documents[title].resign_rule) == (
             365, "expired_or_new_version")
@@ -156,7 +169,8 @@ async def test_seed_creates_space_pages_documents_packets_rule(db, renderer):  #
     packets = {p.name: p for p in await db.scalars(select(LearningPacket))}
     assert set(packets) == {"Standard onboarding", "Acme site rules", "Forklift safety"}
     for name, titles in {
-            "Standard onboarding": ["Dress code", "Confidentiality", "Work expectations"],
+            "Standard onboarding": ["Dress code", "Labels", "Confidentiality",
+                                    "Work expectations"],
             "Acme site rules": ["Acme site rules (sample)", "Acme NDA (sample)"],
             "Forklift safety": ["Forklift safety (sample)"]}.items():
         items = list(await db.scalars(select(LearningPacketItem.document_id).where(
@@ -187,7 +201,7 @@ async def test_dress_code_slides_are_the_page_s_own_images(db, renderer, stored)
         data, content_type = stored[asset.storage_key]
         assert data == (IMAGES / asset.filename).read_bytes()
         assert content_type == "image/webp" and asset.size_bytes == len(data)
-    assert len(stored) == 4         # no other seeded page has images
+    assert len(stored) == 9         # Dress code's 4 and Labels' 5; no other page has images
 
     version = await db.get(LearningDocumentVersion, document.current_version_id)
     assert [str(i) for i in version.image_asset_ids] == [i["assetId"] for i in images]
@@ -195,11 +209,37 @@ async def test_dress_code_slides_are_the_page_s_own_images(db, renderer, stored)
         "What to wear for every visit.", "First version.")
 
 
+async def test_label_slides_are_the_page_s_own_images(db, renderer, stored):  # noqa: F811
+    await seed(db, actor_id=None)
+    await db.commit()
+    document = await db.scalar(select(LearningDocument).where(
+        LearningDocument.title == "Labels"))
+    page = await db.get(WikiPage, document.wiki_node_id)
+    content = page.draft_json["content"]
+    # each heading is followed by its slide image
+    pairs = [(n["content"][0]["text"], content[i + 1]) for i, n in enumerate(content)
+             if n["type"] == "heading"]
+    assert [heading for heading, _ in pairs] == LABEL_HEADINGS
+    assert all(after["type"] == "wikiImage" for _, after in pairs)
+    images = [after["attrs"] for _, after in pairs]
+    assert [i["caption"] for i in images] == LABEL_HEADINGS
+    assets = {str(a.id): a for a in await db.scalars(select(WikiPageAsset))}
+    slides = [assets[i["assetId"]] for i in images]
+    assert [a.filename for a in slides] == LABEL_SLIDES
+    for asset in slides:
+        assert asset.node_id == page.node_id and asset.content_type == "image/webp"
+        data, _ = stored[asset.storage_key]
+        assert data == (IMAGES / asset.filename).read_bytes()
+
+    version = await db.get(LearningDocumentVersion, document.current_version_id)
+    assert [str(i) for i in version.image_asset_ids] == [i["assetId"] for i in images]
+
+
 async def test_seed_is_idempotent(db, renderer, stored):  # noqa: F811
     await seed(db, actor_id=None)
     await db.commit()
     before = await _counts(db)
-    assert before["documents"] == 6 and before["versions"] == 6
+    assert before["documents"] == 7 and before["versions"] == 7
     uploads = dict(stored)
 
     again = await seed(db, actor_id=None)
@@ -255,7 +295,7 @@ def test_storage_down_exits_1_and_adds_nothing(renderer, cli_db, stored):  # noq
 def test_cli_seeds_and_a_second_run_adds_nothing(renderer, cli_db):  # noqa: F811
     first = runner.invoke(app, ["learning-seed"])
     assert first.exit_code == 0, first.output
-    assert "Added:" in first.output and "6 document" in first.output
+    assert "Added:" in first.output and "7 document" in first.output
     second = runner.invoke(app, ["learning-seed"])
     assert second.exit_code == 0, second.output
     assert "Nothing to add" in second.output
