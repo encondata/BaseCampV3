@@ -301,7 +301,7 @@ it('every first-admin code has its own copy', () => {
   const text = (code: string) => sirdar.errorText(new ApiError(422, code, { code }), '__none__');
   for (const code of ['first_admin_not_allowed', 'first_admin_with_seed', 'first_admin_name_invalid',
     'first_admin_email_invalid', 'first_admin_password_too_short', 'first_admin_password_invalid',
-    'first_admin_password_not_allowed', 'first_admin_invalid', 'first_admin_not_set']) {
+    'first_admin_password_not_allowed', 'first_admin_invalid', 'first_admin_not_set', 'first_admin_required']) {
     expect(text(code)).not.toBe('__none__');
   }
   expect(text('first_admin_done')).toBe('The first admin was already created; change their password in the portal.');

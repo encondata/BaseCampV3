@@ -369,6 +369,10 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
             raise EnvError("snapshot_not_found")
         if snap.status != "ready":
             raise EnvError("snapshot_not_ready")
+        if snap.reset_passwords and admin_spec is None:
+            # The recipe cleared every password: without a first admin
+            # nobody could sign in to the new environment.
+            raise EnvError("first_admin_required")
     domain = _check_domain(base_domain or f"{name}.{DEFAULT_DOMAIN_SUFFIX}")
     if not on_do:                       # DigitalOcean sets its own proxy and bind
         if not proxy_ip:

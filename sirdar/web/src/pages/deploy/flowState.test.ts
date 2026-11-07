@@ -179,6 +179,7 @@ describe('errors', () => {
     expect(stepOfCode('first_admin_email_invalid')).toBe('data');
     expect(stepOfCode('mailpit_required')).toBe('extras');
     expect(stepOfCode('smtp_required_for_first_admin')).toBe('data');
+    expect(stepOfCode('first_admin_required')).toBe('data');
     expect(stepOfCode('something_else')).toBe('review');
   });
 });

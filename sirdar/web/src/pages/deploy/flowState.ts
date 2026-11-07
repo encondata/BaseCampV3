@@ -358,6 +358,7 @@ export const CODE_FIELD: Record<string, Field> = {
   smtp_password_invalid: 'mail', smtp_from_invalid: 'mail', smtp_required_for_first_admin: 'data',
   secret_invalid: 'aiKey', secret_not_editable: 'aiKey',
   snapshot_not_found: 'data', snapshot_not_ready: 'data', first_admin_with_seed: 'data', first_admin_invalid: 'data',
+  first_admin_required: 'data',
   first_admin_name_invalid: 'adminName', first_admin_email_invalid: 'adminEmail',
   first_admin_password_too_short: 'adminPassword', first_admin_password_invalid: 'adminPassword',
   first_admin_password_not_allowed: 'adminPassword',

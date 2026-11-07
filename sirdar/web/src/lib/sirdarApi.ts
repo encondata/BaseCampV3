@@ -370,6 +370,7 @@ const MESSAGES: Record<string, string> = {
   first_admin_password_invalid: "The password can't contain line breaks or control characters.",
   first_admin_password_not_allowed: 'An invite sends a set-password link: leave the password empty.',
   first_admin_invalid: "Those first-admin settings aren't valid.",
+  first_admin_required: "This snapshot reset everyone's password, so the environment needs a first admin to sign in with.",
   first_admin_not_set: 'This environment has no first admin to change.',
   first_admin_done: 'The first admin was already created; change their password in the portal.',
   // optional apps and mail

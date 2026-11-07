@@ -67,6 +67,20 @@ async def test_create_still_refuses_a_first_admin_with_a_plain_snapshot(
     assert _code(resp) == (422, "first_admin_with_seed")
 
 
+async def test_create_needs_a_first_admin_when_the_recipe_reset_passwords(
+        client, db, target, tmp_path):
+    # its passwords are gone: without a first admin nobody could sign in
+    snap = await _snap(db, tmp_path, "recipe", "reset")
+    await db.execute(update(Snapshot).where(Snapshot.id == snap.id).values(reset_passwords=True))
+    await db.commit()
+    h = await auth_headers(client, db)
+    resp = await client.post(URL, headers=h, json={**NEW, "snapshot_id": str(snap.id)})
+    assert _code(resp) == (422, "first_admin_required")
+    resp = await client.post(URL, headers=h, json={**NEW, "snapshot_id": str(snap.id),
+                                                   "first_admin": ADMIN})
+    assert resp.status_code == 201, resp.text
+
+
 async def test_ssh_first_update_restores_the_recipe_seed_and_creates_the_admin(
         client, db, target, fake_runner, tmp_path):
     snap = await _snap(db, tmp_path, "recipe", "from-recipe")
