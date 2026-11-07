@@ -432,12 +432,13 @@ it('without seed_data view the recipes are not asked for and From a recipe is lo
   expect(screen.queryByText(/No recipe yet/)).toBeNull();
 });
 
-it('a scratch database that is not set up locks From a recipe with its Seed Data line', async () => {
+it('a recipe list that fails to load locks From a recipe with no hint, whatever the code', async () => {
+  // listRecipes never needs the scratch database: no code of its gets a line of its own
   seed.listRecipes.mockRejectedValue(new ApiError(409, 'scratch_not_configured', { code: 'scratch_not_configured' }));
   await open();
   await toData();
   expect(screen.getByRole('radio', { name: 'From a recipe' }).getAttribute('aria-disabled')).toBe('true');
-  expect(screen.getByText(/Seed Data needs its scratch database/)).toBeTruthy();
+  expect(screen.queryByText(/Seed Data needs its scratch database/)).toBeNull();
   expect(screen.queryByText(/No recipe yet/)).toBeNull();
 });
 

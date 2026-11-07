@@ -76,8 +76,7 @@ export default function DeployFlow({ targets, reloadTargets }: { targets: Deploy
     // From a recipe needs seed_data view (as the nav does); a list that can't be read locks it.
     const recipes = can('seed_data', 'view')
       ? listRecipes().then((list) => ({ recipes: list, recipeLock: null as string | null }))
-        .catch((e) => ({ recipes: [], recipeLock: e instanceof ApiError && e.code === 'scratch_not_configured'
-          ? seedErrorText(e, '') : '' }))
+        .catch(() => ({ recipes: [], recipeLock: '' }))
       : Promise.resolve({ recipes: [], recipeLock: '' });
     const snaps = listSnapshots().then((r) => r.snapshots.filter((s) => s.status === 'ready')).catch(() => []);
     Promise.all([getEnvironmentDefaults(), getIntegrations().catch(() => null),
