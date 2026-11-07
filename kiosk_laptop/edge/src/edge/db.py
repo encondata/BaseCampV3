@@ -263,6 +263,12 @@ SCHEMA_STEPS: list[str] = [
     UPDATE dock_passes SET anchor_at = last_new_at, anchor_received_at = last_new_received_at
         WHERE closed_at IS NOT NULL
     """,
+    # the Dock's crate window W, set on Settings › RFID (edge/dock/state.py):
+    # one row, none until it is first saved (the default, 5 s). Each burst
+    # keeps the W it opened with in dock_passes.quiet_gap_s
+    """
+    CREATE TABLE dock_window (id INTEGER PRIMARY KEY CHECK (id = 1), window_s REAL NOT NULL)
+    """,
 ]
 
 

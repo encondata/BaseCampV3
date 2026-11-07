@@ -20,8 +20,8 @@ AUTH_TABLES = ("cloud_sessions", "offline_logins", "edge_sessions", "login_failu
 MOVE_TABLES = ("cache", "outbox", "laptop_setup", "rfid_events",
               "raw_tag_reads", "rfid_tags_seen", "station_key", "pending_rfid_scans",
               "rfid_unmatched", "alarm_open", "alarm_last", "station_labels", "label_run",
-              "timeclock_displays", "dock_settings", "dock_passes", "dock_pass_tags",
-              "dock_pass_reads")
+              "timeclock_displays", "dock_settings", "dock_window", "dock_passes",
+              "dock_pass_tags", "dock_pass_reads")
 
 
 def _status(request: Request, session: EdgeSession | None) -> dict:

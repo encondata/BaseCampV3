@@ -1,6 +1,7 @@
 """/edge/dock: what the kiosk's Dock screen polls (dock station spec): the
 overview (the open pass, the newest closed passes) and a pass's detail (tags
-with what packing did, every read). Session-gated like /edge/rfid."""
+with what packing did, every read); and the crate window Settings › RFID
+reads and sets ("Crate window setting"). Session-gated like /edge/rfid."""
 
 from edge.dock import views
 from tests.conftest import make_session
@@ -46,12 +47,57 @@ def add_closed(store, n):
 async def test_routes_need_a_session(app, client):
     assert (await client.get("/edge/dock")).status_code == 401
     assert (await client.get("/edge/dock/passes/1")).status_code == 401
+    assert (await client.get("/edge/dock/window")).status_code == 401
+    assert (await client.put("/edge/dock/window", json={"window_s": 3})).status_code == 401
 
 
 async def test_routes_work_offline(app, client):
     h = make_session(app, offline=True)
     assert (await client.get("/edge/dock", headers=h)).status_code == 200
     assert (await client.get("/edge/dock/passes/1", headers=h)).status_code == 404
+    assert (await client.get("/edge/dock/window", headers=h)).json() == {"window_s": 5}
+    admin = make_session(app, offline=True, max_rank=60, roles=["admin"])
+    r = await client.put("/edge/dock/window", json={"window_s": 3}, headers=admin)
+    assert (r.status_code, r.json()) == (200, {"window_s": 3})
+
+
+async def test_window_put_rules_by_role(app, client):
+    worker = make_session(app, max_rank=10)
+    admin = make_session(app, max_rank=60, roles=["admin"])
+    developer = make_session(app, max_rank=100, roles=["developer"])
+
+    async def put(h, value):
+        return await client.put("/edge/dock/window", json={"window_s": value}, headers=h)
+
+    async def saved():
+        got = [(await client.get("/edge/dock/window", headers=h)).json()["window_s"]
+               for h in (worker, admin, developer)]
+        assert len(set(got)) == 1
+        return got[0]
+
+    r = await put(worker, 3)
+    assert (r.status_code, r.json()["detail"]) == (403, {"code": "forbidden"})
+    assert await saved() == 5
+    for value in (1, 10, 7):
+        r = await put(admin, value)
+        assert (r.status_code, r.json()) == (200, {"window_s": value}), value
+    for value in (0.5, 30, 11, 0, -1, 7.5, True, "5", None):
+        r = await put(admin, value)
+        assert (r.status_code, r.json()["detail"]) == (422, {"code": "invalid_window"}), value
+    assert await saved() == 7
+    for value in (0.5, 30, 3600):
+        r = await put(developer, value)
+        assert (r.status_code, r.json()) == (200, {"window_s": value}), value
+    for value in (0, -2, 3601, True, "5"):
+        r = await put(developer, value)
+        assert (r.status_code, r.json()["detail"]) == (422, {"code": "invalid_window"}), value
+    for raw in ('{"window_s": NaN}', '{"window_s": Infinity}', '{"window_s": 1e999}', "{}"):
+        r = await client.put("/edge/dock/window", content=raw,
+                             headers={**developer, "content-type": "application/json"})
+        assert (r.status_code, r.json()["detail"]) == (422, {"code": "invalid_window"}), raw
+    r = await client.put("/edge/dock/window", json=[5], headers=developer)
+    assert (r.status_code, r.json()["detail"]) == (422, {"code": "bad_request"})
+    assert await saved() == 3600
 
 
 async def test_overview_with_nothing_yet(app, client):

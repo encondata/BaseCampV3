@@ -5,7 +5,9 @@ later or there is no crate, timed by the reader's own read_at (re-reads
 never keep it open). Deciding a burst anchors each crate at its first read:
 an asset read within W of it packs into it, crates within 2W of each other
 are flagged together, and an asset in no crate's window is flagged "No crate
-read". Ambiguity is flagged, never guessed. W = 5 s throughout."""
+read". Ambiguity is flagged, never guessed. W is the laptop's crate window
+setting, kept by each burst as it opens: 5 s (the default) unless a test saves
+another."""
 
 import json
 import uuid
@@ -15,7 +17,7 @@ import pytest
 
 from edge import laptop_setup
 from edge.db import Store, iso
-from edge.dock import grouper
+from edge.dock import grouper, state
 from edge.rfid.tagreads import parse_events, store_batch
 from tests.fake_reader import tag_event
 from tests.test_rfid_alarm import as_station, client_asset
@@ -59,6 +61,12 @@ def legacy_settings(store, *, quiet_gap_s=5):
     store.run("INSERT INTO dock_settings (id, dry_run, quiet_gap_s) VALUES (1, 1, ?) "
               "ON CONFLICT (id) DO UPDATE SET dry_run = 1, quiet_gap_s = excluded.quiet_gap_s",
               (quiet_gap_s,))
+
+
+def save_window(store, seconds):
+    """Set the crate window, as PUT /edge/dock/window does."""
+    with store.tx() as c:
+        state.save_window(c, seconds)
 
 
 def stamp_dry_run(store, *raw_ids):
@@ -481,15 +489,15 @@ def test_read_time_parsing_and_fallback(store):
 def test_read_time_too_late_to_close_falls_back(store):
     received = "2026-10-16T14:03:30+00:00"
     fallback = datetime(2026, 10, 16, 14, 3, 30, tzinfo=UTC)
-    for late in ("9999-12-31T23:59:49+0000", "9999-12-31T23:59:59.999+0000",
+    for late in ("9999-12-31T21:59:59+0000", "9999-12-31T23:59:59.999+0000",
                  "0001-01-01T00:00:00+0100", "0001-01-01T00:00:00+0000",
-                 "0001-01-01T00:00:02.000+0000", "0001-01-01T00:00:10.999+0000"):
+                 "0001-01-01T00:00:02.000+0000", "0001-01-01T02:00:00.999+0000"):
         assert grouper.read_time({"read_at": late, "received_at": received}) == fallback
-    # room for 2W + 1 s (11 s) at either end of time
-    assert grouper.read_time({"read_at": "9999-12-31T23:59:48+0000", "received_at": received}) \
-        == datetime(9999, 12, 31, 23, 59, 48, tzinfo=UTC)
-    assert grouper.read_time({"read_at": "0001-01-01T00:00:11+0000", "received_at": received}) \
-        == datetime(1, 1, 1, 0, 0, 11, tzinfo=UTC)
+    # room for twice the longest window + 1 s (2 h 0 min 1 s) at either end of time
+    assert grouper.read_time({"read_at": "9999-12-31T21:59:58+0000", "received_at": received}) \
+        == datetime(9999, 12, 31, 21, 59, 58, tzinfo=UTC)
+    assert grouper.read_time({"read_at": "0001-01-01T02:00:01+0000", "received_at": received}) \
+        == datetime(1, 1, 1, 2, 0, 1, tzinfo=UTC)
 
     dock(store)
     post(store, [tag_event("AA01", timestamp="9999-12-31T23:59:59.999+0000")], 0)
@@ -626,3 +634,57 @@ def test_legacy_settings_row_does_not_make_a_pass_dry(store):
     [p] = passes(store)
     assert (p["outcome"], p["dry_run"], p["send_state"], p["quiet_gap_s"]) \
         == ("pack", 0, "pending", 5)
+
+
+def test_window_change_applies_from_the_next_burst(store):
+    dock(store)
+    save_window(store, 2)
+    for epc, s in (("CC01", 0), ("AA01", 1.5)):
+        read(store, epc, s)
+    group(store, 1.5)
+    [burst] = passes(store)
+    assert burst["quiet_gap_s"] == 2 and burst["closed_at"] is None
+    save_window(store, 8)                         # while the burst is open
+    read(store, "AA02", 3)                        # before its settle (the crate + 2W = 4 s)
+    group(store, 3)
+    [burst] = passes(store)
+    assert burst["closed_at"] is None and burst["quiet_gap_s"] == 2
+    assert group(store, 3 + 2 + 1 - 0.001).closed == 0     # AA02 + W + 1 s, with W = 2
+    assert group(store, 3 + 2 + 1).closed == 2
+    assert decided(store) == [("pack", "c-1", ["a-1"]), ("no_crate", None, ["a-2"])]
+    pack, left = passes(store)
+    assert (pack["quiet_gap_s"], left["quiet_gap_s"]) == (2, 2)
+    assert (when(pack["closed_at"]), when(left["closed_at"])) == (at(2), at(5))
+    read(store, "AA03", 20)                       # the next burst takes the new window
+    group(store, 20)
+    *_, nxt = passes(store)
+    assert nxt["closed_at"] is None and nxt["quiet_gap_s"] == 8
+
+
+def test_open_burst_without_a_window_uses_the_setting(store):
+    dock(store)
+    for epc, s in (("CC01", 0), ("AA01", 1)):
+        read(store, epc, s)
+    group(store, 1)
+    store.run("UPDATE dock_passes SET quiet_gap_s = NULL")   # opened before bursts kept it
+    save_window(store, 3)
+    # settle: the crate + 2W = 6 s; idle: AA01's arrival + (6 - 1) + 1 s
+    assert group(store, 1 + 5 + 1 - 0.001).closed == 0
+    [burst] = passes(store)
+    assert burst["quiet_gap_s"] == 3                         # kept from now on
+    save_window(store, 9)
+    assert group(store, 1 + 5 + 1).closed == 1
+    [p] = passes(store)
+    assert p["outcome"] == "pack" and p["quiet_gap_s"] == 3 and when(p["closed_at"]) == at(3)
+
+
+def test_developer_fractional_window_groups(store):
+    dock(store)
+    save_window(store, 0.5)
+    for epc, s in (("CC01", 0), ("AA01", 0.4), ("AA02", 0.6)):
+        read(store, epc, s)
+    assert group(store, 2).closed == 2
+    assert decided(store) == [("pack", "c-1", ["a-1"]), ("no_crate", None, ["a-2"])]
+    pack, left = passes(store)
+    assert (pack["quiet_gap_s"], left["quiet_gap_s"]) == (0.5, 0.5)
+    assert (when(pack["closed_at"]), when(left["closed_at"])) == (at(0.5), at(1.1))
