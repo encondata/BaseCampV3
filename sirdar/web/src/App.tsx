@@ -11,6 +11,7 @@ import EnvironmentDetail from './pages/environments/EnvironmentDetail';
 import MeLayout from './pages/me/MeLayout';
 import Settings from './pages/Settings';
 import SirdarLogin from './pages/SirdarLogin';
+import SeedDb from './pages/seed/SeedDb';
 import UserDetail from './pages/UserDetail';
 import Users from './pages/Users';
 
@@ -25,6 +26,7 @@ export default function App() {
               <Route path="/" element={<Gate resource="dashboard"><Dashboard /></Gate>} />
               <Route path="/deploy" element={<Gate resource="deploy"><Deploy /></Gate>} />
               <Route path="/deploy/environments/:name" element={<Gate resource="deploy"><EnvironmentDetail /></Gate>} />
+              <Route path="/seed/db" element={<Gate resource="seed_data"><SeedDb /></Gate>} />
               <Route path="/admin/users" element={<Gate resource="users"><Users /></Gate>} />
               <Route path="/admin/users/:personId" element={<Gate resource="users"><UserDetail /></Gate>} />
               <Route path="/admin/access" element={<Gate resource="access"><Access /></Gate>} />

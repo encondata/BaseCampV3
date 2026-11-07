@@ -128,13 +128,13 @@ async function errorOf(resp: Response): Promise<ApiError> {
   return new ApiError(resp.status, code, detail);
 }
 
-async function getJson<T>(path: string): Promise<T> {
+export async function getJson<T>(path: string): Promise<T> {
   const resp = await apiFetch(path);
   if (!resp.ok) throw await errorOf(resp);
   return resp.json();
 }
 
-async function sendJson<T>(method: string, path: string, body?: unknown): Promise<T> {
+export async function sendJson<T>(method: string, path: string, body?: unknown): Promise<T> {
   const resp = await apiFetch(path, {
     method,
     headers: body === undefined ? {} : { 'Content-Type': 'application/json' },

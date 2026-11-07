@@ -2,8 +2,15 @@ import { expect, it } from 'vitest';
 
 import { SIRDAR_NAV, visibleSections } from './sirdarNav';
 
-it('has Dashboard, Deployments, Administration and System sections', () => {
-  expect(SIRDAR_NAV.map((s) => s.label)).toEqual(['Dashboard', 'Deployments', 'Administration', 'System']);
+it('has Dashboard, Deployments, Seed Data, Administration and System sections', () => {
+  expect(SIRDAR_NAV.map((s) => s.label)).toEqual(['Dashboard', 'Deployments', 'Seed Data', 'Administration', 'System']);
+});
+
+it('Seed Data holds DB and Spaces under the seed_data resource', () => {
+  const seed = SIRDAR_NAV.find((s) => s.label === 'Seed Data')!;
+  expect(seed.items.map((i) => [i.label, i.to, i.resource])).toEqual([
+    ['DB', '/seed/db', 'seed_data'], ['Spaces', '/seed/spaces', 'seed_data'],
+  ]);
 });
 
 it('drops items and empty sections the user cannot view', () => {

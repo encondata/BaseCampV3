@@ -11,6 +11,8 @@ const I = {
   shield: icon('M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'),
   log: icon('M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8'),
   deploy: icon('M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09zM12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z'),
+  db: icon('M12 8c4.42 0 8-1.34 8-3s-3.58-3-8-3-8 1.34-8 3 3.58 3 8 3zM4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3'),
+  files: icon('M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z'),
   gear: icon('M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'),
 };
 
@@ -20,6 +22,10 @@ export const SIRDAR_NAV: NavSection[] = [
   ] },
   { label: 'Deployments', icon: I.deploy, items: [
     { to: '/deploy', label: 'Deploy', resource: 'deploy', icon: I.deploy },
+  ] },
+  { label: 'Seed Data', icon: I.db, items: [
+    { to: '/seed/db', label: 'DB', resource: 'seed_data', icon: I.db },
+    { to: '/seed/spaces', label: 'Spaces', resource: 'seed_data', icon: I.files },
   ] },
   { label: 'Administration', icon: I.shield, items: [
     { to: '/admin/users', label: 'Users', resource: 'users', icon: I.users },
@@ -34,6 +40,8 @@ export const SIRDAR_NAV: NavSection[] = [
 export const PAGE_TITLES: Record<string, string> = {
   '/': 'Dashboard',
   '/deploy': 'Deploy',
+  '/seed/db': 'DB',
+  '/seed/spaces': 'Spaces',
   '/admin/users': 'Users',
   '/admin/access': 'Roles & access',
   '/admin/audit': 'Audit log',

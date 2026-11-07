@@ -214,3 +214,42 @@
 /* The Settings tab's First admin dialog sizes to its form. */
 .modal-card.reports-modal-card.rgm-card.sirdar-firstadmin-card { width: min(560px, 96vw); max-width: 96vw; }
 .sirdar-firstadmin { margin-top: 20px; }
+
+/* Seed Data › DB: the recipe/snapshot bar (three fields, one per row on a
+   phone), the tables list beside the table on show, and the rows table. */
+.sirdar-seed-bar { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 720px) { .sirdar-seed-bar { grid-template-columns: minmax(0, 1fr); } }
+.sirdar-seed-cols { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 900px) { .sirdar-seed-cols { grid-template-columns: minmax(0, 1fr); } }
+.sirdar-seed-table { min-width: 0; }
+.sirdar-seed-table .sirdar-section-head h2 { margin: 0; overflow-wrap: anywhere; }
+.sirdar-seed-table .dir-toolbar .dir-search { margin-left: 0; }
+.sirdar-seed-pager { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.sirdar-seed-pager .page-hint { margin: 0; }
+.sirdar-seed-added { margin-top: 16px; }
+.sirdar-seed .data-table tr[aria-selected="true"] td { background: rgba(var(--accent-rgb), 0.08); }
+.sirdar-seed-cols > .data-table-scroll tbody tr { cursor: pointer; }
+/* A table's name in the tables list: plain text that picks the table. */
+.sirdar-seed-pick { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; text-align: left; overflow-wrap: anywhere; }
+.sirdar-seed-pick:hover, .sirdar-seed-pick:focus-visible { text-decoration: underline; }
+.sirdar-seed-rows td { white-space: nowrap; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+/* A sortable column header: the list header's .sortable look (directory.css). */
+.data-table th .sortable {
+  display: inline-flex; align-items: center; gap: 5px; cursor: pointer; user-select: none;
+  background: none; border: 0; font: inherit; color: inherit; letter-spacing: inherit;
+  text-transform: inherit; padding: 0;
+}
+.data-table th .sortable:hover { color: var(--text-dark); }
+.data-table th .sortable .caret { font-size: calc(var(--list-fs-head) * 0.9); color: var(--amber); }
+/* The rows table scrolls sideways with the app's themed bar, not the browser's. */
+.sirdar-seed .data-table-scroll::-webkit-scrollbar { width: 12px; height: 12px; }
+.sirdar-seed .data-table-scroll::-webkit-scrollbar-track { background: transparent; }
+.sirdar-seed .data-table-scroll::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent);
+  border: 3px solid transparent; background-clip: padding-box; border-radius: 999px;
+}
+.sirdar-seed .data-table-scroll::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--muted, #51606f) 65%, transparent); }
+.sirdar-seed .data-table-scroll::-webkit-scrollbar-corner { background: transparent; }
+@supports not selector(::-webkit-scrollbar) {
+  .sirdar-seed .data-table-scroll { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent) transparent; }
+}
