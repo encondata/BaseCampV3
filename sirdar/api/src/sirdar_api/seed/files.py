@@ -217,8 +217,11 @@ def kept_keys(objects: list[tuple[str, int]], refs: dict[str, Reason],
 
 def listing(objects: list[tuple[str, int]], refs: dict[str, Reason],
             manual: dict[str, bool], *, page: int, size: int, needle: str = "") -> dict:
-    """{"files": [{"key","size","kept","because"}], "total"}: a page of
-    the objects whose key contains `needle` (case-insensitive)."""
+    """{"files": [{"key","size","kept","because","reference"}], "total"}:
+    a page of the objects whose key contains `needle` (case-insensitive).
+    `reference` is the phrase for the kept row that references the file
+    ("Avatar of Person A (people)"), kept even when it's unticked by hand,
+    or None when no kept row does."""
     wanted = needle.casefold()
     matched = [(k, s) for k, s in objects if wanted in k.casefold()] if wanted else objects
     start = (page - 1) * size
@@ -226,13 +229,15 @@ def listing(objects: list[tuple[str, int]], refs: dict[str, Reason],
     for key, nbytes in matched[start:start + size]:
         ref, hand = refs.get(key), manual.get(key)
         kept = is_kept(ref, hand)
-        if ref is not None and hand is False:
-            text = f"{UNTICKED} ({because(ref.column, ref.label, ref.table)})"
+        phrase = because(ref.column, ref.label, ref.table) if ref is not None else None
+        if phrase is not None and hand is False:
+            text = f"{UNTICKED} ({phrase})"
         elif not kept:
             text = NONE
-        elif ref is not None:
-            text = because(ref.column, ref.label, ref.table)
+        elif phrase is not None:
+            text = phrase
         else:
             text = TICKED
-        rows.append({"key": key, "size": nbytes, "kept": kept, "because": text})
+        rows.append({"key": key, "size": nbytes, "kept": kept, "because": text,
+                     "reference": phrase})
     return {"files": rows, "total": len(matched)}

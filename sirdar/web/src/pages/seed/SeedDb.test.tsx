@@ -248,3 +248,42 @@ it('a new recipe can only be saved with both add and change', async () => {
   await openPeople();
   expect((screen.getByRole('button', { name: 'Save recipe' }) as HTMLButtonElement).disabled).toBe(true);
 });
+
+it('Save re-reads the recipe and sends its files as saved now', async () => {
+  await openPeople();
+  await pick('Recipe', /^Recipe A$/);
+  await waitFor(() => expect((screen.getByRole('checkbox', { name: 'Row Person 1' }) as HTMLInputElement).checked).toBe(true));
+  api.getRecipe.mockClear();
+  api.getRecipe.mockResolvedValueOnce({
+    id: 'r1', name: 'Recipe A', notes: '', tables: {}, files: { 'avatars/a.jpg': false, 'misc/c.pdf': true },
+  });
+  await userEvent.click(screen.getByRole('button', { name: 'Save recipe' }));
+  await waitFor(() => expect(api.putRecipe).toHaveBeenCalled());
+  expect(api.getRecipe).toHaveBeenCalledWith('r1');
+  expect(api.getRecipe.mock.invocationCallOrder[0]).toBeLessThan(api.putRecipe.mock.invocationCallOrder[0]);
+  expect(api.putRecipe).toHaveBeenCalledWith('r1', {
+    name: 'Recipe A',
+    tables: { people: { mode: 'rows', pks: [{ id: '1' }] } },
+    files: { 'avatars/a.jpg': false, 'misc/c.pdf': true },
+  });
+});
+
+it('a slow recipe answer doesn\'t replace the recipe picked after it', async () => {
+  api.listRecipes.mockResolvedValue([
+    { id: 'r1', name: 'Recipe A', notes: '', tables: 1, rows: 1, files: 1, updated_at: '' },
+    { id: 'r2', name: 'Recipe B', notes: '', tables: 1, rows: 1, files: 0, updated_at: '' },
+  ]);
+  let finishA: (v: unknown) => void = () => {};
+  api.getRecipe.mockImplementation((id: string) => (id === 'r1'
+    ? new Promise((res) => { finishA = res; })
+    : Promise.resolve({ id: 'r2', name: 'Recipe B', notes: '', tables: { people: { mode: 'rows', pks: [{ id: '3' }] } }, files: {} })));
+  await openPeople();
+  await pick('Recipe', /^Recipe A$/);
+  await pick('Recipe', /^Recipe B$/);
+  await waitFor(() => expect((screen.getByLabelText('Recipe name') as HTMLInputElement).value).toBe('Recipe B'));
+  finishA({ id: 'r1', name: 'Recipe A', notes: '', tables: { people: { mode: 'rows', pks: [{ id: '1' }] } }, files: {} });
+  await new Promise((r) => setTimeout(r, 20));
+  expect((screen.getByLabelText('Recipe name') as HTMLInputElement).value).toBe('Recipe B');
+  expect((screen.getByRole('checkbox', { name: 'Row Person 1' }) as HTMLInputElement).checked).toBe(false);
+  expect((screen.getByRole('checkbox', { name: 'Row Person 3' }) as HTMLInputElement).checked).toBe(true);
+});

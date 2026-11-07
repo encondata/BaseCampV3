@@ -14,9 +14,8 @@ import { formatBytes, snapshotLabel } from '../environments/labels';
 import RowTable, { type CheckRow } from './RowTable';
 import {
   getRecipe, listFiles, listRecipes, notOpen, putRecipe, seedErrorText,
-  type FilesPage, type RecipeSummary, type SeedFile,
+  type FilesPage, type RecipeSummary,
 } from './seedApi';
-import type { SelectionBody } from './selection';
 import { useScratchSnapshot } from './useScratchSnapshot';
 
 const FILTER_DEBOUNCE_MS = 300;
@@ -24,21 +23,12 @@ const PAGE_SIZE = 50;
 /** Check all / Deselect all page through every matching file this many at a time (the API's largest page). */
 const KEYS_PAGE_SIZE = 1000;
 
-// the API's "Kept because" texts that name no reference
+// the "Kept because" texts that name no reference (as the API words them)
 const TICKED = 'Ticked by hand';
 const UNTICKED = 'Unticked by hand';
 const NONE = '—';
 
 type Overrides = Record<string, boolean>;
-
-/** What references the file in the saved recipe's kept rows ("Avatar of
- *  Person A (people)"), or null when nothing does. */
-export function referenceOf(f: SeedFile): string | null {
-  if (f.because === NONE || f.because === TICKED) return null;
-  const prefix = `${UNTICKED} (`;
-  if (f.because.startsWith(prefix) && f.because.endsWith(')')) return f.because.slice(prefix.length, -1);
-  return f.because;
-}
 
 export const keptNow = (ref: string | null, override: boolean | undefined) =>
   override === undefined ? ref !== null : override;
@@ -66,14 +56,17 @@ export default function SeedSpaces() {
   // recipe
   const [recipes, setRecipes] = useState<RecipeSummary[]>([]);
   const [recipeId, setRecipeId] = useState('');
-  const [name, setName] = useState('');
-  const [tables, setTables] = useState<SelectionBody>({});
   const [files, setFiles] = useState<Overrides>({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
   // snapshot
   const { snapshots, snapId, phase, pickSnapshot: pickSnap, reopen } = useScratchSnapshot(setError);
+  // the recipe and snapshot picked now, for answers that land after a change
+  const recipeRef = useRef(recipeId);
+  recipeRef.current = recipeId;
+  const snapRef = useRef(snapId);
+  snapRef.current = snapId;
 
   // the files on show
   const [page, setPage] = useState(1);
@@ -83,6 +76,8 @@ export default function SeedSpaces() {
   const [busy, setBusy] = useState(false);
   /** Bumped by Check all / Deselect all: a fresh RowTable forgets its shift-click anchor. */
   const [anchorReset, setAnchorReset] = useState(0);
+  /** Check all / Deselect all is paging through the matching files. */
+  const [checking, setChecking] = useState(false);
 
   useEffect(() => {
     listRecipes().then(setRecipes).catch((e) => setError(seedErrorText(e, "Couldn't load recipes.")));
@@ -93,12 +88,17 @@ export default function SeedSpaces() {
     pickSnap(id);
   };
 
+  const recipeSeq = useRef(0);
   const pickRecipe = (id: string) => {
+    const n = ++recipeSeq.current;
     setSaved(false); setError(''); setListing(null); setPage(1);
-    if (!id) { setRecipeId(''); setName(''); setTables({}); setFiles({}); return; }
+    if (!id) { setRecipeId(''); setFiles({}); return; }
     getRecipe(id)
-      .then((r) => { setRecipeId(r.id); setName(r.name); setTables(r.tables); setFiles(r.files); })
-      .catch((e) => setError(seedErrorText(e, "Couldn't load that recipe.")));
+      .then((r) => {
+        if (n !== recipeSeq.current) return;
+        setRecipeId(r.id); setFiles(r.files);
+      })
+      .catch((e) => { if (n === recipeSeq.current) setError(seedErrorText(e, "Couldn't load that recipe.")); });
   };
 
   useEffect(() => {
@@ -123,24 +123,32 @@ export default function SeedSpaces() {
 
   const change = (next: (f: Overrides) => Overrides) => { setFiles(next); setSaved(false); };
 
-  const shown = (listing?.files ?? []).map((f) => ({ file: f, ref: referenceOf(f) }));
+  const shown = (listing?.files ?? []).map((f) => ({ file: f, ref: f.reference }));
   const refByKey = new Map(shown.map(({ file, ref }) => [file.key, ref !== null]));
   const targets = (keys: string[]) => keys.map((key) => ({ key, referenced: !!refByKey.get(key) }));
 
   const checkMany = async (on: boolean) => {
-    if (!snapId || !recipeId) return;
+    const rid = recipeId;
+    const sid = snapId;
+    if (!sid || !rid) return;
+    const moved = () => rid !== recipeRef.current || sid !== snapRef.current;
     setError('');
+    setChecking(true);
     try {
       const all: { key: string; referenced: boolean }[] = [];
       for (let p = 1; ; p += 1) {
-        const r = await listFiles(snapId, recipeId, { page: p, size: KEYS_PAGE_SIZE, filter: shownFilter });
-        r.files.forEach((f) => all.push({ key: f.key, referenced: referenceOf(f) !== null }));
+        const r = await listFiles(sid, rid, { page: p, size: KEYS_PAGE_SIZE, filter: shownFilter });
+        if (moved()) return;            // another recipe or snapshot was picked meanwhile
+        r.files.forEach((f) => all.push({ key: f.key, referenced: f.reference !== null }));
         if (r.files.length < KEYS_PAGE_SIZE || all.length >= r.total) break;
       }
       change((f) => setKept(f, all, on));
       setAnchorReset((x) => x + 1);
     } catch (e) {
+      if (moved()) return;
       if (notOpen(e)) reopen(); else setError(seedErrorText(e, "Couldn't load the matching files."));
+    } finally {
+      setChecking(false);
     }
   };
 
@@ -148,9 +156,11 @@ export default function SeedSpaces() {
     if (!recipeId) return;
     setSaving(true); setSaved(false); setError('');
     try {
-      // PUT replaces the recipe: its tables go back unchanged
-      const r = await putRecipe(recipeId, { name, tables, files });
-      setName(r.name);
+      // PUT replaces the recipe: re-read it so its tables (and name) go back
+      // as saved now, not as they were when it was picked (the DB page may
+      // have saved since)
+      const fresh = await getRecipe(recipeId);
+      await putRecipe(recipeId, { name: fresh.name, tables: fresh.tables, files });
       setSaved(true);
       listRecipes().then(setRecipes).catch(() => {});
     } catch (e) {
@@ -225,8 +235,10 @@ export default function SeedSpaces() {
                      onChange={(e) => setFilter(e.target.value)} />
             </div>
             <div className="sirdar-target-actions">
-              <button type="button" className="mini-btn" onClick={() => void checkMany(true)}>Check all</button>
-              <button type="button" className="mini-btn" onClick={() => void checkMany(false)}>Deselect all</button>
+              <button type="button" className="mini-btn" disabled={checking}
+                      onClick={() => void checkMany(true)}>Check all</button>
+              <button type="button" className="mini-btn" disabled={checking}
+                      onClick={() => void checkMany(false)}>Deselect all</button>
             </div>
           </div>
           <p className="page-hint">Shift-click a second file to tick or untick everything between.</p>

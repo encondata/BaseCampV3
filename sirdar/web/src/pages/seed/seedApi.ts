@@ -55,7 +55,10 @@ export function getKeys(id: string, table: string, f: KeyFilter) {
 export const resolveSelection = (id: string, tables: SelectionBody) =>
   sendJson<Resolved>('POST', `${snap(id)}/resolve`, { tables });
 
-export interface SeedFile { key: string; size: number; kept: boolean; because: string }
+/** `reference`: the phrase for the kept row that references the file
+ *  ("Avatar of Person A (people)"), even when it's unticked by hand; null
+ *  when no kept row does. */
+export interface SeedFile { key: string; size: number; kept: boolean; because: string; reference: string | null }
 export interface FilesPage { files: SeedFile[]; total: number }
 export interface FilesQuery { page: number; size: number; filter?: string }
 

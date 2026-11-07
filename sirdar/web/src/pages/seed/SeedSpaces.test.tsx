@@ -26,11 +26,18 @@ Element.prototype.scrollIntoView = () => {};   // jsdom lacks it (ComboBox calls
 
 const TABLES = { people: { mode: 'rows', pks: [{ id: '1' }] } };
 const FILES = [
-  { key: 'avatars/a.jpg', size: 1536, kept: true, because: 'Avatar of Person A (people)' },
-  { key: 'avatars/x.jpg', size: 10, kept: false, because: 'Unticked by hand (Avatar of Person X (people))' },
-  { key: 'misc/c.pdf', size: 10, kept: true, because: 'Ticked by hand' },
-  { key: 'assets/b.jpg', size: 10, kept: false, because: '—' },
+  { key: 'avatars/a.jpg', size: 1536, kept: true, because: 'Avatar of Person A (people)',
+    reference: 'Avatar of Person A (people)' },
+  { key: 'avatars/x.jpg', size: 10, kept: false, because: 'Unticked by hand (Avatar of Person X (people))',
+    reference: 'Avatar of Person X (people)' },
+  { key: 'misc/c.pdf', size: 10, kept: true, because: 'Ticked by hand', reference: null },
+  { key: 'assets/b.jpg', size: 10, kept: false, because: '—', reference: null },
 ];
+const RECIPE_A = {
+  id: 'r1', name: 'Recipe A', notes: '', tables: { people: { mode: 'rows', pks: [{ id: '1' }] } },
+  files: { 'misc/c.pdf': true, 'avatars/x.jpg': false, 'gone/old.png': true },
+};
+const RECIPE_B = { id: 'r2', name: 'Recipe B', notes: '', tables: {}, files: { 'avatars/a.jpg': false } };
 
 /** The files endpoint: filters by key and pages like the API. */
 function serveFiles(all = FILES) {
@@ -44,11 +51,11 @@ beforeEach(() => {
   perms.change = true;
   Object.values(api).forEach((f) => f.mockReset());
   snaps.listSnapshots.mockResolvedValue({ snapshots: [SNAP] });
-  api.listRecipes.mockResolvedValue([{ id: 'r1', name: 'Recipe A', notes: '', tables: 1, rows: 1, files: 2, updated_at: '' }]);
-  api.getRecipe.mockResolvedValue({
-    id: 'r1', name: 'Recipe A', notes: '', tables: TABLES,
-    files: { 'misc/c.pdf': true, 'avatars/x.jpg': false, 'gone/old.png': true },
-  });
+  api.listRecipes.mockResolvedValue([
+    { id: 'r1', name: 'Recipe A', notes: '', tables: 1, rows: 1, files: 2, updated_at: '' },
+    { id: 'r2', name: 'Recipe B', notes: '', tables: 0, rows: 0, files: 1, updated_at: '' },
+  ]);
+  api.getRecipe.mockImplementation((id: string) => Promise.resolve(id === 'r2' ? RECIPE_B : RECIPE_A));
   api.openSnapshot.mockResolvedValue({ status: 'ready' });
   api.snapshotStatus.mockResolvedValue({ status: 'ready' });
   serveFiles();
@@ -126,7 +133,7 @@ it('ticking an unreferenced file saves true; unticking it again removes the over
 
 it('Check all with a filter saves every matching key across pages', async () => {
   const many = Array.from({ length: 1203 }, (_, i) => ({
-    key: `wiki/f${i}.png`, size: 1, kept: false, because: '—',
+    key: `wiki/f${i}.png`, size: 1, kept: false, because: '—', reference: null,
   }));
   serveFiles([...FILES, ...many]);
   await openFiles();
@@ -170,4 +177,52 @@ it('Save recipe needs change', async () => {
   perms.change = false;
   await openFiles();
   expect((screen.getByRole('button', { name: 'Save recipe' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('Save re-reads the recipe and sends its tables and name as saved now', async () => {
+  await openFiles();
+  fireEvent.click(box('avatars/a.jpg'));
+  const NEWER = { people: { mode: 'rows', pks: [{ id: '1' }, { id: '2' }] } };
+  api.getRecipe.mockClear();
+  api.getRecipe.mockResolvedValueOnce({ ...RECIPE_A, name: 'Recipe A2', tables: NEWER, files: {} });
+  const [id, body] = await saveBody();
+  expect(api.getRecipe).toHaveBeenCalledWith('r1');
+  expect(api.getRecipe.mock.invocationCallOrder[0]).toBeLessThan(api.putRecipe.mock.invocationCallOrder[0]);
+  expect(id).toBe('r1');
+  expect(body).toEqual({
+    name: 'Recipe A2', tables: NEWER,
+    files: { 'avatars/a.jpg': false, 'misc/c.pdf': true, 'avatars/x.jpg': false, 'gone/old.png': true },
+  });
+});
+
+it('Check all is disabled while it runs, and its answer is dropped if the recipe changed meanwhile', async () => {
+  await openFiles();
+  let finish: (v: unknown) => void = () => {};
+  api.listFiles.mockImplementationOnce(() => new Promise((res) => { finish = res; }));
+  await userEvent.click(screen.getByRole('button', { name: 'Check all' }));
+  expect((screen.getByRole('button', { name: 'Check all' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('button', { name: 'Deselect all' }) as HTMLButtonElement).disabled).toBe(true);
+  await pick('Recipe', /^Recipe B$/);
+  await waitFor(() => expect(api.listFiles).toHaveBeenLastCalledWith(SNAP.id, 'r2', expect.anything()));
+  finish({ files: FILES, total: FILES.length });
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Check all' }) as HTMLButtonElement).disabled).toBe(false));
+  const [id, body] = await saveBody();
+  expect(id).toBe('r2');
+  expect(body.files).toEqual({ 'avatars/a.jpg': false });
+});
+
+it('a slow recipe answer doesn\'t replace the recipe picked after it', async () => {
+  let finishA: (v: unknown) => void = () => {};
+  api.getRecipe.mockImplementation((id: string) => (id === 'r1'
+    ? new Promise((res) => { finishA = res; }) : Promise.resolve(RECIPE_B)));
+  render(<MemoryRouter><SeedSpaces /></MemoryRouter>);
+  await waitFor(() => expect(api.listRecipes).toHaveBeenCalled());
+  await pick('Recipe', /^Recipe A$/);
+  await pick('Recipe', /^Recipe B$/);
+  await pick('Snapshot', new RegExp(SNAP.name));
+  await screen.findByRole('checkbox', { name: 'Row avatars/a.jpg' });
+  finishA(RECIPE_A);
+  await new Promise((r) => setTimeout(r, 20));
+  expect(api.listFiles).not.toHaveBeenCalledWith(SNAP.id, 'r1', expect.anything());
+  expect(box('avatars/a.jpg').checked).toBe(false);   // Recipe B unticks it
 });

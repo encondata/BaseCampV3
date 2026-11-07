@@ -43,7 +43,6 @@ export default function SeedDb() {
   const [recipes, setRecipes] = useState<RecipeSummary[]>([]);
   const [recipeId, setRecipeId] = useState('');
   const [name, setName] = useState('');
-  const [files, setFiles] = useState<Record<string, boolean>>({});
   const [sel, setSel] = useState<Selection>({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -141,24 +140,33 @@ export default function SeedDb() {
   }, [sel, phase, snapId, reopen]);
 
   // ---- recipes -------------------------------------------------------------------
+  const recipeSeq = useRef(0);
   const pickRecipe = (id: string) => {
+    const n = ++recipeSeq.current;
     setSaved(false); setError('');
-    if (!id) { setRecipeId(''); setName(''); setFiles({}); setSel({}); return; }
+    if (!id) { setRecipeId(''); setName(''); setSel({}); return; }
     getRecipe(id)
-      .then((r) => { setRecipeId(r.id); setName(r.name); setFiles(r.files); setSel(fromRecipe(r.tables)); })
-      .catch((e) => setError(seedErrorText(e, "Couldn't load that recipe.")));
+      .then((r) => {
+        if (n !== recipeSeq.current) return;
+        setRecipeId(r.id); setName(r.name); setSel(fromRecipe(r.tables));
+      })
+      .catch((e) => { if (n === recipeSeq.current) setError(seedErrorText(e, "Couldn't load that recipe.")); });
   };
   const newRecipe = () => {
-    setRecipeId(''); setName(''); setFiles({}); setSel({}); setSaved(false); setError('');
+    ++recipeSeq.current;
+    setRecipeId(''); setName(''); setSel({}); setSaved(false); setError('');
   };
   const save = async () => {
     const clean = name.trim();
     if (!clean) { setError('Enter a recipe name.'); return; }
     setSaving(true); setSaved(false); setError('');
     try {
-      const id = recipeId || (await createRecipe(clean)).id;
-      setRecipeId(id);
-      const r = await putRecipe(id, { name: clean, tables: toBody(sel), files });
+      // PUT replaces the recipe: re-read it so its files go back as saved
+      // now, not as they were when it was picked (the Spaces page may have
+      // saved since)
+      const base = recipeId ? await getRecipe(recipeId) : await createRecipe(clean);
+      setRecipeId(base.id);
+      const r = await putRecipe(base.id, { name: clean, tables: toBody(sel), files: base.files });
       setName(r.name);
       setSaved(true);
       listRecipes().then(setRecipes).catch(() => {});

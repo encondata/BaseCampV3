@@ -235,6 +235,17 @@ async def test_manual_drop_beats_a_reference_and_manual_keep_keeps(client, opene
     assert got["blobs/x.bin"] == (True, "File on a row (blobs)")
 
 
+async def test_each_file_carries_its_reference_phrase_or_none(client, opened):
+    base, h = opened
+    rid = await _recipe(client, h, {"people": {"mode": "rows", "pks": [{"id": "1"}]}},
+                        {"avatars/a.png": False, "loose/readme.txt": True})
+    got = {f["key"]: f["reference"]
+           for f in (await _files(client, base, h, rid, size=100))["files"]}
+    assert got["avatars/a.png"] == "Avatar of Person A (people)"   # unticked, still referenced
+    assert got["loose/readme.txt"] is None                         # ticked by hand only
+    assert got["avatars/b.png"] is None
+
+
 async def test_a_key_not_in_objects_tar_is_ignored(client, opened):
     base, h = opened
     rid = await _recipe(client, h, {"people": {"mode": "rows", "pks": [{"id": "3"}]}},
