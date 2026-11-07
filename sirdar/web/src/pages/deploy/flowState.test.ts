@@ -224,3 +224,34 @@ describe('learn, digests and seeding', () => {
     expect(s.digests).toBe('');
   });
 });
+
+describe('From a recipe', () => {
+  const NO_ADMIN = { adminFirst: '', adminLast: '', adminEmail: '', adminPassword: '', adminConfirm: '' };
+  const recipe = (over: Partial<FlowState> = {}) =>
+    ssh({ dataMode: 'recipe', recipeId: 'r1', recipeSnapshotId: 's1', ...over });
+  it('starts on Keep passwords and 2FA', () => {
+    const s = initialState(ctx);
+    expect([s.recipeId, s.recipeSnapshotId, s.resetPasswords]).toEqual(['', '', false]);
+  });
+  it('needs a recipe and a snapshot', () => {
+    expect(stepErrors('data', recipe({ recipeId: '' }), ctx).data).toBe('Choose a recipe.');
+    expect(stepErrors('data', recipe({ recipeSnapshotId: '' }), ctx).data).toBe('Choose a snapshot.');
+    expect(stepErrors('data', recipe(), ctx)).toEqual({});
+  });
+  it('the first super admin is optional when keeping passwords, required when resetting', () => {
+    expect(stepErrors('data', recipe(NO_ADMIN), ctx)).toEqual({});
+    expect(stepErrors('data', recipe({ ...NO_ADMIN, adminEmail: 'nope' }), ctx).adminEmail).toMatch(/valid email/);
+    const reset = stepErrors('data', recipe({ ...NO_ADMIN, resetPasswords: true }), ctx);
+    expect(reset.adminName).toBeTruthy();
+    expect(reset.adminEmail).toBeTruthy();
+    expect(reset.adminPassword).toBeTruthy();
+    expect(stepErrors('data', recipe({ resetPasswords: true }), ctx)).toEqual({});
+  });
+  it('the body sends the built snapshot and the first admin when given', () => {
+    const body = buildBody(recipe({ resetPasswords: true }), ctx, 'built-1');
+    expect(body.snapshot_id).toBe('built-1');
+    expect(body.first_admin).toEqual({ first_name: 'Ada', last_name: 'Lovelace', email: 'ada@test.example.com',
+                                       password_mode: 'typed', password: 'Correct-Horse-9' });
+    expect(buildBody(recipe(NO_ADMIN), ctx, 'built-1').first_admin).toBeUndefined();
+  });
+});

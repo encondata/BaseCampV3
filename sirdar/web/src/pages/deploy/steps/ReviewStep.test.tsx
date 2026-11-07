@@ -10,8 +10,9 @@ import { initialState, type FlowState } from '../flowState';
 import ReviewStep from './ReviewStep';
 
 afterEach(cleanup);
+const RECIPES = [{ id: 'r1', name: 'Acme only', notes: '', tables: 2, rows: 3, files: 0, updated_at: '2026-11-07T10:00:00Z' }];
 function renderStep(over: Partial<FlowState>, extra: { problem?: string; created?: string | null } = {}) {
-  const ctx = flowCtx();
+  const ctx = flowCtx({ recipes: RECIPES });
   const state = { ...initialState(ctx), name: 'qa', type: 'custom' as const, target: 'ssh:lab', ...over };
   render(<MemoryRouter><ReviewStep state={state} set={vi.fn()} errors={{}} ctx={ctx} busy={false}
                                    problem={extra.problem ?? ''} created={extra.created ?? null} /></MemoryRouter>);
@@ -87,4 +88,24 @@ it('kiosk signing digests are counted while the kiosk runs', () => {
   cleanup();
   renderStep({ apps: { ...apps, kiosk: false }, digests: D1 });
   expect(screen.queryByText('Kiosk signing digests')).toBeNull();
+});
+
+it('a recipe start lists the recipe, the snapshot, the passwords and the first super admin', () => {
+  renderStep({ dataMode: 'recipe', recipeId: 'r1', recipeSnapshotId: SNAP.id, resetPasswords: true,
+               adminFirst: 'Ada', adminLast: 'Lovelace', adminEmail: 'ada@test.example.com', adminPassword: 'Correct-Horse-9' });
+  const dd = (dt: string) => screen.getByText(dt, { selector: 'dt' }).nextElementSibling?.textContent;
+  expect(dd('Recipe')).toBe('Acme only');
+  expect(dd('Snapshot')).toBe(SNAP.name);
+  expect(dd('Passwords')).toBe('Make everyone reset their password');
+  expect(dd('First super admin')).toBe('Ada Lovelace · ada@test.example.com');
+  expect(screen.queryByText('Seed starter content')).toBeNull();
+  expect(document.body.textContent).not.toContain('Correct-Horse-9');
+});
+
+it('a recipe start keeping passwords may have no first super admin', () => {
+  renderStep({ dataMode: 'recipe', recipeId: 'r1', recipeSnapshotId: SNAP.id });
+  const dd = (dt: string) => screen.getByText(dt, { selector: 'dt' }).nextElementSibling?.textContent;
+  expect(dd('Passwords')).toBe('Keep passwords and 2FA');
+  expect(dd('First super admin')).toBe('None');
+  expect(screen.queryByText('Their password')).toBeNull();
 });

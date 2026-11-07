@@ -24,5 +24,5 @@ export const FLOW_INTEGRATIONS: Integrations = {
 };
 export const flowCtx = (over: Partial<FlowContext> = {}): FlowContext => ({
   targets: FLOW_TARGETS, defaults: FLOW_DEFAULTS, integrations: FLOW_INTEGRATIONS,
-  accounts: DO_ACCOUNTS_BOTH, snapshots: [SNAP], ...over,
+  accounts: DO_ACCOUNTS_BOTH, snapshots: [SNAP], recipes: [], ...over,
 });

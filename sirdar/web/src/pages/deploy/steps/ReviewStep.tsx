@@ -2,7 +2,7 @@
 import { Link } from 'react-router-dom';
 
 import { parseDigests } from '../../../lib/appRules';
-import { KIND_LABEL, OPTIONAL_APPS, effectiveDomain, targetChoices, targetKind } from '../flowState';
+import { KIND_LABEL, OPTIONAL_APPS, effectiveDomain, sendsAdmin, targetChoices, targetKind } from '../flowState';
 
 import type { StepProps } from './EnvironmentStep';
 
@@ -17,6 +17,10 @@ export default function ReviewStep({ state, ctx, problem, created }: StepProps &
   const bg = state.servers === 'bluegreen';
   const servers = bg ? (state.type === 'production' ? 'Blue/Green (blue and green)' : 'Blue/Green (orange and purple)') : 'Single server';
   const snapshot = ctx.snapshots.find((s) => s.id === state.snapshotId);
+  const recipeMode = state.dataMode === 'recipe';
+  const recipe = ctx.recipes.find((r) => r.id === state.recipeId);
+  const recipeSnapshot = ctx.snapshots.find((s) => s.id === state.recipeSnapshotId);
+  const admin = sendsAdmin(state);
   const digests = state.apps.kiosk ? parseDigests(state.digests).digests.length : 0;
   return (
     <>
@@ -48,8 +52,17 @@ export default function ReviewStep({ state, ctx, problem, created }: StepProps &
         {state.mailMode === 'smtp' && state.smtpPassword && <><dt>SMTP password</dt><dd>{HIDDEN}</dd></>}
         {state.aiKey && <><dt>Anthropic API key</dt><dd>{HIDDEN}</dd></>}
         <dt>Data</dt>
-        <dd>{state.dataMode === 'snapshot' ? `Snapshot ${snapshot?.name ?? ''}, restored by the first deploy` : 'Empty'}</dd>
-        {state.dataMode === 'empty' && (
+        <dd>{state.dataMode === 'snapshot' ? `Snapshot ${snapshot?.name ?? ''}, restored by the first deploy`
+          : recipeMode ? 'From a recipe' : 'Empty'}</dd>
+        {recipeMode && (
+          <>
+            <dt>Recipe</dt><dd>{recipe?.name ?? ''}</dd>
+            <dt>Snapshot</dt><dd>{recipeSnapshot?.name ?? ''}</dd>
+            <dt>Passwords</dt><dd>{state.resetPasswords ? 'Make everyone reset their password' : 'Keep passwords and 2FA'}</dd>
+          </>
+        )}
+        {recipeMode && !admin && <><dt>First super admin</dt><dd>None</dd></>}
+        {admin && (
           <>
             <dt>First super admin</dt>
             <dd>{`${state.adminFirst.trim()} ${state.adminLast.trim()} · ${state.adminEmail.trim()}`}</dd>

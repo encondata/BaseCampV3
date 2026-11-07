@@ -3,7 +3,9 @@
  *  with the report-generate header; Deploy creates the environment, starts
  *  its first deployment and opens it. A start that fails after the create is
  *  retried on its own: the environment is never created twice, and the flow
- *  is locked on Review from then on (its choices are no longer used). */
+ *  is locked on Review from then on (its choices are no longer used).
+ *  From a recipe, Deploy first builds the recipe's subset snapshot (polled
+ *  every BUILD_POLL_MS until ready or failed) and creates with that. */
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -15,6 +17,7 @@ import {
   createEnvironment, deployErrorText, getDoAccounts, getEnvironmentDefaults, getIntegrations, listSnapshots, startDeployment,
   type DeployTarget,
 } from '../../lib/sirdarApi';
+import { buildNoteText, buildRecipe, listRecipes, seedErrorText } from '../seed/seedApi';
 
 import {
   CODE_FIELD, FLOW_STEPS, STEP_HINT, buildBody, initialState, nextStep, prevStep, stepErrors, stepOfCode, withRules,
@@ -27,6 +30,9 @@ import ReviewStep from './steps/ReviewStep';
 import ServersStep from './steps/ServersStep';
 import TargetStep from './steps/TargetStep';
 import TrafficStep from './steps/TrafficStep';
+
+/** While the recipe's snapshot builds, the snapshots are polled this often. */
+export const BUILD_POLL_MS = 2000;
 
 export default function DeployFlow({ targets, reloadTargets }: { targets: DeployTarget[]; reloadTargets: () => void }) {
   const { can } = useAuth();
@@ -44,6 +50,11 @@ export default function DeployFlow({ targets, reloadTargets }: { targets: Deploy
   const unsure = useRef(new Set<string>());
   const [maybeCreated, setMaybeCreated] = useState('');
   const [announce, setAnnounce] = useState('');
+  const [building, setBuilding] = useState(false);
+  /** From a recipe: the snapshot built for these choices, so a retried create doesn't build again. */
+  const built = useRef<{ key: string; id: string } | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const busyRef = useRef(false);
   const focusName = useRef(false);
   const focusTitle = useRef(false);
@@ -62,9 +73,9 @@ export default function DeployFlow({ targets, reloadTargets }: { targets: Deploy
     let live = true;
     const snaps = listSnapshots().then((r) => r.snapshots.filter((s) => s.status === 'ready')).catch(() => []);
     Promise.all([getEnvironmentDefaults(), getIntegrations().catch(() => null),
-                 getDoAccounts().then((r) => r.accounts).catch(() => []), snaps])
-      .then(([defaults, integrations, accounts, snapshots]) => {
-        if (live) setBase({ defaults: defaults as FlowContext['defaults'], integrations, accounts, snapshots });
+                 getDoAccounts().then((r) => r.accounts).catch(() => []), snaps, listRecipes().catch(() => [])])
+      .then(([defaults, integrations, accounts, snapshots, recipes]) => {
+        if (live) setBase({ defaults: defaults as FlowContext['defaults'], integrations, accounts, snapshots, recipes });
       })
       .catch((e) => { if (live) setLoadError(deployErrorText(e, "Couldn't load the defaults.")); });
     return () => { live = false; };
@@ -85,13 +96,52 @@ export default function DeployFlow({ targets, reloadTargets }: { targets: Deploy
     navigate(`/deploy/environments/${encodeURIComponent(name)}?deployment=${encodeURIComponent(dep.id)}`);
   }
 
+  /** A problem that belongs on the Data step: shown there. */
+  const dataProblem = (text: string) => {
+    setErrors({ data: text });
+    if (step !== 'data') go('data');
+  };
+
+  /** Build the recipe's snapshot and wait for it: its id, or null (the reason is on the Data step). */
+  async function buildFromRecipe(s: FlowState): Promise<string | null> {
+    const key = JSON.stringify([s.recipeId, s.recipeSnapshotId, s.resetPasswords]);
+    if (built.current?.key === key) return built.current.id;
+    setBuilding(true);
+    try {
+      let snap = await buildRecipe(s.recipeId, { snapshot_id: s.recipeSnapshotId, reset_passwords: s.resetPasswords });
+      while (snap.status === 'pending') {
+        await new Promise((done) => { setTimeout(done, BUILD_POLL_MS); });
+        if (!mounted.current) return null;
+        const id = snap.id;
+        const found = (await listSnapshots()).snapshots.find((x) => x.id === id);
+        if (!found) { dataProblem(buildNoteText('build_failed')); return null; }
+        snap = found;
+      }
+      if (!mounted.current) return null;
+      if (snap.status !== 'ready') { dataProblem(buildNoteText(snap.notes)); return null; }
+      built.current = { key, id: snap.id };
+      return snap.id;
+    } catch (err) {
+      if (mounted.current) dataProblem(seedErrorText(err, "Couldn't build the recipe's snapshot."));
+      return null;
+    } finally {
+      if (mounted.current) setBuilding(false);
+    }
+  }
+
   async function deploy(alreadyCreated?: string) {
     if (!state || !ctx || busyRef.current) return;
     busyRef.current = true; setBusy(true); setProblem('');
     let name = alreadyCreated ?? created;
     try {
       if (!name) {
-        const body = buildBody(state, ctx);
+        let builtId = '';
+        if (state.dataMode === 'recipe') {
+          const id = await buildFromRecipe(state);
+          if (!id) return;
+          builtId = id;
+        }
+        const body = buildBody(state, ctx, builtId);
         try {
           name = (await createEnvironment(body)).name;
           setCreated(name);
@@ -102,7 +152,9 @@ export default function DeployFlow({ targets, reloadTargets }: { targets: Deploy
           const field = CODE_FIELD[code] ?? 'form';
           const to = stepOfCode(code);
           const text = deployErrorText(err, "Couldn't create the environment.");
-          if (code === 'snapshot_not_found' || code === 'snapshot_not_ready') {
+          if ((code === 'snapshot_not_found' || code === 'snapshot_not_ready') && state.dataMode === 'recipe') {
+            built.current = null;   // the built snapshot is gone: Deploy builds again
+          } else if (code === 'snapshot_not_found' || code === 'snapshot_not_ready') {
             const gone = state.snapshotId;
             setBase((b) => (b ? { ...b, snapshots: b.snapshots.filter((s) => s.id !== gone) } : b));
             setState((s) => (s ? { ...s, snapshotId: '', dataMode: 'empty' } : s));
@@ -159,6 +211,7 @@ export default function DeployFlow({ targets, reloadTargets }: { targets: Deploy
   const startOver = () => {
     if (!window.confirm('Start over? Every choice in this flow is cleared.')) return;
     setState(initialState(ctx)); setErrors({}); setProblem(''); setCreated(null); setMaybeCreated('');
+    built.current = null;
     unsure.current.clear();
     go('environment');
   };
@@ -199,6 +252,7 @@ export default function DeployFlow({ targets, reloadTargets }: { targets: Deploy
           {shown === 'traffic' && <TrafficStep {...props} />}
           {shown === 'data' && <DataStep {...props} />}
           {shown === 'review' && <ReviewStep {...props} busy={busy} problem={problem} created={created} />}
+          {shown === 'review' && building && <p className="page-hint" role="status">Building the recipe's snapshot…</p>}
           {errors.form && shown !== 'review' && <p className="form-error" role="alert">{errors.form}</p>}
         </div>
         <div className="sirdar-flow-foot">

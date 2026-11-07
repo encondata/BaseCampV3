@@ -1,7 +1,12 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+
+const seed = vi.hoisted(() => ({
+  getRecipe: vi.fn(), openSnapshot: vi.fn(), snapshotStatus: vi.fn(), resolveSelection: vi.fn(),
+}));
+vi.mock('../../seed/seedApi', async (orig) => ({ ...(await orig<typeof import('../../seed/seedApi')>()), ...seed }));
 
 import { SNAP } from '../../environments/testData';
 import { flowCtx } from '../flowFixtures';
@@ -11,8 +16,20 @@ import DataStep from './DataStep';
 
 Element.prototype.scrollIntoView = () => {};   // jsdom lacks it (ComboBox calls it)
 afterEach(cleanup);
+const RECIPES = [{ id: 'r1', name: 'Acme only', notes: '', tables: 2, rows: 3, files: 0, updated_at: '2026-11-07T10:00:00Z' }];
+beforeEach(() => {
+  Object.values(seed).forEach((f) => f.mockReset());
+  seed.getRecipe.mockResolvedValue({
+    id: 'r1', name: 'Acme only', notes: '', files: {},
+    tables: { people: { mode: 'rows', pks: [{ id: '1' }, { id: '2' }, { id: '3' }] }, roles: { mode: 'all', pks: [] } },
+  });
+  seed.openSnapshot.mockResolvedValue({ status: 'ready' });
+  seed.resolveSelection.mockResolvedValue({
+    added: {}, reasons: [], added_tables: [], missing_tables: [], missing: { people: [{ id: '3' }] },
+  });
+});
 function renderStep(over: Partial<FlowState> = {}, ctxOver: Partial<FlowContext> = {}, errors: Errors = {}) {
-  const ctx = flowCtx(ctxOver);
+  const ctx = flowCtx({ recipes: RECIPES, ...ctxOver });
   const set = vi.fn();
   render(<DataStep state={{ ...initialState(ctx), name: 'qa', target: 'ssh:lab', ...over }} set={set} errors={errors} ctx={ctx} />);
   return set;
@@ -130,4 +147,58 @@ it('starting empty offers Seed starter content, on by default', async () => {
 it('a snapshot has nothing to seed', () => {
   renderStep({ dataMode: 'snapshot' });
   expect(screen.queryByLabelText('Seed starter content')).toBeNull();
+});
+
+it('offers three choices: Start empty, From a snapshot, From a recipe', async () => {
+  const set = renderStep();
+  expect(screen.getAllByRole('radio').slice(0, 3).map((r) => r.textContent))
+    .toEqual(['Start empty', 'From a snapshot', 'From a recipe']);
+  await userEvent.click(screen.getByRole('radio', { name: 'From a recipe' }));
+  expect(set).toHaveBeenCalledWith({ dataMode: 'recipe' });
+});
+
+it('without recipes From a recipe is locked', async () => {
+  const set = renderStep({}, { recipes: [] });
+  const r = screen.getByRole('radio', { name: 'From a recipe' });
+  expect(r.getAttribute('aria-disabled')).toBe('true');
+  await userEvent.click(r);
+  expect(set).not.toHaveBeenCalled();
+});
+
+it('From a recipe: recipe, snapshot, the password options and the first admin fields', async () => {
+  const set = renderStep({ dataMode: 'recipe' });
+  await userEvent.click(screen.getByLabelText('Recipe'));
+  await userEvent.click(await screen.findByText('Acme only'));
+  expect(set).toHaveBeenCalledWith({ recipeId: 'r1' });
+  await userEvent.click(screen.getByLabelText('Snapshot'));
+  await userEvent.click(await screen.findByText(new RegExp(SNAP.name)));
+  expect(set).toHaveBeenCalledWith({ recipeSnapshotId: SNAP.id });
+  expect(screen.getByRole('radio', { name: 'Keep passwords and 2FA' }).getAttribute('aria-checked')).toBe('true');
+  expect(screen.getByText('Every copied user gets no usable password and their 2FA is cleared; they set new ones from a reset link.'))
+    .toBeTruthy();
+  await userEvent.click(screen.getByRole('radio', { name: 'Make everyone reset their password' }));
+  expect(set).toHaveBeenCalledWith({ resetPasswords: true });
+  expect(screen.getByLabelText('First name')).toBeTruthy();
+  expect(screen.getByLabelText('Email')).toBeTruthy();
+  expect(screen.queryByLabelText('Seed starter content')).toBeNull();
+});
+
+it('From a recipe shows the ticked records found and missing in the snapshot', async () => {
+  renderStep({ dataMode: 'recipe', recipeId: 'r1', recipeSnapshotId: SNAP.id });
+  expect(await screen.findByText('2 of 3 ticked records found in this snapshot; 1 missing')).toBeTruthy();
+  expect(seed.openSnapshot).toHaveBeenCalledWith(SNAP.id);
+  expect(seed.resolveSelection).toHaveBeenCalledWith(SNAP.id, expect.objectContaining({ people: expect.anything() }));
+});
+
+it('a snapshot the scratch copy dropped is opened again before counting', async () => {
+  const { ApiError } = await import('@portal/lib/api');
+  seed.resolveSelection.mockRejectedValueOnce(new ApiError(409, 'snapshot_not_open', { code: 'snapshot_not_open' }));
+  renderStep({ dataMode: 'recipe', recipeId: 'r1', recipeSnapshotId: SNAP.id });
+  expect(await screen.findByText(/2 of 3 ticked records found/)).toBeTruthy();
+  expect(seed.openSnapshot).toHaveBeenCalledTimes(2);
+});
+
+it('From a recipe shows its data error', () => {
+  renderStep({ dataMode: 'recipe' }, {}, { data: 'Choose a recipe.' });
+  expect(screen.getByRole('alert').textContent).toBe('Choose a recipe.');
 });

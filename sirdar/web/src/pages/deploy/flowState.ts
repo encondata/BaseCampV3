@@ -11,6 +11,7 @@ import type {
   DeployTarget, DoAccount, DoAccountKey, EnvType, EnvironmentDefaults, Integrations, NewEnvironmentBody, Snapshot,
 } from '../../lib/sirdarApi';
 import { gbOf, isDoTarget, isVmTarget, mbOf, sshTargets } from '../environments/labels';
+import type { RecipeSummary } from '../seed/seedApi';
 
 export { OPTIONAL_APPS, type OptionalApp } from '../../lib/appRules';
 
@@ -25,7 +26,7 @@ export const STEP_HINT: Record<FlowStep, string> = {
   target: 'Where Sirdar builds it, and that target\'s details.',
   extras: 'Optional apps, hosting options and integrations.',
   traffic: 'What will route traffic to the environment. Nothing to choose here.',
-  data: 'Seed it from a snapshot, or start empty with a first super admin.',
+  data: 'Seed it from a snapshot or a recipe, or start empty with a first super admin.',
   review: 'Every choice. Deploy creates the environment and starts its first deployment.',
 };
 export const KINDS: EnvType[] = ['production', 'dev', 'beta', 'custom'];
@@ -61,7 +62,10 @@ export interface FlowState {
   aiKey: string;
   /** The kiosk signing digests as typed, one per line. */
   digests: string;
-  dataMode: 'empty' | 'snapshot'; snapshotId: string;
+  dataMode: 'empty' | 'snapshot' | 'recipe'; snapshotId: string;
+  /** From a recipe: the recipe, the ready snapshot it's applied to, and
+   *  whether every copied user must reset their password. */
+  recipeId: string; recipeSnapshotId: string; resetPasswords: boolean;
   /** Empty start: step 20 seeds starter content. */
   seedContent: boolean;
   adminFirst: string; adminLast: string; adminEmail: string; adminPasswordMode: 'typed' | 'invite';
@@ -73,6 +77,7 @@ export interface FlowContext {
   integrations: Integrations | null;
   accounts: DoAccount[];
   snapshots: Snapshot[];
+  recipes: RecipeSummary[];
 }
 
 const npmHost = (i: Integrations | null): string => {
@@ -97,7 +102,7 @@ export function initialState(ctx: FlowContext): FlowState {
     apps: { wiki: true, kiosk: true, learn: true, status: true, mailpit: true },
     mailMode: 'mailpit', smtpHost: '', smtpPort: String(d.mail.smtp_port), smtpUsername: '', smtpPassword: '',
     smtpFrom: '', smtpStarttls: true, aiKey: '', digests: '',
-    dataMode: 'empty', snapshotId: '', seedContent: true,
+    dataMode: 'empty', snapshotId: '', recipeId: '', recipeSnapshotId: '', resetPasswords: false, seedContent: true,
     adminFirst: '', adminLast: '', adminEmail: '', adminPasswordMode: 'typed', adminPassword: '', adminConfirm: '',
   };
 }
@@ -241,6 +246,11 @@ export function stepErrors(step: FlowStep, s: FlowState, ctx: FlowContext): Erro
     }
     case 'data': {
       if (s.dataMode === 'snapshot') return s.snapshotId ? {} : { data: 'Choose a snapshot.' };
+      if (s.dataMode === 'recipe') {
+        if (!s.recipeId) return { data: 'Choose a recipe.' };
+        if (!s.recipeSnapshotId) return { data: 'Choose a snapshot.' };
+        if (!sendsAdmin(s)) return {};
+      }
       const min = ctx.defaults.first_admin.password_min_length;
       const names = [s.adminFirst, s.adminLast].map((v) => v.trim());
       return only({
@@ -261,9 +271,20 @@ export function stepErrors(step: FlowStep, s: FlowState, ctx: FlowContext): Erro
   }
 }
 
+/** Whether the create sends a first super admin: always when starting
+ *  empty; from a recipe, when resetting everyone's password (required) or
+ *  when any of its fields is filled in (optional otherwise). */
+export function sendsAdmin(s: FlowState): boolean {
+  if (s.dataMode === 'empty') return true;
+  if (s.dataMode !== 'recipe') return false;
+  return s.resetPasswords || [s.adminFirst, s.adminLast, s.adminEmail].some((v) => v.trim() !== '')
+    || (s.adminPasswordMode === 'typed' && (s.adminPassword !== '' || s.adminConfirm !== ''));
+}
+
 const ports = (ctx: FlowContext) => Object.fromEntries(ctx.defaults.services.map((sv) => [sv.service, sv.port]));
 
-export function buildBody(s: FlowState, ctx: FlowContext): NewEnvironmentBody {
+/** `builtSnapshotId`: From a recipe, the subset snapshot built for this deploy. */
+export function buildBody(s: FlowState, ctx: FlowContext, builtSnapshotId = ''): NewEnvironmentBody {
   const kind = targetKind(s.target);
   const production = s.type === 'production';
   const twoSlots = s.servers === 'bluegreen';
@@ -278,7 +299,8 @@ export function buildBody(s: FlowState, ctx: FlowContext): NewEnvironmentBody {
     ...(digests.length ? { kiosk_signing_digests: digests } : {}),
   };
   if (s.dataMode === 'snapshot') body.snapshot_id = s.snapshotId;
-  else {
+  if (s.dataMode === 'recipe') body.snapshot_id = builtSnapshotId;
+  if (sendsAdmin(s)) {
     body.first_admin = {
       first_name: s.adminFirst.trim(), last_name: s.adminLast.trim(), email: s.adminEmail.trim(),
       password_mode: s.adminPasswordMode, password: s.adminPasswordMode === 'typed' ? s.adminPassword : null,

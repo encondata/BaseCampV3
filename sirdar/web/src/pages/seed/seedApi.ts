@@ -2,7 +2,7 @@
  *  database, resolving the rows a selection needs, and recipes. */
 import { ApiError } from '@portal/lib/api';
 
-import { errorText, getJson, sendJson } from '../../lib/sirdarApi';
+import { errorText, getJson, sendJson, type Snapshot } from '../../lib/sirdarApi';
 
 import type { PkObject, SelectionBody } from './selection';
 
@@ -77,6 +77,12 @@ export const createRecipe = (name: string) => sendJson<Recipe>('POST', '/seed/re
 export const putRecipe = (id: string, body: RecipeBody) =>
   sendJson<Recipe>('PUT', `/seed/recipes/${encodeURIComponent(id)}`, body);
 
+/** Cut a subset snapshot: the recipe applied to a ready snapshot. It comes
+ *  back pending; poll the snapshots until it's ready, or failed with the
+ *  reason in its notes (buildNoteText). */
+export const buildRecipe = (id: string, body: { snapshot_id: string; reset_passwords: boolean }) =>
+  sendJson<Snapshot>('POST', `/seed/recipes/${encodeURIComponent(id)}/build`, body);
+
 const SEED_MESSAGES: Record<string, string> = {
   scratch_not_configured: "Seed Data needs its scratch database, and SIRDAR_SCRATCH_URL isn't set.",
   scratch_unavailable: "Sirdar can't reach its scratch database right now.",
@@ -94,6 +100,34 @@ const SEED_MESSAGES: Record<string, string> = {
   recipe_not_found: 'That recipe no longer exists.',
   forbidden: "You don't have access to do that.",
 };
+
+/** A failed build's notes: a code, or "code: detail" (seed/build.py). */
+const BUILD_NOTES: Record<string, string> = {
+  unsafe_schema: "This snapshot's schema has something a subset can't copy safely",
+  missing_parent: 'A kept row needs a row the recipe leaves out',
+  reset_target_missing: "This snapshot doesn't have a table or column the password reset changes",
+  reset_failed: "The password reset couldn't be applied",
+  unexpected_rows: "The subset ended up with rows the recipe doesn't keep",
+  load_failed: "The kept rows couldn't be loaded",
+  schema_copy_failed: "This snapshot's schema couldn't be copied",
+  dump_failed: "The subset couldn't be written out",
+  bundle_invalid: "The subset snapshot couldn't be written",
+  snapshot_file_missing: "The source snapshot's file is missing",
+  interrupted: 'Sirdar restarted while the snapshot was being built',
+  cancelled: 'The build was canceled',
+  build_failed: 'The build failed',
+  scratch_unavailable: "Sirdar couldn't reach its scratch database",
+};
+
+/** Readable text for a failed build's notes; an unknown code is shown as it is. */
+export function buildNoteText(notes: string): string {
+  const at = notes.indexOf(':');
+  const code = (at < 0 ? notes : notes.slice(0, at)).trim();
+  const detail = at < 0 ? '' : notes.slice(at + 1).trim();
+  const text = BUILD_NOTES[code];
+  if (!text) return notes.trim() || 'The build failed.';
+  return `${text}${detail ? `: ${detail}` : ''}.`;
+}
 
 export function seedErrorText(err: unknown, fallback: string): string {
   if (err instanceof ApiError && SEED_MESSAGES[err.code]) return SEED_MESSAGES[err.code];

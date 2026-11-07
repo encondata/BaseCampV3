@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -17,6 +17,11 @@ const api = vi.hoisted(() => ({
   trustKnownHost: vi.fn(), getDoRegions: vi.fn(), connectDeploy: vi.fn(),
 }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
+const seed = vi.hoisted(() => ({
+  listRecipes: vi.fn(), getRecipe: vi.fn(), openSnapshot: vi.fn(), snapshotStatus: vi.fn(), resolveSelection: vi.fn(),
+  buildRecipe: vi.fn(),
+}));
+vi.mock('../seed/seedApi', async (orig) => ({ ...(await orig<typeof import('../seed/seedApi')>()), ...seed }));
 
 import { ApiError } from '@portal/lib/api';
 
@@ -35,7 +40,14 @@ beforeEach(() => {
   api.getDoAccounts.mockResolvedValue({ accounts: DO_ACCOUNTS_BOTH });
   api.listSnapshots.mockResolvedValue({ snapshots: [SNAP] });
   api.listKnownHosts.mockResolvedValue([]);
+  Object.values(seed).forEach((f) => f.mockReset());
+  seed.listRecipes.mockResolvedValue([RECIPE]);
+  seed.getRecipe.mockResolvedValue({ id: 'r1', name: 'Acme only', notes: '', files: {},
+                                     tables: { people: { mode: 'rows', pks: [{ id: '1' }] } } });
+  seed.openSnapshot.mockResolvedValue({ status: 'ready' });
+  seed.resolveSelection.mockResolvedValue({ added: {}, reasons: [], added_tables: [], missing_tables: [], missing: {} });
 });
+const RECIPE = { id: 'r1', name: 'Acme only', notes: '', tables: 1, rows: 1, files: 0, updated_at: '2026-11-07T10:00:00Z' };
 Element.prototype.scrollIntoView = () => {};   // jsdom lacks it (ComboBox calls it)
 afterEach(cleanup);
 
@@ -313,4 +325,92 @@ it('environment_exists on a first try is only the Name error', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
   await screen.findByText('An environment with that name already exists.');
   expect(screen.queryByText(/It may have been created already/)).toBeNull();
+});
+
+const BUILT = { ...SNAP, id: 'b1', name: 'Acme only from dev-2026-10-04', origin: 'recipe' as 'upload', status: 'pending' as const };
+
+async function recipeToReview(reset: boolean) {
+  await userEvent.type(screen.getByLabelText('Name'), 'qa');
+  await userEvent.click(screen.getByRole('radio', { name: 'Custom' }));
+  await next(); await next();
+  await userEvent.click(screen.getByRole('radio', { name: /Lab box/ }));
+  await next(); await next(); await next();                  // Data
+  await userEvent.click(screen.getByRole('radio', { name: 'From a recipe' }));
+  await userEvent.click(screen.getByLabelText('Recipe'));
+  await userEvent.click(await screen.findByText('Acme only'));
+  await userEvent.click(screen.getByLabelText('Snapshot'));
+  await userEvent.click(await screen.findByText(snapshotLabel(SNAP)));
+  await screen.findByText('1 of 1 ticked records found in this snapshot; 0 missing');
+  if (reset) {
+    await userEvent.click(screen.getByRole('radio', { name: 'Make everyone reset their password' }));
+    await next();
+    expect(screen.getByRole('heading', { name: 'Data' })).toBeTruthy();      // the first admin is required
+    await userEvent.type(screen.getByLabelText('First name'), 'Ada');
+    await userEvent.type(screen.getByLabelText('Last name'), 'Lovelace');
+    await userEvent.type(screen.getByLabelText('Email'), 'ada@test.example.com');
+    await userEvent.click(screen.getByRole('radio', { name: 'Generate & invite' }));
+  }
+  await next();                                              // Review
+  expect(screen.getByRole('heading', { name: 'Review & Deploy' })).toBeTruthy();
+}
+
+it('From a recipe builds the snapshot, waits for it, then creates with it and the first admin', async () => {
+  seed.buildRecipe.mockResolvedValue(BUILT);
+  api.createEnvironment.mockResolvedValue({ ...ENV, name: 'qa' });
+  api.startDeployment.mockResolvedValue({ ...RUNNING, id: 'dep-1', environment: 'qa' });
+  await open();
+  await recipeToReview(true);
+  api.listSnapshots.mockResolvedValue({ snapshots: [SNAP, { ...BUILT, status: 'ready' }] });
+  vi.useFakeTimers();
+  try {
+    fireEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByText("Building the recipe's snapshot…")).toBeTruthy();
+    expect(seed.buildRecipe).toHaveBeenCalledWith('r1', { snapshot_id: SNAP.id, reset_passwords: true });
+    expect(api.createEnvironment).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  } finally { vi.useRealTimers(); }
+  await screen.findByText('at /deploy/environments/qa?deployment=dep-1');
+  expect(api.createEnvironment).toHaveBeenCalledWith(expect.objectContaining({
+    snapshot_id: 'b1',
+    first_admin: { first_name: 'Ada', last_name: 'Lovelace', email: 'ada@test.example.com', password_mode: 'invite',
+                   password: null } }));
+  expect(api.startDeployment).toHaveBeenCalledWith('qa', { mode: 'update' });
+});
+
+it('keeping passwords with no first admin sends none', async () => {
+  seed.buildRecipe.mockResolvedValue({ ...BUILT, status: 'ready' });
+  api.createEnvironment.mockResolvedValue({ ...ENV, name: 'qa' });
+  api.startDeployment.mockResolvedValue({ ...RUNNING, id: 'dep-1', environment: 'qa' });
+  await open();
+  await recipeToReview(false);
+  await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+  await screen.findByText('at /deploy/environments/qa?deployment=dep-1');
+  expect(seed.buildRecipe).toHaveBeenCalledWith('r1', { snapshot_id: SNAP.id, reset_passwords: false });
+  const body = api.createEnvironment.mock.calls[0][0];
+  expect(body.snapshot_id).toBe('b1');
+  expect(body.first_admin).toBeUndefined();
+});
+
+it("a failed build shows the snapshot's notes on the Data step and creates nothing", async () => {
+  seed.buildRecipe.mockResolvedValue(BUILT);
+  await open();
+  await recipeToReview(false);
+  api.listSnapshots.mockResolvedValue({ snapshots: [SNAP, { ...BUILT, status: 'failed', notes: 'reset_failed' }] });
+  vi.useFakeTimers();
+  try {
+    fireEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  } finally { vi.useRealTimers(); }
+  expect(await screen.findByRole('heading', { name: 'Data' })).toBeTruthy();
+  expect(screen.getByText("The password reset couldn't be applied.")).toBeTruthy();
+  expect(api.createEnvironment).not.toHaveBeenCalled();
+});
+
+it('a failed build with an unknown code shows the code', async () => {
+  seed.buildRecipe.mockResolvedValue({ ...BUILT, status: 'failed', notes: 'something_new: detail' });
+  await open();
+  await recipeToReview(false);
+  await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+  expect(await screen.findByText('something_new: detail')).toBeTruthy();
 });
