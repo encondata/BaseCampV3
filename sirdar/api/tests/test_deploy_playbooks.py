@@ -883,7 +883,11 @@ def test_first_admin_step_follows_start_services():
     assert [s.number for s in steps.plan_for("update", first_admin=True, publish=True)] == [
         1, 2, 3, 4, 5, 6, 10, 11, 12, 13, 14]
     assert steps.STEPS_BY_KEY["first_admin"].name == "Create the first admin"
-    for mode, kw in (("reset", {}), ("update", {"restore": True}), ("teardown", {}),
+    # A restore may plan step 11 (a Seed Data recipe snapshot); pipeline.create_deployment
+    # refuses it for any other snapshot. The admin comes after the restore and up.
+    assert [s.key for s in steps.plan_for("update", first_admin=True, restore=True)][-3:] == [
+        "restore", "up", "first_admin"]
+    for mode, kw in (("reset", {}), ("teardown", {}),
                      ("snapshot", {}), ("restore_dump", {})):
         with pytest.raises(ValueError):
             steps.plan_for(mode, first_admin=True, **kw)
