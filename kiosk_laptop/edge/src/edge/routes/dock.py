@@ -1,16 +1,17 @@
 """/edge/dock/* — what the kiosk's Dock screen polls and does: the overview,
-one closed pass's detail and the Start and Stop control. Like
+one closed pass's detail and the Start and Stop control; and the crate
+window W that Settings › RFID reads and sets (edge.dock.state). Like
 /edge/rfid/alarm these need any edge session, online or
-offline; only Start needs an online one (as /edge/rfid/start does). Apart
-from the control's reader calls, they only read and write the laptop's own
-store."""
+offline; only Start needs an online one (as /edge/rfid/start does), and only
+an admin or a developer may set the window. Apart from the control's reader
+calls, they only read and write the laptop's own store."""
 
 import re
 
 from fastapi import APIRouter, Depends, Request
 
-from edge.deps import err, json_object, online, require_session
-from edge.dock import grouper, views
+from edge.deps import err, json_object, online, require_admin, require_session
+from edge.dock import grouper, state, views
 from edge.routes.rfid import start_reader, stop_reader
 from edge.sessions import EdgeSession
 
@@ -32,6 +33,28 @@ async def pass_detail(request: Request, pass_id: str) -> dict:
     if found is None:
         raise err(404, "pass_not_found")
     return found
+
+
+@router.get("/window")
+async def get_window(request: Request) -> dict:
+    with request.app.state.store.tx() as c:
+        return {"window_s": state.window_s(c)}
+
+
+@router.put("/window")
+async def put_window(request: Request, session: EdgeSession = Depends(require_admin)) -> dict:
+    """Set W, from the next burst on: an admin a whole number of seconds
+    from 1 to 10, a developer any number above 0 up to an hour (422
+    invalid_window otherwise)."""
+    value = (await json_object(request)).get("window_s")
+    developer = "developer" in (session.session.get("roles") or [])
+    try:
+        window_s = state.parse_window(value, developer=developer)
+    except ValueError:
+        raise err(422, "invalid_window") from None
+    with request.app.state.store.tx() as c:
+        state.save_window(c, window_s)
+    return {"window_s": window_s}
 
 
 @router.post("/control")

@@ -3,7 +3,8 @@ spec, "The crate window"): the crates read so far by first read, which will
 be flagged together, how many assets the newest crate holds, and for
 each asset its serial (from the move's cached data) and whether it is inside
 a crate's window. It is worked out with the grouper's own window test, so the
-screen agrees with what deciding the burst packs. W = 5 s throughout."""
+screen agrees with what deciding the burst packs, and with the window the
+burst opened with. W = 5 s (the default) unless a test saves another."""
 
 from itertools import cycle
 
@@ -13,7 +14,7 @@ from edge.db import Store
 from edge.dock import views
 from tests.fake_reader import tag_event
 from tests.test_dock_grouper import (ASSETS, CRATES, at, batch, decided, dock, group, passes,
-                                     post, read, tags)
+                                     post, read, save_window, tags)
 from tests.test_rfid_alarm import client_asset
 from tests.test_rfid_processing import MOVE, set_cache
 
@@ -262,3 +263,19 @@ def test_open_pass_with_many_reads(store, tmp_path):
         assert shown(store, "in_window")["AA03"] == (False,)
     finally:
         few.close()
+
+
+def test_open_pass_uses_its_burst_window(store):
+    dock(store)
+    save_window(store, 3)
+    for epc, s in (("CC01", 0), ("AA01", 4)):     # AA01: 4 s from the crate, inside its 2W
+        read(store, epc, s)
+    group(store, 4)
+    fields = ("in_window", "crate_label")
+    assert shown(store, *fields)["AA01"] == (False, None)
+    assert open_pass(store)["added_count"] == 0
+    save_window(store, 10)                        # the open burst keeps W = 3
+    assert shown(store, *fields)["AA01"] == (False, None)
+    assert open_pass(store)["added_count"] == 0
+    store.run("UPDATE dock_passes SET quiet_gap_s = NULL")   # a burst opened before W was kept
+    assert shown(store, *fields)["AA01"] == (True, "Crate 1")  # follows the setting

@@ -15,8 +15,9 @@ section mirrors them (config_sync), marked dirty whenever they change.
 A Dock Station's passes are dropped with the alarm state when the move
 changes, when the laptop is set up as another station type, and when it
 becomes a Dock from another type (the grouper then starts after the newest
-read, so reads taken as another station never land in a pass); Clear Setup
-also drops any dock settings row left by an older build (edge.dock.state).
+read, so reads taken as another station never land in a pass). The Dock's
+crate window survives those; Clear Setup puts it back to its default and
+drops any dock settings row left by an older build (edge.dock.state).
 
 Every Label Station setup leaves the settings unconfirmed (`label_unconfirmed`
 in the shared setup, never in `label_station`) until setup step 5 saves them
@@ -92,8 +93,9 @@ def _with_defaults(settings):
 
 def clear(store: Store) -> None:
     """Forget the shared setup (Clear Setup from the portal, or Wipe), and
-    with it the setup move's off-move alarms, the Dock's passes and any
-    dock settings row left by an older build."""
+    with it the setup move's off-move alarms, the Dock's passes and crate
+    window (back to the default) and any dock settings row left by an older
+    build."""
     with store.tx() as c:
         had = label_station_in(c) is not None
         c.execute("DELETE FROM laptop_setup")

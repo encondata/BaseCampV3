@@ -1,5 +1,5 @@
-/** Kiosk Settings — tabbed sections for Appearance, Sound, Devices, This
- *  Kiosk, Admin, and Developer. The Developer tab, while developer mode
+/** Kiosk Settings — tabbed sections for Appearance, Sound, Devices, RFID,
+ *  This Kiosk, Edge, Admin, and Developer (RFID and Edge on a laptop only). The Developer tab, while developer mode
  *  is on, also shows a read-only "Local data" row (the downloaded move's
  *  counts) with a "Clear local data" button. Admin and Developer are hidden (not
  *  disabled) unless the signed-in person holds the level; signed out,
@@ -10,7 +10,7 @@
  *  Container pack / unpack, Truck load / unload) — admin-gated on
  *  purpose, because each decides what every scan of its kind on this
  *  kiosk records and a worker should not be able to change what the
- *  move's data says. Devices shows the RFID reader, label printer and barcode scanner cards. The remaining tab bodies are placeholders for now. The active tab lives in the `tab` search
+ *  move's data says. Devices shows the RFID reader, label printer and barcode scanner cards. RFID holds the Dock's Crate window (RfidPanel). The remaining tab bodies are placeholders for now. The active tab lives in the `tab` search
  *  param, so a link can deep-link straight to a section. */
 
 import { useEffect, useState } from 'react';
@@ -19,6 +19,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useKioskAuth } from '../auth/KioskAuthContext';
 import DevicesPanel from '../components/devices/DevicesPanel';
 import EdgePanel from '../components/EdgePanel';
+import RfidPanel from '../components/RfidPanel';
 import HslPicker from '../components/HslPicker';
 import LocalDataInspector from '../components/LocalDataInspector';
 import SoundPanel from '../components/SoundPanel';
@@ -178,6 +179,7 @@ export default function Settings() {
         {active.id === 'this-kiosk' && <ThisKioskPanel />}
         {active.id === 'edge' && <EdgePanel />}
         {active.id === 'devices' && <DevicesPanel />}
+        {active.id === 'rfid' && <RfidPanel />}
         {active.id === 'appearance' && (
           <>
             <div className="settings-row">
@@ -321,7 +323,8 @@ export default function Settings() {
         )}
         {active.id === 'developer' && <LocalDataInspector />}
         {active.id !== 'this-kiosk' && active.id !== 'appearance' && active.id !== 'sound'
-          && active.id !== 'admin' && active.id !== 'edge' && active.id !== 'devices' && (
+          && active.id !== 'admin' && active.id !== 'edge' && active.id !== 'devices'
+          && active.id !== 'rfid' && (
           <div className="kiosk-placeholder">
             <p>This section is not available yet.</p>
           </div>

@@ -3,10 +3,11 @@
 detail (its tags with what packing did, every read behind it).
 
 The open pass is the grouper's open burst, not yet decided into passes,
-shown with the grouper's own window test and the move's cached assets.
-Nothing in it counts down: the grouper decides it once the reader's clock
-passes its settle time or, with no more reads, once the laptop's clock has
-(edge.dock.grouper). Plain reads of the edge's own tables; nothing here
+shown with the grouper's own window test, the window the burst opened with
+(not the setting, which applies from the next burst) and the move's cached
+assets. Nothing in it counts down: the grouper decides it once the reader's
+clock passes its settle time or, with no more reads, once the laptop's clock
+has (edge.dock.grouper). Plain reads of the edge's own tables; nothing here
 touches the network or changes a row. An open pass has no detail yet (the
 overview shows it whole), so `detail` answers None for it, as for an
 unknown id."""
@@ -69,22 +70,28 @@ def _serial(assets: dict[str, dict], tag) -> str | None:
     return item.get("serial_number") or None
 
 
-def _open_pass(store: Store, window_s: int) -> dict | None:
+def _open_pass(store: Store) -> dict | None:
     """The burst still open (always the newest row), not yet decided.
 
     It is shown as deciding it now would split it, with the grouper's own
-    window test: the crates read so far by first read (their anchors), each
-    with `conflict` when its group would be flagged `many_crates` (two
-    different crates in it, chained within 2W or by an asset in both their
-    windows, counted by what they matched as the decision counts them), the
-    burst's `conflict` when any crate's is, and `added_count`, the assets in
-    the newest crate's window. Each asset tag has its serial, `in_window`
-    (None until a crate is read) and the newest crate whose window holds it.
-    The same few queries whatever the number of reads."""
-    row = store.one("SELECT id, initiative_id, opened_at FROM dock_passes "
+    window test and the burst's own W (the setting for a burst opened before
+    bursts kept theirs, as the grouper takes it): the crates read so far by
+    first read (their anchors), each with `conflict` when its group would be
+    flagged `many_crates` (two different crates in it, chained within 2W or
+    by an asset in both their windows, counted by what they matched as the
+    decision counts them), the burst's `conflict` when any crate's is, and
+    `added_count`, the assets in the newest crate's window. Each asset tag
+    has its serial, `in_window` (None until a crate is read) and the newest
+    crate whose window holds it. The same few queries whatever the number of
+    reads."""
+    row = store.one("SELECT id, initiative_id, opened_at, quiet_gap_s FROM dock_passes "
                     "WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1")
     if row is None:
         return None
+    window_s = row["quiet_gap_s"]
+    if window_s is None:
+        with store.tx() as c:
+            window_s = state.window_s(c)
     tags = store.all("SELECT epc, kind, label, matched_id FROM dock_pass_tags "
                      "WHERE pass_id = ? ORDER BY rowid", (row["id"],))
     times: dict[str, list[datetime]] = {}   # epc -> its read times, sorted
@@ -133,7 +140,7 @@ def overview(store: Store) -> dict:
     first."""
     closed = store.all("SELECT * FROM dock_passes WHERE closed_at IS NOT NULL "
                        "ORDER BY id DESC LIMIT ?", (RECENT,))
-    return {"open": _open_pass(store, state.WINDOW_S),
+    return {"open": _open_pass(store),
             "passes": [_pass_row(r) for r in closed]}
 
 

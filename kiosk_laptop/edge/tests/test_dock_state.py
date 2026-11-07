@@ -1,7 +1,9 @@
-"""The Dock Station's laptop store (dock station spec §3): a fixed 5 s window and
-no settings, reads never stamped dry run (a stamp from an older build is kept,
-and its scan never uploaded), the uploader never held on a Dock, and pass data
-cleared with the alarm tables on a move change, Clear Setup and Wipe."""
+"""The Dock Station's laptop store (dock station spec §3, "Crate window
+setting"): the crate window W, a laptop setting that defaults to 5 s and goes
+back to it on Clear Setup and Wipe, and no other settings; reads never stamped
+dry run (a stamp from an older build is kept, and its scan never uploaded),
+the uploader never held on a Dock, and pass data cleared with the alarm tables
+on a move change, Clear Setup and Wipe."""
 
 import json
 import uuid
@@ -13,7 +15,7 @@ from edge.db import Store
 from edge.dock import state
 from edge.rfid import processing
 from tests.conftest import make_session
-from tests.test_dock_grouper import legacy_settings, stamp_dry_run
+from tests.test_dock_grouper import legacy_settings, save_window, stamp_dry_run
 from tests.test_rfid_alarm import FRESH, NOW, as_station, client_asset, open_rows
 from tests.test_rfid_processing import MOVE, SETUP, pending, read, seed, unmatched
 from tests.test_rfid_uploader import PATH, accept_all, uploader, with_key
@@ -60,11 +62,65 @@ def settings_rows(store):
     return store.one("SELECT COUNT(*) AS n FROM dock_settings")["n"]
 
 
-def test_window_is_fixed_at_five():
-    assert state.WINDOW_S == 5
-    for gone in ("save_settings", "settings", "settings_in", "dry_run_on", "DEFAULTS",
-                 "GAP_RANGE"):
+def window(store):
+    with store.tx() as c:
+        return state.window_s(c)
+
+
+def test_window_defaults_to_five(store):
+    assert window(store) == 5
+    for gone in ("WINDOW_S", "save_settings", "settings", "settings_in", "dry_run_on",
+                 "DEFAULTS", "GAP_RANGE"):
         assert not hasattr(state, gone), gone
+
+
+def test_window_is_saved_as_sent(store):
+    for value in (3, 0.5, 3600):
+        save_window(store, value)
+        assert window(store) == value
+
+
+def test_parse_window_by_role():
+    for value in (1, 7, 10, 7.0):
+        assert state.parse_window(value, developer=False) == value
+        assert state.parse_window(value, developer=True) == value
+    for value in (0.5, 0.001, 30, 3600):
+        assert state.parse_window(value, developer=True) == value
+    admin_bad = (0.5, 7.5, 11, 30, 0, -1)
+    developer_bad = (0, -0.0, -2, 3600.5, 3601, 10**400)
+    for value in admin_bad + developer_bad + (True, False, "5", None, [5], {"s": 5},
+                                              float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError):
+            state.parse_window(value, developer=False)
+    for value in developer_bad + (True, False, "5", None, float("nan"), float("inf"),
+                                  float("-inf")):
+        with pytest.raises(ValueError):
+            state.parse_window(value, developer=True)
+
+
+def test_window_reset_by_clear_setup_not_by_move_change(store):
+    laptop_setup.save(store, {"initiative_id": MOVE}, "dock")
+    save_window(store, 3)
+    laptop_setup.save(store, {"initiative_id": "m-2"}, "dock")      # a move change
+    assert window(store) == 3
+    laptop_setup.save(store, {"initiative_id": "m-2"}, "rfid")      # a station type change
+    assert window(store) == 3
+    laptop_setup.clear(store)                                       # Clear Setup
+    assert window(store) == 5
+
+
+async def test_wipe_resets_the_window(app, client):
+    save_window(app.state.store, 3)
+    r = await client.post("/edge/wipe", json={"confirm": "WIPE"},
+                          headers=make_session(app, max_rank=60))
+    assert r.json() == {"cleared_move_data": True}
+    r = await client.get("/edge/dock/window", headers=make_session(app))
+    assert (r.status_code, r.json()) == (200, {"window_s": 5})
+
+
+def test_legacy_dock_settings_row_is_ignored(store):
+    store.run("INSERT INTO dock_settings (id, dry_run, quiet_gap_s) VALUES (1, 1, 2)")
+    assert window(store) == 5
 
 
 def test_reads_are_never_stamped_dry_run(store):

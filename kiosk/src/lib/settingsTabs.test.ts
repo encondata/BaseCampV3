@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import { SETTINGS_TABS, visibleTabs } from './settingsTabs';
 
-it('tab order includes This Kiosk right after Devices', () => {
+it('tab order: RFID right after Devices, then This Kiosk', () => {
   expect(SETTINGS_TABS.map((t) => t.id)).toEqual([
-    'appearance', 'sound', 'devices', 'this-kiosk', 'edge', 'admin', 'developer',
+    'appearance', 'sound', 'devices', 'rfid', 'this-kiosk', 'edge', 'admin', 'developer',
   ]);
 });
 
@@ -38,6 +38,14 @@ it('a developer (who also clears the admin rank) sees all six tabs', () => {
 it('gates only on the flag each tab requires — a developer below admin rank still skips Admin', () => {
   const tabs = visibleTabs(SETTINGS_TABS, { isAdmin: false, isDeveloper: true, signedIn: true });
   expect(tabs.map((t) => t.id)).toEqual(['appearance', 'sound', 'devices', 'this-kiosk', 'developer']);
+});
+
+it('RFID is laptop only, after Devices', () => {
+  const ids = SETTINGS_TABS.map((t) => t.id);
+  expect(ids.indexOf('rfid')).toBe(ids.indexOf('devices') + 1);
+  const base = { isAdmin: false, isDeveloper: false, signedIn: true };
+  expect(visibleTabs(SETTINGS_TABS, base).map((t) => t.id)).not.toContain('rfid');
+  expect(visibleTabs(SETTINGS_TABS, { ...base, laptop: true }).map((t) => t.id)).toContain('rfid');
 });
 
 describe('edge tab', () => {

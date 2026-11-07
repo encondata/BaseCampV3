@@ -1380,9 +1380,10 @@ export interface DockCrate {
 }
 
 /** The burst still open, filling in as tags are read; an asset packs into
- *  a crate read within 5 s of it. The edge decides it into passes 10 s
- *  after its newest crate's first read or 5 s after its newest new tag's,
- *  whichever is later, and doesn't say when. `crates` are in first-read
+ *  a crate read within the crate window W of it (Settings › RFID, 5 s by
+ *  default; the burst keeps the W it opened with). The edge decides it into
+ *  passes 2W after its newest crate's first read or W after its newest new
+ *  tag's, whichever is later, and doesn't say when. `crates` are in first-read
  *  order; `conflict` is set when any crate's is, and `added_count` counts
  *  the assets inside the newest crate's window. */
 export interface DockOpenPass {
@@ -1447,6 +1448,24 @@ export async function controlDock(action: DockControl): Promise<DockControlResul
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action }),
+  }));
+}
+
+/** GET/PUT /edge/dock/window: the Dock's crate window, in seconds — how far
+ *  either side of a crate tag a read still goes into that crate. Any signed-in
+ *  session reads it; saving needs admin rank (403 `forbidden`), and a value the
+ *  caller's role may not set is 422 `invalid_window`. */
+export interface DockWindow { window_s: number }
+
+export async function getDockWindow(): Promise<DockWindow> {
+  return jsonFrom<DockWindow>(await apiFetch('/edge/dock/window'));
+}
+
+export async function saveDockWindow(window_s: number): Promise<DockWindow> {
+  return jsonFrom<DockWindow>(await apiFetch('/edge/dock/window', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ window_s }),
   }));
 }
 
