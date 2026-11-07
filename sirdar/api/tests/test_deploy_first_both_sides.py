@@ -55,19 +55,23 @@ async def _first_log(db, dep_id) -> str:
         .execution_options(populate_existing=True))
 
 
-async def _both_sides(db, a: Deployment, b: Deployment) -> None:
-    assert (a.slot, a.go_live, a.status) == ("orange", True, "succeeded")
-    assert (b.slot, b.go_live, b.status) == ("purple", False, "succeeded")
-    assert (b.mode, b.sha, b.git_ref) == ("update", a.sha, a.git_ref)
+async def _both_sides(db, a: Deployment, b: Deployment, live: str = "orange",
+                     other: str = "purple") -> None:
+    assert (a.slot, a.go_live, a.status) == (live, True, "succeeded")
+    assert (b.slot, b.go_live, b.status) == (other, False, "succeeded")
+    # The commit itself is B's ref: a branch that moved meanwhile can't give
+    # B a newer commit than A (DigitalOcean's step 0 resolves the ref again).
+    assert (b.mode, b.sha, b.git_ref) == ("update", a.sha, a.sha)
     assert (b.first_admin, b.seed_content, b.snapshot_id) == (False, False, None)
     assert b.actor_id == a.actor_id
     assert (b.cloud, b.bluegreen, b.publish, b.vm) == (a.cloud, a.bluegreen, a.publish, a.vm)
-    assert (await _first_log(db, b.id)).startswith(NOTE)
+    assert (await _first_log(db, b.id)).startswith(NOTE.replace("orange", live))
     audit = (await db.scalars(select(AuditLog).where(
         AuditLog.action == "deploy.deployment_start",
         AuditLog.entity_id == str(b.id)))).one()
     assert audit.changes["follows"] == str(a.id)
-    assert audit.changes["go_live"] is False and audit.changes["slot"] == "purple"
+    assert audit.changes["go_live"] is False and audit.changes["slot"] == other
+    assert audit.changes["git_ref"] == a.sha
     assert audit.actor_id == a.actor_id and audit.ip is None
 
 
@@ -86,6 +90,17 @@ async def test_a_first_do_deploy_then_deploys_the_other_side(client, db, do_read
     assert (await _env(db, env.id)).active_slot == "orange"
     purple = await db.get(DoSlot, (env.id, "purple"), populate_existing=True)
     assert purple.sha == SHA
+
+
+async def test_a_first_production_deploy_fills_green_and_leaves_it_idle(client, db,
+                                                                       do_ready):
+    env = await do_ready(name="prod", type_="production", account="production")
+    h = await auth_headers(client, db)
+    resp = await _start(client, h, "prod", mode="update")
+    assert resp.status_code == 201, resp.text
+    a, b = await _deployments(db, env.id)
+    await _both_sides(db, a, b, live="blue", other="green")
+    assert (await _env(db, env.id)).active_slot == "blue"
 
 
 async def test_the_second_side_starts_nothing(client, db, do_ready):

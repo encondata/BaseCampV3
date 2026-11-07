@@ -743,14 +743,15 @@ trusted by browsers but don't count against the production rate limits.
 the idle slot and smoke-tests that droplet directly through Caddy. It goes live
 by itself on the first deploy, on a one-slot environment, or when a non-prod
 environment has "activate automatically" on; otherwise the dashboard's
-**Activate** switches the load balancer. The first deploy then goes on by
-itself: once the first slot is live, Sirdar starts a second Update that puts
-the same commit on the other slot and leaves it idle (its log's first line says
-so). That one never goes live, even with "activate automatically" on, and skips
-the seed, the first admin and starter content, which the shared database
-already has. Switching adds the new droplet next to
+**Activate** switches the load balancer. Switching adds the new droplet next to
 the old one, waits for it to be healthy, runs the public smoke test, then
 removes the old one. For a minute or two both slots serve visitors.
+
+**The first deploy fills both slots.** Once the first slot is live, Sirdar
+starts a second Update by itself that puts the same commit on the other slot
+and leaves it idle (its log's first line says so). That one never goes live,
+even with "activate automatically" on, and skips the seed, the first admin and
+starter content, which the shared database already has.
 
 Both slots share one database and one bucket, so **every migration must be
 expand/contract**: the old slot keeps running against the migrated database

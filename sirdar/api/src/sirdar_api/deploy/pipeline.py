@@ -1487,9 +1487,13 @@ async def _start_other_side(deployment_id: uuid.UUID) -> uuid.UUID | None:
             log.warning("deployment %s: didn't start the %s side: %s", deployment_id, other,
                         "no resolved commit")
             return None
-        # Read now: a refusal rolls the session back.
-        env_name, slot, sha, git_ref, actor_id = (env.name, dep.slot, dep.sha, dep.git_ref,
-                                                  dep.actor_id)
+        # Read now: a refusal rolls the session back. The commit is the ref:
+        # DigitalOcean's step 0 resolves git_ref again, and a branch may have
+        # moved since this side resolved it (as Add slot does). The routes'
+        # production lock and retiring check aren't taken: this side never
+        # goes live, and the Update that just went live passed them.
+        env_name, slot, sha, actor_id = env.name, dep.slot, dep.sha, dep.actor_id
+        git_ref = sha
         publish_, cloud, bluegreen = dep.publish, dep.cloud, dep.bluegreen
         try:
             follow = await create_deployment(db, env, mode="update", git_ref=git_ref, sha=sha,

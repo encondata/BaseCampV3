@@ -25,7 +25,7 @@ Consequences:
 
 - The very first deploy triggers it.
 - A first deploy that failed and then succeeded on Retry triggers it when the retry succeeds, because the retry is an Update that went live.
-- An environment like rc1 today (orange live, purple never released) would trigger it on its next successful go-live Update of orange. That's correct and harmless.
+- An environment like rc1 today (orange live, purple never released) doesn't trigger it: its next Update goes to purple, the idle slot, and fills it. (Corrected after review: the earlier text said orange's next Update would trigger it, but no Update goes to orange while purple is idle.)
 - Once both sides have a release, it never triggers again.
 - A deploy that failed, was cancelled or was interrupted never triggers it. Neither does an Activate, a one-slot environment, or an SSH, single-VM, Proxmox or ESXi environment that isn't A/B.
 - A step 20 (Seed starter content) failure leaves the deployment failed (`_seeded_failed`). So B starts only once a Retry of A succeeds.
@@ -35,7 +35,7 @@ Consequences:
 - **A separate deployment**, as Jimmy chose: its own row in Deployments, its own log and its own Retry. It is created and launched by Sirdar right after A's success is committed.
 - **What it deploys:**
   - mode `update`, slot = the other slot, `go_live=False`;
-  - the **same commit**: A's resolved `dep.sha` (full SHA), with A's `git_ref`;
+  - the **same commit**: A's resolved `dep.sha` (full SHA), which is also B's `git_ref` (DigitalOcean's step 0 resolves the ref again, so a branch name could give B a newer commit; changed after the final review);
   - `cloud`/`bluegreen` and `publish`/`vm` as A had them.
 - **It never goes live**, even with "Activate automatically" on: B is the idle side, and the next Update goes to it as today.
 - **Skips the shared-database one-time work A already did:** no seed snapshot (`snapshot_id=None`, so no restore), `first_admin=False` and `seed_content=False`. Its plan is therefore an ordinary idle-side Update. Step 0 builds B's droplet or VM as it does for any never-built slot.
