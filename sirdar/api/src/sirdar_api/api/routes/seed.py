@@ -186,8 +186,14 @@ class RecipeIn(BaseModel):
     files: dict[str, bool] = {}
 
 
-async def _recipe(db, recipe_id: uuid.UUID) -> SeedRecipe:
-    r = await db.get(SeedRecipe, recipe_id)
+async def _recipe(db, recipe_id: uuid.UUID, *, lock: bool = False) -> SeedRecipe:
+    """The recipe; lock=True holds its row until commit, so writes to one
+    recipe run one at a time (last write wins)."""
+    if lock:
+        r = await db.scalar(select(SeedRecipe).where(SeedRecipe.id == recipe_id)
+                            .with_for_update().execution_options(populate_existing=True))
+    else:
+        r = await db.get(SeedRecipe, recipe_id)
     if r is None:
         raise HTTPException(status_code=404, detail={"code": "recipe_not_found"})
     return r
@@ -239,21 +245,22 @@ async def get_recipe(recipe_id: uuid.UUID, db: DbSession):
 @recipes_router.put("/recipes/{recipe_id}")
 async def replace_recipe(recipe_id: uuid.UUID, body: RecipeIn, request: Request, db: DbSession,
                          actor: AuthContext = require_permission("seed_data", "change")):
-    r = await _recipe(db, recipe_id)
-    if body.name is not None:
-        name = _clean_name(body.name)
-        await _name_free(db, name, r.id)
-        r.name = name
-    if body.notes is not None:
-        r.notes = body.notes
-    r.updated_at = func.now()
-    counts = await recipes.replace(
-        db, r.id, {n: {"mode": t.mode, "pks": t.pks} for n, t in body.tables.items()},
-        body.files)
-    audit(db, actor_id=actor.user.person_id, action="seed.recipe_change",
-          entity_type="seed_recipe", entity_id=str(r.id), ip=client_ip(request),
-          changes=counts)
+    r = await _recipe(db, recipe_id, lock=True)
     try:
+        if body.name is not None:
+            name = _clean_name(body.name)
+            await _name_free(db, name, r.id)
+            r.name = name
+        if body.notes is not None:
+            r.notes = body.notes
+        r.updated_at = func.now()
+        await db.flush()
+        counts = await recipes.replace(
+            db, r.id, {n: {"mode": t.mode, "pks": t.pks} for n, t in body.tables.items()},
+            body.files)
+        audit(db, actor_id=actor.user.person_id, action="seed.recipe_change",
+              entity_type="seed_recipe", entity_id=str(r.id), ip=client_ip(request),
+              changes=counts)
         await db.commit()
     except IntegrityError:
         await db.rollback()
@@ -264,8 +271,8 @@ async def replace_recipe(recipe_id: uuid.UUID, body: RecipeIn, request: Request,
 
 @recipes_router.delete("/recipes/{recipe_id}", status_code=204)
 async def delete_recipe(recipe_id: uuid.UUID, request: Request, db: DbSession,
-                        actor: AuthContext = require_permission("seed_data", "delete")):
-    r = await _recipe(db, recipe_id)
+                        actor: AuthContext = require_permission("seed_data", "change")):
+    r = await _recipe(db, recipe_id, lock=True)
     counts = {k: v for k, v in (await recipes.summaries_for(db, r.id)).items()}
     await db.delete(r)
     audit(db, actor_id=actor.user.person_id, action="seed.recipe_delete",

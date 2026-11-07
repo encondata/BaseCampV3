@@ -11,12 +11,6 @@ from .api_helpers import auth_headers
 BASE = "/api/seed/recipes"
 
 
-async def _grant_delete(db):
-    await db.execute(text("INSERT INTO role_permissions (role, resource, action) "
-                          "VALUES ('developer', 'seed_data', 'delete') ON CONFLICT DO NOTHING"))
-    await db.commit()
-
-
 async def _audits(db, action):
     return [r.changes for r in await db.scalars(
         select(AuditLog).where(AuditLog.action == action).order_by(AuditLog.id))]
@@ -24,7 +18,6 @@ async def _audits(db, action):
 
 async def test_crud_roundtrip(client, db):
     h = await auth_headers(client, db)
-    await _grant_delete(db)
     assert (await client.get(BASE, headers=h)).json() == []
     resp = await client.post(BASE, json={"name": "Demo", "notes": "n"}, headers=h)
     assert resp.status_code == 201
@@ -96,7 +89,6 @@ async def test_not_found(client, db):
 
 async def test_audit_counts_only(client, db):
     h = await auth_headers(client, db)
-    await _grant_delete(db)
     rid = (await client.post(BASE, json={"name": "Aud"}, headers=h)).json()["id"]
     await client.put(f"{BASE}/{rid}", headers=h, json={
         "tables": {"sites": {"mode": "rows", "pks": [{"id": "SECRET-1"}, {"id": "SECRET-2"}]}},
@@ -111,7 +103,6 @@ async def test_audit_counts_only(client, db):
 
 async def test_delete_keeps_snapshots(client, db, tmp_path):
     h = await auth_headers(client, db)
-    await _grant_delete(db)
     rid = (await client.post(BASE, json={"name": "S"}, headers=h)).json()["id"]
     snap_id = uuid.uuid4()
     await db.execute(text(
@@ -134,8 +125,8 @@ async def test_permissions_per_action(client, db):
     assert (await client.post(BASE, json={"name": "Q"}, headers=ro)).status_code == 403
     assert (await client.put(f"{BASE}/{rid}", json={}, headers=ro)).status_code == 403
     assert (await client.delete(f"{BASE}/{rid}", headers=ro)).status_code == 403
-    # developer has no delete by default
-    assert (await client.delete(f"{BASE}/{rid}", headers=dev)).status_code == 403
+    # delete needs change, which the developer has
+    assert (await client.delete(f"{BASE}/{rid}", headers=dev)).status_code == 204
     # no token
     assert (await client.get(BASE)).status_code == 401
     # no view at all
@@ -148,3 +139,31 @@ async def test_permissions_per_action(client, db):
 async def test_works_without_scratch(client, db):
     h = await auth_headers(client, db)
     assert (await client.get(BASE, headers=h)).status_code == 200
+
+
+async def test_concurrent_puts_last_write_wins(client, db):
+    import asyncio
+    h = await auth_headers(client, db)
+    rid = (await client.post(BASE, json={"name": "C"}, headers=h)).json()["id"]
+    bodies = [{"tables": {f"t{i}": {"mode": "rows", "pks": [{"id": str(n)} for n in range(500)]}}}
+              for i in range(2)]
+    resps = await asyncio.gather(*(client.put(f"{BASE}/{rid}", json=b, headers=h)
+                                   for b in bodies))
+    assert [r.status_code for r in resps] == [200, 200]
+    got = (await client.get(f"{BASE}/{rid}", headers=h)).json()
+    assert len(got["tables"]) == 1 and len(next(iter(got["tables"].values()))["pks"]) == 500
+
+
+async def test_rename_collision_at_flush_is_409(client, db, monkeypatch):
+    from sirdar_api.api.routes import seed as seed_routes
+
+    async def _skip(*_a, **_k):
+        return None                                  # as if the competing commit came after the check
+
+    h = await auth_headers(client, db)
+    await client.post(BASE, json={"name": "Taken"}, headers=h)
+    rid = (await client.post(BASE, json={"name": "Mine"}, headers=h)).json()["id"]
+    monkeypatch.setattr(seed_routes, "_name_free", _skip)
+    resp = await client.put(f"{BASE}/{rid}", json={"name": "Taken"}, headers=h)
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "recipe_name_taken"
+    assert (await client.get(f"{BASE}/{rid}", headers=h)).json()["name"] == "Mine"
