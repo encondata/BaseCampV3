@@ -12,11 +12,12 @@ from typing import Literal
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from sirdar_api.api.deps import AuthContext, CurrentUser, DbSession
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import Snapshot
-from sirdar_api.seed import SeedError, browse, scratch
+from sirdar_api.seed import SeedError, browse, closure, scratch
 
 log = logging.getLogger(__name__)
 
@@ -128,3 +129,21 @@ async def table_keys(snapshot_id: uuid.UUID, table: str, db: DbSession,
     """Every matching row's primary key, for Check all / Deselect all."""
     async with _browse_conn(db, snapshot_id) as (conn, _):
         return await browse.keys(conn, table, filter_col=filter_col, needle=filter)
+
+
+class TableSelection(BaseModel):
+    mode: Literal["rows", "all"]
+    pks: list[dict[str, str]] = []
+
+
+class ResolveIn(BaseModel):
+    tables: dict[str, TableSelection] = {}
+
+
+@router.post("/snapshots/{snapshot_id}/resolve")
+async def resolve(snapshot_id: uuid.UUID, body: ResolveIn, db: DbSession):
+    """The rows the selection can't exist without (needed rows), why each
+    was added, and the ticked keys the snapshot doesn't have."""
+    tables = {name: sel.model_dump() for name, sel in body.tables.items()}
+    async with _browse_conn(db, snapshot_id) as (conn, _):
+        return await closure.resolve(conn, tables)
