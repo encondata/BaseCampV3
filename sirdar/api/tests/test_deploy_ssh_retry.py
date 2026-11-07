@@ -170,7 +170,36 @@ async def test_ssh_remote_passes_tries_through(monkeypatch):
 
 
 async def test_run_command_with_one_try(monkeypatch, nap):
-    calls = _script(monkeypatch, [known_hosts.unreachable(HOST, PORT)] * 5)
+    async def lookup(db, host, port):
+        return STORED
+    monkeypatch.setattr(known_hosts, "lookup", lookup)
+    calls: list[int] = []
+
+    async def connect(*args, **kw):
+        calls.append(1)
+        raise OSError("down")
+    monkeypatch.setattr(ssh.asyncssh, "connect", connect)
     with pytest.raises(ConnectFailed):
         await ssh.run_command(CFG, None, "true", tries=1)
+    assert len(calls) == 1 and nap.naps == []
+
+
+async def test_rejected_host_key_is_not_retried(monkeypatch, nap):
+    async def lookup(db, host, port):
+        return STORED
+    monkeypatch.setattr(known_hosts, "lookup", lookup)
+    calls: list[int] = []
+
+    async def connect(*args, **kw):
+        calls.append(1)
+        raise asyncssh.KeyExchangeFailed("no matching host key type")
+    monkeypatch.setattr(ssh.asyncssh, "connect", connect)
+    other = asyncssh.generate_private_key("ssh-ed25519")
+
+    async def fetch(host, port, key_type):
+        return other
+    monkeypatch.setattr(known_hosts, "fetch_key_of_type", fetch)
+    with pytest.raises(ssh.HostKeyMismatch) as exc:
+        await ssh.run_command(CFG, None, "true")
+    assert exc.value.actual == known_hosts.fingerprint(other)
     assert len(calls) == 1 and nap.naps == []

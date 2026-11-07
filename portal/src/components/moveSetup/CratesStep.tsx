@@ -5,10 +5,12 @@
  *  is blocked while any clash. */
 import { useMemo, useState } from 'react';
 
-import type { MoveSetupDraft, StatusValue } from '../../lib/api';
+import type { CrateEstimate, MoveSetupDraft, StatusValue } from '../../lib/api';
 import { clampTags, tagTotal, TAG_ASSIGNMENT_ORDER, type TagCounts } from '../../lib/bulkContainers';
 import { TAG_TYPES } from '../../labels/tagTypes';
-import { cratesBody, moveSetupError, SKIPPED_NOTE, type CratesValue } from '../../lib/moveSetup';
+import {
+  cratesBody, estimateSentence, moveSetupError, SKIPPED_NOTE, type CratesValue,
+} from '../../lib/moveSetup';
 import { CRATE_MAX, namingResult } from '../../lib/namingConvention';
 import ComboBox from '../ComboBox';
 import WizardFooter from '../common/WizardFooter';
@@ -29,6 +31,8 @@ interface Props {
   /** Skipped earlier and not edited since: no save on mount, and Next moves
    *  on without saving. Only an edit (the page's setValue) includes it again. */
   skipped?: boolean;
+  /** From the From-To check; null when the asset step was skipped. */
+  estimate?: CrateEstimate | null;
 }
 
 function trimmedNotice(trimmed: TagCounts): string {
@@ -39,6 +43,7 @@ function trimmedNotice(trimmed: TagCounts): string {
 
 export default function CratesStep({
   draft, value, setValue, containerTypes, onDraft, onBack, onSkip, onNext, skipped = false,
+  estimate = null,
 }: Props) {
   const { names, error: namingError } = useMemo(() => namingResult(value, CRATE_MAX), [value]);
   const count = names.length;
@@ -92,7 +97,19 @@ export default function CratesStep({
                           onChange={(v) => setValue({ ...value, ...v })}
                           onCountBlur={() => void clampToCount()}
                           names={names} error={namingError} clashes={clashes}
-                          checking={checking} disabled={busy || skipping} />
+                          checking={checking} disabled={busy || skipping}
+                          countHint={estimate && (
+                            <div className="ms-estimate">
+                              <p className="page-hint">{estimateSentence(estimate)}</p>
+                              {value.count !== String(estimate.crates) && (
+                                <button type="button" className="mini-btn sm"
+                                        disabled={busy || skipping}
+                                        onClick={() => setValue({ ...value, count: String(estimate.crates) })}>
+                                  Use estimate ({estimate.crates})
+                                </button>
+                              )}
+                            </div>
+                          )} />
       </section>
       <section className="bulk-section">
         <p className="eyebrow-sm">Crate type and label tags</p>

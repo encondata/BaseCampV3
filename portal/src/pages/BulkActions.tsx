@@ -50,6 +50,12 @@ export const BULK_TOOLS: BulkTool[] = [
     resource: 'initiatives', action: 'change', to: '/bulk/initiative-people', button: 'Open',
   },
   {
+    key: 'assign-workers', title: 'Assign workers from a template',
+    description: 'Upload a partner\'s worker sheet. Workers match by name, then email, then phone; review every match and create anyone new.',
+    resource: 'initiatives', action: 'change', also: [['workers', 'add'], ['workers', 'change']],
+    to: '/bulk/assign-workers', button: 'Open',
+  },
+  {
     key: 'assets', title: 'Update assets in bulk',
     description: 'Load changes from a spreadsheet. Rows match existing assets by Asset ID or serial; review every change before applying.',
     resource: 'assets', action: 'change', to: '/bulk/assets', button: 'Open',

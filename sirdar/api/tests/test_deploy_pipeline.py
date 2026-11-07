@@ -3,6 +3,7 @@ import base64
 import json
 import uuid
 
+import asyncssh
 import pytest
 from sqlalchemy import select, update
 
@@ -10,8 +11,8 @@ from sirdar_api.api.app import create_app
 from sirdar_api.config import get_settings
 from sirdar_api.db.engine import get_sessionmaker
 from sirdar_api.db.models import Deployment, DeploymentStep, Environment
-from sirdar_api.deploy import envfile, pipeline
-from sirdar_api.deploy.runner import CANCEL_GRACE_SECONDS, RunResult
+from sirdar_api.deploy import envfile, pipeline, ssh
+from sirdar_api.deploy.runner import CANCEL_GRACE_SECONDS, ControlDir, RunResult
 from sirdar_api.deploy.steps import STEPS_BY_KEY
 
 from .deploy_factories import (  # noqa: F401
@@ -22,7 +23,7 @@ from .deploy_factories import (  # noqa: F401
     stop_pipeline,
     trust_fake,
 )
-from .ssh_server import SSH_PASSWORD, ssh_server  # noqa: F401
+from .ssh_server import SSH_PASSWORD, ssh_config, ssh_server  # noqa: F401
 from .test_deploy_api import _ssh_env, deploy_env  # noqa: F401
 
 SHA = "e73b99ca" + "0" * 32
@@ -173,6 +174,7 @@ async def test_logs_redact_json_escaped_secrets(db, deploy_env, ssh_server, secr
     the escaped form of every secret is redacted too."""
     ssh_pw = "ssh-SECRET\nsecond-line"
     _ssh_env(deploy_env, ssh_server, ssh_password=ssh_pw)
+    ssh_server.passwords.add(ssh_pw)                 # step 1's key check logs in
     await trust_fake(db, ssh_server)
     pg = 'pg-"quoted"\\SECRET'
     pepper = 'café-"pepper"-SECRET'
@@ -281,6 +283,147 @@ async def test_shutdown_interrupts(db, env, fake_runner):
     assert (d.status, d.error) == ("interrupted", pipeline.INTERRUPTED)
     assert [s.status for s in steps] == ["succeeded", "succeeded", "interrupted", "not_run",
                                          "not_run", "not_run", "not_run"]
+
+
+@pytest.fixture
+def held(monkeypatch):
+    """Records the deployment's SSH pools and control folders (real ones)."""
+    seen = {"pools": [], "dirs": []}
+
+    class Pool(ssh.SshPool):
+        def __init__(self):
+            super().__init__()
+            self.entered = self.exited = False
+            seen["pools"].append(self)
+
+        async def __aenter__(self):
+            self.entered = True
+            return await super().__aenter__()
+
+        async def __aexit__(self, *exc):
+            await super().__aexit__(*exc)
+            self.exited = True
+
+    class Dir(ControlDir):
+        closed = False
+
+        @classmethod
+        def open(cls):
+            opened = super().open()
+            seen["dirs"].append(opened)
+            return opened
+
+        def close(self):
+            super().close()
+            self.closed = True
+
+    monkeypatch.setattr(ssh, "SshPool", Pool)
+    monkeypatch.setattr(pipeline, "ControlDir", Dir)
+    return seen
+
+
+def _assert_released(held, fake_runner):
+    (pool,), (control,) = held["pools"], held["dirs"]
+    assert pool.entered and pool.exited
+    assert control.closed and not control.path.exists()
+    assert fake_runner.requests
+    assert all(r.control_dir is control for r in fake_runner.requests)
+    assert all(r.target.fingerprint for r in fake_runner.requests)
+
+
+async def test_run_opens_and_closes_pool_and_control_dir(db, env, fake_runner, held,
+                                                         ssh_server):
+    ssh_server.connections = ssh_server.closed = 0      # trusting fetched the key
+    d, _, _ = await _load(await _start(db, env))
+    assert d.status == "succeeded"
+    _assert_released(held, fake_runner)
+    assert fake_runner.requests[0].target.fingerprint == ssh_server.fingerprint
+    # The key check was the pool's login, and leaving the pool closed it.
+    assert (ssh_server.connections, ssh_server.closed) == (1, 1)
+
+
+async def test_failed_step_closes_pool_and_control_dir(db, env, fake_runner, held):
+    fake_runner.results["build"] = RunResult(status="failed", rc=2)
+    d, _, _ = await _load(await _start(db, env))
+    assert d.status == "failed"
+    _assert_released(held, fake_runner)
+
+
+async def test_cancel_closes_pool_and_control_dir(db, env, fake_runner, held, ssh_server):
+    ssh_server.connections = ssh_server.closed = 0
+    fake_runner.gates["build"] = asyncio.Event()
+    dep = await _create(db, env)
+    pipeline.launch(dep.id)
+    await asyncio.wait_for(fake_runner.started["build"].wait(), 5)
+    assert pipeline.request_cancel(dep.id) is True
+    await pipeline.wait(dep.id)
+    d, _, _ = await _load(dep.id)
+    assert d.status == "cancelled"
+    _assert_released(held, fake_runner)
+    assert (ssh_server.connections, ssh_server.closed) == (1, 1)
+
+
+async def test_shutdown_closes_pool_and_control_dir(db, env, fake_runner, held):
+    fake_runner.gates["fetch"] = asyncio.Event()
+    dep = await _create(db, env)
+    pipeline.launch(dep.id)
+    await asyncio.wait_for(fake_runner.started["fetch"].wait(), 5)
+    await pipeline.shutdown()
+    d, _, _ = await _load(dep.id)
+    assert d.status == "interrupted"
+    _assert_released(held, fake_runner)
+
+
+async def test_failed_prepare_closes_pool_and_control_dir(db, deploy_env, ssh_server,
+                                                          secrets_key, fake_runner, held):
+    _ssh_env(deploy_env, ssh_server)
+    env = await make_environment(db)                     # its host key isn't trusted
+    d, _, _ = await _load(await _start(db, env))
+    assert d.status == "failed"
+    (pool,), (control,) = held["pools"], held["dirs"]
+    assert pool.exited and control.closed and not control.path.exists()
+
+
+async def test_no_control_dir_still_deploys(db, env, fake_runner, monkeypatch):
+    def unwritable():
+        raise PermissionError("/tmp")
+    monkeypatch.setattr(pipeline.ControlDir, "open", unwritable)
+    d, _, _ = await _load(await _start(db, env))
+    assert d.status == "succeeded"
+    assert all(r.control_dir is None for r in fake_runner.requests)
+
+
+async def test_run_target_uses_pool_connection(db, env, ssh_server):
+    ssh_server.connections = 0
+    cfg = ssh_config(ssh_server)
+    async with ssh.SshPool() as pool:
+        with ssh.using_pool(pool):
+            target, _ = await pipeline._run_target(db, cfg)
+            result = await ssh.run_command(cfg, db, "uname -srm")
+    assert result.exit_status == 0
+    assert target.fingerprint == ssh_server.fingerprint
+    assert target.host_key_algorithms == "ssh-ed25519"
+    assert ssh_server.connections == 1
+
+
+@pytest.mark.parametrize("trusted, copy", [
+    (False, "Trust its host key on the Deploy page"),
+    (True, "changed. Check the server, forget the old key"),
+])
+async def test_run_target_in_a_pool_keeps_the_prepare_copy(db, deploy_env, ssh_server,
+                                                           secrets_key, trusted, copy):
+    if trusted:
+        await trust_fake(db, ssh_server)
+        ssh_server.serve_host_keys(asyncssh.generate_private_key("ssh-ed25519"))
+    async with ssh.SshPool() as pool:
+        with ssh.using_pool(pool), pytest.raises(pipeline.PrepareError) as e:
+            await pipeline._run_target(db, ssh_config(ssh_server))
+    assert copy in e.value.reason
+
+
+async def test_run_target_without_a_pool_fills_the_fingerprint(db, env, ssh_server):
+    target, _ = await pipeline._run_target(db, ssh_config(ssh_server))
+    assert target.fingerprint == ssh_server.fingerprint
 
 
 async def test_recover_orphans(db, env):

@@ -14,6 +14,7 @@ import Audit from './pages/Audit';
 import BulkActions from './pages/BulkActions';
 import BulkAssets from './pages/BulkAssets';
 import BulkConvertRawFt from './pages/BulkConvertRawFt';
+import BulkAssignWorkers from './pages/BulkAssignWorkers';
 import BulkInitiativePeople from './pages/BulkInitiativePeople';
 import BulkNewMove from './pages/BulkNewMove';
 import BulkSites from './pages/BulkSites';
@@ -269,6 +270,9 @@ export default function App() {
                 } />
                 <Route path="/bulk/initiative-people" element={
                   <ProtectedRoute resource="initiatives" minRank={ADMIN_RANK}><BulkInitiativePeople /></ProtectedRoute>
+                } />
+                <Route path="/bulk/assign-workers" element={
+                  <ProtectedRoute resource="initiatives" minRank={ADMIN_RANK}><BulkAssignWorkers /></ProtectedRoute>
                 } />
                 <Route path="/bulk/assets" element={
                   <ProtectedRoute resource="assets" minRank={ADMIN_RANK}><BulkAssets /></ProtectedRoute>

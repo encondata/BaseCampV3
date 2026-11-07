@@ -214,6 +214,16 @@ started are never retried. The Settings Test button tries once. Ansible's host
 steps retry too (`ANSIBLE_SSH_RETRIES=5`, `ConnectTimeout=15`), by Ansible's
 own rules.
 
+**One connection per server.** A deployment keeps one SSH connection open
+per server for its own commands, and Ansible shares one connection per host
+across all of the deployment's steps (`ControlMaster`, `ControlPersist=15m`,
+pipelining; control sockets in a private folder under `/tmp`). Both are closed
+when the deployment ends, however it ends. Some networks block an address
+after a few new SSH connections in a row, so fewer connections keep a deploy
+under that limit. If a kept connection drops, the next command reconnects
+and the log says `Lost the SSH connection to <host>; reconnecting.` A command
+whose connection dropped is never run again.
+
 ### Deploy pipeline (environments)
 
 Sirdar deploys ServerSherpa environments (the five Compose stacks in
@@ -443,6 +453,13 @@ What Sirdar does on ESXi:
   into the VM's own folder as `ss-<env>-disk0.vmdk` (thin), attaches it,
   grows it to the environment's size (default 4 vCPU, 8 GB, 64 GB) and powers
   the VM on. The VM is recorded the moment ESXi creates it.
+- Every step 0, for a new VM or one left as built, sets the VM to **start
+  with the host**: in the host's autostart list with Power on, and Guest
+  shutdown when the host stops. If the host's own Autostart switch is off,
+  step 0 turns it on (logged; no VM starts with the host without it). Other
+  VMs' entries and the host's delays are left alone, and a VM already in a
+  start order keeps it. If ESXi refuses, the step fails. (Proxmox VMs get
+  the same from Terraform's `on_boot`.)
 - cloud-init, through VMware's guestinfo datasource, sets up the user
   `deploy` with Sirdar's key for that VM (passwordless sudo, no password
   login), the static address or DHCP, and an SSH host key **Sirdar

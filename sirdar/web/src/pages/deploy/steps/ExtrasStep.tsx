@@ -26,7 +26,10 @@ export default function ExtrasStep({ state, set, errors, ctx }: StepProps) {
               <Segmented id="flow-cert-label" caption="Certificate" value={state.acmeStaging}
                          options={[[false, "Let's Encrypt"], [true, "Let's Encrypt staging"]] as const}
                          onPick={(v) => set({ acmeStaging: v })} />
-              <p className="page-hint">Staging certificates aren't trusted by browsers: for test environments.</p>
+              <p className="page-hint">Let's Encrypt: a real certificate that browsers trust. Each one counts toward
+                Let's Encrypt's limit of 50 new certificates a week for the domain, shared by every environment.</p>
+              <p className="page-hint">Staging: Let's Encrypt's test service, with no weekly limit to worry about.
+                Browsers, phones and the kiosk apps refuse its certificate, so use it only to test the deploy itself.</p>
             </div>
           )}
         </div>

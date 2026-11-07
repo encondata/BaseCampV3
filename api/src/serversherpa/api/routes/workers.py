@@ -42,6 +42,7 @@ from serversherpa.db.models import (
     WorkerProfile,
 )
 from serversherpa.db.ordering import natural
+from serversherpa.people import assign_bulk
 from serversherpa.people import bulk_import as bulk
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.storage import presign_get
@@ -164,6 +165,18 @@ async def bulk_import_template(
         return Response(bulk.build_template_xlsx(levels, statuses, partners),
                         media_type=_XLSX, headers=_attachment("workers-template.xlsx"))
     raise _err(422, "unknown_format")
+
+
+@router.get("/bulk-import/assign-template")
+async def assign_template(
+    db: DbSession,
+    actor: AuthContext = require_permission("workers", "add"),
+):
+    """The assign-workers-from-template upload layout (xlsx only); the
+    preview and commit live under /initiatives/{id}/people/assign."""
+    require_bulk_rank(actor)
+    return Response(await assign_bulk.build_template_xlsx(db), media_type=_XLSX,
+                    headers=_attachment("assign-workers-template.xlsx"))
 
 
 @router.get("/bulk-import/export")

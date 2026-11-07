@@ -5,7 +5,7 @@
  */
 import type { BulkSummaryResult, BulkSummaryRow } from '../components/bulk/BulkApplySummary';
 import {
-  ApiError, type ImportJobResults, type MoveSetupCrates, type MoveSetupTrucks, type OrgRef,
+  ApiError, type CrateEstimate, type ImportJobOut, type ImportJobResults, type MoveSetupCrates, type MoveSetupTrucks, type OrgRef,
   type SiteItem, type StatusValue,
 } from './api';
 import type { Action } from './access';
@@ -66,6 +66,34 @@ export function initialCrates(origin?: SiteItem | null, destination?: SiteItem |
 }
 export function initialTrucks(origin?: SiteItem | null, destination?: SiteItem | null): TrucksValue {
   return { convention: defaultConvention('TRK', origin?.code, destination?.code), count: '0', start: '1' };
+}
+
+/** The finished From-To check's crate estimate, if any. */
+export function crateEstimate(job: ImportJobOut | null): CrateEstimate | null {
+  if (!job || job.status !== 'completed') return null;
+  return job.results?.crate_estimate ?? null;
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** "Estimated 24 crates from 212 devices (318U) + 25%; 3 racks and 8 nodes
+ *  left out; 5 devices of unknown size counted as 2U." */
+export function estimateSentence(e: CrateEstimate): string {
+  if (e.devices === 0) {
+    return e.racks || e.nodes
+      ? `Estimated 0 crates: the From-To only lists ${[
+        e.racks ? plural(e.racks, 'rack') : '', e.nodes ? plural(e.nodes, 'node') : '',
+      ].filter(Boolean).join(' and ')}, which don't go in crates.`
+      : 'Estimated 0 crates: the From-To lists no devices.';
+  }
+  const parts = [`Estimated ${plural(e.crates, 'crate')} from ${plural(e.devices, 'device')} (${e.ru}U) + 25%`];
+  const out = [e.racks ? plural(e.racks, 'rack') : '', e.nodes ? plural(e.nodes, 'node') : '']
+    .filter(Boolean);
+  if (out.length) parts.push(`${out.join(' and ')} left out`);
+  if (e.unknown_size) parts.push(`${plural(e.unknown_size, 'device')} of unknown size counted as 2U`);
+  let text = `${parts.join('; ')}.`;
+  if (e.uncapped > e.crates) text += ` The full estimate is ${e.uncapped}, over the ${e.crates} limit.`;
+  return text;
 }
 
 export function cratesBody(value: CratesValue): MoveSetupCrates {

@@ -1,6 +1,7 @@
 """A real in-process asyncssh server for the deploy SSH tests. It accepts
-one user with a password or an authorized ed25519 key and answers the
-connection-check commands with canned output."""
+one user with a password or an authorized ed25519 key (and, playing a VM,
+its cloud-init user with any key) and answers the connection-check
+commands with canned output."""
 
 import asyncio
 from dataclasses import dataclass, field
@@ -11,6 +12,7 @@ import pytest
 
 SSH_USER = "deployer"
 SSH_PASSWORD = "ssh-PW-secret-4242"
+VM_USER = "deploy"                       # vms.VM_USER
 KEY_PASSPHRASE = "open-sesame-SECRET"
 
 OUTPUTS = {
@@ -40,6 +42,14 @@ class FakeSshServer:
     stdin_echo: set = field(default_factory=set)  # commands that answer with their stdin
     stdins: list = field(default_factory=list)    # what those commands read
     acceptor: asyncssh.SSHAcceptor | None = None
+    connections: int = 0                          # accepted TCP connections, host-key fetches too
+    closed: int = 0                               # connections that have since closed
+    server_conns: list = field(default_factory=list)  # server-side ends, to drop from a test
+    max_sessions: int = 10                        # open channels per connection, as OpenSSH
+    open_sessions: int = 0                        # commands whose channel is still open
+    refuse_sessions: bool = False                 # refuse every new channel (ChannelOpenError)
+    drop_after: set = field(default_factory=set)  # commands that close the connection on exit
+    passwords: set = field(default_factory=lambda: {SSH_PASSWORD})   # SSH_USER's passwords
 
     def serve_host_keys(self, *keys: asyncssh.SSHKey) -> None:
         """Change the host keys new connections are offered, in this order
@@ -63,6 +73,19 @@ class FakeSshServer:
 
 def _server_class(state: dict):
     class _Server(asyncssh.SSHServer):
+        def connection_made(self, conn) -> None:
+            state["fake"].connections += 1
+            state["fake"].server_conns.append(conn)
+
+        def connection_lost(self, exc) -> None:
+            state["fake"].closed += 1
+
+        def session_requested(self):
+            fake = state["fake"]
+            if fake.refuse_sessions or fake.open_sessions >= fake.max_sessions:
+                return False                      # the client gets ChannelOpenError
+            return asyncssh.SSHServerProcess(state["process_factory"], None, 3, False)
+
         def begin_auth(self, username: str) -> bool:
             return True
 
@@ -70,12 +93,16 @@ def _server_class(state: dict):
             return True
 
         def validate_password(self, username: str, password: str) -> bool:
-            return username == SSH_USER and password == SSH_PASSWORD
+            return username == SSH_USER and password in state["fake"].passwords
 
         def public_key_auth_supported(self) -> bool:
             return True
 
         def validate_public_key(self, username: str, key: asyncssh.SSHKey) -> bool:
+            if username == VM_USER:
+                # Plays an environment's VM, whose key each test environment
+                # generates: a deployment logs in to check the host key.
+                return True
             return (username == SSH_USER
                     and key.public_data == state["fake"].client_key.public_data)
 
@@ -88,6 +115,13 @@ async def ssh_server(tmp_path):
 
     async def process_factory(process: asyncssh.SSHServerProcess) -> None:
         fake = state["fake"]
+        fake.open_sessions += 1
+        try:
+            await _answer(fake, process)
+        finally:
+            fake.open_sessions -= 1
+
+    async def _answer(fake: FakeSshServer, process: asyncssh.SSHServerProcess) -> None:
         if process.command in fake.stdin_echo:
             fake.commands.append(process.command)
             data = await process.stdin.read()
@@ -97,11 +131,19 @@ async def ssh_server(tmp_path):
             return
         out, err, code = fake.answer(process.command or "")
         if process.command in fake.delays:
-            await asyncio.sleep(fake.delays[process.command])
+            # The session ends early when the client closes its channel.
+            closed = asyncio.ensure_future(process.channel.wait_closed())
+            await asyncio.wait([closed], timeout=fake.delays[process.command])
+            if closed.done():
+                return
+            closed.cancel()
         process.stdout.write(out if isinstance(out, bytes) else out.encode())
         process.stderr.write(err.encode())
         process.exit(code)
+        if process.command in fake.drop_after:      # after the exit status has gone out
+            asyncio.get_running_loop().call_later(0.1, process.channel.get_connection().close)
 
+    state["process_factory"] = process_factory
     host_key = asyncssh.generate_private_key("ssh-ed25519")
     client_key = asyncssh.generate_private_key("ssh-ed25519")
     keys_dir = tmp_path / "deploy-keys"
@@ -112,7 +154,7 @@ async def ssh_server(tmp_path):
 
     server = await asyncssh.create_server(
         _server_class(state), "127.0.0.1", 0, server_host_keys=[host_key],
-        process_factory=process_factory, encoding=None)
+        encoding=None)
     port = server.sockets[0].getsockname()[1]
     state["fake"] = FakeSshServer(port=port, host_key=host_key, client_key=client_key,
                                   keys_dir=keys_dir, acceptor=server)

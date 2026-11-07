@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { MoveSetupDraft, StatusValue } from '../../lib/api';
+import type { CrateEstimate, MoveSetupDraft, StatusValue } from '../../lib/api';
 import type { CratesValue } from '../../lib/moveSetup';
 
 const api = vi.hoisted(() => ({ patchMoveSetup: vi.fn() }));
@@ -20,9 +20,10 @@ const withClashes = (clashes: string[]) => ({
   id: 'd1', previews: { crates: { names: [], clashes, error: null }, trucks: null },
 }) as unknown as MoveSetupDraft;
 
-function Harness({ onNext = vi.fn() }) {
-  const [value, setValue] = useState<CratesValue>(START);
+function Harness({ onNext = vi.fn(), estimate = null as CrateEstimate | null, start = START }) {
+  const [value, setValue] = useState<CratesValue>(start);
   return <CratesStep draft={{ id: 'd1' } as MoveSetupDraft} value={value} setValue={setValue}
+                     estimate={estimate}
                      containerTypes={TYPES} onDraft={vi.fn()} onBack={vi.fn()}
                      onSkip={vi.fn(async () => {})} onNext={onNext} />;
 }
@@ -109,4 +110,25 @@ it('a live save answering after the step is gone never reaches the page', async 
   release(withClashes(['CRT-SJC-DAL-001']));
   await Promise.resolve();
   expect(onDraft).not.toHaveBeenCalled();
+});
+
+const EST: CrateEstimate = { crates: 24, uncapped: 24, needed: 19, devices: 212, ru: 318,
+                             over_10u: 0, unknown_size: 0, racks: 3, nodes: 0 };
+
+it('shows the estimate line, and offers it back once the count is changed', async () => {
+  const user = userEvent.setup();
+  render(<Harness estimate={EST} start={{ ...START, count: '24' }} />);
+  expect(screen.getByText('Estimated 24 crates from 212 devices (318U) + 25%; 3 racks left out.')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Use estimate (24)' })).toBeNull();
+  const count = screen.getByLabelText('Count');
+  await user.clear(count);
+  await user.type(count, '30');
+  await user.click(screen.getByRole('button', { name: 'Use estimate (24)' }));
+  expect((screen.getByLabelText('Count') as HTMLInputElement).value).toBe('24');
+  expect(screen.queryByRole('button', { name: 'Use estimate (24)' })).toBeNull();
+});
+
+it('shows no estimate line without a From-To', () => {
+  render(<Harness />);
+  expect(screen.queryByText(/^Estimated/)).toBeNull();
 });
