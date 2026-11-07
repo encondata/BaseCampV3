@@ -113,7 +113,11 @@ async def test_the_create_audit_and_json_carry_the_three_vms(client, db, ready):
 ])
 async def test_activate_refusals(client, db, ready, body, expected):
     h = await auth_headers(client, db)
-    await _deployed(client, db, h)
+    env = await _deployed(client, db, h)
+    # The first deploy now fills purple too: put it back to never deployed.
+    purple = await db.get(VmSlot, (env.id, "purple"), populate_existing=True)
+    purple.sha = purple.image_tag = None
+    await db.commit()
     assert _code(await client.post(f"{URL}/lan9/activate", headers=h, json=body)) == expected
 
 

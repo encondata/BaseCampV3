@@ -63,7 +63,9 @@ async def test_the_first_deploy_builds_and_goes_live(db, lan, fake_runner, fake_
     dep_id = await _run(db, lan, go_live=True)
     dep, steps, env = await _load(dep_id)
     assert (dep.status, dep.bluegreen, dep.slot) == ("succeeded", True, "orange")
-    assert fake_provisioner.calls == ["provision"] and fake_runner.steps() == FIRST
+    # then the other side's idle Update builds purple; it never goes live
+    assert fake_provisioner.calls == ["provision", "provision"]
+    assert fake_runner.steps()[:len(FIRST)] == FIRST
     assert fake_publisher.calls == ["lan_switch"]
     assert fake_publisher.contexts[0].slot == "orange"
     assert (env.active_slot, env.current_sha, env.status) == ("orange", SHA, "ready")
@@ -429,8 +431,11 @@ async def test_step_11_runs_on_the_slot_vm(db, lan, fake_runner, fake_publisher)
     dep_id = await _run(db, lan, go_live=True, first_admin=True)
     dep, steps, _ = await _load(dep_id)
     assert dep.status == "succeeded", dep.error
-    assert fake_runner.steps() == [*FIRST[:-1], "first_admin", "slot_smoke"]
-    by_step = {r.step: r for r in fake_runner.requests}
+    # A's steps first; the other side's follow-up has no first_admin step
+    first_steps = [*FIRST[:-1], "first_admin", "slot_smoke"]
+    assert fake_runner.steps()[:len(first_steps)] == first_steps
+    assert fake_runner.steps().count("first_admin") == 1
+    by_step = {r.step: r for r in fake_runner.requests[:len(first_steps)]}
     admin = by_step["first_admin"]
     assert _pub(admin.target) == _pub(by_step["up"].target)
     assert _pub(admin.target) != _pub(by_step["data_vm"].target)
@@ -449,8 +454,10 @@ async def test_a_retry_from_step_7_alone(db, lan, fake_runner, fake_publisher,
     dep_id = await _run(db, env, go_live=True, start_step=7, retry_of=first)
     dep, steps, env = await _load(dep_id)
     assert dep.status == "succeeded", dep.error
-    assert fake_provisioner.calls == []
-    assert fake_runner.steps() == ["data_vm", "up", "slot_smoke"]
+    # the retry builds nothing; the follow-up Update builds purple
+    assert fake_provisioner.calls == ["provision"]
+    retry_steps = ["data_vm", "up", "slot_smoke"]
+    assert fake_runner.steps()[:len(retry_steps)] == retry_steps
     assert [s.key for s in steps if s.status == "skipped"] == FIRST_SKIPPED
     data = fake_runner.requests[0]
     assert data.extravars["data_env_b64"] and data.extravars["db_clients"] == [ORANGE, PURPLE]

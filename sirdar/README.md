@@ -747,6 +747,12 @@ environment has "activate automatically" on; otherwise the dashboard's
 the old one, waits for it to be healthy, runs the public smoke test, then
 removes the old one. For a minute or two both slots serve visitors.
 
+**The first deploy fills both slots.** Once the first slot is live, Sirdar
+starts a second Update by itself that puts the same commit on the other slot
+and leaves it idle (its log's first line says so). That one never goes live,
+even with "activate automatically" on, and skips the seed, the first admin and
+starter content, which the shared database already has.
+
 Both slots share one database and one bucket, so **every migration must be
 expand/contract**: the old slot keeps running against the migrated database
 until Activate (and during the switch). Add columns and tables first; remove
@@ -850,7 +856,8 @@ still needs certificates through NPM, which the create response flags as
 `bluegreen_npm_certificates`).
 
 - **Update** deploys to the idle VM (the first deploy goes live by itself, and
-  so does every Update with "Activate automatically" on).
+  so does every Update with "Activate automatically" on; the first deploy then
+  deploys the other VM with the same commit, idle).
 - **Data VM:** Postgres accepts only the two app VMs (pg_hba and the VM's
   firewall in `DOCKER-USER`); storage accepts the app VMs and NPM. Step 7
   (Prepare data VM) re-applies its stack and firewall on every Update. A commit
