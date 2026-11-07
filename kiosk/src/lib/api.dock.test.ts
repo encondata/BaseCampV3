@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
-/** The Dock screen's edge calls: the overview, one pass's detail and the
- *  Start / Stop control, with their paths, methods and body. The Dock has no
- *  settings to save. */
+/** The Dock's edge calls: the overview, the Start / Stop control and the
+ *  crate window (Settings › RFID), with their paths, methods and bodies. */
 import { beforeEach, expect, it, vi } from 'vitest';
 
 import * as api from './api';

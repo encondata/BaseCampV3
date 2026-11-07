@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { SETTINGS_TABS, visibleTabs } from './settingsTabs';
 
-it('tab order includes This Kiosk right after Devices', () => {
+it('tab order: RFID right after Devices, then This Kiosk', () => {
   expect(SETTINGS_TABS.map((t) => t.id)).toEqual([
     'appearance', 'sound', 'devices', 'rfid', 'this-kiosk', 'edge', 'admin', 'developer',
   ]);

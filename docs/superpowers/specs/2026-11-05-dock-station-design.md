@@ -387,6 +387,8 @@ Jimmy asked for the Recent passes card to be removed from the Dock screen.
 
 Jimmy asked for the 5-second window to become a setting on a new RFID tab in kiosk Settings. It isn't a timer. It's the window around the crate scan that decides which devices go into the crate.
 
+Where this section disagrees with an earlier one, this one wins. The window is no longer fixed at 5 s ("Changes after the second test"): 5 s is now its default, and `edge.dock.state` has `DEFAULT_WINDOW_S` and the per-burst W instead of `WINDOW_S`.
+
 **Jimmy's rules:**
 - Admins and higher can set it from 1 to 10 seconds.
 - A developer login can override that: any value.
