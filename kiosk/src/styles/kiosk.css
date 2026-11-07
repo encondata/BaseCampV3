@@ -192,8 +192,56 @@
 .kiosk-setup-banner { margin-top: 18px; border-left: 3px solid var(--accent); }
 .kiosk-setup-banner.is-dev { border-left-color: var(--c-amber); }
 .kiosk-placeholder { max-width: clamp(20rem, 62vw, 62rem); margin-top: 18px; padding: 22px 24px; background: var(--paper); border: 1px dashed var(--paper-line); border-radius: 14px; color: var(--text-mute); display: grid; gap: 14px; justify-items: start; }
-.kiosk-section { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; color: var(--snow); opacity: .85; white-space: nowrap; }
-@media (max-width: 900px) { .kiosk-section { display: none; } }
+/* The trail back home: "Home › Label Printing › Printing Station"
+   (lib/breadcrumbs.ts). It replaces the single section word that used to
+   sit here, in the same mono face. Unlike that word it stays visible at
+   every width, because it is navigation now.
+
+   When the bar runs short, levels shorten with an ellipsis — never a hard
+   clip, which cut "Label Printing" mid-word at 1024px and read as broken.
+   Home never shrinks (it is the way out); the current page gives way
+   first (flex-shrink 3), then any level in between. Each level carries its
+   full name as a hover title. */
+.kiosk-crumbs { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+/* The trail gives way before the brand does: without this the wordmark
+   (which can shrink, for narrow screens) was squeezed to "ServerSh…"
+   while the trail still had room to truncate. */
+.kiosk-brand:has(.kiosk-crumbs) .kiosk-wordmark { flex-shrink: 0; }
+.kiosk-crumbs ol {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0; padding: 0; list-style: none; min-width: 0;
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; white-space: nowrap;
+}
+.kiosk-crumbs li { display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 5.5em; }
+.kiosk-crumbs li:first-child { flex: none; min-width: 0; }
+.kiosk-crumbs li:last-child { flex-shrink: 3; }
+.kiosk-crumb-sep { flex: none; color: var(--snow); opacity: .45; }
+.kiosk-crumb {
+  display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  color: var(--snow); opacity: .7; text-decoration: none;
+  padding: 3px 4px; margin: 0 -4px; border-radius: 6px;
+  transition: opacity .15s, background .15s;
+}
+a.kiosk-crumb:hover { opacity: 1; background: var(--ink-2); text-decoration: underline; text-underline-offset: 3px; }
+a.kiosk-crumb:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: 1px; }
+.kiosk-crumb.is-current { opacity: 1; }
+/* Below 1280px the bar can't also hold the mode chip ("KIOSK · WEB"):
+   at 1024px it left the current page no room at all. The footer's Mode
+   item still says it. */
+@media (max-width: 1279px) {
+  .kiosk-brand:has(.kiosk-crumbs) .kiosk-mode { display: none; }
+}
+/* On a phone-width screen the bar can't hold the wordmark AND a trail:
+   keeping the wordmark crushed the trail until even "Home" was clipped.
+   The logo stays as the brand, and the trail gets the room. Even then a
+   three-level trail has no room for its middle level, so it shortens to
+   "Home › the current page". Nothing is lost: every page under Label
+   Printing has its own "Back to Label Printing" button. */
+@media (max-width: 600px) {
+  .kiosk-brand:has(.kiosk-crumbs) .kiosk-wordmark { display: none; }
+  .kiosk-crumbs { flex: 1 1 auto; }
+  .kiosk-crumbs li:not(:first-child):not(:last-child) { display: none; }
+}
 
 /* ── login page additions ─────────────────────────────────────────
    The kiosk shows the SAME sign-in page as the portal and the wiki

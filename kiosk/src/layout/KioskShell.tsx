@@ -8,7 +8,7 @@
  */
 
 import { Fragment, useEffect, type ReactNode } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 
 import { registrationLabel } from '@portal/lib/devices';
 import { applyPreferences, DEFAULT_PREFERENCES } from '@portal/lib/settings';
@@ -20,7 +20,7 @@ import ScanFlash from '../components/ScanFlash';
 import type { RegistrationState } from '../lib/api';
 import { kioskVersion } from '../lib/config';
 import { useDevMode } from '../lib/devMode';
-import { FEATURES } from '../lib/features';
+import { breadcrumbs } from '../lib/breadcrumbs';
 import { getIdentity } from '../lib/identity';
 import { isReaderStation, stationLabel, useKioskSetup } from '../lib/kioskSetup';
 import { webLabelBackend } from '../lib/labelBackend';
@@ -109,9 +109,9 @@ export default function KioskShell({ children }: { children: ReactNode }) {
 
   const identity = getIdentity();
   const { mode, label: modeLabel } = platform();
-  const feature = FEATURES.find(
-    (f) => location.pathname === f.path || location.pathname.startsWith(`${f.path}/`),
-  );
+  // The trail back home (lib/breadcrumbs.ts): every level but the last is
+  // a link; the last is where you are.
+  const crumbs = breadcrumbs(location.pathname);
 
   // Anything the top bar already shows stays out of here: the kiosk name,
   // the signed-in person, and the registration chip. The session's end
@@ -159,7 +159,22 @@ export default function KioskShell({ children }: { children: ReactNode }) {
               ? stationLabel(kioskSetup.stationType, modeLabel)
               : `Kiosk · ${modeLabel}`}
           </span>
-          {feature && <span className="kiosk-section">{feature.title}</span>}
+          <nav className="kiosk-crumbs" aria-label="Breadcrumb">
+            <ol>
+              {crumbs.map((crumb, i) => {
+                const current = i === crumbs.length - 1;
+                return (
+                  <li key={crumb.path}>
+                    {i > 0 && <span className="kiosk-crumb-sep" aria-hidden="true">›</span>}
+                    {current
+                      // title (on both): the full name, for when a short bar truncates it
+                      ? <span className="kiosk-crumb is-current" aria-current="page" title={crumb.title}>{crumb.title}</span>
+                      : <Link className="kiosk-crumb" to={crumb.path} title={crumb.title}>{crumb.title}</Link>}
+                  </li>
+                );
+              })}
+            </ol>
+          </nav>
         </div>
         <button type="button" className="kiosk-name" title="This kiosk"
                 onClick={() => navigate('/settings?tab=this-kiosk')}>

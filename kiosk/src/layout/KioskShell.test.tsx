@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
-/** KioskShell's top bar shows a section label for the current feature
- *  route and nothing for /. */
+/** KioskShell's top bar carries the trail back home ("Home › Label
+ *  Printing › Printing Station"): every level but the last is a link, the
+ *  last is where you are. lib/breadcrumbs.test.ts covers the route table;
+ *  these cover what the bar renders and that the links navigate. */
 import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useSearchParams } from 'react-router-dom';
@@ -98,14 +100,21 @@ afterEach(() => {
   localStorage.clear();
 });
 
-it('shows the feature title in .kiosk-section at a feature route', () => {
+/** The trail as the bar renders it: each level's text, links marked. */
+function renderedTrail(): string[] {
+  const nav = screen.getByRole('navigation', { name: 'Breadcrumb' });
+  return [...nav.querySelectorAll('.kiosk-crumb')].map((el) => (
+    el.tagName === 'A' ? `${el.textContent}→${el.getAttribute('href')}` : `[${el.textContent}]`
+  ));
+}
+
+it('a top-level page reads Home › the page, with Home a link', () => {
   render(
     <MemoryRouter initialEntries={['/timeclock']}>
       <KioskShell><div /></KioskShell>
     </MemoryRouter>,
   );
-  const section = document.querySelector('.kiosk-section');
-  expect(section?.textContent).toBe('Timeclock');
+  expect(renderedTrail()).toEqual(['Home→/', '[Timeclock]']);
 });
 
 it('has no help button, even for someone with wiki:view', () => {
@@ -122,43 +131,59 @@ it('has no help button, even for someone with wiki:view', () => {
   expect(document.querySelector('.kiosk-help')).toBeNull();
 });
 
-it('shows no section label at /', () => {
+it('home reads just Home, as the current page rather than a link', () => {
   render(
     <MemoryRouter initialEntries={['/']}>
       <KioskShell><div /></KioskShell>
     </MemoryRouter>,
   );
-  expect(document.querySelector('.kiosk-section')).toBeNull();
+  expect(renderedTrail()).toEqual(['[Home]']);
+  expect(screen.getByText('Home').getAttribute('aria-current')).toBe('page');
 });
 
-it('shows "Label Printing" as the section label at a /labels sub-route', () => {
+it('a Label Printing page nests under Label Printing, both earlier levels links', () => {
   render(
     <MemoryRouter initialEntries={['/labels/bulk']}>
       <KioskShell><div /></KioskShell>
     </MemoryRouter>,
   );
-  const section = document.querySelector('.kiosk-section');
-  expect(section?.textContent).toBe('Label Printing');
+  expect(renderedTrail()).toEqual(['Home→/', 'Label Printing→/labels', '[Bulk Print]']);
+  // the arrows between levels are decoration, not read aloud
+  const seps = document.querySelectorAll('.kiosk-crumb-sep');
+  expect(seps).toHaveLength(2);
+  seps.forEach((s) => expect(s.getAttribute('aria-hidden')).toBe('true'));
 });
 
-it('shows "Kiosk Setup" as the section label at /setup', () => {
+it('Settings stops at Settings whichever tab is open', () => {
   render(
-    <MemoryRouter initialEntries={['/setup']}>
+    <MemoryRouter initialEntries={['/settings?tab=devices']}>
       <KioskShell><div /></KioskShell>
     </MemoryRouter>,
   );
-  const section = document.querySelector('.kiosk-section');
-  expect(section?.textContent).toBe('Kiosk Setup');
+  expect(renderedTrail()).toEqual(['Home→/', '[Settings]']);
 });
 
-it('shows "Settings" as the section label at /settings', () => {
+function TrailTarget({ label }: { label: string }) {
+  return <div>{label}</div>;
+}
+
+it('clicking a level goes there — Label Printing, then Home', async () => {
   render(
-    <MemoryRouter initialEntries={['/settings']}>
-      <KioskShell><div /></KioskShell>
+    <MemoryRouter initialEntries={['/labels/station']}>
+      <Routes>
+        <Route path="/labels/station" element={<KioskShell><TrailTarget label="STATION" /></KioskShell>} />
+        <Route path="/labels" element={<KioskShell><TrailTarget label="LABELS" /></KioskShell>} />
+        <Route path="/" element={<KioskShell><TrailTarget label="HOME" /></KioskShell>} />
+      </Routes>
     </MemoryRouter>,
   );
-  const section = document.querySelector('.kiosk-section');
-  expect(section?.textContent).toBe('Settings');
+  await userEvent.click(screen.getByRole('link', { name: 'Label Printing' }));
+  expect(await screen.findByText('LABELS')).toBeTruthy();
+  expect(renderedTrail()).toEqual(['Home→/', '[Label Printing]']);
+
+  await userEvent.click(screen.getByRole('link', { name: 'Home' }));
+  expect(await screen.findByText('HOME')).toBeTruthy();
+  expect(renderedTrail()).toEqual(['[Home]']);
 });
 
 function SettingsStub() {
