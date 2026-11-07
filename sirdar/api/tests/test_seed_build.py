@@ -35,6 +35,9 @@ SNAPSHOTS = "/api/deploy/snapshots"
 # link, a required self-link (loaded in any order), an unmentioned table
 # with a sequence, and files on rows.
 SCHEMA = [
+    # the extensions ServerSherpa uses: their functions sit in public and are allowed
+    "CREATE EXTENSION citext",
+    "CREATE EXTENSION pg_trgm",
     "CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)",
     "INSERT INTO alembic_version VALUES ('0089')",
     "CREATE TABLE roles (id int PRIMARY KEY, name text NOT NULL)",
@@ -78,7 +81,7 @@ SCHEMA = [
     ("CREATE TABLE docs (id int PRIMARY KEY, site_id int NOT NULL REFERENCES sites, "
      "storage_key text)"),
     "INSERT INTO docs VALUES (7, 1, 'docs/plan.pdf'), (8, 2, 'docs/other.pdf')",
-    "CREATE TABLE audit_log (id serial PRIMARY KEY, note text)",
+    "CREATE TABLE audit_log (id serial PRIMARY KEY, note citext)",
     "INSERT INTO audit_log (note) VALUES ('a'), ('b'), ('c')",
     ("CREATE TABLE wiki_pages (id int PRIMARY KEY, "
      "parent_id int NOT NULL REFERENCES wiki_pages DEFERRABLE INITIALLY DEFERRED, title text)"),
@@ -95,10 +98,11 @@ OBJECTS = {
 }
 
 # An untrusted dump's own mischief: an ordinary trigger that keeps the old
-# row (replica mode skips it, as it does an ordinary rule: allowed, inert);
-# an ALWAYS rule that rewrites the UPDATE to nothing, and a REPLICA trigger
-# that copies each hash into another table as it goes (both fire in
-# replica mode: the schema is refused before any row is loaded).
+# row (replica mode skips it, as it does an ordinary rule, but its function
+# is the schema's own, so the schema is refused); an ALWAYS rule that
+# rewrites the UPDATE to nothing; a REPLICA trigger that copies each hash
+# into another table as it goes; a CHECK constraint whose function does the
+# same during the load. All refused before any row is loaded.
 TRIGGER = [
     ("CREATE FUNCTION keep_old() RETURNS trigger LANGUAGE plpgsql AS "
      "$$ BEGIN RETURN OLD; END $$"),
@@ -114,6 +118,13 @@ LEAK = [
     ("CREATE TRIGGER leak AFTER UPDATE ON user_accounts "
      "FOR EACH ROW EXECUTE FUNCTION leak()"),
     "ALTER TABLE user_accounts ENABLE REPLICA TRIGGER leak",
+]
+CHECK = [
+    # no primary key: the CHECK fires again while pg_restore loads user_accounts
+    "CREATE TABLE leaked (hash text)",
+    ("CREATE FUNCTION stash(h text) RETURNS boolean LANGUAGE plpgsql AS "
+     "$$ BEGIN INSERT INTO public.leaked (hash) VALUES (h); RETURN true; END $$"),
+    "ALTER TABLE user_accounts ADD CONSTRAINT stash CHECK (stash(password_hash))",
 ]
 
 SUPERUSER = make_url(BASE_URL).username
@@ -134,8 +145,9 @@ def _dump() -> bytes:
 @pytest.fixture(scope="module")
 def dumps() -> dict[str, bytes]:
     """pg_dump -Fc of the fixture schema: whole; with the ordinary trigger;
-    with the ALWAYS rule; with the REPLICA leak trigger; without
-    biometric_keys; and also without user_accounts.totp_last_counter."""
+    with the ALWAYS rule; with the REPLICA leak trigger; with the leaking
+    CHECK; without biometric_keys; and also without
+    user_accounts.totp_last_counter."""
     with psycopg.connect(_psycopg_url("postgres"), autocommit=True) as conn:
         conn.execute(f'DROP DATABASE IF EXISTS "{SOURCE}" WITH (FORCE)')
         conn.execute(f'CREATE DATABASE "{SOURCE}"')
@@ -155,7 +167,10 @@ def dumps() -> dict[str, bytes]:
         run(["DROP RULE keep_rows ON user_accounts", *LEAK])
         out["leak"] = _dump()
         run(["DROP TRIGGER leak ON user_accounts", "DROP FUNCTION leak", "DROP TABLE leaked",
-             "DROP TABLE biometric_keys"])
+             *CHECK])
+        out["check"] = _dump()
+        run(["ALTER TABLE user_accounts DROP CONSTRAINT stash", "DROP FUNCTION stash",
+             "DROP TABLE leaked", "DROP TABLE biometric_keys"])
         out["no_table"] = _dump()
         with psycopg.connect(_psycopg_url(SOURCE), autocommit=True) as conn:
             conn.execute("ALTER TABLE user_accounts DROP COLUMN totp_last_counter")
@@ -333,6 +348,9 @@ async def test_subset_holds_exactly_the_kept_rows(client, db, headers, source):
             await conn.execute(f"ALTER TABLE {table} VALIDATE CONSTRAINT {table}_{column}_fkey")
         # sequences keep the source's position: new rows never collide
         assert await conn.fetchval("SELECT last_value FROM audit_log_id_seq") == 3
+        # the extensions came along: their public functions aren't the schema's own
+        assert await conn.fetchval("SELECT count(*) FROM pg_extension "
+                                   "WHERE extname IN ('citext', 'pg_trgm')") == 2
     finally:
         await conn.close()
     _scratch_gone(source, built)
@@ -496,13 +514,25 @@ async def test_without_reset_the_secrets_stay(client, db, headers, source):
         "avatars/ann.png", "avatars/bob.png", "devices/d1.bin"}
 
 
-async def test_an_ordinary_trigger_is_allowed_and_inert(
-        client, db, headers, scratch_url, snapshots_dir, tmp_path, dumps):  # noqa: F811
+async def test_an_ordinary_trigger_is_inert_but_its_function_is_refused(
+        client, db, headers, scratch_url, snapshots_dir, tmp_path, dumps,  # noqa: F811
+        monkeypatch):
     rid = await _recipe(client, headers, RESET)
     with_trigger = _store(tmp_path, dumps["trigger"])
     db.add(with_trigger)
     await db.commit()
-    # a BEFORE UPDATE trigger returning OLD would keep every secret: replica mode skips it
+    # every trigger calls a function, and a function of the schema's own is refused
+    built = await _built(client, db, headers, rid, with_trigger, reset_passwords=True)
+    assert (built.status, built.notes) == (
+        "failed", "unsafe_schema: 0 always/replica triggers or rules, 1 functions")
+    _scratch_gone(with_trigger, built)
+
+    # with the check out of the way: a BEFORE UPDATE trigger returning OLD would
+    # keep every secret, and replica mode skips it
+    async def no_check(dst):
+        return None
+
+    monkeypatch.setattr(build, "_check_schema", no_check)
     built = await _built(client, db, headers, rid, with_trigger, reset_passwords=True)
     assert built.status == "ready", built.notes
     conn = await _restored(built)
@@ -520,19 +550,59 @@ async def test_always_or_replica_triggers_and_rules_refuse_the_schema(
     rid = await _recipe(client, headers, RESET)
     with_rule = _store(tmp_path, dumps["rule"])
     with_leak = _store(tmp_path, dumps["leak"])
-    db.add_all([with_rule, with_leak])
+    with_check = _store(tmp_path, dumps["check"])
+    db.add_all([with_rule, with_leak, with_check])
     await db.commit()
-    note = "unsafe_schema: 1 always/replica triggers or rules"
-    # a REPLICA trigger copying hashes elsewhere: refused with and without the reset
+    # a REPLICA trigger (and its function) copying hashes elsewhere: refused with and
+    # without the reset
     for reset_passwords in (True, False):
         built = await _built(client, db, headers, rid, with_leak, reset_passwords=reset_passwords)
-        assert (built.status, built.notes) == ("failed", note), reset_passwords
+        assert (built.status, built.notes) == (
+            "failed", "unsafe_schema: 1 always/replica triggers or rules, 1 functions"), \
+            reset_passwords
         assert built.bundle_file is None
         _scratch_gone(with_leak, built)
     # an ALWAYS rule likewise
     built = await _built(client, db, headers, rid, with_rule, reset_passwords=True)
-    assert (built.status, built.notes) == ("failed", note)
+    assert (built.status, built.notes) == (
+        "failed", "unsafe_schema: 1 always/replica triggers or rules, 0 functions")
     _scratch_gone(with_rule, built)
+    # a CHECK constraint whose function stashes the hash during the load
+    for reset_passwords in (True, False):
+        built = await _built(client, db, headers, rid, with_check,
+                             reset_passwords=reset_passwords)
+        assert (built.status, built.notes) == (
+            "failed", "unsafe_schema: 0 always/replica triggers or rules, 1 functions"), \
+            reset_passwords
+        _scratch_gone(with_check, built)
+
+
+async def test_rows_the_loader_did_not_put_there_fail_the_build(client, db, headers, source,
+                                                                monkeypatch):
+    """Defense in depth: were anything to add rows during the load (here, a
+    stand-in for the schema check being bypassed), the count check refuses."""
+    real_load = build._load
+
+    async def load_and_stray(src, dst, kept):
+        counts = await real_load(src, dst, kept)
+        await dst.execute("INSERT INTO roles VALUES (99, 'stray')")
+        return counts
+
+    monkeypatch.setattr(build, "_load", load_and_stray)
+    rid = await _recipe(client, headers, BASIC)
+    built = await _built(client, db, headers, rid, source)
+    assert (built.status, built.notes) == ("failed", "unexpected_rows: roles")
+    assert built.bundle_file is None
+    _scratch_gone(source, built)
+
+    async def load_and_fill(src, dst, kept):
+        counts = await real_load(src, dst, kept)
+        await dst.execute("INSERT INTO audit_log (note) VALUES ('stray')")   # a table not loaded
+        return counts
+
+    monkeypatch.setattr(build, "_load", load_and_fill)
+    built = await _built(client, db, headers, rid, source)
+    assert (built.status, built.notes) == ("failed", "unexpected_rows: audit_log")
 
 
 async def test_the_reset_is_read_back(client, db, headers, scratch_url, snapshots_dir,  # noqa: F811

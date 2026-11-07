@@ -11,7 +11,9 @@ Its steps, in order:
     (pg_dump --schema-only | pg_restore), so every constraint, index,
     sequence and extension is there before any row; a schema with triggers
     or rules that would fire during the load or the reset (ENABLE ALWAYS or
-    ENABLE REPLICA) is refused (unsafe_schema), see _check_schema;
+    ENABLE REPLICA), or with functions of its own (anything a CHECK, index,
+    generated column, domain or default could call), is refused
+    (unsafe_schema), see _check_schema;
  3. the kept rows are loaded in one transaction with session_replication_role
     = replica (foreign keys and triggers off, so circular and
     self-referencing links load in any order): All rows tables whole, rows
@@ -22,7 +24,9 @@ Its steps, in order:
  6. with reset_passwords, the reset list (seed/reset.py) is applied and
     read back. The reset clears the listed tables and columns; it can't
     guarantee a source schema hasn't stored secrets elsewhere, which is why
-    always/replica triggers and rules are refused in step 2;
+    always/replica triggers and rules, and the schema's own functions, are
+    refused in step 2. Then every public table's row count is compared
+    with what the loader put there (unexpected_rows otherwise);
  7. the subset is dumped (pg_dump -Fc);
  8. a new objects.tar holds only the kept files, copied member by member
     from the source's (content types as they were);
@@ -83,6 +87,14 @@ _UNSAFE_RULES_SQL = """
 SELECT count(*) FROM pg_rewrite r
 JOIN pg_class c ON c.oid = r.ev_class JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = $1 AND r.rulename <> '_RETURN' AND r.ev_enabled IN ('A', 'R')
+"""
+# Functions, procedures and aggregates of the schema's own (not an
+# extension's members, which citext and pg_trgm put in public too).
+_UNSAFE_FUNCTIONS_SQL = """
+SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = $1 AND NOT EXISTS (
+  SELECT 1 FROM pg_depend d
+  WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
 """
 _NOT_NULL_SQL = """
 SELECT c.relname, a.attname FROM pg_attribute a
@@ -260,6 +272,7 @@ async def _build(settings: Settings, snapshot_id: uuid.UUID) -> snapshots.Stored
                         # manifest, and their files don't follow them.
                         rows = {t: n for t, n in rows.items() if t not in reset.EMPTY_TABLES}
                         kept = {t: v for t, v in kept.items() if t not in reset.EMPTY_TABLES}
+                    await _verify_counts(src, dst, rows)
                     refs = await seed_files.referenced(src, kept)
                 finally:
                     await dst.close()
@@ -324,19 +337,45 @@ async def _check_schema(dst: asyncpg.Connection) -> None:
     rows go in, the links are fixed and the secrets cleared with
     session_replication_role = replica, which silences ordinary triggers
     and rules, but not ENABLE ALWAYS ones, and ENABLE REPLICA ones fire
-    only then: a crafted dump could copy a row's password hash into another
-    kept table as it is loaded or reset, where the read-back can't see it.
-    So any such trigger or rule in public fails the build (unsafe_schema),
-    whether or not passwords are being reset."""
+    only then; and a function of the schema's own can run during the load
+    from a CHECK constraint, an index expression, a generated column, a
+    domain or a column default. Either way a crafted dump could copy a
+    row's password hash into another kept table as it is loaded or reset,
+    where the read-back can't see it. So any such trigger or rule, and any
+    function that isn't an extension's (ServerSherpa defines none), fails
+    the build (unsafe_schema), whether or not passwords are being reset."""
     try:
-        count = (await dst.fetchval(_UNSAFE_TRIGGERS_SQL, SCHEMA)
+        fired = (await dst.fetchval(_UNSAFE_TRIGGERS_SQL, SCHEMA)
                  + await dst.fetchval(_UNSAFE_RULES_SQL, SCHEMA))
+        functions = await dst.fetchval(_UNSAFE_FUNCTIONS_SQL, SCHEMA)
     except asyncpg.PostgresError as e:
         log.warning("checking a subset's schema failed: %s", type(e).__name__)
         raise SeedError("load_failed") from None
-    if count:
+    if fired or functions:
         raise SeedError("unsafe_schema",
-                        note=f"unsafe_schema: {count} always/replica triggers or rules")
+                        note=f"unsafe_schema: {fired} always/replica triggers or rules, "
+                             f"{functions} functions")
+
+
+async def _verify_counts(src: asyncpg.Connection, dst: asyncpg.Connection,
+                         expected: dict[str, int]) -> None:
+    """Defense in depth, once the links are fixed and the reset done: every
+    public table of the subset holds exactly the rows the loader put there
+    (none, for a table it didn't load or the reset emptied). A table with
+    other rows fails the build (unexpected_rows)."""
+    names = [t.name for t in await _catalog(dst)]
+    if await dst.fetchval("SELECT to_regclass($1)", f"{SCHEMA}.{ALEMBIC}") is not None:
+        names.append(ALEMBIC)
+    try:
+        for name in sorted(names):
+            actual = await dst.fetchval(f"SELECT count(*) FROM {_ref(name)}")
+            if actual != expected.get(name, 0):
+                log.warning("a subset's table %s holds %d row(s), %d were loaded", name,
+                            actual, expected.get(name, 0))
+                raise SeedError("unexpected_rows", note=f"unexpected_rows: {name}")
+    except asyncpg.PostgresError as e:
+        log.warning("counting a subset's rows failed: %s", type(e).__name__)
+        raise SeedError("load_failed") from None
 
 
 # ---- loading -----------------------------------------------------------------------------
