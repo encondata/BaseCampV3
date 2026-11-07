@@ -235,8 +235,9 @@ def plan_for(mode: str, *, restore: bool = False, publish: bool = False, vm: boo
         if snapshot:
             raise ValueError("a cleanup never takes a snapshot")
         mode = "teardown"
-    if first_admin and (mode != "update" or restore):
-        raise ValueError("only an Update that starts empty creates the first admin")
+    if first_admin and mode != "update":
+        # After a restore too: a recipe-built seed may take a first admin.
+        raise ValueError("only an Update creates the first admin")
     if seed and (mode != "update" or restore):
         raise ValueError("only an Update that starts empty seeds starter content")
     if bluegreen:

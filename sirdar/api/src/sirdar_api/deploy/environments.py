@@ -336,7 +336,11 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     admin_spec = None
     if first_admin is not None:
         if snapshot_id is not None:
-            raise EnvError("first_admin_with_seed")    # a seed already has its users
+            # A seed already has its users; a recipe-built one is the exception
+            # (its users are only what the recipe kept, so step 11 may add one).
+            origin = await db.scalar(select(Snapshot.origin).where(Snapshot.id == snapshot_id))
+            if origin != "recipe":
+                raise EnvError("first_admin_with_seed")
         try:
             admin_spec = first_admins.check(first_admin)
         except first_admins.FirstAdminError as e:

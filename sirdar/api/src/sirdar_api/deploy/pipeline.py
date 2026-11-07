@@ -310,8 +310,9 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
     and Restore VM snapshot there.
 
     first_admin: its plan has step 11 Create the first admin (an Update that
-    starts empty). Dropped when the environment's first admin is already
-    done (or gone), so a retry after step 11 succeeded doesn't plan it again.
+    starts empty or restores a recipe-built seed). Dropped when the
+    environment's first admin is already done (or gone), so a retry after
+    step 11 succeeded doesn't plan it again.
 
     bluegreen: a LAN Blue/Green environment's deployment (it must match
     lan_slots.is_bluegreen, except a publish job: the ordinary 12–14). Slots
@@ -343,8 +344,7 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
     if cloud or bluegreen:
         await _check_slots(db, env, mode=mode, slot=slot, snapshot_id=snapshot_id,
                            retry_of=retry_of)
-    if first_admin and mode == "update" and not restores(mode, snapshot_id) \
-            and not await first_admins.pending(db, env.id):
+    if first_admin and mode == "update" and not await first_admins.pending(db, env.id):
         first_admin = False
     taking_on_delete = mode == "teardown" and (cloud or bluegreen) and snapshot_id is not None
     plan = plan_for(mode, restore=restores(mode, snapshot_id), publish=publish, vm=vm,
@@ -365,6 +365,8 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                                .execution_options(populate_existing=True))
         if snap is None:
             raise snapshots.SnapshotError("snapshot_not_found")
+        if first_admin and restores(mode, snapshot_id) and snap.origin != "recipe":
+            raise ValueError("a restored snapshot already holds its users")
         export = STEPS_BY_KEY["export"].number
         taking = mode == "snapshot" or (taking_on_delete and start_step <= export)
         wanted = "pending" if taking else "ready"

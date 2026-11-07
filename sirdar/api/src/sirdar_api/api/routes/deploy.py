@@ -1134,7 +1134,8 @@ async def _start_do_update(db, env: Environment, body: DeploymentIn, request: Re
                          mode="update", git_ref=ref,
                          sha=ref.lower() if gitref.is_full_sha(ref) else "", snapshot=snapshot,
                          cloud=True, slot=slot, go_live=do_envs.goes_live(env, slot),
-                         first_admin=snapshot is None and await first_admins.pending(db, env.id),
+                         first_admin=_takes_first_admin(snapshot)
+                         and await first_admins.pending(db, env.id),
                          seed_content=seed)
 
 
@@ -1181,6 +1182,12 @@ async def _cleanup_allowed(db, env: Environment) -> None:
     """A cleanup is only for an environment that has never deployed."""
     if not await environments.never_deployed(db, env):
         raise _refuse(409, "cleanup_not_allowed")
+
+
+def _takes_first_admin(snapshot) -> bool:
+    """Step 11 runs without a seed, or after a recipe-built one (a plain seed
+    already holds its users)."""
+    return snapshot is None or snapshot.origin == "recipe"
 
 
 async def _first_admin_ready(db, env: Environment) -> None:
@@ -1261,7 +1268,8 @@ async def _start_lan_update(db, env: Environment, body: DeploymentIn, request: R
                          sha=ref.lower() if gitref.is_full_sha(ref) else "", snapshot=snapshot,
                          publish=env.publish, vm=True, bluegreen=True, slot=slot,
                          go_live=do_envs.goes_live(env, slot),
-                         first_admin=snapshot is None and await first_admins.pending(db, env.id),
+                         first_admin=_takes_first_admin(snapshot)
+                         and await first_admins.pending(db, env.id),
                          seed_content=seed)
 
 
@@ -1606,7 +1614,7 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
     return await _launch(db, env, request, actor, action="deploy.deployment_start",
                          mode=body.mode, git_ref=ref, sha=sha, snapshot=snapshot,
                          publish=env.publish, vm=on_vm, take_vm_snapshot=take,
-                         first_admin=body.mode == "update" and snapshot is None
+                         first_admin=body.mode == "update" and _takes_first_admin(snapshot)
                          and await first_admins.pending(db, env.id), seed_content=seed)
 
 
