@@ -1171,6 +1171,18 @@ def test_the_docker_tasks_install_docker_and_the_folder():
     assert "169.254.169.254" not in (PLAYBOOK_DIR / "tasks" / "docker.yml").read_text()
 
 
+
+def test_the_connection_is_reset_only_when_the_docker_group_was_just_added():
+    """A reset opens a new SSH connection; the office path limits those, so
+    one is made only when the SSH user's groups actually changed."""
+    tasks = yaml.safe_load((PLAYBOOK_DIR / "tasks" / "docker.yml").read_text())
+    by_name = {t["name"]: t for t in tasks}
+    group = by_name["The SSH user may run docker"]
+    reset = by_name["Pick up the docker group on the next connection"]
+    assert reset["ansible.builtin.meta"] == "reset_connection"
+    assert reset["when"] == f"{group['register']} is changed"
+
+
 DATA_ENV = ("STACK_ENV=e2e\nPOSTGRES_PASSWORD=0123abcd\nSPACES_SECRET_KEY=0123abcd\n"
             "STACK_SPACES_PORT=9000\nSTACK_MAILPIT_PORT=8025\n"
             "STACK_DB_PUBLISH=1\nSTACK_DB_PORT=5432\nSTACK_DB_ALLOW=10.10.48.48,10.10.48.49\n")
