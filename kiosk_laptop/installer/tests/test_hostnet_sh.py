@@ -325,6 +325,48 @@ def test_main_still_writes_interfaces_when_the_route_tool_fails(tmp_path, os_nam
     assert out["interfaces"] and "gateway" not in out
 
 
+# The writer feeding a gateway parser sends the gateway line, pauses, then the
+# rest, as uutils tr (Ubuntu 26.04's default tr) does: it writes up to the last
+# newline, then the unterminated tail as a second write. A parser that exits at
+# the match closes the pipe in that pause, the second write dies of SIGPIPE,
+# and under pipefail the gateway was thrown away.
+@pytest.mark.parametrize("os_name,stubs", [
+    ("Linux", 'ip() {{ case "$*" in "-j -4 addr") cat "{ipj}";; "-j -4 route show default") cat "{rt}";; esac; }}; '
+              'tr() {{ command tr "$@" > "{tmp}/tr.out"; head -n 2 "{tmp}/tr.out"; sleep 0.3; '
+              'tail -n +3 "{tmp}/tr.out"; }}'),
+    ("Darwin", 'ifconfig() {{ cat "{ifc}"; }}; networksetup() {{ cat "{ports}"; }}; '
+               'route() {{ [ "$*" = "-n get default" ] || return 1; head -n 4 "{rtm}"; sleep 0.3; '
+               'tail -n +5 "{rtm}"; }}'),
+], ids=["Linux", "Darwin"])
+def test_main_keeps_the_gateway_when_the_writer_sends_it_in_pieces(tmp_path, os_name, stubs):
+    data = tmp_path / "data"; data.mkdir()
+    ipj = tmp_path / "ip.json"; ipj.write_text(IP_JSON)
+    rt = tmp_path / "route.json"; rt.write_text(IP_ROUTE)
+    ifc = tmp_path / "ifconfig.txt"; ifc.write_text(IFCONFIG)
+    ports = tmp_path / "ports.txt"; ports.write_text(PORTS)
+    rtm = tmp_path / "route.txt"; rtm.write_text(ROUTE_GET)
+    body = stubs.format(ipj=ipj, rt=rt, ifc=ifc, ports=ports, rtm=rtm, tmp=tmp_path)
+    r = hn(tmp_path, f'OS={os_name}; {body}; main; echo rc=$?',
+           env={"KIOSK_DATA_DIR": str(data), "KIOSK_SYSFS_NET": str(fake_sysfs(tmp_path))})
+    assert r.stdout == "rc=0\n", r.stderr
+    assert json.loads((data / "host-network.json").read_text())["gateway"] == "10.10.48.1"
+
+
+@pytest.mark.parametrize("parser,feed", [
+    ("parse_gateway_linux", "IP_ROUTE"),
+    ("parse_gateway_macos", "ROUTE_GET"),
+])
+def test_gateway_parsers_read_to_the_end(tmp_path, parser, feed):
+    """The writer exits 0 only when the parser drained the pipe: 200 KB after
+    the match overfill any pipe buffer. The writer is bash's own printf, which
+    dies of SIGPIPE on a closed pipe whatever the platform's cat would do."""
+    src = tmp_path / "feed.txt"; src.write_text(globals()[feed] + "\n")
+    r = hn(tmp_path, f'{{ printf "%s\\n" "$(cat "{src}")"; i=0; while [ $i -lt 200 ]; do '
+                     f'printf "%s\\n" "$LINE"; i=$((i + 1)); done; }} | {parser}; '
+                     f'echo "status=${{PIPESTATUS[*]}}"', env={"LINE": "x" * 1000})
+    assert r.stdout == "10.10.48.1\nstatus=0 0\n", r.stderr
+
+
 def test_write_is_atomic_and_mode_644(tmp_path):
     data = tmp_path / "data"; data.mkdir()
     (data / "host-network.json").write_text("old")
