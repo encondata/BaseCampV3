@@ -456,12 +456,38 @@ async def _restore(settings: Settings, snap: Snapshot, name: str) -> None:
                                ["--no-owner", "--no-privileges", "--dbname", name, str(dump)],
                                role=name)
         if code != 0:
-            # stderr may quote the dump's rows: the log only, never the API.
-            first = next((ln for ln in err.splitlines() if ln.strip()), "")[:300]
-            log.warning("pg_restore into a scratch database exited with %d: %s", code, first)
+            # stderr may quote the dump's rows: its error lines to the log only.
+            log_tool_failure("pg_restore into a scratch database", code, err)
             raise SeedError("restore_failed", reason=f"pg_restore exited with {code}")
     finally:
         await asyncio.to_thread(shutil.rmtree, work, True)
+
+
+_TOOL_ERROR = re.compile(r"pg_(?:restore|dump): error: ")
+_TOOL_ERROR_TAIL = re.compile(r"\s*\b(?:DETAIL|CONTEXT):")
+_TOOL_ERROR_CHARS = 300
+_TOOL_ERROR_LINES = 5
+
+
+def tool_error_lines(err: str) -> list[str]:
+    """The lines of a pg tool's stderr worth logging: only its own
+    `pg_restore: error:` / `pg_dump: error:` lines, each cut before any
+    DETAIL or CONTEXT (where Postgres quotes rows) and to 300 characters.
+    The DETAIL/CONTEXT lines themselves, and everything else, are dropped."""
+    out = []
+    for line in err.splitlines():
+        if not _TOOL_ERROR.match(line):
+            continue
+        cut = _TOOL_ERROR_TAIL.search(line)
+        out.append((line[:cut.start()] if cut else line).rstrip()[:_TOOL_ERROR_CHARS])
+    return out[:_TOOL_ERROR_LINES]
+
+
+def log_tool_failure(what: str, code: int, err: str) -> None:
+    """Log a failed pg tool: its exit code and tool_error_lines, never more
+    of stderr (which may quote the dump's rows)."""
+    log.warning("%s exited with %d: %s", what, code,
+                " | ".join(tool_error_lines(err)) or "(no error line)")
 
 
 async def ensure_restored(settings: Settings, snap: Snapshot, purpose: str = "browse") -> str:

@@ -351,9 +351,8 @@ async def _build(settings: Settings, snapshot_id: uuid.UUID) -> snapshots.Stored
 
 
 def _tool_failed(tool: str, step: str, code: int, err: str) -> SeedError:
-    # stderr may quote rows: the log only, never the notes.
-    first = next((ln for ln in err.splitlines() if ln.strip()), "")[:300]
-    log.warning("%s during a seed build (%s) exited with %d: %s", tool, step, code, first)
+    # stderr may quote rows: its error lines to the log only, never the notes.
+    scratch.log_tool_failure(f"{tool} during a seed build ({step})", code, err)
     return SeedError(step)
 
 

@@ -667,3 +667,35 @@ async def test_app_sweeps_only_with_a_scratch_url(monkeypatch, url, runs):
         get_settings.cache_clear()
     assert events == (["startup sweep", f"loop {scratch.SWEEP_SECONDS}", "cancelled"]
                       if runs else [])
+
+
+# ---- what a failed pg tool logs ----------------------------------------------------------
+
+def test_tool_error_lines_keep_only_the_tools_error_lines():
+    err = "\n".join([  # noqa: FLY002 - one stderr line per item
+        "pg_restore: while PROCESSING TOC:",
+        'pg_restore: from TOC entry 3 TABLE DATA people',
+        ('pg_restore: error: COPY failed for table "people": ERROR:  bad row '
+         "DETAIL:  Key (x)=(secret)"),
+        "DETAIL:  Key (email)=(ann@x.test) already exists.",
+        'CONTEXT:  COPY people, line 1: "1\tAnn\thash-ann"',
+        "pg_dump: error: query failed CONTEXT: row text here",
+        "  pg_restore: error: indented, not the tool's own line",
+        "pg_restore: warning: errors ignored on restore: 1",
+    ])
+    assert scratch.tool_error_lines(err) == [
+        'pg_restore: error: COPY failed for table "people": ERROR:  bad row',
+        "pg_dump: error: query failed",
+    ]
+    assert scratch.tool_error_lines("") == []
+    long = "pg_dump: error: " + "x" * 1000
+    assert len(scratch.tool_error_lines(long)[0]) <= 300
+
+
+def test_a_failed_restore_logs_the_code_and_error_lines_only(caplog):
+    with caplog.at_level("WARNING"):
+        scratch.log_tool_failure("pg_restore into a scratch database", 1,
+                                 'pg_restore: error: oops\nCONTEXT:  COPY t, line 1: "row text"')
+    text = caplog.text
+    assert "exited with 1" in text and "pg_restore: error: oops" in text
+    assert "row text" not in text
