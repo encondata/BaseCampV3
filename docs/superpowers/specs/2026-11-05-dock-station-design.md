@@ -382,3 +382,32 @@ Jimmy asked for the Recent passes card to be removed from the Dock screen.
 - **The pass details popup goes too.** Recent passes' Details button was the only way to open it. The screen no longer shows a pass's individual reads, antennas or signal, or which devices the portal refused.
 - **The laptop is unchanged.** It still keeps every pass. `/edge/dock` still lists the newest closed passes, which the screen uses to notice a decision and to follow it until the portal answers. `GET /edge/dock/passes/{id}` stays, so the details can come back without edge work.
 - **A decided crate still shows on the crate card,** held until the next tag, as before. That's now the only place a pass's outcome shows on the Dock.
+
+## Crate window setting (2026-11-07, Jimmy)
+
+Jimmy asked for the 5-second window to become a setting on a new RFID tab in kiosk Settings. It isn't a timer. It's the window around the crate scan that decides which devices go into the crate.
+
+**Jimmy's rules:**
+- Admins and higher can set it from 1 to 10 seconds.
+- A developer login can override that: any value.
+- It lives on a new **RFID** tab in kiosk Settings.
+
+**The tab:**
+- It sits after Devices.
+- Laptops only, like Edge, because the laptop decides the crates. Every station type sees it; the setup choice hides nothing in Settings.
+- Signed-in people only, like every tab but This Kiosk.
+- One row, **Crate window**: a seconds field, defaulting to 5, with this hint: "Devices read within this many seconds before or after a crate tag go into that crate. Two crates read within twice this time are both flagged, and nothing in them packs. A change applies from the next crate."
+
+**Who can change it:**
+- **Admins and higher** (rank 60+): a whole number of seconds from 1 to 10.
+- **Developers** (the `developer` role): any number above 0, up to 3600, decimals allowed. *My calls:* decimals, and the one-hour ceiling so a typo can't freeze the Dock.
+- **Anyone else signed in:** sees the value with the field locked, and a line saying only an admin can change it.
+- **An admin looking at a developer's value outside 1–10:** sees it as it is and can leave it. Changing it means a whole number from 1 to 10. *My call.*
+
+**Behavior:**
+- The two-crate check is twice the window, as before. Two crates read within 2W are flagged together, and a burst is decided at max(newest crate + 2W, newest new tag + W).
+- A burst keeps the window it opened with. A change applies from the next burst, so a crate already being read never regroups. *My call.* Each pass already stores its window (`dock_passes.quiet_gap_s`), and the open burst now records it when it opens.
+- The Dock screen's open-burst view (window chips, the count, conflict flags) uses the open burst's own window.
+- Stored on the laptop, so it survives restarts. It doesn't sync with the portal's per-kiosk config. *My call.*
+- Clear Setup and Wipe put it back to 5. A move change or a station-type change keeps it. *My call.*
+- The old `dock_settings` table stays unused, so a value saved by the round-2 build (when the window was on the Dock screen) never comes back.
