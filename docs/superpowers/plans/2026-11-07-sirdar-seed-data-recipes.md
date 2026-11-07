@@ -54,11 +54,7 @@
 - **A recipe deploy is two calls from the web.** The web first builds the subset snapshot and waits for it to be ready (progress shown), then creates the environment with that snapshot and the first super admin. The deploy pipeline doesn't change except that a recipe snapshot allows a first super admin.
 
 - **The first super admin is required when "Make everyone reset their password" is chosen** and optional otherwise. With every password reset, nobody could sign in without one.
-- **Caps:**
-  - a recipe holds at most 100000 ticked rows per table;
-  - Check all with a filter refuses past 100000 matches (`too_many_rows`).
-
-  These are guards against a runaway request, not policy. Jimmy can change the number.
+- **No caps** (Jimmy, 2026-11-07): no limit on ticked rows per table or on keys returned for Check all.
 
 ## Review Focus
 
@@ -135,7 +131,7 @@
   - The filter is a case-insensitive substring match on the column cast to text.
   - Table and column names are checked against the catalog, never interpolated raw (use `psycopg`-style identifier quoting via `asyncpg` plus a catalog check).
   - Values are rendered as text, cut to 200 characters; `bytea` shows as `<n bytes>`.
-- `GET /api/seed/snapshots/{id}/tables/{table}/keys?filter_col=&filter=` returns `{"pks": [{...}], "total"}` for every matching row. Check all with a filter uses it. It's capped at 100000 keys; past that it answers 422 `too_many_rows`.
+- `GET /api/seed/snapshots/{id}/tables/{table}/keys?filter_col=&filter=` returns `{"pks": [{...}], "total"}` for every matching row. Check all with a filter uses it.
 - Views require `seed_data:view`.
 
 - [ ] **Step 1: Write failing tests** against a restored test bundle:
@@ -198,8 +194,7 @@
 - `GET /api/seed/recipes/{id}` returns `{"id","name","notes","tables": {table: {"mode", "pks": [...]}}, "files": {key: bool}}`.
 - `PUT /api/seed/recipes/{id}` with the same body shape replaces tables, rows and files in one transaction (`seed_data:change`). Validation:
   - pk objects must be flat string maps;
-  - `mode` must be `rows` or `all`;
-  - at most 100000 rows per table.
+  - `mode` must be `rows` or `all`.
 - `DELETE /api/seed/recipes/{id}` (`seed_data:delete`). Snapshots built from the recipe stay, with `recipe_id` NULL.
 - Each change writes an audit row: `seed.recipe_create`, `seed.recipe_change` or `seed.recipe_delete`, with counts, never row values.
 
