@@ -743,7 +743,12 @@ trusted by browsers but don't count against the production rate limits.
 the idle slot and smoke-tests that droplet directly through Caddy. It goes live
 by itself on the first deploy, on a one-slot environment, or when a non-prod
 environment has "activate automatically" on; otherwise the dashboard's
-**Activate** switches the load balancer. Switching adds the new droplet next to
+**Activate** switches the load balancer. The first deploy then goes on by
+itself: once the first slot is live, Sirdar starts a second Update that puts
+the same commit on the other slot and leaves it idle (its log's first line says
+so). That one never goes live, even with "activate automatically" on, and skips
+the seed, the first admin and starter content, which the shared database
+already has. Switching adds the new droplet next to
 the old one, waits for it to be healthy, runs the public smoke test, then
 removes the old one. For a minute or two both slots serve visitors.
 
@@ -850,7 +855,8 @@ still needs certificates through NPM, which the create response flags as
 `bluegreen_npm_certificates`).
 
 - **Update** deploys to the idle VM (the first deploy goes live by itself, and
-  so does every Update with "Activate automatically" on).
+  so does every Update with "Activate automatically" on; the first deploy then
+  deploys the other VM with the same commit, idle).
 - **Data VM:** Postgres accepts only the two app VMs (pg_hba and the VM's
   firewall in `DOCKER-USER`); storage accepts the app VMs and NPM. Step 7
   (Prepare data VM) re-applies its stack and firewall on every Update. A commit

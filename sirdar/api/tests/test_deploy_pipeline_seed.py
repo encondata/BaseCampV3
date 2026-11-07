@@ -150,8 +150,15 @@ async def test_seed_content_only_for_a_first_update(client, db, target):
 
 # ---- a failed seed: the new commit is already serving ---------------------------------
 
-async def _retry_seed(db, dep_id, env_id, fake_runner, **kw):
-    """Retry from step 20 alone; it succeeds."""
+async def _deployments(db, env_id):
+    return list(await db.scalars(select(Deployment).where(
+        Deployment.environment_id == env_id).order_by(Deployment.created_at)))
+
+
+async def _retry_seed(db, dep_id, env_id, fake_runner, follow_up=False, **kw):
+    """Retry from step 20 alone; it succeeds. On an A/B environment's first
+    deploy the successful retry then starts the other side's idle Update
+    (follow_up=True): the retry itself still ran only step 20, first."""
     del fake_runner.results["seed"]
     fake_runner.requests.clear()
     env = await db.get(Environment, env_id, populate_existing=True)
@@ -163,7 +170,15 @@ async def _retry_seed(db, dep_id, env_id, fake_runner, **kw):
     await db.commit()
     pipeline.launch(retry.id)
     await pipeline.wait(retry.id)
-    assert fake_runner.steps() == ["seed"]
+    if not follow_up:
+        assert fake_runner.steps() == ["seed"]
+        return await _load(retry.id)
+    assert fake_runner.steps()[0] == "seed"
+    assert fake_runner.steps().count("seed") == 1  # the follow-up skips the seed
+    others = [d for d in await _deployments(db, env_id) if d.id not in (dep_id, retry.id)]
+    assert len(others) == 1
+    assert (others[0].go_live, others[0].seed_content, others[0].status) == (
+        False, False, "succeeded")
     return await _load(retry.id)
 
 
@@ -220,7 +235,10 @@ async def test_a_failed_seed_on_digitalocean_records_the_live_commit(
     assert (dep.status, dep.failed_step, steps_[-1].key) == ("failed", 20, "seed")
     assert (env.active_slot, env.current_sha, env.image_tag) == (
         "orange", SHA, envfile.image_tag(SHA))
-    retried, _, env = await _retry_seed(db, dep.id, do_fresh.id, fake_runner)
+    # The failed seed started no other side; the successful retry does (A/B only).
+    assert len(await _deployments(db, do_fresh.id)) == 1
+    retried, _, env = await _retry_seed(db, dep.id, do_fresh.id, fake_runner,
+                                        follow_up=len(do_fresh.slots) == 2)
     assert (retried.status, env.current_sha, env.status) == ("succeeded", SHA, "ready")
 
 
@@ -270,7 +288,9 @@ async def test_a_failed_seed_on_lan_bluegreen_records_the_live_commit(
     assert (dep.status, dep.failed_step, steps_[-1].key) == ("failed", 20, "seed")
     assert (env.active_slot, env.current_sha, env.image_tag) == (
         "orange", SHA, envfile.image_tag(SHA))
-    retried, _, env = await _retry_seed(db, dep.id, env.id, fake_runner)
+    # The failed seed started no other side; the successful retry does.
+    assert len(await _deployments(db, env.id)) == 1
+    retried, _, env = await _retry_seed(db, dep.id, env.id, fake_runner, follow_up=True)
     assert (retried.status, env.current_sha, env.status) == ("succeeded", SHA, "ready")
 
 

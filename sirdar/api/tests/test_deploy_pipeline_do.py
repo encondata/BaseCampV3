@@ -81,8 +81,9 @@ async def test_a_first_deploy_goes_live(db, do_env, fake_runner, fake_publisher,
     assert dep.status == "succeeded", [(s.key, s.status, s.log) for s in steps]
     assert [s.key for s in steps] == ["do_prepare", "preflight", "bootstrap", "fetch", "render",
                                       "build", "dump", "up", "dns", "slot_smoke", "go_live"]
-    assert fake_provisioner.calls == ["do_prepare", "go_live"]
-    assert fake_publisher.calls == ["dns"] and fake_publisher.contexts[0].cloud is True
+    # then the other side's idle Update builds purple (it never goes live)
+    assert fake_provisioner.calls == ["do_prepare", "go_live", "do_prepare"]
+    assert fake_publisher.calls == ["dns", "dns"] and fake_publisher.contexts[0].cloud is True
     assert (env.active_slot, env.current_sha, env.status) == ("orange", SHA, "ready")
     slot = await db.get(DoSlot, (env.id, "orange"), populate_existing=True)
     assert (slot.sha, slot.image_tag, slot.last_check_ok) == (SHA, envfile.image_tag(SHA), True)
@@ -111,7 +112,8 @@ async def test_cloud_vars_reach_every_host_step(db, do_env, fake_runner,
     await _start(db, do_env, slot="orange", go_live=True)
     host_steps = ["preflight", "bootstrap", "fetch", "render", "build", "dump", "up",
                   "slot_smoke"]
-    assert fake_runner.steps() == host_steps
+    # A's host steps, then the same ones for the other side's follow-up Update
+    assert fake_runner.steps() == host_steps * 2
     for request in fake_runner.requests:
         assert request.extravars["external_data"] is True, request.step
         assert request.extravars["block_metadata"] is True, request.step
@@ -450,6 +452,10 @@ async def test_an_update_that_fails_after_up_then_activate(db, do_env, fake_runn
 async def test_activate_refuses_a_slot_never_deployed(db, do_env, fake_runner,
                                                       fake_publisher, fake_provisioner):
     await _start(db, do_env, slot="orange", go_live=True)
+    # The first deploy now fills purple too: put it back to never deployed.
+    purple = await db.get(DoSlot, (do_env.id, "purple"), populate_existing=True)
+    purple.sha = purple.image_tag = None
+    await db.commit()
     env = await db.get(Environment, do_env.id, populate_existing=True)
     with pytest.raises(do_envs.DoEnvError) as e:
         await pipeline.create_deployment(db, env, mode="activate", git_ref="main", sha=SHA,
