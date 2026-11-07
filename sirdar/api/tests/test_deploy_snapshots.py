@@ -212,7 +212,9 @@ async def test_snapshot_out_has_no_keys(db, tmp_path, snapshots_dir):
     out = await snapshots.snapshot_out(db, snap)
     assert set(out) == {"id", "name", "origin", "source", "status", "alembic_revision",
                         "size_bytes", "checksum", "object_count", "object_bytes", "notes",
-                        "source_created_at", "created_at", "created_by_name", "deployment_id"}
+                        "source_created_at", "created_at", "created_by_name", "deployment_id",
+                        "recipe", "source_snapshot", "reset_passwords"}
+    assert (out["recipe"], out["source_snapshot"], out["reset_passwords"]) == (None, None, False)
     assert PEPPER not in repr(out) and TOTP not in repr(out)
     assert vault.is_configured(get_settings())
 

@@ -203,6 +203,18 @@ async def objects_for(settings, snap) -> list[tuple[str, int]]:
     return _objects[snap.id]
 
 
+def is_kept(ref: Reason | None, hand: bool | None) -> bool:
+    """Whether a file is kept: referenced by a kept row (`ref`) or ticked by
+    hand; an untick by hand beats both."""
+    return (ref is not None or hand is True) and hand is not False
+
+
+def kept_keys(objects: list[tuple[str, int]], refs: dict[str, Reason],
+              manual: dict[str, bool]) -> list[str]:
+    """The keys of the snapshot's objects a recipe keeps, in their order."""
+    return [k for k, _ in objects if is_kept(refs.get(k), manual.get(k))]
+
+
 def listing(objects: list[tuple[str, int]], refs: dict[str, Reason],
             manual: dict[str, bool], *, page: int, size: int, needle: str = "") -> dict:
     """{"files": [{"key","size","kept","because"}], "total"}: a page of
@@ -213,7 +225,7 @@ def listing(objects: list[tuple[str, int]], refs: dict[str, Reason],
     rows = []
     for key, nbytes in matched[start:start + size]:
         ref, hand = refs.get(key), manual.get(key)
-        kept = (ref is not None or hand is True) and hand is not False
+        kept = is_kept(ref, hand)
         if ref is not None and hand is False:
             text = f"{UNTICKED} ({because(ref.column, ref.label, ref.table)})"
         elif not kept:

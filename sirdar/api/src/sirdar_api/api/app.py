@@ -28,6 +28,12 @@ async def _lifespan(app: FastAPI):
     # A database hiccup must not stop the app starting.
     except Exception as e:  # noqa: BLE001
         log.warning("couldn't mark interrupted deployments at startup: %s", type(e).__name__)
+    from sirdar_api.seed import build as seed_build
+    try:
+        await seed_build.recover_orphans()   # subset builds a previous process left pending
+    # A database hiccup must not stop the app starting.
+    except Exception as e:  # noqa: BLE001
+        log.warning("couldn't mark interrupted seed builds at startup: %s", type(e).__name__)
     try:
         await pipeline.sweep_runs()          # run folders a crash left on disk
     # A disk problem must not stop the app starting.
@@ -60,6 +66,7 @@ async def _lifespan(app: FastAPI):
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+    await seed_build.shutdown()                                  # builds end "cancelled"
     await pipeline.shutdown(timeout=pipeline.SHUTDOWN_SECONDS)   # runs end "interrupted"
     await dispose_engine()
 

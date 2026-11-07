@@ -43,6 +43,11 @@ SHA256_RE = re.compile(r"[0-9a-f]{64}")
 TIME_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 MANIFEST_KEYS = frozenset({"format", "source", "created_at", "alembic_revision", "bucket",
                            "object_count", "object_bytes", "members"})
+# A subset snapshot (Sirdar's Seed Data) adds these: the recipe and source
+# snapshot it was cut with ({id, name}), whether passwords were reset, the
+# rows copied per table and the files kept.
+EXTRA_KEYS = frozenset({"recipe", "source_snapshot", "reset_passwords", "rows", "files"})
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # Cap on the decompressed bytes of all members; Sirdar passes a tighter one.
 DEFAULT_MAX_BYTES = 64 * 1024 ** 3
 STREAM_ALLOWANCE = 1024 * 1024  # tar headers and padding beyond the members' bytes
@@ -96,8 +101,9 @@ def check_manifest(data: object) -> dict:
     """The manifest, or BundleError naming what's wrong."""
     if not isinstance(data, dict) or data.get("format") != FORMAT:
         raise BundleError(f"This bundle's format isn't one Sirdar reads (format {FORMAT}).")
-    if set(data) - MANIFEST_KEYS:
+    if set(data) - MANIFEST_KEYS - EXTRA_KEYS:
         raise BundleError("The manifest has fields this version doesn't know.")
+    _check_extras(data)
     source = data.get("source")
     if not isinstance(source, str) or not SOURCE_RE.fullmatch(source):
         raise BundleError("The manifest's source is missing or invalid.")
@@ -125,6 +131,30 @@ def check_manifest(data: object) -> dict:
     if not all(isinstance(v, str) and SHA256_RE.fullmatch(v) for v in members.values()):
         raise BundleError("The manifest's checksums aren't SHA-256 hex.")
     return data
+
+
+def _is_count(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _check_extras(data: dict) -> None:
+    """The subset fields, when present (see EXTRA_KEYS)."""
+    for key in ("recipe", "source_snapshot"):
+        if key in data:
+            ref = data[key]
+            if (not isinstance(ref, dict) or set(ref) != {"id", "name"}
+                    or not isinstance(ref["id"], str) or not UUID_RE.fullmatch(ref["id"])
+                    or not isinstance(ref["name"], str) or not ref["name"]):
+                raise BundleError(f"The manifest's {key} isn't an id and a name.")
+    if "reset_passwords" in data and not isinstance(data["reset_passwords"], bool):
+        raise BundleError("The manifest's reset_passwords isn't true or false.")
+    if "rows" in data:
+        rows = data["rows"]
+        if (not isinstance(rows, dict)
+                or not all(isinstance(k, str) and _is_count(v) for k, v in rows.items())):
+            raise BundleError("The manifest's rows aren't counts per table.")
+    if "files" in data and not _is_count(data["files"]):
+        raise BundleError("The manifest's files isn't a count.")
 
 
 def parse_time(value) -> datetime:
@@ -318,10 +348,15 @@ _LABELS = {KEYS_ENC: "keys", KEYS_ENV: "keys", DB_DUMP: "database dump", OBJECTS
 
 
 def pack(out, *, source: str, revision: str, bucket: str, db_dump, objects_tar,
-         keys_file, keys_member: str = KEYS_ENC, created_at: str | None = None) -> dict:
-    """Write a bundle (mode 600) from its parts; the manifest."""
+         keys_file, keys_member: str = KEYS_ENC, created_at: str | None = None,
+         extra: dict | None = None) -> dict:
+    """Write a bundle (mode 600) from its parts; the manifest. `extra`: the
+    subset fields (EXTRA_KEYS only)."""
     if keys_member not in KEY_MEMBERS:
         raise BundleError("The keys member must be keys.enc or keys.env.")
+    extra = dict(extra or {})
+    if set(extra) - EXTRA_KEYS:
+        raise BundleError("The manifest has fields this version doesn't know.")
     for label, path in (("keys", keys_file), ("database dump", db_dump),
                         ("objects", objects_tar)):
         if not os.path.isfile(path):
@@ -343,7 +378,7 @@ def pack(out, *, source: str, revision: str, bucket: str, db_dump, objects_tar,
     manifest = check_manifest({
         "format": FORMAT, "source": source, "created_at": created_at or _now_iso(),
         "alembic_revision": revision, "bucket": bucket,
-        "object_count": count, "object_bytes": total, "members": sums,
+        "object_count": count, "object_bytes": total, "members": sums, **extra,
     })
     raw = json.dumps(manifest, indent=2).encode()
 

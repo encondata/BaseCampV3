@@ -24,7 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
-from sirdar_api.db.models import Deployment, Environment, Snapshot, User
+from sirdar_api.db.models import Deployment, Environment, SeedRecipe, Snapshot, User
 from sirdar_api.deploy import bundle, envfile, vault
 
 KEY_NAMES = ("SS_PASSWORD_PEPPER", "SS_TOTP_ENCRYPTION_KEY")
@@ -301,6 +301,35 @@ async def begin_take(db: AsyncSession, settings: Settings, env: Environment, *, 
     return snap
 
 
+async def begin_build(db: AsyncSession, settings: Settings, *, recipe: SeedRecipe,
+                      source: Snapshot, reset_passwords: bool, actor_id) -> Snapshot:
+    """The pending row a Seed Data build (seed/build.py) fills in: a subset
+    of `source` cut with `recipe`, named "{recipe} from {source}" (cut to
+    64 characters; a taken name gets -2, -3, ... within that, as other
+    snapshot names do)."""
+    if not vault.is_configured(settings):
+        raise SnapshotError("secrets_key_missing")
+    if source.status != "ready" or not source.bundle_file:
+        raise SnapshotError("snapshot_not_ready")
+    await asyncio.to_thread(ensure_dirs, settings)
+    base = f"{recipe.name} from {source.name}"[:64]
+    for n in range(1, 100):
+        name = base if n == 1 else f"{base[:63 - len(str(n))]}-{n}"
+        if await _name_taken(db, name):
+            continue
+        snap = Snapshot(name=name, origin="recipe", source=source.source, status="pending",
+                        notes="", created_by=actor_id, recipe_id=recipe.id,
+                        source_snapshot_id=source.id, reset_passwords=reset_passwords)
+        try:
+            await _insert(db, snap)
+        except SnapshotError as e:
+            if e.code == "snapshot_exists":          # taken since the check
+                continue
+            raise
+        return snap
+    raise SnapshotError("snapshot_exists")
+
+
 def ingest_fetched(settings: Settings, snapshot_id: uuid.UUID) -> Stored:
     """The bundle the Take snapshot step fetched, checked and kept. Sync."""
     src = fetched_path(settings, snapshot_id)
@@ -322,15 +351,18 @@ def mark_ready(snap: Snapshot, stored: Stored) -> None:
 
 
 async def in_use(db: AsyncSession, snap: Snapshot) -> bool:
-    """A pending snapshot, one a running deployment uses, or the seed of an
-    environment that hasn't deployed yet."""
+    """A pending snapshot, one a running deployment uses, the seed of an
+    environment that hasn't deployed yet, or the source of a subset still
+    being built."""
     if snap.status == "pending":
         return True
     running = await db.scalar(select(Deployment.id).where(
         Deployment.snapshot_id == snap.id, Deployment.status == "running").limit(1))
     seeding = await db.scalar(select(Environment.id).where(
         Environment.seed_snapshot_id == snap.id, Environment.current_sha.is_(None)).limit(1))
-    return running is not None or seeding is not None
+    building = await db.scalar(select(Snapshot.id).where(
+        Snapshot.source_snapshot_id == snap.id, Snapshot.status == "pending").limit(1))
+    return running is not None or seeding is not None or building is not None
 
 
 async def delete(db: AsyncSession, settings: Settings, snap: Snapshot) -> Path:
@@ -399,6 +431,7 @@ async def snapshot_out(db: AsyncSession, snap: Snapshot) -> dict:
         job = await db.scalar(select(Deployment.id).where(
             Deployment.snapshot_id == snap.id, Deployment.mode == "snapshot")
             .order_by(Deployment.created_at.desc()).limit(1))
+    recipe = await db.get(SeedRecipe, snap.recipe_id) if snap.recipe_id else None
     return {
         "id": str(snap.id), "name": snap.name, "origin": snap.origin, "source": snap.source,
         "status": snap.status, "alembic_revision": snap.alembic_revision,
@@ -407,6 +440,10 @@ async def snapshot_out(db: AsyncSession, snap: Snapshot) -> dict:
         "notes": snap.notes, "source_created_at": snap.source_created_at,
         "created_at": snap.created_at, "created_by_name": user.display_name if user else None,
         "deployment_id": str(job) if job else None,
+        # a subset cut with Seed Data: its recipe and source (None otherwise)
+        "recipe": {"id": str(recipe.id), "name": recipe.name} if recipe else None,
+        "source_snapshot": await snapshot_ref(db, snap.source_snapshot_id),
+        "reset_passwords": bool(snap.reset_passwords),
     }
 
 

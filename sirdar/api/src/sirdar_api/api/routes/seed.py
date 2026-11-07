@@ -12,7 +12,7 @@ from typing import Literal
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, StrictStr
+from pydantic import BaseModel, StrictBool, StrictStr
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
@@ -25,7 +25,9 @@ from sirdar_api.api.deps import (
 )
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import SeedRecipe, Snapshot
+from sirdar_api.deploy import snapshots
 from sirdar_api.seed import SeedError, browse, closure, recipes, scratch
+from sirdar_api.seed import build as seed_build
 from sirdar_api.seed import files as seed_files
 from sirdar_api.services.audit import audit
 
@@ -176,6 +178,41 @@ async def snapshot_files(snapshot_id: uuid.UUID, recipe_id: uuid.UUID, db: DbSes
         objects = await seed_files.objects_for(get_settings(), snap)
     return seed_files.listing(objects, refs, recipe["files"], page=page, size=size,
                               needle=filter)
+
+
+class BuildIn(BaseModel):
+    snapshot_id: uuid.UUID
+    reset_passwords: StrictBool = False
+
+
+_BUILD_STATUS = {"snapshot_not_ready": 409, "snapshot_exists": 409, "secrets_key_missing": 400,
+                 "snapshots_dir_unwritable": 500}
+
+
+@router.post("/recipes/{recipe_id}/build", status_code=201)
+async def build_recipe(recipe_id: uuid.UUID, body: BuildIn, request: Request, db: DbSession,
+                       actor: AuthContext = require_permission("deploy", "add")):
+    """Cut a subset snapshot: the recipe applied to a ready snapshot. The
+    pending snapshot row comes back at once; the build runs in the
+    background and the row goes ready, or failed with the reason in its
+    notes (seed/build.py)."""
+    recipe = await _recipe(db, recipe_id)
+    source = await _snapshot(db, body.snapshot_id)
+    try:
+        snap = await snapshots.begin_build(db, get_settings(), recipe=recipe, source=source,
+                                           reset_passwords=body.reset_passwords,
+                                           actor_id=actor.user.person_id)
+    except snapshots.SnapshotError as e:
+        await db.rollback()
+        raise HTTPException(status_code=_BUILD_STATUS.get(e.code, 422),
+                            detail={"code": e.code}) from None
+    audit(db, actor_id=actor.user.person_id, action="seed.build", entity_type="snapshot",
+          entity_id=snap.name, ip=client_ip(request),
+          changes={"recipe": recipe.name, "snapshot": source.name, "name": snap.name,
+                   "reset_passwords": body.reset_passwords})
+    await db.commit()
+    seed_build.launch(get_settings(), snap.id)
+    return await snapshots.snapshot_out(db, snap)
 
 
 # --- Recipes: stored in Sirdar's own database, so they need no scratch server.

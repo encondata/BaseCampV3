@@ -310,10 +310,13 @@ def _tool(settings: Settings, tool: str) -> str:
 
 
 async def _run(settings: Settings, tool: str, args: list[str], *,
-               role: str) -> tuple[int, str]:
+               role: str, stdout_path: Path | None = None) -> tuple[int, str]:
     """Run a Postgres client tool against the scratch server as scratch
     database `role`'s own role (never the superuser); (exit code, stderr).
-    The password goes in the child's PGPASSWORD only. A cancelled caller
+    The password goes in the child's PGPASSWORD only. Its standard output
+    is discarded, or written to `stdout_path` (a new mode-600 file: pg_dump
+    writes its dump there, so the tools need no path of their own, which
+    a wrapper running them elsewhere couldn't reach). A cancelled caller
     kills the child."""
     s = _server(settings)
     password = await _role_password(settings, role)
@@ -321,12 +324,19 @@ async def _run(settings: Settings, tool: str, args: list[str], *,
     env.update(PGPASSWORD=password, PGCONNECT_TIMEOUT="10")
     argv = [_tool(settings, tool), "--host", s.host, "--port", str(s.port),
             "--username", role, "--no-password", *args]
+    out = asyncio.subprocess.DEVNULL
+    if stdout_path is not None:
+        out = bundle._open_private(stdout_path)
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv, env=env, stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
-    except OSError:
-        return 127, f"{tool} could not be started"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv, env=env, stdin=asyncio.subprocess.DEVNULL,
+                stdout=out, stderr=asyncio.subprocess.PIPE)
+        except OSError:
+            return 127, f"{tool} could not be started"
+    finally:
+        if stdout_path is not None:
+            os.close(out)
     try:
         _, err = await proc.communicate()
     except BaseException:
@@ -335,6 +345,9 @@ async def _run(settings: Settings, tool: str, args: list[str], *,
         await proc.wait()
         raise
     return proc.returncode or 0, err.decode("utf-8", errors="replace")
+
+
+run_tool = _run      # for seed/build.py: its pg_dump and pg_restore runs
 
 
 # ---- restoring -----------------------------------------------------------------
@@ -451,6 +464,30 @@ async def ensure_restored(settings: Settings, snap: Snapshot, purpose: str = "br
                 raise SeedError("restore_failed",
                                 reason="The scratch database couldn't be restored.") from None
             raise                                 # cancelled: still no database left
+        _state[name] = "ready"
+        _touch(name)
+        return name
+
+
+async def create_blank(settings: Settings, snapshot_id: uuid.UUID, purpose: str) -> str:
+    """A new, empty scratch database for `snapshot_id` (whatever an earlier
+    run left under that name dropped first), owned by a role of its own
+    like a restored one, and known here as ready, so only its owner drops
+    it (see _sweepable). Its name. SeedError scratch_unavailable when the
+    scratch server can't do it."""
+    name = db_name(snapshot_id, purpose)
+    _server(settings)
+    async with _lock(name):
+        _state[name] = "restoring"
+        try:
+            await _drop_db(settings, name)
+            await _create_db(settings, name)
+        except BaseException as e:
+            _state.pop(name, None)
+            if isinstance(e, Exception):
+                log.warning("couldn't create scratch database %s: %s", name, type(e).__name__)
+                raise SeedError("scratch_unavailable") from None
+            raise
         _state[name] = "ready"
         _touch(name)
         return name
