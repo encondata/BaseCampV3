@@ -123,21 +123,8 @@ LABELS = doc(
           "installed.",
           "**Position toward the right.** Apply the label to the right side of the front panel.",
           "**Keep the power button clear.** Leave the power button visible and accessible."),
-    h2("Top label placement"),
-    image("labels-03.webp", "Top label placement"),
-    p("**Top surface. Front-right corner.**"),
-    steps("**Place at the far right.** On the top of the server, as viewed from the front.",
-          "**Set back from the front.** About 1 in / 2.5 cm from the front edge.",
-          "**Face the label forward.** Keep it readable when standing in front of the server."),
-    h2("Rail label placement"),
-    image("labels-04.webp", "Rail label placement"),
-    p("**Paired rails. Matching label.**"),
-    steps("**Tape the rails as a pair.** Use 2–3 wraps of blue tape near each end.",
-          "**Label the flat section.** Apply the matching top label in the center of one "
-          "rail's flat section.",
-          "**Keep with its server.** Keep the labeled rail pair with the server it belongs to."),
     h2("RFID tag placement"),
-    image("labels-05.webp", "RFID tag placement"),
+    image("labels-03.webp", "RFID tag placement"),
     p("**Top-left attachment. Front-facing flag.**"),
     steps('**Fold under the middle.** Fold the "Fold Down" third under the middle section to '
           "create a double-thickness flag.",
@@ -145,6 +132,19 @@ LABELS = doc(
           "from the server's left edge, as viewed from the front.",
           "**Keep the flag close.** Fold the doubled section over the front edge so it lies "
           "as close to the server's front face as possible."),
+    h2("Top label placement"),
+    image("labels-04.webp", "Top label placement"),
+    p("**Top surface. Front-right corner.**"),
+    steps("**Place at the far right.** On the top of the server, as viewed from the front.",
+          "**Set back from the front.** About 1 in / 2.5 cm from the front edge.",
+          "**Face the label forward.** Keep it readable when standing in front of the server."),
+    h2("Rail label placement"),
+    image("labels-05.webp", "Rail label placement"),
+    p("**Paired rails. Matching label.**"),
+    steps("**Tape the rails as a pair.** Use 2–3 wraps of blue tape near each end.",
+          "**Label the flat section.** Apply the matching top label in the center of one "
+          "rail's flat section.",
+          "**Keep with its server.** Keep the labeled rail pair with the server it belongs to."),
     sample=False,
 )
 

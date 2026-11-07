@@ -31,8 +31,8 @@ runner = CliRunner()
 DRESS_SLIDES = ["dress-code-01.webp", "dress-code-02.webp", "dress-code-03.webp",
                 "dress-code-04.webp"]
 LABEL_SLIDES = [f"labels-0{n}.webp" for n in range(1, 6)]
-LABEL_HEADINGS = ["How to read our labels", "Front label placement", "Top label placement",
-                  "Rail label placement", "RFID tag placement"]
+LABEL_HEADINGS = ["How to read our labels", "Front label placement", "RFID tag placement",
+                  "Top label placement", "Rail label placement"]
 
 
 @pytest.fixture(autouse=True)
