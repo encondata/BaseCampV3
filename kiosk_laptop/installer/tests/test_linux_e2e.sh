@@ -43,6 +43,12 @@ INSTALLER_DIR="$REPO/kiosk_laptop/installer"
 REG_PORT="${KIOSK_E2E_REGISTRY_PORT:-5000}"
 REG_NAME=kiosk-e2e-registry
 IMAGE="localhost:$REG_PORT/serversherpa-kiosk-laptop:e2e"
+# Newer images are built and pushed under this second name for the same
+# registry tag, so only the updater's pull moves the kiosk's local $IMAGE tag,
+# as on a real laptop. Building with -t "$IMAGE" would leave the running image
+# without a name before update.sh runs, and the containerd image store (the
+# default from Docker 29) can't find an image by ID once it has no name.
+PUBLISH="127.0.0.1:$REG_PORT/serversherpa-kiosk-laptop:e2e"
 # A builder that reads and writes the local image store: the docker-driver
 # builder named after the current context (setup-buildx-action makes a
 # docker-container builder the default, which does neither).
@@ -178,11 +184,11 @@ pass "exit 0, container not recreated"
 step "3b. Update to a newer image"
 OLD_IMAGE="$GOOD_IMAGE"
 printf 'FROM %s\nLABEL e2e.rev=2\n' "$IMAGE" \
-  | docker buildx build --builder "$BUILDER" --load -q -t "$IMAGE" - >/dev/null \
+  | docker buildx build --builder "$BUILDER" --load -q -t "$PUBLISH" - >/dev/null \
   || fail "couldn't build the newer image"
-NEW_IMAGE=$(docker image inspect -f '{{.Id}}' "$IMAGE")
+NEW_IMAGE=$(docker image inspect -f '{{.Id}}' "$PUBLISH")
 [ "$NEW_IMAGE" != "$OLD_IMAGE" ] || fail "the newer image has the old image's ID"
-docker push -q "$IMAGE" >/dev/null || fail "couldn't push the newer image"
+docker push -q "$PUBLISH" >/dev/null || fail "couldn't push the newer image"
 rc=0; run_update HEALTH_TIMEOUT_S=150 HEALTH_POLL_S=2 || rc=$?
 [ "$rc" = 0 ] || fail "update.sh exited $rc on a newer good image (expected 0)"
 [ "$(container_field '{{.Image}}')" = "$NEW_IMAGE" ] || fail "container isn't running the newer image $NEW_IMAGE"
@@ -201,14 +207,15 @@ pass "exit 0, running the newer image, :previous kept, same serial"
 # ── 4. Rollback from a broken image ───────────────────────────────────
 step "4. Update to a broken image, then roll back"
 printf 'FROM %s\nHEALTHCHECK --interval=5s --timeout=3s --retries=1 CMD exit 1\n' "$IMAGE" \
-  | docker buildx build --builder "$BUILDER" --load -q -t "$IMAGE" - >/dev/null \
+  | docker buildx build --builder "$BUILDER" --load -q -t "$PUBLISH" - >/dev/null \
   || fail "couldn't build the broken image"
-BROKEN_IMAGE=$(docker image inspect -f '{{.Id}}' "$IMAGE")
+BROKEN_IMAGE=$(docker image inspect -f '{{.Id}}' "$PUBLISH")
 [ "$BROKEN_IMAGE" != "$GOOD_IMAGE" ] || fail "the broken image has the good image's ID"
-docker push -q "$IMAGE" >/dev/null || fail "couldn't push the broken image"
+docker push -q "$PUBLISH" >/dev/null || fail "couldn't push the broken image"
 rc=0; run_update HEALTH_TIMEOUT_S=20 HEALTH_POLL_S=2 || rc=$?
 [ "$rc" = 1 ] || fail "update.sh exited $rc on a broken image (expected 1, rolled back)"
 update_log | grep -q 'rolled back' || fail "update.log doesn't say 'rolled back'"
+! update_log | grep -qE "Couldn't (re-)?tag" || fail "update.log says an image couldn't be tagged"
 [ "$(container_field '{{.Image}}')" = "$GOOD_IMAGE" ] || fail "container isn't back on the old image $GOOD_IMAGE"
 wait_healthy 150 || fail "container didn't get healthy again after the rollback"
 [ "$(state_value rejected_image)" = "$BROKEN_IMAGE" ] || fail "update-state.json doesn't reject $BROKEN_IMAGE"
