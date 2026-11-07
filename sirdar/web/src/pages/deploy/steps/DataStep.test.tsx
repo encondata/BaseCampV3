@@ -198,7 +198,38 @@ it('a snapshot the scratch copy dropped is opened again before counting', async 
   expect(seed.openSnapshot).toHaveBeenCalledTimes(2);
 });
 
-it('From a recipe shows its data error', () => {
-  renderStep({ dataMode: 'recipe' }, {}, { data: 'Choose a recipe.' });
-  expect(screen.getByRole('alert').textContent).toBe('Choose a recipe.');
+it('Choose a recipe sits under the Recipe field', () => {
+  renderStep({ dataMode: 'recipe' }, {}, { recipe: 'Choose a recipe.' });
+  const alert = screen.getByRole('alert');
+  expect(alert.textContent).toBe('Choose a recipe.');
+  expect(alert.parentElement?.contains(screen.getByLabelText('Recipe'))).toBe(true);
+  expect(alert.parentElement?.contains(screen.getByLabelText('Snapshot'))).toBe(false);
+});
+
+it('From a recipe shows its data error under the snapshot', () => {
+  renderStep({ dataMode: 'recipe', recipeId: 'r1' }, {}, { data: 'Choose a snapshot.' });
+  expect(screen.getByText('Choose a snapshot.').parentElement?.contains(screen.getByLabelText('Snapshot'))).toBe(true);
+});
+
+it('shows Opening the snapshot… while it restores, then the counts', async () => {
+  seed.openSnapshot.mockResolvedValue({ status: 'restoring' });
+  seed.snapshotStatus.mockResolvedValue({ status: 'ready' });
+  renderStep({ dataMode: 'recipe', recipeId: 'r1', recipeSnapshotId: SNAP.id });
+  expect(screen.getByRole('status').textContent).toBe('Opening the snapshot…');
+  expect(await screen.findByText(/2 of 3 ticked records found/, {}, { timeout: 4000 })).toBeTruthy();
+});
+
+it('a genuinely empty recipe list says to make one', () => {
+  renderStep({}, { recipes: [] });
+  expect(screen.getByText('No recipe yet. Make one in Seed Data.')).toBeTruthy();
+});
+
+it('a locked recipe list shows its line, or nothing, and never says to make one', () => {
+  renderStep({}, { recipes: [], recipeLock: '' });
+  expect(screen.getByRole('radio', { name: 'From a recipe' }).getAttribute('aria-disabled')).toBe('true');
+  expect(screen.queryByText(/No recipe yet/)).toBeNull();
+  cleanup();
+  renderStep({}, { recipes: [], recipeLock: "Seed Data needs its scratch database, and SIRDAR_SCRATCH_URL isn't set." });
+  expect(screen.getByText(/Seed Data needs its scratch database/)).toBeTruthy();
+  expect(screen.queryByText(/No recipe yet/)).toBeNull();
 });

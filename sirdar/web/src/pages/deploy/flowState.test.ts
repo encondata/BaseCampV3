@@ -234,7 +234,7 @@ describe('From a recipe', () => {
     expect([s.recipeId, s.recipeSnapshotId, s.resetPasswords]).toEqual(['', '', false]);
   });
   it('needs a recipe and a snapshot', () => {
-    expect(stepErrors('data', recipe({ recipeId: '' }), ctx).data).toBe('Choose a recipe.');
+    expect(stepErrors('data', recipe({ recipeId: '' }), ctx)).toEqual({ recipe: 'Choose a recipe.' });
     expect(stepErrors('data', recipe({ recipeSnapshotId: '' }), ctx).data).toBe('Choose a snapshot.');
     expect(stepErrors('data', recipe(), ctx)).toEqual({});
   });

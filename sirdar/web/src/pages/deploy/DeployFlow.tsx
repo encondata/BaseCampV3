@@ -14,8 +14,8 @@ import { ApiError } from '@portal/lib/api';
 
 import { useHostKeyTrust } from '../../components/useHostKeyTrust';
 import {
-  createEnvironment, deployErrorText, getDoAccounts, getEnvironmentDefaults, getIntegrations, listSnapshots, startDeployment,
-  type DeployTarget,
+  createEnvironment, deployErrorText, errorText, getDoAccounts, getEnvironmentDefaults, getIntegrations, listSnapshots, startDeployment,
+  type DeployTarget, type Snapshot,
 } from '../../lib/sirdarApi';
 import { buildNoteText, buildRecipe, listRecipes, seedErrorText } from '../seed/seedApi';
 
@@ -33,6 +33,8 @@ import TrafficStep from './steps/TrafficStep';
 
 /** While the recipe's snapshot builds, the snapshots are polled this often. */
 export const BUILD_POLL_MS = 2000;
+/** The build wait gives up after this many snapshot-list failures in a row. */
+export const BUILD_POLL_TRIES = 3;
 
 export default function DeployFlow({ targets, reloadTargets }: { targets: DeployTarget[]; reloadTargets: () => void }) {
   const { can } = useAuth();
@@ -52,7 +54,7 @@ export default function DeployFlow({ targets, reloadTargets }: { targets: Deploy
   const [announce, setAnnounce] = useState('');
   const [building, setBuilding] = useState(false);
   /** From a recipe: the snapshot built for these choices, so a retried create doesn't build again. */
-  const built = useRef<{ key: string; id: string } | null>(null);
+  const built = useRef<{ key: string; id: string; ready: boolean } | null>(null);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const busyRef = useRef(false);
@@ -71,11 +73,17 @@ export default function DeployFlow({ targets, reloadTargets }: { targets: Deploy
 
   useEffect(() => {
     let live = true;
+    // From a recipe needs seed_data view (as the nav does); a list that can't be read locks it.
+    const recipes = can('seed_data', 'view')
+      ? listRecipes().then((list) => ({ recipes: list, recipeLock: null as string | null }))
+        .catch((e) => ({ recipes: [], recipeLock: e instanceof ApiError && e.code === 'scratch_not_configured'
+          ? seedErrorText(e, '') : '' }))
+      : Promise.resolve({ recipes: [], recipeLock: '' });
     const snaps = listSnapshots().then((r) => r.snapshots.filter((s) => s.status === 'ready')).catch(() => []);
     Promise.all([getEnvironmentDefaults(), getIntegrations().catch(() => null),
-                 getDoAccounts().then((r) => r.accounts).catch(() => []), snaps, listRecipes().catch(() => [])])
-      .then(([defaults, integrations, accounts, snapshots, recipes]) => {
-        if (live) setBase({ defaults: defaults as FlowContext['defaults'], integrations, accounts, snapshots, recipes });
+                 getDoAccounts().then((r) => r.accounts).catch(() => []), snaps, recipes])
+      .then(([defaults, integrations, accounts, snapshots, r]) => {
+        if (live) setBase({ defaults: defaults as FlowContext['defaults'], integrations, accounts, snapshots, ...r });
       })
       .catch((e) => { if (live) setLoadError(deployErrorText(e, "Couldn't load the defaults.")); });
     return () => { live = false; };
@@ -105,22 +113,45 @@ export default function DeployFlow({ targets, reloadTargets }: { targets: Deploy
   /** Build the recipe's snapshot and wait for it: its id, or null (the reason is on the Data step). */
   async function buildFromRecipe(s: FlowState): Promise<string | null> {
     const key = JSON.stringify([s.recipeId, s.recipeSnapshotId, s.resetPasswords]);
-    if (built.current?.key === key) return built.current.id;
+    if (built.current?.key === key && built.current.ready) return built.current.id;
     setBuilding(true);
     try {
-      let snap = await buildRecipe(s.recipeId, { snapshot_id: s.recipeSnapshotId, reset_passwords: s.resetPasswords });
-      while (snap.status === 'pending') {
-        await new Promise((done) => { setTimeout(done, BUILD_POLL_MS); });
+      // A build already started for these choices is waited on again, never started twice.
+      let status: Snapshot['status'] = 'pending';
+      let notes = '';
+      let wait = false;
+      if (built.current?.key !== key) {
+        const snap = await buildRecipe(s.recipeId, { snapshot_id: s.recipeSnapshotId, reset_passwords: s.resetPasswords });
+        built.current = { key, id: snap.id, ready: false };
+        ({ status, notes } = snap);
+        wait = true;
+      }
+      const id = built.current!.id;
+      let failures = 0;
+      while (status === 'pending') {
+        if (wait) await new Promise((done) => { setTimeout(done, BUILD_POLL_MS); });
+        wait = true;
         if (!mounted.current) return null;
-        const id = snap.id;
-        const found = (await listSnapshots()).snapshots.find((x) => x.id === id);
-        if (!found) { dataProblem(buildNoteText('build_failed')); return null; }
-        snap = found;
+        let found: Snapshot | undefined;
+        try {
+          found = (await listSnapshots()).snapshots.find((x) => x.id === id);
+          failures = 0;
+        } catch (err) {
+          failures += 1;
+          if (failures >= BUILD_POLL_TRIES) throw err;
+          continue;
+        }
+        if (!found) {
+          built.current = null;
+          dataProblem(errorText(new ApiError(404, 'snapshot_not_found'), "Couldn't build the recipe's snapshot."));
+          return null;
+        }
+        ({ status, notes } = found);
       }
       if (!mounted.current) return null;
-      if (snap.status !== 'ready') { dataProblem(buildNoteText(snap.notes)); return null; }
-      built.current = { key, id: snap.id };
-      return snap.id;
+      if (status !== 'ready') { built.current = null; dataProblem(buildNoteText(notes)); return null; }
+      built.current = { key, id, ready: true };
+      return id;
     } catch (err) {
       if (mounted.current) dataProblem(seedErrorText(err, "Couldn't build the recipe's snapshot."));
       return null;

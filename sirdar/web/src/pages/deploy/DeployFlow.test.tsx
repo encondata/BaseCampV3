@@ -4,10 +4,11 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-const perms = vi.hoisted(() => ({ add: true, change: true }));
+const perms = vi.hoisted(() => ({ add: true, change: true, seed: true }));
 vi.mock('@portal/auth/AuthContext', () => ({
   useAuth: () => ({
-    can: (r: string, a: string) => r === 'deploy' && (a === 'view' || (a === 'add' && perms.add) || (a === 'change' && perms.change)),
+    can: (r: string, a: string) => (r === 'seed_data' && a === 'view' && perms.seed)
+      || (r === 'deploy' && (a === 'view' || (a === 'add' && perms.add) || (a === 'change' && perms.change))),
   }),
 }));
 
@@ -32,7 +33,7 @@ import DeployFlow from './DeployFlow';
 import { FLOW_DEFAULTS, FLOW_INTEGRATIONS, FLOW_TARGETS } from './flowFixtures';
 
 beforeEach(() => {
-  perms.add = true; perms.change = true;
+  perms.add = true; perms.change = true; perms.seed = true;
   Object.values(api).forEach((f) => f.mockReset());
   api.getDeployTargets.mockResolvedValue({ targets: FLOW_TARGETS, types: [] });
   api.getEnvironmentDefaults.mockResolvedValue(FLOW_DEFAULTS);
@@ -413,4 +414,101 @@ it('a failed build with an unknown code shows the code', async () => {
   await recipeToReview(false);
   await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
   expect(await screen.findByText('something_new: detail')).toBeTruthy();
+});
+
+async function toData() {
+  await userEvent.type(screen.getByLabelText('Name'), 'qa');
+  await next(); await next();
+  await userEvent.click(screen.getByRole('radio', { name: /Lab box/ }));
+  await next(); await next(); await next();
+}
+
+it('without seed_data view the recipes are not asked for and From a recipe is locked, with no hint', async () => {
+  perms.seed = false;
+  await open();
+  await toData();
+  expect(seed.listRecipes).not.toHaveBeenCalled();
+  expect(screen.getByRole('radio', { name: 'From a recipe' }).getAttribute('aria-disabled')).toBe('true');
+  expect(screen.queryByText(/No recipe yet/)).toBeNull();
+});
+
+it('a scratch database that is not set up locks From a recipe with its Seed Data line', async () => {
+  seed.listRecipes.mockRejectedValue(new ApiError(409, 'scratch_not_configured', { code: 'scratch_not_configured' }));
+  await open();
+  await toData();
+  expect(screen.getByRole('radio', { name: 'From a recipe' }).getAttribute('aria-disabled')).toBe('true');
+  expect(screen.getByText(/Seed Data needs its scratch database/)).toBeTruthy();
+  expect(screen.queryByText(/No recipe yet/)).toBeNull();
+});
+
+it('a forbidden recipe list locks From a recipe with no hint', async () => {
+  seed.listRecipes.mockRejectedValue(new ApiError(403, 'forbidden', { code: 'forbidden' }));
+  await open();
+  await toData();
+  expect(screen.getByRole('radio', { name: 'From a recipe' }).getAttribute('aria-disabled')).toBe('true');
+  expect(screen.queryByText(/No recipe yet/)).toBeNull();
+});
+
+it('an empty recipe list says to make one', async () => {
+  seed.listRecipes.mockResolvedValue([]);
+  await open();
+  await toData();
+  expect(screen.getByText('No recipe yet. Make one in Seed Data.')).toBeTruthy();
+});
+
+it('the build wait rides out two snapshot-list failures in a row', async () => {
+  seed.buildRecipe.mockResolvedValue(BUILT);
+  api.createEnvironment.mockResolvedValue({ ...ENV, name: 'qa' });
+  api.startDeployment.mockResolvedValue({ ...RUNNING, id: 'dep-1', environment: 'qa' });
+  await open();
+  await recipeToReview(false);
+  api.listSnapshots.mockReset();
+  api.listSnapshots.mockRejectedValueOnce(new Error('net')).mockRejectedValueOnce(new Error('net'))
+    .mockResolvedValue({ snapshots: [SNAP, { ...BUILT, status: 'ready' }] });
+  vi.useFakeTimers();
+  try {
+    fireEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+    for (let i = 0; i < 3; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  } finally { vi.useRealTimers(); }
+  await screen.findByText('at /deploy/environments/qa?deployment=dep-1');
+  expect(seed.buildRecipe).toHaveBeenCalledTimes(1);
+  expect(api.createEnvironment.mock.calls[0][0].snapshot_id).toBe('b1');
+});
+
+it('three failures in a row stop the wait; a second Deploy resumes the same build', async () => {
+  seed.buildRecipe.mockResolvedValue(BUILT);
+  api.createEnvironment.mockResolvedValue({ ...ENV, name: 'qa' });
+  api.startDeployment.mockResolvedValue({ ...RUNNING, id: 'dep-1', environment: 'qa' });
+  await open();
+  await recipeToReview(false);
+  api.listSnapshots.mockReset();
+  api.listSnapshots.mockRejectedValue(new Error('net'));
+  vi.useFakeTimers();
+  try {
+    fireEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+    for (let i = 0; i < 3; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  } finally { vi.useRealTimers(); }
+  expect(await screen.findByRole('heading', { name: 'Data' })).toBeTruthy();
+  expect(api.listSnapshots).toHaveBeenCalledTimes(3);
+  api.listSnapshots.mockResolvedValue({ snapshots: [SNAP, { ...BUILT, status: 'ready' }] });
+  await next();
+  await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+  await screen.findByText('at /deploy/environments/qa?deployment=dep-1');
+  expect(seed.buildRecipe).toHaveBeenCalledTimes(1);
+  expect(api.createEnvironment.mock.calls[0][0].snapshot_id).toBe('b1');
+});
+
+it('a build snapshot that disappears says so with the snapshot_not_found text', async () => {
+  seed.buildRecipe.mockResolvedValue(BUILT);
+  await open();
+  await recipeToReview(false);
+  api.listSnapshots.mockResolvedValue({ snapshots: [SNAP] });
+  vi.useFakeTimers();
+  try {
+    fireEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  } finally { vi.useRealTimers(); }
+  expect(await screen.findByRole('heading', { name: 'Data' })).toBeTruthy();
+  expect(screen.getByText('That snapshot no longer exists.')).toBeTruthy();
+  expect(api.createEnvironment).not.toHaveBeenCalled();
 });

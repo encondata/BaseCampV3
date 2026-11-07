@@ -39,8 +39,9 @@ const n = (v: number) => v.toLocaleString('en-US');
 function useRecipeCounts(recipeId: string, snapshotId: string) {
   const [line, setLine] = useState<{ text: string; error: boolean } | null>(null);
   useEffect(() => {
-    setLine(null);
-    if (!recipeId || !snapshotId) return undefined;
+    if (!recipeId || !snapshotId) { setLine(null); return undefined; }
+    // the Seed pages' line while a snapshot restores into the scratch database
+    setLine({ text: 'Opening the snapshot…', error: false });
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const wait = () => new Promise<void>((done) => { timer = setTimeout(done, OPEN_POLL_MS); });
@@ -86,7 +87,7 @@ function useRecipeCounts(recipeId: string, snapshotId: string) {
 export default function DataStep({ state, set, errors, ctx }: StepProps) {
   const fa = ctx.defaults.first_admin;
   const none = ctx.snapshots.length === 0;
-  const noRecipe = ctx.recipes.length === 0;
+  const noRecipe = ctx.recipeLock !== null || ctx.recipes.length === 0;
   const production = state.type === 'production';
   const recipeMode = state.dataMode === 'recipe';
   const counts = useRecipeCounts(recipeMode ? state.recipeId : '', recipeMode ? state.recipeSnapshotId : '');
@@ -162,7 +163,10 @@ export default function DataStep({ state, set, errors, ctx }: StepProps) {
           })}
         </div>
         {none && <p className="page-hint">No snapshot yet. Upload one or take one in Snapshots below.</p>}
-        {!none && noRecipe && <p className="page-hint">No recipe yet. Make one in Seed Data.</p>}
+        {!none && ctx.recipeLock && <p className="page-hint">{ctx.recipeLock}</p>}
+        {!none && ctx.recipeLock === null && ctx.recipes.length === 0 && (
+          <p className="page-hint">No recipe yet. Make one in Seed Data.</p>
+        )}
       </div>
       {state.dataMode === 'snapshot' ? (
         <div className="sirdar-span2">
@@ -180,6 +184,7 @@ export default function DataStep({ state, set, errors, ctx }: StepProps) {
             <ComboBox inputId="flow-recipe" ariaLabel="Recipe" portal value={state.recipeId} placeholder="Choose a recipe…"
                       options={ctx.recipes.map((r) => ({ value: r.id, label: r.name }))}
                       onChange={(v) => set({ recipeId: v })} />
+            {errors.recipe && <p className="form-error" role="alert">{errors.recipe}</p>}
           </div>
           <div className="sirdar-span2">
             <label className="field-label" htmlFor="flow-recipe-snapshot">Snapshot</label>

@@ -78,6 +78,10 @@ export interface FlowContext {
   accounts: DoAccount[];
   snapshots: Snapshot[];
   recipes: RecipeSummary[];
+  /** null: From a recipe is offered (an empty list says to make one). A
+   *  string: it's locked, with that line ('' for no line: no seed_data
+   *  view, or the list couldn't be read). */
+  recipeLock: string | null;
 }
 
 const npmHost = (i: Integrations | null): string => {
@@ -144,7 +148,7 @@ export function withRules(s: FlowState, ctx: FlowContext): FlowState {
 }
 
 export type Field = 'type' | 'name' | 'gitRef' | 'baseDomain' | 'servers' | 'target' | 'proxyIp' | 'bindIp'
-  | 'machine' | 'cloud' | 'hosting' | 'publish' | 'apps' | 'mail' | 'digests' | 'aiKey' | 'data' | 'adminName' | 'adminEmail'
+  | 'machine' | 'cloud' | 'hosting' | 'publish' | 'apps' | 'mail' | 'digests' | 'aiKey' | 'data' | 'recipe' | 'adminName' | 'adminEmail'
   | 'adminPassword' | 'form';
 export type Errors = Partial<Record<Field, string>>;
 const only = (e: Errors): Errors => Object.fromEntries(Object.entries(e).filter(([, v]) => v)) as Errors;
@@ -247,7 +251,7 @@ export function stepErrors(step: FlowStep, s: FlowState, ctx: FlowContext): Erro
     case 'data': {
       if (s.dataMode === 'snapshot') return s.snapshotId ? {} : { data: 'Choose a snapshot.' };
       if (s.dataMode === 'recipe') {
-        if (!s.recipeId) return { data: 'Choose a recipe.' };
+        if (!s.recipeId) return { recipe: 'Choose a recipe.' };
         if (!s.recipeSnapshotId) return { data: 'Choose a snapshot.' };
         if (!sendsAdmin(s)) return {};
       }
@@ -363,7 +367,7 @@ export const FIELD_STEP: Record<Field, FlowStep> = {
   servers: 'servers',
   target: 'target', proxyIp: 'target', bindIp: 'target', machine: 'target', cloud: 'target',
   hosting: 'extras', publish: 'extras', apps: 'extras', mail: 'extras', digests: 'extras', aiKey: 'extras',
-  data: 'data', adminName: 'data', adminEmail: 'data', adminPassword: 'data',
+  data: 'data', recipe: 'data', adminName: 'data', adminEmail: 'data', adminPassword: 'data',
   form: 'review',
 };
 export const stepOfCode = (code: string): FlowStep => FIELD_STEP[CODE_FIELD[code] ?? 'form'];
