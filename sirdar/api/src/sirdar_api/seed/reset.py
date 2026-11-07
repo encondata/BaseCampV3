@@ -9,7 +9,12 @@ or newer schema) fails the build (reset_target_missing) rather than ship a
 secret; keep this list in step with those models.
 
 password_hash goes to NULL, not to a random hash: nothing can match it,
-and the reset link sets a real one."""
+and the reset link sets a real one.
+
+The reset clears the listed tables and columns; it can't guarantee a
+source schema hasn't stored secrets elsewhere, which is why the build
+refuses a schema with always/replica triggers or rules (build.py,
+_check_schema) and reads the reset back before shipping."""
 
 USER_TABLE = "user_accounts"
 # column -> the value every copied account gets

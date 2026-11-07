@@ -9,7 +9,9 @@ Its steps, in order:
  1. the source's db.dump is restored into a "build" scratch database;
  2. an empty "subset" scratch database gets the source's schema
     (pg_dump --schema-only | pg_restore), so every constraint, index,
-    sequence and extension is there before any row;
+    sequence and extension is there before any row; a schema with triggers
+    or rules that would fire during the load or the reset (ENABLE ALWAYS or
+    ENABLE REPLICA) is refused (unsafe_schema), see _check_schema;
  3. the kept rows are loaded in one transaction with session_replication_role
     = replica (foreign keys and triggers off, so circular and
     self-referencing links load in any order): All rows tables whole, rows
@@ -17,7 +19,10 @@ Its steps, in order:
     table empty; sequences take the source's positions;
  4. every optional link whose row isn't there is set to NULL;
  5. a required link whose row isn't there fails the build (missing_parent);
- 6. with reset_passwords, the reset list (seed/reset.py) is applied;
+ 6. with reset_passwords, the reset list (seed/reset.py) is applied and
+    read back. The reset clears the listed tables and columns; it can't
+    guarantee a source schema hasn't stored secrets elsewhere, which is why
+    always/replica triggers and rules are refused in step 2;
  7. the subset is dumped (pg_dump -Fc);
  8. a new objects.tar holds only the kept files, copied member by member
     from the source's (content types as they were);
@@ -65,6 +70,19 @@ _source_locks: dict[uuid.UUID, asyncio.Lock] = {}   # one build per source at a 
 _SEQUENCES_SQL = """
 SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = $1 AND c.relkind = 'S' ORDER BY c.relname
+"""
+# Triggers and rules that fire in replica mode: ENABLE ALWAYS ('A') and
+# ENABLE REPLICA ('R'; those fire only then). Constraint triggers are
+# internal; a view's _RETURN rule is how a view works.
+_UNSAFE_TRIGGERS_SQL = """
+SELECT count(*) FROM pg_trigger t
+JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = $1 AND NOT t.tgisinternal AND t.tgenabled IN ('A', 'R')
+"""
+_UNSAFE_RULES_SQL = """
+SELECT count(*) FROM pg_rewrite r
+JOIN pg_class c ON c.oid = r.ev_class JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = $1 AND r.rulename <> '_RETURN' AND r.ev_enabled IN ('A', 'R')
 """
 _NOT_NULL_SQL = """
 SELECT c.relname, a.attname FROM pg_attribute a
@@ -232,6 +250,7 @@ async def _build(settings: Settings, snapshot_id: uuid.UUID) -> snapshots.Stored
             try:
                 dst = await _connect(settings, subset_db)
                 try:
+                    await _check_schema(dst)
                     kept = await seed_files.kept_rows(src, detail["tables"])
                     rows = await _load(src, dst, kept)
                     await _fix_links(dst)
@@ -298,6 +317,26 @@ async def _dump(settings: Settings, subset_db: str, out: Path) -> None:
         role=subset_db, stdout_path=out)
     if code != 0:
         raise _tool_failed("pg_dump", "dump_failed", code, err)
+
+
+async def _check_schema(dst: asyncpg.Connection) -> None:
+    """Refuse a schema that could act during the load or the reset. The
+    rows go in, the links are fixed and the secrets cleared with
+    session_replication_role = replica, which silences ordinary triggers
+    and rules, but not ENABLE ALWAYS ones, and ENABLE REPLICA ones fire
+    only then: a crafted dump could copy a row's password hash into another
+    kept table as it is loaded or reset, where the read-back can't see it.
+    So any such trigger or rule in public fails the build (unsafe_schema),
+    whether or not passwords are being reset."""
+    try:
+        count = (await dst.fetchval(_UNSAFE_TRIGGERS_SQL, SCHEMA)
+                 + await dst.fetchval(_UNSAFE_RULES_SQL, SCHEMA))
+    except asyncpg.PostgresError as e:
+        log.warning("checking a subset's schema failed: %s", type(e).__name__)
+        raise SeedError("load_failed") from None
+    if count:
+        raise SeedError("unsafe_schema",
+                        note=f"unsafe_schema: {count} always/replica triggers or rules")
 
 
 # ---- loading -----------------------------------------------------------------------------

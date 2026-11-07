@@ -94,10 +94,11 @@ OBJECTS = {
     "devices/d1.bin": (b"D" * 18, None),
 }
 
-# An untrusted dump's own mischief against the reset: a trigger that keeps
-# the old row (replica mode skips it, as it does an ordinary rule), and an
-# ALWAYS rule that rewrites the UPDATE to nothing (replica mode doesn't
-# switch those off; the read-back catches it).
+# An untrusted dump's own mischief: an ordinary trigger that keeps the old
+# row (replica mode skips it, as it does an ordinary rule: allowed, inert);
+# an ALWAYS rule that rewrites the UPDATE to nothing, and a REPLICA trigger
+# that copies each hash into another table as it goes (both fire in
+# replica mode: the schema is refused before any row is loaded).
 TRIGGER = [
     ("CREATE FUNCTION keep_old() RETURNS trigger LANGUAGE plpgsql AS "
      "$$ BEGIN RETURN OLD; END $$"),
@@ -106,6 +107,14 @@ TRIGGER = [
 ]
 RULE = ["CREATE RULE keep_rows AS ON UPDATE TO user_accounts DO INSTEAD NOTHING",
         "ALTER TABLE user_accounts ENABLE ALWAYS RULE keep_rows"]
+LEAK = [
+    "CREATE TABLE leaked (id serial PRIMARY KEY, hash text)",
+    ("CREATE FUNCTION leak() RETURNS trigger LANGUAGE plpgsql AS "
+     "$$ BEGIN INSERT INTO leaked (hash) VALUES (OLD.password_hash); RETURN NEW; END $$"),
+    ("CREATE TRIGGER leak AFTER UPDATE ON user_accounts "
+     "FOR EACH ROW EXECUTE FUNCTION leak()"),
+    "ALTER TABLE user_accounts ENABLE REPLICA TRIGGER leak",
+]
 
 SUPERUSER = make_url(BASE_URL).username
 
@@ -124,9 +133,9 @@ def _dump() -> bytes:
 
 @pytest.fixture(scope="module")
 def dumps() -> dict[str, bytes]:
-    """pg_dump -Fc of the fixture schema: whole; with the trigger; with the
-    rule; without biometric_keys; and also without
-    user_accounts.totp_last_counter."""
+    """pg_dump -Fc of the fixture schema: whole; with the ordinary trigger;
+    with the ALWAYS rule; with the REPLICA leak trigger; without
+    biometric_keys; and also without user_accounts.totp_last_counter."""
     with psycopg.connect(_psycopg_url("postgres"), autocommit=True) as conn:
         conn.execute(f'DROP DATABASE IF EXISTS "{SOURCE}" WITH (FORCE)')
         conn.execute(f'CREATE DATABASE "{SOURCE}"')
@@ -143,7 +152,10 @@ def dumps() -> dict[str, bytes]:
         out["trigger"] = _dump()
         run(["DROP TRIGGER keep_old ON user_accounts", "DROP FUNCTION keep_old", *RULE])
         out["rule"] = _dump()
-        run(["DROP RULE keep_rows ON user_accounts", "DROP TABLE biometric_keys"])
+        run(["DROP RULE keep_rows ON user_accounts", *LEAK])
+        out["leak"] = _dump()
+        run(["DROP TRIGGER leak ON user_accounts", "DROP FUNCTION leak", "DROP TABLE leaked",
+             "DROP TABLE biometric_keys"])
         out["no_table"] = _dump()
         with psycopg.connect(_psycopg_url(SOURCE), autocommit=True) as conn:
             conn.execute("ALTER TABLE user_accounts DROP COLUMN totp_last_counter")
@@ -402,6 +414,14 @@ async def test_a_cut_name_never_ends_in_a_space_or_dash(client, db, headers, sou
     rid = await _recipe(client, headers, {"roles": {"mode": "all"}}, name="D" * 63 + "-x")
     built = await _built(client, db, headers, rid, source)      # char 64 would be the dash
     assert built.name == "D" * 63
+    # an uncut name keeps its ending; a cut name of dashes falls back to the trimmed whole
+    rid = await _recipe(client, headers, {"roles": {"mode": "all"}}, name="Dash-")
+    built = await _built(client, db, headers, rid, source)
+    assert built.name == f"Dash- from {source.name}"
+    rid = await _recipe(client, headers, {"roles": {"mode": "all"}}, name="-" * 70)
+    built = await _built(client, db, headers, rid, source)
+    assert built.name == f"from {source.name}"
+    assert snapshots._cut("-" * 70, 64) == "recipe"
 
 
 async def test_recipe_names_are_cleaned_and_printable(client, db, headers):
@@ -476,12 +496,11 @@ async def test_without_reset_the_secrets_stay(client, db, headers, source):
         "avatars/ann.png", "avatars/bob.png", "devices/d1.bin"}
 
 
-async def test_reset_ignores_the_dumps_triggers_and_catches_its_rules(
+async def test_an_ordinary_trigger_is_allowed_and_inert(
         client, db, headers, scratch_url, snapshots_dir, tmp_path, dumps):  # noqa: F811
     rid = await _recipe(client, headers, RESET)
     with_trigger = _store(tmp_path, dumps["trigger"])
-    with_rule = _store(tmp_path, dumps["rule"])
-    db.add_all([with_trigger, with_rule])
+    db.add(with_trigger)
     await db.commit()
     # a BEFORE UPDATE trigger returning OLD would keep every secret: replica mode skips it
     built = await _built(client, db, headers, rid, with_trigger, reset_passwords=True)
@@ -494,35 +513,46 @@ async def test_reset_ignores_the_dumps_triggers_and_catches_its_rules(
         assert await _counts(conn, *reset.EMPTY_TABLES) == {t: 0 for t in reset.EMPTY_TABLES}
     finally:
         await conn.close()
-    # an ALWAYS rule rewriting the UPDATE to nothing fires in replica mode too: the
-    # read-back refuses to ship
+
+
+async def test_always_or_replica_triggers_and_rules_refuse_the_schema(
+        client, db, headers, scratch_url, snapshots_dir, tmp_path, dumps):  # noqa: F811
+    rid = await _recipe(client, headers, RESET)
+    with_rule = _store(tmp_path, dumps["rule"])
+    with_leak = _store(tmp_path, dumps["leak"])
+    db.add_all([with_rule, with_leak])
+    await db.commit()
+    note = "unsafe_schema: 1 always/replica triggers or rules"
+    # a REPLICA trigger copying hashes elsewhere: refused with and without the reset
+    for reset_passwords in (True, False):
+        built = await _built(client, db, headers, rid, with_leak, reset_passwords=reset_passwords)
+        assert (built.status, built.notes) == ("failed", note), reset_passwords
+        assert built.bundle_file is None
+        _scratch_gone(with_leak, built)
+    # an ALWAYS rule likewise
+    built = await _built(client, db, headers, rid, with_rule, reset_passwords=True)
+    assert (built.status, built.notes) == ("failed", note)
+    _scratch_gone(with_rule, built)
+
+
+async def test_the_reset_is_read_back(client, db, headers, scratch_url, snapshots_dir,  # noqa: F811
+                                      tmp_path, dumps, monkeypatch):
+    """The second layer: were the schema check ever to miss an ALWAYS rule
+    rewriting the UPDATE to nothing, the read-back refuses to ship."""
+    async def no_check(dst):
+        return None
+
+    monkeypatch.setattr(build, "_check_schema", no_check)
+    rid = await _recipe(client, headers, RESET)
+    with_rule = _store(tmp_path, dumps["rule"])
+    db.add(with_rule)
+    await db.commit()
     built = await _built(client, db, headers, rid, with_rule, reset_passwords=True)
     assert (built.status, built.notes) == ("failed", "reset_failed")
     assert built.bundle_file is None
     _scratch_gone(with_rule, built)
-    # without the reset, the same dump builds (the rule is just part of its schema)
+    # without the reset the rule never fires on anything: the build goes through
     built = await _built(client, db, headers, rid, with_rule)
-    assert built.status == "ready", built.notes
-
-
-async def test_reset_fails_when_a_listed_table_or_column_is_missing(
-        client, db, headers, scratch_url, snapshots_dir, tmp_path, dumps):  # noqa: F811
-    tables = {k: v for k, v in RESET.items() if k != "biometric_keys"}
-    rid = await _recipe(client, headers, tables)
-    no_table = _store(tmp_path, dumps["no_table"])
-    no_column = _store(tmp_path, dumps["no_column"])
-    db.add_all([no_table, no_column])
-    await db.commit()
-    built = await _built(client, db, headers, rid, no_table, reset_passwords=True)
-    assert (built.status, built.notes) == ("failed", "reset_target_missing: biometric_keys")
-    assert built.bundle_file is None
-    _scratch_gone(no_table, built)
-    built = await _built(client, db, headers, rid, no_column, reset_passwords=True)
-    assert (built.status, built.notes) == (
-        "failed", "reset_target_missing: user_accounts.totp_last_counter")
-    _scratch_gone(no_column, built)
-    # without the reset, the same snapshot builds
-    built = await _built(client, db, headers, rid, no_table)
     assert built.status == "ready", built.notes
 
 

@@ -301,6 +301,15 @@ async def begin_take(db: AsyncSession, settings: Settings, env: Environment, *, 
     return snap
 
 
+def _cut(name: str, limit: int) -> str:
+    """`name` within `limit` characters. A name that had to be cut never
+    ends in a space or a dash; should that trim leave nothing (a name of
+    dashes), the whole name trimmed at both ends stands in, else "recipe"."""
+    if len(name) <= limit:
+        return name
+    return name[:limit].rstrip(" -") or name.strip(" -")[:limit] or "recipe"
+
+
 async def begin_build(db: AsyncSession, settings: Settings, *, recipe: SeedRecipe,
                       source: Snapshot, reset_passwords: bool, actor_id) -> Snapshot:
     """The pending row a Seed Data build (seed/build.py) fills in: a subset
@@ -314,8 +323,7 @@ async def begin_build(db: AsyncSession, settings: Settings, *, recipe: SeedRecip
     await asyncio.to_thread(ensure_dirs, settings)
     base = f"{recipe.name} from {source.name}"
     for n in range(1, 100):
-        name = (base[:64].rstrip(" -") if n == 1
-                else f"{base[:63 - len(str(n))].rstrip(' -')}-{n}")
+        name = _cut(base, 64) if n == 1 else f"{_cut(base, 63 - len(str(n)))}-{n}"
         if await _name_taken(db, name):
             continue
         snap = Snapshot(name=name, origin="recipe", source=source.source, status="pending",
