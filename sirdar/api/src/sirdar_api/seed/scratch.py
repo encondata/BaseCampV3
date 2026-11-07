@@ -19,7 +19,11 @@ PUBLIC, as it is on the server's own database and template1, so a role can
 reach only its own database. pg_restore and every browsing connection log
 in as that role. Its password is random, kept in memory, and replaced
 whenever the role is set up again (a new process resets it, with RESET ALL);
-the role is dropped with its database.
+the server only ever sees its SCRAM-SHA-256 verifier. The role is dropped
+with its database. A dump restored as one role can grant on its objects to
+another scratch role (it can see pg_roles), and that other role can't be
+dropped while those privileges exist: it is left NOLOGIN, inert, and swept
+once the granting database is gone.
 
 The scratch URL holds a password: it is never logged, and the Postgres
 tools get passwords through PGPASSWORD in their own environment only."""
@@ -44,7 +48,7 @@ from sqlalchemy.engine import make_url
 
 from sirdar_api.config import Settings
 from sirdar_api.db.models import Snapshot
-from sirdar_api.deploy import bundle, snapshots
+from sirdar_api.deploy import bundle, pgauth, snapshots
 from sirdar_api.seed import SeedError
 
 log = logging.getLogger(__name__)
@@ -65,6 +69,7 @@ _last_used: dict[str, float] = {}     # name -> time.monotonic() of last use
 _locks: dict[str, asyncio.Lock] = {}
 _tasks: set[asyncio.Task] = set()
 _passwords: dict[str, str] = {}      # name -> its role's password
+_password_locks: dict[str, asyncio.Lock] = {}   # one role setup at a time per name
 _setup: dict[str, bool] = {}          # "done" once the server-wide REVOKEs ran
 
 
@@ -97,6 +102,7 @@ def forget_all() -> None:
     _last_used.clear()
     _locks.clear()
     _passwords.clear()
+    _password_locks.clear()
     _setup.clear()
 
 
@@ -144,6 +150,16 @@ def _lock(name: str) -> asyncio.Lock:
     return _locks.setdefault(name, asyncio.Lock())
 
 
+def _locked(name: str) -> bool:
+    """Whether `name`'s lock is held (without making an entry for it)."""
+    lock = _locks.get(name)
+    return lock is not None and lock.locked()
+
+
+def _password_lock(name: str) -> asyncio.Lock:
+    return _password_locks.setdefault(name, asyncio.Lock())
+
+
 # ---- connections and the Postgres tools ------------------------------------------
 
 async def _admin(settings: Settings) -> asyncpg.Connection:
@@ -152,8 +168,11 @@ async def _admin(settings: Settings) -> asyncpg.Connection:
                                  database=s.database, timeout=10)
 
 
-# Role passwords go to the server as SQL literals (CREATE/ALTER ROLE take no
-# parameters): never raise log_statement on the scratch server.
+# CREATE/ALTER ROLE take no parameters, so the password is part of the
+# statement text, which the server may log (log_statement, or
+# log_min_error_statement when it fails). So the statement carries the
+# password's SCRAM-SHA-256 verifier (what the server stores anyway), never
+# the password itself: nothing in a server log logs in.
 _ROLE_ATTRS = "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
 
 
@@ -171,12 +190,13 @@ async def _setup_server(conn: asyncpg.Connection, settings: Settings) -> None:
 
 async def _setup_role(conn: asyncpg.Connection, name: str) -> str:
     """Create, or reset, database `name`'s own role: restricted attributes,
-    a fresh password, no settings of its own (RESET ALL), allowed to SET
-    session_replication_role (a later step loads rows as replica). Its
-    password."""
+    LOGIN (a leftover role was made NOLOGIN), a fresh password, no settings
+    of its own (RESET ALL), allowed to SET session_replication_role (a later
+    step loads rows as replica). Its password."""
     _check_name(name)
-    password = secrets.token_urlsafe(32)          # [A-Za-z0-9_-]: safe in a literal
-    attrs = f"{_ROLE_ATTRS} PASSWORD '{password}'"
+    password = secrets.token_urlsafe(32)
+    # The verifier is [A-Za-z0-9+/=$:] only: safe in a literal.
+    attrs = f"{_ROLE_ATTRS} PASSWORD '{pgauth.scram_sha256(password)}'"
     exists = await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", name)
     if not exists:
         try:
@@ -191,28 +211,45 @@ async def _setup_role(conn: asyncpg.Connection, name: str) -> str:
     return password
 
 
-async def _drop_role(conn: asyncpg.Connection, name: str) -> None:
-    """Drop database `name`'s role (its database must be gone already)."""
+async def _drop_role(conn: asyncpg.Connection, name: str) -> bool:
+    """Drop database `name`'s role (its database must be gone already).
+    True once it is gone. False when Postgres refuses, which happens when
+    another scratch database's dump granted it privileges there (we can't
+    revoke those from here: DROP OWNED works only inside that database, and
+    the superuser never enters a database restored from a dump): the role
+    is left NOLOGIN, so nothing can use it, and the sweep drops it once that
+    database is gone."""
     _check_name(name)
     _passwords.pop(name, None)
     if not await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", name):
-        return
-    # The parameter grant is the one thing outside its database it holds.
+        return True
+    # The parameter grant is the one thing outside the databases it holds.
     await conn.execute(f'REVOKE SET ON PARAMETER session_replication_role FROM "{name}"')
-    await conn.execute(f'DROP ROLE IF EXISTS "{name}"')
+    try:
+        await conn.execute(f'DROP ROLE IF EXISTS "{name}"')
+    except asyncpg.PostgresError as e:    # DependentObjectsStillExistError, mostly
+        log.info("scratch role %s can't be dropped yet (%s); left NOLOGIN for a later sweep",
+                 name, type(e).__name__)
+        await conn.execute(f'ALTER ROLE "{name}" NOLOGIN')
+        return False
+    return True
 
 
 async def _role_password(settings: Settings, name: str) -> str:
     """Database `name`'s role password; reset by the superuser when this
-    process doesn't know it (say, after a restart)."""
+    process doesn't know it (say, after a restart). One setup at a time
+    per name."""
     if name in _passwords:
         return _passwords[name]
-    conn = await _admin(settings)
-    try:
-        await _setup_server(conn, settings)
-        return await _setup_role(conn, name)
-    finally:
-        await conn.close()
+    async with _password_lock(name):
+        if name in _passwords:
+            return _passwords[name]
+        conn = await _admin(settings)
+        try:
+            await _setup_server(conn, settings)
+            return await _setup_role(conn, name)
+        finally:
+            await conn.close()
 
 
 async def connect(settings: Settings, name: str) -> asyncpg.Connection:
@@ -236,12 +273,14 @@ async def _exists(settings: Settings, name: str) -> bool:
 
 
 async def _create_db(settings: Settings, name: str) -> None:
-    """Database `name`, owned by a fresh role of its own; only that role
-    may connect to it."""
+    """Database `name`, owned by a role of its own (fresh, or a leftover one
+    reset: new password, LOGIN, RESET ALL); only that role may connect to
+    it."""
     conn = await _admin(settings)
     try:
         await _setup_server(conn, settings)
-        await _setup_role(conn, _check_name(name))
+        async with _password_lock(name):
+            await _setup_role(conn, _check_name(name))
         await conn.execute(f'CREATE DATABASE "{name}" OWNER "{name}" TEMPLATE template0')
         await conn.execute(f'REVOKE CONNECT ON DATABASE "{name}" FROM PUBLIC')
     finally:
@@ -249,11 +288,17 @@ async def _create_db(settings: Settings, name: str) -> None:
 
 
 async def _drop_db(settings: Settings, name: str) -> None:
-    """Drop database `name` and then its role."""
+    """Drop database `name` and then its role. Returning means the database
+    is gone; the role is gone, or left NOLOGIN for the sweep (see
+    _drop_role), or, should its drop fail some other way, left for the
+    sweep too (logged by type)."""
     conn = await _admin(settings)
     try:
         await conn.execute(f'DROP DATABASE IF EXISTS "{_check_name(name)}" WITH (FORCE)')
-        await _drop_role(conn, name)
+        try:
+            await _drop_role(conn, name)
+        except Exception as e:  # noqa: BLE001 - the database is gone; the role can wait
+            log.warning("scratch role %s couldn't be dropped: %s", name, type(e).__name__)
     finally:
         await conn.close()
 
@@ -442,55 +487,76 @@ async def drop(settings: Settings, name: str) -> None:
     """Drop scratch database `name` (if it exists) and forget it."""
     _check_name(name)
     async with _lock(name):
-        await _drop_db(settings, name)
+        await _drop_db(settings, name)            # back only once the database is gone
         _state.pop(name, None)
         _last_used.pop(name, None)
+
+
+def _sweepable(name: str, cutoff: float, browse: str) -> bool:
+    """Whether the sweep may drop database `name` now, going by what this
+    process knows (not by its lock): unknown here, or a browse database
+    unused since `cutoff`. Checked again once its lock is held."""
+    if _state.get(name) == "restoring":
+        return False
+    if name in _state:
+        if not name.startswith(browse):
+            return False                          # a build in this process: its owner drops it
+        last = _last_used.get(name)
+        if last is not None and last >= cutoff:
+            return False
+    return True
 
 
 async def sweep_idle(settings: Settings) -> int:
     """Drop the browse databases unused for SIRDAR_SCRATCH_IDLE_MINUTES, and
     every scratch database this process doesn't know, whatever its purpose
-    (what an earlier run or a crash left). Runs at startup and then
-    periodically. How many it dropped."""
+    (what an earlier run or a crash left), then the roles whose database is
+    gone. Runs at startup and then periodically. Each drop fails on its own
+    (logged by type), never the sweep. How many databases it dropped."""
     if not configured(settings):
         return 0
     conn = await _admin(settings)
     try:
         names = [r["datname"] for r in await conn.fetch(
-            "SELECT datname FROM pg_database WHERE starts_with(datname, $1)", f"{PREFIX}_")]
+            "SELECT datname FROM pg_database WHERE starts_with(datname, $1) ORDER BY datname",
+            f"{PREFIX}_")]
     finally:
         await conn.close()
     cutoff = time.monotonic() - settings.scratch_idle_minutes * 60
     browse = f"{PREFIX}_browse_"
     dropped = 0
     for name in names:
-        if not NAME_RE.fullmatch(name):
+        if not NAME_RE.fullmatch(name) or _locked(name) or not _sweepable(name, cutoff, browse):
             continue
-        lock = _lock(name)
-        if lock.locked() or _state.get(name) == "restoring":
+        try:
+            async with _lock(name):
+                if not _sweepable(name, cutoff, browse):    # a restore got in first
+                    continue
+                await _drop_db(settings, name)
+                _state.pop(name, None)
+                _last_used.pop(name, None)
+        except Exception as e:  # noqa: BLE001 - on to the next one
+            log.warning("scratch sweep couldn't drop database %s: %s", name, type(e).__name__)
             continue
-        if name in _state:
-            if not name.startswith(browse):
-                continue                          # a build in this process: its owner drops it
-            last = _last_used.get(name)
-            if last is not None and last >= cutoff:
-                continue
-        async with lock:
-            await _drop_db(settings, name)
-            _state.pop(name, None)
-            _last_used.pop(name, None)
         dropped += 1
-    # Roles whose database is gone (a crash between the two drops, or an
-    # earlier version's shared owner role).
+    # Roles whose database is gone: a crash between the two drops, a drop
+    # Postgres refused (see _drop_role), or an earlier version's shared role.
     conn = await _admin(settings)
     try:
         orphans = [r["rolname"] for r in await conn.fetch(
             "SELECT rolname FROM pg_roles r WHERE starts_with(rolname, $1) AND NOT EXISTS "
-            "(SELECT 1 FROM pg_database d WHERE d.datname = r.rolname)", f"{PREFIX}_")]
+            "(SELECT 1 FROM pg_database d WHERE d.datname = r.rolname) ORDER BY rolname",
+            f"{PREFIX}_")]
         for name in orphans:
-            if not NAME_RE.fullmatch(name) or name in _state or _lock(name).locked():
+            if not NAME_RE.fullmatch(name) or name in _state or _locked(name):
                 continue
-            await _drop_role(conn, name)
+            try:
+                async with _lock(name):
+                    if name in _state:                   # a restore got in first
+                        continue
+                    await _drop_role(conn, name)
+            except Exception as e:  # noqa: BLE001 - on to the next one
+                log.warning("scratch sweep couldn't drop role %s: %s", name, type(e).__name__)
     finally:
         await conn.close()
     return dropped

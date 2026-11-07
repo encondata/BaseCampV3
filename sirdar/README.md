@@ -960,9 +960,9 @@ scratch Postgres that needs `SIRDAR_SCRATCH_PASSWORD`. The installer adds a
 generated one to an existing `.env`; on a hand-managed install, set it
 (`python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`) in
 `sirdar/.env` before `docker compose up`, or compose refuses to start.
-Seed Data restores each snapshot as a role of its own, and Sirdar sends
-those roles' passwords to the scratch Postgres as SQL literals: leave its
-`log_statement` at the default (`none`), never `ddl` or `all`.
+Seed Data restores each snapshot as a role of its own; the scratch Postgres
+only ever receives those roles' SCRAM-SHA-256 verifiers, never a password,
+so its statement logs can't leak one.
 
 ## Security notes
 

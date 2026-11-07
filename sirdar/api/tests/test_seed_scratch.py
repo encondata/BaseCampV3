@@ -263,6 +263,138 @@ async def test_startup_sweep_removes_leftover_roles(scratch_url):
     assert _role(name) is None
 
 
+async def test_a_dumps_grant_to_another_role_never_breaks_drops_or_sweeps(
+        scratch_url, snapshots_dir, tmp_path, good_dump):
+    """A crafted dump restored as role A grants on A's objects to role B (it
+    can see every role in pg_roles). B's role then can't be dropped while
+    database A exists: the drop must still finish, B's role is left NOLOGIN,
+    the sweep goes on past it, B can be restored again, and once A is gone
+    a later sweep removes B's role."""
+    settings = get_settings()
+    snap_b = _snapshot(tmp_path, good_dump)
+    a = await scratch.ensure_restored(settings, _snapshot(tmp_path, good_dump))
+    b = await scratch.ensure_restored(settings, snap_b)
+    conn = await scratch.connect(settings, a)
+    try:
+        await conn.execute(f'GRANT SELECT ON sites TO "{b}"')
+    finally:
+        await conn.close()
+    # Dropping B: no error, nothing left "ready", the database gone, the
+    # role inert (NOLOGIN) rather than live.
+    await scratch.drop(settings, b)
+    assert scratch.status(snap_b.id) == "absent"
+    assert b not in _databases()
+    assert _role(b) is not None and _role(b)[-1] is False
+    assert b not in scratch._passwords
+    # The sweep gets past B's undroppable role to the leftovers after it
+    # (names sorting after "_browse_").
+    planted_db = scratch.db_name(uuid.uuid4(), "zzz")
+    planted_role = scratch.db_name(uuid.uuid4(), "zzz")
+    with psycopg.connect(_psycopg_url("postgres"), autocommit=True) as c:
+        c.execute(f'CREATE DATABASE "{planted_db}"')
+        c.execute(f'CREATE ROLE "{planted_role}" LOGIN')
+    assert await scratch.sweep_idle(settings) == 1
+    assert planted_db not in _databases() and _role(planted_role) is None
+    assert _role(b) is not None and _role(b)[-1] is False     # still there, still inert
+    # B can be restored again: its leftover role is reset and gets LOGIN back.
+    assert await scratch.ensure_restored(settings, snap_b) == b
+    assert _role(b) == (False, False, False, False, False, True)
+    assert _tables(b) == {"sites": 2, "racks": 2}
+    await scratch.drop(settings, b)
+    assert _role(b)[-1] is False
+    # Once A is gone, so are the privileges holding B's role: the next sweep drops it.
+    await scratch.drop(settings, a)
+    assert _role(a) is None
+    assert await scratch.sweep_idle(settings) == 0
+    assert _role(b) is None
+
+
+async def test_sweep_continues_past_a_failing_drop(scratch_url, monkeypatch):
+    first = scratch.db_name(uuid.uuid4(), "aaa")
+    second = scratch.db_name(uuid.uuid4(), "zzz")
+    with psycopg.connect(_psycopg_url("postgres"), autocommit=True) as c:
+        for name in (first, second):
+            c.execute(f'CREATE DATABASE "{name}"')
+    real = scratch._drop_db
+
+    async def flaky(settings, name):
+        if name == first:
+            raise OSError("connection reset")
+        await real(settings, name)
+
+    monkeypatch.setattr(scratch, "_drop_db", flaky)
+    assert await scratch.sweep_idle(get_settings()) == 1
+    assert second not in _databases() and first in _databases()
+
+
+async def test_sweep_creates_no_lock_entries_for_names_it_leaves_alone(scratch_url):
+    name = scratch.db_name(uuid.uuid4())
+    with psycopg.connect(_psycopg_url("postgres"), autocommit=True) as c:
+        c.execute(f'CREATE DATABASE "{name}"')
+    scratch._state[name] = "restoring"            # as start_restore does, before the lock
+    try:
+        assert await scratch.sweep_idle(get_settings()) == 0
+        assert name in _databases()
+        assert name not in scratch._locks
+    finally:
+        scratch._state.pop(name, None)
+
+
+async def test_first_time_password_setup_runs_once_per_name(scratch_url, monkeypatch):
+    name = scratch.db_name(uuid.uuid4())
+    calls: list[str] = []
+
+    async def slow_setup(conn, role):
+        calls.append(role)
+        await asyncio.sleep(0.02)
+        scratch._passwords[role] = "pw-" + role
+        return scratch._passwords[role]
+
+    monkeypatch.setattr(scratch, "_setup_role", slow_setup)
+    got = await asyncio.gather(scratch._role_password(get_settings(), name),
+                               scratch._role_password(get_settings(), name))
+    assert calls == [name]
+    assert got == ["pw-" + name] * 2
+
+
+class _RecordingReal:
+    """A real admin connection that also records every statement sent."""
+
+    def __init__(self, conn, sql: list[str]):
+        self._conn, self.sql = conn, sql
+
+    async def execute(self, sql, *args):
+        self.sql.append(sql)
+        return await self._conn.execute(sql, *args)
+
+    def __getattr__(self, attr):
+        return getattr(self._conn, attr)
+
+
+async def test_role_passwords_reach_the_server_only_as_scram_verifiers(
+        scratch_url, snapshots_dir, tmp_path, good_dump, monkeypatch):
+    sql: list[str] = []
+    real_admin = scratch._admin
+
+    async def recording_admin(settings):
+        return _RecordingReal(await real_admin(settings), sql)
+
+    monkeypatch.setattr(scratch, "_admin", recording_admin)
+    snap = _snapshot(tmp_path, good_dump)
+    name = await scratch.ensure_restored(get_settings(), snap)
+    password = scratch._passwords[name]
+    role_sql = [s for s in sql if s.startswith(("CREATE ROLE", "ALTER ROLE"))]
+    assert role_sql, sql
+    assert all(password not in s for s in sql)
+    assert any("PASSWORD 'SCRAM-SHA-256$4096:" in s for s in role_sql)
+    # ...and the plaintext still logs in.
+    conn = await scratch.connect(get_settings(), name)
+    try:
+        assert await conn.fetchval("SELECT current_user") == name
+    finally:
+        await conn.close()
+
+
 async def test_concurrent_callers_restore_once(scratch_url, snapshots_dir, tmp_path,
                                                good_dump, monkeypatch):
     snap = _snapshot(tmp_path, good_dump)
