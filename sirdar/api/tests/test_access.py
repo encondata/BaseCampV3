@@ -28,10 +28,13 @@ def _load(name, fname):
 def test_migration_seed_matches_defaults():
     m1 = _load("m0001", "0001_initial.py")
     m3 = _load("m0003", "0003_deploy.py")
+    m17 = _load("m0017", "0017_seed_recipes.py")
     assert m1.ROLES == DEFAULT_ROLES
     expected = {role: {**grants} for role, grants in m1.GRANTS.items()}
     for role, actions in m3.DEPLOY_GRANTS.items():
         expected[role]["deploy"] = actions
+    for role, actions in m17.SEED_DATA_GRANTS.items():
+        expected[role]["seed_data"] = actions
     assert expected == DEFAULT_GRANTS
 
 

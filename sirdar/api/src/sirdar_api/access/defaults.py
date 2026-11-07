@@ -18,13 +18,14 @@ DEFAULT_ROLES: list[tuple[str, str, int]] = [
 
 DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
     "developer": {"dashboard": ("view",), "users": FULL, "access": FULL,
-                  "audit": ("view",), "settings": FULL, "deploy": DEPLOY, "devtools": FULL},
+                  "audit": ("view",), "settings": FULL, "deploy": DEPLOY, "seed_data": DEPLOY,
+                  "devtools": FULL},
     "founder": {"dashboard": ("view",), "users": FULL, "access": FULL,
-                "audit": ("view",), "settings": FULL, "deploy": DEPLOY},
+                "audit": ("view",), "settings": FULL, "deploy": DEPLOY, "seed_data": DEPLOY},
     "super_admin": {"dashboard": ("view",), "users": FULL, "access": ("view", "change"),
-                    "audit": ("view",), "settings": ("view", "change"), "deploy": DEPLOY},
+                    "audit": ("view",), "settings": ("view", "change"), "deploy": DEPLOY, "seed_data": DEPLOY},
     "admin": {"dashboard": ("view",), "users": ("view",), "access": ("view",),
-              "audit": ("view",), "settings": ("view",), "deploy": ("view",)},
+              "audit": ("view",), "settings": ("view",), "deploy": ("view",), "seed_data": ("view",)},
 }
 
 

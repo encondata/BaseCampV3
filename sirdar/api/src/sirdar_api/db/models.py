@@ -7,8 +7,8 @@ from datetime import datetime
 
 from sqlalchemy import BigInteger, Boolean, ForeignKey, Integer, text
 from sqlalchemy.dialects.postgresql import ARRAY, BYTEA, CITEXT, INET, JSONB, TIMESTAMP, UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy.types import Text
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, validates
+from sqlalchemy.types import Text, TypeDecorator
 
 
 class Base(DeclarativeBase):
@@ -17,6 +17,23 @@ class Base(DeclarativeBase):
         datetime: TIMESTAMP(timezone=True),
         str: Text,
     }
+
+
+class _FrozenDict(dict):
+    """A dict that hashes, so a row keyed on a JSON object can sit in the ORM identity map."""
+
+    def __hash__(self) -> int:  # type: ignore[override]
+        return hash(tuple(sorted(self.items())))
+
+
+class _KeyJSON(TypeDecorator):
+    """JSONB of flat objects whose values are text; loads hashable."""
+
+    impl = JSONB
+    cache_ok = True
+
+    def process_result_value(self, value, dialect):
+        return None if value is None else _FrozenDict(value)
 
 
 class Role(Base):
@@ -354,7 +371,7 @@ class Snapshot(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, server_default=text("gen_random_uuid()"))
     name: Mapped[str] = mapped_column(unique=True)
-    origin: Mapped[str]                            # upload | environment
+    origin: Mapped[str]                            # upload | environment | recipe
     source: Mapped[str]                            # manifest source / environment name
     status: Mapped[str] = mapped_column(server_default=text("'ready'"))
     alembic_revision: Mapped[str | None]
@@ -367,6 +384,65 @@ class Snapshot(Base):
     source_created_at: Mapped[datetime | None]
     created_by: Mapped[uuid.UUID | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    recipe_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("seed_recipes.id", ondelete="SET NULL"))
+    source_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("snapshots.id", ondelete="SET NULL"))
+    reset_passwords: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+
+
+class SeedRecipe(Base):
+    """A named recipe for cutting a seed snapshot from a source snapshot
+    (migration 0017). Children say which tables, rows and files it keeps."""
+
+    __tablename__ = "seed_recipes"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    name: Mapped[str] = mapped_column(unique=True)
+    notes: Mapped[str] = mapped_column(server_default=text("''"))
+    created_by: Mapped[uuid.UUID | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class SeedRecipeTable(Base):
+    """How a recipe treats one table: all rows, or only the listed ones. A table
+    with no row here is empty in the seed."""
+
+    __tablename__ = "seed_recipe_tables"
+
+    recipe_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("seed_recipes.id", ondelete="CASCADE"), primary_key=True)
+    table_name: Mapped[str] = mapped_column(primary_key=True)
+    mode: Mapped[str]                              # rows | all
+
+
+class SeedRecipeRow(Base):
+    """One kept row of a mode='rows' table; `pk` is {column: value-as-text}
+    for every primary-key column."""
+
+    __tablename__ = "seed_recipe_rows"
+
+    recipe_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("seed_recipes.id", ondelete="CASCADE"), primary_key=True)
+    table_name: Mapped[str] = mapped_column(primary_key=True)
+    pk: Mapped[dict] = mapped_column(_KeyJSON, primary_key=True)
+
+    @validates("pk")
+    def _hashable_pk(self, _key, value):
+        return _FrozenDict(value)
+
+
+class SeedRecipeFile(Base):
+    """A manual keep/drop override for one stored file."""
+
+    __tablename__ = "seed_recipe_files"
+
+    recipe_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("seed_recipes.id", ondelete="CASCADE"), primary_key=True)
+    key: Mapped[str] = mapped_column(primary_key=True)
+    keep: Mapped[bool] = mapped_column(Boolean)
 
 
 class Integration(Base):
