@@ -21,6 +21,7 @@ import DevicesPanel from '../components/devices/DevicesPanel';
 import EdgePanel from '../components/EdgePanel';
 import RfidPanel from '../components/RfidPanel';
 import HslPicker from '../components/HslPicker';
+import ClearSetupModal from '../components/ClearSetupModal';
 import LocalDataInspector from '../components/LocalDataInspector';
 import SoundPanel from '../components/SoundPanel';
 import { Switch } from '../components/Switch';
@@ -122,6 +123,7 @@ export default function Settings() {
   const [setupState, setSetupState] = useKioskSetupState();
   const sync = useSyncStatus();
   const [clearError, setClearError] = useState(false);
+  const [clearSetupOpen, setClearSetupOpen] = useState(false);
   // The checkpoint vocabulary, fetched only for the Admin tab (a worker
   // never sees the row, so never pays for the call). null while loading
   // or after a failure — the stored choice still applies either way,
@@ -321,6 +323,25 @@ export default function Settings() {
             </button>
           </div>
         )}
+        {/* Shown whether developer mode is on or not: the clear itself
+            turns developer mode off, and a tester resetting again and
+            again shouldn't have to flip it back on each time. */}
+        {active.id === 'developer' && (
+          <div className="settings-row">
+            <div>
+              <span className="settings-row-label">Clear Setup</span>
+              <p className="settings-row-hint">
+                Back to an out-of-box kiosk for testing: clears the setup and all local data,
+                resets every setting to its default and signs you out. Keeps this kiosk&apos;s
+                name and serial.
+              </p>
+            </div>
+            <button type="button" className="mini-btn danger" onClick={() => setClearSetupOpen(true)}>
+              Clear Setup…
+            </button>
+          </div>
+        )}
+        {clearSetupOpen && <ClearSetupModal onClose={() => setClearSetupOpen(false)} />}
         {active.id === 'developer' && <LocalDataInspector />}
         {active.id !== 'this-kiosk' && active.id !== 'appearance' && active.id !== 'sound'
           && active.id !== 'admin' && active.id !== 'edge' && active.id !== 'devices'

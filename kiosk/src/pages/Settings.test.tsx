@@ -198,6 +198,24 @@ it('a developer sees a Developer mode switch on the Developer tab, unchecked by 
   expect(localStorage.getItem('ss.kiosk.devMode')).toBe('true');
 });
 
+it('Clear Setup sits on the Developer tab even with developer mode off, and opens its confirm', async () => {
+  auth.isAdmin = true;
+  auth.isDeveloper = true;
+  renderAt('/settings?tab=developer');
+  // developer mode is off here (the default): the clear turns it off, so
+  // a tester resetting again must still find the button
+  expect(screen.getByRole('switch', { name: 'Developer mode' }).getAttribute('aria-checked')).toBe('false');
+  await userEvent.click(screen.getByRole('button', { name: 'Clear Setup…' }));
+  expect(screen.getByRole('dialog', { name: 'Clear Setup' })).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByRole('dialog', { name: 'Clear Setup' })).toBeNull();
+});
+
+it('a worker never sees Clear Setup', () => {
+  renderAt('/settings');
+  expect(screen.queryByRole('button', { name: 'Clear Setup…' })).toBeNull();
+});
+
 it('a worker never sees the Developer mode switch, on any tab', () => {
   renderAt('/settings');
   expect(screen.queryByRole('switch', { name: 'Developer mode' })).toBeNull();

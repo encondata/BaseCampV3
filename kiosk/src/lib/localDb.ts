@@ -359,7 +359,17 @@ export function writeMeta(key: string, value: Record<string, unknown>): Promise<
   });
 }
 
-/** Empties every store (the Developer tab's "Clear local data"). */
+/** Empties every store INCLUDING the outbox and uploaded sounds — the
+ *  Developer tab's Clear Setup, which returns the kiosk to out-of-box for
+ *  testing and so must not keep unsent scans or sounds either. The
+ *  confirm step says how many unsent scans go with it. */
+export function clearEverything(): Promise<void> {
+  return withStores(ALL_STORES, 'readwrite', async (tx) => {
+    for (const store of ALL_STORES) await request(tx.objectStore(store).clear());
+  });
+}
+
+/** Empties the move stores (the Developer tab's "Clear local data"). */
 export function clearDb(): Promise<void> {
   return withStores(STORES, 'readwrite', async (tx) => {
     for (const store of STORES) await request(tx.objectStore(store).clear());

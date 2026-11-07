@@ -49,6 +49,10 @@ const DEFS: Record<CheckpointId, CheckpointDef> = {
   truckUnload: { storageKey: 'ss.kiosk.truckUnloadStatus', fallback: 'received' },
 };
 
+/** Every checkpoint this kiosk stores, for whoever must touch them all
+ *  (Clear Setup puts each back to its default). */
+export const CHECKPOINT_IDS = Object.keys(DEFS) as CheckpointId[];
+
 export function defaultCheckpoint(id: CheckpointId): string {
   return DEFS[id].fallback;
 }

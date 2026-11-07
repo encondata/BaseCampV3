@@ -1385,3 +1385,10 @@ a.kiosk-crumb:focus-visible { opacity: 1; outline: 2px solid var(--accent); outl
 }
 .kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-station-card > .modal-body { overflow: auto; min-height: 0; }
 .kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-station-card > .modal-head { flex: none; }
+
+/* ── Clear Setup (Settings › Developer) ─────────────────────────────
+   The confirm card reuses the printer factory reset's modal shell; only
+   its width and the plain list of what goes are its own. */
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.clear-setup-card { width: min(560px, calc(100vw - 32px)); }
+.clear-setup-list { margin: 6px 0 14px; padding-left: 1.2em; display: grid; gap: 6px; font-size: 14px; color: var(--text-dark); }
+.clear-setup-card .zp-notice { margin-top: 12px; }

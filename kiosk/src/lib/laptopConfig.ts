@@ -212,6 +212,19 @@ function onLocalChange(): void {
   }, PUSH_DEBOUNCE_MS);
 }
 
+/** Sends a pending local edit now instead of after the debounce — for
+ *  Clear Setup, which resets the settings and then ends the session the
+ *  PUT needs. Never rejects; anything left pending goes after the next
+ *  sign-in, as usual. */
+export function flushLaptopConfig(): Promise<void> {
+  if (!isLaptop() || !readPending()) return Promise.resolve();
+  if (debounce) {
+    clearTimeout(debounce);
+    debounce = null;
+  }
+  return pushLocal();
+}
+
 let stopCurrent: (() => void) | null = null;
 
 /** Starts the laptop's config sync for a signed-in browser: tracks local
