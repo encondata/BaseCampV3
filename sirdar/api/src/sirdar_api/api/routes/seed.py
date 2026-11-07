@@ -4,14 +4,25 @@ seed_data:view check and its 409 scratch_not_configured (SIRDAR_SCRATCH_URL
 blank or unusable); an endpoint that needs more adds require_permission
 for that action only."""
 
+import logging
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+import asyncpg
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from sirdar_api.api.deps import AuthContext, CurrentUser, DbSession
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import Snapshot
-from sirdar_api.seed import scratch
+from sirdar_api.seed import SeedError, browse, scratch
+
+log = logging.getLogger(__name__)
+
+# SeedError codes and their HTTP status (anything else answers 400).
+_STATUS = {"scratch_unavailable": 503, "scratch_not_configured": 409, "restore_failed": 409,
+           "no_primary_key": 409, "table_not_found": 404, "column_not_found": 404}
 
 
 async def _seed_ready(user: CurrentUser) -> AuthContext:
@@ -47,3 +58,68 @@ async def open_snapshot(snapshot_id: uuid.UUID, db: DbSession):
 async def snapshot_status(snapshot_id: uuid.UUID, db: DbSession):
     await _snapshot(db, snapshot_id)
     return {"status": scratch.status(snapshot_id)}
+
+
+def _http(e: SeedError) -> HTTPException:
+    """A SeedError as the API answers it: its code only (never a Postgres
+    message, which may quote the snapshot's rows)."""
+    return HTTPException(status_code=_STATUS.get(e.code, 400), detail={"code": e.code})
+
+
+@asynccontextmanager
+async def _browse_conn(db, snapshot_id: uuid.UUID) -> AsyncIterator[asyncpg.Connection]:
+    """A connection to the snapshot's browse database for one request
+    (closed after it). The snapshot must have been opened (and be ready)."""
+    snap = await _snapshot(db, snapshot_id)
+    current = scratch.status(snap.id)
+    if current != "ready":
+        raise HTTPException(status_code=409,
+                            detail={"code": "snapshot_not_open", "status": current})
+    settings = get_settings()
+    try:
+        name = await scratch.ensure_restored(settings, snap)
+        try:
+            conn = await scratch.connect(settings, name)
+        except SeedError:
+            raise                                 # scratch_not_configured
+        except Exception as e:  # noqa: BLE001 - asyncpg's messages may quote the server
+            log.warning("couldn't connect to the scratch database for snapshot %s: %s",
+                        snap.id, type(e).__name__)
+            raise SeedError("scratch_unavailable") from None
+    except SeedError as e:
+        raise _http(e) from None
+    try:
+        yield conn
+    except SeedError as e:
+        raise _http(e) from None
+    except (OSError, asyncpg.PostgresConnectionError, asyncpg.InterfaceError) as e:
+        log.warning("lost the scratch database for snapshot %s: %s", snap.id, type(e).__name__)
+        raise _http(SeedError("scratch_unavailable")) from None
+    finally:
+        await conn.close()
+
+
+@router.get("/snapshots/{snapshot_id}/tables")
+async def list_tables(snapshot_id: uuid.UUID, db: DbSession):
+    async with _browse_conn(db, snapshot_id) as conn:
+        return await browse.tables(conn)
+
+
+@router.get("/snapshots/{snapshot_id}/tables/{table}/rows")
+async def table_rows(snapshot_id: uuid.UUID, table: str, db: DbSession,
+                     page: int = Query(1, ge=1, le=10**9),
+                     size: int = Query(50, ge=1, le=1000),
+                     sort: str | None = None,
+                     dir: Literal["asc", "desc"] = "asc",
+                     filter_col: str = "", filter: str = ""):
+    async with _browse_conn(db, snapshot_id) as conn:
+        return await browse.rows(conn, table, page=page, size=size, sort=sort or None,
+                                 direction=dir, filter_col=filter_col, needle=filter)
+
+
+@router.get("/snapshots/{snapshot_id}/tables/{table}/keys")
+async def table_keys(snapshot_id: uuid.UUID, table: str, db: DbSession,
+                     filter_col: str = "", filter: str = ""):
+    """Every matching row's primary key, for Check all / Deselect all."""
+    async with _browse_conn(db, snapshot_id) as conn:
+        return await browse.keys(conn, table, filter_col=filter_col, needle=filter)
