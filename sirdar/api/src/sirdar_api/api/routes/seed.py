@@ -67,9 +67,11 @@ def _http(e: SeedError) -> HTTPException:
 
 
 @asynccontextmanager
-async def _browse_conn(db, snapshot_id: uuid.UUID) -> AsyncIterator[asyncpg.Connection]:
-    """A connection to the snapshot's browse database for one request
-    (closed after it). The snapshot must have been opened (and be ready)."""
+async def _browse_conn(db, snapshot_id: uuid.UUID
+                       ) -> AsyncIterator[tuple[asyncpg.Connection, str]]:
+    """(connection, database name) for the snapshot's browse database, for
+    one request (closed after it). The snapshot must have been opened (and
+    be ready)."""
     snap = await _snapshot(db, snapshot_id)
     current = scratch.status(snap.id)
     if current != "ready":
@@ -89,10 +91,12 @@ async def _browse_conn(db, snapshot_id: uuid.UUID) -> AsyncIterator[asyncpg.Conn
     except SeedError as e:
         raise _http(e) from None
     try:
-        yield conn
+        yield conn, name
     except SeedError as e:
         raise _http(e) from None
-    except (OSError, asyncpg.PostgresConnectionError, asyncpg.InterfaceError) as e:
+    except (OSError, asyncpg.PostgresError, asyncpg.InterfaceError) as e:
+        # A lost connection, or the server cancelling or shutting down: the
+        # scratch server's trouble, told by type only (messages may quote rows).
         log.warning("lost the scratch database for snapshot %s: %s", snap.id, type(e).__name__)
         raise _http(SeedError("scratch_unavailable")) from None
     finally:
@@ -101,8 +105,8 @@ async def _browse_conn(db, snapshot_id: uuid.UUID) -> AsyncIterator[asyncpg.Conn
 
 @router.get("/snapshots/{snapshot_id}/tables")
 async def list_tables(snapshot_id: uuid.UUID, db: DbSession):
-    async with _browse_conn(db, snapshot_id) as conn:
-        return await browse.tables(conn)
+    async with _browse_conn(db, snapshot_id) as (conn, name):
+        return await browse.tables(conn, name)
 
 
 @router.get("/snapshots/{snapshot_id}/tables/{table}/rows")
@@ -112,14 +116,15 @@ async def table_rows(snapshot_id: uuid.UUID, table: str, db: DbSession,
                      sort: str | None = None,
                      dir: Literal["asc", "desc"] = "asc",
                      filter_col: str = "", filter: str = ""):
-    async with _browse_conn(db, snapshot_id) as conn:
+    async with _browse_conn(db, snapshot_id) as (conn, name):
         return await browse.rows(conn, table, page=page, size=size, sort=sort or None,
-                                 direction=dir, filter_col=filter_col, needle=filter)
+                                 direction=dir, filter_col=filter_col, needle=filter,
+                                 db_name=name)
 
 
 @router.get("/snapshots/{snapshot_id}/tables/{table}/keys")
 async def table_keys(snapshot_id: uuid.UUID, table: str, db: DbSession,
                      filter_col: str = "", filter: str = ""):
     """Every matching row's primary key, for Check all / Deselect all."""
-    async with _browse_conn(db, snapshot_id) as conn:
+    async with _browse_conn(db, snapshot_id) as (conn, _):
         return await browse.keys(conn, table, filter_col=filter_col, needle=filter)

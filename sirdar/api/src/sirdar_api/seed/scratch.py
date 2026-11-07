@@ -49,7 +49,7 @@ from sqlalchemy.engine import make_url
 from sirdar_api.config import Settings
 from sirdar_api.db.models import Snapshot
 from sirdar_api.deploy import bundle, pgauth, snapshots
-from sirdar_api.seed import SeedError
+from sirdar_api.seed import SeedError, browse
 
 log = logging.getLogger(__name__)
 
@@ -104,6 +104,7 @@ def forget_all() -> None:
     _passwords.clear()
     _password_locks.clear()
     _setup.clear()
+    browse.forget_counts()
 
 
 def _parse(settings: Settings) -> _Server | None:
@@ -295,6 +296,7 @@ async def _drop_db(settings: Settings, name: str) -> None:
     conn = await _admin(settings)
     try:
         await conn.execute(f'DROP DATABASE IF EXISTS "{_check_name(name)}" WITH (FORCE)')
+        browse.forget_counts(name)
         try:
             await _drop_role(conn, name)
         except Exception as e:  # noqa: BLE001 - the database is gone; the role can wait

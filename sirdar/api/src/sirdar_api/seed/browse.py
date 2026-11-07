@@ -19,6 +19,18 @@ SCHEMA = "public"
 HIDDEN = frozenset({"alembic_version"})   # always copied whole: not data to browse
 VALUE_CHARS = 200
 
+# Exact row counts per browse database: a restored snapshot never changes,
+# so each table is counted once. scratch drops a database's entry with it.
+_counts: dict[str, dict[str, int]] = {}
+
+
+def forget_counts(db_name: str | None = None) -> None:
+    """Forget the cached counts of one database (all of them with None)."""
+    if db_name is None:
+        _counts.clear()
+    else:
+        _counts.pop(db_name, None)
+
 
 @dataclass(frozen=True)
 class Column:
@@ -96,12 +108,26 @@ async def table(conn: asyncpg.Connection, name: str) -> Table:
     return found[0]
 
 
-async def tables(conn: asyncpg.Connection) -> list[dict]:
-    """[{"table", "rows", "pk", "file_columns"}] sorted by name."""
+async def _count(conn: asyncpg.Connection, t: Table) -> int:
+    return await conn.fetchval(f"SELECT count(*) FROM {_ref(t)}")
+
+
+async def _cached_count(conn: asyncpg.Connection, t: Table, db_name: str | None) -> int:
+    """Table t's exact row count, counted once per database `db_name`
+    (every time when db_name is None)."""
+    cache = _counts.setdefault(db_name, {}) if db_name else {}
+    if t.name not in cache:
+        cache[t.name] = await _count(conn, t)
+    return cache[t.name]
+
+
+async def tables(conn: asyncpg.Connection, db_name: str | None = None) -> list[dict]:
+    """[{"table", "rows", "pk", "file_columns"}] sorted by name. Counts are
+    cached under `db_name` (a restored snapshot's browse database)."""
     out = []
     async with conn.transaction(isolation="repeatable_read", readonly=True):
         for t in await _catalog(conn):
-            rows = await conn.fetchval(f"SELECT count(*) FROM {_ref(t)}")
+            rows = await _cached_count(conn, t, db_name)
             out.append({"table": t.name, "rows": rows,
                         "pk": list(t.pk) if t.pk is not None else None,
                         "file_columns": file_columns([c.name for c in t.columns])})
@@ -135,8 +161,9 @@ def _pk_order(t: Table) -> list[str]:
 
 async def rows(conn: asyncpg.Connection, name: str, *, page: int = 1, size: int = 50,
                sort: str | None = None, direction: str = "asc", filter_col: str = "",
-               needle: str = "") -> dict:
-    """{"columns": [{"name","type"}], "rows": [{"pk", "values"}], "total"}."""
+               needle: str = "", db_name: str | None = None) -> dict:
+    """{"columns": [{"name","type"}], "rows": [{"pk", "values"}], "total"};
+    an unfiltered total comes from the counts cached under `db_name`."""
     async with conn.transaction(isolation="repeatable_read", readonly=True):
         t = await table(conn, name)
         args: list = []
@@ -157,7 +184,10 @@ async def rows(conn: asyncpg.Connection, name: str, *, page: int = 1, size: int 
             found = await conn.fetch(sql, *args)
         except asyncpg.UndefinedFunctionError:   # no ordering for the type (json, xml...)
             raise SeedError("column_not_sortable") from None
-        total = await conn.fetchval(f"SELECT count(*) FROM {_ref(t)}{where}", *args[:-2])
+        if where:
+            total = await conn.fetchval(f"SELECT count(*) FROM {_ref(t)}{where}", *args[:-2])
+        else:
+            total = await _cached_count(conn, t, db_name)
     out = []
     for r in found:
         vals = {}

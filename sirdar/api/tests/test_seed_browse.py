@@ -285,3 +285,86 @@ async def test_scratch_unavailable_error_maps_to_503(client, opened, monkeypatch
     resp = await client.get(f"{base}/tables/racks/rows", headers=h)
     assert resp.status_code == 503
     assert resp.json()["detail"]["code"] == "scratch_unavailable"
+
+
+# ---- fix round 1: cached counts, Postgres errors ---------------------------------
+
+def _count_calls(monkeypatch) -> list[str]:
+    from sirdar_api.seed import browse
+    calls: list[str] = []
+    real = browse._count
+
+    async def counting(conn, t):
+        calls.append(t.name)
+        return await real(conn, t)
+
+    monkeypatch.setattr(browse, "_count", counting)
+    return calls
+
+
+async def test_counts_are_taken_once_per_browse_database(client, opened, monkeypatch):
+    base, h = opened
+    calls = _count_calls(monkeypatch)
+    first = (await client.get(f"{base}/tables", headers=h)).json()
+    assert sorted(calls) == sorted([ODD, "events", "memberships", "racks", "sites"])
+    assert (await client.get(f"{base}/tables", headers=h)).json() == first
+    body = (await client.get(f"{base}/tables/racks/rows?size=1", headers=h)).json()
+    assert body["total"] == 120
+    assert len(calls) == 5                          # nothing counted again
+    # A filtered total is always counted for the filter, never cached.
+    body = (await client.get(f"{base}/tables/racks/rows?filter_col=name&filter=R01",
+                             headers=h)).json()
+    assert body["total"] == 10
+    assert len(calls) == 5
+
+
+async def test_unfiltered_rows_total_fills_the_cache(client, opened, monkeypatch):
+    base, h = opened
+    calls = _count_calls(monkeypatch)
+    for _ in range(2):
+        body = (await client.get(f"{base}/tables/racks/rows?size=1", headers=h)).json()
+        assert body["total"] == 120
+    assert calls == ["racks"]
+
+
+async def test_dropping_a_database_forgets_its_counts(client, opened, monkeypatch):
+    from sirdar_api.seed import browse
+    base, h = opened
+    await client.get(f"{base}/tables", headers=h)
+    snapshot_id = __import__("uuid").UUID(base.rsplit("/", 1)[1])
+    name = scratch.db_name(snapshot_id)
+    assert name in browse._counts
+    await scratch.drop(get_settings(), name)
+    assert name not in browse._counts
+
+
+async def test_the_sweep_forgets_the_counts_of_what_it_drops(client, opened, monkeypatch):
+    from sirdar_api.seed import browse
+    base, h = opened
+    await client.get(f"{base}/tables", headers=h)
+    name = scratch.db_name(__import__("uuid").UUID(base.rsplit("/", 1)[1]))
+    assert name in browse._counts
+    monkeypatch.setattr(scratch, "_last_used", {name: 0.0})
+    assert await scratch.sweep_idle(get_settings()) >= 1
+    assert name not in browse._counts
+
+
+@pytest.mark.parametrize("error", ["QueryCanceledError", "AdminShutdownError",
+                                   "InsufficientPrivilegeError"])
+async def test_other_postgres_errors_answer_503_without_their_text(client, opened,
+                                                                   monkeypatch, error):
+    import asyncpg
+
+    from sirdar_api.seed import browse
+    base, h = opened
+
+    async def failing(*args, **kwargs):
+        raise getattr(asyncpg, error)("canceling statement: secret row text")
+
+    monkeypatch.setattr(browse, "tables", failing)
+    monkeypatch.setattr(browse, "rows", failing)
+    for path in ("/tables", "/tables/racks/rows"):
+        resp = await client.get(base + path, headers=h)
+        assert resp.status_code == 503, resp.text
+        assert resp.json()["detail"] == {"code": "scratch_unavailable"}
+        assert "secret" not in resp.text
