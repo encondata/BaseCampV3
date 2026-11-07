@@ -11,13 +11,22 @@ from contextlib import asynccontextmanager
 from typing import Literal
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, StrictStr
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
-from sirdar_api.api.deps import AuthContext, CurrentUser, DbSession
+from sirdar_api.api.deps import (
+    AuthContext,
+    CurrentUser,
+    DbSession,
+    client_ip,
+    require_permission,
+)
 from sirdar_api.config import get_settings
-from sirdar_api.db.models import Snapshot
-from sirdar_api.seed import SeedError, browse, closure, scratch
+from sirdar_api.db.models import SeedRecipe, Snapshot
+from sirdar_api.seed import SeedError, browse, closure, recipes, scratch
+from sirdar_api.services.audit import audit
 
 log = logging.getLogger(__name__)
 
@@ -147,3 +156,119 @@ async def resolve(snapshot_id: uuid.UUID, body: ResolveIn, db: DbSession):
     tables = {name: sel.model_dump() for name, sel in body.tables.items()}
     async with _browse_conn(db, snapshot_id) as (conn, _):
         return await closure.resolve(conn, tables)
+
+
+# --- Recipes: stored in Sirdar's own database, so they need no scratch server.
+async def _seed_viewer(user: CurrentUser) -> AuthContext:
+    if not user.access.can("seed_data", "view"):
+        raise HTTPException(status_code=403, detail={"code": "forbidden"})
+    return user
+
+
+recipes_router = APIRouter(prefix="/seed", tags=["seed"],
+                           dependencies=[Depends(_seed_viewer)])
+
+
+class RecipeCreate(BaseModel):
+    name: str
+    notes: str = ""
+
+
+class RecipeTableIn(BaseModel):
+    mode: Literal["rows", "all"]
+    pks: list[dict[str, StrictStr]] = []
+
+
+class RecipeIn(BaseModel):
+    name: str | None = None
+    notes: str | None = None
+    tables: dict[str, RecipeTableIn] = {}
+    files: dict[str, bool] = {}
+
+
+async def _recipe(db, recipe_id: uuid.UUID) -> SeedRecipe:
+    r = await db.get(SeedRecipe, recipe_id)
+    if r is None:
+        raise HTTPException(status_code=404, detail={"code": "recipe_not_found"})
+    return r
+
+
+def _clean_name(name: str) -> str:
+    name = name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail={"code": "recipe_name_required"})
+    return name
+
+
+async def _name_free(db, name: str, own: uuid.UUID | None = None) -> None:
+    q = select(SeedRecipe.id).where(SeedRecipe.name == name)
+    if own is not None:
+        q = q.where(SeedRecipe.id != own)
+    if await db.scalar(q) is not None:
+        raise HTTPException(status_code=409, detail={"code": "recipe_name_taken"})
+
+
+@recipes_router.get("/recipes")
+async def list_recipes(db: DbSession):
+    return await recipes.summaries(db)
+
+
+@recipes_router.post("/recipes", status_code=201)
+async def create_recipe(body: RecipeCreate, request: Request, db: DbSession,
+                        actor: AuthContext = require_permission("seed_data", "add")):
+    name = _clean_name(body.name)
+    await _name_free(db, name)
+    r = SeedRecipe(name=name, notes=body.notes, created_by=actor.user.person_id)
+    db.add(r)
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail={"code": "recipe_name_taken"}) from None
+    audit(db, actor_id=actor.user.person_id, action="seed.recipe_create",
+          entity_type="seed_recipe", entity_id=str(r.id), ip=client_ip(request))
+    await db.commit()
+    return await recipes.detail(db, r)
+
+
+@recipes_router.get("/recipes/{recipe_id}")
+async def get_recipe(recipe_id: uuid.UUID, db: DbSession):
+    return await recipes.detail(db, await _recipe(db, recipe_id))
+
+
+@recipes_router.put("/recipes/{recipe_id}")
+async def replace_recipe(recipe_id: uuid.UUID, body: RecipeIn, request: Request, db: DbSession,
+                         actor: AuthContext = require_permission("seed_data", "change")):
+    r = await _recipe(db, recipe_id)
+    if body.name is not None:
+        name = _clean_name(body.name)
+        await _name_free(db, name, r.id)
+        r.name = name
+    if body.notes is not None:
+        r.notes = body.notes
+    r.updated_at = func.now()
+    counts = await recipes.replace(
+        db, r.id, {n: {"mode": t.mode, "pks": t.pks} for n, t in body.tables.items()},
+        body.files)
+    audit(db, actor_id=actor.user.person_id, action="seed.recipe_change",
+          entity_type="seed_recipe", entity_id=str(r.id), ip=client_ip(request),
+          changes=counts)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail={"code": "recipe_name_taken"}) from None
+    db.expire_all()
+    return await recipes.detail(db, await _recipe(db, recipe_id))
+
+
+@recipes_router.delete("/recipes/{recipe_id}", status_code=204)
+async def delete_recipe(recipe_id: uuid.UUID, request: Request, db: DbSession,
+                        actor: AuthContext = require_permission("seed_data", "delete")):
+    r = await _recipe(db, recipe_id)
+    counts = {k: v for k, v in (await recipes.summaries_for(db, r.id)).items()}
+    await db.delete(r)
+    audit(db, actor_id=actor.user.person_id, action="seed.recipe_delete",
+          entity_type="seed_recipe", entity_id=str(recipe_id), ip=client_ip(request),
+          changes=counts)
+    await db.commit()

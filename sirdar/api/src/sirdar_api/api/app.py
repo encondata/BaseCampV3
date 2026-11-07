@@ -150,6 +150,7 @@ def create_app() -> FastAPI:
     api.include_router(integration_routes.router)
     api.include_router(dashboard.router)
     api.include_router(seed.router)
+    api.include_router(seed.recipes_router)
 
     app.include_router(api)
 
