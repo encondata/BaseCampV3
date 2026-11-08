@@ -11,15 +11,21 @@ NPM_PASSWORD = "npm-PASSWORD-s3cr3t!"
 CF_VALUES = {"zone": "serversherpa.com", "public_ip": "203.0.113.7"}
 NPM_VALUES = {"url": "http://10.10.48.6:81", "identity": "admin@example.com",
               "letsencrypt_email": ""}
+SY_KEY = "sy_" + "SwItChYaRd-s3cr3t" * 2 + "Ab12"
+SY_VALUES = {"url": "https://switchyard.lan:8443"}
 
 
-async def configure(db, *, cloudflare: bool = True, npm: bool = True) -> None:
+async def configure(db, *, cloudflare: bool = True, npm: bool = True,
+                    switchyard: bool = False) -> None:
     """Save the integrations (needs the secrets_key fixture) and commit."""
     if cloudflare:
         await integrations.save(db, get_settings(), "cloudflare", CF_VALUES, CF_TOKEN,
                                 actor_id=None)
     if npm:
         await integrations.save(db, get_settings(), "npm", NPM_VALUES, NPM_PASSWORD,
+                                actor_id=None)
+    if switchyard:
+        await integrations.save(db, get_settings(), "switchyard", SY_VALUES, SY_KEY,
                                 actor_id=None)
     await db.commit()
 
