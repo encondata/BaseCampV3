@@ -65,6 +65,7 @@ const station = vi.hoisted(() => ({
   state: 'ready' as 'loading' | 'ready' | 'needs_usb' | 'no_settings',
   sent: [] as string[],
   connectUsb: vi.fn(),
+  waitForIdle: vi.fn(async () => undefined),
   /** The saved settings the hook reports (the laptop's network printer
    *  unless a test says otherwise). */
   settings: null as null | Record<string, unknown>,
@@ -80,6 +81,7 @@ vi.mock('../lib/useStationPrinter', () => {
     kind: 'network', ip: '10.0.0.40', serial: null,
     status: async () => status,
     send: async (zpl: string) => { station.sent.push(zpl); },
+    waitForIdle: station.waitForIdle,
   };
   const settings = {
     label_kind: 'top', dpi: 203, offset_x: 0, offset_y: 0, peel: false,
@@ -154,6 +156,14 @@ async function scan(value: string) {
   await waitFor(() => expect(input.disabled).toBe(false));
   await userEvent.type(input, `${value}{Enter}`);
 }
+
+it('the Printing Station never waits for idle', async () => {
+  render_();
+  await scan('10042');
+  await screen.findAllByText('Printed');
+  expect(station.sent).toHaveLength(1);
+  expect(station.waitForIdle).not.toHaveBeenCalled();
+});
 
 it.each([['asset id', '10042'], ['serial', 'sn-4242']])('scanning by %s prints and shows the asset', async (_, value) => {
   render_();

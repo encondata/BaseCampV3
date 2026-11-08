@@ -50,6 +50,7 @@ function fakePrinter(): StationPrinter & { sent: string[] } {
     identify: vi.fn(), status: vi.fn(), peeler: vi.fn(), query: vi.fn(),
     send: vi.fn(async (zpl: string) => { sent.push(zpl); }),
     sendFont: vi.fn(),
+    waitForIdle: vi.fn(async () => undefined),
   };
 }
 

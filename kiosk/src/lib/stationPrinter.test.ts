@@ -39,6 +39,28 @@ beforeEach(() => {
 });
 
 describe('networkStationPrinter', () => {
+  it('waitForIdle over the network polls ~HS through the edge until nothing is queued', async () => {
+    vi.useFakeTimers();
+    try {
+      const hsQueued = (n: number) => `\x02030,0,0,1218,${String(n).padStart(3, '0')},0,0,0,000,0,0,0\x03\r\n`
+        + '\x02000,0,0,0,0,2,4,0,00000000,1,000\x03';
+      const replies = [2, 0];
+      const fetchMock = vi.fn(async (url: string) => (String(url).includes('/edge/printers/query')
+        ? json({ response: hsQueued(replies.shift() ?? 0), truncated: false })
+        : json({}, 401)));
+      vi.stubGlobal('fetch', fetchMock);
+      const seen: number[] = [];
+      const done = networkStationPrinter('10.0.0.40', 'i-1').waitForIdle(2, (n) => seen.push(n));
+      await vi.advanceTimersByTimeAsync(5000);
+      await done;
+      expect(seen).toEqual([2, 0]);
+      const bodies = callsOf(fetchMock).map(([, init]) => JSON.parse(String(init?.body)));
+      expect(bodies).toEqual([{ ip: '10.0.0.40', command: '~HS' }, { ip: '10.0.0.40', command: '~HS' }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('queries ~HI through the edge and parses the reply', async () => {
     const fetchMock = vi.fn(async () => json({ response: HI, truncated: false }));
     vi.stubGlobal('fetch', fetchMock);
@@ -86,6 +108,15 @@ describe('usbStationPrinter', () => {
     } as unknown as ZebraPrinter;
     return { zebra, sent, bytes };
   }
+
+  it("waitForIdle over USB calls the hook's", async () => {
+    const { zebra } = fakeZebra();
+    const waitForIdle = vi.fn(async () => undefined);
+    (zebra as unknown as { waitForIdle: typeof waitForIdle }).waitForIdle = waitForIdle;
+    const onQueued = vi.fn();
+    await usbStationPrinter(zebra, 'i-1').waitForIdle(7, onQueued);
+    expect(waitForIdle).toHaveBeenCalledWith(7, onQueued);
+  });
 
   it('identifies and reads status with the same parsers', async () => {
     const { zebra } = fakeZebra();

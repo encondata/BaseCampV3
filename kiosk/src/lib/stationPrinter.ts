@@ -28,6 +28,7 @@ import {
   fetchKioskFontContent, printerQuery, printerSend, printerSendFont,
   type KioskLabelFont, type KioskLabelTemplate, type LabelKind,
 } from './api';
+import { networkZebraPrinter } from './networkZebra';
 import type { ZebraPrinter } from './useZebraPrinter';
 
 /** The SGD read, byte for byte as the edge allows it (CR LF included). A
@@ -55,6 +56,10 @@ export interface StationPrinter {
   send(zpl: string): Promise<void>;
   /** Installs a library font on E: (`~DY` plus its bytes). */
   sendFont(font: KioskLabelFont): Promise<void>;
+  /** Waits until the printer has no formats queued (the end of a Bulk Print
+   *  batch only; the Printing Station never calls it). `onQueued` gets each
+   *  queued count read. */
+  waitForIdle(labelsSent: number, onQueued?: (queued: number) => void): Promise<void>;
 }
 
 /** What a transport has to provide; everything else is shared. */
@@ -65,6 +70,7 @@ interface Transport {
   query(command: string, opts?: ReadOptions): Promise<string>;
   send(zpl: string): Promise<void>;
   sendFont(name: string, font: KioskLabelFont): Promise<void>;
+  waitForIdle(labelsSent: number, onQueued?: (queued: number) => void): Promise<void>;
 }
 
 /** `sensor.peeler_present`, null on any failure. Over USB the reply is a
@@ -93,6 +99,7 @@ function fromTransport(t: Transport): StationPrinter {
     send: (zpl) => t.send(zpl),
     // Zebra object names are upper case; the same name goes out either way.
     sendFont: (font) => t.sendFont(font.name.toUpperCase(), font),
+    waitForIdle: (labelsSent, onQueued) => t.waitForIdle(labelsSent, onQueued),
   };
 }
 
@@ -106,6 +113,7 @@ export function usbStationPrinter(zebra: ZebraPrinter, initiativeId: string): St
     serial: typeof serial === 'string' && serial ? serial : null,
     query: (command, opts) => zebra.query(command, opts),
     send: (zpl) => zebra.send(zpl),
+    waitForIdle: (labelsSent, onQueued) => zebra.waitForIdle(labelsSent, onQueued),
     sendFont: async (name, font) => {
       const bytes = await fetchKioskFontContent(font.id, initiativeId);
       await zebra.send(downloadFontHeader('E', name, bytes.length));
@@ -117,12 +125,14 @@ export function usbStationPrinter(zebra: ZebraPrinter, initiativeId: string): St
 /** A LAN printer reached through the laptop edge, which builds the same
  *  `~DYE:NAME,B,T,<bytes>,,` header for a font. */
 export function networkStationPrinter(ip: string, initiativeId: string): StationPrinter {
+  const lan = networkZebraPrinter(ip);
   return fromTransport({
     kind: 'network',
     ip,
     serial: null,
     query: async (command) => (await printerQuery(ip, command)).response,
     send: (zpl) => printerSend(ip, zpl),
+    waitForIdle: (labelsSent, onQueued) => lan.waitForIdle(labelsSent, onQueued),
     sendFont: (name, font) => printerSendFont({ ip, font_id: font.id, name, initiative_id: initiativeId }),
   });
 }
