@@ -260,3 +260,11 @@ it('the raw sync fetchers map a failed status to the same ApiError as the others
   await expect(api.fetchLabelTemplatesSyncRaw('i-1'))
     .rejects.toMatchObject({ code: 'server_error', status: 500 });
 });
+
+it('lookupAssets encodes the serial and query', async () => {
+  const fetchMock = vi.fn(async () => json({ matches: [], truncated: false }));
+  vi.stubGlobal('fetch', fetchMock);
+  await api.lookupAssets('k 1', '10 2&3');
+  const urls = (fetchMock.mock.calls as unknown as Call[]).map((c) => c[0]);
+  expect(urls).toContain('http://api.test/kiosk/assets/lookup?serial=k%201&q=10%202%263');
+});

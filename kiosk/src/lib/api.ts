@@ -13,7 +13,7 @@
  * Types come from the portal (type-only imports are erased at build).
  */
 
-import type { LabelVocab, PersonOut, SessionData, UiPreferences } from '@portal/lib/api';
+import type { AssetScanRow, LabelVocab, PersonOut, SessionData, UiPreferences } from '@portal/lib/api';
 import type { SystemStatus } from '@portal/lib/systemStatus';
 
 import { apiUrl } from './config';
@@ -1656,4 +1656,92 @@ export async function postLabelPrinted(body: {
 export async function getRecordedScans(ids: string[]): Promise<string[]> {
   const resp = await apiFetch(`/edge/labels/recorded?ids=${encodeURIComponent(ids.join(','))}`);
   return (await jsonFrom<{ recorded: string[] }>(resp)).recorded;
+}
+
+// ── asset lookup ────────────────────────────────────────────────────
+
+export type LookupMatchKind = 'asset_tag' | 'serial' | 'rfid' | 'name';
+
+export interface KioskLookupMatch {
+  id: string;
+  name: string | null;
+  asset_tag: string;               // "" when unset
+  serial_number: string | null;
+  matched: LookupMatchKind[];
+}
+
+export interface KioskLookupResult {
+  matches: KioskLookupMatch[];
+  truncated: boolean;
+}
+
+export interface KioskAssetEnd {
+  site_name: string | null;
+  pod: string | null;
+  rack: string | null;
+  ru: string | null;
+  position: string | null;
+}
+
+export interface KioskAssetRoute {
+  initiative_id: string;
+  initiative_name: string;
+  source: KioskAssetEnd;
+  destination: KioskAssetEnd;
+}
+
+export interface KioskAssetMove {
+  initiative_id: string;
+  initiative_name: string;
+  status: string;
+  status_label: string;
+  status_color: string;
+}
+
+export interface KioskAssetFull {
+  status: string;
+  status_label: string;
+  status_color: string;
+  moves: KioskAssetMove[];
+  container_name: string | null;
+  truck_name: string | null;
+  location_detail: string;
+}
+
+export interface KioskAssetDetail {
+  id: string;
+  name: string | null;
+  make: string | null;
+  model: string | null;
+  make_model: string;
+  asset_tag: string;
+  serial_number: string | null;
+  rfid: string | null;
+  routes: KioskAssetRoute[];
+  /** Null below admin. */
+  full: KioskAssetFull | null;
+}
+
+/** Finds assets by a scanned or typed value. Read-only. Throws `ApiError`. */
+export async function lookupAssets(serial: string, q: string): Promise<KioskLookupResult> {
+  const resp = await apiFetch(
+    `/kiosk/assets/lookup?serial=${encodeURIComponent(serial)}&q=${encodeURIComponent(q)}`);
+  return jsonFrom<KioskLookupResult>(resp);
+}
+
+/** One asset's details; `full` is null below admin. Throws `ApiError`. */
+export async function fetchAssetDetail(serial: string, assetId: string): Promise<KioskAssetDetail> {
+  const resp = await apiFetch(
+    `/kiosk/assets/${encodeURIComponent(assetId)}?serial=${encodeURIComponent(serial)}`);
+  return jsonFrom<KioskAssetDetail>(resp);
+}
+
+/** An asset's scan history (admin only; 403 otherwise). */
+export async function fetchAssetScans(
+  serial: string, assetId: string, limit = 50,
+): Promise<AssetScanRow[]> {
+  const resp = await apiFetch(
+    `/kiosk/assets/${encodeURIComponent(assetId)}/scans?serial=${encodeURIComponent(serial)}`
+    + `&limit=${limit}`);
+  return jsonFrom<AssetScanRow[]>(resp);
 }

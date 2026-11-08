@@ -8,6 +8,10 @@ import { displayRfid } from './format';
 import type { StoredListPrefs } from './columnMenu';
 import { boolTriToPatch, numberToPatch, type GodField } from './godEdit';
 import type { ColumnDef } from './listTools';
+import { placementText } from './placement';
+
+/** Moved to ./placement (React-free, so the kiosk can import it). */
+export { placementText };
 
 export const LB_TO_KG = 0.453592;
 export const IN_TO_CM = 2.54;
@@ -35,17 +39,6 @@ export function formatDims(
 ): string {
   if (l === null || w === null || h === null) return '—';
   return `${l} × ${w} × ${h} ${unit}`;
-}
-
-/** An asset's Location as shown: "<container> · on <truck>", "<container>",
- *  or the location text ('' when there is none — callers add their '—').
- *  The one text every Location column sorts, filters, searches and exports
- *  by, so it always matches what AssetLocation renders. */
-export function placementText(p: {
-  location_detail?: string | null; container_name?: string | null; truck_name?: string | null;
-}): string {
-  if (p.container_name) return p.truck_name ? `${p.container_name} · on ${p.truck_name}` : p.container_name;
-  return p.location_detail ?? '';
 }
 
 export function assetSearchText(a: AssetItem): string {
