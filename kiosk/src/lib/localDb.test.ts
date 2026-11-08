@@ -421,18 +421,19 @@ it('closes its connection when another tab needs a higher version', async () => 
   await openDb();
 
   // Exactly what a newer tab does: open the same database one version
-  // up. Without the `versionchange` handler this rejects as blocked and
+  // above the current v8 (a same-version open fires nothing). Without the
+  // `versionchange` handler this rejects as blocked and
   // the newer tab hangs forever — which is what happened live, where
   // three stale tabs pinned the database at v1 and the Scanning page
   // never became usable.
   const upgraded = await new Promise<IDBDatabase>((resolve, reject) => {
-    const req = indexedDB.open('serversherpa-kiosk', 8);
+    const req = indexedDB.open('serversherpa-kiosk', 9);
     req.onupgradeneeded = () => req.result.createObjectStore('later', { keyPath: 'id' });
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
     req.onblocked = () => reject(new Error('blocked — the old connection never yielded'));
   });
-  expect(upgraded.version).toBe(8);
+  expect(upgraded.version).toBe(9);
   expect(upgraded.objectStoreNames.contains('assets')).toBe(true);
   upgraded.close();
 });
