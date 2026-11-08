@@ -63,8 +63,19 @@ Ready to print bar.
 - **Ready to print bar, batch progress window, and Reprint.** Batching, the
   auto-next countdown, rack separators and blank labels work as in the portal
   (`printOrder`, `containerPrintOrder`, `batchBounds`, `rackSeparatorZpl`,
-  `blankLabelsZpl`). Each label goes out through `StationPrinter.send`. The end
-  of a batch is **OPEN QUESTION 1**.
+  `blankLabelsZpl`). Each label goes out through `StationPrinter.send`.
+- **The end of a batch waits like the portal** (Jimmy: "Wait like the
+  portal").
+  - After sending a batch, the page calls `waitForIdle(labelsSent,
+    onQueued)`, which polls `~HS` until no formats are queued, at most 60
+    seconds. Progress shows from the queued count, then "Batch complete" and
+    the next batch's countdown.
+  - In peel mode it waits until every label has been taken, as the portal
+    does.
+  - `StationPrinter` gains `waitForIdle`. Over USB it calls the hook's
+    `zebra.waitForIdle`. Over the network it uses `networkZebra`'s, which
+    polls once a second through the edge.
+  - Only Bulk Print calls it. The Printing Station's path is unchanged.
 - **Custom ZPL.** Sent once with nothing ticked, or once per ticked asset, as
   in the portal.
 - **Offline.** Each label bundle the page loads online is written to a kiosk
@@ -125,22 +136,43 @@ API sync change is needed.
 
 ### Lists
 
-The portal lists are built on React tools the kiosk can't import
-(`lib/columnMenu.tsx`, `lib/listTools.tsx`, `lib/virtualRows.tsx`, and the
-portal auth context for preferences). The kiosk gets its own asset list and
-container list, with the same columns (less any the sync lacks) and:
+Jimmy chose the portal's full list tools ("Include them"), so the kiosk uses
+the portal's own `PrintAssetList` and `PrintContainerList` unchanged. That
+means per-column filter menus, the column picker, saved list settings, the
+search, the Ready / Missing filter, sorting, the DPI column and virtual rows.
 
-- checkboxes, select all and none of the shown rows;
-- search across the shown columns;
-- the Ready / Missing segmented filter, with counts;
-- sort by clicking a column header, natural order, with the asset list's
-  rack-and-RU tie-break;
-- a DPI-missing reason in the status cell, as in the portal;
-- virtual rows, so a roster of thousands scrolls smoothly. This is a small
-  kiosk helper; the rows are a fixed height.
+What stands in the way today, and the targeted fix for each:
 
-**Not carried over** (see OPEN QUESTION 2): per-column filter menus, the
-column picker, and saved list preferences.
+- **The portal sign-in.** `PrintAssetList`, `PrintContainerList` and
+  `usePersistentListState` (`lib/columnMenu.tsx`) call `useAuth()` only to
+  read `preferences.list_prefs` and `list_size`, and to save `list_prefs`.
+  - A new portal module, `lib/listPrefs.tsx`, gives them a
+    `ListPrefsContext` and a `useListPrefs()` hook returning `{ listPrefs,
+    listSize, saveListPrefs }`.
+  - The portal provides it from `AuthContext`, inside `AuthProvider`, so
+    portal behavior is unchanged: list settings are still saved to the
+    account.
+  - The kiosk provides one backed by localStorage
+    (`ss.kiosk.listPrefs`). A kiosk session may not write
+    `/auth/me/preferences` (deps.py `KIOSK_SESSION_PATHS`, on purpose), so on
+    the kiosk the list settings are remembered **on that kiosk**, not on the
+    account. `listSize` comes from the session's `preferences.list_size`.
+- **`lib/sites.ts`.** The lists import `naturalCompare` from it, which pulls in
+  ComboBox types, godEdit and notifications. They import it from
+  `lib/naturalSort.ts` instead.
+- **The `@portal` guardrail.** `REACT_ALLOWLIST` gains
+  `components/labels/PrintAssetList`, `components/labels/PrintContainerList`,
+  `lib/columnMenu`, `lib/listTools`, `lib/virtualRows` and `lib/listPrefs`.
+  The kiosk adds `@tanstack/react-virtual` (the portal's version) to its
+  dependencies and to `resolve.dedupe`. The guardrail's dedupe test then
+  proves nothing else leaks in.
+- The kiosk's `localStorage` key for list settings is not in Clear Setup's
+  `KEEP_KEYS`, so Clear Setup resets it.
+
+The modals are not shared. The portal's Print settings window carries offsets
+and size and DPI pickers that the kiosk leaves out, and both portal modals use
+the portal's modal header. The kiosk gets `BulkPrintSettingsModal.tsx` and
+`BulkPrintBatchModal.tsx`, which keep the portal's fields, wording and states.
 
 ### Access
 
@@ -192,11 +224,11 @@ column picker, and saved list preferences.
   the types of the move's cached bundles, as the portal does.
 - **Kiosk pages and components:**
   - `pages/BulkPrint.tsx`;
-  - `components/bulkPrint/BulkAssetList.tsx` and `BulkContainerList.tsx`;
   - `BulkPrintSettingsModal.tsx` and `BulkPrintBatchModal.tsx`, using the
     kiosk's modal header pattern and rounded corners;
-  - `lib/bulkPrintRows.ts` (the adapter) and `lib/virtualRows.ts` (the
-    helper).
+  - `lib/bulkPrintRows.ts` (the adapter);
+  - `lib/listPrefs.ts`, the localStorage provider for the portal's
+    `ListPrefsContext`.
 
   Everything follows the kiosk's light and dark themes and its scrollbar
   styling.
@@ -219,19 +251,10 @@ column picker, and saved list preferences.
   move and type, so another move's labels never show.
 - **Clear Setup** empties the cache, since `label_bundles` is in `STORES`.
 
-## Open questions for Jimmy
+## Decisions from Jimmy after the builder check
 
-1. **The end of a batch.**
-   - The portal waits after each batch until the printer says every label is
-     out (`printer.waitForIdle`, a `~HS` poll). Then it shows "Batch complete"
-     and starts the next batch's countdown.
-   - In peel mode, that wait lasts until every label has been taken.
-   - The kiosk's printer connection has no such wait, and the standing rule is
-     no printer checks in the print path unless asked.
-   - Options: (a) no wait: a batch is done when it has been sent; (b) the
-     portal's wait, on USB and over the network.
-2. **List tools.** Whether per-column filter menus, the column picker and
-   saved list preferences are needed on the kiosk.
+1. End of a batch: "Wait like the portal" (see "Kept from the portal").
+2. List tools: "Include them" (see "Lists").
 
 ## Testing
 
@@ -257,6 +280,15 @@ column picker, and saved list preferences.
     `cloud_sign_in_required`, for both vocab and bundle.
   - No outbox scan is queued.
   - The not-a-Label-Station laptop copy.
+  - At the end of a batch, `waitForIdle` is called with the count of labels
+    sent, and progress follows `onQueued`. The Printing Station never calls
+    it.
+  - The localStorage list settings provider saves and restores sort,
+    filters and columns.
+  - The `@portal` guardrail passes with the new allowlist.
+- **Portal (vitest).** The existing `PrintAssetList`, `PrintContainerList`
+  and column-menu tests pass, with list settings still saved to the account
+  through `ListPrefsContext`.
   - Clear Setup empties `label_bundles`.
 - **Live.** On the dev web kiosk, sign in as staff and as a worker, then print
   a batch to the USB Zebra. On the shared 8090 laptop, only read the page.
