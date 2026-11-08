@@ -33,7 +33,8 @@ from serversherpa.api.routes.auth import (
 )
 from serversherpa.api.routes.labels import vocab_usage as _vocab_usage
 from serversherpa.api.schemas import (
-    HeartbeatIn, HeartbeatOut, KioskAssetLookupMatch, KioskAssetLookupOut,
+    HeartbeatIn, HeartbeatOut, KioskAssetDetailOut, KioskAssetEndOut,
+    KioskAssetFullOut, KioskAssetMoveOut, KioskAssetRouteOut, KioskAssetLookupMatch, KioskAssetLookupOut,
     KioskAssetOut, KioskAssetsSyncOut,
     KioskLabelContextOut, KioskClientAssetOut, KioskClientAssetsSyncOut, KioskClockInIn,
     KioskClockOutIn, KioskContainerAssetIn, KioskContainerAssetOut,
@@ -70,10 +71,13 @@ from serversherpa.db.models import (
     WorkerProfile,
 )
 from serversherpa.db.ordering import natural, natural_key
+from serversherpa.assets.items import asset_statuses
+from serversherpa.assets.placement import asset_placements
 from serversherpa.labels.fields import FT_PREFIX, design_field_keys
 from serversherpa.labels.fonts import resident_object
+from serversherpa.labels.label_values import make_model_text
 from serversherpa.labels.generate.payloads import (
-    asset_payload, container_payload, label_context, load_status_labels,
+    asset_payload, container_payload, label_context, load_status_labels, ru_plain,
 )
 from serversherpa.labels.generate.values import AssetRow, Sites, placeholder_values
 from serversherpa.labels.kiosk_templates import (
@@ -89,7 +93,9 @@ from serversherpa.labels.template_fonts import design_fonts, fonts_used
 from serversherpa.learning import timeclock as learning_timeclock
 from serversherpa.learning.models import LearningOverride
 from serversherpa.services import auth as auth_service
-from serversherpa.services.asset_lookup import find_assets, lookup_reach
+from serversherpa.services.asset_lookup import (
+    asset_in_reach, asset_moves, find_assets, lookup_reach,
+)
 from serversherpa.services import biometric
 from serversherpa.services import kiosk_config
 from serversherpa.services import kiosk_pairing as pairing
@@ -105,6 +111,7 @@ from serversherpa.services.kiosk_registration import (  # noqa: F401 (re-exporte
 )
 from serversherpa.services.password_policy import load_policy
 from serversherpa.services.storage import delete_object, get_object, presign_get, put_object
+from serversherpa.status.labels import UNKNOWN_COLOR, status_labels
 from serversherpa.wiki.share_links import IpRateLimiter
 
 router = APIRouter(prefix="/kiosk", tags=["kiosk"])
@@ -1921,6 +1928,74 @@ async def kiosk_asset_lookup(
         asset_tag=str(h.asset.legacy_id) if h.asset.legacy_id is not None else "",
         serial_number=h.asset.serial_number, matched=h.matched) for h in hits],
         truncated=truncated)
+
+
+@router.get("/assets/{asset_id}", response_model=KioskAssetDetailOut)
+async def kiosk_asset_detail(
+    asset_id: uuid.UUID,
+    db: DbSession,
+    serial: str = Query(...),
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskAssetDetailOut:
+    """The Asset Lookup details card: identity plus, for each live move the
+    device is on, where it comes from and goes to. Admin and above (rank 60)
+    also get `full`: the device's status, its moves with their statuses, and
+    its container, truck and location text. The same reach as the lookup;
+    a device outside it is 404 `asset_not_found`. Read-only."""
+    device = await _kiosk_device(db, serial)
+    _require_move(actor, device.current_initiative_id)
+    reach = await lookup_reach(db, device, access=actor.access, person_id=actor.person.id,
+                               locked_move_id=actor.session.initiative_id)
+    asset = await asset_in_reach(db, reach, asset_id)
+    if asset is None:
+        raise _err(404, "asset_not_found")
+    make = model = None
+    if asset.model_id is not None:
+        mm = (await db.execute(select(AssetModel.make, AssetModel.model)
+                               .where(AssetModel.id == asset.model_id))).first()
+        if mm is not None:
+            make, model = mm
+    moves = await asset_moves(db, reach, asset.id)
+    site_ids = {s for _, ini in moves for s in (ini.origin_site_id, ini.destination_site_id)
+                if s is not None}
+    site_names = ({sid: name for sid, name in (await db.execute(
+        select(Site.id, Site.name).where(Site.id.in_(site_ids)))).all()}
+        if site_ids else {})
+
+    def end(site_id, pod, rack, ru, position) -> KioskAssetEndOut:
+        return KioskAssetEndOut(site_name=site_names.get(site_id), pod=pod, rack=rack,
+                                ru=ru_plain(ru), position=position)
+
+    routes = [KioskAssetRouteOut(
+        initiative_id=ini.id, initiative_name=ini.name,
+        source=end(ini.origin_site_id, ia.source_pod, ia.source_rack, ia.source_ru,
+                   ia.source_position),
+        destination=end(ini.destination_site_id, ia.destination_pod, ia.destination_rack,
+                        ia.destination_ru, ia.destination_position))
+        for ia, ini in moves]
+
+    full = None
+    if reach.admin:
+        asset_labels = await asset_statuses(db)
+        move_labels = await status_labels(db, "initiative")
+        label, color = asset_labels.get(asset.status, (asset.status, UNKNOWN_COLOR))
+        placed = (await asset_placements(db, [asset.id], actor.access,
+                                         actor.person.id)).get(asset.id)
+        full = KioskAssetFullOut(
+            status=asset.status, status_label=label, status_color=color,
+            moves=[KioskAssetMoveOut(
+                initiative_id=ini.id, initiative_name=ini.name, status=ini.status,
+                status_label=move_labels.get(ini.status, (ini.status, UNKNOWN_COLOR))[0],
+                status_color=move_labels.get(ini.status, (ini.status, UNKNOWN_COLOR))[1])
+                for _, ini in moves],
+            container_name=placed.container_name if placed else None,
+            truck_name=placed.truck_name if placed else None,
+            location_detail=asset.location_detail or "")
+    return KioskAssetDetailOut(
+        id=asset.id, name=asset.name, make=make, model=model,
+        make_model=make_model_text(make or "", model or ""),
+        asset_tag=str(asset.legacy_id) if asset.legacy_id is not None else "",
+        serial_number=asset.serial_number, rfid=asset.rfid_tag, routes=routes, full=full)
 
 
 # ── containers: pack / unpack (kiosk:view) ───────────────────────────

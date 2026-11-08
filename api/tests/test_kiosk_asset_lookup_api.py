@@ -248,3 +248,100 @@ async def test_odd_input_never_errors(client, db, seeded_user):
         body = await _matches(client, w["worker"], q)
         if q in ("%", "_"):
             assert body["matches"] == [], q
+
+
+# ── GET /kiosk/assets/{asset_id}: the details card ─────────────────────
+
+
+async def _detail(client, hdrs, asset_id, serial=SERIAL):
+    return await client.get(f"/kiosk/assets/{asset_id}", headers=hdrs,
+                            params={"serial": serial})
+
+
+async def test_worker_details_are_identity_source_and_destination(client, db, seeded_user):
+    w = await _world(db, client)
+    r = await _detail(client, w["worker"], w["web"].id)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert set(body) == {"id", "name", "make", "model", "make_model", "asset_tag",
+                         "serial_number", "rfid", "routes", "full"}
+    assert body["full"] is None
+    assert body["asset_tag"] == "102466"
+    assert body["routes"] == [{
+        "initiative_id": str(w["m"].id), "initiative_name": "ATL1 Move",
+        "source": {"site_name": "ATL1", "pod": "P1", "rack": "R12", "ru": "14",
+                   "position": None},
+        "destination": {"site_name": "ATL2", "pod": "P7", "rack": "C03", "ru": "22",
+                        "position": None}}]
+    assert "ATL1-W1M-DC-01" not in r.text
+
+
+async def test_staff_gets_the_worker_reach_and_no_full_details(client, db, seeded_user):
+    w = await _world(db, client)
+    r = await _detail(client, w["staff"], w["web"].id)
+    assert r.status_code == 200, r.text
+    assert r.json()["full"] is None
+    r = await _detail(client, w["staff"], w["y_asset"].id)
+    assert r.status_code == 404 and _code(r) == "asset_not_found"
+
+
+async def test_admin_details_add_status_moves_and_location(client, db, seeded_user):
+    w = await _world(db, client)
+    r = await _detail(client, w["admin"], w["web"].id)
+    assert r.status_code == 200, r.text
+    full = r.json()["full"]
+    assert full["status"] == "unknown"
+    assert full["status_label"] and full["status_color"]
+    assert full["moves"] == [{
+        "initiative_id": str(w["m"].id), "initiative_name": "ATL1 Move",
+        "status": "in_progress", "status_label": full["moves"][0]["status_label"],
+        "status_color": full["moves"][0]["status_color"]}]
+    assert full["moves"][0]["status_label"] and full["moves"][0]["status_color"]
+    assert full["container_name"] == "ATL1-W1M-DC-01"
+    assert full["truck_name"] == "ATL1-T01"
+
+
+async def test_location_falls_back_to_location_text(client, db, seeded_user):
+    w = await _world(db, client)
+    r = await _detail(client, w["admin"], w["x_loose"].id)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    full = body["full"]
+    assert full["container_name"] is None and full["truck_name"] is None
+    assert full["location_detail"] == "Cage 4"
+    assert full["moves"] == [] and body["routes"] == []
+
+
+async def test_routes_cover_each_live_move(client, db, seeded_user):
+    w = await _world(db, client)
+    archived = Initiative(name="Old Move", initiative_type="move", status="in_progress",
+                          client_id=w["cx"].id, archived_at=w["web"].created_at)
+    db.add(archived)
+    await db.flush()
+    db.add_all([InitiativeAsset(initiative_id=w["m2"].id, asset_id=w["web"].id),
+                InitiativeAsset(initiative_id=w["y"].id, asset_id=w["web"].id),
+                InitiativeAsset(initiative_id=archived.id, asset_id=w["web"].id)])
+    await db.commit()
+    r = await _detail(client, w["worker"], w["web"].id)
+    assert [x["initiative_name"] for x in r.json()["routes"]] == ["ATL1 Move", "ATL1 Wave 2"]
+    r = await _detail(client, w["admin"], w["web"].id)
+    body = r.json()
+    assert [x["initiative_name"] for x in body["routes"]] == [
+        "ATL1 Move", "ATL1 Wave 2", "Other Move"]
+    assert [x["initiative_name"] for x in body["full"]["moves"]] == [
+        "ATL1 Move", "ATL1 Wave 2", "Other Move"]
+
+
+async def test_details_out_of_reach_is_404(client, db, seeded_user):
+    w = await _world(db, client)
+    import uuid
+    for asset_id in (w["y_asset"].id, uuid.uuid4()):
+        r = await _detail(client, w["worker"], asset_id)
+        assert r.status_code == 404 and _code(r) == "asset_not_found"
+    r = await client.patch(f"/initiatives/{w['m'].id}", headers=w["admin"],
+                           json={"kiosk_password": PW})
+    assert r.status_code == 200, r.text
+    r = await client.post("/kiosk/move-login", json={"password": PW})
+    hdrs = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    r = await _detail(client, hdrs, w["x_other"].id)
+    assert r.status_code == 404 and _code(r) == "asset_not_found"

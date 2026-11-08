@@ -158,3 +158,17 @@ async def find_assets(db: AsyncSession, reach: LookupReach,
 async def asset_in_reach(db: AsyncSession, reach: LookupReach,
                          asset_id: uuid.UUID) -> Asset | None:
     return await db.scalar(select(Asset).where(Asset.id == asset_id, asset_reach(reach)))
+
+
+async def asset_moves(db: AsyncSession, reach: LookupReach,
+                      asset_id: uuid.UUID) -> list[tuple[InitiativeAsset, Initiative]]:
+    """The asset's roster rows on the live moves this lookup may show: the
+    kiosk's move first, then the rest by natural move name."""
+    first = (sa.case((Initiative.id == reach.kiosk_move_id, 0), else_=1)
+             if reach.kiosk_move_id is not None else sa.literal(1))
+    rows = (await db.execute(
+        select(InitiativeAsset, Initiative)
+        .join(Initiative, Initiative.id == InitiativeAsset.initiative_id)
+        .where(InitiativeAsset.asset_id == asset_id, move_reach(reach))
+        .order_by(first, natural(Initiative.name), Initiative.id))).all()
+    return [(ia, ini) for ia, ini in rows]
