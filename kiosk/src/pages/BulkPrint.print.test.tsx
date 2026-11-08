@@ -39,10 +39,11 @@ vi.mock('../auth/KioskAuthContext', () => ({
 
 import type { KioskAssetRow, LabelStationSettings } from '../lib/api';
 import { stationZpl } from '../lib/bulkPrintSettings';
+import { writeKioskSetup } from '../lib/kioskSetup';
 import { getAll } from '../lib/localDb';
 import BulkPrint from './BulkPrint';
 import {
-  ASSETS, bundle, deferred, findRow, label, labelChip, resetStation, seedMove, typeCard,
+  ASSETS, bundle, deferred, findRow, label, labelChip, resetStation, seedMove, setupFor, typeCard,
   USB_SETTINGS, VOCAB,
 } from './bulkPrintTestHarness';
 
@@ -302,4 +303,93 @@ it('auto print next counts down from 5 s', async () => {
   await waitFor(() => expect(station.sent).toHaveLength(3));
   expect(await within(dialog).findByText('All 3 labels printed successfully!')).toBeTruthy();
   expect(station.sent[2]).toBe(expected(code(order[2])));
+});
+
+// ── a move change or leaving the page stops a print in flight ─────────
+
+const settle = () => act(async () => { await new Promise((r) => { setTimeout(r, 400); }); });
+
+it('changing the Kiosk Setup move mid-batch closes the batch window and sends nothing more', async () => {
+  writeSettings({ batchSize: 2 });
+  const held = deferred<void>();
+  let calls = 0;
+  station.sendHook = () => { calls += 1; return calls === 1 ? held.promise : undefined; };
+  render_();
+  await labelsReady();
+  await tick(...NAMES);
+  await userEvent.click(screen.getByRole('button', { name: 'Print 3 labels' }));
+  await screen.findByRole('dialog', { name: 'Printing labels' });
+  await waitFor(() => expect(calls).toBe(1));
+
+  act(() => { writeKioskSetup(setupFor('i-2')); });
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Printing labels' })).toBeNull());
+  await act(async () => { held.resolve(); await held.promise; });
+  await settle();
+  expect(station.sent).toHaveLength(1);
+  expect(calls).toBe(1);
+  expect(station.waitForIdle).not.toHaveBeenCalled();
+  expect(screen.queryByRole('dialog', { name: 'Printing labels' })).toBeNull();
+});
+
+it('an auto print next countdown never fires after the move changes', async () => {
+  writeSettings({ batchSize: 2 });
+  const gate = deferred<void>();
+  station.waitForIdle = vi.fn(async () => { await gate.promise; });
+  render_();
+  await labelsReady();
+  await tick(...NAMES);
+
+  vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  await user.click(screen.getByRole('button', { name: 'Print 3 labels' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Printing labels' });
+  await user.click(within(dialog).getByRole('switch', { name: 'Auto print next batch' }));
+  await act(async () => { gate.resolve(); await gate.promise; });
+  expect(await within(dialog).findByText(/in 5s…/)).toBeTruthy();
+  expect(station.sent).toHaveLength(2);
+
+  act(() => { writeKioskSetup(setupFor('i-2')); });
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Printing labels' })).toBeNull());
+  for (let i = 0; i < 7; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+  expect(station.sent).toHaveLength(2);
+  expect(station.waitForIdle).toHaveBeenCalledTimes(1);
+});
+
+it('leaving the page mid-send stops further sends', async () => {
+  writeSettings({ batchSize: 2 });
+  const held = deferred<void>();
+  let calls = 0;
+  station.sendHook = () => { calls += 1; return calls === 1 ? held.promise : undefined; };
+  const view = render_();
+  await labelsReady();
+  await tick(...NAMES);
+  await userEvent.click(screen.getByRole('button', { name: 'Print 3 labels' }));
+  await waitFor(() => expect(calls).toBe(1));
+
+  view.unmount();
+  await act(async () => { held.resolve(); await held.promise; });
+  await settle();
+  expect(station.sent).toHaveLength(1);
+  expect(calls).toBe(1);
+  expect(station.waitForIdle).not.toHaveBeenCalled();
+});
+
+it('a Custom ZPL print stops when the move changes mid-send', async () => {
+  const held = deferred<void>();
+  let calls = 0;
+  station.sendHook = () => { calls += 1; return calls === 1 ? held.promise : undefined; };
+  render_();
+  await labelsReady();
+  await userEvent.click(typeCard('Custom'));
+  await userEvent.type(screen.getByLabelText('Raw ZPL'), '^XA^FDHi^FS^XZ');
+  await tick(...NAMES);
+  await userEvent.click(screen.getByRole('button', { name: 'Print 3 labels' }));
+  await waitFor(() => expect(calls).toBe(1));
+
+  act(() => { writeKioskSetup(setupFor('i-2')); });
+  await act(async () => { held.resolve(); await held.promise; });
+  await settle();
+  expect(station.sent).toHaveLength(1);
+  expect(calls).toBe(1);
+  expect(screen.queryByText(/Successfully printed/)).toBeNull();
 });

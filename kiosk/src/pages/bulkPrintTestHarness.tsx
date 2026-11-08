@@ -25,8 +25,9 @@ export interface FakeStation {
   sent: string[];
   /** Makes `send` fail (a USB printer unplugged mid-batch). */
   sendError: Error | null;
-  /** Runs before each send is recorded; throwing fails that send. */
-  sendHook?: ((zpl: string) => void) | null;
+  /** Runs before each send is recorded; throwing (or rejecting) fails that
+   *  send, and a returned promise holds the send open until it settles. */
+  sendHook?: ((zpl: string) => void | Promise<void>) | null;
   connectUsb: () => Promise<void>;
   waitForIdle: (labels: number, onQueued?: (queued: number) => void) => Promise<void>;
   settings: LabelStationSettings | null;
@@ -59,7 +60,7 @@ export function stationPrinterModule(station: FakeStation) {
     status: async () => IDLE,
     send: async (zpl: string) => {
       if (station.sendError) throw station.sendError;
-      station.sendHook?.(zpl);
+      await station.sendHook?.(zpl);
       station.sent.push(zpl);
     },
     waitForIdle: (labels: number, onQueued?: (queued: number) => void) => station.waitForIdle(labels, onQueued),

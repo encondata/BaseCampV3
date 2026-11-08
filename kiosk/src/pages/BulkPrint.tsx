@@ -74,6 +74,10 @@ const LABEL_DELAY_MS = 100;
 const RAW_ONCE = '';
 const AUTO_NEXT_SECONDS = 5;
 
+/** Thrown inside a send loop whose print was stopped (the move changed or
+ *  the page closed); the print ends quietly, touching nothing. */
+class PrintStopped extends Error {}
+
 const BULK_PATH = LABEL_SECTIONS.find((s) => s.id === 'bulk')!.path;
 const PRINTER_SETUP_PATH = LABEL_SECTIONS.find((s) => s.id === 'printers')!.path;
 /** Printer Setup, opened from here: its Finish and Back come back here. */
@@ -141,6 +145,12 @@ export default function BulkPrint() {
   const [batch, setBatch] = useState<BatchPrintState | null>(null);
   const batchIdsRef = useRef<string[]>([]);
   const batchStaleRef = useRef(0);
+  /** Bumped when the move changes and when the page closes: a print
+   *  started under an older value stops before its next label. */
+  const printGen = useRef(0);
+  /** The `printGen` the open batch started under. */
+  const batchGenRef = useRef(0);
+  useEffect(() => () => { printGen.current += 1; }, []);
 
   const initiativeIdRef = useRef(initiativeId);
   initiativeIdRef.current = initiativeId;
@@ -243,8 +253,15 @@ export default function BulkPrint() {
     }
   }, []);
 
-  // A move change starts both lists over.
+  // A move change starts both lists over, and stops any print of the old
+  // move's labels: the open batch closes and a send in flight goes no further.
   useEffect(() => {
+    printGen.current += 1;
+    setBatch(null);
+    batchIdsRef.current = [];
+    batchStaleRef.current = 0;
+    setPrinting(false);
+    setInlineProgress(null);
     setRoster(null);
     setContainers(null);
     setSelected([]);
@@ -393,15 +410,21 @@ export default function BulkPrint() {
     return count;
   };
 
-  /** Send `ids[from..to)`; returns formats sent and blanks fed. */
-  const sendRange = async (ids: string[], from: number, to: number, onSent?: (n: number) => void) => {
+  /** Send `ids[from..to)`; returns formats sent and blanks fed. Throws
+   *  `PrintStopped` before any send once `printGen` has moved past `gen`. */
+  const sendRange = async (ids: string[], from: number, to: number, gen: number, onSent?: (n: number) => void) => {
+    const go = () => { if (printGen.current !== gen) throw new PrintStopped(); };
     let formatsSent = 0, blanksSent = 0, skipped = 0;
     let prevRack: string | null = from > 0 ? rackOf(rowById.get(ids[from - 1])) : null;
     for (const id of ids.slice(from, to)) {
+      go();
       const zpl = zplFor(id);
       if (!zpl) { skipped += 1; continue; }
       const rack = rackOf(rowById.get(id));
-      if (rackMode && (prevRack === null ? rackNames : rack !== prevRack)) blanksSent += await sendSeparator(id, rack);
+      if (rackMode && (prevRack === null ? rackNames : rack !== prevRack)) {
+        blanksSent += await sendSeparator(id, rack);
+        go();
+      }
       await sendLabel(zpl);
       prevRack = rack;
       formatsSent += 1;
@@ -451,20 +474,27 @@ export default function BulkPrint() {
   /** One batch: send its range, then wait for the printer to print it
    *  (the only wait Bulk Print adds), progress following what's queued. */
   const printBatch = async (batchNumber: number, ids: string[]) => {
+    const gen = batchGenRef.current;
+    if (printGen.current !== gen) return;
+    const live = () => printGen.current === gen;
     const { start, end } = batchBounds(batchNumber, settings.batchSize, ids.length);
     setBatch((b) => b && { ...b, currentBatch: batchNumber, printing: true, finishing: false, batchComplete: false, error: null });
     try {
-      const { formatsSent, blanksSent } = await sendRange(ids, start, end);
+      const { formatsSent, blanksSent } = await sendRange(ids, start, end, gen);
+      if (!live()) return;
       setBatch((b) => b && { ...b, finishing: true });
       const printer = station.printer;
       if (!printer) throw new Error('Print failed');
       await printer.waitForIdle((end - start) * (settings.copies || 1) + blanksSent, (queued) => {
+        if (!live()) return;
         const printedThisBatch = Math.max(0, Math.min(formatsSent - queued, formatsSent));
         setBatch((b) => b && { ...b, printedCount: Math.min(start + printedThisBatch, end) });
       });
+      if (!live()) return;
       const allDone = end >= ids.length;
       setBatch((b) => b && { ...b, printedCount: end, finishing: false, printing: false, batchComplete: true, allComplete: allDone });
     } catch (err) {
+      if (err instanceof PrintStopped || !live()) return;
       const message = err instanceof Error ? err.message : 'Print failed';
       setBatch((b) => b && { ...b, printing: false, finishing: false, batchComplete: true, error: `Batch ${batchNumber} failed: ${message}` });
     }
@@ -477,7 +507,9 @@ export default function BulkPrint() {
     const result = validateForPrint();
     if (!result) return;
     const { ids, stale } = result;
+    const gen = printGen.current;
     if (ids.length > settings.batchSize) {
+      batchGenRef.current = gen;
       batchIdsRef.current = ids;
       batchStaleRef.current = stale;
       setBatch({
@@ -492,26 +524,32 @@ export default function BulkPrint() {
     setInlineProgress({ done: 0, total: ids.length });
     setNotice({ type: 'info', message: `Printing ${ids.length} label(s)...` });
     try {
-      const { formatsSent, skipped } = await sendRange(ids, 0, ids.length, (n) => setInlineProgress({ done: n, total: ids.length }));
+      const { formatsSent, skipped } = await sendRange(ids, 0, ids.length, gen, (n) => setInlineProgress({ done: n, total: ids.length }));
+      if (printGen.current !== gen) return;
       const staleSuffix = stale > 0 ? `. ${stale} used an older template — regenerate for the latest layout.` : '';
       setNotice(skipped > 0
         ? { type: 'warning', message: `Printed ${formatsSent} label(s), skipped ${skipped} (no label data)` }
         : { type: 'success', message: `Successfully printed ${ids.length} label(s)${staleSuffix}` });
     } catch (err) {
+      if (err instanceof PrintStopped || printGen.current !== gen) return;
       setNotice({ type: 'error', message: err instanceof Error ? err.message : 'Print failed' });
     } finally {
-      setPrinting(false);
-      setInlineProgress(null);
+      // a stopped print's state was already reset by the move change
+      if (printGen.current === gen) {
+        setPrinting(false);
+        setInlineProgress(null);
+      }
     }
   };
 
   const printNextBatch = () => {
+    if (!batch || batchGenRef.current !== printGen.current) return;
     const next = (batch?.currentBatch ?? 0) + 1;
     setBatch((b) => b && { ...b, autoCountdown: null });
     void printBatch(next, batchIdsRef.current);
   };
   /** Reprint sends the current batch again from its first label. */
-  const reprintBatch = () => { if (batch) void printBatch(batch.currentBatch, batchIdsRef.current); };
+  const reprintBatch = () => { if (batch && batchGenRef.current === printGen.current) void printBatch(batch.currentBatch, batchIdsRef.current); };
   const closeBatch = () => {
     if (batch?.allComplete) {
       const stale = batchStaleRef.current;
