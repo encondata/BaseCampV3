@@ -17,6 +17,8 @@ His answers:
   and destination along with current location".
 - **Who can use it:** "yes anyone". Every person signed in to the kiosk,
   workers included.
+- **What each person sees:** "any user gets source and destination info but
+  admin and higher get full details".
 
 ## Why
 
@@ -36,7 +38,10 @@ Partial today; Harbor Master SS-397).
 - The screen shows its **name, make/model, serial, RFID, source, destination**
   and **current location**.
 - When the device is **on a move**, its **scan history** shows on the same
-  screen.
+  screen, for admins and above.
+- **Everyone** sees who the device is plus its source and destination.
+  **Admin and above** (role rank 60 or more: admin, super_admin, founder,
+  developer) see the full details.
 - It is **read-only**.
 
 ## Non-goals
@@ -61,88 +66,119 @@ input, sizes, light and dark themes, and touch targets.
    Enter to look up, plus the on-screen Search button the kiosk's other scan
    screens use. A hand scanner and the laptop's RFID reader work the same way
    they do on Scanning (the same keyboard-wedge input).
-2. **Matching.** The value is tried, in this order: RFID tag, asset tag
-   (legacy Asset ID), serial, then name. RFID matches RFID only, as in
-   `rfid-legacy-id-mismatch`: a numeric RFID is never matched against an asset
-   tag. Exact matches (ignoring case and surrounding spaces) come first. Name
-   also matches on part of the name.
-   - **One match:** the device's details open straight away.
-   - **Several matches** (a part-name, or a serial shared by two devices): a
-     short list shows name, asset tag, serial and the move each is on, and
-     tapping one opens it. The list is capped at 25, with "Refine your search"
-     when there are more.
-   - **No match:** "No asset matches *value*." The value stays in the box.
-3. **Details card.**
+2. **Matching (my call, from the builder check).** The kiosk can't tell a
+   keyboard-wedge RFID read from typing, so the value is tried against three
+   exact keys at once, ignoring case and surrounding spaces:
+   - the asset tag (legacy Asset ID);
+   - the serial;
+   - the RFID tag, compared the way stored tags are kept (zero-padded to 24
+     characters, `normalize_rfid`).
+
+   Then:
+   - **All exact hits are one device:** its details open straight away.
+   - **Exact hits on different devices** (for example a typed "102466" that is
+     one device's asset tag and, padded, another device's RFID): a short list
+     shows each with what it matched on ("Asset tag", "Serial", "RFID"), and
+     tapping one opens it.
+   - **No exact hit:** the value is tried as part of a name. One hit opens it;
+     several show the list. The list shows name, asset tag and serial, and is
+     capped at 25, with "Refine your search" when there are more.
+   - **No match at all:** "No asset matches *value*." The value stays in the
+     box.
+   - Offline, the same rules run on the synced devices.
+3. **Details card — everyone.**
    - Name (large), make/model.
-   - Asset tag, serial and RFID, each "—" when blank.
-   - The **move** it is on, with its status. When it is on more than one live
-     move, each is listed.
+   - Asset tag, serial and RFID, each "—" when blank. **My call:** these are
+     shown to everyone, since the person just scanned or typed one of them and
+     needs to know they have the right device.
    - **Source:** site, pod, rack and RU (or position). **Destination:** the
-     same four.
+     same four. When the device is on more than one move, the source and
+     destination of each move are shown under the move's name.
+4. **Details card — admin and above only.** These are added to the card:
+   - The asset's status, with its color.
+   - The move or moves it is on, with each move's status.
    - **Current location:** the container, and the truck that container is on,
      when there is one, as the portal shows it (`placementText`:
      `"<container> · on <truck>"`). Otherwise the asset's Location text.
      Otherwise "—".
-   - The asset's status, with its color.
-4. **Scan history** shows only when the device is on a move. It lists the
-   device's scans, newest first, the same rows the portal's asset Scan History
-   shows: status, when (24-hour clock), how it was scanned, which device, who
-   scanned it, the site and the location. Off-move sightings are marked, as in
-   the portal. It shows the newest 50; the portal page has the rest.
+   - **Scan history,** only when the device is on a move. It lists the
+     device's scans, newest first, the same rows the portal's asset Scan
+     History shows: status, when (24-hour clock), how it was scanned, which
+     device, who scanned it, the site and the location. Off-move sightings
+     are marked, as in the portal. It shows the newest 50; the portal page has
+     the rest.
+   - Below admin, none of these are shown, and the screen says nothing about
+     them being hidden.
 5. **Scan again.** After a result, the scan box stays focused, so the next scan
    replaces the result without a tap. A Clear button empties the screen.
 
 ## Offline
 
-- **Online:** every lookup goes to the API, so it finds any device the person
-  may see, on any move or on none.
+- **Online:** every lookup goes to the API.
 - **Offline (my call):** the lookup searches the devices the kiosk has synced
-  for its own move (the `assets` store) and shows their details from there. It
-  shows the notice "Offline — showing this move's devices only. Scan history
-  needs a connection." There is no scan history offline.
-- **No move set up and offline:** "Connect to look up assets."
+  for its own move (the `assets` store), with the same matching rules. It
+  shows what the synced data holds for that person's level: source and
+  destination for everyone, and for admins also the status and the container
+  the sync records (`container_id`, named from the `containers` store). It
+  shows the notice "Offline — showing this move's devices only." Scan history
+  needs a connection, and says so for admins.
+
+## Where the tile appears (my call, from the builder check)
+
+- Like Scanning and the other move tiles, it is greyed until Kiosk Setup is
+  complete. The kiosk's move is always known when it is used.
+- It shows wherever every tile shows: the web kiosk, and a laptop that isn't
+  set up as a station. Station laptops (RFID, Label, Time Clock, Dock) keep
+  their fixed tile lists and don't get it.
+- The breadcrumb trail is Home › Asset Lookup.
 
 ## Access
 
 - **Who:** anyone signed in to the kiosk (`kiosk:view`), workers included
   (Jimmy).
-- **Which devices:** the same set the person could reach in the portal, with
-  one widening, which is **OPEN QUESTION 1**.
-  - Workers hold no `assets:view` or `scans:view` today (access/defaults.py:
-    `worker` has dashboard, workers, kiosk and wiki only). So "anyone" means
-    the new kiosk routes cannot simply reuse the portal's `assets` and `scans`
-    scopes for a worker.
-  - **My call, pending question 1:** a person with `assets:view` sees what
-    their portal scope allows. A person without it (a worker) sees devices on
-    the kiosk's set-up move and on that move's client's other moves. That is
-    the same reach the kiosk already syncs (`/kiosk/sync/assets` and
-    `/kiosk/sync/client-assets`).
-- A move-password session (a worker locked to one move) gets the same
-  worker reach.
-- The scan history follows the same rule as the device: if the person may see
-  the device, they see its scans.
+- **What they see:** everyone gets the identity, source and destination;
+  admin and above (rank 60 or more) get the full details (Jimmy). The API
+  enforces this split. A response to someone below admin never carries the
+  status, moves, location or scan history.
+- **Which devices (my call; Jimmy didn't choose when asked).**
+  - **Below admin:** devices on the kiosk's move, plus that move's client's
+    devices on its other moves or on no move. That is the same set the kiosk
+    already downloads (`/kiosk/sync/assets` and `/kiosk/sync/client-assets`).
+    Anything else reads as not found.
+  - **Admin and above:** what their portal scope allows (`assets:view` and its
+    scope conditions), plus the kiosk's move.
+  - **A move-password session** (a worker locked to one move): that move's
+    devices only, as the other kiosk asset routes keep it
+    (`_require_move_asset`).
+- **The kiosk's move is the registered device's move, not a value the screen
+  sends** (my call, from the builder check). The routes take the kiosk's
+  serial and use `Device.current_initiative_id`, the way RFID Enroll does
+  (`enroll_rfid`). Otherwise a worker could pass any move id and reach every
+  move's devices.
 
 ## API
 
 New kiosk routes in `api/src/serversherpa/api/routes/kiosk.py`, since a kiosk
-session may only call `/kiosk/*`:
+session may only call `/kiosk/*`. Each takes the kiosk's `serial`, which
+identifies its move:
 
-- `GET /kiosk/assets/lookup?q=<value>&initiative_id=<kiosk move>` returns up
-  to 25 matches, each with what the list shows (id, name, asset tag, serial,
-  RFID, and the moves it is on). It also returns a `truncated` flag. It uses
-  the matching order above.
-- `GET /kiosk/assets/{asset_id}?initiative_id=<kiosk move>` returns the
-  details card: the asset's fields, its live moves with the source and
-  destination of each, its current location (reusing
-  `assets/placement.py` `asset_placements`), and its status.
-- `GET /kiosk/assets/{asset_id}/scans?initiative_id=<kiosk move>&limit=50`
-  returns the scan history, built the same way as `/scans/asset/{asset_id}`
-  (shared helper, so the two can't drift). It is empty when the asset is on
-  no move.
-- **All three:** `kiosk:view`, the scope rule under Access, and 404 for a
-  device the person may not see, the same as for one that doesn't exist. Each
-  is read-only and audited nowhere.
-- The laptop edge proxies `/kiosk/*` already, so the laptop needs no edge
+- `GET /kiosk/assets/lookup?serial=<kiosk>&q=<value>` returns the matches by
+  the rules above. Each match has id, name, asset tag, serial and what it
+  matched on, plus a `truncated` flag.
+- `GET /kiosk/assets/{asset_id}?serial=<kiosk>` returns the details card.
+  - **Everyone:** identity, plus source and destination for each live move.
+  - **Admin and above:** also the status, the moves, and the current location
+    (from `assets/placement.py` `asset_placements`; admins hold
+    `containers:view` and `trucks:view`).
+- `GET /kiosk/assets/{asset_id}/scans?serial=<kiosk>&limit=50` returns the
+  scan history, built the same way as `/scans/asset/{asset_id}` through a
+  shared helper so the two can't drift.
+  - Admin and above only (`require_rank(60)`); anyone else gets 403.
+  - Empty when the asset is on no move.
+- **All three:** `kiosk:view`, plus the device rules under Access. A device
+  outside the person's reach gets 404, the same as one that doesn't exist.
+  They are read-only.
+- The laptop edge already proxies `/kiosk/*`, so the laptop needs no edge
   change.
 
 ## Testing
@@ -152,26 +188,28 @@ session may only call `/kiosk/*`:
   - RFID never matches an asset tag.
   - A part-name finds several devices, and results stop at 25 with
     `truncated`.
-  - A worker is refused (404) a device outside the reach; a person with
-    `assets:view` follows their scope.
-  - The details carry source, destination and current location (container and
+  - A worker is refused (404) a device outside the reach, even when it sends
+    another move's id. A move-password session stays on its move. An admin
+    follows their scope plus the kiosk's move.
+  - Below admin, the details carry identity, source and destination only.
+    Admins also get status, moves and current location (container and
     truck).
+  - The scans route gives a worker 403.
+  - A typed value that is one device's asset tag and another device's RFID
+    returns both, each with what it matched on.
   - The scans equal the portal route's rows for the same asset.
   - Nothing writes: there are no new scans and no outbox rows.
 - **Kiosk (vitest).**
-  - The tile shows for a worker.
+  - The tile shows for a worker, and is greyed until setup.
   - One match opens the details; several show the list; none says so.
-  - Scan history shows only when the device is on a move.
+  - A worker sees source and destination only; an admin sees the full card.
+  - Scan history shows only for an admin, and only when the device is on a
+    move.
   - The offline fallback searches the synced move devices and shows its
     notice.
   - The next scan replaces the result.
   - No outbox write ever happens.
 - **Live.** On the dev web kiosk, look up the dev asset 102466
   `atl1-web-001`, which is in ATL1-W1M-DC-01 on truck ATL1-T01. Search it by
-  each of the four values, as a worker and as staff.
-
-## Open questions for Jimmy
-
-1. **How far a worker can see.** Workers today can't see assets or scans in
-   the portal. Should a worker's lookup reach every device in the system, or
-   only devices on this kiosk's move and its client's other moves (my call)?
+  each of the four values, as a worker (source and destination only) and as
+  an admin (full details, with the container and truck).
