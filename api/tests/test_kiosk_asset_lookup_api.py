@@ -3,12 +3,14 @@ tag, serial, RFID or part name, within the reach the kiosk's own move
 and the person's rank give. Read-only. Design:
 docs/superpowers/specs/2026-11-08-kiosk-asset-lookup-design.md"""
 
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from serversherpa.db.models import (
     Asset,
+    AuditLog,
     Client,
     Container,
     ContainerAsset,
@@ -16,6 +18,7 @@ from serversherpa.db.models import (
     Initiative,
     InitiativeAsset,
     PermissionOverride,
+    ProcessedScan,
     RawScan,
     Site,
     StatusValue,
@@ -26,6 +29,7 @@ from serversherpa.db.models import (
 from tests.test_sites_api import login
 from tests.test_status_values_write import _make
 
+T0 = datetime(2026, 8, 27, 9, 0, tzinfo=UTC)
 SERIAL = "kiosk-lookup-1"
 CHECKPOINT = "lookup_test_checkpoint"
 PW = "Crew-2026!"
@@ -345,3 +349,94 @@ async def test_details_out_of_reach_is_404(client, db, seeded_user):
     hdrs = {"Authorization": f"Bearer {r.json()['access_token']}"}
     r = await _detail(client, hdrs, w["x_other"].id)
     assert r.status_code == 404 and _code(r) == "asset_not_found"
+
+
+# ── scan history (admin only) ─────────────────────────────────────────
+
+
+async def _scan(db, asset, minutes, **kw):
+    db.add(ProcessedScan(
+        scanned_value=f"EPC-{minutes}", scan_type="rfid", match_type="asset",
+        asset_id=asset.id, scanned_at=T0 + timedelta(minutes=minutes),
+        processed_at=T0 + timedelta(minutes=minutes, seconds=1), **kw))
+
+
+async def _scans(client, hdrs, asset_id, serial=SERIAL, **params):
+    return await client.get(f"/kiosk/assets/{asset_id}/scans", headers=hdrs,
+                            params={"serial": serial, **params})
+
+
+async def test_scans_are_admin_only(client, db, seeded_user):
+    w = await _world(db, client)
+    for who in ("worker", "staff"):
+        r = await _scans(client, w[who], w["web"].id)
+        assert r.status_code == 403 and _code(r) == "forbidden", who
+
+
+async def test_scans_match_the_portal_rows(client, db, seeded_user):
+    w = await _world(db, client)
+    await _scan(db, w["web"], 0)
+    await _scan(db, w["web"], 1, off_move=True)
+    await _scan(db, w["web"], 2)
+    await _scan(db, w["web"], 3, archived_at=T0 + timedelta(hours=1))
+    await db.commit()
+    r = await _scans(client, w["admin"], w["web"].id, limit=50)
+    assert r.status_code == 200, r.text
+    portal = await client.get(f"/scans/asset/{w['web'].id}", headers=w["admin"],
+                              params={"limit": 50})
+    assert r.json() == portal.json()
+    rows = r.json()
+    assert len(rows) == 3
+    assert [x["off_move"] for x in rows] == [False, True, False]
+
+
+async def test_scans_cap_at_50_by_default(client, db, seeded_user):
+    w = await _world(db, client)
+    for i in range(55):
+        await _scan(db, w["web"], i)
+    await db.commit()
+    r = await _scans(client, w["admin"], w["web"].id)
+    rows = r.json()
+    assert len(rows) == 50
+    assert rows[0]["scanned_value"] == "EPC-54"
+
+
+async def test_scans_empty_when_on_no_move(client, db, seeded_user):
+    w = await _world(db, client)
+    await _scan(db, w["x_loose"], 0)
+    await db.commit()
+    r = await _scans(client, w["admin"], w["x_loose"].id)
+    assert r.status_code == 200 and r.json() == []
+
+
+async def test_scans_out_of_reach_is_404(client, db, seeded_user):
+    w = await _world(db, client)
+    admin_id = await db.scalar(select(UserAccount.person_id).where(UserAccount.email == ADMIN))
+    db.add(PermissionOverride(person_id=admin_id, resource="assets", action="view",
+                              allow=False))
+    await db.commit()
+    r = await _scans(client, w["admin"], w["y_asset"].id)
+    assert r.status_code == 404 and _code(r) == "asset_not_found"
+
+
+async def test_lookup_never_writes(client, db, seeded_user):
+    w = await _world(db, client)
+    await _scan(db, w["web"], 0)
+    await db.commit()
+
+    async def snapshot():
+        db.expire_all()
+        counts = [await db.scalar(select(func.count()).select_from(t))
+                  for t in (RawScan, ProcessedScan, AuditLog)]
+        seen = await db.scalar(select(Device.last_seen_at).where(Device.serial == SERIAL))
+        return counts, seen
+
+    web_id = w["web"].id
+    before = await snapshot()
+    for hdrs, tail in ((w["worker"], ("lookup", "detail")),
+                       (w["admin"], ("lookup", "detail", "scans"))):
+        assert (await _lookup(client, hdrs, "SN-WEB-001")).status_code == 200
+        assert (await _detail(client, hdrs, web_id)).status_code == 200
+        if "scans" in tail:
+            assert (await _scans(client, hdrs, web_id)).status_code == 200
+    assert await snapshot() == before

@@ -23,17 +23,19 @@ from starlette.datastructures import FormData
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.access.resolver import resolve_access
 from serversherpa.api.deps import (
     AuthContext, DbSession, authenticate_request, client_ip, enforce_read_only_config,
-    rate_limit_ip, require_permission, session_started_at, station_device,
+    rate_limit_ip, require_permission, require_rank, session_started_at, station_device,
 )
 from serversherpa.api.routes.auth import (
     RESET_WINDOW_SECONDS, _scope_out, person_out, session_response, totp_status_out,
 )
 from serversherpa.api.routes.labels import vocab_usage as _vocab_usage
+from serversherpa.api.routes.scans import asset_scan_history
 from serversherpa.api.schemas import (
-    HeartbeatIn, HeartbeatOut, KioskAssetDetailOut, KioskAssetEndOut,
+    AssetScanItem, HeartbeatIn, HeartbeatOut, KioskAssetDetailOut, KioskAssetEndOut,
     KioskAssetFullOut, KioskAssetMoveOut, KioskAssetRouteOut, KioskAssetLookupMatch, KioskAssetLookupOut,
     KioskAssetOut, KioskAssetsSyncOut,
     KioskLabelContextOut, KioskClientAssetOut, KioskClientAssetsSyncOut, KioskClockInIn,
@@ -1996,6 +1998,32 @@ async def kiosk_asset_detail(
         make_model=make_model_text(make or "", model or ""),
         asset_tag=str(asset.legacy_id) if asset.legacy_id is not None else "",
         serial_number=asset.serial_number, rfid=asset.rfid_tag, routes=routes, full=full)
+
+
+@router.get("/assets/{asset_id}/scans", response_model=list[AssetScanItem])
+async def kiosk_asset_scans(
+    asset_id: uuid.UUID,
+    db: DbSession,
+    serial: str = Query(...),
+    limit: int = Query(50, ge=1, le=500),
+    actor: AuthContext = require_permission("kiosk", "view"),
+    _admin: AuthContext = require_rank(GATE_BYPASS_RANK),
+) -> list[AssetScanItem]:
+    """Asset Lookup scan history, admin and above only (403 `forbidden`
+    below rank 60, before any lookup). The same rows as the portal's
+    /scans/asset/{id}, for a device in the kiosk's reach (404
+    `asset_not_found` otherwise); `[]` when it is on no live move.
+    Read-only."""
+    device = await _kiosk_device(db, serial)
+    _require_move(actor, device.current_initiative_id)
+    reach = await lookup_reach(db, device, access=actor.access, person_id=actor.person.id,
+                               locked_move_id=actor.session.initiative_id)
+    asset = await asset_in_reach(db, reach, asset_id)
+    if asset is None:
+        raise _err(404, "asset_not_found")
+    if not await asset_moves(db, reach, asset.id):
+        return []
+    return await asset_scan_history(db, asset.id, limit)
 
 
 # ── containers: pack / unpack (kiosk:view) ───────────────────────────

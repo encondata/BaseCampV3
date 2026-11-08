@@ -293,18 +293,10 @@ async def list_processed_scans(
     return out
 
 
-@router.get("/asset/{asset_id}", response_model=list[AssetScanItem])
-async def list_asset_scans(
-    asset_id: uuid.UUID,
-    db: DbSession,
-    actor: AuthContext = require_permission("scans", "view"),
-    limit: int | None = Query(None, ge=1, le=500),
-) -> list[AssetScanItem]:
-    """Per-asset scan history, newest first. Only matched (processed)
-    scans carry an asset linkage; an unknown or never-scanned asset is
-    an empty history, not an error."""
-    if limit is None:
-        limit = get_settings().scans_history_default
+async def asset_scan_history(db: DbSession, asset_id: uuid.UUID,
+                             limit: int) -> list[AssetScanItem]:
+    """Non-archived processed scans for one asset, newest first, capped
+    at `limit`. Shared by the portal route and the kiosk Asset Lookup."""
     scans = list(await db.scalars(
         select(ProcessedScan).where(
             (ProcessedScan.asset_id == asset_id) &
@@ -318,6 +310,21 @@ async def list_asset_scans(
                           **_raw_context(s, scan_types, asset_statuses,
                                          people, sites))
             for s in scans]
+
+
+@router.get("/asset/{asset_id}", response_model=list[AssetScanItem])
+async def list_asset_scans(
+    asset_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("scans", "view"),
+    limit: int | None = Query(None, ge=1, le=500),
+) -> list[AssetScanItem]:
+    """Per-asset scan history, newest first. Only matched (processed)
+    scans carry an asset linkage; an unknown or never-scanned asset is
+    an empty history, not an error."""
+    if limit is None:
+        limit = get_settings().scans_history_default
+    return await asset_scan_history(db, asset_id, limit)
 
 
 async def _processed_item(db: DbSession, s: ProcessedScan) -> ProcessedScanItem:
