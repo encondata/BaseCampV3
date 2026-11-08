@@ -153,6 +153,24 @@ async def test_rfid_never_matches_an_asset_tag(client, db, seeded_user):
     assert _pairs(body) == [(str(w["twin"].id), ["rfid"])]
 
 
+async def test_an_unpadded_stored_rfid_matches_padded_or_not(client, db, seeded_user):
+    # V2, the roster importer and the asset page save tags unpadded
+    w = await _world(db, client)
+    bare = Asset(name="atl1-bare-005", rfid_tag="100348", client_id=w["cx"].id)
+    zero = Asset(name="atl1-zero-006", rfid_tag="0", client_id=w["cx"].id)
+    db.add_all([bare, zero])
+    await db.flush()
+    db.add_all([InitiativeAsset(initiative_id=w["m"].id, asset_id=bare.id),
+                InitiativeAsset(initiative_id=w["m"].id, asset_id=zero.id)])
+    await db.commit()
+    for q in ("100348", "0" * 18 + "100348", "000100348"):
+        body = await _matches(client, w["worker"], q)
+        assert _pairs(body) == [(str(bare.id), ["rfid"])], q
+    for q in ("0", "0" * 24):
+        body = await _matches(client, w["worker"], q)
+        assert _pairs(body) == [(str(zero.id), ["rfid"])], q
+
+
 async def test_part_name_finds_several_in_reach(client, db, seeded_user):
     w = await _world(db, client)
     body = await _matches(client, w["worker"], "WEB")
@@ -224,6 +242,23 @@ async def test_admin_follows_scope_plus_kiosk_move(client, db, seeded_user):
     assert (await _matches(client, w["admin"], "SN-Y-900"))["matches"] == []
     body = await _matches(client, w["admin"], "SN-WEB-001")
     assert _pairs(body) == [(str(w["web"].id), ["serial"])]
+
+
+async def test_another_clients_device_on_a_live_kiosk_client_move(client, db, seeded_user):
+    w = await _world(db, client)
+    db.add(InitiativeAsset(initiative_id=w["m2"].id, asset_id=w["y_asset"].id))
+    await db.commit()
+    body = await _matches(client, w["worker"], "SN-Y-900")
+    assert _pairs(body) == [(str(w["y_asset"].id), ["serial"])]
+    r = await _detail(client, w["worker"], w["y_asset"].id)
+    assert r.status_code == 200, r.text
+
+    await db.execute(update(Initiative).where(Initiative.id == w["m2"].id)
+                     .values(archived_at=Initiative.created_at))
+    await db.commit()
+    assert (await _matches(client, w["worker"], "SN-Y-900"))["matches"] == []
+    r = await _detail(client, w["worker"], w["y_asset"].id)
+    assert r.status_code == 404 and _code(r) == "asset_not_found"
 
 
 async def test_a_kiosk_without_a_move_gives_a_worker_nothing(client, db, seeded_user):
@@ -305,6 +340,22 @@ async def test_admin_details_add_status_moves_and_location(client, db, seeded_us
     assert full["truck_name"] == "ATL1-T01"
 
 
+async def test_admin_denied_initiatives_view_sees_only_the_kiosk_move(client, db,
+                                                                       seeded_user):
+    w = await _world(db, client)
+    db.add_all([InitiativeAsset(initiative_id=w["m2"].id, asset_id=w["web"].id),
+                InitiativeAsset(initiative_id=w["y"].id, asset_id=w["web"].id)])
+    admin_id = await db.scalar(select(UserAccount.person_id).where(UserAccount.email == ADMIN))
+    db.add(PermissionOverride(person_id=admin_id, resource="initiatives", action="view",
+                              allow=False))
+    await db.commit()
+    r = await _detail(client, w["admin"], w["web"].id)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [x["initiative_name"] for x in body["routes"]] == ["ATL1 Move"]
+    assert [x["initiative_name"] for x in body["full"]["moves"]] == ["ATL1 Move"]
+
+
 async def test_location_falls_back_to_location_text(client, db, seeded_user):
     w = await _world(db, client)
     r = await _detail(client, w["admin"], w["x_loose"].id)
@@ -371,6 +422,16 @@ async def test_scans_are_admin_only(client, db, seeded_user):
     for who in ("worker", "staff"):
         r = await _scans(client, w[who], w["web"].id)
         assert r.status_code == 403 and _code(r) == "forbidden", who
+
+
+async def test_scans_need_scans_view(client, db, seeded_user):
+    w = await _world(db, client)
+    admin_id = await db.scalar(select(UserAccount.person_id).where(UserAccount.email == ADMIN))
+    db.add(PermissionOverride(person_id=admin_id, resource="scans", action="view",
+                              allow=False))
+    await db.commit()
+    r = await _scans(client, w["admin"], w["web"].id)
+    assert r.status_code == 403 and _code(r) == "forbidden"
 
 
 async def test_scans_match_the_portal_rows(client, db, seeded_user):

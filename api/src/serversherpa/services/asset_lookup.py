@@ -23,7 +23,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.access.resolver import AccessInfo
 from serversherpa.access.scope import scope_conditions
-from serversherpa.assets.bulk_update import normalize_rfid
+from serversherpa.assets.bulk_update import _rfid_key, normalize_rfid
 from serversherpa.db.models import Asset, Device, Initiative, InitiativeAsset
 from serversherpa.db.ordering import natural
 
@@ -101,6 +101,8 @@ def move_reach(reach: LookupReach) -> ColumnElement[bool]:
     kiosk_move = (Initiative.id == reach.kiosk_move_id if reach.kiosk_move_id is not None
                   else sa.false())
     if reach.admin:
+        if not reach.access.can("initiatives", "view"):
+            return sa.and_(live, kiosk_move)
         scope = scope_conditions("initiatives", reach.access, reach.person_id)
         if scope is None:
             return live
@@ -133,7 +135,15 @@ async def find_assets(db: AsyncSession, reach: LookupReach,
     exact.append(("serial", Asset.serial_number == value))
     tag = normalize_rfid(value)
     if tag is not None:
-        exact.append(("rfid", Asset.rfid_tag == tag))
+        # a tag stored unpadded (V2, the roster importer, the asset page) is
+        # the same physical tag: compare zero-stripped keys too, an all-zero
+        # tag keyed as "0" (assets/bulk_update._rfid_key). A blank or NULL
+        # tag is no tag, so it never keys as "0".
+        stored_key = sa.func.coalesce(
+            sa.func.nullif(sa.func.upper(sa.func.ltrim(Asset.rfid_tag, "0")), ""), "0")
+        exact.append(("rfid", sa.or_(
+            Asset.rfid_tag == tag,
+            sa.and_(Asset.rfid_tag != "", stored_key == _rfid_key(tag)))))
 
     found: dict[uuid.UUID, LookupHit] = {}
     for kind, cond in exact:

@@ -2008,9 +2008,10 @@ async def kiosk_asset_scans(
     limit: int = Query(50, ge=1, le=500),
     actor: AuthContext = require_permission("kiosk", "view"),
     _admin: AuthContext = require_rank(GATE_BYPASS_RANK),
+    _scans: AuthContext = require_permission("scans", "view"),
 ) -> list[AssetScanItem]:
     """Asset Lookup scan history, admin and above only (403 `forbidden`
-    below rank 60, before any lookup). The same rows as the portal's
+    below rank 60, or without `scans:view`, before any lookup). The same rows as the portal's
     /scans/asset/{id}, for a device in the kiosk's reach (404
     `asset_not_found` otherwise); `[]` when it is on no live move.
     Read-only."""
