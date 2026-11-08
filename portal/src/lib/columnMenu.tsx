@@ -10,12 +10,12 @@
  * and are re-exported here so every consumer of the column-menu mechanism
  * can import from one module.
  *
- * Persistence (`usePersistentListState`) piggybacks on the existing
- * account-wide preferences PATCH (see auth/AuthContext's updatePreferences,
- * lib/api.ts's savePreferencesRequest) — there is no new endpoint. It reads
- * and writes `preferences.list_prefs[pageKey]`, merging so a save from one
- * page's list state never touches another page's entry or any other
- * preference field.
+ * Persistence (`usePersistentListState`) reads and writes `listPrefs[pageKey]`
+ * through lib/listPrefs' ListPrefsContext. In the portal, AuthProvider backs
+ * it with the account-wide preferences PATCH (auth/AuthContext's
+ * updatePreferences, lib/api.ts's savePreferencesRequest) — there is no new
+ * endpoint. It merges so a save from one page's list state never touches
+ * another page's entry or any other preference field.
  *
  * The open menu is portaled to the trigger's `.portal-shell` (else `document.body`;
  * fixed position from the trigger's rect) so a scrolling list card cannot clip it; see
@@ -25,8 +25,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-import { useAuth } from '../auth/AuthContext';
-import { naturalCompare } from './sites';
+import { useListPrefs } from './listPrefs';
+import { naturalCompare } from './naturalSort';
 import {
   activeFilterCount,
   usePortaledMenu,
@@ -622,10 +622,10 @@ export function sanitize(
 }
 
 /** Per-page persistent list state: visible columns, sort, and column
- *  filters. Hydrates once from the account's saved preferences on mount,
- *  then debounces (600ms) a save of every subsequent change — merged onto
- *  the current preferences so no other page's entry, and no other
- *  preference field, is ever clobbered.
+ *  filters. Hydrates once from the saved list settings (useListPrefs; the
+ *  account's preferences in the portal) on mount, then debounces (600ms) a
+ *  save of every subsequent change — merged onto the current settings so no
+ *  other page's entry, and no other preference field, is ever clobbered.
  *
  *  `allKeys` is every column the page can offer — including non-default
  *  and god-only columns a user may have made visible or filtered/sorted by.
@@ -636,7 +636,7 @@ export function sanitize(
 export function usePersistentListState(
   pageKey: string, defaults: PersistentListDefaults, allKeys?: Set<string>,
 ) {
-  const { preferences, updatePreferences } = useAuth();
+  const { listPrefs, saveListPrefs } = useListPrefs();
   const known = allKeys ?? defaults.visible;
 
   // Hydrate synchronously via the lazy initializer — it runs exactly once,
@@ -646,18 +646,18 @@ export function usePersistentListState(
   // debounced-save effect below would see that as a real change and fire
   // an unwanted save right after mount.)
   const [visibleCols, setVisibleColsState] = useState<Set<string>>(() => {
-    const stored = preferences.list_prefs?.[pageKey];
+    const stored = listPrefs[pageKey];
     if (!stored || typeof stored !== 'object') return defaults.visible;
     return sanitize(stored as StoredListPrefs, known, defaults).visible;
   });
   const [sort, setSortState] = useState<{ key: string; dir: 1 | -1 }>(() => {
-    const stored = preferences.list_prefs?.[pageKey];
+    const stored = listPrefs[pageKey];
     if (!stored || typeof stored !== 'object') return { key: defaults.sortKey, dir: defaults.sortDir };
     const s = sanitize(stored as StoredListPrefs, known, defaults);
     return { key: s.sortKey, dir: s.sortDir };
   });
   const [filters, setFiltersState] = useState<ColumnFilters>(() => {
-    const stored = preferences.list_prefs?.[pageKey];
+    const stored = listPrefs[pageKey];
     if (!stored || typeof stored !== 'object') return {};
     return sanitize(stored as StoredListPrefs, known, defaults).filters;
   });
@@ -665,16 +665,19 @@ export function usePersistentListState(
   // Display order for the page's columns. Empty = the page's default
   // (ColumnDef[] source order); applyColumnOrder treats it that way.
   const [colOrder, setColOrderState] = useState<string[]>(() => {
-    const stored = preferences.list_prefs?.[pageKey];
+    const stored = listPrefs[pageKey];
     if (!stored || typeof stored !== 'object') return [];
     return sanitize(stored as StoredListPrefs, known, defaults).order;
   });
 
-  // Latest preferences, read (not depended-on) by the debounced save so a
-  // change elsewhere (e.g. a Settings-page save) between scheduling and
-  // firing still gets merged onto correctly, without resetting our timer.
-  const prefsRef = useRef(preferences);
-  prefsRef.current = preferences;
+  // Latest list settings and save function, read (not depended-on) by the
+  // debounced save so a change elsewhere (e.g. another list's save) between
+  // scheduling and firing still gets merged onto correctly, without
+  // resetting our timer.
+  const listPrefsRef = useRef(listPrefs);
+  listPrefsRef.current = listPrefs;
+  const saveRef = useRef(saveListPrefs);
+  saveRef.current = saveListPrefs;
 
   // Holds the not-yet-fired save (its timer + the payload-builder to run
   // early) so a separate unmount-only effect below can flush it. Cleared
@@ -688,19 +691,15 @@ export function usePersistentListState(
       return;
     }
     const save = () => {
-      const current = prefsRef.current;
-      void updatePreferences({
-        ...current,
-        list_prefs: {
-          ...current.list_prefs,
-          [pageKey]: {
-            visible: Array.from(visibleCols),
-            sortKey: sort.key,
-            sortDir: sort.dir,
-            filters,
-            order: colOrder,
-            seen: Array.from(known),
-          },
+      saveRef.current({
+        ...listPrefsRef.current,
+        [pageKey]: {
+          visible: Array.from(visibleCols),
+          sortKey: sort.key,
+          sortDir: sort.dir,
+          filters,
+          order: colOrder,
+          seen: Array.from(known),
         },
       });
     };
@@ -714,7 +713,7 @@ export function usePersistentListState(
     // there's nothing to flush here. The unmount-only effect below is what
     // flushes a save that's still pending when the component goes away.
     return () => clearTimeout(timer);
-  }, [pageKey, updatePreferences, visibleCols, sort, filters, colOrder]);
+  }, [pageKey, visibleCols, sort, filters, colOrder]);
 
   // Runs its cleanup exactly once, on unmount (empty deps) — never on a
   // dependency change — so a debounced save still pending at navigation

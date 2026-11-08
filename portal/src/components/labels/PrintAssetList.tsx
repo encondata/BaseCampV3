@@ -14,7 +14,6 @@
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
-import { useAuth } from '../../auth/AuthContext';
 import type { InitiativeAssetRow } from '../../lib/api';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters, usePersistentListState,
@@ -25,8 +24,9 @@ import {
   useReorderDrag,
   useSearchHaystacks, visibleColumnsFor, type ColumnDef,
 } from '../../lib/listTools';
+import { useListPrefs } from '../../lib/listPrefs';
+import { naturalCompare } from '../../lib/naturalSort';
 import type { LabelStatus } from '../../lib/printLabels';
-import { naturalCompare } from '../../lib/sites';
 import { VirtualRows } from '../../lib/virtualRows';
 import '../../styles/directory.css';
 
@@ -138,13 +138,16 @@ interface Props {
   refreshing: boolean;
   disabled?: boolean;
   resetKey?: string;
+  /** The scroll box VirtualRows windows against (its `.portal-main` when
+   *  unset); the kiosk passes `.kiosk-main`. */
+  scroller?: string;
 }
 
 export default function PrintAssetList({
-  rows, statusOf, dpisOf = null, selected, onSelectedChange, onDisplayedChange, onRefresh, refreshing, disabled = false, resetKey,
+  rows, statusOf, dpisOf = null, selected, onSelectedChange, onDisplayedChange, onRefresh, refreshing, disabled = false, resetKey, scroller,
 }: Props) {
-  const { preferences } = useAuth();
-  const listGridScale = listScale(preferences?.list_size);
+  const { listSize } = useListPrefs();
+  const listGridScale = listScale(listSize);
   const [query, setQuery] = useState('');
   const [labelFilter, setLabelFilter] = useState<LabelFilter>('all');
   const headerRef = useRef<HTMLInputElement>(null);
@@ -289,7 +292,7 @@ export default function PrintAssetList({
           </div>
         )}
 
-        <VirtualRows rows={displayed} renderRow={(r, vp) => {
+        <VirtualRows rows={displayed} scroller={scroller} renderRow={(r, vp) => {
           const isSelected = selectedSet.has(r.asset_id);
           return (
             <div key={r.id} className={`dir-row ${isSelected ? 'open' : ''}`} {...vp}

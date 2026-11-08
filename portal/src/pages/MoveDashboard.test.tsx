@@ -12,6 +12,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 import type { InitiativeAssetRow, InitiativeItem, UiPreferences } from '../lib/api';
 import { LIST_FIT } from '../lib/listTools';
+import { ListPrefsFromAuth } from '../test/ListPrefsFromAuth';
 
 const auth = vi.hoisted(() => ({
   can: (_resource: string, _action?: string) => true,
@@ -114,7 +115,7 @@ it("renders the move's scheduled window without shifting it west of UTC", async 
   api.listInitiativeAssets.mockResolvedValue([]);
   api.listAssetStatuses.mockResolvedValue([]);
   try {
-    render(<MemoryRouter><MoveDashboard /></MemoryRouter>);
+    render(<MemoryRouter><MoveDashboard /></MemoryRouter>, { wrapper: ListPrefsFromAuth });
     expect(await screen.findByText(/Sep 1, 2026/)).toBeTruthy();
     expect(await screen.findByText(/Sep 15, 2026/)).toBeTruthy();
     expect(screen.queryByText(/Aug 31, 2026/)).toBeNull();
@@ -127,7 +128,7 @@ it('renders a dash for a move with no scheduled dates', async () => {
   api.listInitiatives.mockResolvedValue([move({ scheduled_start: null, scheduled_end: null })]);
   api.listInitiativeAssets.mockResolvedValue([]);
   api.listAssetStatuses.mockResolvedValue([]);
-  render(<MemoryRouter><MoveDashboard /></MemoryRouter>);
+  render(<MemoryRouter><MoveDashboard /></MemoryRouter>, { wrapper: ListPrefsFromAuth });
   expect(await screen.findByText('— → —')).toBeTruthy();
 });
 
@@ -135,7 +136,7 @@ it('asset roster: column floors, shared template + minimum, sideways-scroll card
   api.listInitiatives.mockResolvedValue([move()]);
   api.listInitiativeAssets.mockResolvedValue([asset()]);
   api.listAssetStatuses.mockResolvedValue([]);
-  render(<MemoryRouter><MoveDashboard /></MemoryRouter>);
+  render(<MemoryRouter><MoveDashboard /></MemoryRouter>, { wrapper: ListPrefsFromAuth });
 
   const row = (await screen.findByText('switch-01')).closest('.dir-row') as HTMLElement;
   const card = row.closest('.dir-list') as HTMLElement;
@@ -161,7 +162,7 @@ it('roster Location cell links to the container and truck', async () => {
   api.listInitiatives.mockResolvedValue([move()]);
   api.listInitiativeAssets.mockResolvedValue([a]);
   api.listAssetStatuses.mockResolvedValue([]);
-  render(<MemoryRouter><MoveDashboard /></MemoryRouter>);
+  render(<MemoryRouter><MoveDashboard /></MemoryRouter>, { wrapper: ListPrefsFromAuth });
   const row = (await screen.findByText('switch-01')).closest('.dir-row') as HTMLElement;
   expect(within(row).getByRole('link', { name: 'ATL1-W1M-DC-01' }).getAttribute('href'))
     .toBe('/logistics/containers?open=c1');

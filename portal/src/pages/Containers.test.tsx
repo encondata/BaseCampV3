@@ -16,6 +16,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { ContainerItem, UiPreferences } from '../lib/api';
 import { LIST_FIT } from '../lib/listTools';
+import { ListPrefsFromAuth } from '../test/ListPrefsFromAuth';
 
 const auth = vi.hoisted(() => {
   const state: { listPrefs: Record<string, unknown> } = { listPrefs: {} };
@@ -85,7 +86,7 @@ afterEach(cleanup);
 
 const { default: Containers } = await import('./Containers');
 
-const mount = () => render(<MemoryRouter><Containers /></MemoryRouter>);
+const mount = () => render(<MemoryRouter><Containers /></MemoryRouter>, { wrapper: ListPrefsFromAuth });
 
 // Same pattern as Assets.test.tsx's own `headerNames`/cell-lookup helpers:
 // header labels (Name + the visible columns, in DOM order) line up
@@ -326,6 +327,7 @@ it('a deep-linked container auto-expands its group in the nested view', async ()
     <MemoryRouter initialEntries={[{ pathname: '/', state: { openRow: 'g3' } }]}>
       <Containers />
     </MemoryRouter>,
+    { wrapper: ListPrefsFromAuth },
   );
 
   // its group (Bravo) auto-expanded; useRecordFocus also opens the row's own
@@ -355,6 +357,7 @@ it('collapsing the group that holds the open row closes it, so re-expanding does
     <MemoryRouter initialEntries={[{ pathname: '/', state: { openRow: 'g3' } }]}>
       <Containers />
     </MemoryRouter>,
+    { wrapper: ListPrefsFromAuth },
   );
   await waitFor(() => expect(screen.getAllByText('Bravo Crate').length).toBeGreaterThan(0));
   await user.clear(screen.getByPlaceholderText('Filter this list…'));

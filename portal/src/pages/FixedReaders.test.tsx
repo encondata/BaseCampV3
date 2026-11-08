@@ -17,6 +17,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { DeviceItem, UiPreferences, Watch } from '../lib/api';
 import { LIST_FIT } from '../lib/listTools';
+import { ListPrefsFromAuth } from '../test/ListPrefsFromAuth';
 
 const auth = vi.hoisted(() => {
   const state: {
@@ -122,7 +123,7 @@ afterEach(cleanup);
 const { default: FixedReaders } = await import('./FixedReaders');
 
 function renderReaders(entry = '/hardware/fixed-readers') {
-  return render(<MemoryRouter initialEntries={[entry]}><FixedReaders /></MemoryRouter>);
+  return render(<MemoryRouter initialEntries={[entry]}><FixedReaders /></MemoryRouter>, { wrapper: ListPrefsFromAuth });
 }
 
 /** The labels of the open menu's items, in order. */

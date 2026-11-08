@@ -23,7 +23,6 @@
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
-import { useAuth } from '../../auth/AuthContext';
 import type { ContainerItem } from '../../lib/api';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters, usePersistentListState,
@@ -35,8 +34,9 @@ import {
   useSearchHaystacks, visibleColumnsFor, type ColumnDef,
 } from '../../lib/listTools';
 import { LABEL_TAG_OPTIONS } from '../../lib/labelTags';
+import { useListPrefs } from '../../lib/listPrefs';
+import { naturalCompare } from '../../lib/naturalSort';
 import type { LabelStatus } from '../../lib/printLabels';
-import { naturalCompare } from '../../lib/sites';
 import { VirtualRows } from '../../lib/virtualRows';
 // The DPI column (shown while no printer DPI filters the labels, after the
 // registry and always on) is the asset list's own; it stays within the fit
@@ -127,13 +127,16 @@ interface Props {
   refreshing: boolean;
   disabled?: boolean;
   resetKey?: string;
+  /** The scroll box VirtualRows windows against (its `.portal-main` when
+   *  unset); the kiosk passes `.kiosk-main`. */
+  scroller?: string;
 }
 
 export default function PrintContainerList({
-  rows, statusOf, dpisOf = null, selected, onSelectedChange, onDisplayedChange, onRefresh, refreshing, disabled = false, resetKey,
+  rows, statusOf, dpisOf = null, selected, onSelectedChange, onDisplayedChange, onRefresh, refreshing, disabled = false, resetKey, scroller,
 }: Props) {
-  const { preferences } = useAuth();
-  const listGridScale = listScale(preferences?.list_size);
+  const { listSize } = useListPrefs();
+  const listGridScale = listScale(listSize);
   const [query, setQuery] = useState('');
   const [labelFilter, setLabelFilter] = useState<LabelFilter>('all');
   const headerRef = useRef<HTMLInputElement>(null);
@@ -288,7 +291,7 @@ export default function PrintContainerList({
           </div>
         )}
 
-        <VirtualRows rows={displayed} renderRow={(r, vp) => {
+        <VirtualRows rows={displayed} scroller={scroller} renderRow={(r, vp) => {
           const isSelected = selectedSet.has(r.id);
           return (
             <div key={r.id} className={`dir-row ${isSelected ? 'open' : ''}`} {...vp}

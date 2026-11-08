@@ -31,6 +31,7 @@ import type {
   StatusValue, UiPreferences,
 } from '../lib/api';
 import { LIST_FIT } from '../lib/listTools';
+import { ListPrefsFromAuth } from '../test/ListPrefsFromAuth';
 
 const auth = vi.hoisted(() => {
   const state: { can: (resource: string, action: string) => boolean; maxRank: number } = {
@@ -246,6 +247,7 @@ function renderPage(tab?: string) {
         <Route path="/initiatives/:id" element={<InitiativeDetail />} />
       </Routes>
     </MemoryRouter>,
+    { wrapper: ListPrefsFromAuth },
   );
 }
 
@@ -371,6 +373,7 @@ it('tabs: leaving the Project plan tab drops its view and task from the URL', as
         <Route path="/initiatives/:id" element={<><InitiativeDetail /><LocationProbe /></>} />
       </Routes>
     </MemoryRouter>,
+    { wrapper: ListPrefsFromAuth },
   );
   await screen.findByText('No project plan yet');
   await user.click(screen.getByRole('tab', { name: /^Assets/ }));

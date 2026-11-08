@@ -10,6 +10,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { RawScanRow, UiPreferences } from '../../lib/api';
+import { ListPrefsFromAuth } from '../../test/ListPrefsFromAuth';
 
 const auth = vi.hoisted(() => ({ value: null as unknown }));
 vi.mock('../../auth/AuthContext', () => ({ useAuth: () => auth.value }));
@@ -89,7 +90,7 @@ afterEach(() => {
 const { default: RawScansTab } = await import('./RawScansTab');
 const onCount = vi.fn();
 const mount = () => render(
-  <div className="portal-main"><RawScansTab onCount={onCount} /></div>);
+  <div className="portal-main"><RawScansTab onCount={onCount} /></div>, { wrapper: ListPrefsFromAuth });
 
 const lastPageCall = () => api.getRawScanPage.mock.calls.at(-1)![0];
 

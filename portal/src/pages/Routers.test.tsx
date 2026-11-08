@@ -16,6 +16,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { DeviceItem, UiPreferences, Watch } from '../lib/api';
 import { LIST_FIT } from '../lib/listTools';
+import { ListPrefsFromAuth } from '../test/ListPrefsFromAuth';
 
 const auth = vi.hoisted(() => {
   const state: {
@@ -127,7 +128,7 @@ afterEach(cleanup);
 const { default: Routers } = await import('./Routers');
 
 function renderRouters(entry = '/hardware/routers') {
-  return render(<MemoryRouter initialEntries={[entry]}><Routers /></MemoryRouter>);
+  return render(<MemoryRouter initialEntries={[entry]}><Routers /></MemoryRouter>, { wrapper: ListPrefsFromAuth });
 }
 
 it('routers list: column floors, shared template + minimum, sideways-scroll card', async () => {

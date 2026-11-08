@@ -16,6 +16,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { AssetItem, AssetWatch, StatusValue, UiPreferences } from '../lib/api';
 import { LIST_FIT } from '../lib/listTools';
+import { ListPrefsFromAuth } from '../test/ListPrefsFromAuth';
 
 const auth = vi.hoisted(() => {
   const state: {
@@ -100,7 +101,7 @@ afterEach(cleanup);
 
 const { default: Assets } = await import('./Assets');
 
-const mount = () => render(<MemoryRouter><Assets /></MemoryRouter>);
+const mount = () => render(<MemoryRouter><Assets /></MemoryRouter>, { wrapper: ListPrefsFromAuth });
 
 const headerNames = () => Array.from(document.querySelectorAll('.list-head .col-head button.sortable'))
   .map((b) => b.textContent?.trim().replace(/\s*[▲▼]$/, '').trim() ?? '');
@@ -213,7 +214,7 @@ it('each collapsed row carries an Actions menu with Full details and Edit', asyn
       <Route path="/assets" element={<Assets />} />
       <Route path="/assets/:assetId" element={<div>ASSET PAGE</div>} />
     </Routes>
-  </MemoryRouter>);
+  </MemoryRouter>, { wrapper: ListPrefsFromAuth });
   const trigger = (await screen.findAllByRole('button', { name: /Actions/ }))[0];
   fireEvent.click(trigger);
   expect(await screen.findByText('Full details')).toBeTruthy();
@@ -221,7 +222,7 @@ it('each collapsed row carries an Actions menu with Full details and Edit', asyn
 });
 
 it('opening the Actions menu does not expand the row', async () => {
-  render(<MemoryRouter><Assets /></MemoryRouter>);
+  render(<MemoryRouter><Assets /></MemoryRouter>, { wrapper: ListPrefsFromAuth });
   const trigger = (await screen.findAllByRole('button', { name: /Actions/ }))[0];
   fireEvent.click(trigger);
   expect(document.querySelector('.dir-row.open')).toBeNull();
@@ -233,7 +234,7 @@ it('Full details navigates to the asset page', async () => {
       <Route path="/assets" element={<Assets />} />
       <Route path="/assets/:assetId" element={<div>ASSET PAGE</div>} />
     </Routes>
-  </MemoryRouter>);
+  </MemoryRouter>, { wrapper: ListPrefsFromAuth });
   fireEvent.click((await screen.findAllByRole('button', { name: /Actions/ }))[0]);
   fireEvent.click(await screen.findByText('Full details'));
   expect(await screen.findByText('ASSET PAGE')).toBeTruthy();
@@ -309,7 +310,7 @@ it('search and sort use the shown placement text', async () => {
 
 
 it('the row ends in its Actions button alone, with no open arrow after it', async () => {
-  render(<MemoryRouter><Assets /></MemoryRouter>);
+  render(<MemoryRouter><Assets /></MemoryRouter>, { wrapper: ListPrefsFromAuth });
   const trigger = (await screen.findAllByRole('button', { name: /Actions/ }))[0];
   const row = trigger.closest('.row-main') as HTMLElement;
   expect(row.querySelector('.chevron-cell')).toBeNull();

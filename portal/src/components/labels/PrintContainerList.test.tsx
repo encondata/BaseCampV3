@@ -17,6 +17,7 @@ vi.mock('../../auth/AuthContext', () => ({
   useAuth: () => ({ preferences: { list_prefs: {} }, updatePreferences: auth.updatePreferences }),
 }));
 
+const { ListPrefsFromAuth } = await import('../../test/ListPrefsFromAuth');
 const { default: PrintContainerList, containerCellText, sortContainerRows, PRINT_CONTAINER_LIST_PAGE_KEY } =
   await import('./PrintContainerList');
 const { PRINT_LIST_PAGE_KEY } = await import('./PrintAssetList');
@@ -45,6 +46,7 @@ function setup(over: Partial<Parameters<typeof PrintContainerList>[0]> = {}) {
   const h = { onSelectedChange: vi.fn(), onDisplayedChange: vi.fn(), onRefresh: vi.fn() };
   const view = render(
     <PrintContainerList rows={ROWS} statusOf={statusOf} selected={[]} refreshing={false} {...h} {...over} />,
+    { wrapper: ListPrefsFromAuth },
   );
   return { ...h, view };
 }

@@ -23,6 +23,7 @@ import {
   type UiPreferences,
 } from '../lib/api';
 import { computeCan, type Action, type PermMap, type ScopeInfo } from '../lib/access';
+import { ListPrefsContext, useAccountListPrefs } from '../lib/listPrefs';
 import { DEFAULT_PREFERENCES } from '../lib/settings';
 
 type AuthStatus = 'loading' | 'authed' | 'anon';
@@ -185,6 +186,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // List settings for the shared list modules (lib/listPrefs), from the
+  // account preferences.
+  const listPrefs = useAccountListPrefs(state.preferences, updatePreferences);
+
   const applyProfile = useCallback((detail: PersonDetail) => {
     setState((prev) => ({
       ...prev,
@@ -217,7 +222,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         applyProfile, clearMustChange, godMode, godNavColor, enableGodMode, exitGodMode,
       }}
     >
-      {children}
+      <ListPrefsContext.Provider value={listPrefs}>{children}</ListPrefsContext.Provider>
     </AuthContext.Provider>
   );
 }

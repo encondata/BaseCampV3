@@ -26,6 +26,7 @@ import { sanitize,
   type ColumnFilters,
 } from './columnMenu';
 import type { UiPreferences } from './api';
+import { ListPrefsFromAuth } from '../test/ListPrefsFromAuth';
 
 interface Row { id: string; name: string; site: string }
 
@@ -474,6 +475,9 @@ describe('ColumnMenu', () => {
 /* ── usePersistentListState ───────────────────────────────────────── */
 
 describe('usePersistentListState', () => {
+  // The hook reads list settings from ListPrefsContext; provide it from the mocked useAuth.
+  const renderWithPrefs = <T,>(hook: () => T) => renderHook(hook, { wrapper: ListPrefsFromAuth });
+
   beforeEach(() => {
     vi.useFakeTimers();
     auth.preferences = {
@@ -490,7 +494,7 @@ describe('usePersistentListState', () => {
   });
 
   it('with nothing persisted, returns the caller-supplied defaults', () => {
-    const { result } = renderHook(() => usePersistentListState('sites', {
+    const { result } = renderWithPrefs(() => usePersistentListState('sites', {
       visible: new Set(['name', 'status']), sortKey: 'name', sortDir: 1,
     }));
     expect(Array.from(result.current.visibleCols)).toEqual(['name', 'status']);
@@ -509,7 +513,7 @@ describe('usePersistentListState', () => {
         filters: { status: { values: ['active'] } },
       },
     };
-    const { result } = renderHook(() => usePersistentListState('sites', {
+    const { result } = renderWithPrefs(() => usePersistentListState('sites', {
       visible: new Set(['name', 'status', 'city']), sortKey: 'name', sortDir: 1,
     }));
     expect(Array.from(result.current.visibleCols)).toEqual(['name', 'city']);
@@ -528,7 +532,7 @@ describe('usePersistentListState', () => {
         filters: { ghost: { text: 'x' }, status: { values: ['active'] } },
       },
     };
-    const { result } = renderHook(() => usePersistentListState('sites', {
+    const { result } = renderWithPrefs(() => usePersistentListState('sites', {
       visible: new Set(['name', 'status', 'city']), sortKey: 'name', sortDir: 1,
     }));
     expect(Array.from(result.current.visibleCols)).toEqual(['name', 'status']);
@@ -546,7 +550,7 @@ describe('usePersistentListState', () => {
         filters: {},
       },
     };
-    const { result } = renderHook(() => usePersistentListState(
+    const { result } = renderWithPrefs(() => usePersistentListState(
       'sites',
       { visible: new Set(['name', 'status']), sortKey: 'name', sortDir: 1 },
       new Set(['name', 'status', 'region']), // the full offered set includes it
@@ -564,7 +568,7 @@ describe('usePersistentListState', () => {
         filters: {},
       },
     };
-    const { result } = renderHook(() => usePersistentListState(
+    const { result } = renderWithPrefs(() => usePersistentListState(
       'sites',
       { visible: new Set(['name', 'status']), sortKey: 'name', sortDir: 1 },
       new Set(['name', 'status', 'region']),
@@ -583,7 +587,7 @@ describe('usePersistentListState', () => {
       },
     };
     const seenByMigrate: unknown[] = [];
-    const { result } = renderHook(() => usePersistentListState(
+    const { result } = renderWithPrefs(() => usePersistentListState(
       'sites',
       {
         visible: new Set(['name', 'status']),
@@ -611,7 +615,7 @@ describe('usePersistentListState', () => {
         filters: {},
       },
     };
-    const { result } = renderHook(() => usePersistentListState(
+    const { result } = renderWithPrefs(() => usePersistentListState(
       'sites',
       { visible: new Set(['name', 'status']), sortKey: 'name', sortDir: 1 },
       new Set(['name', 'status', 'region']),
@@ -623,7 +627,7 @@ describe('usePersistentListState', () => {
     auth.preferences.list_prefs = {
       sites: { visible: ['name'], sortKey: 'name', sortDir: 1, filters: {} },
     };
-    renderHook(() => usePersistentListState('sites', {
+    renderWithPrefs(() => usePersistentListState('sites', {
       visible: new Set(['name', 'status']), sortKey: 'name', sortDir: 1,
     }));
     act(() => { vi.advanceTimersByTime(1000); });
@@ -636,7 +640,7 @@ describe('usePersistentListState', () => {
       accent: 'blue',
       list_prefs: { workers: { visible: ['name'], sortKey: 'name', sortDir: 1, filters: {} } },
     };
-    const { result } = renderHook(() => usePersistentListState('sites', {
+    const { result } = renderWithPrefs(() => usePersistentListState('sites', {
       visible: new Set(['name', 'status']), sortKey: 'name', sortDir: 1,
     }));
 
@@ -659,7 +663,7 @@ describe('usePersistentListState', () => {
   });
 
   it('collapses rapid changes into a single save carrying the latest state', () => {
-    const { result } = renderHook(() => usePersistentListState('sites', {
+    const { result } = renderWithPrefs(() => usePersistentListState('sites', {
       visible: new Set(['name', 'status']), sortKey: 'name', sortDir: 1,
     }));
 
@@ -676,7 +680,7 @@ describe('usePersistentListState', () => {
   });
 
   it('flushes a still-pending debounced save on unmount instead of losing it', () => {
-    const { result, unmount } = renderHook(() => usePersistentListState('sites', {
+    const { result, unmount } = renderWithPrefs(() => usePersistentListState('sites', {
       visible: new Set(['name', 'status']), sortKey: 'name', sortDir: 1,
     }));
 
@@ -697,7 +701,7 @@ describe('usePersistentListState', () => {
   });
 
   it('toggleSort flips direction on the same key, resets to ascending on a new key', () => {
-    const { result } = renderHook(() => usePersistentListState('sites', {
+    const { result } = renderWithPrefs(() => usePersistentListState('sites', {
       visible: new Set(['name', 'status']), sortKey: 'name', sortDir: 1,
     }));
     act(() => { result.current.toggleSort('name'); });
@@ -708,7 +712,7 @@ describe('usePersistentListState', () => {
   });
 
   it('setFilter with a blank filter removes the key; clearFilters empties everything', () => {
-    const { result } = renderHook(() => usePersistentListState('sites', {
+    const { result } = renderWithPrefs(() => usePersistentListState('sites', {
       visible: new Set(['name', 'status']), sortKey: 'name', sortDir: 1,
     }));
     act(() => { result.current.setFilter('status', { values: ['active'] }); });
@@ -723,7 +727,7 @@ describe('usePersistentListState', () => {
   });
 
   it('keeps an exclude filter through setFilter and sanitize, never alongside values', () => {
-    const { result } = renderHook(() => usePersistentListState('sites', {
+    const { result } = renderWithPrefs(() => usePersistentListState('sites', {
       visible: new Set(['name', 'status']), sortKey: 'name', sortDir: 1,
     }));
     act(() => { result.current.setFilter('status', { exclude: ['active'] }); });
@@ -741,7 +745,7 @@ describe('usePersistentListState', () => {
     auth.preferences.list_prefs = {
       sites: { order: ['site', 'ghost', 42, 'name'] },
     };
-    const { result } = renderHook(() => usePersistentListState('sites', {
+    const { result } = renderWithPrefs(() => usePersistentListState('sites', {
       visible: new Set(['name', 'site']), sortKey: 'name', sortDir: 1,
     }));
     expect(result.current.colOrder).toEqual(['site', 'name']);
@@ -751,7 +755,7 @@ describe('usePersistentListState', () => {
     auth.preferences.list_prefs = {
       sites: { order: ['site', 'site', 'name'] },
     };
-    const { result } = renderHook(() => usePersistentListState('sites', {
+    const { result } = renderWithPrefs(() => usePersistentListState('sites', {
       visible: new Set(['name', 'site']), sortKey: 'name', sortDir: 1,
     }));
     expect(result.current.colOrder).toEqual(['site', 'name']);
@@ -759,14 +763,14 @@ describe('usePersistentListState', () => {
 
   it('hydrates an empty order when none is stored', () => {
     auth.preferences.list_prefs = { sites: { visible: ['name'] } };
-    const { result } = renderHook(() => usePersistentListState('sites', {
+    const { result } = renderWithPrefs(() => usePersistentListState('sites', {
       visible: new Set(['name', 'site']), sortKey: 'name', sortDir: 1,
     }));
     expect(result.current.colOrder).toEqual([]);
   });
 
   it('saves order changes through the debounced merge-save', () => {
-    const { result } = renderHook(() => usePersistentListState('sites', {
+    const { result } = renderWithPrefs(() => usePersistentListState('sites', {
       visible: new Set(['name', 'site']), sortKey: 'name', sortDir: 1,
     }));
     act(() => { result.current.setColOrder(['site', 'name']); });

@@ -10,6 +10,21 @@ vi.mock('../../auth/AuthContext', () => ({
   useAuth: () => ({ preferences: { list_prefs: {} }, updatePreferences: vi.fn(async () => true) }),
 }));
 
+// Records the scroller each list hands VirtualRows, then renders the real one.
+const virtual = vi.hoisted(() => ({ scrollers: [] as (string | undefined)[] }));
+vi.mock('../../lib/virtualRows', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/virtualRows')>();
+  return {
+    ...actual,
+    VirtualRows: (props: Parameters<typeof actual.VirtualRows>[0]) => {
+      virtual.scrollers.push(props.scroller);
+      return <actual.VirtualRows {...props} />;
+    },
+  };
+});
+
+const { ListPrefsFromAuth } = await import('../../test/ListPrefsFromAuth');
+
 const { default: PrintAssetList, assetCellText, sortRows } = await import('./PrintAssetList');
 
 afterEach(cleanup);
@@ -35,7 +50,8 @@ const statusOf = (r: InitiativeAssetRow) => STATUS[r.asset_id];
 
 function setup(over: Partial<Parameters<typeof PrintAssetList>[0]> = {}) {
   const h = { onSelectedChange: vi.fn(), onDisplayedChange: vi.fn(), onRefresh: vi.fn() };
-  const view = render(<PrintAssetList rows={ROWS} statusOf={statusOf} selected={[]} refreshing={false} {...h} {...over} />);
+  const view = render(<PrintAssetList rows={ROWS} statusOf={statusOf} selected={[]} refreshing={false} {...h} {...over} />,
+    { wrapper: ListPrefsFromAuth });
   return { ...h, view };
 }
 
@@ -138,6 +154,7 @@ describe('PrintAssetList', () => {
     const { rerender } = render(
       <PrintAssetList rows={ROWS} statusOf={statusOf} selected={selectedFixture} refreshing={false}
                       onSelectedChange={onSelectedChange} onDisplayedChange={onDisplayedChange} onRefresh={onRefresh} />,
+      { wrapper: ListPrefsFromAuth },
     );
     expect(onDisplayedChange).toHaveBeenCalledTimes(1);
 
@@ -155,6 +172,17 @@ describe('PrintAssetList', () => {
                       onSelectedChange={onSelectedChange} onDisplayedChange={onDisplayedChange} onRefresh={onRefresh} />,
     );
     expect(onDisplayedChange).toHaveBeenCalledTimes(2);
+  });
+
+  it('forwards scroller to VirtualRows', () => {
+    virtual.scrollers.length = 0;
+    setup({ scroller: '.kiosk-main' });
+    expect(virtual.scrollers.at(-1)).toBe('.kiosk-main');
+    cleanup();
+    virtual.scrollers.length = 0;
+    setup();
+    expect(virtual.scrollers.length).toBeGreaterThan(0);
+    expect(virtual.scrollers.at(-1)).toBeUndefined();
   });
 
   it('refresh button calls back and disables while refreshing', async () => {
