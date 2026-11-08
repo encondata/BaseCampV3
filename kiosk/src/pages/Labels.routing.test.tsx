@@ -7,9 +7,11 @@ import { cleanup, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
+const perms = vi.hoisted(() => ({ labelsView: true }));
 vi.mock('../auth/KioskAuthContext', () => {
   const auth = {
     status: 'authed', mustChangePassword: false, mustChangeReason: null, logout: async () => {},
+    can: (r: string, a: string) => perms.labelsView && r === 'labels' && a === 'view',
   };
   return {
     KioskAuthProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -20,6 +22,7 @@ vi.mock('../layout/KioskShell', () => ({
   default: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock('./PrintingStation', () => ({ default: () => <p>Printing Station page</p> }));
+vi.mock('./BulkPrint', () => ({ default: () => <p>Bulk Print page</p> }));
 vi.mock('./PrinterTools', () => ({ default: () => <p>Printer tools page</p> }));
 
 import App from '../App';
@@ -39,6 +42,7 @@ function open(path: string) {
 }
 
 beforeEach(() => {
+  perms.labelsView = true;
   localStorage.clear();
   writeKioskSetup(SETUP);
   writeSetupState('complete');
@@ -55,11 +59,23 @@ it('web /labels/station renders the Printing Station, not the placeholder', asyn
   expect(screen.queryByText(PLACEHOLDER)).toBeNull();
 });
 
-it('/labels/bulk is still the placeholder', async () => {
+it('/labels/bulk opens Bulk Print with labels:view on a web kiosk', async () => {
   open('/labels/bulk');
-  expect(await screen.findByRole('heading', { name: 'Bulk Print' })).toBeTruthy();
-  expect(screen.getByText(PLACEHOLDER)).toBeTruthy();
-  expect(screen.queryByText('Printing Station page')).toBeNull();
+  expect(await screen.findByText('Bulk Print page')).toBeTruthy();
+  expect(screen.queryByText(PLACEHOLDER)).toBeNull();
+});
+
+it('/labels/bulk opens Bulk Print with labels:view on a laptop that is not a Label Station', async () => {
+  window.__KIOSK_CONFIG__ = { mode: 'laptop' };
+  open('/labels/bulk');
+  expect(await screen.findByText('Bulk Print page')).toBeTruthy();
+});
+
+it('/labels/bulk without labels:view redirects to Label Printing', async () => {
+  perms.labelsView = false;
+  open('/labels/bulk');
+  expect(await screen.findByRole('heading', { name: 'Label Printing' })).toBeTruthy();
+  expect(screen.queryByText('Bulk Print page')).toBeNull();
 });
 
 it('/labels/printers is Printer Setup on the web', async () => {

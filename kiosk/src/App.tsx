@@ -1,6 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 
-import { KioskAuthProvider } from './auth/KioskAuthContext';
+import { KioskAuthProvider, useKioskAuth } from './auth/KioskAuthContext';
 import KioskGuard from './components/KioskGuard';
 import SetupGate from './components/SetupGate';
 import StationRoot from './components/StationRoot';
@@ -9,6 +9,7 @@ import { FEATURES } from './lib/features';
 import { useKioskSetup } from './lib/kioskSetup';
 import { LABEL_SECTIONS, type LabelSection } from './lib/labelSections';
 import { isLaptop } from './lib/platform';
+import BulkPrint from './pages/BulkPrint';
 import Containers from './pages/Containers';
 import DockStation from './pages/DockStation';
 import Enroll from './pages/Enroll';
@@ -35,9 +36,12 @@ const TIMECLOCK = FEATURES.find((f) => f.id === 'timeclock')!;
 
 /** One Label Printing section. Printing Station is real on a web kiosk
  *  and on a laptop set up as a Label Station; any other laptop keeps the
- *  placeholder, and so does Bulk Print everywhere. */
+ *  placeholder. Bulk Print is real everywhere for people with labels:view
+ *  and sends everyone else back to Label Printing. */
 function LabelSectionRoute({ section }: { section: LabelSection }) {
   const [setup] = useKioskSetup();
+  const { can } = useKioskAuth();
+  if (section.id === 'bulk') return can('labels', 'view') ? <BulkPrint /> : <Navigate to="/labels" replace />;
   if (section.id === 'printers') return <PrinterTools />;
   if (section.id === 'station' && (!isLaptop() || setup?.stationType === 'label')) return <PrintingStation />;
   return <LabelSectionPage section={section} />;

@@ -4,6 +4,7 @@
 
 import { Link } from 'react-router-dom';
 
+import { useKioskAuth } from '../auth/KioskAuthContext';
 import { LABEL_SECTIONS, type LabelSection } from '../lib/labelSections';
 
 const ICONS: Record<LabelSection['id'], JSX.Element> = {
@@ -34,13 +35,16 @@ const ICONS: Record<LabelSection['id'], JSX.Element> = {
 };
 
 export default function Labels() {
+  const { can } = useKioskAuth();
+  // Bulk Print is for staff and above: no card without labels:view.
+  const sections = LABEL_SECTIONS.filter((s) => s.id !== 'bulk' || can('labels', 'view'));
   return (
     <div className="portal-page">
       <div className="eyebrow">Kiosk · Label Printing</div>
       <h1 className="page-title">Label Printing</h1>
       <p className="page-hint">Choose what you want to do.</p>
       <nav className="kiosk-launcher label-sections" aria-label="Label printing sections">
-        {LABEL_SECTIONS.map((s) => (
+        {sections.map((s) => (
           <Link key={s.id} className="kiosk-tile" to={s.path}>
             {ICONS[s.id]}
             <span className="kiosk-tile-title">{s.title}</span>

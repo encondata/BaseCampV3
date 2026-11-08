@@ -2,13 +2,22 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
+
+const perms = vi.hoisted(() => ({ labelsView: true }));
+vi.mock('../auth/KioskAuthContext', () => ({
+  useKioskAuth: () => ({ can: (r: string, a: string) => perms.labelsView && r === 'labels' && a === 'view' }),
+}));
+
 
 import { LABEL_SECTIONS } from '../lib/labelSections';
 import LabelSectionPage from './LabelSectionPage';
 import Labels from './Labels';
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  perms.labelsView = true;
+});
 
 function renderRouted() {
   return render(
@@ -29,6 +38,19 @@ function renderRouted() {
     </MemoryRouter>,
   );
 }
+
+it('the Bulk Print card is hidden without labels:view', () => {
+  perms.labelsView = false;
+  renderRouted();
+  expect(screen.getAllByRole('link')).toHaveLength(2);
+  expect(screen.queryByRole('link', { name: /Bulk Print/ })).toBeNull();
+});
+
+it('the Bulk Print card shows with labels:view', () => {
+  renderRouted();
+  expect(screen.getAllByRole('link')).toHaveLength(3);
+  expect(screen.getByRole('link', { name: /Bulk Print/ }).getAttribute('href')).toBe('/labels/bulk');
+});
 
 it('renders a tile link for each of the three sections', () => {
   renderRouted();
