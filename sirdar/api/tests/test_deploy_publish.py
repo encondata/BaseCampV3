@@ -234,7 +234,8 @@ async def test_inspect_reports_every_service(db, secrets_key, publish_fakes):
     assert state["publish"] is False and state["proxy_ip"] == "10.0.0.2"
     assert state["cloudflare"] == {"configured": True, "zone": "serversherpa.com",
                                    "public_ip": PUBLIC_IP, "error": None}
-    assert state["npm"] == {"configured": True, "url": "http://10.10.48.6:81", "error": None}
+    assert state["proxy"] == {"kind": "npm", "configured": True, "url": "http://10.10.48.6:81",
+                              "error": None}
     by = {s["service"]: s for s in state["services"]}
     assert list(by) == ["api", "portal", "kiosk", "wiki", "learn", "spaces", "status"]
     assert by["api"]["forward"] == "10.10.48.63:8000"
@@ -257,7 +258,7 @@ async def test_inspect_without_integrations_or_when_one_is_down(db, secrets_key,
                                                                 publish_fakes):
     env = await make_environment(db, name="uat2", host="10.10.48.63")
     state = await publish.inspect(db, env, get_settings())
-    assert state["cloudflare"]["configured"] is False and state["npm"]["configured"] is False
+    assert state["cloudflare"]["configured"] is False and state["proxy"]["configured"] is False
     assert {s["dns"]["state"] for s in state["services"]} == {"unknown"}
     assert {s["certificate"]["state"] for s in state["services"]} == {"unknown"}
     await configure(db)

@@ -1,7 +1,10 @@
 """Publishing an environment (spec Section 2 steps 12–14, Section 3
-managed_records): a Cloudflare A record and an Nginx Proxy Manager proxy
-host (with its certificate) for every public service, a smoke test of the
-public URLs, and their removal when the environment is deleted.
+managed_records): a Cloudflare A record and a proxy host for every public
+service, a smoke test of the public URLs, and their removal when the
+environment is deleted. A LAN environment's proxy (Environment.proxy) is
+Switchyard or Nginx Proxy Manager: NPM proxy hosts get a Let's Encrypt
+certificate Sirdar requests; Switchyard hosts get theirs from Caddy, and
+Sirdar waits for it. Every Switchyard change set ends with one apply.
 
 Sirdar edits or deletes only what managed_records lists for the
 environment. A row's origin says why it is there: "created" (Sirdar made
@@ -43,12 +46,18 @@ from sirdar_api.deploy import (
     npm,
     outbound,
     smoke,
+    switchyard,
     targets,
     vms,
 )
 from sirdar_api.deploy.cloudflare import Cloudflare, CloudflareError, DnsRecord
 from sirdar_api.deploy.environments import services_of
-from sirdar_api.deploy.integrations import CloudflareConfig, IntegrationError, NpmConfig
+from sirdar_api.deploy.integrations import (
+    CloudflareConfig,
+    IntegrationError,
+    NpmConfig,
+    SwitchyardConfig,
+)
 from sirdar_api.deploy.npm import (
     CERT_BACKOFF,
     RENEW_DAYS,
@@ -59,10 +68,26 @@ from sirdar_api.deploy.npm import (
     covers,
     days_left,
 )
+from sirdar_api.deploy.switchyard import Switchyard, SwitchyardError
 
 Output = Callable[[str], None]
 DNS, PROXY, CERT = "dns_record", "proxy_host", "certificate"
-KIND_INTEGRATION = {DNS: "cloudflare", PROXY: "npm", CERT: "npm"}
+# A Switchyard host (migration 0018). Switchyard has no certificate rows:
+# Caddy gets and renews them itself, and Sirdar only waits for them.
+SY_HOST = "switchyard_host"
+KIND_INTEGRATION = {DNS: "cloudflare", PROXY: "npm", CERT: "npm", SY_HOST: "switchyard"}
+PROXY_LABEL = {"npm": "Nginx Proxy Manager", "switchyard": "Switchyard"}
+# What each proxy's managed rows are.
+PROXY_KINDS = {"npm": (PROXY, CERT), "switchyard": (SY_HOST,)}
+
+
+def proxy_of(env: Environment) -> str | None:
+    """The proxy the environment publishes through: None on DigitalOcean
+    (its load balancer), else Environment.proxy ("npm" when NULL: what
+    every LAN environment made before migration 0018 used)."""
+    if env.target_id == targets.DO_TARGET:
+        return None
+    return env.proxy or "npm"
 
 
 class PublishError(Exception):
@@ -111,14 +136,21 @@ class PublishContext:
     services: tuple[ServicePlan, ...]
     cloud: bool = False             # DigitalOcean: DNS at the load balancer, no NPM
     slot: str | None = None         # LAN Blue/Green: the slot a Switch traffic moves to
+    proxy: str | None = "npm"       # "switchyard" | "npm" | None (DigitalOcean)
     cloudflare: CloudflareConfig | None = field(default=None, repr=False)
     npm: NpmConfig | None = field(default=None, repr=False)
+    switchyard: SwitchyardConfig | None = field(default=None, repr=False)
 
     @property
     def secret_values(self) -> list[str]:
         """What the pipeline's redactor must hide."""
         return [v for v in (self.cloudflare.token if self.cloudflare else None,
-                            self.npm.password if self.npm else None) if v]
+                            self.npm.password if self.npm else None,
+                            self.switchyard.api_key if self.switchyard else None) if v]
+
+    @property
+    def proxy_label(self) -> str:
+        return PROXY_LABEL.get(self.proxy or "npm", "the proxy")
 
 
 @dataclass(frozen=True)
@@ -138,16 +170,32 @@ async def service_plans(db: AsyncSession, env: Environment) -> tuple[ServicePlan
                  for r in rows if r.hostname and app_rules.is_public(env, r.service))
 
 
+async def _load_proxy(db: AsyncSession, settings: Settings, kind: str, *, needed: bool):
+    """The proxy's config. The environment's own proxy must load; the other
+    one only matters for removing what Sirdar made there earlier, so one that
+    can't be read is left out."""
+    try:
+        return await integrations.load(db, settings, kind)
+    except IntegrationError:
+        if needed:
+            raise
+        return None
+
+
 async def prepare(db: AsyncSession, env: Environment, settings: Settings) -> PublishContext:
     cloud = env.target_id == targets.DO_TARGET
+    proxy = proxy_of(env)
     try:
         cf = await integrations.load_cloudflare(db, settings)
-        proxy = None if cloud else await integrations.load_npm(db, settings)
+        npm_cfg = sy_cfg = None
+        if not cloud:
+            npm_cfg = await _load_proxy(db, settings, "npm", needed=proxy == "npm")
+            sy_cfg = await _load_proxy(db, settings, "switchyard", needed=proxy == "switchyard")
     except IntegrationError as e:
         raise PublishError(e.reason) from None
     return PublishContext(env_id=env.id, env_name=env.name, proxy_ip=env.proxy_ip,
-                          services=await service_plans(db, env), cloud=cloud, cloudflare=cf,
-                          npm=proxy)
+                          services=await service_plans(db, env), cloud=cloud, proxy=proxy,
+                          cloudflare=cf, npm=npm_cfg, switchyard=sy_cfg)
 
 
 # ---- managed rows ----------------------------------------------------------------
@@ -187,7 +235,7 @@ def _waits_for_stale(status: Status, rows: dict, sp: ServicePlan, kind: str) -> 
     old = stale_holder(rows, sp, kind)
     if status.state != "claimable" or old is None or old.origin != "created":
         return status
-    noun = "record" if kind == DNS else "proxy host"
+    noun = {DNS: "record", SY_HOST: "Switchyard host"}.get(kind, "proxy host")
     return Status("conflict", f"{status.detail} Publishing first removes Sirdar's old {noun} "
                               f"at {old.name}; then claim this one.", status.current)
 
@@ -201,16 +249,14 @@ def stale_rows(rows: dict, services) -> list[ManagedRecord]:
 
 async def missing_integrations(db: AsyncSession, env: Environment, *,
                                teardown: bool = False) -> list[str]:
-    """Integrations a publish (both) or a teardown (those whose created
-    entries it must delete) needs but which aren't configured. A
-    DigitalOcean environment never uses NPM."""
+    """Integrations a publish (Cloudflare and the environment's proxy) or a
+    teardown (those whose created entries it must delete) needs but which
+    aren't configured. A DigitalOcean environment uses no proxy."""
     if teardown:
         rows = await rows_of(db, env.id)
         wanted = {KIND_INTEGRATION[r.kind] for r in rows.values() if r.origin == "created"}
-    elif env.target_id == targets.DO_TARGET:
-        wanted = {"cloudflare"}
     else:
-        wanted = {"cloudflare", "npm"}
+        wanted = {"cloudflare", proxy_of(env)} - {None}
     return sorted([k for k in wanted if not await integrations.is_configured(db, k)])
 
 
@@ -385,6 +431,158 @@ def cert_status(host: ProxyHost | None, certs: list[Certificate], hostname: str,
     return Status("create", "Sirdar will request a Let's Encrypt certificate.")
 
 
+# Switchyard hosts
+
+SY_MARKER = "Managed by Sirdar: "
+
+
+def sy_notes(env_name: str, env_id) -> str:
+    """The notes of a Switchyard host Sirdar creates: also the mark that it
+    is Sirdar's, and whose."""
+    return f"{SY_MARKER}{env_name} ({env_id})"
+
+
+def sy_owner(host: switchyard.Host) -> tuple[str, str] | None:
+    """(environment name, id) from Sirdar's notes on a host, else None."""
+    notes = host.notes.strip()
+    if not notes.startswith(SY_MARKER) or not notes.endswith(")") or " (" not in notes:
+        return None
+    name, _, rest = notes.removeprefix(SY_MARKER).rpartition(" (")
+    return name, rest[:-1]
+
+
+def _sy_upstreams(sp: ServicePlan) -> tuple[switchyard.Upstream, ...]:
+    return (switchyard.Upstream("http", sp.host_ip, sp.port),)
+
+
+def _sy_redirect(sp: ServicePlan) -> tuple[str, int, bool]:
+    """The bare name: a 302 to the portal, path and query kept (home.py)."""
+    return home.redirect_target(sp.hostname), 302, True
+
+
+def sy_fields(sp: ServicePlan) -> dict:
+    """Sirdar's fields on a Switchyard host: a proxy to the service, or for
+    the bare name a redirect to the portal; HTTPS from Caddy, HSTS off as on
+    Sirdar's NPM hosts. The spaces service needs no body-size setting:
+    Caddy has no cap."""
+    fields = {"enabled": True, "domains": [sp.hostname], "tls_mode": "auto",
+              "force_https": True}
+    if sp.service == home.HOME:
+        to, code, keep = _sy_redirect(sp)
+        return {**fields, "type": "redirect", "upstreams": [], "redirect_to": to,
+                "redirect_code": code, "preserve_path": keep}
+    return {**fields, "type": "proxy",
+            "upstreams": [{"scheme": "http", "host": sp.host_ip, "port": sp.port}]}
+
+
+def new_sy_body(ctx: PublishContext, sp: ServicePlan) -> dict:
+    return {**sy_fields(sp), "hsts": False, "notes": sy_notes(ctx.env_name, ctx.env_id)}
+
+
+def sy_host_body(host: switchyard.Host, sp: ServicePlan) -> dict:
+    """PUT replaces the whole host: everything it has, Sirdar's fields on
+    top. A redirect host's upstreams are left as they are, and so are a
+    proxy host's redirect fields."""
+    body = dict(host.raw)
+    fields = sy_fields(sp)
+    if fields["type"] == "redirect":
+        fields.pop("upstreams")
+    return {**body, **fields}
+
+
+def _sy_target(sp: ServicePlan) -> str:
+    return (f"redirect to {home.redirect_target(sp.hostname)}" if sp.service == home.HOME
+            else sp.forward)
+
+
+def _sy_drift(host: switchyard.Host, sp: ServicePlan) -> list[str]:
+    want = "redirect" if sp.service == home.HOME else "proxy"
+    checks = [("the type", host.type, want)]
+    if want == "proxy":
+        checks.append(("the upstream", host.upstreams, _sy_upstreams(sp)))
+    else:
+        checks.append(("the redirect", (host.redirect_to, host.redirect_code,
+                                        host.preserve_path), _sy_redirect(sp)))
+    checks += [("HTTPS", (host.tls_mode, host.force_https), ("auto", True)),
+               ("the enabled switch", host.enabled, True)]
+    return [name for name, have, want in checks if have != want]
+
+
+def _sy_found(host: switchyard.Host) -> str:
+    if host.type == "redirect":
+        return f"Redirects to {host.redirect_to}"
+    if host.upstreams:
+        return f"To {host.upstreams[0].host}:{host.upstreams[0].port}"
+    return f"A {host.type} host"
+
+
+def _unmanaged_sy(sp: ServicePlan, hosts: list[switchyard.Host], owners: dict[str, str],
+                  env_id) -> Status:
+    """The name as seen without a managed Switchyard host of this environment."""
+    named = [h for h in hosts if sp.hostname in h.domains]
+    if len(named) > 1:
+        return Status("conflict", "More than one Switchyard host serves this name.")
+    if named:
+        found = named[0]
+        if str(found.id) in owners:
+            return Status("conflict",
+                          f"The environment {owners[str(found.id)]} manages this Switchyard host.")
+        owner = sy_owner(found)
+        if owner is not None and owner[1] != str(env_id):
+            return Status("conflict",
+                          f"The environment {owner[0]} manages this Switchyard host.")
+        extra = [d for d in found.domains if d != sp.hostname]
+        if extra:
+            return Status("conflict", f"This Switchyard host also serves {', '.join(extra)}.")
+        if owner is not None:
+            # Sirdar made it for this environment but has no row for it (the
+            # create's answer was lost): it is taken back as created.
+            return Status("update", "Sirdar made this host for this environment; it will "
+                                    "manage it again.", found)
+        return Status("claimable", f"{_sy_found(found)}, made outside Sirdar.", found)
+    if sp.service == home.HOME:
+        return Status("create", f"Sirdar will create a Switchyard redirect to "
+                                f"{home.redirect_target(sp.hostname)}.")
+    return Status("create", f"Sirdar will create a Switchyard host to {sp.forward}.")
+
+
+def sy_status(sp: ServicePlan, hosts: list[switchyard.Host], row: ManagedRecord | None,
+              owners: dict[str, str], env_id) -> Status:
+    if row is not None:
+        mine = next((h for h in hosts if str(h.id) == row.external_id), None)
+        if mine is not None and sp.hostname not in mine.domains:
+            return Status("conflict", f"Sirdar's Switchyard host #{mine.id} no longer serves "
+                                      f"{sp.hostname}; fix it in Switchyard or remove it.", mine)
+        if mine is not None:
+            drift = _sy_drift(mine, sp)
+            if not drift:
+                return Status("ok", "Redirects to the portal" if sp.service == home.HOME
+                              else f"To {sp.forward}", mine)
+            return Status("update", f"Sirdar will change {_and(drift)}.", mine)
+    status = _unmanaged_sy(sp, hosts, owners, env_id)
+    if row is None:
+        return status
+    if status.state == "create":
+        return Status("create", "The Switchyard host Sirdar claimed is gone; it will be "
+                                "created again." if row.origin == "claimed"
+                      else "Sirdar's Switchyard host is gone; it will be created again.")
+    if status.state == "claimable":
+        return Status("conflict", "Sirdar's Switchyard host is gone and another host now "
+                                  "serves this name.")
+    return status
+
+
+def sy_cert_status(certs: dict[str, switchyard.CertState], hostname: str) -> Status:
+    """Caddy's certificate for the name, as Switchyard lists it."""
+    found = certs.get(hostname)
+    if found is not None and found.ready:
+        return Status("ok", "Caddy has a certificate." if found.state == "valid"
+                      else "Caddy has a certificate and will renew it soon.")
+    if found is not None and found.error:
+        return Status("create", "Caddy couldn't get one yet; Sirdar will ask it to try again.")
+    return Status("create", "Caddy will get one once the host is applied.")
+
+
 # ---- the Publish tab ---------------------------------------------------------------
 
 def _entry(status: Status | None, row: ManagedRecord | None, id_key: str) -> dict:
@@ -406,12 +604,13 @@ def _cert_entry(status: Status | None) -> dict:
 
 async def inspect(db: AsyncSession, env: Environment, settings: Settings) -> dict:
     """What publishing this environment would do now, per service. Reads
-    Cloudflare and NPM, changes nothing. A section whose integration isn't
-    configured or can't be read reports "unknown" and says why. A
-    DigitalOcean environment's records point at its load balancer, and it
-    has no NPM section to read."""
+    Cloudflare and the environment's proxy (Switchyard or NPM), changes
+    nothing. A section whose integration isn't configured or can't be read
+    reports "unknown" and says why. A DigitalOcean environment's records
+    point at its load balancer, and it has no proxy section to read."""
     transports = outbound.transports()
     cloud = env.target_id == targets.DO_TARGET
+    proxy = proxy_of(env)
     lb = None
     if cloud:
         do_row = await do_envs.get(db, env.id)
@@ -422,7 +621,7 @@ async def inspect(db: AsyncSession, env: Environment, settings: Settings) -> dic
     out: dict = {"publish": env.publish, "proxy_ip": env.proxy_ip,
                  "cloudflare": {"configured": False, "zone": None, "public_ip": None,
                                 "error": None},
-                 "npm": {"configured": False, "url": None, "error": None}}
+                 "proxy": {"kind": proxy, "configured": False, "url": None, "error": None}}
     dns: dict[str, Status] = {}
     proxies: dict[str, Status] = {}
     certs: dict[str, Status] = {}
@@ -450,19 +649,37 @@ async def inspect(db: AsyncSession, env: Environment, settings: Settings) -> dic
                    for s in services}
 
     proxy_cfg = None
-    if not cloud:
+    if proxy is not None:
         try:
-            proxy_cfg = await integrations.load_npm(db, settings)
+            proxy_cfg = await integrations.load(db, settings, proxy)
         except IntegrationError as e:
-            out["npm"]["error"] = e.reason
+            out["proxy"]["error"] = e.reason
     if proxy_cfg is not None:
-        out["npm"].update(configured=True, url=proxy_cfg.url)
+        out["proxy"].update(configured=True, url=proxy_cfg.url)
+    if proxy_cfg is not None and proxy == "switchyard":
+        try:
+            async with Switchyard(proxy_cfg, transport=transports["switchyard"]) as api:
+                sy_hosts = await api.hosts()
+                sy_certs = {c.domain: c for c in await api.certificates()}
+        except SwitchyardError as e:
+            out["proxy"]["error"] = e.reason
+        else:
+            owners = await owners_of(db, env.id, SY_HOST)
+            for s in services:
+                status = _waits_for_stale(
+                    sy_status(s, sy_hosts, current_row(rows, s, SY_HOST), owners, env.id),
+                    rows, s, SY_HOST)
+                proxies[s.service] = status
+                certs[s.service] = (sy_cert_status(sy_certs, s.hostname)
+                                    if status.state in ("ok", "update", "create")
+                                    else Status("unknown", "Waits for the proxy host."))
+    elif proxy_cfg is not None:
         try:
             async with Npm(proxy_cfg, transport=transports["npm"]) as api:
                 hosts = await api.proxy_hosts()
                 all_certs = await api.certificates()
         except NpmError as e:
-            out["npm"]["error"] = e.reason
+            out["proxy"]["error"] = e.reason
         else:
             owners = await owners_of(db, env.id, PROXY)
             for s in services:
@@ -475,10 +692,11 @@ async def inspect(db: AsyncSession, env: Environment, settings: Settings) -> dic
                     if status.state in ("ok", "update", "create")
                     else Status("unknown", "Waits for the proxy host."))
 
+    host_kind = SY_HOST if proxy == "switchyard" else PROXY
     out["services"] = [{
         "service": s.service, "hostname": s.hostname, "forward": s.forward,
         "dns": _entry(dns.get(s.service), current_row(rows, s, DNS), "record_id"),
-        "proxy": _entry(proxies.get(s.service), current_row(rows, s, PROXY), "host_id"),
+        "proxy": _entry(proxies.get(s.service), current_row(rows, s, host_kind), "host_id"),
         "certificate": _cert_entry(certs.get(s.service)),
     } for s in services]
     out["stale"] = [{"service": r.service, "kind": r.kind, "name": r.name, "origin": r.origin}
@@ -488,12 +706,14 @@ async def inspect(db: AsyncSession, env: Environment, settings: Settings) -> dic
 
 async def claim(db: AsyncSession, env: Environment, state: dict) -> list[str]:
     """Record every claimable DNS record and proxy host in `state` (from
-    inspect) as claimed. Certificates are never claimed. Writes only
+    inspect) as claimed: an NPM proxy host or a Switchyard host, by the
+    environment's proxy. Certificates are never claimed. Writes only
     Sirdar's database; the caller audits and commits."""
     rows = await rows_of(db, env.id)
     claimed: list[str] = []
+    host_kind = SY_HOST if proxy_of(env) == "switchyard" else PROXY
     for svc in state["services"]:
-        for key, kind, id_key in (("dns", DNS, "record_id"), ("proxy", PROXY, "host_id")):
+        for key, kind, id_key in (("dns", DNS, "record_id"), ("proxy", host_kind, "host_id")):
             entry = svc[key]
             if entry["state"] != "claimable":
                 continue
@@ -901,11 +1121,19 @@ async def ensure_proxy(ctx: PublishContext, out: Output, *, transport,
                 await _delete_replaced(api, s.hostname, replaced, out)
 
 
-async def remove_proxy(ctx: PublishContext, out: Output, *, transport) -> None:
+async def remove_proxy(ctx: PublishContext, out: Output, *, transport,
+                       sy_transport=None) -> None:
+    """What Sirdar made in either proxy: an environment's rows say where
+    (its proxy never changes, but rows outlive nothing they describe)."""
     rows = sorted(await _all_rows(ctx.env_id, (PROXY, CERT)),
                   key=lambda r: (r.kind != PROXY, r.name))
-    if not rows:
+    sy_rows = await _all_rows(ctx.env_id, (SY_HOST,))
+    if not rows and not sy_rows:
         out("No proxy hosts or certificates to remove.\n")
+        return
+    if sy_rows:
+        await remove_switchyard(ctx, out, transport=sy_transport)
+    if not rows:
         return
     if not any(r.origin == "created" for r in rows):
         for row in rows:
@@ -915,6 +1143,142 @@ async def remove_proxy(ctx: PublishContext, out: Output, *, transport) -> None:
     async with Npm(cfg, transport=transport) as api:
         for row in rows:
             await _drop_npm(api, row, out)
+
+
+# Switchyard hosts: staged changes, one apply per change set
+
+def still_sirdars_sy_host(found: switchyard.Host, ctx: PublishContext, name: str) -> bool:
+    """Serves only the name, and Sirdar's notes (when it has them) are this
+    environment's."""
+    owner = sy_owner(found)
+    return found.domains == (name.lower(),) and (owner is None or owner[1] == str(ctx.env_id))
+
+
+async def _drop_sy(api: Switchyard | None, ctx: PublishContext, row: ManagedRecord,
+                   out: Output, hosts: list[switchyard.Host] | None) -> str:
+    """Delete (staged) a host Sirdar created when it still matches, and
+    forget the row. "deleted", "gone" (already) or "kept"."""
+    if row.origin != "created":
+        out(f"{row.name}: left the Switchyard host in place (claimed, not made by Sirdar)\n")
+        await _forget(row.id)
+        return "kept"
+    ext = int(row.external_id)
+    found = next((h for h in hosts if h.id == ext), None)
+    result = "gone"
+    if found is None:
+        out(f"{row.name}: already gone: Switchyard host #{ext}\n")
+    elif not still_sirdars_sy_host(found, ctx, row.name):
+        out(_left_in_place(row, "Switchyard host", ext))
+        result = "kept"
+    elif await api.delete_host(ext):
+        out(f"{row.name}: deleted the Switchyard host #{ext}\n")
+        result = "deleted"
+    else:
+        out(f"{row.name}: already gone: Switchyard host #{ext}\n")
+    await _forget(row.id)
+    return result
+
+
+def _sy_updated(drift: list[str], sp: ServicePlan) -> str:
+    if not drift:
+        return "Switchyard host is Sirdar's again"
+    if "the upstream" in drift:
+        return f"Switchyard host now goes to {sp.forward}"
+    if "the redirect" in drift:
+        return "Switchyard host now redirects to the portal"
+    return f"Switchyard host updated ({_and(drift)})"
+
+
+def sy_note(ctx: PublishContext, what: str) -> str:
+    return f"Sirdar: {ctx.env_name} {what}"
+
+
+async def _apply(api: Switchyard, ctx: PublishContext, what: str, out: Output) -> None:
+    await api.apply(sy_note(ctx, what))
+    out(f"Applied in Switchyard: {sy_note(ctx, what)}\n")
+
+
+async def _apply_after_failure(api: Switchyard, ctx: PublishContext, what: str,
+                               out: Output) -> None:
+    """A step that staged changes and then failed still applies them, so
+    Switchyard's hosts and what Caddy serves agree (as NPM's, which change
+    at once); the step's own failure is what it reports."""
+    try:
+        await _apply(api, ctx, what, out)
+    except SwitchyardError as e:
+        out(f"Couldn't apply the changes made so far: {e.reason}\n")
+
+
+async def ensure_switchyard(ctx: PublishContext, out: Output, *, transport,
+                            sleep: Callable[[float], Awaitable[None]],
+                            what: str = "proxy hosts") -> None:
+    """Step 13 through Switchyard: a host per public service (proxy, or the
+    bare name's redirect), one apply, then a wait until Caddy has every
+    name's certificate. `what` names the change set in the apply's note."""
+    cfg = _need_to_publish(ctx.switchyard, "Switchyard")
+    rows, owners = await _rows_and_owners(ctx.env_id, SY_HOST)
+    async with Switchyard(cfg, transport=transport, sleep=sleep) as api:
+        hosts = await api.hosts()
+        staged = False
+        try:
+            # Names the environment no longer uses go first, as in ensure_dns.
+            sy_rows = {k: r for k, r in rows.items() if k[1] == SY_HOST}
+            dropped = set()
+            for row in stale_rows(sy_rows, ctx.services):
+                if await _drop_sy(api, ctx, row, out, hosts) == "deleted":
+                    staged = True
+                    hosts = [h for h in hosts if h.id != int(row.external_id)]
+                dropped.add((row.service, row.kind))
+            rows = {k: r for k, r in rows.items() if k not in dropped}
+            plan = [(s, sy_status(s, hosts, current_row(rows, s, SY_HOST), owners, ctx.env_id))
+                    for s in ctx.services]
+            _stop_on_blockers(plan, "Switchyard hosts")
+            for s, st in plan:
+                if st.state == "create":
+                    made = await api.create_host(new_sy_body(ctx, s))
+                    staged = True
+                    await _remember(ctx.env_id, s.service, SY_HOST, made.id, s.hostname)
+                    out(f"{s.hostname}: created a Switchyard host ({_sy_target(s)})\n")
+                elif st.state == "update":
+                    current = await api.host(st.current.id)
+                    drift = _sy_drift(current, s)
+                    if drift:
+                        await api.update_host(current.id, sy_host_body(current, s))
+                        staged = True
+                    row = current_row(rows, s, SY_HOST)
+                    if row is None or row.external_id != str(current.id):
+                        await _remember(ctx.env_id, s.service, SY_HOST, current.id, s.hostname)
+                    out(f"{s.hostname}: {_sy_updated(drift, s)}\n")
+                else:
+                    out(f"{s.hostname}: Switchyard host ({_sy_target(s)}), unchanged\n")
+        except BaseException:
+            if staged:
+                await _apply_after_failure(api, ctx, what, out)
+            raise
+        if staged:
+            await _apply(api, ctx, what, out)
+        await api.wait_for_certificates([s.hostname for s in ctx.services], out)
+
+
+async def remove_switchyard(ctx: PublishContext, out: Output, *, transport) -> None:
+    rows = sorted(await _all_rows(ctx.env_id, (SY_HOST,)), key=lambda r: r.name)
+    if not any(r.origin == "created" for r in rows):
+        for row in rows:
+            await _drop_sy(None, ctx, row, out, None)
+        return
+    cfg = _need_to_remove(ctx.switchyard, "Switchyard")
+    async with Switchyard(cfg, transport=transport) as api:
+        hosts = await api.hosts()
+        staged = False
+        try:
+            for row in rows:
+                staged = await _drop_sy(api, ctx, row, out, hosts) == "deleted" or staged
+        except BaseException:
+            if staged:
+                await _apply_after_failure(api, ctx, "remove proxy hosts", out)
+            raise
+        if staged:
+            await _apply(api, ctx, "remove proxy hosts", out)
 
 
 # Smoke test
@@ -972,7 +1336,10 @@ async def _managed_hosts(env_id) -> dict[int, ManagedRecord]:
 
 async def _record(ctx: PublishContext, *, transport) -> dict[int, dict]:
     """Host id -> the forward fields of every proxy host Sirdar manages for
-    the environment, as Nginx Proxy Manager has them now."""
+    the environment, as the proxy has them now (Switchyard: the upstreams;
+    a redirect host has none)."""
+    if ctx.proxy == "switchyard":
+        return await _record_sy(ctx, transport=transport)
     cfg = _need_to_publish(ctx.npm, "Nginx Proxy Manager")
     rows = await _managed_hosts(ctx.env_id)
     if not rows:
@@ -981,6 +1348,58 @@ async def _record(ctx: PublishContext, *, transport) -> dict[int, dict]:
         return {h.id: {k: getattr(h, k) for k in FORWARD_FIELDS}
                 for h in await api.proxy_hosts()
                 if h.id in rows and rows[h.id].name in h.domain_names}
+
+
+async def _record_sy(ctx: PublishContext, *, transport) -> dict[int, dict]:
+    cfg = _need_to_publish(ctx.switchyard, "Switchyard")
+    rows = {int(r.external_id): r for r in await _all_rows(ctx.env_id, (SY_HOST,))}
+    if not rows:
+        return {}
+    async with Switchyard(cfg, transport=transport) as api:
+        return {h.id: {"upstreams": [dict(u) for u in h.raw.get("upstreams") or []]}
+                for h in await api.hosts() if h.id in rows and rows[h.id].name in h.domains}
+
+
+async def _put_back_sy(ctx: PublishContext, out: Output, recorded: dict[int, dict],
+                       back: dict[str, str], *, transport, drop_new: bool) -> list[str]:
+    """_put_back for Switchyard: each host's upstreams as recorded, aimed at
+    `back`; one apply for all of it."""
+    cfg = _need_to_publish(ctx.switchyard, "Switchyard")
+    rows = {int(r.external_id): r for r in await _all_rows(ctx.env_id, (SY_HOST,))}
+    failed: list[str] = []
+    if not rows:
+        return failed
+    async with Switchyard(cfg, transport=transport) as api:
+        staged = False
+        for host in await api.hosts():
+            row = rows.get(host.id)
+            if row is None or row.name not in host.domains:
+                continue
+            try:
+                if host.id not in recorded:
+                    if drop_new or row.service not in back:
+                        staged = await _drop_sy(api, ctx, row, out, [host]) == "deleted" or staged
+                    continue
+                if host.type != "proxy":
+                    continue                        # a redirect follows no slot
+                want = [dict(u) for u in recorded[host.id]["upstreams"]]
+                if row.service in back:
+                    want = [{**u, "host": back[row.service]} for u in want]
+                if [dict(u) for u in host.raw.get("upstreams") or []] == want:
+                    continue
+                current = await api.host(host.id)
+                await api.update_host(host.id, {**current.raw, "upstreams": want})
+                staged = True
+                out(f"{row.name}: Switchyard host back to "
+                    f"{', '.join(u['host'] for u in want)}\n")
+            except SwitchyardError as e:
+                failed.append(f"{row.name}: {e.reason}")
+        if staged:
+            try:
+                await _apply(api, ctx, "put traffic back", out)
+            except SwitchyardError as e:
+                failed.append(f"Applying in Switchyard: {e.reason}")
+    return failed
 
 
 async def _put_back(ctx: PublishContext, out: Output, recorded: dict[int, dict],
@@ -992,6 +1411,9 @@ async def _put_back(ctx: PublishContext, out: Output, recorded: dict[int, dict],
     it is deleted; the certificates it got stay managed, for the next try.
     Each host is its own try: the answer lists the ones that couldn't be put
     back."""
+    if ctx.proxy == "switchyard":
+        return await _put_back_sy(ctx, out, recorded, back, transport=transport,
+                                  drop_new=drop_new)
     cfg = _need_to_publish(ctx.npm, "Nginx Proxy Manager")
     rows = await _managed_hosts(ctx.env_id)
     failed: list[str] = []
@@ -1025,22 +1447,23 @@ async def _put_back(ctx: PublishContext, out: Output, recorded: dict[int, dict],
 async def _roll_back(ctx: PublishContext, out: Output, recorded: dict[int, dict],
                      back: dict[str, str], *, transport, drop_new: bool) -> str | None:
     """Our own copy for what couldn't be put back, None when all of it was."""
+    where = ctx.proxy_label
     try:
         failed = await _put_back(ctx, out, recorded, back, transport=transport,
                                  drop_new=drop_new)
-    except (StepFailed, NpmError) as e:
-        return (f"Sirdar couldn't put the proxy hosts back ({e.reason}): check them in Nginx "
-                "Proxy Manager.")
+    except (StepFailed, NpmError, SwitchyardError) as e:
+        return f"Sirdar couldn't put the proxy hosts back ({e.reason}): check them in {where}."
     except Exception:
-        return "Sirdar couldn't put the proxy hosts back: check them in Nginx Proxy Manager."
+        return f"Sirdar couldn't put the proxy hosts back: check them in {where}."
     if not failed:
         return None
     try:
-        total = f" of {len(await _managed_hosts(ctx.env_id))}"
+        kinds = (SY_HOST,) if ctx.proxy == "switchyard" else (PROXY,)
+        total = f" of {len(await _all_rows(ctx.env_id, kinds))}"
     except Exception:
         total = ""
     return (f"Sirdar couldn't put {len(failed)}{total} proxy hosts back: check them in "
-            "Nginx Proxy Manager.\n" + "\n".join(f"  {f}" for f in failed))
+            f"{where}.\n" + "\n".join(f"  {f}" for f in failed))
 
 
 # Put-backs still running: the strong reference that keeps one alive when
@@ -1049,7 +1472,8 @@ _PUTTING_BACK: set[asyncio.Task] = set()
 PUT_BACK_WAIT = 120.0       # seconds a cancelled switch keeps waiting for its put-back
 
 
-async def _wait_for_put_back(rollback: Awaitable[str | None]) -> tuple[str | None, bool]:
+async def _wait_for_put_back(rollback: Awaitable[str | None],
+                             where: str = "Nginx Proxy Manager") -> tuple[str | None, bool]:
     """Run the put-back as its own task and wait for it through cancels, for
     at most PUT_BACK_WAIT seconds. Returns its copy (or ours, if it is still
     running) and whether a cancel arrived meanwhile; the caller re-raises
@@ -1070,8 +1494,7 @@ async def _wait_for_put_back(rollback: Awaitable[str | None]) -> tuple[str | Non
         except asyncio.CancelledError:
             cancelled = True
     if not task.done():
-        return ("Sirdar is still putting the proxy hosts back: check them in Nginx Proxy "
-                "Manager."), cancelled
+        return f"Sirdar is still putting the proxy hosts back: check them in {where}.", cancelled
     return task.result(), cancelled
 
 
@@ -1091,11 +1514,15 @@ async def _home_without_dns(ctx: PublishContext) -> bool:
 
 async def switch_lan(ctx: PublishContext, out: Output, *, npm_transport, smoke_transport,
                      sleep: Callable[[float], Awaitable[None]], now: datetime,
-                     backoff: tuple[int, ...], attempts: int, delay: float) -> None:
+                     backoff: tuple[int, ...], attempts: int, delay: float,
+                     sy_transport=None) -> None:
     """Point the environment's proxy hosts at the slot's VM and check the
-    public names through NPM; only then record the new addresses. On any
-    exit before that (a failure, a cancel), the proxy hosts go back to the
-    slot that was live (recorded first: each host's forward fields)."""
+    public names through the proxy (NPM, or Switchyard: its upstreams, one
+    apply); only then record the new addresses. On any exit before that (a
+    failure, a cancel), the proxy hosts go back to the slot that was live
+    (recorded first: each host's forward fields or upstreams)."""
+    sy = ctx.proxy == "switchyard"
+    transport = sy_transport if sy else npm_transport
     if ctx.slot is None:
         raise StepFailed("This Switch traffic names no server.")
     ip = await lan_slots.slot_ip(ctx.env_id, ctx.slot)
@@ -1103,8 +1530,8 @@ async def switch_lan(ctx: PublishContext, out: Output, *, npm_transport, smoke_t
         raise StepFailed(f"The {ctx.slot} VM has no address yet. Deploy to it first.")
     live, back = await _fallback(ctx.env_id)
     try:
-        recorded = await _record(ctx, transport=npm_transport)
-    except (StepFailed, NpmError) as e:
+        recorded = await _record(ctx, transport=transport)
+    except (StepFailed, NpmError, SwitchyardError) as e:
         raise StepFailed(f"{e.reason} Sirdar changed nothing.") from None
     waiting = await _home_without_dns(ctx)
     moved = replace(ctx, services=tuple(replace(s, host_ip=ip) if s.service in APP_SERVICES
@@ -1112,8 +1539,12 @@ async def switch_lan(ctx: PublishContext, out: Output, *, npm_transport, smoke_t
                                         if not (waiting and s.service == home.HOME)))
     out(f"Switching the proxy hosts to {ctx.slot} ({ip}).\n")
     try:
-        await ensure_proxy(moved, out, transport=npm_transport, sleep=sleep, now=now,
-                           backoff=backoff)
+        if sy:
+            await ensure_switchyard(moved, out, transport=transport, sleep=sleep,
+                                    what=f"switch to {ctx.slot}")
+        else:
+            await ensure_proxy(moved, out, transport=transport, sleep=sleep, now=now,
+                               backoff=backoff)
         await run_smoke(moved, out, transport=smoke_transport, sleep=sleep, attempts=attempts,
                         delay=delay)
         try:
@@ -1123,8 +1554,9 @@ async def switch_lan(ctx: PublishContext, out: Output, *, npm_transport, smoke_t
     except BaseException as e:
         out("Putting traffic back.\n")
         problem, cancelled = await _wait_for_put_back(_roll_back(
-            ctx, out, recorded, back, transport=npm_transport, drop_new=live is None))
-        if cancelled or not isinstance(e, (StepFailed, NpmError)):
+            ctx, out, recorded, back, transport=transport, drop_new=live is None),
+            ctx.proxy_label)
+        if cancelled or not isinstance(e, (StepFailed, NpmError, SwitchyardError)):
             if problem:
                 out(problem + "\n")
             if cancelled and not isinstance(e, asyncio.CancelledError):
@@ -1143,9 +1575,10 @@ async def switch_lan(ctx: PublishContext, out: Output, *, npm_transport, smoke_t
 
 
 class HttpPublisher:
-    """The real publisher: steps 12–14 and 16–17 against Cloudflare, Nginx
-    Proxy Manager and the public URLs, through outbound.transports(). Waits
-    and the clock are injectable for tests."""
+    """The real publisher: steps 12–14 and 16–17 against Cloudflare, the
+    environment's proxy (Switchyard or Nginx Proxy Manager) and the public
+    URLs, through outbound.transports(). Waits and the clock are injectable
+    for tests."""
 
     def __init__(self, *, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
                  now: Callable[[], datetime] | None = None,
@@ -1169,6 +1602,9 @@ class HttpPublisher:
                             raise StepFailed("The load balancer has no address yet. Retry from "
                                              "step 0 (Prepare DigitalOcean).")
                     await ensure_dns(ctx, out, transport=transports["cloudflare"], target=target)
+                case "proxy" if ctx.proxy == "switchyard":
+                    await ensure_switchyard(ctx, out, transport=transports["switchyard"],
+                                            sleep=self._sleep)
                 case "proxy":
                     await ensure_proxy(ctx, out, transport=transports["npm"], sleep=self._sleep,
                                        now=self._now(), backoff=self._backoff)
@@ -1179,13 +1615,15 @@ class HttpPublisher:
                     await switch_lan(ctx, out, npm_transport=transports["npm"],
                                      smoke_transport=transports["smoke"], sleep=self._sleep,
                                      now=self._now(), backoff=self._backoff,
-                                     attempts=self._smoke_attempts, delay=self._smoke_delay)
+                                     attempts=self._smoke_attempts, delay=self._smoke_delay,
+                                     sy_transport=transports.get("switchyard"))
                 case "unproxy":
-                    await remove_proxy(ctx, out, transport=transports["npm"])
+                    await remove_proxy(ctx, out, transport=transports["npm"],
+                                       sy_transport=transports.get("switchyard"))
                 case "undns":
                     await _check_removable(ctx)
                     await remove_dns(ctx, out, transport=transports["cloudflare"])
                 case _:
                     raise ValueError(f"{step!r} isn't a publish step")
-        except (CloudflareError, NpmError) as e:
+        except (CloudflareError, NpmError, SwitchyardError) as e:
             raise StepFailed(e.reason) from None

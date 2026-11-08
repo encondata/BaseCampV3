@@ -367,17 +367,26 @@ async def _lan_server(db: AsyncSession, settings: Settings, env: Environment) ->
     return labels.get(env.target_id, "Host"), cfg.host if cfg else "—"
 
 
+_PROXY_LABEL = {"npm": "Nginx Proxy Manager", "switchyard": "Switchyard"}
+
+
+async def _proxy_middle(db: AsyncSession, env: Environment) -> dict:
+    """The environment's proxy (Switchyard or NPM, Environment.proxy; NULL
+    reads as NPM) and its host from Settings."""
+    kind = env.proxy or "npm"
+    url = (await integrations.config_of(db, kind)).get("url")
+    host = urlsplit(url).hostname if url else None
+    return {"label": _PROXY_LABEL.get(kind, "Proxy"), "sub": host or "Not set up",
+            "status": "ok" if host else "unknown"}
+
+
 async def _lan_flow(db: AsyncSession, settings: Settings, env: Environment) -> dict:
-    url = (await integrations.config_of(db, "npm")).get("url")
-    npm_host = urlsplit(url).hostname if url else None
     label, sub = await _lan_server(db, settings, env)
     live = env.current_sha is not None
     health = ("degraded" if env.status == "failed"
               else "healthy" if live and env.status == "ready" else "unknown")
     deploying, failed = await _marks(db, env, lan=True)
-    return {"kind": "proxy",
-            "middle": {"label": "Nginx Proxy Manager", "sub": npm_host or "Not set up",
-                       "status": "ok" if npm_host else "unknown"},
+    return {"kind": "proxy", "middle": await _proxy_middle(db, env),
             "servers": [{"id": "host", "label": label, "sub": sub,
                          "state": "live" if live else "empty", "health": health,
                          "version": _version(env), "deployed": live}],
@@ -386,10 +395,8 @@ async def _lan_flow(db: AsyncSession, settings: Settings, env: Environment) -> d
 
 
 async def _lan_bluegreen_flow(db: AsyncSession, env: Environment, machines: list) -> dict:
-    """A LAN Blue/Green environment: Nginx Proxy Manager → its two app VMs
-    (orange, purple), each with its slot's commit and last smoke test."""
-    url = (await integrations.config_of(db, "npm")).get("url")
-    npm_host = urlsplit(url).hostname if url else None
+    """A LAN Blue/Green environment: its proxy → its two app VMs (orange,
+    purple), each with its slot's commit and last smoke test."""
     rows = await lan_slots.slots_of(db, env.id)
     by_role = {m.role: m for m in machines}
     servers = []
@@ -404,9 +411,7 @@ async def _lan_bluegreen_flow(db: AsyncSession, env: Environment, machines: list
                         "health": health, "version": r.image_tag if r else None,
                         "deployed": bool(r and r.sha)})
     deploying, failed = await _marks(db, env, lan=False)
-    return {"kind": "proxy",
-            "middle": {"label": "Nginx Proxy Manager", "sub": npm_host or "Not set up",
-                       "status": "ok" if npm_host else "unknown"},
+    return {"kind": "proxy", "middle": await _proxy_middle(db, env),
             "servers": servers, "active_slot": env.active_slot,
             "certificate": None,    # from the live check (_certificates)
             "deploying_slot": deploying, "failed_slot": failed}
@@ -645,7 +650,8 @@ def _bluegreen_parts(env: Environment, flow: dict, machines: list) -> list[dict]
     environment Active."""
     middle = flow["middle"]
     ok = middle["status"] == "ok"
-    parts = [node(f"{env.name}:npm", "Nginx Proxy Manager", "proxy", "Reverse proxy",
+    parts = [node(f"{env.name}:{env.proxy or 'npm'}", middle["label"], "proxy",
+                  "Reverse proxy",
                   "active" if ok else "unknown", "Active" if ok else "Not set up",
                   region="LAN", endpoint=middle["sub"] if ok else "—")]
     data = next((m for m in machines if m.role == vms.DATA), None)
@@ -672,7 +678,8 @@ def _lan_parts(env: Environment, flow: dict) -> list[dict]:
     ok = middle["status"] == "ok"
     health = _HEALTH.get(server["health"], ("unknown", "Unknown"))
     kind = "VM" if targets.is_vm_target(env.target_id) else "SSH host"
-    return [node(f"{env.name}:npm", "Nginx Proxy Manager", "proxy", "Reverse proxy",
+    return [node(f"{env.name}:{env.proxy or 'npm'}", middle["label"], "proxy",
+                 "Reverse proxy",
                  "active" if ok else "unknown", "Active" if ok else "Not set up", region="LAN",
                  endpoint=middle["sub"] if ok else "—"),
             node(f"{env.name}:server", server["label"], "server", kind, *health, region="LAN",

@@ -1,4 +1,4 @@
-"""Shared pieces for the publish tests: fake Cloudflare, NPM and smoke
+"""Shared pieces for the publish tests: fake Cloudflare, NPM, Switchyard and smoke
 targets wired into outbound.transports(), and builders."""
 
 from types import SimpleNamespace
@@ -12,16 +12,18 @@ from sirdar_api.deploy.publish import ServicePlan
 from .fake_cloudflare import FakeCloudflare
 from .fake_npm import FakeNpm
 from .fake_smoke import FakeSmoke
+from .fake_switchyard import FakeSwitchyard
 
 PUBLIC_IP = "203.0.113.7"
 
 
 @pytest.fixture
 def publish_fakes(monkeypatch):
-    fakes = SimpleNamespace(cf=FakeCloudflare(), npm=FakeNpm(), smoke=FakeSmoke())
+    fakes = SimpleNamespace(cf=FakeCloudflare(), npm=FakeNpm(), smoke=FakeSmoke(),
+                            sy=FakeSwitchyard())
     monkeypatch.setattr(outbound, "transports", lambda: {
         "cloudflare": fakes.cf.transport(), "npm": fakes.npm.transport(),
-        "smoke": fakes.smoke.transport()})
+        "switchyard": fakes.sy.transport(), "smoke": fakes.smoke.transport()})
     return fakes
 
 
