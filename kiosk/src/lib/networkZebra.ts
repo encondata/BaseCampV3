@@ -6,7 +6,9 @@
  * on the edge's exact allowlist, sends carry any ZPL.
  *
  * - `waitForIdle` polls `~HS` once a second until no formats are queued,
- *   for at most 60 seconds (then it just returns, as the USB one does).
+ *   for at most max(60 s, 3 s × labels sent) — the USB hook's per-label
+ *   scale, never below the original 60 s (then it just returns, as the USB
+ *   one does).
  * - `ensureOpen` has no handle to open: it resolves once `~HI` answers, so
  *   Factory Reset's restart poll works unchanged. It never throws the USB
  *   hook's "Printer not connected" (that would end the poll for good).
@@ -34,6 +36,7 @@ export interface NetworkZebraOptions {
 
 const POLL_MS = 1000;
 const IDLE_CAP_MS = 60000;
+const IDLE_MS_PER_LABEL = 3000;
 
 const realClock = {
   now: () => Date.now(),
@@ -76,8 +79,8 @@ export function networkZebraPrinter(ip: string, opts: NetworkZebraOptions = {}):
     },
     identify: async () => parseHostIdentification(await query(HOST_IDENTIFICATION)),
     status: async () => parseHostStatus(await query(HOST_STATUS)),
-    waitForIdle: async (_labelsSent, onQueued) => {
-      const deadline = clock.now() + IDLE_CAP_MS;
+    waitForIdle: async (labelsSent, onQueued) => {
+      const deadline = clock.now() + Math.max(IDLE_CAP_MS, labelsSent * IDLE_MS_PER_LABEL);
       for (;;) {
         const n = await queued();
         if (n !== null) {

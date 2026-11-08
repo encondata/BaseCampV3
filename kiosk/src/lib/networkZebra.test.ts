@@ -67,6 +67,23 @@ describe('networkZebraPrinter', () => {
     expect(api.printerQuery).toHaveBeenCalledTimes(60);
   });
 
+  it('waitForIdle keeps polling past 60 seconds for a big batch, up to 3 seconds a label', async () => {
+    // Peel mode: 50 labels still queued until each is taken; the cap scales
+    // like the USB hook's (3 s a label), never below 60 s.
+    api.printerQuery.mockImplementation(async () => ({ response: hs(5), truncated: false }));
+    const clock = fakeClock();
+    await networkZebraPrinter('10.0.0.40', { clock }).waitForIdle(50);
+    expect(clock.now()).toBe(150000);
+    expect(api.printerQuery).toHaveBeenCalledTimes(150);
+  });
+
+  it('waitForIdle still stops at 60 seconds for a small batch', async () => {
+    api.printerQuery.mockImplementation(async () => ({ response: hs(1), truncated: false }));
+    const clock = fakeClock();
+    await networkZebraPrinter('10.0.0.40', { clock }).waitForIdle(5);
+    expect(clock.now()).toBe(60000);
+  });
+
   it('ensureOpen resolves once ~HI answers and throws while it does not', async () => {
     const p = networkZebraPrinter('10.0.0.40');
     api.printerQuery.mockRejectedValueOnce(new Error('printer_unreachable'));
