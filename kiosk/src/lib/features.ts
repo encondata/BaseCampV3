@@ -15,9 +15,9 @@ export interface KioskFeature {
   blurb: string;
   /** True for features that still fall back to the generic FeaturePage
    *  placeholder; absent for features with a real screen (Settings,
-   *  Kiosk Setup, Scanning, RFID Enroll, Containers, Trucks, Label
-   *  Printing, and Timeclock — which is to say all of them today; the
-   *  flag stays for the next one). */
+   *  Kiosk Setup, Scanning, RFID Enroll, Containers, Trucks, Asset
+   *  Lookup, Label Printing, and Timeclock — which is to say all of them
+   *  today; the flag stays for the next one). */
   placeholder?: boolean;
   /** True for the two tiles that stay usable no matter the kiosk setup
    *  state (Kiosk Setup and Settings) — see `featureAvailable`. */

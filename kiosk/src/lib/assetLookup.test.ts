@@ -71,7 +71,11 @@ it('matchLocal falls back to part of a name and caps at 25', () => {
 it('localDetail hides the full card below admin and names the container for an admin', () => {
   const admin = localDetail(WEB, DATA, true);
   expect(admin.full?.container_name).toBe('ATL1-W1M-DC-01');
-  expect(admin.full?.moves).toEqual([]);
+  expect(admin.full?.moves).toEqual([{
+    initiative_id: DATA.moveId, initiative_name: DATA.moveName,
+    status: '', status_label: '', status_color: '',
+  }]);
+  expect(localDetail(WEB, { ...DATA, moveId: '' }, true).full?.moves).toEqual([]);
   expect(admin.full?.truck_name).toBeNull();
   expect(localDetail(WEB, DATA, false).full).toBeNull();
   expect(admin.routes[0].source.site_name).toBe('ATL1');

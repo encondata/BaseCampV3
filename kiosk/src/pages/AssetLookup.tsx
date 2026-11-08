@@ -29,7 +29,7 @@ import { placementText } from '@portal/lib/placement';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
 import {
-  ApiError, fetchAssetScans,
+  fetchAssetScans,
   type KioskAssetDetail, type KioskAssetEnd, type KioskLookupResult,
 } from '../lib/api';
 import {
@@ -62,10 +62,7 @@ function statusChip(
   );
 }
 
-function errorText(err: unknown): string {
-  const code = err instanceof ApiError ? err.code : 'unknown_error';
-  return `Couldn't look that up (${code}).`;
-}
+const LOOKUP_ERROR = "Couldn't look that up. Try again.";
 
 function RouteEnd({ title, end }: { title: string; end: KioskAssetEnd }) {
   const id = useId();
@@ -129,7 +126,9 @@ function HistoryTable({ rows }: { rows: AssetScanRow[] }) {
 
 export default function AssetLookup() {
   const [setup] = useKioskSetup();
-  const { isAdmin } = useKioskAuth();
+  const { isAdmin, can } = useKioskAuth();
+  /** The server also refuses the scans route without it (403). */
+  const canScans = can('scans', 'view');
 
   const [value, setValue] = useState('');
   const [offline, setOffline] = useState(false);
@@ -176,10 +175,11 @@ export default function AssetLookup() {
     };
   }, [disabled]);
 
-  // An admin's scan history: online only, and only for a device on a move.
+  // An admin's scan history: online only, only for a device on a move,
+  // and only with scans:view.
   useEffect(() => {
     const full = detail?.full;
-    if (!detail || !full || full.moves.length === 0 || offline) {
+    if (!detail || !full || full.moves.length === 0 || offline || !canScans) {
       setScans(null);
       return undefined;
     }
@@ -190,7 +190,7 @@ export default function AssetLookup() {
       () => { if (live) setScans('error'); },
     );
     return () => { live = false; };
-  }, [detail, offline]);
+  }, [detail, offline, canScans]);
 
   const openAsset = async (id: string, wasOffline: boolean, mine: number) => {
     const answer = await assetDetail(getIdentity().serial, id, wasOffline, isAdmin);
@@ -204,27 +204,37 @@ export default function AssetLookup() {
     const q = value.trim();
     if (!q || disabled) return;                 // an empty Enter is a no-op
     const mine = ++requestId.current;
+    // The box empties now, not on the answer: a second scanner burst
+    // while this one is in flight starts fresh instead of appending.
+    setValue('');
+    setOffline(false);
     setList(null);
     setDetail(null);
     setMiss(null);
     setError(null);
+    /** A miss or an error puts the value back, selected, so the next
+     *  burst replaces it. */
+    const restore = () => {
+      setValue(q);
+      // after the render that puts it back, unless a newer scan started
+      window.setTimeout(() => { if (mine === requestId.current) focusInput(true); }, 0);
+    };
     try {
       const { offline: off, result } = await findAssets(getIdentity().serial, q);
       if (mine !== requestId.current) return;
       setOffline(off);
       if (result.matches.length === 0) {
         setMiss(q);
-        focusInput(true);
+        restore();
         return;
       }
-      setValue('');
       focusInput();
       if (result.matches.length === 1) await openAsset(result.matches[0].id, off, mine);
       else setList(result);
-    } catch (err) {
+    } catch {
       if (mine !== requestId.current) return;
-      setError(errorText(err));
-      focusInput(true);
+      setError(LOOKUP_ERROR);
+      restore();
     }
   };
 
@@ -233,8 +243,8 @@ export default function AssetLookup() {
     setDetail(null);
     setError(null);
     focusInput();
-    openAsset(id, offline, mine).catch((err: unknown) => {
-      if (mine === requestId.current) setError(errorText(err));
+    openAsset(id, offline, mine).catch(() => {
+      if (mine === requestId.current) setError(LOOKUP_ERROR);
     });
   };
 
@@ -389,7 +399,7 @@ export default function AssetLookup() {
                 </div>
               </dl>
 
-              {(offline || full.moves.length > 0) && (
+              {canScans && (offline || full.moves.length > 0) && (
                 <section className="lookup-history-section">
                   <h3 className="lookup-route-title">Scan history</h3>
                   {offline && <p className="page-hint">Scan history needs a connection.</p>}

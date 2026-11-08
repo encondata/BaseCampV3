@@ -155,7 +155,11 @@ export function localDetail(
       status: asset.asset_status ?? '',
       status_label: asset.asset_status_label ?? '',
       status_color: '',
-      moves: [],
+      // the synced move, the only one known offline; it has no status
+      moves: data.moveId ? [{
+        initiative_id: data.moveId, initiative_name: data.moveName,
+        status: '', status_label: '', status_color: '',
+      }] : [],
       container_name: asset.container_id ? data.containerNames.get(asset.container_id) ?? null : null,
       truck_name: null,
       location_detail: asset.location_detail ?? '',

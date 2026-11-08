@@ -22,10 +22,11 @@ vi.mock('../lib/api', async (importOriginal) => {
   return { ...actual, ...api };
 });
 
-const auth = vi.hoisted(() => ({ isAdmin: false }));
+const auth = vi.hoisted(() => ({ isAdmin: false, denied: new Set<string>() }));
 vi.mock('../auth/KioskAuthContext', () => ({
   useKioskAuth: () => ({
-    status: 'authed', person: { display_name: 'Alex Worker' }, can: () => true,
+    status: 'authed', person: { display_name: 'Alex Worker' },
+    can: (resource: string, action: string) => !auth.denied.has(`${resource}:${action}`),
     isAdmin: auth.isAdmin,
   }),
 }));
@@ -38,7 +39,7 @@ import {
 import { scanWhenText, type LocalAsset } from '../lib/assetLookup';
 import { getIdentity } from '../lib/identity';
 import { writeKioskSetup } from '../lib/kioskSetup';
-import { closeDb, getAll, replaceAll } from '../lib/localDb';
+import { closeDb, getAll, replaceAll, writeMeta } from '../lib/localDb';
 import AssetLookup from './AssetLookup';
 
 const SETUP = {
@@ -103,6 +104,7 @@ beforeEach(async () => {
   (globalThis as unknown as { indexedDB: IDBFactory }).indexedDB = new IDBFactory();
   writeKioskSetup(SETUP);
   auth.isAdmin = false;
+  auth.denied.clear();
   api.lookupAssets.mockReset().mockResolvedValue({
     matches: [match('a-web', 'atl1-web-001', { asset_tag: '102466', matched: ['asset_tag'] })],
     truncated: false,
@@ -212,6 +214,51 @@ it('after a miss the next scan replaces the value', async () => {
   expect(api.lookupAssets).toHaveBeenLastCalledWith(getIdentity().serial, '102466');
   expect(await screen.findByRole('heading', { name: 'atl1-web-001' })).toBeTruthy();
   expect(screen.queryByText('No asset matches nothing-here.')).toBeNull();
+});
+
+it('a scan during an in-flight lookup is never appended to the first', async () => {
+  const user = userEvent.setup();
+  let resolveFirst: (v: unknown) => void = () => {};
+  api.lookupAssets
+    .mockImplementationOnce(() => new Promise((r) => { resolveFirst = r; }))
+    .mockResolvedValueOnce({
+      matches: [match('a-db', 'atl1-db-002', { matched: ['asset_tag'] })], truncated: false,
+    });
+  api.fetchAssetDetail.mockResolvedValue(detail({ id: 'a-db', name: 'atl1-db-002' }));
+  render_();
+  await user.type(input(), '102466{Enter}');
+  expect(input().value).toBe('');
+  await user.keyboard('102467{Enter}');
+  await waitFor(() => expect(api.lookupAssets).toHaveBeenCalledTimes(2));
+  expect(api.lookupAssets).toHaveBeenLastCalledWith(getIdentity().serial, '102467');
+  expect(await screen.findByRole('heading', { name: 'atl1-db-002' })).toBeTruthy();
+  resolveFirst({ matches: [], truncated: false });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(input().value).toBe('');
+});
+
+it('a failed lookup says so plainly and keeps the value selected', async () => {
+  api.lookupAssets.mockRejectedValue(new ApiError(500, 'server_error'));
+  render_();
+  await lookup('102466');
+  expect((await screen.findByRole('alert')).textContent)
+    .toBe('Couldn\'t look that up. Try again.');
+  expect(input().value).toBe('102466');
+  await waitFor(() => expect(document.activeElement).toBe(input()));
+  expect(input().selectionStart).toBe(0);
+  expect(input().selectionEnd).toBe('102466'.length);
+});
+
+it('an online error after an offline answer drops the offline notice', async () => {
+  await seedOffline();
+  render_();
+  await lookup('SN-WEB-001');
+  await screen.findByText('Offline — showing this move\'s devices only.');
+
+  api.lookupAssets.mockRejectedValue(new ApiError(500, 'server_error'));
+  await lookup('102466');
+  expect(await screen.findByText('Couldn\'t look that up. Try again.')).toBeTruthy();
+  expect(screen.queryByText('Offline — showing this move\'s devices only.')).toBeNull();
 });
 
 it('a worker sees source and destination only', async () => {
@@ -351,9 +398,23 @@ async function seedOffline(): Promise<void> {
     id: 'c1', name: 'ATL1-W1M-DC-01', rfid_tag: null, label_tag: null, container_type: null,
     status: 'open', status_label: 'Open', site_id: 'site-1', site_name: 'ATL1', asset_count: 1,
   }]);
+  await writeMeta('sync', { initiativeId: 'm1', initiativeName: 'ATL1 Move' });
   api.lookupAssets.mockRejectedValue(new ApiError(0, 'network'));
   api.fetchAssetDetail.mockRejectedValue(new ApiError(0, 'network'));
 }
+
+it('an admin without scans:view gets no scan history section', async () => {
+  auth.isAdmin = true;
+  auth.denied.add('scans:view');
+  api.fetchAssetDetail.mockResolvedValue(detail({ full: FULL }));
+  render_();
+  await lookup('102466');
+  await screen.findByRole('heading', { name: 'atl1-web-001' });
+  expect(screen.getByText('Current location')).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'Scan history' })).toBeNull();
+  await new Promise((r) => setTimeout(r, 20));
+  expect(api.fetchAssetScans).not.toHaveBeenCalled();
+});
 
 it('offline, the lookup searches the synced devices and shows its notice', async () => {
   await seedOffline();
@@ -378,6 +439,11 @@ it('offline, an admin also sees the container and that scan history needs a conn
   expect(screen.getByText('Offline — showing this move\'s devices only.')).toBeTruthy();
   expect(screen.getByText('ATL1-W1M-DC-01')).toBeTruthy();
   expect(screen.getByText('Scan history needs a connection.')).toBeTruthy();
+  // The kiosk's own move, with no status chip: the synced move has none.
+  const movesFact = screen.getByText('Moves', { selector: 'dt' }).parentElement as HTMLElement;
+  const movesValue = movesFact.querySelector('dd') as HTMLElement;
+  expect(movesValue.textContent).toBe('ATL1 Move');
+  expect(movesValue.querySelector('.chip')).toBeNull();
   // The synced status has no color of its own: a plain chip.
   const statusFact = screen.getByText('Status', { selector: 'dt' }).parentElement as HTMLElement;
   expect(within(statusFact).getByText('Packed').className).toBe('chip tag');
