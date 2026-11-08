@@ -31,9 +31,10 @@ from serversherpa.api.deps import (
 from serversherpa.api.routes.auth import (
     RESET_WINDOW_SECONDS, _scope_out, person_out, session_response, totp_status_out,
 )
+from serversherpa.api.routes.labels import _scoped_initiative, generated_label_bundle
 from serversherpa.api.routes.labels import vocab_usage as _vocab_usage
 from serversherpa.api.schemas import (
-    HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut,
+    GeneratedLabelBundleOut, HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut,
     KioskLabelContextOut, KioskClientAssetOut, KioskClientAssetsSyncOut, KioskClockInIn,
     KioskClockOutIn, KioskContainerAssetIn, KioskContainerAssetOut,
     KioskContainerAssetRow, KioskContainerOut, KioskContainerRef,
@@ -3004,6 +3005,30 @@ async def list_label_vocab(
         item.usage_count = usage.get((r.kind, r.key), 0)
         out.append(item)
     return out
+
+
+@router.get("/labels/bundle", response_model=GeneratedLabelBundleOut)
+async def get_kiosk_label_bundle(
+    db: DbSession, initiative_id: uuid.UUID, label_type: str,
+    actor: AuthContext = require_permission("labels", "view"),
+) -> GeneratedLabelBundleOut:
+    """Bulk Print's data source: the same bundle as the portal's
+    GET /labels/generated/bundle, under /kiosk because a kiosk session can
+    reach only /kiosk/* (and the sign-in lifecycle).
+
+    Needs labels:view (the dependency) and kiosk:view (the kiosk router has
+    no router-level guard, so each route carries its own). A move-password
+    session is locked to its move. An unknown label type is a 422 here,
+    where the portal route answers with an empty bundle.
+    """
+    if not actor.access.can("kiosk", "view"):
+        raise _err(403, "forbidden")
+    _require_move(actor, initiative_id)
+    ini = await _scoped_initiative(db, actor, initiative_id)
+    known = await db.get(LabelVocab, ("type", label_type))
+    if known is None:
+        raise _err(422, "unknown_label_type")
+    return await generated_label_bundle(db, ini, label_type)
 
 
 # ── kiosk sounds (kiosk:view or station key) ─────────────────────────

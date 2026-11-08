@@ -30,6 +30,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Response, UploadFile
 from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from serversherpa.access.defaults import SUPER_ADMIN_RANK
@@ -1992,6 +1993,14 @@ async def get_generated_label_bundle(
     printer's, and its offline cache holds them all. Unknown/archived/
     out-of-scope initiatives read as 404 like the preview endpoint."""
     ini = await _scoped_initiative(db, actor, initiative_id)
+    return await generated_label_bundle(db, ini, label_type)
+
+
+async def generated_label_bundle(
+    db: AsyncSession, ini: Initiative, label_type: str,
+) -> GeneratedLabelBundleOut:
+    """The bundle query shared by the portal route and the kiosk's
+    `GET /kiosk/labels/bundle`: every label of one type on one initiative."""
     # The entity filter is the whole point of the mapping: a container type
     # must never serve asset labels (or the reverse), whatever rows happen
     # to share the initiative. Display names are deliberately NOT joined —
