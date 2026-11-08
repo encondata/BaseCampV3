@@ -27,7 +27,15 @@ const VITE_CONFIG = resolve(SRC, '../vite.config.ts');
  *  extension); a trailing `/*` allows every module in that folder. The
  *  sign-in scene is shared on purpose — the kiosk, portal and wiki show
  *  the same page. */
-const REACT_ALLOWLIST = ['components/login/*'];
+const REACT_ALLOWLIST = [
+  'components/login/*',
+  'components/labels/PrintAssetList',
+  'components/labels/PrintContainerList',
+  'lib/columnMenu',
+  'lib/listTools',
+  'lib/virtualRows',
+  'lib/listPrefs',
+];
 
 // static `import … from '…'`, `import '…'` and `export … from '…'`
 const IMPORT_RE = /^\s*(?:import|export)\s+(type\s+)?(?:[^'";]*?\s+from\s+)?['"]([^'"]+)['"]/gm;

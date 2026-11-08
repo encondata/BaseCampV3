@@ -26,7 +26,7 @@ export default defineConfig({
   },
   resolve: {
     alias: { '@portal': portalSrc },
-    dedupe: ['react', 'react-dom', 'gsap'],
+    dedupe: ['react', 'react-dom', 'gsap', '@tanstack/react-virtual'],
   },
   server: {
     port: 5174,
