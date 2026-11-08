@@ -4,7 +4,7 @@
  * holds the move's data downloaded after Kiosk Setup, so a kiosk can
  * recognize an asset or a person without the API.
  *
- * Database `serversherpa-kiosk` v7, eleven stores:
+ * Database `serversherpa-kiosk` v8, twelve stores:
  *   - `assets` (keyPath `id`; indexes `rfid`, `asset_id`, `serial_number`)
  *   - `people` (keyPath `id`; index `rfid_tag`)
  *   - `meta`   (keyPath `key`) — the `sync` row: which move, the counts,
@@ -37,7 +37,7 @@
  *     build's `labels` row in `meta` (`writeLabelSet`).
  *
  * Older databases upgrade in place: `onupgradeneeded` only creates the
- * stores that are missing, so a kiosk at v1 through v6 keeps its
+ * stores that are missing, so a kiosk at v1 through v7 keeps its
  * downloaded move (and its queued scans) and simply gains what it lacks.
  *
  * Unlike the portal's cache, failures here are NOT swallowed: every call
@@ -47,11 +47,11 @@
  */
 
 const DB_NAME = 'serversherpa-kiosk';
-const DB_VERSION = 7;
+const DB_VERSION = 8;
 
 export type StoreName =
   'assets' | 'people' | 'containers' | 'trucks' | 'label_templates' | 'meta' | 'outbox'
-  | 'sounds' | 'assets_raw' | 'label_templates_raw' | 'labels';
+  | 'sounds' | 'assets_raw' | 'label_templates_raw' | 'labels' | 'label_bundles';
 
 /** The downloaded move — what "Clear local data" empties. `containers`,
  *  `trucks` and `label_templates` join it for exactly the reason `assets` and `people` are
@@ -65,7 +65,7 @@ export type StoreName =
  *  nor this kiosk's offline copies of its sounds. */
 export const STORES: StoreName[] = [
   'assets', 'people', 'containers', 'trucks', 'label_templates', 'assets_raw',
-  'label_templates_raw', 'labels', 'meta',
+  'label_templates_raw', 'labels', 'label_bundles', 'meta',
 ];
 
 export const ALL_STORES: StoreName[] = [...STORES, 'outbox', 'sounds'];
@@ -140,6 +140,9 @@ export function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('labels')) {
         db.createObjectStore('labels', { keyPath: 'asset_id' });
+      }
+      if (!db.objectStoreNames.contains('label_bundles')) {
+        db.createObjectStore('label_bundles', { keyPath: 'key' });
       }
     };
     req.onsuccess = () => {

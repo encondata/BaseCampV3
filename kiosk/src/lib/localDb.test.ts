@@ -128,12 +128,12 @@ it('replaceAllMulti aborts every store together when one write is invalid', asyn
   expect(await readMeta('sync')).toBeNull();
 });
 
-it('v7 carries the outbox, the sounds, the containers, the trucks, the label templates and the label stores', async () => {
+it('v8 adds label_bundles', async () => {
   const db = await openDb();
-  expect(db.version).toBe(7);
+  expect(db.version).toBe(8);
   expect([...db.objectStoreNames].sort()).toEqual([
-    'assets', 'assets_raw', 'containers', 'label_templates', 'label_templates_raw', 'labels',
-    'meta', 'outbox', 'people', 'sounds', 'trucks',
+    'assets', 'assets_raw', 'containers', 'label_bundles', 'label_templates',
+    'label_templates_raw', 'labels', 'meta', 'outbox', 'people', 'sounds', 'trucks',
   ]);
 });
 
@@ -175,7 +175,7 @@ it('upgrades a v1 database in place, keeping its rows and adding the outbox', as
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(7);
+  expect(db.version).toBe(8);
   expect(db.objectStoreNames.contains('outbox')).toBe(true);
   expect(db.objectStoreNames.contains('sounds')).toBe(true);
   expect(db.objectStoreNames.contains('containers')).toBe(true);
@@ -202,7 +202,7 @@ it('upgrades a v2 database in place, keeping its outbox and adding sounds', asyn
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(7);
+  expect(db.version).toBe(8);
   expect(db.objectStoreNames.contains('sounds')).toBe(true);
   expect(db.objectStoreNames.contains('containers')).toBe(true);
   expect(db.objectStoreNames.contains('trucks')).toBe(true);
@@ -230,7 +230,7 @@ it('upgrades a v3 database in place, keeping its data and adding containers', as
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(7);
+  expect(db.version).toBe(8);
   expect(db.objectStoreNames.contains('containers')).toBe(true);
   expect(db.objectStoreNames.contains('trucks')).toBe(true);
   expect(await count('assets')).toBe(1);
@@ -264,7 +264,7 @@ it('upgrades a v4 database in place, keeping its containers and adding trucks', 
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(7);
+  expect(db.version).toBe(8);
   expect(db.objectStoreNames.contains('trucks')).toBe(true);
   expect(await count('assets')).toBe(1);
   expect(await count('containers')).toBe(1);
@@ -302,7 +302,7 @@ it('upgrades a v5 database in place, keeping its data and adding label_templates
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(7);
+  expect(db.version).toBe(8);
   expect(db.objectStoreNames.contains('label_templates')).toBe(true);
   expect(await count('assets')).toBe(1);
   expect(await count('containers')).toBe(1);
@@ -343,7 +343,7 @@ it('upgrades a v6 database in place, keeping its data and adding the raw-body an
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(7);
+  expect(db.version).toBe(8);
   for (const name of ['assets_raw', 'label_templates_raw', 'labels']) {
     expect(db.objectStoreNames.contains(name)).toBe(true);
   }
@@ -435,4 +435,49 @@ it('closes its connection when another tab needs a higher version', async () => 
   expect(upgraded.version).toBe(8);
   expect(upgraded.objectStoreNames.contains('assets')).toBe(true);
   upgraded.close();
+});
+
+it('upgrades a v7 database in place, keeping its data and adding label_bundles', async () => {
+  await new Promise<void>((resolve, reject) => {
+    const req = indexedDB.open('serversherpa-kiosk', 7);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      db.createObjectStore('assets', { keyPath: 'id' }).createIndex('rfid', 'rfid');
+      db.createObjectStore('people', { keyPath: 'id' }).createIndex('rfid_tag', 'rfid_tag');
+      db.createObjectStore('meta', { keyPath: 'key' });
+      db.createObjectStore('outbox', { keyPath: 'client_scan_id' }).createIndex('status', 'status');
+      db.createObjectStore('sounds', { keyPath: 'id' });
+      const containers = db.createObjectStore('containers', { keyPath: 'id' });
+      containers.createIndex('rfid_tag', 'rfid_tag');
+      containers.createIndex('name', 'name');
+      const trucks = db.createObjectStore('trucks', { keyPath: 'id' });
+      trucks.createIndex('name', 'name');
+      trucks.createIndex('load_number', 'load_number');
+      db.createObjectStore('label_templates', { keyPath: 'id' });
+      db.createObjectStore('assets_raw', { keyPath: 'key' });
+      db.createObjectStore('label_templates_raw', { keyPath: 'key' });
+      db.createObjectStore('labels', { keyPath: 'asset_id' });
+    };
+    req.onsuccess = () => { req.result.close(); resolve(); };
+    req.onerror = () => reject(req.error);
+  });
+  await replaceAll('assets', [asset('a', 'R1')]);
+  await putRows('labels', [{ asset_id: '10482', zpl: '^XA^XZ' }]);
+  await putRows('outbox', [{ client_scan_id: 's1', status: 'queued' }]);
+  closeDb();
+
+  const db = await openDb();
+  expect(db.version).toBe(8);
+  expect(db.objectStoreNames.contains('label_bundles')).toBe(true);
+  expect(await count('assets')).toBe(1);
+  expect(await count('labels')).toBe(1);
+  expect(await count('outbox')).toBe(1);
+  expect(await count('label_bundles')).toBe(0);
+});
+
+it('clearDb empties label_bundles', async () => {
+  await putRows('label_bundles', [{ key: 'i-1:top', bundle: {} }]);
+  expect(await count('label_bundles')).toBe(1);
+  await clearDb();
+  expect(await count('label_bundles')).toBe(0);
 });

@@ -41,3 +41,13 @@ it('surfaces a forbidden answer as an ApiError', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => json({ detail: { code: 'forbidden' } }, 403)));
   await expect(api.fetchLabelVocab()).rejects.toMatchObject({ status: 403 });
 });
+
+it('gets /kiosk/labels/bundle with both params encoded', async () => {
+  const body = { initiative_id: 'i 1', label_type: 'top', fetched_at: '2026-11-08T10:00:00Z', labels: [] };
+  const fetchMock = vi.fn(async () => json(body));
+  vi.stubGlobal('fetch', fetchMock);
+  const out = await api.fetchKioskLabelBundle('i 1', 'top');
+  const [url] = fetchMock.mock.calls.at(-1) as unknown as Call;
+  expect(url).toBe('http://api.test/kiosk/labels/bundle?initiative_id=i%201&label_type=top');
+  expect(out).toEqual(body);
+});

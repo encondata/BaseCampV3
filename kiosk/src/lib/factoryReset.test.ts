@@ -33,7 +33,7 @@ import { countUnsent, runClearSetup } from './factoryReset';
 import { getIdentity, setKioskName } from './identity';
 import { installConfigTracking, readConfigState } from './kioskConfig';
 import { readKioskSetup, writeKioskSetup } from './kioskSetup';
-import { closeDb, getAll, putRows } from './localDb';
+import { closeDb, count, getAll, putRows } from './localDb';
 import { readSetupState, writeSetupState } from './setupState';
 import { DEFAULT_SOUND_SETTINGS, readSoundSettings, writeSoundSettings } from './sound';
 
@@ -186,4 +186,12 @@ it('a laptop that cannot be asked still reports the browser count', async () => 
   await usedKiosk();
   remote.getEdgeStatus.mockRejectedValueOnce(new Error('edge down'));
   expect(await countUnsent()).toBe(2);
+});
+
+it('Clear Setup empties label_bundles and the kiosk list settings', async () => {
+  await putRows('label_bundles', [{ key: 'i-1:top', initiative_id: 'i-1', label_type: 'top' }]);
+  localStorage.setItem('ss.kiosk.listPrefs', '{"list_size":"large"}');
+  await runClearSetup(deps());
+  expect(await count('label_bundles')).toBe(0);
+  expect(localStorage.getItem('ss.kiosk.listPrefs')).toBeNull();
 });

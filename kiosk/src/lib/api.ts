@@ -13,12 +13,14 @@
  * Types come from the portal (type-only imports are erased at build).
  */
 
-import type { LabelVocab, PersonOut, SessionData, UiPreferences } from '@portal/lib/api';
+import type {
+  GeneratedLabelBundle, GeneratedLabelBundleItem, LabelVocab, PersonOut, SessionData, UiPreferences } from '@portal/lib/api';
 import type { SystemStatus } from '@portal/lib/systemStatus';
 
 import { apiUrl } from './config';
 
 export type { PersonOut, SessionData, SystemStatus, UiPreferences };
+export type { GeneratedLabelBundle, GeneratedLabelBundleItem };
 
 export class ApiError extends Error {
   constructor(public status: number, public code: string, public detail?: unknown) {
@@ -976,6 +978,18 @@ export async function fetchLabelVocab(kind?: string): Promise<LabelVocab[]> {
     ? `/kiosk/labels/vocab?kind=${encodeURIComponent(kind)}`
     : '/kiosk/labels/vocab');
   return jsonFrom<LabelVocab[]>(resp);
+}
+
+/** Every generated label of one type on one move — the same body as the
+ *  portal's `GET /labels/generated/bundle`, under kiosk:view. `edge_offline`
+ *  arrives as `ApiError(0, 'network')`. */
+export async function fetchKioskLabelBundle(
+  initiativeId: string, labelType: string,
+): Promise<GeneratedLabelBundle> {
+  const resp = await apiFetch(
+    `/kiosk/labels/bundle?initiative_id=${encodeURIComponent(initiativeId)}`
+    + `&label_type=${encodeURIComponent(labelType)}`);
+  return jsonFrom<GeneratedLabelBundle>(resp);
 }
 
 // ── laptop edge (kiosk_laptop/) ─────────────────────────────────────
