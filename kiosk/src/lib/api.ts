@@ -398,6 +398,27 @@ export interface KioskAssetRow {
   model: string | null;
   make_model: string;
   label: Record<string, string>;
+  // Optional so existing fixtures compile; the API always sends them.
+  legacy_id?: number | null;
+  source_rack?: string | null;
+  source_ru?: string | null;
+  source_ru_raw?: string | null;
+  source_position?: string | null;
+  source_pod?: string | null;
+  destination_rack?: string | null;
+  destination_ru?: string | null;
+  destination_ru_raw?: string | null;
+  destination_position?: string | null;
+  destination_pod?: string | null;
+  priority_wave?: string | null;
+  disposition?: string | null;
+  owner?: string | null;
+  pod_number?: string | null;
+  asset_status?: string | null;
+  asset_status_label?: string | null;
+  roster_status?: string | null;
+  roster_status_label?: string | null;
+  vendor_involved?: boolean | null;
 }
 
 export interface KioskAssetsSync {
@@ -444,6 +465,8 @@ export interface KioskContainerRow {
   site_id: string | null;
   site_name: string | null;
   asset_count: number;
+  legacy_id?: number | null;
+  container_type_label?: string | null;
 }
 
 export interface KioskContainersSync {
