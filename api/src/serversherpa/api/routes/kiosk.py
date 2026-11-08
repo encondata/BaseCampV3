@@ -33,7 +33,8 @@ from serversherpa.api.routes.auth import (
 )
 from serversherpa.api.routes.labels import vocab_usage as _vocab_usage
 from serversherpa.api.schemas import (
-    HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut,
+    HeartbeatIn, HeartbeatOut, KioskAssetLookupMatch, KioskAssetLookupOut,
+    KioskAssetOut, KioskAssetsSyncOut,
     KioskLabelContextOut, KioskClientAssetOut, KioskClientAssetsSyncOut, KioskClockInIn,
     KioskClockOutIn, KioskContainerAssetIn, KioskContainerAssetOut,
     KioskContainerAssetRow, KioskContainerOut, KioskContainerRef,
@@ -88,6 +89,7 @@ from serversherpa.labels.template_fonts import design_fonts, fonts_used
 from serversherpa.learning import timeclock as learning_timeclock
 from serversherpa.learning.models import LearningOverride
 from serversherpa.services import auth as auth_service
+from serversherpa.services.asset_lookup import find_assets, lookup_reach
 from serversherpa.services import biometric
 from serversherpa.services import kiosk_config
 from serversherpa.services import kiosk_pairing as pairing
@@ -1878,6 +1880,47 @@ async def enroll_rfid(
         asset_tag=str(asset.legacy_id) if asset.legacy_id is not None else "",
         serial_number=asset.serial_number, rfid_tag=tag,
         already_had_tag=already_had_tag)
+
+
+# ── asset lookup (kiosk:view, read-only) ──────────────────────────────
+# Declared before any /assets/{asset_id} GET, so "lookup" is never parsed
+# as an asset id.
+
+
+@router.get("/assets/lookup", response_model=KioskAssetLookupOut)
+async def kiosk_asset_lookup(
+    db: DbSession,
+    serial: str = Query(...),
+    q: str = Query(..., max_length=200),
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskAssetLookupOut:
+    """Find devices for the kiosk's Asset Lookup screen by a typed or
+    scanned value: exact asset tag, serial or RFID first (a value that is
+    one device's asset tag and another's RFID returns both), a part-name
+    search only when nothing matched exactly; at most 25, `truncated`
+    when more exist (services/asset_lookup.find_assets).
+
+    The reach comes from the registered kiosk (`serial`), never from a
+    move id the screen sends: a move-password session sees its own move
+    only (403 `move_locked` on a kiosk set up for another move); admin and
+    above (rank 60) see their portal `assets:view` scope plus the kiosk's
+    move; anyone below admin sees the kiosk's move plus that move's
+    client's devices on its other live moves or on no move (the synced
+    set), and nothing on a kiosk with no move. Archived devices never
+    match. 404 `device_not_found` for an unknown kiosk.
+
+    Read-only: no scan is recorded, nothing is committed, and the
+    kiosk's `last_seen_at` is left alone."""
+    device = await _kiosk_device(db, serial)
+    _require_move(actor, device.current_initiative_id)
+    reach = await lookup_reach(db, device, access=actor.access, person_id=actor.person.id,
+                               locked_move_id=actor.session.initiative_id)
+    hits, truncated = await find_assets(db, reach, q)
+    return KioskAssetLookupOut(matches=[KioskAssetLookupMatch(
+        id=h.asset.id, name=h.asset.name,
+        asset_tag=str(h.asset.legacy_id) if h.asset.legacy_id is not None else "",
+        serial_number=h.asset.serial_number, matched=h.matched) for h in hits],
+        truncated=truncated)
 
 
 # ── containers: pack / unpack (kiosk:view) ───────────────────────────

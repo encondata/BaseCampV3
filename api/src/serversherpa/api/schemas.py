@@ -4077,6 +4077,26 @@ class KioskRfidEnrollOut(BaseModel):
     already_had_tag: bool
 
 
+class KioskAssetLookupMatch(BaseModel):
+    """One device a kiosk Asset Lookup found. `asset_tag` is the human
+    Asset ID (Asset.legacy_id) as text, "" if unset; `matched` names the
+    keys the typed value hit, in the order asset tag, serial, RFID (or
+    just "name" for a part-name hit)."""
+
+    id: uuid.UUID
+    name: str | None = None
+    asset_tag: str
+    serial_number: str | None = None
+    matched: list[Literal["asset_tag", "serial", "rfid", "name"]]
+
+
+class KioskAssetLookupOut(BaseModel):
+    """`truncated`: more devices matched than the 25 returned."""
+
+    matches: list[KioskAssetLookupMatch]
+    truncated: bool = False
+
+
 # ── kiosk timeclock ──
 
 class KioskTimeclockPerson(BaseModel):
