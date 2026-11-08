@@ -8,8 +8,8 @@ import type { StationType } from './kioskSetup';
 import { isSetupComplete, type KioskSetupState } from './setupState';
 
 export interface KioskFeature {
-  id: 'setup' | 'rfid' | 'clock' | 'scan' | 'enroll' | 'containers' | 'trucks' | 'labels' | 'timeclock'
-  | 'dock' | 'settings';
+  id: 'setup' | 'rfid' | 'clock' | 'scan' | 'enroll' | 'containers' | 'trucks' | 'lookup' | 'labels'
+  | 'timeclock' | 'dock' | 'settings';
   path: string;
   title: string;
   blurb: string;
@@ -30,6 +30,7 @@ export const FEATURES: KioskFeature[] = [
   { id: 'enroll', path: '/enroll', title: 'RFID Enroll', blurb: 'Scan an asset, then scan its RFID tag.' },
   { id: 'containers', path: '/containers', title: 'Containers', blurb: 'Pack and unpack containers by scanning.' },
   { id: 'trucks', path: '/trucks', title: 'Trucks', blurb: 'Load and unload trucks by scanning.' },
+  { id: 'lookup', path: '/lookup', title: 'Asset Lookup', blurb: 'Scan an asset to see what it is and where it goes.' },
   // Asset labels only for now: container labels come later on every kiosk.
   { id: 'labels', path: '/labels', title: 'Label Printing', blurb: 'Print asset labels.' },
   { id: 'timeclock', path: '/timeclock', title: 'Timeclock', blurb: 'Clock in and out of a move.' },

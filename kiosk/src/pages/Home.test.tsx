@@ -39,7 +39,7 @@ it('renders a tile link for each feature, Kiosk Setup first and Settings last', 
   writeSetupState('complete');
   renderRouted();
   const links = screen.getAllByRole('link');
-  expect(links).toHaveLength(8);
+  expect(links).toHaveLength(9);
   expect(links[0].textContent).toContain('Kiosk Setup');
   expect(links[0].getAttribute('href')).toBe('/setup');
   expect(screen.getByRole('link', { name: /Scanning/ }).getAttribute('href')).toBe('/scan');
@@ -51,10 +51,12 @@ it('renders a tile link for each feature, Kiosk Setup first and Settings last', 
   // Trucks is Containers' sibling, so it sits immediately after it.
   expect(links[4].textContent).toContain('Trucks');
   expect(links[4].getAttribute('href')).toBe('/trucks');
+  expect(links[5].textContent).toContain('Asset Lookup');
+  expect(links[5].getAttribute('href')).toBe('/lookup');
   expect(screen.getByRole('link', { name: /Label Printing/ }).getAttribute('href')).toBe('/labels');
   expect(screen.getByRole('link', { name: /Timeclock/ }).getAttribute('href')).toBe('/timeclock');
-  expect(links[7].textContent).toContain('Settings');
-  expect(links[7].getAttribute('href')).toBe('/settings');
+  expect(links[8].textContent).toContain('Settings');
+  expect(links[8].getAttribute('href')).toBe('/settings');
 });
 
 it('renders the launcher tiles only, with no facts list', () => {
@@ -82,7 +84,7 @@ it('navigates to the placeholder and back', async () => {
 
 it('when setup is incomplete, greys out every tile except Kiosk Setup and Settings, and shows the banner', async () => {
   renderRouted();
-  for (const name of [/Scanning/, /RFID Enroll/, /Trucks/, /Label Printing/, /Timeclock/]) {
+  for (const name of [/Scanning/, /RFID Enroll/, /Trucks/, /Asset Lookup/, /Label Printing/, /Timeclock/]) {
     const tile = screen.getByRole('link', { name });
     expect(tile.getAttribute('aria-disabled')).toBe('true');
   }
@@ -197,12 +199,12 @@ it('web mode and an unset laptop still show every feature', () => {
   writeSetupState('complete');
   saveSetup('rfid');
   renderRouted();
-  expect(tileTitles()).toHaveLength(8);
+  expect(tileTitles()).toHaveLength(9);
   cleanup();
   window.__KIOSK_CONFIG__ = { mode: 'laptop' };
   saveSetup();
   renderRouted();
-  expect(tileTitles()).toHaveLength(8);
+  expect(tileTitles()).toHaveLength(9);
 });
 
 it('hides the RFID Reader tile for a Label Station', () => {

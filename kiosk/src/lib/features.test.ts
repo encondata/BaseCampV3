@@ -12,6 +12,7 @@ const containers = FEATURES.find((f) => f.id === 'containers')!;
 const trucks = FEATURES.find((f) => f.id === 'trucks')!;
 const labels = FEATURES.find((f) => f.id === 'labels')!;
 const timeclock = FEATURES.find((f) => f.id === 'timeclock')!;
+const lookup = FEATURES.find((f) => f.id === 'lookup')!;
 
 it('setup and settings are always available, regardless of setup state', () => {
   for (const state of ['incomplete', 'complete', 'failed'] as const) {
@@ -21,7 +22,7 @@ it('setup and settings are always available, regardless of setup state', () => {
 });
 
 it('every other feature is unavailable until setup is complete', () => {
-  for (const feature of [scan, enroll, containers, trucks, labels, timeclock]) {
+  for (const feature of [scan, enroll, containers, trucks, lookup, labels, timeclock]) {
     expect(featureAvailable(feature, 'incomplete')).toBe(false);
     expect(featureAvailable(feature, 'failed')).toBe(false);
     expect(featureAvailable(feature, 'complete')).toBe(true);
@@ -30,7 +31,7 @@ it('every other feature is unavailable until setup is complete', () => {
 
 it('developer mode overrides the setup gate for every feature, in every setup state', () => {
   for (const state of ['incomplete', 'complete', 'failed'] as const) {
-    for (const feature of [setup, settings, scan, enroll, containers, trucks, labels,
+    for (const feature of [setup, settings, scan, enroll, containers, trucks, lookup, labels,
       timeclock]) {
       expect(featureAvailable(feature, state, true)).toBe(true);
     }
@@ -48,6 +49,23 @@ it('Trucks sits immediately after Containers, with its own route', () => {
   expect(trucks.title).toBe('Trucks');
   expect(trucks.blurb).toBe('Load and unload trucks by scanning.');
   expect(trucks.placeholder).toBeUndefined();
+});
+
+it('Asset Lookup sits immediately after Trucks, with its own route', () => {
+  const ids = FEATURES.map((f) => f.id);
+  expect(ids.indexOf('lookup')).toBe(ids.indexOf('trucks') + 1);
+  expect(lookup.path).toBe('/lookup');
+  expect(lookup.title).toBe('Asset Lookup');
+  expect(lookup.blurb).toBe('Scan an asset to see what it is and where it goes.');
+  expect(lookup.placeholder).toBeUndefined();
+});
+
+it('Asset Lookup shows on the web kiosk and on a laptop that is not a station, never on a station', () => {
+  expect(homeFeatures(false, undefined).map((f) => f.id)).toContain('lookup');
+  expect(homeFeatures(true, undefined).map((f) => f.id)).toContain('lookup');
+  for (const s of ['rfid', 'label', 'timeclock', 'dock'] as const) {
+    expect(homeFeatures(true, s).map((f) => f.id)).not.toContain('lookup');
+  }
 });
 
 it('RFID Enroll sits immediately after Scanning, with its own route', () => {
