@@ -454,3 +454,11 @@ it('Apps & mail: Mailpit to SMTP sets the SMTP password in the same save', async
     mail: { mode: 'smtp', host: 'smtp.example.com', port: 587, from_address: 'ops@example.com', starttls: true },
     secrets: { SS_SMTP_PASSWORD: 'new-pass' } }));
 });
+
+it('says which proxy the environment publishes through, beside the proxy IP', async () => {
+  open({ ...ENV, proxy: 'switchyard' });
+  expect(await screen.findByText('Published through Switchyard, chosen when it was created.')).toBeTruthy();
+  cleanup();
+  open();
+  expect(await screen.findByText('Published through Nginx Proxy Manager, chosen when it was created.')).toBeTruthy();
+});

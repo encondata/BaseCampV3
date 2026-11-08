@@ -109,3 +109,14 @@ it('a recipe start keeping passwords may have no first super admin', () => {
   expect(dd('First super admin')).toBe('None');
   expect(screen.queryByText('Their password')).toBeNull();
 });
+
+it('shows the proxy on the LAN, not on DigitalOcean', () => {
+  renderStep({ proxy: 'switchyard' });
+  expect(screen.getByText('Proxy').nextElementSibling?.textContent).toBe('Switchyard');
+  cleanup();
+  renderStep({ proxy: 'npm' });
+  expect(screen.getByText('Proxy').nextElementSibling?.textContent).toBe('Nginx Proxy Manager');
+  cleanup();
+  renderStep({ target: 'digitalocean' });
+  expect(screen.queryByText('Proxy')).toBeNull();
+});

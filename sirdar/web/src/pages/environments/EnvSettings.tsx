@@ -12,7 +12,7 @@ import {
 } from '../../lib/appRules';
 import { ipv4Problem, portProblem, refProblem } from '../../lib/envRules';
 import {
-  deployErrorText, errorDetail, getEnvironmentDefaults, updateEnvironment,
+  INTEGRATION_LABEL, deployErrorText, errorDetail, getEnvironmentDefaults, updateEnvironment,
   type DeployTarget, type Deployment, type Environment, type EnvironmentPatch, type VmDefaults,
 } from '../../lib/sirdarApi';
 
@@ -307,6 +307,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
                        disabled={off} hint={'Each service is named <service>.<base domain>.'}
                        onChange={(v) => set('domain', v)} />
             <TextField id="env-set-proxy" label="Proxy IP" value={form.proxy} error={errors.proxy} disabled={off}
+                       hint={env.proxy ? `Published through ${INTEGRATION_LABEL[env.proxy]}, chosen when it was created.` : undefined}
                        onChange={(v) => set('proxy', v)} />
             <TextField id="env-set-bind" label="Bind IP" value={form.bind} error={errors.bind} disabled={off}
                        onChange={(v) => set('bind', v)} />

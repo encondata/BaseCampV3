@@ -1,10 +1,11 @@
 /** Settings › Integrations: the credentials Sirdar publishes environments
- *  with (Cloudflare DNS, Nginx Proxy Manager), builds VMs with (VMware
+ *  with (Cloudflare DNS, and the two LAN proxies: Switchyard and Nginx Proxy
+ *  Manager), builds VMs with (VMware
  *  ESXi; Proxmox under Other hosts) and builds DigitalOcean environments
  *  with (two accounts, Production and Development, each with an API token and
  *  the renewal token its droplets use). Secrets are write-only: a card shows
  *  only whether one is set. Test checks the saved settings; Remove forgets
- *  them (nothing changes in Cloudflare, NPM, ESXi, Proxmox or DigitalOcean). */
+ *  them (nothing changes in Cloudflare, NPM, Switchyard, ESXi, Proxmox or DigitalOcean). */
 import { Fragment, useCallback, useEffect, useState } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
@@ -12,7 +13,7 @@ import { useAuth } from '@portal/auth/AuthContext';
 import Breakable from '../../components/Breakable';
 import CheckList from '../../components/CheckList';
 import {
-  INTEGRATION_LABEL, clearDoAccount, deployErrorText, getDoAccounts, getIntegrations, removeIntegration, testDoAccount,
+  INTEGRATION_LABEL, SWITCHYARD_OPERATIONS, clearDoAccount, deployErrorText, getDoAccounts, getIntegrations, removeIntegration, testDoAccount,
   testIntegration, type DoAccount, type DoAccountKey, type IntegrationCheck, type IntegrationKind, type Integrations,
 } from '../../lib/sirdarApi';
 import { when } from '../environments/labels';
@@ -23,12 +24,14 @@ import IntegrationModal from './IntegrationModal';
 import ProxmoxModal from './ProxmoxModal';
 
 /** The main cards; Proxmox waits under "Other hosts". */
-const KINDS: IntegrationKind[] = ['cloudflare', 'npm', 'esxi'];
+const KINDS: IntegrationKind[] = ['cloudflare', 'switchyard', 'npm', 'esxi'];
 const PURPOSE: Partial<Record<IntegrationKind, string>> = {
   esxi: 'The VMware ESXi host Sirdar builds a VM on for each ESXi environment.',
   proxmox: 'The Proxmox host Sirdar builds a VM on for each Proxmox environment.',
   cloudflare: 'DNS records for every public service of an environment that publishes.',
-  npm: 'Proxy hosts and certificates for every public service of an environment that publishes.',
+  npm: 'Proxy hosts and certificates for every public service of an environment that publishes through it.',
+  switchyard: 'Hosts for every public service of an environment that publishes through it; Caddy gets the '
+    + 'certificates. The default proxy for new LAN environments.',
 };
 
 /** Whether Sirdar stores this integration's credentials (what Remove forgets). */
@@ -58,6 +61,10 @@ function settingsOf(data: Integrations, kind: IntegrationKind): [string, string]
   if (kind === 'cloudflare') {
     const c = data.cloudflare;
     return [['Zone', c.zone ?? '—'], ['Public IP', c.public_ip ?? '—'], ['API token', set(c.token_set)]];
+  }
+  if (kind === 'switchyard') {
+    const y = data.switchyard;
+    return [['URL', y.url ?? '—'], ['API key', set(y.api_key_set)]];
   }
   const n = data.npm;
   return [['URL', n.url ?? '—'], ['Login email', n.identity ?? '—'],
@@ -177,6 +184,9 @@ export default function IntegrationsSection() {
           </span>
         </div>
         <p className="page-hint">{PURPOSE[kind]}</p>
+        {kind === 'switchyard' && (
+          <p className="page-hint">The API key needs these permissions: {SWITCHYARD_OPERATIONS.join(', ')}.</p>
+        )}
         <dl className="sirdar-kv">
           {settingsOf(data, kind).map(([k, v]) => (
             <Fragment key={k}><dt>{k}</dt><dd className="mono"><Breakable text={v} /></dd></Fragment>
@@ -265,7 +275,8 @@ export default function IntegrationsSection() {
     <section className="sirdar-section">
       <h2>Integrations</h2>
       <p className="page-hint">
-        Environments with Publish on use Cloudflare and Nginx Proxy Manager for their DNS records and proxy hosts;
+        Environments with Publish on use Cloudflare for their DNS records and Switchyard or Nginx Proxy Manager (chosen
+        per environment) for their proxy hosts;
         ESXi environments are built on VMware ESXi. DigitalOcean environments are built in the Production or Development
         account; each has its own token and the renewal token its droplets use. Tokens and passwords are stored
         encrypted and never shown again.
@@ -310,7 +321,7 @@ export default function IntegrationsSection() {
         </div>
       )}
       {data && !mayChange && <p className="page-hint">You can view these settings but not change them.</p>}
-      {editing && data && (editing === 'cloudflare' || editing === 'npm') && (
+      {editing && data && (editing === 'cloudflare' || editing === 'npm' || editing === 'switchyard') && (
         <IntegrationModal kind={editing} current={data} onClose={() => setEditing(null)}
                           onSaved={(saved) => { setData(saved); forget(editing); setEditing(null); }} />
       )}

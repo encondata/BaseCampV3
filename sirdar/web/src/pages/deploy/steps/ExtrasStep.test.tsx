@@ -62,7 +62,19 @@ it('Publish DNS: on with both integrations, off is sent', async () => {
 it('without both integrations Publish is off and says where to set them up', () => {
   renderStep({ publish: false }, { integrations: NO_INTEGRATIONS });
   expect((screen.getByLabelText('Publish DNS') as HTMLInputElement).disabled).toBe(true);
+  expect(screen.getByText(/Set up Cloudflare and Switchyard in Settings › Integrations to publish/)).toBeTruthy();
+  cleanup();
+  renderStep({ publish: false, proxy: 'npm' }, { integrations: NO_INTEGRATIONS });
   expect(screen.getByText(/Set up Cloudflare and Nginx Proxy Manager in Settings › Integrations to publish/)).toBeTruthy();
+});
+
+it('Publish needs the chosen proxy set up', () => {
+  // Cloudflare and NPM are set up, Switchyard isn't.
+  renderStep({ proxy: 'switchyard', publish: false });
+  expect((screen.getByLabelText('Publish DNS') as HTMLInputElement).disabled).toBe(true);
+  cleanup();
+  renderStep({ proxy: 'npm', publish: true });
+  expect((screen.getByLabelText('Publish DNS') as HTMLInputElement).disabled).toBe(false);
 });
 
 it('DigitalOcean always publishes: no Publish switch', () => {

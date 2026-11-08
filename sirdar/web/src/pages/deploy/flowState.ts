@@ -7,8 +7,10 @@ import {
   type AppSwitches, type OptionalApp,
 } from '../../lib/appRules';
 import { ipv4Problem, nameProblem, refProblem } from '../../lib/envRules';
-import type {
-  DeployTarget, DoAccount, DoAccountKey, EnvType, EnvironmentDefaults, Integrations, NewEnvironmentBody, Snapshot,
+import {
+  INTEGRATION_LABEL, PROXY_KINDS,
+  type DeployTarget, type DoAccount, type DoAccountKey, type EnvType, type EnvironmentDefaults, type Integrations,
+  type NewEnvironmentBody, type ProxyKind, type Snapshot,
 } from '../../lib/sirdarApi';
 import { gbOf, isDoTarget, isVmTarget, mbOf, sshTargets } from '../environments/labels';
 import type { RecipeSummary } from '../seed/seedApi';
@@ -47,8 +49,8 @@ export interface FlowState {
   type: EnvType; name: string; gitRef: string; baseDomain: string;
   servers: Servers;
   target: string;
-  /** LAN (VM or SSH): Nginx Proxy Manager's address, and where the ports bind. */
-  proxyIp: string; bindIp: string;
+  /** LAN (VM or SSH): the proxy it publishes through, that proxy's address, and where the ports bind. */
+  proxy: ProxyKind; proxyIp: string; bindIp: string;
   /** VM sizes (app VMs on Blue/Green) and the network: ipCidr is the VM's, or orange's. */
   cores: string; memoryGb: string; diskGb: string;
   ipMode: 'static' | 'dhcp'; ipCidr: string; gateway: string;
@@ -84,25 +86,43 @@ export interface FlowContext {
   recipeLock: string | null;
 }
 
-const npmHost = (i: Integrations | null): string => {
-  if (!i?.npm.url) return '';
-  try { return new URL(i.npm.url).hostname; } catch { return ''; }
+/** The proxy's host, from its URL in Settings › Integrations (the Proxy IP's prefill). */
+export const proxyHost = (i: Integrations | null, proxy: ProxyKind): string => {
+  const url = i?.[proxy].url;
+  if (!url) return '';
+  try { return new URL(url).hostname; } catch { return ''; }
 };
+export const proxyReady = (ctx: FlowContext, proxy: ProxyKind): boolean => !!ctx.integrations?.[proxy].configured;
+/** Switchyard, unless only Nginx Proxy Manager is set up. */
+export function defaultProxy(ctx: FlowContext): ProxyKind {
+  return !proxyReady(ctx, 'switchyard') && proxyReady(ctx, 'npm') ? 'npm' : 'switchyard';
+}
+export const canPublish = (s: FlowState, ctx: FlowContext): boolean =>
+  !!ctx.integrations?.cloudflare.configured && proxyReady(ctx, s.proxy);
+/** A proxy choice; the Proxy IP follows it while it still holds the old proxy's prefill. */
+export function withProxy(s: FlowState, ctx: FlowContext, proxy: ProxyKind): Partial<FlowState> {
+  const prefilled = !s.proxyIp.trim() || s.proxyIp.trim() === proxyHost(ctx.integrations, s.proxy);
+  const next = { ...s, proxy };
+  // Publish stays as chosen; it turns on (the default) when it couldn't be on before.
+  const publish = canPublish(next, ctx) && (s.publish || !canPublish(s, ctx));
+  return { proxy, publish, ...(prefilled ? { proxyIp: proxyHost(ctx.integrations, proxy) } : {}) };
+}
 
 export function initialState(ctx: FlowContext): FlowState {
   const d = ctx.defaults;
   const account = ctx.accounts.find((a) => a.configured && a.key === 'development')?.key
     ?? ctx.accounts.find((a) => a.configured)?.key ?? 'development';
+  const proxy = defaultProxy(ctx);
   return {
     type: 'dev', name: '', gitRef: d.git_ref, baseDomain: '',
     servers: 'single', target: '',
-    proxyIp: npmHost(ctx.integrations), bindIp: d.bind_ip,
+    proxy, proxyIp: proxyHost(ctx.integrations, proxy), bindIp: d.bind_ip,
     cores: String(d.vm.cores), memoryGb: gbOf(d.vm.memory_mb), diskGb: String(d.vm.disk_gb),
     ipMode: 'static', ipCidr: '', gateway: '', purpleIpCidr: '', dataIpCidr: '',
     dataCores: String(d.vm.cores), dataMemoryGb: gbOf(d.vm.memory_mb), dataDiskGb: String(d.vm.disk_gb),
     doAccount: account, dropletSize: d.do.droplet_size, dbSize: d.do.db_size, dbStandby: d.do.db_standby,
     acmeStaging: false, autoActivate: false,
-    publish: !!(ctx.integrations?.cloudflare.configured && ctx.integrations?.npm.configured),
+    publish: !!ctx.integrations?.cloudflare.configured && proxyReady(ctx, proxy),
     apps: { wiki: true, kiosk: true, learn: true, status: true, mailpit: true },
     mailMode: 'mailpit', smtpHost: '', smtpPort: String(d.mail.smtp_port), smtpUsername: '', smtpPassword: '',
     smtpFrom: '', smtpStarttls: true, aiKey: '', digests: '',
@@ -116,14 +136,15 @@ export interface TargetChoice { id: string; label: string; kind: TargetKind; rea
 /** Every target the flow can show for the type and servers chosen, with whether it can be picked now. */
 export function targetChoices(s: FlowState, ctx: FlowContext): TargetChoice[] {
   const doReady = ctx.accounts.some((a) => a.configured && a.region);
-  const npm = !!ctx.integrations?.npm.configured;
+  const anyProxy = PROXY_KINDS.some((p) => proxyReady(ctx, p));
   const out: TargetChoice[] = [];
   if (s.type !== 'production') {
     for (const t of ctx.targets.filter((x) => isVmTarget(x.id))) {
-      const ready = t.available && t.configured && (s.servers === 'single' || npm);
+      const ready = t.available && t.configured && (s.servers === 'single' || anyProxy);
       out.push({ id: t.id, label: t.label, kind: t.id as 'esxi' | 'proxmox', ready,
-                 why: ready ? '' : s.servers === 'bluegreen' && !npm
-                   ? 'Blue/Green on the LAN needs Nginx Proxy Manager (Settings › Integrations).' : 'Not set up yet.' });
+                 why: ready ? '' : s.servers === 'bluegreen' && !anyProxy
+                   ? 'Blue/Green on the LAN needs a proxy: set up Switchyard or Nginx Proxy Manager in Settings › Integrations.'
+                   : 'Not set up yet.' });
     }
   }
   out.push({ id: 'digitalocean', label: 'DigitalOcean', kind: 'digitalocean', ready: doReady,
@@ -147,7 +168,7 @@ export function withRules(s: FlowState, ctx: FlowContext): FlowState {
   return next;
 }
 
-export type Field = 'type' | 'name' | 'gitRef' | 'baseDomain' | 'servers' | 'target' | 'proxyIp' | 'bindIp'
+export type Field = 'type' | 'name' | 'gitRef' | 'baseDomain' | 'servers' | 'target' | 'proxy' | 'proxyIp' | 'bindIp'
   | 'machine' | 'cloud' | 'hosting' | 'publish' | 'apps' | 'mail' | 'digests' | 'aiKey' | 'data' | 'recipe' | 'adminName' | 'adminEmail'
   | 'adminPassword' | 'form';
 export type Errors = Partial<Record<Field, string>>;
@@ -237,6 +258,10 @@ export function stepErrors(step: FlowStep, s: FlowState, ctx: FlowContext): Erro
         return {};
       }
       return only({
+        // Blue/Green switches traffic with it, Publish on or off.
+        proxy: s.servers === 'bluegreen' && !proxyReady(ctx, s.proxy)
+          ? `Blue/Green switches traffic with the proxy: set up ${INTEGRATION_LABEL[s.proxy]} in Settings › Integrations, or choose the other one.`
+          : '',
         proxyIp: ipv4Problem(s.proxyIp, 'proxy IP'), bindIp: ipv4Problem(s.bindIp, 'bind IP'),
         machine: kind === 'esxi' || kind === 'proxmox' ? machineProblem(s, ctx) : '',
       });
@@ -319,6 +344,7 @@ export function buildBody(s: FlowState, ctx: FlowContext, builtSnapshotId = ''):
     };
     return body;
   }
+  body.proxy = s.proxy;
   body.proxy_ip = s.proxyIp.trim();
   body.bind_ip = s.bindIp.trim();
   body.publish = s.publish;
@@ -344,7 +370,7 @@ export const CODE_FIELD: Record<string, Field> = {
   target_invalid: 'target', target_not_configured: 'target', integration_not_configured: 'target',
   vm_not_allowed: 'target', do_not_allowed: 'target', bluegreen_not_allowed: 'target',
   production_requires_digitalocean: 'target', integration_unreadable: 'target',
-  proxy_ip_required: 'proxyIp', proxy_ip_invalid: 'proxyIp', bind_ip_invalid: 'bindIp',
+  proxy_ip_required: 'proxyIp', proxy_ip_invalid: 'proxyIp', bind_ip_invalid: 'bindIp', proxy_invalid: 'proxy',
   vm_invalid: 'machine', vm_cores_invalid: 'machine', vm_memory_invalid: 'machine', vm_disk_invalid: 'machine',
   vm_ip_mode_invalid: 'machine', vm_ip_invalid: 'machine', vm_gateway_invalid: 'machine', ip_in_use: 'machine',
   vm_static_required: 'machine', vm_ips_not_distinct: 'machine', vm_subnet_mismatch: 'machine', ssh_targets_unreadable: 'machine',
@@ -366,7 +392,7 @@ export const CODE_FIELD: Record<string, Field> = {
 export const FIELD_STEP: Record<Field, FlowStep> = {
   type: 'environment', name: 'environment', gitRef: 'environment', baseDomain: 'environment',
   servers: 'servers',
-  target: 'target', proxyIp: 'target', bindIp: 'target', machine: 'target', cloud: 'target',
+  target: 'target', proxy: 'target', proxyIp: 'target', bindIp: 'target', machine: 'target', cloud: 'target',
   hosting: 'extras', publish: 'extras', apps: 'extras', mail: 'extras', digests: 'extras', aiKey: 'extras',
   data: 'data', recipe: 'data', adminName: 'data', adminEmail: 'data', adminPassword: 'data',
   form: 'review',
@@ -396,7 +422,7 @@ export function trafficPlan(s: FlowState, ctx: FlowContext): { kind: 'load_balan
   }
   const first = kind === 'ssh' ? "the SSH target's address"
     : s.ipMode === 'dhcp' && s.servers === 'single' ? "the VM's DHCP address" : ip(s.ipCidr) || 'the first VM';
-  const via = `Nginx Proxy Manager${s.proxyIp ? ` (${s.proxyIp})` : ''}`;
+  const via = `${INTEGRATION_LABEL[s.proxy]}${s.proxyIp ? ` (${s.proxyIp})` : ''}`;
   return { kind: 'proxy', rows: publicApps.map((svc) => ({
     hostname: `${svc}.${domain}`, via,
     to: svc === 'spaces' && s.servers === 'bluegreen' ? `${ip(s.dataIpCidr) || 'the data VM'}:${port(svc)}`

@@ -15,7 +15,9 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 
 import { ApiError } from '@portal/lib/api';
 
-import { CF_CHECK, DO_ACCOUNTS, DO_ACCOUNTS_BOTH, INTEGRATIONS, NO_INTEGRATIONS } from '../environments/testData';
+import {
+  CF_CHECK, DO_ACCOUNTS, DO_ACCOUNTS_BOTH, INTEGRATIONS, NO_INTEGRATIONS, SWITCHYARD_ON,
+} from '../environments/testData';
 
 import IntegrationsSection from './IntegrationsSection';
 
@@ -260,4 +262,29 @@ it("when the accounts can't load, the other cards stay and the error shows", asy
   await screen.findByRole('group', { name: 'Cloudflare' });
   await waitFor(() => expect(screen.getAllByRole('alert').length).toBeGreaterThan(0));
   expect(screen.queryByRole('group', { name: /^DigitalOcean/ })).toBeNull();
+});
+
+it('shows the Switchyard card beside NPM, with the permissions its key needs', async () => {
+  api.getIntegrations.mockResolvedValue({ ...INTEGRATIONS, switchyard: SWITCHYARD_ON });
+  render(<IntegrationsSection />);
+  const sy = await screen.findByRole('group', { name: 'Switchyard' });
+  expect(within(sy).getByText('Configured')).toBeTruthy();
+  expect(within(sy).getByText('https://10.10.48.8:8443')).toBeTruthy();
+  expect(within(sy).getByText('Set', { selector: 'dd' })).toBeTruthy();
+  expect(within(sy).getByText('The API key needs these permissions: status.get, hosts.list, hosts.get, hosts.create, '
+    + 'hosts.update, hosts.delete, config.apply, certs.list, certs.retry.')).toBeTruthy();
+  const names = screen.getAllByRole('group').map((g) => g.getAttribute('aria-label'));
+  expect(names.indexOf('Switchyard')).toBe(names.indexOf('Nginx Proxy Manager') - 1);
+  await userEvent.click(within(sy).getByRole('button', { name: 'Test Switchyard' }));
+  await waitFor(() => expect(api.testIntegration).toHaveBeenCalledWith('switchyard'));
+  await userEvent.click(within(sy).getByRole('button', { name: 'Edit Switchyard' }));
+  expect(screen.getByRole('dialog', { name: 'Switchyard' })).toBeTruthy();
+});
+
+it('an unset Switchyard offers Set up', async () => {
+  render(<IntegrationsSection />);
+  const sy = await screen.findByRole('group', { name: 'Switchyard' });
+  expect(within(sy).getByText('Not set up')).toBeTruthy();
+  expect(within(sy).getByText('Not set', { selector: 'dd' })).toBeTruthy();
+  expect(within(sy).getByRole('button', { name: 'Set up Switchyard' })).toBeTruthy();
 });

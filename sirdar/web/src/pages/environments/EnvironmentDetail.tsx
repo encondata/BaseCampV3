@@ -8,7 +8,7 @@ import { ApiError } from '@portal/lib/api';
 
 import ActivateModal from '../../components/ActivateModal';
 import {
-  errorText, getDeployTargets, getEnvironment, type DeployTarget, type Deployment, type Environment,
+  INTEGRATION_LABEL, errorText, getDeployTargets, getEnvironment, type DeployTarget, type Deployment, type Environment,
 } from '../../lib/sirdarApi';
 
 import BackupsTab from './BackupsTab';
@@ -158,6 +158,7 @@ function EnvironmentPage({ name }: { name: string }) {
       {activating && (
         <ActivateModal envName={env.name} production={env.type === 'production'} slot={activating.slot}
                        fromSlot={env.active_slot} lan={onBluegreen(env)}
+                       proxyLabel={INTEGRATION_LABEL[env.proxy ?? 'npm']}
                        version={env.do?.slots.find((s) => s.slot === activating.slot)?.image_tag
                          ?? env.lan_slots?.find((s) => s.slot === activating.slot)?.image_tag ?? null}
                        onStarted={(dep) => { setActivating(null); started(dep); }}

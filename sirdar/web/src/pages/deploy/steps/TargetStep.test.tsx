@@ -16,8 +16,8 @@ const api = vi.hoisted(() => ({
 }));
 vi.mock('../../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../../lib/sirdarApi')>()), ...api }));
 
-import { DO_ACCOUNTS, DO_ACCOUNTS_BOTH } from '../../environments/testData';
-import { FLOW_TARGETS, flowCtx } from '../flowFixtures';
+import { DO_ACCOUNTS, DO_ACCOUNTS_BOTH, SWITCHYARD_ON } from '../../environments/testData';
+import { FLOW_INTEGRATIONS, FLOW_TARGETS, flowCtx } from '../flowFixtures';
 import { initialState, type Errors, type FlowContext, type FlowState } from '../flowState';
 
 import TargetStep from './TargetStep';
@@ -124,4 +124,34 @@ it('production with the Production account set up: Development is aria-disabled 
   await userEvent.click(dev);
   expect(set).not.toHaveBeenCalledWith({ doAccount: 'development' });
   expect(screen.getByRole('radio', { name: 'Production' }).getAttribute('aria-disabled')).toBeNull();
+});
+
+it('the LAN asks which proxy: Switchyard preselected, an unset one disabled with a pointer', async () => {
+  const both = { integrations: { ...FLOW_INTEGRATIONS, switchyard: SWITCHYARD_ON } };
+  const { set } = await renderStep({ target: 'esxi' }, both);
+  const sy = screen.getByRole('radio', { name: 'Switchyard' });
+  expect(sy.getAttribute('aria-checked')).toBe('true');
+  expect((screen.getByLabelText('Proxy IP') as HTMLInputElement).value).toBe('10.10.48.8');
+  expect(screen.getByText(/Switchyard's LAN address/)).toBeTruthy();
+  await userEvent.click(screen.getByRole('radio', { name: 'Nginx Proxy Manager' }));
+  expect(set).toHaveBeenCalledWith({ proxy: 'npm', publish: true, proxyIp: '10.10.48.6' });
+  cleanup();
+  // Only NPM set up: it is chosen, and Switchyard can't be.
+  await renderStep({ target: 'ssh:lab' });
+  const off = screen.getByRole('radio', { name: 'Switchyard' }) as HTMLButtonElement;
+  expect(off.disabled).toBe(true);
+  expect(screen.getByRole('radio', { name: 'Nginx Proxy Manager' }).getAttribute('aria-checked')).toBe('true');
+  expect(screen.getByText(/Switchyard isn't set up/).textContent).toBe(
+    "Switchyard isn't set up. Add it in Settings › Integrations to use it.");
+  expect(screen.getByRole('link', { name: 'Settings › Integrations' }).getAttribute('href')).toBe('/settings');
+});
+
+it('DigitalOcean has no proxy choice', async () => {
+  await renderStep({ target: 'digitalocean' });
+  expect(screen.queryByRole('radio', { name: 'Switchyard' })).toBeNull();
+});
+
+it('shows the proxy error', async () => {
+  await renderStep({ target: 'esxi' }, {}, { proxy: 'Blue/Green switches traffic with the proxy.' });
+  expect(screen.getByText('Blue/Green switches traffic with the proxy.')).toBeTruthy();
 });

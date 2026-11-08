@@ -9,7 +9,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import type { PublishKind, Integrations } from '../../lib/sirdarApi';
-import { CF_CHECK, INTEGRATIONS, NO_INTEGRATIONS } from '../environments/testData';
+import { CF_CHECK, INTEGRATIONS, NO_INTEGRATIONS, SWITCHYARD_ON } from '../environments/testData';
 
 import IntegrationModal from './IntegrationModal';
 
@@ -24,7 +24,8 @@ function show(kind: PublishKind, current: Integrations = NO_INTEGRATIONS) {
   const onSaved = vi.fn();
   const onClose = vi.fn();
   render(<IntegrationModal kind={kind} current={current} onSaved={onSaved} onClose={onClose} />);
-  return { onSaved, onClose, dialog: screen.getByRole('dialog', { name: kind === 'cloudflare' ? 'Cloudflare' : 'Nginx Proxy Manager' }) };
+  const name = { cloudflare: 'Cloudflare', npm: 'Nginx Proxy Manager', switchyard: 'Switchyard' }[kind];
+  return { onSaved, onClose, dialog: screen.getByRole('dialog', { name }) };
 }
 
 it('sets up Cloudflare: header, the token is required, then it saves', async () => {
@@ -128,4 +129,33 @@ it('Escape and Cancel close it', async () => {
   expect(onClose).toHaveBeenCalledTimes(1);
   await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
   expect(onClose).toHaveBeenCalledTimes(2);
+});
+
+it('sets up Switchyard: the URL and the API key, and lists the permissions the key needs', async () => {
+  const { onSaved, dialog } = show('switchyard');
+  expect(within(dialog).getByText(/The API key needs these permissions: status.get, hosts.list, hosts.get, hosts.create, /))
+    .toBeTruthy();
+  expect(within(dialog).queryByLabelText('Login email')).toBeNull();
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+  expect(within(dialog).getByText('Enter the API key.')).toBeTruthy();
+  await userEvent.type(within(dialog).getByLabelText('URL'), 'https://switchyard.lan:8443');
+  await userEvent.type(within(dialog).getByLabelText('API key'), 'sy_abcdefghijklmnopqrstuvwxyz');
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  expect(api.saveIntegration).toHaveBeenCalledWith('switchyard', {
+    url: 'https://switchyard.lan:8443', api_key: 'sy_abcdefghijklmnopqrstuvwxyz' });
+});
+
+it('Switchyard keeps a stored key unless it is replaced', async () => {
+  const { dialog } = show('switchyard', { ...INTEGRATIONS, switchyard: SWITCHYARD_ON });
+  expect((within(dialog).getByLabelText('URL') as HTMLInputElement).value).toBe('https://10.10.48.8:8443');
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Test' }));
+  await waitFor(() => expect(api.testIntegration).toHaveBeenCalledWith('switchyard', { url: 'https://10.10.48.8:8443' }));
+});
+
+it("a Switchyard key error lands on the key field", async () => {
+  api.saveIntegration.mockRejectedValue(new ApiError(422, 'switchyard_key_invalid'));
+  const { dialog } = show('switchyard', { ...INTEGRATIONS, switchyard: SWITCHYARD_ON });
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+  expect(await within(dialog).findByText(/doesn't look like a Switchyard API key/)).toBeTruthy();
 });

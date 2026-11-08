@@ -1,6 +1,7 @@
 /** Step 5: what will route traffic, read-only. */
 import DataTable from '@portal/components/DataTable';
 
+import { INTEGRATION_LABEL } from '../../../lib/sirdarApi';
 import { targetKind, trafficPlan } from '../flowState';
 
 import type { StepProps } from './EnvironmentStep';
@@ -14,7 +15,7 @@ export default function TrafficStep({ state, ctx }: StepProps) {
       <p className="page-hint">
         {plan.kind === 'load_balancer'
           ? "A DigitalOcean load balancer with a Let's Encrypt certificate sends each name to the live droplet; Sirdar builds it on the first deploy."
-          : `Nginx Proxy Manager gets one proxy host per public app, pointed at the first server.${bg
+          : `${INTEGRATION_LABEL[state.proxy]} gets one proxy host per public app, pointed at the first server.${bg
             ? ' Activate moves every proxy host but spaces to the other app VM.' : ''}`}
       </p>
       {lan && !state.publish && (

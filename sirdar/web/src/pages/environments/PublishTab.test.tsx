@@ -98,7 +98,7 @@ it('Publish now waits for the switch, both integrations and a deployed commit', 
   const off = (await screen.findByRole('button', { name: 'Publish now' })) as HTMLButtonElement;
   expect(off.disabled).toBe(true);
   cleanup();
-  api.getPublishPlan.mockResolvedValue({ ...PUBLISH_PLAN, npm: { configured: false, url: null, error: null } });
+  api.getPublishPlan.mockResolvedValue({ ...PUBLISH_PLAN, proxy: { kind: 'npm', configured: false, url: null, error: null } });
   show(PUBLISHED_ENV);
   const link = await screen.findByRole('link', { name: 'Settings › Integrations' });
   expect(link.getAttribute('href')).toBe('/settings');
@@ -187,7 +187,7 @@ it('while a deployment runs the switch is locked and says why', async () => {
 const DO_PLAN: PublishPlan = {
   ...PUBLISH_PLAN, publish: true,
   cloudflare: { configured: true, zone: 'serversherpa.com', public_ip: '203.0.113.50', error: null },
-  npm: { configured: false, url: null, error: null },
+  proxy: { kind: null, configured: false, url: null, error: null },
   services: PUBLISH_PLAN.services.map((s) => ({
     ...s, proxy: { state: 'unknown', detail: '', origin: null, host_id: null },
     certificate: { state: 'unknown', detail: '', expires_on: null },
@@ -221,4 +221,18 @@ it('DigitalOcean: without Cloudflare it asks for Cloudflare only', async () => {
   show(DO_ENV);
   expect(await screen.findByText(/Set up Cloudflare in/)).toBeTruthy();
   expect((screen.getByRole('button', { name: 'Publish now' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it("names the environment's proxy: Switchyard's errors and set-up", async () => {
+  const env = { ...PUBLISHED_ENV, proxy: 'switchyard' as const };
+  api.getPublishPlan.mockResolvedValue({
+    ...PUBLISH_PLAN, proxy: { kind: 'switchyard', configured: true, url: 'https://10.10.48.8:8443',
+                              error: 'Switchyard rejected the API key.' } });
+  show(env);
+  expect((await screen.findByText(/Switchyard: Switchyard rejected the API key/)).getAttribute('role')).toBe('alert');
+  cleanup();
+  api.getPublishPlan.mockResolvedValue({
+    ...PUBLISH_PLAN, proxy: { kind: 'switchyard', configured: false, url: null, error: null } });
+  show(env);
+  expect(await screen.findByText(/Set up Cloudflare and Switchyard in/)).toBeTruthy();
 });

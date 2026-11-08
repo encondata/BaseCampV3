@@ -2,7 +2,7 @@
  *  VMs, which slot is live, and Activate on the idle one once it ran a deploy. */
 import DataTable from '@portal/components/DataTable';
 
-import type { Environment } from '../../lib/sirdarApi';
+import { INTEGRATION_LABEL, type Environment } from '../../lib/sirdarApi';
 
 import { slotTitle, vmSize, when } from './labels';
 
@@ -16,7 +16,8 @@ export default function LanMachinesSection({ env, canActivate, onActivate }: {
     <section className="sirdar-section" aria-labelledby="sirdar-lan-heading">
       <h2 id="sirdar-lan-heading">Blue/Green</h2>
       <p className="page-hint">
-        Nginx Proxy Manager sends traffic to the live app VM; both app VMs use the data VM's database and storage.
+        {INTEGRATION_LABEL[env.proxy ?? 'npm']} sends traffic to the live app VM; both app VMs use the data VM's database
+        and storage.
       </p>
       <DataTable
         ariaLabel="Blue/Green VMs"

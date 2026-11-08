@@ -1,6 +1,7 @@
 /** Step 4: optional apps, hosting options and integrations. */
 import { AppToggles, DigestsField, Field, MailFields, Segmented, Toggle } from '../../../components/AppsMail';
-import { targetKind } from '../flowState';
+import { INTEGRATION_LABEL } from '../../../lib/sirdarApi';
+import { canPublish as publishable, targetKind } from '../flowState';
 
 import type { StepProps } from './EnvironmentStep';
 
@@ -8,7 +9,7 @@ export default function ExtrasStep({ state, set, errors, ctx }: StepProps) {
   const onDoTarget = targetKind(state.target) === 'digitalocean';
   const production = state.type === 'production';
   const bg = state.servers === 'bluegreen';
-  const canPublish = !!(ctx.integrations?.cloudflare.configured && ctx.integrations?.npm.configured);
+  const canPublish = publishable(state, ctx);
   return (
     <>
       <h3 className="sirdar-sub">Apps</h3>
@@ -54,7 +55,7 @@ export default function ExtrasStep({ state, set, errors, ctx }: StepProps) {
             {canPublish
               ? bg ? 'On: each deploy keeps a Cloudflare record for every public name. Sirdar manages the proxy hosts either way.'
                 : 'On: each deploy keeps a Cloudflare record and a proxy host for every public name.'
-              : 'Set up Cloudflare and Nginx Proxy Manager in Settings › Integrations to publish.'}
+              : `Set up Cloudflare and ${INTEGRATION_LABEL[state.proxy]} in Settings › Integrations to publish.`}
           </p>
           {errors.publish && <p className="form-error" id="flow-publish-error" role="alert">{errors.publish}</p>}
         </>

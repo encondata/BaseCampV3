@@ -1,7 +1,11 @@
-/** Step 3: where Sirdar builds the environment, and that target's details. */
+/** Step 3: where Sirdar builds the environment, and that target's details
+ *  (on the LAN: the proxy it publishes through, its address, the bind IP). */
+import { Link } from 'react-router-dom';
+
 import { arrowNav } from '../../../lib/arrowNav';
+import { INTEGRATION_LABEL, PROXY_KINDS } from '../../../lib/sirdarApi';
 import TargetPanel from '../TargetPanel';
-import { CONNECT_TYPE, targetChoices, targetKind } from '../flowState';
+import { CONNECT_TYPE, proxyReady, targetChoices, targetKind, withProxy } from '../flowState';
 
 import type { StepProps } from './EnvironmentStep';
 
@@ -124,11 +128,34 @@ export default function TargetStep({ state, set, errors, ctx, onTargetsChanged }
 
       {(kind === 'esxi' || kind === 'proxmox' || kind === 'ssh') && (
         <div className="sirdar-flow-grid">
+          <div className="sirdar-span2">
+            <span className="field-label" id="flow-proxy-kind-label">Proxy</span>
+            <div className="segmented" role="radiogroup" aria-labelledby="flow-proxy-kind-label">
+              {PROXY_KINDS.map((p) => {
+                const ready = proxyReady(ctx, p);
+                return (
+                  <button key={p} type="button" role="radio" aria-checked={state.proxy === p}
+                          className={state.proxy === p ? 'on' : ''} tabIndex={state.proxy === p ? 0 : -1}
+                          disabled={!ready} aria-disabled={!ready || undefined} onKeyDown={arrowNav}
+                          onClick={() => { if (ready && state.proxy !== p) set(withProxy(state, ctx, p)); }}>
+                    {INTEGRATION_LABEL[p]}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="page-hint">The proxy this environment's public names go through. It can't change later.</p>
+            {PROXY_KINDS.filter((p) => !proxyReady(ctx, p)).map((p) => (
+              <p key={p} className="page-hint">
+                {INTEGRATION_LABEL[p]} isn't set up. Add it in <Link to="/settings">Settings › Integrations</Link> to use it.
+              </p>
+            ))}
+            {errors.proxy && <p className="form-error" role="alert">{errors.proxy}</p>}
+          </div>
           <div>
             <label className="field-label" htmlFor="flow-proxy">Proxy IP</label>
             <input id="flow-proxy" type="text" value={state.proxyIp} maxLength={45} autoComplete="off" spellCheck={false}
                    aria-invalid={!!errors.proxyIp} onChange={(e) => set({ proxyIp: e.target.value })} />
-            <p className="page-hint">Nginx Proxy Manager's LAN address. The apps trust forwarded headers from it only.</p>
+            <p className="page-hint">{INTEGRATION_LABEL[state.proxy]}'s LAN address. The apps trust forwarded headers from it only.</p>
             {errors.proxyIp && <p className="form-error" role="alert">{errors.proxyIp}</p>}
           </div>
           <div>

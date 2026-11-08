@@ -1,6 +1,6 @@
 /** Set up or change one integration Sirdar publishes with: Cloudflare (zone,
- *  public IP, API token) or Nginx Proxy Manager (URL, login, Let's Encrypt
- *  email, password). The secret is write-only: kept unless replaced, never
+ *  public IP, API token), Nginx Proxy Manager (URL, login, Let's Encrypt
+ *  email, password) or Switchyard (URL, API key). The secret is write-only: kept unless replaced, never
  *  shown. Test tries the values in the form without saving them. */
 import { type RefObject, useEffect, useRef, useState } from 'react';
 
@@ -8,8 +8,8 @@ import CheckList from '../../components/CheckList';
 import SecretField, { type SecretAction } from '../../components/SecretField';
 import { ipv4Problem } from '../../lib/envRules';
 import {
-  INTEGRATION_LABEL, deployErrorText, saveIntegration, testIntegration,
-  type CloudflareBody, type IntegrationCheck, type PublishKind, type Integrations, type NpmBody,
+  INTEGRATION_LABEL, SWITCHYARD_OPERATIONS, deployErrorText, saveIntegration, testIntegration,
+  type CloudflareBody, type IntegrationCheck, type PublishKind, type Integrations, type NpmBody, type SwitchyardBody,
 } from '../../lib/sirdarApi';
 
 type Field = 'zone' | 'ip' | 'url' | 'identity' | 'email' | 'secret' | 'form';
@@ -18,6 +18,7 @@ type Errors = Partial<Record<Field, string>>;
 const CODE_FIELD: Record<string, Field> = {
   zone_invalid: 'zone', public_ip_invalid: 'ip', token_invalid: 'secret', secret_required: 'secret',
   npm_url_invalid: 'url', identity_invalid: 'identity', letsencrypt_email_invalid: 'email', password_invalid: 'secret',
+  switchyard_url_invalid: 'url', switchyard_key_invalid: 'secret',
 };
 const URL_RE = /^https?:\/\/[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:\d{1,5})?\/?$/;
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/;
@@ -26,9 +27,17 @@ const DESCRIPTION: Record<PublishKind, string> = {
     + 'The API token needs DNS edit on the zone.',
   npm: "Sirdar keeps a proxy host and a Let's Encrypt certificate for each public service through the "
     + 'Nginx Proxy Manager API.',
+  switchyard: 'Sirdar keeps a host for each public service through the Switchyard API, and Caddy gets the '
+    + `certificates. The API key needs these permissions: ${SWITCHYARD_OPERATIONS.join(', ')}.`,
 };
-const SECRET_LABEL: Record<PublishKind, string> = { cloudflare: 'API token', npm: 'Password' };
-const SECRET_MISSING: Record<PublishKind, string> = { cloudflare: 'Enter the API token.', npm: 'Enter the password.' };
+const SECRET_LABEL: Record<PublishKind, string> = { cloudflare: 'API token', npm: 'Password', switchyard: 'API key' };
+const SECRET_MISSING: Record<PublishKind, string> = {
+  cloudflare: 'Enter the API token.', npm: 'Enter the password.', switchyard: 'Enter the API key.',
+};
+const URL_HINT: Partial<Record<PublishKind, string>> = {
+  npm: 'Where Sirdar reaches Nginx Proxy Manager, like http://10.10.48.6:81.',
+  switchyard: 'Where Sirdar reaches Switchyard, like https://switchyard.lan:8443.',
+};
 
 function TextField({ id, label, value, error, hint, inputRef, onChange }: {
   id: string; label: string; value: string; error?: string; hint?: string;
@@ -50,10 +59,11 @@ export default function IntegrationModal({ kind, current, onSaved, onClose }: {
 }) {
   const cf = current.cloudflare;
   const npm = current.npm;
-  const secretSet = kind === 'cloudflare' ? cf.token_set : npm.password_set;
+  const sy = current.switchyard;
+  const secretSet = kind === 'cloudflare' ? cf.token_set : kind === 'npm' ? npm.password_set : sy.api_key_set;
   const [zone, setZone] = useState(cf.zone ?? 'serversherpa.com');
   const [ip, setIp] = useState(cf.public_ip ?? '');
-  const [url, setUrl] = useState(npm.url ?? '');
+  const [url, setUrl] = useState((kind === 'switchyard' ? sy.url : npm.url) ?? '');
   const [identity, setIdentity] = useState(npm.identity ?? '');
   // Blank means "the login email"; show it only when it differs.
   const [email, setEmail] = useState(
@@ -85,10 +95,12 @@ export default function IntegrationModal({ kind, current, onSaved, onClose }: {
     };
   }, []);
 
-  const body = (): CloudflareBody | NpmBody => (kind === 'cloudflare'
+  const body = (): CloudflareBody | NpmBody | SwitchyardBody => (kind === 'cloudflare'
     ? { zone: zone.trim(), public_ip: ip.trim(), ...(action === 'set' ? { token: secret } : {}) }
-    : { url: url.trim(), identity: identity.trim(), letsencrypt_email: email.trim(),
-        ...(action === 'set' ? { password: secret } : {}) });
+    : kind === 'switchyard'
+      ? { url: url.trim(), ...(action === 'set' ? { api_key: secret } : {}) }
+      : { url: url.trim(), identity: identity.trim(), letsencrypt_email: email.trim(),
+          ...(action === 'set' ? { password: secret } : {}) });
 
   const validate = (): Errors => {
     const e: Errors = {};
@@ -98,6 +110,8 @@ export default function IntegrationModal({ kind, current, onSaved, onClose }: {
       if (problem) e.ip = problem;
     } else {
       if (!URL_RE.test(url.trim())) e.url = 'Start with http:// or https://, then the host and port only.';
+    }
+    if (kind === 'npm') {
       if (!EMAIL_RE.test(identity.trim())) e.identity = 'Enter an email address.';
       if (email.trim() && !EMAIL_RE.test(email.trim())) e.email = 'Enter an email address, or leave it blank.';
     }
@@ -154,10 +168,13 @@ export default function IntegrationModal({ kind, current, onSaved, onClose }: {
               <TextField id="int-ip" label="Public IP" value={ip} error={errors.ip}
                          hint="The WAN address every A record points at." onChange={edited(setIp)} />
             </>
+          ) : kind === 'switchyard' ? (
+            <TextField id="int-url" label="URL" value={url} error={errors.url} inputRef={firstRef}
+                       hint={URL_HINT.switchyard} onChange={edited(setUrl)} />
           ) : (
             <>
               <TextField id="int-url" label="URL" value={url} error={errors.url} inputRef={firstRef}
-                         hint="Where Sirdar reaches Nginx Proxy Manager, like http://10.10.48.6:81." onChange={edited(setUrl)} />
+                         hint={URL_HINT.npm} onChange={edited(setUrl)} />
               <TextField id="int-identity" label="Login email" value={identity} error={errors.identity}
                          onChange={edited(setIdentity)} />
               <TextField id="int-email" label="Let's Encrypt email" value={email} error={errors.email}
