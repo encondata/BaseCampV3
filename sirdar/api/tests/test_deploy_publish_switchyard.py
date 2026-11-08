@@ -103,10 +103,12 @@ async def test_proxy_creates_hosts_applies_once_and_waits_for_certificates(db, e
     assert "Applied in Switchyard: Sirdar: uat2 proxy hosts\n" in lines
     assert [(s, k, o) for s, k, _, o in await _rows(db)] == sorted(
         (s, SY_HOST, "created") for s in PORTS)
-    # Again: nothing changes, so nothing is applied.
+    # Again: no host changes; the apply runs anyway (a no-op), so one that
+    # failed earlier is never left pending.
     writes = len(_writes(fake))
     again = await _run(db, env, "proxy")
-    assert len(_writes(fake)) == writes and len(fake.applies) == 1
+    assert _writes(fake)[writes:] == [("POST", "/api/config/apply")]
+    assert len(fake.applies) == 2
     assert again[0] == "api.uat2.serversherpa.com: Switchyard host (10.10.48.63:8000), unchanged\n"
 
 
@@ -132,12 +134,14 @@ async def test_proxy_waits_for_certificates_and_times_out(db, env, publish_fakes
     assert sum(sleeps) == switchyard.CERT_TIMEOUT
     assert e.value.reason.startswith("Caddy didn't get a certificate for api.uat2.serversherpa.com"
                                      " within 5 minutes.")
-    # The hosts stay applied and recorded: a retry only waits again.
+    # The hosts stay applied and recorded: a retry changes no host, only
+    # applies (nothing pending) and waits again.
     assert fake.applies == ["Sirdar: uat2 proxy hosts"]
     assert len(await _rows(db)) == len(PORTS)
     fake.issue(*NAMES)
+    writes = len(_writes(fake))
     await _run(db, env, "proxy")
-    assert len(fake.applies) == 1
+    assert _writes(fake)[writes:] == [("POST", "/api/config/apply")]
 
 
 async def test_proxy_corrects_drift_and_keeps_claimed_fields(db, env, publish_fakes):
@@ -278,7 +282,7 @@ async def test_unproxy_leaves_a_host_someone_repurposed(db, env, publish_fakes):
     fake.hosts[hid]["domains"] = ["api.uat2.serversherpa.com", "extra.example.com"]
     await managed(db, env, "api", SY_HOST, hid)
     lines = await _run(db, env, "unproxy")
-    assert hid in fake.hosts and fake.applies == []
+    assert hid in fake.hosts and fake.calls("DELETE", f"/api/hosts/{hid}") == 0
     assert (f"api.uat2.serversherpa.com: Switchyard host #{hid} left in place: it no longer "
             "matches what Sirdar made.\n") in lines
 
@@ -386,3 +390,32 @@ async def test_the_switchyard_kind_exists_in_the_database(db, env):
     await db.commit()                    # NPM's host #1 and Switchyard's #1 both fit
     assert (await db.get(Environment, env.id)).proxy == "switchyard"
     assert DNS != SY_HOST
+
+
+# ---- a failed apply is retried ---------------------------------------------------------
+
+async def test_a_failed_apply_is_applied_by_the_retry(db, env, publish_fakes):
+    fake = publish_fakes.sy
+    fake.apply_errors = 1
+    with pytest.raises(StepFailed):
+        await _run(db, env, "proxy")
+    assert fake.applies == [] and fake.applied == {}       # saved in Switchyard, not live
+    assert len(await _rows(db)) == len(PORTS)
+    lines = await _run(db, env, "proxy")                    # every host is "ok" now
+    assert fake.applies == ["Sirdar: uat2 proxy hosts"]
+    assert fake.applied.keys() == fake.hosts.keys()
+    assert "Applied in Switchyard: Sirdar: uat2 proxy hosts\n" in lines
+
+
+async def test_a_failed_removal_apply_keeps_the_rows_and_the_retry_applies(db, env,
+                                                                          publish_fakes):
+    fake = publish_fakes.sy
+    await _run(db, env, "proxy")
+    fake.apply_errors = 1
+    with pytest.raises(StepFailed):
+        await _run(db, env, "unproxy")
+    assert fake.hosts == {} and len(fake.applied) == len(PORTS)   # Caddy still serves them
+    assert len(await _rows(db)) == len(PORTS)                     # still Sirdar's to remove
+    await _run(db, env, "unproxy")
+    assert fake.applied == {} and await _rows(db) == []
+    assert fake.applies[-1] == "Sirdar: uat2 remove proxy hosts"

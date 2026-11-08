@@ -5,10 +5,10 @@ puts every upstream back (and applies that)."""
 from dataclasses import replace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from sirdar_api.config import get_settings
-from sirdar_api.db.models import EnvironmentService, EsxiVm
+from sirdar_api.db.models import EnvironmentService, EsxiVm, ManagedRecord
 from sirdar_api.deploy import publish, vmcommon
 from sirdar_api.deploy.publish import DNS
 
@@ -143,3 +143,30 @@ async def test_switching_needs_switchyard(db, secrets_key, publish_fakes):  # no
     publish_fakes.sy.key = "sy_wrong"
     reason = await _fails(db, env, "orange")
     assert reason == "Switchyard rejected the API key. Sirdar changed nothing."
+
+
+async def test_a_host_the_failed_switch_created_goes_back_to_the_live_slot(db, lan,
+                                                                          publish_fakes):  # noqa: F811
+    await _switched(db, lan, "orange")
+    # kiosk has no host yet (as if it was turned on since): the switch creates it.
+    kiosk = next(h for h in publish_fakes.sy.hosts.values()
+                 if h["domains"] == ["kiosk.lan9.serversherpa.com"])
+    del publish_fakes.sy.hosts[kiosk["id"]]
+    await db.execute(delete(ManagedRecord).where(ManagedRecord.service == "kiosk",
+                                                 ManagedRecord.kind == publish.SY_HOST))
+    await db.commit()
+    publish_fakes.smoke.set("portal.lan9.serversherpa.com", 502)
+    await _fails(db, lan, "purple")
+    assert _upstreams(publish_fakes)["kiosk.lan9.serversherpa.com"] == ORANGE
+    assert _upstreams(publish_fakes, applied=False)["kiosk.lan9.serversherpa.com"] == ORANGE
+    assert set(_upstreams(publish_fakes).values()) == {ORANGE, DATA}
+
+
+async def test_home_managed_only_in_switchyard_stays_in_a_switch(db, secrets_key,  # noqa: F811
+                                                                 publish_fakes):
+    await configure_esxi(db)
+    await configure(db, npm=False, switchyard=True)
+    env = await make_bluegreen_environment(db, proxy="switchyard")
+    await managed(db, env, "home", publish.SY_HOST, 77, name="lan9.serversherpa.com")
+    ctx = await _ctx(db, env, "orange")
+    assert await publish._home_without_dns(ctx) is False

@@ -1155,12 +1155,15 @@ def still_sirdars_sy_host(found: switchyard.Host, ctx: PublishContext, name: str
 
 
 async def _drop_sy(api: Switchyard | None, ctx: PublishContext, row: ManagedRecord,
-                   out: Output, hosts: list[switchyard.Host] | None) -> str:
+                   out: Output, hosts: list[switchyard.Host] | None, *,
+                   forget: bool = True) -> str:
     """Delete (staged) a host Sirdar created when it still matches, and
-    forget the row. "deleted", "gone" (already) or "kept"."""
+    forget the row (unless `forget` is False: the caller forgets it once the
+    apply went through). "deleted", "gone" (already) or "kept"."""
     if row.origin != "created":
         out(f"{row.name}: left the Switchyard host in place (claimed, not made by Sirdar)\n")
-        await _forget(row.id)
+        if forget:
+            await _forget(row.id)
         return "kept"
     ext = int(row.external_id)
     found = next((h for h in hosts if h.id == ext), None)
@@ -1175,7 +1178,8 @@ async def _drop_sy(api: Switchyard | None, ctx: PublishContext, row: ManagedReco
         result = "deleted"
     else:
         out(f"{row.name}: already gone: Switchyard host #{ext}\n")
-    await _forget(row.id)
+    if forget:
+        await _forget(row.id)
     return result
 
 
@@ -1252,10 +1256,13 @@ async def ensure_switchyard(ctx: PublishContext, out: Output, *, transport,
                 else:
                     out(f"{s.hostname}: Switchyard host ({_sy_target(s)}), unchanged\n")
         except BaseException:
-            if staged:
+            if staged or await _all_rows(ctx.env_id, (SY_HOST,)):
                 await _apply_after_failure(api, ctx, what, out)
             raise
-        if staged:
+        # Always applied while Sirdar manages hosts here, changed this run or
+        # not: an earlier apply that failed after the hosts were saved left
+        # them pending, and an apply with nothing pending changes nothing.
+        if staged or await _all_rows(ctx.env_id, (SY_HOST,)):
             await _apply(api, ctx, what, out)
         await api.wait_for_certificates([s.hostname for s in ctx.services], out)
 
@@ -1269,16 +1276,17 @@ async def remove_switchyard(ctx: PublishContext, out: Output, *, transport) -> N
     cfg = _need_to_remove(ctx.switchyard, "Switchyard")
     async with Switchyard(cfg, transport=transport) as api:
         hosts = await api.hosts()
-        staged = False
         try:
             for row in rows:
-                staged = await _drop_sy(api, ctx, row, out, hosts) == "deleted" or staged
+                await _drop_sy(api, ctx, row, out, hosts, forget=False)
         except BaseException:
-            if staged:
-                await _apply_after_failure(api, ctx, "remove proxy hosts", out)
+            await _apply_after_failure(api, ctx, "remove proxy hosts", out)
             raise
-        if staged:
-            await _apply(api, ctx, "remove proxy hosts", out)
+        # The rows go only once the apply went through: until then Caddy still
+        # serves the names, and a retry (finding the hosts gone) applies again.
+        await _apply(api, ctx, "remove proxy hosts", out)
+    for row in rows:
+        await _forget(row.id)
 
 
 # Smoke test
@@ -1376,13 +1384,15 @@ async def _put_back_sy(ctx: PublishContext, out: Output, recorded: dict[int, dic
             if row is None or row.name not in host.domains:
                 continue
             try:
-                if host.id not in recorded:
-                    if drop_new or row.service not in back:
-                        staged = await _drop_sy(api, ctx, row, out, [host]) == "deleted" or staged
+                new = host.id not in recorded
+                if new and (drop_new or row.service not in back):
+                    staged = await _drop_sy(api, ctx, row, out, [host]) == "deleted" or staged
                     continue
                 if host.type != "proxy":
                     continue                        # a redirect follows no slot
-                want = [dict(u) for u in recorded[host.id]["upstreams"]]
+                # A host the switch created goes to `back` too, as NPM's do.
+                want = [dict(u) for u in (host.raw.get("upstreams") if new
+                                          else recorded[host.id]["upstreams"]) or []]
                 if row.service in back:
                     want = [{**u, "host": back[row.service]} for u in want]
                 if [dict(u) for u in host.raw.get("upstreams") or []] == want:
@@ -1508,7 +1518,7 @@ async def _home_without_dns(ctx: PublishContext) -> bool:
     name = next((s.hostname for s in ctx.services if s.service == home.HOME), None)
     if name is None:
         return False
-    rows = await _all_rows(ctx.env_id, (DNS, PROXY, CERT))
+    rows = await _all_rows(ctx.env_id, (DNS, PROXY, CERT, SY_HOST))
     return not any(r.service == home.HOME and r.name == name for r in rows)
 
 
