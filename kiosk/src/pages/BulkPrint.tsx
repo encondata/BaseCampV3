@@ -26,6 +26,12 @@
  * Two modes, as in the portal: asset label types list the move's assets,
  * container types its containers, each with its own selection and shown
  * rows. A type's `default_copies` seeds copies without ever being saved.
+ *
+ * Printing is the portal's: each label goes to the saved printer with its
+ * offsets and print mode (`stationZpl`); a selection larger than the batch
+ * size runs in the batch window, and each batch ends by waiting for the
+ * printer (`waitForIdle`). Nothing is recorded: no outbox row, no Labeled
+ * scan.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
@@ -34,8 +40,9 @@ import type { ContainerItem, InitiativeAssetRow } from '@portal/lib/api';
 import { relativeTime } from '@portal/lib/format';
 import { isContainerLabelType, isPersonLabelType, vocabLabel, vocabOfKind } from '@portal/lib/labels';
 import {
-  LABEL_TYPE_CUSTOM, bundleAtDpi, bundleByEntity, containerPrintOrder, defaultCopiesFor,
-  dpisByEntity, labelStatusFor, printOrder, readPrintSettings,
+  LABEL_TYPE_CUSTOM, batchBounds, batchCount, blankLabelsZpl, bundleAtDpi, bundleByEntity,
+  containerPrintOrder, defaultCopiesFor, dpisByEntity, labelDots, labelStatusFor, missingLabelIds,
+  printOrder, rackOf, rackSeparatorZpl, readPrintSettings, showsRackName, staleLabelCount,
   type LabelStatus, type PrintSettings,
 } from '@portal/lib/printLabels';
 import PrintAssetList from '@portal/components/labels/PrintAssetList';
@@ -44,6 +51,7 @@ import '@portal/styles/labels.css';
 import '@portal/styles/dashboard.css';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
+import BulkPrintBatchModal, { type BatchPrintState } from '../components/labels/BulkPrintBatchModal';
 import BulkPrintSettingsModal from '../components/labels/BulkPrintSettingsModal';
 import { ChoiceCard } from '../components/printers/ChoiceCard';
 import type {
@@ -51,7 +59,7 @@ import type {
 } from '../lib/api';
 import { cachedBundleTypes, loadBundle, loadVocab } from '../lib/bundleCache';
 import { toPrintAssetRow, toPrintContainerItem } from '../lib/bulkPrintRows';
-import { bulkSettingsModified, writeBulkSettings } from '../lib/bulkPrintSettings';
+import { bulkSettingsModified, stationZpl, writeBulkSettings } from '../lib/bulkPrintSettings';
 import { useKioskSetup } from '../lib/kioskSetup';
 import { labelBackend } from '../lib/labelBackend';
 import { LABEL_SECTIONS, type PrinterSetupRouteState } from '../lib/labelSections';
@@ -60,8 +68,11 @@ import { getAll, readMeta } from '../lib/localDb';
 import { useSyncStatus } from '../lib/sync';
 import { useStationPrinter } from '../lib/useStationPrinter';
 
+/** The pause between labels, as in the portal. */
+const LABEL_DELAY_MS = 100;
 /** The id of Custom's one send when no row is ticked (no row has it). */
 const RAW_ONCE = '';
+const AUTO_NEXT_SECONDS = 5;
 
 const BULK_PATH = LABEL_SECTIONS.find((s) => s.id === 'bulk')!.path;
 const PRINTER_SETUP_PATH = LABEL_SECTIONS.find((s) => s.id === 'printers')!.path;
@@ -125,6 +136,11 @@ export default function BulkPrint() {
     () => (seededCopies === null ? operatorSettings : { ...operatorSettings, copies: seededCopies }),
     [operatorSettings, seededCopies]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [printing, setPrinting] = useState(false);
+  const [inlineProgress, setInlineProgress] = useState<{ done: number; total: number } | null>(null);
+  const [batch, setBatch] = useState<BatchPrintState | null>(null);
+  const batchIdsRef = useRef<string[]>([]);
+  const batchStaleRef = useRef(0);
 
   const initiativeIdRef = useRef(initiativeId);
   initiativeIdRef.current = initiativeId;
@@ -348,22 +364,185 @@ export default function BulkPrint() {
     writeBulkSettings(persisted);
   };
 
+  // ── sending (the portal's, through the saved printer) ────────────────
+  /** One format to the saved printer, with its offsets and print mode. */
+  const sendLabel = (zpl: string, singleCopy = false) => {
+    const printer = station.printer;
+    if (!printer || !station.settings) return Promise.reject(new Error('Print failed'));
+    return printer.send(stationZpl(zpl, settings, station.settings, { singleCopy }));
+  };
+  /** The code to send: a label generated for the saved printer's DPI only. */
+  const zplFor = (entityId: string): string | null => {
+    if (isCustom) return customZpl.trim() || null;
+    const item = byEntity.get(entityId);
+    return item && printerDpi && item.dpi_key === printerDpi ? item.code : null;
+  };
+  const rowById = useMemo(() => new Map((roster ?? []).map((r) => [r.asset_id, r])), [roster]);
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  const rackMode = settings.printByRack && !containerMode;
+  /** Front labels name each rack on its separator and lead the job with
+   *  one; every other type keeps V2's plain blanks between racks. */
+  const rackNames = rackMode && showsRackName(labelType);
+  /** Feed the separator in front of `assetId`'s rack; returns labels fed.
+   *  A Front separator is sized to that asset's own label stock. */
+  const sendSeparator = async (assetId: string, rack: string) => {
+    const count = settings.blanksBetweenRacks;
+    if (count <= 0) return 0;
+    await sendLabel(rackNames ? rackSeparatorZpl(rack, count, labelDots(byEntity.get(assetId), vocab)) : blankLabelsZpl(count), true);
+    return count;
+  };
+
+  /** Send `ids[from..to)`; returns formats sent and blanks fed. */
+  const sendRange = async (ids: string[], from: number, to: number, onSent?: (n: number) => void) => {
+    let formatsSent = 0, blanksSent = 0, skipped = 0;
+    let prevRack: string | null = from > 0 ? rackOf(rowById.get(ids[from - 1])) : null;
+    for (const id of ids.slice(from, to)) {
+      const zpl = zplFor(id);
+      if (!zpl) { skipped += 1; continue; }
+      const rack = rackOf(rowById.get(id));
+      if (rackMode && (prevRack === null ? rackNames : rack !== prevRack)) blanksSent += await sendSeparator(id, rack);
+      await sendLabel(zpl);
+      prevRack = rack;
+      formatsSent += 1;
+      onSent?.(formatsSent);
+      await sleep(LABEL_DELAY_MS);
+    }
+    return { formatsSent, blanksSent, skipped };
+  };
+
   const printableIds = useMemo(
     () => (containerMode
       ? containerPrintOrder(containerSelected, containerDisplayed, settings)
       : printOrder(selected, displayed, settings)),
     [containerMode, containerSelected, containerDisplayed, selected, displayed, settings]);
   const activeSelected = containerMode ? containerSelected : selected;
+  const setActiveSelected = containerMode ? setContainerSelected : setSelected;
   /** What Print sends: the printable selection, or for Custom with nothing
    *  ticked one send of the raw ZPL with no row behind it. */
   const printIds = useMemo(() => (isCustom && activeSelected.length === 0 ? [RAW_ONCE] : printableIds),
     [isCustom, activeSelected.length, printableIds]);
+
+  const validateForPrint = (): { ids: string[]; stale: number } | null => {
+    if (station.state !== 'ready' || !station.printer || !labelType || printIds.length === 0) {
+      setNotice({ type: 'error', message: `Please connect a printer, select a label type, and select ${entityNoun}s to print` });
+      return null;
+    }
+    if (isCustom) {
+      if (!customZpl.trim()) { setNotice({ type: 'error', message: 'Please enter raw ZPL code for custom label printing' }); return null; }
+      return { ids: printIds, stale: 0 };
+    }
+    const missing = missingLabelIds(printableIds, byEntity, printerDpi);
+    if (missing.length > 0) {
+      const unsupported = missing.filter((id) => labelStatusFor(id, byEntity, printerDpi) === 'unsupported').length;
+      setNotice({
+        type: 'error',
+        message: unsupported === missing.length
+          ? `${missing.length} selected ${entityNoun}(s) have labels compiled for a non-Zebra printer`
+          : `${missing.length} selected ${entityNoun}(s) have no ${typeLabel(labelType)} at ${printerDpi} DPI — generate at ${printerDpi} DPI.`,
+        action: { label: 'Deselect missing', onClick: () => { setActiveSelected((s) => s.filter((id) => !missing.includes(id))); setNotice(null); } },
+      });
+      return null;
+    }
+    const stale = staleLabelCount(printableIds, byEntity, printerDpi);
+    return { ids: printableIds, stale };
+  };
+
+  /** One batch: send its range, then wait for the printer to print it
+   *  (the only wait Bulk Print adds), progress following what's queued. */
+  const printBatch = async (batchNumber: number, ids: string[]) => {
+    const { start, end } = batchBounds(batchNumber, settings.batchSize, ids.length);
+    setBatch((b) => b && { ...b, currentBatch: batchNumber, printing: true, finishing: false, batchComplete: false, error: null });
+    try {
+      const { formatsSent, blanksSent } = await sendRange(ids, start, end);
+      setBatch((b) => b && { ...b, finishing: true });
+      const printer = station.printer;
+      if (!printer) throw new Error('Print failed');
+      await printer.waitForIdle((end - start) * (settings.copies || 1) + blanksSent, (queued) => {
+        const printedThisBatch = Math.max(0, Math.min(formatsSent - queued, formatsSent));
+        setBatch((b) => b && { ...b, printedCount: Math.min(start + printedThisBatch, end) });
+      });
+      const allDone = end >= ids.length;
+      setBatch((b) => b && { ...b, printedCount: end, finishing: false, printing: false, batchComplete: true, allComplete: allDone });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Print failed';
+      setBatch((b) => b && { ...b, printing: false, finishing: false, batchComplete: true, error: `Batch ${batchNumber} failed: ${message}` });
+    }
+  };
+
+  /** Print: a selection larger than the batch size runs in batches (the
+   *  batch window); anything else prints inline with no wait. Bulk Print
+   *  records nothing: no outbox row, no Labeled scan. */
+  const handlePrint = async () => {
+    const result = validateForPrint();
+    if (!result) return;
+    const { ids, stale } = result;
+    if (ids.length > settings.batchSize) {
+      batchIdsRef.current = ids;
+      batchStaleRef.current = stale;
+      setBatch({
+        total: ids.length, batchSize: settings.batchSize, currentBatch: 1, totalBatches: batchCount(ids.length, settings.batchSize),
+        printedCount: 0, printing: true, finishing: false, batchComplete: false, allComplete: false,
+        autoPrintNext: false, autoCountdown: null, error: null,
+      });
+      await printBatch(1, ids);
+      return;
+    }
+    setPrinting(true);
+    setInlineProgress({ done: 0, total: ids.length });
+    setNotice({ type: 'info', message: `Printing ${ids.length} label(s)...` });
+    try {
+      const { formatsSent, skipped } = await sendRange(ids, 0, ids.length, (n) => setInlineProgress({ done: n, total: ids.length }));
+      const staleSuffix = stale > 0 ? `. ${stale} used an older template — regenerate for the latest layout.` : '';
+      setNotice(skipped > 0
+        ? { type: 'warning', message: `Printed ${formatsSent} label(s), skipped ${skipped} (no label data)` }
+        : { type: 'success', message: `Successfully printed ${ids.length} label(s)${staleSuffix}` });
+    } catch (err) {
+      setNotice({ type: 'error', message: err instanceof Error ? err.message : 'Print failed' });
+    } finally {
+      setPrinting(false);
+      setInlineProgress(null);
+    }
+  };
+
+  const printNextBatch = () => {
+    const next = (batch?.currentBatch ?? 0) + 1;
+    setBatch((b) => b && { ...b, autoCountdown: null });
+    void printBatch(next, batchIdsRef.current);
+  };
+  /** Reprint sends the current batch again from its first label. */
+  const reprintBatch = () => { if (batch) void printBatch(batch.currentBatch, batchIdsRef.current); };
+  const closeBatch = () => {
+    if (batch?.allComplete) {
+      const stale = batchStaleRef.current;
+      const staleSuffix = stale > 0 ? `. ${stale} used an older template — regenerate for the latest layout.` : '';
+      setNotice({ type: 'success', message: `Successfully printed ${batch.total} label(s)${staleSuffix}` });
+    }
+    setBatch(null);
+  };
+
+  // Auto-next countdown (V2): starts when a batch completes with the toggle on.
+  useEffect(() => {
+    if (!batch) return;
+    const shouldCount = batch.batchComplete && !batch.allComplete && batch.autoPrintNext && !batch.printing && !batch.error;
+    if (shouldCount && batch.autoCountdown === null) setBatch((b) => b && { ...b, autoCountdown: AUTO_NEXT_SECONDS });
+    if (!shouldCount && batch.autoCountdown !== null) setBatch((b) => b && { ...b, autoCountdown: null });
+  }, [batch?.batchComplete, batch?.allComplete, batch?.autoPrintNext, batch?.printing, batch?.error]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!batch || batch.autoCountdown === null) return undefined;
+    if (batch.autoCountdown <= 0) { printNextBatch(); return undefined; }
+    const timer = setTimeout(() => setBatch((b) => b && b.autoCountdown !== null ? { ...b, autoCountdown: b.autoCountdown - 1 } : b), 1000);
+    return () => clearTimeout(timer);
+  }, [batch?.autoCountdown]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const canPrint = station.state === 'ready' && !!station.printer && !!labelType && printIds.length > 0
-    && (isCustom || !!printerDpi);
+    && !printing && !batch;
   const modified = bulkSettingsModified(settings);
-  const readyHint = activeSelected.length === 0
-    ? (isCustom ? `The ZPL prints once; select ${entityNoun}s to print it once per ${entityNoun}` : `Select ${entityNoun}s to print labels`)
-    : `${printableIds.length} label(s) will be printed${activeSelected.length > printableIds.length ? ` · ${activeSelected.length - printableIds.length} selected ${entityNoun}(s) are hidden by the current filters` : ''}`;
+  const readyHint = inlineProgress
+    ? `Printing ${inlineProgress.done} of ${inlineProgress.total}…`
+    : activeSelected.length === 0
+      ? (isCustom ? `The ZPL prints once; select ${entityNoun}s to print it once per ${entityNoun}` : `Select ${entityNoun}s to print labels`)
+      : `${printableIds.length} label(s) will be printed${activeSelected.length > printableIds.length ? ` · ${activeSelected.length - printableIds.length} selected ${entityNoun}(s) are hidden by the current filters` : ''}`;
 
   const head = (
     <div>
@@ -494,8 +673,8 @@ export default function BulkPrint() {
           )}
           <p className="page-hint">{readyHint}</p>
           <div className="plabels-ready-actions">
-            <button type="button" className="btn-solid" disabled={!canPrint}>
-              {`Print ${printIds.length} label${printIds.length === 1 ? '' : 's'}`}
+            <button type="button" className="btn-solid" disabled={!canPrint} onClick={() => void handlePrint()}>
+              {printing ? 'Printing…' : `Print ${printIds.length} label${printIds.length === 1 ? '' : 's'}`}
             </button>
           </div>
         </StepCard>
@@ -524,7 +703,8 @@ export default function BulkPrint() {
                                   selected={containerSelected} onSelectedChange={setContainerSelected}
                                   onDisplayedChange={setContainerDisplayed}
                                   onRefresh={() => void loadRows()}
-                                  refreshing={rowsLoading} resetKey={initiativeId} scroller=".kiosk-main" />
+                                  refreshing={rowsLoading} disabled={printing || !!batch}
+                                  resetKey={initiativeId} scroller=".kiosk-main" />
             )
           ) : roster.length === 0 ? (
             <div className="dir-empty">No assets found on this move</div>
@@ -533,7 +713,7 @@ export default function BulkPrint() {
                             dpisOf={isCustom || !labelType ? null : assetDpis} selected={selected}
                             onSelectedChange={setSelected} onDisplayedChange={setDisplayed}
                             onRefresh={() => void loadRows()} refreshing={rowsLoading}
-                            resetKey={initiativeId} scroller=".kiosk-main" />
+                            disabled={printing || !!batch} resetKey={initiativeId} scroller=".kiosk-main" />
           )}
         </KioskListPrefsProvider>
       </div>
@@ -541,6 +721,12 @@ export default function BulkPrint() {
       {settingsOpen && (
         <BulkPrintSettingsModal settings={settings} onChange={updateSettings}
                                 onClose={() => setSettingsOpen(false)} />
+      )}
+      {batch && (
+        <BulkPrintBatchModal state={batch}
+                             subtitle={`${setup.initiativeName} · ${typeLabel(labelType)} · ${batch.total} labels in ${batch.totalBatches} batches of ${batch.batchSize}`}
+                             onAutoPrintNextChange={(v) => setBatch((b) => b && { ...b, autoPrintNext: v })}
+                             onPrintNext={printNextBatch} onReprint={reprintBatch} onCancel={closeBatch} onDone={closeBatch} />
       )}
     </div>
   );

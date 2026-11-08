@@ -25,6 +25,8 @@ export interface FakeStation {
   sent: string[];
   /** Makes `send` fail (a USB printer unplugged mid-batch). */
   sendError: Error | null;
+  /** Runs before each send is recorded; throwing fails that send. */
+  sendHook?: ((zpl: string) => void) | null;
   connectUsb: () => Promise<void>;
   waitForIdle: (labels: number, onQueued?: (queued: number) => void) => Promise<void>;
   settings: LabelStationSettings | null;
@@ -39,6 +41,7 @@ export function resetStation(station: FakeStation): void {
   station.state = 'ready';
   station.sent = [];
   station.sendError = null;
+  station.sendHook = null;
   station.settings = { ...USB_SETTINGS, printer: { ...USB_SETTINGS.printer } };
 }
 
@@ -56,6 +59,7 @@ export function stationPrinterModule(station: FakeStation) {
     status: async () => IDLE,
     send: async (zpl: string) => {
       if (station.sendError) throw station.sendError;
+      station.sendHook?.(zpl);
       station.sent.push(zpl);
     },
     waitForIdle: (labels: number, onQueued?: (queued: number) => void) => station.waitForIdle(labels, onQueued),
@@ -104,18 +108,20 @@ export const CONTAINERS: KioskContainerRow[] = [
 
 /** A fresh database holding `initiativeId`'s setup and synced rows, the
  *  sync meta naming `syncedFor` (the same move unless a test says not). */
-export async function seedMove(initiativeId = 'i-1', syncedFor = initiativeId): Promise<void> {
+export async function seedMove(
+  initiativeId = 'i-1', syncedFor = initiativeId, assets: KioskAssetRow[] = ASSETS,
+): Promise<void> {
   localStorage.clear();
   closeDb();
   (globalThis as unknown as { indexedDB: IDBFactory }).indexedDB = new IDBFactory();
-  await writeSyncedRows(syncedFor);
+  await writeSyncedRows(syncedFor, assets);
   writeKioskSetup(setupFor(initiativeId));
 }
 
-export async function writeSyncedRows(syncedFor: string): Promise<void> {
+export async function writeSyncedRows(syncedFor: string, assets: KioskAssetRow[] = ASSETS): Promise<void> {
   await replaceAllMulti(
-    [{ store: 'assets', rows: ASSETS }, { store: 'containers', rows: CONTAINERS }],
-    { key: 'sync', value: { initiativeId: syncedFor, assets: ASSETS.length } },
+    [{ store: 'assets', rows: assets }, { store: 'containers', rows: CONTAINERS }],
+    { key: 'sync', value: { initiativeId: syncedFor, assets: assets.length } },
   );
 }
 
