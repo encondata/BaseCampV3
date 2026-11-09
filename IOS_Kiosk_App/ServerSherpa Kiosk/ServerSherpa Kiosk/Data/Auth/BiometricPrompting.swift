@@ -37,3 +37,37 @@ struct SystemBiometricPrompter: BiometricPrompter {
         }
     }
 }
+
+/// `prompter` with a `BiometricPromptProblem` turned into a cancel (nil), after `onProblem` hears
+/// which one (Android `problemAware`): the rules see a cancel, and the screen shows the problem's
+/// line (`BiometricCopy.lockoutCard`, `unavailableSheet`, …) instead of staying silent. Any other
+/// error still throws.
+func problemAware(_ prompter: BiometricPrompter,
+                  onProblem: @escaping @Sendable (BiometricPromptProblem) -> Void) -> BiometricPrompter {
+    ProblemAwarePrompter(base: prompter, onProblem: onProblem)
+}
+
+private struct ProblemAwarePrompter: BiometricPrompter {
+    let base: BiometricPrompter
+    let onProblem: @Sendable (BiometricPromptProblem) -> Void
+
+    func authenticate(reason: String) async throws -> BiometricAuth? {
+        do {
+            return try await base.authenticate(reason: reason)
+        } catch let problem as BiometricPromptProblem {
+            onProblem(problem)
+            return nil
+        }
+    }
+}
+
+/// The last problem a `problemAware` prompter turned into a cancel, for the line under the card or
+/// on the Turn on sheet.
+final class BiometricPromptProblems: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _last: BiometricPromptProblem?
+
+    var last: BiometricPromptProblem? { lock.withLock { _last } }
+
+    func record(_ problem: BiometricPromptProblem) { lock.withLock { _last = problem } }
+}

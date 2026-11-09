@@ -29,7 +29,8 @@ private struct LoginScreenBody: View {
 
     init(container: AppContainer) {
         self.container = container
-        _vm = State(initialValue: LoginViewModel(auth: container.auth, api: container.api))
+        _vm = State(initialValue: LoginViewModel(auth: container.auth, api: container.api,
+                                                 biometric: container.biometric, enrollOffer: container.enrollOffer))
         _pair = State(initialValue: PairViewModel(api: container.api, identity: container.identity, auth: container.auth))
     }
 
@@ -70,7 +71,16 @@ private struct LoginScreenBody: View {
             .animation(.easeOut(duration: 0.15), value: vm.supportOpen)
             .environment(\.colorScheme, .light)
             .tint(LoginTokens.orange)
-            .task { await vm.loadStatus() }
+            // The banners and the device's biometric card load side by side (the card never
+            // waits for the status call).
+            .task {
+                async let status: Void = vm.loadStatus()
+                await vm.loadCard()
+                await status
+            }
+            // The card's prompt starts on its own when the card appears; the view model lets it
+            // run once per screen.
+            .task(id: vm.view) { await vm.autoPrompt(SystemBiometricPrompter()) }
             // Entering the pair view begins pairing, leaving it stops; the whole
             // screen going away (signed in) stops it too.
             .onChange(of: vm.view) { old, new in

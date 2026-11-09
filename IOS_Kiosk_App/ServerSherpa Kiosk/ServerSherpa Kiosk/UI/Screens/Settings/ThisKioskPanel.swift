@@ -1,7 +1,8 @@
 import SwiftUI
 import UIKit
 
-/// Settings › This Kiosk: name, serial, mode, API/portal URLs, version — usable signed out.
+/// Settings › This Kiosk: name, serial, mode, biometric sign-in, API/portal URLs, version — usable
+/// signed out.
 struct ThisKioskPanel: View {
     @Environment(KioskConfig.self) private var config
     @Environment(Identity.self) private var identity
@@ -66,6 +67,7 @@ struct ThisKioskPanel: View {
             }
             SettingsRow(title: "Mode") { Text("iOS").font(KioskType.mono(13)).foregroundStyle(palette.text) }
             SettingsRow(title: "Device model") { Text(DeviceInfo.rawInfo()["model"] ?? "—").font(KioskType.mono(13)).foregroundStyle(palette.text) }
+            BiometricRow()
             SettingsRow(title: "API URL", detail: "Where this kiosk talks to the portal. Must start with http:// or https://. Saving a new API address signs this kiosk out.") {
                 field("https://api.serversherpa.com", $api, url: true).accessibilityIdentifier("api-url")
                     .onChange(of: api) { urlError = nil; typed() }
