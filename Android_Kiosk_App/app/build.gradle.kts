@@ -14,8 +14,8 @@ android {
         applicationId = "com.serversherpa.kiosk"
         minSdk = 30
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "KIOSK_VERSION", "\"$versionName\"")
         buildConfigField("String", "DEFAULT_PORTAL_URL", "\"https://portal.dev.serversherpa.com\"")
