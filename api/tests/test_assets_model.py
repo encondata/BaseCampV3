@@ -12,7 +12,8 @@ from serversherpa.db.models import (
 
 async def test_seeds_present(db):
     cats = (await db.scalars(select(AssetCategory))).all()
-    assert {c.key for c in cats} == {"server", "storage", "network", "power", "other"}
+    assert {c.key for c in cats} == {
+        "server", "storage", "network", "power", "rack", "other"}
     statuses = (await db.scalars(
         select(StatusValue).where(StatusValue.record_type == "asset"))).all()
     keys = {s.key for s in statuses}
