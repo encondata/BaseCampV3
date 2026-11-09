@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     # admin-sent account invites (POST /users with invite, POST /users/{id}/invite)
     invite_ttl_minutes: int = 1440                # invite link lifetime (24 hours)
 
-    # ── Kiosk biometric sign-in (Android key attestation) ──
+    # ── Kiosk biometric sign-in (Android key attestation, iOS App Attest) ──
     # SHA-256 digests of the kiosk app's signing certificates that may enroll
     # a biometric key (release upload key, Play app signing key, and the debug
     # key in development): comma-separated hex, colons and case ignored.
@@ -73,6 +73,8 @@ class Settings(BaseSettings):
     kiosk_signing_digests: Annotated[list[str], NoDecode] = []
     # Google's attestation revocation list (security/attestation_status.py)
     attestation_status_url: str = "https://android.googleapis.com/attestation/status"
+    # Accept Apple's development App Attest environment (dev only)
+    kiosk_app_attest_development: bool = False
 
     # ── Optional apps (deploy/stack's STACK_APPS) ──────────
     # The optional apps this environment runs: comma-separated, lowercase
