@@ -13,6 +13,7 @@ from pathlib import Path
 import cbor2
 import pytest
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 import serversherpa.security.app_attest as app_attest_module
@@ -93,6 +94,10 @@ def test_expired_credential_cert_is_expired():
     refused(make_attestation(), "expired", now=NOW - timedelta(days=2))
 
 
+def test_expired_intermediate_is_expired():
+    refused(make_attestation(inter_not_after=NOW - timedelta(seconds=1)), "expired")
+
+
 def test_expired_root_is_expired():
     """Unlike Android's anchors, the pinned root's own dates are checked."""
     expired_root = make_root(not_after=NOW - timedelta(days=1))
@@ -109,7 +114,16 @@ def test_missing_extension_is_challenge():
 
 
 def test_key_id_not_hash_of_cert_key():
-    refused(make_attestation(), "key_id", key_id=sha256(b"another key").digest())
+    """credentialId and key_id agree (step 8 passes); only the certificate's
+    key hashes to something else (step 4)."""
+    other = sha256(b"another key").digest()
+    refused(make_attestation(cred_id=other), "key_id", key_id=other)
+
+
+def test_credential_key_not_p256_is_key_id():
+    """A P-384 credential key whose hash is the key id and credentialId:
+    only the curve check refuses it."""
+    refused(make_attestation(cred_curve=ec.SECP384R1()), "key_id")
 
 
 def test_credential_id_mismatch_is_key_id():

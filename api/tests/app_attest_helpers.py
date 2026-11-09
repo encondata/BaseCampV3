@@ -53,11 +53,14 @@ def nonce_extension(nonce: bytes) -> bytes:
 
 
 def cose_key(public_key: ec.EllipticCurvePublicKey) -> bytes:
-    """The credential key as a COSE EC2 key (kty EC2, alg ES256, crv P-256)."""
+    """The credential key as a COSE EC2 key (kty EC2, alg ES256, crv P-256;
+    a P-384 test key gets crv P-384 and 48-byte coordinates)."""
     numbers = public_key.public_numbers()
-    return cbor2.dumps({1: 2, 3: -7, -1: 1,
-                        -2: numbers.x.to_bytes(32, "big"),
-                        -3: numbers.y.to_bytes(32, "big")})
+    size = (public_key.curve.key_size + 7) // 8
+    crv = {256: 1, 384: 2}[public_key.curve.key_size]
+    return cbor2.dumps({1: 2, 3: -7, -1: crv,
+                        -2: numbers.x.to_bytes(size, "big"),
+                        -3: numbers.y.to_bytes(size, "big")})
 
 
 def build_auth_data(*, app_id: str, counter: int, aaguid: bytes, cred_id: bytes,
@@ -120,6 +123,8 @@ def make_attestation(*, fmt: str = "apple-appattest", x5c: list[bytes] | None = 
                      aaguid: bytes = PRODUCTION, counter: int = 0, app_id: str = APP_ID,
                      cred_id: bytes | None = None, nonce_override: bytes | None = None,
                      no_extension: bool = False, cred_not_after: datetime | None = None,
+                     inter_not_after: datetime | None = None,
+                     cred_curve: ec.EllipticCurve | None = None,
                      root_key_name: str | None = None,
                      auth_data: bytes | None = None) -> Built:
     """credential certificate → intermediate → root; the object passes every
@@ -128,12 +133,14 @@ def make_attestation(*, fmt: str = "apple-appattest", x5c: list[bytes] | None = 
     `root_key_name` signs the intermediate with another root (same subject
     name, different key); `built.root` stays the default root, so pinning it
     refuses the chain. `x5c` replaces the certificate list, and `auth_data`
-    the whole authData."""
+    the whole authData. `cred_curve` gives the credential certificate a key
+    on another curve; key_id and credentialId still follow that key."""
     pinned = make_root()
     signer = make_root(root_key_name) if root_key_name else pinned
     signer_key = ec_key(root_key_name or "root", ec.SECP384R1())
     inter_key = ec_key("intermediate", ec.SECP384R1())
-    cred_key = ec_key("credential", ec.SECP256R1())
+    cred_key = (ec_key(f"credential-{cred_curve.name}", cred_curve) if cred_curve
+                else ec_key("credential", ec.SECP256R1()))
 
     key_id = sha256(x963(cred_key.public_key())).digest()
     auth = auth_data if auth_data is not None else build_auth_data(
@@ -144,7 +151,8 @@ def make_attestation(*, fmt: str = "apple-appattest", x5c: list[bytes] | None = 
     inter = make_cert(subject=INTERMEDIATE_NAME, issuer=signer.subject,
                       public_key=inter_key.public_key(), signing_key=signer_key,
                       serial=0x2002, not_before=datetime(2020, 3, 18, tzinfo=UTC),
-                      not_after=datetime(2030, 3, 13, tzinfo=UTC), ca=True)
+                      not_after=inter_not_after or datetime(2030, 3, 13, tzinfo=UTC),
+                      ca=True)
     extensions = ([] if no_extension
                   else [x509.UnrecognizedExtension(APP_ATTEST_OID, nonce_extension(nonce))])
     cred = make_cert(subject=_name(key_id.hex()), issuer=INTERMEDIATE_NAME,
