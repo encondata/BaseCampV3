@@ -265,3 +265,50 @@ Check:
 Touch ID needs a Touch ID device; none is known.
 
 **Signing risk:** automatic signing must add App Attest to the App ID. If `xcodebuild -allowProvisioningUpdates` can't, Jimmy ticks the App Attest capability once in Xcode.
+
+## Implementation notes (2026-11-09)
+
+Built on branch `ios-biometric-sign-in` by subagent-driven development: seven tasks, a per-task review with fix rounds, and a five-lens final review whose serious findings were each checked by a second, adversarial agent.
+
+**Rulings that changed or sharpened the design**
+- **App Attest off for now.** This is decision 3; Harbor Master SS-521 turns it back on.
+  - Unattested iOS keys are stored as `security_level = "unattested"`, so SS-521 can find and revoke them.
+  - The setting `SS_KIOSK_IOS_REQUIRE_APP_ATTEST` defaults to false.
+  - The verifier, the pinned Apple root and the app's App Attest code all stay in place. The app's switch is `BiometricAppAttest.isEnabled = false`.
+  - SS-521 also needs the entitlements file and `CODE_SIGN_ENTITLEMENTS` back in both app configurations.
+- **Platform must match the device.**
+  - Enroll accepts `platform: "ios"` only on a kiosk whose `sub_type` is `ios`, and `android` only on `android` or `zebra`. Anything else is 422 `attestation_failed` with reason `platform`.
+  - Without this, an Android phone could take the unattested iOS path and skip Google key attestation.
+- **A personal device's platform.**
+  - A kiosk can be made personal only once its platform is known; otherwise `PUT /devices/{id}/personal` returns 422 `platform_unknown`. Clearing is always allowed.
+  - On a personal device, only the owner's check-in can change the platform family (iOS versus Android/Zebra). That change also clears the assignment and revokes its keys (reason `platform_changed`, audited).
+  - Anyone else's check-in leaves the platform alone and is audited as `platform_change_ignored`.
+  - An admin `PATCH` that changes a personal device's platform family needs the same super-admin gate as the personal assignment, and also clears and revokes.
+- **No auto prompt right after Sign out.** Face ID is passive, so the once-per-screen auto prompt would sign the person straight back in. After an explicit Sign out the card shows and waits for a tap. A launch, a session end or a failed restore still prompts on its own.
+- **No auto prompt while Settings or the support card is open** on the sign-in screen. The card's links are disabled while a sign-in is running.
+- **Detecting a changed face or finger.** A Secure Enclave key lookup doesn't notice `.biometryCurrentSet` invalidation, so the key store also saves the biometric domain state (`domainState.biometry.stateHash`) at create. A mismatch reads as "gone": the key is forgotten on the device and the app falls back to the password form. A Keychain that throws is "unusable this time" and never forgets the key.
+- **Proof signature.** Enroll always sends a Secure Enclave signature over the enroll nonce, made behind the one Face ID prompt.
+- **Words.** The copy names the device's biometric from `LAContext.biometryType` even during a lockout. The no-biometric fallback guesses from the Home button.
+- **Undecodable answers.** A 2xx answer the app can't decode reads as "Something went wrong", not "try again", matching Android.
+- **Late answers.** A late `/challenge` answer never deletes a newer key.
+
+**Owed**
+- **Device pass.** On Jimmy's iPad Pro 13 against the dev stack:
+  - enroll, then sign in;
+  - cancel;
+  - lockout;
+  - expired;
+  - add an alternate appearance, then the card should fall back;
+  - Sign out, then no auto prompt;
+  - Forget from the app, /me and the device page;
+  - clear the assignment;
+  - check the sheet's size on iPad and iPhone;
+  - check that the state hash stays the same across relaunch and reboot.
+- **SS-521.** Paid Apple Developer Program; restore the entitlements; require App Attest; revoke `unattested` keys. Also refuse unattested keys at sign-in once the requirement is on.
+- **Portal.** The browser session owns it: "fingerprint"/"phone" copy, the `security_level` type in `api.ts` (add `secure_enclave`, `unattested`), and copy for `platform_unknown` and the PATCH 403.
+- **Known residuals.**
+  - The platform is self-reported until a device is personal.
+  - A major iPadOS update may change the state hash once, falling back to the password form.
+  - The enrollment isn't tied to the API host, so switching servers forgets it.
+  - Every ignored check-in writes a `platform_change_ignored` audit row.
+- **Pre-existing.** On main, `JavaScriptLabelEngineTests/theReferenceCasesPrintByteForByte` fails: the iOS label reference cases went stale after main's label changes.
