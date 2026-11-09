@@ -54,6 +54,63 @@ struct KioskAuthTests {
         #expect(h.auth.can("kiosk", "view")); #expect(!h.auth.can("labels", "view"))
     }
 
+    @Test func loginRecordsCurrentSignInWithTheTypedEmail() async throws {
+        let h = Harness()
+        h.api.loginResult = { fakeSession() }
+        #expect(h.auth.currentSignIn == nil)
+        try await h.auth.login(email: "tina@example.com", password: "pw")
+        #expect(h.auth.currentSignIn == CurrentSignIn(method: .password, email: "tina@example.com"))
+    }
+
+    @Test func moveLoginLeavesNoCurrentSignIn() async throws {
+        let h = Harness()
+        h.api.loginResult = { fakeSession() }
+        h.api.moveLoginResult = { _ in fakeSession() }
+        try await h.auth.login(email: "tina@example.com", password: "pw")
+        try await h.auth.moveLogin(password: "move")
+        #expect(h.auth.currentSignIn == nil)
+        #expect(h.auth.lastSignIn == .password)   // the heartbeat still reports "password"
+        #expect(h.auth.takePendingSignIn() == .password)
+    }
+
+    @Test func pairLeavesNoCurrentSignIn() async throws {
+        let h = Harness()
+        h.api.loginResult = { fakeSession() }
+        try await h.auth.login(email: "tina@example.com", password: "pw")
+        await h.auth.completePair(fakeSession())
+        #expect(h.auth.currentSignIn == nil)
+    }
+
+    @Test func restoreLeavesNoCurrentSignIn() async throws {
+        let h = Harness()
+        h.api.loginResult = { fakeSession() }
+        try await h.auth.login(email: "tina@example.com", password: "pw")
+        h.refresher.refreshResult = { fakeSession() }
+        await h.auth.restore()
+        #expect(h.auth.currentSignIn == nil)
+    }
+
+    @Test func logoutAndEndSessionClearCurrentSignIn() async throws {
+        let h = Harness()
+        h.api.loginResult = { fakeSession() }
+        try await h.auth.login(email: "tina@example.com", password: "pw")
+        await h.auth.logout()
+        #expect(h.auth.currentSignIn == nil)
+        try await h.auth.login(email: "tina@example.com", password: "pw")
+        #expect(h.auth.currentSignIn != nil)
+        h.auth.endSession()
+        #expect(h.auth.currentSignIn == nil)
+    }
+
+    @Test func signInWithBiometricMarksABiometricSignIn() {
+        let h = Harness()
+        h.auth.signInWithBiometric(fakeSession())
+        #expect(h.auth.takePendingSignIn() == .biometric)
+        #expect(h.auth.currentSignIn?.method == .biometric)
+        #expect(h.auth.lastSignIn == .biometric)
+        if case .authed = h.auth.state {} else { Issue.record("expected authed") }
+    }
+
     @Test func loginFailurePropagatesAndStaysPut() async {
         let h = Harness()
         do { try await h.auth.login(email: "a@b.c", password: "bad"); Issue.record("should throw") }

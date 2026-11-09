@@ -1,7 +1,13 @@
 import Foundation
 import Observation
 
-enum LoginMethod: String, Sendable { case password, link }
+enum LoginMethod: String, Sendable { case password, link, biometric }
+
+/// How the person now signed in on this kiosk, and the email they typed (password only).
+struct CurrentSignIn: Equatable, Sendable {
+    let method: LoginMethod
+    let email: String?
+}
 
 enum AuthState: Equatable {
     case loading, anon
@@ -31,6 +37,9 @@ final class KioskAuth {
     /// How the person signed in on this kiosk (nil after a cookie restore): a later sign-in beat
     /// (Kiosk Setup's station key retry) reports the same method.
     @ObservationIgnored private(set) var lastSignIn: LoginMethod?
+    /// The live session's sign-in: login() records the typed email. Move logins, pairs and cookie
+    /// restores leave it nil, and so do logout and endSession.
+    private(set) var currentSignIn: CurrentSignIn?
 
     /// Runs first in `logout()`; the container points it at `heartbeat.stop()` and the print
     /// jobs' reset.
@@ -53,9 +62,11 @@ final class KioskAuth {
     /// Cookie restore on launch.
     func restore() async {
         if let data = await refresher.refresh() {
+            currentSignIn = nil
             apply(data)
         } else {
             onRestoreFailed?()
+            currentSignIn = nil
             state = .anon
         }
     }
@@ -64,14 +75,17 @@ final class KioskAuth {
         let data = try await api.login(email: email, password: password)
         pendingSignIn = .password
         lastSignIn = .password
+        currentSignIn = CurrentSignIn(method: .password, email: email)
         apply(data)
     }
 
-    /// The web's rule: the heartbeat only knows password | link, so a move password is "password".
+    /// A move password is reported to the heartbeat as "password", though it is not a personal
+    /// sign-in (no current sign-in, so nothing offers enrollment from it).
     func moveLogin(password: String) async throws {
         let data = try await api.moveLogin(password: password)
         pendingSignIn = .password
         lastSignIn = .password
+        currentSignIn = nil
         apply(data)
     }
 
@@ -81,6 +95,15 @@ final class KioskAuth {
         await refresher.adopt(data, cookie: cookie)
         pendingSignIn = .link
         lastSignIn = .link
+        currentSignIn = nil
+        apply(data)
+    }
+
+    /// A biometric sign-in: the API layer already stored the session and refresh cookie.
+    func signInWithBiometric(_ data: SessionData) {
+        pendingSignIn = .biometric
+        lastSignIn = .biometric
+        currentSignIn = CurrentSignIn(method: .biometric, email: nil)
         apply(data)
     }
 
@@ -90,6 +113,7 @@ final class KioskAuth {
     func logout() async {
         onLogout?()
         state = .anon
+        currentSignIn = nil
         let serial = identity.current.serial
         let credentials = await refresher.signOutLocally()
         let api = self.api
@@ -102,6 +126,7 @@ final class KioskAuth {
     /// The session died underneath us (SessionCoordinator).
     func endSession() {
         onSessionEnded?()
+        currentSignIn = nil
         state = .anon
     }
 

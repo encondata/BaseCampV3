@@ -303,6 +303,37 @@ final class URLSessionKioskApi: KioskApi {
         return response.data
     }
 
+    // MARK: biometric sign-in
+
+    func biometricEnrollChallenge(serial: String) async throws -> String {
+        let out: BiometricEnrollChallengeOut = try Self.parse(await authed {
+            try Self.request(Self.url("\($0)/kiosk/biometric/enroll-challenge"), post: BiometricSerialIn(serial: serial))
+        })
+        return out.nonce
+    }
+
+    func biometricEnroll(_ body: BiometricIosEnrollIn) async throws -> BiometricEnrollOut {
+        try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/biometric/enroll"), post: body) })
+    }
+
+    func biometricChallenge(serial: String) async throws -> BiometricChallengeOut {
+        try Self.parse(await plain { try Self.request(Self.url("\($0)/kiosk/biometric/challenge"), post: BiometricSerialIn(serial: serial)) })
+    }
+
+    func biometricSignIn(keyId: String, challenge: String, signature: String) async throws -> SessionData {
+        let response = try await plain {
+            try Self.request(Self.url("\($0)/kiosk/biometric/sign-in"), post: BiometricSignInIn(keyId: keyId, challenge: challenge, signature: signature))
+        }
+        return try await signedIn(response)
+    }
+
+    func biometricForget(serial: String) async throws {
+        let response = try await authed { try Self.request(Self.url("\($0)/kiosk/biometric?serial=\(Self.q(serial))"), "DELETE") }
+        guard (200..<300).contains(response.http.statusCode) else {
+            throw ApiError.from(status: response.http.statusCode, body: response.data)
+        }
+    }
+
     // MARK: scans, RFID, timeclock
 
     func postScans(_ body: KioskScanBatchIn) async throws -> KioskScanBatchOut {

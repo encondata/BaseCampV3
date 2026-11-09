@@ -66,6 +66,28 @@ protocol KioskApi: Sendable {
     /// kiosk, shown once. 403 `not_signed_in_here` until a heartbeat registered the session.
     func issueStationKey(serial: String) async throws -> String
 
+    // MARK: biometric sign-in (errors as {"detail":{"code":...}})
+
+    /// `POST /kiosk/biometric/enroll-challenge` under the session: the enroll nonce. 403
+    /// enroll_window_closed (not a fresh password session here) / not_personal_device, 423 read_only_mode.
+    func biometricEnrollChallenge(serial: String) async throws -> String
+    /// `POST /kiosk/biometric/enroll` under the session. 403 enroll_window_closed /
+    /// not_personal_device, 422 bad_enroll_nonce (expired, spent or someone else's: never a 401,
+    /// which would end the session) / attestation_failed (detail["reason"]) /
+    /// attestation_status_unavailable, 423 read_only_mode.
+    func biometricEnroll(_ body: BiometricIosEnrollIn) async throws -> BiometricEnrollOut
+    /// `POST /kiosk/biometric/challenge`, no session: whose card this device shows, and the
+    /// challenge to sign. 404 no_biometric, 429 biometric_rate_limited.
+    func biometricChallenge(serial: String) async throws -> BiometricChallengeOut
+    /// `POST /kiosk/biometric/sign-in`, no session; stores the session like `login` (the server
+    /// sets the refresh cookie and binds the session to the serial). 429 biometric_rate_limited,
+    /// 401 bad_challenge / bad_signature / account_disabled, 404 no_biometric, 403
+    /// not_personal_device / kiosk_not_allowed / password_change_required / biometric_expired.
+    func biometricSignIn(keyId: String, challenge: String, signature: String) async throws -> SessionData
+    /// `DELETE /kiosk/biometric?serial=` under the session: revokes the person's own key here
+    /// (204 always).
+    func biometricForget(serial: String) async throws
+
     // MARK: Rolodex (admins, rank 60+; 403 forbidden / move_locked otherwise)
 
     /// `GET /kiosk/rolodex/workers`: every worker, without email or phone.
