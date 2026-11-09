@@ -502,7 +502,13 @@ async def heartbeat(
         # omits `manufacturer`/`datawedge` must not demote a known Zebra back
         # to plain `android` when the stored payload still identifies it.
         device.raw_info = {**(device.raw_info or {}), **body.raw_info}
+        old_sub_type = device.sub_type
         device.sub_type = kiosk_sub_type(body.mode, device.raw_info)
+        # A personal device that now checks in as another platform (an
+        # Android phone as an iPad, say) loses its assignment and its keys;
+        # the check-in itself still goes through.
+        await biometric.clear_personal_on_platform_change(
+            db, device, old_sub_type, actor_id=actor.person.id, ip=client_ip(request))
         device.last_seen_at = now
         device.updated_at = now
     if body.sign_in:

@@ -35,6 +35,8 @@ from tests.test_kiosk_biometric_api import (
     _code,
     _enroll,
     _enroll_challenge,
+    _enrolled,
+    _key,
     _kiosk_login,
     _make_personal,
     _person,
@@ -524,6 +526,102 @@ async def test_device_of_another_kind_takes_neither_path(
         assert a.status_code == 422 and a.json()["detail"] == PLATFORM, (sub_type, a.text)
     assert attest.calls == [] and app_attest.calls == []
     assert await _keys(db) == []
+
+
+# ── a personal device that changes platform ─────────────────────────
+# A check-in that moves a personal device to another platform family
+# (iOS; Android with Zebra; any other sub_type alone) means it is no longer
+# the phone that was assigned: the assignment is cleared and its live keys
+# revoked, so a script can't turn an Android phone into an "iPad" to take
+# the unattested iOS path. The check-in itself still succeeds.
+
+async def _device(db, serial: str) -> Device:
+    db.expire_all()
+    return await db.scalar(select(Device).where(Device.serial == serial))
+
+
+async def _audits(db, action: str, entity_id: str) -> list[dict]:
+    db.expire_all()
+    return [row.changes for row in (await db.scalars(select(AuditLog).where(
+        AuditLog.action == action, AuditLog.entity_id == entity_id))).all()]
+
+
+async def test_personal_android_checking_in_as_ios_loses_assignment_and_key(
+        client, db, seeded_user, app_attest, attest):  # noqa: F811
+    hdrs, person, key_id, _ = await _enrolled(db, client, attest)
+    # the attack: a nonce taken while it is still an Android phone, then a
+    # check-in as an iPad, then the unattested iOS enroll
+    nonce = await _nonce(client, hdrs, ANDROID_SERIAL)
+    await _beat_ios(client, hdrs, ANDROID_SERIAL, login_method="password")
+    device = await _device(db, ANDROID_SERIAL)
+    assert device.sub_type == "ios"
+    assert (device.personal_person_id, device.personal_set_at, device.personal_set_by) \
+        == (None, None, None)
+    key = await _key(db, key_id)
+    assert key.revoked_at is not None and key.revoke_reason == "platform_changed"
+    [cleared] = await _audits(db, "personal_cleared", str(device.id))
+    assert cleared["person_id"] == {"from": str(person.id), "to": None}
+    assert cleared["sub_type"] == {"from": "android", "to": "ios"}
+    assert cleared["reason"] == "platform_changed"
+    [revoked] = await _audits(db, "biometric_revoke", key_id)
+    assert revoked["reason"] == "platform_changed"
+
+    key2 = ec.generate_private_key(ec.SECP256R1())
+    r = await _enroll_ios(client, hdrs, _unattested(_ios_body(nonce, key2, serial=ANDROID_SERIAL)))
+    assert r.status_code == 403 and _code(r) == "not_personal_device"
+    r = await _enroll_challenge(client, hdrs, ANDROID_SERIAL)
+    assert r.status_code == 403 and _code(r) == "not_personal_device"
+    assert app_attest.calls == []
+    assert [k.id for k in await _keys(db) if k.revoked_at is None] == []
+    c = await _challenge(client, ANDROID_SERIAL)
+    assert c.status_code == 404 and _code(c) == "no_biometric"
+
+
+async def test_personal_ipad_checking_in_as_android_loses_assignment_and_key(
+        client, db, seeded_user, app_attest):
+    hdrs, _, r, _ = await _ios_enrolled(db, client)
+    assert r.status_code == 200, r.text
+    await _beat(client, hdrs, SERIAL, login_method="password")    # mode "android"
+    device = await _device(db, SERIAL)
+    assert device.sub_type == "android" and device.personal_person_id is None
+    key = await _key(db, r.json()["key_id"])
+    assert key.revoke_reason == "platform_changed"
+    [cleared] = await _audits(db, "personal_cleared", str(device.id))
+    assert cleared["sub_type"] == {"from": "ios", "to": "android"}
+
+
+async def test_android_to_zebra_keeps_assignment_and_key(
+        client, db, seeded_user, attest):  # noqa: F811
+    hdrs, person, key_id, _ = await _enrolled(db, client, attest)
+    await _beat(client, hdrs, ANDROID_SERIAL, login_method="password",
+                raw_info={"manufacturer": "Zebra Technologies"})
+    device = await _device(db, ANDROID_SERIAL)
+    assert device.sub_type == "zebra" and device.personal_person_id == person.id
+    assert (await _key(db, key_id)).revoked_at is None
+    assert await _audits(db, "personal_cleared", str(device.id)) == []
+    c = await _challenge(client, ANDROID_SERIAL)
+    assert c.status_code == 200, c.text
+
+
+async def test_non_personal_device_changing_platform_is_unaffected(client, db, seeded_user):
+    await _make(db, client, "worker", EMAIL)
+    hdrs = await _kiosk_login(client, EMAIL)
+    await _beat(client, hdrs, "android-not-personal")
+    await _beat_ios(client, hdrs, "android-not-personal")
+    device = await _device(db, "android-not-personal")
+    assert device.sub_type == "ios" and device.personal_person_id is None
+    assert await _audits(db, "personal_cleared", str(device.id)) == []
+
+
+async def test_first_known_platform_keeps_the_assignment(client, db, seeded_user, app_attest):
+    # a personal device with no platform yet (made in the portal before it
+    # ever checked in) learning one is not a change of platform
+    hdrs, person = await _worker_on_ipad(db, client)
+    await _set_sub_type(db, SERIAL, None)
+    await _beat_ios(client, hdrs, SERIAL, login_method="password")
+    device = await _device(db, SERIAL)
+    assert device.sub_type == "ios" and device.personal_person_id == person.id
+    assert await _audits(db, "personal_cleared", str(device.id)) == []
 
 
 async def test_ios_key_lists_as_secure_enclave(client, db, seeded_user, app_attest):

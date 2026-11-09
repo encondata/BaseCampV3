@@ -127,15 +127,12 @@ async def enroll_challenge(
         actor.person.id, actor.session.family_id, body.serial))
 
 
-# The device sub_types each enroll platform is for (kiosk.kiosk_sub_type).
-_ENROLL_SUB_TYPES = {"android": frozenset({"android", "zebra"}), "ios": frozenset({"ios"})}
-
-
 def _platform_matches(platform: str, device: Device) -> bool:
     """Whether `device` may enroll with a `platform` body: an Android phone
     or Zebra handheld only as Android, an iPad or iPhone only as iOS, and
-    any other kiosk never."""
-    return device.sub_type in _ENROLL_SUB_TYPES.get(platform, frozenset())
+    any other kiosk never (biometric.platform_family)."""
+    return (platform in biometric.ENROLL_PLATFORMS
+            and biometric.platform_family(device.sub_type) == platform)
 
 
 def _b64(text: str) -> bytes:

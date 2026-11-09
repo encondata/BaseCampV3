@@ -236,6 +236,48 @@ def signature_valid(public_key_der: bytes, challenge: str, signature: bytes) -> 
 
 # ── keys ────────────────────────────────────────────────────────────
 
+# A kiosk's platform family by sub_type (kiosk.kiosk_sub_type): a Zebra
+# handheld is an Android phone. Any other sub_type is its own family.
+_PLATFORM_FAMILIES = {"android": "android", "zebra": "android", "ios": "ios"}
+# The enroll bodies' platforms, each named after its family.
+ENROLL_PLATFORMS = frozenset({"android", "ios"})
+
+
+def platform_family(sub_type: str | None) -> str | None:
+    """The platform family of a kiosk sub_type: "ios", "android" (a Zebra
+    too), any other sub_type itself, or None while the device's platform
+    isn't known yet."""
+    return _PLATFORM_FAMILIES.get(sub_type, sub_type) if sub_type is not None else None
+
+
+async def clear_personal_on_platform_change(
+    db: AsyncSession, device: Device, old_sub_type: str | None, *,
+    actor_id: uuid.UUID | None, ip: str | None = None,
+) -> bool:
+    """After a check-in set `device.sub_type`: a personal device that moved to
+    another platform family is no longer the phone that was assigned, so its
+    live keys are revoked (reason `platform_changed`) and the assignment is
+    cleared, audited as `personal_cleared` with the old and new sub_type.
+    A move within a family (Android and Zebra), a first known platform and a
+    non-personal device change nothing. Returns whether it cleared. Does not
+    commit."""
+    before = device.personal_person_id
+    old, new = platform_family(old_sub_type), platform_family(device.sub_type)
+    if before is None or old is None or old == new:
+        return False
+    await revoke_keys(db, device_id=device.id, reason="platform_changed",
+                      actor_id=actor_id, ip=ip)
+    device.personal_person_id = None
+    device.personal_set_at = None
+    device.personal_set_by = None
+    audit(db, actor_id=actor_id, entity_type="device", entity_id=str(device.id),
+          action="personal_cleared",
+          changes={"person_id": {"from": str(before), "to": None},
+                   "sub_type": {"from": old_sub_type, "to": device.sub_type},
+                   "reason": "platform_changed"}, ip=ip)
+    return True
+
+
 def shared_station(device: Device) -> bool:
     """A Label, RFID or Time Clock station, or any kiosk holding a station
     key, is shared: it is never anyone's personal phone for biometrics,
