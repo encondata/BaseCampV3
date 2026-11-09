@@ -351,24 +351,29 @@ async def enroll_ios(
     public_key_x963: bytes, app_attest_key_id: bytes | None, attestation: bytes | None,
     proof: bytes, password_sign_in_at: datetime, ip: str | None = None,
 ) -> BiometricKey:
-    """iOS: verify the App Attest statement, which binds the nonce and the
-    Secure Enclave key through clientDataHash, then the key's own signature
-    over the nonce (`proof`), and store the key as `secure_enclave` the way
-    `enroll` stores an Android one. Google's revocation list is Android's
-    and plays no part. The caller has checked the session, the device and
-    the nonce, and holds the device row FOR UPDATE. Does not commit.
-
-    Without an attestation (`app_attest_key_id` and `attestation` both None:
-    App Attest is off in the app until SS-521) the proof is still checked
-    and the key is stored as `unattested`, or refused as
-    attestation_failed{attestation_required} when
-    SS_KIOSK_IOS_REQUIRE_APP_ATTEST is set."""
+    """iOS: check the Secure Enclave key's own signature over the nonce
+    (`proof`) and store the key the way `enroll` stores an Android one,
+    as `secure_enclave` or `unattested`:
+    - with an App Attest statement (`app_attest_key_id` and `attestation`),
+      verify it first (it binds the nonce and the key through
+      clientDataHash); the key is `secure_enclave`;
+    - without one (both None: App Attest is off in the app until SS-521),
+      the key is `unattested`, or refused as
+      attestation_failed{attestation_required} when
+      SS_KIOSK_IOS_REQUIRE_APP_ATTEST is set;
+    - with only one of the two, attestation_failed{parse}: a sent
+      attestation is never dropped.
+    Google's revocation list is Android's and plays no part. The caller has
+    checked the session, the device, its platform and the nonce, and holds
+    the device row FOR UPDATE. Does not commit."""
     public_key_der = _x963_to_spki(public_key_x963)
-    if attestation is None or app_attest_key_id is None:
+    if attestation is None and app_attest_key_id is None:
         if get_settings().kiosk_ios_require_app_attest:
             logger.warning("app attest refused: no attestation and it is required")
             raise BiometricError(422, "attestation_failed", reason="attestation_required")
         security_level = "unattested"
+    elif attestation is None or app_attest_key_id is None:
+        raise BiometricError(422, "attestation_failed", reason="parse")
     else:
         if len(app_attest_key_id) != APP_ATTEST_KEY_ID_LENGTH:
             raise BiometricError(422, "attestation_failed", reason="parse")

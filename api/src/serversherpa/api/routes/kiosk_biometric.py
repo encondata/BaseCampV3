@@ -15,7 +15,9 @@ password sign-in there.
 - Enroll takes `platform`: Android (the default) sends its key attestation
   chain; iOS sends its Secure Enclave key and the key's signature over the
   nonce, plus an App Attest statement when the app has App Attest on
-  (off until SS-521). The gate is the same for both, and so is everything
+  (off until SS-521). The platform must be the device's own (its
+  `sub_type`), so an Android phone never skips Google's key attestation by
+  posing as an iPad. The gate is the same for both, and so is everything
   after enroll.
 - `DELETE ?serial=` (kiosk session): forget the caller's own key on that
   phone. Exempt from the freeze, like forgetting a remembered browser.
@@ -125,6 +127,17 @@ async def enroll_challenge(
         actor.person.id, actor.session.family_id, body.serial))
 
 
+# The device sub_types each enroll platform is for (kiosk.kiosk_sub_type).
+_ENROLL_SUB_TYPES = {"android": frozenset({"android", "zebra"}), "ios": frozenset({"ios"})}
+
+
+def _platform_matches(platform: str, device: Device) -> bool:
+    """Whether `device` may enroll with a `platform` body: an Android phone
+    or Zebra handheld only as Android, an iPad or iPhone only as iOS, and
+    any other kiosk never."""
+    return device.sub_type in _ENROLL_SUB_TYPES.get(platform, frozenset())
+
+
 def _b64(text: str) -> bytes:
     """Strict standard base64; anything else is attestation_failed{parse}."""
     try:
@@ -167,6 +180,10 @@ async def enroll(
     if (nonce.person_id != actor.person.id or nonce.family_id != actor.session.family_id
             or nonce.serial != body.serial or await biometric.nonce_spent(db, nonce, device.id)):
         raise _err(422, "bad_enroll_nonce")
+    # before any attestation or proof work; nothing is written, so the
+    # nonce stays good for the device's own platform
+    if not _platform_matches(body.platform, device):
+        raise _err(422, "attestation_failed", reason="platform")
     # what proves where the key lives, decoded before anything is written
     if body.platform == "ios":
         enroll_key, evidence = biometric.enroll_ios, _decode_ios(body)

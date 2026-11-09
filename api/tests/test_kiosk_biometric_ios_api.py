@@ -1,7 +1,10 @@
 """Kiosk biometric sign-in on iOS: the `platform: "ios"` branch of
-POST /kiosk/biometric/enroll (App Attest at enroll, a Secure Enclave key
-stored as `secure_enclave`), and sign-in with that key through the
-unchanged routes.
+POST /kiosk/biometric/enroll, and sign-in with that key through the
+unchanged routes. An enroll with an App Attest statement stores the Secure
+Enclave key as `secure_enclave`; one without (App Attest is off in the app
+until SS-521) stores it as `unattested`, unless
+SS_KIOSK_IOS_REQUIRE_APP_ATTEST refuses it. The body's platform must be the
+device's own.
 
 The App Attest verifier is patched with a fake that records what it was
 asked to check; the verifier has its own tests (test_app_attest.py). The
@@ -19,13 +22,15 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from sqlalchemy import select
 
-from serversherpa.config import get_settings
-from serversherpa.db.models import AuditLog, BiometricKey
+from serversherpa.config import Settings, get_settings
+from serversherpa.db.models import AuditLog, BiometricKey, Device
 from serversherpa.security.app_attest import KIOSK_IOS_APP_ID
 from serversherpa.security.key_attestation import AttestationError
 from serversherpa.services import biometric
+from tests.test_kiosk_biometric_api import SERIAL as ANDROID_SERIAL
 from tests.test_kiosk_biometric_api import (
     _alice_id,
+    _beat,
     _challenge,
     _code,
     _enroll,
@@ -36,7 +41,7 @@ from tests.test_kiosk_biometric_api import (
     _sign,
     _sign_in,
     _worker_on_phone,
-    attest,  # noqa: F401  (a fixture: the Android enroll in the audit test)
+    attest,  # noqa: F401  (a fixture: the Android enrolls in the audit and platform tests)
 )
 from tests.test_sites_api import login
 from tests.test_status_values_write import PW, _make
@@ -327,11 +332,14 @@ def require_app_attest(monkeypatch):
     get_settings.cache_clear()
     assert get_settings().kiosk_ios_require_app_attest is True
     yield
-    monkeypatch.delenv("SS_KIOSK_IOS_REQUIRE_APP_ATTEST")
+    # back to conftest's pin (a delenv would let a developer's .env through)
+    monkeypatch.setenv("SS_KIOSK_IOS_REQUIRE_APP_ATTEST", "false")
     get_settings.cache_clear()
 
 
 def test_ios_app_attest_is_not_required_by_default():
+    assert Settings.model_fields["kiosk_ios_require_app_attest"].default is False
+    # conftest pins it, so a developer's .env can't flip it under the suite
     assert get_settings().kiosk_ios_require_app_attest is False
 
 
@@ -438,6 +446,84 @@ async def test_ios_unattested_key_lists_as_unattested(client, db, seeded_user, a
     resp = await client.get("/auth/me/biometric-keys", headers=await login(client, EMAIL, PW))
     assert resp.status_code == 200, resp.text
     assert [row["security_level"] for row in resp.json()] == ["unattested"]
+
+
+# ── the body's platform is the device's own ────────────────────────
+
+PLATFORM = {"code": "attestation_failed", "reason": "platform"}
+
+
+async def _set_sub_type(db, serial: str, sub_type: str | None) -> None:
+    db.expire_all()
+    device = await db.scalar(select(Device).where(Device.serial == serial))
+    device.sub_type = sub_type
+    await db.commit()
+
+
+async def test_android_device_never_takes_the_ios_path(
+        client, db, seeded_user, app_attest, attest):  # noqa: F811
+    # an Android phone sending an iOS body would skip Google's key attestation
+    hdrs, _ = await _worker_on_phone(db, client)
+    key = ec.generate_private_key(ec.SECP256R1())
+    nonce = await _nonce(client, hdrs, ANDROID_SERIAL)
+    full = _ios_body(nonce, key, serial=ANDROID_SERIAL)
+    for name, body in {"unattested": _unattested(full), "attested": full,
+                       "bad base64 too": {**_unattested(full), "public_key": "@@"}}.items():
+        r = await _enroll_ios(client, hdrs, body)
+        assert r.status_code == 422, (name, r.text)
+        assert r.json()["detail"] == PLATFORM, name
+    assert app_attest.calls == [] and attest.calls == []
+    assert await _keys(db) == []
+    # the nonce isn't spent: the phone's own Android enroll still takes it
+    a = await _enroll(client, hdrs, ANDROID_SERIAL, nonce=nonce)
+    assert a.status_code == 200, a.text
+    assert a.json()["security_level"] == "strongbox"
+
+
+async def test_zebra_handheld_enrolls_as_android_only(
+        client, db, seeded_user, app_attest, attest):  # noqa: F811
+    hdrs, _ = await _worker_on_phone(db, client)
+    await _beat(client, hdrs, ANDROID_SERIAL, login_method="password",
+                raw_info={"manufacturer": "Zebra Technologies"})
+    db.expire_all()
+    device = await db.scalar(select(Device).where(Device.serial == ANDROID_SERIAL))
+    assert device.sub_type == "zebra"
+    key = ec.generate_private_key(ec.SECP256R1())
+    nonce = await _nonce(client, hdrs, ANDROID_SERIAL)
+    r = await _enroll_ios(client, hdrs, _unattested(_ios_body(nonce, key, serial=ANDROID_SERIAL)))
+    assert r.status_code == 422 and r.json()["detail"] == PLATFORM
+    a = await _enroll(client, hdrs, ANDROID_SERIAL, nonce=nonce)
+    assert a.status_code == 200, a.text
+
+
+async def test_ios_device_never_takes_the_android_path(
+        client, db, seeded_user, app_attest, attest):  # noqa: F811
+    hdrs, _ = await _worker_on_ipad(db, client)
+    nonce = await _nonce(client, hdrs)
+    a = await _enroll(client, hdrs, SERIAL, nonce=nonce)
+    assert a.status_code == 422, a.text
+    assert a.json()["detail"] == PLATFORM
+    assert attest.calls == [] and app_attest.calls == []
+    assert await _keys(db) == []
+    # the nonce isn't spent: the iPad's own iOS enroll still takes it
+    key = ec.generate_private_key(ec.SECP256R1())
+    r = await _enroll_ios(client, hdrs, _unattested(_ios_body(nonce, key)))
+    assert r.status_code == 200, r.text
+
+
+async def test_device_of_another_kind_takes_neither_path(
+        client, db, seeded_user, app_attest, attest):  # noqa: F811
+    hdrs, _ = await _worker_on_ipad(db, client)
+    key = ec.generate_private_key(ec.SECP256R1())
+    for sub_type in ("laptop", "web", None):
+        await _set_sub_type(db, SERIAL, sub_type)
+        nonce = await _nonce(client, hdrs)
+        r = await _enroll_ios(client, hdrs, _unattested(_ios_body(nonce, key)))
+        assert r.status_code == 422 and r.json()["detail"] == PLATFORM, (sub_type, r.text)
+        a = await _enroll(client, hdrs, SERIAL, nonce=nonce)
+        assert a.status_code == 422 and a.json()["detail"] == PLATFORM, (sub_type, a.text)
+    assert attest.calls == [] and app_attest.calls == []
+    assert await _keys(db) == []
 
 
 async def test_ios_key_lists_as_secure_enclave(client, db, seeded_user, app_attest):

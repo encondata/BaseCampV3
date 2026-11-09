@@ -11,8 +11,9 @@ enum BiometryKind: Equatable, Sendable {
 /// The one switch for App Attest at enroll. App Attest needs the paid Apple Developer Program
 /// membership, which the team doesn't have right now, so it is off: enroll sends the Secure
 /// Enclave key and its proof without Apple's statement, and the server stores the key as
-/// `unattested`. Harbor Master SS-521 turns it back on: flip this, add the
-/// `com.apple.developer.devicecheck.appattest-environment` entitlement back, and set
+/// `unattested`. Harbor Master SS-521 turns it back on: flip this; add the entitlements file
+/// back (`com.apple.developer.devicecheck.appattest-environment = production`) and restore
+/// `CODE_SIGN_ENTITLEMENTS` in both app build configurations, Debug and Release; then set
 /// `SS_KIOSK_IOS_REQUIRE_APP_ATTEST` on the server.
 enum BiometricAppAttest {
     static let isEnabled = false

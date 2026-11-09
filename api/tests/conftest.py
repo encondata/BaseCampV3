@@ -108,6 +108,9 @@ def _prepare_environment() -> None:
     # Every optional app is on unless a test says otherwise (a developer's
     # .env may list fewer).
     os.environ["SS_APPS"] = ""
+    # iOS biometric enrolls without App Attest are allowed (the default until
+    # SS-521) unless a test opts in to requiring it.
+    os.environ["SS_KIOSK_IOS_REQUIRE_APP_ATTEST"] = "false"
     get_settings.cache_clear()
 
     subprocess.run(
