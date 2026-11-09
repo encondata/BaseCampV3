@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 /**
- * The printer preview: a design with a QR code gets a note under the
- * render, since Labelary draws a ^BQ symbol about 0.2 in higher than a
- * Zebra prints it (the compiler sets ^FO for the printer).
+ * The printer preview: renders on request, says when a label is too large,
+ * and notes picture placeholders. QR codes need no note: the canvas, the
+ * render and the print all put them at the compiler's ^FO.
  */
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -17,8 +17,6 @@ vi.mock('../../../lib/api', async (importActual) => ({
 }));
 
 const { default: PreviewPanel } = await import('./PreviewPanel');
-
-const NOTE = 'The preview shows QR codes about 0.2 in higher than the printer; the canvas is right.';
 
 beforeEach(() => {
   api.compileLabel.mockResolvedValue({ code: '^XA^XZ' });
@@ -36,12 +34,11 @@ function renderWith(design: DesignV2) {
 }
 
 describe('PreviewPanel', () => {
-  it('notes the QR offset under a render of a design with a QR code', async () => {
+  it('renders a design with a QR code with no note about it', async () => {
     renderWith(VEGAS());
-    expect(screen.queryByText(NOTE)).toBeNull();   // nothing rendered yet
     fireEvent.click(screen.getByRole('button', { name: 'Render' }));
     expect(await screen.findByRole('img', { name: 'The label as the printer renders it' })).toBeTruthy();
-    expect(screen.getByText(NOTE)).toBeTruthy();
+    expect(screen.queryByText(/QR code/)).toBeNull();
   });
 
   it('a label too large to render (a big picture at a high DPI) says so, without asking Labelary', async () => {
@@ -95,13 +92,5 @@ describe('PreviewPanel', () => {
     expect(await screen.findByRole('img', { name: 'The label as the printer renders it' })).toBeTruthy();
     expect(api.compileLabel).toHaveBeenLastCalledWith(expect.objectContaining({ image_mode: 'placeholder' }));
     expect(screen.queryByText(PICTURES)).toBeNull();
-  });
-
-  it('says nothing about QR codes when the design has none', async () => {
-    const d = VEGAS();
-    renderWith({ ...d, elements: d.elements.filter((e) => e.type !== 'qr' && !(e.type === 'field' && e.display === 'qr')) });
-    fireEvent.click(screen.getByRole('button', { name: 'Render' }));
-    expect(await screen.findByRole('img', { name: 'The label as the printer renders it' })).toBeTruthy();
-    expect(screen.queryByText(NOTE)).toBeNull();
   });
 });

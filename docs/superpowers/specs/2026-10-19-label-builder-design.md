@@ -175,7 +175,7 @@ stacking order, lock, and hide-when-empty (data elements only).
 | Static text | content; font; size; weight; inverted; alignment |
 | Line, Box | stroke width; box: fill |
 | Barcode | field or static data; Code 128 or Code 39; bar height from the box; module width; human-readable line on/off; width follows the data and the module; the canvas shows the printed width |
-| QR code | field or static data; size from the box (magnification in printer steps); error correction M; the canvas draws the symbol where it prints, and the compiler sets `^FO` the printer's 0.2 in QR offset above it, so a symbol can't sit nearer the top edge than 0.2 in (the Properties panel warns) |
+| QR code | field or static data; size from the box (magnification in printer steps); error correction M; the canvas draws the symbol where it prints, which is the compiler's `^FO` (no offset; §4.8) |
 
 **Field value pipeline** (in this order): take the raw value → Split (if the
 display type is Split: the piece for this sub-field) → Strip → Max
@@ -326,11 +326,9 @@ codes and shapes use top-left `^FO`.
 - The canvas is the preview. The existing printer-rendered preview
   (Labelary) stays as a check, with sample values substituted and the
   template's open fonts embedded in the request (cached on the server);
-  the resident default renders through Labelary's font 0 (§4.4). Labelary
-  draws a QR code about 0.2 in higher than a Zebra prints it (the compiler
-  sets `^FO` for the printer, §4.8), so a render with a QR code says so
-  under it: "The preview shows QR codes about 0.2 in higher than the
-  printer; the canvas is right."
+  the resident default renders through Labelary's font 0 (§4.4). A QR code
+  sits in the same place on the canvas, in the render and on the printer
+  (§4.8), so the render carries no QR note.
 - A stand-in for the default font on the canvas is Jimmy's choice
   (2026-10-19) over buying a Swiss 721 webfont license. It is Roboto
   Regular since 2026-10-20, when the resident file turned out to be the
@@ -374,11 +372,11 @@ codes and shapes use top-left `^FO`.
   for alignment inside the reserved width, per-element QR magnification and
   Code 128 options. Positions stay top-left `^FO`; the browser's font
   metrics decide where text sits, so no printer-side metrics are needed.
-  One printer quirk is absorbed: a Zebra draws a `^BQ` symbol's top edge
-  0.2 in below its `^FO` y (60 dots measured on a ZD421 at 300 DPI, at any
-  magnification; scaled for 203 and 600, unverified there), so the QR's
-  `^FO` y is the symbol's top less that, clamped at 0 (labels/qr.py
-  `QR_FO_OFFSET_IN`, mirrored in the portal's qr.ts).
+  A QR code's `^FO` is the symbol's top-left, where the canvas draws it.
+  The 0.2 in `^FO` offset added on 2026-10-20 (from a 60-dot measurement
+  on the ZD421 at 300 DPI) was removed on 2026-11-09: at 203 DPI the
+  print matched the Labelary render, not the canvas, and Jimmy wants the
+  design and the render to be the truth, not offsets in the ZPL.
 - The sync carries the fields in §3.6 (several are new to the sync) and the
   move's new code.
 - Every design carries a schema version. A laptop whose edge is older than

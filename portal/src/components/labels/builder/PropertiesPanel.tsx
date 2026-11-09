@@ -39,7 +39,6 @@ import {
   type Align, type DesignV2, type ElementPatch, type ElementV2, type FieldElement, type ImageElement,
   type ImageFit, type ImageSource, type Rotation, type StripWhere, type Symbology, type TextElement, type Trim,
 } from '../../../labels/builder/model';
-import { QR_FO_OFFSET_IN, qrTooHigh } from '../../../labels/builder/qr';
 import { toDots } from '../../../labels/builder/units';
 import type { LabelFields } from '../../../lib/api';
 import '../../../styles/directory.css';
@@ -131,15 +130,6 @@ function Prop({ label, children, note, warning }: {
       {warning && <div className="lbp-hint is-warning" role="status">{warning}</div>}
     </div>
   );
-}
-
-const QR_TOO_HIGH = `Too close to the top edge: the printer can't print a QR code higher than ${QR_FO_OFFSET_IN} in from the top`;
-
-/** A QR code (or a field shown as one) whose symbol the printer can't put
- *  where it is drawn: nearer the top edge than its ^FO offset (qr.ts). */
-function qrWarning(el: ElementV2, value: string, dpi: number): string | undefined {
-  const isQr = el.type === 'qr' || (el.type === 'field' && el.display === 'qr');
-  return isQr && qrTooHigh(el, value, dpi) ? QR_TOO_HIGH : undefined;
 }
 
 function kindName(el: ElementV2): string {
@@ -540,8 +530,7 @@ export default function PropertiesPanel({
         )}
 
         <Prop label="Position & size (dots)"
-          note={barcodeOptions ? barcodeHint(el, elementValue(el, samples), dpi) : undefined}
-          warning={qrWarning(el, elementValue(el, samples), dpi)}>
+          note={barcodeOptions ? barcodeHint(el, elementValue(el, samples), dpi) : undefined}>
           <span className="lbp-unit">X</span>
           <NumberBox ariaLabel="X" className="lbp-num is-small" integer min={0} disabled={readOnly || !!el.locked}
             {...numberOf(() => true, (e) => toDots(footprint(e).x, dpi), (e, v) => (e.locked ? null : { x: (v ?? 0) / dpi }))} />

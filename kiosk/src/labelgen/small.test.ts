@@ -12,7 +12,7 @@ import { applyRules, isBlank, piece, splitValue, type FieldRules } from './field
 import {
   DEFAULT_FAMILY, FAMILIES, RESIDENT_FONT, WEIGHTS, fontObject, objectFamily, residentObject,
 } from './fonts';
-import { QR_FO_OFFSET_IN, QrTooLong, qrFoOffsetDots, qrModules } from './qr';
+import { QrTooLong, qrModules } from './qr';
 import {
   LABEL_TAG_ASSIGNMENT_ORDER, LABEL_TAG_KEYS, LABEL_TAG_LABELS, resolveLabelTag,
 } from './tags';
@@ -146,13 +146,6 @@ describe('qr', () => {
       .toEqual(['QR data too long for version 10 at error correction M (214 bytes)']);
     expect((caught as QrTooLong).message)
       .toBe('QR data too long for version 10 at error correction M (214 bytes)');
-  });
-
-  it('puts ^FO 0.2 in above the symbol', () => {
-    expect(QR_FO_OFFSET_IN).toBe(0.2);
-    expect(qrFoOffsetDots(203)).toBe(41);
-    expect(qrFoOffsetDots(300)).toBe(60);
-    expect(qrFoOffsetDots(600)).toBe(120);
   });
 });
 

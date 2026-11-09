@@ -130,13 +130,11 @@ QR).
     for now (2026-10-20). Two ways to reach a network printer: relay
     through a Label Station laptop on the same network (the edge already
     has scan, query, send and fonts), or Zebra Browser Print.
-36. **QR `^FO` offset at 203 and 600 DPI.** The emulator draws `^BQ` about
-    10 dots below and right of its `^FO`; the printer's real offset was
-    measured with a probe on the ZD421-300dpi (60 dots down, none
-    sideways, at magnification 5 and 10) and the compiler and canvas now
-    compensate (`labels/qr.py` `QR_FO_OFFSET_IN`, 2026-10-20). The 203 and
-    600 DPI values (41 and 120 dots) are scaled, not measured: probe them
-    on hardware and adjust if they differ.
+36. ~~**QR `^FO` offset at 203 and 600 DPI.**~~ Closed 2026-11-09: the
+    offset is gone. `^FO` is the symbol's top-left on every DPI, matching
+    the canvas and the Labelary render; the 203 DPI print matched the
+    render. If the ZD421-300dpi still prints QR codes low, look at that
+    printer's setup, not the compiler.
 
 ## Kiosk and laptop edge (`kiosk/`, `kiosk_laptop/`)
 

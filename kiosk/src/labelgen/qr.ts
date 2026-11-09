@@ -1,7 +1,6 @@
 /**
  * QR code sizing for the v2 ZPL compiler (labels/qr.py): how many modules a
- * value needs at error correction M, and how far below its ^FO the printer
- * draws a ^BQ symbol.
+ * value needs at error correction M.
  *
  * Ported rather than imported from the portal's builder/qr.ts, which uses
  * TextEncoder: the Android bundle's engine has none. Pure: no DOM, no Intl,
@@ -9,7 +8,7 @@
  */
 
 import { DesignError } from './errors';
-import { pyRound, utf8Length } from './py';
+import { utf8Length } from './py';
 
 /** A QR value no level-M symbol up to version 10 holds: a problem with the
  *  design's data, not a crash. */
@@ -27,15 +26,6 @@ export const CAPACITY_M: readonly (readonly [number, number, number])[] = [
   [255, 154, 106], [293, 178, 122], [365, 221, 152], [432, 262, 180],
   [513, 311, 213],
 ];
-
-/** How far below its ^FO y the printer draws a ^BQ symbol's top edge, in
- *  inches (measured at 300 dpi; the other DPIs scale it). */
-export const QR_FO_OFFSET_IN = 0.2;
-
-/** The printer's ^BQ offset below ^FO at `dpi`, in dots. */
-export function qrFoOffsetDots(dpi: number): number {
-  return pyRound(QR_FO_OFFSET_IN * dpi);
-}
 
 const NUMERIC = /^[0-9]*$/;
 // the QR alphanumeric set: digits, upper-case letters, space and $ % * + - . / :

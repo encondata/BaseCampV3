@@ -1622,10 +1622,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     [432, 262, 180],
     [513, 311, 213]
   ];
-  const QR_FO_OFFSET_IN = 0.2;
-  function qrFoOffsetDots(dpi) {
-    return pyRound(QR_FO_OFFSET_IN * dpi);
-  }
   const NUMERIC = /^[0-9]*$/;
   const ALPHANUMERIC = /^[0-9A-Z $%*+\-./:]*$/;
   const MODE_NAMES = ["digits", "characters", "bytes"];
@@ -1779,8 +1775,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const mag = Math.min(10, Math.max(1, pyRound(wd / modules)));
     const side = modules * mag;
     const x = Math.max(0, dots(el.x, dpi) + floorDiv(wd - side, 2));
-    const top = dots(el.y, dpi) + floorDiv(hd - side, 2);
-    const y = Math.max(0, top - qrFoOffsetDots(dpi));
+    const y = Math.max(0, dots(el.y, dpi) + floorDiv(hd - side, 2));
     return z`^FO${x},${y}^BQN,2,${mag}^FH_^FDMA,${esc(value)}^FS`;
   }
   function v2Shape(el, dpi) {

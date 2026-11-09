@@ -30,7 +30,7 @@ import {
   type FieldEl, type ImageEl, type LineEl, type QrEl, type Rotation, type TextEl,
 } from './model';
 import { floorDiv, pyRound, utf8Encode } from './py';
-import { QrTooLong, qrFoOffsetDots, qrModules } from './qr';
+import { QrTooLong, qrModules } from './qr';
 import { TOKEN_RE } from './tokens';
 
 type Values = Readonly<Record<string, string>>;
@@ -206,9 +206,8 @@ function v2Text(el: TextEl | FieldEl, value: string, dpi: number): string[] {
 
 /** Error correction M, automatic input (`MA,`). Magnification fills the box
  *  for the symbol size the value needs, capped at 10; the symbol is
- *  centered on the box. The printer draws the symbol QR_FO_OFFSET_IN below
- *  its ^FO, so ^FO goes that far above (never above 0). ^BQ prints upright
- *  only (N). */
+ *  centered on the box, and ^FO is its top-left (no printer offset). ^BQ
+ *  prints upright only (N). */
 function v2Qr(el: QrEl | FieldEl, value: string, dpi: number): string {
   let modules: number;
   try {
@@ -222,8 +221,7 @@ function v2Qr(el: QrEl | FieldEl, value: string, dpi: number): string {
   const mag = Math.min(10, Math.max(1, pyRound(wd / modules)));
   const side = modules * mag;
   const x = Math.max(0, dots(el.x, dpi) + floorDiv(wd - side, 2));
-  const top = dots(el.y, dpi) + floorDiv(hd - side, 2);
-  const y = Math.max(0, top - qrFoOffsetDots(dpi));
+  const y = Math.max(0, dots(el.y, dpi) + floorDiv(hd - side, 2));
   return z`^FO${x},${y}^BQN,2,${mag}^FH_^FDMA,${esc(value)}^FS`;
 }
 
