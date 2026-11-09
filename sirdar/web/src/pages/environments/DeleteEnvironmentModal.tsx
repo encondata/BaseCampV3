@@ -21,7 +21,7 @@ import { DO_RESOURCE_LABEL, hostLabel, onBluegreen, onDo, onVmHost, vmRef, vmSta
 /** snapshot: null when the environment doesn't choose; phrase: production's "delete production <name>". */
 type Attempt = { confirm: string; snapshot: boolean | null; phrase: string | null };
 const NOUN: Record<ManagedRecordRef['kind'], string> = {
-  dns_record: 'DNS record', proxy_host: 'Proxy host', certificate: 'Certificate',
+  dns_record: 'DNS record', proxy_host: 'Proxy host', certificate: 'Certificate', switchyard_host: 'Switchyard host',
 };
 const line = (r: ManagedRecordRef) => `${NOUN[r.kind]} ${r.name}`;
 

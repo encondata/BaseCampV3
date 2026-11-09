@@ -15,6 +15,10 @@ it('a top-level page is Home, then the page', () => {
   expect(trail('/timeclock')).toEqual(['Home=/', 'Timeclock=/timeclock']);
 });
 
+it('Asset Lookup is a top-level page', () => {
+  expect(trail('/lookup')).toEqual(['Home=/', 'Asset Lookup=/lookup']);
+});
+
 it('Label Printing nests its three pages under itself', () => {
   expect(trail('/labels')).toEqual(['Home=/', 'Label Printing=/labels']);
   expect(trail('/labels/station')).toEqual(['Home=/', 'Label Printing=/labels', 'Printing Station=/labels/station']);

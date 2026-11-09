@@ -495,6 +495,9 @@ class EnvironmentIn(BaseModel):
     snapshot_id: uuid.UUID | None = None
     # mode "new" only (default on): deploys publish DNS records and proxy hosts
     publish: bool | None = None
+    # LAN only: the proxy it publishes through (absent: Switchyard). Fixed
+    # once created; DigitalOcean takes none.
+    proxy: Literal["switchyard", "npm"] | None = None
     # mode "new" with a VM target only: the VM step 0 builds
     vm: VmIn | None = None
     # mode "new" with target "digitalocean" only: account, slots and sizes
@@ -666,11 +669,11 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
                 apps=body.apps,
                 mail=body.mail.model_dump(exclude_none=True) if body.mail else None,
                 kiosk_signing_digests=body.kiosk_signing_digests,
-                secrets=body.secrets)
+                secrets=body.secrets, proxy=body.proxy)
         else:
             env, _, report = await environments.adopt(
                 db, settings, name=body.name, type_=body.type, target_id=body.target,
-                git_ref=body.git_ref, actor_id=actor_id)
+                git_ref=body.git_ref, actor_id=actor_id, proxy=body.proxy)
     except environments.EnvError as e:
         await db.rollback()
         raise _env_http(e) from None
@@ -693,7 +696,7 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
         changes = {"name": env.name, "type": env.type, "target": env.target_id,
                    "base_domain": env.base_domain, "git_ref": env.git_ref,
                    "proxy_ip": env.proxy_ip, "bind_ip": env.bind_ip, "publish": env.publish,
-                   "apps": list(env.apps),
+                   "proxy": env.proxy, "apps": list(env.apps),
                    # never the SMTP password or a secret's value: names only
                    "mail": ({"mode": "smtp", "host": env.smtp_host} if env.smtp_host
                             else {"mode": "mailpit"}),
@@ -957,11 +960,13 @@ def _not_on_bg() -> HTTPException:
                          detail={"code": pipeline.NotSupportedOnBlueGreen.code})
 
 
-async def _require_npm(db) -> None:
-    """Nginx Proxy Manager is a Blue/Green environment's switch, Publish on or off."""
-    if not await integrations.is_configured(db, "npm"):
+async def _require_proxy(db, env: Environment) -> None:
+    """The environment's proxy (Switchyard or Nginx Proxy Manager) is a
+    Blue/Green environment's switch, Publish on or off."""
+    proxy = publish.proxy_of(env)
+    if proxy is not None and not await integrations.is_configured(db, proxy):
         raise HTTPException(status_code=409, detail={"code": "integration_not_configured",
-                                                     "kinds": ["npm"]})
+                                                     "kinds": [proxy]})
 
 
 async def _require_vm_host(db, env: Environment) -> None:
@@ -1249,7 +1254,7 @@ async def _start_lan_update(db, env: Environment, body: DeploymentIn, request: R
     if body.take_vm_snapshot is not None:
         raise _refuse(422, "vm_snapshot_not_allowed")
     await _require_vm_host(db, env)
-    await _require_npm(db)
+    await _require_proxy(db, env)
     if env.publish:
         await _require_integrations(db, env)
     ref = body.git_ref or env.git_ref
@@ -1369,7 +1374,7 @@ async def _activate_lan(db, env: Environment, body: ActivateIn, request: Request
     if row is None or not row.sha:
         raise _refuse(409, "slot_not_deployed", slot=body.slot)
     await _require_vm_host(db, env)
-    await _require_npm(db)
+    await _require_proxy(db, env)
     if await _host_target(db, env, slot=body.slot) is None:
         raise _refuse(409, "vm_not_ready")              # the slot's VM has no address
     return await _launch(db, env, request, actor, action="deploy.activate", mode="activate",
@@ -1760,7 +1765,7 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     elif dep.mode == "publish" or publishing:
         await _require_integrations(db, env)
     if dep.bluegreen and dep.mode in ("update", "activate"):
-        await _require_npm(db)
+        await _require_proxy(db, env)
     if taking:
         if from_step <= STEPS_BY_KEY["export"].number:
             if cfg is None:             # the slot's droplet has no address

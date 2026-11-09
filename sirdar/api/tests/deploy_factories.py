@@ -81,9 +81,10 @@ async def make_environment(db, *, name: str = "uat", target_id: str = "ssh",
                            host: str = "127.0.0.1", status: str = "ready",
                            current_sha: str | None = None,
                            secrets: dict | None = None,
-                           with_home: bool = False) -> Environment:
+                           with_home: bool = False,
+                           proxy: str | None = None) -> Environment:
     settings = get_settings()
-    env = Environment(name=name, type="dev", target_id=target_id,
+    env = Environment(name=name, type="dev", target_id=target_id, proxy=proxy,
                       base_domain=f"{name}.serversherpa.com", git_ref="main",
                       current_sha=current_sha,
                       image_tag=envfile.image_tag(current_sha) if current_sha else None,

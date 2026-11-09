@@ -2,6 +2,7 @@
 import { Link } from 'react-router-dom';
 
 import { parseDigests } from '../../../lib/appRules';
+import { INTEGRATION_LABEL } from '../../../lib/sirdarApi';
 import { KIND_LABEL, OPTIONAL_APPS, effectiveDomain, sendsAdmin, targetChoices, targetKind } from '../flowState';
 
 import type { StepProps } from './EnvironmentStep';
@@ -32,7 +33,10 @@ export default function ReviewStep({ state, ctx, problem, created }: StepProps &
         {kind === 'digitalocean' ? (
           <><dt>Sizes</dt><dd className="mono">{`${state.dropletSize} · ${state.dbSize}${state.dbStandby ? ' · standby node' : ''}`}</dd></>
         ) : (
-          <><dt>Proxy IP · Bind IP</dt><dd className="mono">{`${state.proxyIp} · ${state.bindIp}`}</dd></>
+          <>
+            <dt>Proxy</dt><dd>{INTEGRATION_LABEL[state.proxy]}</dd>
+            <dt>Proxy IP · Bind IP</dt><dd className="mono">{`${state.proxyIp} · ${state.bindIp}`}</dd>
+          </>
         )}
         {(kind === 'esxi' || kind === 'proxmox') && (
           <><dt>Addresses</dt><dd className="mono">{bg ? `orange ${state.ipCidr} · purple ${state.purpleIpCidr} · data ${state.dataIpCidr}`

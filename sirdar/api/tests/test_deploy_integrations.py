@@ -180,6 +180,8 @@ async def test_public_view_never_carries_a_secret(db, secrets_key, monkeypatch):
                        "updated_at": None, "updated_by_name": None},
         "npm": {"configured": False, "url": None, "identity": None, "letsencrypt_email": None,
                 "password_set": False, "updated_at": None, "updated_by_name": None},
+        "switchyard": {"configured": False, "url": None, "api_key_set": False,
+                       "updated_at": None, "updated_by_name": None},
         "proxmox": {"configured": False, "url": None, "node": None, "pool": None,
                     "storage": None, "bridge": None, "vlan_tag": None, "template_vmid": None,
                     "tls_fingerprint": None, "token_id": None, "token_set": False,

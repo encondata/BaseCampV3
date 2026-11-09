@@ -395,7 +395,7 @@ async def test_dns_points_at_the_load_balancer_and_never_needs_npm(db, secrets_k
     await configure(db)                                  # NPM saved: still never read
     state = await publish.inspect(db, env, get_settings())
     assert state["cloudflare"]["public_ip"] == "203.0.113.50"
-    assert state["npm"] == {"configured": False, "url": None, "error": None}
+    assert state["proxy"] == {"kind": None, "configured": False, "url": None, "error": None}
     assert {s["dns"]["state"] for s in state["services"]} == {"ok"}
     assert not [r for r in publish_fakes.npm.requests]
 

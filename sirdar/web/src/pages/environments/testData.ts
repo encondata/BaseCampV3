@@ -25,7 +25,7 @@ export const ENV: Environment = {
   id: 'e1', name: 'uat', type: 'dev', target: 'ssh:lab', target_kind: 'ssh', vm: null, machines: [], lan_slots: null,
   base_domain: 'uat.serversherpa.com',
   env_dir: '/opt/serversherpa/uat', git_ref: 'main', current_sha: SHA, image_tag: 'e73b99ca', never_deployed: false,
-  status: 'ready', proxy_ip: '10.10.48.6', bind_ip: '0.0.0.0', keep_dumps: 5,
+  status: 'ready', proxy: 'npm', proxy_ip: '10.10.48.6', bind_ip: '0.0.0.0', keep_dumps: 5,
   spaces_bucket: 'serversherpa', log_level: 'INFO',
   services: [svc('api', 8000), svc('portal', 8091), { ...svc('home', 8091), hostname: 'uat.serversherpa.com' },
              svc('kiosk', 8090), svc('wiki', 8096), svc('spaces', 9000), svc('status', 8095), svc('mailpit', 8025)],
@@ -174,6 +174,14 @@ export function summary(d: Deployment): DeploymentSummary {
   };
 }
 
+/** Switchyard not set up (most fixtures), and set up. */
+export const SWITCHYARD_OFF: Integrations['switchyard'] = {
+  configured: false, url: null, api_key_set: false, updated_at: null, updated_by_name: null,
+};
+export const SWITCHYARD_ON: Integrations['switchyard'] = {
+  configured: true, url: 'https://10.10.48.8:8443', api_key_set: true,
+  updated_at: '2026-11-07T15:00:00Z', updated_by_name: 'Jimmy Henderson',
+};
 export const INTEGRATIONS: Integrations = {
   secrets_key_configured: true,
   cloudflare: { configured: true, zone: 'serversherpa.com', public_ip: '203.0.113.7', token_set: true,
@@ -181,6 +189,7 @@ export const INTEGRATIONS: Integrations = {
   npm: { configured: true, url: 'http://10.10.48.6:81', identity: 'admin@example.com',
          letsencrypt_email: 'admin@example.com', password_set: true,
          updated_at: '2026-10-04T15:05:00Z', updated_by_name: 'Jimmy Henderson' },
+  switchyard: SWITCHYARD_OFF,
   proxmox: { configured: true, url: 'https://10.10.48.5:8006', node: 'pve', pool: 'sirdar', storage: 'local-lvm',
              bridge: 'vmbr0', vlan_tag: null, template_vmid: 9000,
              tls_fingerprint: fingerprint(7),
@@ -198,6 +207,7 @@ export const NO_INTEGRATIONS: Integrations = {
   cloudflare: { configured: false, zone: null, public_ip: null, token_set: false, updated_at: null, updated_by_name: null },
   npm: { configured: false, url: null, identity: null, letsencrypt_email: null, password_set: false,
          updated_at: null, updated_by_name: null },
+  switchyard: SWITCHYARD_OFF,
   proxmox: { configured: false, url: null, node: null, pool: null, storage: null, bridge: null, vlan_tag: null,
              template_vmid: null, tls_fingerprint: null, token_id: null, token_set: false, updated_at: null,
              updated_by_name: null },
@@ -219,7 +229,7 @@ export const CF_CHECK: IntegrationCheck = {
 export const PUBLISH_PLAN: PublishPlan = {
   publish: false, proxy_ip: '10.10.48.6',
   cloudflare: { configured: true, zone: 'serversherpa.com', public_ip: '203.0.113.7', error: null },
-  npm: { configured: true, url: 'http://10.10.48.6:81', error: null },
+  proxy: { kind: 'npm', configured: true, url: 'http://10.10.48.6:81', error: null },
   services: [
     { service: 'api', hostname: 'api.uat.serversherpa.com', forward: '10.10.48.63:8000',
       dns: { state: 'claimable', detail: 'A 203.0.113.7, made outside Sirdar.', origin: null, record_id: 'rec-1' },

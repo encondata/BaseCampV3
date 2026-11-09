@@ -83,3 +83,8 @@ it('DigitalOcean keeps the droplet and load balancer wording', () => {
   expect(hint.textContent).toMatch(/load balancer/);
   expect(hint.textContent).not.toMatch(/Nginx Proxy Manager/);
 });
+
+it("LAN Blue/Green names the environment's proxy", () => {
+  const { dialog } = show({ envName: 'lan9', lan: true, proxyLabel: 'Switchyard' });
+  expect(within(dialog).getByText(/Switchyard proxy hosts/)).toBeTruthy();
+});

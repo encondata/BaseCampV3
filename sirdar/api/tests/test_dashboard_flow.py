@@ -170,6 +170,18 @@ async def test_a_lan_ssh_environment_is_proxy_then_one_host(client, db, monkeypa
     assert cert["tone"] == "unknown"           # the fake check: nothing answers
 
 
+async def test_a_switchyard_environment_shows_switchyard(client, db, monkeypatch):
+    await configure(db, switchyard=True)       # https://switchyard.lan:8443
+    await make_environment(db, name="uat", current_sha=SHA, secrets={}, proxy="switchyard")
+    monkeypatch.setattr(targets, "ssh_config_for",
+                        lambda tid, s: SimpleNamespace(host="10.10.48.63"))
+    monkeypatch.setattr(targets, "public_targets",
+                        lambda s, **kw: [{"id": "ssh", "label": "Lab box"}])
+    card = next(c for c in (await _dashboard(client, db))["environments"] if c["id"] == "uat")
+    assert card["flow"]["middle"] == {"label": "Switchyard", "sub": "switchyard.lan",
+                                      "status": "ok"}
+
+
 async def test_a_vm_environment_shows_its_vm(client, db):
     await configure_proxmox(db)
     env = await make_vm_environment(db, name="uat3")
@@ -178,7 +190,8 @@ async def test_a_vm_environment_shows_its_vm(client, db):
     (server,) = card["flow"]["servers"]
     assert (server["label"], server["sub"], server["state"]) == (
         vm.name, vm.ip or "No address yet", "empty")
-    assert card["flow"]["middle"] == {"label": "Nginx Proxy Manager", "sub": "Not set up",
+    # A new environment publishes through Switchyard (the default), not set up here.
+    assert card["flow"]["middle"] == {"label": "Switchyard", "sub": "Not set up",
                                       "status": "unknown"}
 
 

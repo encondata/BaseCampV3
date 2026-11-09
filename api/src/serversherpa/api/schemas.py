@@ -4077,6 +4077,81 @@ class KioskRfidEnrollOut(BaseModel):
     already_had_tag: bool
 
 
+class KioskAssetLookupMatch(BaseModel):
+    """One device a kiosk Asset Lookup found. `asset_tag` is the human
+    Asset ID (Asset.legacy_id) as text, "" if unset; `matched` names the
+    keys the typed value hit, in the order asset tag, serial, RFID (or
+    just "name" for a part-name hit)."""
+
+    id: uuid.UUID
+    name: str | None = None
+    asset_tag: str
+    serial_number: str | None = None
+    matched: list[Literal["asset_tag", "serial", "rfid", "name"]]
+
+
+class KioskAssetLookupOut(BaseModel):
+    """`truncated`: more devices matched than the 25 returned."""
+
+    matches: list[KioskAssetLookupMatch]
+    truncated: bool = False
+
+
+class KioskAssetEndOut(BaseModel):
+    """One end of a move for a device: where it is coming from or going to."""
+
+    site_name: str | None = None
+    pod: str | None = None
+    rack: str | None = None
+    ru: str | None = None
+    position: str | None = None
+
+
+class KioskAssetRouteOut(BaseModel):
+    initiative_id: uuid.UUID
+    initiative_name: str
+    source: KioskAssetEndOut
+    destination: KioskAssetEndOut
+
+
+class KioskAssetMoveOut(BaseModel):
+    """A move the device is on, with the move's own status."""
+
+    initiative_id: uuid.UUID
+    initiative_name: str
+    status: str
+    status_label: str
+    status_color: str
+
+
+class KioskAssetFullOut(BaseModel):
+    """Admin-only part of the details card (rank 60 and above)."""
+
+    status: str
+    status_label: str
+    status_color: str
+    moves: list[KioskAssetMoveOut]
+    container_name: str | None = None
+    truck_name: str | None = None
+    location_detail: str = ""
+
+
+class KioskAssetDetailOut(BaseModel):
+    """The kiosk Asset Lookup details card. `rfid` is the stored, padded
+    tag; `full` is null below admin."""
+
+    id: uuid.UUID
+    name: str | None = None
+    make: str | None = None
+    model: str | None = None
+    make_model: str
+    asset_tag: str
+    serial_number: str | None = None
+    rfid: str | None = None
+    routes: list[KioskAssetRouteOut]
+    full: KioskAssetFullOut | None = None
+
+
 # ── kiosk timeclock ──
 
 class KioskTimeclockPerson(BaseModel):

@@ -258,13 +258,13 @@ async def _insert(db: AsyncSession, settings: Settings, *, name: str,
                   actor_id, seed_snapshot_id: uuid.UUID | None = None,
                   publish: bool = False,
                   public_services: tuple[str, ...] = envfile.PUBLIC_SERVICES,
-                  slots: list[str] | None = None) -> Environment:
+                  slots: list[str] | None = None, proxy: str | None = None) -> Environment:
     env = Environment(name=name, type=type_, target_id=target_id, base_domain=domain,
                       git_ref=git_ref, current_sha=current_sha, image_tag=image_tag,
                       status=status, proxy_ip=proxy_ip, bind_ip=bind_ip,
                       keep_dumps=keep_dumps, spaces_bucket=spaces_bucket,
                       log_level=log_level, created_by=actor_id,
-                      seed_snapshot_id=seed_snapshot_id, publish=publish)
+                      seed_snapshot_id=seed_snapshot_id, publish=publish, proxy=proxy)
     if slots is not None:
         # Set on the INSERT: the database checks production's slots there.
         env.slots = slots
@@ -288,6 +288,14 @@ async def _insert(db: AsyncSession, settings: Settings, *, name: str,
     return env
 
 
+def check_proxy(proxy: str | None) -> str:
+    """A LAN environment's proxy: the given one, else the default."""
+    chosen = proxy if proxy is not None else integrations.DEFAULT_PROXY
+    if chosen not in integrations.PROXY_KINDS:
+        raise EnvError("proxy_invalid")
+    return chosen
+
+
 async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: str,
                      target_id: str, git_ref: str = DEFAULT_GIT_REF,
                      base_domain: str | None = None, proxy_ip: str | None = None,
@@ -299,7 +307,7 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
                      first_admin: dict | None = None, apps: list[str] | None = None,
                      mail: dict | None = None,
                      kiosk_signing_digests: list[str] | None = None,
-                     secrets: dict | None = None) -> Environment:
+                     secrets: dict | None = None, proxy: str | None = None) -> Environment:
     """A new environment (status "new"): default ports unless given, the
     target's host for every service, freshly generated secrets. With a
     snapshot, its first deploy restores that snapshot (and its keys). With
@@ -312,7 +320,10 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     first_admin: the first super admin step 11 of the first deploy creates
     (never with a snapshot). With `vm.slots: 2` (ESXi or Proxmox) the
     environment is LAN Blue/Green: a data VM and two app VMs (orange,
-    purple), static addresses, Nginx Proxy Manager as the switch.
+    purple), static addresses, its proxy as the switch.
+    proxy: the LAN proxy it publishes through, "switchyard" (the default) or
+    "npm"; a Blue/Green environment's must be set up (it is the switch).
+    DigitalOcean takes none (its load balancer).
     apps: the optional apps it runs (None: all); only those get public
     names. mail: its Mailpit (the default) or an SMTP server (apps.check_mail).
     kiosk_signing_digests: the kiosk app's signing certificate digests (apps.check_digests).
@@ -359,6 +370,16 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         raise EnvError("do_not_allowed")
     if on_do and vm is not None:
         raise EnvError("vm_not_allowed")
+    lan_proxy = None
+    if on_do:
+        if proxy is not None:
+            raise EnvError("proxy_not_allowed")
+    else:
+        lan_proxy = check_proxy(proxy)
+        if (vm or {}).get("slots") == 2 and not await integrations.is_configured(db, lan_proxy):
+            # Blue/Green switches traffic with it, Publish on or off. (Publishing
+            # through it is checked when a deploy starts, as for Cloudflare.)
+            raise EnvError("integration_not_configured", kinds=[lan_proxy])
     if snapshot_id is not None:
         # Locked until the caller commits, so a concurrent delete waits and
         # then sees this environment's seed (in use) instead of racing it.
@@ -407,9 +428,6 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
             raise EnvError("integration_not_configured", kinds=[target_id])
         try:
             if (vm or {}).get("slots") == 2:
-                if not await integrations.is_configured(db, "npm"):
-                    # Nginx Proxy Manager is the switch between the two app VMs.
-                    raise EnvError("integration_not_configured", kinds=["npm"])
                 bluegreen = vms.check_bluegreen(vm)
                 addresses = [vms.static_ip(bluegreen[r]["ip_cidr"])
                              for r in ("orange", "purple", "data")]
@@ -438,13 +456,13 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     env = await _insert(
         db, settings, name=name, type_=type_, target_id=target_id, git_ref=git_ref,
         host=host, domain=domain, proxy_ip=proxy,
-        # Blue/Green: NPM reaches each VM on its own address, so they bind everywhere.
+        # Blue/Green: the proxy reaches each VM on its own address, so they bind everywhere.
         bind_ip=DEFAULT_BIND_IP if bluegreen is not None else bind, ports=all_ports,
         keep_dumps=envfile.DEFAULT_KEEP_DUMPS, spaces_bucket=envfile.DEFAULT_SPACES_BUCKET,
         log_level=envfile.DEFAULT_LOG_LEVEL, status="new", current_sha=None, image_tag=None,
         secrets=vault.generate_env_secrets() | extra_secrets, actor_id=actor_id,
         seed_snapshot_id=snapshot_id, publish=publish,
-        public_services=app_rules.public_services(apps_on))
+        public_services=app_rules.public_services(apps_on), proxy=lan_proxy)
     await _set_apps_and_mail(db, env, apps_on, mail_spec, digests)
     if spec is not None or bluegreen is not None:
         stored = await integrations.config_of(db, target_id)
@@ -760,8 +778,12 @@ def _adopted_secrets(values: dict[str, str]) -> dict[str, str]:
 
 
 async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
-                target_id: str, git_ref: str = "main",
-                actor_id=None) -> tuple[Environment, Deployment, AdoptReport]:
+                target_id: str, git_ref: str = "main", actor_id=None,
+                proxy: str | None = None) -> tuple[Environment, Deployment, AdoptReport]:
+    """`proxy`: the LAN proxy its names are published through once Publish
+    is turned on ("switchyard", the default, or "npm"); not checked here, as
+    an adopted environment starts with Publish off."""
+    lan_proxy = check_proxy(proxy)
     if targets.is_built_target(target_id):
         # VM environments are only ones Sirdar built: a hand-built VM (uat)
         # stays an SSH target.
@@ -814,7 +836,7 @@ async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
         ports=picked["ports"], keep_dumps=picked["keep_dumps"],
         spaces_bucket=picked["spaces_bucket"], log_level=picked["log_level"],
         status="ready", current_sha=sha, image_tag=picked["image_tag"], secrets=secrets,
-        actor_id=actor_id, public_services=app_rules.public_services(apps_on))
+        actor_id=actor_id, public_services=app_rules.public_services(apps_on), proxy=lan_proxy)
     await _set_apps_and_mail(db, env, apps_on, mail_spec, digests)
     now = _now()
     dep = Deployment(environment_id=env.id, mode="adopt", git_ref=git_ref, sha=sha,

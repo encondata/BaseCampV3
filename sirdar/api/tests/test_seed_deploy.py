@@ -164,7 +164,7 @@ async def test_lan_first_update_restores_the_recipe_seed_and_creates_the_admin(
     snap = await _snap(db, tmp_path, "recipe", "from-recipe")
     h = await auth_headers(client, db)
     lan = {"mode": "new", "name": "lan9", "type": "custom", "target": "esxi",
-           "proxy_ip": "10.0.0.2", "publish": False, "vm": LAN_VM}
+           "proxy_ip": "10.0.0.2", "publish": False, "vm": LAN_VM, "proxy": "npm"}
     created = await client.post(URL, headers=h, json={
         **lan, "snapshot_id": str(snap.id), "first_admin": ADMIN})
     assert created.status_code == 201, created.text

@@ -30,7 +30,7 @@ from .test_deploy_pipeline import SHA
 URL = "/api/deploy/environments"
 NEWER = "e1" * 20
 NEW = {"mode": "new", "name": "lan9", "type": "custom", "target": "esxi",
-       "proxy_ip": "10.0.0.2", "publish": False, "vm": LAN_VM}
+       "proxy_ip": "10.0.0.2", "publish": False, "vm": LAN_VM, "proxy": "npm"}
 
 
 @pytest.fixture

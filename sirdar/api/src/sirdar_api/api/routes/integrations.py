@@ -1,5 +1,5 @@
-"""Settings › Integrations: the Cloudflare and Nginx Proxy Manager
-credentials Sirdar publishes environments with, the DigitalOcean API token
+"""Settings › Integrations: the Cloudflare, Nginx Proxy Manager and
+Switchyard credentials Sirdar publishes environments with, the DigitalOcean API token
 (SIRDAR_DEPLOY_DO_TOKEN is the fallback when none is stored; the saved
 settings' Test uses whichever applies), and the Proxmox API token
 and ESXi password it builds VMs with (their TLS certificates are pinned
@@ -28,6 +28,7 @@ from sirdar_api.deploy import (
     npm,
     outbound,
     proxmox,
+    switchyard,
     tls_pin,
 )
 from sirdar_api.deploy.integrations import IntegrationError
@@ -37,8 +38,9 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/deploy/integrations", tags=["deploy"])
 
-Kind = Literal["cloudflare", "npm", "proxmox", "esxi", "digitalocean"]
+Kind = Literal["cloudflare", "npm", "switchyard", "proxmox", "esxi", "digitalocean"]
 TESTERS = {"cloudflare": cloudflare.test_connection, "npm": npm.test_connection,
+           "switchyard": switchyard.test_connection,
            "proxmox": proxmox.test_connection, "esxi": esxi.test_connection,
            "digitalocean": digitalocean.test_integration}
 # Where each VM host's certificate is fetched from (host, port).
@@ -68,6 +70,11 @@ class NpmIn(BaseModel):
     identity: str = Field(max_length=254)
     letsencrypt_email: str = Field(default="", max_length=254)
     password: str | None = None
+
+
+class SwitchyardIn(BaseModel):
+    url: str = Field(max_length=300)
+    api_key: str | None = None
 
 
 class ProxmoxIn(BaseModel):
@@ -111,6 +118,10 @@ def _cloudflare_values(body: CloudflareIn) -> dict:
 def _npm_values(body: NpmIn) -> dict:
     return {"url": body.url, "identity": body.identity,
             "letsencrypt_email": body.letsencrypt_email}
+
+
+def _switchyard_values(body: SwitchyardIn) -> dict:
+    return {"url": body.url}
 
 
 async def _pinned(db, kind: str, url: str, given: str | None) -> tuple[str, str]:
@@ -210,6 +221,12 @@ async def save_npm(body: NpmIn, request: Request, db: DbSession,
     return await _save("npm", _npm_values(body), body.password, request, db, actor)
 
 
+@router.put("/switchyard")
+async def save_switchyard(body: SwitchyardIn, request: Request, db: DbSession,
+                          actor: AuthContext = require_permission("deploy", "change")):
+    return await _save("switchyard", _switchyard_values(body), body.api_key, request, db, actor)
+
+
 @router.put("/proxmox")
 async def save_proxmox(body: ProxmoxIn, request: Request, db: DbSession,
                        actor: AuthContext = require_permission("deploy", "change")):
@@ -296,6 +313,13 @@ async def check_npm(request: Request, db: DbSession, body: NpmIn | None = None,
                     actor: AuthContext = require_permission("deploy", "change")):
     return await _test("npm", _npm_values(body) if body else None,
                        body.password if body else None, request, db, actor)
+
+
+@router.post("/switchyard/test")
+async def check_switchyard(request: Request, db: DbSession, body: SwitchyardIn | None = None,
+                           actor: AuthContext = require_permission("deploy", "change")):
+    return await _test("switchyard", _switchyard_values(body) if body else None,
+                       body.api_key if body else None, request, db, actor)
 
 
 @router.post("/proxmox/test")

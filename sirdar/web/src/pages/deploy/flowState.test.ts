@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { flowCtx } from './flowFixtures';
+import { SWITCHYARD_ON } from '../environments/testData';
+
+import { FLOW_INTEGRATIONS, flowCtx } from './flowFixtures';
 import {
-  CODE_FIELD, FIELD_STEP, FLOW_STEPS, buildBody, initialState, nextStep, prevStep, stepErrors, stepOfCode,
-  targetChoices, trafficPlan, vmNetworkProblem, withRules, type FlowState,
+  CODE_FIELD, FIELD_STEP, FLOW_STEPS, buildBody, canPublish, initialState, nextStep, prevStep, stepErrors, stepOfCode,
+  targetChoices, trafficPlan, vmNetworkProblem, withProxy, withRules, type FlowState,
 } from './flowState';
 
 const ctx = flowCtx();
@@ -11,6 +13,44 @@ const base = (over: Partial<FlowState> = {}) => withRules({ ...initialState(ctx)
 const ssh = (over: Partial<FlowState> = {}) => base({
   name: 'qa', type: 'custom', target: 'ssh:lab', proxyIp: '10.10.48.6', adminFirst: 'Ada', adminLast: 'Lovelace',
   adminEmail: 'ada@test.example.com', adminPassword: 'Correct-Horse-9', adminConfirm: 'Correct-Horse-9', ...over,
+});
+
+describe('the proxy', () => {
+  const both = flowCtx({ integrations: { ...FLOW_INTEGRATIONS, switchyard: SWITCHYARD_ON } });
+  it('preselects Switchyard, and its address', () => {
+    const s = initialState(both);
+    expect([s.proxy, s.proxyIp, s.publish]).toEqual(['switchyard', '10.10.48.8', true]);
+  });
+  it('preselects Nginx Proxy Manager when only it is set up', () => {
+    expect(initialState(ctx).proxy).toBe('npm');
+    const none = flowCtx({ integrations: { ...FLOW_INTEGRATIONS, npm: { ...FLOW_INTEGRATIONS.npm, configured: false } } });
+    expect(initialState(none).proxy).toBe('switchyard');
+  });
+  it('a choice moves a prefilled Proxy IP and keeps a typed one', () => {
+    const s = initialState(both);
+    expect(withProxy(s, both, 'npm')).toEqual({ proxy: 'npm', publish: true, proxyIp: '10.10.48.6' });
+    expect(withProxy({ ...s, proxyIp: '10.0.0.9' }, both, 'npm')).toEqual({ proxy: 'npm', publish: true });
+    expect(withProxy({ ...s, publish: false }, both, 'npm').publish).toBe(false);     // as chosen
+  });
+  it('Publish needs Cloudflare and the chosen proxy', () => {
+    const s = initialState(both);
+    expect(canPublish(s, both)).toBe(true);
+    expect(canPublish({ ...s, proxy: 'switchyard' }, ctx)).toBe(false);
+    expect(canPublish({ ...s, proxy: 'npm' }, ctx)).toBe(true);
+  });
+  it('goes in the create body and the traffic plan', () => {
+    const s = { ...ssh(), proxy: 'switchyard' as const };
+    expect(buildBody(s, both).proxy).toBe('switchyard');
+    expect(trafficPlan(s, both).rows[0].via).toBe('Switchyard (10.10.48.6)');
+    expect(buildBody({ ...s, target: 'digitalocean' }, both).proxy).toBeUndefined();
+  });
+  it('Blue/Green needs the chosen proxy set up', () => {
+    const s = base({ servers: 'bluegreen', target: 'esxi', proxy: 'switchyard' });
+    expect(stepErrors('target', s, ctx).proxy).toBe(
+      'Blue/Green switches traffic with the proxy: set up Switchyard in Settings › Integrations, or choose the other one.');
+    expect(stepErrors('target', { ...s, proxy: 'npm' }, ctx).proxy).toBeUndefined();
+    expect(stepOfCode('proxy_invalid')).toBe('target');
+  });
 });
 
 describe('the steps', () => {
@@ -119,7 +159,7 @@ describe('checks', () => {
 describe('the create body', () => {
   it('SSH: proxy, bind, publish, default ports, the first admin, no vm', () => {
     expect(buildBody(ssh(), ctx)).toEqual({
-      name: 'qa', type: 'custom', target: 'ssh:lab', git_ref: 'main', proxy_ip: '10.10.48.6', bind_ip: '0.0.0.0',
+      name: 'qa', type: 'custom', target: 'ssh:lab', git_ref: 'main', proxy: 'npm', proxy_ip: '10.10.48.6', bind_ip: '0.0.0.0',
       publish: true, ports: { api: 8000, portal: 8091, kiosk: 8090, wiki: 8096, learn: 8092, spaces: 9000, status: 8095, mailpit: 8025 },
       apps: ['wiki', 'kiosk', 'learn', 'status', 'mailpit'], mail: { mode: 'mailpit' },
       first_admin: { first_name: 'Ada', last_name: 'Lovelace', email: 'ada@test.example.com', password_mode: 'typed',

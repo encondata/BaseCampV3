@@ -18,8 +18,9 @@ LAN_VM = {"slots": 2, "ip_mode": "static", "ip_cidr": f"{ORANGE}/8",
 
 async def make_bluegreen_environment(db, *, name: str = "lan9", target: str = "esxi",
                                      publish: bool = False, host_key=None,
-                                     check_addresses: bool = False, **vm):
-    """Needs secrets_key, the target's integration and NPM (integration_helpers).
+                                     check_addresses: bool = False, proxy: str = "npm", **vm):
+    """Needs secrets_key, the target's integration and the proxy: NPM unless
+    `proxy` says "switchyard" (integration_helpers).
     Loopback is allowed and (unless check_addresses) the address check
     skipped, as in vm_helpers."""
     with pytest.MonkeyPatch.context() as mp:
@@ -36,7 +37,8 @@ async def make_bluegreen_environment(db, *, name: str = "lan9", target: str = "e
                 host_key.export_public_key("openssh").decode().strip()))
         env = await environments.create_new(db, get_settings(), name=name, type_="dev",
                                             target_id=target, proxy_ip="10.0.0.2",
-                                            vm={**LAN_VM, **vm}, publish=publish)
+                                            vm={**LAN_VM, **vm}, publish=publish,
+                                            proxy=proxy)
     await db.commit()
     return env
 

@@ -1,6 +1,7 @@
 /** Publish tab: whether deploys publish this environment (a DNS record and a
  *  proxy host per public name, then a smoke test), what publishing would do
- *  now for each name (read live from Cloudflare and Nginx Proxy Manager),
+ *  now for each name (read live from Cloudflare and the environment's proxy,
+ *  Switchyard or Nginx Proxy Manager),
  *  Claim for hand-made records and hosts, and Publish now (steps 12–14 alone).
  *  DigitalOcean: DNS only (records at the load balancer, no proxy hosts), and
  *  the switch can't change (the API's do_field_locked). */
@@ -12,7 +13,7 @@ import DataTable from '@portal/components/DataTable';
 
 import { arrowNav } from '../../lib/arrowNav';
 import {
-  claimPublish, deployErrorText, getPublishPlan, startDeployment, updateEnvironment,
+  INTEGRATION_LABEL, claimPublish, deployErrorText, getPublishPlan, startDeployment, updateEnvironment,
   type Deployment, type Environment, type PublishEntry, type PublishPlan,
 } from '../../lib/sirdarApi';
 
@@ -59,8 +60,9 @@ export default function PublishTab({ env, onStarted, onChanged }: {
   const mayChange = can('deploy', 'change');
   const mayDeploy = can('deploy', 'add');
   const cloud = onDo(env);
-  // DigitalOcean never uses Nginx Proxy Manager: Cloudflare alone publishes it.
-  const configured = !!plan && plan.cloudflare.configured && (cloud || plan.npm.configured);
+  // DigitalOcean uses no proxy: Cloudflare alone publishes it.
+  const configured = !!plan && plan.cloudflare.configured && (cloud || plan.proxy.configured);
+  const proxyLabel = INTEGRATION_LABEL[plan?.proxy.kind ?? env.proxy ?? 'npm'];
   const claimable = !!plan && plan.services.some((s) => s.dns.state === 'claimable' || s.proxy.state === 'claimable');
   const switchLocked = cloud || !mayChange || running || busy !== '';
 
@@ -124,11 +126,11 @@ export default function PublishTab({ env, onStarted, onChanged }: {
       </div>
       {plan && !configured && (
         <p className="page-hint">
-          Set up {cloud ? 'Cloudflare' : 'Cloudflare and Nginx Proxy Manager'} in <Link to="/settings">Settings › Integrations</Link> to publish.
+          Set up {cloud ? 'Cloudflare' : `Cloudflare and ${proxyLabel}`} in <Link to="/settings">Settings › Integrations</Link> to publish.
         </p>
       )}
       {plan?.cloudflare.error && <p className="form-error" role="alert">Cloudflare: {plan.cloudflare.error}</p>}
-      {plan?.npm.error && <p className="form-error" role="alert">Nginx Proxy Manager: {plan.npm.error}</p>}
+      {plan?.proxy.error && <p className="form-error" role="alert">{proxyLabel}: {plan.proxy.error}</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
       <DataTable
         ariaLabel="Public names"

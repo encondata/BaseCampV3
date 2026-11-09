@@ -321,6 +321,34 @@ reused (left blank on save or Test) only for the target it was entered for:
 the same zone for Cloudflare, the same URL and login for NPM. Change the
 target and the secret must be entered again.
 
+**Switchyard (the other LAN proxy).** Switchyard is a Caddy-based proxy
+manager that sits beside NPM; each LAN environment publishes through one of
+them, chosen in the Deploy flow (Target step, **Proxy**) and fixed once
+created. Switchyard is the default for new environments; every environment
+made before migration 0018 keeps NPM, and DigitalOcean environments use none
+(their load balancer). In Settings > Integrations, Switchyard takes its URL
+and an API key (`sy_…`, sent as `Authorization: Bearer`, stored encrypted,
+never shown again; left blank, the stored key is kept for the same URL).
+Make the key in Switchyard (Administration > API keys) with exactly these
+operations: `status.get`, `hosts.list`, `hosts.get`, `hosts.create`,
+`hosts.update`, `hosts.delete`, `config.apply`, `certs.list`, `certs.retry`.
+Test reads `GET /api/status` and `GET /api/hosts` and tells an unreachable
+server, a rejected key and a missing permission apart. Step 13 keeps one
+Switchyard host per public service (`type: proxy`, the service's host and
+port over http, `tls_mode: auto`, Force HTTPS, HSTS off, notes `Managed by
+Sirdar: <env> (<env id>)`, which also marks whose it is); the bare name is a
+`redirect` host (302 to `https://portal.<base domain>`, path and query kept).
+Switchyard stages changes, so each change set ends with one `POST
+/api/config/apply` noted `Sirdar: <env> <what>`; a 422 means Caddy refused the
+config and kept the old one, and the step fails with Switchyard's message.
+Caddy gets the certificates itself: Sirdar requests none and keeps no
+certificate rows, it waits (up to 5 minutes, checking every 10 seconds) until
+`GET /api/certificates` shows every name covered, asking Switchyard to retry
+once if Caddy reported a failure. Switch traffic changes the hosts' upstreams
+in one apply and puts them back (another apply) on a failure. Delete
+environment deletes the hosts Sirdar created and applies. Switchyard's host
+ids are its own, so its rows have their own kind (`switchyard_host`).
+
 Sirdar changes only what it records in `managed_records`: entries it
 **created**, and hand-made ones someone **claimed** on the environment's
 Publish tab. Any other record or proxy host at a wanted name, or a wildcard
@@ -637,7 +665,7 @@ Routes for VMs answer 409 `not_vm_environment` on an SSH environment.
 | `POST /environments/{name}/snapshots` (take one) | `deploy:add` |
 | `DELETE /snapshots/{id}` | `deploy:change` |
 | `GET /integrations` | `deploy:view` |
-| `PUT /integrations/cloudflare`, `PUT /integrations/npm`, `DELETE /integrations/{kind}`, `POST /integrations/{kind}/test` | `deploy:change` |
+| `PUT /integrations/cloudflare`, `PUT /integrations/npm`, `PUT /integrations/switchyard`, `DELETE /integrations/{kind}`, `POST /integrations/{kind}/test` | `deploy:change` |
 | `GET /environments/{name}/publish` | `deploy:view` |
 | `POST /environments/{name}/publish/claim` | `deploy:change` |
 | `POST /environments/{name}/deployments` (`mode`: `publish`) | `deploy:add` |

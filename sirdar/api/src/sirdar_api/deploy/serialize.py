@@ -115,6 +115,8 @@ async def environment_out(db: AsyncSession, env: Environment) -> dict:
         "base_domain": env.base_domain, "env_dir": envfile.env_dir(env.name),
         "git_ref": env.git_ref, "current_sha": env.current_sha, "image_tag": env.image_tag,
         "status": env.status, "proxy_ip": env.proxy_ip, "bind_ip": env.bind_ip,
+        # publish.proxy_of: none on DigitalOcean, NPM for a LAN row from before 0018
+        "proxy": None if env.target_id == targets.DO_TARGET else env.proxy or "npm",
         "keep_dumps": env.keep_dumps, "spaces_bucket": env.spaces_bucket,
         "log_level": env.log_level,
         "services": [{"service": r.service, "host_ip": r.host_ip, "port": r.port,

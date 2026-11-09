@@ -1,5 +1,6 @@
 """Integration credentials: the Cloudflare API token and the Nginx Proxy
-Manager login Sirdar publishes with (phase 4), the Proxmox API token it
+Manager login Sirdar publishes with (phase 4), the Switchyard API key (the
+other LAN proxy, beside NPM; an environment's `proxy` picks one), the Proxmox API token it
 builds VMs with (phase 5), the ESXi password it builds VMs with (phase 6) and
 (since phase 7) a facade over the Production DigitalOcean account in
 do_accounts (SIRDAR_DEPLOY_DO_TOKEN is its fallback), plus their non-secret
@@ -23,30 +24,39 @@ from sirdar_api.config import Settings
 from sirdar_api.db.models import DoAccount, Environment, Integration, User
 from sirdar_api.deploy import envfile, tls_pin, vault
 
-KINDS = ("cloudflare", "npm", "proxmox", "esxi", "digitalocean")
+KINDS = ("cloudflare", "npm", "switchyard", "proxmox", "esxi", "digitalocean")
+# The LAN proxies an environment publishes through (Environment.proxy).
+PROXY_KINDS = ("switchyard", "npm")
+DEFAULT_PROXY = "switchyard"
 # The kinds an environment's VM is built on; an environment on one has
 # target_id equal to the kind (targets.VM_TARGETS).
 VM_HOST_KINDS = ("proxmox", "esxi")
-LABELS = {"cloudflare": "Cloudflare", "npm": "Nginx Proxy Manager", "proxmox": "Proxmox",
+LABELS = {"cloudflare": "Cloudflare", "npm": "Nginx Proxy Manager",
+          "switchyard": "Switchyard", "proxmox": "Proxmox",
           "esxi": "VMware ESXi", "digitalocean": "DigitalOcean"}
 FIELDS = {"cloudflare": ("zone", "public_ip"), "npm": ("url", "identity", "letsencrypt_email"),
+          "switchyard": ("url",),
           "proxmox": ("url", "node", "pool", "storage", "bridge", "vlan_tag", "template_vmid",
                       "tls_fingerprint", "token_id"),
           "esxi": ("url", "user", "datastore", "network", "resource_pool", "source_vm",
                    "dns_servers", "tls_fingerprint"),
           "digitalocean": ()}
-SECRET_FIELD = {"cloudflare": "token", "npm": "password", "proxmox": "token",
+SECRET_FIELD = {"cloudflare": "token", "npm": "password", "switchyard": "api_key",
+                "proxmox": "token",
                 "esxi": "password", "digitalocean": "token"}
 DEFAULT_ZONE = "serversherpa.com"
 # A stored secret is reused (secret omitted) only for the target it was
 # entered for: the Cloudflare token only ever goes to api.cloudflare.com, so
 # the zone is enough; the NPM and ESXi passwords go to the URL, for that login.
 # The DigitalOcean token only ever goes to api.digitalocean.com.
-TARGET_FIELDS = {"cloudflare": ("zone",), "npm": ("url", "identity"), "proxmox": ("url",),
+# The Switchyard key goes to the URL.
+TARGET_FIELDS = {"cloudflare": ("zone",), "npm": ("url", "identity"), "switchyard": ("url",),
+                 "proxmox": ("url",),
                  "esxi": ("url", "user"), "digitalocean": ()}
 NEW_TARGET_REASON = {
     "cloudflare": "Enter the token again to use it with a different zone.",
     "npm": "Enter the password again to use it with a different server or login.",
+    "switchyard": "Enter the API key again to use it with a different Switchyard server.",
     "proxmox": "Enter the API token again to use it with a different Proxmox server.",
     "esxi": "Enter the password again to use it with a different ESXi host or user.",
     "digitalocean": "Enter the API token again.",
@@ -58,6 +68,8 @@ PASSWORD_MAX = 1024
 
 _DOMAIN_RE = re.compile(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{20,200}")
+# Switchyard's keys are sy_ and 43 base64url characters; any length from 20 is taken.
+_SY_KEY_RE = re.compile(r"sy_[A-Za-z0-9_-]{20,200}")
 # A DigitalOcean personal access token is dop_v1_ and 64 hex digits; other
 # tokens (older or scoped formats) are any printable ASCII without spaces, up
 # to 200 characters. Only a dop_v1_ token is held to its full shape, so a
@@ -119,6 +131,12 @@ class NpmConfig:
     identity: str
     letsencrypt_email: str
     password: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class SwitchyardConfig:
+    url: str
+    api_key: str = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -194,6 +212,13 @@ def _check_npm(values: dict) -> dict:
     if not _email(email):
         raise IntegrationError("letsencrypt_email_invalid")
     return {"url": url, "identity": identity, "letsencrypt_email": email}
+
+
+def _check_switchyard(values: dict) -> dict:
+    url = str(values.get("url") or "").strip().rstrip("/")
+    if not _URL_RE.fullmatch(url):
+        raise IntegrationError("switchyard_url_invalid")
+    return {"url": url}
 
 
 def check_https_url(value, code: str) -> str:
@@ -314,7 +339,8 @@ def _check_esxi(values: dict) -> dict:
             "tls_fingerprint": fingerprint, "tls_cert_pem": pem}
 
 
-_CHECKS = {"cloudflare": _check_cloudflare, "npm": _check_npm, "proxmox": _check_proxmox,
+_CHECKS = {"cloudflare": _check_cloudflare, "npm": _check_npm,
+           "switchyard": _check_switchyard, "proxmox": _check_proxmox,
            "esxi": _check_esxi, "digitalocean": lambda values: {}}
 
 
@@ -329,6 +355,9 @@ def check_secret(kind: str, value: str) -> str:
     elif kind == "proxmox":
         if not isinstance(value, str) or not _PVE_TOKEN_RE.fullmatch(value):
             raise IntegrationError("proxmox_token_invalid")
+    elif kind == "switchyard":
+        if not isinstance(value, str) or not _SY_KEY_RE.fullmatch(value):
+            raise IntegrationError("switchyard_key_invalid")
     elif kind == "digitalocean":
         if (not isinstance(value, str) or not _PRINTABLE_TOKEN_RE.fullmatch(value)
                 or (value.startswith(DO_TOKEN_PREFIX) and not _DO_TOKEN_RE.fullmatch(value))):
@@ -339,7 +368,8 @@ def check_secret(kind: str, value: str) -> str:
     return value
 
 
-Config = CloudflareConfig | NpmConfig | ProxmoxConfig | EsxiConfig | DigitalOceanConfig
+Config = (CloudflareConfig | NpmConfig | SwitchyardConfig | ProxmoxConfig | EsxiConfig
+          | DigitalOceanConfig)
 
 
 def _config(kind: str, config: dict, secret: str) -> Config:
@@ -347,6 +377,8 @@ def _config(kind: str, config: dict, secret: str) -> Config:
         return DigitalOceanConfig(token=secret)
     if kind == "cloudflare":
         return CloudflareConfig(zone=config["zone"], public_ip=config["public_ip"], token=secret)
+    if kind == "switchyard":
+        return SwitchyardConfig(url=config["url"], api_key=secret)
     if kind == "proxmox":
         return ProxmoxConfig(url=config["url"], node=config["node"], pool=config["pool"],
                              storage=config["storage"], bridge=config["bridge"],
@@ -411,6 +443,10 @@ async def load_cloudflare(db: AsyncSession, settings: Settings) -> CloudflareCon
 
 async def load_npm(db: AsyncSession, settings: Settings) -> NpmConfig | None:
     return await load(db, settings, "npm")
+
+
+async def load_switchyard(db: AsyncSession, settings: Settings) -> SwitchyardConfig | None:
+    return await load(db, settings, "switchyard")
 
 
 async def load_proxmox(db: AsyncSession, settings: Settings) -> ProxmoxConfig | None:

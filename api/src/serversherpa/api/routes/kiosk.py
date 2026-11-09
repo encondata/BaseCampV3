@@ -23,18 +23,22 @@ from starlette.datastructures import FormData
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.access.resolver import resolve_access
 from serversherpa.api.deps import (
     AuthContext, DbSession, authenticate_request, client_ip, enforce_read_only_config,
-    rate_limit_ip, require_permission, session_started_at, station_device,
+    rate_limit_ip, require_permission, require_rank, session_started_at, station_device,
 )
 from serversherpa.api.routes.auth import (
     RESET_WINDOW_SECONDS, _scope_out, person_out, session_response, totp_status_out,
 )
 from serversherpa.api.routes.labels import _scoped_initiative, generated_label_bundle
 from serversherpa.api.routes.labels import vocab_usage as _vocab_usage
+from serversherpa.api.routes.scans import asset_scan_history
 from serversherpa.api.schemas import (
-    GeneratedLabelBundleOut, HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut,
+    AssetScanItem, GeneratedLabelBundleOut, HeartbeatIn, HeartbeatOut, KioskAssetDetailOut,
+    KioskAssetEndOut, KioskAssetFullOut, KioskAssetMoveOut, KioskAssetRouteOut,
+    KioskAssetLookupMatch, KioskAssetLookupOut, KioskAssetOut, KioskAssetsSyncOut,
     KioskLabelContextOut, KioskClientAssetOut, KioskClientAssetsSyncOut, KioskClockInIn,
     KioskClockOutIn, KioskContainerAssetIn, KioskContainerAssetOut,
     KioskContainerAssetRow, KioskContainerOut, KioskContainerRef,
@@ -70,10 +74,13 @@ from serversherpa.db.models import (
     WorkerProfile,
 )
 from serversherpa.db.ordering import natural, natural_key
+from serversherpa.assets.items import asset_statuses
+from serversherpa.assets.placement import asset_placements
 from serversherpa.labels.fields import FT_PREFIX, design_field_keys
 from serversherpa.labels.fonts import resident_object
+from serversherpa.labels.label_values import make_model_text
 from serversherpa.labels.generate.payloads import (
-    asset_payload, container_payload, label_context, load_status_labels,
+    asset_payload, container_payload, label_context, load_status_labels, ru_plain,
 )
 from serversherpa.labels.generate.values import AssetRow, Sites, placeholder_values
 from serversherpa.labels.kiosk_templates import (
@@ -89,6 +96,9 @@ from serversherpa.labels.template_fonts import design_fonts, fonts_used
 from serversherpa.learning import timeclock as learning_timeclock
 from serversherpa.learning.models import LearningOverride
 from serversherpa.services import auth as auth_service
+from serversherpa.services.asset_lookup import (
+    asset_in_reach, asset_moves, find_assets, lookup_reach,
+)
 from serversherpa.services import biometric
 from serversherpa.services import kiosk_config
 from serversherpa.services import kiosk_pairing as pairing
@@ -104,6 +114,7 @@ from serversherpa.services.kiosk_registration import (  # noqa: F401 (re-exporte
 )
 from serversherpa.services.password_policy import load_policy
 from serversherpa.services.storage import delete_object, get_object, presign_get, put_object
+from serversherpa.status.labels import UNKNOWN_COLOR, status_labels
 from serversherpa.wiki.share_links import IpRateLimiter
 
 router = APIRouter(prefix="/kiosk", tags=["kiosk"])
@@ -1879,6 +1890,142 @@ async def enroll_rfid(
         asset_tag=str(asset.legacy_id) if asset.legacy_id is not None else "",
         serial_number=asset.serial_number, rfid_tag=tag,
         already_had_tag=already_had_tag)
+
+
+# ── asset lookup (kiosk:view, read-only) ──────────────────────────────
+# Declared before any /assets/{asset_id} GET, so "lookup" is never parsed
+# as an asset id.
+
+
+@router.get("/assets/lookup", response_model=KioskAssetLookupOut)
+async def kiosk_asset_lookup(
+    db: DbSession,
+    serial: str = Query(...),
+    q: str = Query(..., max_length=200),
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskAssetLookupOut:
+    """Find devices for the kiosk's Asset Lookup screen by a typed or
+    scanned value: exact asset tag, serial or RFID first (a value that is
+    one device's asset tag and another's RFID returns both), a part-name
+    search only when nothing matched exactly; at most 25, `truncated`
+    when more exist (services/asset_lookup.find_assets).
+
+    The reach comes from the registered kiosk (`serial`), never from a
+    move id the screen sends: a move-password session sees its own move
+    only (403 `move_locked` on a kiosk set up for another move); admin and
+    above (rank 60) see their portal `assets:view` scope plus the kiosk's
+    move; anyone below admin sees the kiosk's move plus that move's
+    client's devices on its other live moves or on no move (the synced
+    set), and nothing on a kiosk with no move. Archived devices never
+    match. 404 `device_not_found` for an unknown kiosk.
+
+    Read-only: no scan is recorded, nothing is committed, and the
+    kiosk's `last_seen_at` is left alone."""
+    device = await _kiosk_device(db, serial)
+    _require_move(actor, device.current_initiative_id)
+    reach = await lookup_reach(db, device, access=actor.access, person_id=actor.person.id,
+                               locked_move_id=actor.session.initiative_id)
+    hits, truncated = await find_assets(db, reach, q)
+    return KioskAssetLookupOut(matches=[KioskAssetLookupMatch(
+        id=h.asset.id, name=h.asset.name,
+        asset_tag=str(h.asset.legacy_id) if h.asset.legacy_id is not None else "",
+        serial_number=h.asset.serial_number, matched=h.matched) for h in hits],
+        truncated=truncated)
+
+
+@router.get("/assets/{asset_id}", response_model=KioskAssetDetailOut)
+async def kiosk_asset_detail(
+    asset_id: uuid.UUID,
+    db: DbSession,
+    serial: str = Query(...),
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskAssetDetailOut:
+    """The Asset Lookup details card: identity plus, for each live move the
+    device is on, where it comes from and goes to. Admin and above (rank 60)
+    also get `full`: the device's status, its moves with their statuses, and
+    its container, truck and location text. The same reach as the lookup;
+    a device outside it is 404 `asset_not_found`. Read-only."""
+    device = await _kiosk_device(db, serial)
+    _require_move(actor, device.current_initiative_id)
+    reach = await lookup_reach(db, device, access=actor.access, person_id=actor.person.id,
+                               locked_move_id=actor.session.initiative_id)
+    asset = await asset_in_reach(db, reach, asset_id)
+    if asset is None:
+        raise _err(404, "asset_not_found")
+    make = model = None
+    if asset.model_id is not None:
+        mm = (await db.execute(select(AssetModel.make, AssetModel.model)
+                               .where(AssetModel.id == asset.model_id))).first()
+        if mm is not None:
+            make, model = mm
+    moves = await asset_moves(db, reach, asset.id)
+    site_ids = {s for _, ini in moves for s in (ini.origin_site_id, ini.destination_site_id)
+                if s is not None}
+    site_names = ({sid: name for sid, name in (await db.execute(
+        select(Site.id, Site.name).where(Site.id.in_(site_ids)))).all()}
+        if site_ids else {})
+
+    def end(site_id, pod, rack, ru, position) -> KioskAssetEndOut:
+        return KioskAssetEndOut(site_name=site_names.get(site_id), pod=pod, rack=rack,
+                                ru=ru_plain(ru), position=position)
+
+    routes = [KioskAssetRouteOut(
+        initiative_id=ini.id, initiative_name=ini.name,
+        source=end(ini.origin_site_id, ia.source_pod, ia.source_rack, ia.source_ru,
+                   ia.source_position),
+        destination=end(ini.destination_site_id, ia.destination_pod, ia.destination_rack,
+                        ia.destination_ru, ia.destination_position))
+        for ia, ini in moves]
+
+    full = None
+    if reach.admin:
+        asset_labels = await asset_statuses(db)
+        move_labels = await status_labels(db, "initiative")
+        label, color = asset_labels.get(asset.status, (asset.status, UNKNOWN_COLOR))
+        placed = (await asset_placements(db, [asset.id], actor.access,
+                                         actor.person.id)).get(asset.id)
+        full = KioskAssetFullOut(
+            status=asset.status, status_label=label, status_color=color,
+            moves=[KioskAssetMoveOut(
+                initiative_id=ini.id, initiative_name=ini.name, status=ini.status,
+                status_label=move_labels.get(ini.status, (ini.status, UNKNOWN_COLOR))[0],
+                status_color=move_labels.get(ini.status, (ini.status, UNKNOWN_COLOR))[1])
+                for _, ini in moves],
+            container_name=placed.container_name if placed else None,
+            truck_name=placed.truck_name if placed else None,
+            location_detail=asset.location_detail or "")
+    return KioskAssetDetailOut(
+        id=asset.id, name=asset.name, make=make, model=model,
+        make_model=make_model_text(make or "", model or ""),
+        asset_tag=str(asset.legacy_id) if asset.legacy_id is not None else "",
+        serial_number=asset.serial_number, rfid=asset.rfid_tag, routes=routes, full=full)
+
+
+@router.get("/assets/{asset_id}/scans", response_model=list[AssetScanItem])
+async def kiosk_asset_scans(
+    asset_id: uuid.UUID,
+    db: DbSession,
+    serial: str = Query(...),
+    limit: int = Query(50, ge=1, le=500),
+    actor: AuthContext = require_permission("kiosk", "view"),
+    _admin: AuthContext = require_rank(GATE_BYPASS_RANK),
+    _scans: AuthContext = require_permission("scans", "view"),
+) -> list[AssetScanItem]:
+    """Asset Lookup scan history, admin and above only (403 `forbidden`
+    below rank 60, or without `scans:view`, before any lookup). The same rows as the portal's
+    /scans/asset/{id}, for a device in the kiosk's reach (404
+    `asset_not_found` otherwise); `[]` when it is on no live move.
+    Read-only."""
+    device = await _kiosk_device(db, serial)
+    _require_move(actor, device.current_initiative_id)
+    reach = await lookup_reach(db, device, access=actor.access, person_id=actor.person.id,
+                               locked_move_id=actor.session.initiative_id)
+    asset = await asset_in_reach(db, reach, asset_id)
+    if asset is None:
+        raise _err(404, "asset_not_found")
+    if not await asset_moves(db, reach, asset.id):
+        return []
+    return await asset_scan_history(db, asset.id, limit)
 
 
 # ── containers: pack / unpack (kiosk:view) ───────────────────────────

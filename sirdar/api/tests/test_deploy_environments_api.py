@@ -26,7 +26,8 @@ ENV_KEYS = {"id", "name", "type", "target", "base_domain", "env_dir", "git_ref",
             "log_level", "services", "secrets_set", "seed_snapshot", "last_deployment",
             "created_at", "updated_at", "publish", "managed_records", "target_kind", "vm",
             "do", "slots", "active_slot", "auto_activate", "retiring", "never_deployed",
-            "first_admin", "machines", "lan_slots", "apps", "mail", "kiosk_signing_digests"}
+            "first_admin", "machines", "lan_slots", "apps", "mail", "kiosk_signing_digests",
+            "proxy"}
 NEW = {"mode": "new", "name": "qa", "type": "custom", "target": "ssh",
        "proxy_ip": "10.10.48.6"}
 DEFAULTS_URL = "/api/deploy/environment-defaults"
@@ -108,6 +109,7 @@ async def test_create_new_environment(client, db, target, leak_guard):
     assert await _audits(db, "deploy.environment_create") == [{
         "name": "qa", "type": "custom", "target": "ssh", "base_domain": "qa.serversherpa.com",
         "git_ref": "main", "proxy_ip": "10.10.48.6", "bind_ip": "0.0.0.0", "publish": True,
+        "proxy": "switchyard",
         "apps": ["wiki", "kiosk", "learn", "status", "mailpit"], "mail": {"mode": "mailpit"},
         "secrets": []}]
     assert (await client.get(f"{URL}/qa", headers=h)).json() == body

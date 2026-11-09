@@ -66,7 +66,7 @@ async def test_publish_tab_and_claim(client, db, ready, publish_fakes, no_leaks)
     h = await auth_headers(client, db)
     state = (await client.get(f"{ENV_URL}/publish", headers=h)).json()
     assert state["services"][0]["dns"]["state"] == "claimable"
-    assert state["cloudflare"]["configured"] and state["npm"]["configured"]
+    assert state["cloudflare"]["configured"] and state["proxy"]["configured"]
     resp = await client.post(f"{ENV_URL}/publish/claim", headers=h)
     assert resp.status_code == 200
     assert resp.json()["claimed"] == ["dns:api.uat.serversherpa.com"]

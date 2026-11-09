@@ -242,6 +242,10 @@ class Environment(Base):
     # lowercase hex, rendered as SS_KIOSK_SIGNING_DIGESTS. Not a secret.
     kiosk_signing_digests: Mapped[list[str]] = mapped_column(
         ARRAY(Text), server_default=text("'{}'"))
+    # The LAN proxy it publishes through (migration 0018): "switchyard" or
+    # "npm"; NULL on DigitalOcean (its load balancer). NULL on the LAN reads
+    # as "npm", what every environment made before 0018 used.
+    proxy: Mapped[str | None]
     created_by: Mapped[uuid.UUID | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
@@ -454,7 +458,8 @@ class Integration(Base):
 
     __tablename__ = "integrations"
 
-    kind: Mapped[str] = mapped_column(primary_key=True)   # cloudflare|npm|proxmox|esxi|digitalocean
+    # cloudflare|npm|switchyard|proxmox|esxi|digitalocean
+    kind: Mapped[str] = mapped_column(primary_key=True)
     config: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
     secret_enc: Mapped[bytes | None] = mapped_column(BYTEA)
     updated_by: Mapped[uuid.UUID | None]
@@ -474,7 +479,7 @@ class ManagedRecord(Base):
     environment_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("environments.id", ondelete="CASCADE"))
     service: Mapped[str]
-    kind: Mapped[str]                              # dns_record | proxy_host | certificate
+    kind: Mapped[str]              # dns_record | proxy_host | certificate | switchyard_host
     external_id: Mapped[str]
     name: Mapped[str]                              # the hostname it serves
     origin: Mapped[str]                            # created | claimed

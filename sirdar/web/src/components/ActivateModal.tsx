@@ -12,11 +12,13 @@ import { deployErrorText, activateSlot, type Deployment } from '../lib/sirdarApi
 import { slotTitle } from '../pages/environments/labels';
 
 export default function ActivateModal({
-  envName, production, slot, fromSlot, version, lan = false, onStarted, onClose,
+  envName, production, slot, fromSlot, version, lan = false, proxyLabel = 'Nginx Proxy Manager', onStarted, onClose,
 }: {
   envName: string; production: boolean; slot: string | null; fromSlot: string | null; version: string | null;
-  /** LAN Blue/Green: the switch is Nginx Proxy Manager, not a load balancer. */
+  /** LAN Blue/Green: the switch is the environment's proxy, not a load balancer. */
   lan?: boolean;
+  /** LAN: that proxy's name (Switchyard or Nginx Proxy Manager). */
+  proxyLabel?: string;
   onStarted: (dep: Deployment) => void; onClose: () => void;
 }) {
   const [confirm, setConfirm] = useState('');
@@ -69,7 +71,7 @@ export default function ActivateModal({
             <p className="page-hint">
               {slot && lan
                 ? `Sirdar smoke-tests ${slotTitle(slot)}${version ? ` (${version})` : ''} on its VM, then points this `
-                  + "environment's Nginx Proxy Manager proxy hosts at it and checks the public names through them. "
+                  + `environment's ${proxyLabel} proxy hosts at it and checks the public names through them. `
                   + 'If that check fails, every proxy host goes back.'
                   + (from ? ` ${from} keeps running: activate it again to switch back.` : '')
                 : slot

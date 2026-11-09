@@ -97,6 +97,14 @@ const ICONS: Record<KioskFeature['id'], JSX.Element> = {
       <path d="M2 27h6.5M15.5 27h9M31.5 27H38" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
     </svg>
   ),
+  // A magnifying glass: look an asset up by scanning its label.
+  lookup: (
+    <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <circle cx="17" cy="17" r="10" stroke="currentColor" strokeWidth="2.5" />
+      <path d="M24.5 24.5L34 34" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+      <circle cx="17" cy="17" r="3" fill="currentColor" />
+    </svg>
+  ),
   labels: (
     <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <path

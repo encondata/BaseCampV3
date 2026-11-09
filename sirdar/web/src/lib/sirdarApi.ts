@@ -252,6 +252,10 @@ const MESSAGES: Record<string, string> = {
   secret_required: 'Enter the token or password: none is stored yet.',
   npm_url_invalid: 'Use the address of Nginx Proxy Manager, like http://10.10.48.6:81 (no path).',
   identity_invalid: 'Enter the email you sign in to Nginx Proxy Manager with.',
+  switchyard_url_invalid: 'Use the address of Switchyard, like https://switchyard.lan:8443 (no path).',
+  switchyard_key_invalid: "That doesn't look like a Switchyard API key: sy_ and at least 20 letters, digits, - or _.",
+  proxy_invalid: 'Choose Switchyard or Nginx Proxy Manager.',
+  proxy_not_allowed: 'DigitalOcean environments use their load balancer, not a proxy.',
   letsencrypt_email_invalid: "That isn't a valid email address.",
   password_invalid: "That password can't be used: it's empty, too long, or has a line break.",
   integration_not_found: "Those credentials aren't stored any more.",
@@ -601,18 +605,21 @@ export interface Environment {
   first_admin: EnvFirstAdmin | null;
   /** Deploys publish DNS records and proxy hosts (steps 12–14). */
   publish: boolean;
+  /** The LAN proxy it publishes through (fixed once created); null on DigitalOcean. */
+  proxy: ProxyKind | null;
   /** The optional apps it runs (API and Portal always run). */
   apps: string[];
   /** Where its mail goes. */
   mail: EnvMail;
   /** SHA-256 digests of the kiosk app's signing certificates (SS_KIOSK_SIGNING_DIGESTS). */
   kiosk_signing_digests: string[];
-  /** What Sirdar manages for it in Cloudflare and Nginx Proxy Manager. */
+  /** What Sirdar manages for it in Cloudflare and its proxy. */
   managed_records: ManagedRecordRef[];
   last_deployment: DeploymentSummary | null; created_at: string; updated_at: string;
 }
 export interface ManagedRecordRef {
-  service: string; kind: 'dns_record' | 'proxy_host' | 'certificate'; name: string; origin: 'created' | 'claimed';
+  service: string; kind: 'dns_record' | 'proxy_host' | 'certificate' | 'switchyard_host'; name: string;
+  origin: 'created' | 'claimed';
 }
 /** A VM environment's VM. `stage`: none before step 0 starts one, partial while it isn't finished, then built.
  *  `vmid`/`node` are Proxmox's, `moref` ESXi's; `ip` is null until the VM reports it. */
@@ -673,6 +680,8 @@ export interface NewEnvironmentBody {
   first_admin?: NewFirstAdmin;
   /** Deploys publish DNS records and proxy hosts (the API's default: true). */
   publish?: boolean;
+  /** LAN only: the proxy it publishes through (the API's default: Switchyard). */
+  proxy?: ProxyKind;
   /** a VM target ('proxmox' or 'esxi') only: the VM step 0 builds. */
   vm?: NewVm;
   /** target 'digitalocean' only. */
@@ -792,14 +801,20 @@ export async function deleteSnapshot(id: string): Promise<void> {
 
 /* ---- Publishing: integrations (Settings) and the Publish tab ---- */
 /** The integrations Sirdar publishes with. */
-export type PublishKind = 'cloudflare' | 'npm';
+export type PublishKind = 'cloudflare' | 'npm' | 'switchyard';
+/** The LAN proxies an environment can publish through. */
+export type ProxyKind = 'switchyard' | 'npm';
+export const PROXY_KINDS: ProxyKind[] = ['switchyard', 'npm'];
+/** What a Switchyard API key needs, operation by operation. */
+export const SWITCHYARD_OPERATIONS = ['status.get', 'hosts.list', 'hosts.get', 'hosts.create', 'hosts.update',
+  'hosts.delete', 'config.apply', 'certs.list', 'certs.retry'];
 /** The hosts Sirdar builds environments' VMs on. */
 export type VmHostKind = 'proxmox' | 'esxi';
 /** The cloud account the Deploy page and the dashboard read. */
 export type CloudKind = 'digitalocean';
 export type IntegrationKind = PublishKind | VmHostKind | CloudKind;
 export const INTEGRATION_LABEL: Record<IntegrationKind, string> = {
-  cloudflare: 'Cloudflare', npm: 'Nginx Proxy Manager', proxmox: 'Proxmox', esxi: 'VMware ESXi',
+  cloudflare: 'Cloudflare', npm: 'Nginx Proxy Manager', switchyard: 'Switchyard', proxmox: 'Proxmox', esxi: 'VMware ESXi',
   digitalocean: 'DigitalOcean',
 };
 export interface CloudflareIntegration {
@@ -809,6 +824,9 @@ export interface CloudflareIntegration {
 export interface NpmIntegration {
   configured: boolean; url: string | null; identity: string | null; letsencrypt_email: string | null;
   password_set: boolean; updated_at: string | null; updated_by_name: string | null;
+}
+export interface SwitchyardIntegration {
+  configured: boolean; url: string | null; api_key_set: boolean; updated_at: string | null; updated_by_name: string | null;
 }
 export interface ProxmoxIntegration {
   configured: boolean; url: string | null; node: string | null; pool: string | null; storage: string | null;
@@ -836,12 +854,14 @@ export interface DigitalOceanIntegration {
   updated_at: string | null; updated_by_name: string | null;
 }
 export interface Integrations {
-  secrets_key_configured: boolean; cloudflare: CloudflareIntegration; npm: NpmIntegration; proxmox: ProxmoxIntegration;
+  secrets_key_configured: boolean; cloudflare: CloudflareIntegration; npm: NpmIntegration;
+  switchyard: SwitchyardIntegration; proxmox: ProxmoxIntegration;
   esxi: EsxiIntegration; digitalocean: DigitalOceanIntegration;
 }
 /** An omitted secret keeps the stored one. */
 export interface CloudflareBody { zone: string; public_ip: string; token?: string }
 export interface NpmBody { url: string; identity: string; letsencrypt_email?: string; password?: string }
+export interface SwitchyardBody { url: string; api_key?: string }
 /** tls_fingerprint: the certificate the user trusted (null: show it first). An omitted token keeps the stored one. */
 export interface ProxmoxBody {
   url: string; node: string; pool: string; storage: string; bridge: string; vlan_tag: number | null;
@@ -854,7 +874,7 @@ export interface EsxiBody {
 }
 /** An omitted token keeps the stored one (a Test then uses the token Sirdar uses). */
 export interface DigitalOceanBody { token?: string }
-type IntegrationBody = CloudflareBody | NpmBody | ProxmoxBody | EsxiBody | DigitalOceanBody;
+type IntegrationBody = CloudflareBody | NpmBody | SwitchyardBody | ProxmoxBody | EsxiBody | DigitalOceanBody;
 /** A VM host's certificate, as tls_untrusted describes it. */
 export interface TlsCertificate { fingerprint: string; subject: string; issuer: string; not_after: string; names: string[] }
 export interface IntegrationCheck {
@@ -871,7 +891,8 @@ export interface PublishService {
 export interface PublishPlan {
   publish: boolean; proxy_ip: string;
   cloudflare: { configured: boolean; zone: string | null; public_ip: string | null; error: string | null };
-  npm: { configured: boolean; url: string | null; error: string | null };
+  /** The environment's proxy (kind null on DigitalOcean). */
+  proxy: { kind: ProxyKind | null; configured: boolean; url: string | null; error: string | null };
   services: PublishService[];
   /** Managed entries under a name the environment no longer uses. */
   stale: ManagedRecordRef[];

@@ -9,6 +9,7 @@ import { FEATURES } from './lib/features';
 import { useKioskSetup } from './lib/kioskSetup';
 import { LABEL_SECTIONS, type LabelSection } from './lib/labelSections';
 import { isLaptop } from './lib/platform';
+import AssetLookup from './pages/AssetLookup';
 import BulkPrint from './pages/BulkPrint';
 import Containers from './pages/Containers';
 import DockStation from './pages/DockStation';
@@ -31,6 +32,7 @@ const SCAN = FEATURES.find((f) => f.id === 'scan')!;
 const ENROLL = FEATURES.find((f) => f.id === 'enroll')!;
 const CONTAINERS = FEATURES.find((f) => f.id === 'containers')!;
 const TRUCKS = FEATURES.find((f) => f.id === 'trucks')!;
+const LOOKUP = FEATURES.find((f) => f.id === 'lookup')!;
 const LABELS = FEATURES.find((f) => f.id === 'labels')!;
 const TIMECLOCK = FEATURES.find((f) => f.id === 'timeclock')!;
 
@@ -121,6 +123,17 @@ export default function App() {
               <KioskGuard>
                 <SetupGate feature={TRUCKS}>
                   <KioskShell><Trucks /></KioskShell>
+                </SetupGate>
+              </KioskGuard>
+            )}
+          />
+          {/* Asset Lookup is a real screen — same guards as Scanning. */}
+          <Route
+            path={LOOKUP.path}
+            element={(
+              <KioskGuard>
+                <SetupGate feature={LOOKUP}>
+                  <KioskShell><AssetLookup /></KioskShell>
                 </SetupGate>
               </KioskGuard>
             )}
