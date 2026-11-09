@@ -33,6 +33,10 @@ const NUMERIC = /^[0-9]*$/;
 const ALPHANUMERIC = /^[0-9A-Z $%*+\-./:]*$/;
 const MODE_NAMES = ['digits', 'characters', 'bytes'] as const;
 
+/** A ^BQ symbol prints this many dots below its ^FO y (labels/qr.py
+ *  QR_PRINT_DROP_DOTS): the compiler sets ^FO this far above the box. */
+export const QR_PRINT_DROP_DOTS = 10;
+
 /** Data bits at error correction M for versions 1-10 (data codewords x 8).
  *  CAPACITY_M is these for a value in one mode. */
 export const DATA_BITS_M: readonly number[] = [128, 224, 352, 512, 688, 864, 992, 1232, 1456, 1728];

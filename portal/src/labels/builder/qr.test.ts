@@ -47,11 +47,17 @@ describe('qrModules', () => {
 });
 
 describe('qrLayout', () => {
-  it('places the Vegas QR where it prints: 10 dots below ^FO1000,148^BQN,2,7 at 300', () => {
+  it('places the Vegas QR on its box, where ^FO1000,148^BQN,2,7 prints it at 300 (10 dots lower)', () => {
     expect(QR_PRINT_DROP_DOTS).toBe(10);
-    expect(qrLayout({ x: 3.3333, y: 0.4933, w: 0.49, h: 0.49 }, '100000', 300)).toEqual({
+    expect(qrLayout({ x: 3.3333, y: 0.5267, w: 0.49, h: 0.49 }, '100000', 300)).toEqual({
       modules: 21, magnification: 7, side: 147, x: 1000, y: 158, capped: false,
     });
+  });
+
+  it('never prints nearer the top than the drop: ^FO y stops at 0', () => {
+    expect(qrLayout({ x: 1, y: 0, w: 0.49, h: 0.49 }, '100000', 300).y).toBe(10);
+    expect(qrLayout({ x: 1, y: 0.02, w: 0.49, h: 0.49 }, '100000', 300).y).toBe(10);   // box top at 6
+    expect(qrLayout({ x: 1, y: 0.05, w: 0.49, h: 0.49 }, '100000', 300).y).toBe(15);
   });
 
   it('caps the magnification at 10 and centers the symbol on the box', () => {
@@ -61,7 +67,7 @@ describe('qrLayout', () => {
     expect(out.side).toBe(210);
     expect(out.capped).toBe(true);
     expect(out.x).toBe(600 + 42);
-    expect(out.y).toBe(300 + 42 + 10);
+    expect(out.y).toBe(300 + 42);
   });
 
   it('never magnifies below 1 and floors a negative offset like Python //', () => {

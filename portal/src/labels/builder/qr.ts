@@ -7,9 +7,9 @@
  * The printer encodes at error correction M in automatic mode. A symbol is
  * 17 + 4 × version modules a side; the magnification (dots per module)
  * comes from the box width only, capped at the printer's 10, and the symbol
- * is centered on the box. The compiler's ^FO is that centered top-left;
- * `qrLayout` is where the symbol prints, QR_PRINT_DROP_DOTS below it, as
- * Labelary renders it and the printer prints it. `qrMatrix` is the symbol itself, encoded as the printer encodes
+ * is centered on the box; ^BQ prints QR_PRINT_DROP_DOTS below its ^FO, so the
+ * compiler's ^FO is that far above. `qrLayout` is where the symbol prints,
+ * as Labelary renders it and the printer prints it. `qrMatrix` is the symbol itself, encoded as the printer encodes
  * it, so the canvas draws the real code for the sample value, as it draws
  * every other sample.
  */
@@ -116,8 +116,9 @@ export function qrMagnification(wDots: number, modules: number): number {
 
 /** How far below its ^FO y a ^BQ symbol prints, in dots: 10 at 203, 300
  *  and 600 DPI and magnification 2 to 10, with no sideways shift (Labelary,
- *  2026-11-09; the 203 DPI print matches the render). The canvas draws the
- *  symbol here; the ZPL is not adjusted for it. */
+ *  2026-11-09; the 203 DPI print matches the render). The compiler sets ^FO
+ *  this far above the symbol's place (labels/qr.py QR_PRINT_DROP_DOTS), so
+ *  it prints on its box. */
 export const QR_PRINT_DROP_DOTS = 10;
 
 export interface QrLayout {
@@ -125,8 +126,8 @@ export interface QrLayout {
   magnification: number;
   /** The symbol's side in dots. */
   side: number;
-  /** The symbol's top-left in dots, where it prints: the compiler's `^FO`,
-   *  with y QR_PRINT_DROP_DOTS lower. */
+  /** The symbol's top-left in dots, where it prints: centered on the box,
+   *  never nearer the top than QR_PRINT_DROP_DOTS. */
   x: number;
   y: number;
   /** The box asks for more than the printer's magnification cap. */
@@ -147,7 +148,8 @@ export function qrLayout(box: { x: number; y: number; w: number; h: number }, va
     magnification,
     side,
     x: Math.max(0, toDots(box.x, dpi) + Math.floor((wd - side) / 2)),
-    y: Math.max(0, toDots(box.y, dpi) + Math.floor((hd - side) / 2)) + QR_PRINT_DROP_DOTS,
+    // the compiler's ^FO y is the drop above the centered top, never above 0
+    y: Math.max(0, toDots(box.y, dpi) + Math.floor((hd - side) / 2) - QR_PRINT_DROP_DOTS) + QR_PRINT_DROP_DOTS,
     capped: Math.round(wd / modules) > QR_MAX_MAGNIFICATION,
   };
 }

@@ -13,11 +13,12 @@
  *    printer draws the value's modules (barcode.ts) × the narrow module
  *    (^BY, whole dots at the DPI) whatever the box says — so resizing
  *    along the bars sets the module and the width follows
- *    (`barcodeWidthIn`, `withBarcodeWidths`). A key press steps the module
+ *    (`barcodeWidthIn`, `withPrintedSizes`). A key press steps the module
  *    a dot at least; a barcode with no value to count snaps to whole
  *    modules of its own;
  *  - QR code: square, in whole magnification steps of the symbol the value
- *    needs (qr.ts), capped at the printer's 10;
+ *    needs (qr.ts), capped at the printer's 10; its box is the square it
+ *    prints for the sample (`qrPrintedBox`, `withPrintedSizes`);
  *  - line and box: free;
  *  - image: a free box, the picture fitting inside it by its fit (cover
  *    crops it to fill the box, contain leaves white around it).
@@ -36,7 +37,7 @@ import { reservedWidthIn, sizePtForHeight, textBoxFor, type FontMetrics } from '
 import {
   elementValue, type BarcodeElement, type DesignV2, type Display, type ElementV2, type FieldElement,
 } from './model';
-import { qrMagnification, qrModules } from './qr';
+import { QR_PRINT_DROP_DOTS, qrMagnification, qrModules } from './qr';
 import { pyRound, toDots } from './units';
 
 export type Handle = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw';
@@ -166,16 +167,52 @@ export function barcodeWidthIn(el: ElementV2, value: string, dpi: number): numbe
   return modules ? (modules * barcodeModuleDots(el.moduleIn, dpi)) / dpi : null;
 }
 
+/** A QR code, or a field placement shown as one. */
+export function isQr(el: ElementV2): boolean {
+  return el.type === 'qr' || (el.type === 'field' && el.display === 'qr');
+}
+
+/** The square a QR code prints `value` in at `dpi`, in inches: the symbol
+ *  the compiler centers on the box (qr.ts qrLayout), never nearer the top
+ *  edge than ^BQ's 10-dot drop below a ^FO of 0. Null for an empty value
+ *  (nothing to size), one too long to print, or an element that isn't a
+ *  QR code. */
+export function qrPrintedBox(el: ElementV2, value: string, dpi: number): Rect | null {
+  if (!isQr(el) || value === '') return null;
+  let modules: number;
+  try {
+    modules = qrModules(value);
+  } catch {
+    return null;
+  }
+  const wd = toDots(el.w, dpi);
+  const hd = toDots(el.h, dpi);
+  const side = modules * qrMagnification(wd, modules);
+  const x = Math.max(0, toDots(el.x, dpi) + Math.floor((wd - side) / 2));
+  const y = Math.max(QR_PRINT_DROP_DOTS, toDots(el.y, dpi) + Math.floor((hd - side) / 2));
+  return { x: x / dpi, y: y / dpi, w: side / dpi, h: side / dpi };
+}
+
 /** `design` with every barcode's w the width it prints at `dpi` with
- *  `values` (elementValue: a field's rules first). The compiler never reads
- *  a barcode's w; the canvas, hit-testing and the align tools do, so the
- *  builder keeps it in step. A barcode whose value is empty keeps its box;
- *  the same design comes back when nothing changes. */
-export function withBarcodeWidths(design: DesignV2, values: Readonly<Record<string, string>>,
+ *  `values` (elementValue: a field's rules first), and every QR code's box
+ *  the square it prints (`qrPrintedBox`), so the outline, the handles,
+ *  hit-testing and the align tools work on what prints. The compiler never
+ *  reads a barcode's w; a QR's fitted box compiles to the same symbol in the
+ *  same place. A barcode or QR code whose value is empty keeps its box; the
+ *  same design comes back when nothing changes. */
+export function withPrintedSizes(design: DesignV2, values: Readonly<Record<string, string>>,
   dpi: number): DesignV2 {
   let changed = false;
   const elements = design.elements.map((el) => {
-    const w = barcodeWidthIn(el, elementValue(el, values), dpi);
+    const value = elementValue(el, values);
+    const box = qrPrintedBox(el, value, dpi);
+    if (box) {
+      const same = (['x', 'y', 'w', 'h'] as const).every((k) => toDots(el[k], dpi) === toDots(box[k], dpi));
+      if (same) return el;
+      changed = true;
+      return { ...el, ...box };
+    }
+    const w = barcodeWidthIn(el, value, dpi);
     if (w === null || w === el.w) return el;
     changed = true;
     return { ...el, w };

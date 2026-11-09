@@ -27,9 +27,9 @@
  * still open.
  * Pointer positions stay in exact inches; everything drawn is in whole
  * dots as the compiler rounds them (CanvasElement). A barcode is as wide as
- * it prints for its sample at the viewed DPI (geometry.ts withBarcodeWidths):
- * the canvas works from the design with those widths, so its edits carry
- * them.
+ * it prints for its sample at the viewed DPI, and a QR code's box is the
+ * square it prints (geometry.ts withPrintedSizes): the canvas works from the
+ * design with those boxes, so its edits carry them.
  * Keyboard (useBuilderShortcuts): tools, arrows (⇧ ten dots, ⌥ to resize),
  * Tab, ⌘A, Delete, ⌘D, stacking, ⌘L, the align keys, zoom and the view
  * toggles. Undo, the clipboard, Format and Workflow keys are the page's.
@@ -40,7 +40,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 
 import type { FontWeight } from '../../../labels/builder/fonts';
 import {
-  clampToLabel, hitTest, marqueeSelect, resize, snap, withBarcodeWidths, type Handle, type Point, type Rect,
+  clampToLabel, hitTest, marqueeSelect, resize, snap, withPrintedSizes, type Handle, type Point, type Rect,
   type ResizeContext,
 } from '../../../labels/builder/geometry';
 import type { LoadedFont } from '../../../labels/builder/metrics';
@@ -154,7 +154,7 @@ export default function Canvas({
   fieldName = identity, gridIn = DEFAULT_GRID_IN, readOnly = false, keyboard = true, imageTool = false, platform,
 }: CanvasProps) {
   // every barcode as wide as it prints (the same design when they already are)
-  const design = useMemo(() => withBarcodeWidths(given, samples, dpi), [given, samples, dpi]);
+  const design = useMemo(() => withPrintedSizes(given, samples, dpi), [given, samples, dpi]);
   const os = useMemo(() => platform ?? detectPlatform(), [platform]);
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const stageRef = useRef<HTMLDivElement>(null);

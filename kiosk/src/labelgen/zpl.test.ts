@@ -318,34 +318,34 @@ describe('escaping (Porting rule 2)', () => {
 describe('schema 2 codes', () => {
   const qr = { id: 'q1', type: 'qr', field: 'asset_id', x: 1, y: 0.5, w: 0.49, h: 0.49, rotation: 0 };
 
-  it('sizes and centers a QR code, ^FO at its top-left', () => {
+  it('sizes and centers a QR code, ^FO the 10-dot ^BQ drop above it', () => {
     const values = { asset_id: '100000' };
-    expect(body(v2([qr], { values }))).toEqual(['^FO300,150^BQN,2,7^FH_^FDMA,100000^FS']);
-    expect(body(v2([qr], { values, dpi: 600 }))).toEqual(['^FO642,342^BQN,2,10^FH_^FDMA,100000^FS']);
+    expect(body(v2([qr], { values }))).toEqual(['^FO300,140^BQN,2,7^FH_^FDMA,100000^FS']);
+    expect(body(v2([qr], { values, dpi: 600 }))).toEqual(['^FO642,332^BQN,2,10^FH_^FDMA,100000^FS']);
     const long = 'X'.repeat(26);
     expect(body(v2([qr], { values: { asset_id: long } }))).toEqual([
-      `^FO298,148^BQN,2,6^FH_^FDMA,${long}^FS`]);
+      `^FO298,138^BQN,2,6^FH_^FDMA,${long}^FS`]);
     expect(body(v2([qr], { values: { asset_id: 'é'.repeat(14) } }))).toEqual([
-      `^FO301,151^BQN,2,5^FH_^FDMA,${'_c3_a9'.repeat(14)}^FS`]);
+      `^FO301,141^BQN,2,5^FH_^FDMA,${'_c3_a9'.repeat(14)}^FS`]);
     const { field: _f, ...rest } = qr;
     expect(body(v2([{ ...rest, data: 'HELLO' }], { values: {} }))).toEqual([
-      '^FO300,150^BQN,2,7^FH_^FDMA,HELLO^FS']);
+      '^FO300,140^BQN,2,7^FH_^FDMA,HELLO^FS']);
     for (const [w, mag] of [[0.35, 5], [0.7, 10]]) {
       const q = { id: 'q1', type: 'qr', data: '100000', x: 1, y: 1, w, h: w, rotation: 0 };
-      expect(body(v2([q], { values: {} }))).toEqual([`^FO300,300^BQN,2,${mag}^FH_^FDMA,100000^FS`]);
+      expect(body(v2([q], { values: {} }))).toEqual([`^FO300,290^BQN,2,${mag}^FH_^FDMA,100000^FS`]);
     }
     const top = { id: 'q1', type: 'qr', data: '100000', x: 1, y: 0, w: 0.49, h: 0.49, rotation: 0 };
     expect(body(v2([top], { values: {} }))).toEqual(['^FO300,0^BQN,2,7^FH_^FDMA,100000^FS']);
-    expect(body(v2([{ ...top, y: 0.1 }], { values: {} }))).toEqual(['^FO300,30^BQN,2,7^FH_^FDMA,100000^FS']);
+    expect(body(v2([{ ...top, y: 0.1 }], { values: {} }))).toEqual(['^FO300,20^BQN,2,7^FH_^FDMA,100000^FS']);
     // a symbol wider than its box centers with floor division: (10 - 21) // 2 is -6
     const small = { id: 'q1', type: 'qr', data: '100000', x: 1, y: 1, w: 0.0333, h: 0.0333, rotation: 0 };
-    expect(body(v2([small], { values: {} }))).toEqual(['^FO294,294^BQN,2,1^FH_^FDMA,100000^FS']);
+    expect(body(v2([small], { values: {} }))).toEqual(['^FO294,284^BQN,2,1^FH_^FDMA,100000^FS']);
   });
 
   it('prints a QR code upright whatever its rotation', () => {
     for (const rotation of [90, 180, 270]) {
       expect(body(v2([{ ...qr, rotation }], { values: { asset_id: '100000' } }))).toEqual([
-        '^FO300,150^BQN,2,7^FH_^FDMA,100000^FS']);
+        '^FO300,140^BQN,2,7^FH_^FDMA,100000^FS']);
       expect(v2([field({ display: 'qr', w: 0.49, h: 0.49, rotation })])).toContain('^BQN,2,7^');
     }
   });
@@ -366,7 +366,7 @@ describe('schema 2 codes', () => {
     const q = field({ id: 'f2', display: 'qr', w: 0.49, h: 0.49 });
     expect(body(v2([code, q]))).toEqual([
       '^FO400,28^BY4^BCN,50,N,N,N^FH_^FD>:07C^FS',
-      '^FO400,28^BQN,2,7^FH_^FDMA,07C^FS']);
+      '^FO400,18^BQN,2,7^FH_^FDMA,07C^FS']);
     // an even run of digits starts in subset C; Code 39 has no start code
     const digits = { id: 'b1', type: 'barcode', data: '1234', symbology: 'code128', x: 0, y: 0,
       w: 1, h: 0.2, rotation: 90 };

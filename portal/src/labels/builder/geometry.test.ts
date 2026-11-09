@@ -3,11 +3,11 @@ import { describe, expect, it } from 'vitest';
 import vegas from '../../../../api/src/serversherpa/labels/fixtures/vegas_v2.json';
 import {
   barcodeModuleDots, barcodeWidthIn, clampToLabel, footprint, hitTest, marqueeSelect, move, resize, snap,
-  withBarcodeWidths, type ResizeContext,
+  qrPrintedBox, withPrintedSizes, type ResizeContext,
 } from './geometry';
 import { reservedWidthIn, textBoxFor, type FontMetrics } from './metrics';
 import {
-  parseDesign, type BarcodeElement, type BoxElement, type ElementV2, type FieldElement, type ImageElement,
+  parseDesign, type BarcodeElement, type BoxElement, type DesignV2, type ElementV2, type FieldElement, type ImageElement,
   type QrElement, type TextElement,
 } from './model';
 
@@ -330,7 +330,7 @@ describe('resize: barcodes and QR codes', () => {
   });
 });
 
-describe('withBarcodeWidths', () => {
+describe('withPrintedSizes', () => {
   it('keeps every barcode as wide as it prints for the values, and nothing else', () => {
     const design = parseDesign({
       ...vegas,
@@ -342,7 +342,7 @@ describe('withBarcodeWidths', () => {
       ],
     });
     const values = { asset_id: '100000', asset_name: 'SAMPLE-SERVER-01' };
-    const out = withBarcodeWidths(design, values, 300);
+    const out = withPrintedSizes(design, values, 300);
     const w = (id: string) => out.elements.find((e) => e.id === id)!.w;
     expect(w('barcode')).toBeCloseTo(272 / 300, 12);
     // the field's rules come first: four characters, subset B, 2 dots
@@ -352,8 +352,57 @@ describe('withBarcodeWidths', () => {
     design.elements.filter((e) => !['barcode', 'as-barcode', 'static'].includes(e.id))
       .forEach((e) => expect(out.elements.find((o) => o.id === e.id)).toBe(e));
     // in step already: the same design back
-    expect(withBarcodeWidths(out, values, 300)).toBe(out);
+    expect(withPrintedSizes(out, values, 300)).toBe(out);
     // an empty value keeps the box
-    expect(withBarcodeWidths(design, {}, 300).elements.find((e) => e.id === 'barcode')!.w).toBe(byId('barcode').w);
+    expect(withPrintedSizes(design, {}, 300).elements.find((e) => e.id === 'barcode')!.w).toBe(byId('barcode').w);
   });
 });
+
+describe('QR boxes are the square they print', () => {
+  const qr = (over: Partial<ElementV2> = {}) => ({
+    id: 'q', type: 'qr', data: '100000', x: 1, y: 0.5, w: 0.19, h: 0.19, rotation: 0, ...over,
+  }) as ElementV2;
+  const dots = (r: { x: number; y: number; w: number; h: number }, dpi: number) =>
+    [r.x, r.y, r.w, r.h].map((v) => Math.round(v * dpi));
+
+  it('fits a box the symbol overflows: 57 dots asks for 21 × 3 = 63, centered on it', () => {
+    // 0.19 in at 300 = 57 dots: magnification round(57 / 21) = 3, 63 dots, 3 dots out each side
+    expect(dots(qrPrintedBox(qr(), '100000', 300)!, 300)).toEqual([297, 147, 63, 63]);
+  });
+
+  it('fits a box larger than its whole steps, and leaves a fitted one alone', () => {
+    const big = qr({ w: 0.6, h: 0.6 });   // 180 dots: 9 x 21 = 189
+    const box = qrPrintedBox(big, '100000', 300)!;
+    expect(dots(box, 300)).toEqual([295, 145, 189, 189]);   // (180 - 189) // 2 = -5, as the compiler floors
+    const fitted = { ...big, ...box } as ElementV2;
+    const design = { schema: 2, size: { w: 4, h: 2 }, splits: {}, elements: [fitted] } as DesignV2;
+    expect(withPrintedSizes(design, {}, 300)).toBe(design);
+  });
+
+  it('keeps the box below the drop at the top edge, where it can print', () => {
+    expect(dots(qrPrintedBox(qr({ y: 0 }), '100000', 300)!, 300)[1]).toBe(10);
+  });
+
+  it('sizes by the sample, and keeps the box for an empty value or a non-QR', () => {
+    const field = { id: 'f', type: 'field', field: 'asset_id', display: 'qr', x: 1, y: 0.5, w: 0.49, h: 0.49,
+      rotation: 0 } as ElementV2;
+    const design = { schema: 2, size: { w: 4, h: 2 }, splits: {}, elements: [field] } as DesignV2;
+    // 26 alphanumerics need 25 modules: 147 / 25 → 6, 150 dots: (147 - 150) // 2 = -2
+    const out = withPrintedSizes(design, { asset_id: 'X'.repeat(26) }, 300);
+    expect(dots(out.elements[0], 300)).toEqual([298, 148, 150, 150]);
+    expect(withPrintedSizes(design, { asset_id: '' }, 300)).toBe(design);
+    expect(qrPrintedBox({ ...field, display: 'text' } as ElementV2, '100000', 300)).toBeNull();
+  });
+
+  it('round-trips between DPIs without creeping', () => {
+    let el = qr({ w: 0.49, h: 0.49 });
+    const start = qrPrintedBox(el, '100000', 300)!;
+    el = { ...el, ...start } as ElementV2;
+    for (let i = 0; i < 3; i++) {
+      el = { ...el, ...qrPrintedBox(el, '100000', 203)! } as ElementV2;
+      el = { ...el, ...qrPrintedBox(el, '100000', 300)! } as ElementV2;
+    }
+    expect(dots(el, 300)).toEqual(dots(start, 300));
+  });
+});
+

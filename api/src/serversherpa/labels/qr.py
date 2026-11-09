@@ -38,6 +38,13 @@ NUMERIC = frozenset("0123456789")
 ALPHANUMERIC = frozenset("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:")
 
 
+# A ^BQ symbol prints this many dots below its ^FO y: 10 at 203, 300 and
+# 600 dpi and magnification 2-10, with no sideways shift (Labelary,
+# 2026-11-09; the 203 dpi print matches the render). The compiler sets ^FO
+# this far above the QR's box so the symbol prints where the box is; the
+# canvas (portal qr.ts QR_PRINT_DROP_DOTS) draws it there.
+QR_PRINT_DROP_DOTS = 10
+
 # Data bits at error correction M for versions 1-10 (data codewords x 8).
 # CAPACITY_M above is these for a value in one mode.
 DATA_BITS_M: tuple[int, ...] = (128, 224, 352, 512, 688, 864, 992, 1232, 1456, 1728)

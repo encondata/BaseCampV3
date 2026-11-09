@@ -15,7 +15,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import vegas from '../../../../../api/src/serversherpa/labels/fixtures/vegas_v2.json';
 import { align } from '../../../labels/builder/align';
 import { faceFile, type FontWeight } from '../../../labels/builder/fonts';
-import { withBarcodeWidths } from '../../../labels/builder/geometry';
+import { withPrintedSizes } from '../../../labels/builder/geometry';
 import { cssFamilyOf, textBoxFor, textWidthIn, type FontMetrics, type LoadedFont } from '../../../labels/builder/metrics';
 import {
   parseDesign, replaceElements, serializeDesign, updateElement, type BarcodeElement, type DesignV2, type ElementV2,
@@ -522,7 +522,7 @@ describe('align', () => {
     const { last } = setup({ selection: selected });
     fireEvent.click(screen.getByRole('button', { name: 'Align left' }));
     // the canvas works with each barcode as wide as it prints
-    const d = withBarcodeWidths(VEGAS(), SAMPLES, DPI);
+    const d = withPrintedSizes(VEGAS(), SAMPLES, DPI);
     const expected = replaceElements(d, align(selected.map((id) => el(d, id)), 'left', d.size));
     expect(last()).toEqual(expected);
     // the first selected (banner-pod, at 400 dots) is the anchor and stays put

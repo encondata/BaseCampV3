@@ -57,7 +57,7 @@ from serversherpa.labels.model import (
     element_hidden,
     element_value,
 )
-from serversherpa.labels.qr import QrTooLong, qr_modules
+from serversherpa.labels.qr import QR_PRINT_DROP_DOTS, QrTooLong, qr_modules
 from serversherpa.labels.tokens import TOKEN_RE
 
 _ROT = {0: "N", 90: "R", 180: "I", 270: "B"}
@@ -220,9 +220,11 @@ def _v2_qr(el: QrEl | FieldEl, value: str, dpi: int) -> str:
     """Error correction M, automatic input (`MA,`). Magnification fills the
     box for the symbol size the value needs (labels.qr), capped at the
     printer's 10; the symbol is centered on the box, so a capped one stays
-    where the design put it. ^FO is the symbol's top-left, where the canvas
-    draws it and Labelary renders it (no printer offset is added: the 203 dpi
-    print matches the render, 2026-11-09). ^BQ prints upright only (N): a
+    where the design put it. ^BQ prints its symbol QR_PRINT_DROP_DOTS below
+    its ^FO, so ^FO y is that far above the symbol's top (never above 0): the
+    symbol prints on the box, where the canvas draws it. The builder keeps a
+    QR's box the square it prints (portal geometry.ts withPrintedSizes).
+    ^BQ prints upright only (N): a
     square symbol looks the same at any rotation, which stays in the model
     for the canvas."""
     try:
@@ -233,7 +235,7 @@ def _v2_qr(el: QrEl | FieldEl, value: str, dpi: int) -> str:
     mag = min(10, max(1, round(wd / modules)))
     side = modules * mag
     x = max(0, _dots(el.x, dpi) + (wd - side) // 2)
-    y = max(0, _dots(el.y, dpi) + (hd - side) // 2)
+    y = max(0, _dots(el.y, dpi) + (hd - side) // 2 - QR_PRINT_DROP_DOTS)
     return f"^FO{x},{y}^BQN,2,{mag}^FH_^FDMA,{_esc(value)}^FS"
 
 

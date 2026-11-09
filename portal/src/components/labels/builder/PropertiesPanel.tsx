@@ -10,7 +10,7 @@
  * (NumberBox). W and H go through the canvas's own resize rules, so a text
  * element's height scales its font size and a QR code stays square. A
  * barcode is as wide as it prints its sample (geometry.ts
- * withBarcodeWidths): its length is read-only, Module sets it, and H (W
+ * withPrintedSizes): its length is read-only, Module sets it, and H (W
  * when it is turned) is the bar height; every edit here keeps each
  * barcode's width in step. A text
  * field is refit whenever its font, size, weight, inverted or expected
@@ -30,7 +30,7 @@ import { useRef } from 'react';
 import type { ReactNode } from 'react';
 
 import {
-  barcodeModuleDots, barcodeWidthIn, footprint, isBarcode, resize, withBarcodeWidths, type ResizeContext,
+  barcodeModuleDots, barcodeWidthIn, footprint, isBarcode, resize, withPrintedSizes, type ResizeContext,
 } from '../../../labels/builder/geometry';
 import type { DitherMode } from '../../../labels/builder/dither';
 import { imageName, samplePersonId } from '../../../labels/builder/image';
@@ -157,8 +157,8 @@ export default function PropertiesPanel({
   imagesAllowed = false, readOnly = false, onDialog,
 }: PropertiesPanelProps) {
   // every barcode as wide as it prints, here and in every edit sent up
-  const design = withBarcodeWidths(given, samples, dpi);
-  const onChange = (next: DesignV2) => emit(withBarcodeWidths(next, samples, dpi));
+  const design = withPrintedSizes(given, samples, dpi);
+  const onChange = (next: DesignV2) => emit(withPrintedSizes(next, samples, dpi));
   // what an edit that lands later works from: this render's, read when it lands
   const latest = useRef({ design, onChange, readOnly });
   latest.current = { design, onChange, readOnly };

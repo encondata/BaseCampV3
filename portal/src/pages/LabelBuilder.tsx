@@ -35,9 +35,10 @@
  * font changed before that font's metrics arrived is refit when they do,
  * so its box is one line of the new font tall.
  *
- * A barcode's box is as wide as it prints its sample at the DPI shown
- * (geometry.ts withBarcodeWidths): the design opens that way (and counts
- * as unchanged), and every edit keeps it so. The compiler never reads it.
+ * A barcode's box is as wide as it prints its sample at the DPI shown, and
+ * a QR code's box is the square it prints (geometry.ts withPrintedSizes):
+ * the design opens that way (and counts as unchanged), and every edit keeps
+ * it so, so the outline and the align tools work on what prints.
  *
  * An ID badge in ZPL takes images (spec 2026-10-20-badge-templates §4.10):
  * the Image tool and the image properties are there only, a design with
@@ -86,7 +87,7 @@ import { useBuilderFonts } from '../components/labels/builder/useBuilderFonts';
 import { useBuilderShortcuts, type ShortcutHandlers } from '../components/labels/builder/useBuilderShortcuts';
 import VersionsModal from '../components/labels/builder/VersionsModal';
 import { metricsFile } from '../labels/builder/fonts';
-import { clampToLabel, withBarcodeWidths } from '../labels/builder/geometry';
+import { clampToLabel, withPrintedSizes } from '../labels/builder/geometry';
 import { createHistory } from '../labels/builder/history';
 import { samplePersonId } from '../labels/builder/image';
 import {
@@ -292,7 +293,7 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
     () => ({ ...(isChild ? initial.node?.samples : initial.template.samples) ?? {} }));
   const [viewDpi, setViewDpi] = useState(isChild ? template.dpi_key : PARENT_DPI);
   // the design as opened, each barcode as wide as it prints (no change to save)
-  const [opened] = useState(() => withBarcodeWidths(initial.design, samples, dpiDots(vocab, viewDpi)));
+  const [opened] = useState(() => withPrintedSizes(initial.design, samples, dpiDots(vocab, viewDpi)));
   const history = useRef(createHistory<DesignV2>(opened));
   const [design, setDesign] = useState<DesignV2>(opened);
   const [, setHistoryTick] = useState(0);
@@ -388,7 +389,7 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
   const apply = useCallback((edited: DesignV2) => {
     const h = history.current;
     if (edited === h.present) return;
-    const next = withBarcodeWidths(edited, widthsFrom.current.samples, widthsFrom.current.dpi);
+    const next = withPrintedSizes(edited, widthsFrom.current.samples, widthsFrom.current.dpi);
     markPending(h.present, next);
     h.push(next);
     setDesign(next);
@@ -487,7 +488,7 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
     if (!isChild) setSamples({ ...(row.samples ?? {}) });
     let d: DesignV2;
     try {
-      d = withBarcodeWidths(parseDesign(row.design), isChild ? samples : { ...(row.samples ?? {}) }, dpi);
+      d = withPrintedSizes(parseDesign(row.design), isChild ? samples : { ...(row.samples ?? {}) }, dpi);
     } catch (err) {
       console.error('label builder: the restored design cannot be read', err);
       setSaved((prev) => ({ ...prev, samples: isChild ? prev.samples : json(row.samples ?? {}) }));

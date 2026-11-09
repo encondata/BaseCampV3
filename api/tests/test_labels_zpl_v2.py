@@ -15,7 +15,7 @@ from serversherpa.labels.brother_ptouch import compile_ptouch
 from serversherpa.labels.fields import MOCK_VALUES
 from serversherpa.labels.fonts import FAMILIES, font_object
 from serversherpa.labels.model import parse_design
-from serversherpa.labels.qr import qr_modules
+from serversherpa.labels.qr import QR_PRINT_DROP_DOTS, qr_modules
 from serversherpa.labels.render import render_template
 from serversherpa.labels.zpl import compile_zpl
 
@@ -158,41 +158,44 @@ def test_qr_uses_mode_m_and_caps_magnification_at_10():
     qr = {"id": "q1", "type": "qr", "field": "asset_id", "x": 1, "y": 0.5,
           "w": 0.49, "h": 0.49, "rotation": 0}
     values = {"asset_id": "100000"}
-    # 147 dots / 21 modules = 7 at 300; ^FO is the symbol's top-left
-    assert _body(_zpl(qr, values=values)) == ["^FO300,150^BQN,2,7^FH_^FDMA,100000^FS"]
+    # 147 dots / 21 modules = 7 at 300; the symbol prints on the box (top at
+    # 150), so ^FO is the 10-dot ^BQ drop above it
+    assert _body(_zpl(qr, values=values)) == ["^FO300,140^BQN,2,7^FH_^FDMA,100000^FS"]
     # 294 / 21 = 14 at 600: capped at 10 (210 dots), centered in the 294-dot
-    # box
+    # box (top at 342)
     assert _body(_zpl(qr, values=values, dpi=600)) == [
-        "^FO642,342^BQN,2,10^FH_^FDMA,100000^FS"]
+        "^FO642,332^BQN,2,10^FH_^FDMA,100000^FS"]
     # 26 alphanumerics need version 2 (25 modules): 147 / 25 -> 6,
     # 150 dots, centered over the 147-dot box
     long = "X" * 26
     assert _body(_zpl(qr, values={"asset_id": long})) == [
-        f"^FO298,148^BQN,2,6^FH_^FDMA,{long}^FS"]
+        f"^FO298,138^BQN,2,6^FH_^FDMA,{long}^FS"]
     # 14 x é is 28 UTF-8 bytes: version 3 (29 modules): 147 / 29 -> 5,
     # 145 dots, one dot in from each side; ^FH_ hex-escapes
     # every byte
     accents = "é" * 14
     assert _body(_zpl(qr, values={"asset_id": accents})) == [
-        "^FO301,151^BQN,2,5^FH_^FDMA," + "_c3_a9" * 14 + "^FS"]
+        "^FO301,141^BQN,2,5^FH_^FDMA," + "_c3_a9" * 14 + "^FS"]
     # static data works the same way
     static = {k: v for k, v in qr.items() if k != "field"} | {"data": "HELLO"}
-    assert _body(_zpl(static, values={})) == ["^FO300,150^BQN,2,7^FH_^FDMA,HELLO^FS"]
+    assert _body(_zpl(static, values={})) == ["^FO300,140^BQN,2,7^FH_^FDMA,HELLO^FS"]
 
 
-def test_qr_fo_is_where_the_design_puts_the_symbol():
-    """No printer offset: ^FO is the symbol's top-left at any magnification,
-    where the canvas draws it and the render shows it."""
+def test_qr_fo_sits_the_bq_drop_above_the_symbol():
+    """^BQ prints its symbol 10 dots below its ^FO at any magnification and
+    DPI, so ^FO y is 10 dots above where the symbol should print, and never
+    above 0."""
+    assert QR_PRINT_DROP_DOTS == 10
     # magnification 5 (105 dots) and 10 (210 dots), each filling its box
     for w, mag in ((0.35, 5), (0.7, 10)):
         qr = {"id": "q1", "type": "qr", "data": "100000", "x": 1, "y": 1, "w": w, "h": w,
               "rotation": 0}
-        assert _body(_zpl(qr, values={})) == [f"^FO300,300^BQN,2,{mag}^FH_^FDMA,100000^FS"]
-    # a QR code can sit at the top edge
+        assert _body(_zpl(qr, values={})) == [f"^FO300,290^BQN,2,{mag}^FH_^FDMA,100000^FS"]
+    # nearer the top than the drop, ^FO y stays at 0
     top = {"id": "q1", "type": "qr", "data": "100000", "x": 1, "y": 0, "w": 0.49, "h": 0.49,
            "rotation": 0}
     assert _body(_zpl(top, values={})) == ["^FO300,0^BQN,2,7^FH_^FDMA,100000^FS"]
-    assert _body(_zpl({**top, "y": 0.1}, values={})) == ["^FO300,30^BQN,2,7^FH_^FDMA,100000^FS"]
+    assert _body(_zpl({**top, "y": 0.1}, values={})) == ["^FO300,20^BQN,2,7^FH_^FDMA,100000^FS"]
 
 
 def test_qr_modules_pick_the_smallest_version_at_level_m():
@@ -232,7 +235,7 @@ def test_qr_always_prints_upright():
         qr = {"id": "q1", "type": "qr", "field": "asset_id", "x": 1, "y": 0.5,
               "w": 0.49, "h": 0.49, "rotation": rotation}
         assert _body(_zpl(qr, values={"asset_id": "100000"})) == [
-            "^FO300,150^BQN,2,7^FH_^FDMA,100000^FS"]
+            "^FO300,140^BQN,2,7^FH_^FDMA,100000^FS"]
         as_field = _field(display="qr", w=0.49, h=0.49, rotation=rotation)
         assert "^BQN,2,7^" in _zpl(as_field)
 
@@ -357,7 +360,7 @@ def test_field_displayed_as_barcode_or_qr_applies_its_rules():
     qr = _field(id="f2", display="qr", w=0.49, h=0.49)
     assert _body(_zpl(code, qr)) == [
         "^FO400,28^BY4^BCN,50,N,N,N^FH_^FD>:07C^FS",
-        "^FO400,28^BQN,2,7^FH_^FDMA,07C^FS"]
+        "^FO400,18^BQN,2,7^FH_^FDMA,07C^FS"]   # the box's top at 28, less the 10-dot drop
 
 
 def test_v2_needs_values():
