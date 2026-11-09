@@ -301,6 +301,143 @@ async def test_ios_enroll_audit_records_platform(
     assert ios["serial"] == SERIAL
     android = rows[a.json()["key_id"]]
     assert android["platform"] == "android" and android["security_level"] == "strongbox"
+    # an Android key's chain is its attestation
+    assert ios["attested"] is True and android["attested"] is True
+
+
+async def _enroll_audit(db, key_id: str) -> dict:
+    db.expire_all()
+    row = await db.scalar(select(AuditLog).where(
+        AuditLog.action == "biometric_enroll", AuditLog.entity_id == key_id))
+    return row.changes
+
+
+# ── App Attest off for now (spec decision 3, follow-up SS-521) ─────
+
+def _unattested(body: dict) -> dict:
+    """The body the app sends while BiometricAppAttest.isEnabled is false."""
+    return {k: v for k, v in body.items() if k not in ("app_attest_key_id", "attestation")}
+
+
+@pytest.fixture
+def require_app_attest(monkeypatch):
+    """SS_KIOSK_IOS_REQUIRE_APP_ATTEST=true (Settings is frozen: set it through
+    the environment)."""
+    monkeypatch.setenv("SS_KIOSK_IOS_REQUIRE_APP_ATTEST", "true")
+    get_settings.cache_clear()
+    assert get_settings().kiosk_ios_require_app_attest is True
+    yield
+    monkeypatch.delenv("SS_KIOSK_IOS_REQUIRE_APP_ATTEST")
+    get_settings.cache_clear()
+
+
+def test_ios_app_attest_is_not_required_by_default():
+    assert get_settings().kiosk_ios_require_app_attest is False
+
+
+async def test_ios_unattested_enroll_is_stored_and_signs_in(
+        client, db, seeded_user, app_attest):
+    hdrs, person = await _worker_on_ipad(db, client)
+    key = ec.generate_private_key(ec.SECP256R1())
+    r = await _enroll_ios(client, hdrs, _unattested(_ios_body(await _nonce(client, hdrs), key)))
+    assert r.status_code == 200, r.text
+    assert r.json()["security_level"] == "unattested"
+    [row] = await _keys(db)
+    assert row.security_level == "unattested" and row.person_id == person.id
+    assert row.public_key == key.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    audit = await _enroll_audit(db, r.json()["key_id"])
+    assert audit["attested"] is False
+    assert audit["platform"] == "ios" and audit["security_level"] == "unattested"
+    assert app_attest.calls == []          # nothing to verify: App Attest never ran
+
+    # sign-in is the same as for an attested key
+    client.cookies.clear()
+    c = await _challenge(client, SERIAL)
+    assert c.status_code == 200, c.text
+    card = c.json()
+    s = await _sign_in(client, card["key_id"], card["challenge"], _sign(key, card["challenge"]))
+    assert s.status_code == 200, s.text
+    assert s.json()["person"]["id"] == str(person.id)
+
+
+async def test_ios_unattested_enroll_refused_when_required(
+        client, db, seeded_user, app_attest, require_app_attest):
+    hdrs, _ = await _worker_on_ipad(db, client)
+    key = ec.generate_private_key(ec.SECP256R1())
+    nonce = await _nonce(client, hdrs)
+    r = await _enroll_ios(client, hdrs, _unattested(_ios_body(nonce, key)))
+    assert r.status_code == 422
+    assert r.json()["detail"] == {"code": "attestation_failed", "reason": "attestation_required"}
+    assert await _keys(db) == []
+    assert app_attest.calls == []
+    # an attested enroll still works with the setting on, on the same nonce
+    r = await _enroll_ios(client, hdrs, _ios_body(nonce, key))
+    assert r.status_code == 200, r.text
+    assert r.json()["security_level"] == "secure_enclave"
+
+
+async def test_ios_attestation_fields_come_together(client, db, seeded_user, app_attest):
+    hdrs, _ = await _worker_on_ipad(db, client)
+    key = ec.generate_private_key(ec.SECP256R1())
+    nonce = await _nonce(client, hdrs)
+    full = _ios_body(nonce, key)
+    for missing in ("app_attest_key_id", "attestation"):
+        body = {k: v for k, v in full.items() if k != missing}
+        r = await _enroll_ios(client, hdrs, body)
+        assert r.status_code == 422, (missing, r.text)
+        # an explicit null is the same as leaving it out
+        r = await _enroll_ios(client, hdrs, {**full, missing: None})
+        assert r.status_code == 422, (missing, r.text)
+    # the public key and the proof are always needed
+    for needed in ("public_key", "signature"):
+        r = await _enroll_ios(client, hdrs, {k: v for k, v in _unattested(full).items()
+                                             if k != needed})
+        assert r.status_code == 422, (needed, r.text)
+    assert app_attest.calls == []
+    assert await _keys(db) == []
+
+
+async def test_ios_unattested_bad_proof_is_422_proof(client, db, seeded_user, app_attest):
+    hdrs, _ = await _worker_on_ipad(db, client)
+    key = ec.generate_private_key(ec.SECP256R1())
+    nonce = await _nonce(client, hdrs)
+    elsewhere = key.sign(b"a different message", ec.ECDSA(hashes.SHA256()))
+    body = _unattested(_ios_body(nonce, key, signature=_b64(elsewhere)))
+    r = await _enroll_ios(client, hdrs, body)
+    assert r.status_code == 422
+    assert r.json()["detail"] == {"code": "attestation_failed", "reason": "proof"}
+    # a malformed key or proof is a refusal with a reason, never a 500
+    parse = {"code": "attestation_failed", "reason": "parse"}
+    for name, over in {"64-byte key": {"public_key": _b64(_x963(key)[1:])},
+                       "off-curve point": {"public_key": _b64(_off_curve_point(key))},
+                       "non-base64 signature": {"signature": "@@not base64@@"}}.items():
+        r = await _enroll_ios(client, hdrs, _unattested(_ios_body(nonce, key, **over)))
+        assert r.status_code == 422, (name, r.text)
+        assert r.json()["detail"] == parse, name
+    r = await _enroll_ios(client, hdrs, _unattested(_ios_body(nonce, key, signature=_b64(b"x"))))
+    assert r.status_code == 422 and r.json()["detail"]["reason"] == "proof"
+    assert app_attest.calls == []
+    assert await _keys(db) == []
+
+
+async def test_ios_attested_enroll_records_attested_true(client, db, seeded_user, app_attest):
+    _, _, r, _ = await _ios_enrolled(db, client)
+    assert r.status_code == 200, r.text
+    assert r.json()["security_level"] == "secure_enclave"
+    audit = await _enroll_audit(db, r.json()["key_id"])
+    assert audit["attested"] is True and audit["security_level"] == "secure_enclave"
+    assert len(app_attest.calls) == 1
+
+
+async def test_ios_unattested_key_lists_as_unattested(client, db, seeded_user, app_attest):
+    hdrs, _ = await _worker_on_ipad(db, client)
+    key = ec.generate_private_key(ec.SECP256R1())
+    r = await _enroll_ios(client, hdrs, _unattested(_ios_body(await _nonce(client, hdrs), key)))
+    assert r.status_code == 200, r.text
+    resp = await client.get("/auth/me/biometric-keys", headers=await login(client, EMAIL, PW))
+    assert resp.status_code == 200, resp.text
+    assert [row["security_level"] for row in resp.json()] == ["unattested"]
 
 
 async def test_ios_key_lists_as_secure_enclave(client, db, seeded_user, app_attest):

@@ -6,8 +6,10 @@ biometric unlocks. Enroll registers its public half after the platform
 proves where it lives: Android's key attestation
 (security/key_attestation.py), or on iOS App Attest
 (security/app_attest.py) plus the Secure Enclave key's signature over the
-nonce. Sign-in signs a one-time challenge with it (SHA256withECDSA over the
-UTF-8 bytes of the challenge string), the same on both.
+nonce. App Attest is off for now (SS-521): an iOS enroll without it is
+stored as "unattested" unless SS_KIOSK_IOS_REQUIRE_APP_ATTEST is set.
+Sign-in signs a one-time challenge with it (SHA256withECDSA over the UTF-8
+bytes of the challenge string), the same on both.
 
 - The enroll nonce is a signed JWT (typ "bioenroll", 5 minutes) bound to the
   person, the session family and the serial. The Android app passes the
@@ -286,7 +288,8 @@ async def _store_key(
 ) -> BiometricKey:
     """Store `public_key_der` (DER SubjectPublicKeyInfo) as the person's live
     key on `device`, revoking every older live key on the device, audited as
-    `biometric_enroll` with the platform. Does not commit."""
+    `biometric_enroll` with the platform and whether the key was attested
+    (every level but "unattested"). Does not commit."""
     await revoke_keys(db, device_id=device.id, reason="replaced", actor_id=person_id, ip=ip)
     await db.flush()          # the old live key leaves the partial unique index first
     key = BiometricKey(
@@ -298,7 +301,8 @@ async def _store_key(
     audit(db, actor_id=person_id, entity_type="biometric_key", entity_id=str(key.id),
           action="biometric_enroll",
           changes={"device_id": str(device.id), "serial": device.serial,
-                   "platform": platform, "security_level": security_level}, ip=ip)
+                   "platform": platform, "security_level": security_level,
+                   "attested": security_level != "unattested"}, ip=ip)
     await db.flush()
     return key
 
@@ -344,35 +348,48 @@ def _x963_to_spki(raw: bytes) -> bytes:
 
 async def enroll_ios(
     db: AsyncSession, *, person_id: uuid.UUID, device: Device, nonce: str,
-    public_key_x963: bytes, app_attest_key_id: bytes, attestation: bytes, proof: bytes,
-    password_sign_in_at: datetime, ip: str | None = None,
+    public_key_x963: bytes, app_attest_key_id: bytes | None, attestation: bytes | None,
+    proof: bytes, password_sign_in_at: datetime, ip: str | None = None,
 ) -> BiometricKey:
     """iOS: verify the App Attest statement, which binds the nonce and the
     Secure Enclave key through clientDataHash, then the key's own signature
     over the nonce (`proof`), and store the key as `secure_enclave` the way
     `enroll` stores an Android one. Google's revocation list is Android's
     and plays no part. The caller has checked the session, the device and
-    the nonce, and holds the device row FOR UPDATE. Does not commit."""
+    the nonce, and holds the device row FOR UPDATE. Does not commit.
+
+    Without an attestation (`app_attest_key_id` and `attestation` both None:
+    App Attest is off in the app until SS-521) the proof is still checked
+    and the key is stored as `unattested`, or refused as
+    attestation_failed{attestation_required} when
+    SS_KIOSK_IOS_REQUIRE_APP_ATTEST is set."""
     public_key_der = _x963_to_spki(public_key_x963)
-    if len(app_attest_key_id) != APP_ATTEST_KEY_ID_LENGTH:
-        raise BiometricError(422, "attestation_failed", reason="parse")
-    try:
-        verify_app_attest(
-            attestation, key_id=app_attest_key_id,
-            client_data_hash=client_data_hash(nonce, public_key_x963),
-            app_id=KIOSK_IOS_APP_ID,
-            allow_development=get_settings().kiosk_app_attest_development)
-    except AttestationError as exc:
-        # as on Android: the API answers only the reason, the log keeps the
-        # detail (never the attestation object itself)
-        logger.warning("app attest refused: %s %s", exc.reason, exc.detail)
-        raise BiometricError(422, "attestation_failed", reason=exc.reason) from None
+    if attestation is None or app_attest_key_id is None:
+        if get_settings().kiosk_ios_require_app_attest:
+            logger.warning("app attest refused: no attestation and it is required")
+            raise BiometricError(422, "attestation_failed", reason="attestation_required")
+        security_level = "unattested"
+    else:
+        if len(app_attest_key_id) != APP_ATTEST_KEY_ID_LENGTH:
+            raise BiometricError(422, "attestation_failed", reason="parse")
+        try:
+            verify_app_attest(
+                attestation, key_id=app_attest_key_id,
+                client_data_hash=client_data_hash(nonce, public_key_x963),
+                app_id=KIOSK_IOS_APP_ID,
+                allow_development=get_settings().kiosk_app_attest_development)
+        except AttestationError as exc:
+            # as on Android: the API answers only the reason, the log keeps the
+            # detail (never the attestation object itself)
+            logger.warning("app attest refused: %s %s", exc.reason, exc.detail)
+            raise BiometricError(422, "attestation_failed", reason=exc.reason) from None
+        security_level = "secure_enclave"
     if not signature_valid(public_key_der, nonce, proof):
-        logger.warning("app attest refused: proof signature over the nonce does not verify")
+        logger.warning("biometric enroll refused: proof signature over the nonce does not verify")
         raise BiometricError(422, "attestation_failed", reason="proof")
     return await _store_key(
         db, person_id=person_id, device=device, public_key_der=public_key_der,
-        security_level="secure_enclave", platform="ios",
+        security_level=security_level, platform="ios",
         password_sign_in_at=password_sign_in_at, ip=ip)
 
 

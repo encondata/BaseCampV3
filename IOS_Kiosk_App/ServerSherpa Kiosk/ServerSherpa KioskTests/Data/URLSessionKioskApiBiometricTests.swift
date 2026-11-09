@@ -25,13 +25,24 @@ struct URLSessionKioskApiBiometricTests {
 
     @Test func enrollSendsTheIosBody() async throws {
         let h = try await signedIn()
-        h.server.enqueue(.json(200, #"{"key_id":"k1","security_level":"app_attest","renews_at":"2027-01-01T00:00:00Z"}"#))
+        h.server.enqueue(.json(200, #"{"key_id":"k1","security_level":"secure_enclave","renews_at":"2027-01-01T00:00:00Z"}"#))
         let out = try await h.api.biometricEnroll(BiometricIosEnrollIn(serial: "s1", nonce: "n", publicKey: "p", appAttestKeyId: "k", attestation: "a", signature: "g"))
-        #expect(out == BiometricEnrollOut(keyId: "k1", securityLevel: "app_attest", renewsAt: "2027-01-01T00:00:00Z"))
+        #expect(out == BiometricEnrollOut(keyId: "k1", securityLevel: "secure_enclave", renewsAt: "2027-01-01T00:00:00Z"))
         let req = try #require(h.server.takeRequest())
         #expect(req.method == "POST"); #expect(req.path == "/kiosk/biometric/enroll")
         #expect(req.header("Authorization") == "Bearer tok1")
         #expect(req.bodyString == #"{"app_attest_key_id":"k","attestation":"a","nonce":"n","platform":"ios","public_key":"p","serial":"s1","signature":"g"}"#)
+    }
+
+    /// App Attest off (`BiometricAppAttest.isEnabled == false`, SS-521): no attestation fields at all.
+    @Test func enrollSendsTheUnattestedIosBody() async throws {
+        let h = try await signedIn()
+        h.server.enqueue(.json(200, #"{"key_id":"k1","security_level":"unattested","renews_at":"2027-01-01T00:00:00Z"}"#))
+        let out = try await h.api.biometricEnroll(BiometricIosEnrollIn(serial: "s1", nonce: "n", publicKey: "p", signature: "g"))
+        #expect(out == BiometricEnrollOut(keyId: "k1", securityLevel: "unattested", renewsAt: "2027-01-01T00:00:00Z"))
+        let req = try #require(h.server.takeRequest())
+        #expect(req.method == "POST"); #expect(req.path == "/kiosk/biometric/enroll")
+        #expect(req.bodyString == #"{"nonce":"n","platform":"ios","public_key":"p","serial":"s1","signature":"g"}"#)
     }
 
     @Test func enrollRefusalKeepsTheReason() async throws {

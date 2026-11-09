@@ -13,9 +13,10 @@ password sign-in there.
 - A shared station (Label, RFID or Time Clock station, or any kiosk with a
   station key) is never personal: no enroll, no card, no sign-in.
 - Enroll takes `platform`: Android (the default) sends its key attestation
-  chain; iOS sends its Secure Enclave key, an App Attest statement and the
-  key's signature over the nonce. The gate is the same for both, and so is
-  everything after enroll.
+  chain; iOS sends its Secure Enclave key and the key's signature over the
+  nonce, plus an App Attest statement when the app has App Attest on
+  (off until SS-521). The gate is the same for both, and so is everything
+  after enroll.
 - `DELETE ?serial=` (kiosk session): forget the caller's own key on that
   phone. Exempt from the freeze, like forgetting a remembered browser.
 
@@ -136,12 +137,17 @@ def _decode_chain(chain: list[str]) -> list[bytes]:
     return [_b64(c) for c in chain]
 
 
-def _decode_ios(body: BiometricEnrollIn) -> dict[str, bytes]:
+def _b64_optional(text: str | None) -> bytes | None:
+    return None if text is None else _b64(text)
+
+
+def _decode_ios(body: BiometricEnrollIn) -> dict[str, bytes | None]:
     """The iOS fields, decoded, as biometric.enroll_ios's keyword arguments
-    (the schema has made sure all four are present)."""
+    (the schema has made sure the key and the proof are present, and the
+    App Attest pair is both or neither)."""
     return {"public_key_x963": _b64(body.public_key),
-            "app_attest_key_id": _b64(body.app_attest_key_id),
-            "attestation": _b64(body.attestation),
+            "app_attest_key_id": _b64_optional(body.app_attest_key_id),
+            "attestation": _b64_optional(body.attestation),
             "proof": _b64(body.signature)}
 
 

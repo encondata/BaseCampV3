@@ -75,6 +75,8 @@ class Settings(BaseSettings):
     attestation_status_url: str = "https://android.googleapis.com/attestation/status"
     # Accept Apple's development App Attest environment (dev only)
     kiosk_app_attest_development: bool = False
+    # Refuse iOS biometric enrolls without an App Attest statement (turn on with SS-521)
+    kiosk_ios_require_app_attest: bool = False
 
     # ── Optional apps (deploy/stack's STACK_APPS) ──────────
     # The optional apps this environment runs: comma-separated, lowercase

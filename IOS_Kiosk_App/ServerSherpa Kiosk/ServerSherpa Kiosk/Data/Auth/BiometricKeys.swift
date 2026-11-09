@@ -8,8 +8,19 @@ enum BiometryKind: Equatable, Sendable {
     case faceID, touchID
 }
 
+/// The one switch for App Attest at enroll. App Attest needs the paid Apple Developer Program
+/// membership, which the team doesn't have right now, so it is off: enroll sends the Secure
+/// Enclave key and its proof without Apple's statement, and the server stores the key as
+/// `unattested`. Harbor Master SS-521 turns it back on: flip this, add the
+/// `com.apple.developer.devicecheck.appattest-environment` entitlement back, and set
+/// `SS_KIOSK_IOS_REQUIRE_APP_ATTEST` on the server.
+enum BiometricAppAttest {
+    static let isEnabled = false
+}
+
 /// Whether this device can hold a biometric sign-in key right now. `unsupported` covers no
-/// biometric hardware, no App Attest, and the Simulator.
+/// biometric hardware, no App Attest (checked only while `BiometricAppAttest.isEnabled`), and
+/// the Simulator.
 enum BiometricReadiness: Equatable, Sendable {
     case ready(BiometryKind)
     case noPasscode
@@ -27,10 +38,11 @@ enum KeyProbe: Equatable, Sendable {
 /// What enroll sends the server about a new key. `publicKey` is the 65-byte X9.63 point;
 /// `appAttestKeyId` is the base64 key id `DCAppAttestService` returns; `attestation` is its
 /// attestation object, whose clientDataHash is `biometricClientDataHash(nonce:publicKey:)`.
+/// Both are nil, together, while `BiometricAppAttest.isEnabled` is false.
 struct BiometricEnrollProof: Equatable, Sendable {
     let publicKey: Data
-    let appAttestKeyId: String
-    let attestation: Data
+    let appAttestKeyId: String?
+    let attestation: Data?
 }
 
 /// What `sign` throws when the key is missing or iOS invalidated it: the same verdict as a
@@ -53,8 +65,9 @@ protocol BiometricKeys: Sendable {
     /// offer goes by `readiness()`.
     func biometryKind() -> BiometryKind?
 
-    /// Replaces any old key with a new Secure Enclave key, attested by App Attest for `nonce`.
-    /// Throws when either can't be made, and then leaves no key behind.
+    /// Replaces any old key with a new Secure Enclave key, attested by App Attest for `nonce`
+    /// while `BiometricAppAttest.isEnabled`. Throws when either can't be made, and then leaves no
+    /// key behind.
     func create(nonce: String) async throws -> BiometricEnrollProof
 
     /// Never prompts.
@@ -98,7 +111,8 @@ func biometricProbeVerdict(lookup: OSStatus, storedState: Data?, storedStateRead
     return storedState == currentState ? .ready : .gone
 }
 
-/// `BiometricKeys` on the Secure Enclave and App Attest. Thin on purpose: the device pass covers it.
+/// `BiometricKeys` on the Secure Enclave, and App Attest while `BiometricAppAttest.isEnabled`.
+/// Thin on purpose: the device pass covers it.
 struct SecureEnclaveBiometricKeys: BiometricKeys {
     static let tag = Data("com.serversherpa.kiosk.biometric".utf8)
     /// The generic-password item holding the biometric state the key was made under.
@@ -109,7 +123,7 @@ struct SecureEnclaveBiometricKeys: BiometricKeys {
         #if targetEnvironment(simulator)
         return .unsupported
         #else
-        guard DCAppAttestService.shared.isSupported else { return .unsupported }
+        if BiometricAppAttest.isEnabled, !DCAppAttestService.shared.isSupported { return .unsupported }
         let context = LAContext()
         var error: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
@@ -141,6 +155,9 @@ struct SecureEnclaveBiometricKeys: BiometricKeys {
             // The biometrics the key is bound to, for the probe. An unreadable state saves nothing,
             // and the probe then goes by the key lookup alone.
             if let state = Self.biometryState(LAContext()) { try Self.storeState(state) }
+            guard BiometricAppAttest.isEnabled else {
+                return BiometricEnrollProof(publicKey: publicKey, appAttestKeyId: nil, attestation: nil)
+            }
             let service = DCAppAttestService.shared
             let keyId = try await service.generateKey()
             let attestation = try await service.attestKey(keyId, clientDataHash: biometricClientDataHash(nonce: nonce, publicKey: publicKey))

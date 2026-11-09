@@ -136,10 +136,11 @@ final class BiometricSignIn {
         }
     }
 
-    /// Turn on: a fresh nonce, a new Secure Enclave key attested to it by App Attest, one prompt,
-    /// then the key's signature over the nonce behind that prompt, all sent to the server. Any old
-    /// key here is replaced. Canceled while another enroll or sign-in runs, or when the task is
-    /// canceled (the sheet closed): then nothing is stored.
+    /// Turn on: a fresh nonce, a new Secure Enclave key (attested to it by App Attest while
+    /// `BiometricAppAttest.isEnabled`), one prompt, then the key's signature over the nonce behind
+    /// that prompt, all sent to the server. Any old key here is replaced. Canceled while another
+    /// enroll or sign-in runs, or when the task is canceled (the sheet closed): then nothing is
+    /// stored.
     func enroll(_ prompt: BiometricPrompter) async -> EnrollOutcome {
         guard begin() else { return .canceled }
         defer { end() }
@@ -184,7 +185,7 @@ final class BiometricSignIn {
                 serial: serial, nonce: nonce,
                 publicKey: proof.publicKey.base64EncodedString(),
                 appAttestKeyId: proof.appAttestKeyId,
-                attestation: proof.attestation.base64EncodedString(),
+                attestation: proof.attestation?.base64EncodedString(),
                 signature: signature.base64EncodedString()
             ))
         } catch {

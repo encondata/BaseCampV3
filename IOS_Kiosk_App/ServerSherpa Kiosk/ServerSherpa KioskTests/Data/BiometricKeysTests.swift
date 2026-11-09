@@ -7,9 +7,23 @@ import UIKit
 @testable import ServerSherpa_Kiosk
 
 /// The biometric key's pure pieces, the software fake the rules are tested with, and what the
-/// real Secure Enclave key does on the Simulator (no Secure Enclave, no App Attest).
+/// real Secure Enclave key does on the Simulator (no Secure Enclave).
 @Suite(.serialized, .timeLimit(.minutes(1)))
 struct BiometricKeysTests {
+    /// App Attest needs the paid Apple Developer Program; SS-521 turns it back on.
+    @Test func appAttestIsOffForNow() {
+        #expect(BiometricAppAttest.isEnabled == false)
+    }
+
+    @Test func fakeAttestsOnlyWhenAsked() async throws {
+        let keys = FakeBiometricKeys()
+        let bare = try await keys.create(nonce: "n1")
+        #expect(bare.appAttestKeyId == nil); #expect(bare.attestation == nil)
+        keys.attests = true
+        let attested = try await keys.create(nonce: "n2")
+        #expect(attested.appAttestKeyId != nil); #expect(attested.attestation != nil)
+    }
+
     @Test func clientDataHashMatchesTheServerVector() {
         let hash = biometricClientDataHash(nonce: "enroll-nonce", publicKey: Data([4] + (1...64)))
         #expect(hash.map { String(format: "%02x", $0) }.joined() == "e66ae6444b04ccdff839a7a0d5041d2bf2b1797a3ffdcddfd7e59fd5828df43a")
@@ -79,7 +93,7 @@ struct BiometricKeysTests {
     }
 
     /// The real key on the Simulator: never ready, never prompts, and a create that fails
-    /// (no Secure Enclave, no App Attest) leaves no key behind.
+    /// (no Secure Enclave) leaves no key behind.
     @Test func secureEnclaveKeysOnTheSimulatorAreUnsupportedAndLeaveNoKey() async {
         let keys = SecureEnclaveBiometricKeys()
         #expect(keys.readiness() == .unsupported)

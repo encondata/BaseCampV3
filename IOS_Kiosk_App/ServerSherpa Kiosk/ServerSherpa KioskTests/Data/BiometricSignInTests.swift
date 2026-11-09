@@ -109,14 +109,39 @@ struct BiometricSignInTests {
         #expect(body.nonce == "nonce-1")
         #expect(body.platform == "ios")
         #expect(body.publicKey == proof.publicKey.base64EncodedString())
-        #expect(body.appAttestKeyId == proof.appAttestKeyId)
-        #expect(body.attestation == proof.attestation.base64EncodedString())
         #expect(proof.publicKey == r.keys.publicKey?.x963Representation)
         #expect(verifies(body.signature, "nonce-1", r.keys.publicKey))
         let enrolled = BiometricEnrollment(keyId: "key-1", personId: "p1", email: "tina@example.com")
         #expect(r.prefs.biometric == enrolled)
         #expect(r.bio.enrollment == enrolled)
         #expect(r.keys.hasKey)
+    }
+
+    /// App Attest off (SS-521): the key and its proof only.
+    @Test func enrollWithoutAttestationSendsNoAttestationFields() async throws {
+        let r = Rig()
+        try await r.auth.login(email: "tina@example.com", password: "pw")
+        #expect(await r.bio.enroll(r.prompt) == .enrolled)
+        let body = try #require(r.api.bioEnrollBodies.first)
+        #expect(body.appAttestKeyId == nil)
+        #expect(body.attestation == nil)
+        #expect(body.publicKey == r.keys.publicKey?.x963Representation.base64EncodedString())
+        #expect(verifies(body.signature, "nonce-1", r.keys.publicKey))
+    }
+
+    /// With App Attest on, the statement goes with the key id, both from the proof.
+    @Test func enrollWithAttestationSendsBoth() async throws {
+        let r = Rig()
+        r.keys.attests = true
+        try await r.auth.login(email: "tina@example.com", password: "pw")
+        #expect(await r.bio.enroll(r.prompt) == .enrolled)
+        let body = try #require(r.api.bioEnrollBodies.first)
+        let proof = try #require(r.keys.proof)
+        let keyId = try #require(proof.appAttestKeyId)
+        let attestation = try #require(proof.attestation)
+        #expect(body.appAttestKeyId == keyId)
+        #expect(body.attestation == attestation.base64EncodedString())
+        #expect(verifies(body.signature, "nonce-1", r.keys.publicKey))
     }
 
     @Test func enrollTakesAFreshNonceAndProvesTheKeyBehindThePrompt() async throws {

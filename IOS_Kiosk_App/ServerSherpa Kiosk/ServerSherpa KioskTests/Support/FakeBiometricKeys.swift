@@ -5,12 +5,14 @@ import Foundation
 /// A software P-256 key standing in for the Secure Enclave one (Android `FakeBiometricKeys`):
 /// real DER signatures, so a test can verify what was signed. `invalidated` plays iOS dropping
 /// the key (Face ID re-enrolled, a finger added); `probeUnavailable` plays a Keychain that throws.
+/// `attests` plays App Attest on (`BiometricAppAttest.isEnabled`); off, like the app for now.
 final class FakeBiometricKeys: BiometricKeys, @unchecked Sendable {
     private struct State {
         var readinessValue: BiometricReadiness = .ready(.faceID)
         var hardwareKind: BiometryKind?
         var invalidated = false
         var probeUnavailable = false
+        var attests = false
         var createError: Error?
         var signError: Error?
         var created: [String] = []
@@ -47,6 +49,11 @@ final class FakeBiometricKeys: BiometricKeys, @unchecked Sendable {
         get { locked { $0.probeUnavailable } }
         set { locked { $0.probeUnavailable = newValue } }
     }
+    /// `create` returns an App Attest key id and attestation; false (the default) leaves both nil.
+    var attests: Bool {
+        get { locked { $0.attests } }
+        set { locked { $0.attests = newValue } }
+    }
     /// Thrown by `create`, which (like the real one) then leaves no key behind.
     var createError: Error? {
         get { locked { $0.createError } }
@@ -72,18 +79,18 @@ final class FakeBiometricKeys: BiometricKeys, @unchecked Sendable {
     func biometryKind() -> BiometryKind? { hardwareKind }
 
     func create(nonce: String) async throws -> BiometricEnrollProof {
-        let error = locked { s -> Error? in
+        let (error, attests) = locked { s -> (Error?, Bool) in
             s.key = nil
             s.invalidated = false
-            return s.createError
+            return (s.createError, s.attests)
         }
         if let error { throw error }
         let key = P256.Signing.PrivateKey()
         let publicKey = key.publicKey.x963Representation
         let proof = BiometricEnrollProof(
             publicKey: publicKey,
-            appAttestKeyId: Data(SHA256.hash(data: publicKey)).base64EncodedString(),
-            attestation: Data("fake-attestation-\(nonce)".utf8)
+            appAttestKeyId: attests ? Data(SHA256.hash(data: publicKey)).base64EncodedString() : nil,
+            attestation: attests ? Data("fake-attestation-\(nonce)".utf8) : nil
         )
         locked { s in
             s.key = key

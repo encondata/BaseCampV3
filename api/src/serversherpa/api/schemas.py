@@ -495,15 +495,18 @@ class BiometricEnrollChallengeOut(BaseModel):
 
 
 # Where a biometric key lives: Android's TEE or StrongBox, or the iOS Secure
-# Enclave.
-SecurityLevel = Literal["tee", "strongbox", "secure_enclave"]
+# Enclave. An iOS key enrolled without App Attest is "unattested" (App Attest
+# is off until SS-521; that follow-up finds and revokes these).
+SecurityLevel = Literal["tee", "strongbox", "secure_enclave", "unattested"]
 
 _IOS_ENROLL_FIELDS = ("public_key", "app_attest_key_id", "attestation", "signature")
+_IOS_REQUIRED_FIELDS = ("public_key", "signature")
 
 
 class BiometricEnrollIn(BaseModel):
-    """Android sends `chain`; iOS sends `platform: "ios"` and the four iOS
-    fields. A body that mixes or omits a platform's fields is a 422."""
+    """Android sends `chain`; iOS sends `platform: "ios"`, `public_key` and
+    `signature`, and `app_attest_key_id` with `attestation` together or not
+    at all. A body that mixes or omits a platform's fields is a 422."""
 
     serial: str = Field(min_length=1, max_length=120)
     nonce: str = Field(min_length=1, max_length=2048)
@@ -514,7 +517,8 @@ class BiometricEnrollIn(BaseModel):
     # iOS, each in standard base64: the Secure Enclave key's X9.63 point
     # (04 || X || Y, 65 bytes), the App Attest key id (32 bytes), the App
     # Attest attestation object (CBOR), and the Secure Enclave key's DER
-    # ECDSA signature over the nonce's UTF-8 bytes
+    # ECDSA signature over the nonce's UTF-8 bytes. The two App Attest
+    # fields are absent while the app has App Attest off (SS-521).
     public_key: str | None = Field(default=None, max_length=128)
     app_attest_key_id: str | None = Field(default=None, max_length=64)
     attestation: str | None = Field(default=None, max_length=32_768)
@@ -538,9 +542,12 @@ class BiometricEnrollIn(BaseModel):
         else:
             if self.chain is not None:
                 raise ValueError("an iOS enroll takes no chain")
-            missing = [name for name in _IOS_ENROLL_FIELDS if name not in given]
+            missing = [name for name in _IOS_REQUIRED_FIELDS if name not in given]
             if missing:
                 raise ValueError(f"an iOS enroll needs {', '.join(missing)}")
+            if (self.app_attest_key_id is None) != (self.attestation is None):
+                raise ValueError("an iOS enroll sends app_attest_key_id and attestation "
+                                 "together or not at all")
         return self
 
 

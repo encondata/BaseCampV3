@@ -31,14 +31,16 @@ struct BiometricEnrollChallengeOut: Codable, Equatable, Sendable {
 }
 
 /// `POST /kiosk/biometric/enroll` body for iOS. Every value is standard base64 except
-/// `serial`, `nonce` and `platform`.
+/// `serial`, `nonce` and `platform`. `appAttestKeyId` and `attestation` come together or not at
+/// all; the synthesized encoding leaves a nil one out of the body (`encodeIfPresent`), as it is
+/// while App Attest is off (SS-521).
 struct BiometricIosEnrollIn: Codable, Equatable, Sendable {
     var serial: String
     var nonce: String
     var platform: String
     var publicKey: String
-    var appAttestKeyId: String
-    var attestation: String
+    var appAttestKeyId: String?
+    var attestation: String?
     var signature: String
 
     enum CodingKeys: String, CodingKey {
@@ -51,7 +53,7 @@ struct BiometricIosEnrollIn: Codable, Equatable, Sendable {
         case signature
     }
 
-    init(serial: String, nonce: String, platform: String = "ios", publicKey: String, appAttestKeyId: String, attestation: String, signature: String) {
+    init(serial: String, nonce: String, platform: String = "ios", publicKey: String, appAttestKeyId: String? = nil, attestation: String? = nil, signature: String) {
         self.serial = serial
         self.nonce = nonce
         self.platform = platform
