@@ -397,6 +397,55 @@ async def test_patching_within_a_platform_family_keeps_the_assignment(
     assert await _audits(db, "personal_cleared") == []
 
 
+async def test_patching_a_personal_device_to_another_platform_needs_a_super_admin(
+        client, db, seeded_user):
+    w = await _worker(db)
+    device_id = await _kiosk(db)
+    sa, _ = await _super(db, client)
+    assert (await _put_personal(client, sa, device_id, w.id)).status_code == 200
+    key_id = await _key(db, w.id, device_id)
+    lead = await _rank_79_hardware_lead(db, client)
+    # the whole PATCH is refused: the other fields in it are not written
+    r = await _patch_device(client, lead, device_id, sub_type="ios",
+                            name="Renamed", version="9.9.9")
+    assert r.status_code == 403 and _code(r) == "forbidden_rank"
+    # clearing the platform is a change of family too
+    r = await _patch_device(client, lead, device_id, sub_type=None)
+    assert r.status_code == 403 and _code(r) == "forbidden_rank"
+    d = await _fresh_device(db, device_id)
+    assert (d.sub_type, d.name, d.version) == ("android", "Jo's phone", None)
+    assert d.personal_person_id == w.id and d.personal_set_at is not None
+    assert (await _fresh_key(db, key_id)).revoked_at is None
+    assert await _audits(db, "personal_cleared") == []
+    assert await _audits(db, "biometric_revoke") == []
+    assert [a for a in await _audits(db, "update")
+            if a.entity_type == "device" and a.entity_id == str(device_id)] == []
+
+
+async def test_a_hardware_admin_still_patches_what_keeps_the_assignment(
+        client, db, seeded_user):
+    w = await _worker(db)
+    personal_id = await _kiosk(db)
+    shared_id = await _kiosk(db, name="Dock tablet")
+    sa, _ = await _super(db, client)
+    assert (await _put_personal(client, sa, personal_id, w.id)).status_code == 200
+    key_id = await _key(db, w.id, personal_id)
+    lead = await _rank_79_hardware_lead(db, client)
+    # a device that is nobody's: any platform, as before
+    r = await _patch_device(client, lead, shared_id, sub_type="ios")
+    assert r.status_code == 200, r.text
+    assert (await _fresh_device(db, shared_id)).sub_type == "ios"
+    # a personal device: within its family, and fields other than sub_type
+    r = await _patch_device(client, lead, personal_id, sub_type="zebra")
+    assert r.status_code == 200, r.text
+    r = await _patch_device(client, lead, personal_id, name="Jo's handheld")
+    assert r.status_code == 200, r.text
+    d = await _fresh_device(db, personal_id)
+    assert (d.sub_type, d.name, d.personal_person_id) == ("zebra", "Jo's handheld", w.id)
+    assert (await _fresh_key(db, key_id)).revoked_at is None
+    assert await _audits(db, "personal_cleared") == []
+
+
 async def test_personal_put_is_frozen_in_read_only_mode(client, db, seeded_user):
     a = await _worker(db)
     device_id = await _kiosk(db)

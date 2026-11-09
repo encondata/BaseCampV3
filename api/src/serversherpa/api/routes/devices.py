@@ -382,6 +382,14 @@ async def patch_device(
     if "name" in data and (data["name"] is None or not data["name"].strip()):
         raise _err(422, "bad_name")
     await _validate_device_values(db, data)
+    # moving a personal device to another platform family clears its
+    # assignment and revokes its key: a personal write, so super admin only
+    # like PUT /personal. Checked before any field is set, so a refused
+    # PATCH changes nothing.
+    if "sub_type" in data and device.personal_person_id is not None \
+            and biometric.platform_family(device.sub_type) \
+            != biometric.platform_family(data["sub_type"]):
+        _require_super_admin(actor)
     before = snapshot(device, list(data))
     old_sub_type = device.sub_type
     for key, value in data.items():
