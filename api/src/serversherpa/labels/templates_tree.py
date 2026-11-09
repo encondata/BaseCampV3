@@ -107,8 +107,20 @@ class TemplateActive(TreeError):
     bound by it)."""
     status, code = 409, "template_active"
 
-    def __init__(self):
-        super().__init__(message="Deactivate the template to rename it.")
+    def __init__(self, message: str = "Deactivate the template to rename it."):
+        super().__init__(message=message)
+
+
+class SizeSmaller(TreeError):
+    """Change size… only grows a label: the new size is at least as wide
+    and at least as tall as the current one, so every element keeps its
+    place from the top-left corner and the new room is on the right and
+    bottom."""
+    status, code = 422, "size_smaller"
+
+    def __init__(self, *, width_in: float, height_in: float):
+        super().__init__(message="A template's size can only grow, never shrink.",
+                         width_in=width_in, height_in=height_in)
 
 
 class NotCustomized(TreeError):
@@ -769,6 +781,25 @@ async def set_parent_fields(db: AsyncSession, parent: LabelTemplate, values: dic
         for field, value in values.items():
             setattr(row, field, value)
         row.updated_at = _now()
+
+
+async def resize_kept_children(db: AsyncSession, parent: LabelTemplate, *, w: float, h: float,
+                               summary: str, actor_id: uuid.UUID | None) -> None:
+    """After a parent's size grows, the children that keep their own design
+    (customized, and Old ones) take the new size too, their elements left
+    exactly where they are: an edit on each (`v<n>.<edits>`), so the
+    whole family is one size. Uncustomized children were regenerated from
+    the parent's design by the save."""
+    for child in await children_of(db, parent, for_update=True):
+        design = child.design or {}
+        if not design or design.get("size") == {"w": w, "h": h}:
+            continue
+        child.design = {**design, "size": {"w": w, "h": h}}
+        child.child_edits += 1
+        child.version += 1
+        child.updated_at = _now()
+        add_version(db, child, version=child.generated_from_version or 0,
+                    child_edits=child.child_edits, summary=summary, actor_id=actor_id)
 
 
 # ── DPIs ────────────────────────────────────────────────────────────

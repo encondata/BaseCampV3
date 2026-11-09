@@ -229,6 +229,11 @@
 .modal-card.reports-modal-card.rgm-card.lt-small-card { width: min(560px, 96vw); max-width: 96vw; }
 .modal-card.reports-modal-card.rgm-card.lt-delete-card { width: min(640px, 96vw); max-width: 96vw; }
 .modal-card.reports-modal-card.rgm-card.lt-replace-card { width: min(720px, 96vw); max-width: 96vw; }
+/* Change size…: as wide as New template, for the same row of size buttons */
+.modal-card.reports-modal-card.rgm-card.lt-resize-card { width: min(680px, 96vw); max-width: 96vw; }
+.lt-resize-card .pf-form { margin: 0; }
+.lt-resize-card .page-hint.lt-resize-now { margin: 0 0 8px; }
+.lt-resize-card .pf-error { margin: 0; }
 .lt-delete { display: flex; flex-direction: column; gap: 12px; }
 .lt-delete .page-hint.lt-delete-note { margin: 0; }
 .lt-delete .pf-form { margin: 0; }

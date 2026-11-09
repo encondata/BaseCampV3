@@ -68,6 +68,8 @@ const api = vi.hoisted(() => ({
   getLabelTemplateVersion: vi.fn(),
   restoreLabelTemplateVersion: vi.fn(),
   noteLabelTemplateVersion: vi.fn(),
+  createLabelVocab: vi.fn(),
+  updateLabelVocab: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -134,16 +136,19 @@ const SITES: SiteItem[] = [
   { id: 's2', name: 'NAP11' } as SiteItem,
 ];
 
-const vocabRow = (kind: string, key: string, label: string, sort = 0): LabelVocab => ({
-  kind, key, label, description: '', meta: {}, sort_order: sort, is_active: true, usage_count: null,
+const vocabRow = (kind: string, key: string, label: string, sort = 0,
+  meta: Record<string, unknown> = {}): LabelVocab => ({
+  kind, key, label, description: '', meta, sort_order: sort, is_active: true, usage_count: null,
 });
+const sizeRow = (key: string, label: string, w: number, h: number, sort = 0) =>
+  vocabRow('size', key, label, sort, { width_in: w, height_in: h, has_tab: false });
 
 const VOCAB: LabelVocab[] = [
   vocabRow('type', 'top', 'Top Label'),
   vocabRow('type', 'front', 'Front Label', 1),
   vocabRow('type', 'container', 'Container Label', 2),
-  vocabRow('size', '4x2', '4 x 2 in'),
-  vocabRow('size', '6x4', '6 x 4 in', 1),
+  sizeRow('4x2', '4 x 2 in', 4, 2),
+  sizeRow('6x4', '6 x 4 in', 6, 4, 1),
   vocabRow('language', 'zpl', 'ZPL'),
   vocabRow('language', 'escp', 'ESC/P', 1),
   vocabRow('dpi', '203', '203 dpi'),
@@ -346,7 +351,8 @@ it('a parent’s menu: design, versions, clone, sites, rename, on/off and delete
   renderRouted();
   await ready();
   expect(await openMenu('Vegas Destination')).toEqual([
-    'Edit design', 'Versions…', 'Clone to new template…', 'Sites…', 'Rename…', 'Deactivate', 'Delete…',
+    'Edit design', 'Versions…', 'Clone to new template…', 'Sites…', 'Rename…', 'Change size…', 'Deactivate',
+    'Delete…',
   ]);
 });
 
@@ -354,8 +360,8 @@ it('a parent missing a DPI offers Add DPI…, and one with older rows of its fam
   renderRouted();
   await ready();
   expect(await openMenu('Amsterdam Destination')).toEqual([
-    'Edit design', 'Versions…', 'Clone to new template…', 'Sites…', 'Add DPI…', 'Replace…', 'Rename…', 'Activate',
-    'Delete…',
+    'Edit design', 'Versions…', 'Clone to new template…', 'Sites…', 'Add DPI…', 'Replace…', 'Rename…',
+    'Change size…', 'Activate', 'Delete…',
   ]);
 });
 
@@ -528,6 +534,76 @@ it('Rename… on an inactive parent previews its DPI versions, saves and refresh
   await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledWith('p2', { name: 'Amsterdam West' }));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   await waitFor(() => expect(api.listLabelTemplateTree).toHaveBeenCalledTimes(2));
+});
+
+it('Change size… is off on an active template, with the reason', async () => {
+  renderRouted();
+  await ready();
+  await openMenu('Vegas Destination');
+  const item = screen.getByRole('menuitem', { name: /Change size…/ }) as HTMLButtonElement;
+  expect(item.disabled).toBe(true);
+  expect(item.textContent).toContain('Deactivate it first to change its size');
+  await userEvent.click(item);
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+it('Change size… offers only larger sizes, saves and refreshes the list', async () => {
+  api.listLabelVocab.mockResolvedValue([
+    ...VOCAB, sizeRow('2x1', '2 x 1 in', 2, 1, 2), sizeRow('4x6', '4 x 6 in', 4, 6, 3),
+    sizeRow('3x4', '3 x 4 in', 3, 4, 4),
+  ]);
+  api.updateLabelTemplate.mockResolvedValue({});
+  renderRouted();
+  await ready();
+  await openMenu('Amsterdam Destination');
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Change size…' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Change size' });
+  expect(within(dialog).getByText('Now 4 x 2 in')).toBeTruthy();
+  const sizes = within(dialog).getByRole('group', { name: 'New size' });
+  // never smaller in either direction, and not the size it is now
+  expect(within(sizes).getAllByRole('button').map((b) => b.textContent)).toEqual([
+    '6 x 4 in', '4 x 6 in', 'Custom…']);
+  await userEvent.click(within(sizes).getByRole('button', { name: '4 x 6 in' }));
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Change size' }));
+  await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledWith('p2', { size_key: '4x6' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  await waitFor(() => expect(api.listLabelTemplateTree).toHaveBeenCalledTimes(2));
+});
+
+it('Change size… › Custom… refuses a smaller size and posts a larger one off the list', async () => {
+  api.updateLabelTemplate.mockResolvedValue({});
+  api.createLabelVocab.mockResolvedValue({});
+  renderRouted();
+  await ready();
+  await openMenu('Amsterdam Destination');
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Change size…' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Change size' });
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Custom…' }));
+  const go = within(dialog).getByRole('button', { name: 'Change size' }) as HTMLButtonElement;
+  await userEvent.type(within(dialog).getByLabelText('Width (in)'), '4');
+  await userEvent.type(within(dialog).getByLabelText('Height (in)'), '1.5');
+  expect(within(dialog).getByRole('alert').textContent).toMatch(/At least 4" wide and 2" tall/);
+  expect(go.disabled).toBe(true);
+  await userEvent.clear(within(dialog).getByLabelText('Height (in)'));
+  await userEvent.type(within(dialog).getByLabelText('Height (in)'), '3');
+  expect(within(dialog).queryByRole('alert')).toBeNull();
+  await userEvent.click(go);
+  await waitFor(() => expect(api.createLabelVocab).toHaveBeenCalledWith({
+    kind: 'size', key: '4x3', label: '4" x 3"', is_active: false,
+    meta: { width_in: 4, height_in: 3, has_tab: false },
+  }));
+  await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledWith('p2', { size_key: '4x3' }));
+});
+
+it('Change size… says why the API refused it', async () => {
+  api.updateLabelTemplate.mockRejectedValue(new ApiError(409, 'template_active', {}));
+  renderRouted();
+  await ready();
+  await openMenu('Amsterdam Destination');
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Change size…' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Change size' });
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Change size' }));
+  expect((await within(dialog).findByRole('alert')).textContent).toMatch(/Deactivate the template first/);
 });
 
 it('a DPI version has no Rename…', async () => {

@@ -219,12 +219,12 @@ async def test_parent_metadata_flows_to_children(client, db, seeded_user):
     assert r.json()["version"] == 2  # the rename's version ("Renamed from …")
     r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"description": "Again"})
     assert r.json()["version"] == 2  # other metadata is not a version
-    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"size_key": "2x1"})
+    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"size_key": "6x4"})
     assert r.status_code == 200, r.text
     node = await _node(client, hdrs, "Vegas Dest")
     assert [c["name"] for c in node["children"]] == [
         "Vegas Dest · 203", "Vegas Dest · 300", "Vegas Dest · 600"]
-    assert {c["size_key"] for c in node["children"]} == {"2x1"}
+    assert {c["size_key"] for c in node["children"]} == {"6x4"}
     r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"dpi_key": "203"})
     assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_field"
 
@@ -302,41 +302,98 @@ async def test_a_samples_only_save_leaves_the_children_alone(client, db, seeded_
 
 
 async def test_a_size_change_rewrites_the_design_size(client, db, seeded_user):
-    """contracts-3: a parent's size_key change puts the size into the design
-    of the parent and its uncustomized children (a version on each); a
-    customized child keeps its own and is out of date."""
+    """contracts-3, Change size…: a parent's size_key change puts the size
+    into the design of the parent and its uncustomized children (a version
+    on each); a customized child keeps its hand edits, takes the new size
+    as an edit of its own (elements where they were) and stays out of
+    date."""
     hdrs = await _super(db, client)
-    parent = await _create(client, hdrs)
+    parent = await _create(client, hdrs, is_active=False)
     c300 = _child(await _node(client, hdrs, "Vegas Destination"), "300")
     r = await client.patch(f"{URL}/{c300['id']}", headers=hdrs, json={"design": _added(DESIGN)})
     assert r.status_code == 200, r.text
 
-    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"size_key": "2x1"})
+    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"size_key": "4x3-tab"})
     assert r.status_code == 200, r.text
     body = r.json()
     assert (body["size_key"], body["version"], body["design"]["size"]) == (
-        "2x1", 2, {"w": 2, "h": 1})
+        "4x3-tab", 2, {"w": 4, "h": 3})
     assert body["design"]["elements"] == DESIGN["elements"]
     assert body["out_of_date"] == [c300["id"]]
     versions = (await client.get(f"{URL}/{parent['id']}/versions", headers=hdrs)).json()
-    assert versions[0]["summary"] == "Size changed to 2x1"
+    assert versions[0]["summary"] == "Size changed to 4x3-tab"
     node = await _node(client, hdrs, "Vegas Destination")
     for dpi in ("203", "600"):
         c = _child(node, dpi)
         assert (c["size_key"], c["design"]["size"], c["generated_from_version"]) == (
-            "2x1", {"w": 2, "h": 1}, 2)
+            "4x3-tab", {"w": 4, "h": 3}, 2)
         newest = (await client.get(f"{URL}/{c['id']}/versions", headers=hdrs)).json()[0]
-        assert (newest["label"], newest["summary"]) == ("v2", "Size changed to 2x1")
+        assert (newest["label"], newest["summary"]) == ("v2", "Size changed to 4x3-tab")
     kept = _child(node, "300")
-    assert kept["size_key"] == "2x1" and kept["design"]["size"] == {"w": 4, "h": 2}
-    assert kept["out_of_date"] is True
+    assert kept["size_key"] == "4x3-tab" and kept["design"]["size"] == {"w": 4, "h": 3}
+    assert kept["design"]["elements"] == _added(DESIGN)["elements"]
+    assert kept["out_of_date"] is True and kept["customized"] is True
+    newest = (await client.get(f"{URL}/{kept['id']}/versions", headers=hdrs)).json()[0]
+    assert (newest["label"], newest["summary"]) == ("v1.2", "Size changed to 4x3-tab")
     # with a design in the same PATCH the size still comes from the list
     r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs,
-                           json={"size_key": "4x2", "design": _moved(body["design"])})
+                           json={"size_key": "6x4", "design": _moved(body["design"])})
     assert r.status_code == 200, r.text
-    assert r.json()["design"]["size"] == {"w": 4, "h": 2}
+    assert r.json()["design"]["size"] == {"w": 6, "h": 4}
     versions = (await client.get(f"{URL}/{parent['id']}/versions", headers=hdrs)).json()
     assert versions[0]["summary"] == "Moved 1 element, changed the size"
+
+
+async def test_a_size_change_needs_the_template_off(client, db, seeded_user):
+    """Change size… is for an inactive template: on an active one, 409
+    template_active and nothing changes."""
+    hdrs = await _super(db, client)
+    parent = await _create(client, hdrs)
+    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"size_key": "6x4"})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "template_active"
+    assert "change its size" in r.json()["detail"]["message"]
+    node = await _node(client, hdrs, "Vegas Destination")
+    assert node["size_key"] == "4x2" and node["design"]["size"] == {"w": 4, "h": 2}
+    # the same size again is not a change
+    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"size_key": "4x2"})
+    assert r.status_code == 200, r.text
+
+
+async def test_a_size_change_never_shrinks(client, db, seeded_user):
+    """The new size is at least as wide and at least as tall: 2x1 (both
+    smaller) and the ID badge (narrower, though not shorter) are refused
+    with 422 size_smaller; a taller label of the same width is fine."""
+    hdrs = await _super(db, client)
+    parent = await _create(client, hdrs, is_active=False)
+    for key in ("2x1", "id-badge"):
+        r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"size_key": key})
+        assert r.status_code == 422, (key, r.text)
+        assert r.json()["detail"]["code"] == "size_smaller"
+        assert (r.json()["detail"]["width_in"], r.json()["detail"]["height_in"]) == (4, 2)
+    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"size_key": "4x6"})
+    assert r.status_code == 200, r.text
+    assert r.json()["design"]["size"] == {"w": 4, "h": 6}
+    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"size_key": "4x2"})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "size_smaller"
+
+
+async def test_a_size_change_can_take_an_unlisted_custom_size(client, db, seeded_user):
+    """Change size… › Custom… makes an off-list size row, as New template
+    does: the template it was made for may move onto it; a second template
+    may not."""
+    hdrs = await _super(db, client)
+    parent = await _create(client, hdrs, is_active=False)
+    other = await _create(client, hdrs, name="Other", is_active=False)
+    r = await client.post("/labels/vocab", headers=hdrs, json={
+        "kind": "size", "key": "4_5x2_5", "label": '4.5" x 2.5"', "is_active": False,
+        "meta": {"width_in": 4.5, "height_in": 2.5, "has_tab": False}})
+    assert r.status_code == 201, r.text
+    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"size_key": "4_5x2_5"})
+    assert r.status_code == 200, r.text
+    assert r.json()["design"]["size"] == {"w": 4.5, "h": 2.5}
+    r = await client.patch(f"{URL}/{other['id']}", headers=hdrs, json={"size_key": "4_5x2_5"})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "unknown_vocab"
 
 
 async def test_parent_save_never_overwrites_a_child_customized_meanwhile(
