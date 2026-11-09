@@ -35,6 +35,7 @@ import {
   ApiError, createLabelTemplate, createLabelVocab, updateLabelVocab, type LabelTemplate, type LabelVocab,
 } from '../../../lib/api';
 import { isPersonLabelType, sizeMeta, vocabOfKind } from '../../../lib/labels';
+import { fmtInches as fmt, toInches, useCustomSizeRow, type Unit } from './customSize';
 import '../../../styles/directory.css';
 import '../../../styles/profile.css';   /* .pf-form, .btn-solid, .pf-error */
 import '../../../styles/reports.css';
@@ -50,34 +51,12 @@ export interface NewTemplateModalProps {
   onCancel: () => void;
 }
 
-type Unit = 'in' | 'mm';
-
 const CUSTOM = '__custom__';
-const MM_PER_IN = 25.4;
 /** The size an ID badge starts on: the CR80 card (migration 0042). */
 const BADGE_SIZE = 'id-badge';
 
-/** A dimension typed in `unit`, in inches to the thousandth; null unless
- *  it is a positive number. */
-export function toInches(text: string, unit: Unit): number | null {
-  const n = Number(text.trim());
-  if (!text.trim() || !Number.isFinite(n) || n <= 0) return null;
-  const inches = Math.round((unit === 'mm' ? n / MM_PER_IN : n) * 1000) / 1000;
-  return inches > 0 ? inches : null;
-}
-
-function fmt(n: number): string {
-  return String(Math.round(n * 1000) / 1000);
-}
-
-/** A size row's key and label for `w` × `h` inches, as the seeded rows
- *  read (`4x2`, `4" x 2"`): dots become underscores, and a key another
- *  size already holds gets `-2`, `-3`… */
-export function customSizeKey(w: number, h: number, taken: ReadonlySet<string>): string {
-  const base = `${fmt(w)}x${fmt(h)}`.replace(/\./g, '_');
-  if (!taken.has(base)) return base;
-  for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
-}
+// re-exported where its tests and callers have always found them
+export { customSizeKey, toInches } from './customSize';
 
 /** The longest custom type key (the API takes 40), leaving room for `_NN`. */
 const TYPE_KEY_MAX = 36;
@@ -90,11 +69,6 @@ export function customTypeKey(name: string, taken: ReadonlySet<string>): string 
     .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, TYPE_KEY_MAX).replace(/_+$/, '');
   if (!base || !taken.has(base)) return base;
   for (let n = 2; ; n++) if (!taken.has(`${base}_${n}`)) return `${base}_${n}`;
-}
-
-function sameSize(row: LabelVocab, w: number, h: number): boolean {
-  const m = sizeMeta(row);
-  return Math.abs(m.width_in - w) < 0.0005 && Math.abs(m.height_in - h) < 0.0005 && !m.has_tab;
 }
 
 const ERRORS: Record<string, string> = {
@@ -125,12 +99,7 @@ export default function NewTemplateModal({ vocab, onCreated, onCancel }: NewTemp
   const [keepSize, setKeepSize] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** The custom size row this dialog last posted, so a retry after a failed
-   *  create uses it instead of posting another: `made` once the API has it
-   *  (or a repeat of the post found it there). */
-  const ownSize = useRef<{ key: string; w: number; h: number; active: boolean; made: boolean } | null>(null);
-  /** Keys this dialog posted or found taken: never offered again. */
-  const usedKeys = useRef(new Set<string>());
+  const customSizeRow = useCustomSizeRow(vocab, sizes);
   /** The custom type row this dialog last posted, as `ownSize`. */
   const ownType = useRef<{ key: string; label: string; active: boolean; made: boolean } | null>(null);
   const usedTypeKeys = useRef(new Set<string>());
@@ -198,48 +167,7 @@ export default function NewTemplateModal({ vocab, onCreated, onCancel }: NewTemp
       const m = sizeMeta(sizes.find((s) => s.key === size)!);
       return { key: size, w: m.width_in, h: m.height_in };
     }
-    const listed = sizes.find((s) => sameSize(s, w!, h!));
-    if (listed) return { key: listed.key, w: w!, h: h! };
-    const own = ownSize.current;
-    const again = own !== null && own.w === w && own.h === h && own.active === keepSize;
-    if (again && own.made) return { key: own.key, w: w!, h: h! };
-    // the size or the switch changed since this dialog made its row off the list
-    if (own !== null && own.made && !own.active) {
-      try {
-        await updateLabelVocab('size', own.key, {
-          label: `${fmt(w!)}" x ${fmt(h!)}"`, is_active: keepSize,
-          meta: { width_in: w, height_in: h, has_tab: false },
-        });
-        ownSize.current = { key: own.key, w: w!, h: h!, active: keepSize, made: true };
-        return { key: own.key, w: w!, h: h! };
-      } catch (err) {
-        // no longer a pending row (a template took it, it was listed or
-        // removed): post a new one; anything else, the next try rewrites again
-        if (!(err instanceof ApiError) || (err.status !== 403 && err.status !== 404)) throw err;
-        ownSize.current = null;
-      }
-    }
-    // a repeat of a post whose answer was lost: a 409 now means it landed
-    const repeat = again && !own.made;
-    const taken = new Set([...vocab.filter((v) => v.kind === 'size').map((v) => v.key), ...usedKeys.current]);
-    const key = repeat ? own.key : customSizeKey(w!, h!, taken);
-    usedKeys.current.add(key);
-    ownSize.current = { key, w: w!, h: h!, active: keepSize, made: false };
-    try {
-      await createLabelVocab({
-        kind: 'size', key, label: `${fmt(w!)}" x ${fmt(h!)}"`, is_active: keepSize,
-        meta: { width_in: w, height_in: h, has_tab: false },
-      });
-    } catch (err) {
-      const landed = repeat && err instanceof ApiError && err.code === 'label_vocab_exists';
-      if (!landed) {
-        // another's row under that key: the next try takes a new one
-        if (err instanceof ApiError && err.code === 'label_vocab_exists') ownSize.current = null;
-        throw err;
-      }
-    }
-    ownSize.current.made = true;
-    return { key, w: w!, h: h! };
+    return { key: await customSizeRow(w!, h!, keepSize), w: w!, h: h! };
   };
 
   const create = async () => {

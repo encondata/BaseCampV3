@@ -937,7 +937,9 @@ async def _patch_parent(db: DbSession, row: LabelTemplate, data: dict, summary: 
                 _images_badge_only(child.design, label_type, language_key,
                                    template_id=str(child.id), template_name=child.name)
     _check_samples(data.get("samples"))
-    await _check_template_vocab(db, data, current=row)
+    resize = await _check_resize(db, row, data)
+    await _check_template_vocab(
+        db, {k: v for k, v in data.items() if not (resize and k == "size_key")}, current=row)
     changes: dict = {}
     if "name" in data and data["name"] != row.name:
         before = row.name
@@ -976,6 +978,10 @@ async def _patch_parent(db: DbSession, row: LabelTemplate, data: dict, summary: 
         await tree.save_parent(db, row, design=design, samples=samples, summary=summary,
                                actor_id=actor.person.id, child_summary=child_summary)
         changes["version"] = {"from": before_version, "to": row.version}
+    if resize:
+        await tree.resize_kept_children(db, row, w=design["size"]["w"], h=design["size"]["h"],
+                                        summary=f"Size changed to {fields['size_key']}",
+                                        actor_id=actor.person.id)
     if "is_active" in data and await _set_active(db, row, data["is_active"]):
         changes["is_active"] = {"from": not data["is_active"], "to": data["is_active"]}
     elif "name" in changes or "label_type" in changes:
@@ -987,6 +993,30 @@ async def _patch_parent(db: DbSession, row: LabelTemplate, data: dict, summary: 
         audit(db, actor_id=actor.person.id, entity_type="label_template",
               entity_id=str(row.id), action="update", changes=changes)
     return await _out_of_date(db, row)
+
+
+async def _check_resize(db: DbSession, row: LabelTemplate, data: dict) -> bool:
+    """Change size… on a builder parent, decided from the row as locked:
+    only while the template is inactive (409 template_active), only to a
+    size at least as wide and as tall as the current one (422 size_smaller),
+    and to a listed size or the unlisted custom one the dialog just made
+    for it (422 unknown_vocab otherwise). True when the size changes."""
+    key = data.get("size_key")
+    if key is None or key == row.size_key:
+        return False
+    if row.is_active:
+        raise tree.TemplateActive("Deactivate the template to change its size.")
+    await _check_new_vocab(db, "size", key)
+    new = await db.get(LabelVocab, ("size", key))
+    cur = await db.get(LabelVocab, ("size", row.size_key))
+    cur_w, cur_h = ((cur.meta or {}).get("width_in"), (cur.meta or {}).get("height_in")) if cur else (None, None)
+    if cur_w is None or cur_h is None:
+        size = (row.design or {}).get("size") or {}
+        cur_w, cur_h = size.get("w", 0), size.get("h", 0)
+    new_w, new_h = new.meta["width_in"], new.meta["height_in"]
+    if new_w < cur_w - 0.0005 or new_h < cur_h - 0.0005:
+        raise tree.SizeSmaller(width_in=cur_w, height_in=cur_h)
+    return True
 
 
 async def _patch_single(db: DbSession, row: LabelTemplate, data: dict,

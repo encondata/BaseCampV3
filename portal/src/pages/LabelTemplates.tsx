@@ -19,8 +19,9 @@
  *  read-only — no menus, no New template):
  *   - a parent: Edit design, Versions…, Clone to new template…, Sites…,
  *     Add DPI… (a DPI missing), Replace… (older active rows of its family
- *     and type), Rename… (inactive only: on an active one it shows off,
- *     with the reason), Activate/Deactivate, Delete… (typed name);
+ *     and type), Rename… and Change size… (inactive only: on an active one
+ *     they show off, with the reason; a size only grows),
+ *     Activate/Deactivate, Delete… (typed name);
  *   - a child: Edit this DPI only, Update from parent… (customized only),
  *     Versions…, Test print… (the builder, which prints it on arrival:
  *     navigation state `testPrint`), Delete this DPI…
@@ -66,6 +67,7 @@ import { CloneModal } from '../components/labels/builder/BuilderDialogs';
 import VersionsModal from '../components/labels/builder/VersionsModal';
 import DeleteTemplateModal from '../components/labels/DeleteTemplateModal';
 import ReplaceTemplateModal from '../components/labels/ReplaceTemplateModal';
+import ChangeSizeModal from '../components/labels/ChangeSizeModal';
 import {
   AddDpiModal, DeactivateTemplateModal, RenameTemplateModal, SitesModal, UpdateFromParentModal,
 } from '../components/labels/TemplateRowDialogs';
@@ -141,7 +143,8 @@ type Dialog =
   | { kind: 'update'; child: LabelTemplateChild; parent: LabelTemplateTreeNode }
   | { kind: 'delete'; template: LabelTemplate; dpiChildren: LabelTemplateChild[] }
   | { kind: 'deactivate'; template: LabelTemplate }
-  | { kind: 'rename'; node: LabelTemplateTreeNode };
+  | { kind: 'rename'; node: LabelTemplateTreeNode }
+  | { kind: 'resize'; node: LabelTemplateTreeNode };
 
 export default function LabelTemplates() {
   const { can, maxRank, preferences } = useAuth();
@@ -381,6 +384,14 @@ export default function LabelTemplates() {
     hint: node.is_active ? 'Deactivate it first to rename it' : undefined,
     onSelect: () => setDialog({ kind: 'rename', node }),
   }] : []);
+  // Change size… only while off, and only larger (the API refuses an active
+  // one: template_active, and a smaller size: size_smaller); on an active
+  // template it shows, off, with the reason
+  const resizeAction = (node: LabelTemplateTreeNode): RowAction[] => (canChange ? [{
+    key: 'resize', label: 'Change size…', disabled: node.is_active,
+    hint: node.is_active ? 'Deactivate it first to change its size' : undefined,
+    onSelect: () => setDialog({ kind: 'resize', node }),
+  }] : []);
   const onOff = (node: LabelTemplateTreeNode): RowAction[] => {
     if (!canChange) return [];
     return node.is_active
@@ -404,6 +415,7 @@ export default function LabelTemplates() {
       key: 'replace', label: 'Replace…', onSelect: () => setDialog({ kind: 'replace', node }),
     }] : []),
     ...renameAction(node),
+    ...resizeAction(node),
     ...onOff(node),
     ...(canDelete ? [{
       key: 'delete', label: 'Delete…', destructive: true,
@@ -662,6 +674,9 @@ export default function LabelTemplates() {
       {dialog?.kind === 'rename' && (
         <RenameTemplateModal template={dialog.node} dpiChildren={dialog.node.children} onRenamed={done}
           onClose={() => setDialog(null)} />
+      )}
+      {dialog?.kind === 'resize' && (
+        <ChangeSizeModal template={dialog.node} vocab={vocab} onChanged={done} onClose={() => setDialog(null)} />
       )}
       {dialog?.kind === 'deactivate' && (
         <DeactivateTemplateModal template={dialog.template} onDeactivated={done} onClose={() => setDialog(null)} />
