@@ -127,16 +127,34 @@ struct BiometricKeysTests {
         #expect(biometricProbeVerdict(lookup: errSecInteractionNotAllowed, storedState: Data([1]), storedStateReadFailed: false, currentState: Data([2])) == .gone)
     }
 
+    /// A key `.biometryCurrentSet` invalidated can come back from the lookup with any status; a
+    /// changed state still means gone, or the key would read as unavailable forever.
+    @Test func probeVerdictWithChangedBiometricsIsGoneWhateverTheLookupSays() {
+        for status in [errSecNotAvailable, errSecInternalComponent, errSecAuthFailed, errSecItemNotFound] {
+            #expect(biometricProbeVerdict(lookup: status, storedState: Data([1]), storedStateReadFailed: false, currentState: Data([2])) == .gone, "\(status)")
+        }
+    }
+
+    /// With the same biometrics, an unexpected lookup status is the Keychain failing this time.
+    @Test func probeVerdictWithTheSameBiometricsAndAnOddLookupIsUnavailable() {
+        for status in [errSecNotAvailable, errSecInternalComponent, errSecAuthFailed] {
+            #expect(biometricProbeVerdict(lookup: status, storedState: Data([1]), storedStateReadFailed: false, currentState: Data([1])) == .unavailable, "\(status)")
+        }
+    }
+
     @Test func probeVerdictWithAnUnreadableOrMissingStateKeepsTheLookupVerdict() {
         #expect(biometricProbeVerdict(lookup: errSecSuccess, storedState: Data([1]), storedStateReadFailed: false, currentState: nil) == .ready)
         #expect(biometricProbeVerdict(lookup: errSecSuccess, storedState: nil, storedStateReadFailed: false, currentState: Data([2])) == .ready)
         #expect(biometricProbeVerdict(lookup: errSecItemNotFound, storedState: Data([1]), storedStateReadFailed: false, currentState: nil) == .gone)
+        #expect(biometricProbeVerdict(lookup: errSecNotAvailable, storedState: Data([1]), storedStateReadFailed: false, currentState: nil) == .unavailable)
+        #expect(biometricProbeVerdict(lookup: errSecNotAvailable, storedState: nil, storedStateReadFailed: false, currentState: Data([2])) == .unavailable)
     }
 
     @Test func probeVerdictWhenTheStoredStateCannotBeReadIsUnavailableNeverGone() {
         #expect(biometricProbeVerdict(lookup: errSecSuccess, storedState: nil, storedStateReadFailed: true, currentState: Data([2])) == .unavailable)
         #expect(biometricProbeVerdict(lookup: errSecSuccess, storedState: nil, storedStateReadFailed: true, currentState: nil) == .unavailable)
         #expect(biometricProbeVerdict(lookup: errSecInteractionNotAllowed, storedState: nil, storedStateReadFailed: true, currentState: Data([2])) == .unavailable)
+        #expect(biometricProbeVerdict(lookup: errSecNotAvailable, storedState: nil, storedStateReadFailed: true, currentState: Data([2])) == .unavailable)
         // A key the Keychain says is not there is gone whatever the state item says.
         #expect(biometricProbeVerdict(lookup: errSecItemNotFound, storedState: nil, storedStateReadFailed: true, currentState: nil) == .gone)
     }

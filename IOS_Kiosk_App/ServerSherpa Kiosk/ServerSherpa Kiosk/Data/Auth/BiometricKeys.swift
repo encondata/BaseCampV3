@@ -99,17 +99,17 @@ func biometricClientDataHash(nonce: String, publicKey: Data) -> Data {
 /// The probe's verdict. `lookup` is the no-prompt Keychain lookup of the key. A Secure Enclave key
 /// is still found after Face ID is re-enrolled or a finger is added (`.biometryCurrentSet` is
 /// checked only when signing), so the biometric state saved at create is compared with the
-/// current one: a change means the key is dead. A missing or unreadable state never means gone;
-/// a stored state the Keychain can't read means unavailable. A key the lookup can't find is gone.
+/// current one: a change means the key is dead, whatever the lookup said. A missing or unreadable
+/// state never means gone, and then the lookup decides; a stored state the Keychain can't read
+/// means unavailable. A key the lookup can't find is gone.
 func biometricProbeVerdict(lookup: OSStatus, storedState: Data?, storedStateReadFailed: Bool, currentState: Data?) -> KeyProbe {
+    if !storedStateReadFailed, let storedState, let currentState, storedState != currentState { return .gone }
     switch lookup {
     case errSecSuccess, errSecInteractionNotAllowed: break
     case errSecItemNotFound: return .gone
     default: return .unavailable
     }
-    if storedStateReadFailed { return .unavailable }
-    guard let storedState, let currentState else { return .ready }
-    return storedState == currentState ? .ready : .gone
+    return storedStateReadFailed ? .unavailable : .ready
 }
 
 /// `BiometricKeys` on the Secure Enclave, and App Attest while `BiometricAppAttest.isEnabled`.
@@ -180,9 +180,8 @@ struct SecureEnclaveBiometricKeys: BiometricKeys {
     func sign(_ message: Data, with auth: BiometricAuth) throws -> Data {
         let found = copyKey(auth.context)
         let stored = Self.storedState()
-        // The prompt's own context carries the biometric state it was just evaluated under.
-        let current = auth.context.domainState.biometry.stateHash ?? Self.biometryState(LAContext())
-        switch biometricProbeVerdict(lookup: found.status, storedState: stored.state, storedStateReadFailed: stored.failed, currentState: current) {
+        // The current state is read the way create and probe read it, from a fresh context.
+        switch biometricProbeVerdict(lookup: found.status, storedState: stored.state, storedStateReadFailed: stored.failed, currentState: Self.biometryState(LAContext())) {
         case .gone: throw BiometricKeyError.gone
         case .unavailable: throw Self.osError(stored.failed ? errSecInternalComponent : found.status)
         case .ready: break

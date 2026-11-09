@@ -61,7 +61,10 @@ MAX_CHAIN_LENGTH = 6              # remote-provisioned chains run longer
 Reason = Literal["chain", "root", "expired", "revoked", "challenge", "security_level",
                  "key_properties", "user_auth", "package", "boot_state", "parse",
                  # iOS App Attest (security/app_attest.py) and the enroll proof
-                 "format", "key_id", "app_id", "counter", "environment", "proof"]
+                 "format", "key_id", "app_id", "counter", "environment", "proof",
+                 # enroll's own refusals: a platform the device isn't, and no
+                 # App Attest while SS_KIOSK_IOS_REQUIRE_APP_ATTEST is set
+                 "platform", "attestation_required"]
 
 
 class AttestationError(Exception):

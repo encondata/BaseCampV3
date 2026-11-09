@@ -867,17 +867,19 @@ async def put_device_personal(
     clear it with `person_id: null`. Refused with 422 not_eligible plus a
     `reason`: shared_station (a Label, RFID or Time Clock station, or a
     station-key kiosk), no_account, account_disabled (a disabled account
-    or an archived person), no_kiosk_view or move_identity. Setting a person
-    on a kiosk whose platform isn't known yet (it has never checked in) is
-    422 platform_unknown: whoever checked it in first would pick its
-    platform, and with it the enroll path. Clearing is always allowed.
+    or an archived person), no_kiosk_view or move_identity. Setting a new
+    person on a kiosk whose platform isn't known yet (it has never checked
+    in) is 422 platform_unknown: whoever checked it in first would pick its
+    platform, and with it the enroll path. Clearing is always allowed, and
+    so is re-saving the person a row assigned before that rule already has.
     Changing or clearing the person revokes every live biometric key on the
     device (reason `reassigned`), so an earlier owner's key can never come
     back. The same person again changes nothing."""
     _require_super_admin(actor)
     device = await _locked_kiosk(db, device_id)
     before, after = device.personal_person_id, body.person_id
-    if after is not None and biometric.platform_family(device.sub_type) is None:
+    if (after is not None and after != before
+            and biometric.platform_family(device.sub_type) is None):
         await db.rollback()
         raise _err(422, "platform_unknown")
     if after is not None:

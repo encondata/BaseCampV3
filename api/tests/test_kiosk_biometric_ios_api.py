@@ -182,20 +182,25 @@ async def test_ios_enroll_follows_the_development_setting(
         client, db, seeded_user, app_attest, monkeypatch):
     hdrs, _ = await _worker_on_ipad(db, client)
     key = ec.generate_private_key(ec.SECP256R1())
-    r = await _enroll_ios(client, hdrs, _ios_body(await _nonce(client, hdrs), key))
-    assert r.status_code == 200, r.text
-    assert app_attest.calls[-1]["allow_development"] is False
-
-    # Settings is frozen: set it through the environment
-    monkeypatch.setenv("SS_KIOSK_APP_ATTEST_DEVELOPMENT", "true")
-    get_settings.cache_clear()
+    # Settings is frozen: set it through the environment, both ways, so a
+    # developer's .env never decides either half
     try:
+        monkeypatch.setenv("SS_KIOSK_APP_ATTEST_DEVELOPMENT", "false")
+        get_settings.cache_clear()
+        assert get_settings().kiosk_app_attest_development is False
+        r = await _enroll_ios(client, hdrs, _ios_body(await _nonce(client, hdrs), key))
+        assert r.status_code == 200, r.text
+        assert app_attest.calls[-1]["allow_development"] is False
+
+        monkeypatch.setenv("SS_KIOSK_APP_ATTEST_DEVELOPMENT", "true")
+        get_settings.cache_clear()
         assert get_settings().kiosk_app_attest_development is True
         r = await _enroll_ios(client, hdrs, _ios_body(await _nonce(client, hdrs), key))
         assert r.status_code == 200, r.text
         assert app_attest.calls[-1]["allow_development"] is True
     finally:
-        monkeypatch.delenv("SS_KIOSK_APP_ATTEST_DEVELOPMENT")
+        # back to conftest's pin (a delenv would let a developer's .env through)
+        monkeypatch.setenv("SS_KIOSK_APP_ATTEST_DEVELOPMENT", "false")
         get_settings.cache_clear()
 
 

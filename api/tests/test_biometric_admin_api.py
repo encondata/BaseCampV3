@@ -354,6 +354,30 @@ async def test_clearing_works_on_a_device_with_no_platform(client, db, seeded_us
     assert cleared.changes == {"person_id": {"from": str(w.id), "to": None}}
 
 
+async def test_re_saving_the_owner_of_a_device_with_no_platform_is_a_no_op(
+        client, db, seeded_user):
+    # a row assigned before the platform rule: the same person again changes
+    # nothing, while a different person still needs a known platform
+    w = await _worker(db)
+    sa, sa_id = await _super(db, client)
+    device_id = await _kiosk(db, sub_type=None, personal_person_id=w.id,
+                             personal_set_at=datetime.now(UTC), personal_set_by=sa_id)
+    set_at = (await _fresh_device(db, device_id)).personal_set_at
+    key_id = await _key(db, w.id, device_id)
+    r = await _put_personal(client, sa, device_id, w.id)
+    assert r.status_code == 200, r.text
+    d = await _fresh_device(db, device_id)
+    assert (d.personal_person_id, d.personal_set_at, d.personal_set_by) == (w.id, set_at, sa_id)
+    assert (await _fresh_key(db, key_id)).revoked_at is None
+    assert await _audits(db, "personal_set") == []
+    other = await _worker(db, email="bio-w2@test.example.com", first="Al", last="Other")
+    r = await _put_personal(client, sa, device_id, other.id)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {"code": "platform_unknown"}
+    assert (await _fresh_device(db, device_id)).personal_person_id == w.id
+    assert (await _fresh_key(db, key_id)).revoked_at is None
+
+
 async def _patch_device(client, hdrs, device_id, **fields):
     return await client.patch(f"/devices/{device_id}", headers=hdrs, json=fields)
 
