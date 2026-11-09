@@ -41,9 +41,9 @@ def _code(resp):
     return resp.json()["detail"]["code"]
 
 
-async def _kiosk(db, *, name="Jo's phone", **kw) -> uuid.UUID:
+async def _kiosk(db, *, name="Jo's phone", sub_type="android", **kw) -> uuid.UUID:
     device = Device(device_type="kiosk", name=name,
-                    serial=f"android-{uuid.uuid4().hex[:8]}", sub_type="android", **kw)
+                    serial=f"android-{uuid.uuid4().hex[:8]}", sub_type=sub_type, **kw)
     db.add(device)
     await db.commit()
     return device.id
@@ -324,6 +324,76 @@ async def test_assigning_the_same_person_again_is_a_no_op(client, db, seeded_use
     # clearing nothing is also quiet
     other = await _kiosk(db, name="Spare")
     assert (await _put_personal(client, sa, other, None)).status_code == 200
+    assert await _audits(db, "personal_cleared") == []
+
+
+async def test_personal_put_needs_a_known_platform(client, db, seeded_user):
+    # a kiosk that never checked in has no platform yet: whoever checked it
+    # in first would pick it, and with it the enroll path, for the person
+    w = await _worker(db)
+    device_id = await _kiosk(db, sub_type=None)
+    sa, _ = await _super(db, client)
+    r = await _put_personal(client, sa, device_id, w.id)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {"code": "platform_unknown"}
+    d = await _fresh_device(db, device_id)
+    assert (d.personal_person_id, d.personal_set_at, d.personal_set_by) == (None, None, None)
+    assert await _audits(db, "personal_set") == []
+
+
+async def test_clearing_works_on_a_device_with_no_platform(client, db, seeded_user):
+    # a row assigned before the rule above can still be cleared
+    w = await _worker(db)
+    sa, sa_id = await _super(db, client)
+    device_id = await _kiosk(db, sub_type=None, personal_person_id=w.id,
+                             personal_set_at=datetime.now(UTC), personal_set_by=sa_id)
+    r = await _put_personal(client, sa, device_id, None)
+    assert r.status_code == 200, r.text
+    assert (await _fresh_device(db, device_id)).personal_person_id is None
+    [cleared] = await _audits(db, "personal_cleared")
+    assert cleared.changes == {"person_id": {"from": str(w.id), "to": None}}
+
+
+async def _patch_device(client, hdrs, device_id, **fields):
+    return await client.patch(f"/devices/{device_id}", headers=hdrs, json=fields)
+
+
+async def test_patching_a_personal_device_to_another_platform_clears_and_revokes(
+        client, db, seeded_user):
+    w = await _worker(db)
+    device_id = await _kiosk(db)
+    sa, sa_id = await _super(db, client)
+    assert (await _put_personal(client, sa, device_id, w.id)).status_code == 200
+    key_id = await _key(db, w.id, device_id)
+    r = await _patch_device(client, sa, device_id, sub_type="ios")
+    assert r.status_code == 200, r.text
+    d = await _fresh_device(db, device_id)
+    assert d.sub_type == "ios"
+    assert (d.personal_person_id, d.personal_set_at, d.personal_set_by) == (None, None, None)
+    gone = await _fresh_key(db, key_id)
+    assert gone.revoked_at is not None and gone.revoke_reason == "platform_changed"
+    [cleared] = await _audits(db, "personal_cleared")
+    assert cleared.actor_person_id == sa_id and cleared.entity_id == str(device_id)
+    assert cleared.changes == {"person_id": {"from": str(w.id), "to": None},
+                               "sub_type": {"from": "android", "to": "ios"},
+                               "reason": "platform_changed"}
+    [revoke] = await _audits(db, "biometric_revoke")
+    assert revoke.actor_person_id == sa_id and revoke.changes["reason"] == "platform_changed"
+
+
+async def test_patching_within_a_platform_family_keeps_the_assignment(
+        client, db, seeded_user):
+    w = await _worker(db)
+    device_id = await _kiosk(db)
+    sa, _ = await _super(db, client)
+    assert (await _put_personal(client, sa, device_id, w.id)).status_code == 200
+    key_id = await _key(db, w.id, device_id)
+    for fields in ({"sub_type": "zebra"}, {"sub_type": "android"}, {"name": "Jo's handheld"}):
+        r = await _patch_device(client, sa, device_id, **fields)
+        assert r.status_code == 200, (fields, r.text)
+    d = await _fresh_device(db, device_id)
+    assert d.sub_type == "android" and d.personal_person_id == w.id
+    assert (await _fresh_key(db, key_id)).revoked_at is None
     assert await _audits(db, "personal_cleared") == []
 
 

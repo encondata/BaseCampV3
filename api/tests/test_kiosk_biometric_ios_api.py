@@ -529,11 +529,13 @@ async def test_device_of_another_kind_takes_neither_path(
 
 
 # ── a personal device that changes platform ─────────────────────────
-# A check-in that moves a personal device to another platform family
-# (iOS; Android with Zebra; any other sub_type alone) means it is no longer
-# the phone that was assigned: the assignment is cleared and its live keys
-# revoked, so a script can't turn an Android phone into an "iPad" to take
-# the unattested iOS path. The check-in itself still succeeds.
+# A check-in by the owner that moves their personal device to another
+# platform family (iOS; Android with Zebra; any other sub_type, or none yet,
+# alone) means it is no longer the phone that was assigned: the assignment
+# is cleared and its live keys revoked, so a script can't turn an Android
+# phone into an "iPad" to take the unattested iOS path. Anyone else's
+# check-in can't change a personal device's platform at all. The check-in
+# itself still succeeds either way.
 
 async def _device(db, serial: str) -> Device:
     db.expire_all()
@@ -554,12 +556,13 @@ async def test_personal_android_checking_in_as_ios_loses_assignment_and_key(
     nonce = await _nonce(client, hdrs, ANDROID_SERIAL)
     await _beat_ios(client, hdrs, ANDROID_SERIAL, login_method="password")
     device = await _device(db, ANDROID_SERIAL)
+    device_id = str(device.id)      # read before anything expires the session's rows
     assert device.sub_type == "ios"
     assert (device.personal_person_id, device.personal_set_at, device.personal_set_by) \
         == (None, None, None)
     key = await _key(db, key_id)
     assert key.revoked_at is not None and key.revoke_reason == "platform_changed"
-    [cleared] = await _audits(db, "personal_cleared", str(device.id))
+    [cleared] = await _audits(db, "personal_cleared", device_id)
     assert cleared["person_id"] == {"from": str(person.id), "to": None}
     assert cleared["sub_type"] == {"from": "android", "to": "ios"}
     assert cleared["reason"] == "platform_changed"
@@ -583,10 +586,11 @@ async def test_personal_ipad_checking_in_as_android_loses_assignment_and_key(
     assert r.status_code == 200, r.text
     await _beat(client, hdrs, SERIAL, login_method="password")    # mode "android"
     device = await _device(db, SERIAL)
+    device_id = str(device.id)
     assert device.sub_type == "android" and device.personal_person_id is None
     key = await _key(db, r.json()["key_id"])
     assert key.revoke_reason == "platform_changed"
-    [cleared] = await _audits(db, "personal_cleared", str(device.id))
+    [cleared] = await _audits(db, "personal_cleared", device_id)
     assert cleared["sub_type"] == {"from": "ios", "to": "android"}
 
 
@@ -596,9 +600,10 @@ async def test_android_to_zebra_keeps_assignment_and_key(
     await _beat(client, hdrs, ANDROID_SERIAL, login_method="password",
                 raw_info={"manufacturer": "Zebra Technologies"})
     device = await _device(db, ANDROID_SERIAL)
+    device_id = str(device.id)
     assert device.sub_type == "zebra" and device.personal_person_id == person.id
     assert (await _key(db, key_id)).revoked_at is None
-    assert await _audits(db, "personal_cleared", str(device.id)) == []
+    assert await _audits(db, "personal_cleared", device_id) == []
     c = await _challenge(client, ANDROID_SERIAL)
     assert c.status_code == 200, c.text
 
@@ -613,15 +618,55 @@ async def test_non_personal_device_changing_platform_is_unaffected(client, db, s
     assert await _audits(db, "personal_cleared", str(device.id)) == []
 
 
-async def test_first_known_platform_keeps_the_assignment(client, db, seeded_user, app_attest):
-    # a personal device with no platform yet (made in the portal before it
-    # ever checked in) learning one is not a change of platform
+async def test_someone_elses_check_in_never_changes_a_personal_devices_platform(
+        client, db, seeded_user, app_attest, attest):  # noqa: F811
+    _, owner, key_id, _ = await _enrolled(db, client, attest)
+    # another signed-in kiosk user who knows the serial
+    await _make(db, client, "worker", EMAIL)
+    other = await _kiosk_login(client, EMAIL)
+    other_id = (await _person(db, EMAIL)).id
+    await _beat_ios(client, other, ANDROID_SERIAL)       # the check-in itself succeeds
+    device = await _device(db, ANDROID_SERIAL)
+    device_id = str(device.id)
+    assert device.sub_type == "android" and device.personal_person_id == owner.id
+    assert (await _key(db, key_id)).revoked_at is None
+    assert await _audits(db, "personal_cleared", device_id) == []
+    db.expire_all()
+    [ignored] = (await db.scalars(select(AuditLog).where(
+        AuditLog.action == "platform_change_ignored",
+        AuditLog.entity_id == device_id))).all()
+    assert ignored.entity_type == "device" and ignored.actor_person_id == other_id
+    assert ignored.changes == {"sub_type": {"from": "android", "to": "ios"}}
+    # the card still works for the owner
+    c = await _challenge(client, ANDROID_SERIAL)
+    assert c.status_code == 200, c.text
+    # their check-in within the family is an ordinary one: nothing ignored
+    await _beat(client, other, ANDROID_SERIAL)
+    assert len(await _audits(db, "platform_change_ignored", device_id)) == 1
+
+
+async def test_legacy_personal_device_with_no_platform_clears_when_the_owner_checks_in(
+        client, db, seeded_user, app_attest):
+    # a device made personal before its platform was known (the portal now
+    # refuses that, platform_unknown): only its owner's check-in can set the
+    # platform, and that counts as a change, so the assignment is cleared
     hdrs, person = await _worker_on_ipad(db, client)
     await _set_sub_type(db, SERIAL, None)
+    # anyone else's check-in leaves it as it is
+    await _make(db, client, "worker", "ios-bio-other@test.example.com")
+    other = await _kiosk_login(client, "ios-bio-other@test.example.com")
+    await _beat_ios(client, other, SERIAL)
+    device = await _device(db, SERIAL)
+    device_id = str(device.id)
+    assert device.sub_type is None and device.personal_person_id == person.id
+    assert len(await _audits(db, "platform_change_ignored", device_id)) == 1
+    # the owner's check-in sets it and clears the assignment
     await _beat_ios(client, hdrs, SERIAL, login_method="password")
     device = await _device(db, SERIAL)
-    assert device.sub_type == "ios" and device.personal_person_id == person.id
-    assert await _audits(db, "personal_cleared", str(device.id)) == []
+    assert device.sub_type == "ios" and device.personal_person_id is None
+    [cleared] = await _audits(db, "personal_cleared", device_id)
+    assert cleared["sub_type"] == {"from": None, "to": "ios"}
+    assert cleared["person_id"] == {"from": str(person.id), "to": None}
 
 
 async def test_ios_key_lists_as_secure_enclave(client, db, seeded_user, app_attest):

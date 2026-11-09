@@ -237,7 +237,8 @@ def signature_valid(public_key_der: bytes, challenge: str, signature: bytes) -> 
 # ── keys ────────────────────────────────────────────────────────────
 
 # A kiosk's platform family by sub_type (kiosk.kiosk_sub_type): a Zebra
-# handheld is an Android phone. Any other sub_type is its own family.
+# handheld is an Android phone. Any other sub_type, and none yet, is its own
+# family.
 _PLATFORM_FAMILIES = {"android": "android", "zebra": "android", "ios": "ios"}
 # The enroll bodies' platforms, each named after its family.
 ENROLL_PLATFORMS = frozenset({"android", "ios"})
@@ -246,24 +247,50 @@ ENROLL_PLATFORMS = frozenset({"android", "ios"})
 def platform_family(sub_type: str | None) -> str | None:
     """The platform family of a kiosk sub_type: "ios", "android" (a Zebra
     too), any other sub_type itself, or None while the device's platform
-    isn't known yet."""
+    isn't known yet (a family of its own: learning it is a change)."""
     return _PLATFORM_FAMILIES.get(sub_type, sub_type) if sub_type is not None else None
+
+
+async def apply_reported_sub_type(
+    db: AsyncSession, device: Device, new_sub_type: str, *,
+    actor_id: uuid.UUID, ip: str | None = None,
+) -> str:
+    """Apply the sub_type a check-in reports. On a personal device, a move to
+    another platform family is taken only from its owner, and then clears
+    the assignment and revokes its keys (clear_personal_on_platform_change);
+    from anyone else it is ignored (sub_type unchanged) and audited as
+    `platform_change_ignored`, so knowing a serial is never enough to
+    unassign someone's phone or pick its enroll path. Any other change (within
+    a family, or on a device that isn't personal) is just set. Returns
+    "set", "cleared" or "ignored". Does not commit."""
+    old = device.sub_type
+    family_change = platform_family(old) != platform_family(new_sub_type)
+    if (family_change and device.personal_person_id is not None
+            and actor_id != device.personal_person_id):
+        audit(db, actor_id=actor_id, entity_type="device", entity_id=str(device.id),
+              action="platform_change_ignored",
+              changes={"sub_type": {"from": old, "to": new_sub_type}}, ip=ip)
+        return "ignored"
+    device.sub_type = new_sub_type
+    if await clear_personal_on_platform_change(db, device, old, actor_id=actor_id, ip=ip):
+        return "cleared"
+    return "set"
 
 
 async def clear_personal_on_platform_change(
     db: AsyncSession, device: Device, old_sub_type: str | None, *,
     actor_id: uuid.UUID | None, ip: str | None = None,
 ) -> bool:
-    """After a check-in set `device.sub_type`: a personal device that moved to
-    another platform family is no longer the phone that was assigned, so its
-    live keys are revoked (reason `platform_changed`) and the assignment is
-    cleared, audited as `personal_cleared` with the old and new sub_type.
-    A move within a family (Android and Zebra), a first known platform and a
+    """After `device.sub_type` was set (by its owner's check-in, or by an
+    admin in the portal): a personal device that moved to another platform
+    family, including from none yet, is no longer the phone that was
+    assigned, so its live keys are revoked (reason `platform_changed`) and
+    the assignment is cleared, audited as `personal_cleared` with the old
+    and new sub_type. A move within a family (Android and Zebra) and a
     non-personal device change nothing. Returns whether it cleared. Does not
     commit."""
     before = device.personal_person_id
-    old, new = platform_family(old_sub_type), platform_family(device.sub_type)
-    if before is None or old is None or old == new:
+    if before is None or platform_family(old_sub_type) == platform_family(device.sub_type):
         return False
     await revoke_keys(db, device_id=device.id, reason="platform_changed",
                       actor_id=actor_id, ip=ip)
