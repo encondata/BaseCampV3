@@ -135,6 +135,8 @@ it('needs_usb when no allowed device can be picked, and connectUsb opens the pic
   await waitFor(() => expect(result.current.state).toBe('needs_usb'));
   expect(result.current.printer).toBeNull();
   expect(usb.connectTo).not.toHaveBeenCalled();
+  // the picked printer isn't the saved one: it answers ~HI and is switched to
+  usb.hi = hi('ZD621-203dpi', 8);
   await act(async () => { await result.current.connectUsb(); });
   expect(usb.connect).toHaveBeenCalled();
   await waitFor(() => expect(result.current.state).toBe('ready'));
@@ -253,6 +255,25 @@ describe('a USB printer that is not the saved one', () => {
     expect(apiMock.putLabelStation).not.toHaveBeenCalled();
     expect(result.current.switched).toBeNull();
     expect(result.current.switchError).toBeNull();
+  });
+
+  it.each([
+    ['throws', new Error('timeout') as string | Error],
+    ['answers nothing readable', 'garbage' as string | Error],
+  ])('a printer whose serial differs and whose ~HI %s is needs_usb, never the old settings', async (_why, reply) => {
+    apiMock.getLabelStation.mockResolvedValue(SAVED_300('SAVED'));
+    usb.hi = reply;
+    const { result, seen } = renderRecorded();
+    await waitFor(() => expect(result.current.state).toBe('needs_usb'));
+    const before = seen.length;
+    await act(async () => { await result.current.connectUsb(); });   // picks PICKED
+    await waitFor(() => expect(result.current.switchError).not.toBeNull());
+    expect(result.current.switchError).toBe("the connected printer didn't say what it is");
+    expect(result.current.state).toBe('needs_usb');
+    expect(result.current.printer).toBeNull();
+    expect(result.current.switched).toBeNull();
+    expect(apiMock.putLabelStation).not.toHaveBeenCalled();
+    expect(seen.slice(before).some((s) => s.state === 'ready' || s.printer)).toBe(false);
   });
 
   it('an unreadable identity is taken as the saved printer too', async () => {

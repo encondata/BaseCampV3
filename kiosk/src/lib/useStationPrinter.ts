@@ -18,9 +18,10 @@
  *   read (`~HI` plus the peeler) and saved as this station's printer with
  *   its own DPI, offsets reset, and only then is ready (`switched` says
  *   so). Until the check ends the state is `loading` with no printer, so
- *   nothing prints at the old DPI or offsets. A printer that won't
- *   identify itself is taken as the saved one (as before); a save that
- *   fails is `needs_usb` with `switchError`. Network printers are never
+ *   nothing prints at the old DPI or offsets. With a serial missing, a
+ *   printer that won't identify itself is taken as the saved one (as
+ *   before); one whose serial differs is `needs_usb` with `switchError`,
+ *   as is a save that fails. Network printers are never
  *   checked. Nothing here runs per label.
  *   `holdUsbCheck` puts the check off (still not ready) while another
  *   screen owns the choice of printer: Printer Setup's Change printer
@@ -226,9 +227,11 @@ async function checkUsbPrinter(
     if (!ident || (ident.model === saved.printer.model && ident.dpi === saved.dpi)) return { kind: 'same' };
   }
   ident ??= await identifyOrNull(printer);
-  // A printer that won't say what it is can't be saved: as before, it
-  // stands for the saved one.
-  if (!ident) return { kind: 'same' };
+  // Only reached when the serials say it's another printer: one that won't
+  // say what it is can't be saved, and must not print with the saved
+  // printer's DPI and offsets. (With a serial missing, an identity that
+  // can't be read still stands for the saved printer, above.)
+  if (!ident) return { kind: 'error', error: "the connected printer didn't say what it is" };
   const peeler = await printer.peeler();
   // Dropped (held, unmounted, another pick): nothing is saved.
   if (!live()) return { kind: 'same' };
