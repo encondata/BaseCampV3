@@ -59,11 +59,14 @@ FACTORY_CHAIN_LENGTH = 4          # leaf, batch, intermediate, root
 MAX_CHAIN_LENGTH = 6              # remote-provisioned chains run longer
 
 Reason = Literal["chain", "root", "expired", "revoked", "challenge", "security_level",
-                 "key_properties", "user_auth", "package", "boot_state", "parse"]
+                 "key_properties", "user_auth", "package", "boot_state", "parse",
+                 # iOS App Attest (security/app_attest.py) and the enroll proof
+                 "format", "key_id", "app_id", "counter", "environment", "proof"]
 
 
 class AttestationError(Exception):
-    """The chain was refused; `reason` is one of the Reason codes."""
+    """The chain (or iOS App Attest statement) was refused; `reason` is one
+    of the Reason codes."""
 
     def __init__(self, reason: Reason, detail: str = ""):
         super().__init__(f"{reason}: {detail}" if detail else reason)
