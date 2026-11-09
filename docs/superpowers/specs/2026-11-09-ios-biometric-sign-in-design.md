@@ -25,6 +25,13 @@ The person a kiosk iPad or iPhone is assigned to should sign in with Face ID or 
    - At enrollment, the server instead checks Apple's App Attest statement. It proves the request comes from our genuine, unmodified app (team `Y2QYBG96U4`, bundle `Server-Sherpas.ServerSherpa-Kiosk`) on a real Apple device.
    - The statement is bound to the sign-in key's public key. That key is created by that genuine app in the Secure Enclave, behind Face ID or Touch ID.
    - The server trusts the app's code for the "needs Face ID" part. It does not check that part directly.
+3. **App Attest is off for now** (2026-11-09: "I'm fine with the downgrade to get this working without apple for now but please add a future followup card to harbor master"). App Attest needs the paid Apple Developer Program, and the team has no membership right now. Harbor Master **SS-521** turns it back on. Until then:
+   - **App.** It makes and uses the Secure Enclave key exactly as designed below, but does not call App Attest: a single switch, `BiometricAppAttest.isEnabled = false`, controls this. The entitlements file and `CODE_SIGN_ENTITLEMENTS` are removed, so the existing development profile can sign the app.
+   - **Enroll body.** The iOS body always sends `public_key` and `signature`. `app_attest_key_id` and `attestation` are optional, and are sent together or not at all.
+   - **Server without an attestation.** While `SS_KIOSK_IOS_REQUIRE_APP_ATTEST` is false (the default for now), the server accepts an iOS enroll that has no attestation. It still checks the proof signature, stores the key with `security_level = "unattested"`, and the audit records `attested: false`.
+   - **Server with an attestation.** One that is sent is verified as below, and the key is `secure_enclave`.
+   - **Requiring it.** With the setting true, an iOS enroll without an attestation is 422 `attestation_failed` with reason `attestation_required`.
+   - **What it costs.** Someone holding a person's password and a modified app or a script could register a key that doesn't need Face ID.
 
 ## What the person sees
 

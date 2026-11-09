@@ -636,3 +636,79 @@ Paths are relative to `IOS_Kiosk_App/ServerSherpa Kiosk/`. IK is `ServerSherpa K
 
 - [ ] **Step 5: Commit.**
   - `git commit -m "feat(ios): Face ID sign-in card, enroll offer and This Kiosk row"`
+
+---
+
+### Task 7: App Attest off for now (Jimmy, 2026-11-09; follow-up SS-521)
+
+The spec's decision 3 applies. App Attest needs the paid Apple Developer Program. Face ID sign-in ships without it, and everything built for it stays in place behind one switch.
+
+**Files:**
+- Server:
+  - Modify `api/src/serversherpa/api/schemas.py` (`BiometricEnrollIn` iOS rule, and `SecurityLevel` gains `"unattested"`)
+  - Modify `services/biometric.py` (`enroll_ios`)
+  - Modify `api/routes/kiosk_biometric.py`
+  - Modify `config.py` (new setting)
+  - Amend `migrations/versions/0124_biometric_secure_enclave.py` in place. The branch is unmerged and the dev DB is still at 0123. Drop the throwaway `serversherpa_test_iosbio` test DB so conftest recreates it.
+  - Tests: `tests/test_kiosk_biometric_ios_api.py`, `tests/test_biometric_schema.py`
+- iOS:
+  - Modify `IK/Data/Auth/BiometricKeys.swift`
+  - Modify `IK/Core/Model/Biometric.swift` (`BiometricIosEnrollIn` optional fields)
+  - Modify `IK/Data/Auth/BiometricSignIn.swift` (it passes the optional fields through)
+  - Modify `IT/Support/FakeBiometricKeys.swift`
+  - Tests: `IT/Data/URLSessionKioskApiBiometricTests.swift`, `IT/Data/BiometricKeysTests.swift`, `IT/Data/BiometricSignInTests.swift`
+  - Delete `IOS_Kiosk_App/ServerSherpa Kiosk/ServerSherpa Kiosk.entitlements`, and remove both `CODE_SIGN_ENTITLEMENTS` lines from `project.pbxproj`. Keep `NSFaceIDUsageDescription`.
+
+**Interfaces:**
+- **Server.**
+  - Setting `Settings.kiosk_ios_require_app_attest: bool = False` (`SS_KIOSK_IOS_REQUIRE_APP_ATTEST`), with the comment "Refuse iOS biometric enrolls without an App Attest statement (turn on with SS-521)".
+  - The iOS body needs `public_key` and `signature`. `app_attest_key_id` and `attestation` are both present or both absent; anything else is 422 from validation.
+  - `enroll_ios(..., app_attest_key_id: bytes | None, attestation: bytes | None, ...)`:
+    - Without an attestation, when required: `BiometricError(422, "attestation_failed", reason="attestation_required")`.
+    - Without an attestation, when not required: skip `verify_app_attest`, still check the proof, and store `security_level="unattested"`.
+    - With an attestation: unchanged.
+  - The audit `changes` gains `attested: bool`.
+- **iOS.**
+  - `enum BiometricAppAttest { static let isEnabled = false }` in `BiometricKeys.swift`, with a doc comment naming SS-521 and the paid membership.
+  - `BiometricEnrollProof.appAttestKeyId: String?` and `attestation: Data?`.
+  - `SecureEnclaveBiometricKeys.create`: while the switch is off, it skips `DCAppAttestService` and returns nil for both fields. `readiness()` checks `DCAppAttestService.isSupported` only while the switch is on.
+  - `BiometricIosEnrollIn.appAttestKeyId: String?` and `attestation: String?`, encoded only when non-nil (`encodeIfPresent`).
+  - `FakeBiometricKeys` gains a knob `attests: Bool = false`.
+
+- [ ] **Step 1: Write the failing tests.**
+
+  Server:
+
+  | Test | Expected |
+  |---|---|
+  | `test_ios_unattested_enroll_is_stored_and_signs_in` | 200; `security_level == "unattested"`; the audit has `attested is False`; `fake.calls == []`; challenge then sign-in gives 200 |
+  | `test_ios_unattested_enroll_refused_when_required` | setting true gives 422 `attestation_failed` with `reason == "attestation_required"` and no key row |
+  | `test_ios_attestation_fields_come_together` | `app_attest_key_id` without `attestation`, or the reverse, gives 422 |
+  | `test_ios_unattested_bad_proof_is_422_proof` | |
+  | `test_ios_attested_enroll_records_attested_true` | `secure_enclave`, `attested is True` |
+  | `test_unattested_level_allowed_at_head` | in `test_biometric_schema.py` |
+
+  The 0124 round trip must also delete `unattested` rows on downgrade.
+
+  iOS:
+
+  | Test | Expected |
+  |---|---|
+  | `appAttestIsOffForNow` | `BiometricAppAttest.isEnabled == false` |
+  | `enrollSendsTheUnattestedIosBody` | `bodyString == #"{"nonce":"n","platform":"ios","public_key":"p","serial":"s1","signature":"g"}"#` |
+  | `enrollSendsTheIosBody` | keeps the attested shape, with both fields present |
+  | `enrollWithoutAttestationSendsNoAttestationFields` | in `BiometricSignInTests`: the default fake gives a body with `appAttestKeyId == nil` and `attestation == nil` |
+  | `enrollWithAttestationSendsBoth` | the fake with `attests = true` |
+
+- [ ] **Step 2: Run the tests to verify they fail.** Use the server and iOS commands in Global Constraints.
+
+- [ ] **Step 3: Implement.**
+
+- [ ] **Step 4: Verify.**
+  - Run all the biometric server files with `PYTHONPATH=src`.
+  - Run the full iOS unit target. The known pre-existing failure is `theReferenceCasesPrintByteForByte`.
+  - Run the simulator build.
+  - Run the device build: `xcodebuild build -scheme "ServerSherpa Kiosk" -destination 'generic/platform=iOS' -derivedDataPath ../.derived-iosbio-device -allowProvisioningUpdates -allowProvisioningDeviceRegistration`. Expected: `BUILD SUCCEEDED` with the cached development profile. No Apple ID is signed in.
+
+- [ ] **Step 5: Commit.**
+  - `git commit -m "feat: iOS Face ID sign-in without App Attest for now (SS-521 turns it on)"`
