@@ -2,16 +2,22 @@
 sign-in challenge tokens, enroll, the 30-day anchor, and revoking keys.
 
 A key is an EC P-256 key in the phone's secure hardware that only a strong
-biometric unlocks. Enroll registers its public half after Android's key
-attestation proves where it lives (security/key_attestation.py). Sign-in
-signs a one-time challenge with it (SHA256withECDSA over the UTF-8 bytes of
-the challenge string).
+biometric unlocks. Enroll registers its public half after the platform
+proves where it lives: Android's key attestation
+(security/key_attestation.py), or on iOS App Attest
+(security/app_attest.py) plus the Secure Enclave key's signature over the
+nonce. App Attest is off for now (SS-521): an iOS enroll without it is
+stored as "unattested" unless SS_KIOSK_IOS_REQUIRE_APP_ATTEST is set.
+Sign-in signs a one-time challenge with it (SHA256withECDSA over the UTF-8
+bytes of the challenge string), the same on both.
 
 - The enroll nonce is a signed JWT (typ "bioenroll", 5 minutes) bound to the
-  person, the session family and the serial. The app passes the SHA-256 of
-  its UTF-8 bytes to `setAttestationChallenge` (KeyMint caps the attestation
-  challenge at 128 bytes, and the JWT is longer). It is spent once any key
-  has been enrolled for that person on that device since it was issued.
+  person, the session family and the serial. The Android app passes the
+  SHA-256 of its UTF-8 bytes to `setAttestationChallenge` (KeyMint caps the
+  attestation challenge at 128 bytes, and the JWT is longer); the iOS app
+  binds it, with the key, into App Attest's clientDataHash
+  (app_attest.client_data_hash). It is spent once any key has been enrolled
+  for that person on that device since it was issued.
 - The sign-in challenge is a signed JWT (typ "bio", 60 seconds) naming the
   key, with a random jti. Issuing one records its jti and issue time on the
   key row (`last_nonce`); only the recorded one is accepted. Asking again
@@ -24,6 +30,7 @@ the challenge string).
   move it.
 
 Design: docs/superpowers/specs/2026-10-23-kiosk-biometric-sign-in-design.md
+(iOS: docs/superpowers/specs/2026-11-09-ios-biometric-sign-in-design.md)
 """
 
 import hashlib
@@ -37,12 +44,21 @@ import jwt
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.serialization import load_der_public_key
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    PublicFormat,
+    load_der_public_key,
+)
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.config import get_settings
 from serversherpa.db.models import BiometricKey, Device
+from serversherpa.security.app_attest import (
+    KIOSK_IOS_APP_ID,
+    client_data_hash,
+    verify_app_attest,
+)
 from serversherpa.security.attestation_status import load_status
 from serversherpa.security.key_attestation import (
     AttestationError,
@@ -63,6 +79,8 @@ CHALLENGE_REUSE_MIN_SECONDS = 20
 ENROLL_NONCE_TTL_SECONDS = 300
 CHALLENGE_TYP = "bio"
 ENROLL_TYP = "bioenroll"
+X963_POINT_LENGTH = 65          # 04 || X || Y on P-256
+APP_ATTEST_KEY_ID_LENGTH = 32   # SHA-256 of the App Attest key's point
 
 
 class BiometricError(Exception):
@@ -218,6 +236,75 @@ def signature_valid(public_key_der: bytes, challenge: str, signature: bytes) -> 
 
 # ── keys ────────────────────────────────────────────────────────────
 
+# A kiosk's platform family by sub_type (kiosk.kiosk_sub_type): a Zebra
+# handheld is an Android phone. Any other sub_type, and none yet, is its own
+# family.
+_PLATFORM_FAMILIES = {"android": "android", "zebra": "android", "ios": "ios"}
+# The enroll bodies' platforms, each named after its family.
+ENROLL_PLATFORMS = frozenset({"android", "ios"})
+
+
+def platform_family(sub_type: str | None) -> str | None:
+    """The platform family of a kiosk sub_type: "ios", "android" (a Zebra
+    too), any other sub_type itself, or None while the device's platform
+    isn't known yet (a family of its own: learning it is a change)."""
+    return _PLATFORM_FAMILIES.get(sub_type, sub_type) if sub_type is not None else None
+
+
+async def apply_reported_sub_type(
+    db: AsyncSession, device: Device, new_sub_type: str, *,
+    actor_id: uuid.UUID, ip: str | None = None,
+) -> str:
+    """Apply the sub_type a check-in reports. On a personal device, a move to
+    another platform family is taken only from its owner, and then clears
+    the assignment and revokes its keys (clear_personal_on_platform_change);
+    from anyone else it is ignored (sub_type unchanged) and audited as
+    `platform_change_ignored`, so knowing a serial is never enough to
+    unassign someone's phone or pick its enroll path. Any other change (within
+    a family, or on a device that isn't personal) is just set. Returns
+    "set", "cleared" or "ignored". Does not commit."""
+    old = device.sub_type
+    family_change = platform_family(old) != platform_family(new_sub_type)
+    if (family_change and device.personal_person_id is not None
+            and actor_id != device.personal_person_id):
+        audit(db, actor_id=actor_id, entity_type="device", entity_id=str(device.id),
+              action="platform_change_ignored",
+              changes={"sub_type": {"from": old, "to": new_sub_type}}, ip=ip)
+        return "ignored"
+    device.sub_type = new_sub_type
+    if await clear_personal_on_platform_change(db, device, old, actor_id=actor_id, ip=ip):
+        return "cleared"
+    return "set"
+
+
+async def clear_personal_on_platform_change(
+    db: AsyncSession, device: Device, old_sub_type: str | None, *,
+    actor_id: uuid.UUID | None, ip: str | None = None,
+) -> bool:
+    """After `device.sub_type` was set (by its owner's check-in, or by an
+    admin in the portal): a personal device that moved to another platform
+    family, including from none yet, is no longer the phone that was
+    assigned, so its live keys are revoked (reason `platform_changed`) and
+    the assignment is cleared, audited as `personal_cleared` with the old
+    and new sub_type. A move within a family (Android and Zebra) and a
+    non-personal device change nothing. Returns whether it cleared. Does not
+    commit."""
+    before = device.personal_person_id
+    if before is None or platform_family(old_sub_type) == platform_family(device.sub_type):
+        return False
+    await revoke_keys(db, device_id=device.id, reason="platform_changed",
+                      actor_id=actor_id, ip=ip)
+    device.personal_person_id = None
+    device.personal_set_at = None
+    device.personal_set_by = None
+    audit(db, actor_id=actor_id, entity_type="device", entity_id=str(device.id),
+          action="personal_cleared",
+          changes={"person_id": {"from": str(before), "to": None},
+                   "sub_type": {"from": old_sub_type, "to": device.sub_type},
+                   "reason": "platform_changed"}, ip=ip)
+    return True
+
+
 def shared_station(device: Device) -> bool:
     """A Label, RFID or Time Clock station, or any kiosk holding a station
     key, is shared: it is never anyone's personal phone for biometrics,
@@ -263,14 +350,40 @@ async def nonce_spent(db: AsyncSession, nonce: EnrollNonce, device_id: uuid.UUID
         BiometricKey.created_at >= nonce.issued_at)))
 
 
+async def _store_key(
+    db: AsyncSession, *, person_id: uuid.UUID, device: Device, public_key_der: bytes,
+    security_level: str, platform: str, password_sign_in_at: datetime,
+    ip: str | None,
+) -> BiometricKey:
+    """Store `public_key_der` (DER SubjectPublicKeyInfo) as the person's live
+    key on `device`, revoking every older live key on the device, audited as
+    `biometric_enroll` with the platform and whether the key was attested
+    (every level but "unattested"). Does not commit."""
+    await revoke_keys(db, device_id=device.id, reason="replaced", actor_id=person_id, ip=ip)
+    await db.flush()          # the old live key leaves the partial unique index first
+    key = BiometricKey(
+        id=uuid.uuid4(), person_id=person_id, device_id=device.id,
+        public_key=public_key_der, key_alg="ES256",
+        security_level=security_level, created_at=datetime.now(UTC),
+        password_sign_in_at=password_sign_in_at)
+    db.add(key)
+    audit(db, actor_id=person_id, entity_type="biometric_key", entity_id=str(key.id),
+          action="biometric_enroll",
+          changes={"device_id": str(device.id), "serial": device.serial,
+                   "platform": platform, "security_level": security_level,
+                   "attested": security_level != "unattested"}, ip=ip)
+    await db.flush()
+    return key
+
+
 async def enroll(
     db: AsyncSession, *, person_id: uuid.UUID, device: Device, nonce: str,
     chain_der: list[bytes], password_sign_in_at: datetime, ip: str | None = None,
 ) -> BiometricKey:
-    """Verify the attestation chain and store its key as the person's live
-    key on `device`, revoking every older live key on the device. The caller
-    has checked the session, the device and the nonce, and holds the device
-    row FOR UPDATE. Does not commit."""
+    """Android: verify the attestation chain and store its key as the
+    person's live key on `device`, revoking every older live key on the
+    device. The caller has checked the session, the device and the nonce,
+    and holds the device row FOR UPDATE. Does not commit."""
     now = datetime.now(UTC)
     status = await load_status(db)
     if status is None or not status.fresh(now):
@@ -284,20 +397,74 @@ async def enroll(
         # the chain itself) for whoever looks into a refused phone
         logger.warning("attestation refused: %s %s", exc.reason, exc.detail)
         raise BiometricError(422, "attestation_failed", reason=exc.reason) from None
-    await revoke_keys(db, device_id=device.id, reason="replaced", actor_id=person_id, ip=ip)
-    await db.flush()          # the old live key leaves the partial unique index first
-    key = BiometricKey(
-        id=uuid.uuid4(), person_id=person_id, device_id=device.id,
-        public_key=attested.public_key_der, key_alg="ES256",
-        security_level=attested.security_level, created_at=now,
-        password_sign_in_at=password_sign_in_at)
-    db.add(key)
-    audit(db, actor_id=person_id, entity_type="biometric_key", entity_id=str(key.id),
-          action="biometric_enroll",
-          changes={"device_id": str(device.id), "serial": device.serial,
-                   "security_level": attested.security_level}, ip=ip)
-    await db.flush()
-    return key
+    return await _store_key(
+        db, person_id=person_id, device=device, public_key_der=attested.public_key_der,
+        security_level=attested.security_level, platform="android",
+        password_sign_in_at=password_sign_in_at, ip=ip)
+
+
+def _x963_to_spki(raw: bytes) -> bytes:
+    """DER SubjectPublicKeyInfo of an uncompressed P-256 point (04 || X ||
+    Y), which must lie on the curve; else attestation_failed{parse}."""
+    if len(raw) != X963_POINT_LENGTH or raw[0] != 0x04:
+        raise BiometricError(422, "attestation_failed", reason="parse")
+    try:
+        key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), raw)
+    except ValueError:
+        raise BiometricError(422, "attestation_failed", reason="parse") from None
+    return key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+
+
+async def enroll_ios(
+    db: AsyncSession, *, person_id: uuid.UUID, device: Device, nonce: str,
+    public_key_x963: bytes, app_attest_key_id: bytes | None, attestation: bytes | None,
+    proof: bytes, password_sign_in_at: datetime, ip: str | None = None,
+) -> BiometricKey:
+    """iOS: check the Secure Enclave key's own signature over the nonce
+    (`proof`) and store the key the way `enroll` stores an Android one,
+    as `secure_enclave` or `unattested`:
+    - with an App Attest statement (`app_attest_key_id` and `attestation`),
+      verify it first (it binds the nonce and the key through
+      clientDataHash); the key is `secure_enclave`;
+    - without one (both None: App Attest is off in the app until SS-521),
+      the key is `unattested`, or refused as
+      attestation_failed{attestation_required} when
+      SS_KIOSK_IOS_REQUIRE_APP_ATTEST is set;
+    - with only one of the two, attestation_failed{parse}: a sent
+      attestation is never dropped.
+    Google's revocation list is Android's and plays no part. The caller has
+    checked the session, the device, its platform and the nonce, and holds
+    the device row FOR UPDATE. Does not commit."""
+    public_key_der = _x963_to_spki(public_key_x963)
+    if attestation is None and app_attest_key_id is None:
+        if get_settings().kiosk_ios_require_app_attest:
+            logger.warning("app attest refused: no attestation and it is required")
+            raise BiometricError(422, "attestation_failed", reason="attestation_required")
+        security_level = "unattested"
+    elif attestation is None or app_attest_key_id is None:
+        raise BiometricError(422, "attestation_failed", reason="parse")
+    else:
+        if len(app_attest_key_id) != APP_ATTEST_KEY_ID_LENGTH:
+            raise BiometricError(422, "attestation_failed", reason="parse")
+        try:
+            verify_app_attest(
+                attestation, key_id=app_attest_key_id,
+                client_data_hash=client_data_hash(nonce, public_key_x963),
+                app_id=KIOSK_IOS_APP_ID,
+                allow_development=get_settings().kiosk_app_attest_development)
+        except AttestationError as exc:
+            # as on Android: the API answers only the reason, the log keeps the
+            # detail (never the attestation object itself)
+            logger.warning("app attest refused: %s %s", exc.reason, exc.detail)
+            raise BiometricError(422, "attestation_failed", reason=exc.reason) from None
+        security_level = "secure_enclave"
+    if not signature_valid(public_key_der, nonce, proof):
+        logger.warning("biometric enroll refused: proof signature over the nonce does not verify")
+        raise BiometricError(422, "attestation_failed", reason="proof")
+    return await _store_key(
+        db, person_id=person_id, device=device, public_key_der=public_key_der,
+        security_level=security_level, platform="ios",
+        password_sign_in_at=password_sign_in_at, ip=ip)
 
 
 async def revoke_keys(

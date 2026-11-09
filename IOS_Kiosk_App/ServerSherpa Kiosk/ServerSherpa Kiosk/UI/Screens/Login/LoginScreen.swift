@@ -11,6 +11,12 @@ struct LoginScreen: View {
     }
 }
 
+/// What restarts the card's auto prompt: the view, and whether something covers the card.
+private struct AutoPromptTrigger: Equatable {
+    var view: LoginView
+    var covered: Bool
+}
+
 /// The whole screen and its safe-area insets, measured without the keyboard
 /// so the scene does not rescale when the keyboard comes up.
 private struct ScreenFrame: Equatable {
@@ -29,7 +35,8 @@ private struct LoginScreenBody: View {
 
     init(container: AppContainer) {
         self.container = container
-        _vm = State(initialValue: LoginViewModel(auth: container.auth, api: container.api))
+        _vm = State(initialValue: LoginViewModel(auth: container.auth, api: container.api,
+                                                 biometric: container.biometric, enrollOffer: container.enrollOffer))
         _pair = State(initialValue: PairViewModel(api: container.api, identity: container.identity, auth: container.auth))
     }
 
@@ -70,7 +77,18 @@ private struct LoginScreenBody: View {
             .animation(.easeOut(duration: 0.15), value: vm.supportOpen)
             .environment(\.colorScheme, .light)
             .tint(LoginTokens.orange)
-            .task { await vm.loadStatus() }
+            // The banners and the device's biometric card load side by side (the card never
+            // waits for the status call).
+            .task {
+                async let status: Void = vm.loadStatus()
+                await vm.loadCard()
+                await status
+            }
+            // The card's prompt starts on its own when the card appears, or when the Settings
+            // sheet or support card that covered it closes; the view model lets it run once per
+            // screen.
+            .task(id: AutoPromptTrigger(view: vm.view, covered: vm.covered)) { await vm.autoPrompt(SystemBiometricPrompter()) }
+            .onChange(of: settingsSheet.wrappedValue, initial: true) { _, open in vm.settingsOpen = open }
             // Entering the pair view begins pairing, leaving it stops; the whole
             // screen going away (signed in) stops it too.
             .onChange(of: vm.view) { old, new in

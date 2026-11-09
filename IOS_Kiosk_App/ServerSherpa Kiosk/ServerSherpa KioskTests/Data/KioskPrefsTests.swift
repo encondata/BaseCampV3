@@ -18,6 +18,21 @@ struct KioskPrefsTests {
         #expect(prefs.cameraPosition == .back)
     }
 
+    @Test func biometricEnrollmentRoundTripsAndNilRemoves() {
+        let defaults = freshDefaults()
+        let prefs = KioskPrefs(defaults: defaults)
+        #expect(prefs.biometric == nil)
+        let enrollment = BiometricEnrollment(keyId: "k1", personId: "p1", email: "tina@example.com")
+        prefs.biometric = enrollment
+        #expect(KioskPrefs(defaults: defaults).biometric == enrollment)
+        #expect(defaults.string(forKey: "ss.kiosk.biometric") != nil)
+        prefs.biometric = nil
+        #expect(KioskPrefs(defaults: defaults).biometric == nil)
+        #expect(defaults.object(forKey: "ss.kiosk.biometric") == nil)
+        defaults.set("not json", forKey: "ss.kiosk.biometric")
+        #expect(KioskPrefs(defaults: defaults).biometric == nil)
+    }
+
     @Test func roundTripsAndSurvivesANewInstance() {
         let defaults = freshDefaults()
         let prefs = KioskPrefs(defaults: defaults)

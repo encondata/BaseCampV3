@@ -23,6 +23,7 @@ final class KioskPrefs {
         static let name = "ss.kiosk.name"
         static let cameraPosition = "ss.kiosk.cameraPosition"
         static let labels = "ss.kiosk.labels"
+        static let biometric = "ss.kiosk.biometric"
     }
 
     nonisolated static let printerStopsKey = "ss.kiosk.printerStops"
@@ -34,6 +35,16 @@ final class KioskPrefs {
                 defaults.set(s, forKey: Key.setupSelection)
             } else {
                 defaults.removeObject(forKey: Key.setupSelection)
+            }
+        }
+    }
+    /// Who this kiosk is enrolled for biometric sign-in; nil removes it. Unreadable JSON reads as nil.
+    var biometric: BiometricEnrollment? {
+        didSet {
+            if let biometric, let data = try? KioskJSON.encoder.encode(biometric), let s = String(data: data, encoding: .utf8) {
+                defaults.set(s, forKey: Key.biometric)
+            } else {
+                defaults.removeObject(forKey: Key.biometric)
             }
         }
     }
@@ -63,6 +74,9 @@ final class KioskPrefs {
         setupSelection = defaults.string(forKey: Key.setupSelection)
             .flatMap { $0.data(using: .utf8) }
             .flatMap { try? KioskJSON.decoder.decode(KioskSetupSelection.self, from: $0) }
+        biometric = defaults.string(forKey: Key.biometric)
+            .flatMap { $0.data(using: .utf8) }
+            .flatMap { try? KioskJSON.decoder.decode(BiometricEnrollment.self, from: $0) }
         appearance = parseAppearance(defaults.string(forKey: Key.appearance))
         sound = parseSoundSettings(defaults.string(forKey: Key.sound))
         devMode = defaults.bool(forKey: Key.devMode)

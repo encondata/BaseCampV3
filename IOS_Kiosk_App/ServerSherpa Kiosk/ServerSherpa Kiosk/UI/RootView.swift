@@ -1,10 +1,12 @@
 import SwiftUI
 
 /// KioskGuard { KioskShell { NavigationStack { Home + routes behind SetupGate } } },
-/// the flash overlay over everything, and the scene-phase hooks.
+/// the flash overlay over everything, the biometric Turn on sheet over the signed-in app, and
+/// the scene-phase hooks.
 struct RootView: View {
     @Environment(\.container) private var container
     @Environment(KioskAuth.self) private var auth
+    @Environment(EnrollOffer.self) private var enrollOffer
     @Environment(\.scenePhase) private var scenePhase
     @State private var path: [Route] = []
 
@@ -29,6 +31,12 @@ struct RootView: View {
             }
             ScanFlash()
         }
+        // Inside the theme: the sheet follows the app's light or dark look.
+        .sheet(item: offerSheet) { shown in
+            EnrollOfferSheet(ui: enrollOffer.sheet ?? shown, words: enrollOffer.words,
+                             onTurnOn: { Task { await enrollOffer.turnOn(SystemBiometricPrompter()) } },
+                             onNotNow: { enrollOffer.notNow() })
+        }
         .environment(\.goHome, GoHomeAction { [path = $path] in path.wrappedValue.removeAll() })
         .kioskTheme(accent: preferences?.accent ?? "amber",
                     scheme: KioskTheme.scheme(forTheme: preferences?.theme ?? "light"))
@@ -46,6 +54,11 @@ struct RootView: View {
             default: break
             }
         }
+    }
+
+    /// The Turn on sheet; a swipe down is Not now (never while Turn on runs).
+    private var offerSheet: Binding<EnrollOfferUI?> {
+        Binding(get: { enrollOffer.sheet }, set: { if $0 == nil { enrollOffer.notNow() } })
     }
 
     /// Screens not built yet show the placeholder until their task replaces the destination.

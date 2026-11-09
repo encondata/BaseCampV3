@@ -53,6 +53,16 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     var rolodexCreateResult: @Sendable (RolodexCreateIn) async throws -> RolodexDetail = { _ in throw unset }
     var rolodexUpdateResult: @Sendable (String, RolodexPatch) async throws -> RolodexDetail = { _, _ in throw unset }
     var rolodexPhotoResult: @Sendable (String, Data) async throws -> RolodexPhotoOut = { _, _ in throw unset }
+    // Biometric sign-in. The challenge defaults to Android's "nothing enrolled" answer.
+    var bioEnrollChallengeResult: @Sendable (String) async throws -> String = { _ in throw unset }
+    var bioEnrollResult: @Sendable (BiometricIosEnrollIn) async throws -> BiometricEnrollOut = { _ in throw unset }
+    var bioChallengeResult: @Sendable (String) async throws -> BiometricChallengeOut = { _ in throw ApiError(status: 404, code: "no_biometric") }
+    var bioSignInResult: @Sendable (String, String, String) async throws -> SessionData = { _, _, _ in throw unset }
+    var bioForgetResult: @Sendable (String) async throws -> Void = { _ in }
+    /// Every body `biometricEnroll` was called with, in order.
+    var bioEnrollBodies: [BiometricIosEnrollIn] { lock.lock(); defer { lock.unlock() }; return _bioEnrollBodies }
+    private var _bioEnrollBodies: [BiometricIosEnrollIn] = []
+
     /// When set, every Rolodex call awaits this (with its name, as in `calls`) before
     /// answering: holds a save, create or upload in flight.
     var rolodexGate: (@Sendable (String) async -> Void)?
@@ -161,6 +171,22 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     func rolodexPhoto(id: String, jpeg: Data) async throws -> RolodexPhotoOut {
         lock.withLock { _rolodexPhotos.append((id, jpeg)) }
         record("rolodexPhoto"); await rolodexGate?("rolodexPhoto"); return try await rolodexPhotoResult(id, jpeg)
+    }
+    func biometricEnrollChallenge(serial: String) async throws -> String {
+        record("bioEnrollChallenge"); return try await bioEnrollChallengeResult(serial)
+    }
+    func biometricEnroll(_ body: BiometricIosEnrollIn) async throws -> BiometricEnrollOut {
+        lock.withLock { _bioEnrollBodies.append(body) }
+        record("bioEnroll"); return try await bioEnrollResult(body)
+    }
+    func biometricChallenge(serial: String) async throws -> BiometricChallengeOut {
+        record("bioChallenge"); return try await bioChallengeResult(serial)
+    }
+    func biometricSignIn(keyId: String, challenge: String, signature: String) async throws -> SessionData {
+        record("bioSignIn"); return try await bioSignInResult(keyId, challenge, signature)
+    }
+    func biometricForget(serial: String) async throws {
+        record("bioForget"); try await bioForgetResult(serial)
     }
     func fetchImage(url: String) async throws -> Data {
         record("image"); await imageGate?(url)

@@ -179,3 +179,82 @@ def test_migration_round_trip(throwaway_url):
         assert conn.execute("SELECT to_regclass('biometric_keys')").fetchone()[0] \
             == "biometric_keys"
         assert "login_method" in _columns(conn, "auth_sessions")
+
+
+async def test_secure_enclave_level_allowed_at_head(db, seeded_user):
+    # migration 0124: an iOS key lives in the Secure Enclave
+    device = Device(device_type="kiosk", name="iPad Pro", serial="ios-bio-schema-1",
+                    sub_type="ios", personal_person_id=seeded_user.id,
+                    personal_set_at=datetime.now(UTC), personal_set_by=seeded_user.id)
+    db.add(device)
+    await db.commit()
+    key = BiometricKey(person_id=seeded_user.id, device_id=device.id,
+                       public_key=b"\x30\x59fake-der", key_alg="ES256",
+                       security_level="secure_enclave",
+                       password_sign_in_at=datetime.now(UTC))
+    db.add(key)
+    await db.commit()
+    await db.refresh(key)
+    assert key.security_level == "secure_enclave"
+    # anything else is still refused
+    db.add(BiometricKey(person_id=seeded_user.id, device_id=device.id,
+                        public_key=b"\x30\x59fake-der", key_alg="ES256",
+                        security_level="software", revoked_at=datetime.now(UTC),
+                        password_sign_in_at=datetime.now(UTC)))
+    with pytest.raises(IntegrityError):
+        await db.commit()
+    await db.rollback()
+
+
+async def test_unattested_level_allowed_at_head(db, seeded_user):
+    # migration 0124: an iOS key enrolled without App Attest (spec decision 3,
+    # until SS-521 turns App Attest back on)
+    device = Device(device_type="kiosk", name="iPad Air", serial="ios-bio-schema-2",
+                    sub_type="ios", personal_person_id=seeded_user.id,
+                    personal_set_at=datetime.now(UTC), personal_set_by=seeded_user.id)
+    db.add(device)
+    await db.commit()
+    key = BiometricKey(person_id=seeded_user.id, device_id=device.id,
+                       public_key=b"\x30\x59fake-der", key_alg="ES256",
+                       security_level="unattested",
+                       password_sign_in_at=datetime.now(UTC))
+    db.add(key)
+    await db.commit()
+    await db.refresh(key)
+    assert key.security_level == "unattested"
+
+
+def _security_levels(conn) -> list[str]:
+    return sorted(level for (level,) in conn.execute(
+        "SELECT security_level FROM biometric_keys"))
+
+
+def test_migration_0124_round_trip(throwaway_url):
+    sync = throwaway_url.set(drivername="postgresql").render_as_string(hide_password=False)
+    _alembic(throwaway_url, "upgrade", "head")
+    with psycopg.connect(sync, autocommit=True) as conn:
+        person = conn.execute("INSERT INTO people (first_name, last_name) "
+                              "VALUES ('Jo', 'Bio') RETURNING id").fetchone()[0]
+        for n, level in enumerate(("tee", "secure_enclave", "unattested")):
+            device = conn.execute(
+                "INSERT INTO devices (device_type, name) VALUES ('kiosk', %s) RETURNING id",
+                (f"K{n}",)).fetchone()[0]
+            conn.execute(
+                "INSERT INTO biometric_keys (person_id, device_id, public_key, "
+                "security_level, password_sign_in_at) VALUES (%s, %s, '\\x30', %s, now())",
+                (person, device, level))
+        assert _security_levels(conn) == ["secure_enclave", "tee", "unattested"]
+
+    # rolling back deletes the iOS keys (attested or not), then narrows the check
+    _alembic(throwaway_url, "downgrade", "0123")
+    with psycopg.connect(sync, autocommit=True) as conn:
+        assert _security_levels(conn) == ["tee"]
+        for level in ("secure_enclave", "unattested"):
+            with pytest.raises(psycopg.errors.CheckViolation):
+                conn.execute("UPDATE biometric_keys SET security_level = %s", (level,))
+
+    _alembic(throwaway_url, "upgrade", "head")
+    with psycopg.connect(sync, autocommit=True) as conn:
+        for level in ("unattested", "secure_enclave"):
+            conn.execute("UPDATE biometric_keys SET security_level = %s", (level,))
+            assert _security_levels(conn) == [level]

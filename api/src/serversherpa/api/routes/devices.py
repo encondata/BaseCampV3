@@ -370,7 +370,9 @@ async def patch_device(
     device_id: uuid.UUID, body: DevicePatch, db: DbSession,
     actor: AuthContext = require_permission("scanning_hardware", "change"),
 ) -> dict:
-    device = await db.get(Device, device_id)
+    # FOR UPDATE: a sub_type change may clear the personal assignment, which
+    # must not interleave with PUT /personal or a heartbeat
+    device = await db.scalar(select(Device).where(Device.id == device_id).with_for_update())
     if device is None:
         raise _err(404, "device_not_found")
     data = body.model_dump(exclude_unset=True)
@@ -380,13 +382,27 @@ async def patch_device(
     if "name" in data and (data["name"] is None or not data["name"].strip()):
         raise _err(422, "bad_name")
     await _validate_device_values(db, data)
+    # moving a personal device to another platform family clears its
+    # assignment and revokes its key: a personal write, so super admin only
+    # like PUT /personal. Checked before any field is set, so a refused
+    # PATCH changes nothing.
+    if "sub_type" in data and device.personal_person_id is not None \
+            and biometric.platform_family(device.sub_type) \
+            != biometric.platform_family(data["sub_type"]):
+        _require_super_admin(actor)
     before = snapshot(device, list(data))
+    old_sub_type = device.sub_type
     for key, value in data.items():
         setattr(device, key, value)
     device.updated_at = datetime.now(UTC)
     audit(db, actor_id=actor.person.id, entity_type="device",
           entity_id=str(device.id), action="update",
           changes=diff(before, snapshot(device, list(data))))
+    # a personal device moved to another platform family is no longer the
+    # phone that was assigned (as for its owner's check-in)
+    if "sub_type" in data:
+        await biometric.clear_personal_on_platform_change(
+            db, device, old_sub_type, actor_id=actor.person.id)
     await db.commit()
     return await _item_for(db, device.id)
 
@@ -851,13 +867,21 @@ async def put_device_personal(
     clear it with `person_id: null`. Refused with 422 not_eligible plus a
     `reason`: shared_station (a Label, RFID or Time Clock station, or a
     station-key kiosk), no_account, account_disabled (a disabled account
-    or an archived person), no_kiosk_view or move_identity.
+    or an archived person), no_kiosk_view or move_identity. Setting a new
+    person on a kiosk whose platform isn't known yet (it has never checked
+    in) is 422 platform_unknown: whoever checked it in first would pick its
+    platform, and with it the enroll path. Clearing is always allowed, and
+    so is re-saving the person a row assigned before that rule already has.
     Changing or clearing the person revokes every live biometric key on the
     device (reason `reassigned`), so an earlier owner's key can never come
     back. The same person again changes nothing."""
     _require_super_admin(actor)
     device = await _locked_kiosk(db, device_id)
     before, after = device.personal_person_id, body.person_id
+    if (after is not None and after != before
+            and biometric.platform_family(device.sub_type) is None):
+        await db.rollback()
+        raise _err(422, "platform_unknown")
     if after is not None:
         reason = ("shared_station" if biometric.shared_station(device)
                   else await _personal_refusal(db, after))

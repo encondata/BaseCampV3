@@ -321,4 +321,76 @@ struct AppContainerTests {
         #expect(c.prefs.portalUrl == "https://portal.example")
         #expect(c.prefs.devMode)
     }
+
+    // MARK: Biometric sign-in
+
+    /// A container with a software key store and nothing listening on the API.
+    private func biometricContainer(_ keys: FakeBiometricKeys) throws -> AppContainer {
+        let defaults = freshDefaults()
+        KioskPrefs(defaults: defaults).apiUrl = "http://127.0.0.1:9"   // nothing listens
+        return AppContainer(defaults: defaults, secrets: MemorySecretStore(),
+                            modelContainer: try KioskSchema.inMemoryContainer(), backgroundTask: NoBackgroundTasking(),
+                            labelEngine: FakeLabelEngine(), biometricKeys: keys)
+    }
+
+    /// Tina's key and enrollment on this device.
+    private func enroll(_ c: AppContainer, _ keys: FakeBiometricKeys) async throws -> BiometricEnrollment {
+        _ = try await keys.create(nonce: "nonce-0")
+        let enrollment = BiometricEnrollment(keyId: "key-1", personId: "p1", email: "tina@example.com")
+        c.prefs.biometric = enrollment
+        return enrollment
+    }
+
+    /// The shared-station rule is both halves: a station type (a Time Clock) or a station key.
+    /// Either one makes Turn on "this device can't use it" before anything else is checked;
+    /// without both, a signed-out Turn on gets as far as the sign-in it needs.
+    @Test func biometricIsWiredWithTheSharedStationRule() async throws {
+        let keys = FakeBiometricKeys()
+        let c = try biometricContainer(keys)
+        let prompt = FakeBiometricPrompter()
+        let w = c.biometric.words
+        #expect(await c.biometric.enroll(prompt) == .failed(BiometricCopy.enrollWindow(w)))   // not shared
+
+        c.prefs.setupSelection = .timeclock(initiativeId: nil, initiativeName: nil, siteId: nil, siteName: nil, siteRole: nil)
+        #expect(await c.biometric.offerEnroll() == false)
+        #expect(await c.biometric.enroll(prompt) == .unsupported)
+
+        c.prefs.setupSelection = nil
+        #expect(await c.biometric.enroll(prompt) == .failed(BiometricCopy.enrollWindow(w)))
+        c.station.storeKey("station-key-1")
+        #expect(c.station.hasKey)
+        #expect(await c.biometric.offerEnroll() == false)
+        #expect(await c.biometric.enroll(prompt) == .unsupported)
+
+        #expect(prompt.reasons.isEmpty)
+        #expect(keys.created.isEmpty)
+    }
+
+    /// Reset app starts a fresh setup but keeps the sign-in, and with it the biometric key.
+    @Test func resetAppKeepsTheBiometricEnrollment() async throws {
+        let keys = FakeBiometricKeys()
+        let c = try biometricContainer(keys)
+        let enrollment = try await enroll(c, keys)
+        c.prefs.setupSelection = testSelection(initiativeId: "i1")
+        try await c.resetApp()
+        #expect(c.prefs.setupSelection == nil)
+        #expect(c.prefs.biometric == enrollment)
+        #expect(c.biometric.enrollment == enrollment)
+        #expect(keys.hasKey)
+        #expect(keys.deleted == 0)
+    }
+
+    /// Signing out keeps the key, so the next sign-in screen shows the card.
+    @Test func signOutKeepsTheBiometricEnrollment() async throws {
+        let keys = FakeBiometricKeys()
+        let c = try biometricContainer(keys)
+        let enrollment = try await enroll(c, keys)
+        await c.auth.completePair(fakeSession())
+        await c.auth.logout()
+        #expect(c.auth.state == .anon)
+        #expect(c.prefs.biometric == enrollment)
+        #expect(keys.hasKey)
+        #expect(keys.deleted == 0)
+        #expect(c.enrollOffer.sheet == nil)
+    }
 }

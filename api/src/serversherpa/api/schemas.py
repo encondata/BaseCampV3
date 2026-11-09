@@ -494,24 +494,66 @@ class BiometricEnrollChallengeOut(BaseModel):
     nonce: str
 
 
+# Where a biometric key lives: Android's TEE or StrongBox, or the iOS Secure
+# Enclave. An iOS key enrolled without App Attest is "unattested" (App Attest
+# is off until SS-521; that follow-up finds and revokes these).
+SecurityLevel = Literal["tee", "strongbox", "secure_enclave", "unattested"]
+
+_IOS_ENROLL_FIELDS = ("public_key", "app_attest_key_id", "attestation", "signature")
+_IOS_REQUIRED_FIELDS = ("public_key", "signature")
+
+
 class BiometricEnrollIn(BaseModel):
+    """Android sends `chain`; iOS sends `platform: "ios"`, `public_key` and
+    `signature`, and `app_attest_key_id` with `attestation` together or not
+    at all. A body that mixes or omits a platform's fields is a 422."""
+
     serial: str = Field(min_length=1, max_length=120)
     nonce: str = Field(min_length=1, max_length=2048)
-    # KeyStore.getCertificateChain, leaf first, each certificate's DER in
-    # standard base64
-    chain: list[str] = Field(min_length=1, max_length=10)
+    platform: Literal["android", "ios"] = "android"
+    # Android: KeyStore.getCertificateChain, leaf first, each certificate's
+    # DER in standard base64
+    chain: list[str] | None = Field(default=None, min_length=1, max_length=10)
+    # iOS, each in standard base64: the Secure Enclave key's X9.63 point
+    # (04 || X || Y, 65 bytes), the App Attest key id (32 bytes), the App
+    # Attest attestation object (CBOR), and the Secure Enclave key's DER
+    # ECDSA signature over the nonce's UTF-8 bytes. The two App Attest
+    # fields are absent while the app has App Attest off (SS-521).
+    public_key: str | None = Field(default=None, max_length=128)
+    app_attest_key_id: str | None = Field(default=None, max_length=64)
+    attestation: str | None = Field(default=None, max_length=32_768)
+    signature: str | None = Field(default=None, max_length=512)
 
     @field_validator("chain")
     @classmethod
-    def _bounded(cls, v: list[str]) -> list[str]:
-        if any(len(c) > 16_384 for c in v):
+    def _bounded(cls, v: list[str] | None) -> list[str] | None:
+        if v is not None and any(len(c) > 16_384 for c in v):
             raise ValueError("certificate too large")
         return v
+
+    @model_validator(mode="after")
+    def _platform_fields(self) -> "BiometricEnrollIn":
+        given = [name for name in _IOS_ENROLL_FIELDS if getattr(self, name) is not None]
+        if self.platform == "android":
+            if self.chain is None:
+                raise ValueError("an Android enroll needs chain")
+            if given:
+                raise ValueError(f"an Android enroll takes no {', '.join(given)}")
+        else:
+            if self.chain is not None:
+                raise ValueError("an iOS enroll takes no chain")
+            missing = [name for name in _IOS_REQUIRED_FIELDS if name not in given]
+            if missing:
+                raise ValueError(f"an iOS enroll needs {', '.join(missing)}")
+            if (self.app_attest_key_id is None) != (self.attestation is None):
+                raise ValueError("an iOS enroll sends app_attest_key_id and attestation "
+                                 "together or not at all")
+        return self
 
 
 class BiometricEnrollOut(BaseModel):
     key_id: uuid.UUID
-    security_level: Literal["tee", "strongbox"]
+    security_level: SecurityLevel
     renews_at: datetime          # 30 days after the password sign-in
 
 
@@ -3583,7 +3625,7 @@ class BiometricKeyOut(BaseModel):
     id: uuid.UUID
     device_id: uuid.UUID
     device_name: str
-    security_level: Literal["tee", "strongbox"]
+    security_level: SecurityLevel
     created_at: datetime
     last_used_at: datetime | None
     renews_at: datetime

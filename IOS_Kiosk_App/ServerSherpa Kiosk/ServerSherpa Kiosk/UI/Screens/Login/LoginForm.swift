@@ -99,24 +99,36 @@ struct LoginTextField: View {
     }
 }
 
-/// The navy "Sign in →" button (60+ pt), "Signing in…" while busy.
+/// The navy "Sign in →" button (60+ pt), "Signing in…" while busy. With a `title` (the
+/// biometric card's "Sign in as …") it keeps its words while busy and leads with `systemImage`.
 struct LoginSubmitButton: View {
     let busy: Bool
     let f: CGFloat
+    var title: String? = nil
+    var systemImage: String? = nil
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 14 * f) {
-                Text(busy ? "Signing in…" : "Sign in")
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 28 * f, weight: .regular))
+                        .foregroundStyle(LoginTokens.orange)
+                        .accessibilityHidden(true)
+                }
+                Text(title ?? (busy ? "Signing in…" : "Sign in"))
                     .font(KioskType.sans(28 * f, .semibold))
                     .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
                 if busy {
                     ProgressView().tint(.white)
-                } else {
+                } else if systemImage == nil {
                     VectorIconView(icon: LoginIcons.arrow, tint: LoginTokens.orange, size: 34 * f)
                 }
             }
+            .padding(.horizontal, 16 * f)
             .frame(maxWidth: .infinity)
             .frame(height: max(44, 67 * f))
             .background(LoginTokens.ink, in: RoundedRectangle(cornerRadius: 8))
@@ -150,6 +162,7 @@ struct LoginUnderlinedLink: View {
 struct LoginQuietLink: View {
     let title: String
     let f: CGFloat
+    var enabled = true
     let action: () -> Void
 
     var body: some View {
@@ -163,6 +176,8 @@ struct LoginQuietLink: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.45)
     }
 }
 
@@ -193,16 +208,18 @@ struct LoginBackToTimeclockButton: View {
     }
 }
 
-/// The inline error line under the fields.
+/// The inline error line under the fields. `neutral` is a note in ink rather than an error
+/// (the biometric card's expired line above the password form).
 struct LoginErrorText: View {
     let text: String?
     let f: CGFloat
+    var neutral = false
 
     var body: some View {
         if let text {
             Text(text)
                 .font(KioskType.sans(15 * f))
-                .foregroundStyle(LoginFormColors.error)
+                .foregroundStyle(neutral ? LoginTokens.ink : LoginFormColors.error)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityAddTraits(.isStaticText)
         }
@@ -241,7 +258,7 @@ private struct LoginBanners: View {
 }
 
 /// The sign-in column: banners, eyebrow, title, subtitle, then the body for the
-/// current view (email & password, pair with phone, move password).
+/// current view (email & password, pair with phone, move password, the biometric card).
 struct LoginForm: View {
     @Bindable var vm: LoginViewModel
     let f: CGFloat
@@ -272,16 +289,25 @@ struct LoginForm: View {
                 .padding(.top, 8 * f)
                 .padding(.trailing, 90 * f)
             switch vm.view {
-            case .password: passwordBody.padding(.top, 30 * f)
+            case .password:
+                if vm.cardPending {
+                    BiometricPendingView(vm: vm, f: f).padding(.top, 30 * f)
+                } else {
+                    passwordBody.padding(.top, 30 * f)
+                }
             case .pair: pairBody.padding(.top, 28 * f)
             case .move: MovePasswordForm(vm: vm, f: f, onBack: back).padding(.top, 40 * f)
+            case .biometric:
+                if let card = vm.card, let words = vm.cardWords {
+                    BiometricCardView(vm: vm, card: card, words: words, kind: vm.cardKind, f: f).padding(.top, 30 * f)
+                }
             }
         }
     }
 
     private var subtitle: String {
         switch vm.view {
-        case .password: "Use your account to access your migration workspace."
+        case .password, .biometric: "Use your account to access your migration workspace."
         case .pair: "Link this kiosk with your phone."
         case .move: "Sign in with a move password."
         }
@@ -300,6 +326,10 @@ struct LoginForm: View {
 
     private var passwordBody: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // The card sent the person here: why (expired, a refusal).
+            if let notice = vm.notice {
+                LoginErrorText(text: notice, f: f, neutral: !vm.noticeError).padding(.bottom, 16 * f)
+            }
             LoginFieldLabel(text: "EMAIL", f: f)
             LoginTextField(placeholder: "you@company.com", text: $vm.email, invalid: vm.emailInvalid, f: f,
                            focus: $emailFocused)

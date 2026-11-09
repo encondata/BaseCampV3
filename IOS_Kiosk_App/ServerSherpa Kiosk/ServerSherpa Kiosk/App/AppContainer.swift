@@ -38,6 +38,11 @@ final class AppContainer {
     /// shares it with the list. Signing out (or a session end, or Reset app) clears it and its
     /// offline copy.
     let rolodex: RolodexModel
+    /// Face ID / Touch ID sign-in on a personal iPad or iPhone: who is offered it, Turn on, the
+    /// sign-in screen's card and Forget. Its key and enrollment outlive sign-out and Reset app.
+    let biometric: BiometricSignIn
+    /// The Turn on sheet after a password sign-in, over the signed-in app; sign-out closes it.
+    let enrollOffer: EnrollOffer
     /// Each printer's state after a failed send or a cut font install (the `~JX` clear, the stop),
     /// keyed to the printer and applied under `printerLock` by the same callers. The stops are kept
     /// across launches (`KioskPrefs.printerStops`).
@@ -63,9 +68,10 @@ final class AppContainer {
     /// the real generator unless a test passes another (nothing starts it until a build runs,
     /// and only `launch()` starts the builder). `bluetoothClient` is CoreBluetooth unless a test
     /// passes a fake (nothing makes its central until a Bluetooth printer is used).
+    /// `biometricKeys` is the Secure Enclave key store unless a test passes a fake.
     init(defaults: UserDefaults, secrets: SecretStore, modelContainer: ModelContainer, storeIsTemporary: Bool = false,
          backgroundTask: BackgroundTasking, fontsDir: URL? = nil, labelEngine: LabelEngine = JavaScriptLabelEngine(),
-         bluetoothClient: (any BluetoothCentralClient)? = nil) {
+         bluetoothClient: (any BluetoothCentralClient)? = nil, biometricKeys: (any BiometricKeys)? = nil) {
         let prefs = KioskPrefs(defaults: defaults)
         let config = KioskConfig(prefs: prefs)
         let identity = Identity(prefs: prefs, secrets: secrets)
@@ -129,21 +135,33 @@ final class AppContainer {
             return RolodexModel.Owner(personId: s.person.id, apiUrl: config.apiUrl)
         })
         self.rolodex = rolodex
+        // A shared station is never anyone's personal device: a station type (Time Clock) or a
+        // station key.
+        let biometric = BiometricSignIn(api: api, auth: auth, keys: biometricKeys ?? SecureEnclaveBiometricKeys(),
+                                        prefs: prefs, identity: identity,
+                                        sharedStation: { prefs.setupSelection?.stationType != nil || station.hasKey })
+        let enrollOffer = EnrollOffer(biometric: biometric, auth: auth)
+        self.biometric = biometric
+        self.enrollOffer = enrollOffer
 
         // Print Labels' list and its waiting jobs belong to one session on one move, and the
         // Bluetooth link to the session (a send in flight fails, and its printer gets a `~JX`).
-        // The Rolodex's list (and its offline copy) belongs to the admin who loaded it.
+        // The Rolodex's list (and its offline copy) belongs to the admin who loaded it. The Turn on
+        // sheet (and a Turn on running under it) belongs to the person signed in. The biometric
+        // key stays: the next sign-in screen shows its card.
         let printJobs = self.printJobs
         auth.onLogout = {
             heartbeat.stop()
             bluetooth.close()
             Task { await printJobs.reset() }
             rolodex.clear()
+            enrollOffer.close()
         }
         auth.onSessionEnded = {
             bluetooth.close()
             Task { await printJobs.reset() }
             rolodex.clear()
+            enrollOffer.close()
         }
         // A session that ended while the app was closed takes the Rolodex's offline copy with it.
         auth.onRestoreFailed = { rolodex.clear() }
@@ -205,7 +223,7 @@ final class AppContainer {
     /// and portal URLs, the kiosk's identity and name, and appearance, sound, camera, checkpoint
     /// and developer-mode preferences. The label builder ends stopped, waiting for a sync. A Time
     /// Clock station's key goes too: the kiosk is no longer set up as one. The Rolodex forgets its
-    /// list and deletes its offline copy.
+    /// list and deletes its offline copy. The biometric key and enrollment stay, as the sign-in does.
     /// Throws when the local data couldn't be cleared; the setup is then left as it was.
     func resetApp() async throws {
         // Nothing waiting prints for the setup being cleared.
@@ -354,5 +372,7 @@ extension View {
             .environment(c.flash)
             .environment(c.toast)
             .environment(c.rolodex)
+            .environment(c.biometric)
+            .environment(c.enrollOffer)
     }
 }

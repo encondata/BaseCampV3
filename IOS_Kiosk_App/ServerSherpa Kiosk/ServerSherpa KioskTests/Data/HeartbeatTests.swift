@@ -27,6 +27,15 @@ struct HeartbeatTests {
         #expect(hb.registration == nil)
     }
 
+    @Test func biometricSignInSendsBiometricLoginMethod() async throws {
+        let api = FakeKioskApi(); let gate = TickGate()
+        let hb = harness(api, gate: gate)
+        hb.start(signIn: .biometric)
+        try #require(await waitUntil { api.heartbeats.count == 1 })
+        #expect(api.heartbeats[0].signIn == true); #expect(api.heartbeats[0].loginMethod == "biometric")
+        hb.stop()
+    }
+
     @Test func failedBeatKeepsPendingSignInAndLastState() async {
         let api = FakeKioskApi(); let gate = TickGate()
         let failing = LockedFlag(true)

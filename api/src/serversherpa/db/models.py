@@ -1305,7 +1305,8 @@ class BiometricKey(Base):
         ForeignKey("devices.id", ondelete="CASCADE"))
     public_key: Mapped[bytes] = mapped_column(LargeBinary)  # DER SubjectPublicKeyInfo
     key_alg: Mapped[str] = mapped_column(server_default=text("'ES256'"))
-    security_level: Mapped[str]                             # "tee" | "strongbox"
+    # "tee" | "strongbox" | "secure_enclave" | "unattested" (iOS without App Attest, SS-521)
+    security_level: Mapped[str]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     password_sign_in_at: Mapped[datetime]
     last_used_at: Mapped[datetime | None]

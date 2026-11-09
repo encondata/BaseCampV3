@@ -12,11 +12,19 @@ password sign-in there.
   move-login's per-IP failure cap. The new session is bound to the phone.
 - A shared station (Label, RFID or Time Clock station, or any kiosk with a
   station key) is never personal: no enroll, no card, no sign-in.
+- Enroll takes `platform`: Android (the default) sends its key attestation
+  chain; iOS sends its Secure Enclave key and the key's signature over the
+  nonce, plus an App Attest statement when the app has App Attest on
+  (off until SS-521). The platform must be the device's own (its
+  `sub_type`), so an Android phone never skips Google's key attestation by
+  posing as an iPad. The gate is the same for both, and so is everything
+  after enroll.
 - `DELETE ?serial=` (kiosk session): forget the caller's own key on that
   phone. Exempt from the freeze, like forgetting a remembered browser.
 
 Design: docs/superpowers/specs/2026-10-23-kiosk-biometric-sign-in-design.md
-§Rules. Tokens, keys and revocation: services/biometric.py."""
+§Rules (iOS: docs/superpowers/specs/2026-11-09-ios-biometric-sign-in-design.md
+§Server). Tokens, keys and revocation: services/biometric.py."""
 
 import base64
 import binascii
@@ -119,11 +127,38 @@ async def enroll_challenge(
         actor.person.id, actor.session.family_id, body.serial))
 
 
-def _decode_chain(chain: list[str]) -> list[bytes]:
+def _platform_matches(platform: str, device: Device) -> bool:
+    """Whether `device` may enroll with a `platform` body: an Android phone
+    or Zebra handheld only as Android, an iPad or iPhone only as iOS, and
+    any other kiosk never (biometric.platform_family)."""
+    return (platform in biometric.ENROLL_PLATFORMS
+            and biometric.platform_family(device.sub_type) == platform)
+
+
+def _b64(text: str) -> bytes:
+    """Strict standard base64; anything else is attestation_failed{parse}."""
     try:
-        return [base64.b64decode(c, validate=True) for c in chain]
+        return base64.b64decode(text, validate=True)
     except (binascii.Error, ValueError):
         raise _err(422, "attestation_failed", reason="parse") from None
+
+
+def _decode_chain(chain: list[str]) -> list[bytes]:
+    return [_b64(c) for c in chain]
+
+
+def _b64_optional(text: str | None) -> bytes | None:
+    return None if text is None else _b64(text)
+
+
+def _decode_ios(body: BiometricEnrollIn) -> dict[str, bytes | None]:
+    """The iOS fields, decoded, as biometric.enroll_ios's keyword arguments
+    (the schema has made sure the key and the proof are present, and the
+    App Attest pair is both or neither)."""
+    return {"public_key_x963": _b64(body.public_key),
+            "app_attest_key_id": _b64_optional(body.app_attest_key_id),
+            "attestation": _b64_optional(body.attestation),
+            "proof": _b64(body.signature)}
 
 
 @router.post("/enroll", response_model=BiometricEnrollOut)
@@ -142,15 +177,23 @@ async def enroll(
     if (nonce.person_id != actor.person.id or nonce.family_id != actor.session.family_id
             or nonce.serial != body.serial or await biometric.nonce_spent(db, nonce, device.id)):
         raise _err(422, "bad_enroll_nonce")
-    chain = _decode_chain(body.chain)
+    # before any attestation or proof work; nothing is written, so the
+    # nonce stays good for the device's own platform
+    if not _platform_matches(body.platform, device):
+        raise _err(422, "attestation_failed", reason="platform")
+    # what proves where the key lives, decoded before anything is written
+    if body.platform == "ios":
+        enroll_key, evidence = biometric.enroll_ios, _decode_ios(body)
+    else:
+        enroll_key, evidence = biometric.enroll, {"chain_der": _decode_chain(body.chain)}
     # binds an unbound session here; refused when another serial won the bind
     if not await _bind_kiosk_session(db, actor, device):
         raise _err(403, "enroll_window_closed")
     try:
-        key = await biometric.enroll(
+        key = await enroll_key(
             db, person_id=actor.person.id, device=device, nonce=body.nonce,
-            chain_der=chain, password_sign_in_at=session_started_at(actor.session),
-            ip=client_ip(request))
+            password_sign_in_at=session_started_at(actor.session),
+            ip=client_ip(request), **evidence)
     except BiometricError as exc:
         await db.rollback()
         extra = {"reason": exc.reason} if exc.reason else {}

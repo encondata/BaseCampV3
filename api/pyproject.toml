@@ -23,6 +23,7 @@ dependencies = [
     "anthropic>=0.116",
     "cryptography>=42",
     "pyasn1>=0.6",             # Android key attestation's KeyDescription (security/key_attestation.py)
+    "cbor2>=5.6",              # iOS App Attest attestation objects (security/app_attest.py)
     "jinja2>=3.1",
     "weasyprint>=68",          # 68.0 added weasyprint.urls.URLFetcher and url_fetcher=None as the default (project plan PDF's data-only fetcher)
     "pdf417gen>=0.7",
@@ -57,7 +58,9 @@ where = ["src"]
 # vegas_v2.json is the Vegas Destination design seed-label-templates loads
 "serversherpa.labels" = ["fixtures/*.json"]
 # the pinned Google hardware attestation roots (security/key_attestation.py)
-"serversherpa.security" = ["attestation_roots/*.pem", "attestation_roots/README.md"]
+# and Apple's App Attest root (security/app_attest.py)
+"serversherpa.security" = ["attestation_roots/*.pem", "attestation_roots/README.md",
+                           "app_attest_roots/*.pem", "app_attest_roots/README.md"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
