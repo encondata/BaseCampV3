@@ -1,6 +1,5 @@
 import CryptoKit
 import Foundation
-import Security
 @testable import ServerSherpa_Kiosk
 
 /// A software P-256 key standing in for the Secure Enclave one (Android `FakeBiometricKeys`):
@@ -32,7 +31,7 @@ final class FakeBiometricKeys: BiometricKeys, @unchecked Sendable {
         get { locked { $0.readinessValue } }
         set { locked { $0.readinessValue = newValue } }
     }
-    /// The key is still stored but no longer usable: probe gives `.gone`, sign throws.
+    /// The key is still stored but no longer usable: probe gives `.gone`, sign throws `BiometricKeyError.gone`.
     var invalidated: Bool {
         get { locked { $0.invalidated } }
         set { locked { $0.invalidated = newValue } }
@@ -96,7 +95,7 @@ final class FakeBiometricKeys: BiometricKeys, @unchecked Sendable {
     func sign(_ message: Data, with auth: BiometricAuth) throws -> Data {
         try locked { s in
             if let error = s.signError { throw error }
-            guard let key = s.key, !s.invalidated else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(errSecItemNotFound)) }
+            guard let key = s.key, !s.invalidated else { throw BiometricKeyError.gone }
             return try key.signature(for: message).derRepresentation
         }
     }

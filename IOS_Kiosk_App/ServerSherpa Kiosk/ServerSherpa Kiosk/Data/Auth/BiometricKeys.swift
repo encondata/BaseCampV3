@@ -33,6 +33,12 @@ struct BiometricEnrollProof: Equatable, Sendable {
     let attestation: Data
 }
 
+/// What `sign` throws when the key is missing or iOS invalidated it: the same verdict as a
+/// `.gone` probe, so the caller forgets the key and falls back to the password form.
+enum BiometricKeyError: Error, Equatable, Sendable {
+    case gone
+}
+
 /// A Face ID / Touch ID prompt that succeeded. Signing with its context does not prompt again.
 struct BiometricAuth: @unchecked Sendable {
     let context: LAContext
@@ -49,7 +55,8 @@ protocol BiometricKeys: Sendable {
     /// Never prompts.
     func probe() -> KeyProbe
 
-    /// A DER ECDSA SHA-256 signature over `message`. Throws when there is no usable key.
+    /// A DER ECDSA SHA-256 signature over `message`. Throws `BiometricKeyError.gone` when the key
+    /// is missing or invalidated, and any other error when the Keychain fails this time.
     func sign(_ message: Data, with auth: BiometricAuth) throws -> Data
 
     func delete()
@@ -61,9 +68,28 @@ func biometricClientDataHash(nonce: String, publicKey: Data) -> Data {
     Data(SHA256.hash(data: Data(nonce.utf8) + publicKey))
 }
 
+/// The probe's verdict. `lookup` is the no-prompt Keychain lookup of the key. A Secure Enclave key
+/// is still found after Face ID is re-enrolled or a finger is added (`.biometryCurrentSet` is
+/// checked only when signing), so the biometric state saved at create is compared with the
+/// current one: a change means the key is dead. A missing or unreadable state never means gone;
+/// a stored state the Keychain can't read means unavailable. A key the lookup can't find is gone.
+func biometricProbeVerdict(lookup: OSStatus, storedState: Data?, storedStateReadFailed: Bool, currentState: Data?) -> KeyProbe {
+    switch lookup {
+    case errSecSuccess, errSecInteractionNotAllowed: break
+    case errSecItemNotFound: return .gone
+    default: return .unavailable
+    }
+    if storedStateReadFailed { return .unavailable }
+    guard let storedState, let currentState else { return .ready }
+    return storedState == currentState ? .ready : .gone
+}
+
 /// `BiometricKeys` on the Secure Enclave and App Attest. Thin on purpose: the device pass covers it.
 struct SecureEnclaveBiometricKeys: BiometricKeys {
     static let tag = Data("com.serversherpa.kiosk.biometric".utf8)
+    /// The generic-password item holding the biometric state the key was made under.
+    static let stateService = "com.serversherpa.kiosk.biometric"
+    static let stateAccount = "biometry_state"
 
     func readiness() -> BiometricReadiness {
         #if targetEnvironment(simulator)
@@ -87,9 +113,15 @@ struct SecureEnclaveBiometricKeys: BiometricKeys {
     }
 
     func create(nonce: String) async throws -> BiometricEnrollProof {
-        delete()
         do {
+            // A key left behind here would leave two under one tag, and signing could pick the old one.
+            let deleted = SecItemDelete(Self.query as CFDictionary)
+            guard deleted == errSecSuccess || deleted == errSecItemNotFound else { throw Self.osError(deleted) }
+            SecItemDelete(Self.stateQuery as CFDictionary)
             let publicKey = try makeKey()
+            // The biometrics the key is bound to, for the probe. An unreadable state saves nothing,
+            // and the probe then goes by the key lookup alone.
+            if let state = Self.biometryState(LAContext()) { try Self.storeState(state) }
             let service = DCAppAttestService.shared
             let keyId = try await service.generateKey()
             let attestation = try await service.attestKey(keyId, clientDataHash: biometricClientDataHash(nonce: nonce, publicKey: publicKey))
@@ -103,16 +135,23 @@ struct SecureEnclaveBiometricKeys: BiometricKeys {
     func probe() -> KeyProbe {
         let context = LAContext()
         context.interactionNotAllowed = true
-        switch copyKey(context).status {
-        case errSecSuccess, errSecInteractionNotAllowed: return .ready
-        case errSecItemNotFound: return .gone
-        default: return .unavailable
-        }
+        let lookup = copyKey(context).status
+        let stored = Self.storedState()
+        return biometricProbeVerdict(lookup: lookup, storedState: stored.state, storedStateReadFailed: stored.failed, currentState: Self.biometryState(LAContext()))
     }
 
     func sign(_ message: Data, with auth: BiometricAuth) throws -> Data {
         let found = copyKey(auth.context)
-        guard found.status == errSecSuccess, let key = found.key else { throw Self.osError(found.status) }
+        let stored = Self.storedState()
+        // The prompt's own context carries the biometric state it was just evaluated under.
+        let current = auth.context.domainState.biometry.stateHash ?? Self.biometryState(LAContext())
+        switch biometricProbeVerdict(lookup: found.status, storedState: stored.state, storedStateReadFailed: stored.failed, currentState: current) {
+        case .gone: throw BiometricKeyError.gone
+        case .unavailable: throw Self.osError(stored.failed ? errSecInternalComponent : found.status)
+        case .ready: break
+        }
+        // Ready without a key ref is a locked Keychain (errSecInteractionNotAllowed).
+        guard let key = found.key else { throw Self.osError(found.status) }
         var error: Unmanaged<CFError>?
         guard let signature = SecKeyCreateSignature(key, .ecdsaSignatureMessageX962SHA256, message as CFData, &error) else {
             throw Self.failure(error)
@@ -122,6 +161,7 @@ struct SecureEnclaveBiometricKeys: BiometricKeys {
 
     func delete() {
         SecItemDelete(Self.query as CFDictionary)
+        SecItemDelete(Self.stateQuery as CFDictionary)
     }
 
     /// Makes the permanent Secure Enclave key, usable only after Face ID / Touch ID with the
@@ -158,6 +198,45 @@ struct SecureEnclaveBiometricKeys: BiometricKeys {
         guard status == errSecSuccess else { return (status, nil) }
         guard let item, CFGetTypeID(item) == SecKeyGetTypeID() else { return (errSecInternalComponent, nil) }
         return (status, (item as! SecKey))
+    }
+
+    /// The enrolled biometrics' state hash; nil when nothing is enrolled or it can't be read.
+    /// It changes when a face or finger is added or removed. Never prompts.
+    private static func biometryState(_ context: LAContext) -> Data? {
+        var error: NSError?
+        _ = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
+        return context.domainState.biometry.stateHash
+    }
+
+    private static func storeState(_ state: Data) throws {
+        var item = stateQuery
+        item[kSecValueData as String] = state
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let status = SecItemAdd(item as CFDictionary, nil)
+        guard status == errSecSuccess else { throw osError(status) }
+    }
+
+    /// The saved state; `failed` when the Keychain could not answer.
+    private static func storedState() -> (state: Data?, failed: Bool) {
+        var query = stateQuery
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        switch SecItemCopyMatching(query as CFDictionary, &item) {
+        case errSecSuccess:
+            guard let data = item as? Data else { return (nil, true) }
+            return (data, false)
+        case errSecItemNotFound: return (nil, false)
+        default: return (nil, true)
+        }
+    }
+
+    private static var stateQuery: [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: stateService,
+            kSecAttrAccount as String: stateAccount,
+        ]
     }
 
     private static var query: [String: Any] {

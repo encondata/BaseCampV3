@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import LocalAuthentication
+import Security
 import Testing
 import UIKit
 @testable import ServerSherpa_Kiosk
@@ -44,7 +45,7 @@ struct BiometricKeysTests {
         let keys = FakeBiometricKeys()
         let auth = BiometricAuth(context: LAContext())
         #expect(keys.probe() == .gone)
-        #expect(throws: (any Error).self) { try keys.sign(Data("abc".utf8), with: auth) }
+        #expect(throws: BiometricKeyError.gone) { try keys.sign(Data("abc".utf8), with: auth) }
         _ = try await keys.create(nonce: "n1")
         #expect(keys.probe() == .ready)
         keys.probeUnavailable = true
@@ -52,7 +53,7 @@ struct BiometricKeysTests {
         keys.probeUnavailable = false
         keys.invalidated = true
         #expect(keys.probe() == .gone)
-        #expect(throws: (any Error).self) { try keys.sign(Data("abc".utf8), with: auth) }
+        #expect(throws: BiometricKeyError.gone) { try keys.sign(Data("abc".utf8), with: auth) }
         keys.delete()
         #expect(keys.deleted == 1)
         #expect(keys.probe() == .gone)
@@ -78,6 +79,43 @@ struct BiometricKeysTests {
         #expect(keys.probe() == .gone)
         await #expect(throws: (any Error).self) { try await keys.create(nonce: "n1") }
         #expect(keys.probe() == .gone)
-        #expect(throws: (any Error).self) { try keys.sign(Data("abc".utf8), with: BiometricAuth(context: LAContext())) }
+        #expect(throws: BiometricKeyError.gone) { try keys.sign(Data("abc".utf8), with: BiometricAuth(context: LAContext())) }
+    }
+
+    // The probe's verdict. A Secure Enclave key can still be found after Face ID is re-enrolled
+    // or a finger is added (the Secure Enclave checks `.biometryCurrentSet` only when signing),
+    // so the biometric state saved at create is compared with the current one.
+
+    @Test func probeVerdictFollowsTheKeyLookup() {
+        let s = Data([1])
+        #expect(biometricProbeVerdict(lookup: errSecSuccess, storedState: nil, storedStateReadFailed: false, currentState: nil) == .ready)
+        #expect(biometricProbeVerdict(lookup: errSecInteractionNotAllowed, storedState: nil, storedStateReadFailed: false, currentState: nil) == .ready)
+        #expect(biometricProbeVerdict(lookup: errSecItemNotFound, storedState: s, storedStateReadFailed: false, currentState: s) == .gone)
+        #expect(biometricProbeVerdict(lookup: errSecNotAvailable, storedState: s, storedStateReadFailed: false, currentState: s) == .unavailable)
+        #expect(biometricProbeVerdict(lookup: errSecInternalComponent, storedState: nil, storedStateReadFailed: false, currentState: nil) == .unavailable)
+    }
+
+    @Test func probeVerdictWithTheSameBiometricsIsReady() {
+        #expect(biometricProbeVerdict(lookup: errSecSuccess, storedState: Data([1, 2]), storedStateReadFailed: false, currentState: Data([1, 2])) == .ready)
+        #expect(biometricProbeVerdict(lookup: errSecInteractionNotAllowed, storedState: Data([1, 2]), storedStateReadFailed: false, currentState: Data([1, 2])) == .ready)
+    }
+
+    @Test func probeVerdictWithChangedBiometricsIsGone() {
+        #expect(biometricProbeVerdict(lookup: errSecSuccess, storedState: Data([1]), storedStateReadFailed: false, currentState: Data([2])) == .gone)
+        #expect(biometricProbeVerdict(lookup: errSecInteractionNotAllowed, storedState: Data([1]), storedStateReadFailed: false, currentState: Data([2])) == .gone)
+    }
+
+    @Test func probeVerdictWithAnUnreadableOrMissingStateKeepsTheLookupVerdict() {
+        #expect(biometricProbeVerdict(lookup: errSecSuccess, storedState: Data([1]), storedStateReadFailed: false, currentState: nil) == .ready)
+        #expect(biometricProbeVerdict(lookup: errSecSuccess, storedState: nil, storedStateReadFailed: false, currentState: Data([2])) == .ready)
+        #expect(biometricProbeVerdict(lookup: errSecItemNotFound, storedState: Data([1]), storedStateReadFailed: false, currentState: nil) == .gone)
+    }
+
+    @Test func probeVerdictWhenTheStoredStateCannotBeReadIsUnavailableNeverGone() {
+        #expect(biometricProbeVerdict(lookup: errSecSuccess, storedState: nil, storedStateReadFailed: true, currentState: Data([2])) == .unavailable)
+        #expect(biometricProbeVerdict(lookup: errSecSuccess, storedState: nil, storedStateReadFailed: true, currentState: nil) == .unavailable)
+        #expect(biometricProbeVerdict(lookup: errSecInteractionNotAllowed, storedState: nil, storedStateReadFailed: true, currentState: Data([2])) == .unavailable)
+        // A key the Keychain says is not there is gone whatever the state item says.
+        #expect(biometricProbeVerdict(lookup: errSecItemNotFound, storedState: nil, storedStateReadFailed: true, currentState: nil) == .gone)
     }
 }
