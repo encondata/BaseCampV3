@@ -26,6 +26,8 @@ adb devices
 adb -s <serial> install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
+Launch it with `adb -s <serial> shell am start -n com.serversherpa.kiosk/.MainActivity`. Never use `adb shell monkey` to open the app: when monkey finishes it turns the device's auto-rotate on, which the app itself never does.
+
 Debug builds default to `https://api.dev.serversherpa.com`; change it under Settings › This Kiosk (reachable signed out via the gear on the login screen). Release builds default to `https://api.serversherpa.com`.
 
 ## Scanning inputs
