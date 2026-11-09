@@ -10,4 +10,4 @@
  * Deliberately NOT imported by labelgen/index.ts: the Android/iOS bundle
  * stays byte-identical when only this hash moves.
  */
-export const SOURCE_HASH = '3a806eea41ccc3eb2748b22bd01a213ed8ba2e53edc081bd430df16e1191cdec';
+export const SOURCE_HASH = '5db4098c487b0f9ef1c4fb0b6513698075add1cdc5d3576a6f2416226df1e4ca';
