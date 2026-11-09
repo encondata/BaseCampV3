@@ -26,6 +26,14 @@ const usb = vi.hoisted(() => ({
   hi: '' as string | Error,
   /** The `sensor.peeler_present` reply. */
   peeler: '"present"',
+  /** `~HI` replies by the connected device's serial (over `hi`). */
+  hiBySerial: {} as Record<string, string | Error>,
+  /** Replies the next `~HI`s wait on, in order (over the two above). */
+  hiSeq: [] as Promise<string>[],
+  /** Holds the picker open until it settles. */
+  pickGate: null as Promise<void> | null,
+  /** The person cancels the picker. */
+  cancel: false,
 }));
 vi.mock('./useZebraPrinter', async () => {
   const { useState } = await import('react');
@@ -35,14 +43,26 @@ vi.mock('./useZebraPrinter', async () => {
       return {
         supported: true, connected: device !== null, productName: device?.productName ?? null, device,
         notice: null, clearNotice: () => {},
-        connect: async () => { usb.connect(); setDevice(usb.picked); },
+        // As the real hook: a held printer is closed (a moment) and let go
+        // before the picker opens; a cancelled picker leaves none.
+        connect: async () => {
+          usb.connect();
+          if (device) { await new Promise((r) => setTimeout(r, 5)); setDevice(null); }
+          // the picker is open (then the pick is opened) for a moment at least
+          await (usb.pickGate ?? new Promise((r) => setTimeout(r, 5)));
+          if (!usb.cancel) setDevice(usb.picked);
+        },
         connectTo: async (d: Dev) => { usb.connectTo(d); setDevice(d); },
+        disconnect: async () => { setDevice(null); },
         knownDevices: async () => usb.known,
         query: async (command: string) => {
           usb.queries.push(command);
           if (command === '~HI') {
-            if (usb.hi instanceof Error) throw usb.hi;
-            return usb.hi;
+            const next = usb.hiSeq.shift();
+            if (next) return next;
+            const reply = (device && usb.hiBySerial[device.serialNumber]) ?? usb.hi;
+            if (reply instanceof Error) throw reply;
+            return reply;
           }
           return command.includes('sensor.peeler_present') ? usb.peeler : '';
         },
@@ -72,6 +92,11 @@ beforeEach(() => {
   usb.queries = [];
   usb.hi = '';
   usb.peeler = '"present"';
+  usb.hiBySerial = {};
+  usb.hiSeq = [];
+  usb.pickGate = null;
+  usb.cancel = false;
+  usb.picked = { productName: 'ZD621', serialNumber: 'PICKED' };
   apiMock.putLabelStation.mockImplementation(async (s: LabelStationSettings) => s);
   writeKioskSetup({
     initiativeId: 'i-1', initiativeName: 'Move', siteId: 's-1', siteName: 'ORD1',
@@ -372,6 +397,101 @@ describe('a USB printer that is not the saved one', () => {
     expect(result.current.settings).toEqual(stored);
     expect(result.current.switched).toBeNull();
     expect(usb.queries).toEqual([]);
+  });
+
+  it('Connect printer after a failed switch asks the old printer nothing while the picker is open', async () => {
+    let stored = SAVED_300('SAVED');
+    apiMock.getLabelStation.mockImplementation(async () => stored);
+    apiMock.putLabelStation.mockRejectedValueOnce(new ApiError(409, 'not_label_station'));
+    usb.hiBySerial = { PICKED: hi('ZD411-203dpi', 8), SAVED: hi('ZD421-300dpi', 12) };
+    const dpiOf: Record<string, number> = { PICKED: 203, SAVED: 300 };
+    const seen: { state: string; dpi?: number; serial?: string }[] = [];
+    const { result } = renderHook(() => {
+      const r = useStationPrinter();
+      seen.push({ state: r.state, dpi: r.settings?.dpi, serial: (r.zebra.device as Dev | null)?.serialNumber });
+      return r;
+    });
+    await waitFor(() => expect(result.current.state).toBe('needs_usb'));
+    await act(async () => { await result.current.connectUsb(); });   // the ZD411: save fails
+    await waitFor(() => expect(result.current.switchError).not.toBeNull());
+
+    // a retry's save would land now
+    apiMock.putLabelStation.mockImplementation(async (s: LabelStationSettings) => { stored = s; return s; });
+    let open!: () => void;
+    usb.pickGate = new Promise<void>((r) => { open = r; });
+    usb.picked = { productName: 'ZD421', serialNumber: 'SAVED' };   // the person picks the saved ZD421
+    const queriesBefore = usb.queries.length;
+    let picking!: Promise<void>;
+    act(() => { picking = result.current.connectUsb(); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+    expect(usb.queries.length).toBe(queriesBefore);
+    expect(apiMock.putLabelStation).toHaveBeenCalledTimes(1);   // the failed one only
+
+    await act(async () => { open(); await picking; });
+    await waitFor(() => expect(result.current.state).toBe('ready'));
+    expect(result.current.settings).toEqual(SAVED_300('SAVED'));
+    expect(stored).toEqual(SAVED_300('SAVED'));
+    for (const s of seen.filter((x) => x.state === 'ready')) expect(s.dpi).toBe(dpiOf[s.serial ?? '']);
+  });
+
+  it('a reload that changes the saved printer checks the connected one again', async () => {
+    let stored = SAVED_300('SAVED');
+    apiMock.getLabelStation.mockImplementation(async () => stored);
+    apiMock.putLabelStation.mockImplementation(async (s: LabelStationSettings) => { stored = s; return s; });
+    usb.known = [{ productName: 'ZD421', serialNumber: 'SAVED' }];
+    usb.hiBySerial = { SAVED: hi('ZD421-300dpi', 12) };
+    const { result, seen } = renderRecorded();
+    await waitFor(() => expect(result.current.state).toBe('ready'));
+    const before = seen.length;
+
+    // saved elsewhere: another printer at 203 DPI
+    stored = { ...settings({ model: 'ZD411-203dpi', serial: 'OTHER' }), dpi: 203 };
+    await act(async () => { await result.current.reload(); });
+    await waitFor(() => expect(apiMock.putLabelStation).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.state).toBe('ready'));
+    expect(result.current.settings).toMatchObject({ dpi: 300, printer: { model: 'ZD421-300dpi', serial: 'SAVED' } });
+    // never ready on the ZD421 with the 203-DPI settings
+    expect(seen.slice(before).filter((s) => s.state === 'ready' || s.printer).every((s) => s.dpi === 300)).toBe(true);
+  });
+
+  it('cancelling the picker, or picking the same checked printer, sends no ~HI', async () => {
+    const zd421 = { productName: 'ZD421', serialNumber: '' };
+    usb.known = [zd421];
+    apiMock.getLabelStation.mockResolvedValue(SAVED_300(null));
+    usb.hi = hi('ZD421-300dpi', 12);
+    const { result } = renderHook(() => useStationPrinter());
+    await waitFor(() => expect(result.current.state).toBe('ready'));
+    expect(usb.queries.filter((q) => q === '~HI')).toHaveLength(1);
+
+    usb.cancel = true;
+    await act(async () => { await result.current.connectUsb(); });
+    expect(result.current.state).toBe('needs_usb');
+
+    usb.cancel = false;
+    usb.picked = zd421;   // the same USBDevice
+    await act(async () => { await result.current.connectUsb(); });
+    await waitFor(() => expect(result.current.state).toBe('ready'));
+    expect(usb.queries.filter((q) => q === '~HI')).toHaveLength(1);
+  });
+
+  it('unplugged and plugged back in mid-~HI, the printer is checked again', async () => {
+    const dev = { productName: 'ZD411', serialNumber: '' };
+    usb.known = [dev];
+    apiMock.getLabelStation.mockResolvedValue(SAVED_300(null));
+    let fail!: (e: Error) => void;
+    usb.hiSeq = [new Promise<string>((_r, reject) => { fail = reject; })];
+    usb.hi = hi('ZD411-203dpi', 8);
+    const { result } = renderHook(() => useStationPrinter());
+    await waitFor(() => expect(usb.queries).toContain('~HI'));
+    expect(result.current.state).toBe('loading');
+
+    await act(async () => { await result.current.zebra.disconnect(); });
+    await act(async () => { await result.current.zebra.connectTo(dev as unknown as Parameters<typeof result.current.zebra.connectTo>[0]); });
+    await act(async () => { fail(new Error('unplugged')); await Promise.resolve(); });
+    await waitFor(() => expect(result.current.state).toBe('ready'));
+    expect(usb.queries.filter((q) => q === '~HI')).toHaveLength(2);
+    expect(result.current.settings?.dpi).toBe(203);
+    expect(result.current.switched).toEqual({ from: 'ZD421-300dpi · 300 DPI', to: 'ZD411-203dpi · 203 DPI' });
   });
 
   it('on the web the switch is saved to this kiosk and read only once', async () => {

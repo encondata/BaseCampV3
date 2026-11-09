@@ -11,7 +11,8 @@
  *   that device reports none — a saved serial is never swapped for a
  *   different printer. Anything else needs the person to pick one
  *   (`connectUsb`, the browser's picker): `needs_usb`.
- * - A connected USB printer is checked ONCE against the saved one before
+ * - A connected USB printer is checked against the saved one (once per
+ *   device and saved serial/model/DPI) before
  *   it is ready (the picker, or the only allowed Zebra standing in, can
  *   connect any Zebra): serials on both sides decide it outright;
  *   otherwise one `~HI` does (same model and DPI). A different printer is
@@ -85,13 +86,13 @@ export function useStationPrinter({ holdUsbCheck = false }: UseStationPrinterOpt
   settingsRef.current = settings;
   // The connected USB device checked against the saved printer (it
   // matched, was switched to, or couldn't say), and the one whose switch
-  // couldn't be saved. A device is checked once.
-  const [verified, setVerified] = useState<unknown>(null);
-  const [failed, setFailed] = useState<unknown>(null);
-  // The check in flight: which device, and which `connectUsb` round (a
-  // pick, the same printer included, checks it again).
-  const checking = useRef<{ device: unknown; round: number } | null>(null);
-  const [round, setRound] = useState(0);
+  // couldn't be saved, each with the saved printer's key it was checked
+  // against: a different device OR a different saved printer (serial,
+  // model, DPI) is checked again.
+  const [verified, setVerified] = useState<Checked | null>(null);
+  const [failed, setFailed] = useState<Checked | null>(null);
+  // The check in flight (or the last one), by device and key.
+  const checking = useRef<Checked | null>(null);
   const [switched, setSwitched] = useState<{ from: string; to: string } | null>(null);
   const [switchError, setSwitchError] = useState<string | null>(null);
 
@@ -139,41 +140,53 @@ export function useStationPrinter({ holdUsbCheck = false }: UseStationPrinterOpt
   }, [load]);
 
   const usbSaved = settings?.printer.type === 'usb';
+  const key = settings && usbSaved ? usbKey(settings) : '';
   const device = zebra.connected ? zebra.device ?? null : null;
+  const same = (c: Checked | null) => c !== null && c.device === device && c.key === key;
   // A connected USB printer not yet checked against the saved one.
-  const unchecked = usbSaved && device !== null && verified !== device;
+  const unchecked = usbSaved && device !== null && !same(verified);
+  const failedHere = unchecked && same(failed);
+  const failedHereRef = useRef(failedHere);
+  failedHereRef.current = failedHere;
 
   useEffect(() => {
-    if (holdUsbCheck) {
-      // A check under way is dropped before it saves; it runs again after.
+    // Let go (or held by another screen): a check under way is dropped
+    // before it saves, and the printer is checked again when it's back.
+      if (holdUsbCheck || device === null) {
       checking.current = null;
       return;
     }
-    if (!unchecked || (checking.current?.device === device && checking.current.round === round)) return;
+    if (!unchecked || (checking.current?.device === device && checking.current.key === key)) return;
     const saved = settingsRef.current;
     if (!saved || saved.printer.type !== 'usb') return;
-    const token = { device, round };
+    const token: Checked = { device, key };
     checking.current = token;
+    setFailed(null);
     const live = () => mounted.current && checking.current === token;
     void (async () => {
       const outcome = await checkUsbPrinter(saved, device, usbStationPrinter(zebraRef.current, initiativeId), live);
-      if (!live()) return;
+      if (!live()) {
+        // Dropped after its save went out: read back what is saved now, so
+        // whatever is connected is checked against it.
+        if (outcome.kind === 'switched' && mounted.current) void load();
+        return;
+      }
       if (outcome.kind === 'same') {
-        setVerified(device);
+        setVerified(token);
         return;
       }
       if (outcome.kind === 'error') {
         setSwitchError(outcome.error);
         setSwitched(null);
-        setFailed(device);
+        setFailed(token);
         return;
       }
       setSettings(outcome.settings);
       setSwitched({ from: printerLabel(saved), to: printerLabel(outcome.settings) });
       setSwitchError(null);
-      setVerified(device);
+      setVerified({ device, key: usbKey(outcome.settings) });
     })();
-  }, [holdUsbCheck, unchecked, device, round, initiativeId]);
+  }, [holdUsbCheck, unchecked, failedHere, device, key, initiativeId, load]);
 
   const printer = useMemo<StationPrinter | null>(() => {
     if (!settings) return null;
@@ -189,21 +202,35 @@ export function useStationPrinter({ holdUsbCheck = false }: UseStationPrinterOpt
   if (!loaded) state = 'loading';
   else if (!settings || (settings.printer.type === 'network' && !settings.printer.ip)) state = 'no_settings';
   else if (printer) state = 'ready';
-  else if (unchecked) state = failed === device ? 'needs_usb' : 'loading';
+  else if (unchecked) state = failedHere ? 'needs_usb' : 'loading';
   else state = findingUsb ? 'loading' : 'needs_usb';
 
+  // The picker lets go of the held printer first; whatever it connects is
+  // checked like any new device (the same, already checked one isn't).
+  // Nothing is reset before it opens, so the old printer is never asked
+  // anything meanwhile. A printer whose switch failed and is still the one
+  // connected afterwards is tried again.
   const connectUsb = useCallback(async () => {
-    // Picking again (the same printer included) checks it again.
-    setFailed(null);
-    setVerified(null);
-    setRound((n) => n + 1);
     await zebraRef.current.connect();
+    if (failedHereRef.current) {
+      checking.current = null;
+      setFailed(null);
+    }
   }, []);
 
   return {
-    settings, printer, zebra, state, switched, switchError: unchecked && failed === device ? switchError : null,
+    settings, printer, zebra, state, switched, switchError: failedHere ? switchError : null,
     connectUsb, reload: load,
   };
+}
+
+/** A device checked against the saved printer `key` (`usbKey`). */
+interface Checked { device: unknown; key: string }
+
+/** What identifies the saved USB printer for the check: serial, model,
+ *  DPI (offsets and peel don't change which printer it is). */
+function usbKey(s: LabelStationSettings): string {
+  return [s.printer.serial ?? '', s.printer.model ?? '', s.dpi].join('|');
 }
 
 type CheckOutcome =

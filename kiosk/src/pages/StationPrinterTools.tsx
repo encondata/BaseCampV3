@@ -132,6 +132,9 @@ export default function StationPrinterTools() {
   // doesn't switch to one picked there (Save printer saves it with the
   // offsets and peel it checked; Close lets go of it).
   const [stepOwnsPrinter, setStepOwnsPrinter] = useState(false);
+  // Bumped on each open: a close still reloading after the modal opened
+  // again never lifts the newer modal's hold.
+  const stepGen = useRef(0);
   const station = useStationPrinter({ holdUsbCheck: stepOwnsPrinter });
   const { settings, printer, zebra, state } = station;
   const [setup] = useKioskSetup();
@@ -193,11 +196,13 @@ export default function StationPrinterTools() {
 
   const openStep = (which: StepModal) => {
     deviceAtOpen.current = zebra.device ?? null;
+    stepGen.current += 1;
     setStepOwnsPrinter(true);
     setStepModal(which);
   };
 
   const closeStep = async (saved: boolean) => {
+    const gen = stepGen.current;
     setStepModal(null);
     // A USB printer picked in the modal but not saved isn't the station's:
     // let go of it so the saved one is found again (also when the saved
@@ -208,8 +213,8 @@ export default function StationPrinterTools() {
       }
       await station.reload();
     } finally {
-      // Checked against what is saved now.
-      setStepOwnsPrinter(false);
+      // Checked against what is saved now — unless the modal is open again.
+      if (stepGen.current === gen) setStepOwnsPrinter(false);
     }
   };
 

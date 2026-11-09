@@ -148,3 +148,25 @@ it("Change printer's Save printer wins over the switch: its offsets and peel are
   expect(api.putLabelStation).toHaveBeenCalledTimes(1);   // the step's save only
   expect(stored).toEqual(step.save);
 });
+
+it('reopening Change printer while the last close is still reloading keeps the new modal in charge', async () => {
+  usb.known = [{ productName: 'ZD421', serialNumber: 'ZD421-SN' }];
+  renderPage();
+  expect(await screen.findByText('Horizontal 4 dots · Vertical -3 dots')).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Change printer' }));
+  let dialog = await screen.findByRole('dialog', { name: 'Change printer' });
+
+  // the reload after Close hangs until the modal is open again
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  api.getLabelStation.mockImplementationOnce(async () => { await gate; return stored; });
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Change printer' }));
+  dialog = await screen.findByRole('dialog', { name: 'Change printer' });
+  await act(async () => { release(); await gate; await new Promise((r) => setTimeout(r, 10)); });
+
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Pick a printer' }));   // the ZD411
+  await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+  expect(api.putLabelStation).not.toHaveBeenCalled();
+  expect(stored).toEqual(ZD421);
+});

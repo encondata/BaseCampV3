@@ -96,6 +96,10 @@ it('says when the connected printer could not be switched to, linking Printer Se
     "Couldn't switch to the connected printer: this kiosk's storage is full. Set it up in Printer Setup.",
   );
   expect(within(alert).getByRole('link', { name: 'Printer Setup' }).getAttribute('href')).toBe('/labels/printers');
+  // not also "isn't connected": it is; Connect printer stays for the retry
+  expect(screen.queryByText(/The label printer isn.t connected/)).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Connect printer' }));
+  expect(station.connectUsb).toHaveBeenCalled();
 });
 
 it('the printer line names the saved printer', async () => {

@@ -275,6 +275,26 @@ export default function BulkPrint() {
     void loadRows();
   }, [initiativeId, loadRows]);
 
+  // A different printer saved for the station (its DPI or serial: a
+  // switch to the connected one, or a save in Printer Setup) stops a print
+  // the same way: the open batch closes and a send in flight goes no
+  // further, so nothing more goes out made for the old printer. Offsets
+  // and peel alone don't.
+  const printerKey = station.settings
+    ? `${station.settings.dpi}|${station.settings.printer.serial ?? ''}`
+    : '';
+  const lastPrinterKey = useRef(printerKey);
+  useEffect(() => {
+    if (lastPrinterKey.current === printerKey) return;
+    lastPrinterKey.current = printerKey;
+    printGen.current += 1;
+    setBatch(null);
+    batchIdsRef.current = [];
+    batchStaleRef.current = 0;
+    setPrinting(false);
+    setInlineProgress(null);
+  }, [printerKey]);
+
   // Again whenever a sync finishes (the mount's read is the effect above).
   const firstPhase = useRef(true);
   useEffect(() => {
@@ -708,7 +728,8 @@ export default function BulkPrint() {
           {station.state === 'loading' && <p className="page-hint">Connecting to the label printer…</p>}
           {station.state === 'needs_usb' && (
             <div className="station-printer-note" role="status">
-              <p>The label printer isn&apos;t connected. Connect it to start printing.</p>
+              {/* After a failed switch the printer is connected; the note above says why it can't print. */}
+              {!station.switchError && <p>The label printer isn&apos;t connected. Connect it to start printing.</p>}
               <button type="button" className="mini-btn" onClick={() => { void station.connectUsb(); }}>
                 Connect printer
               </button>

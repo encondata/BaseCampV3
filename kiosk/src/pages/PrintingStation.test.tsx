@@ -247,6 +247,10 @@ it('says when the connected printer could not be switched to, linking Printer Se
     "Couldn't switch to the connected printer: this laptop isn't set up as a Label Station. Set it up in Printer Setup.",
   );
   expect(within(alert).getByRole('link', { name: 'Printer Setup' }).getAttribute('href')).toBe('/labels/printers');
+  // not also "isn't connected": it is; Connect printer stays for the retry
+  expect(screen.queryByText(/The label printer isn.t connected/)).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Connect printer' }));
+  expect(station.connectUsb).toHaveBeenCalled();
 });
 
 it('no_settings points to Kiosk Setup', async () => {

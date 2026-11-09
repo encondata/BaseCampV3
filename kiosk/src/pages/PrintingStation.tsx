@@ -540,7 +540,8 @@ export default function PrintingStation() {
       {station.state === 'loading' && <p className="page-hint">Connecting to the label printer…</p>}
       {station.state === 'needs_usb' && (
         <div className="station-printer-note" role="status">
-          <p>The label printer isn&apos;t connected. Connect it to start printing.</p>
+          {/* After a failed switch the printer is connected; the note above says why it can't print. */}
+          {!station.switchError && <p>The label printer isn&apos;t connected. Connect it to start printing.</p>}
           <button type="button" className="mini-btn" onClick={() => { void station.connectUsb(); }}>
             Connect printer
           </button>

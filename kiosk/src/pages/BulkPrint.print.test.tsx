@@ -393,3 +393,67 @@ it('a Custom ZPL print stops when the move changes mid-send', async () => {
   expect(calls).toBe(1);
   expect(screen.queryByText(/Successfully printed/)).toBeNull();
 });
+
+it("the station's printer changing mid-batch closes the batch window and sends nothing more", async () => {
+  writeSettings({ batchSize: 2 });
+  const held = deferred<void>();
+  let calls = 0;
+  station.sendHook = () => { calls += 1; return calls === 1 ? held.promise : undefined; };
+  const view = render_();
+  await labelsReady();
+  await tick(...NAMES);
+  await userEvent.click(screen.getByRole('button', { name: 'Print 3 labels' }));
+  await screen.findByRole('dialog', { name: 'Printing labels' });
+  await waitFor(() => expect(calls).toBe(1));
+
+  // switched to a 300-DPI printer with another serial
+  station.settings = { ...SAVED, dpi: 300, printer: { ...SAVED.printer, model: 'ZD421-300dpi', serial: 'NEW' } };
+  view.rerender(<MemoryRouter><BulkPrint /></MemoryRouter>);
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Printing labels' })).toBeNull());
+  await act(async () => { held.resolve(); await held.promise; });
+  await settle();
+  expect(station.sent).toHaveLength(1);
+  expect(calls).toBe(1);
+  expect(station.waitForIdle).not.toHaveBeenCalled();
+});
+
+it('an auto print next countdown never fires after the station printer changes', async () => {
+  writeSettings({ batchSize: 2 });
+  const gate = deferred<void>();
+  station.waitForIdle = vi.fn(async () => { await gate.promise; });
+  const view = render_();
+  await labelsReady();
+  await tick(...NAMES);
+
+  vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  await user.click(screen.getByRole('button', { name: 'Print 3 labels' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Printing labels' });
+  await user.click(within(dialog).getByRole('switch', { name: 'Auto print next batch' }));
+  await act(async () => { gate.resolve(); await gate.promise; });
+  expect(await within(dialog).findByText(/in 5s…/)).toBeTruthy();
+  expect(station.sent).toHaveLength(2);
+
+  // the same model at the same DPI but another printer (serial)
+  station.settings = { ...SAVED, printer: { ...SAVED.printer, serial: 'NEW' } };
+  view.rerender(<MemoryRouter><BulkPrint /></MemoryRouter>);
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Printing labels' })).toBeNull());
+  for (let i = 0; i < 7; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+  expect(station.sent).toHaveLength(2);
+  expect(station.waitForIdle).toHaveBeenCalledTimes(1);
+});
+
+it('saving new offsets mid-batch keeps the batch open', async () => {
+  writeSettings({ batchSize: 2 });
+  const gate = deferred<void>();
+  station.waitForIdle = vi.fn(async () => { await gate.promise; });
+  const view = render_();
+  await labelsReady();
+  await tick(...NAMES);
+  await userEvent.click(screen.getByRole('button', { name: 'Print 3 labels' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Printing labels' });
+  station.settings = { ...SAVED, offset_x: 12 };
+  view.rerender(<MemoryRouter><BulkPrint /></MemoryRouter>);
+  await act(async () => { gate.resolve(); await gate.promise; });
+  expect(await within(dialog).findByText('Batch 1 complete! Ready to print next batch.')).toBeTruthy();
+});
