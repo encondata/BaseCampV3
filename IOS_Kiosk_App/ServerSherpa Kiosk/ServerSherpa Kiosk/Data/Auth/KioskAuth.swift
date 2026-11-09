@@ -40,6 +40,11 @@ final class KioskAuth {
     /// The live session's sign-in: login() records the typed email. Move logins, pairs and cookie
     /// restores leave it nil, and so do logout and endSession.
     private(set) var currentSignIn: CurrentSignIn?
+    /// An explicit sign-out on this launch that no sign-in screen has seen yet. The next one
+    /// shows the biometric card without starting its prompt: Face ID would sign the person who
+    /// just tapped Sign out straight back in. A session end or a restore failure leaves it unset,
+    /// and any sign-in clears it.
+    @ObservationIgnored private var signedOutUnseen = false
 
     /// Runs first in `logout()`; the container points it at `heartbeat.stop()` and the print
     /// jobs' reset.
@@ -114,6 +119,7 @@ final class KioskAuth {
         onLogout?()
         state = .anon
         currentSignIn = nil
+        signedOutUnseen = true
         let serial = identity.current.serial
         let credentials = await refresher.signOutLocally()
         let api = self.api
@@ -135,6 +141,13 @@ final class KioskAuth {
         return computeCan(s.perms, resource, action)
     }
 
+    /// Whether the person just signed out (and no sign-in screen has seen it yet); the sign-in
+    /// screen takes it once.
+    func takeSignedOut() -> Bool {
+        defer { signedOutUnseen = false }
+        return signedOutUnseen
+    }
+
     /// The heartbeat consumes this exactly once per sign-in.
     func takePendingSignIn() -> LoginMethod? {
         defer { pendingSignIn = nil }
@@ -150,6 +163,7 @@ final class KioskAuth {
             prefs.setupState = .incomplete
             station?.clearKey()
         }
+        signedOutUnseen = false
         state = .authed(session)
     }
 }

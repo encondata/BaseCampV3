@@ -59,6 +59,14 @@ struct BiometricKeysTests {
         #expect(keys.probe() == .gone)
     }
 
+    /// The kind is the hardware's, read even when the biometric can't be used (a lockout).
+    @Test func biometryKindComesFromTheHardwareType() {
+        #expect(biometryKind(of: .faceID) == .faceID)
+        #expect(biometryKind(of: .touchID) == .touchID)
+        #expect(biometryKind(of: .none) == nil)
+        #expect(biometryKind(of: .opticID) == nil)
+    }
+
     @MainActor @Test func wordsForKinds() {
         #expect(currentBiometricWords(.touchID).bio == "Touch ID")
         #expect(currentBiometricWords(.faceID).bio == "Face ID")

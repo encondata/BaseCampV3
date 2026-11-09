@@ -8,6 +8,7 @@ import Foundation
 final class FakeBiometricKeys: BiometricKeys, @unchecked Sendable {
     private struct State {
         var readinessValue: BiometricReadiness = .ready(.faceID)
+        var hardwareKind: BiometryKind?
         var invalidated = false
         var probeUnavailable = false
         var createError: Error?
@@ -30,6 +31,11 @@ final class FakeBiometricKeys: BiometricKeys, @unchecked Sendable {
     var readinessValue: BiometricReadiness {
         get { locked { $0.readinessValue } }
         set { locked { $0.readinessValue = newValue } }
+    }
+    /// What `biometryKind()` reports: the hardware, also when it isn't ready (a lockout).
+    var hardwareKind: BiometryKind? {
+        get { locked { $0.hardwareKind } }
+        set { locked { $0.hardwareKind = newValue } }
     }
     /// The key is still stored but no longer usable: probe gives `.gone`, sign throws `BiometricKeyError.gone`.
     var invalidated: Bool {
@@ -62,6 +68,8 @@ final class FakeBiometricKeys: BiometricKeys, @unchecked Sendable {
     var proof: BiometricEnrollProof? { locked { $0.proof } }
 
     func readiness() -> BiometricReadiness { readinessValue }
+
+    func biometryKind() -> BiometryKind? { hardwareKind }
 
     func create(nonce: String) async throws -> BiometricEnrollProof {
         let error = locked { s -> Error? in

@@ -1,9 +1,14 @@
 import SwiftUI
 import UIKit
 
-/// The SF Symbol for the device's biometric on the card's button.
-func biometricSymbol(_ w: BiometricWords) -> String {
-    w.bio == "Touch ID" ? "touchid" : "faceid"
+/// The SF Symbol for the device's biometric on the card's button; nil (the button's arrow) when
+/// the device names none.
+func biometricSymbol(_ kind: BiometryKind?) -> String? {
+    switch kind {
+    case .faceID: "faceid"
+    case .touchID: "touchid"
+    case nil: nil
+    }
 }
 
 /// The "Sign in as …" card (Android `BiometricCardView`): the person's photo (initials until it
@@ -13,6 +18,7 @@ struct BiometricCardView: View {
     let vm: LoginViewModel
     let card: BiometricCard
     let words: BiometricWords
+    let kind: BiometryKind?
     let f: CGFloat
 
     var body: some View {
@@ -21,16 +27,17 @@ struct BiometricCardView: View {
                 .padding(.bottom, 24 * f)
             // The button says what the prompt will.
             LoginSubmitButton(busy: vm.bioBusy, f: f, title: BiometricCopy.signInReason(words, name: card.displayName),
-                              systemImage: biometricSymbol(words)) {
+                              systemImage: biometricSymbol(kind)) {
                 Task { await vm.signInWithBiometric(SystemBiometricPrompter()) }
             }
             .accessibilityIdentifier("login-bio-sign-in")
             LoginErrorText(text: vm.bioError, f: f).padding(.top, 12 * f)
+            // Not while a sign-in runs: its answer would land over the form chosen.
             HStack(spacing: 10 * f) {
-                LoginQuietLink(title: "Use password", f: f) { vm.usePassword() }
+                LoginQuietLink(title: "Use password", f: f, enabled: !vm.bioBusy) { vm.usePassword() }
                     .accessibilityIdentifier("login-bio-password")
-                Text("·").foregroundStyle(LoginTokens.line)
-                LoginQuietLink(title: "Other account", f: f) { vm.otherAccount() }
+                Text("·").foregroundStyle(LoginTokens.line).accessibilityHidden(true)
+                LoginQuietLink(title: "Other account", f: f, enabled: !vm.bioBusy) { vm.otherAccount() }
                     .accessibilityIdentifier("login-bio-other")
             }
             .frame(maxWidth: .infinity)

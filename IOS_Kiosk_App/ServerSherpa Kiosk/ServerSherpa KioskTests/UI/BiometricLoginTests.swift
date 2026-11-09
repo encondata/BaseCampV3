@@ -61,6 +61,12 @@ struct BiometricLoginTests {
 
         var bioCalls: [String] { api.calls.filter { $0.hasPrefix("bio") } }
 
+        /// The next visit to the sign-in screen: a new view model on the same app.
+        func nextScreen() -> LoginViewModel {
+            let sleeper = sleeper
+            return LoginViewModel(auth: auth, api: api, biometric: bio, enrollOffer: offer, sleep: { try await sleeper.sleep($0) })
+        }
+
         var isAuthed: Bool { if case .authed = auth.state { true } else { false } }
 
         /// The card on screen and the prompt that started on its own.
@@ -172,6 +178,157 @@ struct BiometricLoginTests {
         await r.vm.autoPrompt(r.prompter)
         #expect(r.prompter.reasons.isEmpty)
         #expect(!r.isAuthed)
+    }
+
+    // ── when the prompt starts on its own ───────────────────────────
+
+    @Test func noAutoPromptRightAfterSignOut() async throws {
+        let r = Rig()
+        try await r.enrolled()
+        try await r.auth.login(email: "tina@example.com", password: "pw")
+        await r.auth.logout()
+        // The screen after Sign out shows the card, but Face ID would sign the person straight
+        // back in: the prompt waits for a tap.
+        let screen = r.nextScreen()
+        await screen.loadCard()
+        #expect(screen.view == .biometric)
+        await screen.autoPrompt(r.prompter)
+        #expect(r.prompter.reasons.isEmpty)
+        #expect(!r.isAuthed)
+        await screen.signInWithBiometric(r.prompter)   // the person's own tap
+        #expect(r.prompter.reasons.count == 1)
+        #expect(r.isAuthed)
+    }
+
+    @Test func aLaunchOrASessionEndStillAutoPrompts() async throws {
+        let r = Rig()
+        try await r.enrolled()
+        r.prompter.answer = nil
+        // A launch whose restore finds no session.
+        await r.auth.restore()
+        await r.cardThenAutoPrompt()
+        #expect(r.prompter.reasons.count == 1)
+        // A session that ended underneath the kiosk.
+        try await r.auth.login(email: "tina@example.com", password: "pw")
+        r.auth.endSession()
+        let afterEnd = r.nextScreen()
+        await afterEnd.loadCard()
+        await afterEnd.autoPrompt(r.prompter)
+        #expect(r.prompter.reasons.count == 2)
+        // A sign-out that no screen saw is forgotten by the next sign-in.
+        try await r.auth.login(email: "tina@example.com", password: "pw")
+        await r.auth.logout()
+        try await r.auth.login(email: "tina@example.com", password: "pw")
+        r.auth.endSession()
+        let afterLaterEnd = r.nextScreen()
+        await afterLaterEnd.loadCard()
+        await afterLaterEnd.autoPrompt(r.prompter)
+        #expect(r.prompter.reasons.count == 3)
+        // A sign-out holds only the screen that follows it.
+        try await r.auth.login(email: "tina@example.com", password: "pw")
+        await r.auth.logout()
+        let afterOut = r.nextScreen()
+        await afterOut.loadCard()
+        await afterOut.autoPrompt(r.prompter)
+        #expect(r.prompter.reasons.count == 3)
+        let later = r.nextScreen()
+        await later.loadCard()
+        await later.autoPrompt(r.prompter)
+        #expect(r.prompter.reasons.count == 4)
+    }
+
+    @Test func noAutoPromptWhileSettingsOrSupportCoversTheCard() async throws {
+        let r = Rig()
+        try await r.enrolled()
+        r.prompter.answer = nil
+        await r.vm.loadCard()
+        #expect(r.vm.view == .biometric)
+        r.vm.settingsOpen = true   // the gear's Settings sheet: a sign-in would tear it down
+        #expect(r.vm.covered)
+        await r.vm.autoPrompt(r.prompter)
+        #expect(r.prompter.reasons.isEmpty)
+        r.vm.settingsOpen = false
+        r.vm.supportOpen = true
+        #expect(r.vm.covered)
+        await r.vm.autoPrompt(r.prompter)
+        #expect(r.prompter.reasons.isEmpty)
+        // Closed, the card still untouched and not yet prompted: the prompt starts.
+        r.vm.supportOpen = false
+        #expect(!r.vm.covered)
+        await r.vm.autoPrompt(r.prompter)
+        #expect(r.prompter.reasons.count == 1)
+    }
+
+    // ── while a sign-in runs ────────────────────────────────────────
+
+    @Test func theCardsLinksWaitForARunningSignIn() async throws {
+        let r = Rig()
+        try await r.enrolled()
+        let hold = HoldGate()
+        r.api.bioSignInResult = { _, _, _ in await hold.wait(); return fakeSession() }
+        await r.vm.loadCard()
+        let signing = Task { await r.vm.signInWithBiometric(r.prompter) }
+        #expect(await waitUntil { r.api.calls.contains("bioSignIn") })
+        #expect(r.vm.bioBusy)
+        // Other account and Use password do nothing while the server answers: its yes would
+        // sign the card's person in over the form chosen.
+        r.vm.otherAccount()
+        r.vm.usePassword()
+        #expect(r.vm.view == .biometric)
+        #expect(r.vm.email == "")
+        await hold.open()
+        await signing.value
+        #expect(r.isAuthed)
+    }
+
+    @Test func aLateAnswerNeverReplacesAFormChosenMeanwhile() async throws {
+        let r = Rig()
+        try await r.enrolled()
+        let hold = HoldGate()
+        r.api.bioSignInResult = { _, _, _ in await hold.wait(); throw ApiError(status: 403, code: "kiosk_not_allowed") }
+        await r.vm.loadCard()
+        let signing = Task { await r.vm.signInWithBiometric(r.prompter) }
+        #expect(await waitUntil { r.api.calls.contains("bioSignIn") })
+        r.vm.view = .move   // the screen moved on while the server answered
+        await hold.open()
+        await signing.value
+        #expect(r.vm.view == .move)
+        #expect(r.vm.notice == nil)
+        #expect(r.vm.email == "")
+        #expect(r.vm.bioError == nil)
+        #expect(!r.vm.bioBusy)
+    }
+
+    // ── the enrollment going away under the card ────────────────────
+
+    @Test func aForgottenEnrollmentDropsTheCardToThePlainForm() async throws {
+        let r = Rig()
+        try await r.enrolled()
+        r.prompter.answer = nil
+        await r.cardThenAutoPrompt()
+        #expect(r.vm.view == .biometric)
+        // Settings › This Kiosk › Forget, from the sign-in screen's gear.
+        #expect(await r.bio.forget(signedIn: false))
+        #expect(await waitUntil { r.vm.view == .password })
+        #expect(r.vm.card == nil)
+        #expect(r.vm.email == "")
+        #expect(r.vm.notice == nil)
+        #expect(!r.vm.noticeError)
+    }
+
+    @Test func theCardsSymbolIsTheDevicesBiometric() async throws {
+        #expect(biometricSymbol(.faceID) == "faceid")
+        #expect(biometricSymbol(.touchID) == "touchid")
+        #expect(biometricSymbol(nil) == nil)
+        // Locked out on a Touch ID iPad: not ready, but still Touch ID, not a guess.
+        let r = Rig()
+        try await r.enrolled()
+        r.keys.readinessValue = .unsupported
+        r.keys.hardwareKind = .touchID
+        await r.vm.loadCard()
+        #expect(r.vm.view == .biometric)
+        #expect(r.vm.cardKind == .touchID)
+        #expect(r.vm.cardWords == BiometricWords(bio: "Touch ID", device: "iPad"))
     }
 
     // ── the fallbacks to the password form ──────────────────────────

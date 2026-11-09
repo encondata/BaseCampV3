@@ -45,6 +45,8 @@ final class LoginViewModel {
     // Once per screen: a new visit to the sign-in page makes a new view model.
     @ObservationIgnored private var cardLoaded = false
     @ObservationIgnored private var autoPrompted = false
+    /// This screen follows an explicit sign-out: the card shows, but its prompt waits for a tap.
+    @ObservationIgnored private var afterSignOut = false
     /// The person chose a form while the card was on its way: it never replaces that form.
     @ObservationIgnored private var cardDeclined = false
 
@@ -74,6 +76,9 @@ final class LoginViewModel {
     }
     var ssoHint = false
     var supportOpen = false
+    /// The screen's Settings sheet (the gear) is up. Like the support card, it holds the auto
+    /// prompt: a sign-in would tear it down.
+    var settingsOpen = false
     private(set) var status: SystemStatus?
 
     /// The device's card: shown while `view` is `.biometric`, and kept for Use password's email.
@@ -89,8 +94,14 @@ final class LoginViewModel {
     private(set) var notice: String?
     /// `notice` reads as an error (red) rather than a note.
     private(set) var noticeError = false
-    /// The card's biometric and device words, for its button's words and symbol.
+    /// The card's biometric and device words, for its button.
     private(set) var cardWords: BiometricWords?
+    /// The device's biometric, for the card button's symbol.
+    private(set) var cardKind: BiometryKind?
+
+    /// Something covers the card (the Settings sheet, the support card): no prompt starts on its
+    /// own until it closes.
+    var covered: Bool { settingsOpen || supportOpen }
 
     init(auth: KioskAuth, api: KioskApi, biometric: BiometricSignIn? = nil, enrollOffer: EnrollOffer? = nil,
          sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
@@ -166,6 +177,7 @@ final class LoginViewModel {
     func loadCard() async {
         guard let bio = biometric, !cardLoaded else { return }
         cardLoaded = true
+        afterSignOut = auth.takeSignedOut()
         if case .authed = auth.state { return }
         // The local record only decides whether to say "Checking…": nothing from it is shown,
         // since card() hasn't checked it yet (a shared station now, a key gone).
@@ -184,6 +196,7 @@ final class LoginViewModel {
         guard let found, untouched else { return }
         let w = bio.words
         cardWords = w
+        cardKind = bio.kind
         if found.expired {
             card = found
             email = found.email ?? ""
@@ -193,13 +206,16 @@ final class LoginViewModel {
             view = .biometric
             card = found
             bioError = nil
+            followEnrollment()
         }
     }
 
     /// The prompt that starts on its own when the card appears: once per screen (never again on a
-    /// re-render or a rotation), and never for an expired card.
+    /// re-render or a rotation), and never for an expired card. Not right after an explicit
+    /// sign-out (the card waits for a tap), and not while something covers the card: the screen
+    /// asks again when it closes.
     func autoPrompt(_ p: BiometricPrompter) async {
-        guard !autoPrompted, view == .biometric, let card, !card.expired else { return }
+        guard !autoPrompted, !afterSignOut, !covered, view == .biometric, let card, !card.expired else { return }
         autoPrompted = true
         await signInWithBiometric(p)
     }
@@ -215,15 +231,22 @@ final class LoginViewModel {
         let problems = BiometricPromptProblems()
         let outcome = await bio.signIn(problemAware(p) { problems.record($0) }, name: card?.displayName)
         let w = bio.words
+        // A form chosen while it ran is the person's: only a sign-in changes anything now.
+        guard view == .biometric || outcome == .signedIn else {
+            bioBusy = false
+            return
+        }
         switch outcome {
         case .signedIn:
             bioBusy = false
         case .canceled:
             bioBusy = false
             bioError = Self.cardLine(problems.last, w)
+            dropCardIfForgotten()
         case .failed(let message):
             bioBusy = false
             bioError = message
+            dropCardIfForgotten()
         case .expired:
             toPassword(BiometricCopy.expired(w), error: false, keepEmail: true)
         case .passwordChange:
@@ -236,8 +259,10 @@ final class LoginViewModel {
     }
 
     /// The card's Use password: this person's password form, with the email from the validated
-    /// card. During "Checking…" there is no card yet, so the form opens empty.
+    /// card. During "Checking…" there is no card yet, so the form opens empty. Not while a sign-in
+    /// runs (its answer would land over the form).
     func usePassword() {
+        guard !bioBusy else { return }
         let email = card?.email ?? ""
         view = .password
         self.email = email
@@ -245,11 +270,34 @@ final class LoginViewModel {
     }
 
     /// The card's Other account: the password form for someone else, nothing filled in (its
-    /// links still offer Pair with phone and Use a move password).
+    /// links still offer Pair with phone and Use a move password). Not while a sign-in runs (it
+    /// could still sign the card's person in).
     func otherAccount() {
+        guard !bioBusy else { return }
         view = .password
         email = ""
         password = ""
+    }
+
+    /// Follows the device's enrollment while the card shows: forgotten (Settings › This Kiosk ›
+    /// Forget, under the gear), the card drops to the plain password form.
+    private func followEnrollment() {
+        guard let bio = biometric else { return }
+        withObservationTracking { _ = bio.enrollment } onChange: { [weak self] in
+            // onChange runs before the new value is set: look on the next main-actor turn.
+            Task { @MainActor [weak self] in
+                guard let self, self.view == .biometric else { return }
+                self.dropCardIfForgotten()
+                if self.view == .biometric { self.followEnrollment() }
+            }
+        }
+    }
+
+    /// The card's key is no longer this device's enrollment: the plain password form. A running
+    /// sign-in answers first (it calls this again when it leaves the person on the card).
+    private func dropCardIfForgotten() {
+        guard view == .biometric, !bioBusy, let card, biometric?.enrollment?.keyId != card.keyId else { return }
+        toPassword(nil, error: false, keepEmail: false)
     }
 
     /// Whether the form is as the screen opened it: a card may still take its place.

@@ -90,12 +90,16 @@ final class BiometricSignIn {
     /// The device's enrollment (whose key, and its email), or nil: Settings › This Kiosk's row.
     var enrollment: BiometricEnrollment? { prefs.biometric }
 
-    /// The copy's words for this device: its ready biometric, or the device's best guess when
-    /// none is ready.
-    var words: BiometricWords {
-        if case .ready(let kind) = keys.readiness() { return wordsFor(kind) }
-        return wordsFor(nil)
+    /// This device's biometric: the ready one, else the hardware's own (locked out, nothing
+    /// enrolled), else nil.
+    var kind: BiometryKind? {
+        if case .ready(let kind) = keys.readiness() { return kind }
+        return keys.biometryKind()
     }
+
+    /// The copy's words for this device: its biometric (`kind`), or the device's best guess when
+    /// it has none.
+    var words: BiometricWords { wordsFor(kind) }
 
     /// Whether to show the Turn on sheet now: right after a person's own password sign-in (never a
     /// restored, link, biometric or move-password session, a move-locked one, or one whose

@@ -921,4 +921,17 @@ struct BiometricSignInTests {
         r.keys.readinessValue = .noneEnrolled
         #expect(r.bio.words == BiometricWords(bio: "no biometric", device: "iPad"))
     }
+
+    /// Locked out, a Touch ID iPad is not ready, but its words (and the card's symbol) stay
+    /// Touch ID: the kind comes from the hardware, not a guess.
+    @Test func aLockedOutDeviceKeepsItsBiometricsWords() {
+        let r = Rig()
+        r.keys.readinessValue = .unsupported   // biometryLockout
+        r.keys.hardwareKind = .touchID
+        #expect(r.bio.kind == .touchID)
+        #expect(r.bio.words == BiometricWords(bio: "Touch ID", device: "iPad"))
+        r.keys.hardwareKind = nil
+        #expect(r.bio.kind == nil)
+        #expect(r.bio.words == BiometricWords(bio: "no biometric", device: "iPad"))
+    }
 }

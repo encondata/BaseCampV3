@@ -11,6 +11,12 @@ struct LoginScreen: View {
     }
 }
 
+/// What restarts the card's auto prompt: the view, and whether something covers the card.
+private struct AutoPromptTrigger: Equatable {
+    var view: LoginView
+    var covered: Bool
+}
+
 /// The whole screen and its safe-area insets, measured without the keyboard
 /// so the scene does not rescale when the keyboard comes up.
 private struct ScreenFrame: Equatable {
@@ -78,9 +84,11 @@ private struct LoginScreenBody: View {
                 await vm.loadCard()
                 await status
             }
-            // The card's prompt starts on its own when the card appears; the view model lets it
-            // run once per screen.
-            .task(id: vm.view) { await vm.autoPrompt(SystemBiometricPrompter()) }
+            // The card's prompt starts on its own when the card appears, or when the Settings
+            // sheet or support card that covered it closes; the view model lets it run once per
+            // screen.
+            .task(id: AutoPromptTrigger(view: vm.view, covered: vm.covered)) { await vm.autoPrompt(SystemBiometricPrompter()) }
+            .onChange(of: settingsSheet.wrappedValue, initial: true) { _, open in vm.settingsOpen = open }
             // Entering the pair view begins pairing, leaving it stops; the whole
             // screen going away (signed in) stops it too.
             .onChange(of: vm.view) { old, new in

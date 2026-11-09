@@ -23,14 +23,21 @@ func biometricPromptProblem(for code: LAError.Code) -> BiometricPromptProblem? {
     }
 }
 
-/// The system Face ID / Touch ID prompt, biometrics only: no passcode fallback button.
+/// The system Face ID / Touch ID prompt, biometrics only: no passcode fallback button. A canceled
+/// task (Turn on stopped by a sign-out, the sign-in screen gone) takes the prompt down with it:
+/// the context is invalidated, and the prompt answers as a cancel.
 struct SystemBiometricPrompter: BiometricPrompter {
     func authenticate(reason: String) async throws -> BiometricAuth? {
         let context = LAContext()
         context.localizedFallbackTitle = ""
+        let auth = BiometricAuth(context: context)
         do {
-            try await context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason)
-            return BiometricAuth(context: context)
+            try await withTaskCancellationHandler {
+                try await auth.context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason)
+            } onCancel: {
+                auth.context.invalidate()
+            }
+            return auth
         } catch let error as LAError {
             if let problem = biometricPromptProblem(for: error.code) { throw problem }
             return nil

@@ -162,6 +162,7 @@ struct LoginUnderlinedLink: View {
 struct LoginQuietLink: View {
     let title: String
     let f: CGFloat
+    var enabled = true
     let action: () -> Void
 
     var body: some View {
@@ -175,6 +176,8 @@ struct LoginQuietLink: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.45)
     }
 }
 
@@ -296,7 +299,7 @@ struct LoginForm: View {
             case .move: MovePasswordForm(vm: vm, f: f, onBack: back).padding(.top, 40 * f)
             case .biometric:
                 if let card = vm.card, let words = vm.cardWords {
-                    BiometricCardView(vm: vm, card: card, words: words, f: f).padding(.top, 30 * f)
+                    BiometricCardView(vm: vm, card: card, words: words, kind: vm.cardKind, f: f).padding(.top, 30 * f)
                 }
             }
         }

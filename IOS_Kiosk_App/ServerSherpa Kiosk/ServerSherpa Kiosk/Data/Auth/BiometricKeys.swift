@@ -48,6 +48,11 @@ struct BiometricAuth: @unchecked Sendable {
 protocol BiometricKeys: Sendable {
     func readiness() -> BiometricReadiness
 
+    /// The device's biometric hardware, whether or not it can be used right now (locked out,
+    /// nothing enrolled); nil without any. For the copy's words and the card's symbol only: the
+    /// offer goes by `readiness()`.
+    func biometryKind() -> BiometryKind?
+
     /// Replaces any old key with a new Secure Enclave key, attested by App Attest for `nonce`.
     /// Throws when either can't be made, and then leaves no key behind.
     func create(nonce: String) async throws -> BiometricEnrollProof
@@ -60,6 +65,15 @@ protocol BiometricKeys: Sendable {
     func sign(_ message: Data, with auth: BiometricAuth) throws -> Data
 
     func delete()
+}
+
+/// `LAContext.biometryType` as a kind; nil for none (or a type the app doesn't name, Optic ID).
+func biometryKind(of type: LABiometryType) -> BiometryKind? {
+    switch type {
+    case .faceID: return .faceID
+    case .touchID: return .touchID
+    default: return nil
+    }
 }
 
 /// The App Attest clientDataHash the server checks: SHA-256 of the nonce's UTF-8 bytes followed
@@ -104,12 +118,17 @@ struct SecureEnclaveBiometricKeys: BiometricKeys {
         guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
             return Self.code(error) == .biometryNotEnrolled ? .noneEnrolled : .unsupported
         }
-        switch context.biometryType {
-        case .faceID: return .ready(.faceID)
-        case .touchID: return .ready(.touchID)
-        default: return .unsupported
-        }
+        guard let kind = ServerSherpa_Kiosk.biometryKind(of: context.biometryType) else { return .unsupported }
+        return .ready(kind)
         #endif
+    }
+
+    func biometryKind() -> BiometryKind? {
+        let context = LAContext()
+        var error: NSError?
+        // biometryType is set by this call whatever it returns (locked out, none enrolled).
+        _ = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
+        return ServerSherpa_Kiosk.biometryKind(of: context.biometryType)
     }
 
     func create(nonce: String) async throws -> BiometricEnrollProof {
