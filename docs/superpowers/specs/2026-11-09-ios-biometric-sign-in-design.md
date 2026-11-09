@@ -144,7 +144,10 @@ It runs Apple's checks ("Validating apps that connect to your server") in this o
 Further requirements:
 - **Error reasons.** `AttestationError`'s reason list grows: `format`, `key_id`, `app_id`, `counter`, `environment`, `proof`.
 - **App ID.** The app ID is a constant, `KIOSK_IOS_APP_ID = "Y2QYBG96U4.Server-Sherpas.ServerSherpa-Kiosk"`, like Android's `KIOSK_PACKAGE`. Apple only attests apps signed by that team, so no setting is needed.
-- **New setting.** `SS_KIOSK_APP_ATTEST_DEVELOPMENT` (bool, default false) is passed as `allow_development`. The dev `.env` sets it to true, because builds installed from Xcode or `devicectl` use Apple's development environment. App Store and TestFlight builds use production. No deploy or Sirdar plumbing is needed, since production keeps the default.
+- **New setting.** `SS_KIOSK_APP_ATTEST_DEVELOPMENT` (bool, default false) is passed as `allow_development`. It is an escape hatch for a build that uses Apple's development environment.
+  - *My call, after the builder check:* the app's entitlement asks for the **production** environment in every build (see iOS app › Project). Xcode and `devicectl` installs, TestFlight and the App Store then all attest the same way. A production server works with field iPads however the app was installed.
+  - The dev `.env` doesn't need the setting, and no deploy or Sirdar plumbing is needed.
+  - The trust boundary is the same either way: only team `Y2QYBG96U4` can sign this bundle.
 - **Apple's root.** It is pinned at `security/app_attest_roots/apple_app_attestation_root_ca.pem`, with a README giving its source URL (`https://www.apple.com/certificateauthority/Apple_App_Attestation_Root_CA.pem`) and SHA-256 fingerprint. It is added to package-data.
   - **It must not go in `attestation_roots/`.** `google_roots()` trusts every `.pem` there, and `test_pinned_google_roots` expects exactly Google's 5.
 - **No receipt.** The receipt and Apple's fraud-risk metric are not used. App Attest assertions are not used either, because sign-ins are signed by the Secure Enclave key, as on Android.
@@ -211,8 +214,8 @@ Paths are under `IOS_Kiosk_App/ServerSherpa Kiosk/ServerSherpa Kiosk/`. The layo
   - The This Kiosk row goes between Device model and API URL.
 - **Project**:
   - `NSFaceIDUsageDescription` in `Info.plist`.
-  - An entitlements file outside the synchronized app folder, with `com.apple.developer.devicecheck.appattest-environment = development`. `CODE_SIGN_ENTITLEMENTS` points to it in both app configurations.
-  - App Store and TestFlight builds use production regardless.
+  - An entitlements file outside the synchronized app folder, with `com.apple.developer.devicecheck.appattest-environment = production`. `CODE_SIGN_ENTITLEMENTS` points to it in both app configurations.
+  - *Fallback, if the device pass shows a development-signed build can't use production:* set the entitlement to `development` and set `SS_KIOSK_APP_ATTEST_DEVELOPMENT=true` on the dev stack. Report it to Jimmy, because field iPads would then need TestFlight or that setting on their server.
 
 ## Non-goals
 
@@ -240,10 +243,10 @@ Paths are under `IOS_Kiosk_App/ServerSherpa Kiosk/ServerSherpa Kiosk/`. The layo
 The device is Jimmy's iPad Pro 13 (Face ID), against the dev stack:
 - dev DB at 0124;
 - `cbor2` installed;
-- `SS_KIOSK_APP_ATTEST_DEVELOPMENT=true`;
 - the iPad assigned to Jimmy as a personal device in the portal.
 
 Check:
+- the enroll audit shows a production attestation (it was accepted with the development setting off);
 - enroll;
 - sign in;
 - cancel;
