@@ -18,9 +18,11 @@
  *    prints its value (the value's modules × the module: barcode.ts), the
  *    human-readable line centered under the bars; with no value, only its
  *    box;
- *  - a QR code: a placeholder symbol where and as big as the printer puts
- *    it (qr.ts qrLayout: centered, whole magnification steps, capped at 10),
- *    always upright, as ^BQ prints;
+ *  - a QR code: the real symbol for its value (qr.ts qrMatrix), where and
+ *    as big as the printer puts it (qr.ts qrLayout: centered, whole
+ *    magnification steps, capped at 10, 10 dots below its ^FO), always
+ *    upright, as ^BQ prints; a
+ *    placeholder of that size when the value can't be encoded;
  *  - a line or box: the compiler's ^GB, a border of the stroke width (solid
  *    when that fills it);
  *  - an image (ID badges): the dots it prints — the server's gray picture
@@ -46,7 +48,7 @@ import { cssFamilyOf, textWidthIn, type LoadedFont } from '../../../labels/build
 import {
   imageParams, invertPadOf, type ElementV2, type FieldElement, type ImageElement, type TextElement,
 } from '../../../labels/builder/model';
-import { qrLayout, type QrLayout } from '../../../labels/builder/qr';
+import { qrLayout, qrMatrix, type QrLayout } from '../../../labels/builder/qr';
 import { pyRound, toDots } from '../../../labels/builder/units';
 import { DEFAULT_FONT } from './canvasActions';
 import { useImageRaster, type GrayRaster } from './imageRaster';
@@ -359,8 +361,27 @@ function BarcodeBody({ el, dpi, text, value, hidden, px, uid }: CanvasElementPro
   );
 }
 
-function QrSymbol({ layout, uid }: { layout: QrLayout; uid: string }) {
-  const { x, y, side, magnification: m } = layout;
+function QrSymbol({ layout, uid, value }: { layout: QrLayout; uid: string; value: string }) {
+  const { x, y, side, magnification: m, modules } = layout;
+  const matrix = qrMatrix(value, modules);
+  const capped = layout.capped
+    ? <title>The printer caps a QR code at 10 dots per module, so at this DPI it prints smaller, centered in its box.</title>
+    : null;
+  if (matrix) {
+    // the real code for the value: one path of the dark modules on a light square
+    let d = '';
+    matrix.forEach((row, r) => row.forEach((dark, c) => {
+      if (dark) d += `M${x + c * m} ${y + r * m}h${m}v${m}h${-m}z`;
+    }));
+    return (
+      <g className={`lbc-qr-symbol${layout.capped ? ' is-capped' : ''}`}>
+        <rect className="lbc-qr-light" x={x} y={y} width={side} height={side} />
+        <path className="lbc-qr-dark lbc-qr-modules" d={d} shapeRendering="crispEdges" />
+        {capped}
+      </g>
+    );
+  }
+  // the encoder couldn't place the value: a placeholder of the printed size
   const id = `${uid}-qr`;
   const finders: [number, number][] = [[x, y], [x + side - 7 * m, y], [x, y + side - 7 * m]];
   return (
@@ -380,9 +401,7 @@ function QrSymbol({ layout, uid }: { layout: QrLayout; uid: string }) {
           <rect className="lbc-qr-dark" x={fx + 2 * m} y={fy + 2 * m} width={3 * m} height={3 * m} />
         </g>
       ))}
-      {layout.capped && (
-        <title>The printer caps a QR code at 10 dots per module, so at this DPI it prints smaller, centered in its box.</title>
-      )}
+      {capped}
     </g>
   );
 }
@@ -405,7 +424,7 @@ function QrBody({ el, dpi, hidden, value, px, uid }: CanvasElementProps) {
           </rect>
         )}
       </g>
-      {!hidden && layout && <QrSymbol layout={layout} uid={uid} />}
+      {!hidden && layout && <QrSymbol layout={layout} uid={uid} value={value} />}
     </>
   );
 }

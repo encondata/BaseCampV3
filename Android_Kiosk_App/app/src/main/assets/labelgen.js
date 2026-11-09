@@ -1610,22 +1610,52 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.name = "QrTooLong";
     }
   }
-  const CAPACITY_M = [
-    [34, 20, 14],
-    [63, 38, 26],
-    [101, 61, 42],
-    [149, 90, 62],
-    [202, 122, 84],
-    [255, 154, 106],
-    [293, 178, 122],
-    [365, 221, 152],
-    [432, 262, 180],
-    [513, 311, 213]
-  ];
   const NUMERIC = /^[0-9]*$/;
   const ALPHANUMERIC = /^[0-9A-Z $%*+\-./:]*$/;
   const MODE_NAMES = ["digits", "characters", "bytes"];
+  const DATA_BITS_M = [128, 224, 352, 512, 688, 864, 992, 1232, 1456, 1728];
+  const COUNT_BITS = [[10, 9, 8], [12, 11, 16]];
+  const TAIL = [[0, 4, 7], [0, 6], [0]];
+  const GROUP = [3, 2, 1];
+  function modesFor(ch) {
+    if (NUMERIC.test(ch)) return [0, 1, 2];
+    return ALPHANUMERIC.test(ch) ? [1, 2] : [2];
+  }
+  function segmentedBits(value, countBits) {
+    if (value === "") return 0;
+    const fresh = () => [[Infinity, Infinity, Infinity], [Infinity, Infinity], [Infinity]];
+    const close = (cost2) => Math.min(
+      ...cost2.flatMap((row, m) => row.map((c, r) => c + TAIL[m][r]))
+    );
+    let cost = fresh();
+    let first = true;
+    for (const ch of value) {
+      const next = fresh();
+      const byteBits = 8 * utf8Length(ch);
+      const closed = first ? 0 : close(cost);
+      for (const m2 of modesFor(ch)) {
+        const start = closed + 4 + countBits[m2];
+        if (m2 === 2) next[2][0] = Math.min(next[2][0], start + byteBits);
+        else next[m2][1] = Math.min(next[m2][1], start);
+        if (first) continue;
+        cost[m2].forEach((c, r) => {
+          if (c === Infinity) return;
+          if (m2 === 2) next[2][0] = Math.min(next[2][0], c + byteBits);
+          else if (r + 1 === GROUP[m2]) next[m2][0] = Math.min(next[m2][0], c + (m2 === 0 ? 10 : 11));
+          else next[m2][r + 1] = Math.min(next[m2][r + 1], c);
+        });
+      }
+      cost = next;
+      first = false;
+    }
+    return close(cost);
+  }
   function qrModules(value) {
+    const short = segmentedBits(value, COUNT_BITS[0]);
+    for (let version = 1; version <= DATA_BITS_M.length; version += 1) {
+      const bits = version < 10 ? short : segmentedBits(value, COUNT_BITS[1]);
+      if (bits <= DATA_BITS_M[version - 1]) return 17 + 4 * version;
+    }
     let mode;
     let length;
     if (NUMERIC.test(value)) {
@@ -1637,9 +1667,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     } else {
       mode = 2;
       length = utf8Length(value);
-    }
-    for (let version = 1; version <= CAPACITY_M.length; version += 1) {
-      if (length <= CAPACITY_M[version - 1][mode]) return 17 + 4 * version;
     }
     throw new QrTooLong(`QR data too long for version 10 at error correction M (${length} ${MODE_NAMES[mode]})`);
   }

@@ -144,6 +144,9 @@ describe('rendering', () => {
     expect(node('barcode').querySelector('.lbc-bars')).not.toBeNull();
     expect(node('barcode').querySelector('text.lbc-hri')!.textContent).toBe('10482');
     expect(node('qr').querySelector('.lbc-qr-symbol')).not.toBeNull();
+    // the real code for the sample, not a placeholder pattern
+    expect(node('qr').querySelector('.lbc-qr-modules')?.getAttribute('d')).toMatch(/^M\d/);
+    expect(node('qr').querySelector('pattern')).toBeNull();
     expect(node('rule').querySelector('.lbc-shape')).not.toBeNull();
     expect(node('side-site').querySelector('.lbc-frame')!.getAttribute('transform')).toContain('rotate(270)');
   });

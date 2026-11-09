@@ -133,6 +133,16 @@ describe('qr', () => {
     expect(qrModules('٣'.repeat(20))).toBe(29);
   });
 
+  it('sizes a mixed value by its shortest segments, as Labelary renders it', () => {
+    expect(qrModules('abc12345678901234567890')).toBe(21);   // one byte segment would need v2
+    expect(qrModules('CN0123456789012345678')).toBe(21);     // 21 alphanumerics would need v2
+    expect(qrModules('SN0000001')).toBe(21);
+    expect(qrModules('Dell PowerEdge R740')).toBe(25);
+    expect(qrModules('https://portal.serversherpa.com/assets/100417')).toBe(33);
+    expect(qrModules('ABC1234567890123456789012345678')).toBe(25);
+    expect(qrModules('RACK 14.01.07C.02.03 / RU 12 / NAP11-HALL-B')).toBe(29);
+  });
+
   it('raises QrTooLong, a DesignError, past version 10', () => {
     let caught: unknown;
     try {

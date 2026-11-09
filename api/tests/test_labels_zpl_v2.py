@@ -212,6 +212,19 @@ def test_qr_modules_pick_the_smallest_version_at_level_m():
         qr_modules("x" * 214)                        # beyond v10's 213 bytes
 
 
+def test_qr_modules_size_mixed_values_by_their_shortest_segments():
+    """The printer splits a mixed value into numeric, alphanumeric and byte
+    segments, so a long run of digits takes ~3.3 bits each instead of 5.5
+    or 8. Sizes as Labelary rendered them (2026-11-09)."""
+    assert qr_modules("abc12345678901234567890") == 21   # one byte segment would need v2
+    assert qr_modules("CN0123456789012345678") == 21     # 21 alphanumerics would need v2
+    assert qr_modules("SN0000001") == 21
+    assert qr_modules("Dell PowerEdge R740") == 25
+    assert qr_modules("https://portal.serversherpa.com/assets/100417") == 33
+    assert qr_modules("ABC1234567890123456789012345678") == 25
+    assert qr_modules("RACK 14.01.07C.02.03 / RU 12 / NAP11-HALL-B") == 29
+
+
 def test_qr_always_prints_upright():
     """^BQ has one orientation (N); the rotation stays in the model for the
     canvas, and a square symbol looks the same either way."""
