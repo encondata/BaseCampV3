@@ -76,6 +76,28 @@ it('labels at another DPI count as missing', async () => {
   expect(within(list).queryByText('DPI')).toBeNull();
 });
 
+it('says when it switched to the connected printer, until dismissed', async () => {
+  station.switched = { from: 'ZD421-300dpi · 300 DPI', to: 'ZD411-203dpi · 203 DPI' };
+  render_();
+  const text = 'Switched to the connected printer: ZD411-203dpi · 203 DPI (was ZD421-300dpi · 300 DPI). '
+    + 'Offsets were reset — run the alignment test in Printer Setup if labels sit off.';
+  const note = (await screen.findByText(text)).closest('.plabels-notice') as HTMLElement;
+  expect(note.className).toContain('info');
+  await userEvent.click(within(note).getByRole('button', { name: 'Dismiss' }));
+  expect(screen.queryByText(text)).toBeNull();
+});
+
+it('says when the connected printer could not be switched to, linking Printer Setup', async () => {
+  station.state = 'needs_usb';
+  station.switchError = "this kiosk's storage is full";
+  render_();
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toContain(
+    "Couldn't switch to the connected printer: this kiosk's storage is full. Set it up in Printer Setup.",
+  );
+  expect(within(alert).getByRole('link', { name: 'Printer Setup' }).getAttribute('href')).toBe('/labels/printers');
+});
+
 it('the printer line names the saved printer', async () => {
   render_();
   expect(await screen.findByText('Printer: ZD421 · 203 DPI')).toBeTruthy();

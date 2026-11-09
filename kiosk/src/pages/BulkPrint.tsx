@@ -65,6 +65,7 @@ import { labelBackend } from '../lib/labelBackend';
 import { LABEL_SECTIONS, type PrinterSetupRouteState } from '../lib/labelSections';
 import { KioskListPrefsProvider } from '../lib/listPrefs';
 import { getAll, readMeta } from '../lib/localDb';
+import { switchedText } from '../lib/stationPrinter';
 import { useSyncStatus } from '../lib/sync';
 import { useStationPrinter } from '../lib/useStationPrinter';
 
@@ -131,6 +132,8 @@ export default function BulkPrint() {
   const [containerSelected, setContainerSelected] = useState<string[]>([]);
   const [containerDisplayed, setContainerDisplayed] = useState<ContainerItem[]>([]);
   const [notice, setNotice] = useState<Notice | null>(null);
+  /** The printer switch whose notice was dismissed. */
+  const [dismissedSwitch, setDismissedSwitch] = useState<typeof station.switched>(null);
   // The operator's own print settings — the only thing ever written back.
   // A label type's `default_copies` seed lives beside it, so a seed can
   // never be saved over a value the operator chose (the portal's rule).
@@ -641,6 +644,23 @@ export default function BulkPrint() {
             {notice.action && <button type="button" className="mini-btn" onClick={notice.action.onClick}>{notice.action.label}</button>}
             <button type="button" className="mini-btn" onClick={() => setNotice(null)} aria-label="Dismiss">×</button>
           </div>
+        </div>
+      )}
+
+      {station.switched && station.switched !== dismissedSwitch && (
+        <div className="plabels-notice info" role="status">
+          <p className="page-hint">{switchedText(station.switched)}</p>
+          <div className="plabels-notice-actions">
+            <button type="button" className="mini-btn" onClick={() => setDismissedSwitch(station.switched)} aria-label="Dismiss">×</button>
+          </div>
+        </div>
+      )}
+      {station.switchError && (
+        <div className="plabels-notice error" role="alert">
+          <p className="page-hint">
+            {`Couldn't switch to the connected printer: ${station.switchError}. Set it up in `}
+            <Link to={PRINTER_SETUP_PATH} state={TO_PRINTER_SETUP}>Printer Setup</Link>.
+          </p>
         </div>
       )}
 

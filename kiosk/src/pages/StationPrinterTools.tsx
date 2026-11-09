@@ -127,7 +127,12 @@ function peelerText(present: boolean | null, peel: boolean, subject: string): st
 export default function StationPrinterTools() {
   const backend = labelBackend();
   const owner = OWNER[backend.kind];
-  const station = useStationPrinter();
+  // Open from Change printer / Check printer until the reload after it:
+  // the modal's step owns the choice of printer meanwhile, so the hook
+  // doesn't switch to one picked there (Save printer saves it with the
+  // offsets and peel it checked; Close lets go of it).
+  const [stepOwnsPrinter, setStepOwnsPrinter] = useState(false);
+  const station = useStationPrinter({ holdUsbCheck: stepOwnsPrinter });
   const { settings, printer, zebra, state } = station;
   const [setup] = useKioskSetup();
   const [vocab, setVocab] = useState<LabelVocab[]>([]);
@@ -188,6 +193,7 @@ export default function StationPrinterTools() {
 
   const openStep = (which: StepModal) => {
     deviceAtOpen.current = zebra.device ?? null;
+    setStepOwnsPrinter(true);
     setStepModal(which);
   };
 
@@ -196,10 +202,15 @@ export default function StationPrinterTools() {
     // A USB printer picked in the modal but not saved isn't the station's:
     // let go of it so the saved one is found again (also when the saved
     // printer has no serial, or is a network one).
-    if (!saved && zebra.connected && (zebra.device ?? null) !== deviceAtOpen.current) {
-      await zebra.disconnect();
+    try {
+      if (!saved && zebra.connected && (zebra.device ?? null) !== deviceAtOpen.current) {
+        await zebra.disconnect();
+      }
+      await station.reload();
+    } finally {
+      // Checked against what is saved now.
+      setStepOwnsPrinter(false);
     }
-    await station.reload();
   };
 
   let statusText: string;

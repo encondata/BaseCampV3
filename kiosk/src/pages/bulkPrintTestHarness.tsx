@@ -31,6 +31,9 @@ export interface FakeStation {
   connectUsb: () => Promise<void>;
   waitForIdle: (labels: number, onQueued?: (queued: number) => void) => Promise<void>;
   settings: LabelStationSettings | null;
+  /** The hook's `switched` / `switchError` (null unless a test sets them). */
+  switched?: { from: string; to: string } | null;
+  switchError?: string | null;
 }
 
 export const USB_SETTINGS: LabelStationSettings = {
@@ -44,6 +47,8 @@ export function resetStation(station: FakeStation): void {
   station.sendError = null;
   station.sendHook = null;
   station.settings = { ...USB_SETTINGS, printer: { ...USB_SETTINGS.printer } };
+  station.switched = null;
+  station.switchError = null;
 }
 
 const IDLE: HostStatus = {
@@ -71,6 +76,8 @@ export function stationPrinterModule(station: FakeStation) {
       printer: station.state === 'ready' ? printer : null,
       zebra: {},
       state: station.state,
+      switched: station.switched ?? null,
+      switchError: station.switchError ?? null,
       connectUsb: station.connectUsb,
       reload: async () => {},
     }),

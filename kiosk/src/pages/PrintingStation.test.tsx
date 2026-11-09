@@ -69,6 +69,8 @@ const station = vi.hoisted(() => ({
   /** The saved settings the hook reports (the laptop's network printer
    *  unless a test says otherwise). */
   settings: null as null | Record<string, unknown>,
+  switched: null as null | { from: string; to: string },
+  switchError: null as null | string,
 }));
 vi.mock('../lib/useStationPrinter', () => {
   const status: HostStatus = {
@@ -93,6 +95,8 @@ vi.mock('../lib/useStationPrinter', () => {
       printer: station.state === 'ready' ? printer : null,
       zebra: {},
       state: station.state,
+      switched: station.switched,
+      switchError: station.switchError,
       connectUsb: station.connectUsb,
       reload: async () => {},
     }),
@@ -132,6 +136,8 @@ beforeEach(async () => {
   station.state = 'ready';
   station.sent = [];
   station.settings = null;
+  station.switched = null;
+  station.switchError = null;
   build.status = null;
   build.listeners.clear();
   resetOutboxForTest();
@@ -220,6 +226,27 @@ it('needs_usb offers Connect printer', async () => {
   await userEvent.click(await screen.findByRole('button', { name: 'Connect printer' }));
   expect(station.connectUsb).toHaveBeenCalled();
   expect((screen.getByLabelText('Scan value') as HTMLInputElement).disabled).toBe(true);
+});
+
+it('says when it switched to the connected printer, until dismissed', async () => {
+  station.switched = { from: 'ZD421-300dpi · 300 DPI', to: 'ZD411-203dpi · 203 DPI' };
+  render_();
+  const text = 'Switched to the connected printer: ZD411-203dpi · 203 DPI (was ZD421-300dpi · 300 DPI). '
+    + 'Offsets were reset — run the alignment test in Printer Setup if labels sit off.';
+  expect(await screen.findByText(text)).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+  expect(screen.queryByText(text)).toBeNull();
+});
+
+it('says when the connected printer could not be switched to, linking Printer Setup', async () => {
+  station.state = 'needs_usb';
+  station.switchError = "this laptop isn't set up as a Label Station";
+  render_();
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toBe(
+    "Couldn't switch to the connected printer: this laptop isn't set up as a Label Station. Set it up in Printer Setup.",
+  );
+  expect(within(alert).getByRole('link', { name: 'Printer Setup' }).getAttribute('href')).toBe('/labels/printers');
 });
 
 it('no_settings points to Kiosk Setup', async () => {

@@ -144,6 +144,13 @@ export async function readFonts(printer: StationPrinter): Promise<DirectoryListi
 
 // ── pure helpers ────────────────────────────────────────────────────
 
+/** What Bulk Print and the Printing Station say after `useStationPrinter`
+ *  switched to a connected USB printer that wasn't the saved one. */
+export function switchedText(switched: { from: string; to: string }): string {
+  return `Switched to the connected printer: ${switched.to} (was ${switched.from}). `
+    + 'Offsets were reset — run the alignment test in Printer Setup if labels sit off.';
+}
+
 /** An SGD getvar reply's value: surrounding whitespace and double quotes
  *  stripped; `"?"` (unknown variable) and an empty reply are null. */
 export function parseGetvar(reply: string): string | null {

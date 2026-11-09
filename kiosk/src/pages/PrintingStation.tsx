@@ -55,6 +55,7 @@ import {
 } from '../lib/printQueue';
 import { buildScanIndex, matchAssetOrSerial, type ScanIndex } from '../lib/scanMatch';
 import { playScanSound } from '../lib/sound';
+import { switchedText } from '../lib/stationPrinter';
 import { useStationPrinter } from '../lib/useStationPrinter';
 import { useSyncStatus } from '../lib/sync';
 import { useWebLabelSettings } from '../lib/webLabelSettings';
@@ -195,6 +196,8 @@ export default function PrintingStation() {
   const { phase } = useSyncStatus();
   const [appearance] = useAppearance();
   const station = useStationPrinter();
+  /** The printer switch whose notice was dismissed. */
+  const [dismissedSwitch, setDismissedSwitch] = useState<typeof station.switched>(null);
   const [value, setValue] = useState('');
   const [index, setIndex] = useState<ScanIndex | null>(null);
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('loading');
@@ -520,6 +523,20 @@ export default function PrintingStation() {
         </div>
       )}
 
+      {station.switched && station.switched !== dismissedSwitch && (
+        <div className="station-printer-note" role="status">
+          <p>{switchedText(station.switched)}</p>
+          <button type="button" className="mini-btn" onClick={() => setDismissedSwitch(station.switched)}>Dismiss</button>
+        </div>
+      )}
+      {station.switchError && (
+        <div className="station-printer-note" role="alert">
+          <p>
+            {`Couldn't switch to the connected printer: ${station.switchError}. Set it up in `}
+            <Link to={PRINTER_SETUP_PATH} state={TO_PRINTER_SETUP}>Printer Setup</Link>.
+          </p>
+        </div>
+      )}
       {station.state === 'loading' && <p className="page-hint">Connecting to the label printer…</p>}
       {station.state === 'needs_usb' && (
         <div className="station-printer-note" role="status">
