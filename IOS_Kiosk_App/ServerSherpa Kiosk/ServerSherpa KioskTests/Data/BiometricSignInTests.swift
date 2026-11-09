@@ -181,6 +181,7 @@ struct BiometricSignInTests {
             (ApiError(status: 422, code: "bad_enroll_nonce"), BiometricCopy.enrollRetry(w)),
             (ApiError.network(), BiometricCopy.network(w)),
             (ApiError(status: 503, code: "read_only_mode"), BiometricCopy.enrollFailed(w)),
+            (ApiError(status: 200, code: "unknown_error"), BiometricCopy.enrollFailed(w)),
             (undecodable(), BiometricCopy.enrollFailed(w)),
         ]
         for (error, message) in cases {
@@ -397,13 +398,15 @@ struct BiometricSignInTests {
     @Test func cardOfflineOrThrottledKeepsTheKey() async throws {
         let r = Rig()
         try await r.enrolledAndSignedOut()
-        for error in [ApiError.network(), ApiError(status: 429, code: "biometric_rate_limited"), undecodable()] {
+        let errors: [Error] = [ApiError.network(), ApiError(status: 429, code: "biometric_rate_limited"),
+                               ApiError(status: 200, code: "unknown_error"), undecodable()]
+        for error in errors {
             r.api.bioChallengeResult = { _ in throw error }
             #expect(await r.bio.card() == nil, "\(error)")
             #expect(r.keys.hasKey, "\(error)")
             #expect(r.prefs.biometric != nil, "\(error)")
         }
-        #expect(r.calls == ["bioChallenge", "bioChallenge", "bioChallenge"])
+        #expect(r.calls == ["bioChallenge", "bioChallenge", "bioChallenge", "bioChallenge"])
     }
 
     @Test func invalidatedKeyHasNoCard() async throws {
@@ -598,7 +601,8 @@ struct BiometricSignInTests {
         r.api.bioChallengeResult = { _ in bioCard() }
         r.prompt.answer = nil
         #expect(await r.bio.signIn(r.prompt, name: nil) == .canceled)
-        #expect(r.prompt.reasons == [BiometricCopy.signInReasonFallback(w)])
+        #expect(await r.bio.signIn(r.prompt, name: " \n") == .canceled)
+        #expect(r.prompt.reasons == [BiometricCopy.signInReasonFallback(w), BiometricCopy.signInReasonFallback(w)])
         #expect(r.calls.isEmpty)   // a canceled prompt spends no challenge
         #expect(r.keys.hasKey)
         #expect(r.prefs.biometric != nil)
@@ -820,14 +824,67 @@ struct BiometricSignInTests {
         let r = Rig()
         try await r.enrolledAndSignedOut()
         r.api.bioChallengeResult = { _ in bioCard() }
-        r.api.bioSignInResult = { _, _, _ in throw undecodable() }
+        // What the transport throws for a 2xx body that didn't decode (a captive portal's HTML).
+        r.api.bioSignInResult = { _, _, _ in throw ApiError(status: 200, code: "unknown_error") }
         #expect(await r.bio.signIn(r.prompt, name: "Ada Lovelace") == .failed(BiometricCopy.somethingWrong(w)))
         r.api.bioSignInResult = { _, _, _ in throw ApiError.network() }
         #expect(await r.bio.signIn(r.prompt, name: "Ada Lovelace") == .failed(BiometricCopy.network(w)))
+        r.api.bioChallengeResult = { _ in throw ApiError(status: 200, code: "unknown_error") }
+        #expect(await r.bio.signIn(r.prompt, name: "Ada Lovelace") == .failed(BiometricCopy.somethingWrong(w)))
+        // Any error that isn't the API's reads the same.
         r.api.bioChallengeResult = { _ in throw undecodable() }
         #expect(await r.bio.signIn(r.prompt, name: "Ada Lovelace") == .failed(BiometricCopy.somethingWrong(w)))
+        // A non-2xx unknown_error is the server's own refusal: try again.
+        r.api.bioChallengeResult = { _ in throw ApiError(status: 500, code: "unknown_error") }
+        #expect(await r.bio.signIn(r.prompt, name: "Ada Lovelace") == .failed(BiometricCopy.tryAgain(w)))
         #expect(r.keys.hasKey)
         #expect(r.prefs.biometric != nil)
+    }
+
+    /// A card or offer `/challenge` answer that comes back after the person turned it on again
+    /// is about the old key: it never forgets the new one.
+    @Test func aLateChallengeAnswerNeverForgetsANewerKey() async throws {
+        let renewed: @Sendable (BiometricIosEnrollIn) async throws -> BiometricEnrollOut = { _ in
+            BiometricEnrollOut(keyId: "key-2", securityLevel: "secure_enclave", renewsAt: "2026-12-09T00:00:00Z")
+        }
+        // The card, signed out.
+        let r = Rig()
+        try await r.enrolledAndSignedOut()
+        let hold = HoldGate()
+        r.api.bioChallengeResult = { _ in
+            await hold.wait()
+            throw ApiError(status: 404, code: "no_biometric")
+        }
+        let card = Task { await r.bio.card() }
+        #expect(await waitUntil { r.calls.contains("bioChallenge") })
+        r.api.bioEnrollResult = renewed
+        try await r.auth.login(email: "tina@example.com", password: "pw")
+        #expect(await r.bio.enroll(r.prompt) == .enrolled)
+        let deleted = r.keys.deleted
+        await hold.open()
+        #expect(await card.value == nil)
+        #expect(r.prefs.biometric?.keyId == "key-2")
+        #expect(r.keys.hasKey)
+        #expect(r.keys.deleted == deleted)
+        // The offer, after a password sign-in.
+        let o = Rig()
+        try await o.enrolledAndSignedOut()
+        let held = HoldGate()
+        o.api.bioChallengeResult = { _ in
+            await held.wait()
+            throw ApiError(status: 404, code: "no_biometric")
+        }
+        try await o.auth.login(email: "tina@example.com", password: "pw")
+        let offer = Task { await o.bio.offerEnroll() }
+        #expect(await waitUntil { o.calls.contains("bioChallenge") })
+        o.api.bioEnrollResult = renewed
+        #expect(await o.bio.enroll(o.prompt) == .enrolled)
+        let dropped = o.keys.deleted
+        await held.open()
+        #expect(await offer.value == false)
+        #expect(o.prefs.biometric?.keyId == "key-2")
+        #expect(o.keys.hasKey)
+        #expect(o.keys.deleted == dropped)
     }
 
     @Test func aThrowingPromptIsTryAgainAndKeepsTheKey() async throws {

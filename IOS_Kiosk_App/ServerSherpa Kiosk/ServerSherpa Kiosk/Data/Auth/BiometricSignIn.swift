@@ -120,6 +120,7 @@ final class BiometricSignIn {
                 } catch {
                     if code(error) != "no_biometric" { return false }   // offline, throttled: ask another time
                 }
+                guard prefs.biometric == local else { return false }   // changed while asking: not now
                 dropLocal()
             }
         }
@@ -211,13 +212,14 @@ final class BiometricSignIn {
         do {
             c = try await api.biometricChallenge(serial: identity.current.serial)
         } catch {
-            if code(error) == "no_biometric" { dropLocal() }   // offline or throttled keeps it
+            if code(error) == "no_biometric" { dropLocal(ifStill: local) }   // offline or throttled keeps it
             return nil
         }
         guard c.keyId == local.keyId else {
-            dropLocal()
+            dropLocal(ifStill: local)
             return nil
         }
+        guard prefs.biometric == local else { return nil }   // changed while asking: a stale card
         return BiometricCard(keyId: c.keyId, challenge: c.challenge, displayName: c.displayName,
                              photoUrl: c.photoUrl, expired: c.expired, email: local.email)
     }
@@ -242,7 +244,7 @@ final class BiometricSignIn {
         case .ready:
             break
         }
-        let named = name.flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
+        let named = name.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
         let reason = named.map { BiometricCopy.signInReason(w, name: $0) } ?? BiometricCopy.signInReasonFallback(w)
         let proven: BiometricAuth
         do {
@@ -356,9 +358,21 @@ final class BiometricSignIn {
         prefs.biometric = nil
     }
 
-    /// The API's code. Anything else (a 200 whose body didn't decode) is `unexpected`, not the
-    /// network: the transport already turns every I/O failure into `ApiError.network()`.
-    private func code(_ error: Error) -> String { (error as? ApiError)?.code ?? Self.unexpected }
+    /// `dropLocal()` for an answer about `local` that came back after an await: only while
+    /// `local` is still the enrollment, so a late answer never forgets a newer key (or one a
+    /// running Turn on is making).
+    private func dropLocal(ifStill local: BiometricEnrollment) {
+        guard prefs.biometric == local else { return }
+        dropLocal()
+    }
+
+    /// The API's code. A 2xx whose body didn't decode (the transport's `unknown_error` with that
+    /// status, a captive portal's HTML, say) or any other error is `unexpected`, not the network:
+    /// the transport already turns every I/O failure into `ApiError.network()`.
+    private func code(_ error: Error) -> String {
+        guard let api = error as? ApiError, !(200..<300).contains(api.status) else { return Self.unexpected }
+        return api.code
+    }
 
     private static let unexpected = "unexpected"
 
