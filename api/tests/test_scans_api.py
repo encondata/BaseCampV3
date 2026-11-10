@@ -179,7 +179,9 @@ async def test_scans_view_gate(client, db, seeded_user):
     db.add(PersonRole(person_id=w.id, role="worker"))
     await db.commit()
     hdrs = await make_login(db, client, w, "wk-noscan@test.example.com")
-    for path in ("/scans/raw", "/scans/processed", "/scans/stats/daily"):
+    for path in ("/scans/raw", "/scans/processed", "/scans/stats/daily",
+                 "/scans/raw/1/record",
+                 "/scans/processed/00000000-0000-0000-0000-000000000000/record"):
         resp = await client.get(path, headers=hdrs)
         assert resp.status_code == 403, path
 

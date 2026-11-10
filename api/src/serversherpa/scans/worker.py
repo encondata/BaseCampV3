@@ -4,7 +4,11 @@ rules → delete the raw row. Errors roll back the whole scan (raw row
 intact — no V2-style silent loss); a follow-up transaction stamps
 match_attempted_at and logs an error execution so the slow sweep
 retries it. No signal handlers, matching the import worker: safety is
-per-scan commits + idempotent re-runs."""
+per-scan commits + idempotent re-runs.
+
+Every attempt saves the matcher's trace (scans/matching.py trace_record)
+on the scan: on the raw row when it doesn't match or a rule fails, on the
+processed row when it matches (migration 0125)."""
 
 import asyncio
 import logging
@@ -15,7 +19,7 @@ from sqlalchemy import select
 from serversherpa.db.models import (
     Asset, ProcessedScan, RawScan, StatusRuleExecution,
 )
-from serversherpa.scans.matching import match_scan
+from serversherpa.scans.matching import match_scan, trace_record
 from serversherpa.status_rules.engine import RuleExecutionError, apply_rules
 
 logger = logging.getLogger("serversherpa.scans.worker")
@@ -34,10 +38,15 @@ _last_sweep: datetime | None = None
 
 _COPY_FIELDS = ("scanned_value", "scan_type", "status", "scanned_at",
                 "device_id", "operator_id", "site_id", "location_detail",
-                "source", "off_move")
+                "source", "off_move", "kiosk_asset_id", "client_scan_id",
+                "scan_status", "initiative_id")
 
 
-async def _stamp_error(maker, raw_id: int, err: Exception) -> None:
+async def _stamp_error(maker, raw_id: int, err: Exception,
+                       trace: dict | None = None) -> None:
+    """The scan's transaction rolled back: stamp the attempt, keep the
+    trace the matcher got as far as (outcome "error", with the message),
+    and log an error execution."""
     rule_id = getattr(err, "rule_id", None)
     rule_name = getattr(err, "rule_name", None)
     try:
@@ -45,6 +54,15 @@ async def _stamp_error(maker, raw_id: int, err: Exception) -> None:
             raw = await db.get(RawScan, raw_id)
             if raw is not None:
                 raw.match_attempted_at = datetime.now(UTC)
+                raw.match_trace = {
+                    **(trace or {"attempted_at": raw.match_attempted_at.isoformat(),
+                                 "value": raw.scanned_value}),
+                    **({"matched": trace["outcome"] == "matched"} if trace else {}),
+                    "outcome": "error", "error": str(err)[:2000],
+                    "reason": ("A status rule failed after the match; the scan "
+                               "stays raw and is retried" if rule_id is not None
+                               else "Processing failed; the scan stays raw and "
+                                    "is retried")}
             db.add(StatusRuleExecution(
                 rule_id=rule_id, rule_name=rule_name or "(scan processing)",
                 processed_scan_id=None, conditions_met=rule_id is not None,
@@ -55,6 +73,7 @@ async def _stamp_error(maker, raw_id: int, err: Exception) -> None:
 
 
 async def process_raw_scan(maker, raw_id: int) -> str:
+    trace: dict | None = None
     try:
         async with maker() as db:
             raw = await db.scalar(
@@ -62,14 +81,20 @@ async def process_raw_scan(maker, raw_id: int) -> str:
                 .with_for_update(skip_locked=True))
             if raw is None:
                 return "gone"
+            steps: list = []
+            attempted_at = datetime.now(UTC)
             match = await match_scan(db, raw.scanned_value,
-                                    scan_type=raw.scan_type)
+                                    scan_type=raw.scan_type, trace=steps)
+            trace = trace_record(raw.scanned_value, raw.scan_type, steps,
+                                 match, attempted_at)
             if match is None:
-                raw.match_attempted_at = datetime.now(UTC)
+                raw.match_attempted_at = attempted_at
+                raw.match_trace = trace
                 await db.commit()
                 return "unmatched"
             processed = ProcessedScan(
                 **{f: getattr(raw, f) for f in _COPY_FIELDS},
+                match_trace=trace,
                 raw_scan_id=raw.id, match_type=match.match_type,
                 asset_id=(match.target_id
                           if match.match_type == "asset" else None),
@@ -96,11 +121,11 @@ async def process_raw_scan(maker, raw_id: int) -> str:
             return "matched"
     except RuleExecutionError as err:
         logger.exception("raw scan %s: rule failed", raw_id)
-        await _stamp_error(maker, raw_id, err)
+        await _stamp_error(maker, raw_id, err, trace)
         return "error"
     except Exception as err:
         logger.exception("raw scan %s: processing failed", raw_id)
-        await _stamp_error(maker, raw_id, err)
+        await _stamp_error(maker, raw_id, err, trace)
         return "error"
 
 

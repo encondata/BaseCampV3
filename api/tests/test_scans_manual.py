@@ -58,6 +58,12 @@ async def test_records_a_manual_scan_with_the_editor(db):
     assert row.raw_scan_id is None
     assert row.match_type == "asset" and row.asset_id == asset.id
     assert asset.last_seen_at is None            # not a presence read
+    # migration 0125: the move it was edited on, and a "manual" trace
+    assert row.initiative_id == _move.id and row.scan_status == "in_transit"
+    assert row.match_trace["mode"] == "manual"
+    assert row.match_trace["outcome"] == "matched"
+    assert row.match_trace["matched_on"] == "manual"
+    assert row.match_trace["matched_id"] == str(asset.id)
 
 
 async def test_falls_back_to_the_asset_id_without_a_serial(db):

@@ -10,6 +10,7 @@ import { Link } from 'react-router-dom';
 
 import { useAuth } from '../../auth/AuthContext';
 import GodDeleteButton from '../GodDeleteButton';
+import ScanDetailViews from './ScanDetailViews';
 import {
   ApiError,
   listProcessedScans,
@@ -380,13 +381,15 @@ export default function ProcessedScansTab({ onCount }: {
                     <div className="detail-clip">
                       <div className="detail-inner">
                         {open && (
-                          <ProcessedScanRowDetail
-                            scan={s}
-                            godVisible={godMode}
-                            pending={pd.pendingIds.has(s.id)}
-                            onMark={() => pd.mark('processed_scan', s.id, s.scanned_value)}
-                            onUnmark={() => pd.unmark(s.id)}
-                          />
+                          <ScanDetailViews kind="processed" id={s.id}>
+                            <ProcessedScanRowDetail
+                              scan={s}
+                              godVisible={godMode}
+                              pending={pd.pendingIds.has(s.id)}
+                              onMark={() => pd.mark('processed_scan', s.id, s.scanned_value)}
+                              onUnmark={() => pd.unmark(s.id)}
+                            />
+                          </ScanDetailViews>
                         )}
                       </div>
                     </div>
@@ -400,8 +403,8 @@ export default function ProcessedScansTab({ onCount }: {
   );
 }
 
-/* ── row detail: read-only — no interactive elements besides the god
- *    delete button. ── */
+/* ── row detail (the Details view under ScanDetailViews): read-only —
+ *    no interactive elements besides the god delete button. ── */
 
 function ProcessedScanRowDetail({ scan, godVisible, pending, onMark, onUnmark }: {
   scan: ProcessedScanRow; godVisible: boolean; pending: boolean;

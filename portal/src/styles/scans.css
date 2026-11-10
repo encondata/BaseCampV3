@@ -1,0 +1,24 @@
+/* Admin → Scans: an expanded entry's Details | Raw switch and the Raw view
+   (components/scans/ScanDetailViews.tsx). */
+
+.scan-detail-views { display: flex; flex-direction: column; gap: 14px; }
+.scan-detail-views > .segmented { align-self: flex-start; }
+
+.scan-json {
+  position: relative;
+  background: var(--surface-2);
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+}
+.scan-json pre {
+  margin: 0;
+  padding: 14px 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-dark);
+  /* long values wrap instead of scrolling sideways */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.scan-json-copy { position: absolute; top: 10px; right: 10px; }

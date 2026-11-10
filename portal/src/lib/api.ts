@@ -3270,6 +3270,19 @@ export async function listScanDailyStats(days: number): Promise<ScanDailyStat[]>
   return resp.json();
 }
 
+/** A scan as one JSON document for an entry's Raw view (GET
+ *  /scans/raw/{id}/record, /scans/processed/{id}/record): every stored
+ *  field, the names behind its ids, the kiosk's own match, the matcher's
+ *  trace and, for a processed scan, what it matched and the rules that ran.
+ *  A raw scan that has matched since answers 404 `scan_not_found`. */
+export async function getScanRecord(
+  kind: 'raw' | 'processed', id: string | number, signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const resp = await apiFetch(`/scans/${kind}/${encodeURIComponent(String(id))}/record`, { signal });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 export async function listProcessedScans(): Promise<ProcessedScanRow[]> {
   const resp = await apiFetch('/scans/processed');
   if (!resp.ok) throw await errorFrom(resp);

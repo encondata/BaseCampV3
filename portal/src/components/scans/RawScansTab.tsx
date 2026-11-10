@@ -22,6 +22,7 @@ import {
   type ColumnValuesSource,
 } from '../../lib/columnMenu';
 import { DateRangeMenu } from '../../lib/dateRangeMenu';
+import ScanDetailViews from './ScanDetailViews';
 import {
   applyColumnOrder,
   ColHead,
@@ -291,7 +292,11 @@ export default function RawScansTab({ onCount }: {
                   <div className="detail">
                     <div className="detail-clip">
                       <div className="detail-inner">
-                        {open && <RawScanRowDetail scan={r} />}
+                        {open && (
+                          <ScanDetailViews kind="raw" id={r.id}>
+                            <RawScanRowDetail scan={r} />
+                          </ScanDetailViews>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -314,7 +319,7 @@ export default function RawScansTab({ onCount }: {
   );
 }
 
-/* ── row detail: read-only, no interactive elements. ── */
+/* ── row detail (the Details view under ScanDetailViews): read-only. ── */
 
 function RawScanRowDetail({ scan }: { scan: RawScanRow }) {
   return (
