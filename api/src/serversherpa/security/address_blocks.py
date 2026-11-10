@@ -31,7 +31,7 @@ from fastapi import HTTPException, Request
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.api.deps import rate_limit_ip
+from serversherpa.api.deps import DbSession, rate_limit_ip
 from serversherpa.db.models import AddressBlock, SignInFailure
 from serversherpa.wiki.share_links import bucket_for
 
@@ -184,6 +184,13 @@ async def raise_if_blocked(db: AsyncSession, request: Request) -> None:
     block = await active_block(db, address, now)
     if block is not None:
         raise blocked_error(block, now)
+
+
+async def guard_sign_in(request: Request, db: DbSession) -> None:
+    """Dependency form of `raise_if_blocked`, for a route whose other
+    dependencies (the 2FA challenge check) must not run first: declare it
+    ahead of them."""
+    await raise_if_blocked(db, request)
 
 
 async def _on_trip(db: AsyncSession, block: AddressBlock) -> None:

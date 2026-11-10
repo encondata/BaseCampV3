@@ -6,7 +6,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Cookie, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.deps import (
@@ -23,6 +23,8 @@ from serversherpa.api.schemas import (
 from serversherpa.config import get_settings
 from serversherpa.db.models import AuthSession, Initiative, UserAccount
 from serversherpa.notifications.schedule import zone_loads
+from serversherpa.security import address_blocks
+from serversherpa.security.address_blocks import guard_sign_in, raise_if_blocked, record_failure
 from serversherpa.services import auth as auth_service
 from serversherpa.services import password_reset
 from serversherpa.services import totp as totp_service
@@ -168,6 +170,13 @@ def session_response(result: AuthResult, response: Response, totp: TotpStatusOut
     )
 
 
+# AuthError codes that count toward a sign-in address block (SS-487). Not
+# account_disabled, kiosk_not_allowed, password_change_required: those
+# mean the credential was right.
+_COUNTED_LOGIN = frozenset({"invalid_credentials", "account_locked"})
+_COUNTED_TOTP = frozenset({"totp_invalid", "account_locked"})
+
+
 def _auth_http_error(exc: AuthError) -> HTTPException:
     return HTTPException(
         status_code=_STATUS.get(exc.code, 401), detail={"code": exc.code})
@@ -217,14 +226,18 @@ async def password_reset_request(
 async def password_reset_check(
     body: PasswordResetCheckIn, request: Request, db: DbSession,
 ) -> PasswordResetCheckOut:
+    await raise_if_blocked(db, request)
     _limit(reset_confirm_limiter, request)
     if len(body.token) > MAX_RESET_TOKEN_LEN:
+        await record_failure(db, request, address_blocks.RESET_CHECK)
         return PasswordResetCheckOut(valid=False, first_password=False)
     found = await password_reset.find_valid(db, body.token)
     # from the same lookup that validated the token: has this account ever
     # had a password? (an invite, or a reset asked for before it was used)
     first_password = found is not None and found[1].password_hash is None
     await db.rollback()          # release the FOR UPDATE lock
+    if found is None:
+        await record_failure(db, request, address_blocks.RESET_CHECK)
     return PasswordResetCheckOut(valid=found is not None, first_password=first_password)
 
 
@@ -232,11 +245,15 @@ async def password_reset_check(
 async def password_reset_confirm(
     body: PasswordResetConfirmIn, request: Request, db: DbSession,
 ) -> None:
+    await raise_if_blocked(db, request)
     _limit(reset_confirm_limiter, request)
     if len(body.token) > MAX_RESET_TOKEN_LEN:
+        await record_failure(db, request, address_blocks.RESET_CONFIRM)
         raise _invalid_reset()
     found = await password_reset.find_valid(db, body.token)
     if found is None:
+        await db.rollback()
+        await record_failure(db, request, address_blocks.RESET_CONFIRM)
         raise _invalid_reset()
     token, account = found
     require_password_length(body.new_password)
@@ -251,6 +268,7 @@ async def login(
     body: LoginIn, request: Request, response: Response, db: DbSession,
     ss_trust: Annotated[str | None, Cookie()] = None,
 ) -> SessionOut | LoginChallengeOut:
+    await raise_if_blocked(db, request)
     try:
         result = await auth_service.login(
             db, email=body.email, password=body.password,
@@ -258,6 +276,8 @@ async def login(
             client=body.client, trust_token=ss_trust,
         )
     except AuthError as exc:
+        if exc.code in _COUNTED_LOGIN:
+            await record_failure(db, request, address_blocks.LOGIN)
         raise _auth_http_error(exc) from None
     if isinstance(result, LoginChallenge):
         return LoginChallengeOut(
@@ -434,6 +454,7 @@ async def _finish_challenge(
 @router.post("/totp/verify", response_model=SessionOut)
 async def totp_verify(
     body: TotpVerifyIn, request: Request, response: Response, db: DbSession,
+    _guard: Annotated[None, Depends(guard_sign_in)],
     actor: TotpChallengeOrUser,
 ) -> SessionOut:
     if actor.purpose != "verify":
@@ -441,6 +462,8 @@ async def totp_verify(
     try:
         await totp_service.verify_code(db, actor.account, body.code, ip=client_ip(request))
     except AuthError as exc:
+        if exc.code in _COUNTED_TOTP:
+            await record_failure(db, request, address_blocks.TOTP_VERIFY)
         raise _auth_http_error(exc) from None
     return await _finish_challenge(db, actor, request, response, remember=body.remember)
 

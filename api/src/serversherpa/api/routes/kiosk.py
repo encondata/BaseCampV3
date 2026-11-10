@@ -95,6 +95,7 @@ from serversherpa.labels.mock_render import (  # noqa: F401 (re-exported)
 from serversherpa.labels.template_fonts import design_fonts, fonts_used
 from serversherpa.learning import timeclock as learning_timeclock
 from serversherpa.learning.models import LearningOverride
+from serversherpa.security import address_blocks
 from serversherpa.services import auth as auth_service
 from serversherpa.services.asset_lookup import (
     asset_in_reach, asset_moves, find_assets, lookup_reach,
@@ -285,6 +286,7 @@ async def move_login(
     """Sign a kiosk in with a move's password. The session belongs to the
     move's hidden kiosk identity and is locked to that move (see
     kiosk_setup/setup_options and services/move_password.py)."""
+    await address_blocks.raise_if_blocked(db, request)
     raw_ip = rate_limit_ip(request)
     ip = _inet_or_none(raw_ip)
     bucket = move_login_bucket(raw_ip)
@@ -292,7 +294,9 @@ async def move_login(
         raise _err(429, "move_login_rate_limited")
     initiative = await move_password_service.find_initiative_by_password(db, body.password)
     if initiative is None:
-        raise await _move_login_failed(db, ip, bucket, "invalid_move_password")
+        error = await _move_login_failed(db, ip, bucket, "invalid_move_password")
+        await address_blocks.record_failure(db, request, address_blocks.MOVE_LOGIN)
+        raise error
     if not move_password_service.is_move_active(initiative):
         raise await _move_login_failed(db, ip, bucket, "move_not_active",
                                        initiative_id=str(initiative.id))

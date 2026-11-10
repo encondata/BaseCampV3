@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from serversherpa.db.models import AuditLog, Device, Initiative, Person, Site, StatusValue
 from serversherpa.services import auth as auth_service
+from serversherpa.services.audit import audit
 from serversherpa.services.auth import AuthError
 from tests.test_sites_api import login
 from tests.test_status_values_write import _make
@@ -295,14 +296,28 @@ async def test_move_login_rate_limit_shares_an_ipv6_64_and_has_a_global_cap(
 
     def xff(addr):
         return {"X-Forwarded-For": addr}
-    # one subscriber rotating addresses inside a /64 keeps one budget
-    for n in range(limit):
+    # one subscriber rotating addresses inside a /64 keeps one budget. The
+    # sign-in address block (SS-487) would stop the /64 at its 10th failure,
+    # so the rest of the cap's budget is seeded as the same audit rows the
+    # route writes, keyed by the /64 bucket.
+    http_failures = 9
+    for n in range(http_failures):
         r = await client.post("/kiosk/move-login", json={"password": "wrong-wrong"},
                               headers=xff(f"2001:db8:9:9:{n + 1:x}::1"))
         assert r.status_code == 401
+        assert r.json()["detail"]["code"] == "invalid_move_password"
+    rows = list(await db.scalars(select(AuditLog).where(
+        AuditLog.entity_id == kiosk_routes.MOVE_LOGIN_AUDIT_ID,
+        AuditLog.action == "login_failed")))
+    assert {row.changes["bucket"] for row in rows} == {"2001:db8:9:9::/64"}
+    for _ in range(limit - http_failures):
+        audit(db, actor_id=None, entity_type="auth", entity_id=kiosk_routes.MOVE_LOGIN_AUDIT_ID,
+              action="login_failed",
+              changes={"reason": "invalid_move_password", "bucket": "2001:db8:9:9::/64"})
+    await db.commit()
     r = await client.post("/kiosk/move-login", json={"password": PW},
                           headers=xff("2001:db8:9:9:ffff::7"))
-    assert r.status_code == 429
+    assert r.status_code == 429 and r.json()["detail"]["code"] == "move_login_rate_limited"
     # another /64 is unaffected
     r = await client.post("/kiosk/move-login", json={"password": PW}, headers=xff("2001:db8:9:8::1"))
     assert r.status_code == 200, r.text
