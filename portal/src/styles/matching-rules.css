@@ -178,7 +178,6 @@
   --xy-controls-button-color-hover: var(--accent);
   --xy-controls-button-border-color: var(--paper-line);
   --xy-controls-box-shadow: none;
-  --xy-attribution-background-color: transparent;
   min-width: 0;
   height: var(--mr-editor-h);
   border: 1px solid var(--paper-line);
@@ -205,7 +204,6 @@
   font-size: 11px;
   color: var(--text-mute);
 }
-.mr-canvas .react-flow__attribution a { color: var(--text-mute); }
 
 /* a step */
 .mr-node {

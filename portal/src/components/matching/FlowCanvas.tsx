@@ -234,6 +234,7 @@ function Canvas({ flow, selected, warnings, lit, onChange, onSelect, onDropKind,
         fitViewOptions={FIT_OPTIONS}
         minZoom={MIN_ZOOM}
         maxZoom={MAX_ZOOM}
+        proOptions={{ hideAttribution: true }}
       >
         <Background />
         <ZoomControls />

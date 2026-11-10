@@ -79,6 +79,12 @@ it('renders each step with its title and output labels', () => {
   expect(screen.getByText('none')).toBeTruthy();
 });
 
+it('shows no React Flow credit link', () => {
+  const { container } = renderCanvas();
+  expect(container.querySelector('.react-flow__attribution')).toBeNull();
+  expect(screen.queryByRole('link', { name: /react flow/i })).toBeNull();
+});
+
 it('marks warned and lit steps', () => {
   const { container, unmount } = renderCanvas({ warnings: new Set(['n3']) });
   expect(nodeEl(container, 'n3').classList.contains('mr-warn')).toBe(true);
