@@ -210,6 +210,11 @@ export default function MatchingRules() {
             void loadVersions();
             if (selectedId) void loadDetail(selectedId);
           }}
+          onStale={() => {
+            // the dialog stays open on its message; the list behind it catches up
+            void loadVersions();
+            if (selectedId) void loadDetail(selectedId);
+          }}
           onCheckFailed={(c) => {
             detailSeq.current += 1;
             setCheck(c);

@@ -2,8 +2,9 @@
  *  makes the change. A version that fails the check stays put: the dialog
  *  says so and stays open, and the page fills its check panel from the
  *  refusal's `check` (onCheckFailed). A version another tab moved on
- *  meanwhile (409 bad_state) says what it is now and calls onDone, so the
- *  page reloads the list. */
+ *  meanwhile (409 bad_state) says what it is now and stays open with only
+ *  Close, since the change no longer applies; onStale lets the page reload
+ *  the list behind it. */
 
 import { useState } from 'react';
 
@@ -43,7 +44,7 @@ function callFor(kind: StateChangeKind): (id: string) => Promise<unknown> {
 }
 
 export default function StateChangeModal({
-  kind, version, liveVersion, placeLabel, onClose, onDone, onCheckFailed,
+  kind, version, liveVersion, placeLabel, onClose, onDone, onCheckFailed, onStale,
 }: {
   kind: StateChangeKind;
   version: MatchingVersion;
@@ -52,9 +53,12 @@ export default function StateChangeModal({
   onClose: () => void;
   onDone: () => void;
   onCheckFailed?: (check: MatchingCheck) => void;
+  /** The version changed state meanwhile: reload behind the open dialog. */
+  onStale?: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [stale, setStale] = useState(false);
   const copy = copyFor(kind, version.version, liveVersion, placeLabel);
 
   const run = async () => {
@@ -69,12 +73,13 @@ export default function StateChangeModal({
         const check = (err.detail as { check?: MatchingCheck } | undefined)?.check;
         if (check) onCheckFailed?.(check);
       } else if (err instanceof ApiError && err.code === 'bad_state') {
-        // another tab moved it on meanwhile: say what it is now, and let
-        // the page reload the list (which may close this dialog)
+        // another tab moved it on meanwhile: say what it is now, keep the
+        // dialog up, and let the page reload the list behind it
         const state = (err.detail as { state?: string } | undefined)?.state;
         const label = STATE_LABELS.find((s) => s.key === state)?.label ?? state ?? 'changed';
         setError(`v${version.version} is now ${label}.`);
-        onDone();
+        setStale(true);
+        onStale?.();
       } else {
         setError(`Couldn't change v${version.version}. Try again.`);
       }
@@ -85,7 +90,9 @@ export default function StateChangeModal({
   return (
     <StandardModal eyebrow="Matching rules" title={copy.title} description={copy.hint} cardClass="mr-confirm-card"
       busy={busy} onClose={onClose}
-      footer={(
+      footer={stale ? (
+        <button type="button" className="mini-btn" onClick={onClose}>Close</button>
+      ) : (
         <>
           <button type="button" className="btn-solid" disabled={busy} onClick={() => void run()}>
             {copy.button}

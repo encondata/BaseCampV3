@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 /**
  * StateChangeModal — a version another tab moved on (409 bad_state) says
- * what it is now and hands back to the page, which reloads the list.
+ * what it is now and stays open with only Close; onStale lets the page
+ * reload the list behind it.
  */
 
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
@@ -31,14 +32,22 @@ const V2: MatchingVersion = {
 beforeEach(() => { Object.values(api).forEach((f) => f.mockReset()); });
 afterEach(cleanup);
 
-it('a version that changed state meanwhile says what it is now and reloads', async () => {
+it('a version that changed state meanwhile says what it is now, stays open and reloads', async () => {
   const user = userEvent.setup();
   const onDone = vi.fn();
+  const onStale = vi.fn();
+  const onClose = vi.fn();
   api.standbyMatchingVersion.mockRejectedValue(new ApiError(409, 'bad_state', { code: 'bad_state', state: 'live' }));
   render(<StateChangeModal kind="standby" version={V2} liveVersion={1} placeLabel="Printing"
-                           onClose={vi.fn()} onDone={onDone} />);
+                           onClose={onClose} onDone={onDone} onStale={onStale} />);
   await user.click(screen.getByRole('button', { name: 'Save as standby' }));
 
   expect((await screen.findByRole('alert')).textContent).toBe('v2 is now Live.');
-  await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(onStale).toHaveBeenCalledTimes(1));
+  expect(onDone).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Save as standby' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
+  // the footer's Close (the header's X is labeled Close too)
+  await user.click(screen.getAllByRole('button', { name: 'Close' }).find((b) => b.textContent === 'Close')!);
+  expect(onClose).toHaveBeenCalledTimes(1);
 });

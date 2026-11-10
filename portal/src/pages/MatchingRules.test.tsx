@@ -214,6 +214,33 @@ it('a failing deploy keeps the dialog and fills the check panel', async () => {
   expect(item.textContent).toContain('Problem 1');
 });
 
+it('a version that changed state meanwhile keeps the dialog on its message and reloads behind it', async () => {
+  versions = [version({ id: 'v2id', version: 2, state: 'draft' }), version()];
+  api.deployMatchingVersion.mockImplementation(async () => {
+    versions = [version({ id: 'v2id', version: 2, state: 'standby' }), version()];
+    throw new ApiError(409, 'bad_state', { code: 'bad_state', state: 'standby' });
+  });
+  const user = renderPage();
+  const row = await versionRow('v2');
+
+  await user.click(within(row).getByRole('button', { name: /actions/i }));
+  await user.click(await screen.findByRole('menuitem', { name: 'Deploy' }));
+  const dialog = await screen.findByRole('dialog');
+  const before = api.listMatchingVersions.mock.calls.length;
+  await user.click(within(dialog).getByRole('button', { name: 'Deploy' }));
+
+  expect(await within(dialog).findByText('v2 is now Standby.')).toBeTruthy();
+  await waitFor(() => expect(api.listMatchingVersions.mock.calls.length).toBeGreaterThan(before));
+  await waitFor(async () => expect((await versionRow('v2')).textContent).toContain('Standby'));
+  expect(screen.getByRole('dialog')).toBe(dialog);
+  expect(within(dialog).queryByRole('button', { name: 'Deploy' })).toBeNull();
+  expect(within(dialog).getByText('v2 is now Standby.')).toBeTruthy();
+
+  // the footer's Close (the header's X is labeled Close too)
+  await user.click(within(dialog).getAllByRole('button', { name: 'Close' }).find((b) => b.textContent === 'Close')!);
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+});
+
 it("flags a live version that fails today", async () => {
   versions = [version({ current: { passed: 8, total: 9, ok: false, checked_at: null } })];
   renderPage();
