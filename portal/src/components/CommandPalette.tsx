@@ -100,6 +100,7 @@ export default function CommandPalette() {
       ...navGated('Developer tools', '/dev', 'devtools', true),
       ...navGated('Database', '/dev/database', 'devtools', true),
       ...navGated('Variables', '/dev/database/variables', 'devtools', true),
+      ...navGated('Matching rules', '/dev/matching-rules', 'devtools', true),
       { group: 'Navigate', label: 'View my profile', icon: NAV_ICON, run: () => navigate('/me') },
       { group: 'Navigate', label: 'My preferences', icon: NAV_ICON, run: () => navigate('/me/preferences') },
       { group: 'Navigate', label: 'All notifications', icon: NAV_ICON, run: () => navigate('/notifications') },

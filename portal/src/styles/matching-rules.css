@@ -1,0 +1,80 @@
+/* Developer › Matching rules — the management page and its dialogs.
+ * Tokens only; the tables are DataTable, so their typography stays in
+ * directory.css. */
+
+/* ── page layout: versions on top, check + test assets below ────── */
+.mr-layout { display: flex; flex-direction: column; gap: 16px; }
+.mr-lower {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(0, 2fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 1100px) { .mr-lower { grid-template-columns: 1fr; } }
+
+/* a panel is its own rounded scroll box (in chrome.css's scrollbar list) */
+.mr-scroll {
+  background: var(--surface);
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  min-width: 0;
+  max-height: 560px;
+  overflow: auto;
+}
+/* not upper-cased: "Check · v2" keeps its lower-case version number */
+.mr-panel-title {
+  margin: 0 0 12px;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-dark);
+}
+.mr-panel-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.mr-panel-bar .mr-panel-title { margin: 0; }
+.mr-panel .page-hint { margin: 0 0 10px; }
+
+/* the selected version row */
+.mr-versions tbody tr { cursor: pointer; }
+.mr-versions tbody tr[aria-selected='true'] td { background: rgba(var(--accent-rgb), 0.1); }
+.mr-versions tbody tr[aria-selected='true'] td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
+.mr-actions { display: flex; justify-content: flex-end; }
+.mr-tests-cell { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+
+/* ── check panel ───────────────────────────────────────────────── */
+.mr-check { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.mr-check-mark { display: inline-block; width: 1.4em; }
+.mr-check .is-ok .mr-check-mark { color: var(--ok); }
+.mr-check .is-bad .mr-check-mark { color: var(--c-red); }
+.mr-problems { margin: 4px 0 0 1.4em; padding-left: 14px; color: var(--text-mute); }
+.mr-check-sum { margin: 0 0 4px; color: var(--text-dark); }
+.mr-check-sum.is-muted { color: var(--text-mute); }
+
+/* ── test results ──────────────────────────────────────────────── */
+.mr-pass { color: var(--ok); white-space: nowrap; }
+.mr-fail { color: var(--c-red); white-space: nowrap; }
+
+/* ── dialogs ───────────────────────────────────────────────────── */
+.modal-card.reports-modal-card.rgm-card.mr-confirm-card { width: min(560px, 96vw); max-width: 96vw; }
+.modal-card.reports-modal-card.rgm-card.mr-asset-card { width: min(860px, 96vw); max-width: 96vw; }
+.mr-expected { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+/* doubled with .pf-form so its two-column grid can't win by import order */
+.pf-form.mr-expected-line {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(160px, 1.2fr) minmax(180px, 1.2fr) 88px;
+  gap: 10px;
+  align-items: center;
+}
+.mr-expected-labels {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(160px, 1.2fr) minmax(180px, 1.2fr) 88px;
+  gap: 10px;
+}
+.mr-expected-labels span {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.mr-modal-error { margin: 10px 0 0; }

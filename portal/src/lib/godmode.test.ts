@@ -65,6 +65,17 @@ describe('NAV_SECTIONS', () => {
     expect(isNavItemVisible(item!, canAll, true, 0, true)).toBe(true);
   });
 
+  it('hides Matching rules without god mode even when devtools is held', () => {
+    const item = NAV_SECTIONS
+      .flatMap((s) => s.items)
+      .find((i) => i.to === '/dev/matching-rules');
+
+    expect(item, 'no nav item for /dev/matching-rules').toBeDefined();
+    expect(item!.resource).toBe('devtools');
+    expect(isNavItemVisible(item!, canAll, false, 0, true)).toBe(false);
+    expect(isNavItemVisible(item!, canAll, true, 0, true)).toBe(true);
+  });
+
   it('registers Dashboards above Assets and Admin above System', () => {
     const labels = NAV_SECTIONS.map((s) => s.label);
     expect(labels.indexOf('Dashboards')).toBe(0);

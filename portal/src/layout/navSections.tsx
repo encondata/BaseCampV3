@@ -793,6 +793,19 @@ export const NAV_SECTIONS: NavSection[] = [
           </svg>
         ),
       },
+      {
+        to: '/dev/matching-rules',
+        label: 'Matching rules',
+        resource: 'devtools',
+        godOnly: true,
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 21v-8M12 13 5 6M12 13l7-7" />
+            <path d="M5 11V6h5M14 6h5v5" />
+          </svg>
+        ),
+      },
     ],
   },
   {

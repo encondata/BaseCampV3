@@ -78,6 +78,7 @@ import TruckDetail from './pages/TruckDetail';
 import UserDetail from './pages/UserDetail';
 import Users from './pages/Users';
 import Variables from './pages/Variables';
+import MatchingRules from './pages/MatchingRules';
 import Workers from './pages/Workers';
 import WorkerDetailPage from './pages/WorkerDetail';
 
@@ -308,6 +309,9 @@ export default function App() {
                 } />
                 <Route path="/dev/database/variables" element={
                   <ProtectedRoute resource="devtools"><Variables /></ProtectedRoute>
+                } />
+                <Route path="/dev/matching-rules" element={
+                  <ProtectedRoute resource="devtools"><MatchingRules /></ProtectedRoute>
                 } />
                 <Route path="/me" element={<Profile />} />
                 <Route path="/me/preferences" element={<Profile />} />

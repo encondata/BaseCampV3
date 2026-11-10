@@ -46,6 +46,7 @@ export const ROUTE_RESOURCE: Record<string, string> = {
   '/dev': 'devtools',
   '/dev/database': 'devtools',
   '/dev/database/variables': 'devtools',
+  '/dev/matching-rules': 'devtools',
 };
 
 export function computeCan(
