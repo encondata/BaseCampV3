@@ -170,6 +170,8 @@ READ_ONLY_EXEMPT_PATHS = frozenset({
     # listed for completeness): a learn session's writes freeze like any
     # other (learning/sessions.learn_actor)
     "/learn/auth/code", "/learn/auth/link", "/learn/auth/logout",
+    # matching rules: a check or a test run reads a flow and the test set and stores nothing
+    "/devtools/matching-rules/check", "/devtools/matching-rules/test-run",
 })
 READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/", "/auth/me/trusted-browsers/",
                              "/auth/me/biometric-keys/", "/kiosk/pair")

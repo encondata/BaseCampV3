@@ -14,6 +14,8 @@ from serversherpa.matching_rules.flow import Flow
 from serversherpa.matching_rules.models import MatchingTestAsset, MatchingTestRow
 from serversherpa.matching_rules.validate import CheckItem, structure_checks
 
+MAX_TEST_ASSETS = 10
+
 
 async def load_test_set(db: AsyncSession) -> list[MatchingTestAsset]:
     return list(
@@ -98,9 +100,13 @@ class CheckResult:
         }
 
 
-async def check_flow(db: AsyncSession, place: str, flow: Flow) -> CheckResult:
-    assets = await load_test_set(db)
+def check_against(flow: Flow, place: str, assets: Sequence[MatchingTestAsset]) -> CheckResult:
+    """The one place a check is composed: structure checks plus the test rows."""
     return CheckResult(structure_checks(flow), run_test_set(flow, place, assets))
+
+
+async def check_flow(db: AsyncSession, place: str, flow: Flow) -> CheckResult:
+    return check_against(flow, place, await load_test_set(db))
 
 
 async def move_targets(

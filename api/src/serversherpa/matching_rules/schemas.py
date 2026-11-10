@@ -2,12 +2,13 @@
 
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 from serversherpa.matching_rules.check import CheckResult, RowResult
-from serversherpa.matching_rules.flow import Flow, Place
+from serversherpa.matching_rules.engine import JS_WHITESPACE, RunResult, Target, TraceStep
+from serversherpa.matching_rules.flow import EXPECTED, Flow, Place
 from serversherpa.matching_rules.validate import CheckItem
 
 
@@ -137,3 +138,111 @@ class VersionUpdateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     flow: Flow
+
+
+class CheckIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    place: Place
+    flow: Flow
+
+
+class TestRunIn(BaseModel):
+    __test__ = False  # not a pytest class, despite the name
+    model_config = ConfigDict(extra="forbid")
+
+    place: Place
+    flow: Flow
+    value: Annotated[str, Field(max_length=256)]
+    against: Literal["test_set", "move"]
+    initiative_id: uuid.UUID | None = None
+
+
+def hit_out(t: Target) -> HitOut:
+    return HitOut(id=t.key, asset_tag=t.asset_tag, name=t.name, rfid=t.rfid,
+                  serial=t.serial, sits=t.sits)
+
+
+class TraceStepOut(BaseModel):
+    node_id: str
+    kind: str
+    value_in: str
+    value_out: str | None
+    output: str | None
+    hits: list[HitOut] | None
+
+
+class RunOut(BaseModel):
+    outcome: Literal["found", "not_found", "stopped"]
+    stop_reason: str | None
+    end_node_id: str | None
+    asset: HitOut | None
+    field: str | None
+    action: str | None
+    message: str | None
+    trace: list[TraceStepOut]
+
+
+def trace_step_out(s: TraceStep) -> TraceStepOut:
+    return TraceStepOut(
+        node_id=s.node_id, kind=s.kind, value_in=s.value_in, value_out=s.value_out,
+        output=s.output, hits=None if s.hits is None else [hit_out(h) for h in s.hits])
+
+
+def run_out(r: RunResult) -> RunOut:
+    return RunOut(
+        outcome=r.outcome, stop_reason=r.stop_reason, end_node_id=r.end_node_id,
+        asset=hit_out(r.asset) if r.asset else None, field=r.field, action=r.action,
+        message=r.message, trace=[trace_step_out(s) for s in r.trace])
+
+
+class TestRowIn(BaseModel):
+    __test__ = False
+    model_config = ConfigDict(extra="forbid")
+
+    place: Place
+    value: Annotated[str, Field(min_length=1, max_length=256)]
+    expected: Literal[*EXPECTED]  # type: ignore[valid-type]
+
+    @field_validator("value")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip(JS_WHITESPACE).strip():
+            raise ValueError("value is blank")
+        return v
+
+
+class TestRowOut(TestRowIn):
+    __test__ = False
+
+    id: uuid.UUID
+    test_asset_id: uuid.UUID
+
+
+def _blank_to_none(v: str | None) -> str | None:
+    if v is None or not v.strip():
+        return None
+    return v
+
+
+class TestAssetIn(BaseModel):
+    __test__ = False
+    model_config = ConfigDict(extra="forbid")
+
+    asset_tag: Annotated[int, Field(ge=1)]
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+    rfid: Annotated[str | None, Field(max_length=128)] = None
+    serial: Annotated[str | None, Field(max_length=128)] = None
+    sits: Literal["move", "client"] = "move"
+
+    @field_validator("rfid", "serial")
+    @classmethod
+    def _null_when_blank(cls, v: str | None) -> str | None:
+        return _blank_to_none(v)
+
+
+class TestAssetOut(TestAssetIn):
+    __test__ = False
+
+    id: uuid.UUID
+    rows: list[TestRowOut]
