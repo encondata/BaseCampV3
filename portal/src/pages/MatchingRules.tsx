@@ -41,8 +41,11 @@ export default function MatchingRules() {
   const [versions, setVersions] = useState<MatchingVersion[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [check, setCheck] = useState<MatchingCheck | null>(null);
-  const [assets, setAssets] = useState<MatchingTestAsset[]>([]);
-  const [error, setError] = useState('');
+  const [assets, setAssets] = useState<MatchingTestAsset[] | null>(null);
+  // One error per source, each cleared only by its own success.
+  const [versionsError, setVersionsError] = useState('');
+  const [checkError, setCheckError] = useState('');
+  const [assetsError, setAssetsError] = useState('');
   const [stateChange, setStateChange] = useState<{ kind: StateChangeKind; version: MatchingVersion } | null>(null);
   const [editing, setEditing] = useState<{ asset: MatchingTestAsset | null } | null>(null);
   const [deleting, setDeleting] = useState<MatchingTestAsset | null>(null);
@@ -54,12 +57,12 @@ export default function MatchingRules() {
     try {
       const list = await listMatchingVersions(place);
       setVersions(list);
-      setError('');
+      setVersionsError('');
       setSelectedId((cur) => (cur && list.some((v) => v.id === cur)
         ? cur
         : (list.find((v) => v.state === 'live') ?? list[0])?.id ?? null));
     } catch {
-      setError("Couldn't load the versions.");
+      setVersionsError("Couldn't load the versions.");
     }
   }, [place]);
 
@@ -68,17 +71,21 @@ export default function MatchingRules() {
     setCheck(null);
     try {
       const d = await getMatchingVersion(id);
-      if (seq === detailSeq.current) setCheck(d.check);
+      if (seq === detailSeq.current) {
+        setCheck(d.check);
+        setCheckError('');
+      }
     } catch {
-      if (seq === detailSeq.current) setError("Couldn't load the check.");
+      if (seq === detailSeq.current) setCheckError("Couldn't load the check.");
     }
   }, []);
 
   const loadAssets = useCallback(async () => {
     try {
       setAssets(await listMatchingTestAssets());
+      setAssetsError('');
     } catch {
-      setError("Couldn't load the test assets.");
+      setAssetsError("Couldn't load the test assets.");
     }
   }, []);
 
@@ -164,13 +171,12 @@ export default function MatchingRules() {
         </div>
       </div>
 
-      {error && <p className="pf-error" role="alert">{error}</p>}
-
       <div className="mr-layout">
         <section className="mr-panel mr-scroll" aria-labelledby="mr-versions-title">
           <h2 className="mr-panel-title" id="mr-versions-title">Versions</h2>
+          {versionsError && <p className="pf-error" role="alert">{versionsError}</p>}
           {versions === null ? (
-            <p className="page-hint">Loading…</p>
+            !versionsError && <p className="page-hint">Loading…</p>
           ) : (
             <VersionsTable versions={versions} selectedId={selectedId} onSelect={select} onOpen={openEditor}
                            onDeploy={(v) => askState('deploy', v)} onRollback={(v) => askState('rollback', v)} />
@@ -178,8 +184,9 @@ export default function MatchingRules() {
         </section>
 
         <div className="mr-lower">
-          <CheckPanel version={selected} check={check} />
-          <TestAssetsPanel place={place} assets={assets} results={check?.tests ?? []}
+          <CheckPanel version={selected} check={check} error={checkError} />
+          <TestAssetsPanel place={place} assets={assets ?? []} results={check?.tests ?? []}
+                           loading={assets === null} error={assetsError}
                            onAdd={() => setEditing({ asset: null })}
                            onEdit={(a) => setEditing({ asset: a })}
                            onDelete={setDeleting} />
@@ -201,6 +208,7 @@ export default function MatchingRules() {
           onCheckFailed={(c) => {
             detailSeq.current += 1;
             setCheck(c);
+            setCheckError('');
           }}
         />
       )}

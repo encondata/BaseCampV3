@@ -386,3 +386,50 @@ it('clicking a row selects it; the toolbar buttons follow its state', async () =
   await user.click(screen.getByRole('button', { name: 'Run tests' }));
   await waitFor(() => expect(api.getMatchingVersion).toHaveBeenLastCalledWith('v2id'));
 });
+
+it('Escape in an open ComboBox closes only its list, not the TestAssetModal', async () => {
+  const onClose = vi.fn();
+  const onSaved = vi.fn();
+  const user = userEvent.setup();
+  render(<TestAssetModal asset={null} onClose={onClose} onSaved={onSaved} />);
+  const dialog = screen.getByRole('dialog');
+  await user.click(within(dialog).getByRole('button', { name: 'Add expected result' }));
+  await user.click(within(dialog).getByRole('combobox', { name: 'Should find' }));
+  // the list's entries are buttons (ComboBox), portaled out of the card
+  expect(await screen.findByRole('button', { name: 'Found by serial' })).toBeTruthy();
+
+  await user.keyboard('{Escape}');
+
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Found by serial' })).toBeNull());
+  expect(screen.queryByRole('dialog')).not.toBeNull();
+  expect(onClose).not.toHaveBeenCalled();
+  expect(onSaved).not.toHaveBeenCalled();
+
+  // a second Escape, with no list open, closes the dialog
+  await user.keyboard('{Escape}');
+  expect(onClose).toHaveBeenCalled();
+});
+
+it('a failed test-assets load stays shown, with no empty-set hints and Add off', async () => {
+  api.listMatchingTestAssets.mockRejectedValue(new ApiError(500, 'unknown_error'));
+  renderPage();
+  expect(await screen.findByText("Couldn't load the test assets.")).toBeTruthy();
+  // the versions load succeeds after it, and does not clear it
+  await versionRow('v1');
+  await waitFor(() => expect(api.getMatchingVersion).toHaveBeenCalled());
+  expect(screen.getByText("Couldn't load the test assets.")).toBeTruthy();
+  expect(screen.queryByText('The test set should have 5 to 10 assets.')).toBeNull();
+  expect(screen.queryByRole('table', { name: 'Test assets' })).toBeNull();
+  expect((screen.getByRole('button', { name: 'Add test asset' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('a failed check load shows its error in the check panel, not Loading…', async () => {
+  api.getMatchingVersion.mockRejectedValue(new ApiError(500, 'unknown_error'));
+  renderPage();
+  const panel = await screen.findByRole('region', { name: 'Check · v1' });
+  expect(await within(panel).findByText("Couldn't load the check.")).toBeTruthy();
+  expect(within(panel).queryByText('Loading…')).toBeNull();
+  // the other loads are unaffected
+  expect(await screen.findByRole('table', { name: 'Test assets' })).toBeTruthy();
+  expect(screen.queryByText("Couldn't load the versions.")).toBeNull();
+});

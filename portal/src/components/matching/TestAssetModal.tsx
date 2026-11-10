@@ -16,7 +16,10 @@ import {
   type MatchingPlace, type MatchingTestAsset, type MatchingTestAssetIn, type MatchingTestRow,
 } from '../../lib/api';
 import { EXPECTED_LABELS, PLACES } from '../../lib/matchingRules';
-import MatchingModal from './MatchingModal';
+import StandardModal from '../StandardModal';
+import '../../styles/profile.css'; /* .btn-solid, .pf-form, .pf-error */
+import '../../styles/directory.css'; /* .btn-danger, .mini-btn */
+import '../../styles/matching-rules.css';
 
 interface Line {
   key: string;
@@ -79,8 +82,8 @@ export default function TestAssetModal({ asset, onClose, onSaved }: {
       const body: MatchingTestAssetIn = {
         asset_tag: Number(tag),
         name: name.trim(),
-        rfid: rfid.trim() === '' ? null : rfid,
-        serial: serial.trim() === '' ? null : serial,
+        rfid: rfid.trim() || null,
+        serial: serial.trim() || null,
         sits,
       };
       const current = saved.current
@@ -125,9 +128,10 @@ export default function TestAssetModal({ asset, onClose, onSaved }: {
   const cancel = () => (wrote.current ? onSaved() : onClose());
 
   return (
-    <MatchingModal
+    <StandardModal
+      eyebrow="Matching rules"
       title={asset ? 'Edit test asset' : 'Add test asset'}
-      hint="An asset the check runs every version against, and what each place should find for it."
+      description="An asset the check runs every version against, and what each place should find for it."
       cardClass="mr-asset-card" busy={busy} onClose={cancel}
       footer={(
         <>
@@ -193,7 +197,7 @@ export default function TestAssetModal({ asset, onClose, onSaved }: {
       )}
       <button type="button" className="mini-btn" disabled={busy} onClick={addLine}>Add expected result</button>
       {error && <p className="pf-error mr-modal-error" role="alert">{error}</p>}
-    </MatchingModal>
+    </StandardModal>
   );
 }
 
@@ -218,9 +222,10 @@ export function DeleteTestAssetModal({ asset, onClose, onDone }: {
   };
 
   return (
-    <MatchingModal
+    <StandardModal
+      eyebrow="Matching rules"
       title={`Delete test asset ${asset.asset_tag}`}
-      hint="Its expected results are deleted with it."
+      description="Its expected results are deleted with it."
       cardClass="mr-confirm-card" busy={busy} onClose={onClose}
       footer={(
         <>
@@ -232,6 +237,6 @@ export function DeleteTestAssetModal({ asset, onClose, onDone }: {
       )}
     >
       {error ? <p className="pf-error" role="alert">{error}</p> : null}
-    </MatchingModal>
+    </StandardModal>
   );
 }

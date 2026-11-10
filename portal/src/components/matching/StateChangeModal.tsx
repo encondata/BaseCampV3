@@ -9,7 +9,10 @@ import {
   ApiError, deployMatchingVersion, rollbackMatchingVersion, standbyMatchingVersion,
   type MatchingCheck, type MatchingVersion,
 } from '../../lib/api';
-import MatchingModal from './MatchingModal';
+import StandardModal from '../StandardModal';
+import '../../styles/profile.css'; /* .btn-solid, .pf-error */
+import '../../styles/directory.css'; /* .mini-btn */
+import '../../styles/matching-rules.css';
 
 export type StateChangeKind = 'deploy' | 'rollback' | 'standby';
 
@@ -64,7 +67,8 @@ export default function StateChangeModal({
   };
 
   return (
-    <MatchingModal title={copy.title} hint={copy.hint} cardClass="mr-confirm-card" busy={busy} onClose={onClose}
+    <StandardModal eyebrow="Matching rules" title={copy.title} description={copy.hint} cardClass="mr-confirm-card"
+      busy={busy} onClose={onClose}
       footer={(
         <>
           <button type="button" className="btn-solid" disabled={busy} onClick={() => void run()}>
@@ -75,6 +79,6 @@ export default function StateChangeModal({
       )}
     >
       {error ? <p className="pf-error" role="alert">{error}</p> : null}
-    </MatchingModal>
+    </StandardModal>
   );
 }

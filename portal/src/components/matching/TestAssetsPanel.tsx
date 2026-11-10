@@ -33,7 +33,7 @@ function resultText(r: MatchingTestRowResult): string {
 }
 
 export default function TestAssetsPanel({
-  place, assets, results, onAdd, onEdit, onDelete,
+  place, assets, results, onAdd, onEdit, onDelete, loading = false, error = '',
 }: {
   place: MatchingPlace;
   assets: MatchingTestAsset[];
@@ -41,8 +41,14 @@ export default function TestAssetsPanel({
   onAdd: () => void;
   onEdit: (a: MatchingTestAsset) => void;
   onDelete: (a: MatchingTestAsset) => void;
+  /** The list hasn't come back yet. */
+  loading?: boolean;
+  /** The list couldn't be loaded. */
+  error?: string;
 }) {
   const titleId = useId();
+  // Until the real list is here, an empty one says nothing about the test set.
+  const known = !loading && !error;
   const full = assets.length >= MAX_TEST_ASSETS;
   const byRow = new Map(results.map((r) => [r.row_id, r]));
 
@@ -83,11 +89,15 @@ export default function TestAssetsPanel({
     <section className="mr-panel mr-scroll" aria-labelledby={titleId}>
       <div className="mr-panel-bar">
         <h2 className="mr-panel-title" id={titleId}>Test assets</h2>
-        <button type="button" className="btn-solid" disabled={full} onClick={onAdd}>Add test asset</button>
+        <button type="button" className="btn-solid" disabled={!known || full} onClick={onAdd}>Add test asset</button>
       </div>
-      {full && <p className="page-hint">The test set holds at most 10 assets.</p>}
-      {assets.length < MIN_TEST_ASSETS && <p className="page-hint">The test set should have 5 to 10 assets.</p>}
-      <DataTable ariaLabel="Test assets" columns={COLUMNS} rows={rows} />
+      {error && <p className="pf-error" role="alert">{error}</p>}
+      {!error && loading && <p className="page-hint">Loading…</p>}
+      {known && full && <p className="page-hint">The test set holds at most 10 assets.</p>}
+      {known && assets.length < MIN_TEST_ASSETS && (
+        <p className="page-hint">The test set should have 5 to 10 assets.</p>
+      )}
+      {known && <DataTable ariaLabel="Test assets" columns={COLUMNS} rows={rows} />}
     </section>
   );
 }

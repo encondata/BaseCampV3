@@ -7,15 +7,19 @@ import { useId } from 'react';
 import type { MatchingCheck, MatchingVersion } from '../../lib/api';
 import { formatSavedAt } from '../../lib/matchingRules';
 
-export default function CheckPanel({ version, check }: {
+export default function CheckPanel({ version, check, error = '' }: {
   version: MatchingVersion | null; check: MatchingCheck | null;
+  /** The check couldn't be loaded: shown in place of "Loading…". */
+  error?: string;
 }) {
   const titleId = useId();
   if (!version) return null;
   return (
     <section className="mr-panel mr-scroll" aria-labelledby={titleId}>
       <h2 className="mr-panel-title" id={titleId}>Check · v{version.version}</h2>
-      {!check ? (
+      {error ? (
+        <p className="pf-error" role="alert">{error}</p>
+      ) : !check ? (
         <p className="page-hint">Loading…</p>
       ) : (
         <>

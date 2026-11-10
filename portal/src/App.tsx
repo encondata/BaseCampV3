@@ -26,6 +26,7 @@ import ClientDashboard from './pages/ClientDashboard';
 import Containers from './pages/Containers';
 import ContainerLabels from './pages/ContainerLabels';
 import Dev from './pages/Dev';
+import MatchingRules from './pages/MatchingRules';
 import MoveDashboard from './pages/MoveDashboard';
 import DevDatabase from './pages/DevDatabase';
 import External from './pages/External';
@@ -78,7 +79,6 @@ import TruckDetail from './pages/TruckDetail';
 import UserDetail from './pages/UserDetail';
 import Users from './pages/Users';
 import Variables from './pages/Variables';
-import MatchingRules from './pages/MatchingRules';
 import Workers from './pages/Workers';
 import WorkerDetailPage from './pages/WorkerDetail';
 
