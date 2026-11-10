@@ -1,6 +1,8 @@
 /**
- * In-app inbox provider: polls /notifications/inbox every 30 s and on tab
- * focus. Items that appear after the first successful poll are "new" —
+ * In-app inbox provider: re-reads /notifications/inbox when the live stream
+ * signals a change (useInboxStream), and polls as the fallback: every 30 s
+ * while the stream is down, every 120 s while it is live, and on tab focus.
+ * Items that appear after the first successful poll are "new" —
  * ToastHost shows those. Also hosts short-lived local message toasts
  * (useToast) so pages don't each grow their own.
  */
@@ -13,9 +15,12 @@ import {
   clearReadInbox, hideInboxItem, listInbox, markAllInboxRead, markInboxRead, markInboxUnread,
 } from './api';
 import type { InboxItem } from './api';
+import { useInboxStream } from './inboxStream';
 import { installAudioUnlock, playNotificationSound } from './notificationSounds';
 
 export const INBOX_POLL_MS = 30_000;
+/** Safety-net poll while the stream is live (signals do the real work). */
+export const INBOX_POLL_LIVE_MS = 120_000;
 export const LOCAL_TOAST_MS = 4_000;
 /** A local toast with an action (Undo) stays as long as an inbox toast
  *  with one (ToastHost's INBOX_TOAST_MS), so there is time to reach it. */
@@ -57,7 +62,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const seen = useRef<Set<string> | null>(null);          // null until the first poll lands
   const nextLocalId = useRef(1);
 
-  const refresh = useCallback(async () => {
+  const readInbox = useCallback(async () => {
     if (!person) return;
     try {
       const inbox = await listInbox();
@@ -78,6 +83,34 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     }
   }, [person]);
 
+  // Coalesce reads. At most one read is in flight and at most one follow-up
+  // is queued behind it, so a burst of signals costs two reads, not N. A call
+  // made while a read is in flight gets the follow-up's promise, not the
+  // in-flight one: the in-flight read may have started before the caller's
+  // mutation or signal, so only a read that starts afterward shows the truth.
+  const inFlight = useRef<Promise<void> | null>(null);
+  const followUp = useRef<Promise<void> | null>(null);
+  const refresh = useCallback((): Promise<void> => {
+    if (followUp.current) return followUp.current;
+    const start = () => {
+      const p: Promise<void> = readInbox().finally(() => {
+        if (inFlight.current === p) inFlight.current = null;
+      });
+      inFlight.current = p;
+      return p;
+    };
+    if (!inFlight.current) return start();
+    // run on either outcome, so a read that rejects can't wedge refresh()
+    const run = () => {
+      followUp.current = null;
+      return start();
+    };
+    followUp.current = inFlight.current.then(run, run);
+    return followUp.current;
+  }, [readInbox]);
+
+  const live = useInboxStream(person?.id, () => { void refresh(); });
+
   // The provider sits above the router and never unmounts, so a sign-out
   // (or sign-in as someone else) must reset all of this by hand — otherwise
   // the next person's first poll compares against the previous person's
@@ -92,14 +125,16 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!person) return;
     void refresh();
-    const t = setInterval(() => { void refresh(); }, INBOX_POLL_MS);
+    const t = setInterval(
+      () => { void refresh(); }, live ? INBOX_POLL_LIVE_MS : INBOX_POLL_MS,
+    );
     const onVis = () => { if (document.visibilityState === 'visible') void refresh(); };
     document.addEventListener('visibilitychange', onVis);
     return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVis); };
-  }, [person, refresh]);
+  }, [person, refresh, live]);
 
-  // Every mutation paints locally first (the popover must feel instant on a
-  // 30 s poll) and then re-reads the inbox so the server stays the truth.
+  // Every mutation paints locally first (the popover must feel instant
+  // between reads) and then re-reads the inbox so the server stays the truth.
   // `wasUnread` is read from the rendered `items`, not from inside a
   // setState updater: StrictMode double-invokes updaters, so a count
   // change nested in one would decrement twice.
