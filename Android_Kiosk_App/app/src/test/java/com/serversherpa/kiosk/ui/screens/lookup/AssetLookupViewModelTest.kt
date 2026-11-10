@@ -270,7 +270,18 @@ class AssetLookupViewModelTest {
         val b = build(api)
         b.vm.onSweep(listOf("100348")); settle()
         assertEquals(listOf("lookupAssets:000000000000000000100348"), api.calls)
-        assertEquals("000000000000000000100348", b.vm.ui.value.miss)
+        // The padded tag is what's sent; the box and the miss show its display form.
+        assertEquals("100348", b.vm.ui.value.miss)
+        assertEquals("100348", b.vm.ui.value.value)
+    }
+
+    @Test fun sweepErrorKeepsTheDisplayForm() = runTest {
+        val api = FakeKioskApi().apply { lookupAssetsResult = { _, _ -> throw ApiError(500, "boom", null) } }
+        val b = build(api)
+        b.vm.onSweep(listOf("000000000000000000100348")); settle()
+        assertEquals(listOf("lookupAssets:000000000000000000100348"), api.calls)
+        assertEquals("Couldn't look that up. Try again.", b.vm.ui.value.error)
+        assertEquals("100348", b.vm.ui.value.value)
     }
 
     @Test fun sweepDedupesByPaddedTag() = runTest {
@@ -291,6 +302,40 @@ class AssetLookupViewModelTest {
         // The next lookup clears it.
         b.vm.onScan("A-1"); settle()
         assertNull(b.vm.ui.value.notice)
+    }
+
+    /** The several-tags notice replaces whatever was showing. */
+    @Test fun severalTagsNoticeClearsTheScreen() = runTest {
+        val api = FakeKioskApi().apply {
+            lookupAssetsResult = { _, v -> if (v == "core") KioskLookupResult(listOf(KioskLookupMatch("a1", "Asset a1", "T-a1"), KioskLookupMatch("a2", "Asset a2", "T-a2"))) else KioskLookupResult() }
+            assetDetailResult = { _, id -> detail(id) }
+        }
+        val b = build(api)
+        b.vm.onScan("core"); settle()
+        b.vm.pick("a1"); settle()
+        assertEquals("a1", b.vm.ui.value.detail?.id)
+        b.vm.onSweep(listOf("100348", "100349")); settle()
+        assertEquals(LookupUi(notice = "2 tags read. Point the reader at one tag and try again."), b.vm.ui.value)
+
+        b.vm.onScan("nothing"); settle()
+        assertEquals("nothing", b.vm.ui.value.miss)
+        b.vm.onSweep(listOf("100348", "100349")); settle()
+        assertEquals(LookupUi(notice = "2 tags read. Point the reader at one tag and try again."), b.vm.ui.value)
+    }
+
+    /** An answer still in flight when the notice appears must not land under it. */
+    @Test fun severalTagsNoticeDropsAnInFlightAnswer() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val api = FakeKioskApi().apply {
+            lookupAssetsResult = { _, _ -> gate.await(); one("x1") }
+            assetDetailResult = { _, id -> detail(id) }
+        }
+        val b = build(api)
+        b.vm.onScan("A-1"); settle()
+        b.vm.onSweep(listOf("100348", "100349"))
+        gate.complete(Unit); settle()
+        assertEquals(LookupUi(notice = "2 tags read. Point the reader at one tag and try again."), b.vm.ui.value)
+        assertEquals(0, api.count("assetDetail"))
     }
 
     @Test fun blankLookupIsNoOp() = runTest {

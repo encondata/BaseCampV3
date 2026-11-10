@@ -6,6 +6,7 @@ import com.serversherpa.kiosk.core.lookup.distinctTags
 import com.serversherpa.kiosk.core.model.AssetScanRow
 import com.serversherpa.kiosk.core.model.KioskAssetDetail
 import com.serversherpa.kiosk.core.model.KioskLookupResult
+import com.serversherpa.kiosk.core.scan.displayRfid
 import com.serversherpa.kiosk.data.identity.Identity
 import com.serversherpa.kiosk.data.lookup.AssetLookupRepository
 import java.util.concurrent.atomic.AtomicInteger
@@ -44,9 +45,10 @@ data class LookupUi(
  * match opens the card, several show a list, none keeps the value and says so.
  * Read-only: nothing here records, queues or writes anything (no Outbox).
  *
- * Every lookup, pick and clear bumps [requestId]; an answer started under an
- * older id is dropped, so a slow first answer never replaces a newer one. The
- * screen feeds [onScan] from ScanBus and [onSweep] from the sled's bursts.
+ * Every lookup, pick, clear and several-tags notice bumps [requestId]; an
+ * answer started under an older id is dropped, so a slow first answer never
+ * replaces a newer one. The screen feeds [onScan] from ScanBus and [onSweep]
+ * from the sled's bursts.
  */
 class AssetLookupViewModel(
     private val repo: AssetLookupRepository,
@@ -67,6 +69,11 @@ class AssetLookupViewModel(
     fun lookup() {
         val q = _ui.value.value.trim()
         if (q.isEmpty()) return                       // an empty Enter is a no-op
+        find(q, shown = q)
+    }
+
+    /** Looks [q] up; [shown] is what the box and a miss show (a sled tag's display form). */
+    private fun find(q: String, shown: String) {
         val mine = requestId.incrementAndGet()
         // The box empties now, not on the answer: a second burst while this one
         // is in flight starts fresh instead of appending.
@@ -77,7 +84,7 @@ class AssetLookupViewModel(
                 if (!current(mine)) return@launch
                 val matches = found.result.matches
                 when (matches.size) {
-                    0 -> _ui.update { it.copy(offline = found.offline, miss = q, value = q) }
+                    0 -> _ui.update { it.copy(offline = found.offline, miss = shown, value = shown) }
                     1 -> {
                         _ui.update { it.copy(offline = found.offline) }
                         openAsset(matches[0].id, found.offline, mine)
@@ -87,7 +94,7 @@ class AssetLookupViewModel(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (current(mine)) _ui.update { it.copy(error = LOOKUP_ERROR, value = q) }
+                if (current(mine)) _ui.update { it.copy(error = LOOKUP_ERROR, value = shown) }
             }
         }
     }
@@ -98,13 +105,18 @@ class AssetLookupViewModel(
         lookup()
     }
 
-    /** A sled sweep: one distinct tag is a scan; several can't be told apart. */
+    /** A sled sweep: one distinct tag is a scan (the padded tag is sent, its display form is
+     *  shown); several can't be told apart, so the screen says so and nothing else, and an
+     *  answer still in flight is dropped rather than landing under the notice. */
     fun onSweep(epcs: List<String>) {
         val tags = distinctTags(epcs)
         when {
             tags.isEmpty() -> return
-            tags.size == 1 -> onScan(tags[0])
-            else -> _ui.update { it.copy(notice = "${tags.size} tags read. Point the reader at one tag and try again.") }
+            tags.size == 1 -> find(tags[0], shown = displayRfid(tags[0]))
+            else -> {
+                requestId.incrementAndGet()
+                _ui.value = LookupUi(notice = "${tags.size} tags read. Point the reader at one tag and try again.")
+            }
         }
     }
 

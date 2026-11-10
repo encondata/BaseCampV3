@@ -206,7 +206,7 @@ class RfidController(
     val connectNote: StateFlow<String?> = reader.connectNote
 
     private val _session = MutableStateFlow<RfidReadSession?>(null)
-    /** Non-null only while a burst is running. The Scanning screen's live panel. */
+    /** Non-null only while a burst is running. Scanning's and Asset Lookup's live panel. */
     val session: StateFlow<RfidReadSession?> = _session
 
     private class OwnedBurst(val owner: String?, val tags: List<String>)

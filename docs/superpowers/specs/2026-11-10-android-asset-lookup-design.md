@@ -163,8 +163,16 @@ The view model does not check setup. The route is wrapped in `SetupGate`, and th
 - Review Focus #3 wording ("404/403 on lookup reads as No asset matches") follows the web instead: the lookup route returns an empty list for out-of-reach devices (shown as "No asset matches"), and any thrown error from find reads "Couldn't look that up. Try again." Cost if wrong: a forbidden lookup shows the generic error instead of the miss line (copy only).
 - The view model does not gate on setup; the route is wrapped in `SetupGate` (redirects Home until setup is complete) and the screen disables the box when setup is missing. Cost if wrong: none expected.
 
+### Final review fixes
+
+- **Owner-aware sled arming.** `RfidController.arm(owner)`/`disarm(owner)` take an `RfidOwner` key (`SCANNING`, `LOOKUP`). Another owner arming drops any open burst and resets the "already sent" set; a disarm by an owner that isn't armed does nothing, so NavHost's late dispose of the leaving screen can't kill the arriving screen's trigger. Each burst carries the owner armed when it started, and each screen collects `burstsFor(owner)`, so a leaving Scanning screen never queues a Lookup sweep (or the reverse).
+- **Read panel and Stop.** While a sled read is open, Lookup shows `RfidReadPanel` (without the "already sent" count) in place of the box, as Scanning does, with its Stop button. It fits 320 dp.
+- **Card brought into view.** The match list stays (as on the web); when a picked row's card opens below it, a `BringIntoViewRequester` scrolls the card into view.
+- **Off-main offline decode.** `loadLocal()` and the local match run on an injected dispatcher (`Dispatchers.Default`), and the open right after an offline find reuses the data that find loaded (once) instead of decoding every payload again.
+- **Notice reset.** The several-tags notice bumps the request id and replaces the whole state, so nothing lingers under it and an in-flight answer is dropped.
+- **Display-form tag.** A one-tag sweep still sends the padded tag, but the box and the miss line show its display form ("No asset matches 100418."). Sending the unpadded form would also match an all-digit asset tag, so the padded tag stays on the wire.
+
 ### Owed
 
 - A device check at 320 dp on the MC2200 (the layout was only checked under Robolectric).
 - The live check against the dev API: dev asset 102466 `atl1-web-001` by each of its four values (asset tag, serial, RFID, name), as a worker and as an admin.
-- Deferred review notes: no on-screen latched-read state or Stop control for the sled on this screen; the doc comment on `RfidController` still says only Scanning arms the sled.
