@@ -3,8 +3,12 @@
  * signals a change (useInboxStream), and polls as the fallback: every 30 s
  * while the stream is down, every 120 s while it is live, and on tab focus.
  * Items that appear after the first successful poll are "new" —
- * ToastHost shows those. Also hosts short-lived local message toasts
- * (useToast) so pages don't each grow their own.
+ * ToastHost shows those. An address block still waiting on a decision is
+ * new on the first poll too (an admin who signs in during one gets the
+ * toast), and every poll drops an address-block toast once it is decided
+ * or has run out, so one admin's decision clears every admin's toast.
+ * Also hosts short-lived local message toasts (useToast) so pages don't
+ * each grow their own.
  */
 import {
   createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode,
@@ -15,6 +19,7 @@ import {
   clearReadInbox, hideInboxItem, listInbox, markAllInboxRead, markInboxRead, markInboxUnread,
 } from './api';
 import type { InboxItem } from './api';
+import { ADDRESS_BLOCKED_KIND, addressBlockOpen } from './addressBlocked';
 import { useInboxStream } from './inboxStream';
 import { installAudioUnlock, playNotificationSound } from './notificationSounds';
 
@@ -68,16 +73,27 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       const inbox = await listInbox();
       setItems(inbox.items);
       setUnreadCount(inbox.unread_count);
+      const latest = new Map(inbox.items.map((i) => [i.id, i]));
+      const settled = (i: InboxItem) => {
+        if (i.kind !== ADDRESS_BLOCKED_KIND) return false;
+        const now = latest.get(i.id) ?? i;
+        return !!now.read_at || !addressBlockOpen(now);
+      };
+      let fresh: InboxItem[];
       if (seen.current === null) {
+        // first poll: only an undecided block toasts; the rest is history
         seen.current = new Set(inbox.items.map((i) => i.id));
+        fresh = inbox.items.filter((i) => !i.read_at && addressBlockOpen(i));
       } else {
-        const fresh = inbox.items.filter((i) => !i.read_at && !seen.current!.has(i.id));
+        // a block that ended before this poll saw it has nothing left to decide
+        fresh = inbox.items.filter((i) => !i.read_at && !seen.current!.has(i.id) && !settled(i));
         inbox.items.forEach((i) => seen.current!.add(i.id));
-        if (fresh.length) {
-          setNewItems((cur) => [...fresh, ...cur].slice(0, 3));
-          playNotificationSound(soundRef.current);
-        }
+        if (fresh.length) playNotificationSound(soundRef.current);
       }
+      setNewItems((cur) => {
+        const kept = cur.some(settled) ? cur.filter((i) => !settled(i)) : cur;
+        return fresh.length ? [...fresh, ...kept].slice(0, 3) : kept;
+      });
     } catch {
       /* transient: keep the last value */
     }

@@ -154,6 +154,64 @@ it('plays the chosen sound only when NEW items arrive after the first poll', asy
   expect(sounds.playNotificationSound).toHaveBeenCalledTimes(1);    // same items again: no replay
 });
 
+const blockedItem = (id: string, payload: Record<string, unknown> = {}, read = false) => ({
+  ...item(id, read), kind: 'address_blocked', category: 'security' as const, link: '/system/blocked-addresses',
+  title: 'Sign-ins blocked from 203.0.113.7 for 1 hour (10 failed attempts)',
+  payload: { address: '203.0.113.7', level: 1, ends_at: new Date(Date.now() + 3_600_000).toISOString(),
+    failure_count: 10, state: 'open', ...payload },
+});
+
+it('the first poll toasts an unread open address block, but not a read one or one that ended', async () => {
+  api.listInbox.mockResolvedValue(inbox([
+    blockedItem('blk'), blockedItem('old', {}, true),
+    blockedItem('gone', { ends_at: new Date(Date.now() - 1000).toISOString() }),
+    blockedItem('done', { state: 'cleared', decided_by: 'Ada Admin' }), item('a'),
+  ]));
+  render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await screen.findByText(/new:blk$/);
+  expect(screen.getByText(/new:blk$/).textContent).toContain('new:blk');
+});
+
+it('a later poll drops an address-block toast once another admin has decided it', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  api.listInbox.mockResolvedValue(inbox([item('a')]));
+  render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await screen.findByText('unread:1 new:');
+  api.listInbox.mockResolvedValue(inbox([blockedItem('blk'), item('a')]));
+  await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_MS + 50); });
+  await screen.findByText('unread:2 new:blk');
+  api.listInbox.mockResolvedValue(inbox([
+    blockedItem('blk', { state: 'cleared', decided_by: 'Ada Admin' }, true), item('a'),
+  ]));
+  await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_MS + 50); });
+  await screen.findByText('unread:1 new:');
+});
+
+it('a later poll keeps other new toasts while it drops a decided address block', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  api.listInbox.mockResolvedValue(inbox([]));
+  render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await screen.findByText('unread:0 new:');
+  api.listInbox.mockResolvedValue(inbox([blockedItem('blk'), item('b')]));
+  await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_MS + 50); });
+  await screen.findByText('unread:2 new:blk,b');
+  api.listInbox.mockResolvedValue(inbox([blockedItem('blk', { state: 'permanent', decided_by: 'Ada Admin' }, true), item('b')]));
+  await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_MS + 50); });
+  await screen.findByText('unread:1 new:b');
+});
+
+it('a block that already ended by the time a poll first sees it does not toast', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  api.listInbox.mockResolvedValue(inbox([]));
+  render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await screen.findByText('unread:0 new:');
+  api.listInbox.mockResolvedValue(inbox([
+    blockedItem('gone', { ends_at: new Date(Date.now() - 1000).toISOString() }), item('b'),
+  ]));
+  await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_MS + 50); });
+  await screen.findByText('unread:2 new:b');
+});
+
 it('a stream signal re-reads the inbox and toasts a new item', async () => {
   render(<NotificationsProvider><Probe /></NotificationsProvider>);
   await screen.findByText('unread:1 new:');

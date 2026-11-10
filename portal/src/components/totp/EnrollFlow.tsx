@@ -34,7 +34,7 @@ export default function EnrollFlow({ email, start, confirm, remember = null, onD
   confirm: (code: string) => Promise<{ backup_codes: string[] }>;
   remember?: { checked: boolean; onChange: (v: boolean) => void; days: number } | null;
   onDone: () => void;
-  onError?: (code: string) => void;
+  onError?: (code: string, err?: unknown) => void;
   ackLabel?: string;
 }) {
   const [step, setStep] = useState<Step>('scan');
@@ -72,7 +72,7 @@ export default function EnrollFlow({ email, start, confirm, remember = null, onD
       if (seq !== reqSeq.current) return;
       const c = errorCode(err);
       setError(CONFIRM_ERRORS[c] ?? 'Could not start enrollment. Try again.');
-      onError?.(c);
+      onError?.(c, err);
     }
   // start is stable for the life of the flow
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -100,7 +100,7 @@ export default function EnrollFlow({ email, start, confirm, remember = null, onD
       setError(CONFIRM_ERRORS[c] ?? 'Something went wrong. Try again.');
       setCode('');
       setOtpAttempt((n) => n + 1);
-      onError?.(c);
+      onError?.(c, err);
     } finally {
       setBusy(false);
     }

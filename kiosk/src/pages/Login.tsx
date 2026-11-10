@@ -23,6 +23,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 
 import LoginScene from '@portal/components/login/LoginScene';
 import { IconArrow } from '@portal/components/login/loginIcons';
+import { addressBlockedMessage, isAddressBlocked } from '@portal/lib/addressBlocked';
 import '@portal/styles/login-light.css';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
@@ -150,7 +151,8 @@ export default function Login() {
       navigate(from, { replace: true });
     } catch (err) {
       const code = err instanceof ApiError ? err.code : 'network';
-      setError(ERROR_MESSAGES[code] ?? 'Login failed. Please try again.');
+      setError(isAddressBlocked(err) ? addressBlockedMessage((err as ApiError).detail)
+        : ERROR_MESSAGES[code] ?? 'Login failed. Please try again.');
       setInvalid({ email: true, password: true });
       setPassword('');
       shakeForm();
@@ -174,7 +176,8 @@ export default function Login() {
       navigate(from, { replace: true });
     } catch (err) {
       const code = err instanceof ApiError ? err.code : 'network';
-      setMoveError(MOVE_ERROR_MESSAGES[code] ?? 'Login failed. Please try again.');
+      setMoveError(isAddressBlocked(err) ? addressBlockedMessage((err as ApiError).detail)
+        : MOVE_ERROR_MESSAGES[code] ?? 'Login failed. Please try again.');
       setMovePassword('');
       shakeForm();
     } finally {

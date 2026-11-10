@@ -2594,6 +2594,31 @@ class MoveSetupOut(BaseModel):
 
 # ── system ────────────────────────────────────────────────────────
 
+class BlockedAddressOut(BaseModel):
+    """One row of System › Blocked addresses (SS-487). `status` comes from
+    the block's state, not its `permanent` flag: a cleared permanent block
+    is "ended"."""
+    address: str
+    status: Literal["blocked", "permanent", "ended"]
+    level: int
+    blocked_at: datetime
+    ends_at: datetime | None
+    ended_at: datetime | None
+    times_blocked: int
+    failure_count: int
+    last_route: str
+    first_blocked_at: datetime
+    cleared_at: datetime | None
+    cleared_by_name: str | None
+    made_permanent_at: datetime | None
+    made_permanent_by_name: str | None
+
+
+class BlockedAddressActionIn(BaseModel):
+    # In the body, not the path: an IPv6 key holds a "/".
+    address: str = Field(max_length=64)
+
+
 class SystemProcessOut(BaseModel):
     name: str
     kind: str

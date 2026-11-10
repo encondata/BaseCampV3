@@ -13,7 +13,7 @@ from serversherpa.api.routes import (
     learn, learning, me,
     move_setup,
     notes, notifications, plans, reports, router_agent, scans, search, sites, spec_lookup,
-    stakeholders, status_provenance, status_rules, status_values, system,
+    blocked_addresses, stakeholders, status_provenance, status_rules, status_values, system,
     time as time_routes, time_bulk as time_bulk_routes, trucks, users, warehouse,
     wiki, workers,
 )
@@ -147,6 +147,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(audit.router)
     app.include_router(system.router)
+    app.include_router(blocked_addresses.router)
     app.include_router(notifications.router)
     app.include_router(wiki.router)
     app.include_router(learning.router)

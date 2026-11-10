@@ -110,3 +110,23 @@ it('maps server errors', async () => {
   await user.click(screen.getByRole('button', { name: 'Set password' }));
   expect(await screen.findByText(/That password was used recently/)).toBeTruthy();
 });
+
+it('a blocked address on the link check shows the blocked message, not the expired state', async () => {
+  api.checkPasswordResetToken.mockRejectedValue(
+    new ApiError(429, 'address_blocked', { code: 'address_blocked', retry_after: 3600 }));
+  renderAt('#token=abc123');
+  expect(await screen.findByText(
+    'Too many failed sign-in attempts from this network. Try again in 60 minutes.')).toBeTruthy();
+  expect(screen.queryByText('This link has expired or was already used')).toBeNull();
+});
+
+it('a blocked address on confirm shows the blocked message', async () => {
+  api.confirmPasswordReset.mockRejectedValue(
+    new ApiError(429, 'address_blocked', { code: 'address_blocked', retry_after: null }));
+  const user = userEvent.setup();
+  renderAt('#token=abc123');
+  await user.type(await screen.findByLabelText(/New password/), 'BrandNewPass9!');
+  await user.type(screen.getByLabelText('Confirm new password'), 'BrandNewPass9!');
+  await user.click(screen.getByRole('button', { name: 'Set password' }));
+  expect(await screen.findByText('This network is blocked from signing in. Contact your administrator.')).toBeTruthy();
+});

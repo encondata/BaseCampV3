@@ -575,6 +575,57 @@ def reset_totp(
     asyncio.run(_run())
 
 
+async def _unblock_addresses(address: str | None, clear_all: bool) -> tuple[list[str], int]:
+    """Clear one address's block, or every active block. Returns the lines
+    to print and the exit code (1 when a named address has no active block)."""
+    from serversherpa.db.models import AddressBlock
+    from serversherpa.security import address_blocks as ab
+    from serversherpa.services.audit import audit
+    from serversherpa.wiki.share_links import bucket_for
+
+    lines: list[str] = []
+    try:
+        async with get_sessionmaker()() as db:
+            if clear_all:
+                targets = [b.address for b in await ab.list_blocks(db, "active")]
+            else:
+                targets = [bucket_for(address)]
+            code = 0
+            for target in targets:
+                existing = await db.get(AddressBlock, target)
+                level = existing.level if existing is not None else 0
+                try:
+                    await ab.clear(db, target, actor_id=None)
+                except (ab.BlockNotFound, ab.BlockNotActive):
+                    lines.append(f"No active block for {target}.")
+                    code = 1
+                    continue
+                audit(db, actor_id=None, entity_type="address_block", entity_id=target,
+                      action="address_block_cleared",
+                      changes={"address": target, "level": level, "via": "cli"})
+                lines.append(f"Cleared {target}.")
+            await db.commit()
+            return lines, code
+    finally:
+        await dispose_engine()
+
+
+@app.command(name="unblock-address")
+def unblock_address(
+    address: str = typer.Argument(None, help="The blocked address (an IPv6 address clears its /64)"),
+    all_: bool = typer.Option(False, "--all", help="Clear every active block"),
+) -> None:
+    """Last-resort recovery when every admin is blocked from signing in:
+    clear one address's sign-in block, or all of them."""
+    if (address is None) == (not all_):
+        typer.secho("Give exactly one of ADDRESS or --all.", fg="red", err=True)
+        raise typer.Exit(code=2)
+    lines, code = asyncio.run(_unblock_addresses(address, all_))
+    for line in lines:
+        typer.secho(line, fg="green" if line.startswith("Cleared") else "red")
+    raise typer.Exit(code=code)
+
+
 async def _refresh_attestation_status(transport=None) -> int:
     """One session: fetch Google's list, store it, commit, dispose. Returns
     how many entries the stored list has, whatever their status (tests pass a

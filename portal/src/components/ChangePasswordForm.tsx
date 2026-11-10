@@ -6,6 +6,7 @@
 import { useState, type FormEvent } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
+import { addressBlockedMessage, isAddressBlocked } from '../lib/addressBlocked';
 import { ApiError, changePasswordRequest, confirmPasswordReset } from '../lib/api';
 
 const ERRORS: Record<string, string> = {
@@ -51,7 +52,7 @@ export default function ChangePasswordForm({ onSuccess, resetToken, minLength }:
       onSuccess();
     } catch (err) {
       const code = err instanceof ApiError ? err.code : 'network';
-      setError(ERRORS[code] ?? 'Could not change the password — try again.');
+      setError(isAddressBlocked(err) ? addressBlockedMessage((err as ApiError).detail) : ERRORS[code] ?? 'Could not change the password — try again.');
     } finally {
       setSaving(false);
     }

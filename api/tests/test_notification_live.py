@@ -306,3 +306,27 @@ async def test_connect_raw_has_a_timeout(monkeypatch):
     monkeypatch.setattr(live.asyncpg, "connect", fake_connect)
     await live.connect_raw("-x")
     assert seen["timeout"] == live.CONNECT_TIMEOUT == 10.0
+
+
+async def test_address_block_resolve_signals_each_card_owner(db, listener):
+    from datetime import UTC, datetime
+
+    from serversherpa.notifications import address_blocks
+    blocked_at = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
+    a, b = await _owner(db, "a"), await _owner(db, "b")
+    for owner in (a, b):
+        await _card(db, owner, address_blocks.KIND,
+                    {"address": "203.0.113.7", "state": "open",
+                     "blocked_at": address_blocks.block_key(blocked_at)})
+    await _drain(listener)
+
+    await address_blocks.resolve_block(db, "203.0.113.7", blocked_at, "cleared", "Admin")
+    await db.commit()
+    got = {await _next(listener, 2), await _next(listener, 2)}
+    assert got == {str(a.id), str(b.id)}
+    assert await _nothing(listener, 0.3)
+
+    # Already decided: nothing changes, nothing is sent.
+    await address_blocks.resolve_block(db, "203.0.113.7", blocked_at, "cleared", "Admin")
+    await db.commit()
+    assert await _nothing(listener, 0.5)
