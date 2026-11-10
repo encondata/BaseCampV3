@@ -12,6 +12,11 @@ import com.serversherpa.kiosk.data.db.KioskDatabase
 import com.serversherpa.kiosk.data.db.LABEL_CONTEXT_META_KEY
 import com.serversherpa.kiosk.data.db.MOVE_META_KEY
 import com.serversherpa.kiosk.data.db.MetaEntity
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -146,6 +151,41 @@ class AssetLookupRepositoryTest {
         val api = FakeKioskApi().apply { assetScansResult = { _, _, limit -> assertEquals(50, limit); emptyList() } }
         assertTrue(AssetLookupRepository(api, seeded()).scans("K1", "a1").isEmpty())
         try { AssetLookupRepository(offlineApi(), seeded()).scans("K1", "a1"); fail() } catch (e: ApiError) { assertTrue(e.isNetwork) }
+    }
+
+    /** Counts the hops onto it, then runs the work on Default as production does. */
+    private class CountingDispatcher : CoroutineDispatcher() {
+        val hops = AtomicInteger()
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            hops.incrementAndGet()
+            Dispatchers.Default.dispatch(context, block)
+        }
+    }
+
+    /** Decoding every synced payload is CPU work: it runs on the injected (Default) dispatcher,
+     *  not the caller's (Main) thread, and only when the lookup actually falls back. */
+    @Test fun offlineDecodeRunsOffTheCallersThread() = runTest {
+        val decode = CountingDispatcher()
+        val online = FakeKioskApi().apply { lookupAssetsResult = { _, _ -> KioskLookupResult() } }
+        AssetLookupRepository(online, seeded(), decode).find("K1", "SN-100")
+        assertEquals("an online answer decodes nothing", 0, decode.hops.get())
+
+        val found = AssetLookupRepository(offlineApi(), seeded(), decode).find("K1", "SN-100")
+        assertEquals("a1", found.result.matches.single().id)
+        assertTrue("the fallback decodes on the injected dispatcher", decode.hops.get() > 0)
+    }
+
+    /** One offline lookup decodes once: the single match's open reuses what find loaded. */
+    @Test fun anOfflineOpenReusesTheFindsData() = runTest {
+        val decode = CountingDispatcher()
+        val repo = AssetLookupRepository(offlineApi(), seeded(), decode)
+        repo.find("K1", "SN-100")
+        val afterFind = decode.hops.get()
+        val opened = repo.open("K1", "a1", offline = true, admin = false)
+        assertEquals("a1", opened.detail!!.id)
+        assertEquals("no second decode", afterFind, decode.hops.get())
+        repo.open("K1", "a1", offline = true, admin = false)
+        assertTrue("used once: a later open loads fresh", decode.hops.get() > afterFind)
     }
 
     @Test fun nothingIsWrittenToTheOutbox() = runTest {

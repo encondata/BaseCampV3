@@ -14,6 +14,9 @@ import com.serversherpa.kiosk.data.api.KioskJson
 import com.serversherpa.kiosk.data.db.KioskDatabase
 import com.serversherpa.kiosk.data.db.LABEL_CONTEXT_META_KEY
 import com.serversherpa.kiosk.data.sync.Sync
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
@@ -26,18 +29,30 @@ data class Opened(val offline: Boolean, val detail: KioskAssetDetail?)
  * move's synced assets in Room. Only a network failure (or `edge_offline`) falls back;
  * every other error propagates. Nothing here writes anything (no Outbox).
  * Port of kiosk/src/lib/assetLookup.ts.
+ *
+ * The fallback decodes every synced asset payload, so it runs on [decode] (Default), never
+ * on the caller's Main thread; the open right after an offline find reuses what it loaded.
  */
-class AssetLookupRepository(private val api: KioskApi, private val db: KioskDatabase) {
+class AssetLookupRepository(
+    private val api: KioskApi,
+    private val db: KioskDatabase,
+    private val decode: CoroutineDispatcher = Dispatchers.Default,
+) {
+    /** What the last offline [find] loaded, for the [open] that follows it. Used once. */
+    @Volatile private var lastLocal: LocalLookupData? = null
 
     private fun isOffline(e: ApiError) = e.isNetwork || e.code == "edge_offline"
 
-    suspend fun find(serial: String, value: String): Found =
-        try {
+    suspend fun find(serial: String, value: String): Found {
+        lastLocal = null
+        return try {
             Found(false, api.lookupAssets(serial, value))
         } catch (e: ApiError) {
             if (!isOffline(e)) throw e
-            Found(true, matchLocal(loadLocal().assets, value))
+            val data = loadLocal().also { lastLocal = it }
+            Found(true, withContext(decode) { matchLocal(data.assets, value) })
         }
+    }
 
     suspend fun open(serial: String, id: String, offline: Boolean, admin: Boolean): Opened {
         if (!offline) {
@@ -47,14 +62,14 @@ class AssetLookupRepository(private val api: KioskApi, private val db: KioskData
                 if (!isOffline(e)) throw e
             }
         }
-        val data = loadLocal()
+        val data = lastLocal?.also { lastLocal = null } ?: loadLocal()
         val asset = data.assets.firstOrNull { it.id == id }
         return Opened(true, asset?.let { localDetail(it, data, admin) })
     }
 
     suspend fun scans(serial: String, id: String): List<AssetScanRow> = api.assetScans(serial, id, SCAN_LIMIT)
 
-    suspend fun loadLocal(): LocalLookupData {
+    suspend fun loadLocal(): LocalLookupData = withContext(decode) {
         val assets = db.assets().all().mapNotNull {
             try { KioskJson.decodeFromString(LocalAsset.serializer(), it.payloadJson) } catch (e: Exception) { null }
         }
@@ -65,7 +80,7 @@ class AssetLookupRepository(private val api: KioskApi, private val db: KioskData
         }
         fun text(key: String): String? =
             (ctx?.get(key) as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotEmpty() }
-        return LocalLookupData(
+        LocalLookupData(
             assets = assets,
             containerNames = containerNames,
             moveId = meta?.initiativeId ?: "",
