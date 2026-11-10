@@ -21,6 +21,8 @@ const api = vi.hoisted(() => ({
   updateMatchingDraft: vi.fn(),
   createMatchingDraft: vi.fn(),
   checkMatchingFlow: vi.fn(),
+  testRunMatchingFlow: vi.fn(),
+  listInitiatives: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -31,9 +33,10 @@ vi.mock('../lib/api', async (importActual) => ({
 vi.mock('../components/matching/FlowCanvas', async () => {
   const { connect, moveNode } = await vi.importActual<typeof import('../lib/matchingRules')>('../lib/matchingRules');
   return {
-    default: ({ flow, warnings, onChange, onSelect }: {
+    default: ({ flow, warnings, lit, onChange, onSelect }: {
       flow: Flow;
       warnings: Set<string>;
+      lit: { nodes: Set<string>; edges: Set<string> } | null;
       onChange: (f: Flow) => void;
       onSelect: (s: { kind: 'node' | 'edge'; id: string } | null) => void;
     }) => (
@@ -46,6 +49,7 @@ vi.mock('../components/matching/FlowCanvas', async () => {
         ))}
         <button type="button" onClick={() => onChange(connect(flow, 'n3', 'none', 'n6'))}>stub-connect</button>
         <button type="button" onClick={() => onChange(moveNode(flow, 'n2', { x: 5, y: 5 }))}>stub-move</button>
+        <output data-testid="lit">{lit ? [...lit.nodes].join(',') : ''}</output>
         <output data-testid="edges">{flow.edges.map((e) => `${e.source}.${e.output}>${e.target}`).join(' ')}</output>
       </div>
     ),
@@ -321,4 +325,29 @@ it('wires an output from the settings panel', async () => {
   await user.click(entry!);
   expect(screen.getByTestId('edges').textContent).toContain('n3.none>n6');
   expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+it('a run lights its path and an edit clears it', async () => {
+  const user = userEvent.setup();
+  api.testRunMatchingFlow.mockResolvedValue({
+    outcome: 'found', stop_reason: null, end_node_id: 'n4',
+    asset: { id: 'a1', asset_tag: 103, name: 'Test asset 3', rfid: null, serial: null, sits: 'move' },
+    field: 'asset_tag', action: 'print_label', message: null,
+    trace: [
+      { node_id: 'n1', kind: 'scan_input', value_in: '103', value_out: '103', output: 'out', hits: null },
+      { node_id: 'n2', kind: 'clean_up', value_in: '103', value_out: '103', output: 'out', hits: null },
+      { node_id: 'n3', kind: 'match', value_in: '103', value_out: null, output: 'found', hits: null },
+      { node_id: 'n5', kind: 'found', value_in: '103', value_out: null, output: null, hits: null },
+    ],
+  });
+  renderAt('v2id');
+  await user.type(await screen.findByLabelText('Value to test'), '103');
+  await user.click(screen.getByRole('button', { name: 'Run' }));
+
+  await waitFor(() => expect(screen.getByTestId('lit').textContent).toBe('n1,n2,n3,n5'));
+  expect(api.testRunMatchingFlow.mock.calls[0][0]).toMatchObject({ place: 'printing', value: '103', against: 'test_set' });
+
+  await user.click(screen.getByRole('button', { name: 'stub-move' }));
+  expect(screen.getByTestId('lit').textContent).toBe('');
+  expect(screen.queryByText(/Found by/)).toBeNull();
 });

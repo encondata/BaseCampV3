@@ -227,3 +227,10 @@
 .mr-node.mr-lit { border-color: var(--ok); }
 .mr-node.mr-dim { opacity: 0.45; }
 .mr-canvas .react-flow__edge.mr-lit-edge .react-flow__edge-path { stroke: var(--ok); stroke-width: 2.5; }
+
+/* ── the test bar: under the canvas, in the grid's `test` row ───── */
+.mr-editor > .mr-test { grid-area: test; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.mr-test-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 16px; }
+.mr-test-controls input { min-width: 200px; }
+.mr-test-result { margin: 0; color: var(--text-dark); font-weight: 600; }
+.mr-trace { list-style: none; margin: 0; max-height: 220px; display: flex; flex-direction: column; gap: 2px; color: var(--text-dark); white-space: pre-wrap; }

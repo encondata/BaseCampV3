@@ -23,15 +23,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import StandardModal from '../components/StandardModal';
-import FlowCanvas, { type CanvasSelection, type FlowCanvasHandle, type LitPath } from '../components/matching/FlowCanvas';
+import FlowCanvas, { type CanvasSelection, type FlowCanvasHandle } from '../components/matching/FlowCanvas';
 import NodePalette from '../components/matching/NodePalette';
 import NodeSettings from '../components/matching/NodeSettings';
+import TestBar from '../components/matching/TestBar';
 import {
   checkMatchingFlow, createMatchingDraft, getMatchingVersion, updateMatchingDraft,
-  type MatchingCheck, type MatchingVersionDetail,
+  type MatchingCheck, type MatchingRun, type MatchingVersionDetail,
 } from '../lib/api';
 import {
-  addNode, PLACES, removeEdge, removeNode, sameFlow, setSettings, STATE_CHIP, STATE_LABELS,
+  addNode, litPath, PLACES, removeEdge, removeNode, sameFlow, setSettings, STATE_CHIP, STATE_LABELS,
   type Flow, type NodeKind,
 } from '../lib/matchingRules';
 import { useLeaveGuard } from '../lib/useLeaveGuard';
@@ -58,8 +59,8 @@ export default function MatchingRuleEditor() {
   const [saveError, setSaveError] = useState('');
   const [savedNote, setSavedNote] = useState('');
   const [leaveTo, setLeaveTo] = useState<string | null>(null);
-  // The test bar (Task 11) lights the path a test run took.
-  const [lit] = useState<LitPath | null>(null);
+  // The test bar's last run; its path is lit on the canvas.
+  const [run, setRun] = useState<MatchingRun | null>(null);
 
   const canvas = useRef<FlowCanvasHandle>(null);
   const flowRef = useRef(flow);
@@ -121,6 +122,8 @@ export default function MatchingRuleEditor() {
   const problems = failing.flatMap((item) => (item.problems.length
     ? item.problems.map((p) => p.message)
     : [item.label]));
+
+  const lit = useMemo(() => (run && flow ? litPath(run.trace, flow) : null), [run, flow]);
 
   const edit = useCallback((next: Flow) => {
     setFlow(next);
@@ -243,7 +246,7 @@ export default function MatchingRuleEditor() {
             setSelected(null);
           }}
         />
-        {/* Task 11: the test bar goes here, in the grid's `test` row. */}
+        <TestBar place={loaded.place} flow={flow} onRun={setRun} />
       </div>
 
       {leaveTo !== null && (
