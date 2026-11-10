@@ -30,6 +30,8 @@ val FEATURE_ICONS: Map<FeatureId, ImageVector> = mapOf(
     FeatureId.ENROLL to icon("enroll", strokes = listOf("M4 9h11l9 11-9 11H4V9z", "M29 14a8 8 0 0 1 0 12M33.5 10a13.5 13.5 0 0 1 0 20"), fills = listOf(circle(10.5f, 15.5f, 2f))),
     FeatureId.CONTAINERS to icon("containers", strokes = listOf("M6 11h28a2 2 0 0 1 2 2v19a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V13a2 2 0 0 1 2-2z", "M4 17h32", "M14 17v17M26 17v17", "M13 11V8a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v3")),
     FeatureId.TRUCKS to icon("trucks", strokes = listOf("M2 10h19v17H2V10z", "M21 16h7l5 6v5h-12v-11z", circle(12f, 30f, 3.5f), circle(28f, 30f, 3.5f), "M2 27h6.5M15.5 27h9M31.5 27H38")),
+    // A magnifier over a tag: the tag outline at the back, the lens and handle in front.
+    FeatureId.LOOKUP to icon("lookup", strokes = listOf("M4 5h12l9 9-3 3", "M4 5v12l6 6", circle(22f, 22f, 7.5f), "M27.5 27.5L35 35"), fills = listOf(circle(10f, 11f, 2f))),
     FeatureId.LABELS to icon("labels", strokes = listOf("M6 6h15l13 13-15 15L6 21V6z"), fills = listOf(circle(14f, 14f, 2.5f))),
     FeatureId.TIMECLOCK to icon("timeclock", strokes = listOf(circle(20f, 20f, 15f), "M20 11v9l7 4")),
     // The Time Clock station's tile shows the same clock face (as on the web).

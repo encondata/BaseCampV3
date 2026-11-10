@@ -10,6 +10,7 @@ object Routes {
     const val TIMECLOCK = "timeclock"
     const val CONTAINERS = "containers"
     const val TRUCKS = "trucks"
+    const val LOOKUP = "lookup"
     const val LABELS = "labels"
     const val LABELS_PRINT = "labels/print"
     const val LABELS_PRINTER = "labels/printer"

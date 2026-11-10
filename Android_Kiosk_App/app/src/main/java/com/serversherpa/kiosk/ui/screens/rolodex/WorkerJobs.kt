@@ -18,6 +18,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.serversherpa.kiosk.core.model.RolodexJob
+import com.serversherpa.kiosk.ui.components.ColorChip
+import com.serversherpa.kiosk.ui.components.hexColor
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
 import java.time.OffsetDateTime
 import java.time.ZoneId

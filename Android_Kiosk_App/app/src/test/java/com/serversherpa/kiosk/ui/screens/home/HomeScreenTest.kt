@@ -3,6 +3,7 @@ package com.serversherpa.kiosk.ui.screens.home
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
@@ -32,7 +33,7 @@ class HomeScreenTest {
         compose.setContent { CompositionLocalProvider(LocalAppContainer provides c) { KioskTheme { HomeScreen(rememberNavController()) } } }
         compose.onNodeWithText("What would you like to do?").assertIsDisplayed()
         compose.onNodeWithText("Kiosk setup is incomplete. Only Kiosk Setup and Settings are available.").assertIsDisplayed()
-        assertEquals(6, compose.onAllNodesWithText("Finish Kiosk Setup first.").fetchSemanticsNodes().size)
+        assertEquals(7, compose.onAllNodesWithText("Finish Kiosk Setup first.").fetchSemanticsNodes().size)
     }
 
     /** The locked tiles carry an extra "Finish Kiosk Setup first." line; the two always-available
@@ -42,7 +43,8 @@ class HomeScreenTest {
         compose.setContent { CompositionLocalProvider(LocalAppContainer provides c) { KioskTheme { HomeScreen(rememberNavController()) } } }
         fun height(tag: String) = compose.onNodeWithTag(tag).fetchSemanticsNode().size.height
         assertEquals(height("tile-SCAN"), height("tile-SETUP"))          // row 1
-        assertEquals(height("tile-TIMECLOCK"), height("tile-SETTINGS"))  // row 4
+        assertEquals(height("tile-TRUCKS"), height("tile-LOOKUP"))       // row 3
+        assertEquals(height("tile-LABELS"), height("tile-TIMECLOCK"))    // row 4 (Settings is alone on row 5)
     }
 
     /** An admin's Home has the Rolodex tile, usable before Kiosk Setup (it needs no move). */
@@ -53,7 +55,7 @@ class HomeScreenTest {
         compose.onNodeWithTag("tile-ROLODEX").assertExists().assertIsEnabled()   // below the fold on a small window
         compose.onNodeWithText("Rolodex").assertExists()
         compose.onNodeWithText("Look up workers, edit their details, and take photos.").assertExists()
-        assertEquals(6, compose.onAllNodesWithText("Finish Kiosk Setup first.").fetchSemanticsNodes().size)   // the Rolodex isn't locked
+        assertEquals(7, compose.onAllNodesWithText("Finish Kiosk Setup first.").fetchSemanticsNodes().size)   // the Rolodex isn't locked
     }
 
     @Test fun staffAndMovePasswordSessionsDontSeeTheRolodexTile() {
@@ -65,6 +67,14 @@ class HomeScreenTest {
         compose.runOnIdle { c.auth.completePair(fakeSession(maxRank = 10, kioskMove = KioskMove("i1", "Move"))) }
         compose.waitForIdle()
         compose.onNodeWithTag("tile-ROLODEX").assertDoesNotExist()
+    }
+
+    /** Asset Lookup is a locked tile until Kiosk Setup is complete (the web blocks it too). */
+    @Test fun assetLookupIsGreyedUntilSetup() {
+        val c = testContainer()
+        compose.setContent { CompositionLocalProvider(LocalAppContainer provides c) { KioskTheme { HomeScreen(rememberNavController()) } } }
+        compose.onNodeWithTag("tile-LOOKUP").assertExists().assertIsNotEnabled()
+        compose.onNodeWithText("Scan an asset to see what it is and where it goes.").assertExists()
     }
 
     @Test fun devModeUnlocksWithBanner() {
