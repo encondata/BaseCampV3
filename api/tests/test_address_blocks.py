@@ -2,6 +2,7 @@
 `serversherpa.security.address_blocks` — trip, ladder, reset, clear,
 make permanent, exemptions, IPv6 /64 keying, concurrency and listing."""
 import asyncio
+import ipaddress
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -165,6 +166,91 @@ async def test_exempt_addresses_never_count(db):
     assert not ab.is_exempt("10.0.0.5")
     assert not ab.is_exempt("203.0.113.7")
     assert not ab.is_exempt("2001:db8::/64")
+
+
+# ── who may set X-Forwarded-For (I1) and the proxy exemption (I2) ──
+
+@pytest.fixture
+def proxies(monkeypatch):
+    """Set FORWARDED_ALLOW_IPS for one test (None unsets it)."""
+    def set_(value):
+        if value is None:
+            monkeypatch.delenv("FORWARDED_ALLOW_IPS", raising=False)
+        else:
+            monkeypatch.setenv("FORWARDED_ALLOW_IPS", value)
+    return set_
+
+
+def test_untrusted_private_peer_is_keyed_on_itself(proxies):
+    proxies(None)
+    assert ab.address_for(req("203.0.113.7", ("10.0.0.9", 1))) == "10.0.0.9"
+    proxies("10.0.0.2")
+    assert ab.address_for(req("203.0.113.7", ("10.0.0.9", 1))) == "10.0.0.9"
+    assert ab.address_for(req("203.0.113.7", ("8.8.8.8", 1))) == "8.8.8.8"
+
+
+def test_trusted_proxy_peer_honors_rightmost_xff(proxies):
+    proxies("10.0.0.2")
+    assert ab.address_for(req("203.0.113.7", ("10.0.0.2", 1))) == "203.0.113.7"
+    assert ab.address_for(req("1.2.3.4, 203.0.113.7", ("10.0.0.2", 1))) == "203.0.113.7"
+    # an unparseable rightmost entry falls back to the peer (exempt here)
+    assert ab.address_for(req("garbage", ("10.0.0.2", 1))) is None
+    proxies("bogus, 10.0.0.0/24")
+    assert ab.address_for(req("203.0.113.7", ("10.0.0.5", 1))) == "203.0.113.7"
+    assert ab.trusted_proxies() == (False, (ipaddress.ip_network("10.0.0.0/24"),))
+
+
+def test_loopback_peer_always_honors_xff(proxies):
+    for value in (None, "10.0.0.2"):
+        proxies(value)
+        assert ab.address_for(req("203.0.113.7", ("127.0.0.1", 1))) == "203.0.113.7"
+        assert ab.address_for(req("203.0.113.7", ("::1", 1))) == "203.0.113.7"
+
+
+def test_wildcard_keeps_private_peer_rule(proxies):
+    proxies("*")
+    assert ab.address_for(req("203.0.113.7", ("10.0.0.9", 1))) == "203.0.113.7"
+    assert ab.address_for(req("203.0.113.7", ("8.8.8.8", 1))) == "8.8.8.8"
+    # `*` exempts nothing beyond loopback
+    assert not ab.is_exempt("10.0.0.9")
+
+
+async def test_trusted_proxy_address_is_exempt(db, proxies):
+    proxies("10.0.0.2")
+    request = req(None, ("10.0.0.2", 1))
+    assert ab.address_for(request) is None
+    for _ in range(12):
+        assert await ab.record_failure(db, request, ab.LOGIN, now=T0) is None
+    assert await failure_rows(db) == 0
+    assert ab.is_exempt("10.0.0.2")
+    assert ab.is_exempt("::ffff:10.0.0.2")
+    assert not ab.is_exempt("10.0.0.3")
+    proxies("10.0.0.0/24")
+    assert ab.is_exempt("10.0.0.5")
+    assert ab.address_for(req(None, ("10.0.0.5", 1))) is None
+    for _ in range(12):
+        assert await ab.record_failure(db, req(None, ("10.0.0.5", 1)), ab.LOGIN,
+                                       now=T0) is None
+    assert await failure_rows(db) == 0
+    assert not ab.is_exempt("10.0.1.5")
+
+
+async def test_announce_error_keeps_the_block(db, monkeypatch, caplog):
+    import serversherpa.notifications.address_blocks as notif
+
+    async def boom(db, block):
+        raise RuntimeError("inbox down")
+    monkeypatch.setattr(notif, "announce_block", boom)
+    await fail(db, 9, T0)
+    with caplog.at_level("ERROR", logger=ab.__name__):
+        block = await fail(db, 1, T0)
+    assert block is not None and block.address == "203.0.113.7"
+    db.expire_all()
+    row = await db.scalar(select(AddressBlock).where(AddressBlock.address == "203.0.113.7"))
+    assert row is not None and row.level == 1
+    assert (await ab.active_block(db, "203.0.113.7", now=T0)) is not None
+    assert any("RuntimeError" in r.getMessage() and "203.0.113.7" in r.getMessage()
+               for r in caplog.records)
 
 
 async def test_ipv6_counts_by_64(db):

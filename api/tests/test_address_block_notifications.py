@@ -1,7 +1,7 @@
 """The address_blocked admin notification (SS-487): who hears about a trip,
 the exact titles, and how Clear / Block permanently resolve every copy."""
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, text, update
 from starlette.requests import Request
@@ -162,3 +162,21 @@ async def test_clear_does_not_touch_other_addresses(db):
     assert states == {ADDR: "cleared", "203.0.113.8": "open"}
     assert await db.scalar(select(AddressBlock).where(AddressBlock.address == ADDR))
 
+
+
+async def test_clear_leaves_an_earlier_ended_blocks_card_alone(db):
+    """A decision resolves only the current block's cards: a card from an
+    earlier block of the same address that ended on its own stays open."""
+    a = await person(db, "Ada", "admin")
+    old = await trip(db, now=T0)
+    old_key = notif.block_key(old.blocked_at)
+    later = T0 + timedelta(hours=2)  # the 1-hour block has ended
+    new = await trip(db, now=later)
+    assert new.level == 2
+    await ab.clear(db, ADDR, actor_id=a, now=later)
+    await db.commit()
+    by_key = {r.payload["blocked_at"]: r.payload for r in await rows(db)}
+    assert set(by_key) == {old_key, notif.block_key(later)}
+    assert by_key[old_key]["state"] == "open"
+    assert "decided_by" not in by_key[old_key]
+    assert by_key[notif.block_key(later)]["state"] == "cleared"

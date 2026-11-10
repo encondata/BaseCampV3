@@ -6,11 +6,17 @@ that address from the sign-in routes. Each new block climbs a ladder:
 starts over once 7 days pass after the last block started, or when an
 admin clears the block.
 
-The address is `bucket_for(rate_limit_ip(request))`: IPv4 as itself, IPv6
-by its /64, an IPv4-mapped IPv6 address as the IPv4. Loopback and the
-shared `unknown` bucket are never counted or blocked: if the proxy stops
-sending X-Forwarded-For every caller looks like loopback, and a block
-there would shut everyone out.
+The address is the caller's address bucketed by `bucket_for`: IPv4 as
+itself, IPv6 by its /64, an IPv4-mapped IPv6 address as the IPv4.
+X-Forwarded-For is honored only when the direct peer is loopback or a
+trusted proxy from FORWARDED_ALLOW_IPS (the same list uvicorn's
+--proxy-headers trusts); any other peer, private or not, is keyed on
+itself, so a LAN caller cannot pick the address it is counted as. With
+FORWARDED_ALLOW_IPS="*" the older `rate_limit_ip` private-peer rule
+applies. Loopback, the trusted proxies themselves and the shared
+`unknown` bucket are never counted or blocked: if the proxy stops sending
+X-Forwarded-For every caller looks like the proxy, and a block there
+would shut everyone out.
 
 Only failures count, and only on the sign-in routes listed below; sessions
 already signed in from a blocked address keep working.
@@ -21,8 +27,11 @@ block. The global prune and the failure-row deletes use SKIP LOCKED, so
 two addresses' transactions never wait on each other's rows."""
 from __future__ import annotations
 
+import functools
 import ipaddress
+import logging
 import math
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -70,6 +79,10 @@ _DELETE_ADDRESS_SQL = text(
     " FOR UPDATE SKIP LOCKED)")
 _LOOPBACK_V6 = ipaddress.IPv6Address("::1")
 
+logger = logging.getLogger(__name__)
+
+IpNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
+
 
 class BlockNotFound(Exception):
     """No block row exists for that address."""
@@ -83,10 +96,48 @@ def _now(now: datetime | None) -> datetime:
     return now if now is not None else datetime.now(UTC)
 
 
+@functools.lru_cache(maxsize=8)
+def _parse_trusted(raw: str) -> tuple[bool, tuple[IpNetwork, ...]]:
+    wildcard = False
+    nets: list[IpNetwork] = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if entry == "*":
+            wildcard = True
+            continue
+        try:
+            nets.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            continue  # a hostname or typo: uvicorn's problem, not ours
+    return wildcard, tuple(nets)
+
+
+def trusted_proxies() -> tuple[bool, tuple[IpNetwork, ...]]:
+    """(wildcard, networks) parsed from FORWARDED_ALLOW_IPS (uvicorn's
+    default 127.0.0.1 when unset). Entries are IPs or CIDR networks;
+    unparseable ones are skipped. Read on every call (the parse is cached
+    per value), so a changed environment takes effect at once."""
+    return _parse_trusted(os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1"))
+
+
+def _unmapped(ip: ipaddress.IPv4Address | ipaddress.IPv6Address):
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    return ip
+
+
+def _is_trusted_proxy(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    _, nets = trusted_proxies()
+    return any(ip.version == net.version and ip in net for net in nets)
+
+
 def is_exempt(address: str) -> bool:
     """True for addresses never counted or blocked: `unknown`, anything
-    unparseable, and loopback (127.0.0.0/8, ::1, IPv4-mapped loopback).
-    Accepts a raw address or a bucket (an IPv6 /64)."""
+    unparseable, loopback (127.0.0.0/8, ::1, IPv4-mapped loopback) and the
+    trusted proxies from FORWARDED_ALLOW_IPS (never `*`). Accepts a raw
+    address or a bucket (an IPv6 /64)."""
     try:
         ip = ipaddress.ip_address(address)
     except ValueError:
@@ -96,15 +147,45 @@ def is_exempt(address: str) -> bool:
             return True
         if isinstance(net, ipaddress.IPv6Network) and _LOOPBACK_V6 in net:
             return True
-        return net.is_loopback
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
-    return ip.is_loopback
+        if net.is_loopback:
+            return True
+        _, nets = trusted_proxies()
+        return any(net.version == t.version and net.overlaps(t) for t in nets)
+    ip = _unmapped(ip)
+    return ip.is_loopback or _is_trusted_proxy(ip)
+
+
+def _client_address(request: Request) -> str:
+    """The caller's address. X-Forwarded-For (its rightmost entry, the one
+    our proxy appended) is honored only when the direct peer is loopback or
+    a trusted proxy; with FORWARDED_ALLOW_IPS="*" it falls back to
+    `rate_limit_ip`'s private-peer rule."""
+    wildcard, _ = trusted_proxies()
+    if wildcard:
+        return rate_limit_ip(request)
+    peer = request.client.host if request.client else None
+    if not peer:
+        return "unknown"
+    forwarded = request.headers.get("x-forwarded-for")
+    if not forwarded:
+        return peer
+    try:
+        peer_ip = _unmapped(ipaddress.ip_address(peer))
+    except ValueError:
+        return peer
+    if not (peer_ip.is_loopback or _is_trusted_proxy(peer_ip)):
+        return peer
+    rightmost = forwarded.split(",")[-1].strip()
+    try:
+        ipaddress.ip_address(rightmost)
+    except ValueError:
+        return peer
+    return rightmost
 
 
 def address_for(request: Request) -> str | None:
     """The block key for this request, or None when the address is exempt."""
-    raw = rate_limit_ip(request)
+    raw = _client_address(request)
     if is_exempt(raw):
         return None
     bucket = bucket_for(raw)
@@ -245,16 +326,24 @@ async def record_failure(db: AsyncSession, request: Request, route: str,
     block.made_permanent_by = None
     await db.flush()
     await db.execute(_DELETE_ADDRESS_SQL, {"address": address})
-    await _on_trip(db, block)
+    # A failed announcement must not lose the block: the cards roll back
+    # to the savepoint and the block commits without them.
+    try:
+        async with db.begin_nested():
+            await _on_trip(db, block)
+    except Exception as exc:  # noqa: BLE001 (any announce error, logged)
+        logger.error("address block announce failed for %s: %s: %s",
+                     address, type(exc).__name__, exc)
     await db.commit()
     return block
 
 
-async def _resolve_cards(db: AsyncSession, address: str,
+async def _resolve_cards(db: AsyncSession, block: AddressBlock,
                          state: Literal["cleared", "permanent"],
                          actor_id: uuid.UUID | None) -> None:
     from serversherpa.notifications.address_blocks import decided_by_name, resolve_block
-    await resolve_block(db, address, state, await decided_by_name(db, actor_id))
+    await resolve_block(db, block.address, block.blocked_at, state,
+                        await decided_by_name(db, actor_id))
 
 
 async def clear(db: AsyncSession, address: str, *, actor_id: uuid.UUID | None,
@@ -274,7 +363,7 @@ async def clear(db: AsyncSession, address: str, *, actor_id: uuid.UUID | None,
     block.level = 0
     await db.execute(_DELETE_ADDRESS_SQL, {"address": address})
     await db.flush()
-    await _resolve_cards(db, address, "cleared", actor_id)
+    await _resolve_cards(db, block, "cleared", actor_id)
     return block
 
 
@@ -294,7 +383,7 @@ async def make_permanent(db: AsyncSession, address: str, *,
     block.made_permanent_at = now
     block.made_permanent_by = actor_id
     await db.flush()
-    await _resolve_cards(db, address, "permanent", actor_id)
+    await _resolve_cards(db, block, "permanent", actor_id)
     return block
 
 

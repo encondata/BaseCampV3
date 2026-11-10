@@ -8,6 +8,7 @@ role rank of at least GATE_BYPASS_RANK. A high-ranked role anchored to a
 client or partner does not qualify."""
 
 import uuid
+from datetime import UTC, datetime
 from typing import Literal
 
 from sqlalchemy import func, select, text
@@ -47,8 +48,15 @@ def block_title(block: AddressBlock) -> str:
             f"({block.failure_count} failed attempts)")
 
 
+def block_key(blocked_at: datetime) -> str:
+    """The `blocked_at` a card carries: which block of the address it
+    announced, so a decision resolves only that block's cards."""
+    return blocked_at.astimezone(UTC).isoformat()
+
+
 async def announce_block(db: AsyncSession, block: AddressBlock) -> int:
     payload = {"address": block.address, "level": block.level,
+               "blocked_at": block_key(block.blocked_at),
                "ends_at": block.ends_at.isoformat() if block.ends_at else None,
                "failure_count": block.failure_count, "state": "open"}
     title = block_title(block)
@@ -58,19 +66,23 @@ async def announce_block(db: AsyncSession, block: AddressBlock) -> int:
     return len(admins)
 
 
-async def resolve_block(db: AsyncSession, address: str,
+async def resolve_block(db: AsyncSession, address: str, blocked_at: datetime,
                         state: Literal["cleared", "permanent"],
                         decided_by: str) -> None:
-    """Mark every open card for this address decided, and read for every
-    admin. A card already read keeps its first read time."""
+    """Mark every open card for this block (this address and this
+    `blocked_at`) decided, and read for every admin. Cards from an earlier
+    block of the address that ended on its own stay as they are. A card
+    already read keeps its first read time."""
     await db.execute(text(
         "UPDATE notifications SET payload = payload || "
         "jsonb_build_object('state', CAST(:state AS text), "
         "'decided_by', CAST(:by AS text)), "
         "read_at = COALESCE(read_at, now()) "
         "WHERE kind = :kind AND payload ->> 'address' = CAST(:address AS text) "
+        "AND payload ->> 'blocked_at' = CAST(:blocked_at AS text) "
         "AND payload ->> 'state' = 'open'"),
-        {"state": state, "by": decided_by, "kind": KIND, "address": address})
+        {"state": state, "by": decided_by, "kind": KIND, "address": address,
+         "blocked_at": block_key(blocked_at)})
 
 
 async def decided_by_name(db: AsyncSession, actor_id: uuid.UUID | None) -> str:
