@@ -1005,7 +1005,8 @@ a.kiosk-crumb:focus-visible { opacity: 1; outline: 2px solid var(--accent); outl
 }
 .lookup-pick:hover { text-decoration: underline; }
 .lookup-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
-.lookup-card { margin-top: 18px; }
+/* The card spans the scan bar's width, so the two line up edge to edge. */
+.lookup-card { margin-top: 18px; max-width: clamp(20rem, 82vw, 90rem); }
 .lookup-card .enroll-card-name { margin: 0; overflow-wrap: anywhere; }
 .lookup-make { margin: 4px 0 0; font-size: 15px; color: var(--text-mute); }
 .lookup-route { margin-top: 16px; }
@@ -1019,6 +1020,11 @@ a.kiosk-crumb:focus-visible { opacity: 1; outline: 2px solid var(--accent); outl
   text-transform: uppercase; color: var(--text-mute);
 }
 .lookup-end .enroll-facts { margin-top: 6px; }
+/* Site gets its own line; Pod, Rack and RU always share the next one. */
+.lookup-end-facts {
+  display: grid; grid-template-columns: repeat(3, max-content); gap: 6px 28px;
+}
+.lookup-end-facts > div:first-child { grid-column: 1 / -1; }
 .lookup-admin { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--paper-line); }
 .lookup-moves { display: flex; flex-direction: column; gap: 4px; }
 .lookup-move { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }

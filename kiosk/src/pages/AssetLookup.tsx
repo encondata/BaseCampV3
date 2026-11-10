@@ -70,7 +70,7 @@ function RouteEnd({ title, end }: { title: string; end: KioskAssetEnd }) {
   return (
     <div className="lookup-end" role="group" aria-labelledby={id}>
       <div className="lookup-end-title" id={id}>{title}</div>
-      <dl className="enroll-facts">
+      <dl className="enroll-facts lookup-end-facts">
         <div><dt>Site</dt><dd>{end.site_name || '—'}</dd></div>
         <div><dt>Pod</dt><dd className="mono">{end.pod || '—'}</dd></div>
         <div><dt>Rack</dt><dd className="mono">{end.rack || '—'}</dd></div>
