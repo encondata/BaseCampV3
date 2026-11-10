@@ -359,12 +359,6 @@ export default function AssetLookup() {
                 <div className="lookup-status" role="group" aria-label="Status">
                   {statusChip(full.status_label, full.status_color) ?? '—'}
                 </div>
-                <dl>
-                  <div>
-                    <dt>Current location</dt>
-                    <dd>{placementText(full) || '—'}</dd>
-                  </div>
-                </dl>
               </div>
             )}
           </div>
@@ -377,6 +371,13 @@ export default function AssetLookup() {
                 {detail.rfid ? displayRfid(detail.rfid) : '—'}
               </dd>
             </div>
+            {full && (
+              // On the identity line, pushed to the right edge under the status chip.
+              <div className="lookup-location">
+                <dt>Current location</dt>
+                <dd>{placementText(full) || '—'}</dd>
+              </div>
+            )}
           </dl>
 
           {detail.routes.map((route) => (

@@ -332,11 +332,11 @@ it('an admin sees the full card', async () => {
   await screen.findByRole('heading', { name: 'atl1-web-001' });
 
   expect(screen.getByRole('group', { name: 'Status' })).toBeTruthy();
-  // No "Status" word on screen, and Current location sits in the card's
-  // top-right block, right under the status chip.
-  const head = document.querySelector('.lookup-head-status') as HTMLElement;
+  // No "Status" word in the card's header: the chip speaks for itself.
   expect(within(document.querySelector('.lookup-head') as HTMLElement).queryByText('Status')).toBeNull();
-  expect(within(head).getByText('Current location')).toBeTruthy();
+  // Current location shares the Asset tag / Serial / RFID line.
+  const identity = screen.getByText('Asset tag').closest('dl') as HTMLElement;
+  expect(within(identity).getByText('Current location')).toBeTruthy();
   expect(screen.getByText('Moves')).toBeTruthy();
   expect(screen.getByText('ATL1 Move')).toBeTruthy();
   expect(screen.getByText('In progress')).toBeTruthy();
