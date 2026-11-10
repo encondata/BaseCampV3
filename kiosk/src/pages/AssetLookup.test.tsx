@@ -331,7 +331,12 @@ it('an admin sees the full card', async () => {
   await lookup('102466');
   await screen.findByRole('heading', { name: 'atl1-web-001' });
 
-  expect(screen.getByText('Status', { selector: 'dt' })).toBeTruthy();
+  expect(screen.getByRole('group', { name: 'Status' })).toBeTruthy();
+  // No "Status" word on screen, and Current location sits in the card's
+  // top-right block, right under the status chip.
+  const head = document.querySelector('.lookup-head-status') as HTMLElement;
+  expect(within(document.querySelector('.lookup-head') as HTMLElement).queryByText('Status')).toBeNull();
+  expect(within(head).getByText('Current location')).toBeTruthy();
   expect(screen.getByText('Moves')).toBeTruthy();
   expect(screen.getByText('ATL1 Move')).toBeTruthy();
   expect(screen.getByText('In progress')).toBeTruthy();
@@ -358,7 +363,7 @@ it('a status with no color is a plain chip', async () => {
   render_();
   await lookup('102466');
   await screen.findByRole('heading', { name: 'atl1-web-001' });
-  const statusFact = screen.getByText('Status', { selector: 'dt' }).parentElement as HTMLElement;
+  const statusFact = screen.getByRole('group', { name: 'Status' });
   const chip = within(statusFact).getByText('Packed');
   expect(chip.className).toBe('chip tag');
   expect(chip.getAttribute('style')).toBeNull();
@@ -446,7 +451,7 @@ it('offline, an admin also sees the container and that scan history needs a conn
   expect(movesValue.textContent).toBe('ATL1 Move');
   expect(movesValue.querySelector('.chip')).toBeNull();
   // The synced status has no color of its own: a plain chip.
-  const statusFact = screen.getByText('Status', { selector: 'dt' }).parentElement as HTMLElement;
+  const statusFact = screen.getByRole('group', { name: 'Status' });
   expect(within(statusFact).getByText('Packed').className).toBe('chip tag');
   expect(api.fetchAssetScans).not.toHaveBeenCalled();
 });

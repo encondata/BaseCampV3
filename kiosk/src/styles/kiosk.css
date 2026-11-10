@@ -1014,7 +1014,8 @@ a.kiosk-crumb:focus-visible { opacity: 1; outline: 2px solid var(--accent); outl
 .lookup-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 28px; flex-wrap: wrap; }
 .lookup-head-main { min-width: 0; }
 .lookup-head-status { margin: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; text-align: right; }
-.lookup-head-status > div { min-width: 0; }
+.lookup-head-status > div, .lookup-head-status dl > div { min-width: 0; }
+.lookup-head-status dl { margin: 0; }
 .lookup-head-status dt {
   font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
   color: var(--text-mute);

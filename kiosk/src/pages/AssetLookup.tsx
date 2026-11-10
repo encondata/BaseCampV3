@@ -353,12 +353,19 @@ export default function AssetLookup() {
               {detail.make_model && <p className="lookup-make">{detail.make_model}</p>}
             </div>
             {full && (
-              <dl className="lookup-head-status">
-                <div>
-                  <dt>Status</dt>
-                  <dd className="lookup-status">{statusChip(full.status_label, full.status_color) ?? '—'}</dd>
+              <div className="lookup-head-status">
+                {/* No "Status" word: the large chip speaks for itself (the
+                    group keeps the name for screen readers). */}
+                <div className="lookup-status" role="group" aria-label="Status">
+                  {statusChip(full.status_label, full.status_color) ?? '—'}
                 </div>
-              </dl>
+                <dl>
+                  <div>
+                    <dt>Current location</dt>
+                    <dd>{placementText(full) || '—'}</dd>
+                  </div>
+                </dl>
+              </div>
             )}
           </div>
           <dl className="enroll-facts">
@@ -399,10 +406,6 @@ export default function AssetLookup() {
                       </div>
                     )}
                   </dd>
-                </div>
-                <div>
-                  <dt>Current location</dt>
-                  <dd>{placementText(full) || '—'}</dd>
                 </div>
               </dl>
 
