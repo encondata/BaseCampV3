@@ -46,6 +46,7 @@ import com.serversherpa.kiosk.core.setup.SetupState
 import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.data.lookup.AssetLookupRepository
 import com.serversherpa.kiosk.input.camera.CameraScanSheet
+import com.serversherpa.kiosk.input.rfid.RfidOwner
 import com.serversherpa.kiosk.ui.components.CameraFieldButton
 import com.serversherpa.kiosk.ui.components.ColorChip
 import com.serversherpa.kiosk.ui.components.KioskChip
@@ -96,17 +97,18 @@ fun AssetLookupScreen(@Suppress("UNUSED_PARAMETER") nav: NavController) {
     // called from the main thread, never from the sled's own threads.
     LaunchedEffect(Unit) { container.scanBus.events.collect { if (readyNow) vm.onScan(it.value) } }
     LaunchedEffect(Unit) {
-        container.rfid.bursts.collect { epcs ->
+        container.rfid.burstsFor(RfidOwner.LOOKUP).collect { epcs ->
             if (readyNow) vm.onSweep(epcs)
             // A lookup sends nothing anywhere: under a "skip tags already sent" sweep policy the
             // controller would otherwise drop a second sweep of the same tag on this screen.
             container.rfid.forgetQueued(epcs)
         }
     }
-    // The sled's trigger is this screen's RFID input while it is open (as on Scanning).
+    // The sled's trigger is this screen's RFID input while it is open (as on Scanning). Its
+    // own owner key: Scanning's late dispose can't disarm it, and only its own sweeps land here.
     DisposableEffect(ready) {
-        if (ready) container.rfid.arm()
-        onDispose { if (ready) container.rfid.disarm() }
+        if (ready) container.rfid.arm(RfidOwner.LOOKUP)
+        onDispose { if (ready) container.rfid.disarm(RfidOwner.LOOKUP) }
     }
 
     // A full-screen dialog: it floats over this page rather than replacing it.

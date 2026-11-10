@@ -98,6 +98,78 @@ class RfidControllerTest {
         assertNull(r.controller.session.value)
     }
 
+    /** Owner-aware arming: NavHost's exit transition can run the leaving
+     *  screen's disarm after the arriving screen's arm. That late disarm must
+     *  not leave the arriving screen's sled dead. */
+    @Test fun aLateDisarmByTheLeavingOwnerLeavesTheNewOwnerArmed() = runTest {
+        val r = Rig(backgroundScope)
+        r.controller.start(); r.controller.arm(RfidOwner.SCANNING); settle()
+        r.controller.arm(RfidOwner.LOOKUP); r.controller.disarm(RfidOwner.SCANNING); settle()
+        r.controller.connectNow(); settle()
+        r.reader.emitTrigger(TriggerEvent.PRESSED); settle()
+        assertTrue("the arriving owner still holds the trigger", r.reader.inventoryRunning)
+    }
+
+    /** A new owner is a new visit: what the previous owner sent is forgotten,
+     *  even though the controller never went through a disarm in between. */
+    @Test fun armingAnotherOwnerResetsWhatWasAlreadySent() = runTest {
+        val r = Rig(backgroundScope)
+        r.settings.value = DEFAULT_RFID_SETTINGS.copy(enabled = true, repeatPolicy = RepeatSweepPolicy.SKIP_AND_COUNT)
+        val bursts = mutableListOf<List<String>>()
+        backgroundScope.launch { r.controller.bursts.collect { bursts += it } }
+        r.controller.start(); r.controller.arm(RfidOwner.SCANNING); settle()
+        r.controller.connectNow(); settle()
+        r.reader.emitTrigger(TriggerEvent.PRESSED); r.reader.emitTag("100348"); settle()
+        r.reader.emitTrigger(TriggerEvent.RELEASED); settle()
+
+        r.controller.arm(RfidOwner.LOOKUP); settle()
+        r.reader.emitTrigger(TriggerEvent.PRESSED); r.reader.emitTag("100348"); settle()
+        assertEquals(0, r.controller.session.value?.skippedRepeats)
+        r.reader.emitTrigger(TriggerEvent.RELEASED); settle()
+        assertEquals(listOf(listOf("100348"), listOf("100348")), bursts)
+    }
+
+    /** Re-arming by the same owner within a visit keeps its sweep history. */
+    @Test fun reArmingTheSameOwnerKeepsWhatWasAlreadySent() = runTest {
+        val r = Rig(backgroundScope)
+        r.settings.value = DEFAULT_RFID_SETTINGS.copy(enabled = true, repeatPolicy = RepeatSweepPolicy.SKIP_AND_COUNT)
+        val bursts = mutableListOf<List<String>>()
+        backgroundScope.launch { r.controller.bursts.collect { bursts += it } }
+        r.controller.start(); r.controller.arm(RfidOwner.LOOKUP); settle()
+        r.controller.connectNow(); settle()
+        r.reader.emitTrigger(TriggerEvent.PRESSED); r.reader.emitTag("100348"); settle()
+        r.reader.emitTrigger(TriggerEvent.RELEASED); settle()
+        r.controller.arm(RfidOwner.LOOKUP); settle()
+        r.reader.emitTrigger(TriggerEvent.PRESSED); r.reader.emitTag("100348"); settle()
+        r.reader.emitTrigger(TriggerEvent.RELEASED); settle()
+        assertEquals(listOf(listOf("100348"), emptyList()), bursts)
+    }
+
+    /** Arming another owner drops the open burst, and every later sweep goes
+     *  only to the owner armed when it started: the leaving screen's
+     *  collector never sees the arriving screen's sweep. */
+    @Test fun aSweepReachesOnlyTheOwnerThatWasArmedForIt() = runTest {
+        val r = Rig(backgroundScope)
+        val toScanning = mutableListOf<List<String>>()
+        val toLookup = mutableListOf<List<String>>()
+        backgroundScope.launch { r.controller.burstsFor(RfidOwner.SCANNING).collect { toScanning += it } }
+        backgroundScope.launch { r.controller.burstsFor(RfidOwner.LOOKUP).collect { toLookup += it } }
+        r.controller.start(); r.controller.arm(RfidOwner.SCANNING); settle()
+        r.controller.connectNow(); settle()
+        r.reader.emitTrigger(TriggerEvent.PRESSED); r.reader.emitTag("100348"); settle()
+
+        r.controller.arm(RfidOwner.LOOKUP); settle()
+        assertNull("the previous owner's open burst is dropped", r.controller.session.value)
+        assertEquals(false, r.reader.inventoryRunning)
+
+        r.reader.emitTrigger(TriggerEvent.RELEASED); settle()
+        r.reader.emitTrigger(TriggerEvent.PRESSED); r.reader.emitTag("100418"); settle()
+        r.reader.emitTrigger(TriggerEvent.RELEASED); settle()
+        r.controller.disarm(RfidOwner.SCANNING); settle()   // the leaving screen's late dispose
+        assertEquals(emptyList<List<String>>(), toScanning)
+        assertEquals(listOf(listOf("100418")), toLookup)
+    }
+
     @Test fun theStopButtonEndsALatchedReadAndStillQueues() = runTest {
         val r = Rig(backgroundScope)
         r.settings.value = DEFAULT_RFID_SETTINGS.copy(enabled = true, triggerMode = RfidTriggerMode.TOGGLE)
