@@ -15,6 +15,33 @@ import { UNCATEGORIZED_FILL } from './initiatives';
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 
+/** Structural rack line-work styles for the paper renderings (classes
+ *  come through with the serialized SVG). Values deliberately diverge from
+ *  initiatives.css — tuned darker caps/posts and finer hairlines for
+ *  paper — so a modal palette change need not carry over, but check both
+ *  when restyling the frame. The ONE source for both paper outputs: the
+ *  Print layout sheet turns it into CSS rules (SHEET_CSS below), and the
+ *  Export PDF path (rackPdf.ts) writes it onto each cloned SVG element as
+ *  presentation attributes, since svg2pdf never sees app CSS. Keys are
+ *  class names, values SVG property name to value. */
+export const RACK_LINE_WORK: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  'rack-post': { fill: '#f4f6f8', stroke: '#111827', 'stroke-width': '1.5' },
+  'rack-cap': { fill: '#e5e8ec', stroke: '#111827', 'stroke-width': '1.5' },
+  'rack-interior': { fill: '#fff', stroke: '#111827', 'stroke-width': '1' },
+  'rack-u-hairline': { stroke: '#e5e7eb', 'stroke-width': '0.5' },
+  'rack-u-label': { 'font-size': '7px', fill: '#6b7280',
+                    'font-family': 'ui-monospace, Menlo, monospace' },
+  'rack-block-label': { 'font-size': '8.5px',
+                        'font-family': 'ui-monospace, Menlo, monospace' },
+  'rack-faceplate-ghost': { fill: '#fff', stroke: '#c9ced6', 'stroke-width': '1' },
+  'rack-empty-label': { 'font-size': '10px', fill: '#6b7280' },
+};
+
+const RACK_LINE_WORK_CSS = Object.entries(RACK_LINE_WORK)
+  .map(([cls, props]) => `.${cls} { ${
+    Object.entries(props).map(([k, v]) => `${k}: ${v};`).join(' ')} }`)
+  .join('\n  ');
+
 const SHEET_CSS = `
   @page { margin: 0.5in; }
   * { box-sizing: border-box; }
@@ -46,20 +73,7 @@ const SHEET_CSS = `
   .legend .swatch { display: inline-block; vertical-align: -1px; margin-right: 4px; }
   .key-verified { background: #fff; border: 2px solid #15803d; }
   .key-planned { background: #fff; border: 1.5px dashed #111827; }
-  /* structural rack line-work (classes come through with the serialized
-     SVG). Values deliberately diverge from initiatives.css — tuned darker
-     caps/posts and finer hairlines for paper — so a modal palette change
-     need not carry over, but check both when restyling the frame. */
-  .rack-post { fill: #f4f6f8; stroke: #111827; stroke-width: 1.5; }
-  .rack-cap { fill: #e5e8ec; stroke: #111827; stroke-width: 1.5; }
-  .rack-interior { fill: #fff; stroke: #111827; stroke-width: 1; }
-  .rack-u-hairline { stroke: #e5e7eb; stroke-width: 0.5; }
-  .rack-u-label { font-size: 7px; fill: #6b7280;
-                  font-family: ui-monospace, Menlo, monospace; }
-  .rack-block-label { font-size: 8.5px;
-                      font-family: ui-monospace, Menlo, monospace; }
-  .rack-faceplate-ghost { fill: #fff; stroke: #c9ced6; stroke-width: 1; }
-  .rack-empty-label { font-size: 10px; fill: #6b7280; }
+  ${RACK_LINE_WORK_CSS}
 `;
 
 export function buildRackPrintHtml(input: {

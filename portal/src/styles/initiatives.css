@@ -397,6 +397,9 @@
   margin: 0;
   color: var(--c-amber, #a36207);
 }
+/* Print layout + Export PDF stay together at the footer's right end */
+.rack-modal-actions { display: flex; gap: 8px; }
+.rack-modal-error { flex: 1 1 100%; margin: 0; }
 .rack-legend {
   display: flex;
   align-items: center;

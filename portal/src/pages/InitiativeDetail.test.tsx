@@ -238,6 +238,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const rackPdf = vi.hoisted(() => ({ exportRackPdf: vi.fn(() => Promise.resolve()) }));
+vi.mock('../lib/rackPdf', () => rackPdf);
+
 const { default: InitiativeDetail } = await import('./InitiativeDetail');
 
 function renderPage(tab?: string) {
@@ -888,4 +891,17 @@ it('assets list: the Location cell links to the container and truck', async () =
     .toBe('/logistics/containers?open=c1');
   expect(within(row).getByRole('link', { name: 'ATL1-T01' }).getAttribute('href'))
     .toBe('/logistics/trucks/t1');
+});
+
+it("assets list: a rack cell opens the rack view, whose Export PDF names the move", async () => {
+  const user = userEvent.setup();
+  api.listInitiativeAssets.mockResolvedValue([{ ...ASSET, source_ru: 10 }]);
+  renderPage('assets');
+
+  const row = await assetRow();
+  await user.click(within(row).getByRole('button', { name: 'rack-a1' }));
+  await user.click(screen.getByRole('button', { name: 'Export PDF' }));
+  expect(rackPdf.exportRackPdf).toHaveBeenCalledWith(expect.objectContaining({
+    moveName: 'NAP11 Hall Migration', rackName: 'rack-a1', sideLabel: 'Source',
+  }));
 });
