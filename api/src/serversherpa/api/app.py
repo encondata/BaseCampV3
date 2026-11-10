@@ -60,6 +60,8 @@ async def _lifespan(app: FastAPI):
         heartbeat.cancel()
         await asyncio.gather(heartbeat, return_exceptions=True)
         handler.close()
+        from serversherpa.notifications.live import stop_hub
+        await stop_hub()                 # the live inbox listen connection (SS-500)
         await dispose_engine()
 
 

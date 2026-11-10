@@ -5,15 +5,18 @@ notifications/email.py), so it has no channels, quiet hours or member overrides;
 what it hears about is its watches (listed, added, changed and removed here, each change
 audited on the group), and it carries no categories.
 This file also hosts the per-person in-app inbox routes (/inbox, mark-one-read,
-mark-all-read), the company notification settings (/settings: anyone signed in
-reads them, admins and above change them) and, for super admins and above, the
-delivery log (/log), Check delivery (/check) and the kinds it picks from (/kinds)."""
+mark-all-read, and the /inbox/stream WebSocket that signals a change live), the
+company notification settings (/settings: anyone signed in reads them, admins
+and above change them) and, for super admins and above, the delivery log (/log),
+Check delivery (/check) and the kinds it picks from (/kinds)."""
 
+import asyncio
 import base64
+import contextlib
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
 from pydantic import AwareDatetime
 from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -32,6 +35,10 @@ from serversherpa.api.schemas import (
     NotificationRecipientOut, NotificationSettingsIn, NotificationSettingsOut, SwitchPair,
     WatchIn, WatchKindsIn, WatchOut,
 )
+from serversherpa.api.ws_auth import (
+    WS_AUTH_SUBPROTOCOL, WS_UNAUTHENTICATED, authenticate_portal_ws, session_still_live,
+)
+from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
     EmailOutbox, Notification, NotificationGroup, NotificationGroupMember,
     NotificationLog, NotificationMembershipRequest, NotificationWatch, Person,
@@ -45,7 +52,7 @@ from serversherpa.notifications.company import (
 )
 from serversherpa.notifications.delivery_log import EVENTS
 from serversherpa.notifications.kinds import CATEGORY_KEYS, KINDS, kind_info
-from serversherpa.notifications.live import signal_inbox
+from serversherpa.notifications.live import get_hub, signal_inbox
 from serversherpa.notifications.requests import RequestError, decide_request
 from serversherpa.notifications.watches import (
     EVERYTHING, WatchError, add_watch, can_open, clean_kinds, group_watches, thing_of,
@@ -628,6 +635,55 @@ async def inbox_clear_read(user: CurrentUser, db: DbSession) -> Response:
         await signal_inbox(db, user.person.id)
         await db.commit()
     return Response(status_code=204)
+
+
+INBOX_STREAM_PING_SECONDS = 30.0
+
+
+@router.websocket("/inbox/stream")
+async def inbox_stream(ws: WebSocket) -> None:
+    """Live inbox signal (SS-500). Sends `{"inbox": true}` whenever the
+    signed-in person's inbox changes, and `{"ping": true}` every
+    INBOX_STREAM_PING_SECONDS, after re-checking the session. It carries no
+    notification content: the portal re-reads GET /inbox on a signal.
+
+    The person comes only from the authenticated session, and the socket
+    takes no parameters, so it can never signal anyone else's inbox. Auth
+    is the log tail's (ws_auth): token in the subprotocol list, never the
+    URL. No permission beyond being a signed-in portal user: everyone has
+    an inbox. Close codes: 4401 unauthenticated (token missing, invalid,
+    or the session ends mid-stream); 4403 a kiosk session or a password
+    change owed. Read-only maintenance mode does not apply (it is a read)."""
+    maker = get_sessionmaker()
+    async with maker() as db:
+        actor = await authenticate_portal_ws(db, ws)
+    if isinstance(actor, int):
+        await ws.close(code=actor)
+        return
+
+    person_id = actor.person.id
+    hub = await get_hub()
+    q = hub.subscribe(person_id)
+    try:
+        await ws.accept(subprotocol=WS_AUTH_SUBPROTOCOL)
+        while True:
+            try:
+                await asyncio.wait_for(q.get(), INBOX_STREAM_PING_SECONDS)
+            except TimeoutError:
+                async with maker() as db:
+                    live = await session_still_live(db, actor.session.id)
+                if not live:
+                    await ws.close(code=WS_UNAUTHENTICATED)
+                    return
+                await ws.send_json({"ping": True})
+            else:
+                await ws.send_json({"inbox": True})
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        hub.unsubscribe(person_id, q)
+        with contextlib.suppress(Exception):
+            await ws.close()
 
 
 # ── delivery log + Check delivery (super admin and above) ─────────────
