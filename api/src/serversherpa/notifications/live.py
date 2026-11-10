@@ -27,6 +27,7 @@ BACKOFF_MAX = 30.0
 HEALTH_INTERVAL = 15.0      # how often an idle listen connection is checked
 HEALTH_TIMEOUT = 10.0
 CLOSE_TIMEOUT = 5.0
+CONNECT_TIMEOUT = 10.0      # a connect that hangs is a failed attempt
 
 
 async def signal_inbox(db: AsyncSession, person_id: uuid.UUID) -> None:
@@ -35,6 +36,13 @@ async def signal_inbox(db: AsyncSession, person_id: uuid.UUID) -> None:
     commit does."""
     await db.execute(text("SELECT pg_notify(:ch, :pid)"),
                       {"ch": INBOX_CHANNEL, "pid": str(person_id)})
+
+
+async def signal_inboxes(db: AsyncSession, person_ids) -> None:
+    """signal_inbox() once per distinct id in `person_ids` (for example the
+    `RETURNING person_id` rows of a bulk UPDATE). Nothing is sent for none."""
+    for pid in dict.fromkeys(person_ids):
+        await signal_inbox(db, pid)
 
 
 async def connect_raw(suffix: str = "-inbox") -> asyncpg.Connection:
@@ -46,7 +54,7 @@ async def connect_raw(suffix: str = "-inbox") -> asyncpg.Connection:
     kwargs["server_settings"] = {"application_name": get_application_name(suffix)}
     return await asyncpg.connect(
         user=url.username, password=url.password, host=url.host,
-        port=url.port, database=url.database, **kwargs)
+        port=url.port, database=url.database, timeout=CONNECT_TIMEOUT, **kwargs)
 
 
 class InboxHub:
@@ -142,30 +150,50 @@ class InboxHub:
         return True
 
     async def _supervise(self, connected: bool) -> None:
+        delay = BACKOFF_START
         while not self._stopping:
-            if connected:
-                # Wait for the connection to drop, checking it now and then
-                # so a half-open socket is noticed too.
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(self._lost.wait(), HEALTH_INTERVAL)
-                if not self._lost.is_set() and await self._healthy():
-                    continue
-                log.warning("inbox listen connection lost; reconnecting")
-                await self._drop_conn()
+            try:
+                connected = await self._supervise_once(connected)
+                delay = BACKOFF_START
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Never let a surprise end live signals for this process:
+                # log it, start over from a fresh connection after a pause.
+                log.exception("inbox listen supervisor failed; restarting in %.0f s", delay)
+                with contextlib.suppress(Exception):
+                    await self._drop_conn()
                 connected = False
-            delay = BACKOFF_START
-            while not self._stopping and not connected:
                 await asyncio.sleep(delay)
-                try:
-                    await self._connect()
-                    connected = True
-                except Exception:
-                    log.warning("inbox listen reconnect failed; next try in %.0f s",
-                                min(delay * 2, BACKOFF_MAX), exc_info=True)
-                    delay = min(delay * 2, BACKOFF_MAX)
-            if connected:
-                # Signals sent while it was down are lost: everyone re-reads.
-                self._poke_everyone()
+                delay = min(delay * 2, BACKOFF_MAX)
+
+    async def _supervise_once(self, connected: bool) -> bool:
+        """One round: watch a live connection until it drops, or reconnect
+        with backoff. Returns whether it is connected now."""
+        if connected:
+            # Wait for the connection to drop, checking it now and then
+            # so a half-open socket is noticed too.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._lost.wait(), HEALTH_INTERVAL)
+            if not self._lost.is_set() and await self._healthy():
+                return True
+            log.warning("inbox listen connection lost; reconnecting")
+            await self._drop_conn()
+            connected = False
+        delay = BACKOFF_START
+        while not self._stopping and not connected:
+            await asyncio.sleep(delay)
+            try:
+                await self._connect()
+                connected = True
+            except Exception:
+                log.warning("inbox listen reconnect failed; next try in %.0f s",
+                            min(delay * 2, BACKOFF_MAX), exc_info=True)
+                delay = min(delay * 2, BACKOFF_MAX)
+        if connected:
+            # Signals sent while it was down are lost: everyone re-reads.
+            self._poke_everyone()
+        return connected
 
     async def _drop_conn(self) -> None:
         conn, self._conn = self._conn, None

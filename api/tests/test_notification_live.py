@@ -187,3 +187,122 @@ async def test_hide_route_signals_only_on_change(client, db, seeded_user, listen
     resp = await client.delete(f"/notifications/inbox/{row.id}", headers=hdrs)
     assert resp.status_code == 204
     assert await _nothing(listener, 0.5)
+
+
+# ── writers outside notify() that change inbox rows ──────────────────
+
+async def _owner(db, tag: str):
+    from serversherpa.db.models import Person
+    person = Person(first_name="Owner", last_name=tag, email=f"owner-{tag}@test.example.com")
+    db.add(person)
+    await db.flush()
+    return person
+
+
+async def _card(db, owner, kind: str, payload: dict):
+    from serversherpa.db.models import Notification
+    db.add(Notification(person_id=owner.id, kind=kind, title="Card", payload=payload))
+    await db.commit()
+
+
+async def test_reset_request_bump_signals_each_card_owner(db, seeded_user, listener):
+    from serversherpa.notifications import reset_requests
+    a, b = await _owner(db, "a"), await _owner(db, "b")
+    for owner in (a, b):
+        await _card(db, owner, reset_requests.KIND,
+                    {"target_person_id": str(seeded_user.id), "state": "open", "count": 1})
+    await _drain(listener)
+
+    assert await reset_requests.open_or_bump(db, seeded_user) == 2
+    await db.commit()
+    got = {await _next(listener, 2), await _next(listener, 2)}
+    assert got == {str(a.id), str(b.id)}
+    assert await _nothing(listener, 0.3)
+
+
+async def test_reset_request_resolve_signals_each_card_owner(db, seeded_user, listener):
+    from serversherpa.notifications import reset_requests
+    a, b = await _owner(db, "a"), await _owner(db, "b")
+    for owner in (a, b):
+        await _card(db, owner, reset_requests.KIND,
+                    {"target_person_id": str(seeded_user.id), "state": "open", "count": 1})
+    await _drain(listener)
+
+    await reset_requests.resolve(db, seeded_user.id, "Admin")
+    await db.commit()
+    got = {await _next(listener, 2), await _next(listener, 2)}
+    assert got == {str(a.id), str(b.id)}
+    assert await _nothing(listener, 0.3)
+
+    # Nothing open any more: nothing changes, nothing is sent.
+    await reset_requests.resolve(db, seeded_user.id, "Admin")
+    await db.commit()
+    assert await _nothing(listener, 0.5)
+
+
+async def test_membership_resolve_copies_signals_once_per_owner(db, listener):
+    from serversherpa.notifications.requests import resolve_copies
+    a = await _owner(db, "a")
+    request_id = uuid.uuid4()
+    for _ in range(2):   # two copies, one owner: one signal
+        await _card(db, a, "membership_request", {"request_id": str(request_id), "state": "pending"})
+    await _drain(listener)
+
+    await resolve_copies(db, request_id, "approved", "Admin")
+    await db.commit()
+    assert await _next(listener, 2) == str(a.id)
+    assert await _nothing(listener, 0.3)
+
+    await resolve_copies(db, uuid.uuid4(), "approved", "Admin")
+    await db.commit()
+    assert await _nothing(listener, 0.5)
+
+
+async def test_router_resolve_copies_signals_each_owner(db, listener):
+    from serversherpa.services.router_agent import resolve_router_copies
+    a, b = await _owner(db, "a"), await _owner(db, "b")
+    device_id = uuid.uuid4()
+    for owner in (a, b):
+        await _card(db, owner, "router_approval", {"device_id": str(device_id), "state": "pending"})
+    await _drain(listener)
+
+    await resolve_router_copies(db, device_id, "approved", "Admin")
+    await db.commit()
+    got = {await _next(listener, 2), await _next(listener, 2)}
+    assert got == {str(a.id), str(b.id)}
+    assert await _nothing(listener, 0.3)
+
+
+# ── hub hardening ────────────────────────────────────────────────────
+
+async def test_supervisor_survives_an_unexpected_error(monkeypatch, caplog):
+    from serversherpa.notifications import live
+    monkeypatch.setattr(live, "BACKOFF_START", 0.01)
+    h = live.InboxHub()
+    calls = []
+
+    async def once(connected):
+        calls.append(connected)
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+        h._stopping = True
+        return True
+
+    monkeypatch.setattr(h, "_supervise_once", once)
+    await asyncio.wait_for(h._supervise(True), 2)
+    # The error was logged, and the next round started over unconnected.
+    assert calls == [True, False]
+    assert "inbox listen supervisor failed" in caplog.text
+
+
+async def test_connect_raw_has_a_timeout(monkeypatch):
+    from serversherpa.notifications import live
+    seen = {}
+
+    async def fake_connect(**kwargs):
+        seen.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(live.asyncpg, "connect", fake_connect)
+    await live.connect_raw("-x")
+    assert seen["timeout"] == live.CONNECT_TIMEOUT == 10.0
