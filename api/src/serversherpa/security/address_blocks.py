@@ -187,8 +187,10 @@ async def raise_if_blocked(db: AsyncSession, request: Request) -> None:
 
 
 async def _on_trip(db: AsyncSession, block: AddressBlock) -> None:
-    """Called inside record_failure's transaction when a block trips.
-    Task 2 fills this in (admin notifications); a no-op for now."""
+    """Called inside record_failure's transaction when a block trips: one
+    inbox card per admin."""
+    from serversherpa.notifications.address_blocks import announce_block
+    await announce_block(db, block)
 
 
 async def record_failure(db: AsyncSession, request: Request, route: str,
@@ -241,6 +243,13 @@ async def record_failure(db: AsyncSession, request: Request, route: str,
     return block
 
 
+async def _resolve_cards(db: AsyncSession, address: str,
+                         state: Literal["cleared", "permanent"],
+                         actor_id: uuid.UUID | None) -> None:
+    from serversherpa.notifications.address_blocks import decided_by_name, resolve_block
+    await resolve_block(db, address, state, await decided_by_name(db, actor_id))
+
+
 async def clear(db: AsyncSession, address: str, *, actor_id: uuid.UUID | None,
                 now: datetime | None = None) -> AddressBlock:
     """End an active block now and reset the ladder (level 0). Deletes the
@@ -258,6 +267,7 @@ async def clear(db: AsyncSession, address: str, *, actor_id: uuid.UUID | None,
     block.level = 0
     await db.execute(_DELETE_ADDRESS_SQL, {"address": address})
     await db.flush()
+    await _resolve_cards(db, address, "cleared", actor_id)
     return block
 
 
@@ -277,6 +287,7 @@ async def make_permanent(db: AsyncSession, address: str, *,
     block.made_permanent_at = now
     block.made_permanent_by = actor_id
     await db.flush()
+    await _resolve_cards(db, address, "permanent", actor_id)
     return block
 
 
