@@ -81,6 +81,12 @@ open class FakeKioskApi : KioskApi {
     // ── rolodex ─────────────────────────────────────────────────────
     // Suspending, so a test can hold a call open (a double tap while saving). Each call is
     // recorded in `calls` (and its body below) before it answers, so a refused one still shows.
+    var lookupAssetsResult: suspend (String, String) -> KioskLookupResult = { _, _ -> throw ApiError(404, "not_found", null) }
+    var assetDetailResult: suspend (String, String) -> KioskAssetDetail = { _, _ -> throw ApiError(404, "not_found", null) }
+    var assetScansResult: suspend (String, String, Int) -> List<AssetScanRow> = { _, _, _ -> throw ApiError(404, "not_found", null) }
+    override suspend fun lookupAssets(serial: String, value: String): KioskLookupResult { calls += "lookupAssets:$value"; return lookupAssetsResult(serial, value) }
+    override suspend fun assetDetail(serial: String, assetId: String): KioskAssetDetail { calls += "assetDetail:$assetId"; return assetDetailResult(serial, assetId) }
+    override suspend fun assetScans(serial: String, assetId: String, limit: Int): List<AssetScanRow> { calls += "assetScans:$assetId"; return assetScansResult(serial, assetId, limit) }
     var rolodexWorkersResult: suspend () -> RolodexList = { RolodexList("now") }
     var rolodexWorkerResult: suspend (String) -> RolodexDetail = { throw ApiError(404, "person_not_found") }
     var rolodexOptionsResult: suspend () -> RolodexOptions = { RolodexOptions() }

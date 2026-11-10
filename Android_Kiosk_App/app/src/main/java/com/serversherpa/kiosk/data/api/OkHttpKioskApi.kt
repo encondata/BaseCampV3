@@ -1,6 +1,9 @@
 package com.serversherpa.kiosk.data.api
 
 import com.serversherpa.kiosk.core.ApiError
+import com.serversherpa.kiosk.core.model.AssetScanRow
+import com.serversherpa.kiosk.core.model.KioskAssetDetail
+import com.serversherpa.kiosk.core.model.KioskLookupResult
 import com.serversherpa.kiosk.core.model.BiometricChallengeOut
 import com.serversherpa.kiosk.core.model.BiometricEnrollChallengeOut
 import com.serversherpa.kiosk.core.model.BiometricEnrollIn
@@ -53,6 +56,7 @@ import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.SerializationStrategy
 import kotlinx.serialization.json.JsonObject
@@ -320,6 +324,16 @@ class OkHttpKioskApi(
         parse(authed { url(apiUrl("/kiosk/station-key")).post(jsonBody(KioskStationKeyIn.serializer(), KioskStationKeyIn(serial))) }, KioskStationKeyOut.serializer()).key
 
     // ── rolodex ─────────────────────────────────────────────────────
+
+    override suspend fun lookupAssets(serial: String, value: String): KioskLookupResult =
+        parse(authed { url(apiUrl("/kiosk/assets/lookup?serial=${q(serial)}&q=${q(value)}")).get() }, KioskLookupResult.serializer())
+
+    override suspend fun assetDetail(serial: String, assetId: String): KioskAssetDetail =
+        parse(authed { url(apiUrl("/kiosk/assets/${q(assetId)}?serial=${q(serial)}")).get() }, KioskAssetDetail.serializer())
+
+    override suspend fun assetScans(serial: String, assetId: String, limit: Int): List<AssetScanRow> =
+        parse(authed { url(apiUrl("/kiosk/assets/${q(assetId)}/scans?serial=${q(serial)}&limit=$limit")).get() },
+            ListSerializer(AssetScanRow.serializer()))
 
     override suspend fun rolodexWorkers(): RolodexList =
         parse(authed { url(apiUrl("/kiosk/rolodex/workers")).get() }, RolodexList.serializer())

@@ -56,6 +56,27 @@ class OkHttpKioskApiEndpointsTest {
         }
     }
 
+    @Test fun assetLookupPaths() = runBlocking<Unit> {
+        ApiHarness(tmp.root).use { h ->
+            h.signIn()
+            h.server.enqueue(jsonResponse(200, """{"matches":[{"id":"a1","asset_tag":"T-1","matched":["name"]}],"truncated":false}"""))
+            assertEquals("a1", h.api.lookupAssets("K 1", "a/b c").matches[0].id)
+            var req = h.server.takeRequest()
+            assertEquals("/kiosk/assets/lookup?serial=K%201&q=a%2Fb%20c", req.path); assertEquals("GET", req.method)
+            assertTrue(req.getHeader("Authorization")!!.startsWith("Bearer "))
+            h.server.enqueue(jsonResponse(200, """{"id":"a1","asset_tag":"T-1","routes":[],"full":null}"""))
+            assertEquals("a1", h.api.assetDetail("K 1", "a1").id)
+            req = h.server.takeRequest()
+            assertEquals("/kiosk/assets/a1?serial=K%201", req.path); assertEquals("GET", req.method)
+            assertTrue(req.getHeader("Authorization")!!.startsWith("Bearer "))
+            h.server.enqueue(jsonResponse(200, """[{"id":"s1","scanned_at":"2026-11-10T09:00:00Z"}]"""))
+            assertEquals(1, h.api.assetScans("K 1", "a1", 50).size)
+            req = h.server.takeRequest()
+            assertEquals("/kiosk/assets/a1/scans?serial=K%201&limit=50", req.path); assertEquals("GET", req.method)
+            assertTrue(req.getHeader("Authorization")!!.startsWith("Bearer "))
+        }
+    }
+
     @Test fun labelEndpointsReturnRawBodiesAndFontBytes() = runBlocking<Unit> {
         ApiHarness(tmp.root).use { h ->
             h.signIn()
