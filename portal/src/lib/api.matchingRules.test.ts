@@ -125,3 +125,34 @@ it('a refused deploy is an ApiError with the check', async () => {
   expect(err.code).toBe('check_failed');
   expect((err.detail as { check: { ok: boolean } }).check.ok).toBe(false);
 });
+
+it('encodes every id it puts in a path, so a crafted id stays one segment', async () => {
+  const calls = mockFetch(json({}));
+  const bad = '../system/admin';
+  const enc = '..%2Fsystem%2Fadmin';
+  await getMatchingVersion(bad);
+  await updateMatchingDraft(bad, FLOW);
+  await standbyMatchingVersion(bad);
+  await deployMatchingVersion(bad);
+  await rollbackMatchingVersion(bad);
+  await updateMatchingTestAsset(bad, { asset_tag: 1, name: 'Test asset 1' });
+  await createMatchingTestRow(bad, { place: 'printing', value: 'x', expected: 'not_found' });
+  await updateMatchingTestRow(bad, { place: 'printing', value: 'x', expected: 'not_found' });
+  const urls = calls().map(([u]) => u);
+  expect(urls[0]).toContain(`${ROOT}/versions/${enc}`);
+  expect(urls[0]).not.toContain('/system/admin');
+  expect(urls[1]).toContain(`${ROOT}/versions/${enc}`);
+  expect(urls[2]).toContain(`${ROOT}/versions/${enc}/standby`);
+  expect(urls[3]).toContain(`${ROOT}/versions/${enc}/deploy`);
+  expect(urls[4]).toContain(`${ROOT}/versions/${enc}/rollback`);
+  expect(urls[5]).toContain(`${ROOT}/test-assets/${enc}`);
+  expect(urls[6]).toContain(`${ROOT}/test-assets/${enc}/rows`);
+  expect(urls[7]).toContain(`${ROOT}/test-rows/${enc}`);
+
+  const deletes = mockFetch(noContent);
+  await deleteMatchingTestAsset(bad);
+  await deleteMatchingTestRow(bad);
+  const [da, dr] = deletes().map(([u]) => u);
+  expect(da).toContain(`${ROOT}/test-assets/${enc}`);
+  expect(dr).toContain(`${ROOT}/test-rows/${enc}`);
+});

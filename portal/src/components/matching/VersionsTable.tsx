@@ -4,9 +4,9 @@
 
 import DataTable, { type DataTableColumn, type DataTableRow } from '../DataTable';
 import { RowActionsMenu, type RowAction } from '../hardware/RowActionsMenu';
-import type { MatchingState, MatchingVersion } from '../../lib/api';
+import type { MatchingVersion } from '../../lib/api';
 import { ACTIONS_TRACK } from '../../lib/listTools';
-import { formatSavedAt, STATE_LABELS } from '../../lib/matchingRules';
+import { formatSavedAt, STATE_CHIP, STATE_LABELS } from '../../lib/matchingRules';
 
 const COLUMNS: DataTableColumn[] = [
   { key: 'version', label: 'Version', width: '90px', mono: true },
@@ -16,13 +16,6 @@ const COLUMNS: DataTableColumn[] = [
   { key: 'tests', label: 'Tests' },
   { key: 'actions', label: '', width: ACTIONS_TRACK, align: 'right' },
 ];
-
-export const STATE_CHIP: Record<MatchingState, string> = {
-  draft: 'chip tag',
-  standby: 'chip c-amber',
-  live: 'chip c-green',
-  retired: 'chip c-slate',
-};
 
 export default function VersionsTable({
   versions, selectedId, onSelect, onOpen, onDeploy, onRollback,

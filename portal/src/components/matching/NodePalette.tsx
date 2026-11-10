@@ -5,10 +5,7 @@
 
 import type { DragEvent } from 'react';
 
-import { KINDS, type NodeKind } from '../../lib/matchingRules';
-
-/** The drag-and-drop type a palette entry carries (its value is the kind). */
-export const DRAG_TYPE = 'application/x-matching-node';
+import { DRAG_TYPE, KINDS, type NodeKind } from '../../lib/matchingRules';
 
 export default function NodePalette({ hasScanInput, onAdd }: {
   hasScanInput: boolean;

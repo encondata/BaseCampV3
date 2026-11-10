@@ -6,17 +6,20 @@
  * The flow is the source of truth. Steps map to React Flow nodes (type
  * `mr`), wires to edges (`sourceHandle` = the output, `targetHandle` =
  * `in`). Every edit goes back through the Task 8 helpers: a new wire is
- * `connect()` (and `isValidConnection` refuses what `connect` would), a
- * move is `moveNode()` once the drag ends (or an arrow key moves it), and
- * the Delete or Backspace key is `removeNode()` / `removeEdge()`. While a
- * step is being dragged the canvas keeps its own copy of the nodes, so it
- * can follow the pointer; a new `flow` rebuilds that copy (keeping each
- * node's measured size, so React Flow needn't measure it again).
+ * `connect()` (and `isValidConnection` is `canConnect()`, the same rules),
+ * a move is `moveNode()` once the drag ends or an arrow key moves a step
+ * (both arrive as a position change with `dragging: false`), and the
+ * Delete or Backspace key is `removeNode()` / `removeEdge()` — only while
+ * focus is inside the canvas, so Backspace on a palette button or Save
+ * deletes nothing. While a step is being dragged the canvas keeps its own
+ * copy of the nodes, so it can follow the pointer; a new `flow` rebuilds
+ * that copy (keeping each node's measured size, so React Flow needn't
+ * measure it again, and a step mid-drag where the pointer has it).
  *
  * Visible controls for the gestures: zoom in, zoom out and fit view (with
  * the zoom level) for the wheel and pinch; the palette's click to add for
- * dragging a kind in; the settings panel's Delete step and Delete wire for
- * the keys. Selection comes back through `onSelect`, from a click or the
+ * dragging a kind in; the settings panel's Wires lists for dragging a wire,
+ * and its Delete step and Delete wire for the keys. Selection comes back through `onSelect`, from a click or the
  * keyboard (Enter on a focused step or wire).
  *
  * `handle` (opt-in) gives the page `center()`: the canvas's center in flow
@@ -33,10 +36,9 @@ import '@xyflow/react/dist/style.css';
 import { useCallback, useImperativeHandle, useMemo, useRef, useState, type DragEvent, type Ref } from 'react';
 
 import {
-  connect, moveNode, outputsFor, removeEdge, removeNode, type Flow, type FlowNode, type NodeKind,
+  canConnect, connect, DRAG_TYPE, moveNode, removeEdge, removeNode, type Flow, type FlowNode, type NodeKind,
 } from '../../lib/matchingRules';
 import FlowNodeView, { type FlowNodeLook, type HandleSlot } from './FlowNodeView';
-import { DRAG_TYPE } from './NodePalette';
 
 export type CanvasSelection = { kind: 'node' | 'edge'; id: string };
 export type LitPath = { nodes: Set<string>; edges: Set<string> };
@@ -65,19 +67,24 @@ const NODE_TYPES: NodeTypes = { mr: MrNodeType };
 function toNodes(
   flow: Flow, selected: CanvasSelection | null, warnings: Set<string>, lit: LitPath | null, prev: MrNode[],
 ): MrNode[] {
-  const measured = new Map(prev.map((n) => [n.id, n.measured]));
-  return flow.nodes.map((n) => ({
-    id: n.id,
-    type: 'mr',
-    position: n.position,
-    data: {
-      node: n,
-      look: { warn: warnings.has(n.id), lit: !!lit?.nodes.has(n.id), dim: !!lit && !lit.nodes.has(n.id) },
-    },
-    selected: selected?.kind === 'node' && selected.id === n.id,
-    deletable: n.kind !== 'scan_input',
-    measured: measured.get(n.id),
-  }));
+  const before = new Map(prev.map((n) => [n.id, n]));
+  return flow.nodes.map((n) => {
+    const old = before.get(n.id);
+    return {
+      id: n.id,
+      type: 'mr',
+      // a step mid-drag stays under the pointer; its drop commits the position
+      position: old?.dragging ? old.position : n.position,
+      dragging: old?.dragging,
+      data: {
+        node: n,
+        look: { warn: warnings.has(n.id), lit: !!lit?.nodes.has(n.id), dim: !!lit && !lit.nodes.has(n.id) },
+      },
+      selected: selected?.kind === 'node' && selected.id === n.id,
+      deletable: n.kind !== 'scan_input',
+      measured: old?.measured,
+    };
+  });
 }
 
 interface Props {
@@ -142,8 +149,8 @@ function Canvas({ flow, selected, warnings, lit, onChange, onSelect, onDropKind,
     if (kept.length) setNodes((prev) => applyNodeChanges(kept, prev));
     const picked = changes.filter((c) => c.type === 'select' && c.selected);
     if (picked.length === 1 && picked[0].type === 'select') onSelect({ kind: 'node', id: picked[0].id });
-    // an arrow key moves a selected step with `dragging: false` (a drag's
-    // end does too, and also reaches onNodeDragStop)
+    // the one place a move commits: a drag's end and an arrow key's move
+    // both report the step's position with `dragging: false`
     let next = flowRef.current;
     for (const c of changes) {
       if (c.type === 'position' && c.dragging === false && c.position) next = moveNode(next, c.id, c.position);
@@ -156,13 +163,13 @@ function Canvas({ flow, selected, warnings, lit, onChange, onSelect, onDropKind,
     if (picked.length === 1 && picked[0].type === 'select') onSelect({ kind: 'edge', id: picked[0].id });
   }, [onSelect]);
 
-  const isValidConnection: IsValidConnection = useCallback((c: Edge | Connection) => {
-    const f = flowRef.current;
-    const from = f.nodes.find((n) => n.id === c.source);
-    const to = f.nodes.find((n) => n.id === c.target);
-    if (!from || !to || from.id === to.id || to.kind === 'scan_input') return false;
-    return !!c.sourceHandle && outputsFor(from).includes(c.sourceHandle);
-  }, []);
+  const isValidConnection: IsValidConnection = useCallback((c: Edge | Connection) => (
+    !!c.sourceHandle && canConnect(flowRef.current, c.source, c.sourceHandle, c.target)
+  ), []);
+
+  // React Flow hears the delete keys on the whole document; act on them
+  // only while focus is inside the canvas.
+  const onBeforeDelete = useCallback(async () => !!wrapRef.current?.contains(document.activeElement), []);
 
   const onDragOver = (e: DragEvent) => {
     if (!e.dataTransfer.types.includes(DRAG_TYPE)) return;
@@ -177,7 +184,9 @@ function Canvas({ flow, selected, warnings, lit, onChange, onSelect, onDropKind,
   };
 
   return (
-    <div className="mr-canvas-inner" ref={wrapRef}>
+    // tabIndex -1: a click on the pane focuses the canvas (so the delete
+    // keys work after picking a wire), without adding a tab stop
+    <div className="mr-canvas-inner" ref={wrapRef} tabIndex={-1}>
       <ReactFlow<MrNode, Edge>
         nodes={nodes}
         edges={edges}
@@ -190,12 +199,12 @@ function Canvas({ flow, selected, warnings, lit, onChange, onSelect, onDropKind,
         isValidConnection={isValidConnection}
         onNodeClick={(_, n) => onSelect({ kind: 'node', id: n.id })}
         onNodeDragStart={(_, n) => onSelect({ kind: 'node', id: n.id })}
-        onNodeDragStop={(_, n) => commit(moveNode(flowRef.current, n.id, n.position))}
         onEdgeClick={(_, e) => onSelect({ kind: 'edge', id: e.id })}
         onPaneClick={() => onSelect(null)}
         onNodesDelete={(gone) => commit(gone.reduce((f, n) => removeNode(f, n.id), flowRef.current))}
         onEdgesDelete={(gone) => commit(gone.reduce((f, e) => removeEdge(f, e.id), flowRef.current))}
         deleteKeyCode={['Backspace', 'Delete']}
+        onBeforeDelete={onBeforeDelete}
         onDragOver={onDragOver}
         onDrop={onDrop}
         fitView

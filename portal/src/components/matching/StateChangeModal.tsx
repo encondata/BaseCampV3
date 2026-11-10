@@ -31,7 +31,13 @@ function copyFor(kind: StateChangeKind, n: number, liveVersion: number | null, p
   return { title: `Save v${n} as standby`, hint: `v${n} is checked and kept ready, but not live.`, button: 'Save as standby' };
 }
 
-const CALL = { deploy: deployMatchingVersion, rollback: rollbackMatchingVersion, standby: standbyMatchingVersion };
+/** Looked up at the click, not at module load: importing this module (App.tsx
+ *  pulls in every page) reads nothing from the api module. */
+function callFor(kind: StateChangeKind): (id: string) => Promise<unknown> {
+  if (kind === 'deploy') return deployMatchingVersion;
+  if (kind === 'rollback') return rollbackMatchingVersion;
+  return standbyMatchingVersion;
+}
 
 export default function StateChangeModal({
   kind, version, liveVersion, placeLabel, onClose, onDone, onCheckFailed,
@@ -52,7 +58,7 @@ export default function StateChangeModal({
     setBusy(true);
     setError('');
     try {
-      await CALL[kind](version.id);
+      await callFor(kind)(version.id);
       onDone();
     } catch (err) {
       if (err instanceof ApiError && err.code === 'check_failed') {

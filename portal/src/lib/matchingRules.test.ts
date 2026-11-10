@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 
 import type { MatchingTraceStep } from './api';
 import {
-  addNode, connect, defaultSettings, formatSavedAt, litPath, moveNode, nodeTitle, outputsFor,
+  addNode, canConnect, connect, defaultSettings, formatSavedAt, litPath, moveNode, nodeTitle, outputsFor,
   removeEdge, removeNode, sameFlow, setSettings, type Flow, type FlowNode,
 } from './matchingRules';
 
@@ -39,6 +39,16 @@ it('connect replaces the wire on an output and refuses bad wires', () => {
   expect(connect(base, 'n2', 'out', 'n1')).toBe(base);
   expect(connect(base, 'n4', 'out', 'n5')).toBe(base);
   expect(connect(base, 'n2', 'invalid', 'n5')).toBe(base);
+});
+
+it('canConnect holds the rules connect follows', () => {
+  expect(canConnect(base, 'n3', 'none', 'n4')).toBe(true);
+  expect(canConnect(base, 'n3', 'none', 'n3')).toBe(false);   // itself
+  expect(canConnect(base, 'n2', 'out', 'n1')).toBe(false);    // into Scan input
+  expect(canConnect(base, 'n4', 'out', 'n5')).toBe(false);    // Found has no outputs
+  expect(canConnect(base, 'n2', 'invalid', 'n5')).toBe(false); // Trim has no invalid
+  expect(canConnect(base, 'n9', 'out', 'n5')).toBe(false);    // no such step
+  expect(canConnect(base, 'n2', 'out', 'n9')).toBe(false);
 });
 
 it('connect gives a new wire the next edge id', () => {

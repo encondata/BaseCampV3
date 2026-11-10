@@ -1,6 +1,6 @@
 /** Matching rules: the flow's types, the label tables and the pure helpers the editor builds on.
  *  The keys, labels and rules mirror api/src/serversherpa/matching_rules/flow.py. */
-import type { MatchingTraceStep } from './api';
+import type { MatchingState, MatchingTraceStep } from './api';
 import { longDate } from './format';
 
 export type NodeKind = 'scan_input' | 'clean_up' | 'match' | 'found' | 'not_found';
@@ -80,6 +80,17 @@ export const STATE_LABELS: Labeled[] = [
   { key: 'retired', label: 'Retired' },
 ];
 
+/** Each state's chip classes (directory.css), on the versions table and the editor's top bar. */
+export const STATE_CHIP: Record<MatchingState, string> = {
+  draft: 'chip tag',
+  standby: 'chip c-amber',
+  live: 'chip c-green',
+  retired: 'chip c-slate',
+};
+
+/** The drag-and-drop type a palette entry carries onto the canvas (its value is the kind). */
+export const DRAG_TYPE = 'application/x-matching-node';
+
 const labelOf = (table: Labeled[], key: string | undefined): string | undefined =>
   table.find((t) => t.key === key)?.label;
 
@@ -122,11 +133,19 @@ export function addNode(flow: Flow, kind: NodeKind, position: { x: number; y: nu
   return { flow: { ...flow, nodes: [...flow.nodes, node] }, id };
 }
 
-export function connect(flow: Flow, source: string, output: string, target: string): Flow {
+/** Whether `connect` would wire `source`'s `output` to `target`: both steps
+ *  exist, they differ, the target isn't a Scan input, and the output is one
+ *  the source has. (The canvas's isValidConnection and the settings panel's
+ *  Wires lists use it.) */
+export function canConnect(flow: Flow, source: string, output: string, target: string): boolean {
   const from = flow.nodes.find((n) => n.id === source);
   const to = flow.nodes.find((n) => n.id === target);
-  if (!from || !to || source === target || to.kind === 'scan_input') return flow;
-  if (!outputsFor(from).includes(output)) return flow;
+  if (!from || !to || source === target || to.kind === 'scan_input') return false;
+  return outputsFor(from).includes(output);
+}
+
+export function connect(flow: Flow, source: string, output: string, target: string): Flow {
+  if (!canConnect(flow, source, output, target)) return flow;
   const kept = flow.edges.filter((e) => !(e.source === source && e.output === output));
   const id = nextId('e', flow.edges.map((e) => e.id));
   return { ...flow, edges: [...kept, { id, source, output, target }] };

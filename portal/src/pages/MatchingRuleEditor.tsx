@@ -26,13 +26,12 @@ import StandardModal from '../components/StandardModal';
 import FlowCanvas, { type CanvasSelection, type FlowCanvasHandle, type LitPath } from '../components/matching/FlowCanvas';
 import NodePalette from '../components/matching/NodePalette';
 import NodeSettings from '../components/matching/NodeSettings';
-import { STATE_CHIP } from '../components/matching/VersionsTable';
 import {
   checkMatchingFlow, createMatchingDraft, getMatchingVersion, updateMatchingDraft,
   type MatchingCheck, type MatchingVersionDetail,
 } from '../lib/api';
 import {
-  addNode, nodeTitle, PLACES, removeEdge, removeNode, sameFlow, setSettings, STATE_LABELS,
+  addNode, PLACES, removeEdge, removeNode, sameFlow, setSettings, STATE_CHIP, STATE_LABELS,
   type Flow, type NodeKind,
 } from '../lib/matchingRules';
 import { useLeaveGuard } from '../lib/useLeaveGuard';
@@ -228,12 +227,10 @@ export default function MatchingRuleEditor() {
                       onChange={edit} onSelect={setSelected} onDropKind={place} />
         </div>
         <NodeSettings
+          flow={flow}
           node={selNode}
           edge={selEdge}
-          titleOf={(nid) => {
-            const n = flow.nodes.find((x) => x.id === nid);
-            return n ? nodeTitle(n) : nid;
-          }}
+          onFlowChange={edit}
           onChange={(settings) => { if (selNode) edit(setSettings(flow, selNode.id, settings)); }}
           onDeleteNode={() => {
             if (!selNode) return;

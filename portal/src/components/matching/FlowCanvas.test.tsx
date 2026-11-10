@@ -4,7 +4,7 @@
  * recipe's stubs (ResizeObserver, DOMMatrixReadOnly, a 500 px element size).
  */
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 
 import type { Flow } from '../../lib/matchingRules';
@@ -58,6 +58,7 @@ const FLOW: Flow = {
 function renderCanvas(props: Partial<Parameters<typeof FlowCanvas>[0]> = {}) {
   return render(
     <div style={{ width: 800, height: 500 }}>
+      <button type="button">outside</button>
       <FlowCanvas flow={FLOW} selected={null} warnings={new Set()} lit={null}
                   onChange={vi.fn()} onSelect={vi.fn()} onDropKind={vi.fn()} {...props} />
     </div>,
@@ -95,4 +96,54 @@ it('shows visible zoom buttons', () => {
   expect(screen.getByRole('button', { name: /zoom in/i })).toBeTruthy();
   expect(screen.getByRole('button', { name: /zoom out/i })).toBeTruthy();
   expect(screen.getByRole('button', { name: /fit view/i })).toBeTruthy();
+});
+
+const lastFlow = (onChange: ReturnType<typeof vi.fn>): Flow => onChange.mock.calls.at(-1)?.[0] as Flow;
+
+it('the Delete key removes the selected step and its wires, with focus in the canvas', async () => {
+  const onChange = vi.fn();
+  const { container } = renderCanvas({ selected: { kind: 'node', id: 'n2' }, onChange });
+  const node = container.querySelector<HTMLElement>('.react-flow__node[data-id="n2"]')!;
+  node.focus();
+  fireEvent.keyDown(node, { key: 'Delete', code: 'Delete' });
+  fireEvent.keyUp(node, { key: 'Delete', code: 'Delete' });
+  await waitFor(() => expect(onChange).toHaveBeenCalled());
+  const flow = lastFlow(onChange);
+  expect(flow.nodes.map((n) => n.id)).toEqual(['n1', 'n3', 'n4', 'n5']);
+  expect(flow.edges.map((e) => e.id)).toEqual(['e3', 'e4']);
+});
+
+it('the Delete key removes the selected wire', async () => {
+  const onChange = vi.fn();
+  const { container } = renderCanvas({ selected: { kind: 'edge', id: 'e4' }, onChange });
+  const pane = container.querySelector<HTMLElement>('.react-flow__node[data-id="n1"]')!;
+  pane.focus();
+  fireEvent.keyDown(pane, { key: 'Backspace', code: 'Backspace' });
+  fireEvent.keyUp(pane, { key: 'Backspace', code: 'Backspace' });
+  await waitFor(() => expect(onChange).toHaveBeenCalled());
+  const flow = lastFlow(onChange);
+  expect(flow.nodes).toHaveLength(5);
+  expect(flow.edges.map((e) => e.id)).toEqual(['e1', 'e2', 'e3']);
+});
+
+it('the Delete key does nothing while focus is outside the canvas', async () => {
+  const onChange = vi.fn();
+  renderCanvas({ selected: { kind: 'node', id: 'n2' }, onChange });
+  const outside = screen.getByRole('button', { name: 'outside' });
+  outside.focus();
+  fireEvent.keyDown(outside, { key: 'Backspace', code: 'Backspace' });
+  fireEvent.keyUp(outside, { key: 'Backspace', code: 'Backspace' });
+  await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+  expect(onChange).not.toHaveBeenCalled();
+});
+
+it('Scan input is not deletable from the keyboard', async () => {
+  const onChange = vi.fn();
+  const { container } = renderCanvas({ selected: { kind: 'node', id: 'n1' }, onChange });
+  const node = container.querySelector<HTMLElement>('.react-flow__node[data-id="n1"]')!;
+  node.focus();
+  fireEvent.keyDown(node, { key: 'Delete', code: 'Delete' });
+  fireEvent.keyUp(node, { key: 'Delete', code: 'Delete' });
+  await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+  expect(onChange).not.toHaveBeenCalled();
 });

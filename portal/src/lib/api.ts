@@ -7394,6 +7394,8 @@ export interface MatchingTestAsset extends MatchingTestAssetIn {
 }
 
 const MATCHING = '/devtools/matching-rules';
+// Every id goes into its path through encodeURIComponent: an id from the
+// address bar is already decoded, and a `../` in it must stay one segment.
 
 async function matchingCall<T>(path: string, method: string, body?: unknown): Promise<T> {
   const resp = await apiFetch(`${MATCHING}${path}`, body === undefined ? { method } : {
@@ -7407,23 +7409,23 @@ export const listMatchingVersions = (place: MatchingPlace): Promise<MatchingVers
   matchingCall(`/versions?place=${encodeURIComponent(place)}`, 'GET');
 
 export const getMatchingVersion = (id: string): Promise<MatchingVersionDetail> =>
-  matchingCall(`/versions/${id}`, 'GET');
+  matchingCall(`/versions/${encodeURIComponent(id)}`, 'GET');
 
 export const createMatchingDraft = (
   body: { place: MatchingPlace; flow: Flow; based_on_id?: string | null },
 ): Promise<MatchingVersionDetail> => matchingCall('/versions', 'POST', body);
 
 export const updateMatchingDraft = (id: string, flow: Flow): Promise<MatchingVersionDetail> =>
-  matchingCall(`/versions/${id}`, 'PUT', { flow });
+  matchingCall(`/versions/${encodeURIComponent(id)}`, 'PUT', { flow });
 
 export const standbyMatchingVersion = (id: string): Promise<MatchingVersionDetail> =>
-  matchingCall(`/versions/${id}/standby`, 'POST');
+  matchingCall(`/versions/${encodeURIComponent(id)}/standby`, 'POST');
 
 export const deployMatchingVersion = (id: string): Promise<MatchingVersionDetail> =>
-  matchingCall(`/versions/${id}/deploy`, 'POST');
+  matchingCall(`/versions/${encodeURIComponent(id)}/deploy`, 'POST');
 
 export const rollbackMatchingVersion = (id: string): Promise<MatchingVersionDetail> =>
-  matchingCall(`/versions/${id}/rollback`, 'POST');
+  matchingCall(`/versions/${encodeURIComponent(id)}/rollback`, 'POST');
 
 export const checkMatchingFlow = (place: MatchingPlace, flow: Flow): Promise<MatchingCheck> =>
   matchingCall('/check', 'POST', { place, flow });
@@ -7439,16 +7441,16 @@ export const createMatchingTestAsset = (body: MatchingTestAssetIn): Promise<Matc
   matchingCall('/test-assets', 'POST', body);
 
 export const updateMatchingTestAsset = (id: string, body: MatchingTestAssetIn): Promise<MatchingTestAsset> =>
-  matchingCall(`/test-assets/${id}`, 'PATCH', body);
+  matchingCall(`/test-assets/${encodeURIComponent(id)}`, 'PATCH', body);
 
 export const deleteMatchingTestAsset = (id: string): Promise<void> =>
-  matchingCall(`/test-assets/${id}`, 'DELETE');
+  matchingCall(`/test-assets/${encodeURIComponent(id)}`, 'DELETE');
 
 export const createMatchingTestRow = (assetId: string, body: MatchingTestRowIn): Promise<MatchingTestRow> =>
-  matchingCall(`/test-assets/${assetId}/rows`, 'POST', body);
+  matchingCall(`/test-assets/${encodeURIComponent(assetId)}/rows`, 'POST', body);
 
 export const updateMatchingTestRow = (id: string, body: MatchingTestRowIn): Promise<MatchingTestRow> =>
-  matchingCall(`/test-rows/${id}`, 'PATCH', body);
+  matchingCall(`/test-rows/${encodeURIComponent(id)}`, 'PATCH', body);
 
 export const deleteMatchingTestRow = (id: string): Promise<void> =>
-  matchingCall(`/test-rows/${id}`, 'DELETE');
+  matchingCall(`/test-rows/${encodeURIComponent(id)}`, 'DELETE');

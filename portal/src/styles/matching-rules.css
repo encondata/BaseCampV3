@@ -134,6 +134,7 @@
 }
 .mini-btn.mr-palette-item:disabled { cursor: not-allowed; }
 .pf-form.mr-settings-form { grid-template-columns: minmax(0, 1fr); }
+.mr-wires-title { margin: 6px 0 0; }
 .mr-fixed { margin: 0; font-size: 12.5px; color: var(--text-mute); }
 
 /* each kind's stripe, on the palette and the canvas */
@@ -147,7 +148,7 @@
    it follows .portal-shell[data-theme] in light and dark */
 .mr-canvas {
   --xy-background-color: var(--surface);
-  --xy-background-pattern-dots-color: var(--paper-line);
+  --xy-background-pattern-color: var(--paper-line);   /* the dots (12.12 reads no -dots- variable) */
   --xy-node-background-color: var(--surface-2);
   --xy-node-border: 1px solid var(--paper-line);
   --xy-node-color: var(--text-dark);
@@ -174,7 +175,7 @@
   overflow: hidden;
   background: var(--surface);
 }
-.mr-canvas-inner { width: 100%; height: 100%; }
+.mr-canvas-inner { width: 100%; height: 100%; outline: none; }
 .mr-canvas .react-flow__controls {
   border: 1px solid var(--paper-line);
   border-radius: 9px;
@@ -221,8 +222,8 @@
 .mr-canvas .react-flow__handle.mr-port:hover,
 .mr-canvas .react-flow__handle.mr-port.connectingto { background: var(--accent); }
 /* selection is an outline, so a selected step still shows its warning */
-.react-flow__node.selected .mr-node { outline: 2px solid var(--accent); outline-offset: 3px; }
+.mr-canvas .react-flow__node.selected .mr-node { outline: 2px solid var(--accent); outline-offset: 3px; }
 .mr-node.mr-warn { border-color: var(--c-red); border-style: dashed; }
 .mr-node.mr-lit { border-color: var(--ok); }
 .mr-node.mr-dim { opacity: 0.45; }
-.react-flow__edge.mr-lit-edge .react-flow__edge-path { stroke: var(--ok); stroke-width: 2.5; }
+.mr-canvas .react-flow__edge.mr-lit-edge .react-flow__edge-path { stroke: var(--ok); stroke-width: 2.5; }

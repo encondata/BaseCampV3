@@ -310,3 +310,15 @@ it('Scan input is enabled in the palette when the flow has none', async () => {
   const scanInput = await screen.findByRole('button', { name: 'Scan input' }) as HTMLButtonElement;
   expect(scanInput.disabled).toBe(false);
 });
+
+it('wires an output from the settings panel', async () => {
+  const user = userEvent.setup();
+  renderAt('v2id');
+  await user.click(await screen.findByRole('button', { name: 'node n3' }));
+  await user.click(screen.getByRole('combobox', { name: 'none goes to' }));
+  // the palette has a "Not found" button too; the list's entry is the portaled one
+  const entry = screen.getAllByRole('button', { name: 'Not found' }).find((b) => b.classList.contains('kbar-item'));
+  await user.click(entry!);
+  expect(screen.getByTestId('edges').textContent).toContain('n3.none>n6');
+  expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(false);
+});
