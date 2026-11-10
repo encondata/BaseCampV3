@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.14.10",
+    "@xyflow/react": "12.12.0",
     "bwip-js": "^4.11.4",
     "gsap": "^3.12.5",
     "jspdf": "^3.0.4",
