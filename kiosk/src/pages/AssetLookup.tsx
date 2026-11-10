@@ -95,7 +95,8 @@ function HistoryTable({ rows }: { rows: AssetScanRow[] }) {
               <th>Device</th>
               <th>Operator</th>
               <th>Site</th>
-              <th>Location</th>
+              {/* Kept blank on purpose: room for a future column. */}
+              <th aria-hidden="true" />
             </tr>
           </thead>
           <tbody>
@@ -112,7 +113,7 @@ function HistoryTable({ rows }: { rows: AssetScanRow[] }) {
                 <td className="mono">{s.device_id || '—'}</td>
                 <td>{s.operator_name || '—'}</td>
                 <td>{s.site_name || '—'}</td>
-                <td>{s.location_detail || '—'}</td>
+                <td aria-hidden="true" />
               </tr>
             ))}
           </tbody>

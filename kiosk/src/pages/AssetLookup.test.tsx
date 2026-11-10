@@ -352,7 +352,12 @@ it('an admin sees the full card', async () => {
   expect(when).not.toMatch(/AM|PM/i);
   expect(within(history).getByText('KIOSK-ATL1-01')).toBeTruthy();
   expect(within(history).getByText('Alex Worker')).toBeTruthy();
-  expect(within(history).getByText('—')).toBeTruthy();     // blank location
+  // The Location column is kept blank for later: no heading, no values.
+  expect(within(history).queryByText('Location')).toBeNull();
+  expect(within(history).queryByText('—')).toBeNull();
+  const headers = within(history).getAllByRole('columnheader', { hidden: true });
+  expect(headers).toHaveLength(7);
+  expect(headers[6].textContent).toBe('');
   expect(screen.queryByText('Latest 50 scans shown.')).toBeNull();
 });
 
