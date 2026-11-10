@@ -57,6 +57,7 @@ import com.serversherpa.kiosk.ui.components.ScanInput
 import com.serversherpa.kiosk.ui.components.SolidButton
 import com.serversherpa.kiosk.ui.components.hexColor
 import com.serversherpa.kiosk.ui.components.kioskViewModel
+import com.serversherpa.kiosk.ui.screens.scan.RfidReadPanel
 import com.serversherpa.kiosk.ui.theme.ChipTone
 import com.serversherpa.kiosk.ui.theme.FragmentMono
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
@@ -87,6 +88,7 @@ fun AssetLookupScreen(@Suppress("UNUSED_PARAMETER") nav: NavController) {
     val setup by container.prefs.setupSelection.collectAsStateWithLifecycle(initialValue = null)
     val setupState by container.prefs.setupState.collectAsStateWithLifecycle(initialValue = SetupState.INCOMPLETE)
     val auth by container.auth.state.collectAsStateWithLifecycle()
+    val rfidSession by container.rfid.session.collectAsStateWithLifecycle()
     val ready = setupState.isComplete && setup != null
     val readyNow by rememberUpdatedState(ready)
     // The server refuses the scans route without it too; recomputed when the session changes.
@@ -116,12 +118,19 @@ fun AssetLookupScreen(@Suppress("UNUSED_PARAMETER") nav: NavController) {
 
     Column {
         PageHeader("Kiosk · Asset Lookup", "Asset Lookup", setup?.headerLine() ?: "Finish Kiosk Setup first.")
-        ScanInput(
-            ui.value, vm::onValueChange, onSubmit = { if (ready) vm.onScan(it) },
-            placeholder = "Scan or type an asset tag, serial, RFID, or name",
-            enabled = ready, keepFocus = !camera,
-            trailingIcon = if (container.hasCamera) ({ CameraFieldButton(ready) { camera = true } }) else null,
-        )
+        // While the sled reads, its live panel (with Stop, for a latched or toggled read) takes
+        // the box's place, as on Scanning. A lookup sends nothing, so there's no "already sent".
+        val burst = rfidSession
+        if (burst != null) {
+            RfidReadPanel(session = burst, showSkipped = false, onStop = { container.rfid.stopBurst() })
+        } else {
+            ScanInput(
+                ui.value, vm::onValueChange, onSubmit = { if (ready) vm.onScan(it) },
+                placeholder = "Scan or type an asset tag, serial, RFID, or name",
+                enabled = ready, keepFocus = !camera,
+                trailingIcon = if (container.hasCamera) ({ CameraFieldButton(ready) { camera = true } }) else null,
+            )
+        }
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             SolidButton("Search", onClick = { if (ready) vm.lookup() }, enabled = ready, modifier = Modifier.weight(1f))
             MiniButton("Clear", { vm.clear() })

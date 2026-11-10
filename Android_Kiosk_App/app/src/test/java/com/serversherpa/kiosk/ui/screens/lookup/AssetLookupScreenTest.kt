@@ -40,6 +40,8 @@ import com.serversherpa.kiosk.core.model.KioskAssetRoute
 import com.serversherpa.kiosk.core.model.KioskLookupMatch
 import com.serversherpa.kiosk.core.model.KioskLookupResult
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
+import com.serversherpa.kiosk.core.rfid.DEFAULT_RFID_SETTINGS
+import com.serversherpa.kiosk.core.rfid.RfidTriggerMode
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.core.setup.SetupState
 import com.serversherpa.kiosk.data.FakeKioskApi
@@ -381,6 +383,55 @@ class AssetLookupScreenTest {
         compose.waitForIdle()
         assertFalse("disarmed: the trigger no longer starts a read", reader.inventoryRunning)
         assertEquals(null, c.rfid.session.value)
+    }
+
+    /** A latched read shows the live read panel with its Stop button (the on-screen control
+     *  for the trigger), and Stop ends the read and looks the one tag up. */
+    @Test fun latchedReadShowsThePanelAndStopEndsIt() {
+        val reader = FakeRfidReader()
+        val api = FakeKioskApi().apply {
+            lookupAssetsResult = { _, _ -> one() }
+            assetDetailResult = { _, _ -> workerDetail }
+        }
+        val c = rig(api, reader = reader)
+        runBlocking { c.prefs.setRfid(DEFAULT_RFID_SETTINGS.copy(enabled = true, triggerMode = RfidTriggerMode.TOGGLE)) }
+        c.rfid.start()
+        show(c)
+        waitReady()
+        runBlocking { c.rfid.connectNow() }
+        settleSled()
+        reader.emitTrigger(TriggerEvent.PRESSED)
+        compose.waitUntilIdlingMain { reader.inventoryRunning }
+        reader.emitTrigger(TriggerEvent.RELEASED)
+        reader.emitTag("100418")
+        waitForText("Reading…")
+        compose.onNodeWithText("Stop").assertIsDisplayed().performClick()
+        compose.waitUntilIdlingMain { !reader.inventoryRunning }
+        compose.waitUntilIdlingMain { "lookupAssets:000000000000000000100418" in api.calls }
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Reading…").fetchSemanticsNodes().isEmpty() }
+        waitForText("Core switch")
+    }
+
+    /** The panel fits the MC2200: Stop stays on screen at 320 dp. */
+    @Test @Config(qualifiers = "w320dp-h640dp") fun readPanelFitsAt320dp() {
+        val reader = FakeRfidReader()
+        val c = rig(FakeKioskApi(), reader = reader)
+        runBlocking { c.prefs.setRfid(DEFAULT_RFID_SETTINGS.copy(enabled = true, triggerMode = RfidTriggerMode.TOGGLE)) }
+        c.rfid.start()
+        show(c)
+        waitReady()
+        runBlocking { c.rfid.connectNow() }
+        settleSled()
+        reader.emitTrigger(TriggerEvent.PRESSED)
+        compose.waitUntilIdlingMain { reader.inventoryRunning }
+        reader.emitTrigger(TriggerEvent.RELEASED)
+        reader.emitTag("000000000000000000100418")
+        waitForText("Reading…")
+        val width = compose.onRoot().fetchSemanticsNode().size.width
+        val b = compose.onNodeWithText("Stop").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertTrue("clipped: ${b.right} > $width", b.right <= width + 1f)
+        compose.onNodeWithText("Stop").performClick()
+        compose.waitUntilIdlingMain { !reader.inventoryRunning }
     }
 
     @Test fun sweepOfSeveralTagsSaysSo() {
