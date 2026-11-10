@@ -1,0 +1,249 @@
+"""Sign-in address blocks (SS-487): the blocking service core in
+`serversherpa.security.address_blocks` — trip, ladder, reset, clear,
+make permanent, exemptions, IPv6 /64 keying, concurrency and listing."""
+import asyncio
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from fastapi import HTTPException
+from sqlalchemy import func, select
+from starlette.requests import Request
+
+from serversherpa.db.models import AddressBlock, SignInFailure
+from serversherpa.security import address_blocks as ab
+
+T0 = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
+
+
+def req(xff: str | None = "203.0.113.7", client=("127.0.0.1", 1)) -> Request:
+    headers = [(b"x-forwarded-for", xff.encode())] if xff else []
+    return Request({"type": "http", "client": client, "headers": headers})
+
+
+async def fail(db, n: int, now: datetime, *, xff="203.0.113.7", route=ab.LOGIN):
+    """Record n failures at `now`; return the last call's result."""
+    result = None
+    for _ in range(n):
+        result = await ab.record_failure(db, req(xff), route, now=now)
+    return result
+
+
+async def failure_rows(db) -> int:
+    return await db.scalar(select(func.count()).select_from(SignInFailure))
+
+
+async def test_nine_failures_do_not_block(db):
+    assert await fail(db, 9, T0) is None
+    assert await ab.active_block(db, "203.0.113.7", now=T0) is None
+    assert await failure_rows(db) == 9
+
+
+async def test_tenth_failure_blocks_for_one_hour(db):
+    await fail(db, 9, T0)
+    block = await fail(db, 1, T0)
+    assert block is not None
+    assert block.address == "203.0.113.7"
+    assert block.level == 1
+    assert block.permanent is False
+    assert block.blocked_at == T0
+    assert block.ends_at == T0 + timedelta(hours=1)
+    assert block.first_blocked_at == T0
+    assert block.times_blocked == 1
+    assert block.failure_count == 10
+    assert block.last_route == "login"
+    assert ab.block_state(block, T0) == "blocked"
+    assert (await ab.active_block(db, "203.0.113.7", now=T0)).address == "203.0.113.7"
+    # the trip's failures are gone
+    assert await failure_rows(db) == 0
+
+
+async def test_failures_older_than_an_hour_do_not_count(db):
+    await fail(db, 9, T0)
+    assert await fail(db, 1, T0 + timedelta(minutes=61)) is None
+    assert await ab.active_block(db, "203.0.113.7", now=T0 + timedelta(minutes=61)) is None
+    # the global prune removed the nine stale rows
+    assert await failure_rows(db) == 1
+
+
+async def test_ladder(db):
+    now = T0
+    expected = [(1, timedelta(hours=1)), (2, timedelta(hours=6)),
+                (3, timedelta(hours=12)), (4, timedelta(hours=24))]
+    for level, duration in expected:
+        block = await fail(db, 10, now)
+        assert block is not None
+        assert block.level == level
+        assert block.permanent is False
+        assert block.ends_at == now + duration
+        assert block.first_blocked_at == T0
+        now = block.ends_at + timedelta(minutes=1)
+        assert ab.block_state(block, now) == "ended"
+        assert ab.ended_at(block, now) == block.ends_at
+    block = await fail(db, 10, now)
+    assert block.level == 5
+    assert block.permanent is True
+    assert block.ends_at is None
+    assert block.times_blocked == 5
+    assert ab.block_state(block, now + timedelta(days=365)) == "permanent"
+    assert ab.ended_at(block, now + timedelta(days=365)) is None
+
+
+async def test_seven_days_without_a_block_resets_to_level_one(db):
+    await fail(db, 10, T0, xff="203.0.113.7")
+    await fail(db, 10, T0, xff="203.0.113.8")
+    later = await fail(db, 10, T0 + timedelta(days=7), xff="203.0.113.7")
+    assert later.level == 1
+    assert later.times_blocked == 2
+    sooner = await fail(db, 10, T0 + timedelta(days=6, hours=23), xff="203.0.113.8")
+    assert sooner.level == 2
+
+
+async def test_clear_resets_level_and_failures(db, seeded_user):
+    await fail(db, 10, T0)
+    cleared = await ab.clear(db, "203.0.113.7", actor_id=seeded_user.id,
+                             now=T0 + timedelta(minutes=5))
+    await db.commit()
+    assert cleared.level == 0
+    assert cleared.cleared_at == T0 + timedelta(minutes=5)
+    assert cleared.cleared_by == seeded_user.id
+    assert ab.block_state(cleared, T0 + timedelta(minutes=5)) == "ended"
+    assert ab.ended_at(cleared, T0 + timedelta(minutes=10)) == T0 + timedelta(minutes=5)
+
+    t1 = T0 + timedelta(minutes=10)
+    assert await fail(db, 1, t1) is None
+    assert await ab.active_block(db, "203.0.113.7", now=t1) is None
+    block = await fail(db, 9, t1)
+    assert block is not None
+    assert block.level == 1
+    assert block.cleared_at is None
+    assert block.cleared_by is None
+    assert block.times_blocked == 2
+
+
+async def test_make_permanent(db, seeded_user):
+    await fail(db, 10, T0)
+    block = await ab.make_permanent(db, "203.0.113.7", actor_id=seeded_user.id,
+                                    now=T0 + timedelta(minutes=1))
+    await db.commit()
+    assert block.permanent is True
+    assert block.ends_at is None
+    assert block.made_permanent_at == T0 + timedelta(minutes=1)
+    assert block.made_permanent_by == seeded_user.id
+    assert ab.block_state(block, T0 + timedelta(days=30)) == "permanent"
+    # already permanent: not a timed active block
+    with pytest.raises(ab.BlockNotActive):
+        await ab.make_permanent(db, "203.0.113.7", actor_id=seeded_user.id,
+                                now=T0 + timedelta(minutes=2))
+
+    # an ended (expired) block cannot be made permanent
+    await fail(db, 10, T0, xff="203.0.113.9")
+    with pytest.raises(ab.BlockNotActive):
+        await ab.make_permanent(db, "203.0.113.9", actor_id=seeded_user.id,
+                                now=T0 + timedelta(hours=2))
+    with pytest.raises(ab.BlockNotFound):
+        await ab.clear(db, "198.51.100.1", actor_id=seeded_user.id, now=T0)
+    with pytest.raises(ab.BlockNotFound):
+        await ab.make_permanent(db, "198.51.100.1", actor_id=seeded_user.id, now=T0)
+    # clearing an ended block is refused too
+    with pytest.raises(ab.BlockNotActive):
+        await ab.clear(db, "203.0.113.9", actor_id=seeded_user.id,
+                       now=T0 + timedelta(hours=2))
+
+
+async def test_exempt_addresses_never_count(db):
+    for request in (req(None, ("127.0.0.1", 1)), req(None, ("::1", 1)),
+                    req(None, None)):
+        assert ab.address_for(request) is None
+        for _ in range(12):
+            assert await ab.record_failure(db, request, ab.LOGIN, now=T0) is None
+        await ab.raise_if_blocked(db, request)
+    assert await failure_rows(db) == 0
+    assert ab.is_exempt("unknown")
+    assert ab.is_exempt("not-an-address")
+    assert ab.is_exempt("127.5.5.5")
+    assert ab.is_exempt("::1")
+    assert not ab.is_exempt("10.0.0.5")
+    assert not ab.is_exempt("203.0.113.7")
+    assert not ab.is_exempt("2001:db8::/64")
+
+
+async def test_ipv6_counts_by_64(db):
+    block = None
+    for i in range(1, 11):
+        block = await ab.record_failure(db, req(f"2001:db8::{i:x}"), ab.LOGIN, now=T0)
+    assert block is not None
+    assert block.address == "2001:db8::/64"
+    assert ab.address_for(req("2001:db8::ffff")) == "2001:db8::/64"
+    assert ab.address_for(req("::ffff:203.0.113.7")) == "203.0.113.7"
+
+
+async def test_concurrent_failures_block_once(db):
+    from serversherpa.db.engine import get_sessionmaker
+
+    await fail(db, 9, T0)
+    sessions = [get_sessionmaker()() for _ in range(3)]
+    try:
+        results = await asyncio.gather(*(
+            ab.record_failure(s, req(), ab.LOGIN, now=T0) for s in sessions))
+    finally:
+        for s in sessions:
+            await s.close()
+    assert sum(r is not None for r in results) == 1
+    block = await ab.active_block(db, "203.0.113.7", now=T0)
+    assert block.times_blocked == 1
+    assert block.level == 1
+
+
+async def test_raise_if_blocked(db, seeded_user):
+    await ab.raise_if_blocked(db, req())  # no block: no-op
+    await fail(db, 10, T0)
+    block = await ab.active_block(db, "203.0.113.7", now=T0)
+    err = ab.blocked_error(block, T0)
+    assert err.status_code == 429
+    assert err.detail == {"code": "address_blocked", "retry_after": 3600}
+    assert err.headers == {"Retry-After": "3600"}
+    # just before the end it still rounds up to at least 1
+    err = ab.blocked_error(block, T0 + timedelta(hours=1) - timedelta(milliseconds=10))
+    assert err.detail["retry_after"] == 1
+
+    # raise_if_blocked against the real clock: a fresh block right now
+    await fail(db, 10, datetime.now(UTC), xff="203.0.113.20")
+    with pytest.raises(HTTPException) as caught:
+        await ab.raise_if_blocked(db, req("203.0.113.20"))
+    assert caught.value.status_code == 429
+    assert caught.value.detail["code"] == "address_blocked"
+    assert 3590 <= caught.value.detail["retry_after"] <= 3600
+    assert caught.value.headers["Retry-After"] == str(caught.value.detail["retry_after"])
+
+    await ab.make_permanent(db, "203.0.113.20", actor_id=seeded_user.id)
+    await db.commit()
+    with pytest.raises(HTTPException) as caught:
+        await ab.raise_if_blocked(db, req("203.0.113.20"))
+    assert caught.value.detail == {"code": "address_blocked", "retry_after": None}
+    assert not caught.value.headers
+
+
+async def test_list_blocks(db, seeded_user):
+    now = T0 + timedelta(days=40)
+    # active timed
+    await fail(db, 10, now - timedelta(minutes=10), xff="198.51.100.1")
+    # active permanent
+    await fail(db, 10, now - timedelta(minutes=20), xff="198.51.100.2")
+    await ab.make_permanent(db, "198.51.100.2", actor_id=seeded_user.id,
+                            now=now - timedelta(minutes=19))
+    # ended by expiry 5 days ago
+    await fail(db, 10, now - timedelta(days=5, hours=1), xff="198.51.100.3")
+    # ended by a clear 2 days ago
+    await fail(db, 10, now - timedelta(days=2), xff="198.51.100.4")
+    await ab.clear(db, "198.51.100.4", actor_id=seeded_user.id,
+                   now=now - timedelta(days=2) + timedelta(minutes=1))
+    # ended 31 days ago: left out
+    await fail(db, 10, now - timedelta(days=31, hours=1), xff="198.51.100.5")
+    await db.commit()
+
+    active = await ab.list_blocks(db, "active", now=now)
+    assert [b.address for b in active] == ["198.51.100.1", "198.51.100.2"]
+    ended = await ab.list_blocks(db, "ended", now=now)
+    assert [b.address for b in ended] == ["198.51.100.4", "198.51.100.3"]
+    total = await db.scalar(select(func.count()).select_from(AddressBlock))
+    assert total == 5

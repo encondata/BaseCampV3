@@ -2668,6 +2668,47 @@ class WikiSearchLog(Base):
     at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
+class SignInFailure(Base):
+    """One failed sign-in attempt from a client address (migration 0126).
+    Ten within a rolling hour trip an `AddressBlock`; rows older than an
+    hour are pruned on every write (`security.address_blocks`)."""
+    __tablename__ = "sign_in_failures"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    address: Mapped[str]
+    route: Mapped[str]
+    at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    __table_args__ = (
+        Index("ix_sign_in_failures_address_at", "address", "at"),
+        Index("ix_sign_in_failures_at", "at"),
+    )
+
+
+class AddressBlock(Base):
+    """An address blocked from signing in, one row per address ever
+    blocked (migration 0126). The row is kept after the block ends so the
+    escalation ladder (1 h, 6 h, 12 h, 24 h, permanent) can resume; `level`
+    0 means an admin cleared it. See `security.address_blocks`."""
+    __tablename__ = "address_blocks"
+
+    address: Mapped[str] = mapped_column(primary_key=True)
+    level: Mapped[int] = mapped_column(SmallInteger)
+    permanent: Mapped[bool] = mapped_column(server_default=text("false"))
+    blocked_at: Mapped[datetime]
+    ends_at: Mapped[datetime | None]
+    first_blocked_at: Mapped[datetime]
+    times_blocked: Mapped[int] = mapped_column(Integer)
+    failure_count: Mapped[int] = mapped_column(Integer)
+    last_route: Mapped[str]
+    cleared_at: Mapped[datetime | None]
+    cleared_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    made_permanent_at: Mapped[datetime | None]
+    made_permanent_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+
+
 # Register the learning and project-plan models on Base.metadata (they import
 # Base from here).
 import serversherpa.learning.models  # noqa: F401
