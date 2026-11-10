@@ -1,7 +1,8 @@
 """Library routes: learning documents, publishing versions (wiki
 snapshots), reading a version's HTML, and the learning-space page picker.
 Reads need `learning:view`; create `add`; settings and publish `change`;
-archive `delete` (`require_manager`, so wiki administrators too). Linking
+archive `delete` (`require_manager`, so wiki administrators too); listing
+archived documents is for super admins and above. Linking
 and publishing a page also need the actor's view access on it in the wiki
 (`library.learning_page`)."""
 import uuid
@@ -11,7 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 from sqlalchemy import select
 
-from serversherpa.api.deps import AuthContext, DbSession
+from serversherpa.api.deps import AuthContext, DbSession, ensure_super_admin
 from serversherpa.db.models import Person
 from serversherpa.learning import library
 from serversherpa.learning.access import require_manager
@@ -111,6 +112,8 @@ async def list_documents(
     include_archived: bool = False,
     actor: AuthContext = require_manager("view"),
 ) -> list[DocumentListItem]:
+    if include_archived:
+        ensure_super_admin(actor)
     return [DocumentListItem(**row)
             for row in await library.list_documents(db, include_archived=include_archived)]
 
