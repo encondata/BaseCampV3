@@ -229,7 +229,7 @@ class TestAssetIn(BaseModel):
     __test__ = False
     model_config = ConfigDict(extra="forbid")
 
-    asset_tag: Annotated[int, Field(ge=1)]
+    asset_tag: Annotated[int, Field(ge=1, le=2**53 - 1)]  # a safe JavaScript number
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
     rfid: Annotated[str | None, Field(max_length=128)] = None
     serial: Annotated[str | None, Field(max_length=128)] = None

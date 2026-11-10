@@ -62,6 +62,18 @@ async def test_asset_tag_unique(client, db, seeded_user):
     assert (r.status_code, _code(r)) == (409, "duplicate_asset_tag")
 
 
+async def test_asset_tag_stays_a_safe_browser_number(client, db, seeded_user):
+    # the portal reads asset tags as JavaScript numbers: past 2**53 - 1 they
+    # stop being exact, so the API refuses them (and 0 or less, as before)
+    h = await dev(client, db, seeded_user)
+    for tag in (0, 2**53, 2**63):
+        r = await _post_asset(client, h, tag)
+        assert r.status_code == 422, (tag, r.text)
+    r = await _post_asset(client, h, 2**53 - 1)
+    assert r.status_code == 201, r.text
+    assert r.json()["asset_tag"] == 2**53 - 1
+
+
 async def test_blank_rfid_and_serial_store_null(client, db, seeded_user):
     h = await dev(client, db, seeded_user)
     r = await _post_asset(client, h, 300, rfid="  ", serial="")
