@@ -45,6 +45,7 @@ from serversherpa.notifications.company import (
 )
 from serversherpa.notifications.delivery_log import EVENTS
 from serversherpa.notifications.kinds import CATEGORY_KEYS, KINDS, kind_info
+from serversherpa.notifications.live import signal_inbox
 from serversherpa.notifications.requests import RequestError, decide_request
 from serversherpa.notifications.watches import (
     EVERYTHING, WatchError, add_watch, can_open, clean_kinds, group_watches, thing_of,
@@ -570,6 +571,7 @@ async def inbox_mark_read(notification_id: uuid.UUID, user: CurrentUser, db: DbS
         raise HTTPException(status_code=404, detail={"code": "notification_not_found"})
     if row.read_at is None:
         row.read_at = datetime.now(UTC)
+        await signal_inbox(db, user.person.id)
         await db.commit()
     return Response(status_code=204)
 
@@ -581,6 +583,7 @@ async def inbox_mark_unread(notification_id: uuid.UUID, user: CurrentUser, db: D
         raise HTTPException(status_code=404, detail={"code": "notification_not_found"})
     if row.read_at is not None:
         row.read_at = None
+        await signal_inbox(db, user.person.id)
         await db.commit()
     return Response(status_code=204)
 
@@ -594,6 +597,7 @@ async def inbox_hide(notification_id: uuid.UUID, user: CurrentUser, db: DbSessio
         raise HTTPException(status_code=404, detail={"code": "notification_not_found"})
     if row.dismissed_at is None:
         row.dismissed_at = datetime.now(UTC)
+        await signal_inbox(db, user.person.id)
         await db.commit()
     return Response(status_code=204)
 
@@ -606,7 +610,9 @@ async def inbox_mark_all_read(user: CurrentUser, db: DbSession) -> Response:
     now = datetime.now(UTC)
     for row in rows:
         row.read_at = now
-    await db.commit()
+    if rows:
+        await signal_inbox(db, user.person.id)
+        await db.commit()
     return Response(status_code=204)
 
 
@@ -618,7 +624,9 @@ async def inbox_clear_read(user: CurrentUser, db: DbSession) -> Response:
     now = datetime.now(UTC)
     for row in rows:
         row.dismissed_at = now
-    await db.commit()
+    if rows:
+        await signal_inbox(db, user.person.id)
+        await db.commit()
     return Response(status_code=204)
 
 
