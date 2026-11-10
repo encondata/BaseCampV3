@@ -162,3 +162,50 @@ it('editing the flow clears the result and the highlight', async () => {
   expect(screen.queryByText(/Found by RFID/)).toBeNull();
   expect(onRun).toHaveBeenLastCalledWith(null);
 });
+
+it('a run stopped before any step says only why', async () => {
+  const user = userEvent.setup();
+  api.testRunMatchingFlow.mockResolvedValue(run({
+    outcome: 'stopped', stop_reason: 'no_scan_input', end_node_id: null, asset: null, field: null, action: null,
+    trace: [],
+  }));
+  render(<TestBar place="scanning" flow={FLOW} onRun={vi.fn()} />);
+  await user.type(screen.getByLabelText('Value to test'), '5');
+  await user.click(screen.getByRole('button', { name: 'Run' }));
+
+  expect(await screen.findByText('Stopped: the flow needs exactly one Scan input')).toBeTruthy();
+  expect(screen.queryByText(/Stopped at/)).toBeNull();
+});
+
+it('a found asset with no asset tag leaves the tag out', async () => {
+  const user = userEvent.setup();
+  api.testRunMatchingFlow.mockResolvedValue(run({ asset: { ...hit(103), asset_tag: null } }));
+  render(<TestBar place="scanning" flow={FLOW} onRun={vi.fn()} />);
+  await user.type(screen.getByLabelText('Value to test'), '102');
+  await user.click(screen.getByRole('button', { name: 'Run' }));
+
+  expect(await screen.findByText('Found by RFID: Test asset 3 · Record the scan')).toBeTruthy();
+});
+
+it("moves that fail to load say so, with Retry; Test set clears it", async () => {
+  const user = userEvent.setup();
+  api.listInitiatives.mockRejectedValueOnce(new Error('down'));
+  render(<TestBar place="printing" flow={FLOW} onRun={vi.fn()} />);
+
+  await user.click(screen.getByRole('button', { name: 'A move' }));
+  expect((await screen.findByRole('alert')).textContent).toContain("Couldn't load the moves.");
+  await user.click(screen.getByRole('button', { name: 'Test set' }));
+  expect(screen.queryByText("Couldn't load the moves.")).toBeNull();
+
+  api.listInitiatives.mockRejectedValueOnce(new Error('down'));
+  await user.click(screen.getByRole('button', { name: 'A move' }));
+  await screen.findByText("Couldn't load the moves.");
+  expect(api.listInitiatives).toHaveBeenCalledTimes(2);
+
+  await user.click(screen.getByRole('button', { name: 'Retry' }));
+  expect(api.listInitiatives).toHaveBeenCalledTimes(3);
+  await user.click(screen.getByRole('combobox', { name: 'Move' }));
+  expect(await screen.findByRole('button', { name: 'Move A' })).toBeTruthy();
+  expect(screen.queryByText("Couldn't load the moves.")).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+});

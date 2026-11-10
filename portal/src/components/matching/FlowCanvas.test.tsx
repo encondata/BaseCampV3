@@ -91,11 +91,19 @@ it('marks warned and lit steps', () => {
   expect(nodeEl(lit.container, 'n2').classList.contains('mr-dim')).toBe(false);
 });
 
-it('shows visible zoom buttons', () => {
-  renderCanvas();
-  expect(screen.getByRole('button', { name: /zoom in/i })).toBeTruthy();
-  expect(screen.getByRole('button', { name: /zoom out/i })).toBeTruthy();
-  expect(screen.getByRole('button', { name: /fit view/i })).toBeTruthy();
+it('shows labeled zoom buttons and the zoom level', async () => {
+  const { container } = renderCanvas();
+  for (const label of ['Zoom in', 'Zoom out', 'Fit view']) {
+    expect(screen.getByRole('button', { name: label }).textContent).toBe(label);
+  }
+  // React Flow's icon-only controls are gone
+  expect(container.querySelector('.react-flow__controls')).toBeNull();
+  const level = screen.getByTitle('Zoom level');
+  const before = level.textContent;
+  expect(before).toMatch(/^\d+%$/);
+  fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+  await waitFor(() => expect(level.textContent).not.toBe(before));
+  expect(Number(level.textContent!.replace('%', ''))).toBeGreaterThan(Number(before!.replace('%', '')));
 });
 
 const lastFlow = (onChange: ReturnType<typeof vi.fn>): Flow => onChange.mock.calls.at(-1)?.[0] as Flow;

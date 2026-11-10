@@ -175,17 +175,31 @@ export function removeEdge(flow: Flow, id: string): Flow {
   return { ...flow, edges: flow.edges.filter((e) => e.id !== id) };
 }
 
-/** The nodes a test run visited and the wires it took between them. */
-export function litPath(trace: MatchingTraceStep[], flow: Flow): { nodes: Set<string>; edges: Set<string> } {
+/** The nodes a test run visited and the wires it took between them.
+ *  `endNodeId` (the run's `end_node_id`) is where the run ended: it is lit
+ *  too, with the wire into it from the last step's output. That covers a
+ *  stop the trace has no step for (bad settings: the engine stops before
+ *  recording the step) and the closing wire of a loop. */
+export function litPath(
+  trace: MatchingTraceStep[], flow: Flow, endNodeId?: string | null,
+): { nodes: Set<string>; edges: Set<string> } {
   const nodes = new Set(trace.map((s) => s.node_id));
   const edges = new Set<string>();
+  const wire = (from: MatchingTraceStep, to: string) => {
+    if (from.output == null) return;
+    for (const e of flow.edges) {
+      if (e.source === from.node_id && e.output === from.output && e.target === to) edges.add(e.id);
+    }
+  };
   trace.forEach((step, i) => {
     const next = trace[i + 1];
-    if (!next || step.output == null) return;
-    for (const e of flow.edges) {
-      if (e.source === step.node_id && e.output === step.output && e.target === next.node_id) edges.add(e.id);
-    }
+    if (next) wire(step, next.node_id);
   });
+  const last = trace.at(-1);
+  if (endNodeId) {
+    nodes.add(endNodeId);
+    if (last) wire(last, endNodeId);
+  }
   return { nodes, edges };
 }
 

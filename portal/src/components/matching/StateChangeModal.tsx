@@ -1,7 +1,9 @@
 /** Deploy, Roll back to, or Save as standby: says what will happen, then
  *  makes the change. A version that fails the check stays put: the dialog
  *  says so and stays open, and the page fills its check panel from the
- *  refusal's `check` (onCheckFailed). */
+ *  refusal's `check` (onCheckFailed). A version another tab moved on
+ *  meanwhile (409 bad_state) says what it is now and calls onDone, so the
+ *  page reloads the list. */
 
 import { useState } from 'react';
 
@@ -9,6 +11,7 @@ import {
   ApiError, deployMatchingVersion, rollbackMatchingVersion, standbyMatchingVersion,
   type MatchingCheck, type MatchingVersion,
 } from '../../lib/api';
+import { STATE_LABELS } from '../../lib/matchingRules';
 import StandardModal from '../StandardModal';
 import '../../styles/profile.css'; /* .btn-solid, .pf-error */
 import '../../styles/directory.css'; /* .mini-btn */
@@ -65,6 +68,13 @@ export default function StateChangeModal({
         setError(`v${version.version} doesn't pass the check. The check panel shows what's wrong.`);
         const check = (err.detail as { check?: MatchingCheck } | undefined)?.check;
         if (check) onCheckFailed?.(check);
+      } else if (err instanceof ApiError && err.code === 'bad_state') {
+        // another tab moved it on meanwhile: say what it is now, and let
+        // the page reload the list (which may close this dialog)
+        const state = (err.detail as { state?: string } | undefined)?.state;
+        const label = STATE_LABELS.find((s) => s.key === state)?.label ?? state ?? 'changed';
+        setError(`v${version.version} is now ${label}.`);
+        onDone();
       } else {
         setError(`Couldn't change v${version.version}. Try again.`);
       }

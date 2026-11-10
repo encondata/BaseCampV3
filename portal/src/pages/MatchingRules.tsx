@@ -52,17 +52,22 @@ export default function MatchingRules() {
   // Bumped by every detail request and by a refusal's check, so a late
   // answer never overwrites what the panel shows now.
   const detailSeq = useRef(0);
+  // Bumped by every versions request, so a slow answer for the place the
+  // page just left never lands after the new place's list.
+  const versionsSeq = useRef(0);
 
   const loadVersions = useCallback(async () => {
+    const seq = ++versionsSeq.current;
     try {
       const list = await listMatchingVersions(place);
+      if (seq !== versionsSeq.current) return;
       setVersions(list);
       setVersionsError('');
       setSelectedId((cur) => (cur && list.some((v) => v.id === cur)
         ? cur
         : (list.find((v) => v.state === 'live') ?? list[0])?.id ?? null));
     } catch {
-      setVersionsError("Couldn't load the versions.");
+      if (seq === versionsSeq.current) setVersionsError("Couldn't load the versions.");
     }
   }, [place]);
 

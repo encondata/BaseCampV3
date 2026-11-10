@@ -16,9 +16,9 @@
  * that copy (keeping each node's measured size, so React Flow needn't
  * measure it again, and a step mid-drag where the pointer has it).
  *
- * Visible controls for the gestures: zoom in, zoom out and fit view (with
- * the zoom level) for the wheel and pinch; the palette's click to add for
- * dragging a kind in; the settings panel's Wires lists for dragging a wire,
+ * Visible controls for the gestures: labeled Zoom out, Zoom in and Fit view
+ * buttons (with the zoom level between them) for the wheel and pinch; the
+ * palette's click to add for dragging a kind in; the settings panel's Wires lists for dragging a wire,
  * and its Delete step and Delete wire for the keys. Selection comes back through `onSelect`, from a click or the
  * keyboard (Enter on a focused step or wire).
  *
@@ -27,7 +27,7 @@
  */
 
 import {
-  applyNodeChanges, Background, Controls, Handle, Position, ReactFlow, ReactFlowProvider, useReactFlow,
+  applyNodeChanges, Background, Handle, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow,
   useViewport,
   type Connection, type Edge, type EdgeChange, type IsValidConnection, type Node, type NodeChange,
   type NodeProps, type NodeTypes,
@@ -39,6 +39,7 @@ import {
   canConnect, connect, DRAG_TYPE, moveNode, removeEdge, removeNode, type Flow, type FlowNode, type NodeKind,
 } from '../../lib/matchingRules';
 import FlowNodeView, { type FlowNodeLook, type HandleSlot } from './FlowNodeView';
+import '../../styles/directory.css'; /* .mini-btn */
 
 export type CanvasSelection = { kind: 'node' | 'edge'; id: string };
 export type LitPath = { nodes: Set<string>; edges: Set<string> };
@@ -98,9 +99,31 @@ interface Props {
   handle?: Ref<FlowCanvasHandle>;
 }
 
-function ZoomLevel() {
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 2;
+const FIT_OPTIONS = { padding: 0.2, maxZoom: 1 };
+
+/** The visible zoom controls: text buttons, not React Flow's icon-only
+ *  Controls, with the zoom level between them. */
+function ZoomControls() {
+  const { zoomIn, zoomOut, fitView } = useReactFlow();
   const { zoom } = useViewport();
-  return <div className="mr-zoom-level" title="Zoom level">{Math.round(zoom * 100)}%</div>;
+  return (
+    <Panel position="bottom-left" className="mr-zoom">
+      <button type="button" className="mini-btn mr-zoom-btn" disabled={zoom <= MIN_ZOOM}
+              onClick={() => void zoomOut()}>
+        Zoom out
+      </button>
+      <span className="mr-zoom-level" title="Zoom level">{Math.round(zoom * 100)}%</span>
+      <button type="button" className="mini-btn mr-zoom-btn" disabled={zoom >= MAX_ZOOM}
+              onClick={() => void zoomIn()}>
+        Zoom in
+      </button>
+      <button type="button" className="mini-btn mr-zoom-btn" onClick={() => void fitView(FIT_OPTIONS)}>
+        Fit view
+      </button>
+    </Panel>
+  );
 }
 
 function Canvas({ flow, selected, warnings, lit, onChange, onSelect, onDropKind, handle: canvasHandle }: Props) {
@@ -208,14 +231,12 @@ function Canvas({ flow, selected, warnings, lit, onChange, onSelect, onDropKind,
         onDragOver={onDragOver}
         onDrop={onDrop}
         fitView
-        fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
-        minZoom={0.25}
-        maxZoom={2}
+        fitViewOptions={FIT_OPTIONS}
+        minZoom={MIN_ZOOM}
+        maxZoom={MAX_ZOOM}
       >
         <Background />
-        <Controls showInteractive={false}>
-          <ZoomLevel />
-        </Controls>
+        <ZoomControls />
       </ReactFlow>
     </div>
   );

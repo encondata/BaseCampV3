@@ -80,6 +80,17 @@
 .mr-modal-error { margin: 10px 0 0; }
 
 /* ── flow editor: /dev/matching-rules/versions/:id ─────────────── */
+/* the editor's way back to the management page */
+.mr-back {
+  display: inline-block;
+  margin-bottom: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--text-mute);
+  text-decoration: none;
+}
+.mr-back:hover { color: var(--accent); }
 .mr-editor-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .mr-saved { font-size: 12.5px; color: var(--ok); }
 
@@ -176,20 +187,23 @@
   background: var(--surface);
 }
 .mr-canvas-inner { width: 100%; height: 100%; outline: none; }
-.mr-canvas .react-flow__controls {
+/* the zoom controls: labeled buttons with the zoom level between them */
+.mr-canvas .mr-zoom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px;
   border: 1px solid var(--paper-line);
-  border-radius: 9px;
-  overflow: hidden;
+  border-radius: 11px;
+  background: var(--surface);
 }
-.mr-canvas .react-flow__controls-button { width: 28px; height: 28px; }
+.mini-btn.mr-zoom-btn { height: 28px; padding: 0 10px; font-size: 12px; }
 .mr-zoom-level {
-  width: 28px;
-  padding: 5px 0;
+  min-width: 40px;
   text-align: center;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 11px;
   color: var(--text-mute);
-  background: var(--surface-2);
 }
 .mr-canvas .react-flow__attribution a { color: var(--text-mute); }
 
@@ -232,5 +246,7 @@
 .mr-editor > .mr-test { grid-area: test; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .mr-test-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 16px; }
 .mr-test-controls input { min-width: 200px; }
+.mr-test-moves-error { display: flex; align-items: center; gap: 10px; }
+.mr-test-moves-error .pf-error { margin: 0; }
 .mr-test-result { margin: 0; color: var(--text-dark); font-weight: 600; }
 .mr-trace { list-style: none; margin: 0; max-height: 220px; display: flex; flex-direction: column; gap: 2px; color: var(--text-dark); white-space: pre-wrap; }

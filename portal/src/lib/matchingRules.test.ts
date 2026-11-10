@@ -90,6 +90,20 @@ it('litPath lights the visited steps and the wires taken', () => {
   expect([...lit.edges].sort()).toEqual(['e1', 'e2', 'e4']);
 });
 
+it('litPath lights where a bad_settings run stopped, and the wire into it', () => {
+  // the engine stops at n3 before appending its step
+  const lit = litPath(traceOf(['n1', 'out'], ['n2', 'out']), base, 'n3');
+  expect([...lit.nodes]).toEqual(['n1', 'n2', 'n3']);
+  expect([...lit.edges].sort()).toEqual(['e1', 'e2']);
+});
+
+it('litPath lights the closing wire of a loop', () => {
+  const loop: Flow = { ...base, edges: [...base.edges.filter((e) => e.id !== 'e4'), { id: 'e5', source: 'n3', output: 'none', target: 'n2' }] };
+  const lit = litPath(traceOf(['n1', 'out'], ['n2', 'out'], ['n3', 'none']), loop, 'n2');
+  expect([...lit.nodes]).toEqual(['n1', 'n2', 'n3']);
+  expect([...lit.edges].sort()).toEqual(['e1', 'e2', 'e5']);
+});
+
 it('nodeTitle and outputsFor match the server', () => {
   expect(nodeTitle({ ...clean, settings: { op: 'trim' } })).toBe('Clean up (Trim)');
   expect(nodeTitle({ ...match, settings: {} })).toBe('Match');

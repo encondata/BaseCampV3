@@ -12,7 +12,7 @@ import userEvent from '@testing-library/user-event';
 import { Link, MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { MatchingCheck, MatchingVersionDetail } from '../lib/api';
+import { ApiError, type MatchingCheck, type MatchingVersionDetail } from '../lib/api';
 import type { Flow } from '../lib/matchingRules';
 import MatchingRuleEditor from './MatchingRuleEditor';
 
@@ -97,7 +97,7 @@ function detail(overrides: Partial<MatchingVersionDetail> = {}): MatchingVersion
 
 function Where() {
   const loc = useLocation();
-  return <div data-testid="where">{loc.pathname}</div>;
+  return <div data-testid="where">{`${loc.pathname}${loc.search}`}</div>;
 }
 
 function renderAt(id: string) {
@@ -108,6 +108,7 @@ function renderAt(id: string) {
       <Routes>
         <Route path="/dev/matching-rules/versions/:id" element={<MatchingRuleEditor />} />
         <Route path="/dev" element={<div>Developer page</div>} />
+        <Route path="/dev/matching-rules" element={<div>Matching rules page</div>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -337,17 +338,79 @@ it('a run lights its path and an edit clears it', async () => {
       { node_id: 'n1', kind: 'scan_input', value_in: '103', value_out: '103', output: 'out', hits: null },
       { node_id: 'n2', kind: 'clean_up', value_in: '103', value_out: '103', output: 'out', hits: null },
       { node_id: 'n3', kind: 'match', value_in: '103', value_out: null, output: 'found', hits: null },
-      { node_id: 'n5', kind: 'found', value_in: '103', value_out: null, output: null, hits: null },
+      { node_id: 'n4', kind: 'found', value_in: '103', value_out: null, output: null, hits: null },
     ],
   });
   renderAt('v2id');
   await user.type(await screen.findByLabelText('Value to test'), '103');
   await user.click(screen.getByRole('button', { name: 'Run' }));
 
-  await waitFor(() => expect(screen.getByTestId('lit').textContent).toBe('n1,n2,n3,n5'));
+  await waitFor(() => expect(screen.getByTestId('lit').textContent).toBe('n1,n2,n3,n4'));
   expect(api.testRunMatchingFlow.mock.calls[0][0]).toMatchObject({ place: 'printing', value: '103', against: 'test_set' });
 
   await user.click(screen.getByRole('button', { name: 'stub-move' }));
   expect(screen.getByTestId('lit').textContent).toBe('');
   expect(screen.queryByText(/Found by/)).toBeNull();
+});
+
+it('a draft that changed state meanwhile saves as a new draft', async () => {
+  const user = userEvent.setup();
+  renderAt('v2id');
+  await user.click(await screen.findByRole('button', { name: 'stub-connect' }));
+  api.updateMatchingDraft.mockRejectedValue(new ApiError(409, 'not_draft', { code: 'not_draft' }));
+  api.createMatchingDraft.mockResolvedValue(detail({ id: 'v3id', version: 3, state: 'draft', based_on_version: 2 }));
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+
+  expect(api.updateMatchingDraft).toHaveBeenCalledTimes(1);
+  expect(api.createMatchingDraft).toHaveBeenCalledTimes(1);
+  const body = api.createMatchingDraft.mock.calls[0][0] as { place: string; flow: Flow; based_on_id: string };
+  expect(body.place).toBe('printing');
+  expect(body.based_on_id).toBe('v2id');
+  expect(body.flow.edges.some((e) => e.source === 'n3' && e.output === 'none' && e.target === 'n6')).toBe(true);
+  await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('/dev/matching-rules/versions/v3id'));
+  expect(await screen.findByText('v2 changed state meanwhile; saved as v3.')).toBeTruthy();
+  expect(screen.queryByText(/Couldn't save/)).toBeNull();
+  expect(screen.getByRole('heading', { name: /v3/ })).toBeTruthy();
+});
+
+it('the Matching rules link goes back to the place when clean', async () => {
+  const user = userEvent.setup();
+  api.getMatchingVersion.mockResolvedValue(detail({ place: 'scanning' }));
+  renderAt('v2id');
+  await screen.findByRole('heading', { name: /v2/ });
+  const back = screen.getByRole('link', { name: '← Matching rules' });
+  expect(back.getAttribute('href')).toBe('/dev/matching-rules?place=scanning');
+  await user.click(back);
+  expect(await screen.findByText('Matching rules page')).toBeTruthy();
+  expect(screen.getByTestId('where').textContent).toBe('/dev/matching-rules?place=scanning');
+  expect(screen.queryByRole('heading', { name: 'Leave without saving?' })).toBeNull();
+});
+
+it('the Matching rules link asks first when there are unsaved changes', async () => {
+  const user = userEvent.setup();
+  renderAt('v2id');
+  await user.click(await screen.findByRole('button', { name: 'stub-connect' }));
+  await user.click(screen.getByRole('link', { name: '← Matching rules' }));
+
+  expect(await screen.findByRole('heading', { name: 'Leave without saving?' })).toBeTruthy();
+  expect(screen.getByTestId('where').textContent).toBe('/dev/matching-rules/versions/v2id');
+  await user.click(screen.getByRole('button', { name: 'Leave' }));
+  expect(await screen.findByText('Matching rules page')).toBeTruthy();
+  expect(screen.getByTestId('where').textContent).toBe('/dev/matching-rules?place=printing');
+});
+
+it('a run that stopped on bad settings lights the step it stopped at', async () => {
+  const user = userEvent.setup();
+  api.testRunMatchingFlow.mockResolvedValue({
+    outcome: 'stopped', stop_reason: 'bad_settings', end_node_id: 'n3',
+    asset: null, field: null, action: null, message: null,
+    trace: [
+      { node_id: 'n1', kind: 'scan_input', value_in: '103', value_out: '103', output: 'out', hits: null },
+      { node_id: 'n2', kind: 'clean_up', value_in: '103', value_out: '103', output: 'out', hits: null },
+    ],
+  });
+  renderAt('v2id');
+  await user.type(await screen.findByLabelText('Value to test'), '103');
+  await user.click(screen.getByRole('button', { name: 'Run' }));
+  await waitFor(() => expect(screen.getByTestId('lit').textContent).toBe('n1,n2,n3'));
 });

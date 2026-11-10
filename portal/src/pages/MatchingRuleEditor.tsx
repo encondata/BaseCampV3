@@ -5,7 +5,12 @@
  *
  * A draft saves in place. Any other version (standby, live, retired) is
  * never changed: saving it makes a new draft based on it, and the page
- * moves to that draft's address.
+ * moves to that draft's address. A draft another tab put on standby or
+ * deployed meanwhile (409 not_draft) takes the same path, so the edits are
+ * kept as a new draft instead of trapped behind a save that always fails.
+ *
+ * `← Matching rules` in the top bar goes back to the management page at
+ * this version's place; it is a real link, so the leave guard asks first.
  *
  * Live warnings: 400 ms after the last edit the flow is checked
  * (`checkMatchingFlow`). The steps a failing structure item names are
@@ -20,7 +25,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import StandardModal from '../components/StandardModal';
 import FlowCanvas, { type CanvasSelection, type FlowCanvasHandle } from '../components/matching/FlowCanvas';
@@ -28,7 +33,7 @@ import NodePalette from '../components/matching/NodePalette';
 import NodeSettings from '../components/matching/NodeSettings';
 import TestBar from '../components/matching/TestBar';
 import {
-  checkMatchingFlow, createMatchingDraft, getMatchingVersion, updateMatchingDraft,
+  ApiError, checkMatchingFlow, createMatchingDraft, getMatchingVersion, updateMatchingDraft,
   type MatchingCheck, type MatchingRun, type MatchingVersionDetail,
 } from '../lib/api';
 import {
@@ -123,7 +128,7 @@ export default function MatchingRuleEditor() {
     ? item.problems.map((p) => p.message)
     : [item.label]));
 
-  const lit = useMemo(() => (run && flow ? litPath(run.trace, flow) : null), [run, flow]);
+  const lit = useMemo(() => (run && flow ? litPath(run.trace, flow, run.end_node_id) : null), [run, flow]);
 
   const edit = useCallback((next: Flow) => {
     setFlow(next);
@@ -134,6 +139,7 @@ export default function MatchingRuleEditor() {
   if (!loaded || !flow) {
     return (
       <div className="portal-page">
+        <Link to="/dev/matching-rules" className="mr-back">← Matching rules</Link>
         {loadError ? <p className="pf-error" role="alert">{loadError}</p> : <div className="dir-empty">Loading…</div>}
       </div>
     );
@@ -171,14 +177,26 @@ export default function MatchingRuleEditor() {
     const sent = flow;
     setSaving(true);
     setSaveError('');
+    const asNewDraft = () => createMatchingDraft({ place: loaded.place, flow: sent, based_on_id: loaded.id });
     try {
-      const d = loaded.state === 'draft'
-        ? await updateMatchingDraft(loaded.id, sent)
-        : await createMatchingDraft({ place: loaded.place, flow: sent, based_on_id: loaded.id });
+      let d: MatchingVersionDetail;
+      let note = '';
+      if (loaded.state !== 'draft') {
+        d = await asNewDraft();
+      } else {
+        try {
+          d = await updateMatchingDraft(loaded.id, sent);
+        } catch (err) {
+          // another tab put it on standby or deployed it meanwhile
+          if (!(err instanceof ApiError && err.code === 'not_draft')) throw err;
+          d = await asNewDraft();
+          note = `v${loaded.version} changed state meanwhile; saved as v${d.version}.`;
+        }
+      }
       // an edit made while the save was out stays (and stays unsaved)
       const editedSince = !!flowRef.current && !sameFlow(flowRef.current, sent);
       adopt(d, editedSince);
-      setSavedNote(`Saved v${d.version}.`);
+      setSavedNote(note || `Saved v${d.version}.`);
       if (d.id !== loaded.id) navigate(`/dev/matching-rules/versions/${d.id}`, { replace: true });
     } catch {
       setSaveError(`Couldn't save v${loaded.version}. Try again.`);
@@ -191,6 +209,7 @@ export default function MatchingRuleEditor() {
     <div className="portal-page mr-editor-page">
       <div className="dir-head">
         <div>
+          <Link to={`/dev/matching-rules?place=${loaded.place}`} className="mr-back">← Matching rules</Link>
           <div className="eyebrow">Matching rules · {placeLabel}</div>
           <h1 className="page-title">
             v{loaded.version} <span className={STATE_CHIP[loaded.state]}>{stateLabel}</span>

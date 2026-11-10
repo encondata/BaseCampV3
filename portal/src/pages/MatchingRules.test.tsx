@@ -144,6 +144,24 @@ it('switching to Scanning loads its versions', async () => {
   expect(screen.getByRole('tab', { name: 'Scanning' }).getAttribute('aria-selected')).toBe('true');
 });
 
+it("a slow place's versions never land after the place switched", async () => {
+  let answerPrinting: (v: MatchingVersion[]) => void = () => {};
+  const scanning = [version({ id: 'v4id', place: 'scanning', version: 4 })];
+  api.listMatchingVersions.mockImplementation((place: string) => (place === 'printing'
+    ? new Promise<MatchingVersion[]>((r) => { answerPrinting = r; })
+    : Promise.resolve(scanning)));
+  const user = renderPage();
+  await user.click(screen.getByRole('tab', { name: 'Scanning' }));
+  await versionRow('v4');
+
+  answerPrinting([version()]);
+  await waitFor(() => expect(api.getMatchingVersion).toHaveBeenCalledWith('v4id'));
+  await new Promise((r) => setTimeout(r, 0));
+  const table = screen.getByRole('table', { name: 'Versions' });
+  expect(within(table).queryByText('v1')).toBeNull();
+  expect(within(table).getByText('v4')).toBeTruthy();
+});
+
 it('Deploy asks first, then deploys and reloads', async () => {
   versions = [version({ id: 'v2id', version: 2, state: 'draft' }), version()];
   api.deployMatchingVersion.mockResolvedValue(detail(versions[0]));

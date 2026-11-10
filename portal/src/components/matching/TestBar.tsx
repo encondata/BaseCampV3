@@ -4,7 +4,8 @@
  *  controls, and `onRun` hands the run up so the canvas lights its path.
  *  Any edit to the flow clears the result and the highlight, so a stale
  *  path is never lit on a changed flow. Moves load the first time "A move"
- *  is chosen. */
+ *  is chosen; a failed load says so with a Retry button, and going back to
+ *  "Test set" clears it (choosing "A move" again tries again). */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -45,6 +46,9 @@ export default function TestBar({ place, flow, onRun }: {
   const [run, setRun] = useState<MatchingRun | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [movesError, setMovesError] = useState(false);
+  // Bumped by Retry, so the moves load runs again.
+  const [movesTry, setMovesTry] = useState(0);
 
   // Bumped by every run and every flow change, so a late answer for an older flow is dropped.
   const seq = useRef(0);
@@ -73,9 +77,18 @@ export default function TestBar({ place, flow, onRun }: {
           .sort((a, b) => naturalCompare(a.name, b.name))
           .map((i) => ({ value: i.id, label: i.name })));
       })
-      .catch(() => { if (live) setError('The moves could not be loaded. Try again.'); });
+      .catch(() => { if (live) setMovesError(true); });
     return () => { live = false; };
-  }, [against, moves]);
+  }, [against, moves, movesTry]);
+
+  const choose = (key: Against) => {
+    setAgainst(key);
+    if (key === 'test_set') setMovesError(false);
+  };
+  const retryMoves = () => {
+    setMovesError(false);
+    setMovesTry((t) => t + 1);
+  };
 
   const canRun = value.trim() !== '' && (against === 'test_set' || moveId !== '') && !busy;
 
@@ -112,10 +125,14 @@ export default function TestBar({ place, flow, onRun }: {
       const field = FIELDS.find((f) => f.key === r.field)?.label ?? r.field ?? '';
       const action = FOUND_ACTIONS.find((a) => a.key === r.action)?.label ?? r.action ?? '';
       const a = r.asset;
-      return `Found by ${field}: ${a?.name ?? ''} (asset tag ${a?.asset_tag ?? ''}) · ${action}`;
+      // a real move asset with no legacy id has no asset tag
+      const tag = a?.asset_tag != null ? ` (asset tag ${a.asset_tag})` : '';
+      return `Found by ${field}: ${a?.name ?? ''}${tag} · ${action}`;
     }
     if (r.outcome === 'not_found') return `Not found · ${r.message ?? ''}`;
-    return `Stopped at ${titleOf(r.end_node_id)}: ${STOP_REASONS[r.stop_reason ?? ''] ?? r.stop_reason ?? ''}`;
+    const reason = STOP_REASONS[r.stop_reason ?? ''] ?? r.stop_reason ?? '';
+    // no end step: the run stopped before any (no_scan_input)
+    return r.end_node_id ? `Stopped at ${titleOf(r.end_node_id)}: ${reason}` : `Stopped: ${reason}`;
   };
 
   const traceLine = (s: MatchingTraceStep, i: number): string => {
@@ -142,7 +159,7 @@ export default function TestBar({ place, flow, onRun }: {
           <div className="segmented" role="group" aria-labelledby="mr-test-against">
             {([['test_set', 'Test set'], ['move', 'A move']] as const).map(([key, label]) => (
               <button key={key} type="button" className={against === key ? 'on' : ''}
-                      aria-pressed={against === key} onClick={() => setAgainst(key)}>
+                      aria-pressed={against === key} onClick={() => choose(key)}>
                 {label}
               </button>
             ))}
@@ -157,6 +174,12 @@ export default function TestBar({ place, flow, onRun }: {
         )}
         <button type="button" className="btn-solid" disabled={!canRun} onClick={() => void doRun()}>Run</button>
       </div>
+      {movesError && (
+        <div className="mr-test-moves-error">
+          <p className="pf-error" role="alert">Couldn&apos;t load the moves.</p>
+          <button type="button" className="mini-btn" onClick={retryMoves}>Retry</button>
+        </div>
+      )}
       {error && <p className="pf-error" role="alert">{error}</p>}
       {run && (
         <>
