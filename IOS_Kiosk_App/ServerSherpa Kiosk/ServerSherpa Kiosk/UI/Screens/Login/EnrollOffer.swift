@@ -36,8 +36,30 @@ final class EnrollOffer {
         follow()
     }
 
+    #if DEBUG
+    /// The sample sheet's words (`showSampleForUITest()`); nil for every real offer.
+    @ObservationIgnored private var sampleWords: BiometricWords?
+    #endif
+
     /// The sheet's biometric and device words.
-    var words: BiometricWords { biometric.words }
+    var words: BiometricWords {
+        #if DEBUG
+        if let sampleWords { return sampleWords }
+        #endif
+        return biometric.words
+    }
+
+    #if DEBUG
+    /// Debug builds only (`-uiTestEnrollOffer`): the real sheet with sample words, so its layout
+    /// can be checked on the Simulator, which has no Secure Enclave and never reaches a real offer.
+    /// It asks nothing: no key, no system prompt, no server. Its Turn on only shows the line a
+    /// Turn on that didn't work shows (the sheet's taller state); Not now and a swipe down close it.
+    func showSampleForUITest() {
+        close()
+        sampleWords = BiometricWords(bio: "Face ID", device: "iPad")
+        sheet = EnrollOfferUI()
+    }
+    #endif
 
     /// After a person's password sign-in: asks in the background, shows the sheet on a yes.
     func afterPasswordSignIn() {
@@ -56,6 +78,12 @@ final class EnrollOffer {
     /// Turn on: the system prompt once, then the key to the server. The sheet closes when it's on,
     /// and stays up with a line otherwise. Returns when Turn on has ended (or was stopped).
     func turnOn(_ p: BiometricPrompter) async {
+        #if DEBUG
+        if let sampleWords {
+            sheet = EnrollOfferUI(message: BiometricCopy.enrollFailed(sampleWords))
+            return
+        }
+        #endif
         guard let person = signedIn(), person == owner else {
             close()
             return
@@ -79,6 +107,9 @@ final class EnrollOffer {
         turningOn = nil
         owner = nil
         sheet = nil
+        #if DEBUG
+        sampleWords = nil
+        #endif
     }
 
     private func runTurnOn(_ person: String, _ p: BiometricPrompter) async {
@@ -138,40 +169,53 @@ final class EnrollOffer {
 }
 
 /// "Use Face ID to sign in on this iPad?" with Turn on and Not now, over the signed-in app. It
-/// follows the app's light or dark theme (its palette), with rounded corners.
+/// follows the app's light or dark theme (its palette), with rounded corners. The sheet fits its
+/// content, and the buttons are always on screen when it opens: only the text can scroll (very
+/// large text, an iPhone in landscape), never the buttons (`PinnedActions`).
 struct EnrollOfferSheet: View {
     let ui: EnrollOfferUI
     let words: BiometricWords
     let onTurnOn: () -> Void
     let onNotNow: () -> Void
+    /// The presenter's width is compact (an iPhone, a narrow iPad window). Read by the presenter:
+    /// inside a sheet the size class can differ from the window's.
+    let compactWidth: Bool
     @Environment(\.kioskPalette) private var palette
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        ScrollView { content }
-        .scrollBounceBehavior(.basedOnSize)
+        PinnedActions(padding: 20) {
+            // Overline, title and question.
+            PageHeader(eyebrow: BiometricCopy.offerOverline(words), title: BiometricCopy.offerTitle(words),
+                       subtitle: BiometricCopy.offerBody(words))
+        } actions: {
+            // The line from the last Turn on, then the two buttons.
+            VStack(alignment: .leading, spacing: 0) {
+                KioskToast(text: ui.message, error: true)
+                HStack(spacing: 8) {
+                    PrimaryButton(ui.busy ? "Turning on…" : "Turn on", enabled: !ui.busy, action: onTurnOn)
+                        .accessibilityIdentifier("enroll-offer-turn-on")
+                    SecondaryButton("Not now", enabled: !ui.busy, action: onNotNow)
+                        .accessibilityIdentifier("enroll-offer-not-now")
+                }
+                .padding(.top, 8)
+            }
+        }
+        // At the top of a sheet taller than it (a phone's half-height sheet).
+        .frame(maxHeight: .infinity, alignment: .top)
         .background(palette.paper)
+        // The UI test's handle on the sheet's frame (the buttons must lie inside it).
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("enroll-offer-sheet")
         // Not while Turn on runs (Android's dialog ignores a dismiss then).
         .interactiveDismissDisabled(ui.busy)
         .presentationBackground(palette.paper)
         .presentationCornerRadius(16)
-        .presentationDetents([.medium])
+        // A phone's sheet stops at half height, or opens full height at the accessibility text
+        // sizes, where half leaves the text hardly any room. Elsewhere the form sheet fits its
+        // content: a medium detent there cuts the fitted sheet to about half of it (iPadOS 26),
+        // which hid the buttons.
+        .presentationDetents(compactWidth && !typeSize.isAccessibilitySize ? [.medium] : [.large])
         .presentationSizing(.form.fitted(horizontal: false, vertical: true))
-    }
-
-    /// Overline, title and question, the line from the last Turn on, then the two buttons.
-    var content: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            PageHeader(eyebrow: BiometricCopy.offerOverline(words), title: BiometricCopy.offerTitle(words),
-                       subtitle: BiometricCopy.offerBody(words))
-            KioskToast(text: ui.message, error: true)
-            HStack(spacing: 8) {
-                PrimaryButton(ui.busy ? "Turning on…" : "Turn on", enabled: !ui.busy, action: onTurnOn)
-                    .accessibilityIdentifier("enroll-offer-turn-on")
-                SecondaryButton("Not now", enabled: !ui.busy, action: onNotNow)
-                    .accessibilityIdentifier("enroll-offer-not-now")
-            }
-            .padding(.top, 8)
-        }
-        .padding(20)
     }
 }
