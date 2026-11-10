@@ -71,7 +71,7 @@ touch targets.
   screen. The match list and the scan history are stacked rows instead, with
   the same fields and order: a history row shows the status chip (and an
   amber "Off move" chip), the time (24-hour, `yyyy-MM-dd HH:mm`), the method
-  chip, then Device, Operator, Site and Location. On a tablet the same rows
+  chip, then Device, Operator and Site. On a tablet the same rows
   are used. It must fit the MC2200 at 320 dp.
 - **Status chips** use the server's colors, through the Rolodex's
   `ColorChip`/`hexColor`, moved to `ui/components` so both screens share it.
@@ -134,6 +134,8 @@ Live: on the Pixel and the MC2200, against the dev API, look up dev asset
 ## Implementation notes
 
 Built on branch `android-asset-lookup` (commits `df39eb1b3` to `aa47c1520`).
+
+Following the web (058526e9e), the scan history shows no Location.
 
 ### Files
 

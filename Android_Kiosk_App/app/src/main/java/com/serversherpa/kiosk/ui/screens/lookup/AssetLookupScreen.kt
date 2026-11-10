@@ -298,7 +298,6 @@ private fun HistoryRows(rows: List<AssetScanRow>) {
                 Fact("Device", s.device_id.ifBlank { BLANK })
                 Fact("Operator", s.operator_name?.takeIf { it.isNotBlank() } ?: BLANK, mono = false)
                 Fact("Site", s.site_name?.takeIf { it.isNotBlank() } ?: BLANK, mono = false)
-                Fact("Location", s.location_detail.ifBlank { BLANK }, mono = false)
             }
         }
         HorizontalDivider(color = c.paperLine)

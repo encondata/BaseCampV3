@@ -96,7 +96,7 @@ class AssetLookupScreenTest {
     private val scanRow = AssetScanRow(
         "s1", scanned_value = "102466", scan_type = "barcode", scan_type_label = "Barcode", scan_type_color = "#3366ff",
         status = "packed", status_label = "Packed", status_color = "#22aa55", scanned_at = "2026-11-08T21:05:00Z",
-        device_id = "K-1", operator_name = "Tina T", site_name = "Dallas DC", location_detail = "Dock 4", off_move = true,
+        device_id = "K-1", operator_name = "Tina T", site_name = "Dallas DC", location_detail = "Cage 4", off_move = true,
     )
 
     private fun one(id: String = "a1") = KioskLookupResult(listOf(KioskLookupMatch(id, "Core switch", "102466", "SN-100", listOf("asset_tag"))))
@@ -218,6 +218,9 @@ class AssetLookupScreenTest {
         waitForText("Tina T")
         compose.onNodeWithText("Current location").assertExists()
         compose.onNodeWithText("Crate 7 · on Truck 3").assertExists()
+        // Following the web (058526e9e), the history rows carry no Location label or value.
+        compose.onNodeWithText("Location").assertDoesNotExist()
+        compose.onNodeWithText("Cage 4").assertDoesNotExist()
         compose.onNodeWithText("Moves").assertExists()
         compose.onNodeWithText("Move One").assertExists()
         compose.onNodeWithText("Loaded").assertExists()                  // the move's own status chip
@@ -502,7 +505,7 @@ class AssetLookupScreenTest {
         compose.onNodeWithText("Clear").assertIsDisplayed().inside()
         search(api, "102466")
         waitForText("Tina T")
-        for (label in listOf("Asset tag", "Serial", "RFID", "Current location", "Source", "Destination", "Site", "Rack", "RU", "Moves", "Scan history", "Device", "Operator", "Location")) {
+        for (label in listOf("Asset tag", "Serial", "RFID", "Current location", "Source", "Destination", "Site", "Rack", "RU", "Moves", "Scan history", "Device", "Operator")) {
             compose.onAllNodesWithText(label).fetchSemanticsNodes().also { assertTrue("missing $label", it.isNotEmpty()) }
         }
         compose.onNodeWithText("Current location").performScrollTo().assertIsDisplayed().inside()
@@ -511,7 +514,8 @@ class AssetLookupScreenTest {
         compose.onNodeWithText("SN-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ").performScrollTo().assertIsDisplayed().inside()
         compose.onNodeWithText("RACK-NORTH-HALL-B-0042").performScrollTo().assertIsDisplayed().inside()
         compose.onNodeWithText("Crate 7 with an unusually long container name · on Truck 3 from Dallas to Austin").performScrollTo().assertIsDisplayed().inside()
-        compose.onNodeWithText("Loading dock four, staging lane B, second pallet row").performScrollTo().assertIsDisplayed().inside()
+        compose.onNodeWithText("Loading dock four, staging lane B, second pallet row").assertDoesNotExist()
+        compose.onNodeWithText("Location").assertDoesNotExist()
         compose.onNodeWithText("Search").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Clear").assertIsDisplayed()
     }
