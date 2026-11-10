@@ -1,8 +1,8 @@
 """Sample content for `serversherpa learning-seed`: the wiki pages (as
 ProseMirror JSON), their learning-document settings, quiz questions and
 packets. Every sample page opens with the same "replace this text"
-callout; Dress code and Labels are the company's own slides, so they
-have none.
+callout; Dress code, Labels, the loading dock and the rack server pages
+are the company's own slides, so they have none.
 
 The node helpers are copied from the wiki guide scripts' wikidoc.py (the
 CLI never imports from .superpowers). Inline text uses **bold** markers
@@ -145,6 +145,78 @@ LABELS = doc(
           "**Label the flat section.** Apply the matching top label in the center of one "
           "rail's flat section.",
           "**Keep with its server.** Keep the labeled rail pair with the server it belongs to."),
+    sample=False,
+)
+
+# the loading dock slides, one per heading; every word below is on them
+CRATING = doc(
+    h2("Load servers into crates"),
+    image("crating-01.webp", "Load servers into crates"),
+    steps("**Standard servers.** Build a left stack and a right stack.",
+          "**Larger devices.** Stack deeper, taller devices with labels facing forward."),
+    bullets("**Maximum 10 servers per stack.**",
+            "**Protective foam.** Place protective foam between every server and on top of "
+            "each stack.",
+            "Place matching rails on top of the servers in the same crate."),
+    p("**All labels must face the same direction — toward the open front.**"),
+    h2("Unpack and group servers"),
+    image("crating-02.webp", "Unpack and group servers"),
+    steps("**Check the top label.** When possible, group servers going to the same "
+          "destination rack.",
+          "**Keep matching rails together.** Place rails on top of the stack containing "
+          "their matching servers."),
+    p("**Cart stacks: 10 RU maximum • Use two people for server transfers**"),
+    sample=False,
+)
+
+# the server handling slides, one per heading; every word below is on them
+RACK_SERVERS = doc(
+    h2("Two-person server removal"),
+    image("rack-servers-01.webp", "Two-person server removal"),
+    p("**Always use two people.**"),
+    steps("**Support together.** Both people support the server before it clears the rack.",
+          "**Keep it level.** Maintain a secure grip as the server comes free.",
+          "**Lower together.** Coordinate the movement and lower onto the cart.",
+          "**Keep rails with their server.** Remove the rails. Tape them together as a pair "
+          "with 2–3 wraps of blue tape near each end. Keep the pair on the stack with its "
+          "server."),
+    p("**Two people. Every server.** Server stacks on carts must not exceed 10 RU."),
+    h2("Heavy-server removal with a lift cart"),
+    image("rack-servers-02.webp", "Heavy-server removal with a lift cart"),
+    p("**Use a lift cart and two people.**"),
+    steps("**Position and raise the cart.** Place the cart in front of the rack. Lock the "
+          "casters and raise the platform to the server.",
+          "**Guide onto the platform.** With two people, slide the server onto the lift "
+          "platform and keep it fully supported.",
+          "**Lower the platform.** Once the server is fully on the cart, lower the platform "
+          "slowly.",
+          "**Keep rails with their server.** Remove the rails. Pair them with 2–3 wraps of "
+          "blue tape near each end and keep them with their server."),
+    p("**Two people. Every server.** Server stacks on carts must not exceed 10 RU."),
+    h2("Two-person server reinstallation"),
+    image("rack-servers-03.webp", "Two-person server reinstallation"),
+    p("**Always use two people.**"),
+    steps("**Prepare the matching rails.** Confirm the assigned rack position. Remove the "
+          "blue tape and install the rails that belong to the server.",
+          "**Lift together.** With one person on each side, lift the server from the cart. "
+          "Keep it level and supported.",
+          "**Align and slide into place.** Align the server with both rails. Guide it into "
+          "the rack together without forcing it.",
+          "**Secure the server.** Confirm the server is fully seated and secured before "
+          "releasing your support."),
+    p("**Two people. Every server.** Server stacks on carts must not exceed 10 RU."),
+    h2("Heavy-server installation with a lift cart"),
+    image("rack-servers-04.webp", "Heavy-server installation with a lift cart"),
+    p("**Use a lift cart and two people.**"),
+    steps("**Install the matching rails.** Remove the blue tape from the paired rails. Fit "
+          "them at the assigned rack position and confirm they are secure.",
+          "**Position and align the cart.** Place the cart in front of the rack. Lock the "
+          "casters and raise the server to align with the rails.",
+          "**Guide into the rack.** With two people, engage the rails and slide the server "
+          "into the rack. Keep it supported throughout.",
+          "**Secure before lowering.** Confirm the server is fully seated and secured before "
+          "lowering and moving the cart away."),
+    p("**Two people. Every server.** Server stacks on carts must not exceed 10 RU."),
     sample=False,
 )
 
@@ -301,6 +373,19 @@ DOCUMENTS: tuple[SeedDoc, ...] = (
              "sign_style": "typed_name", "require_scroll": True, "min_read_seconds": 60,
              "reading_style": "slides"},
             change_note="First version."),
+    SeedDoc("Standard onboarding", "Loading dock crating process", CRATING,
+            "How to load servers into crates and unpack them at the loading dock.",
+            {"validity_days": YEAR, "resign_rule": "expired_or_new_version",
+             "sign_style": "typed_name", "require_scroll": True, "min_read_seconds": 60,
+             "reading_style": "slides"},
+            change_note="First version."),
+    SeedDoc("Standard onboarding", "Server removal and installation in racks", RACK_SERVERS,
+            "How two people take servers out of racks and put them back, by hand or with a "
+            "lift cart.",
+            {"validity_days": YEAR, "resign_rule": "expired_or_new_version",
+             "sign_style": "typed_name", "require_scroll": True, "min_read_seconds": 60,
+             "reading_style": "slides"},
+            change_note="First version."),
     SeedDoc("Standard onboarding", "Confidentiality", CONFIDENTIALITY,
             "How we handle what we see and hear at client sites.",
             {"validity_days": YEAR, "resign_rule": "expired_or_new_version"}),
@@ -342,7 +427,8 @@ FOLDERS = ("Standard onboarding", "Client site rules", "Extras")
 # (packet name, description, document titles in order)
 PACKETS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("Standard onboarding", "What every worker reviews and signs before working on site.",
-     ("Dress code", "Labels", "Confidentiality", "Work expectations")),
+     ("Dress code", "Labels", "Loading dock crating process",
+      "Server removal and installation in racks", "Confidentiality", "Work expectations")),
     ("Acme site rules", "Site rules and the NDA for Acme initiatives.",
      ("Acme site rules (sample)", "Acme NDA (sample)")),
     ("Forklift safety", "Safe forklift operation, for certified operators.",
