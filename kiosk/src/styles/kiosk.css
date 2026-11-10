@@ -1009,6 +1009,18 @@ a.kiosk-crumb:focus-visible { opacity: 1; outline: 2px solid var(--accent); outl
 .lookup-card { margin-top: 18px; max-width: clamp(20rem, 82vw, 90rem); }
 .lookup-card .enroll-card-name { margin: 0; overflow-wrap: anywhere; }
 .lookup-make { margin: 4px 0 0; font-size: 15px; color: var(--text-mute); }
+/* Name and make on the left; for admins, Status (as large as the name)
+   with Current location right under it on the right. */
+.lookup-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 28px; flex-wrap: wrap; }
+.lookup-head-main { min-width: 0; }
+.lookup-head-status { margin: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; text-align: right; }
+.lookup-head-status > div { min-width: 0; }
+.lookup-head-status dt {
+  font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-mute);
+}
+.lookup-head-status dd { margin: 2px 0 0; font-size: 15px; color: var(--text-dark); overflow-wrap: anywhere; }
+.lookup-status .chip { font-size: 24px; font-weight: 600; padding: 4px 14px; }
 .lookup-route { margin-top: 16px; }
 .lookup-route-title { margin: 0 0 6px; font-size: 16px; font-weight: 600; color: var(--text-dark); }
 .lookup-routes {
@@ -1020,9 +1032,9 @@ a.kiosk-crumb:focus-visible { opacity: 1; outline: 2px solid var(--accent); outl
   text-transform: uppercase; color: var(--text-mute);
 }
 .lookup-end .enroll-facts { margin-top: 6px; }
-/* Site gets its own line; Pod, Rack and RU always share the next one. */
+/* Site gets its own line; Rack and RU always share the next one. */
 .lookup-end-facts {
-  display: grid; grid-template-columns: repeat(3, max-content); gap: 6px 28px;
+  display: grid; grid-template-columns: repeat(2, max-content); gap: 6px 28px;
 }
 .lookup-end-facts > div:first-child { grid-column: 1 / -1; }
 .lookup-admin { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--paper-line); }

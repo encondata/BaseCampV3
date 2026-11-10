@@ -268,7 +268,8 @@ it('a worker sees source and destination only', async () => {
 
   const source = screen.getByRole('group', { name: 'Source' });
   expect(within(source).getByText('ATL1')).toBeTruthy();
-  expect(within(source).getByText('P1')).toBeTruthy();
+  expect(within(source).queryByText('P1')).toBeNull();
+  expect(within(source).queryByText('Pod')).toBeNull();
   expect(within(source).getByText('R12')).toBeTruthy();
   expect(within(source).getByText('14')).toBeTruthy();
   const destination = screen.getByRole('group', { name: 'Destination' });
@@ -299,7 +300,7 @@ it('a blank RU with a position set is labeled Position', async () => {
   expect(within(source).queryByText('RU')).toBeNull();
   const destination = screen.getByRole('group', { name: 'Destination' });
   expect(within(destination).getByText('RU')).toBeTruthy();
-  expect(within(destination).getAllByText('—')).toHaveLength(4);
+  expect(within(destination).getAllByText('—')).toHaveLength(3);
 });
 
 it('two routes each sit under their move name', async () => {

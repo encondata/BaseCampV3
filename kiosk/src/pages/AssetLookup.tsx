@@ -72,7 +72,6 @@ function RouteEnd({ title, end }: { title: string; end: KioskAssetEnd }) {
       <div className="lookup-end-title" id={id}>{title}</div>
       <dl className="enroll-facts lookup-end-facts">
         <div><dt>Site</dt><dd>{end.site_name || '—'}</dd></div>
-        <div><dt>Pod</dt><dd className="mono">{end.pod || '—'}</dd></div>
         <div><dt>Rack</dt><dd className="mono">{end.rack || '—'}</dd></div>
         {asPosition
           ? <div><dt>Position</dt><dd className="mono">{end.position}</dd></div>
@@ -348,8 +347,20 @@ export default function AssetLookup() {
 
       {detail && (
         <div className="enroll-card lookup-card">
-          <h2 className="enroll-card-name">{detail.name || 'Unnamed asset'}</h2>
-          {detail.make_model && <p className="lookup-make">{detail.make_model}</p>}
+          <div className="lookup-head">
+            <div className="lookup-head-main">
+              <h2 className="enroll-card-name">{detail.name || 'Unnamed asset'}</h2>
+              {detail.make_model && <p className="lookup-make">{detail.make_model}</p>}
+            </div>
+            {full && (
+              <dl className="lookup-head-status">
+                <div>
+                  <dt>Status</dt>
+                  <dd className="lookup-status">{statusChip(full.status_label, full.status_color) ?? '—'}</dd>
+                </div>
+              </dl>
+            )}
+          </div>
           <dl className="enroll-facts">
             <div><dt>Asset tag</dt><dd className="mono">{detail.asset_tag || '—'}</dd></div>
             <div><dt>Serial</dt><dd className="mono">{detail.serial_number || '—'}</dd></div>
@@ -374,10 +385,6 @@ export default function AssetLookup() {
           {full && (
             <>
               <dl className="enroll-facts lookup-admin">
-                <div>
-                  <dt>Status</dt>
-                  <dd>{statusChip(full.status_label, full.status_color) ?? '—'}</dd>
-                </div>
                 <div>
                   <dt>Moves</dt>
                   <dd>
