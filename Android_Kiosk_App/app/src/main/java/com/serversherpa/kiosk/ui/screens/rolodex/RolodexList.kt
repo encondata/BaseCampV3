@@ -44,8 +44,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -58,10 +56,12 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.serversherpa.kiosk.core.model.RolodexRow
+import com.serversherpa.kiosk.ui.components.ColorChip
 import com.serversherpa.kiosk.ui.components.KioskToast
 import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.components.PageHeader
 import com.serversherpa.kiosk.ui.components.SolidButton
+import com.serversherpa.kiosk.ui.components.hexColor
 import com.serversherpa.kiosk.ui.components.lineIcon
 import com.serversherpa.kiosk.ui.screens.timeclock.screens.TcSearchIcon
 import com.serversherpa.kiosk.ui.theme.ChipTone
@@ -70,28 +70,6 @@ import com.serversherpa.kiosk.ui.theme.LocalKioskColors
 import kotlinx.coroutines.launch
 
 private val RefreshIcon = lineIcon("refresh", listOf("M19.5 12a7.5 7.5 0 1 1-2.2-5.3", "M19.5 4.5v3.8h-3.8"))
-
-/** `#rrggbb` (as the API sends status and level colors) to a Color; null for anything else. */
-internal fun hexColor(value: String?): Color? {
-    val v = value?.trim()?.removePrefix("#") ?: return null
-    if (v.length != 6 || v.any { it.lowercaseChar() !in "0123456789abcdef" }) return null
-    return Color(0xFF000000L or v.toLong(16))
-}
-
-/** A pill in the status's own color (statuses can be customized in the portal); slate without one. */
-@Composable
-internal fun ColorChip(text: String, color: Color?, modifier: Modifier = Modifier) {
-    val c = LocalKioskColors.current
-    val base = color ?: ChipTone.SLATE.text
-    // The status colors are bright: on light paper the words take a darker shade to stay legible.
-    val ink = if (c.isDark) base else lerp(base, Color.Black, 0.4f)
-    Text(
-        text, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, color = ink, maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        modifier = modifier.background(base.copy(alpha = 0.14f), RoundedCornerShape(999.dp))
-            .border(1.dp, base.copy(alpha = 0.4f), RoundedCornerShape(999.dp)).padding(horizontal = 9.dp, vertical = 2.dp),
-    )
-}
 
 /**
  * The A–Z list (mockup 2-list-chosen): header with the count and "+ New", the offline banner, a

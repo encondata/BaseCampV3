@@ -9,7 +9,26 @@ import org.junit.Test
 
 class FeaturesTest {
     @Test fun orderMatchesTheWebKiosk() {
-        assertEquals(listOf("setup", "scan", "enroll", "containers", "trucks", "labels", "timeclock", "settings"), FEATURES.map { it.route })
+        assertEquals(listOf("setup", "scan", "enroll", "containers", "trucks", "lookup", "labels", "timeclock", "settings"), FEATURES.map { it.route })
+    }
+
+    @Test fun lookupIsATileAfterTrucks() {
+        val f = feature(FeatureId.LOOKUP)
+        assertEquals("lookup", f.route)
+        assertEquals("Asset Lookup", f.title)
+        assertEquals("Scan an asset to see what it is and where it goes.", f.blurb)
+        assertFalse(f.placeholder)
+        assertFalse(featureAvailable(f, SetupState.INCOMPLETE))       // gated on setup
+        assertTrue(featureAvailable(f, SetupState.COMPLETE))
+        val ids = homeFeatures(null).map { it.id }
+        assertEquals(ids.indexOf(FeatureId.TRUCKS) + 1, ids.indexOf(FeatureId.LOOKUP))
+        assertEquals(FeatureId.LOOKUP, featureForRoute("lookup")?.id)
+    }
+
+    @Test fun lookupIsNotOnATimeClockStation() {
+        assertFalse(FeatureId.LOOKUP in homeFeatures("timeclock").map { it.id })
+        assertFalse(FeatureId.LOOKUP in homeFeatures("timeclock", isAdmin = true).map { it.id })
+        assertTrue(FeatureId.LOOKUP in homeFeatures(null, isAdmin = true).map { it.id })
     }
 
     @Test fun onlySetupAndSettingsAreAlwaysAvailable() {

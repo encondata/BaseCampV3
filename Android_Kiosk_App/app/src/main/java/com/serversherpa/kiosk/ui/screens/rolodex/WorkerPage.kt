@@ -73,7 +73,9 @@ import com.serversherpa.kiosk.input.camera.PhotoStepBar
 import com.serversherpa.kiosk.input.camera.PhotoStepsWindow
 import com.serversherpa.kiosk.input.camera.rememberPhotoPicker
 import com.serversherpa.kiosk.ui.components.CameraIcon
+import com.serversherpa.kiosk.ui.components.ColorChip
 import com.serversherpa.kiosk.ui.components.KioskToast
+import com.serversherpa.kiosk.ui.components.hexColor
 import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.components.PageHeader
 import com.serversherpa.kiosk.ui.components.Segmented

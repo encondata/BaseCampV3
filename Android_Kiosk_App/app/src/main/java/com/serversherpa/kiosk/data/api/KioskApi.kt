@@ -20,6 +20,9 @@ import com.serversherpa.kiosk.core.model.KioskTimeclockStatus
 import com.serversherpa.kiosk.core.model.KioskTrucksSync
 import com.serversherpa.kiosk.core.model.PairCreated
 import com.serversherpa.kiosk.core.model.PairPoll
+import com.serversherpa.kiosk.core.model.AssetScanRow
+import com.serversherpa.kiosk.core.model.KioskAssetDetail
+import com.serversherpa.kiosk.core.model.KioskLookupResult
 import com.serversherpa.kiosk.core.model.RolodexCreateIn
 import com.serversherpa.kiosk.core.model.RolodexDetail
 import com.serversherpa.kiosk.core.model.RolodexDuplicatesIn
@@ -128,4 +131,12 @@ interface KioskApi {
     /** PUT /kiosk/rolodex/workers/{person_id}/photo with the raw JPEG as the body (`Content-Type: image/jpeg`).
      *  413 file_too_large, 422 empty_file / invalid_file_type / unreadable_image / image_too_large, 403 rank_too_low. */
     suspend fun rolodexPhoto(personId: String, jpeg: ByteArray): RolodexPhotoOut
+
+    // ── asset lookup (read-only; nothing is recorded) ──
+    /** GET /kiosk/assets/lookup?serial=&q=: assets whose tag, serial, RFID or name matches [value]. */
+    suspend fun lookupAssets(serial: String, value: String): KioskLookupResult
+    /** GET /kiosk/assets/{id}?serial=. `full` is present for admins only. 403/404 when out of reach. */
+    suspend fun assetDetail(serial: String, assetId: String): KioskAssetDetail
+    /** GET /kiosk/assets/{id}/scans?serial=&limit= (admins with scans:view), newest first. */
+    suspend fun assetScans(serial: String, assetId: String, limit: Int): List<AssetScanRow>
 }

@@ -32,6 +32,7 @@ import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.scan.displayRfid
 import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.input.datawedge.DataWedge
+import com.serversherpa.kiosk.input.rfid.RfidOwner
 import com.serversherpa.kiosk.ui.components.KioskChip
 import com.serversherpa.kiosk.ui.components.CameraFieldButton
 import com.serversherpa.kiosk.ui.components.KioskToast
@@ -67,7 +68,7 @@ fun ScanScreen(nav: NavHostController) {
 
     LaunchedEffect(Unit) { container.scanBus.events.collect { vm.onScan(it.value) } }
     // A finished sweep queues here, beside the typed and barcode commits.
-    LaunchedEffect(Unit) { container.rfid.bursts.collect { vm.onBurst(it) } }
+    LaunchedEffect(Unit) { container.rfid.burstsFor(RfidOwner.SCANNING).collect { vm.onBurst(it) } }
 
     // The sled reads only while this screen is on top, the same rule the scan
     // bus follows. Keyed on Unit, not re-keyed on anything that changes while
@@ -81,8 +82,8 @@ fun ScanScreen(nav: NavHostController) {
     // simpler invariant to keep, so both line up rather than one covering
     // for the other.
     DisposableEffect(Unit) {
-        container.rfid.arm()
-        onDispose { container.rfid.disarm() }
+        container.rfid.arm(RfidOwner.SCANNING)
+        onDispose { container.rfid.disarm(RfidOwner.SCANNING) }
     }
 
     // A full-screen dialog: it floats over this page rather than replacing it.

@@ -2,7 +2,7 @@ package com.serversherpa.kiosk.core.features
 
 import com.serversherpa.kiosk.core.setup.SetupState
 
-enum class FeatureId { SETUP, SCAN, ENROLL, CONTAINERS, TRUCKS, LABELS, TIMECLOCK, SETTINGS, TIMECLOCK_STATION, ROLODEX }
+enum class FeatureId { SETUP, SCAN, ENROLL, CONTAINERS, TRUCKS, LOOKUP, LABELS, TIMECLOCK, SETTINGS, TIMECLOCK_STATION, ROLODEX }
 
 /** One launcher tile / route. `placeholder` features open the generic
  *  "not available yet" page; `alwaysAvailable` ones ignore setup state. */
@@ -22,6 +22,7 @@ val FEATURES: List<KioskFeature> = listOf(
     KioskFeature(FeatureId.ENROLL, "enroll", "RFID Enroll", "Scan an asset, then scan its RFID tag."),
     KioskFeature(FeatureId.CONTAINERS, "containers", "Containers", "Pack and unpack containers by scanning.", placeholder = true),
     KioskFeature(FeatureId.TRUCKS, "trucks", "Trucks", "Load and unload trucks by scanning.", placeholder = true),
+    KioskFeature(FeatureId.LOOKUP, "lookup", "Asset Lookup", "Scan an asset to see what it is and where it goes."),
     KioskFeature(FeatureId.LABELS, "labels", "Label Printing", "Print asset labels."),
     KioskFeature(FeatureId.TIMECLOCK, "timeclock", "Timeclock", "Clock in and out of a move."),
     KioskFeature(FeatureId.SETTINGS, "settings", "Settings", "Appearance, sound, devices, and more.", alwaysAvailable = true),

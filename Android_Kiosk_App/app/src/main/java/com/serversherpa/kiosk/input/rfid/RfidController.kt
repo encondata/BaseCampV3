@@ -23,14 +23,25 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.getAndUpdate
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+
+/**
+ * Who holds the sled's trigger. Each screen that reads RFID arms with its own
+ * key, so a leaving screen's late `disarm` can't switch off the arriving
+ * screen's trigger, and a sweep only reaches the screen it was read for.
+ */
+object RfidOwner {
+    const val SCANNING = "scanning"
+    const val LOOKUP = "lookup"
+}
 
 /**
  * Owns one reader. Turns trigger events into inventories using whichever
@@ -175,6 +186,14 @@ import kotlinx.coroutines.withTimeoutOrNull
  * `onTag` never touches `stopGate` — only trigger evaluation waits for a
  * stop to finish; tags keep folding into the still-open session for the
  * whole vendor round trip, same as before.
+ *
+ * Arming is owner-aware (see [RfidOwner]): two screens read RFID (Scanning
+ * and Asset Lookup), and NavHost's exit transition can run the leaving
+ * screen's `disarm` after the arriving screen's `arm`. `arm(owner)` with a
+ * different owner than the armed one starts a new visit — it drops any
+ * open burst and resets `queued` — and `disarm(owner)` does nothing unless
+ * that owner is the one armed. Each burst carries the owner that was armed
+ * when it started; [burstsFor] delivers a burst only to that owner's screen.
  */
 class RfidController(
     private val reader: RfidReader,
@@ -187,12 +206,19 @@ class RfidController(
     val connectNote: StateFlow<String?> = reader.connectNote
 
     private val _session = MutableStateFlow<RfidReadSession?>(null)
-    /** Non-null only while a burst is running. The Scanning screen's live panel. */
+    /** Non-null only while a burst is running. Scanning's and Asset Lookup's live panel. */
     val session: StateFlow<RfidReadSession?> = _session
 
-    private val _bursts = MutableSharedFlow<List<String>>(extraBufferCapacity = 16)
-    /** One emission per finished burst: the tags to queue, in read order. */
-    val bursts: SharedFlow<List<String>> = _bursts
+    private class OwnedBurst(val owner: String?, val tags: List<String>)
+
+    private val _bursts = MutableSharedFlow<OwnedBurst>(extraBufferCapacity = 16)
+    /** One emission per finished burst, whoever it was read for: the tags to
+     *  queue, in read order. Screens collect [burstsFor] instead. */
+    val bursts: Flow<List<String>> = _bursts.map { it.tags }
+
+    /** The bursts read while [owner] held the trigger, and no one else's. */
+    fun burstsFor(owner: String): Flow<List<String>> =
+        _bursts.filter { it.owner == owner }.map { it.tags }
 
     private val _applyError = MutableStateFlow<String?>(null)
     /** Why the reader refused the last settings push, for the RFID tab to show.
@@ -221,6 +247,10 @@ class RfidController(
     private val mutex = Mutex()
     private var current: RfidSettings = DEFAULT_RFID_SETTINGS
     private var armed: Boolean = false
+    /** The screen that armed the trigger, or null once it disarmed. */
+    private var owner: String? = null
+    /** The owner armed when the open burst started; its emission carries it. */
+    private var sessionOwner: String? = null
     private var queued: Set<String> = emptySet()
     private var pressedAtMs: Long = 0L
 
@@ -261,8 +291,8 @@ class RfidController(
     private val applyGate = Mutex()
 
     private sealed interface Command {
-        data object Arm : Command
-        data object Disarm : Command
+        data class Arm(val owner: String) : Command
+        data class Disarm(val owner: String) : Command
         data object Stop : Command
     }
 
@@ -412,8 +442,8 @@ class RfidController(
         scope.launch {
             for (command in commands) {
                 when (command) {
-                    Command.Arm -> armNow()
-                    Command.Disarm -> disarmNow()
+                    is Command.Arm -> armNow(command.owner)
+                    is Command.Disarm -> disarmNow(command.owner)
                     Command.Stop -> endBurst(stopReader = true, queue = true)
                 }
             }
@@ -442,17 +472,20 @@ class RfidController(
         }
     }
 
-    /** Only the Scanning screen calls this, while it is composed. */
-    fun arm() {
-        check(commands.trySend(Command.Arm).isSuccess) {
+    /** A screen that reads RFID calls this while it is composed, with its own
+     *  [RfidOwner] key (Scanning's by default). Another owner than the armed
+     *  one takes the trigger over as a new visit: see the class doc. */
+    fun arm(owner: String = RfidOwner.SCANNING) {
+        check(commands.trySend(Command.Arm(owner)).isSuccess) {
             "Couldn't queue arm(): the command channel is closed."
         }
     }
 
     /** Leaving the screen ends any read in progress. Its tags are dropped: the
-     *  screen that would queue them is gone. */
-    fun disarm() {
-        check(commands.trySend(Command.Disarm).isSuccess) {
+     *  screen that would queue them is gone. A no-op unless [owner] is the one
+     *  armed, so a leaving screen's late dispose can't disarm the next one. */
+    fun disarm(owner: String = RfidOwner.SCANNING) {
+        check(commands.trySend(Command.Disarm(owner)).isSuccess) {
             "Couldn't queue disarm(): the command channel is closed."
         }
     }
@@ -484,20 +517,36 @@ class RfidController(
         }
     }
 
-    private suspend fun armNow() = mutex.withLock {
-        // `queued` is "what this visit to the screen already sent"; a
-        // *new* visit starts that over, or a repeat-sweep policy
-        // would drop every tag on the operator's next sweep forever.
-        // But a re-arm within the same visit — a lifecycle-aware
-        // collector re-firing, or a return from a dialog — must not
-        // wipe the sweep history the operator is mid-visit through.
-        if (!armed) queued = emptySet()
-        armed = true
+    private suspend fun armNow(owner: String) {
+        val takeover = mutex.withLock {
+            // `queued` is "what this visit to the screen already sent"; a
+            // *new* visit starts that over, or a repeat-sweep policy
+            // would drop every tag on the operator's next sweep forever.
+            // But a re-arm within the same visit — a lifecycle-aware
+            // collector re-firing, or a return from a dialog — must not
+            // wipe the sweep history the operator is mid-visit through.
+            // Another owner arming is always a new visit, even before the
+            // previous owner's disarm has landed.
+            val takeover = armed && this.owner != owner
+            if (!armed || takeover) queued = emptySet()
+            armed = true
+            this.owner = owner
+            takeover
+        }
+        // The previous owner's open burst is dropped, as its own disarm would
+        // have done: the screen it was read for is leaving. A burst the new
+        // owner started in between (a trigger pulled in that gap) is kept.
+        if (takeover) endBurst(stopReader = true, queue = false, unlessOwnedBy = owner)
     }
 
-    private suspend fun disarmNow() {
-        mutex.withLock { armed = false }
-        endBurst(stopReader = true, queue = false)
+    private suspend fun disarmNow(owner: String) {
+        val mine = mutex.withLock {
+            if (this.owner != owner) return@withLock false
+            armed = false
+            this.owner = null
+            true
+        }
+        if (mine) endBurst(stopReader = true, queue = false)
     }
 
     /** Removes tags whose write to the outbox failed from `queued`, so a tag
@@ -676,6 +725,7 @@ class RfidController(
             when (nextTriggerAction(current.triggerMode, event, reading, heldMs)) {
                 TriggerAction.START -> {
                     _session.value = startSession(clock())
+                    sessionOwner = owner
                     // applyGate nested inside mutex (mutex outer, applyGate
                     // inner) so a start can never race a settings push on
                     // the vendor link. Nothing that holds applyGate (i.e.
@@ -756,9 +806,10 @@ class RfidController(
      * uncancelled one, while a cancelled `disarm()` (`queue = false`) still
      * discards them, the same as an uncancelled one.
      */
-    private suspend fun endBurst(stopReader: Boolean, queue: Boolean) {
+    private suspend fun endBurst(stopReader: Boolean, queue: Boolean, unlessOwnedBy: String? = null) {
         val owns = mutex.withLock {
             if (_session.value == null) return@withLock false
+            if (unlessOwnedBy != null && sessionOwner == unlessOwnedBy) return@withLock false
             if (stoppingBurst) {
                 if (!queue) queueOnStop = false
                 return@withLock false
@@ -802,7 +853,7 @@ class RfidController(
                     if (d != null && q && current.repeatPolicy != RepeatSweepPolicy.ALWAYS_QUEUE) {
                         queued = queuedAfter(queued, d)
                     }
-                    d to q
+                    d?.let { OwnedBurst(sessionOwner, burstToScans(it)) } to q
                 }
             }
         } catch (e: CancellationException) {
@@ -820,14 +871,14 @@ class RfidController(
                     if (d != null && q && current.repeatPolicy != RepeatSweepPolicy.ALWAYS_QUEUE) {
                         queued = queuedAfter(queued, d)
                     }
-                    d to q
+                    d?.let { OwnedBurst(sessionOwner, burstToScans(it)) } to q
                 }
-                if (d != null && q) _bursts.emit(burstToScans(d))
+                if (d != null && q) _bursts.emit(d)
             }
             throw e
         }
         // Emitting outside the lock: a slow collector on `bursts` must not
         // stall trigger and tag handling for everyone else.
-        if (done != null && shouldQueue) _bursts.emit(burstToScans(done))
+        if (done != null && shouldQueue) _bursts.emit(done)
     }
 }
