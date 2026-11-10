@@ -101,6 +101,15 @@ Besides email and password, the link with phone and the move password, a person'
 
 **Tests.** `BiometricSignInTest` and the login tests use a software P-256 key (`FakeBiometricKeys`) and a fake prompt only. The real Keystore, attestation and BiometricPrompt need a device.
 
+## Asset Lookup
+
+Home › Asset Lookup finds one asset and shows what the server knows about it. Design: `../docs/superpowers/specs/2026-11-10-android-asset-lookup-design.md` (Implementation notes), ported from the web kiosk: `../docs/superpowers/specs/2026-11-08-kiosk-asset-lookup-design.md`.
+- **Who sees what.** Everyone sees identity (name, make/model, asset tag, serial, RFID) and each route's source and destination. Admins (rank 60+) also see status, moves and current location, and scan history when they have `scans:view` and the asset is on a move. The server decides what is returned; the app only decides what to draw.
+- **Inputs.** Typed text, DataWedge scans, the camera, and the RFD40 sled. One tag from the sled looks it up; several tags show a notice to point the reader at one tag.
+- **Setup.** Needs Kiosk Setup; the tile and the input stay disabled until it is complete.
+- **Offline.** When the API can't be reached, lookup runs on the synced move devices only and shows a notice saying so. Scan history needs a connection.
+- **Never records a scan.** A lookup writes nothing to the outbox.
+
 ## Icons and fonts
 
 `python3 tools/make_icons.py` regenerates the launcher icons from `../portal/public/images/serversherpa-logo.png`. Fonts are bundled (see `FONTS-LICENSE.md`).

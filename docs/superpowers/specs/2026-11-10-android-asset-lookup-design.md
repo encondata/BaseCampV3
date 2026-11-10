@@ -130,3 +130,41 @@ Robolectric and unit tests, mirroring the web tests:
 
 Live: on the Pixel and the MC2200, against the dev API, look up dev asset
 102466 `atl1-web-001` by each of its four values as a worker and as an admin.
+
+## Implementation notes
+
+Built on branch `android-asset-lookup` (commits `df39eb1b3` to `aa47c1520`).
+
+### Files
+
+All paths under `Android_Kiosk_App/app/src/main/java/com/serversherpa/kiosk/`.
+
+- **core/lookup** — `AssetLookup.kt`: pure matching (keys, tag rule, RFID padding, exact hits then name fallback, natural sort, cap and `truncated`), offline details from a stored payload, `scanWhenText`. `core/model/Lookup.kt` holds the API models; `core/text/NaturalSort.kt` the natural compare.
+- **data/lookup** — `AssetLookupRepository.kt` (`find`, `open`, `scans`, `loadLocal`) with the offline fallback. `data/api/KioskApi.kt` and `OkHttpKioskApi.kt` gain `lookupAssets`, `assetDetail` and `assetScans`.
+- **ui/screens/lookup** — `AssetLookupViewModel.kt` (stale-answer counter, scan history state) and `AssetLookupScreen.kt` (input, match list, detail card, scan history, notices).
+- **ui/components/ColorChip.kt** — `ColorChip` and `hexColor` moved out of the Rolodex so both screens share them; the Rolodex files (`RolodexList`, `WorkerJobs`, `WorkerPage`) only changed imports.
+- **Features, Routes, KioskApp, FeatureIcons** — the Asset Lookup tile (after Trucks, for everyone, gated on setup, not on Time Clock stations), its route, and its icon.
+- Tests: `AssetLookupTest`, `NaturalSortTest`, `AssetLookupRepositoryTest`, `AssetLookupViewModelTest`, `AssetLookupScreenTest`, plus additions to `ModelsJsonTest`, `OkHttpKioskApiEndpointsTest`, `FeaturesTest`, `HomeScreenTest` and `FakeKioskApi`.
+
+### Offline data source
+
+No migration. Offline matching and details read the synced move assets already in Room: the stored server row (`assets.payload_json`), the site names from the `label_context` meta, and the container names from the synced containers. Fallback happens only on `ApiError.isNetwork` or code `edge_offline`; any other error propagates. Opening a result found offline skips the API. Payloads that don't decode are skipped.
+
+### Sled sweeps and `forgetQueued`
+
+After each sweep the screen calls `rfid.forgetQueued(epcs)`. A lookup sends nothing anywhere, but the controller marks every tag it emits as queued this visit. Under a "skip tags already sent" sweep policy a second sweep of the same tag on this screen would be dropped without it. One distinct tag looks it up; several show "N tags read. Point the reader at one tag and try again." with no API call. The sled is armed while the screen is open and set up, and disarmed on leave.
+
+### Setup gate on inputs
+
+The view model does not check setup. The route is wrapped in `SetupGate`, and the screen forwards scanner, camera and sled input, and enables the box and Search, only when setup is complete.
+
+### Rulings made during the build
+
+- Review Focus #3 wording ("404/403 on lookup reads as No asset matches") follows the web instead: the lookup route returns an empty list for out-of-reach devices (shown as "No asset matches"), and any thrown error from find reads "Couldn't look that up. Try again." Cost if wrong: a forbidden lookup shows the generic error instead of the miss line (copy only).
+- The view model does not gate on setup; the route is wrapped in `SetupGate` (redirects Home until setup is complete) and the screen disables the box when setup is missing. Cost if wrong: none expected.
+
+### Owed
+
+- A device check at 320 dp on the MC2200 (the layout was only checked under Robolectric).
+- The live check against the dev API: dev asset 102466 `atl1-web-001` by each of its four values (asset tag, serial, RFID, name), as a worker and as an admin.
+- Deferred review notes: no on-screen latched-read state or Stop control for the sled on this screen; the doc comment on `RfidController` still says only Scanning arms the sled.
