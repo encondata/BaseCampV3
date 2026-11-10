@@ -38,6 +38,13 @@ edit and test.
   that ironed out."
 - He approved both mockups (the flow editor, and the management page) and the
   playback below.
+- **Version 1 copies today exactly**, quirks included, so switching the apps
+  over in phase 2 changes nothing. Fixes come afterwards as normal new
+  versions (deployed, and rolled back if needed).
+- **When two or more assets match, a Match step takes the first** (today's
+  kiosk behavior).
+- **Access: the developer role only**, the same as Database and System
+  config. Founders and super admins don't get it.
 
 ## Goals (phase 1)
 
@@ -67,8 +74,12 @@ edit and test.
 - No flows for Containers, Trucks, RFID Enroll, Asset Lookup, the RFID and
   Dock stations, the time clock, or the server's final match.
 - No containers or people as match targets: assets only.
-- The SS-522 mismatches are not fixed here. They get fixed when the apps
-  follow the live flows (phase 2), or separately if Jimmy wants that sooner.
+- **The SS-522 mismatches are not fixed here.** v1 reproduces them on
+  purpose. They get fixed as new versions once the apps follow the live flows
+  (phase 2).
+- No Scan type branching in phase 1: the web and laptop kiosks can't tell an
+  RFID read from typed text before matching. It comes back with the stations
+  and the server's final match.
 
 ## Anti-goals
 
@@ -81,11 +92,13 @@ edit and test.
 
 ## The page
 
-### Where (my call)
+### Where
 
-Developer › **Matching rules**, at `/dev/matching-rules`, guarded like the
-other Developer pages (`ProtectedRoute resource="devtools"`, and the API with
-the same permission). It also gets a card on the Developer landing page (`/dev`).
+- **Address (my call):** Developer › **Matching rules**, at
+  `/dev/matching-rules`, with a card on the Developer landing page (`/dev`).
+- **Who (Jimmy):** the developer role only. It's guarded like the other
+  Developer pages: `ProtectedRoute resource="devtools"`, and the API with
+  `devtools`, which only the developer role holds.
 
 ### Management view (the second mockup)
 
@@ -114,33 +127,71 @@ the same permission). It also gets a card on the Developer landing page (`/dev`)
 | Kind | Settings | Outputs |
 |---|---|---|
 | **Scan input** | none (one per flow) | out |
-| **Scan type** | which types go which way | rfid, other |
-| **Clean up** | one of: trim, upper-case, lower-case, strip leading zeros, pad to 24, read as a number | out (and "invalid", e.g. not a number) |
-| **Match** | table (Assets), field (asset tag, serial, RFID, name), compare (exact, ignore case, contains), search in (this move, the client, all), when two or more match (stop as not found, or ask to pick) | found, none (and "several" when ask to pick) |
+| **Clean up** | one of: trim, upper-case, lower-case, strip leading zeros, pad to 24, read as a number | out, and "invalid" where it can fail (e.g. not a number, longer than 24) |
+| **Match** | table (Assets); field (asset tag, serial, RFID, name); compare (see below); search in (this move, or this move plus the client's other devices); when two or more match: take the first, by asset tag order (Jimmy) | found, none |
 | **Found** | what happens (print the label, record the scan) | — |
 | **Not found** | the message shown | — |
 
-Rules for the builder:
-- **Wiring:** a Clean up node passes the cleaned value to the next node. A
-  Match node compares the value it receives.
-- **Scan type:** needed because Scanning treats an RFID read differently from
-  a typed value, as the server does today.
-- **The field list is a fixed vocabulary:** asset tag, serial, RFID, name. In
-  phase 2 each app maps it to its own columns (for example asset tag is
-  `legacy_id` on the server and `asset_id` in the kiosk's downloaded move).
+### How values move (my call, from the review)
 
-## Version 1 of each flow: today's rule (my call)
+- A Clean up node passes its cleaned value on.
+- A Match node compares the value it received, and passes that same value on
+  through both outputs. So a later Match can try the same value against a
+  different field.
+- Each output wires to exactly one node.
 
-Each place starts with a built-in v1 that reproduces how the web kiosk matches
-today, so phase 2 can switch over without changing behavior:
-- **Printing:** trim and upper-case → Match asset tag (exact, this move) →
-  Match serial (ignore case, this move) → Not found "This asset isn't on this
-  move." RFID is never tried.
-- **Scanning:** trim and upper-case → Match RFID with leading zeros stripped
-  on both sides (this move) → Match asset tag (exact) → Match serial (ignore
-  case) → Not found.
+### Match compare options (my call, from the review)
 
-v1 is Live from the start, and it must pass the check and the test set.
+- **Exact.**
+- **Ignore case:** both sides upper-cased.
+- **Strip leading zeros on both sides:** used for RFID.
+- **Contains.**
+
+Today's kiosk upper-cases both sides for every field, and strips zeros on both
+sides only for RFID. The compare options exist so v1 can say exactly that.
+Comparing the stored side can't be done with a Clean up node, which only
+changes the scanned value.
+
+### Field vocabulary
+
+The field list is fixed: asset tag, serial, RFID, name. In phase 2 each app
+maps it to its own columns: asset tag is `legacy_id` on the server and
+`asset_id` (the text of `legacy_id`) in the kiosk's downloaded move.
+
+### Search in
+
+- **This move:** what the kiosk downloads for the move. For a run against a
+  real move, that means the move's `initiative_assets` rows, with the same
+  filtering the kiosk sync uses.
+- **This move plus the client's other devices:** adds the client's assets
+  (`Asset.client_id` = the move's client), as the kiosk's client-assets
+  download does.
+- **Not offered for kiosk places:** "all assets" (kiosks never have them).
+
+## Version 1 of each flow: today's web kiosk, exactly (Jimmy)
+
+Each place starts with a built-in v1 that reproduces the web kiosk's matching
+today (`kiosk/src/lib/scanMatch.ts`), quirks included:
+
+- **Printing** (`matchAssetOrSerial`):
+  1. Trim and upper-case.
+  2. Match asset tag, as text, ignoring case (so "007" doesn't find asset 7).
+  3. Match serial, ignoring case.
+  4. Not found: "This asset isn't on this move."
+
+  RFID is never tried. Search in: this move. Two hits: take the first.
+- **Scanning** (`matchScan`):
+  1. Trim and upper-case.
+  2. Match RFID, stripping leading zeros on both sides.
+  3. Match asset tag, as text, ignoring case.
+  4. Match serial, ignoring case.
+  5. Not found.
+
+  Search in: this move. Two hits: take the first.
+
+v1 is Live from the start. Its test-set rows describe today's behavior, so v1
+passes them. A later "corrected" version changes those expected rows along
+with the flow.
 
 ## Testing
 
@@ -158,17 +209,21 @@ v1 is Live from the start, and it must pass the check and the test set.
 ### Test assets (my call on storage)
 
 - **Storage:** a small table of their own, not real assets, so they never
-  appear on a move, in a report or in a sync. 5 to 10 rows, each with asset
-  tag, name, RFID and serial, edited on the page.
+  appear on a move, in a report or in a sync. 5 to 10 rows, edited on the
+  page. Each row has:
+  - **asset tag:** a whole number, like the real legacy ID
+  - **name, RFID and serial**
+  - **where it sits:** on the move, or one of the client's other devices, so
+    "search in" can be tested
 - **Expected results:** each test asset has rows (place, value to try, expected
   result: found by asset tag / serial / RFID / name, or not found).
 - **The starting set covers the tricky cases:**
   - an RFID stored padded and scanned without zeros
   - an asset tag that is also another asset's RFID
   - a mixed-case serial
-  - a leading-zero asset tag
+  - an asset tag typed with a leading zero ("007" for asset 7)
   - a name that is part of another name
-  - a value that matches two assets
+  - a value that matches two assets (take the first)
 
 ## Versions and states
 
@@ -182,7 +237,16 @@ v1 is Live from the start, and it must pass the check and the test set.
 - **Edit:** a Live, Standby or Retired version can't be edited. Editing makes
   a new draft from it.
 - **Audit:** every save, standby, deploy and rollback is written to the audit
-  log, with who and when.
+  log (`services/audit.audit`), with who and when.
+- **Model:** versions follow the label templates' pattern
+  (`label_template_versions`). Status rules are edited in place without
+  versions, so they're the precedent only for "central rules as data".
+- **When the test set changes (my call):**
+  - Editing the test set is never blocked.
+  - Each version keeps the result it got when it was checked.
+  - The page re-runs every version against today's test set. A Live version
+    that now fails is flagged on the page, but stays live until someone
+    deploys or rolls back.
 - **Phase 1 delivery:** Deploy only marks Live. Phase 2 sends the Live version
   of each place with the kiosk's move download and check-in.
 
@@ -192,7 +256,7 @@ v1 is Live from the start, and it must pass the check and the test set.
 - **Look:** follows the portal's light and dark themes with tokens. No default
   scrollbars. Modals use the report-generate header with rounded corners.
 - **No invented sample content:** placeholder names like "Test asset 1".
-- **Database:** migration at the next free number.
+- **Database:** migration at the next free number (0126 today).
 
 ## Left to the builder
 
