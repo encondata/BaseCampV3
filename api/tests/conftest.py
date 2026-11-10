@@ -427,6 +427,9 @@ async def clean_db():
         # labels seeds (0042 as amended by 0066, 0102 and 0104)
         await session.execute(text(LABEL_VOCAB_SEEDS))
         await session.execute(text(LABEL_PLACEHOLDER_SEEDS))
+        # matching rules: the people TRUNCATE above also emptied the versions
+        from serversherpa.matching_rules.seed import reset_matching_seed
+        await reset_matching_seed(session)
         await session.commit()
     # per-process rate limiters would otherwise carry hits between tests
     from serversherpa.api.routes.auth import reset_confirm_limiter, reset_request_limiter

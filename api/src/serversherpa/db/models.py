@@ -2672,3 +2672,4 @@ class WikiSearchLog(Base):
 # Base from here).
 import serversherpa.learning.models  # noqa: F401
 import serversherpa.plans.models  # noqa: F401
+import serversherpa.matching_rules.models  # noqa: F401
