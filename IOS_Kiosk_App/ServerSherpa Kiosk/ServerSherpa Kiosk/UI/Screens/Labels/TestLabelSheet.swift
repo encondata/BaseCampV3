@@ -14,7 +14,9 @@ struct TestLabelSheet: View {
         let ui = vm.ui
         let size = vm.alignmentSize()
         let templateName = vm.currentPick?.templateName
-        ScrollView {
+        // The cards and offsets can scroll; the line and the buttons under them never do, so Print
+        // test label and Done are on screen whatever the device, orientation or text size.
+        PinnedActions(padding: 16) {
             VStack(alignment: .leading, spacing: 0) {
                 PageHeader(eyebrow: "Printer Setup", title: "Test labels",
                            subtitle: "Print a test label, then adjust the offsets and print again until it lines up. The offsets save as you type.")
@@ -30,6 +32,9 @@ struct TestLabelSheet: View {
                 }
                 .padding(.bottom, 8)
                 if let size { PrinterOffsetFields(vm: vm, dpi: size.dpi) }
+            }
+        } actions: {
+            VStack(alignment: .leading, spacing: 0) {
                 KioskToast(text: ui.testMessage, error: ui.testError)
                 if ui.testLocalNetworkDenied || ui.testBluetoothSettings || ui.testPairingLost {
                     HStack(spacing: 8) {
@@ -47,8 +52,8 @@ struct TestLabelSheet: View {
                 }
                 .padding(.top, 12)
             }
-            .padding(16)
         }
+        .frame(maxHeight: .infinity, alignment: .top)
         .background(palette.paper)
         // Not while a label is going out (Android's dialog ignores a dismiss then).
         .interactiveDismissDisabled(ui.testing)

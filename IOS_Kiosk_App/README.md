@@ -15,7 +15,7 @@ xcodebuild test -scheme "ServerSherpa Kiosk" -destination 'platform=iOS Simulato
 xcodebuild build -scheme "ServerSherpa Kiosk" -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.5' -derivedDataPath ../.derived
 ```
 
-Or open `IOS_Kiosk_App/ServerSherpa Kiosk/ServerSherpa Kiosk.xcodeproj` in Xcode. The UI tests (`-only-testing:"ServerSherpa KioskUITests"`) run signed out; set `TEST_RUNNER_SCREENSHOT_DIR` to also write login, Settings, Pair and move-password screenshots.
+Or open `IOS_Kiosk_App/ServerSherpa Kiosk/ServerSherpa Kiosk.xcodeproj` in Xcode. The UI tests (`-only-testing:"ServerSherpa KioskUITests"`) run signed out; set `TEST_RUNNER_SCREENSHOT_DIR` to also write login, Settings, Pair and move-password screenshots. `SheetButtonsUITests` checks that sheet buttons are on screen without a scroll (the Face ID sign-in sheet, the support card, the sign-in Settings sheet) in both orientations and at large text sizes; run it on an iPad and an iPhone (for example `name=iPad Pro 13-inch (M4)` and `name=iPhone 16`).
 
 ## Run on a device
 
@@ -74,7 +74,7 @@ Besides email and password, pairing with a phone and the move password, the iPad
 - **Platform changes.** If a personal device ever checks in as a different platform (iOS instead of Android, or the other way around), its assignment and key are cleared. Only its owner's check-in can do that; anyone else's check-in leaves the platform as it was.
 - **Forget.** In Settings › This Kiosk (signed out, the device forgets it and the portal's copy is useless without it), on /me, or on the user page. The device's page in the portal can forget it too.
 
-**Device only.** The Simulator always reports that it can't use biometric sign-in, so it shows the plain password form and never offers Turn on. The Secure Enclave key, the Face ID or Touch ID prompt, and a key dying when a face or finger is added need a real iPad or iPhone.
+**Device only.** The Simulator always reports that it can't use biometric sign-in, so it shows the plain password form and never offers Turn on. To check the Turn on sheet's layout there, Debug builds take `-uiTestEnrollOffer`: the real sheet with sample words (Face ID, iPad), which asks nothing (its Turn on only shows the "didn't work" line). The Secure Enclave key, the Face ID or Touch ID prompt, and a key dying when a face or finger is added need a real iPad or iPhone.
 
 **Tests.** `BiometricSignInTests`, `BiometricLoginTests` and `EnrollOfferTests` use a software P-256 key (`FakeBiometricKeys`) and a fake prompt (`FakeBiometricPrompter`) only.
 
@@ -85,6 +85,8 @@ iOS has no app pinning API for an ordinary app. Use Guided Access (Settings › 
 ## Layout
 
 `Core/` is pure Swift (Foundation only) mirroring Android `core/`; `Data/` is URLSession, Keychain, SwiftData and UserDefaults, sync, and outbox; `Input/` is the scan sources; `UI/` is SwiftUI. The Xcode project uses synchronized folders: new files under the app or test folders join the target automatically.
+
+Never hide buttons behind a scroll: a sheet's, cover's or card's action buttons must be on screen when it opens, on every device, orientation and text size. Put them in `PinnedActions` (`UI/Components/PinnedActions.swift`), never at the end of a `ScrollView`: only the content scrolls, and the buttons stay pinned below it.
 
 ## Icons and fonts
 
