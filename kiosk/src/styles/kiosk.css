@@ -1011,7 +1011,7 @@ a.kiosk-crumb:focus-visible { opacity: 1; outline: 2px solid var(--accent); outl
 .lookup-make { margin: 4px 0 0; font-size: 15px; color: var(--text-mute); }
 /* Name and make on the left; for admins, Status (as large as the name)
    with Current location right under it on the right. */
-.lookup-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 28px; flex-wrap: wrap; }
+.lookup-head { display: flex; justify-content: space-between; align-items: stretch; gap: 12px 28px; flex-wrap: wrap; }
 .lookup-head-main { min-width: 0; }
 .lookup-head-status { margin: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; text-align: right; }
 .lookup-head-status > div { min-width: 0; }
@@ -1023,7 +1023,12 @@ a.kiosk-crumb:focus-visible { opacity: 1; outline: 2px solid var(--accent); outl
   color: var(--text-mute);
 }
 .lookup-head-status dd { margin: 2px 0 0; font-size: 15px; color: var(--text-dark); overflow-wrap: anywhere; }
-.lookup-status .chip { font-size: 24px; font-weight: 600; padding: 4px 14px; }
+.lookup-head-status .lookup-status { flex: 1 1 auto; display: flex; }
+/* The status chip is as tall as the name + make/model lines beside it. */
+.lookup-status .chip {
+  height: auto; align-self: stretch; padding: 0 20px; gap: 10px;
+  border-radius: 12px; font-size: 26px; font-weight: 600;
+}
 .lookup-route { margin-top: 16px; }
 .lookup-route-title { margin: 0 0 6px; font-size: 16px; font-weight: 600; color: var(--text-dark); }
 .lookup-routes {
