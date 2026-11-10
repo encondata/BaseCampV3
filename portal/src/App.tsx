@@ -71,6 +71,7 @@ import StakeholderDetail from './pages/StakeholderDetail';
 import StatusRules from './pages/StatusRules';
 import SystemConfig from './pages/SystemConfig';
 import SystemProcesses from './pages/SystemProcesses';
+import BlockedAddresses from './pages/BlockedAddresses';
 import TimeManagement from './pages/TimeManagement';
 import Trucks from './pages/Trucks';
 import Warehouse from './pages/Warehouse';
@@ -255,6 +256,9 @@ export default function App() {
                 } />
                 <Route path="/system/processes" element={
                   <ProtectedRoute minRank={80}><SystemProcesses /></ProtectedRoute>
+                } />
+                <Route path="/system/blocked-addresses" element={
+                  <ProtectedRoute minRank={ADMIN_RANK}><BlockedAddresses /></ProtectedRoute>
                 } />
                 <Route path="/bulk" element={
                   <ProtectedRoute minRank={ADMIN_RANK}><BulkActions /></ProtectedRoute>

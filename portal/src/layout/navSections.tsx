@@ -692,6 +692,19 @@ export const NAV_SECTIONS: NavSection[] = [
         ),
       },
       {
+        to: '/system/blocked-addresses',
+        label: 'Blocked addresses',
+        resource: 'dashboard',
+        minRank: ADMIN_RANK,
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="9" />
+            <path d="m5.6 5.6 12.8 12.8" />
+          </svg>
+        ),
+      },
+      {
         to: '/system/processes',
         label: 'Processes',
         resource: 'dashboard',

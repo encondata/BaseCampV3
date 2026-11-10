@@ -4512,6 +4512,61 @@ export async function getHealthStorage(): Promise<HealthStorageOut> {
   return resp.json();
 }
 
+// ── system: sign-in address blocks (SS-487) ─────────────────────────
+
+export type BlockedAddressStatus = 'blocked' | 'permanent' | 'ended';
+
+export type BlockedAddressRoute =
+  | 'login' | 'totp_verify' | 'move_login' | 'biometric_sign_in'
+  | 'password_reset_check' | 'password_reset_confirm';
+
+export interface BlockedAddress {
+  address: string;
+  status: BlockedAddressStatus;
+  /** 1–4 timed (1 h / 6 h / 12 h / 24 h), 5 permanent. */
+  level: number;
+  blocked_at: string;
+  /** null when permanent. */
+  ends_at: string | null;
+  ended_at: string | null;
+  times_blocked: number;
+  failure_count: number;
+  last_route: BlockedAddressRoute | string;
+  first_blocked_at: string;
+  cleared_at: string | null;
+  cleared_by_name: string | null;
+  made_permanent_at: string | null;
+  made_permanent_by_name: string | null;
+}
+
+/** Admin only (403 otherwise). `active` = timed and permanent blocks;
+ *  `ended` = blocks that ended in the last 30 days. */
+export async function listBlockedAddresses(show: 'active' | 'ended'): Promise<BlockedAddress[]> {
+  const resp = await apiFetch(`/system/blocked-addresses?show=${show}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+async function blockedAddressAction(path: string, address: string): Promise<BlockedAddress> {
+  const resp = await apiFetch(`/system/blocked-addresses/${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ address }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Errors: 404 `block_not_found`, 409 `block_not_active`. */
+export function clearAddressBlock(address: string): Promise<BlockedAddress> {
+  return blockedAddressAction('clear', address);
+}
+
+/** Errors: 404 `block_not_found`, 409 `block_not_active`. */
+export function blockAddressPermanently(address: string): Promise<BlockedAddress> {
+  return blockedAddressAction('permanent', address);
+}
+
 // ── system: process registry + logs ─────────────────────────────────
 
 export interface SystemProcessOut {
