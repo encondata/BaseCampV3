@@ -100,10 +100,12 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       return p;
     };
     if (!inFlight.current) return start();
-    followUp.current = inFlight.current.then(() => {
+    // run on either outcome, so a read that rejects can't wedge refresh()
+    const run = () => {
       followUp.current = null;
       return start();
-    });
+    };
+    followUp.current = inFlight.current.then(run, run);
     return followUp.current;
   }, [readInbox]);
 

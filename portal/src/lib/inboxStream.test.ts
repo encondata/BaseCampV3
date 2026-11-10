@@ -9,7 +9,7 @@ vi.mock('./api', async (importOriginal) => ({
 }));
 
 import * as api from './api';
-import { useInboxStream } from './inboxStream';
+import { INBOX_STREAM_STALE_MS, useInboxStream } from './inboxStream';
 
 class FakeWS {
   static all: FakeWS[] = [];
@@ -128,8 +128,68 @@ describe('useInboxStream', () => {
     act(() => FakeWS.all[1].open());
     await act(async () => { FakeWS.all[1].end(4401); });
     expect(FakeWS.all).toHaveLength(2);
-    await tick(1000);
+    // the open was not stable, so the backoff keeps growing: 2 s, not 1 s
+    await tick(1999);
+    expect(FakeWS.all).toHaveLength(2);
+    await tick(1);
     expect(FakeWS.all).toHaveLength(3);
+  });
+
+  it('an open-then-drop loop keeps growing the backoff', async () => {
+    await mount();
+    await act(async () => { FakeWS.all[0].end(); });
+    for (const [i, wait] of [[1, 1000], [2, 2000], [3, 4000]] as const) {
+      await tick(wait - 1);
+      expect(FakeWS.all).toHaveLength(i);
+      await tick(1);
+      expect(FakeWS.all).toHaveLength(i + 1);
+      act(() => FakeWS.all[i].open());
+      await tick(100);
+      await act(async () => { FakeWS.all[i].end(); });
+    }
+    await tick(7999);
+    expect(FakeWS.all).toHaveLength(4);
+    await tick(1);
+    expect(FakeWS.all).toHaveLength(5);
+  });
+
+  it('a stable socket that drops resets the backoff to 1 s', async () => {
+    await mount();
+    await act(async () => { FakeWS.all[0].end(); });
+    await tick(1000);
+    await act(async () => { FakeWS.all[1].end(); });
+    await tick(2000);
+    expect(FakeWS.all).toHaveLength(3);
+    act(() => FakeWS.all[2].open());
+    await tick(5000);
+    await act(async () => { FakeWS.all[2].end(); });
+    await tick(999);
+    expect(FakeWS.all).toHaveLength(3);
+    await tick(1);
+    expect(FakeWS.all).toHaveLength(4);
+  });
+
+  it('closes a socket that has gone silent and reconnects', async () => {
+    const { result } = await mount();
+    const ws = FakeWS.all[0];
+    act(() => ws.open());
+    // pings keep it alive past the stale window
+    await tick(INBOX_STREAM_STALE_MS - 1000);
+    act(() => ws.msg({ ping: true }));
+    await tick(INBOX_STREAM_STALE_MS - 1000);
+    expect(ws.close).not.toHaveBeenCalled();
+    expect(result.current).toBe(true);
+    // then nothing at all for the whole window
+    await tick(1000);
+    expect(ws.close).toHaveBeenCalled();
+    expect(result.current).toBe(false);
+    // it had been up long enough to count as stable: retry after 1 s
+    await tick(1000);
+    expect(FakeWS.all).toHaveLength(2);
+    // the late close event of the dead socket changes nothing
+    await act(async () => { ws.end(); });
+    await tick(30_000);
+    expect(FakeWS.all).toHaveLength(2);
   });
 
   it('backs off when 4401 refresh finds no session', async () => {
