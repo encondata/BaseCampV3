@@ -15,6 +15,7 @@ from serversherpa.notifications.company import load_company_settings
 from serversherpa.notifications.delivery_log import record
 from serversherpa.notifications.email import effective_switches, load_contact, maybe_email
 from serversherpa.notifications.kinds import kind_info
+from serversherpa.notifications.live import signal_inbox
 
 
 async def notify(db: AsyncSession, person_id: uuid.UUID, kind: str, title: str, *,
@@ -56,6 +57,8 @@ async def notify(db: AsyncSession, person_id: uuid.UUID, kind: str, title: str, 
                        link=link, payload=payload or {}, created_at=datetime.now(UTC))
     db.add(row)
     await db.flush()
+    # Open portal tabs re-read the inbox; Postgres sends this on commit only.
+    await signal_inbox(db, person_id)
     record(db, "inbox_written", channel="inbox", person_id=person_id,
            notification_id=row.id, kind=kind,
            category=info.category if info else None, detail=log_detail)

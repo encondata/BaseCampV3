@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.db.models import AddressBlock, Person, PersonRole, Role, UserAccount
 from serversherpa.notifications.inbox import notify
+from serversherpa.notifications.live import signal_inboxes
 
 KIND = "address_blocked"
 LINK = "/system/blocked-addresses"
@@ -72,17 +73,19 @@ async def resolve_block(db: AsyncSession, address: str, blocked_at: datetime,
     """Mark every open card for this block (this address and this
     `blocked_at`) decided, and read for every admin. Cards from an earlier
     block of the address that ended on its own stay as they are. A card
-    already read keeps its first read time."""
-    await db.execute(text(
+    already read keeps its first read time. Each admin whose card changed
+    gets a live inbox signal, so their toast goes away without a poll."""
+    changed = await db.scalars(text(
         "UPDATE notifications SET payload = payload || "
         "jsonb_build_object('state', CAST(:state AS text), "
         "'decided_by', CAST(:by AS text)), "
         "read_at = COALESCE(read_at, now()) "
         "WHERE kind = :kind AND payload ->> 'address' = CAST(:address AS text) "
         "AND payload ->> 'blocked_at' = CAST(:blocked_at AS text) "
-        "AND payload ->> 'state' = 'open'"),
+        "AND payload ->> 'state' = 'open' RETURNING person_id"),
         {"state": state, "by": decided_by, "kind": KIND, "address": address,
          "blocked_at": block_key(blocked_at)})
+    await signal_inboxes(db, changed.all())
 
 
 async def decided_by_name(db: AsyncSession, actor_id: uuid.UUID | None) -> str:

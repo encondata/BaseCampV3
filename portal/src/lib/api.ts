@@ -4641,12 +4641,27 @@ export function logStreamUrl(
   return `${apiUrl().replace(/^http/, 'ws')}/system/processes/${name}/logs/stream${qs ? `?${qs}` : ''}`;
 }
 
+/** The inbox change-signal WebSocket URL. No query string; the token rides
+ *  the subprotocol list (see logStreamProtocols). */
+export function inboxStreamUrl(): string {
+  return `${apiUrl().replace(/^http/, 'ws')}/notifications/inbox/stream`;
+}
+
 /** The subprotocol list that authenticates the live tail — pass it as
  *  the second argument of `new WebSocket(url, protocols)`. The handshake
  *  sends it as `Sec-WebSocket-Protocol: ss-bearer, <token>`; the server
  *  accepts "ss-bearer" on success and closes 4401 otherwise. */
 export function logStreamProtocols(token: string): string[] {
   return ['ss-bearer', token];
+}
+
+/** Like getAccessTokenForStream, but refreshes first when the in-memory
+ *  token is stale. A WebSocket handshake rejected for a bad token shows up
+ *  in browsers as a plain 1006 close, so the stream must not rely on a
+ *  4401 to learn the token expired. */
+export async function getFreshAccessTokenForStream(): Promise<string | null> {
+  if (tokenIsStale()) await refreshSession();
+  return accessToken;
 }
 
 export function getAccessTokenForStream(): string | null {

@@ -3,7 +3,8 @@
  * /learning/library — the document list (title, version, published, packets,
  * sign-offs, translation chips), its search, and the New document flow
  * (a wiki page from the learning space plus a title, then onto the
- * document's own page). New document needs learning:add.
+ * document's own page). New document needs learning:add. Show archived is
+ * for super admins and above.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -18,11 +19,14 @@ vi.mock('../../lib/notificationsContext', () => ({ useToast: () => toast }));
 
 const auth = vi.hoisted(() => ({
   perms: { view: true, add: true, change: true, delete: true } as Record<string, boolean>,
+  maxRank: 60,
+  global: true,
 }));
 vi.mock('../../auth/AuthContext', () => ({
   useAuth: () => ({
     can: (resource: string, action = 'view') => resource === 'learning' && auth.perms[action] === true,
-    scope: { global: true },
+    scope: { global: auth.global },
+    maxRank: auth.maxRank,
     preferences: {},
     updatePreferences: vi.fn(),
     hasRole: () => false,
@@ -71,6 +75,8 @@ function renderPage() {
 
 beforeEach(() => {
   auth.perms = { view: true, add: true, change: true, delete: true };
+  auth.maxRank = 60;
+  auth.global = true;
   api.listLearningDocuments.mockReset().mockResolvedValue(DOCS);
   api.listLearningWikiPages.mockReset().mockResolvedValue(PAGES);
   api.createLearningDocument.mockReset().mockResolvedValue({ id: 'new-1' });
@@ -96,7 +102,46 @@ it('lists documents with version, published date, packets, sign-offs and transla
   // an unpublished document says so
   const unpublished = screen.getByRole('link', { name: 'Acme NDA' }).closest('.dir-row') as HTMLElement;
   expect(within(unpublished).getByText('Not published')).toBeTruthy();
-  expect(api.listLearningDocuments).toHaveBeenCalledWith();
+  expect(api.listLearningDocuments).toHaveBeenCalledWith(false);
+});
+
+it('Show archived is only for super admins and lists archived documents with a chip', async () => {
+  const first = renderPage();
+  await screen.findByRole('link', { name: 'Dress code' });
+  // an admin has no Show archived
+  expect(screen.queryByRole('checkbox', { name: 'Show archived' })).toBeNull();
+  first.unmount();
+
+  auth.maxRank = 80;
+  const archived: LearningDocumentListItem = {
+    id: 'd3', title: 'Old badge rules', current_version_no: 2, published_at: '2026-09-01T15:00:00Z',
+    packets: [], signoff_count: 12, languages: {}, archived_at: '2026-10-01T15:00:00Z',
+  };
+  renderPage();
+  await screen.findByRole('link', { name: 'Dress code' });
+  expect(screen.queryByRole('link', { name: 'Old badge rules' })).toBeNull();
+  api.listLearningDocuments.mockResolvedValueOnce([...DOCS, archived]);
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Show archived' }));
+  const link = await screen.findByRole('link', { name: 'Old badge rules' });
+  expect(api.listLearningDocuments).toHaveBeenLastCalledWith(true);
+  const row = link.closest('.dir-row') as HTMLElement;
+  expect(within(row).getByText('Archived').className).toContain('chip');
+  expect(within(row).getByText('v2')).toBeTruthy();
+  // live documents carry no Archived chip
+  const live = screen.getByRole('link', { name: 'Dress code' }).closest('.dir-row') as HTMLElement;
+  expect(within(live).queryByText('Archived')).toBeNull();
+
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Show archived' }));
+  await waitFor(() => expect(screen.queryByRole('link', { name: 'Old badge rules' })).toBeNull());
+  expect(api.listLearningDocuments).toHaveBeenLastCalledWith(false);
+});
+
+it('a super admin anchored to a client gets no Show archived', async () => {
+  auth.maxRank = 80;
+  auth.global = false;
+  renderPage();
+  await screen.findByRole('link', { name: 'Dress code' });
+  expect(screen.queryByRole('checkbox', { name: 'Show archived' })).toBeNull();
 });
 
 it('search narrows the list', async () => {
