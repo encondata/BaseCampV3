@@ -121,3 +121,56 @@ async def test_rfid_read_matches_container_and_badge_tags(db):
             == Match("container", c.id, "rfid_tag"))
     assert (await match_scan(db, "E280EEE", scan_type="rfid")
             == Match("person", p.id, "rfid_tag"))
+
+
+# ── trace (migration 0125) ───────────────────────────────────────────
+
+from serversherpa.scans.matching import trace_record  # noqa: E402
+
+_AT = datetime(2026, 11, 10, 14, 25, tzinfo=UTC)
+
+
+async def test_trace_full_ladder_skips_what_the_value_cannot_be(db):
+    steps: list = []
+    assert await match_scan(db, "no-such-thing", trace=steps) is None
+    assert steps == [
+        {"field": "id", "skipped": "not a UUID"},
+        {"field": "legacy_id", "skipped": "not a whole number"},
+        {"field": "rfid_tag", "table": "assets", "hits": 0},
+        {"field": "rfid_tag", "table": "containers", "hits": 0},
+        {"field": "rfid_tag", "table": "people", "hits": 0},
+        {"field": "serial_number", "table": "assets", "hits": 0},
+        {"field": "name", "table": "assets", "hits": 0},
+        {"field": "name", "table": "containers", "hits": 0},
+    ]
+    t = trace_record("no-such-thing", "barcode", steps, None, _AT)
+    assert t["outcome"] == "no_match" and t["mode"] == "full_ladder"
+    assert t["attempted_at"] == _AT.isoformat()
+
+
+async def test_trace_ambiguous_names_where_the_ladder_stopped(db):
+    await _asset(db, serial_number="TWIN")
+    await _asset(db, serial_number="TWIN")
+    steps: list = []
+    assert await match_scan(db, "TWIN", trace=steps) is None
+    assert steps[-1] == {"field": "serial_number", "table": "assets", "hits": "2+"}
+    t = trace_record("TWIN", "barcode", steps, None, _AT)
+    assert t["outcome"] == "ambiguous" and t["ambiguous_on"] == "serial_number"
+    assert t["reason"].startswith("Two or more assets have this serial number")
+
+
+async def test_trace_matched_by_legacy_id(db):
+    a = await _asset(db, legacy_id=4472)
+    steps: list = []
+    got = await match_scan(db, "4472", trace=steps)
+    assert steps == [{"field": "id", "skipped": "not a UUID"},
+                     {"field": "legacy_id", "table": "assets", "hits": 1}]
+    t = trace_record("4472", "barcode", steps, got, _AT)
+    assert (t["outcome"], t["matched_on"], t["match_type"], t["matched_id"]) == (
+        "matched", "legacy_id", "asset", str(a.id))
+    assert t["reason"] == "Matched an asset by its Asset ID"
+
+
+async def test_trace_is_optional_and_matching_is_unchanged(db):
+    a = await _asset(db, rfid_tag="E2809999")
+    assert await match_scan(db, "E2809999", scan_type="rfid") == Match("asset", a.id, "rfid_tag")

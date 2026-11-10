@@ -1678,6 +1678,9 @@ async def _store_scan_batch(
             "initiative_id": scan.initiative_id or device.current_initiative_id,
             "source": "kiosk",
             "client_scan_id": scan.client_scan_id,
+            # the kiosk's own local match, kept for troubleshooting; the
+            # worker still re-matches the value from scratch
+            "kiosk_asset_id": scan.asset_id,
         })
         accepted.append(scan.client_scan_id)
 
@@ -1884,6 +1887,7 @@ async def enroll_rfid(
         "initiative_id": body.initiative_id or device.current_initiative_id,
         "source": "kiosk",
         "client_scan_id": body.client_scan_id,
+        "kiosk_asset_id": asset.id,          # the asset the kiosk named
     }).on_conflict_do_nothing(
         index_elements=["client_scan_id"],
         index_where=text("client_scan_id IS NOT NULL")))
@@ -2188,6 +2192,7 @@ async def pack_container_asset(
         "initiative_id": body.initiative_id or device.current_initiative_id,
         "source": "kiosk",
         "client_scan_id": body.client_scan_id,
+        "kiosk_asset_id": asset.id,          # the asset the kiosk named
     }).on_conflict_do_nothing(
         index_elements=["client_scan_id"],
         index_where=text("client_scan_id IS NOT NULL")))

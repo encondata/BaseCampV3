@@ -220,3 +220,73 @@ async def test_worker_logs_the_match_on_each_execution(db):
         match = ex.actions_applied[0]["match"]
         assert (match["match_type"], match["matched_on"], match["id"]) == (
             "asset", "rfid_tag", str(a.id))
+
+
+# ── match trace + kiosk match (migration 0125) ─────────────────────────
+
+
+async def test_no_match_saves_the_trace_on_the_raw_row(db):
+    scan = _raw("000000000000000100222", scan_type="rfid")
+    db.add(scan)
+    await db.commit()
+    assert await worker.process_raw_scan(get_sessionmaker(), scan.id) == "unmatched"
+    async with get_sessionmaker()() as check:
+        row = (await check.scalars(select(RawScan))).one()
+        t = row.match_trace
+        assert t["outcome"] == "no_match" and t["mode"] == "rfid_tags_only"
+        assert t["value"] == "000000000000000100222"
+        assert [(s["field"], s["table"], s["hits"]) for s in t["steps"]] == [
+            ("rfid_tag", "assets", 0), ("rfid_tag", "containers", 0),
+            ("rfid_tag", "people", 0)]
+        assert "RFID tag" in t["reason"]
+        assert t["attempted_at"] == row.match_attempted_at.isoformat()
+
+
+async def test_match_carries_trace_and_the_raw_context_to_processed(db):
+    import uuid as _uuid
+
+    from serversherpa.db.models import Initiative
+    a = Asset(serial_number="SN-9", rfid_tag="E28011")
+    other = Asset(serial_number="SN-10")
+    move = Initiative(name="Trace move", initiative_type="move")
+    db.add_all([a, other, move])
+    await db.flush()
+    client_id = _uuid.uuid4()
+    scan = _raw("E28011", scan_type="rfid")
+    scan.kiosk_asset_id = other.id          # the kiosk thought it was another asset
+    scan.client_scan_id = client_id
+    scan.scan_status = "rfid_4_into_cage"
+    scan.initiative_id = move.id
+    db.add(scan)
+    await db.commit()
+
+    assert await worker.process_raw_scan(get_sessionmaker(), scan.id) == "matched"
+    async with get_sessionmaker()() as check:
+        ps = (await check.scalars(select(ProcessedScan))).one()
+        assert ps.kiosk_asset_id == other.id
+        assert ps.client_scan_id == client_id
+        assert ps.scan_status == "rfid_4_into_cage"
+        assert ps.initiative_id == move.id
+        t = ps.match_trace
+        assert t["outcome"] == "matched" and t["matched_on"] == "rfid_tag"
+        assert t["matched_id"] == str(a.id)
+        assert t["steps"] == [{"field": "rfid_tag", "table": "assets", "hits": 1}]
+
+
+async def test_rule_error_keeps_the_trace_with_the_error(db):
+    a = Asset(serial_number="SN-11", status="unknown")
+    rule = StatusRule(name="Boom", trigger_status="rfid_4_into_cage",
+                      trigger_match_type="asset")
+    rule.actions.append(StatusRuleAction(
+        position=1, action_type="set_asset_status",
+        params={"status": "not-a-key"}))
+    scan = _raw("SN-11")
+    db.add_all([a, rule, scan])
+    await db.commit()
+
+    assert await worker.process_raw_scan(get_sessionmaker(), scan.id) == "error"
+    async with get_sessionmaker()() as check:
+        t = (await check.scalars(select(RawScan))).one().match_trace
+        assert t["outcome"] == "error" and t["matched"] is True
+        assert t["matched_on"] == "serial_number"      # how far the matcher got
+        assert t["error"] and "status rule failed" in t["reason"]

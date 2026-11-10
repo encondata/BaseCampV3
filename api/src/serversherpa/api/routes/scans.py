@@ -20,7 +20,7 @@ from serversherpa.config import get_settings
 from serversherpa.db.models import (
     Asset, Container, Person, ProcessedScan, RawScan, Site, StatusValue,
 )
-from serversherpa.scans import raw_query
+from serversherpa.scans import raw_query, record_json
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.storage import presign_get
 
@@ -349,6 +349,33 @@ async def _processed_item(db: DbSession, s: ProcessedScan) -> ProcessedScanItem:
         processed_at=s.processed_at, archived_at=s.archived_at,
         created_at=s.created_at,
         **_raw_context(s, scan_types, asset_statuses, people, sites))
+
+
+@router.get("/raw/{scan_id}/record")
+async def raw_scan_record(
+    scan_id: int, db: DbSession,
+    actor: AuthContext = require_permission("scans", "view"),
+) -> dict:
+    """The Raw view of an inbox entry: the whole scan as JSON (scans/
+    record_json.py). 404 `scan_not_found` once it has matched — the worker
+    moves a matched scan to processed_scans (raw_scan_id keeps its id)."""
+    raw = await db.get(RawScan, scan_id)
+    if raw is None:
+        raise _err(404, "scan_not_found")
+    return await record_json.raw_scan_record(db, raw)
+
+
+@router.get("/processed/{scan_id}/record")
+async def processed_scan_record(
+    scan_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("scans", "view"),
+) -> dict:
+    """The Raw view of a processed scan: the whole record as JSON, with what
+    it matched, the kiosk's own match and the status rules that ran."""
+    ps = await db.get(ProcessedScan, scan_id)
+    if ps is None:
+        raise _err(404, "scan_not_found")
+    return await record_json.processed_scan_record(db, ps)
 
 
 @router.patch("/processed/{scan_id}", response_model=ProcessedScanItem)

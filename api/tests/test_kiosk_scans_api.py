@@ -341,3 +341,74 @@ async def test_person_route_ignores_off_move(client, db, seeded_user):
     db.expire_all()
     row = await db.scalar(select(RawScan).where(RawScan.scanned_value == "EPC-PERSON-OFF"))
     assert row.off_move is False
+
+
+# ── the Raw view (migration 0125) ──────────────────────────────────────
+
+
+async def test_raw_view_end_to_end_keeps_kiosk_match_and_trace(
+        client, db, seeded_user, monkeypatch):
+    """A kiosk sends two scans, each with its local match: one the server
+    matches to the same asset, one it can't match. The Raw view of each
+    shows the stored context, the kiosk's match and the matcher's trace."""
+    monkeypatch.setattr(worker, "_last_sweep", None)
+    hdrs = await login(client)
+    site, initiative, checkpoint = await _seed_context(db)
+    await _seed_device(db, site=site, initiative=initiative,
+                       scan_status=checkpoint.key)
+    asset = Asset(name="Traced Asset", rfid_tag="EPC-TRACE-1", legacy_id=55501)
+    db.add(asset)
+    await db.commit()
+    asset_id, site_id, initiative_id = asset.id, site.id, initiative.id
+
+    good, bad = _scan("EPC-TRACE-1", asset_id=str(asset_id)), _scan("EPC-TRACE-21DIGITS")
+    resp = await client.post("/kiosk/scans", headers=hdrs,
+                             json={"serial": SERIAL, "scans": [good, bad]})
+    assert resp.status_code == 200, resp.text
+    db.expire_all()
+    stored = {r.scanned_value: r.kiosk_asset_id
+              for r in (await db.scalars(select(RawScan))).all()}
+    assert stored == {"EPC-TRACE-1": asset_id, "EPC-TRACE-21DIGITS": None}
+
+    assert await worker.run_once(get_sessionmaker()) is True
+    db.expire_all()
+    raw = (await db.scalars(select(RawScan))).one()
+    ps = (await db.scalars(select(ProcessedScan))).one()
+
+    r = (await client.get(f"/scans/raw/{raw.id}/record", headers=hdrs)).json()
+    assert r["kind"] == "raw" and r["scanned_value"] == "EPC-TRACE-21DIGITS"
+    assert r["device"]["name"] == "Kiosk Scan Target" and r["device"]["serial"] == SERIAL
+    assert r["site"] == {"id": str(site_id), "name": "NAP11 Scan Hall"}
+    assert r["move"] == {"id": str(initiative_id), "name": "NAP11 Scan Move"}
+    assert r["client_scan_id"] == bad["client_scan_id"]
+    assert r["kiosk_match"] is None
+    assert r["match_trace"]["outcome"] == "no_match"
+    assert r["match_trace"]["mode"] == "rfid_tags_only"
+
+    p = (await client.get(f"/scans/processed/{ps.id}/record", headers=hdrs)).json()
+    assert p["kind"] == "processed" and p["raw_scan_id"] is not None
+    assert p["client_scan_id"] == good["client_scan_id"]
+    assert p["move"]["id"] == str(initiative_id)
+    assert p["matched"]["name"] == "Traced Asset" and p["matched"]["asset_tag"] == "55501"
+    assert p["kiosk_match"] == {"asset_id": str(asset_id), "name": "Traced Asset",
+                                "asset_tag": "55501", "missing": False, "agrees": True}
+    assert p["match_trace"]["matched_on"] == "rfid_tag"
+    assert p["rules"] == []
+
+    # once matched, the inbox entry is gone
+    gone = await client.get(f"/scans/raw/{ps.raw_scan_id}/record", headers=hdrs)
+    assert gone.status_code == 404 and gone.json()["detail"]["code"] == "scan_not_found"
+
+
+async def test_raw_view_trace_reads_in_order(client, db, seeded_user):
+    """jsonb re-sorts keys; the Raw view puts the trace back in reading order."""
+    hdrs = await login(client)
+    db.add(RawScan(scanned_value="NOBODY", scan_type="rfid", scanned_at=T0, match_trace={
+        "reason": "r", "outcome": "no_match", "steps": [{"hits": 0, "table": "assets",
+                                                          "field": "rfid_tag"}],
+        "mode": "rfid_tags_only", "value": "NOBODY", "attempted_at": "t"}))
+    await db.commit()
+    raw = (await db.scalars(select(RawScan))).one()
+    t = (await client.get(f"/scans/raw/{raw.id}/record", headers=hdrs)).json()["match_trace"]
+    assert list(t) == ["attempted_at", "value", "mode", "steps", "outcome", "reason"]
+    assert list(t["steps"][0]) == ["field", "table", "hits"]

@@ -1031,6 +1031,11 @@ class RawScan(Base):
     # rules that ask for sightings (an "Off-move sighting equals true"
     # condition).
     off_move: Mapped[bool] = mapped_column(server_default=text("false"))
+    # scan troubleshooting (migration 0125): the kiosk's own match, as
+    # reported (device data, no FK), and the matcher's latest attempt
+    # (scans/matching.py MatchTrace)
+    kiosk_asset_id: Mapped[uuid.UUID | None]
+    match_trace: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
@@ -1079,6 +1084,14 @@ class ProcessedScan(Base):
     processed_at: Mapped[datetime]
     archived_at: Mapped[datetime | None]
     off_move: Mapped[bool] = mapped_column(server_default=text("false"))  # migration 0098
+    # migration 0125: copied from the raw row (manual status edits get a
+    # "manual" trace), so the processed record keeps the whole context
+    kiosk_asset_id: Mapped[uuid.UUID | None]
+    match_trace: Mapped[dict | None] = mapped_column(JSONB)
+    client_scan_id: Mapped[uuid.UUID | None]
+    scan_status: Mapped[str | None]
+    initiative_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("initiatives.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 

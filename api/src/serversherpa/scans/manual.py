@@ -39,7 +39,8 @@ async def record_status_edit(
     Raises RuleExecutionError when a rule action fails — the caller owns
     the transaction and decides to roll back."""
     scan = await _add_scan(db, asset=asset, status=status, actor_person_id=actor_person_id,
-                           source=SOURCE_INITIATIVE_ASSET_EDIT)
+                           source=SOURCE_INITIATIVE_ASSET_EDIT,
+                           initiative_id=assoc.initiative_id)
     await apply_rules(db, scan, initiative_asset=assoc, matched_on="manual")
     return scan
 
@@ -59,16 +60,25 @@ async def record_asset_status_edit(
 
 
 async def _add_scan(db: AsyncSession, *, asset: Asset, status: str,
-                    actor_person_id: uuid.UUID | None, source: str) -> ProcessedScan:
+                    actor_person_id: uuid.UUID | None, source: str,
+                    initiative_id: uuid.UUID | None = None) -> ProcessedScan:
     now = datetime.now(UTC)
+    value = asset.serial_number or str(asset.id)
     scan = ProcessedScan(
-        scanned_value=asset.serial_number or str(asset.id),
-        scan_type="manual", status=status,
+        scanned_value=value,
+        scan_type="manual", status=status, scan_status=status,
+        initiative_id=initiative_id,
         scanned_at=now, processed_at=now,
         device_id=PORTAL_DEVICE_ID, operator_id=actor_person_id,
         site_id=None, location_detail="",
         source=source, raw_scan_id=None,
         match_type="asset", asset_id=asset.id,
+        # no matcher ran: the edit names its asset (scans/matching.py
+        # trace_record is the shape for a scanner read)
+        match_trace={"attempted_at": now.isoformat(), "value": value, "mode": "manual",
+                     "steps": [], "outcome": "matched", "matched_on": "manual",
+                     "match_type": "asset", "matched_id": str(asset.id),
+                     "reason": "Status set by hand in the portal; no matching needed"},
     )
     db.add(scan)
     await db.flush()
