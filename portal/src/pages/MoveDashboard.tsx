@@ -588,7 +588,8 @@ export default function MoveDashboard() {
       )}
 
       {rackView && (
-        <RackViewModal rackName={rackView.rackName} side={rackView.side}
+        <RackViewModal moveName={move?.name ?? ''}
+                       rackName={rackView.rackName} side={rackView.side}
                        rows={rows} onClose={() => setRackView(null)} />
       )}
     </div>

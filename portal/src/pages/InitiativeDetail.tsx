@@ -1346,6 +1346,7 @@ export default function InitiativeDetail() {
 
       {rackView && (
         <RackViewModal
+          moveName={initiative.name}
           rackName={rackView.rackName}
           side={rackView.side}
           rows={assets}

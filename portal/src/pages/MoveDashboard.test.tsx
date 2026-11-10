@@ -6,7 +6,7 @@
  * refresh cadence are exercised in the browser/manually.
  */
 
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
@@ -46,6 +46,9 @@ vi.mock('../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../lib/api')>()),
   ...api,
 }));
+
+const rackPdf = vi.hoisted(() => ({ exportRackPdf: vi.fn(() => Promise.resolve()) }));
+vi.mock('../lib/rackPdf', () => rackPdf);
 
 const { default: MoveDashboard } = await import('./MoveDashboard');
 
@@ -169,4 +172,16 @@ it('roster Location cell links to the container and truck', async () => {
   expect(within(row).getByRole('link', { name: 'ATL1-T01' }).getAttribute('href'))
     .toBe('/logistics/trucks/t1');
   mockPrefs.list_prefs = {};
+});
+
+it("a roster rack cell opens the rack view, whose Export PDF names the move", async () => {
+  api.listInitiatives.mockResolvedValue([move()]);
+  api.listInitiativeAssets.mockResolvedValue([asset({ source_ru: 10 })]);
+  api.listAssetStatuses.mockResolvedValue([]);
+  render(<MemoryRouter><MoveDashboard /></MemoryRouter>, { wrapper: ListPrefsFromAuth });
+  fireEvent.click(await screen.findByRole('button', { name: 'rack-a1' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Export PDF' }));
+  expect(rackPdf.exportRackPdf).toHaveBeenCalledWith(expect.objectContaining({
+    moveName: 'Denver → Austin', rackName: 'rack-a1', sideLabel: 'Source',
+  }));
 });
