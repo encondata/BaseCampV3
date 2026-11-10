@@ -173,6 +173,22 @@ async def test_biometric_bad_signature_counts(client, db, seeded_user, attest): 
     assert (await _sign_in(client, key_id, c, _sign(key, c))).status_code == 200
 
 
+async def test_biometric_spent_or_wrong_challenge_never_counts(
+        client, db, seeded_user, attest):  # noqa: F811
+    """bad_challenge (an expired, spent or another key's challenge) is not a
+    wrong credential: only no_biometric and bad_signature count."""
+    _, _, key_id, key = await _enrolled(db, client, attest)
+    c = (await _challenge(client)).json()["challenge"]
+    ok = await client.post("/kiosk/biometric/sign-in", headers=ADDR, json={
+        "key_id": key_id, "challenge": c, "signature": _sign(key, c)})
+    assert ok.status_code == 200, ok.text
+    for _ in range(12):  # replay the spent challenge
+        r = await client.post("/kiosk/biometric/sign-in", headers=ADDR, json={
+            "key_id": key_id, "challenge": c, "signature": _sign(key, c)})
+        assert r.status_code == 401 and r.json()["detail"]["code"] == "bad_challenge"
+    assert await _failures(db) == 0
+
+
 # ── password reset ──────────────────────────────────────────────────
 
 async def test_reset_check_and_confirm_invalid_tokens_count(client, db, seeded_user):

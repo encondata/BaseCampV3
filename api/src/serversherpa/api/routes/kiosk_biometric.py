@@ -231,11 +231,12 @@ async def challenge(
     return out
 
 
-# Refusals that count toward a sign-in address block (SS-487): the key or
-# its signature did not check out. Account-specific refusals after a valid
+# Refusals that count toward a sign-in address block (SS-487): an unknown
+# key or a signature that does not verify. An expired or spent challenge
+# (bad_challenge) is not a wrong credential and never counts. Account-specific refusals after a valid
 # signature (account_disabled, kiosk_not_allowed, password_change_required,
 # biometric_expired, not_personal_device) never count.
-_COUNTED_SIGN_IN = frozenset({"bad_challenge", "no_biometric", "bad_signature"})
+_COUNTED_SIGN_IN = frozenset({"no_biometric", "bad_signature"})
 
 
 @router.post("/sign-in", response_model=SessionOut)
