@@ -299,6 +299,26 @@ class AssetLookupScreenTest {
         waitForText("Source")
     }
 
+    /** On a phone the list stays (as on the web) and the picked card opens below it: it is
+     *  scrolled into view rather than left off screen under 25 rows. */
+    @Test @Config(qualifiers = "w360dp-h640dp") fun pickedCardIsBroughtIntoView() {
+        val api = FakeKioskApi().apply {
+            lookupAssetsResult = { _, _ ->
+                KioskLookupResult((1..25).map { KioskLookupMatch("a$it", "Rack switch $it", "1024$it", "SN-$it", listOf("name")) })
+            }
+            assetDetailResult = { _, id -> workerDetail.copy(id = id, name = "Card for $id") }
+        }
+        show(rig(api))
+        search(api, "rack switch")
+        waitForText("Rack switch 25")
+        compose.onNodeWithText("Rack switch 25").performScrollTo().performClick()
+        compose.waitUntilIdlingMain { "assetDetail:a25" in api.calls }
+        waitForText("Card for a25")
+        compose.waitForIdle()
+        compose.onNodeWithText("Card for a25").assertIsDisplayed()
+        compose.onNodeWithText("Rack switch 1").assertExists()          // the list is kept
+    }
+
     @Test fun nameMatchesHideMatchedOn() {
         val api = FakeKioskApi().apply {
             lookupAssetsResult = { _, _ ->

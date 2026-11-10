@@ -1,8 +1,11 @@
 package com.serversherpa.kiosk.ui.screens.lookup
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -74,6 +77,7 @@ private const val BLANK = "—"
  * Until Kiosk Setup is complete (only a developer gets here then) the box and Search are off
  * and scanner and sled reads are not passed on, as the web blocks a lookup without setup.
  */
+@OptIn(ExperimentalFoundationApi::class)   // BringIntoViewRequester
 @Composable
 fun AssetLookupScreen(@Suppress("UNUSED_PARAMETER") nav: NavController) {
     val container = LocalAppContainer.current
@@ -94,6 +98,11 @@ fun AssetLookupScreen(@Suppress("UNUSED_PARAMETER") nav: NavController) {
     // The server refuses the scans route without it too; recomputed when the session changes.
     val canScans = remember(auth) { container.auth.can("scans", "view") }
     var camera by remember { mutableStateOf(false) }
+    // On a phone the list stacks above the card, so a picked row's card opens off screen:
+    // the list stays (as on the web) and the card is scrolled into view.
+    val cardInView = remember { BringIntoViewRequester() }
+    val picked = ui.detail?.takeIf { ui.list != null }
+    LaunchedEffect(picked) { if (picked != null) cardInView.bringIntoView() }
 
     // Both collectors run on Main (Compose's dispatcher), so the view model is only ever
     // called from the main thread, never from the sled's own threads.
@@ -140,7 +149,7 @@ fun AssetLookupScreen(@Suppress("UNUSED_PARAMETER") nav: NavController) {
         KioskToast(ui.error, error = true)
         KioskToast(ui.notice)
         ui.list?.let { MatchList(it, vm::pick) }
-        ui.detail?.let { DetailCard(it, ui.scans, ui.offline, canScans) }
+        ui.detail?.let { DetailCard(it, ui.scans, ui.offline, canScans, Modifier.bringIntoViewRequester(cardInView)) }
     }
 }
 
@@ -184,11 +193,11 @@ private fun MatchList(list: KioskLookupResult, onPick: (String) -> Unit) {
 /** The details card: identity, each route's two ends, and for admins Moves and Scan history. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun DetailCard(detail: KioskAssetDetail, scans: ScanHistory, offline: Boolean, canScans: Boolean) {
+private fun DetailCard(detail: KioskAssetDetail, scans: ScanHistory, offline: Boolean, canScans: Boolean, modifier: Modifier = Modifier) {
     val c = LocalKioskColors.current
     val full = detail.full
     Column(
-        Modifier.fillMaxWidth().padding(top = 12.dp).background(c.paper, RoundedCornerShape(14.dp))
+        modifier.fillMaxWidth().padding(top = 12.dp).background(c.paper, RoundedCornerShape(14.dp))
             .border(1.dp, c.paperLine, RoundedCornerShape(14.dp)).padding(16.dp),
     ) {
         Row(verticalAlignment = Alignment.Top) {
