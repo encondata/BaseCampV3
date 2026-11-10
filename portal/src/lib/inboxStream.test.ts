@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./api')>()),
-  getAccessTokenForStream: vi.fn(() => 'tok'),
+  getFreshAccessTokenForStream: vi.fn(async () => 'tok'),
   refreshSession: vi.fn(async () => ({ ok: true })),
 }));
 
@@ -30,23 +30,33 @@ beforeEach(() => {
   vi.useFakeTimers();
   FakeWS.all = [];
   (globalThis as unknown as { WebSocket: unknown }).WebSocket = FakeWS;
-  vi.mocked(api.getAccessTokenForStream).mockReturnValue('tok');
+  vi.mocked(api.getFreshAccessTokenForStream).mockResolvedValue('tok');
   vi.mocked(api.refreshSession).mockClear();
 });
 afterEach(() => vi.useRealTimers());
 
+const flush = () => act(async () => { await vi.advanceTimersByTimeAsync(0); });
+const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+const mount = async (id = 'p1', cb: () => void = vi.fn()) => {
+  const r = renderHook(({ i, c }) => useInboxStream(i, c), {
+    initialProps: { i: id, c: cb },
+  });
+  await flush();
+  return r;
+};
+
 describe('useInboxStream', () => {
-  it('opens with ss-bearer protocols and no token in the URL', () => {
-    renderHook(() => useInboxStream('p1', vi.fn()));
+  it('opens with ss-bearer protocols and no token in the URL', async () => {
+    await mount();
     expect(FakeWS.all).toHaveLength(1);
     expect(FakeWS.all[0].protocols).toEqual(['ss-bearer', 'tok']);
     expect(FakeWS.all[0].url).toMatch(/^ws.*\/notifications\/inbox\/stream$/);
     expect(FakeWS.all[0].url).not.toContain('tok');
   });
 
-  it('calls onChange on open and on each inbox message, not on ping', () => {
+  it('calls onChange on open and on each inbox message, not on ping', async () => {
     const onChange = vi.fn();
-    renderHook(() => useInboxStream('p1', onChange));
+    await mount('p1', onChange);
     act(() => FakeWS.all[0].open());
     expect(onChange).toHaveBeenCalledTimes(1);
     act(() => FakeWS.all[0].msg({ inbox: true }));
@@ -55,80 +65,106 @@ describe('useInboxStream', () => {
     expect(onChange).toHaveBeenCalledTimes(2);
   });
 
-  it('returns true while open and false after close', () => {
-    const { result } = renderHook(() => useInboxStream('p1', vi.fn()));
+  it('returns true while open and false after close', async () => {
+    const { result } = await mount();
     expect(result.current).toBe(false);
     act(() => FakeWS.all[0].open());
     expect(result.current).toBe(true);
-    act(() => FakeWS.all[0].end());
+    await act(async () => { FakeWS.all[0].end(); });
     expect(result.current).toBe(false);
   });
 
-  it('reconnects with backoff 1 s then 2 s', () => {
-    renderHook(() => useInboxStream('p1', vi.fn()));
-    act(() => FakeWS.all[0].end());
-    act(() => { vi.advanceTimersByTime(999); });
+  it('reconnects with backoff 1 s then 2 s', async () => {
+    await mount();
+    await act(async () => { FakeWS.all[0].end(); });
+    await tick(999);
     expect(FakeWS.all).toHaveLength(1);
-    act(() => { vi.advanceTimersByTime(1); });
+    await tick(1);
     expect(FakeWS.all).toHaveLength(2);
-    act(() => FakeWS.all[1].end());
-    act(() => { vi.advanceTimersByTime(1999); });
+    await act(async () => { FakeWS.all[1].end(); });
+    await tick(1999);
     expect(FakeWS.all).toHaveLength(2);
-    act(() => { vi.advanceTimersByTime(1); });
+    await tick(1);
     expect(FakeWS.all).toHaveLength(3);
   });
 
-  it('retries after backoff when there is no token', () => {
-    vi.mocked(api.getAccessTokenForStream).mockReturnValue(null);
-    renderHook(() => useInboxStream('p1', vi.fn()));
+  it('retries after backoff when there is no token', async () => {
+    vi.mocked(api.getFreshAccessTokenForStream).mockResolvedValue(null);
+    await mount();
     expect(FakeWS.all).toHaveLength(0);
-    vi.mocked(api.getAccessTokenForStream).mockReturnValue('tok');
-    act(() => { vi.advanceTimersByTime(1000); });
+    vi.mocked(api.getFreshAccessTokenForStream).mockResolvedValue('tok');
+    await tick(1000);
     expect(FakeWS.all).toHaveLength(1);
   });
 
-  it('on 4401 calls refreshSession before reconnecting', async () => {
-    renderHook(() => useInboxStream('p1', vi.fn()));
+  it('waits for the fresh token before constructing the socket', async () => {
+    let release: (t: string) => void = () => {};
+    vi.mocked(api.getFreshAccessTokenForStream).mockReturnValueOnce(
+      new Promise<string>((r) => { release = r; }),
+    );
+    await mount();
+    expect(FakeWS.all).toHaveLength(0);
+    await act(async () => { release('fresh'); });
+    expect(FakeWS.all).toHaveLength(1);
+    expect(FakeWS.all[0].protocols).toEqual(['ss-bearer', 'fresh']);
+  });
+
+  it('on 4401 after a stable connection refreshes then reconnects at once', async () => {
+    await mount();
+    act(() => FakeWS.all[0].open());
+    await tick(6000);
     await act(async () => { FakeWS.all[0].end(4401); });
     expect(api.refreshSession).toHaveBeenCalledTimes(1);
     expect(FakeWS.all).toHaveLength(2);
   });
 
+  it('two quick 4401 closes: the second waits for backoff', async () => {
+    await mount();
+    await act(async () => { FakeWS.all[0].end(4401); });
+    expect(api.refreshSession).toHaveBeenCalledTimes(1);
+    expect(FakeWS.all).toHaveLength(1);
+    await tick(1000);
+    expect(FakeWS.all).toHaveLength(2);
+    act(() => FakeWS.all[1].open());
+    await act(async () => { FakeWS.all[1].end(4401); });
+    expect(FakeWS.all).toHaveLength(2);
+    await tick(1000);
+    expect(FakeWS.all).toHaveLength(3);
+  });
+
   it('backs off when 4401 refresh finds no session', async () => {
     vi.mocked(api.refreshSession).mockResolvedValueOnce(null);
-    renderHook(() => useInboxStream('p1', vi.fn()));
+    await mount();
+    act(() => FakeWS.all[0].open());
+    await tick(6000);
     await act(async () => { FakeWS.all[0].end(4401); });
     expect(FakeWS.all).toHaveLength(1);
-    act(() => { vi.advanceTimersByTime(1000); });
+    await tick(1000);
     expect(FakeWS.all).toHaveLength(2);
   });
 
-  it('closes and stops reconnecting on unmount', () => {
-    const { unmount } = renderHook(() => useInboxStream('p1', vi.fn()));
+  it('closes and stops reconnecting on unmount', async () => {
+    const { unmount } = await mount();
     const ws = FakeWS.all[0];
     unmount();
     expect(ws.close).toHaveBeenCalled();
-    act(() => { vi.advanceTimersByTime(60_000); });
+    await tick(60_000);
     expect(FakeWS.all).toHaveLength(1);
   });
 
-  it('closes and reconnects fresh when personId changes', () => {
-    const { rerender } = renderHook(
-      ({ id }) => useInboxStream(id, vi.fn()),
-      { initialProps: { id: 'p1' } },
-    );
+  it('closes and reconnects fresh when personId changes', async () => {
+    const { rerender } = await mount();
     const first = FakeWS.all[0];
-    rerender({ id: 'p2' });
+    rerender({ i: 'p2', c: vi.fn() });
+    await flush();
     expect(first.close).toHaveBeenCalled();
     expect(FakeWS.all).toHaveLength(2);
   });
 
-  it('does not reconnect when only the callback changes', () => {
-    const { rerender } = renderHook(
-      ({ cb }) => useInboxStream('p1', cb),
-      { initialProps: { cb: vi.fn() } },
-    );
-    rerender({ cb: vi.fn() });
+  it('does not reconnect when only the callback changes', async () => {
+    const { rerender } = await mount();
+    rerender({ i: 'p1', c: vi.fn() });
+    await flush();
     expect(FakeWS.all).toHaveLength(1);
   });
 });

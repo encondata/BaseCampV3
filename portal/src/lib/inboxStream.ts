@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  getAccessTokenForStream,
+  getFreshAccessTokenForStream,
   inboxStreamUrl,
   logStreamProtocols,
   refreshSession,
@@ -8,6 +8,9 @@ import {
 import { nextBackoff } from './logViewer';
 
 const SESSION_ENDED_CODE = 4401;
+// A 4401 may reconnect at once only if the socket had been up this long;
+// otherwise a repeating 4401 would tight-loop (backoff resets on open).
+const MIN_STABLE_MS = 5000;
 
 /**
  * Opens the inbox change-signal WebSocket for the signed-in person and calls
@@ -34,13 +37,19 @@ export function useInboxStream(
     const retryLater = () => {
       if (cancelled) return;
       backoff = nextBackoff(backoff);
-      timer = setTimeout(connect, backoff);
+      timer = setTimeout(() => void connect(), backoff);
     };
 
-    function connect() {
+    async function connect() {
       timer = null;
       if (cancelled) return;
-      const token = getAccessTokenForStream();
+      let token: string | null = null;
+      try {
+        token = await getFreshAccessTokenForStream();
+      } catch {
+        token = null;
+      }
+      if (cancelled) return;
       if (!token) {
         retryLater();
         return;
@@ -49,10 +58,12 @@ export function useInboxStream(
       const socket = new WebSocket(inboxStreamUrl(), logStreamProtocols(token));
       ws = socket;
       let settled = false;
+      let openedAt = 0;
 
       socket.onopen = () => {
         if (cancelled) return;
         backoff = 0;
+        openedAt = Date.now();
         setOpen(true);
         onChangeRef.current();
       };
@@ -81,8 +92,8 @@ export function useInboxStream(
             session = null;
           }
           if (cancelled) return;
-          if (session) {
-            connect();
+          if (session && openedAt > 0 && Date.now() - openedAt >= MIN_STABLE_MS) {
+            void connect();
             return;
           }
         }
@@ -96,7 +107,7 @@ export function useInboxStream(
       };
     }
 
-    connect();
+    void connect();
 
     return () => {
       cancelled = true;

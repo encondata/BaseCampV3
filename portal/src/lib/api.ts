@@ -4600,6 +4600,15 @@ export function logStreamProtocols(token: string): string[] {
   return ['ss-bearer', token];
 }
 
+/** Like getAccessTokenForStream, but refreshes first when the in-memory
+ *  token is stale. A WebSocket handshake rejected for a bad token shows up
+ *  in browsers as a plain 1006 close, so the stream must not rely on a
+ *  4401 to learn the token expired. */
+export async function getFreshAccessTokenForStream(): Promise<string | null> {
+  if (tokenIsStale()) await refreshSession();
+  return accessToken;
+}
+
 export function getAccessTokenForStream(): string | null {
   return accessToken;
 }
