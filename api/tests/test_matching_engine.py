@@ -319,3 +319,20 @@ def test_found_after_a_none_output_stops():
     )
     r = run_flow(flow, "zzz", [T("a", 7)])
     assert (r.outcome, r.stop_reason) == ("stopped", "found_without_match")
+
+
+def test_strip_zeros_compare_trims_again_like_the_kiosk_rfid_key():
+    # rfidKey is key(displayRfid(v.trim())): trim, strip zeros, trim and upper-case again.
+    assert compare("strip_zeros", "AB", "00 AB")
+    assert compare("strip_zeros", "00 ab", "AB")
+    assert compare("strip_zeros", "0\u3000AB", "00\tab")
+    assert compare("strip_zeros", "0", " 0 ")  # the value side is trimmed first, as on the kiosk
+    assert not compare("strip_zeros", "AB", " \t")  # a value that keys to blank never matches
+
+
+def test_zero_strip_stops_at_a_line_terminator_like_js_dot():
+    for lt in ("\n", "\r", "\u2028", "\u2029"):
+        assert clean("strip_zeros", "0" + lt) == ("out", "0" + lt)
+        assert clean("strip_zeros", "00" + lt + "A") == ("out", "0" + lt + "A")
+        assert not compare("strip_zeros", "0" + lt + "A", lt + "A")
+    assert clean("strip_zeros", "00\tA") == ("out", "\tA")  # a tab is not a line terminator

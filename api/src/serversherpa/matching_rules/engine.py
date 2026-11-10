@@ -32,7 +32,8 @@ STOP_REASONS = (
     "found_without_match",
 )
 
-_LEADING_ZEROS = re.compile(r"^0+(?=.)", flags=re.DOTALL)
+# JS `/^0+(?=.)/`: JS `.` matches anything but a line terminator.
+_LEADING_ZEROS = re.compile("^0+(?=[^\n\r\u2028\u2029])")
 _ASCII_DIGITS = re.compile(r"[0-9]+")
 
 
@@ -72,6 +73,10 @@ def _strip_zeros(v: str) -> str:
     return _LEADING_ZEROS.sub("", v)
 
 
+def _rfid_key(v: str) -> str:
+    return _strip_zeros(v.strip(JS_WHITESPACE)).strip(JS_WHITESPACE).upper()
+
+
 def clean(op: str, value: str) -> tuple[str, str]:
     """Run one Clean up op; returns (output taken, value passed on)."""
     if op == "trim":
@@ -103,8 +108,9 @@ def compare(mode: str, stored: str | None, value: str) -> bool:
     if mode == "ignore_case":
         return s.upper() == value.upper()
     if mode == "strip_zeros":
-        # Also ignores case, as the kiosk's RFID key does.
-        return _strip_zeros(s).upper() == _strip_zeros(value).upper()
+        # The kiosk's rfidKey on both sides: trim, strip zeros, trim and upper-case again.
+        a, b = _rfid_key(s), _rfid_key(value)
+        return bool(a) and a == b
     if mode == "contains":
         return value.upper() in s.upper()
     raise ValueError(f"unknown compare mode {mode!r}")
