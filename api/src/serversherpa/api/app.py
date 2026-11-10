@@ -10,7 +10,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from serversherpa.api.routes import (
     access, ai, asset_models, assets, attachments, audit, auth, cleanup, containers,
     devices, devtools, health, initiatives, kiosk, kiosk_biometric, kiosk_rolodex, labels,
-    learn, learning, me,
+    learn, learning, matching_rules, me,
     move_setup,
     notes, notifications, plans, reports, router_agent, scans, search, sites, spec_lookup,
     stakeholders, status_provenance, status_rules, status_values, system,
@@ -143,6 +143,7 @@ def create_app() -> FastAPI:
     app.include_router(devtools.router)
     app.include_router(cleanup.router)
     app.include_router(health.router)
+    app.include_router(matching_rules.router)
     app.include_router(audit.router)
     app.include_router(system.router)
     app.include_router(notifications.router)
