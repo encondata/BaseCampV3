@@ -12,10 +12,11 @@ import { Link } from 'react-router-dom';
 
 import AuthCard from '../components/AuthCard';
 import ChangePasswordForm from '../components/ChangePasswordForm';
-import { checkPasswordResetToken } from '../lib/api';
+import { addressBlockedMessage, isAddressBlocked } from '../lib/addressBlocked';
+import { ApiError, checkPasswordResetToken } from '../lib/api';
 import { getSystemStatus } from '../lib/systemStatus';
 
-type Phase = 'checking' | 'invalid' | 'form' | 'done';
+type Phase = 'checking' | 'invalid' | 'blocked' | 'form' | 'done';
 
 const linkStyle = { color: '#1b2129', fontWeight: 500, borderBottom: '1px solid #ffa12e', textDecoration: 'none' };
 
@@ -24,6 +25,7 @@ export default function ResetPassword() {
   const [phase, setPhase] = useState<Phase>(token ? 'checking' : 'invalid');
   const [minLength, setMinLength] = useState<number | undefined>(undefined);
   const [firstPassword, setFirstPassword] = useState(false);
+  const [blockedMessage, setBlockedMessage] = useState('');
 
   useEffect(() => {
     if (window.location.hash) {
@@ -38,11 +40,25 @@ export default function ResetPassword() {
         setFirstPassword(check.first_password);
         setPhase(check.valid ? 'form' : 'invalid');
       })
-      .catch(() => { if (live) setPhase('invalid'); });
+      .catch((err) => {
+        if (!live) return;
+        if (isAddressBlocked(err)) {
+          setBlockedMessage(addressBlockedMessage((err as ApiError).detail));
+          setPhase('blocked');
+        } else {
+          setPhase('invalid');
+        }
+      });
     return () => { live = false; };
   }, [token]);
 
   if (phase === 'checking') return <AuthCard title="Checking your link…">{null}</AuthCard>;
+
+  if (phase === 'blocked') {
+    return (
+      <AuthCard title="Can't check your link right now" lead={blockedMessage}>{null}</AuthCard>
+    );
+  }
 
   if (phase === 'invalid') {
     return (
