@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 
 import { AuthProvider } from './auth/AuthContext';
@@ -81,6 +82,9 @@ import Users from './pages/Users';
 import Variables from './pages/Variables';
 import Workers from './pages/Workers';
 import WorkerDetailPage from './pages/WorkerDetail';
+
+// Loaded on first visit, which keeps React Flow out of the main bundle.
+const MatchingRuleEditor = lazy(() => import('./pages/MatchingRuleEditor'));
 
 /** Old URL kept alive for bookmarks and audit links — carries the query
  *  string (e.g. ?open=<id>) and router state to the new path. */
@@ -312,6 +316,11 @@ export default function App() {
                 } />
                 <Route path="/dev/matching-rules" element={
                   <ProtectedRoute resource="devtools"><MatchingRules /></ProtectedRoute>
+                } />
+                <Route path="/dev/matching-rules/versions/:id" element={
+                  <ProtectedRoute resource="devtools">
+                    <Suspense fallback={<div className="dir-empty">Loading…</div>}><MatchingRuleEditor /></Suspense>
+                  </ProtectedRoute>
                 } />
                 <Route path="/me" element={<Profile />} />
                 <Route path="/me/preferences" element={<Profile />} />

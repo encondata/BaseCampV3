@@ -1,0 +1,98 @@
+// @vitest-environment jsdom
+/**
+ * FlowCanvas — the real React Flow in jsdom, with the React Flow testing
+ * recipe's stubs (ResizeObserver, DOMMatrixReadOnly, a 500 px element size).
+ */
+
+import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, beforeAll, expect, it, vi } from 'vitest';
+
+import type { Flow } from '../../lib/matchingRules';
+import FlowCanvas from './FlowCanvas';
+
+beforeAll(() => {
+  class ResizeObserverStub {
+    callback: ResizeObserverCallback;
+    constructor(callback: ResizeObserverCallback) { this.callback = callback; }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  class DOMMatrixReadOnlyStub {
+    m22: number;
+    constructor(transform?: string) {
+      const scale = transform?.match(/scale\(([1-9.])\)/)?.[1];
+      this.m22 = scale !== undefined ? Number(scale) : 1;
+    }
+  }
+  Object.assign(globalThis, { ResizeObserver: ResizeObserverStub, DOMMatrixReadOnly: DOMMatrixReadOnlyStub });
+  Object.defineProperties(HTMLElement.prototype, {
+    offsetHeight: { configurable: true, get() { return 500; } },
+    offsetWidth: { configurable: true, get() { return 500; } },
+  });
+});
+
+afterEach(cleanup);
+
+const FLOW: Flow = {
+  format: 1,
+  nodes: [
+    { id: 'n1', kind: 'scan_input', settings: {}, position: { x: 0, y: 0 } },
+    { id: 'n2', kind: 'clean_up', settings: { op: 'trim' }, position: { x: 220, y: 0 } },
+    {
+      id: 'n3', kind: 'match',
+      settings: { table: 'assets', field: 'asset_tag', compare: 'ignore_case', search_in: 'move', multiple: 'first' },
+      position: { x: 440, y: 0 },
+    },
+    { id: 'n4', kind: 'found', settings: { action: 'print_label' }, position: { x: 660, y: -60 } },
+    { id: 'n5', kind: 'not_found', settings: { message: 'No match' }, position: { x: 660, y: 60 } },
+  ],
+  edges: [
+    { id: 'e1', source: 'n1', output: 'out', target: 'n2' },
+    { id: 'e2', source: 'n2', output: 'out', target: 'n3' },
+    { id: 'e3', source: 'n3', output: 'found', target: 'n4' },
+    { id: 'e4', source: 'n3', output: 'none', target: 'n5' },
+  ],
+};
+
+function renderCanvas(props: Partial<Parameters<typeof FlowCanvas>[0]> = {}) {
+  return render(
+    <div style={{ width: 800, height: 500 }}>
+      <FlowCanvas flow={FLOW} selected={null} warnings={new Set()} lit={null}
+                  onChange={vi.fn()} onSelect={vi.fn()} onDropKind={vi.fn()} {...props} />
+    </div>,
+  );
+}
+
+const nodeEl = (container: HTMLElement, id: string): HTMLElement => {
+  const el = container.querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"] .mr-node`);
+  if (!el) throw new Error(`no node ${id}`);
+  return el;
+};
+
+it('renders each step with its title and output labels', () => {
+  renderCanvas();
+  expect(screen.getByText('Clean up (Trim)')).toBeTruthy();
+  expect(screen.getByText('Match (asset tag)')).toBeTruthy();
+  expect(screen.getByText('found')).toBeTruthy();
+  expect(screen.getByText('none')).toBeTruthy();
+});
+
+it('marks warned and lit steps', () => {
+  const { container, unmount } = renderCanvas({ warnings: new Set(['n3']) });
+  expect(nodeEl(container, 'n3').classList.contains('mr-warn')).toBe(true);
+  expect(nodeEl(container, 'n2').classList.contains('mr-warn')).toBe(false);
+  unmount();
+
+  const lit = renderCanvas({ lit: { nodes: new Set(['n1', 'n2']), edges: new Set(['e1']) } });
+  expect(nodeEl(lit.container, 'n2').classList.contains('mr-lit')).toBe(true);
+  expect(nodeEl(lit.container, 'n4').classList.contains('mr-dim')).toBe(true);
+  expect(nodeEl(lit.container, 'n2').classList.contains('mr-dim')).toBe(false);
+});
+
+it('shows visible zoom buttons', () => {
+  renderCanvas();
+  expect(screen.getByRole('button', { name: /zoom in/i })).toBeTruthy();
+  expect(screen.getByRole('button', { name: /zoom out/i })).toBeTruthy();
+  expect(screen.getByRole('button', { name: /fit view/i })).toBeTruthy();
+});

@@ -78,3 +78,151 @@
   color: var(--text-mute);
 }
 .mr-modal-error { margin: 10px 0 0; }
+
+/* ── flow editor: /dev/matching-rules/versions/:id ─────────────── */
+.mr-editor-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mr-saved { font-size: 12.5px; color: var(--ok); }
+
+/* the live check, above the canvas */
+.mr-warnings {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 20px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 12.5px;
+}
+.mr-warnings.is-bad { border-color: var(--c-red); box-shadow: inset 3px 0 0 var(--c-red); }
+.mr-warnings .pf-error { margin: 0; }
+.mr-warn-list { margin: 0; padding-left: 18px; color: var(--text-dark); display: flex; flex-direction: column; gap: 2px; }
+.mr-warn-tests { margin-left: auto; }
+
+/* palette | canvas | settings, the test bar (Task 11) under all three */
+.mr-editor {
+  --mr-editor-h: clamp(420px, 68vh, 760px);
+  display: grid;
+  grid-template-columns: clamp(150px, 14vw, 200px) minmax(0, 1fr) clamp(220px, 22vw, 300px);
+  grid-template-areas:
+    'palette canvas settings'
+    'test test test';
+  gap: 16px;
+  align-items: stretch;
+}
+.mr-editor > .mr-palette-panel { grid-area: palette; }
+.mr-editor > .mr-canvas { grid-area: canvas; }
+.mr-editor > .mr-settings-panel { grid-area: settings; }
+.mr-editor > .mr-side { max-height: var(--mr-editor-h); }
+@media (max-width: 900px) {
+  .mr-editor {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: 'canvas' 'palette' 'settings' 'test';
+  }
+  .mr-editor > .mr-side { max-height: none; }
+}
+
+.mr-palette { display: flex; flex-direction: column; gap: 8px; }
+.mini-btn.mr-palette-item {
+  justify-content: flex-start;
+  width: 100%;
+  cursor: grab;
+  box-shadow: inset 3px 0 0 var(--mr-kind, var(--paper-line));
+}
+.mini-btn.mr-palette-item:disabled { cursor: not-allowed; }
+.pf-form.mr-settings-form { grid-template-columns: minmax(0, 1fr); }
+.mr-fixed { margin: 0; font-size: 12.5px; color: var(--text-mute); }
+
+/* each kind's stripe, on the palette and the canvas */
+.mr-node-scan_input { --mr-kind: var(--accent); }
+.mr-node-clean_up { --mr-kind: var(--text-mute); }
+.mr-node-match { --mr-kind: var(--amber); }
+.mr-node-found { --mr-kind: var(--ok); }
+.mr-node-not_found { --mr-kind: var(--c-red); }
+
+/* the canvas: React Flow's own variables, set to the portal tokens, so
+   it follows .portal-shell[data-theme] in light and dark */
+.mr-canvas {
+  --xy-background-color: var(--surface);
+  --xy-background-pattern-dots-color: var(--paper-line);
+  --xy-node-background-color: var(--surface-2);
+  --xy-node-border: 1px solid var(--paper-line);
+  --xy-node-color: var(--text-dark);
+  --xy-edge-stroke: var(--text-mute);
+  --xy-edge-stroke-width: 1.5;
+  --xy-edge-stroke-selected: var(--accent);
+  --xy-connectionline-stroke: var(--accent);
+  --xy-connectionline-stroke-width: 1.5;
+  --xy-handle-background-color: var(--text-mute);
+  --xy-handle-border-color: var(--surface);
+  --xy-selection-background-color: rgba(var(--accent-rgb), 0.08);
+  --xy-selection-border: 1px dotted var(--accent);
+  --xy-controls-button-background-color: var(--surface-2);
+  --xy-controls-button-background-color-hover: var(--surface);
+  --xy-controls-button-color: var(--text-dark);
+  --xy-controls-button-color-hover: var(--accent);
+  --xy-controls-button-border-color: var(--paper-line);
+  --xy-controls-box-shadow: none;
+  --xy-attribution-background-color: transparent;
+  min-width: 0;
+  height: var(--mr-editor-h);
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.mr-canvas-inner { width: 100%; height: 100%; }
+.mr-canvas .react-flow__controls {
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  overflow: hidden;
+}
+.mr-canvas .react-flow__controls-button { width: 28px; height: 28px; }
+.mr-zoom-level {
+  width: 28px;
+  padding: 5px 0;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-mute);
+  background: var(--surface-2);
+}
+.mr-canvas .react-flow__attribution a { color: var(--text-mute); }
+
+/* a step */
+.mr-node {
+  min-width: 170px;
+  background: var(--xy-node-background-color);
+  border: var(--xy-node-border);
+  border-radius: 10px;
+  color: var(--xy-node-color);
+  font-family: var(--font-display);
+  font-size: 13px;
+  box-shadow: inset 3px 0 0 var(--mr-kind, var(--paper-line));
+  transition: opacity 0.15s, border-color 0.15s;
+}
+.mr-node-title { position: relative; padding: 9px 14px 9px 16px; font-weight: 600; white-space: nowrap; }
+.mr-node-outs { border-top: 1px solid var(--paper-line); padding: 3px 0; }
+.mr-node-out {
+  position: relative;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 14px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-mute);
+}
+.mr-canvas .react-flow__handle.mr-port { width: 10px; height: 10px; }
+.mr-canvas .react-flow__handle.mr-port:hover,
+.mr-canvas .react-flow__handle.mr-port.connectingto { background: var(--accent); }
+/* selection is an outline, so a selected step still shows its warning */
+.react-flow__node.selected .mr-node { outline: 2px solid var(--accent); outline-offset: 3px; }
+.mr-node.mr-warn { border-color: var(--c-red); border-style: dashed; }
+.mr-node.mr-lit { border-color: var(--ok); }
+.mr-node.mr-dim { opacity: 0.45; }
+.react-flow__edge.mr-lit-edge .react-flow__edge-path { stroke: var(--ok); stroke-width: 2.5; }

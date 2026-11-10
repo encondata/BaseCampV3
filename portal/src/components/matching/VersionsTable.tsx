@@ -17,7 +17,7 @@ const COLUMNS: DataTableColumn[] = [
   { key: 'actions', label: '', width: ACTIONS_TRACK, align: 'right' },
 ];
 
-const STATE_CHIP: Record<MatchingState, string> = {
+export const STATE_CHIP: Record<MatchingState, string> = {
   draft: 'chip tag',
   standby: 'chip c-amber',
   live: 'chip c-green',
