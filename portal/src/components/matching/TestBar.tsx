@@ -122,7 +122,7 @@ export default function TestBar({ place, flow, onRun }: {
     let line = `${i + 1}. ${titleOf(s.node_id)}  "${s.value_in}" → "${s.value_out ?? ''}"  ${s.output ?? ''}`;
     if (s.kind === 'match' && s.hits) {
       const tags = s.hits.map((h) => h.asset_tag);
-      line += `  ${tags.length} ${tags.length === 1 ? 'hit' : 'hits'}: ${tags.join(', ')}`;
+      line += `  ${tags.length} hits: ${tags.join(', ')}`;
       if (tags.length >= 2) line += ` · took ${tags[0]}`;
     }
     return line;
