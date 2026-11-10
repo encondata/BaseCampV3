@@ -4586,6 +4586,12 @@ export function logStreamUrl(
   return `${apiUrl().replace(/^http/, 'ws')}/system/processes/${name}/logs/stream${qs ? `?${qs}` : ''}`;
 }
 
+/** The inbox change-signal WebSocket URL. No query string; the token rides
+ *  the subprotocol list (see logStreamProtocols). */
+export function inboxStreamUrl(): string {
+  return `${apiUrl().replace(/^http/, 'ws')}/notifications/inbox/stream`;
+}
+
 /** The subprotocol list that authenticates the live tail — pass it as
  *  the second argument of `new WebSocket(url, protocols)`. The handshake
  *  sends it as `Sec-WebSocket-Protocol: ss-bearer, <token>`; the server
