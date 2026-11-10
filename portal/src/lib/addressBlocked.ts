@@ -21,3 +21,20 @@ export function addressBlockedMessage(detail: unknown): string {
 export function isAddressBlocked(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === ADDRESS_BLOCKED_CODE;
 }
+
+/** The inbox kind the API sends admins when it blocks an address. */
+export const ADDRESS_BLOCKED_KIND = 'address_blocked';
+
+/** True while an `address_blocked` inbox item's block still waits on a
+ *  decision: nobody has cleared it or made it permanent (`state: 'open'`)
+ *  and it hasn't run out (`ends_at` null for a permanent block, or still
+ *  ahead). Structural so the kiosk, which imports this file, needs no
+ *  portal types. */
+export function addressBlockOpen(
+  item: { kind: string; payload: Record<string, unknown> }, now = Date.now(),
+): boolean {
+  if (item.kind !== ADDRESS_BLOCKED_KIND || item.payload.state !== 'open') return false;
+  const ends = item.payload.ends_at;
+  if (ends === null || ends === undefined) return true;
+  return typeof ends === 'string' && Date.parse(ends) > now;
+}
