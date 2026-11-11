@@ -7340,3 +7340,76 @@ export async function searchWiki(
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
+
+/* ── client groups (staff, global scope) ───────────────────────── */
+
+export interface ClientGroup {
+  id: string; name: string; aliases: string[]; asset_count: number; people_count: number;
+}
+export interface ReviewValue {
+  value: string; value_key: string; asset_count: number;
+  move_ids: string[]; move_names: string[]; dismissed: boolean;
+}
+export interface MergePlan {
+  aliases_added: string[]; rows_moved: number; people_moved: number; conflicts: string[];
+}
+
+const jsonPost = (method: string, body: unknown): RequestInit => ({
+  method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+});
+
+export async function listClientGroups(clientId: string): Promise<ClientGroup[]> {
+  const resp = await apiFetch(`/clients/${clientId}/groups`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function createClientGroup(
+  clientId: string, body: { name: string; aliases?: string[] },
+): Promise<ClientGroup> {
+  const resp = await apiFetch(`/clients/${clientId}/groups`, jsonPost('POST', body));
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateClientGroup(
+  clientId: string, groupId: string, body: { name?: string; aliases?: string[] },
+): Promise<ClientGroup> {
+  const resp = await apiFetch(`/clients/${clientId}/groups/${groupId}`, jsonPost('PATCH', body));
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function deleteClientGroup(clientId: string, groupId: string): Promise<void> {
+  const resp = await apiFetch(`/clients/${clientId}/groups/${groupId}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function mergeClientGroups(
+  clientId: string, targetId: string, sourceId: string, dryRun: boolean,
+): Promise<MergePlan> {
+  const resp = await apiFetch(`/clients/${clientId}/groups/${targetId}/merge`,
+    jsonPost('POST', { source_id: sourceId, dry_run: dryRun }));
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listGroupReview(clientId: string, includeDismissed = false): Promise<ReviewValue[]> {
+  const resp = await apiFetch(`/clients/${clientId}/groups/review?include_dismissed=${includeDismissed}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function matchGroupReview(
+  clientId: string, body: { value: string; group_id: string },
+): Promise<void> {
+  const resp = await apiFetch(`/clients/${clientId}/groups/review/match`, jsonPost('POST', body));
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function dismissGroupReview(
+  clientId: string, body: { value: string; dismissed: boolean },
+): Promise<void> {
+  const resp = await apiFetch(`/clients/${clientId}/groups/review/dismiss`, jsonPost('POST', body));
+  if (!resp.ok) throw await errorFrom(resp);
+}

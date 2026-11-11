@@ -17,6 +17,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
 import NotesFilesPanel from '../components/NotesFilesPanel';
+import ClientGroupsPanel from '../components/clients/ClientGroupsPanel';
 import ChildPartnersPanel from '../components/stakeholders/ChildPartnersPanel';
 import StatusHover from '../components/StatusHover';
 import TradeChips from '../components/workers/TradeChips';
@@ -849,6 +850,9 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
           )}
         </div>
       )}
+
+      {/* ── Groups (clients, global staff only) ─────────────────────── */}
+      {kind === 'client' && canEditHierarchy && <ClientGroupsPanel clientId={org.id} />}
 
       {/* ── Notes & uploads ──────────────────────────────────────────── */}
       <div className="init-panel" style={{ marginTop: 18 }}>
