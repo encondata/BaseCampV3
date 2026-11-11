@@ -1,7 +1,7 @@
 # Android kiosk: Zebra sled review and fix — design
 
 Date: 2026-11-10. Branch `android-rfid-sled` (not merged, not pushed; Jimmy tests on hardware first).
-Status: revised after four critiques. The draft was commit `ea1235c69`.
+Status: revised after four critiques. The draft was commit `ea1235c69`. Built 2026-11-11: the closing "Implementation notes" record what the build changed, and win over the body where they differ.
 
 Conventions in this document:
 
@@ -868,3 +868,202 @@ Read before the hardware session:
 - **Keystrokes (ruling 3).** Nothing is swallowed. If the sled types as a keyboard and also sends through its scanner, the second copy within 2 seconds is dropped; scanning the same thing twice on purpose still counts twice.
 - **Location (ruling 22).** The Connect button needs only Nearby devices; the automatic connect still needs precise Location, until step 33 says otherwise.
 - **The branch** is not merged and not pushed.
+
+## Implementation notes
+
+Written 2026-11-11, after the merge (M1) and the final review's two fix waves. Built on branch `android-rfid-sled` from `5f0bf6632`; not merged, not pushed. At `97ae173bc` the full suite ran 1846 tests with 0 failures (baseline 1441) and `assembleDebug` passed. Where these notes and the body above disagree, these notes describe the code. The script to run on hardware is `docs/android-sled-hardware-script.md`: this design's script adjusted to the build (two log tags added to the live view, the steps' expected sentences as `SledWords` has them, the open questions below added to steps 5 and 11, and the batch lines as "If it happens at any step").
+
+### What shipped
+
+| Task | Commits | What |
+|---|---|---|
+| T1, foundation | `527b712d0` | The frozen contract: `RfidReader` with a KDoc paragraph per member, the `core/rfid` types in `Sled.kt`, `NeedsRegion` and the new `Failed`, `SledFix`, every sentence in `SledWords` with `SledWordsTest`, the finished `FakeRfidReader`. The settings migration (`triggerLayout`, `readerAddress`, old `triggerPersonality` read), `KioskPrefs.updateRfid`, `isZebraHost`, `DataWedge.enableScannerInput`, `RfidPermissions.NEARBY` and `nearbyGranted`, `ScanSource.SLED`, the eight doubles as `RfidReader by inner`; the plugin flag, the trigger-mode note and the LED step deleted. 1484 tests. |
+| A1, pure helpers | `61e64193a` | `SledKeyLayout`, `SledPower`, `SledResults`, `SledPrecheck`, `SledLifecycle`, `SledBarcodeText` in `core/rfid`, with tests. |
+| A2, link on one worker | `bfb662013`, fix `894f27afa` | One never-interrupted RFID worker; the pre-check seam; `ENUM_TRANSPORT.BLUETOOTH`; a generation per connection; loss detection; connect steps 1 to 7; batch recovery once, then stop only; the failed-connect cleanup thread. |
+| A3, operations | `35e667617`, fix `2dd61762d` | Steps 8 to 11; key-layout write and checked read-back; the settings push through the classifier; the `perform()` outcome table; the stop settle; unsolicited stops; region with hopping and channels; the battery block; vendor logging; `pairedSleds`. |
+| A4, scanner engine | `bdce7f5c6` | One `SDKHandler(appContext, false)` per process, a scanner worker acting on the latest desired value, the stale window, both watchdogs, the Bluetooth check before `BT_NORMAL`, the soft trigger, the adapter's own Bluetooth receiver; the stand-down functions deleted. |
+| A5, scans and pins | `da5a6b185` | `SledNeverCallTest` (both scans, with a fixture test of every rule) and `ZebraVendorPinTest`. |
+| Track A merge | `144ae6991` | |
+| B1, link and reconnect | `b0b6db49c` | `linkGate`, `linkWanted`, the stored gate, the enable edge, the reconnect schedule, nudges, `SledRetry`. |
+| B2, sweeps and jobs | `755937f35`, fix `09bb94c7c` | Sweeps gated on the layout in force, failed and timed-out starts, the stop retry and "may still be reading", unsolicited stops, the job queue, the battery poll, `softScanOnce`, activity. |
+| B3, wiring | `710cf13b7` | `SledScanGuard` and its hooks, the sled barcode collector, the address auto-save, `SledNudgeReceiver`, `SledDisplayEffect` and `keepDisplayOn`, `MainActivity` (key log, configuration changes, `ENABLE_PLUGIN` once, edge-to-edge), the manifest, `PrinterLock.isLocked`, the Developer row, the sign-in collector, `settingsTab`. |
+| B4, screens | `90615bf2c`, fix `e741b02ff` | `sledLine` and the slot, the sled controls in `ScanTools` on five screens, the rebuilt RFID tab, Admin's region Retry and `NeedsRegion` flow, the Devices tab line, Enroll's raw check. |
+| M1, merge | `de1fc5215` | Both tracks, no conflicts; 1801 tests, 0 failures. |
+| Final fix wave, adapter | `8b8652cb9`, `f117785ec` | 22 findings; 1817 tests. |
+| Final fix wave, app | `3988d54f9`, `97ae173bc` | 36 findings; ruling 41 and hardware step 4 amended in place; 1846 tests. |
+| D1, documents | this commit | The README's "Scanning inputs" and "RFID sled", these notes, the hardware script. |
+
+### Decisions the plan made where the design left room
+
+- `SledRetry(afterDrop, name, lastReason)` in `core/rfid/SledRetry.kt`, and `RfidController.retry: StateFlow<SledRetry?>`, non-null exactly while `reconnecting`, so `sledLine` can choose the reconnecting sentence (after a drop, connecting to *name*, or the trigger sentence). `sledLine` takes `retry` as a last parameter defaulting to null.
+- `SledWords.couldNotReach(name, severalPaired = false)`: with `severalPaired`, the sentence is followed by `USE_A_DIFFERENT_SLED`, which is the design's "same, more than one sled paired" row.
+- `SledWords.refused(labels, othersApplied = true)`: `othersApplied = false` drops "The other settings were applied." An empty list gives `SETTINGS_NOT_APPLIED`.
+- `SledWords` members the Words tables did not name: `SETTINGS_NOT_APPLIED` ("The sled didn't accept every setting.", a failed push with no sentence of its own), `FINISH_READ_FIRST` (today's controller text for a region change during a read), `REGION_NOT_SET` ("The sled didn't accept that region."), and the `ROW_*` row labels the refused sentence names.
+- `SledConnectException(failed: RfidConnection.Failed)`: every connect failure, whose `failed` equals the state just published, so the message equals `failed.reason`.
+- `SledInfo` members other than `generation` and `name` default (null, or false for `autoChosen`), so a double builds one from two values.
+- Layout jobs coalesce to the latest layout, as pushes coalesce to the latest settings: at most one more write while a write is in flight, and the latest always last (Review Focus 2).
+- The stored gate starts null, and a null gate does not dial: nothing automatic connects before the first `connectForLifecycle`.
+- A disconnect that does not answer within 10 s is logged and sets no `connectionError`.
+- `SledScanGuard(…, onTyping: () -> Unit = {})`: the hook runs on every `noteTyping`. `AppContainer` passes `{ rfid.noteActivity() }`, so `ScanInput` needs no container.
+- The barcode collector's hold is computed from its own delays (`arrived` plus the waits it has made), never from a clock that does not move under Robolectric.
+- `SledDisplayEffect(container, route, lastTouchMs = 0L, now = System::currentTimeMillis)`: `KioskApp` passes the last touch, and tests pass a fake `now`.
+
+### Preflight rulings (the controller, before T1)
+
+1. `VendorOpen`, and the A1 types named in `protected open` seams (`Precheck`, `BondedDevice`, `TeardownPlan`), are public: Kotlin refuses a `protected` member of a public class that names an `internal` type.
+2. The engine seam is `internal open fun buildScannerEngine()`, not `protected open`, and the engine is built lazily on first use, never from the constructor.
+3. A second batch result in a row fails as `SledConnectException(Failed(BATCH_MODE_UNRECOVERABLE_MESSAGE))` with a `BatchModeUnrecoverableException` cause, and the kept test asserts the cause.
+4. Step 4 is retryable on an open error, a send error, a command timeout or a recorded loss, and not when registration silently fails with no vendor error. Amended in the final fix wave (below).
+5. A2 removed the connect path's `standDownBarcodeImager` call, and A4 deleted the stand-down functions.
+6. `runBestSteps` takes a trailing `name` for its `couldNotReach(name)` failure.
+7. The fake keeps `inventoryRunning = false` in `connect()` and `disconnect()`, and nulls `info` at the start of every `connect()` and in `disconnect()`; `FakeRfidReaderTest` pins all four.
+8. `SledRetry.afterDrop` and `name` are fixed when the schedule starts (the name from `info.name` at the drop, else the paired sled matching the request's address), and the give-up and timeout sentences are `couldNotReach(that name, severalPaired = pairedSleds().size >= 2)`.
+9. Because the stored gate starts null, the edge and reconnect tests first call `connectForLifecycle { <gate> }`.
+10. Controller tests drive a rig that runs in `backgroundScope` with repeated `runCurrent()` and `advanceTimeBy`, never `advanceUntilIdle()`.
+11. B3 could edit `KioskApplication.kt` (on neither track's list): the class is `open`, `onCreate` takes its container from `internal open fun createContainer()`, and the test-source `TestKioskApplication` returns `testContainer()`, so spec tests 26 and 29 build `MainActivity`.
+12. Helpers in new test files of the two shared packages are `private` or nested.
+13. `sledLine` with `reconnecting` true and `retry` null says `connectingTo(null)` with Stop.
+14. `reportsBuildsTheThreeHintsExactly` passes raw 28, not 24, for NO_ACTION/NO_ACTION.
+
+### Amendments from the final review
+
+The final whole-branch review had six lenses (SDK, concurrency, contract, spec, operator, regression). Every finding was fixed or recorded; none was refuted. These change the body above.
+
+Adapter wave (`8b8652cb9`, `f117785ec`):
+
+- **Ruling 9, cleanup after a failed connect** (and "Adapter rules", "Teardown"). The cleanup removes the listener, disconnects and disposes (`teardownPlan(linkUp = false, …)`), with no stop, batch-mode write or save, whatever the vendor says about the link, so it asks nothing of the sled. The next worker block joins it without a bound: 5 s and 20 s now only time a log line, and the references are never dropped early. The vendor's protocol and transport wrappers are static, so a cleanup does not act "against that attempt's objects only", and an abandoned one could overlap the next link.
+- **Step 4 and preflight ruling 4.** After two registration tries that saw no retryable error, a checked read of 2269 decides: link trouble, or an open, send or timeout result, is retryable; a refusal, or a sled that answers, is not. The read counts toward marking the link lost.
+- **The power index rule.** The real top is `levels[0] + levels.size − 1`, replacing the 400 ceiling. The unit, `powerMinDbm`, `powerMaxDbm` and `PowerTable.topIndex` come from entries at or below it, and the index is capped at `topIndex`. A1's ruling for a table with no entry of 400 or less is gone with the ceiling.
+- **A layout is never saved** (step 2, "Teardown", "Trigger layout"). `SledLayoutMemory` (`core/rfid/SledLifecycle.kt`) records, by address, every sled this adapter wrote a layout to, for the life of the process. Teardown, the stop after a batch start, ruling 28's recovery and connect step 2 skip `saveConfig()` for such a sled. Step 2 goes through `batchPrevention`: "0" needs nothing; a rejected read, or a sled that may hold a layout, gets DISABLE without a save; any other value gets DISABLE and a save. The memory does not outlive the process (parked, below).
+- **The batch-mode-off save trade.** Nearly every connect writes a layout, so after the first one in a process batch mode OFF is never saved for that sled: not at step 2, at teardown, after a batch start, or by ruling 28's recovery. Every connect still turns it off at step 2. Deliberate: a save would also keep the layout.
+- **Ruling 40.** `SCANNER_ALREADY_ACTIVE` is always terminated and established once more, and a second `ALREADY_ACTIVE` is `Unavailable(DID_NOT_START)`. The "opened by this engine" fast path is gone: every open and close sends `DISABLED` first, which closes the vendor's socket, so that case can never be live when it is checked.
+- **An unrequested termination** while the session is still wanted shows `Unavailable(DID_NOT_START)`, with Try again, not `Off`. Bluetooth turning off and a link loss still show `Off`.
+- **The disconnect handler** (and two link-trouble results in a row) writes `Failed(couldNotReach(name), retryable = true, fix = SledFix.CONNECT)`. The frozen fake's `dropLink` was not changed and writes no fix.
+- **`requestedLayout`** is written only inside an accepted `setTriggerLayout` block, under `stateLock`, while its generation is current, so a refused call queued before a newer connect never overwrites that connect's layout. A4's ruling "updated at the start of every `setTriggerLayout` block, whatever the outcome" is replaced.
+- **Unsolicited stops.** `InventoryTracker` records the sweep whose start went out and counts the stops asked for; a stop event is dropped when a start was asked for after that read's start went out, or a stop was asked for since the event. An owed stop event expires after `STOP_EVENT_OWED_MS = 2_000`‡.
+- **The tag buffer** is `TAGS_BUFFER = 16_384`‡ (was 512): a `SharedFlow` grows its buffer only as it fills.
+- **The step-9 dump** also logs the link profile (antenna 1's RF mode table index), Tari and the pre-filter count, each read guarded on its own (ruling 24's "logged").
+- **New seam** `protected open fun linkedReader()`, so spec test 4 (a call during teardown returns `SledNotConnected` and shows nothing) is covered whole. `ZebraVendorPinTest` also pins the trigger type's `toString()` and the dump's three accessors. Rows 3 and 19 name the renamed test.
+
+App wave (`3988d54f9`, `97ae173bc`):
+
+- **Ruling 41** is amended in place: Bluetooth turning on is exempt from the 2 s window. The Reconnect bullet is amended to match.
+- **Connect wait** ("Link management"). The timeout writes the couldn't-reach sentence only while the link is wanted and no schedule is running; otherwise the waiting caller gets `SledNotConnected`. A schedule that starts clears the old sentence, and a try that the schedule's end overtook clears it when the link is unwanted. The try right after a first batch clear waits 60 s.
+- **Start wait.** 5 s, plus `PURGE_WAIT_MS = 5_000`‡ while "Report each tag once" is on. The adapter logs `Start: purge N ms, perform M ms (OUTCOME).` to size it.
+- **Activity** is stamped in `ACTIVITY_STEP_MS = 1_000`‡ steps (or when the clock moves back), and a touch counts only when a finger goes down (`Modifier.onEveryTouchDown`), so a drag no longer recomposes per frame.
+- **`layoutError`** clears on each new generation, after a disconnect, and when a write the controller stopped waiting for later lands with an accepted read-back.
+- **`setRegion`** runs on the controller's scope and takes `afterSet` (Admin's `updateRfid { region }` moved into it), so a cancelled caller still gets the `NeedsRegion` reconnect. A one-region sled in `NeedsRegion` is offered that region as a choice; this extends the 2026-09-16 region design's "one region = Locked".
+- **Reconnect.** A drop starts its schedule only when the stored gate passes (otherwise the failure line, no flashing "Reconnecting…").
+- **The nudge filter** (`core/rfid/SledNudgeFilter.kt`) uses the last or saved sled's address only while that sled is still paired, else the name rule; the receiver and the controller share it. This replaces the Reconnect bullet's "the last connected sled's address".
+- **The nudge receiver** is registered `RECEIVER_EXPORTED`, so the Bluetooth process can reach it with `ACL_CONNECTED` (B3's `RECEIVER_NOT_EXPORTED` is replaced). It logs each Bluetooth-on and each link it hears, addresses only.
+- **The chooser.** Choosing a sled while the state is the "More than one sled is paired" failure connects to it.
+- **The slot** ("Scan screens", row 14). A connection line is red only for a drop seen during the visit: a failure after the link was up since the screen opened, or a reconnect after a drop the visit saw begin. "Connecting…", "Not connected." and the never-up tries an open screen starts stay muted. The region and scanner lines keep the text-at-open rule, and a read error is always red. The slot sits under the tool row, still below the scan box.
+- **The RFID tab.** The Sled triggers row sits above Trigger (B4 had it after). The dimmed row hints and lights the layout in force (`effectiveLayout`, so RFID), and the hint and the control read one settings value.
+- **The guard's hooks table** gains Time Clock's Enter Your Name (text growth notes typing, Search or Enter goes through `acceptTyped`, a refused copy clears the box) and sign-in's Move password field (typing noted, Enter through `acceptTyped` via `submitMoveTyped`; the Sign in button stays unguarded).
+- **`SledWords`** gained the RFID tab's row hints (`HINT_*`), `activeRegion(code)` and `READERS_OWN_REGION`, byte for byte the old inline texts. This edited a file frozen after T1, safe once the tracks had merged. "RFID reader", "Trigger", "Repeat sweeps", "Region" and "Restore defaults" stay inline.
+- **Logs.** One `DataWedge` line per `ENABLE_PLUGIN`; one `SledScanGuard` "Delivered a sled scan through the scanner session (N characters, TYPE)." per session scan, never the value; the nudge receiver's lines.
+- **Hardware step 4** starts with Developer mode on.
+- **Parked items closed by the two waves:** A4-r0-1 to -3 and -7, B1-r0-1, -3, -5 and -7, B3-r0-2 and -3, and the RFID tab hints parked at B4. Enroll's sled controls gained the screen test spec test 36 asked for.
+
+### Parked at the final review
+
+- `SledLayoutMemory` lasts only for the process. After an app restart without a sled power cycle, the first connect's step 2 (on a 1500 read other than "0"), or the teardown of a connect that failed before step 10, can still save a layout the previous process wrote. It needs the hardware answer to whether an RFD40 keeps its running settings across a link drop (script steps 5 and 11).
+- After a first batch clear, the `BATCH_CLEARED_RETRYING` sentence gives way to "Connecting…" almost at once, because the immediate try clears `info`, and stays replaced through the up-to-20 s cleanup join. Cosmetic.
+- `TimeclockFlowViewModel.onType` returns early while a lookup runs, so a refused typed copy can stay in Enter Your Name's box until the next key or step. Harmless.
+- From the re-review: an orphaned KDoc in `RfidControllerTest` above the new scope-cancel test. The live-view logcat filter missing `DataWedge` and `SledNudgeReceiver` is fixed in the hardware script.
+- Older minor items still parked are listed one per line at the end of the hardware script.
+
+### Implementer rulings that changed this design
+
+The task reports (`.superpowers/sdd/2026-11-10-android-sled-sdk-review/task-*-report.md`, not in git) hold every ruling. These are the ones that change or extend what the body says; rulings that only picked a mechanism inside its letter are left there. "Replaced" marks a ruling a later fix undid.
+
+T1:
+- Every wrong-state call on the fake fails with `SledNotConnected`; a non-`SledConnectException` connect failure is wrapped, with the original as its cause; a blank reason falls back to `couldNotReach(name)`.
+- The fake's `setConnection`: `Connecting`, `Disconnected` and `Disabled` clear `info`, `Failed` keeps it. `stopInventory` while `Connected` always clears `inventoryRunning`. Its accepted read-back has `raw = null`.
+- `SledWords.reports` treats "the same" as the same description, so two different unassigned keys read "Upper and lower triggers are not assigned."
+
+A1:
+- After a failed write, `runLayoutWrite` accepts a read-back equal to that entry's own pair (a fallback's pair, not only the first request's), and it reads back after every failed write, link trouble included.
+- In the push, a second out-of-step result on one step counts as a refusal, and a retry that meets link trouble stops the push.
+- An invalid-usage error is a refusal for `perform()`; at connect it is `couldNotReach`, not retryable, with fix CONNECT.
+- The duplicate-name pre-check compares names exactly, case included (the SDK's own match).
+
+A2:
+- The "region reads `NA`" check is a best step right after step 1 (the step table has no region read).
+- Step 7's one retry each follows any failure except link trouble and a region refusal. Step 4 also treats `RFID_COMM_NO_CONNECTION` as retryable.
+- Link trouble in a setup step fails with `couldNotReach(name)` without the several-paired sentence.
+- A batch result "in a row" is reset by any other outcome of the vendor open, not by a pre-check refusal; a third in a row is the end state too.
+- A connect whose generation is stale when its block starts makes no vendor call and returns `SledNotConnected`; a failure that ends stale returns `SledNotConnected` and publishes nothing.
+- The batch recovery's steps are bounded by the vendor's own waits (about 24 s worst case); the 20 s figure applies to its close.
+- A leaf lock, `stateLock`, makes the generation check atomic with the state writes; it never surrounds a vendor call or another lock, so the lock order is unchanged.
+- Fix round: a second batch result in a row gets only a stop (no purge, no batch-mode write, no save, `batchRecoveryPlan`), `batchRecovery` still turns true on it, and the batch note stays the one the purging recovery set.
+- Replaced: step 2's "save only when 1500 is not '0'" (now `batchPrevention`); the cleanup's "link up when no loss, not retryable and the vendor says up" (now always `linkUp = false`).
+
+A3:
+- Step 11 fails the connect on the battery read's first timeout (ruling 46), through a third `batteryBlock` parameter.
+- `stopInventory` always sends the vendor stop while `Connected`; with nothing running, a refused stop is success and no wait runs. A refused stop while a read ran fails with `MAY_STILL_BE_READING`.
+- The purge before a start follows the last applied settings, kept across connections.
+- Has-scanner comes from the vendor's `ReaderDevice.getDeviceCapability`: "…SCAN…" true, "PREMIUM (WiFi)" and "STANDARD" false, anything else null.
+- `regions()` reads `getRegionInfo` for the active region only, `setRegion` for the picked one; blank channel entries are dropped; a picked region whose detail cannot be read counts as not configurable.
+- A region refusal during steps 8 to 11 ends the connect in `NeedsRegion` with the info gathered.
+- `vendorLogging` is process-wide (a companion flow). A start event of the current generation marks a read running even when the app did not ask (the only way it learns of the sled's own start).
+- Fix round: the stop settle is timed from the stop's return; a battery level that arrives during the connect shows at the publish; each IMMEDIATE trigger write is guarded and retried on its own; an owed stop event is consumed only when no stop is in progress.
+
+A4:
+- Each open request gets a number, and the worker opens at most once per request, so a `DID_NOT_START` does not loop.
+- An accepted `ALREADY_ACTIVE`, or a `SUCCESS` whose callback never came, starts the stale window when establish returns.
+- The watchdog shows `STOPPED_RESPONDING` only while a session is wanted; `retry` while stuck fails with `SCANNER_STOPPED_RESPONDING`.
+- Step 12 is asked from the RFID worker at the `Connected` publish, not after `connect` returns to its caller.
+- The adapter's Bluetooth receiver is registered when the engine is first built and never unregistered.
+- When Bluetooth turns off, the close's terminate and `DISABLED` still run (Review Focus 5's "no vendor call" means no open call).
+- A barcode is gated on `Ready` only, not on its scanner id.
+- Replaced: the `ALREADY_ACTIVE` ownership record (now always terminated); "an unrequested termination holds the request closed and shows `Off`" (now `DID_NOT_START`); `requestedLayout` written whatever the outcome.
+
+A5:
+- `Dispose(` with no occurrence passes ("at most once"). Plain patterns match as substrings, and string templates count as code.
+- The pin test also checks the return types the adapter relies on.
+
+B1:
+- `connectNow` and `disconnectNow` go through the FIFO `connectionCommands` queue on the controller's scope, not a bare `scope.async`, so the last-issued state still wins.
+- Each `reader.connect()` and `reader.disconnect()` also holds `applyGate` for the call (outer to inner), so a START or `setRegion` waiting on `applyGate` can wait behind a connect.
+- `reconnecting` follows the schedule: an attempt that replaces a pending try counts as the schedule's next try. A try that cannot dial (gate closed, link up) ends the schedule.
+- `printerBusy()` holds back only the retry machine's tries (schedule, nudge, the batch try), checked every `PRINTER_POLL_MS = 500`‡; lifecycle, switch and manual connects do not wait for the printer.
+- The batch immediate try inherits the attempt's manual flag, and its own batch failure is an ordinary retryable failure.
+- A nudge is also ignored while the retry job is past its wait; a one-off nudge try outside a schedule does not set `reconnecting`.
+- A timed-out caller gets `SledConnectException(Failed(sentence, retryable = true))`; a skipped connect gets `SledNotConnected`.
+- A new `readerAddress` counts letter case as no change, and its reconnect is a manual attempt that runs only while the link is wanted. `setRegion`'s reconnect runs only while the link is wanted.
+- "Given up" clears when the link comes up, on a manual attempt, and whenever `linkWanted` goes false.
+
+B2:
+- A stop not answered within 4 s counts as a returned failure: retried once, then "may still be reading".
+- A failed start's one stop is not retried and never sets `MAY_STILL_BE_READING`, and its sweep closes with its tags queued.
+- `endBurst`'s stops hold `applyGate` for each call, and a disconnect waits on `stopGate` after its own `endBurst`.
+- When the link leaves `Connected`, a sweep already opened on the generation now `Connected` is kept.
+- A job whose turn comes while not `Connected` makes no call and is used up. A layout job passes the raw setting; the reader writes the effective layout.
+- The battery timer restarts after every finished job, so an idle sled is asked every 60 s. `lastActivityMs` starts at the controller's construction time.
+- `softScanOnce` does not release a pull that failed.
+- Withdrawn in its fix round: the inline region-load fast path (a region load is always a queued job).
+
+B3:
+- The guard: one accepted copy cancels at most one copy from the other route, and every acceptance still inside the window is kept; refused when the gap is under 2 000 ms (exactly 2 000 is accepted).
+- The "Zebra SDK logging" row sits after the fake reader's row, above the local-data inspector, still below the developer-mode check.
+- `SettingsScreen` clears `settingsTab` with `compareAndSet(tab, null)`; `SledDisplayEffect` sets `keepScreenOn = false` when it leaves composition.
+- The ruling-38 collector compares addresses ignoring case.
+- Sled barcodes are handled one at a time, in the sled's order. A blank Enter on Time Clock Welcome skips the guard.
+- Replaced: the receiver's own last-sled address and `RECEIVER_NOT_EXPORTED` (now the shared nudge filter and `RECEIVER_EXPORTED`).
+
+B4:
+- The slot shows Stop when the line offers it, and Try again under the scanner's did-not-start sentence (`SledFix` has no Try again).
+- `sledLine` gives `Connecting`, `Connected` and `NeedsRegion` no fix, and `Disabled` while enabled reads "Not connected." with Connect.
+- On the RFID tab the fix row leaves out Connect (the tab's own button is there) and Choose (the chooser is the fix).
+- "Region set. Reconnecting the sled…" shows once the link has left `NeedsRegion` after an accepted write, not from the tap. A region load failing with `SledNotConnected` shows nothing.
+- The paired list is re-read when the link or the permissions change. The disagreement line and `layoutError` can both show.
+- Fix round: the Session hint reads "A higher setting keeps a tag quiet longer after it answers."; Admin's region error clears when the link drops; the permission snapshot is read again on every resume (RFID tab, Devices tab, the slot); the dimmed row hints the layout in force.
+- Replaced: the slot's text-at-open rule for the connection line (now `dropDuringVisit`), and the Sled triggers row after Trigger (now above it).
+
+### Other deviations
+
+- Two files frozen after T1 changed: `SledWords.kt` (the RFID tab hints, app wave) and `FakeRfidReader.kt` (KDoc only: where the fake differs from the adapter).
+- Numbers chosen during the build, beside the waits list: `PRINTER_POLL_MS = 500`, `PURGE_WAIT_MS = 5_000`, `ACTIVITY_STEP_MS = 1_000`, `STOP_EVENT_OWED_MS = 2_000`, `TAGS_BUFFER = 16_384`, and the unsolicited-stop wait polled in 10 ms steps, at most 50.
+- The single-file rule left `ZebraRfidReader.kt` at 2,543 lines, `ZebraBarcodeEngine.kt` at 1,023 and `RfidController.kt` at 2,096; splitting them after the merge is parked.
+- No task found the spec and the plan disagreeing beyond the conflicts preflight rulings 1, 2, 3, 10 and 11 settle; in each, the spec (or the frozen contract) won.

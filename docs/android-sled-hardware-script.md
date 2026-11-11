@@ -1,0 +1,109 @@
+# Android kiosk: Zebra sled hardware script
+
+Run with Jimmy, on branch `android-rfid-sled` (not merged, not pushed). One row per step: mark Pass or Fail, and write what was seen in Notes. A **Fork** says what to change before going on.
+
+Source: the Hardware script section of `docs/superpowers/specs/2026-11-10-android-sled-sdk-review-design.md`, adjusted to the code as built (that spec's Implementation notes list every change the build made). Text in "quotes" is screen text: an operator sentence, button or row label copied exactly from `SledWords`, except the old build's "Trigger drives", the Devices tab's "Zebra DataWedge" row and the developer label "Zebra SDK logging" (ruling 35). `<name>` is the sled's Bluetooth name and `<n>` a number. Text in `code` is a log line, a log tag or a command.
+
+## Before the first launch of the new build
+
+- Debug build, dev server, a test move, Kiosk Setup done, signed in as an admin and developer.
+- In the old build, write down: what "Trigger drives" says on the Pixel (the new build inherits it: ruling 16); on the MC2200, what Settings › Devices says on the "Zebra DataWedge" row ("Present — profile ServerSherpaKiosk" or "Not installed on this device") and whether a Scan button shows on Scanning.
+- Start `adb logcat -v threadtime > <a file outside the repository>` and leave it running. It holds tag values, barcodes and badge codes; never commit it. Live view: `adb logcat -v threadtime -s ZebraRfidReader ZebraBarcodeEngine RfidController SledScanGuard SledNudgeReceiver DataWedge IRFIDinfo IRFIDError 123RFID API3Wrapper ScannerSDK-SDKHandler BluetoothManager BluetoothScanner BluetoothLEManager System.err AndroidRuntime:E` (the spec's line plus `SledNudgeReceiver` and `DataWedge`, the tags of the nudge and ENABLE_PLUGIN lines blocks 3 and 5 read).
+- Launch with `adb shell am start -n com.serversherpa.kiosk/.MainActivity`. Never `adb shell monkey`. Bluetooth and the power key are worked by hand. Nothing is changed on the device through adb; never change rotation or other system settings.
+- Blocks 1, 2, 4 and 5 can run on USB. Block 3 runs on battery, or with Developer options › Stay awake confirmed off.
+
+## Block 1. First contact (Pixel)
+
+| Step | Do | Expect | Pass/Fail | Notes |
+|---|---|---|---|---|
+| 1 | Pair the sled from Android's Bluetooth settings. Write down the steps that worked and the name shown. | The sled is listed under a name starting `RFD40` (or `RFD90`, `RFD8500`); the app only counts those as sleds. |  | Feeds "No sled is paired with this device. Pair the RFD40 in Bluetooth settings, then come back and tap Connect." (provisional until this step records the real pairing steps). |
+| 2 | First launch. Turn the reader on if it is off; allow the permissions. | The app connects by itself. The RFID tab reads "Connected to <name> · battery <n>%" (the battery part can follow a moment after "Connected to <name>"). |  | With one sled paired and none saved, its address is saved (ruling 38). |
+| 3 | Read the first connect's dump (`ZebraRfidReader`): model, firmware, serial, scanner name, capability, key layout as found, Bluetooth host mode, scan batch mode, link profile (RF mode index), Tari, pre-filter count, power table first, second, last and size, battery event text, external keyboard devices. Run `adb shell dumpsys input`: is there a keyboard named like the sled? | Every item is logged once. |  | **Forks:** scanner yes, no or unknown (decides block 4's reach); the power table tops out near 30 or near 300 (decides the slider); the sled is or is not a keyboard (decides whether a typed route exists). The app takes the table's real top as first entry + size − 1; write down whether the last entry is higher than that. |
+| 4 | Developer tab: Developer mode on (the "Zebra SDK logging" row shows only then; a fresh install has it off), then Zebra SDK logging on. RFID tab: Disconnect, then Connect, to get one connect on the wire log. | `IRFIDinfo` lines appear. Does `getdeviceinfo` produce a `Command:getdeviceinfo,Status:` line? |  | Repeat this step after every reinstall. The switch is off again at every launch. |
+| 5 | Turn the reader switch off and on. Then tap Connect twice quickly. | Off and on: it disconnects and connects with no tap on Connect. Two taps: one attempt in the log. |  | On the reconnect, note the dump's `Dump: attribute 2269 reads <v>` line (4 RFID, 5 Both, 10 Barcode). Still the layout written before the switch went off: the sled keeps its running settings across a link drop (the open `SledLayoutMemory` question, Implementation notes). |
+
+## Block 2. RFID only (Asset Lookup first, which records nothing; then Scanning on the test move)
+
+| Step | Do | Expect | Pass/Fail | Notes |
+|---|---|---|---|---|
+| 6 | Set "Sled triggers" to RFID first. Pull each trigger. Copy the raw `Notification:TriggerEvent` line for each trigger. | Each trigger sweeps, and no beam. |  | A kiosk that had "Trigger drives: Barcode" comes up in Barcode, so this is first. **Fork:** a SCAN type here means the filter makes that trigger dead; change the filter before going on. |
+| 7 | Sweep with no tag near. | The read starts with no "The sled didn't start reading. Pull the trigger again." Does `Notification:StartOperation` arrive? |  | **Fork:** decides whether a timeout from the start stays unconfirmed (`Start: sent, unconfirmed …`). The `Start: purge N ms, perform M ms (OUTCOME).` line times the start; the controller waits 5 s (10 s with "Report each tag once" on). |
+| 8 | "Report each tag once" on: sweep the same tags twice. | Reported both times? |  | The purge time in the `Start:` line sizes the extra 5 s. |
+| 9 | Each RFID tab control at each extreme, with SDK logging on: beeper Off and High, power lowest and highest, tag population 1 and 1000, session S0 to S3, dynamic power on and off. Then wait three minutes idle and change one setting. | One status line per command. No "The sled didn't accept:" line, and the change after three idle minutes does not fail. |  | A saved power above the sled's top shows "This sled's maximum is <n> dBm." and the slider stops at that top. |
+| 10 | Connect and then disconnect a Bluetooth keyboard during a held sweep. | The sweep survives. |  | |
+
+## Block 3. Losing the link (phone on battery)
+
+| Step | Do | Expect | Pass/Fail | Notes |
+|---|---|---|---|---|
+| 11 | Switch the sled off while connected on Scanning, and do not touch the phone. Switch it on. Repeat, leaving the sled off. Repeat once more and tap Stop on the RFID tab during a wait. | Within seconds "The sled disconnected. Reconnecting…" (red, with Stop, under the tool row) and the display stays on. Switched on: it reconnects. Left off: after four tries "Couldn't reach <name>. Make sure it is on, charged and close by, then tap Connect.", then Connect works. Stop: trying stops. |  | Time the loss and the reconnect. When the sled comes back, `SledNudgeReceiver` logs `A Bluetooth link appeared: <address> (the sled).` and the wait is cut short. After the power cycle, the dump's `Dump: attribute 2269 reads <v>` line says whether a layout survives a power cycle. |
+| 12 | Walk out of range with the sled. | Up to about 30 seconds before the app notices (link supervision, platform). |  | |
+| 13 | Bluetooth off and on, by hand. Watch for `BluetoothLEManager` lines. | The same as step 11. A try made while Bluetooth is off ends the tries with "Bluetooth is off. Turn it on to use the sled." and the Turn on Bluetooth button; turning Bluetooth on connects again with no tap (`SledNudgeReceiver`: `Bluetooth turned on.`). |  | Ruling 41 as amended: Bluetooth turning on is never ignored. |
+| 14 | Reader on, sled off, on Home. Then open Scanning. | On Home: one attempt only. On Scanning: the tries run, shown muted (not red): "Connecting to <name>…" with Stop, then the couldn't-reach sentence, still muted. |  | A sled already out of reach when the screen opened is never red. |
+| 15 | Sled off, reader on, on Print Labels with a Bluetooth printer: print five labels during the reconnect window. | All print, and no sled attempt starts while a label is sending. |  | A try waits for the printer, checked every 500 ms. |
+| 16 | Sit on Scanning longer than the phone's display timeout with the sled connected. Start a latched sweep and leave it two minutes. Press the power key. Wake. | The display stays on. Tags keep arriving. |  | Note the teardown lines after the power key, and the time to connected after waking. |
+| 17 | Leave Scanning untouched with the sled connected for over 10 minutes. Then leave the sled idle until it powers itself off. | The display turns off after 10 minutes. |  | How long until the sled powers off, and what the app shows. (Corrects the 10-minute number.) |
+
+## Block 4. Barcodes (Pixel)
+
+| Step | Do | Expect | Pass/Fail | Notes |
+|---|---|---|---|---|
+| 18 | "Sled triggers" on Barcode. Watch the scanner line on the RFID tab. Pull during "Starting the sled's barcode scanner…". Scan a Code 128 and a QR on Scanning. | "Starting the sled's barcode scanner…", then "Barcode scanner ready."; how long? One row per scan. |  | For each scan, note which route delivered (session: `SledScanGuard` `Delivered a sled scan through the scanner session (N characters, TYPE).`; typed: the scan box) and every `SledScanGuard` line (which route first, the gap, the length): these give the real gaps for the guard's numbers. One accepted copy cancels one copy from the other route, so a sled that sends one route twice within 2 s delivers twice; look for it here. **Fork:** ready and nothing arrives, or it arrives twice, or only typed: stop and fix before going on. **Fork:** if "Starting the sled's barcode scanner…" lasts longer than about a second, change the order so a layout that uses the scanner is written only once the scanner is ready or has failed (no beam means not ready). |
+| 19 | If the line says "The sled's barcode scanner didn't start, so scans from the sled won't arrive. Tap Try again, or scan with the camera.": tap Try again. | Does the sled type instead? |  | Record the reason in the log. The same line shows when the sled ends the scanner's connection by itself. |
+| 20 | "Sled triggers" on Both, on Asset Lookup first. Scan with the lower trigger during a sweep. Then the same on Scanning. | The upper trigger sweeps, the lower scans, and the lower one does not open the read panel. |  | Note which physical trigger is which and correct the Both hint ("Upper trigger reads tags. Lower trigger scans barcodes.") if they are the other way round. |
+| 21 | Switch between the three several times from Scanning, including during a sweep. Then count threads (`adb shell ps -T -p <pid> \| wc -l`) and look for `Faster Firmware Thread started`. | A change during a sweep ends that sweep first, and its tags queue. The thread count does not grow. |  | |
+| 22 | The sled's Scan button on Scanning. | A beam and a barcode; the beam stops at the barcode or after 3 seconds. |  | |
+| 23 | In Barcode layout, Bluetooth off and on by hand. | No `BluetoothLEManager` line appears; the scanner line returns to "Barcode scanner ready." after the reconnect. |  | |
+| 24 | RFID Enroll with the sled: the asset's barcode, then the tag. Scan the asset's own barcode at the tag step. Scan another asset's barcode at the tag step. Then Print Labels: one label per scan. | Own: "That's this asset's own asset ID, not an RFID tag." (or "That's this asset's own serial, not an RFID tag."). Another: "That's the asset ID for <name>, not an RFID tag." (or "That's the serial for <name>, not an RFID tag."), with the other asset's name. Print Labels prints one label per scan. On both, the display stays on between scans. |  | |
+| 25 | Sign out. On the Move password view, scan the move QR with the sled. | One sign-in. |  | The field's typed copy goes through the guard too, so a sled that types and sends still signs in once. |
+| 26 | Time Clock Welcome: scan a badge with the sled. Then the same on Enter Your Name. | One lookup each. |  | The badge code is in the log (the scanner SDK logs frames at info level). |
+| 27 | In Barcode layout, background and foreground the app ten times. | The thread count after is the same as before. |  | |
+| 28 | Last in this block, because it can end the process: a QR of 300 or more characters. | One row. |  | If the app closes, look for `ArrayIndexOutOfBoundsException` in `BluetoothManager$ConnectedThread`. |
+
+## Block 5. Other devices and edges
+
+| Step | Do | Expect | Pass/Fail | Notes |
+|---|---|---|---|---|
+| 29 | Admin tab: the region shown; with SDK logging on, copy the raw `getregion` reply row for the active region. Do not tap another region: one tap sets it. | The sled's region shows. |  | Whether the sled sends the hopping flag as `true` or `1`. A sled with none set shows "<name> has no region set, so it can't read tags. An admin sets it in Settings › Admin.", and after a tap "Region set. Reconnecting the sled…". A one-region sled with none set offers that region as a button. |
+| 30 | MC2200 without the sled, new build: Settings › Devices, the "Zebra DataWedge" row (compare with the old build); Scanning's Scan button; the handheld's scan key on Scanning, RFID Enroll, Print Labels and Asset Lookup; the move QR on sign-in with the scan key; a badge on Time Clock Welcome. | One delivery each. The log shows one `DataWedge` line, `Sent DataWedge's ENABLE_PLUGIN for the scanner input (once per process).` |  | |
+| 31 | MC2200 with the sled. | The RFID tab shows "Sled triggers" dimmed, RFID lit, with "On this device the handheld's own scanner reads barcodes. Both sled triggers read tags." Scan screens show no sled control and no sled Scan button. Both sled triggers sweep even when the setting says Barcode. The scan key still scans. No scanner-SDK session lines in the log. |  | |
+| 32 | Two sleds paired. Then forget the saved one in Android's Bluetooth settings, by hand. | The chooser appears under the RFID reader row, one sled per line, and the saved one is used. After forgetting: the other is used and saved. |  | With two paired and none saved: "More than one sled is paired with this device. Choose one in Settings › RFID."; choosing one connects to it. |
+| 33 | On the Pixel, deny Location and keep Nearby devices. Connect, sweep, scan a barcode. Background and foreground the app. | Before Connect the line reads "Android needs Bluetooth and location permission before the sled can connect. Grant them in this app's settings." Connect, the sweep and the scan work. |  | Note that the automatic connect on foreground does not happen (settles ruling 22). |
+| 34 | The sled on its charger: pull the trigger. | "The sled can't read tags while it is charging." |  | Note the result name in the log. |
+
+## If it happens at any step
+
+| Step | Do | Expect | Pass/Fail | Notes |
+|---|---|---|---|---|
+| W1 | A sled holding tags from offline use, on Connect. | `Batch-mode recovery: the sled is holding tags from offline use. Clearing them.` in the log, then "The sled was holding tags from offline use. They were cleared." (or "They couldn't be cleared.") under the line once connected. |  | "The sled was holding tags from offline use. Connecting again…" gives way to "Connecting…" almost at once (parked, cosmetic). |
+| W2 | The same sled, batch again on the next Connect. | `Batch-mode recovery: a second batch result in a row. Stopping the radio only; no second purge or save.` and the sentence that sends the operator to Zebra's 123RFID Mobile app. |  | Every later Connect logs the same line until 123RFID Mobile clears the sled. |
+
+## Hand-off notes
+
+- **No `<queries>` entry (ruling 2).** DataWedge detection on the MC2200 is unchanged; adding the entry changes how every scan arrives there, and turning it on is Jimmy's decision. Step 30's "Zebra DataWedge" row says whether detection works today.
+- **Old settings (ruling 16).** A kiosk that had "Trigger drives: Barcode" comes up in the Barcode layout (no sweeps); block 2 starts by setting RFID.
+- **Logs (ruling 17).** Once the sled's scanner session is used, the scanner SDK logs every barcode frame at info level in any build, Time Clock badge codes included; Zebra SDK logging adds the RFID wire log and is off at every launch.
+- **Display (ruling 5).** The display stays on with a connected sled on the scan screens (Scanning and Asset Lookup also while connecting or reconnecting; RFID Enroll and Print Labels in Barcode or Both), and is released after 10 minutes idle or when reconnecting gives up.
+- **Reconnect (ruling 4).** Reconnect waits are 2, 4, 15 and 60 s, then the app gives up and says so; Stop, Disconnect, the reader switch and leaving the app stop it; nothing is tried while a label is printing.
+- **Keystrokes (ruling 3).** Nothing is swallowed; a copy from the other route within 2 s is dropped, and the same scan twice on purpose counts twice.
+- **Location (ruling 22).** The Connect button needs only Nearby devices; the automatic connect still needs precise Location until step 33 says otherwise.
+- **Layouts are never saved on the sled.** After the first layout write in a process, batch mode off is not saved for that sled either; every connect still turns it off.
+- **`SledLayoutMemory` lasts only for the process.** Steps 5 and 11 say whether the sled keeps a layout across a link drop and a power cycle, which decides whether it must outlive the app.
+- **The branch** is not merged and not pushed.
+
+Minor items still parked in the ledger, one line each:
+
+- The fake reader's overlap message can name no other call (diagnostic text only; the fake is frozen).
+- No test for a failed fallback layout write whose read-back matches that fallback, or for a settings retry that hits link trouble.
+- `ZebraRfidReader.kt` (2,543 lines), `ZebraBarcodeEngine.kt` (1,023) and `RfidController.kt` (2,096) are to be split after the merge.
+- An unexpected throw inside the scanner engine's open would leave the line on "Starting the sled's barcode scanner…" (unreachable today).
+- The scanner worker and timer are per engine while the scanner SDK handler is per process; the app builds one reader.
+- Five matcher gaps in the never-call scans: an aliased `Actions`, commas inside generic arguments of `SDKHandler(`, extension functions on a generic receiver, no stripped-intact guard on the device scan, and pin lookups outside `check()`.
+- `printerBusy()` is checked before `linkGate` and not again under it.
+- `dialing` would stay true if `pairedSleds()` threw while an attempt ended (the contract says it never throws).
+- One accepted scan cancels at most one copy from the other route (step 18 checks it).
+- `SledDisplayEffectTest` reads the controller's private `sledScreenOpen` by reflection.
+- `MainActivityConfigTest` uses the deprecated `ShadowInputDevice.makeInputDeviceNamed`, so the test output carries warnings.
+- After a first batch clear, its sentence gives way to "Connecting…" almost at once (W1).
+- On Time Clock Enter Your Name, a refused typed copy stays in the box while the sled's lookup is still running, until the next key or step.
+- In `RfidControllerTest`, the KDoc of `aDisconnectWhoseCallerIsCancelledMidStopStillFinishesAndLeavesTheControllerClean` sits above the test inserted before it.
