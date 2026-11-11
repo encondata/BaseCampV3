@@ -118,6 +118,16 @@ internal class ScannerCommandFailed(val result: ScannerResult) : Exception()
  * open request or [retry]. Bluetooth turning off shows `Off` (the link drop
  * and the reconnect after it open a new request) and drops the cached id.
  *
+ * **Leaked reader threads.** The vendor's Bluetooth reader thread swallows
+ * the one interrupt its own cancel sends, so each session the vendor closes
+ * (terminate, or the mode reset) leaves that thread polling a closed socket
+ * every 50 ms for the life of the process. The worker runs [reap]
+ * ([reapLeakedReaderThreads] in the app) right after every mode reset that
+ * closes, a close's and a failed open's, and right before every open's first
+ * mode reset: the points where it holds no session and the vendor has already
+ * dropped its own thread. It never reaps while a session is up or being
+ * established. A reap that found any is logged.
+ *
  * **Watchdog.** Each vendor call is watched ([COMMAND_WATCHDOG_MS],
  * [ESTABLISH_WATCHDOG_MS] for establish). One that outlives it changes only
  * what [state] shows, to `Unavailable(STOPPED_RESPONDING)`, while a session is
@@ -133,6 +143,7 @@ internal class ZebraBarcodeEngine(
     private val clock: () -> Long = SystemClock::elapsedRealtime,
     private val watchdog: (timeoutMs: Long, onTimeout: () -> Unit) -> () -> Unit,
     private val log: (String) -> Unit,
+    private val reap: () -> ReapResult = { reapLeakedReaderThreads() },
 ) : ScannerEvents {
 
     private val _state = MutableStateFlow<SledScannerState>(SledScannerState.Off)
@@ -456,6 +467,7 @@ internal class ZebraBarcodeEngine(
         var bluetoothModeSent = false
         var up = false
         try {
+            reapLeaked()
             mode(sdk, ScannerMode.DISABLED)
             if (!stillWanted(d)) return
             if (!bluetoothOn()) {
@@ -478,7 +490,10 @@ internal class ZebraBarcodeEngine(
                 Established.Superseded -> Unit
             }
         } finally {
-            if (bluetoothModeSent && !up) mode(sdk, ScannerMode.DISABLED)
+            if (bluetoothModeSent && !up) {
+                mode(sdk, ScannerMode.DISABLED)
+                reapLeaked()
+            }
         }
     }
 
@@ -586,7 +601,7 @@ internal class ZebraBarcodeEngine(
         if (rest > 0) armWindow(s, rest)
     }
 
-    /** Terminate, then the mode reset in a `finally`. */
+    /** Terminate, then the mode reset in a `finally`, then a reap once the session is gone. */
     private fun close(s: Session) {
         log("Scanner: closing the session on scanner ${s.id} (generation ${s.generation}).")
         s.cancelWindow()
@@ -598,7 +613,32 @@ internal class ZebraBarcodeEngine(
                 if (sdk != null) mode(sdk, ScannerMode.DISABLED)
             } finally {
                 synchronized(lock) { if (session === s) session = null }
+                reapLeaked()
             }
+        }
+    }
+
+    /**
+     * Stops the vendor reader threads its own closes leaked
+     * ([reapLeakedReaderThreads]), and logs the result when it found any.
+     * Called on the worker at two points only, where the engine holds no
+     * session and the vendor has already dropped its own reader thread: right
+     * after a mode reset that closes (a close's, a failed open's), and right
+     * before an open's first mode reset. Never while a session is up or being
+     * established.
+     */
+    private fun reapLeaked() {
+        val result = try {
+            reap()
+        } catch (t: Throwable) {
+            log("Scanner: reaping leaked reader threads threw ${t.javaClass.name}: ${t.message}")
+            return
+        }
+        if (result.found > 0) {
+            log(
+                "Scanner: reaped ${result.reaped} of ${result.found} leaked reader thread(s) in ${result.elapsedMs} ms; " +
+                    "${result.survivors} still running.",
+            )
         }
     }
 
@@ -1021,3 +1061,94 @@ internal fun chooseScanner(candidates: List<ScannerCandidate>, target: SledIdent
  * argument. One name, so a test can pin it.
  */
 internal fun scanCommandInXml(): String = ""
+
+/**
+ * The class of the scanner SDK's Bluetooth reader thread: the private
+ * `ConnectedThread` inside its `BluetoothManager`, one per scanner session.
+ * [reapLeakedReaderThreads] and the connect dump know it by this name alone;
+ * `ZebraVendorPinTest` pins that the bundled `.aar` has it and that it is a
+ * `Thread`. The RFID SDK's own reader thread is another class, never matched.
+ */
+internal const val VENDOR_READER_THREAD = "com.zebra.scannercontrol.BluetoothManager\$ConnectedThread"
+
+/** How long one reap may go on, shared by every leaked thread it found. */
+internal const val REAP_BOUND_MS = 500L
+
+/** One reap: the leaked threads [found], how many [reaped], how many [survivors] still run, in [elapsedMs]. */
+internal data class ReapResult(val found: Int, val reaped: Int, val survivors: Int, val elapsedMs: Long)
+
+/** Whether [thread] is one of the scanner SDK's reader threads ([VENDOR_READER_THREAD]). The reaper and the connect dump share this one test. */
+internal fun isVendorReaderThread(thread: Thread): Boolean = thread.javaClass.name == VENDOR_READER_THREAD
+
+/**
+ * Stops the scanner SDK's leaked reader threads and says what it found.
+ *
+ * The vendor's reader thread loops while it is not interrupted. Each pass
+ * polls its socket and then sleeps 50 ms inside a catch that swallows the
+ * interrupt (it prints the stack trace), and the throw has already cleared
+ * the flag. The vendor's own cancel interrupts once, which nearly always lands
+ * in that sleep and is swallowed, and then closes the socket. So every session
+ * the vendor closes leaves its thread polling a closed socket every 50 ms for
+ * the life of the process (`available called on closed socket!` in the log).
+ * The thread ends only when the flag is set at its loop check, and a steady
+ * stream of interrupts does that: one wakes it from the sleep, and the next
+ * lands while the catch prints.
+ *
+ * So every alive thread that [isVendorReader] accepts, never the calling one,
+ * is interrupted again and again, with a yield between rounds, until it has
+ * ended or [boundMs], shared by all of them, runs out. A yield, not a timed
+ * wait: Android stretches short timed waits of a background process by tens of
+ * milliseconds, and then each interrupt would land in a sleep again. A thread
+ * that never ends (one blocked in a read) costs one bound of spinning on the
+ * worker, then is left running and counted among the survivors. The default
+ * clock is `System.nanoTime`, because `SystemClock` stands still in unit
+ * tests and the bound would never run out.
+ *
+ * Run it only where no vendor reader thread is in use: on the scanner worker
+ * while the engine holds no session, after the vendor has dropped its own
+ * thread. Never `Thread.stop()`, and nothing reaches into vendor fields. It
+ * never throws: when the threads cannot be listed or tested it finds none,
+ * `ReapResult(0, 0, 0, …)`.
+ */
+internal fun reapLeakedReaderThreads(
+    threads: () -> Collection<Thread> = { Thread.getAllStackTraces().keys },
+    isVendorReader: (Thread) -> Boolean = ::isVendorReaderThread,
+    boundMs: Long = REAP_BOUND_MS,
+    now: () -> Long = { System.nanoTime() / 1_000_000L },
+): ReapResult {
+    var start = 0L
+    var found: List<Thread> = emptyList()
+    try {
+        start = now()
+        val self = Thread.currentThread()
+        found = threads().filter { it !== self && it.isAlive && isVendorReader(it) }
+        val running = found.toMutableList()
+        while (running.isNotEmpty() && now() - start < boundMs) {
+            running.forEach { it.interrupt() }
+            Thread.yield()
+            running.removeAll { !it.isAlive }
+        }
+    } catch (_: Throwable) {
+        // Nothing to report from here; what has ended is counted below.
+    }
+    val reaped = found.count { !it.isAlive }
+    val elapsed = try {
+        now() - start
+    } catch (_: Throwable) {
+        0L
+    }
+    return ReapResult(found = found.size, reaped = reaped, survivors = found.size - reaped, elapsedMs = elapsed)
+}
+
+/**
+ * The connect dump's line about the scanner SDK's reader threads: how many
+ * are alive, by the reaper's own test. Never throws.
+ */
+internal fun vendorReaderThreadsDump(
+    threads: () -> Collection<Thread> = { Thread.getAllStackTraces().keys },
+    isVendorReader: (Thread) -> Boolean = ::isVendorReaderThread,
+): String = try {
+    "Dump: ${threads().count { it.isAlive && isVendorReader(it) }} vendor scanner reader thread(s) alive."
+} catch (_: Throwable) {
+    "Dump: the app's threads could not be listed, so the vendor scanner reader threads were not counted."
+}

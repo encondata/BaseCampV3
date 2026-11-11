@@ -43,8 +43,9 @@ import org.junit.Test
  * them and no name can clash with Track B's test files (preflight ruling 12).
  *
  * The pure helpers are here too: [chooseScanner] (matching a listed scanner
- * against this kiosk's own sled, never a stranger's device) and
- * [scanCommandInXml].
+ * against this kiosk's own sled, never a stranger's device),
+ * [scanCommandInXml], and [reapLeakedReaderThreads] with the connect dump's
+ * count, which run against real threads that copy the vendor reader's loop.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ZebraBarcodeEngineTest {
@@ -148,7 +149,12 @@ class ZebraBarcodeEngineTest {
         }
     }
 
-    /** One engine over a [FakeSdk], on [executor] (the calling thread by default). */
+    /**
+     * One engine over a [FakeSdk], on [executor] (the calling thread by
+     * default). Its reaper is a stand-in: it records where it ran, among the
+     * vendor calls, and reports [reapResult]. The vendor calls themselves stay
+     * in [FakeSdk.calls], unchanged.
+     */
     internal class Rig(val executor: Executor = Executor { it.run() }) {
         val clock = FakeClock()
         val timers = Timers()
@@ -156,6 +162,12 @@ class ZebraBarcodeEngineTest {
         val logs = CopyOnWriteArrayList<String>()
         @Volatile var bluetooth = true
         val sdkBuilds = AtomicInteger()
+
+        /** Where each reap ran: how many vendor calls came before it. */
+        val reapsAt = CopyOnWriteArrayList<Int>()
+        @Volatile var reapResult = ReapResult(found = 0, reaped = 0, survivors = 0, elapsedMs = 0)
+        @Volatile var onReap: () -> Unit = {}
+
         val engine = ZebraBarcodeEngine(
             sdk = {
                 sdkBuilds.incrementAndGet()
@@ -166,6 +178,11 @@ class ZebraBarcodeEngineTest {
             clock = { clock.now },
             watchdog = timers.watchdog,
             log = { logs += it },
+            reap = {
+                reapsAt += sdk.calls.size
+                onReap()
+                reapResult
+            },
         ).also { sdk.events = it }
 
         val state: SledScannerState get() = engine.state.value
@@ -173,6 +190,19 @@ class ZebraBarcodeEngineTest {
         fun open(generation: Int = 1) = engine.want(generation, open = true, target = SLED_IDENTITY)
 
         fun close(generation: Int = 1) = engine.want(generation, open = false, target = SLED_IDENTITY)
+
+        /** The vendor calls, with [REAP] where each reap ran. */
+        fun callsAndReaps(): List<String> {
+            val calls = sdk.calls.toList()
+            val merged = mutableListOf<String>()
+            var next = 0
+            for (at in reapsAt) {
+                while (next < at) merged += calls[next++]
+                merged += REAP
+            }
+            while (next < calls.size) merged += calls[next++]
+            return merged
+        }
     }
 
     companion object {
@@ -185,6 +215,9 @@ class ZebraBarcodeEngineTest {
 
         /** A close: terminate, then the mode reset. */
         internal val CLOSE_CALLS = listOf("terminate 10", "mode DISABLED")
+
+        /** Where a reap ran, in [Rig.callsAndReaps]. */
+        private const val REAP = "reap"
 
         private val READY = SledScannerState.Ready
         private val OPENING = SledScannerState.Opening
@@ -720,6 +753,218 @@ class ZebraBarcodeEngineTest {
         } finally {
             worker.shutdown()
         }
+    }
+
+    // ── the vendor's leaked reader threads ──
+    //
+    // The vendor's reader thread swallows the one interrupt its own cancel()
+    // sends, so each session the vendor closes leaves it polling a closed
+    // socket every 50 ms. The engine reaps them where it holds no session.
+
+    @Test fun everyCloseReapsAfterItsModeResetAndLogsOnlyWhenItFoundSome() {
+        val rig = Rig()
+        rig.open()
+        rig.reapResult = ReapResult(found = 2, reaped = 1, survivors = 1, elapsedMs = 500)
+
+        rig.close()
+
+        assertEquals(listOf(REAP) + OPEN_CALLS + CLOSE_CALLS + REAP, rig.callsAndReaps())
+        assertEquals(
+            "one line, for the reap that found some",
+            listOf("Scanner: reaped 1 of 2 leaked reader thread(s) in 500 ms; 1 still running."),
+            rig.logs.filter { it.startsWith("Scanner: reaped") },
+        )
+
+        // A failed open after the Bluetooth mode went in is closed the same way.
+        val failed = Rig()
+        failed.sdk.listed = listOf(STRANGER)
+        failed.open()
+        assertEquals(DID_NOT_START, failed.state)
+        assertEquals(listOf(REAP, "mode DISABLED", "mode BT_NORMAL", "list", "mode DISABLED", REAP), failed.callsAndReaps())
+        assertTrue("found none: nothing logged", failed.logs.none { it.startsWith("Scanner: reaped") })
+    }
+
+    @Test fun everyOpenReapsBeforeItsModeReset() {
+        val rig = Rig()
+        rig.open()
+        assertEquals(listOf(REAP) + OPEN_CALLS, rig.callsAndReaps())
+
+        rig.close()
+        rig.open(generation = 2)
+
+        assertEquals(
+            listOf(REAP) + OPEN_CALLS + CLOSE_CALLS + REAP + REAP + listOf("mode DISABLED", "mode BT_NORMAL", "establish 10"),
+            rig.callsAndReaps(),
+        )
+        assertEquals(READY, rig.state)
+    }
+
+    @Test fun noReapWhileASessionIsUpOrOpening() {
+        val worker = singleWorker()
+        try {
+            val rig = Rig(worker)
+            val reapThreads = CopyOnWriteArrayList<Thread>()
+            rig.onReap = { reapThreads += Thread.currentThread() }
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            rig.sdk.beforeEstablished = {
+                entered.countDown()
+                release.awaitBriefly()
+            }
+            rig.open()
+            assertTrue(entered.awaitBriefly())
+            assertEquals(OPENING, rig.state)
+
+            // Sled triggers changed to Barcode while the scanner is opening: the same session is still asked for.
+            rig.open()
+            assertEquals("only the reap before the open", listOf(0), rig.reapsAt.toList())
+            release.countDown()
+            drain(worker)
+            assertEquals(READY, rig.state)
+
+            // Changed again while Ready (Both to Barcode keeps the scanner).
+            rig.open()
+            drain(worker)
+
+            assertEquals(listOf(REAP) + OPEN_CALLS, rig.callsAndReaps())
+            assertEquals("on the engine's worker, never the caller's thread", 1, reapThreads.size)
+            assertTrue(reapThreads.single() !== Thread.currentThread())
+        } finally {
+            worker.shutdown()
+        }
+    }
+
+    @Test fun aSingleInterruptDoesNotStopAThreadThatSwallowsItsInterrupt() {
+        val zombie = startSleeping(ZombieReader())
+        try {
+            zombie.interrupt() // all the vendor's own cancel() does before it closes the socket
+            zombie.join(300)
+
+            assertTrue("the catch swallowed the interrupt and the loop went on", zombie.isAlive)
+        } finally {
+            stopAll(listOf(zombie))
+        }
+    }
+
+    @Test fun theReaperStopsEveryZombieWithinTheBound() {
+        val zombies: List<Thread> = List(3) { startSleeping(ZombieReader()) }
+        try {
+            val result = reapLeakedReaderThreads(isVendorReader = { it in zombies })
+
+            assertEquals(ReapResult(found = 3, reaped = 3, survivors = 0, elapsedMs = result.elapsedMs), result)
+            assertTrue("within $REAP_BOUND_MS ms: ${result.elapsedMs}", result.elapsedMs in 0..REAP_BOUND_MS)
+            assertTrue(zombies.none { it.isAlive })
+        } finally {
+            stopAll(zombies)
+        }
+    }
+
+    @Test fun theReaperTouchesOnlyVendorReaderThreads() {
+        val zombie = startSleeping(ZombieReader())
+        val bystander = startSleeping(Bystander())
+        val finished = Thread {}.apply {
+            start()
+            join()
+        }
+        try {
+            // Every thread but the bystander passes the test, the calling thread included.
+            val result = reapLeakedReaderThreads(
+                threads = { listOf(zombie, bystander, finished, Thread.currentThread()) },
+                isVendorReader = { it !== bystander },
+            )
+
+            assertEquals("the alive zombie only: never the calling thread or a finished one", 1, result.found)
+            assertEquals(1, result.reaped)
+            assertFalse(zombie.isAlive)
+            assertFalse("the calling thread was not interrupted", Thread.interrupted())
+            bystander.join(100)
+            assertTrue("the bystander still runs", bystander.isAlive)
+
+            // The real test takes the vendor's reader class only.
+            assertEquals(0, reapLeakedReaderThreads(threads = { listOf(bystander) }).found)
+            assertTrue(bystander.isAlive)
+        } finally {
+            stopAll(listOf(zombie, bystander))
+        }
+    }
+
+    @Test fun theReaperNeverThrows() {
+        val noList = reapLeakedReaderThreads(threads = { throw IllegalStateException("no thread list") })
+        assertEquals(ReapResult(0, 0, 0, noList.elapsedMs), noList)
+
+        val zombie = startSleeping(ZombieReader())
+        try {
+            val badTest = reapLeakedReaderThreads(threads = { listOf(zombie) }, isVendorReader = { throw NoClassDefFoundError("vendor") })
+            assertEquals(ReapResult(0, 0, 0, badTest.elapsedMs), badTest)
+
+            val badClock = reapLeakedReaderThreads(threads = { listOf(zombie) }, isVendorReader = { true }, now = { throw IllegalStateException("clock") })
+            assertEquals(ReapResult(0, 0, 0, badClock.elapsedMs), badClock)
+            assertTrue(zombie.isAlive)
+        } finally {
+            stopAll(listOf(zombie))
+        }
+    }
+
+    @Test fun theConnectDumpCountsTheAliveThreadsTheReaperWouldTake() {
+        val finished = Thread {}.apply {
+            start()
+            join()
+        }
+        val alive = Thread.currentThread()
+
+        assertEquals(
+            "Dump: 1 vendor scanner reader thread(s) alive.",
+            vendorReaderThreadsDump(threads = { listOf(alive, finished) }, isVendorReader = { true }),
+        )
+        assertEquals("the real test takes the vendor's reader class only", "Dump: 0 vendor scanner reader thread(s) alive.", vendorReaderThreadsDump(threads = { listOf(alive) }))
+        assertEquals(
+            "Dump: the app's threads could not be listed, so the vendor scanner reader threads were not counted.",
+            vendorReaderThreadsDump(threads = { throw IllegalStateException("no thread list") }),
+        )
+    }
+
+    /**
+     * The vendor reader thread's loop, as `BluetoothManager.ConnectedThread.run`
+     * has it once its socket is closed: sleep 50 ms a pass, and swallow the
+     * interrupt the sleep throws.
+     */
+    private open class SwallowsItsInterrupt(name: String) : Thread(name) {
+        init {
+            isDaemon = true
+        }
+
+        override fun run() {
+            while (!Thread.interrupted()) {
+                try {
+                    Thread.sleep(50)
+                } catch (e: InterruptedException) {
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
+    /** One the tests take for a vendor reader thread. */
+    private class ZombieReader : SwallowsItsInterrupt("zombie-reader")
+
+    /** The same loop in a class that is not the vendor's. */
+    private class Bystander : SwallowsItsInterrupt("bystander")
+
+    /** Starts [thread] and waits until it sleeps, where the vendor's own cancel lands its one interrupt. */
+    private fun startSleeping(thread: Thread): Thread {
+        thread.start()
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (thread.state != Thread.State.TIMED_WAITING) {
+            check(System.nanoTime() < deadline) { "${thread.name} never went to sleep" }
+            Thread.sleep(1)
+        }
+        return thread
+    }
+
+    /** Stops the looping threads a test started, so none outlives it. */
+    private fun stopAll(threads: List<Thread>) {
+        reapLeakedReaderThreads(threads = { threads }, isVendorReader = { true }, boundMs = 5_000)
+        threads.forEach { it.join(1_000) }
     }
 
     // ── the delegate ──

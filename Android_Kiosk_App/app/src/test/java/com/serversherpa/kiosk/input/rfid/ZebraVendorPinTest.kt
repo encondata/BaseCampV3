@@ -112,6 +112,12 @@ class ZebraVendorPinTest {
             vendorClass(SCANNER + "SDKHandler")
                 .getConstructor(Class.forName("android.content.Context"), Boolean::class.javaPrimitiveType).let { null }
         }
+        // The leaked-reader reaper and the connect dump know the vendor's
+        // Bluetooth reader thread by its class name alone, so a renamed or
+        // moved class would leave every leaked thread running unseen.
+        check("$VENDOR_READER_THREAD is a Thread") {
+            if (Thread::class.java.isAssignableFrom(vendorClass(VENDOR_READER_THREAD))) null else "is not a Thread subclass"
+        }
         check("DCSSDK_MODE.DCSSDK_OPMODE_DISABLED") { enumConstant(SCANNER + "DCSSDKDefs\$DCSSDK_MODE", "DCSSDK_OPMODE_DISABLED") }
         listOf(
             "DCSSDK_RESULT_SCANNER_ALREADY_ACTIVE",

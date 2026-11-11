@@ -13,7 +13,9 @@ import org.junit.Test
  * throw, calls that change the sled's stored setup or start scanning for other
  * devices, and the second scanner SDK. `Dispose(` may appear once, inside
  * `tearDownVendor`, and `saveConfig(` only inside the batch-mode prevention,
- * recovery and teardown functions.
+ * recovery and teardown functions. It also fails on `Thread.stop()`, which
+ * the leaked-reader reaper must never use (it only interrupts): any `.stop(`
+ * or `::stop` whose receiver is not the radio's `Inventory`.
  *
  * The device-settings scan reads all of `src/main/java` and fails on anything
  * that changes a setting of the phone itself: turning the Bluetooth adapter on
@@ -117,6 +119,13 @@ class SledNeverCallTest {
             "fun recoverFromBatchMode() { config.saveConfig() }",
             "fun tearDownVendor() { config.saveConfig(); readers.Dispose() }",
             "fun dispose() { readers.Dispose() }",
+            "fun reap(zombie: Thread) {",
+            "    rfid.Actions.Inventory.stop()",
+            "    rfid.Actions?.Inventory?.stop()",
+            "    zombie.stop()",
+            "    Thread.currentThread()?.stop()",
+            "    threads.forEach(Thread::stop)",
+            "}",
         ).joinToString("\n")
 
         assertEquals(
@@ -128,6 +137,9 @@ class SledNeverCallTest {
                 "Fixture.kt:10 in open(): ENUM_TRANSPORT.ALL",
                 "Fixture.kt:11 in open(): saveConfig( outside preventBatchMode, recoverFromBatchMode and tearDownVendor",
                 "Fixture.kt:17 in dispose(): Dispose( outside tearDownVendor",
+                "Fixture.kt:21 in reap(): $THREAD_STOP",
+                "Fixture.kt:22 in reap(): $THREAD_STOP",
+                "Fixture.kt:23 in reap(): $THREAD_STOP",
                 "Dispose( appears 2 times; at most once, in tearDownVendor",
             ),
             vendorFindings(listOf("Fixture.kt" to fixture)),
@@ -187,6 +199,9 @@ class SledNeverCallTest {
                 .forEach { findings += Finding(it.first, "${at(it.first)}: setTriggerMode( with true") }
             Regex("""\bActions\s*\??\.\s*reset\s*\(""").findAll(code)
                 .forEach { findings += Finding(it.range.first, "${at(it.range.first)}: Actions.reset(") }
+            Regex("""(?:\.\s*stop\s*\(|::\s*stop\b)""").findAll(code)
+                .filterNot { INVENTORY_RECEIVER.containsMatchIn(code.substring(0, it.range.first)) }
+                .forEach { findings += Finding(it.range.first, "${at(it.range.first)}: $THREAD_STOP") }
             Regex("""\bsaveConfig\s*\(""").findAll(code)
                 .filter { enclosing(it.range.first) !in SAVE_CONFIG_HOMES }
                 .forEach { findings += Finding(it.range.first, "${at(it.range.first)}: saveConfig( outside $SAVE_CONFIG_HOMES_TEXT") }
@@ -405,6 +420,16 @@ class SledNeverCallTest {
             "getKeylayoutType(",
             "runInterruptible",
         )
+
+        /**
+         * `Thread.stop()`, which the leaked-reader reaper must never use. The
+         * matcher cannot see types, so it flags every `.stop(` call and `::stop`
+         * reference whose receiver is not `Inventory`, the radio's one stop.
+         */
+        const val THREAD_STOP = ".stop( or ::stop not on Inventory (Thread.stop)"
+
+        /** The code just before a `.stop(` or `::stop` ends in the receiver `Inventory` (or `Inventory?`). */
+        val INVENTORY_RECEIVER = Regex("""\bInventory\s*\??\s*$""")
 
         const val DISPOSE_HOME = "tearDownVendor"
         val SAVE_CONFIG_HOMES = setOf("preventBatchMode", "recoverFromBatchMode", "tearDownVendor")

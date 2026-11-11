@@ -2015,6 +2015,7 @@ open class ZebraRfidReader(
                 Log.i(TAG, "Dump: ${rfid.Actions.PreFilters.length()} pre-filter(s) as the SDK holds them for the sled.")
             }
             logExternalKeyboards()
+            Log.i(TAG, vendorReaderThreadsDump())
         }
 
         /** One guarded dump read: a failure is logged and the dump goes on, unless it is link trouble. */
