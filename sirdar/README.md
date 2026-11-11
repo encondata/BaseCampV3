@@ -363,6 +363,21 @@ Sirdar. A certificate Sirdar created that a proxy host staying in place
 (for example a claimed one) still uses is only forgotten, not deleted. Docker
 images stay on the host.
 
+**Force delete** (the Delete dialog's switch, `"force": true` with
+`mode: "teardown"`; migration 0019) is for an environment Sirdar can't reach.
+It runs every step of the Delete plan, but a step that fails, times out or
+can't start is skipped instead of stopping the run, and the environment is
+removed from Sirdar anyway. It never takes the snapshot (production's other
+rules still apply). The host steps don't wait out a playbook's timeout: the
+SSH connection Sirdar opens before them is the reachability check, so an
+unreachable host costs its connect retries (about two minutes) and the step
+is skipped. The last step's log, and the `deploy.environment_delete` audit row
+(`force`, `left_behind`), list what may be left behind: each skipped step,
+each DNS record, proxy host, certificate or Switchyard host Sirdar made and
+couldn't remove, the VMs of a skipped Destroy VM, and each DigitalOcean
+resource still recorded. A failed Delete's Deployments tab offers Force
+delete too; it starts a new deployment, not a retry.
+
 **Adopting a hand-built environment** (`POST /api/deploy/environments` with
 `"mode": "adopt"`): Sirdar reads `/opt/serversherpa/<name>/.env` and the
 checkout's commit over SSH and imports them, secrets encrypted. Nothing on
@@ -927,7 +942,8 @@ and real SMTP (droplets keep Mailpit).
 
 #### Creating an environment: the Deploy flow
 
-The Deploy page is a seven-step flow that creates **and** deploys a new
+**New deployment** on the Environments page (`/deploy/new`; the old
+`/deploy?tab=new` link goes there) is a seven-step flow that creates **and** deploys a new
 environment: **Environment** (type and name), **Servers** (single server or
 Blue/Green), **Target** (ESXi, Proxmox, DigitalOcean or SSH, with the target's
 details and the connection test), **Extras**, **Traffic** (read-only: what
@@ -935,7 +951,9 @@ routes the public names), **Data** (seed from a snapshot or start empty) and
 **Review & Deploy**. One Deploy button creates the environment and starts its
 first deployment. If the start fails, Deploy retries only the start; the flow
 is then locked to Review, so edit the environment on its Settings tab instead.
-Existing servers are adopted with **Adopt existing** on the Environments list.
+Existing servers are adopted with **Adopt existing** on the Environments page,
+whose Environments tab shows the Dashboard's environment cards (without the
+traffic graph) and whose Snapshots tab lists the snapshots.
 
 - **Types:** Production, Development, UAT (stored as `beta`) and Custom.
   Production always runs on DigitalOcean, Blue/Green.
