@@ -6,12 +6,14 @@ notification worker's check compares with the asset as it is now. `asset_label`,
 `asset_watch_link` and `watched_status` say how a watch names its asset, where it links and
 which status it reads, for the routes and the check alike.
 
-A watch needs what the asset's page needs (`assets:view` and the asset's client scope). One on an
-initiative also needs what the initiative's asset list needs (`initiatives:view` and the
-initiative's scope), and the asset has to be on that initiative. Both are asked of the one test
-every notification asks (notifications/access.py), and the check asks the same when a watch fires
-(asset_watch_check.py), so setting, listing and firing agree: no watch can be set that would end
-without a notice for want of access. Access is not stored: a watch whose owner can't open its
+A watch needs what the asset's page needs (`assets:view`, the asset's client scope and its
+client's groups). One on an initiative also needs what the initiative's asset list needs
+(`initiatives:view` and the initiative's scope), and the asset has to be on that initiative; there
+the asset's row on the move, by that move's group rule, stands in for the asset's own group
+(`openable_places`). Both are asked of the tests every notification asks (notifications/
+access.py), and the check and the email re-check ask the same when a watch fires
+(asset_watch_check.py, event_sweep.watch_recheck), so setting, listing and firing agree: no watch
+can be set that would end without a notice for want of access. Access is not stored: a watch whose owner can't open its
 asset or initiative stays in place and is not listed until they can again.
 
 Each write is audited on the person's account, as their other watches are (`watch.add`,
@@ -22,15 +24,14 @@ Spec: docs/superpowers/specs/2026-11-05-asset-watches-design.md (What counts, Da
 Link)"""
 
 import uuid
-from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 
 from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.access.resolver import resolve_access_many
+from serversherpa.access.resolver import AccessInfo, resolve_access_many
 from serversherpa.api.schemas import AssetWatchOut, AssetWatchStateOut
 from serversherpa.db.models import (
     Asset,
@@ -43,8 +44,7 @@ from serversherpa.db.models import (
     Truck,
     TruckContainer,
 )
-from serversherpa.notifications.access import viewers, visible_among
-from serversherpa.notifications.events import Thing
+from serversherpa.notifications.access import visible_among, visible_rows
 from serversherpa.services.audit import audit, diff
 from serversherpa.status.labels import active_statuses, status_fields, status_labels
 
@@ -79,6 +79,13 @@ def asset_watch_link(watch: AssetWatch, row_id: uuid.UUID | None) -> str:
 
 
 # ── the snapshot ────────────────────────────────────────────────────
+
+def asset_watch_payload(watch: AssetWatch) -> dict:
+    """What an `asset_watch` notice keeps of its watch, for the send-time re-check of its email
+    (event_sweep.watch_recheck): the asset and the initiative it was set on (None for one on the
+    asset itself)."""
+    return {"asset_id": str(watch.asset_id), "initiative_id": _str(watch.initiative_id)}
+
 
 def _iso(at: datetime | None) -> str | None:
     return at.isoformat() if at is not None else None
@@ -170,43 +177,88 @@ def watched_status(taken: Mapping | None, initiative_id: uuid.UUID | None) -> st
 
 # ── who can open a watch ────────────────────────────────────────────
 
-def _opens(asset_id: uuid.UUID, initiative_id: uuid.UUID | None) -> tuple[Thing, ...]:
-    """What a watch's owner has to be able to open: the asset, and for a watch set on an
-    initiative that initiative too, whose asset list is where the watch was set."""
-    if initiative_id is None:
-        return (Thing("asset", asset_id),)
-    return (Thing("asset", asset_id), Thing("initiative", initiative_id))
+# Where a watch is: its person, its asset, and the initiative it was set on (None for one on the
+# asset itself).
+Place = tuple[uuid.UUID, uuid.UUID, uuid.UUID | None]
+
+
+def place_of(watch: AssetWatch) -> Place:
+    return (watch.person_id, watch.asset_id, watch.initiative_id)
+
+
+async def openable_places(db: AsyncSession, places: Iterable[Place], *,
+                          access: Mapping[uuid.UUID, AccessInfo] | None = None) -> set[Place]:
+    """The places among `places` whose person can open everything a watch there needs now, by
+    the rule each page uses (notifications/access.py):
+
+    - a watch on the asset: the asset's page (`assets:view`, its client scope and its client's
+      groups);
+    - a watch on an initiative: the initiative, and the asset's row on it by that move's row
+      rule (`visible_rows`), with `assets:view` and the asset's client scope but not the asset's
+      own group, which comes from its newest row and may be another move's (client groups spec,
+      item 12). Once the asset has no row there (it left the move), the asset's page decides.
+
+    Setting, listing, firing and the email re-check all ask this, so they agree. Asked once per
+    kind of thing however many places there are; `access` skips resolving."""
+    places = list(dict.fromkeys(places))
+    if not places:
+        return set()
+    people = list(dict.fromkeys(person_id for person_id, _, _ in places))
+    if access is None:
+        access = await resolve_access_many(db, people)
+    asset_ids = list(dict.fromkeys(asset_id for _, asset_id, _ in places))
+    assets = await visible_among(db, "asset", asset_ids, people, access=access)
+    on_moves = [place for place in places if place[2] is not None]
+    moves: Mapping[uuid.UUID, frozenset[uuid.UUID]] = {}
+    in_client: Mapping[uuid.UUID, frozenset[uuid.UUID]] = {}
+    rows: Mapping[uuid.UUID, frozenset[tuple[uuid.UUID, uuid.UUID]]] = {}
+    present: set[tuple[uuid.UUID, uuid.UUID]] = set()
+    if on_moves:
+        moves = await visible_among(db, "initiative", [place[2] for place in on_moves], people,
+                                    access=access)
+        in_client = await visible_among(db, "asset", [place[1] for place in on_moves], people,
+                                        access=access, group_rule=False)
+        pairs = [(asset_id, initiative_id) for _, asset_id, initiative_id in on_moves]
+        rows = await visible_rows(db, pairs, people, access=access)
+        present = set((await db.execute(
+            select(InitiativeAsset.asset_id, InitiativeAsset.initiative_id).where(
+                InitiativeAsset.asset_id.in_({a for a, _ in pairs}),
+                InitiativeAsset.initiative_id.in_({i for _, i in pairs})))).tuples().all())
+    out: set[Place] = set()
+    for place in places:
+        person_id, asset_id, initiative_id = place
+        if initiative_id is None:
+            if asset_id in assets.get(person_id, ()):
+                out.add(place)
+            continue
+        if initiative_id not in moves.get(person_id, ()):
+            continue
+        if (asset_id, initiative_id) in present:
+            ok = (asset_id in in_client.get(person_id, ())
+                  and (asset_id, initiative_id) in rows.get(person_id, ()))
+        else:
+            ok = asset_id in assets.get(person_id, ())
+        if ok:
+            out.add(place)
+    return out
 
 
 async def _can_open(db: AsyncSession, person_id: uuid.UUID, asset_id: uuid.UUID,
                     initiative_id: uuid.UUID | None) -> bool:
-    """Whether the person can open everything a watch in this place needs (`_opens`) now."""
-    access = await resolve_access_many(db, [person_id])
-    for thing in _opens(asset_id, initiative_id):
-        if person_id not in await viewers(db, thing, [person_id], access=access):
-            return False
-    return True
+    """Whether the person can open everything a watch in this place needs now
+    (`openable_places`)."""
+    place = (person_id, asset_id, initiative_id)
+    return place in await openable_places(db, [place])
 
 
 async def _visible(db: AsyncSession, person_id: uuid.UUID,
                    watches: Sequence[AssetWatch]) -> list[AssetWatch]:
-    """The watches whose asset, and initiative for one set there, the person can open now, by
-    the rule each page uses (notifications/access.py), asked once per kind of thing however many
+    """The person's watches they can open now (`openable_places`), asked once however many
     there are."""
     if not watches:
         return []
-    ids: dict[str, list[uuid.UUID]] = defaultdict(list)
-    for watch in watches:
-        for thing in _opens(watch.asset_id, watch.initiative_id):
-            ids[thing.type].append(thing.id)
-    access = await resolve_access_many(db, [person_id])
-    seen: set[Thing] = set()
-    for thing_type, thing_ids in ids.items():
-        theirs = (await visible_among(db, thing_type, thing_ids, [person_id],
-                                      access=access)).get(person_id, frozenset())
-        seen.update(Thing(thing_type, thing_id) for thing_id in theirs)
-    return [watch for watch in watches
-            if seen.issuperset(_opens(watch.asset_id, watch.initiative_id))]
+    seen = await openable_places(db, [place_of(watch) for watch in watches])
+    return [watch for watch in watches if place_of(watch) in seen]
 
 
 # ── setting, changing and stopping one ──────────────────────────────

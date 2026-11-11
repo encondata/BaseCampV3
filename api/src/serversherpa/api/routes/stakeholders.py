@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.access.resolver import can_touch_rank
+from serversherpa.access.role_mix import assert_no_client_worker_mix
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
@@ -569,6 +570,8 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
                 PersonRole.revoked_at.is_(None)))
         if existing is not None:
             raise _err(409, "already_a_contact")
+        # a worker can't also be a client contact (409 client_worker_conflict)
+        await assert_no_client_worker_mix(db, body.person_id, role_name)
 
         grant = PersonRole(
             person_id=body.person_id,
@@ -640,6 +643,9 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
         old_tier = _tier_of(current.role)
         result_tier = old_tier
         if new_tier is not None and new_tier != old_tier:
+            # a new tier is a new grant: refused beside a worker role, even
+            # one held from before the rule (which stays as it is)
+            await assert_no_client_worker_mix(db, person_id, new_role_name)
             now = datetime.now(UTC)
             current.revoked_at = now
             current.revoked_by = actor.person.id

@@ -9,6 +9,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from serversherpa.access.apply import ORG_ANCHORS, apply_global_roles, apply_groups
+from serversherpa.access.role_mix import assert_no_client_worker_mix
 from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.access.effective import effective_cells
 from serversherpa.access.resolver import can_touch_rank
@@ -728,7 +729,11 @@ async def demote_to_worker(
     organization's contact; the contact flows own them. Everything else
     that grants portal access goes: other roles, access groups, per-person
     permission overrides, notification groups (and pending join/leave
-    requests), two-factor, trusted browsers, sessions and the account."""
+    requests), two-factor, trusted browsers, sessions and the account.
+
+    409 `client_worker_conflict` for a client contact who isn't a worker
+    yet: one person never holds a client tier and the worker role, so
+    staff remove the contact first (access/role_mix.py)."""
     _, account, _ = await _load_target(db, actor, person_id)
     try:
         now = datetime.now(UTC)
@@ -745,6 +750,9 @@ async def demote_to_worker(
             and (role_rows.get(name) is None
                  or role_rows[name].scope_anchor not in ORG_ANCHORS))
         worker_granted = "worker" not in active_roles
+        if worker_granted:
+            # a client contact can't also be a worker: 409, before any write
+            await assert_no_client_worker_mix(db, person_id, "worker")
         access_groups = sorted(await db.scalars(
             select(AccessGroup.name)
             .join(AccessGroupMember, AccessGroupMember.group_id == AccessGroup.id)

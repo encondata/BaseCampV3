@@ -3,7 +3,8 @@
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
@@ -17,6 +18,7 @@ from serversherpa.api.routes import (
     time as time_routes, time_bulk as time_bulk_routes, trucks, users, warehouse,
     wiki, workers,
 )
+from serversherpa.access.role_mix import RoleMixError
 from serversherpa.config import get_settings
 from serversherpa.db.engine import dispose_engine, set_application_name
 
@@ -102,6 +104,13 @@ def create_app() -> FastAPI:
         expose_headers=["X-Raster-Width", "X-Raster-Height", "Content-Disposition"],
     )
     app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+    @app.exception_handler(RoleMixError)
+    async def _role_mix(_request: Request, exc: RoleMixError) -> JSONResponse:
+        # Any grant path that would give one person a client tier and the
+        # worker role (access/role_mix.py). Nothing was committed: the
+        # request's session closes without it.
+        return JSONResponse(status_code=409, content={"detail": {"code": exc.code}})
 
     app.include_router(auth.router)
     app.include_router(access.router)

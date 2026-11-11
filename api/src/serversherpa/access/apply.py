@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from serversherpa.access.role_mix import assert_no_client_worker_mix
 from serversherpa.db.models import (
     AccessGroup, AccessGroupMember, PermissionOverride, PersonRole, Role,
 )
@@ -48,7 +49,9 @@ async def apply_global_roles(
 ) -> dict | None:
     """Make the person's revocable (non org-anchored) roles equal `desired`.
     Org-anchored grants are managed by the contact flows and never revoked
-    here. `role_rows` must cover every current and desired role name."""
+    here. `role_rows` must cover every current and desired role name.
+    Raises RoleMixError, before writing anything, when a new grant would
+    give the person the worker role beside a client tier."""
     current = await current_roles(db, person_id)
     revocable_current = {
         name for name in current
@@ -56,6 +59,9 @@ async def apply_global_roles(
     }
     if revocable_current == desired:
         return None
+    # before any write: a refused grant (RoleMixError) leaves nothing half-applied
+    for role in sorted(desired - current):
+        await assert_no_client_worker_mix(db, person_id, role)
     now = datetime.now(UTC)
     for role in revocable_current - desired:
         await db.execute(
