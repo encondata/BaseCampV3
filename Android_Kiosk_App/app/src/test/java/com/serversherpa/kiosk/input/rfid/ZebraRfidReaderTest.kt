@@ -47,6 +47,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -105,7 +106,11 @@ class ZebraRfidReaderTest {
      * references clears it, never the close itself. [lastOpenWasBatchSeen]
      * records, per open, whether the open before it was a batch result.
      * [scannerRig], when set before first use, supplies the scanner engine
-     * (a real engine over a fake scanner SDK).
+     * (a real engine over a fake scanner SDK). [vendorReaderDouble], when
+     * set, is the reader object every operation's block finds, even after a
+     * teardown dropped the link, so only the adapter's state and generation
+     * checks can refuse a call; with it unset every operation finds no
+     * reader and returns `SledNotConnected` whatever the state.
      */
     private class SeamReader(context: Context, scope: CoroutineScope, zebraHost: Boolean = false) :
         ZebraRfidReader(context, scope, zebraHost) {
@@ -127,6 +132,7 @@ class ZebraRfidReaderTest {
         @Volatile var onClose: () -> Unit = {}
         @Volatile var onLinkUpCheck: () -> Unit = {}
         @Volatile var closeThread: String? = null
+        @Volatile var vendorReaderDouble: RFIDReader? = null
 
         /** Replaces the adapter's clock when set (for example with the test scheduler's virtual time). */
         @Volatile var clock: (() -> Long)? = null
@@ -162,6 +168,8 @@ class ZebraRfidReaderTest {
             attached = false
         }
 
+        override fun linkedReader(): RFIDReader? = vendorReaderDouble
+
         override fun nowMs(): Long = clock?.invoke() ?: super.nowMs()
 
         override fun buildScannerEngine(): ZebraBarcodeEngine = scannerRig?.engine ?: super.buildScannerEngine()
@@ -193,15 +201,27 @@ class ZebraRfidReaderTest {
      * status stay null.
      */
     private fun operationFailure(result: RFIDResults): OperationFailureException {
-        val unsafeClass = Class.forName("sun.misc.Unsafe")
-        val unsafe = unsafeClass.getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
-        val e = unsafeClass.getMethod("allocateInstance", Class::class.java)
-            .invoke(unsafe, OperationFailureException::class.java) as OperationFailureException
+        val e = unconstructed(OperationFailureException::class.java)
         OperationFailureException::class.java.declaredFields.single { it.type == RFIDResults::class.java }
             .apply { isAccessible = true }
             .set(e, result)
         return e
     }
+
+    /** An object of [type] allocated without running a constructor: every field is null or zero. */
+    private fun <T> unconstructed(type: Class<T>): T {
+        val unsafeClass = Class.forName("sun.misc.Unsafe")
+        val unsafe = unsafeClass.getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
+        return type.cast(unsafeClass.getMethod("allocateInstance", Class::class.java).invoke(unsafe, type))
+    }
+
+    /**
+     * A vendor reader object with nothing behind it (its `Config`, `Actions`
+     * and `Events` are null), for [SeamReader.vendorReaderDouble]: a block
+     * that runs against it fails with its own sentence instead of returning
+     * `SledNotConnected`, so a test can tell the two apart.
+     */
+    private fun hollowVendorReader(): RFIDReader = unconstructed(RFIDReader::class.java)
 
     @Test fun startsDisconnected() = runTest {
         assertTrue(reader(backgroundScope).connection.value is RfidConnection.Disconnected)
@@ -529,19 +549,24 @@ class ZebraRfidReaderTest {
     @Test fun anUnsolicitedStopWaitsUntilTheTagsHaveGoneQuiet() = runTest {
         val (r, stops) = connectedOnVirtualTime()
         val g = r.currentGeneration
+        // Away from time 0, the adapter's "no tag yet" value, so the gap can
+        // only come from the tag; and the tag 40 ms before the stop event, so
+        // it is measured from the tag, not from the event.
+        advanceTimeBy(200)
         r.onStartEvent(g)
         r.onTag(g, "E2000001")
+        advanceTimeBy(40)
         r.onStopEvent(g)
         runCurrent()
         assertTrue("a tag just came: not settled", stops.isEmpty())
 
-        advanceTimeBy(90)
+        advanceTimeBy(50)
         runCurrent()
         assertTrue("90 ms after the last tag is not yet the 100 ms quiet gap", stops.isEmpty())
 
         advanceTimeBy(20)
         runCurrent()
-        assertEquals("the quiet gap passed", 1, stops.size)
+        assertEquals("the quiet gap passed, 110 ms after the last tag", 1, stops.size)
     }
 
     @Test fun anUnsolicitedStopWaitsAtMostTheCapWhileTagsKeepComing() = runTest {
@@ -579,6 +604,37 @@ class ZebraRfidReaderTest {
         assertTrue("the stop belonged to the sweep before; it must not end the new one", stops.isEmpty())
     }
 
+    @Test fun aStopAskedForDuringTheUnsolicitedStopWaitDropsThatStop() = runTest {
+        // The sled ends sweep A by itself; the operator's press stops A before
+        // the event goes out, and the next press opens sweep B while its start
+        // still waits. A's event must not then end B.
+        val (r, stops) = connectedOnVirtualTime()
+        val g = r.currentGeneration
+        r.onStartEvent(g)
+        r.onStopEvent(g)
+        runCurrent()
+
+        r.stopInventory()   // refused by the seam double; asking for it is what counts
+        advanceTimeBy(600)
+        runCurrent()
+
+        assertTrue("the caller is ending that sweep itself", stops.isEmpty())
+    }
+
+    @Test fun aStopEventArrivingAfterTheNextStartWasAskedForIsDropped() = runTest {
+        // The sled's own stop of the read before comes after the next start was
+        // asked for, but before that start went out (parked A3).
+        val (r, stops) = connectedOnVirtualTime()
+        val g = r.currentGeneration
+        r.onStartEvent(g)
+        r.startInventory()   // asked for; the seam double never sends it
+        r.onStopEvent(g)
+        advanceTimeBy(600)
+        runCurrent()
+
+        assertTrue("it ends the read before the new sweep, which has not started yet", stops.isEmpty())
+    }
+
     @Test fun aStopEventArrivingAfterItsWaitEndedDoesNotEndTheNextSweep() {
         val t = InventoryTracker()
         t.startAsked()
@@ -590,20 +646,22 @@ class ZebraRfidReaderTest {
         t.startAsked()
         t.startSending()
         t.markRunning()
-        assertEquals("the late event of the first stop is swallowed", StopEventKind.LATE, t.stopEvent())
+        assertEquals("the late event of the first stop is swallowed", StopEventKind.LATE, t.stopEvent().kind)
         assertTrue("the new sweep still runs", t.running)
-        assertEquals("the next one is the sled's own", StopEventKind.UNSOLICITED, t.stopEvent())
+        val own = t.stopEvent()
+        assertEquals("the next one is the sled's own", StopEventKind.UNSOLICITED, own.kind)
+        assertTrue("and it ends the sweep that is running", t.stillCurrent(own))
         assertFalse(t.running)
 
         // A stop whose event came within its wait owes nothing.
         t.startSending()
         t.markRunning()
         assertTrue(t.beginStop())
-        assertEquals(StopEventKind.REQUESTED, t.stopEvent())
+        assertEquals(StopEventKind.REQUESTED, t.stopEvent().kind)
         t.stopEnded(waited = true)
         t.startSending()
         t.markRunning()
-        assertEquals(StopEventKind.UNSOLICITED, t.stopEvent())
+        assertEquals(StopEventKind.UNSOLICITED, t.stopEvent().kind)
 
         // A new connection owes nothing either.
         t.markRunning()
@@ -611,7 +669,75 @@ class ZebraRfidReaderTest {
         t.stopEnded(waited = true)
         t.reset()
         t.markRunning()
-        assertEquals(StopEventKind.UNSOLICITED, t.stopEvent())
+        assertEquals(StopEventKind.UNSOLICITED, t.stopEvent().kind)
+    }
+
+    @Test fun aStopEventOwedTooLongIsNoLongerOwed() {
+        // A requested stop whose event never comes must not swallow the sled's
+        // own stop of a sweep that starts later (parked A3).
+        var now = 1_000L
+        val t = InventoryTracker { now }
+        t.startAsked()
+        t.startSending()
+        t.markRunning()
+        assertTrue(t.beginStop())
+        t.stopEnded(waited = true)   // no stop event came, and none ever does
+
+        now += STOP_EVENT_OWED_MS + 1
+        t.startAsked()
+        t.startSending()
+        t.markRunning()
+        val own = t.stopEvent()
+
+        assertEquals("the sled's own stop of the new sweep", StopEventKind.UNSOLICITED, own.kind)
+        assertTrue(t.stillCurrent(own))
+        assertFalse(t.running)
+    }
+
+    @Test fun anUnsolicitedStopBelongsOnlyToTheReadItEnded() {
+        val t = InventoryTracker()
+        t.startAsked()
+        t.startSending()
+        t.markRunning()
+        val first = t.stopEvent()
+        assertEquals(StopEventKind.UNSOLICITED, first.kind)
+        assertTrue(t.stillCurrent(first))
+
+        t.stopAsked()
+        assertFalse("a stop asked for since", t.stillCurrent(first))
+
+        t.startSending()
+        t.markRunning()
+        t.startAsked()   // the next start is asked for before the event comes
+        val late = t.stopEvent()
+        assertEquals(StopEventKind.UNSOLICITED, late.kind)
+        assertFalse("a start asked for after that read's start went out", t.stillCurrent(late))
+    }
+
+    // ── the tags flow ──
+
+    @Test fun tagsWaitingBehindABusyCollectorAreNotDropped() = runTest {
+        // The controller's collector waits while a start is in flight; a dense
+        // field can report thousands of tags in that time (parked F-concurrency-4).
+        val r = seamReader(backgroundScope)
+        assertTrue(r.connect(request).isSuccess)
+        val g = r.currentGeneration
+        val gate = CompletableDeferred<Unit>()
+        val received = mutableListOf<String>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            r.tags.collect {
+                received += it
+                if (received.size == 1) gate.await()
+            }
+        }
+        val count = 5_000
+        repeat(count) { r.onTag(g, "E2%07d".format(it)) }
+
+        gate.complete(Unit)
+        runCurrent()
+
+        assertEquals("every tag reaches the collector once it is free", count, received.size)
+        assertEquals("in order", "E2%07d".format(count - 1), received.last())
     }
 
     // ── the requested stop's wait ──
@@ -783,7 +909,7 @@ class ZebraRfidReaderTest {
 
     // ── cancellation and the stale link (rows 3 and 19) ──
 
-    @Test fun aConnectCancelledPartwayLeavesADefiniteStateAndNoAttachedReader() = runTest {
+    @Test fun aConnectCancelledPartwayLeavesADefiniteStateWithTheLinkItBuilt() = runTest {
         // The caller stops waiting while the vendor connect is still running.
         // The block is never interrupted: it finishes, and the state it ends
         // in is definite. Nothing tears the new link down behind its back.
@@ -859,35 +985,72 @@ class ZebraRfidReaderTest {
         assertEquals(RfidConnection.Disconnected, r.connection.value)
     }
 
-    @Test fun aCleanupThatOutlivesItsBoundIsAbandonedAndNeverRunTwice() = runTest {
-        // Real time: the bound is the companion's 5 s.
+    @Test fun aCleanupThatOutlivesItsBoundIsWaitedForAndNeverOverlapsTheNextBlock() = runTest {
+        // Real time: the bound is the companion's 5 s. The vendor keeps one
+        // protocol layer and one Bluetooth transport for the process, so a
+        // late cleanup's disconnect and dispose would close the next link:
+        // the next block waits for the cleanup however long it takes.
         val closeEntered = CountDownLatch(1)
         val releaseClose = CountDownLatch(1)
         val r = seamReader(backgroundScope)
         r.onOpen = { _, _ -> throw IllegalStateException("simulated partway failure") }
         r.onClose = {
             closeEntered.countDown()
-            releaseClose.await(3 * ZebraRfidReader.CLEANUP_BOUND_MS, TimeUnit.MILLISECONDS)
+            releaseClose.await(4 * ZebraRfidReader.CLEANUP_BOUND_MS, TimeUnit.MILLISECONDS)
+            r.events += "close ended"
         }
         try {
             assertTrue(r.connect(request).isFailure)
             assertTrue("the cleanup's close has started", withContext(Dispatchers.IO) { closeEntered.awaitBriefly() })
             r.onOpen = { sled, generation -> VendorOpen.Up(SledInfo(generation, sled.name, sled.address)) }
 
-            val startedNs = System.nanoTime()
-            val next = withContext(Dispatchers.Default) {
-                withTimeout(2 * ZebraRfidReader.CLEANUP_BOUND_MS) { r.connect(request) }
-            }
-            val waitedMs = (System.nanoTime() - startedNs) / 1_000_000L
+            val next = async(Dispatchers.Default) { r.connect(request) }
+            withContext(Dispatchers.IO) { Thread.sleep(ZebraRfidReader.CLEANUP_BOUND_MS + 500) }
 
-            assertTrue("the next block goes on without the stuck cleanup", next.isSuccess)
-            assertTrue("it waited out the bound first ($waitedMs ms)", waitedMs >= ZebraRfidReader.CLEANUP_BOUND_MS - 100)
+            assertEquals("past its bound, the cleanup still holds the next block back", 1, r.openCalls)
+            assertEquals(RfidConnection.Connecting, r.connection.value)
+
+            releaseClose.countDown()
+            val result = withContext(Dispatchers.Default) { withTimeout(5_000) { next.await() } }
+
+            assertTrue(result.isSuccess)
             assertEquals(RfidConnection.Connected("RFD4031", null), r.connection.value)
-            assertEquals("the abandoned cleanup's link is dropped, not closed again", 1, r.closeCalls)
-            assertEquals(2, r.openCalls)
+            assertEquals(
+                "the next open only after the cleanup ended, and the cleanup closed once",
+                listOf("open", "close", "close ended", "open"),
+                r.events.toList(),
+            )
             assertTrue("the new link is untouched", r.attached)
         } finally {
             releaseClose.countDown()
+        }
+    }
+
+    @Test fun aFailedConnectsCleanupAsksNothingOfTheSled() = runTest {
+        // The link is still up (as the vendor sees it) after each of these
+        // failures, but its sled has just failed a step or was never
+        // unlocked: the cleanup removes the listener, disconnects and
+        // disposes, with no stop, batch-mode write or save to wait out.
+        val stepFour = RfidConnection.Failed(SledWords.TRIGGER_NOT_SET_UP, retryable = false, fix = SledFix.CONNECT)
+        val failures = listOf<() -> Nothing>(
+            { throw SledConnectException(stepFour) },
+            { throw operationFailure(RFIDResults.RFID_CONNECTION_PASSWORD_ERROR) },
+            { throw operationFailure(RFIDResults.RFID_API_PARAM_ERROR) },
+        )
+        for (failure in failures) {
+            val r = seamReader(backgroundScope)
+            r.onOpen = { _, _ -> failure() }
+
+            val failed = failedOf(r.connect(request))
+            r.disconnect()   // joins the cleanup
+
+            assertFalse(failed.retryable)
+            assertTrue(r.linkUp)
+            assertEquals(
+                "${failed.reason}: listener, disconnect and dispose only",
+                listOf(teardownPlan(linkUp = false, wroteLayout = false)),
+                r.plans.toList(),
+            )
         }
     }
 
@@ -1026,7 +1189,11 @@ class ZebraRfidReaderTest {
 
         r.onLinkLost(r.currentGeneration)
 
-        assertEquals(RfidConnection.Failed(SledWords.couldNotReach("RFD4031"), retryable = true), r.connection.value)
+        assertEquals(
+            "with the Connect fix, so the scan screens' slot shows the button its sentence names",
+            RfidConnection.Failed(SledWords.couldNotReach("RFD4031"), retryable = true, fix = SledFix.CONNECT),
+            r.connection.value,
+        )
         assertEquals("a drop keeps info, so the controller can tell it from a connect that never came up", info, r.info.value)
     }
 
@@ -1139,6 +1306,59 @@ class ZebraRfidReaderTest {
         assertEquals(stepFour, r.connection.value)
         assertEquals(SledWords.TRIGGER_NOT_SET_UP, failed.reason)
         assertEquals(SledFix.CONNECT, failed.fix)
+    }
+
+    // ── connect step 4 ──
+
+    private val sendError = VendorError("RFID_COMM_SEND_ERROR", null)
+    private val refusal = VendorError("RFID_API_PARAM_ERROR", null)
+
+    /** Runs [runTriggerEventSetup] with [registered] as each try's answer, and [checkError] as the check's (null: it answered). */
+    private fun triggerSetup(registered: List<Boolean>, checkError: VendorError?, tryError: VendorError? = null): Pair<TriggerEventSetup, List<String>> {
+        val calls = mutableListOf<String>()
+        val answers = ArrayDeque(registered)
+        val outcome = runTriggerEventSetup(
+            register = {
+                calls += "register"
+                if (tryError != null) throw IllegalStateException("try")
+                answers.removeFirst()
+            },
+            check = {
+                calls += "check"
+                if (checkError != null) throw IllegalStateException("check")
+            },
+            screen = { step, _ -> if (step == "trigger events") tryError else checkError },
+        )
+        return outcome to calls
+    }
+
+    @Test fun aTriggerRegistrationThatNeverTookIsRetryableWhenTheSledStoppedAnswering() {
+        // The vendor drops the registration's own result: a timeout comes back
+        // only as an event that stayed unregistered. The check that follows
+        // shows the sled is not answering, which another connect can fix.
+        for (error in listOf(timeout, sendError)) {
+            val (outcome, calls) = triggerSetup(registered = listOf(false, false), checkError = error)
+            assertEquals(listOf("register", "register", "check"), calls)
+            assertEquals(TriggerEventSetup.NotRegistered(retryable = true, checkError = error), outcome)
+        }
+    }
+
+    @Test fun aTriggerRegistrationThatNeverTookOnASledThatAnswersIsNotRetryable() {
+        val (answered, _) = triggerSetup(registered = listOf(false, false), checkError = null)
+        assertEquals(TriggerEventSetup.NotRegistered(retryable = false, checkError = null), answered)
+
+        val (refused, _) = triggerSetup(registered = listOf(false, false), checkError = refusal)
+        assertEquals("a refusal is an answer", TriggerEventSetup.NotRegistered(retryable = false, checkError = refusal), refused)
+    }
+
+    @Test fun aTriggerRegistrationIsTriedTwiceAndCheckedOnlyWhenNeeded() {
+        val (second, secondCalls) = triggerSetup(registered = listOf(false, true), checkError = timeout)
+        assertEquals(TriggerEventSetup.Registered, second)
+        assertEquals(listOf("register", "register"), secondCalls)
+
+        val (thrown, thrownCalls) = triggerSetup(registered = emptyList(), checkError = null, tryError = timeout)
+        assertEquals("a try that threw link trouble needs no check", TriggerEventSetup.NotRegistered(retryable = true, checkError = null), thrown)
+        assertEquals(listOf("register", "register"), thrownCalls)
     }
 
     @Test fun aVendorExceptionFromTheSeamMapsThroughConnectFailure() = runTest {
@@ -1521,6 +1741,78 @@ class ZebraRfidReaderTest {
 
         assertEquals(SledScannerState.Off, r.scanner.value)
         assertEquals(ZebraBarcodeEngineTest.OPEN_CALLS + ZebraBarcodeEngineTest.CLOSE_CALLS, r.scannerCalls)
+    }
+
+    @Test fun aRefusedLayoutCallQueuedBeforeANewerConnectLeavesThatConnectsLayout() = runTest {
+        // A layout call whose caller stopped waiting is still queued when a
+        // newer connect asks for Barcode. It runs first and is refused (the
+        // state is Connecting); with no read-back, the scanner session must
+        // still follow the newer connect's layout (ruling 27, parked A4-r0-3).
+        val r = scannerReader(backgroundScope)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val opens = java.util.concurrent.atomic.AtomicInteger()
+        r.onOpen = { sled, generation ->
+            if (opens.incrementAndGet() == 1) {
+                entered.countDown()
+                release.awaitBriefly()
+            }
+            VendorOpen.Up(SledInfo(generation, sled.name, sled.address))
+        }
+        val held = async(Dispatchers.Default) { r.connect(request) }
+        assertTrue(withContext(Dispatchers.IO) { entered.awaitBriefly() })
+
+        val stale = async(start = CoroutineStart.UNDISPATCHED) { r.setTriggerLayout(SledTriggerLayout.RFID) }
+        val newer = async(start = CoroutineStart.UNDISPATCHED) { r.connect(barcodeRequest) }
+        release.countDown()
+
+        assertTrue("the queued layout call is refused", realWait { stale.await() }.exceptionOrNull() is SledNotConnected)
+        assertTrue(realWait { newer.await() }.isSuccess)
+        realWait { held.await() }
+        assertNull("no read-back", r.info.value?.trigger)
+        assertEquals("the scanner follows the newer connect's Barcode", SledScannerState.Ready, r.scanner.value)
+    }
+
+    @Test fun aCallMadeDuringTeardownReturnsNotConnectedAndShowsNoError() = runTest {
+        // Spec test 4. The teardown runs on the worker after disconnect() has
+        // published Disconnected; a call made meanwhile queues behind it.
+        val r = seamReader(backgroundScope)
+        r.vendorReaderDouble = hollowVendorReader()
+        assertTrue(r.connect(request).isSuccess)
+        assertFalse(
+            "while Connected, a call reaches its vendor block (and fails there, with its own sentence)",
+            r.apply(DEFAULT_RFID_SETTINGS).exceptionOrNull() is SledNotConnected,
+        )
+        val closeEntered = CountDownLatch(1)
+        val releaseClose = CountDownLatch(1)
+        r.onClose = {
+            closeEntered.countDown()
+            releaseClose.awaitBriefly()
+        }
+        val states = CopyOnWriteArrayList<RfidConnection>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { r.connection.collect { states += it } }
+
+        val disconnecting = async(Dispatchers.Default) { r.disconnect() }
+        assertTrue("the teardown is running", withContext(Dispatchers.IO) { closeEntered.awaitBriefly() })
+        val calls = mapOf(
+            "apply" to async(Dispatchers.Default) { r.apply(DEFAULT_RFID_SETTINGS) },
+            "startInventory" to async(Dispatchers.Default) { r.startInventory() },
+            "stopInventory" to async(Dispatchers.Default) { r.stopInventory() },
+            "regions" to async(Dispatchers.Default) { r.regions() },
+            "setRegion" to async(Dispatchers.Default) { r.setRegion("US", hopping = null) },
+            "setTriggerLayout" to async(Dispatchers.Default) { r.setTriggerLayout(SledTriggerLayout.BARCODE) },
+        )
+        withContext(Dispatchers.IO) { Thread.sleep(100) }   // let every call post its block behind the teardown
+        releaseClose.countDown()
+
+        for ((member, call) in calls) {
+            val result = realWait { call.await() }
+            assertTrue("$member must report SledNotConnected, got ${result.exceptionOrNull()}", result.exceptionOrNull() is SledNotConnected)
+        }
+        realWait { disconnecting.await() }
+        assertEquals(RfidConnection.Disconnected, r.connection.value)
+        assertTrue("no failure shows, got $states", states.none { it is RfidConnection.Failed })
+        assertEquals(1, r.closeCalls)
     }
 
     // ── connect notes ──

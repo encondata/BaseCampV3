@@ -318,23 +318,26 @@ class ZebraBarcodeEngineTest {
         assertEquals(DID_NOT_START, rig.state)
     }
 
-    @Test fun alreadyActiveIsUpOnlyForASessionThisEngineOpenedInTheSameGeneration() {
+    @Test fun alreadyActiveAfterATerminateThatDidNotGoThroughIsTerminatedAndEstablishedAgain() {
+        // The terminate fails (in the vendor, a throw before it clears its
+        // active flag), so the vendor still marks the scanner active. The
+        // close's mode reset stopped the vendor's Bluetooth manager and closed
+        // the socket all the same, so the next open in the same generation
+        // (a Barcode, RFID, Barcode flip) must not take ALREADY_ACTIVE as up.
         val rig = Rig()
         rig.open()
         assertEquals(READY, rig.state)
-        // The terminate fails, so the session may still be active.
         rig.sdk.terminateResult = ScannerResult.FAILURE
         rig.close()
-        rig.sdk.calls.clear()
+        assertEquals(OPEN_CALLS + CLOSE_CALLS, rig.sdk.calls.toList())
+        rig.sdk.terminateResult = ScannerResult.SUCCESS
+        val again = listOf("mode DISABLED", "mode BT_NORMAL", "establish 10", "terminate 10", "establish 10")
 
+        rig.sdk.calls.clear()
         rig.sdk.establishResults += ScannerResult.ALREADY_ACTIVE
         rig.open()
 
-        assertEquals("opened here in this generation: up", listOf("mode DISABLED", "mode BT_NORMAL", "establish 10"), rig.sdk.calls.toList())
-        // No established callback comes for a session already up, so its stale window starts when the establish returned.
-        assertEquals(OPENING, rig.state)
-        rig.clock.now += ZebraBarcodeEngine.STALE_WINDOW_MS
-        rig.timers.liveOne().fire()
+        assertEquals("the same generation: terminate, then one more establish", again, rig.sdk.calls.toList())
         assertEquals(READY, rig.state)
 
         rig.close()
@@ -342,11 +345,7 @@ class ZebraBarcodeEngineTest {
         rig.sdk.establishResults += ScannerResult.ALREADY_ACTIVE
         rig.open(generation = 2)
 
-        assertEquals(
-            "a new generation does not own it",
-            listOf("mode DISABLED", "mode BT_NORMAL", "establish 10", "terminate 10", "establish 10"),
-            rig.sdk.calls.toList(),
-        )
+        assertEquals("a new generation: the same", again, rig.sdk.calls.toList())
         assertEquals(READY, rig.state)
     }
 
@@ -437,7 +436,7 @@ class ZebraBarcodeEngineTest {
 
     // ── closing ──
 
-    @Test fun anUnexpectedTerminationGoesOffAndQueuesTerminateThenDisabled() {
+    @Test fun anUnexpectedTerminationOffersTryAgainAndQueuesTerminateThenDisabled() {
         val worker = singleWorker()
         try {
             val rig = Rig(worker)
@@ -451,7 +450,9 @@ class ZebraBarcodeEngineTest {
 
             val release = hold(worker)
             rig.engine.sessionTerminated(10)
-            assertEquals("Off at once", OFF, rig.state)
+            // The RFID link is still Connected in a layout that uses the
+            // scanner, and the screens offer Try again only for this fault.
+            assertEquals("at once, as a scanner that did not start", DID_NOT_START, rig.state)
             assertEquals(OPEN_CALLS, rig.sdk.calls.toList())
             release.countDown()
             drain(worker)
@@ -459,11 +460,36 @@ class ZebraBarcodeEngineTest {
 
             rig.open()
             drain(worker)
-            assertEquals("asking again for the same session does not reopen it", OFF, rig.state)
+            assertEquals("asking again for the same session does not reopen it", DID_NOT_START, rig.state)
             assertEquals(OPEN_CALLS + CLOSE_CALLS, rig.sdk.calls.toList())
+
+            assertTrue(runBlocking { rig.engine.retry(1) }.isSuccess)
+            drain(worker)
+            assertEquals(
+                "Try again reopens it",
+                OPEN_CALLS + CLOSE_CALLS + listOf("mode DISABLED", "mode BT_NORMAL", "establish 10"),
+                rig.sdk.calls.toList(),
+            )
+            assertEquals(READY, rig.state)
+
+            rig.engine.sessionTerminated(10)
+            assertEquals(DID_NOT_START, rig.state)
+            rig.engine.linkLost(1)
+            assertEquals("the link drop that follows shows Off", OFF, rig.state)
         } finally {
             worker.shutdown()
         }
+    }
+
+    @Test fun bluetoothTurningOffAfterAnUnexpectedTerminationShowsOff() {
+        val rig = Rig()
+        rig.open()
+        rig.engine.sessionTerminated(10)
+        assertEquals(DID_NOT_START, rig.state)
+
+        rig.engine.bluetoothTurningOff()
+
+        assertEquals("the link drop and the reconnect after it open a new request", OFF, rig.state)
     }
 
     @Test fun closingWhileReadyGoesOffAndTerminatesThenResetsTheMode() {

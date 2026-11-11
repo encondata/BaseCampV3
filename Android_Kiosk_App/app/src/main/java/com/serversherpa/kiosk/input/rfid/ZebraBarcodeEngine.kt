@@ -92,12 +92,15 @@ internal class ScannerCommandFailed(val result: ScannerResult) : Exception()
  * call, since the vendor would switch Bluetooth on itself or wait for it),
  * resets the mode, sets the classic-Bluetooth mode, lists the scanners only to
  * find the sled's id ([chooseScanner], cached per sled), and establishes.
- * `ALREADY_ACTIVE` is up only for a session this engine opened in the same
- * generation (one whose terminate did not go through); otherwise terminate,
+ * `ALREADY_ACTIVE` is never a session this engine can use: terminate,
  * establish once more, and a second `ALREADY_ACTIVE` or any other result is
- * `Unavailable(DID_NOT_START)`. `NOT_AVAILABLE` drops the cached id, lists
- * once and establishes once. A failed open resets the mode when the
- * Bluetooth mode went in.
+ * `Unavailable(DID_NOT_START)`. Ruling 40's one exception, a session this
+ * engine opened in the same generation, cannot be up by then: every close and
+ * every open sends the mode reset first, and the vendor's reset stops its
+ * Bluetooth manager and closes the scanner's socket, while the vendor keeps
+ * the scanner marked active whenever its terminate did not go through.
+ * `NOT_AVAILABLE` drops the cached id, lists once and establishes once. A
+ * failed open resets the mode when the Bluetooth mode went in.
  *
  * **Ready** comes only once establish returned `SUCCESS` and
  * [STALE_WINDOW_MS] passed since the established callback (the vendor's
@@ -106,10 +109,14 @@ internal class ScannerCommandFailed(val result: ScannerResult) : Exception()
  * Ready is dropped and logged with its length, never its value.
  *
  * **Closing** (not wanted, a termination this engine did not ask for, a link
- * loss, Bluetooth turning off) shows `Off` at once and queues terminate, then
- * the mode reset in a `finally`. A termination the engine did not ask for, or
- * Bluetooth turning off, holds the request closed until a new open request or
- * [retry]. Bluetooth turning off also drops the cached id.
+ * loss, Bluetooth turning off) queues terminate, then the mode reset in a
+ * `finally`, and changes what [state] shows at once: `Off`, except after a
+ * termination the engine did not ask for while the session is still asked
+ * for, which shows `Unavailable(DID_NOT_START)`, so the screens offer Try
+ * again while the RFID link stays `Connected`. A termination the engine did
+ * not ask for, or Bluetooth turning off, holds the request closed until a new
+ * open request or [retry]. Bluetooth turning off shows `Off` (the link drop
+ * and the reconnect after it open a new request) and drops the cached id.
  *
  * **Watchdog.** Each vendor call is watched ([COMMAND_WATCHDOG_MS],
  * [ESTABLISH_WATCHDOG_MS] for establish). One that outlives it changes only
@@ -134,24 +141,30 @@ internal class ZebraBarcodeEngine(
     private val _barcodes = MutableSharedFlow<SledBarcode>(extraBufferCapacity = 16)
     val barcodes: SharedFlow<SledBarcode> = _barcodes.asSharedFlow()
 
-    /** What the reader asked for. [request] numbers each open request; [parked] holds it closed after the engine closed it by itself. */
+    /** What the reader asked for. [request] numbers each open request; [parked] holds it closed after the engine closed it by itself, and says why. */
     private data class Desire(
         val generation: Int,
         val open: Boolean,
         val target: SledIdentity,
         val request: Int,
-        val parked: Boolean = false,
+        val parked: Parked? = null,
     ) {
-        val wanted: Boolean get() = open && !parked
+        val wanted: Boolean get() = open && parked == null
+    }
+
+    /** Why the engine holds an open request closed by itself. */
+    private enum class Parked {
+        /** The scanner ended the session without being asked: shown as `Unavailable(DID_NOT_START)`, so Try again is offered. */
+        ENDED_BY_ITSELF,
+
+        /** Bluetooth is turning off: shown as `Off`. */
+        BLUETOOTH_OFF,
     }
 
     /** The session the engine has up: for [generation] and [request], on scanner [id], its stale window from [windowStart]. */
     private class Session(val generation: Int, val request: Int, val id: Int, val windowStart: Long) {
         @Volatile var cancelWindow: () -> Unit = {}
     }
-
-    /** A session this engine established, until a terminate is known to have ended it. */
-    private data class Owned(val generation: Int, val id: Int)
 
     private data class CachedId(val target: SledIdentity, val id: Int)
 
@@ -187,7 +200,6 @@ internal class ZebraBarcodeEngine(
     private var callCount = 0L
     private var pumpQueued = false
     private var session: Session? = null
-    private var owned: Owned? = null
     private var cached: CachedId? = null
     private var cacheEpoch = 0
 
@@ -246,7 +258,7 @@ internal class ZebraBarcodeEngine(
         synchronized(lock) {
             cached = null
             cacheEpoch++
-            if (desire.wanted) desire = desire.copy(parked = true)
+            if (desire.open) desire = desire.copy(parked = Parked.BLUETOOTH_OFF)
             renderLocked()
         }
         log("Scanner: Bluetooth is turning off; closing, and the scanner id is forgotten.")
@@ -255,15 +267,17 @@ internal class ZebraBarcodeEngine(
 
     /**
      * The Try again button: terminate (when a session is up), then open once
-     * more. Fails at once while the scanner shows `STOPPED_RESPONDING` (the
-     * worker is stuck), and with [SledNotConnected] when no session is asked
-     * for in [generation]. Returns once it is queued, without waiting for it.
+     * more; it also reopens a request held closed after the scanner ended its
+     * session by itself. Fails at once while the scanner shows
+     * `STOPPED_RESPONDING` (the worker is stuck), and with [SledNotConnected]
+     * when no session is asked for in [generation]. Returns once it is
+     * queued, without waiting for it.
      */
     suspend fun retry(generation: Int): Result<Unit> {
         synchronized(lock) {
             if (_state.value == STOPPED_RESPONDING) return Result.failure(Exception(SledWords.SCANNER_STOPPED_RESPONDING))
             if (!desire.open || desire.generation != generation) return Result.failure(SledNotConnected())
-            desire = desire.copy(request = ++requests, parked = false)
+            desire = desire.copy(request = ++requests, parked = null)
             found = SledScannerState.Opening
             renderLocked()
         }
@@ -329,14 +343,14 @@ internal class ZebraBarcodeEngine(
                 else -> null
             }
             if (current == true) {
-                desire = desire.copy(parked = true)
+                desire = desire.copy(parked = Parked.ENDED_BY_ITSELF)
                 renderLocked()
             }
             current
         }
         when (parked) {
             null -> log("Scanner: a terminated callback for scanner $scannerId, which this engine has no session with; ignored.")
-            true -> log("Scanner: scanner $scannerId ended its session by itself; closing.")
+            true -> log("Scanner: scanner $scannerId ended its session by itself; closing, and showing that it did not start, so Try again is offered.")
             false -> log("Scanner: scanner $scannerId ended an older session by itself.")
         }
         kick()
@@ -472,39 +486,34 @@ internal class ZebraBarcodeEngine(
     private fun establishFor(sdk: ScannerSdk, d: Desire): Established {
         var id = cachedIdFor(d.target) ?: listFor(sdk, d.target) ?: return Established.Failed
         if (!stillWanted(d)) return Established.Superseded
-        var result = establish(sdk, id, d)
+        var result = establish(sdk, id)
         if (result == ScannerResult.NOT_AVAILABLE) {
             log("Scanner: scanner $id is not available; listing again.")
             synchronized(lock) { cached = null }
             if (!stillWanted(d)) return Established.Superseded
             id = listFor(sdk, d.target) ?: return Established.Failed
             if (!stillWanted(d)) return Established.Superseded
-            result = establish(sdk, id, d)
+            result = establish(sdk, id)
         }
         if (result == ScannerResult.ALREADY_ACTIVE) {
-            val openedHere = synchronized(lock) { owned == Owned(d.generation, id) }
-            if (openedHere) {
-                log("Scanner: scanner $id is already active, opened here in this generation: up.")
-                result = ScannerResult.SUCCESS
-            } else {
-                log("Scanner: scanner $id is already active, not opened here in this generation; terminating, then one more establish.")
-                terminate(sdk, id)
-                if (!stillWanted(d)) return Established.Superseded
-                result = establish(sdk, id, d)
-                if (result == ScannerResult.ALREADY_ACTIVE) log("Scanner: scanner $id is still already active.")
-            }
+            // The mode reset this open began with closed any socket this
+            // engine had, so the vendor's flag is stale or another app holds it.
+            log("Scanner: scanner $id is already active, with no session this engine can use; terminating, then one more establish.")
+            terminate(sdk, id)
+            if (!stillWanted(d)) return Established.Superseded
+            result = establish(sdk, id)
+            if (result == ScannerResult.ALREADY_ACTIVE) log("Scanner: scanner $id is still already active.")
         }
         return if (result == ScannerResult.SUCCESS) Established.Up(id) else Established.Failed
     }
 
-    private fun establish(sdk: ScannerSdk, id: Int, d: Desire): ScannerResult {
+    private fun establish(sdk: ScannerSdk, id: Int): ScannerResult {
         synchronized(lock) {
             establishing = id
             establishedAt = null
         }
         val result = guarded("establish on scanner $id", ESTABLISH_WATCHDOG_MS) { sdk.establish(id) } ?: ScannerResult.FAILURE
         log("Scanner: establish on scanner $id: $result.")
-        if (result == ScannerResult.SUCCESS) synchronized(lock) { owned = Owned(d.generation, id) }
         return result
     }
 
@@ -602,8 +611,7 @@ internal class ZebraBarcodeEngine(
         }
         log("Scanner: terminate on scanner $id: $result.")
         val ended = result == ScannerResult.SUCCESS || result == ScannerResult.NOT_ACTIVE || result == ScannerResult.NOT_AVAILABLE
-        synchronized(lock) { if (ended && owned?.id == id) owned = null }
-        if (!ended) log("Scanner: the session on scanner $id may still be active.")
+        if (!ended) log("Scanner: the vendor may still mark scanner $id active; an ALREADY_ACTIVE at the next open is terminated first.")
         return result
     }
 
@@ -717,9 +725,14 @@ internal class ZebraBarcodeEngine(
         }
     }
 
-    /** `Off` unless a session is wanted; `STOPPED_RESPONDING` while a call is stuck; else what the open flow found. */
+    /**
+     * `DID_NOT_START` while an open request is held closed after the scanner
+     * ended its session by itself; else `Off` unless a session is wanted;
+     * `STOPPED_RESPONDING` while a call is stuck; else what the open flow found.
+     */
     private fun renderLocked() {
         val shown = when {
+            desire.open && desire.parked == Parked.ENDED_BY_ITSELF -> DID_NOT_START
             !desire.wanted -> SledScannerState.Off
             stuck -> STOPPED_RESPONDING
             else -> found

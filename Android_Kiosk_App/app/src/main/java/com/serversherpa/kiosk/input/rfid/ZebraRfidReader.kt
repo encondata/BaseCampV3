@@ -11,6 +11,7 @@ import android.util.Log
 import android.view.InputDevice
 import androidx.core.content.ContextCompat
 import com.serversherpa.kiosk.core.rfid.AttributeRead
+import com.serversherpa.kiosk.core.rfid.BatchPrevention
 import com.serversherpa.kiosk.core.rfid.BatchRecoveryPlan
 import com.serversherpa.kiosk.core.rfid.BondedDevice
 import com.serversherpa.kiosk.core.rfid.LayoutWrite
@@ -36,6 +37,7 @@ import com.serversherpa.kiosk.core.rfid.SledConnectRequest
 import com.serversherpa.kiosk.core.rfid.SledFix
 import com.serversherpa.kiosk.core.rfid.SledInfo
 import com.serversherpa.kiosk.core.rfid.SledKey
+import com.serversherpa.kiosk.core.rfid.SledLayoutMemory
 import com.serversherpa.kiosk.core.rfid.SledNotConnected
 import com.serversherpa.kiosk.core.rfid.SledScannerState
 import com.serversherpa.kiosk.core.rfid.SledTriggerLayout
@@ -45,6 +47,7 @@ import com.serversherpa.kiosk.core.rfid.TeardownPlan
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.core.rfid.TriggerPull
 import com.serversherpa.kiosk.core.rfid.VendorError
+import com.serversherpa.kiosk.core.rfid.batchPrevention
 import com.serversherpa.kiosk.core.rfid.batchRecoveryPlan
 import com.serversherpa.kiosk.core.rfid.bestStepDue
 import com.serversherpa.kiosk.core.rfid.classifyResult
@@ -151,16 +154,20 @@ sealed interface VendorOpen {
  * call never overwrites what that call published. A loss (the vendor's
  * disconnect event, or two link-trouble results in a row) is recorded for
  * its generation; for the current one it writes
- * `Failed(couldNotReach(name), retryable = true)` while the state is
+ * `Failed(couldNotReach(name), retryable = true, fix = CONNECT)` while the state is
  * `Connecting`, `Connected` or `NeedsRegion`, and the link's blocks then
  * return [SledNotConnected].
  *
  * **Connect.** A pre-check over Android's bonded list runs before any
  * vendor object is built ([precheck]); then [openVendorConnection] runs the
  * vendor sequence (spec, Connect sequence). A failed connect's cleanup runs
- * once, on a thread of its own for that attempt; the worker's next block
- * waits for it at most [CLEANUP_BOUND_MS] ([BATCH_CLEANUP_BOUND_MS] after a
- * batch recovery) and then drops that attempt's vendor references.
+ * once, on a thread of its own for that attempt, and asks nothing of the
+ * sled: it removes the listener, disconnects and disposes. The worker's next
+ * block waits until that cleanup has ended, however long it takes (logged
+ * every [CLEANUP_BOUND_MS], or [BATCH_CLEANUP_BOUND_MS] after a batch
+ * recovery), because the vendor keeps one protocol layer and one Bluetooth
+ * transport for the whole process: each `RFIDReader` is only a handle on
+ * them, so a late cleanup would close or confuse the next attempt's link.
  *
  * Every operator sentence is a [SledWords] member. Vendor result names and
  * texts go to the log (`adb logcat -s ZebraRfidReader`) through
@@ -198,7 +205,7 @@ open class ZebraRfidReader(
     private val _batchRecovery = MutableStateFlow(false)
     override val batchRecovery: StateFlow<Boolean> = _batchRecovery.asStateFlow()
 
-    private val _tags = MutableSharedFlow<String>(extraBufferCapacity = 512)
+    private val _tags = MutableSharedFlow<String>(extraBufferCapacity = TAGS_BUFFER)
     override val tags: SharedFlow<String> = _tags.asSharedFlow()
 
     private val _pulls = MutableSharedFlow<TriggerPull>(extraBufferCapacity = 16)
@@ -228,9 +235,12 @@ open class ZebraRfidReader(
     final override val barcodes: SharedFlow<SledBarcode> get() = scannerEngine.barcodes
 
     /**
-     * The layout the last connect request or [setTriggerLayout] asked for.
+     * The layout the controller last requested in the current generation:
+     * the connect request's, or the last [setTriggerLayout] that passed the
+     * state check in this generation (a refused call never changes it).
      * While no read-back was accepted, the layout in force is its
      * `effectiveLayout` (ruling 27), and the scanner session follows it.
+     * Written under [stateLock].
      */
     @Volatile private var requestedLayout: SledTriggerLayout = SledTriggerLayout.RFID
 
@@ -253,12 +263,17 @@ open class ZebraRfidReader(
     /** The chosen sled's name for the attempt in flight, for the link-loss sentence before `info` is set. */
     @Volatile private var linkName: String? = null
 
+    /** The chosen sled's address for the attempt in flight (and the link it opened), for [layoutMemory]. Worker-confined. */
+    private var linkAddress: String? = null
+
+    /** The sleds this adapter wrote a trigger layout to: their config is never saved ([layoutMayBeLive]). */
+    private val layoutMemory = SledLayoutMemory()
+
     /** The vendor objects of the open (or failed, not yet cleaned up) link. Read by the cleanup thread. */
     @Volatile private var link: VendorLink? = null
 
     // Worker-confined from here down.
     private var openGeneration = NO_GENERATION
-    private var wroteLayout = false
     private var links = LinkTroubleTracker()
     private var batchInARow = false
     private var batchNote: String? = null
@@ -278,7 +293,7 @@ open class ZebraRfidReader(
     private var sawRegionNotSet = false
 
     // Written on the worker and on the vendor's event thread.
-    private val inventory = InventoryTracker()
+    private val inventory = InventoryTracker { nowMs() }
     @Volatile private var lastTagAtMs = 0L
 
     /** The last battery level the current generation reported, kept so the publish at the end of a connect can show it. */
@@ -317,11 +332,24 @@ open class ZebraRfidReader(
         /** A best setup step not started this long after the vendor `connect()` returned is skipped. */
         internal const val BEST_STEP_DEADLINE_MS = SLED_BEST_STEP_DEADLINE_MS
 
-        /** How long the worker's next block waits for a failed connect's cleanup. */
+        /**
+         * How long the worker's next block waits for a failed connect's
+         * cleanup before it logs that it is still waiting. It keeps waiting:
+         * the cleanup's vendor calls act on the process's one vendor link.
+         */
         internal const val CLEANUP_BOUND_MS = 5_000L
 
         /** The same, after a batch recovery (its close). */
         internal const val BATCH_CLEANUP_BOUND_MS = 20_000L
+
+        /**
+         * How many tag reads wait for the controller. Its collector waits
+         * while a start is in flight (up to its start wait plus a wait for its
+         * gate), and the sled reports in the order of a thousand tags a
+         * second, so 512 could drop tags of a dense field that "report each
+         * tag once" never reports again. The buffer only grows as it fills.
+         */
+        internal const val TAGS_BUFFER = 16_384
 
         /** The batch recovery's pause after its stop, and before its one retry of the batch-mode write. */
         internal const val BATCH_PAUSE_MS = 500L
@@ -337,7 +365,6 @@ open class ZebraRfidReader(
 
         private const val NO_GENERATION = -1
         private const val BATCH_MODE_ATTRIBUTE = 1500
-        private const val BATCH_MODE_OFF_VALUE = "0"
         private const val REGION_NOT_SET_CODE = "NA"
 
         /** The key-layout attribute: written by a raw layout write, read back after every write, and read by the battery block. */
@@ -425,9 +452,9 @@ open class ZebraRfidReader(
 
     private fun attempt(request: SledConnectRequest, generation: Int): Result<Unit> {
         tearDownOpenLink()
-        wroteLayout = false
         links = LinkTroubleTracker()
         linkName = null
+        linkAddress = null
         powerTable = null
         reimmediateAfterStop = false
         sawRegionNotSet = false
@@ -442,6 +469,7 @@ open class ZebraRfidReader(
         }
         val name = chosen.sled.name
         linkName = name
+        linkAddress = chosen.sled.address
         openGeneration = generation
         Log.i(TAG, "Connecting to $name (${chosen.sled.address}), generation $generation.")
         val opened = try {
@@ -453,8 +481,12 @@ open class ZebraRfidReader(
             } else {
                 failureOf(t, name, chosen.severalPaired)
             }
-            val linkUp = generation !in lostGenerations && !failed.retryable && vendorLinkUpQuietly()
-            cleanUpAfterFailedConnect(teardownPlan(linkUp, wroteLayout), CLEANUP_BOUND_MS, generation)
+            // A failed connect's cleanup never asks anything of the sled: no
+            // stop, no batch-mode write, no save. Its sled has just failed a
+            // step (or, after a password error, was never unlocked), so each
+            // of those could wait out the vendor's 2 s to 15 s timeouts, and
+            // the batch-mode step already ran at connect step 2.
+            cleanUpAfterFailedConnect(teardownPlan(linkUp = false, wroteLayout = false), CLEANUP_BOUND_MS, generation)
             return fail(generation, failed)
         }
         return when (opened) {
@@ -512,7 +544,7 @@ open class ZebraRfidReader(
     /** A link that recorded a loss, or is not up, at the end of setup: cleaned up, and failed retryably. */
     private fun notUpAtTheEnd(name: String, generation: Int): Result<Unit> {
         Log.w(TAG, "The link to $name was not up at the end of setup (generation $generation).")
-        cleanUpAfterFailedConnect(teardownPlan(linkUp = false, wroteLayout = wroteLayout), CLEANUP_BOUND_MS, generation)
+        cleanUpAfterFailedConnect(teardownPlan(linkUp = false, wroteLayout = false), CLEANUP_BOUND_MS, generation)
         return fail(generation, reached(name))
     }
 
@@ -587,8 +619,9 @@ open class ZebraRfidReader(
 
     /**
      * Starts the one cleanup of a failed attempt, on its own thread, against
-     * that attempt's link (captured here, on the worker). Nothing to close:
-     * just drops the references.
+     * that attempt's link (captured here, on the worker), so the failed
+     * connect returns at once; the worker's next block waits for it
+     * ([awaitCleanup]). Nothing to close: just drops the references.
      */
     private fun cleanUpAfterFailedConnect(plan: TeardownPlan, boundMs: Long, generation: Int) {
         if (!hasOpenVendorConnection()) {
@@ -606,30 +639,49 @@ open class ZebraRfidReader(
         thread.start()
     }
 
-    /** Waits for a failed attempt's cleanup, at most its bound, then drops that attempt's references. */
+    /**
+     * Waits until a failed attempt's cleanup has ended, then drops that
+     * attempt's references. It never goes on while the cleanup still runs:
+     * the vendor has one protocol layer and one Bluetooth transport per
+     * process, so the cleanup's disconnect and dispose would close the next
+     * link, share its status replies and unregister its receivers. Its calls
+     * ask nothing of the sled, and the vendor bounds its own waits; a wait
+     * past [pendingCleanupBoundMs] is logged each time it passes.
+     */
     private fun awaitCleanup() {
         val thread = pendingCleanup ?: return
+        var waitedMs = 0L
+        while (true) {
+            try {
+                thread.join(pendingCleanupBoundMs)
+            } catch (e: InterruptedException) {
+                // Nothing interrupts the worker. The flag is left clear on purpose:
+                // set, it would make every later vendor wait end at once.
+                Log.w(TAG, "The wait for a failed connect's cleanup was interrupted; waiting on.", e)
+                continue
+            }
+            if (!thread.isAlive) break
+            waitedMs += pendingCleanupBoundMs
+            Log.w(TAG, "The cleanup of a failed connect is still running after $waitedMs ms; waiting for it, so two links never overlap.")
+        }
         pendingCleanup = null
-        try {
-            thread.join(pendingCleanupBoundMs)
-        } catch (e: InterruptedException) {
-            // Nothing interrupts the worker. The flag is left clear on purpose:
-            // set, it would make every later vendor wait end at once.
-            Log.w(TAG, "The wait for a failed connect's cleanup was interrupted; going on.", e)
-        }
-        if (thread.isAlive) {
-            Log.w(TAG, "The cleanup of a failed connect was still running after ${pendingCleanupBoundMs} ms; going on without it.")
-        }
         dropVendorRefs()
     }
 
     /** Tears down whatever link is open, with the plan its state allows, then drops the references. */
     private fun tearDownOpenLink() {
         if (hasOpenVendorConnection()) {
-            closeQuietly(teardownPlan(linkKnownUp(), wroteLayout), "teardown")
+            closeQuietly(teardownPlan(linkKnownUp(), layoutMayBeLive()), "teardown")
         }
         dropVendorRefs()
     }
+
+    /**
+     * Whether the chosen sled's running config may hold a trigger layout this
+     * process wrote, from this connection or an earlier one
+     * ([SledLayoutMemory]): its config is then never saved. On the worker.
+     */
+    private fun layoutMayBeLive(): Boolean = layoutMemory.mayHoldLayout(linkAddress)
 
     private fun linkKnownUp(): Boolean = openGeneration !in lostGenerations && vendorLinkUpQuietly()
 
@@ -740,7 +792,7 @@ open class ZebraRfidReader(
             when (e.results) {
                 RFIDResults.RFID_BATCHMODE_IN_PROGRESS -> {
                     logFailure("connect", e)
-                    val plan = batchRecoveryPlan(secondInARow = lastOpenWasBatch)
+                    val plan = batchRecoveryPlan(secondInARow = lastOpenWasBatch, layoutMayBeLive = layoutMayBeLive())
                     return VendorOpen.BatchCleared(recoverFromBatchMode(rfid, vendor, plan))
                 }
                 RFIDResults.RFID_READER_REGION_NOT_CONFIGURED -> {
@@ -784,8 +836,8 @@ open class ZebraRfidReader(
 
     /**
      * Drops the references to the link's vendor objects without closing them:
-     * after its teardown, or when a failed connect's cleanup outlived its
-     * bound (that cleanup keeps the link it captured). On the worker.
+     * after its teardown, or once a failed connect's cleanup (which closed
+     * the link it captured) has ended. On the worker.
      */
     protected open fun forgetVendorConnection() {
         link = null
@@ -794,12 +846,15 @@ open class ZebraRfidReader(
     /** The vendor's own view of the link (`rfid.isConnected()`). */
     protected open fun vendorLinkUp(): Boolean = link?.reader?.isConnected() == true
 
+    /** The open link's reader object, which every operation's block runs against; null with no link. On the worker. */
+    protected open fun linkedReader(): RFIDReader? = link?.reader
+
     private fun bluetoothAdapter(): BluetoothAdapter? = context.getSystemService(BluetoothManager::class.java)?.adapter
 
     // ── the connect sequence, steps 2 to 7 ──
 
     /** One connect's setup: the best-step clock, started when step 1 returned, and the step rules. */
-    private inner class LinkSetup(private val name: String, private val generation: Int) {
+    private inner class LinkSetup(private val name: String, val generation: Int) {
         private val connectReturnedAt = nowMs()
 
         fun sinceConnectReturned(): Long = nowMs() - connectReturnedAt
@@ -856,11 +911,14 @@ open class ZebraRfidReader(
 
     private fun setUpLink(rfid: RFIDReader, vendor: VendorLink, setup: LinkSetup) {
         setup.best("region check") { checkRegion(rfid) }
-        // Step 2. Its save runs before any layout write, so a layout is never saved.
+        // Step 2. Its save runs before this connection's layout write, and
+        // never for a sled an earlier connection wrote a layout to, whose
+        // running config may still hold it; a rejected read is not saved.
         setup.best("batch-mode prevention") {
             val value = readAttribute(rfid, BATCH_MODE_ATTRIBUTE)
-            Log.i(TAG, "Batch-mode prevention: attribute $BATCH_MODE_ATTRIBUTE reads ${value ?: "(no answer for it)"}.")
-            if (value != BATCH_MODE_OFF_VALUE) preventBatchMode(save = true, rfid = rfid)
+            val prevention = batchPrevention(value, layoutMayBeLive())
+            Log.i(TAG, "Batch-mode prevention: attribute $BATCH_MODE_ATTRIBUTE reads ${value ?: "(no answer for it)"}: $prevention.")
+            if (prevention != BatchPrevention.NOTHING) preventBatchMode(save = prevention == BatchPrevention.OFF_AND_SAVE, rfid = rfid)
         }
         // Step 3.
         setup.must("link events") { registerLinkEvents(rfid, vendor) }
@@ -904,35 +962,37 @@ open class ZebraRfidReader(
 
     /**
      * Step 4: the trigger events, checked with `isEventRegistered`, tried
-     * twice. A failure is exactly [SledWords.TRIGGER_NOT_SET_UP]: retryable
-     * after link trouble, an open, send or timeout result, or a recorded
-     * loss; not retryable when the event simply stayed unregistered.
+     * twice ([runTriggerEventSetup]). A failure is exactly
+     * [SledWords.TRIGGER_NOT_SET_UP]: retryable after link trouble, an open,
+     * send or timeout result (on a try or on the check that follows), or a
+     * recorded loss; not retryable when the sled answered the check, so the
+     * event stayed unregistered on a sled that is listening. The check's link
+     * trouble counts toward marking the link lost.
      */
     private fun setUpTriggerEvents(rfid: RFIDReader, setup: LinkSetup) {
-        var retryable = false
-        for (attempt in 1..2) {
-            try {
+        val outcome = runTriggerEventSetup(
+            register = {
                 rfid.Events.setHandheldEvent(true)
-                if (rfid.Events.isEventRegistered(RFID_EVENT_TYPE.HANDHELD_TRIGGER_EVENT)) {
-                    setup.checkLoss()
-                    return
-                }
-                Log.w(TAG, "Setup: the trigger events are not registered after try $attempt.")
-            } catch (t: Throwable) {
+                rfid.Events.isEventRegistered(RFID_EVENT_TYPE.HANDHELD_TRIGGER_EVENT)
+            },
+            check = { readCheckedAttribute(rfid, KEY_LAYOUT_ATTRIBUTE, "Trigger events check") },
+            screen = { step, t ->
                 if (t is SledConnectException) throw t
                 if (isRegionNotSet(t)) throw RegionNotConfigured()
-                val error = logFailure("trigger events", t)
-                if (error != null && retryableSetupError(error)) retryable = true
+                logFailure(step, t)
+            },
+        )
+        when (outcome) {
+            TriggerEventSetup.Registered -> setup.checkLoss()
+            is TriggerEventSetup.NotRegistered -> {
+                val checkClass = outcome.checkError?.let(::classifyResult)
+                if (checkClass == ResultClass.LINK_TROUBLE && links.record(checkClass)) onLinkLost(setup.generation)
+                throw SledConnectException(
+                    RfidConnection.Failed(SledWords.TRIGGER_NOT_SET_UP, retryable = outcome.retryable || setup.lost(), fix = SledFix.CONNECT),
+                )
             }
         }
-        throw SledConnectException(
-            RfidConnection.Failed(SledWords.TRIGGER_NOT_SET_UP, retryable = retryable || setup.lost(), fix = SledFix.CONNECT),
-        )
     }
-
-    private fun retryableSetupError(error: VendorError): Boolean =
-        classifyResult(error) == ResultClass.LINK_TROUBLE ||
-            connectFailure(error, name = null, severalPaired = false, classLoading = false).retryable
 
     /** Reads attribute [number]'s value; null when the reply was for another attribute ([readCheckedAttribute]). */
     private fun readAttribute(rfid: RFIDReader, number: Int): String? = readCheckedAttribute(rfid, number, "Batch-mode prevention")?.value
@@ -954,16 +1014,17 @@ open class ZebraRfidReader(
     }
 
     /**
-     * The batch-mode safety step: batch mode off, saved only when [save]. Connect
-     * step 2 saves; teardown saves only when this connection wrote no trigger
-     * layout (`teardownPlan(...).saveConfig`), so a layout is never saved.
-     * Throws; the caller decides what a failure means.
+     * The batch-mode safety step: batch mode off, saved only when [save].
+     * Connect step 2 saves by [batchPrevention]; teardown and the stop after a
+     * batch start save only while the sled cannot hold a layout this process
+     * wrote (`teardownPlan(..., layoutMayBeLive()).saveConfig`), so a layout
+     * is never saved. Throws; the caller decides what a failure means.
      */
     private fun preventBatchMode(save: Boolean, rfid: RFIDReader? = link?.reader) {
         val config = rfid?.Config ?: return
         config.setBatchMode(BATCH_MODE.DISABLE)
         if (save) config.saveConfig()
-        Log.i(TAG, if (save) "Batch mode set off and saved." else "Batch mode set off, not saved (this connection wrote a trigger layout).")
+        Log.i(TAG, if (save) "Batch mode set off and saved." else "Batch mode set off, not saved.")
     }
 
     /**
@@ -973,10 +1034,12 @@ open class ZebraRfidReader(
      * would tell the sled to leave them out), then runs the steps [plan]
      * allows, each guarded and logged: stop, a pause, purge (false on
      * failure), batch mode off (once more after a pause when refused as in
-     * progress), save. A second batch result in a row gets only the stop
-     * (ruling 28). Returns whether a purge cleared the tags. The close runs as
-     * the failed connect's cleanup, bounded at [BATCH_CLEANUP_BOUND_MS]; the
-     * steps here are bounded by the vendor's own waits.
+     * progress), save (left out for a sled whose running config may hold a
+     * layout this process wrote). A second batch result in a row gets only
+     * the stop (ruling 28). Returns whether a purge cleared the tags. The
+     * close runs as the failed connect's cleanup (logged while it runs past
+     * [BATCH_CLEANUP_BOUND_MS]); the steps here are bounded by the vendor's
+     * own waits.
      */
     private fun recoverFromBatchMode(rfid: RFIDReader, vendor: VendorLink, plan: BatchRecoveryPlan): Boolean {
         _batchRecovery.value = true
@@ -1007,7 +1070,11 @@ open class ZebraRfidReader(
                 }
             }
         }
-        if (plan.saveConfig) recoveryStep("save") { rfid.Config.saveConfig() }
+        if (plan.saveConfig) {
+            recoveryStep("save") { rfid.Config.saveConfig() }
+        } else if (plan.purge) {
+            Log.w(TAG, "Batch-mode recovery: no save, since this sled may still hold a trigger layout this app wrote.")
+        }
         return purged
     }
 
@@ -1079,8 +1146,10 @@ open class ZebraRfidReader(
             val name = _info.value?.name ?: linkName
             _connection.update { state ->
                 when (state) {
-                    is RfidConnection.Connecting, is RfidConnection.Connected, is RfidConnection.NeedsRegion ->
-                        RfidConnection.Failed(SledWords.couldNotReach(name), retryable = true)
+                    // With the Connect fix, as every other couldn't-reach failure:
+                    // its sentence ends "then tap Connect", and the scan screens'
+                    // slot draws only the failure's own button.
+                    is RfidConnection.Connecting, is RfidConnection.Connected, is RfidConnection.NeedsRegion -> reached(name)
                     else -> state
                 }
             }
@@ -1105,7 +1174,7 @@ open class ZebraRfidReader(
     internal fun onTag(generation: Int, epc: String) {
         if (generation != currentGeneration) return
         lastTagAtMs = nowMs()
-        // The buffer holds 512; a drop here is a tag the operator thinks was read.
+        // The buffer holds TAGS_BUFFER; a drop here is a tag the operator thinks was read.
         if (!_tags.tryEmit(epc)) Log.w(TAG, "Dropped a tag read: the tags flow's buffer is full.")
     }
 
@@ -1123,12 +1192,16 @@ open class ZebraRfidReader(
      * With no stop requested while an inventory runs, the sled ended the read
      * by itself: after the same wait a requested stop gets, its reason goes
      * out on [unsolicitedStops], from a coroutine on [scope] (ruling 45:
-     * logged, never shown), unless a start was asked for meanwhile.
+     * logged, never shown), unless the read it ended is no longer the
+     * current one ([InventoryTracker.stillCurrent]): a start was asked for
+     * after that read's start went out (even before this event came), or a
+     * stop was asked for since the event, which ends that sweep anyway and
+     * must not let the event end the next one.
      */
     internal fun onStopEvent(generation: Int) {
         if (generation != currentGeneration) return
-        val sweep = inventory.sweep
-        when (inventory.stopEvent()) {
+        val event = inventory.stopEvent()
+        when (event.kind) {
             StopEventKind.REQUESTED, StopEventKind.IDLE -> {
                 Log.i(TAG, "Inventory stop event, generation $generation.")
                 return
@@ -1148,8 +1221,8 @@ open class ZebraRfidReader(
                 delay(STOP_SETTLE_POLL_MS)
             }
             if (generation != currentGeneration) return@launch
-            if (inventory.sweep != sweep) {
-                Log.i(TAG, "Dropped an unsolicited stop: a start was asked for during its wait, so it belongs to the sweep before.")
+            if (!inventory.stillCurrent(event)) {
+                Log.i(TAG, "Dropped an unsolicited stop: a start or a stop was asked for since that read began, so it belongs to a sweep already ended.")
                 return@launch
             }
             if (!_unsolicitedStops.tryEmit(reason)) Log.w(TAG, "Dropped an unsolicited stop: the flow's buffer is full.")
@@ -1329,7 +1402,7 @@ open class ZebraRfidReader(
             errorOf("stop after a batch start", t)
         }
         try {
-            preventBatchMode(save = teardownPlan(linkUp = true, wroteLayout = wroteLayout).saveConfig, rfid = rfid)
+            preventBatchMode(save = teardownPlan(linkUp = true, wroteLayout = layoutMayBeLive()).saveConfig, rfid = rfid)
         } catch (t: Throwable) {
             errorOf("batch-mode safety step after a batch start", t)
         }
@@ -1342,8 +1415,16 @@ open class ZebraRfidReader(
      * arrived and no tag has come for 100 ms, at most 500 ms ([stopSettled]),
      * because the vendor's stop returns before the last tags are delivered.
      * The wait is measured from when the stop returned ([stopThenSettle]).
+     * Asking for a stop drops an unsolicited stop still waiting to go out
+     * ([onStopEvent]): the caller is ending that sweep itself.
      */
-    final override suspend fun stopInventory(): Result<Unit> = onWorker {
+    final override suspend fun stopInventory(): Result<Unit> {
+        // Counted before the wait for the worker, like a start.
+        inventory.stopAsked()
+        return onWorker { stopOnWorker() }
+    }
+
+    private fun stopOnWorker(): Result<Unit> =
         linkBlock("stop", sentence = SledWords.MAY_STILL_BE_READING) { rfid, generation ->
             val wasRunning = inventory.beginStop()
             val error = stopThenSettle(
@@ -1373,7 +1454,6 @@ open class ZebraRfidReader(
             }
             Result.success(Unit)
         }
-    }
 
     /**
      * The start and stop triggers IMMEDIATE again, after a start that found an
@@ -1510,12 +1590,14 @@ open class ZebraRfidReader(
      * reads back. `Accepted` updates `info.trigger`; a read-back that could
      * not be accepted sets it null and fails; link trouble counts toward
      * marking the link lost, leaves `info.trigger` as it was and fails. Both
-     * failures are [SledWords.TRIGGER_CHECK_FAILED]. Never saved. Afterward,
-     * whatever the outcome, the scanner session is opened or closed to match
-     * the layout in force, without waiting for it.
+     * failures are [SledWords.TRIGGER_CHECK_FAILED]. Never saved. Only a call
+     * that passes the state check, in the generation still current, becomes
+     * the requested layout: a refused one, for example a call still queued
+     * when a newer connect asked for its own layout, changes nothing
+     * (ruling 27). Afterward, whatever the outcome, the scanner session is
+     * opened or closed to match the layout in force, without waiting for it.
      */
     final override suspend fun setTriggerLayout(layout: SledTriggerLayout): Result<SledTriggerReadback> = onWorker {
-        requestedLayout = layout
         val result = writeLayoutBlock(layout)
         synchronized(stateLock) { syncScannerLocked() }
         result
@@ -1523,6 +1605,7 @@ open class ZebraRfidReader(
 
     private fun writeLayoutBlock(layout: SledTriggerLayout): Result<SledTriggerReadback> =
         linkBlock("trigger layout", sentence = SledWords.TRIGGER_CHECK_FAILED) { rfid, generation ->
+            synchronized(stateLock) { if (generation == currentGeneration) requestedLayout = layout }
             val known = _info.value
             when (val outcome = writeTriggerLayout(rfid, layout, known?.model ?: known?.name, known?.hasScanner)) {
                 is LayoutWriteOutcome.Accepted -> {
@@ -1551,13 +1634,14 @@ open class ZebraRfidReader(
     /**
      * The layout write and read-back for connect step 10 and [setTriggerLayout]
      * (spec, Trigger layout). `setTriggerMode(mode, false)` goes only to a
-     * model whose name contains `RFD8500`. Marks this connection as having
-     * written a layout, so teardown skips the save.
+     * model whose name contains `RFD8500`. Notes the sled in [layoutMemory]
+     * before the first write, so nothing saves its config from then on, in
+     * this connection or a later one.
      */
     private fun writeTriggerLayout(rfid: RFIDReader, requested: SledTriggerLayout, model: String?, hasScanner: Boolean?): LayoutWriteOutcome {
         val effective = effectiveLayout(requested, zebraHost, hasScanner)
         if (effective != requested) Log.i(TAG, "Trigger layout: $requested asked for, $effective written (Zebra host $zebraHost, has scanner $hasScanner).")
-        wroteLayout = true
+        layoutMemory.written(linkAddress)
         if (model?.contains(TRIGGER_MODE_MODEL) == true) {
             try {
                 rfid.Config.setTriggerMode(
@@ -1756,7 +1840,7 @@ open class ZebraRfidReader(
         val state = _connection.value
         val stateAllows = state is RfidConnection.Connected || (allowNeedsRegion && state is RfidConnection.NeedsRegion)
         val generation = currentGeneration
-        val rfid = link?.reader
+        val rfid = linkedReader()
         if (!stateAllows || rfid == null || openGeneration != generation || generation in lostGenerations) {
             return Result.failure(SledNotConnected())
         }
@@ -1895,20 +1979,40 @@ open class ZebraRfidReader(
             null
         }
 
-        /** Step 9: attributes 2269, 1587 and 2325 as found, and the external keyboards; nothing is written. */
+        /**
+         * Step 9: attributes 2269, 1587 and 2325 as found; the link profile
+         * (the RF mode table index), Tari and pre-filter count the sled is
+         * left with (ruling 24: left as the sled has them, and logged); and
+         * the external keyboards. Nothing is written. Each read is guarded on
+         * its own; link trouble still fails the connect.
+         */
         override fun dump() {
             checkLoss()
             for (attribute in DUMP_ATTRIBUTES) {
-                try {
+                dumpRead("attribute $attribute") {
                     readCheckedAttribute(rfid, attribute, "Dump")?.let { read ->
                         Log.i(TAG, "Dump: attribute $attribute reads ${read.value} (type ${read.type}).")
                     }
-                } catch (t: Throwable) {
-                    val error = errorOf("dump: attribute $attribute", t)
-                    if (classifyResult(error) == ResultClass.LINK_TROUBLE) throw t
                 }
             }
+            dumpRead("antenna 1 link profile and Tari") {
+                val rf = rfid.Config.Antennas.getAntennaRfConfig(1)
+                Log.i(TAG, "Dump: antenna 1 link profile (RF mode table index) ${rf.getrfModeTableIndex()}, Tari ${rf.tari}.")
+            }
+            dumpRead("pre-filters") {
+                Log.i(TAG, "Dump: ${rfid.Actions.PreFilters.length()} pre-filter(s) as the SDK holds them for the sled.")
+            }
             logExternalKeyboards()
+        }
+
+        /** One guarded dump read: a failure is logged and the dump goes on, unless it is link trouble. */
+        private inline fun dumpRead(what: String, body: () -> Unit) {
+            try {
+                body()
+            } catch (t: Throwable) {
+                val error = errorOf("dump: $what", t)
+                if (classifyResult(error) == ResultClass.LINK_TROUBLE) throw t
+            }
         }
 
         /** Step 10: the layout write of [layout] and its read-back. */
@@ -1988,6 +2092,67 @@ internal fun combineConnectNotes(existing: String?, additional: String): String 
  * keeps batch mode off from then on.
  */
 internal class BatchModeUnrecoverableException : Exception(SledWords.BATCH_MODE_UNRECOVERABLE_MESSAGE)
+
+// ── connect step 4 ──
+
+/** How connect step 4 ended ([runTriggerEventSetup]). */
+internal sealed interface TriggerEventSetup {
+    data object Registered : TriggerEventSetup
+
+    /**
+     * Still not registered after two tries. [retryable] when a try or the
+     * check after them met link trouble or an open, send or timeout result;
+     * [checkError] is the check's own error (null when the sled answered it).
+     */
+    data class NotRegistered(val retryable: Boolean, val checkError: VendorError?) : TriggerEventSetup
+}
+
+/**
+ * Connect step 4: [register] (the vendor's `setHandheldEvent(true)`, then
+ * `isEventRegistered`) up to twice. The vendor drops the registration's own
+ * result: a command timeout, a send error and a refusal all come back only as
+ * an event that stayed unregistered, never as a throw. So when the tries saw
+ * no retryable error, one command whose result is visible ([check]) tells a
+ * sled that stopped answering (link trouble, an open, send or timeout result:
+ * retryable) from one that answered and still left the event out (not
+ * retryable). [screen] logs a throw and returns its vendor error (null for
+ * any other throwable); it may rethrow what must pass through, such as a
+ * recorded loss or a region refusal.
+ */
+internal fun runTriggerEventSetup(
+    register: () -> Boolean,
+    check: () -> Unit,
+    screen: (step: String, t: Throwable) -> VendorError?,
+): TriggerEventSetup {
+    var retryable = false
+    for (attempt in 1..2) {
+        try {
+            if (register()) return TriggerEventSetup.Registered
+            Log.w(ZebraRfidReader.TAG, "Setup: the trigger events are not registered after try $attempt.")
+        } catch (t: Throwable) {
+            val error = screen("trigger events", t)
+            if (error != null && retryableSetupError(error)) retryable = true
+        }
+    }
+    if (retryable) return TriggerEventSetup.NotRegistered(retryable = true, checkError = null)
+    val checkError = try {
+        check()
+        null
+    } catch (t: Throwable) {
+        screen("trigger events check", t) ?: VendorError(resultName = null, vendorMessage = "${t.javaClass.name}: ${t.message}")
+    }
+    if (checkError == null) {
+        Log.w(ZebraRfidReader.TAG, "Setup: the sled answered the check, so it left the trigger events out; a retry would not help.")
+        return TriggerEventSetup.NotRegistered(retryable = false, checkError = null)
+    }
+    Log.w(ZebraRfidReader.TAG, "Setup: after the trigger events, ${vendorLogLine("the check", checkError)}.")
+    return TriggerEventSetup.NotRegistered(retryable = retryableSetupError(checkError), checkError = checkError)
+}
+
+/** A setup error worth another connect: link trouble, or an open, send or timeout result. */
+internal fun retryableSetupError(error: VendorError): Boolean =
+    classifyResult(error) == ResultClass.LINK_TROUBLE ||
+        connectFailure(error, name = null, severalPaired = false, classLoading = false).retryable
 
 // ── connect steps 8 to 11 ──
 
@@ -2194,18 +2359,27 @@ internal enum class StopEventKind {
     UNSOLICITED,
 }
 
+/** How long a stop event stays owed by a stop whose wait ended without it; after this, a stop event is taken as new. */
+internal const val STOP_EVENT_OWED_MS = 2_000L
+
+/** One inventory stop event as [InventoryTracker.stopEvent] classified it, with the counts [InventoryTracker.stillCurrent] compares. */
+internal data class StopEvent(val kind: StopEventKind, val sentSweep: Int, val stopsAsked: Int)
+
 /**
  * The inventory state the worker and the vendor's event thread share:
  * whether a read runs, the stop in progress, whether a stop event is still
- * owed by a stop whose wait ended without one, and the count of starts asked
- * for (the sweep). One small lock, never held around a vendor call.
+ * owed by a stop whose wait ended without one (for [STOP_EVENT_OWED_MS] on
+ * [now]), the count of starts asked for (the sweep), the sweep whose start
+ * last went out, and the count of stops asked for. One small lock, never
+ * held around a vendor call.
  */
-internal class InventoryTracker {
+internal class InventoryTracker(private val now: () -> Long = { System.nanoTime() / 1_000_000L }) {
     private val lock = Any()
     private var stopRequested = false
 
     /** A requested stop's wait ended without its stop event: the next one that comes with no stop in progress is that one, late. */
     private var stopEventOwed = false
+    private var owedSinceMs = 0L
 
     @Volatile var running = false
         private set
@@ -2214,9 +2388,14 @@ internal class InventoryTracker {
     @Volatile var stopEventSeen = false
         private set
 
-    /** Counts the starts asked for; an unsolicited stop still waiting to go out is dropped when it changed. */
-    @Volatile var sweep = 0
-        private set
+    /** Counts the starts asked for. */
+    private var sweep = 0
+
+    /** The sweep whose start last went out: the read a stop event of the sled's own ends. */
+    private var sentSweep = 0
+
+    /** Counts the stops asked for. */
+    private var stopsAsked = 0
 
     /** A new connection: nothing runs and nothing is owed. */
     fun reset() = synchronized(lock) {
@@ -2224,13 +2403,20 @@ internal class InventoryTracker {
         stopRequested = false
         stopEventSeen = false
         stopEventOwed = false
+        sentSweep = sweep
     }
 
     /** A start was asked for: a new sweep. */
     fun startAsked() = synchronized(lock) { sweep++ }
 
-    /** The start is about to be sent: any earlier stop request is over. */
-    fun startSending() = synchronized(lock) { stopRequested = false }
+    /** A stop was asked for. */
+    fun stopAsked() = synchronized(lock) { stopsAsked++ }
+
+    /** The start is about to be sent: any earlier stop request is over, and the read that runs next is this sweep's. */
+    fun startSending() = synchronized(lock) {
+        stopRequested = false
+        sentSweep = sweep
+    }
 
     /** A start went through, or the sled said a read started. */
     fun markRunning() {
@@ -2252,17 +2438,24 @@ internal class InventoryTracker {
     fun stopEnded(waited: Boolean) = synchronized(lock) {
         running = false
         stopRequested = false
-        if (waited) stopEventOwed = !stopEventSeen
+        if (waited) {
+            stopEventOwed = !stopEventSeen
+            owedSinceMs = now()
+        }
     }
 
     /**
      * Classifies one stop event and updates the state for it: noted while a
      * stop is in progress; swallowed as [StopEventKind.LATE] when one is
-     * owed; otherwise idle, or the sled's own stop of a running read.
+     * owed and the owing stop ended at most [STOP_EVENT_OWED_MS] ago (an
+     * older debt is dropped, so a missing event cannot swallow the sled's own
+     * stop of a later sweep); otherwise idle, or the sled's own stop of a
+     * running read. The counts are taken under the same lock.
      */
-    fun stopEvent(): StopEventKind = synchronized(lock) {
+    fun stopEvent(): StopEvent = synchronized(lock) {
         stopEventSeen = true
-        when {
+        if (stopEventOwed && now() - owedSinceMs > STOP_EVENT_OWED_MS) stopEventOwed = false
+        val kind = when {
             stopRequested -> StopEventKind.REQUESTED
             stopEventOwed -> {
                 stopEventOwed = false
@@ -2274,6 +2467,17 @@ internal class InventoryTracker {
                 StopEventKind.UNSOLICITED
             }
         }
+        StopEvent(kind, sentSweep, stopsAsked)
+    }
+
+    /**
+     * Whether the read [event] ended is still the current sweep: no start
+     * was asked for since that read's start went out, and no stop since the
+     * event. An unsolicited stop that fails this belongs to a sweep that is
+     * over, and must not end the next one.
+     */
+    fun stillCurrent(event: StopEvent): Boolean = synchronized(lock) {
+        sweep == event.sentSweep && stopsAsked == event.stopsAsked
     }
 }
 

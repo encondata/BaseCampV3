@@ -37,6 +37,34 @@ class SledLifecycleTest {
         )
     }
 
+    @Test fun nothingSavesTheConfigOfASledThatMayHoldALayout() {
+        // saveConfig() saves the whole running config, and a layout written by
+        // an earlier connection stays in it through a link drop.
+        val memory = SledLayoutMemory()
+        assertFalse(memory.mayHoldLayout("00:11:22:33:44:55"))
+        assertFalse(memory.mayHoldLayout(null))
+        memory.written("00:11:22:33:44:55")
+        assertTrue("case is ignored", memory.mayHoldLayout("00:11:22:33:44:55".lowercase()))
+        assertFalse("another sled", memory.mayHoldLayout("00:11:22:33:44:66"))
+
+        assertEquals(
+            BatchRecoveryPlan(stop = true, purge = true, disableBatchMode = true, saveConfig = false),
+            batchRecoveryPlan(secondInARow = false, layoutMayBeLive = true),
+        )
+        assertEquals(
+            TeardownPlan(stopInventory = true, disableBatchMode = true, saveConfig = false),
+            teardownPlan(linkUp = true, wroteLayout = memory.mayHoldLayout("00:11:22:33:44:55")),
+        )
+    }
+
+    @Test fun connectStep2SavesOnlyAReadItCanTrustAndNeverOverALayout() {
+        assertEquals(BatchPrevention.NOTHING, batchPrevention("0", layoutMayBeLive = false))
+        assertEquals(BatchPrevention.NOTHING, batchPrevention("0", layoutMayBeLive = true))
+        assertEquals(BatchPrevention.OFF_AND_SAVE, batchPrevention("2", layoutMayBeLive = false))
+        assertEquals("a save would keep the layout", BatchPrevention.OFF, batchPrevention("2", layoutMayBeLive = true))
+        assertEquals("a rejected read is unknown: off, not saved", BatchPrevention.OFF, batchPrevention(null, layoutMayBeLive = false))
+    }
+
     @Test fun theScannerIsWantedOnlyByRuling7() {
         assertTrue(scannerWanted(connected = true, layoutInForceUsesScanner = true, zebraHost = false, hasScanner = null))
         assertTrue(scannerWanted(connected = true, layoutInForceUsesScanner = true, zebraHost = false, hasScanner = true))

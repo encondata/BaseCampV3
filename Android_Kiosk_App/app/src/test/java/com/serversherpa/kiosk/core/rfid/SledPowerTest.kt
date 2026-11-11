@@ -24,12 +24,35 @@ class SledPowerTest {
         assertEquals(170, powerIndex(table, 27))
     }
 
-    @Test fun aStepOfTenUsesOnlyTheEntriesUpTo400ForTheUnit() {
+    @Test fun aStepOfTenUsesOnlyTheRealEntries() {
+        // The vendor's table for MIN 100, MAX 300, step 10: 201 entries of
+        // 100 + k * 10, so 100 to 2100. Only 100 to 300 are real.
         val table = powerTable(IntArray(201) { 100 + it * 10 })!!
         assertFalse(table.inDbm)
         assertEquals(10, table.minDbm)
-        assertEquals(40, table.maxDbm)
+        assertEquals("the real top, not an invented entry", 30, table.maxDbm)
+        assertEquals(20, table.topIndex)
         assertEquals(17, powerIndex(table, 27))
+        assertEquals(20, powerIndex(table, 30))
+        assertEquals("never an index past the real top", 20, powerIndex(table, 35))
+    }
+
+    @Test fun aSledWhoseTopIsBelowTheSettingsCapIsNeverSentMoreThanItsTop() {
+        // MIN 100, MAX 270, step 10: the slider still goes to 30 dBm.
+        val table = powerTable(IntArray(171) { 100 + it * 10 })!!
+        assertEquals(27, table.maxDbm)
+        assertEquals("30 dBm is sent as the sled's own top, 270", 17, powerIndex(table, 30))
+        assertEquals(270, table.levels[powerIndex(table, 30)])
+    }
+
+    @Test fun aDbmTableWithAStepOfTwoKeepsItsUnit() {
+        // MIN 10, MAX 30, step 2: 21 entries of 10 + 2k, so 10 to 50.
+        val table = powerTable(IntArray(21) { 10 + it * 2 })!!
+        assertTrue("its real entries stop at 30, so it is in dBm", table.inDbm)
+        assertEquals(10, table.minDbm)
+        assertEquals(30, table.maxDbm)
+        assertEquals(10, powerIndex(table, 30))
+        assertEquals(10, powerIndex(table, 99))
     }
 
     @Test fun neverAboveTheLastIndexOrBelowZero() {

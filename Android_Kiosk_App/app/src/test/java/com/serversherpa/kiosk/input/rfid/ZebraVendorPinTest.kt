@@ -1,5 +1,6 @@
 package com.serversherpa.kiosk.input.rfid
 
+import com.serversherpa.kiosk.core.rfid.triggerTypePasses
 import java.lang.reflect.Modifier
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -46,6 +47,21 @@ class ZebraVendorPinTest {
             vendorClass(API3 + "IEvents\$HandheldTriggerEventData").getMethod("getHandheldTriggerType")
                 .returns(vendorClass(API3 + "HANDHELD_TRIGGER_TYPE"))
         }
+        // The trigger-type deny-list (ruling 26) compares the type's toString()
+        // with "HANDHELD_TRIGGER_SCAN". The type is a plain class whose
+        // toString() returns a private name, not an enum, so a changed copy
+        // would let scan-trigger pulls start sweeps with nothing failing.
+        check("HANDHELD_TRIGGER_TYPE.HANDHELD_TRIGGER_SCAN.toString() is the name the deny-list drops") {
+            // Its static initializer builds three instances and a map, nothing Android.
+            val type = Class.forName(API3 + "HANDHELD_TRIGGER_TYPE", true, javaClass.classLoader)
+            val name = type.getField("HANDHELD_TRIGGER_SCAN").get(null)?.toString()
+                ?: return@check "the constant is null"
+            when {
+                name != "HANDHELD_TRIGGER_SCAN" -> "is \"$name\""
+                triggerTypePasses(name) -> "passes the deny-list"
+                else -> null
+            }
+        }
         listOf("setReaderDisconnectEvent", "setInventoryStartEvent", "setInventoryStopEvent").forEach { name ->
             check("Events.$name(boolean)") { events.getMethod(name, Boolean::class.javaPrimitiveType).let { null } }
         }
@@ -66,6 +82,14 @@ class ZebraVendorPinTest {
         check("ReaderCapabilities.getTransmitPowerLevelValues()") {
             vendorClass(API3 + "ReaderCapabilities").getMethod("getTransmitPowerLevelValues").returns(IntArray::class.java)
         }
+        // Connect step 9's dump of what ruling 24 leaves as the sled has it.
+        val rfConfig = vendorClass(API3 + "Antennas\$AntennaRfConfig")
+        check("Antennas.getAntennaRfConfig(int)") {
+            vendorClass(API3 + "Antennas").getMethod("getAntennaRfConfig", Int::class.javaPrimitiveType).returns(rfConfig)
+        }
+        check("AntennaRfConfig.getrfModeTableIndex()") { rfConfig.getMethod("getrfModeTableIndex").returns(Long::class.javaPrimitiveType!!) }
+        check("AntennaRfConfig.getTari()") { rfConfig.getMethod("getTari").returns(Long::class.javaPrimitiveType!!) }
+        check("PreFilters.length()") { vendorClass(API3 + "PreFilters").getMethod("length").returns(Int::class.javaPrimitiveType!!) }
         check("Config.getAttribute(int, AttributeInfo)") {
             config.getMethod("getAttribute", Int::class.javaPrimitiveType, attributeInfo).returns(attributeInfo)
         }
