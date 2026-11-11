@@ -84,11 +84,23 @@ def log(message: str) -> None:
         pass
 
 
+def tool_env() -> dict[str, str]:
+    """os.environ with untranslated messages, so nmcli's and gsettings' errors
+    match the English strings below. C.UTF-8 rather than plain C: in plain C,
+    GLib tools escape non-ASCII text (an SSID like "Café") on output. LANGUAGE
+    goes because gettext honors it over LC_ALL in any locale but plain C."""
+    env = {k: v for k, v in os.environ.items() if k != "LANGUAGE"}
+    env["LC_ALL"] = "C.UTF-8"
+    return env
+
+
 def run_cmd(cmd: list[str], *, stdin: str | None = None, timeout: float = 10) -> subprocess.CompletedProcess:
-    """Runs a tool. A missing tool is exit 127 and a timeout is 124, never an
-    exception. stdin, when given, is the tool's whole input."""
+    """Runs a tool in the C locale (tool_env). A missing tool is exit 127 and a
+    timeout is 124, never an exception. stdin, when given, is the tool's whole
+    input."""
     try:
-        return subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=timeout, check=False)
+        return subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=timeout, check=False,
+                              env=tool_env())
     except FileNotFoundError:
         return subprocess.CompletedProcess(cmd, 127, "", "")
     except subprocess.TimeoutExpired:
@@ -158,21 +170,45 @@ def gsettings_reset(schema: str, key: str) -> bool:
     return run_cmd(["gsettings", "reset", schema, key]).returncode == 0
 
 
+def gsettings_gone(r: subprocess.CompletedProcess) -> bool:
+    """True only when gsettings itself says the schema or key doesn't exist on
+    this desktop. A timeout, a missing gsettings or a D-Bus/dconf error is not
+    "gone": the key may well be there and still locked."""
+    return r.returncode != 0 and ("No such schema" in r.stderr or "No such key" in r.stderr
+                                  or "No such schema" in r.stdout or "No such key" in r.stdout)
+
+
 def lock_file() -> Path:
     return state_dir() / "desktop-lock.json"
 
 
+def _set_aside_corrupt() -> None:
+    """A corrupt desktop-lock.json is kept as desktop-lock.json.corrupt, so
+    nothing in it is lost."""
+    f = lock_file()
+    try:
+        os.replace(f, f.with_name(f.name + ".corrupt"))
+        log("desktop-lock.json is corrupt; kept as desktop-lock.json.corrupt")
+    except OSError as exc:
+        log(f"desktop-lock.json is corrupt and can't be set aside ({exc})")
+
+
 def read_saved() -> list[dict] | None:
-    """The saved originals, or None when there is no (usable) file."""
+    """The saved originals, or None when there is no usable file (a corrupt
+    one is set aside first)."""
     try:
         data = json.loads(lock_file().read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
-    except (OSError, ValueError):
-        log("desktop-lock.json is unreadable; saving the current values again")
+    except ValueError:
+        _set_aside_corrupt()
+        return None
+    except OSError as exc:
+        log(f"desktop-lock.json is unreadable ({exc})")
         return None
     items = data.get("saved") if isinstance(data, dict) else None
     if not isinstance(items, list):
+        _set_aside_corrupt()
         return None
     return [i for i in items if isinstance(i, dict) and isinstance(i.get("schema"), str)
             and isinstance(i.get("key"), str) and (i.get("value") is None or isinstance(i.get("value"), str))]
@@ -196,21 +232,31 @@ def lock_desktop() -> int:
     true originals after a crash), then writes the locked ones. A value
     already locked is saved as None, which means "reset to the default" on
     restore, so a lost file can never make the locked values the originals.
-    Returns how many settings were locked (0 when the originals couldn't be
-    saved: then nothing changes)."""
+    A file missing some LOCK_KEYS (a key that couldn't be read last time) gets
+    those added, with their current values, before they are locked; the
+    values already in it are never overwritten. Returns how many settings
+    were locked (0 when the originals couldn't be saved: then nothing
+    changes)."""
     saved = read_saved()
-    if saved is None:
-        saved = []
-        for schema, key, locked in LOCK_KEYS:
-            current = gsettings_get(schema, key)
-            if current is None:
-                continue
-            saved.append({"schema": schema, "key": key, "value": None if current == locked else current})
+    had = saved or []
+    have = {(i["schema"], i["key"]) for i in had}
+    added = []
+    for schema, key, locked in LOCK_KEYS:
+        if (schema, key) in have:
+            continue
+        current = gsettings_get(schema, key)
+        if current is None:
+            continue
+        added.append({"schema": schema, "key": key, "value": None if current == locked else current})
+    if saved is None or added:
         try:
-            write_saved(saved)
+            write_saved(had + added)
+            saved = had + added
         except OSError as exc:
-            log(f"desktop lock skipped: can't save the current values ({exc})")
-            return 0
+            if saved is None:
+                log(f"desktop lock skipped: can't save the current values ({exc})")
+                return 0
+            log(f"desktop lock: can't save {len(added)} more values ({exc}); locking the saved ones only")
     keep = {(i["schema"], i["key"]) for i in saved}
     n = sum(1 for schema, key, locked in LOCK_KEYS
             if (schema, key) in keep and gsettings_set(schema, key, locked))
@@ -218,19 +264,50 @@ def lock_desktop() -> int:
     return n
 
 
+def reset_locked_keys() -> bool:
+    """No usable save file: every LOCK_KEYS key that holds its locked value is
+    reset to the GNOME default; the others are left alone. True when nothing
+    is left locked (False when a key couldn't be read or reset)."""
+    ok = True
+    n = 0
+    for schema, key, locked in LOCK_KEYS:
+        r = run_cmd(["gsettings", "get", schema, key])
+        if r.returncode != 0:
+            if not gsettings_gone(r):
+                ok = False
+            continue
+        if r.stdout.strip() != locked:
+            continue
+        r = run_cmd(["gsettings", "reset", schema, key])
+        if r.returncode == 0:
+            n += 1
+        elif not gsettings_gone(r):
+            ok = False
+    log(f"desktop restore without a save file: {n} locked settings reset"
+        + ("" if ok else "; some couldn't be checked or reset"))
+    return ok
+
+
 def restore_desktop() -> bool:
     """Puts every saved value back (None: reset). The file goes when all are
-    back, or when a key no longer exists. A key that is there and failed
-    stays in the file for the next restore. True when nothing is left."""
+    back, or when gsettings says a key's schema or key no longer exists. Any
+    other failure (gsettings down, timed out, missing) keeps the item in the
+    file for the next restore. With no usable file, the keys still holding
+    their locked values are reset. True when nothing is left."""
     saved = read_saved()
     if saved is None:
-        return True
+        return reset_locked_keys()
     left = []
     for item in saved:
         schema, key, value = item["schema"], item["key"], item["value"]
-        ok = gsettings_reset(schema, key) if value is None else gsettings_set(schema, key, value)
-        if not ok and gsettings_get(schema, key) is not None:
-            left.append(item)
+        cmd = ["gsettings", "reset", schema, key] if value is None else ["gsettings", "set", schema, key, value]
+        r = run_cmd(cmd)
+        if r.returncode == 0:
+            continue
+        if gsettings_gone(r):
+            log(f"desktop restore: {schema} {key} no longer exists; dropped")
+            continue
+        left.append(item)
     if left:
         try:
             write_saved(left)
@@ -257,13 +334,15 @@ def _read(p: Path) -> str:
 def battery(root: Path | None = None) -> dict | None:
     """The laptop's own battery: the first type=Battery supply with a numeric
     capacity, never a device's (a mouse's: scope=Device). Charging means the
-    battery says so, or the mains are on and it isn't discharging."""
+    battery says so, or a charger (Mains, or USB-C) is online and it isn't
+    discharging ("Not charging" on a full battery counts as plugged in)."""
     root = root or POWER_SUPPLY
     try:
         supplies = sorted(root.iterdir())
     except OSError:
         return None
-    mains = any(_read(s / "type") == "Mains" and _read(s / "online") == "1" for s in supplies)
+    # The charger: a Mains supply, or a USB one (USB-C power delivery) that is online.
+    mains = any(_read(s / "type") in ("Mains", "USB") and _read(s / "online") == "1" for s in supplies)
     for s in supplies:
         if _read(s / "type") != "Battery" or _read(s / "scope") == "Device" or _read(s / "present") == "0":
             continue
@@ -299,8 +378,9 @@ def nmcli_fields(line: str) -> list[str]:
 
 
 def wifi_networks(rescan: bool = True) -> list[dict]:
-    """Visible Wi-Fi networks, one per name (the strongest access point),
-    hidden ones dropped, the connected one first, then by signal."""
+    """Visible Wi-Fi networks, one per name (the in-use access point for the
+    connected one, else the strongest), hidden ones dropped, the connected one
+    first, then by signal."""
     r = run_cmd(["nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list",
                  "--rescan", "auto" if rescan else "no"], timeout=20)
     if r.returncode != 0:
@@ -316,8 +396,9 @@ def wifi_networks(rescan: bool = True) -> list[dict]:
         if old is None:
             best[net["ssid"]] = net
             continue
-        old["active"] = old["active"] or net["active"]
-        if net["signal"] > old["signal"]:
+        if net["active"]:
+            best[net["ssid"]] = net
+        elif not old["active"] and net["signal"] > old["signal"]:
             old["signal"], old["secure"] = net["signal"], net["secure"]
     return sorted(best.values(), key=lambda n: (not n["active"], -n["signal"], n["ssid"].lower()))
 
@@ -417,11 +498,15 @@ def ensure_start_icon() -> None:
 
 def cleanup_restore_entry() -> None:
     """After an uninstall's one-shot restore: its autostart entry goes, and
-    this file too when it is the copy in the state folder."""
-    (Path.home() / ".config" / "autostart" / RESTORE_AUTOSTART).unlink(missing_ok=True)
-    me = Path(__file__).resolve()
-    if me.parent == state_dir().resolve():
-        me.unlink(missing_ok=True)
+    this file too when it is the copy in the state folder. An error is logged,
+    never raised (the shortcuts are already back)."""
+    try:
+        (Path.home() / ".config" / "autostart" / RESTORE_AUTOSTART).unlink(missing_ok=True)
+        me = Path(__file__).resolve()
+        if me.parent == state_dir().resolve():
+            me.unlink(missing_ok=True)
+    except OSError as exc:
+        log(f"restore cleanup: {exc}")
 
 
 # ── Command line ──────────────────────────────────────────────────────
