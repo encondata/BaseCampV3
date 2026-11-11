@@ -1127,7 +1127,7 @@ export async function setUserRoles(personId: string, roles: string[]): Promise<s
 
 /* ── external directory (client/partner contacts + external role) ── */
 
-export type ContactTier = 'owner' | 'admin' | 'viewer';
+export type ContactTier = 'owner' | 'admin' | 'viewer' | 'individual';
 export type OrgKind = 'client' | 'partner';
 
 export interface ExternalLinkItem {
@@ -1191,6 +1191,10 @@ export interface ContactItem {
   tier: ContactTier;
   org_title: string | null;
   functions: string[];
+  /** filled only for global callers; [] otherwise */
+  group_ids?: string[];
+  /** individual, or has group chips (partners: always false) */
+  restricted?: boolean;
 }
 
 export async function listOrgContacts(kind: OrgKind, id: string): Promise<ContactItem[]> {
@@ -1251,6 +1255,8 @@ export interface ContactUpdatePatch {
   tier?: ContactTier;
   org_title?: string | null;
   functions?: string[];
+  /** client links, global staff only; replaces the person's group chips */
+  group_ids?: string[];
 }
 
 export async function patchContactLink(

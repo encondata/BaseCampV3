@@ -16,6 +16,7 @@ import AvatarUpload from '../components/AvatarUpload';
 import ComboBox from '../components/ComboBox';
 import GodDeleteButton from '../components/GodDeleteButton';
 import TagInput from '../components/TagInput';
+import GroupChips, { useClientGroupNames } from '../components/clients/GroupChips';
 import TierSelect, { TIER_LABEL } from '../components/TierSelect';
 import {
   addContactLink, apiFetch, ApiError, listPartnerTypes, type ContactTier, type StatusValue,
@@ -82,6 +83,8 @@ interface ContactItem {
   tier: ContactTier;
   org_title: string | null;
   functions: string[];
+  group_ids?: string[];
+  restricted?: boolean;
 }
 
 interface SuppliedWorker {
@@ -932,6 +935,8 @@ function ContactsPanel({ cfg, orgId, contacts, canManage, onChanged }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [addOpen, setAddOpen] = useState(false);
+  const { scope } = useAuth();
+  const groupNames = useClientGroupNames(cfg.kind === 'client' ? orgId : null);
 
   const refresh = async () => {
     const resp = await apiFetch(`${cfg.apiBase}/${orgId}/contacts`);
@@ -986,7 +991,8 @@ function ContactsPanel({ cfg, orgId, contacts, canManage, onChanged }: {
             ? <span className="chip c-green" title="Has portal access"><span className="dot" />portal</span>
             : <span className="chip tag">no login</span>}
           <span className="chip tag">{TIER_LABEL[c.tier]}</span>
-          {canManage && (
+          <GroupChips ids={c.group_ids} names={groupNames} />
+          {canManage && !(c.restricted && scope?.global !== true) && (
             <button className="mini-btn" disabled={busy} title="Remove contact"
                     onClick={() => void remove(c.person_id)}>✕</button>
           )}
@@ -1165,7 +1171,7 @@ function AddContactModal({ cfg, orgId, linkedIds, onClose, onAdded }: {
                       }))}
                   /></div>
                 <div><label>Tier</label>
-                  <TierSelect value={tier} onChange={setTier} /></div>
+                  <TierSelect kind={cfg.kind} value={tier} onChange={setTier} /></div>
               </div>
             ) : (
               <>
@@ -1180,7 +1186,7 @@ function AddContactModal({ cfg, orgId, linkedIds, onClose, onAdded }: {
                   <div><label>Phone</label>
                     <input value={ncForm.phone} onChange={set('phone')} /></div>
                   <div><label>Tier</label>
-                    <TierSelect value={tier} onChange={setTier} /></div>
+                    <TierSelect kind={cfg.kind} value={tier} onChange={setTier} /></div>
                 </div>
               </>
             )}

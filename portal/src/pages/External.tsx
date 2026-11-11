@@ -26,6 +26,8 @@ import {
   apiFetch,
   ApiError,
   getExternal,
+  listClientGroups,
+  listOrgContacts,
   patchContactLink,
   removeContactLink,
   type ContactTier,
@@ -135,6 +137,11 @@ const LINK_ERRORS: Record<string, string> = {
   rank_too_low: "You don't have permission for that tier.",
   invalid_functions: 'Functions must be short, unique tags (max 12).',
   org_not_found: 'That organization could not be found.',
+  restricted_contact: 'Only staff can change or remove a restricted contact.',
+  individual_is_staff_only: 'Only staff can give a contact the Individual tier.',
+  group_not_in_client: 'One of those groups does not belong to this client.',
+  tier_not_for_partners: 'Partner links can only be Owner, Admin or Viewer.',
+  forbidden: "You don't have permission for that.",
 };
 
 const NEW_CONTACT_ERRORS: Record<string, string> = {
@@ -608,11 +615,36 @@ function ExternalDetail({
   );
 }
 
+/** The client link's "Groups" chips: options mode, so only the client's own
+ *  groups can be picked. Owner/admin links keep their chips but dimmed. */
+function GroupsField({ link, options, value, busy, onChange }: {
+  link: ExternalLinkItem;
+  options: { value: string; label: string }[];
+  value: string[];
+  busy: boolean;
+  onChange: (ids: string[]) => void;
+}) {
+  const seesAll = link.tier === 'owner' || link.tier === 'admin';
+  const empty = link.tier === 'individual' ? 'No groups — sees no assets.' : 'All groups.';
+  return (
+    <div style={{ flexBasis: '100%' }}>
+      <label className="eyebrow-sm" style={{ display: 'block', marginBottom: 4 }}>Groups</label>
+      <div style={seesAll ? { opacity: 0.55 } : undefined}>
+        <TagInput value={value} options={options} disabled={busy}
+                  placeholder={value.length === 0 && !seesAll ? empty : 'Add a group…'}
+                  onChange={onChange} />
+      </div>
+      {seesAll && <p className="set-note" style={{ padding: 0, margin: '4px 0 0' }}>
+        Owners and admins see every group.</p>}
+    </div>
+  );
+}
+
 /* ── edit modal: everything mutable — avatar, org links editor, login
  * lifecycle. Reuses the same components/API calls the old inline row
  * editor used; only the container changed. ─────────────────────────── */
 
-function EditPersonModal({
+export function EditPersonModal({
   person, allOrgs, loadAllOrgs, functionTags, canClients, canPartners, canUsers,
   canGrantLogin, onClose, onChanged,
 }: {
@@ -635,6 +667,34 @@ function EditPersonModal({
 
   const canManageLink = (kind: OrgKind) => (kind === 'client' ? canClients : canPartners);
 
+  // Per client link: the chips + restricted flag (GET /clients/{id}/contacts;
+  // the directory's link rows don't carry them) and, for global staff only,
+  // the client's group names for the chip picker.
+  const { scope } = useAuth();
+  const isStaff = scope?.global === true;
+  const clientKey = person.links.filter((l) => l.kind === 'client').map((l) => l.org_id).join(',');
+  const [clientInfo, setClientInfo] =
+    useState<Record<string, { group_ids: string[]; restricted: boolean }>>({});
+  const [groupOptions, setGroupOptions] = useState<Record<string, { value: string; label: string }[]>>({});
+  useEffect(() => {
+    let alive = true;
+    for (const orgId of clientKey ? clientKey.split(',') : []) {
+      void listOrgContacts('client', orgId).then((rows) => {
+        const row = rows.find((r) => r.person_id === person.person_id);
+        if (alive && row) {
+          setClientInfo((m) => ({ ...m, [orgId]: {
+            group_ids: row.group_ids ?? [], restricted: row.restricted ?? false } }));
+        }
+      }).catch(() => {});
+      if (isStaff) {
+        void listClientGroups(orgId).then((gs) => {
+          if (alive) setGroupOptions((m) => ({ ...m, [orgId]: gs.map((g) => ({ value: g.id, label: g.name })) }));
+        }).catch(() => {});
+      }
+    }
+    return () => { alive = false; };
+  }, [clientKey, isStaff, person.person_id]);
+
   const run = async (fn: () => Promise<unknown>, fallback: string) => {
     setBusy(true);
     setError('');
@@ -649,8 +709,19 @@ function EditPersonModal({
   };
 
   const updateLink = (link: ExternalLinkItem, patch: Parameters<typeof patchContactLink>[3]) =>
-    run(() => patchContactLink(link.kind, link.org_id, person.person_id, patch),
-      'Could not save — try again.');
+    run(async () => {
+      await patchContactLink(link.kind, link.org_id, person.person_id, patch);
+      setClientInfo((m) => {
+        const cur = m[link.org_id] ?? { group_ids: [], restricted: false };
+        const group_ids = patch.group_ids ?? cur.group_ids;
+        const tier = patch.tier ?? link.tier;
+        return { ...m, [link.org_id]: { group_ids,
+          restricted: tier === 'individual' || group_ids.length > 0 } };
+      });
+    }, 'Could not save — try again.');
+  // A client login can't change or remove a restricted (individual / chipped) contact.
+  const locked = (l: ExternalLinkItem) =>
+    l.kind === 'client' && (clientInfo[l.org_id]?.restricted ?? l.tier === 'individual');
   const removeLink = (link: ExternalLinkItem) =>
     run(() => removeContactLink(link.kind, link.org_id, person.person_id),
       'Could not remove the link — try again.');
@@ -719,12 +790,13 @@ function EditPersonModal({
                 </div>
                 <span className="chip tag">{l.kind === 'client' ? 'Client' : 'Partner'}</span>
                 {canManageLink(l.kind) ? (
-                  <TierSelect value={l.tier} disabled={busy}
+                  <TierSelect kind={l.kind} value={l.tier}
+                              disabled={busy || (!isStaff && locked(l))}
                               onChange={(tier) => void updateLink(l, { tier })} />
                 ) : (
                   <span className="chip tag">{l.tier}</span>
                 )}
-                {canManageLink(l.kind) && (
+                {canManageLink(l.kind) && !(!isStaff && locked(l)) && (
                   <button className="mini-btn" disabled={busy} title="Remove link"
                           onClick={() => void removeLink(l)}>✕</button>
                 )}
@@ -740,6 +812,12 @@ function EditPersonModal({
                       <TagInput value={l.functions} suggestions={functionTags} disabled={busy}
                                 placeholder="Functions — billing, scheduling…"
                                 onChange={(fns) => void updateLink(l, { functions: fns })} />
+                      {l.kind === 'client' && isStaff && groupOptions[l.org_id] && (
+                        <GroupsField link={l} busy={busy}
+                                     options={groupOptions[l.org_id]!}
+                                     value={clientInfo[l.org_id]?.group_ids ?? []}
+                                     onChange={(ids) => void updateLink(l, { group_ids: ids })} />
+                      )}
                     </>
                   ) : (
                     <>
@@ -766,7 +844,8 @@ function EditPersonModal({
                     sub: o.kind === 'client' ? 'Client' : 'Partner',
                   }))}
                 />
-                <TierSelect value={addTier} onChange={setAddTier} disabled={busy} />
+                <TierSelect kind={addOrg ? parseOrgKey(addOrg).kind : undefined}
+                            value={addTier} onChange={setAddTier} disabled={busy} />
                 <button className="mini-btn accent" disabled={!addOrg || busy}
                         onClick={addLink}>
                   Add link
@@ -932,7 +1011,8 @@ function NewExternalContactModal({ allOrgs, loadAllOrgs, functionTags, onClose, 
                   }))}
                 /></div>
               <div><label>Tier</label>
-                <TierSelect value={tier} onChange={setTier} /></div>
+                <TierSelect kind={org ? parseOrgKey(org).kind : undefined}
+                            value={tier} onChange={setTier} /></div>
               <div><label>Title at org</label>
                 <input value={form.org_title} onChange={set('org_title')} placeholder="VP Sales…" /></div>
               <div className="full"><label>Functions</label>
