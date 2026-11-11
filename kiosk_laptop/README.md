@@ -196,7 +196,8 @@ and the kiosk points the reader's tag data at this laptop.
   night.
 - It waits up to 2 minutes for the new version to be healthy. If it isn't, the
   previous version is put back. A version that failed its health check isn't
-  tried again until a newer one is published.
+  tried again until a newer one is published, or (macOS and Linux) until
+  the installer is run again.
 - The nightly update also refreshes the helper scripts (`hostnet` and
   `launch`, `.sh` or `.ps1`) from the version of the installer the laptop was
   installed from (recorded as `KIOSK_INSTALLER_REF` in `config.env`, `main`
@@ -244,6 +245,25 @@ and the kiosk points the reader's tag data at this laptop.
   failing, the laptop keeps retrying (at most every 15 minutes). Only a scan
   the cloud refuses outright is marked failed, and Edge settings can retry
   it.
+
+## Label printers on Linux
+
+Nothing needs doing by hand. So Chrome can print to USB Zebra label printers,
+the installer:
+
+- adds a udev rule that lets Chrome open Zebra printers
+  (`/etc/udev/rules.d/60-serversherpa-label-printers.rules`);
+- blocks the `usblp` printer driver, which otherwise claims the printers
+  (`/etc/modprobe.d/serversherpa-no-usblp.conf`);
+- removes the system printer queues Ubuntu sets up for USB Zebras, and the
+  `system-config-printer-udev` package that makes them (other printers are
+  left alone);
+- lets snap Chromium use USB devices (`snap connect chromium:raw-usb`) when
+  that is the browser.
+
+The host network job checks all of this every minute and puts back anything
+that changed. Uninstalling removes the two files; it doesn't reinstall the
+package.
 
 ## Windows label printers
 
@@ -317,6 +337,12 @@ instead.
 
 - Install log: `install.log` in the install folder. Update log: `update.log`
   in the same folder.
+- Linux, "error while creating mount source path ... read-only file system":
+  snap Docker was installed next to Docker Engine. The installer and the host
+  network job remove snap Docker and restart Docker Engine on their own; if
+  only snap Docker was there, the installer installs Docker Engine first.
+- macOS and Linux, "skipping ... it failed its health check before" in
+  `update.log`: re-running the installer tries that version again.
 - Kiosk logs: `docker compose -f <install folder>/docker-compose.yml logs -f edge`
 - Health: `docker compose -f <install folder>/docker-compose.yml ps` shows the
   container as healthy once the kiosk answers.

@@ -555,3 +555,115 @@ def test_main_on_macos_lists_every_owned_address(tmp_path):
     out = json.loads((data / "host-network.json").read_text())
     assert {"192.168.64.1", "10.99.0.1", "192.168.1.20", "192.168.7.7", "10.8.0.2",
             "10.10.48.57"} <= set(out["self_addresses"])
+
+
+# ── USB label-printer upkeep (Linux, root) ────────────────────────────
+from conftest import ZEBRA_QUEUES, lp_calls, lp_stubs  # noqa: E402
+
+UDEV = "udev/60-serversherpa-label-printers.rules"
+MODPROBE = "modprobe/serversherpa-no-usblp.conf"
+
+
+def _upkeep(tmp_path, os_name="Linux", uid="0", **kw):
+    stubs = lp_stubs(tmp_path, **kw)
+    return hn(tmp_path, stubs + f'OS={os_name}; id() {{ echo {uid}; }}; label_upkeep; echo rc=$?')
+
+
+def test_upkeep_as_root_on_linux_fixes_what_is_off(tmp_path):
+    r = _upkeep(tmp_path, snaps=("docker", "chromium"))
+    assert r.stdout == "rc=0\n" and r.stderr == ""   # silent
+    calls = lp_calls(tmp_path)
+    assert (tmp_path / UDEV).exists() and (tmp_path / MODPROBE).exists()
+    assert "modprobe -r usblp" in calls
+    assert [c for c in calls if c.startswith("lpadmin")] == [f"lpadmin -x {q}" for q in ZEBRA_QUEUES]
+    assert "udevadm control --reload" in calls
+    assert "snap connect chromium:raw-usb" in calls
+    assert "snap remove --purge docker" in calls
+    assert "systemctl restart docker.socket docker.service" in calls
+    assert not any(c.startswith(("apt-get", "dpkg-query")) for c in calls)   # no packages from hostnet
+
+
+def test_upkeep_with_everything_in_place_only_checks(tmp_path):
+    _upkeep(tmp_path, usblp=False, lpstat="device for HP: usb://HP/x\n", snaps=("chromium",), raw_usb=True)
+    (tmp_path / "lp.calls").unlink()
+    r = _upkeep(tmp_path, usblp=False, lpstat="device for HP: usb://HP/x\n", snaps=("chromium",), raw_usb=True)
+    assert r.stdout == "rc=0\n"
+    calls = lp_calls(tmp_path)
+    assert not [c for c in calls if c.split()[0] in ("udevadm", "modprobe", "lpadmin", "systemctl")]
+    assert "snap connect chromium:raw-usb" not in calls
+    assert not [c for c in calls if c.startswith("snap remove")]
+
+
+def test_upkeep_rewrites_a_missing_udev_rule_and_reloads(tmp_path):
+    _upkeep(tmp_path, usblp=False)
+    (tmp_path / UDEV).unlink()
+    (tmp_path / "lp.calls").unlink()
+    _upkeep(tmp_path, usblp=False)
+    calls = lp_calls(tmp_path)
+    assert (tmp_path / UDEV).exists() and "udevadm control --reload" in calls
+    assert "udevadm trigger --subsystem-match=usb --attr-match=idVendor=0a5f" in calls
+
+
+def test_upkeep_leaves_snap_docker_alone_without_docker_engine(tmp_path):
+    _upkeep(tmp_path, snaps=("docker",), engine=False)
+    assert not any(c.startswith(("snap remove", "systemctl restart")) for c in lp_calls(tmp_path))
+
+
+def test_upkeep_finishes_an_interrupted_snap_docker_removal(tmp_path):
+    (tmp_path / "run").mkdir()
+    (tmp_path / "run" / "serversherpa-kiosk-snap-docker-removed").write_text("")
+    _upkeep(tmp_path, snaps=())
+    assert "systemctl restart docker.socket docker.service" in lp_calls(tmp_path)
+    assert not (tmp_path / "run" / "serversherpa-kiosk-snap-docker-removed").exists()
+
+
+@pytest.mark.parametrize("os_name,uid", [("Linux", "1000"), ("Darwin", "0"), ("Darwin", "501")])
+def test_upkeep_does_nothing_off_linux_or_without_root(tmp_path, os_name, uid):
+    r = _upkeep(tmp_path, os_name=os_name, uid=uid, snaps=("docker", "chromium"))
+    assert r.stdout == "rc=0\n" and lp_calls(tmp_path) == []
+    assert not (tmp_path / UDEV).exists()
+
+
+def test_script_run_survives_every_upkeep_failure_and_still_writes_the_file(tmp_path):
+    """As root on Linux with every upkeep tool failing and /etc unwritable:
+    exit 0, no output, host-network.json written."""
+    data = tmp_path / "data"; data.mkdir()
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    calls = tmp_path / "calls"
+
+    def tool(name, body):
+        (bindir / name).write_text(f'#!/bin/sh\necho "{name} $*" >> "{calls}"\n{body}\n')
+        (bindir / name).chmod(0o755)
+    (tmp_path / "ip.json").write_text(IP_JSON)
+    tool("ip", f"cat '{tmp_path / 'ip.json'}'")
+    tool("uname", "echo Linux")
+    tool("id", "echo 0")
+    tool("lsmod", "echo 'usblp 1 0'")
+    tool("lpstat", "echo 'device for Z: usb://Zebra%20Technologies/ZD421'; exit 1")
+    for t in ("modprobe", "udevadm", "lpadmin", "systemctl"):
+        tool(t, "echo boom >&2; exit 1")
+    tool("snap", 'case "$1" in list) exit 0;; esac; echo boom >&2; exit 1')
+    (tmp_path / "etc").write_text("not a folder")
+    env = {**os.environ, "KIOSK_DIR": str(tmp_path), "KIOSK_DATA_DIR": str(data),
+           "KIOSK_SYSFS_NET": str(fake_sysfs(tmp_path)), "PATH": f"{bindir}:{os.environ['PATH']}",
+           "KIOSK_UDEV_RULES_DIR": str(tmp_path / "etc" / "udev"),
+           "KIOSK_MODPROBE_DIR": str(tmp_path / "etc" / "modprobe"),
+           "KIOSK_RUN_DIR": str(tmp_path / "etc" / "run"), "KIOSK_DOCKERD_BIN": "/bin/sh"}
+    r = subprocess.run([BASH, str(HOSTNET_SH)], capture_output=True, text=True, env=env)
+    assert r.returncode == 0 and r.stdout == "" and r.stderr == ""
+    assert json.loads((data / "host-network.json").read_text())["interfaces"]
+    log = calls.read_text()
+    assert "modprobe -r usblp" in log and "lpadmin -x Z" in log and "snap remove --purge docker" in log
+
+
+def test_script_run_keeps_mains_exit_code(tmp_path):
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    for name, body in (("ip", "exit 1"), ("uname", "echo Linux"), ("id", "echo 0")):
+        (bindir / name).write_text(f"#!/bin/sh\n{body}\n"); (bindir / name).chmod(0o755)
+    env = {**os.environ, "KIOSK_DIR": str(tmp_path), "KIOSK_DATA_DIR": str(tmp_path),
+           "PATH": f"{bindir}:{os.environ['PATH']}", "KIOSK_UDEV_RULES_DIR": str(tmp_path / "u"),
+           "KIOSK_MODPROBE_DIR": str(tmp_path / "m"), "KIOSK_RUN_DIR": str(tmp_path / "r"),
+           "KIOSK_DOCKERD_BIN": str(tmp_path / "none")}
+    r = subprocess.run([BASH, str(HOSTNET_SH)], capture_output=True, text=True, env=env)
+    assert r.returncode == 1 and r.stdout == "" and r.stderr == ""
+    assert (tmp_path / "u" / "60-serversherpa-label-printers.rules").exists()   # upkeep still ran

@@ -29,7 +29,11 @@
 #
 # The data folder: KIOSK_DATA_DIR, else config.env's KIOSK_DATA_DIR, else the
 # OS default. Testing hooks: KIOSK_HOSTNET_LIB=1 defines the functions without
-# running main; KIOSK_SYSFS_NET replaces /sys/class/net. Written for bash 3.2
+# running main; KIOSK_SYSFS_NET replaces /sys/class/net (and see the label
+# printer block for its own).
+#
+# On Linux as root it also keeps the USB label printers working for Chrome's
+# WebUSB (label_upkeep, after the file is written, best-effort and silent). Written for bash 3.2
 # (macOS's bash).
 set -uo pipefail
 
@@ -293,7 +297,187 @@ main() {
   write_host_network "$(data_dir)" "$(printf '%s' "$found" | usable_only | to_json "$(utc_now)" "$(gateway)" "$self")"
 }
 
-# Called on the last line so a partially written script runs nothing.
+# The label-printer block is silent here.
+lp_say() { :; }
+lp_warn() { :; }
+
+# >>> USB label printers (Linux). This block is the same in install.sh and
+# hostnet.sh; tests/test_install_sh.py checks the two copies match. Every
+# step is best-effort, returns 0, and acts only when something is off: it
+# reports each change through lp_say and each failure through lp_warn, which
+# each script defines (install.sh: info/warn; hostnet.sh: silent).
+# Testing hooks: KIOSK_UDEV_RULES_DIR, KIOSK_MODPROBE_DIR, KIOSK_DOCKERD_BIN,
+# KIOSK_RUN_DIR replace /etc/udev/rules.d, /etc/modprobe.d, /usr/bin/dockerd, /run.
+LP_UDEV_RULES="${KIOSK_UDEV_RULES_DIR:-/etc/udev/rules.d}/60-serversherpa-label-printers.rules"
+LP_MODPROBE_CONF="${KIOSK_MODPROBE_DIR:-/etc/modprobe.d}/serversherpa-no-usblp.conf"
+LP_DOCKERD_BIN="${KIOSK_DOCKERD_BIN:-/usr/bin/dockerd}"
+# Present while a snap Docker removal waits for Docker Engine's restart.
+LP_SNAP_MARKER="${KIOSK_RUN_DIR:-/run}/serversherpa-kiosk-snap-docker-removed"
+
+# lp_udev_rule: Zebra (USB vendor 0a5f) printers open to Chrome's WebUSB, for
+# everyone and (uaccess) for whoever is signed in at the screen.
+lp_udev_rule() {
+  printf '%s\n' '# ServerSherpa kiosk: Chrome prints to USB Zebra label printers over WebUSB.' \
+    'SUBSYSTEM=="usb", ATTR{idVendor}=="0a5f", MODE="0666", TAG+="uaccess"'
+}
+
+# lp_modprobe_conf: keeps the usblp printer driver off the label printers
+# (it claims them, and WebUSB then gets "Access denied").
+lp_modprobe_conf() {
+  printf '%s\n' '# ServerSherpa kiosk: usblp claims USB label printers, which blocks WebUSB.' \
+    'blacklist usblp'
+}
+
+# lp_write FILE CONTENT: 0 when FILE was written, 1 when it already held
+# CONTENT, 2 when it couldn't be written. Mode 644.
+lp_write() {
+  local file="$1" want="$2"
+  if [ -f "$file" ] && [ "$(cat "$file" 2>/dev/null)" = "$want" ]; then return 1; fi
+  if mkdir -p "$(dirname "$file")" 2>/dev/null && printf '%s\n' "$want" >"$file" 2>/dev/null \
+     && chmod 644 "$file" 2>/dev/null; then
+    return 0
+  fi
+  return 2
+}
+
+lp_ensure_udev_rule() {
+  local rc=0
+  lp_write "$LP_UDEV_RULES" "$(lp_udev_rule)" || rc=$?
+  case "$rc" in
+    0)
+      lp_say "Wrote $LP_UDEV_RULES so Chrome can open USB Zebra label printers."
+      if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload >/dev/null 2>&1 || true
+        udevadm trigger --subsystem-match=usb --attr-match=idVendor=0a5f >/dev/null 2>&1 || true
+      fi ;;
+    2) lp_warn "Couldn't write $LP_UDEV_RULES; Chrome may not be able to open USB label printers." ;;
+  esac
+  return 0
+}
+
+lp_usblp_loaded() {
+  command -v lsmod >/dev/null 2>&1 || return 1
+  lsmod 2>/dev/null | awk '$1 == "usblp" { found = 1 } END { exit !found }'
+}
+
+lp_ensure_no_usblp() {
+  local rc=0
+  lp_write "$LP_MODPROBE_CONF" "$(lp_modprobe_conf)" || rc=$?
+  case "$rc" in
+    0) lp_say "Wrote $LP_MODPROBE_CONF (the usblp driver no longer claims label printers)." ;;
+    2) lp_warn "Couldn't write $LP_MODPROBE_CONF." ;;
+  esac
+  if lp_usblp_loaded && command -v modprobe >/dev/null 2>&1; then
+    if modprobe -r usblp >/dev/null 2>&1; then
+      lp_say "Unloaded the usblp driver."
+    else
+      lp_warn "Couldn't unload the usblp driver (it is blocked from the next start on)."
+    fi
+  fi
+  return 0
+}
+
+# lp_zebra_queues: `lpstat -v` on stdin -> the names of the CUPS queues whose
+# device URI starts with usb://Zebra, one per line.
+lp_zebra_queues() {
+  awk '$1 == "device" && $2 == "for" && index($4, "usb://Zebra") == 1 { q = $3; sub(/:$/, "", q); print q }'
+}
+
+# lp_remove_zebra_queues: the USB Zebra queues Ubuntu sets up on its own; CUPS
+# holding the printer blocks WebUSB. Other printers are never touched.
+lp_remove_zebra_queues() {
+  local q
+  command -v lpstat >/dev/null 2>&1 && command -v lpadmin >/dev/null 2>&1 || return 0
+  for q in $(LC_ALL=C lpstat -v 2>/dev/null | lp_zebra_queues); do
+    if lpadmin -x "$q" >/dev/null 2>&1; then
+      lp_say "Removed the CUPS printer queue $q (the kiosk prints to USB Zebras itself)."
+    else
+      lp_warn "Couldn't remove the CUPS printer queue $q."
+    fi
+  done
+  return 0
+}
+
+lp_snap_has() { command -v snap >/dev/null 2>&1 && snap list "$1" >/dev/null 2>&1; }
+
+# lp_engine_present: Docker Engine (docker-ce or docker.io), not the snap.
+lp_engine_present() {
+  [ -x "$LP_DOCKERD_BIN" ] && return 0
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl cat docker.service 2>/dev/null | awk '
+    /^ExecStart=/ { exec = 1 } /\/snap\// { snap = 1 } END { exit !(exec && !snap) }'
+}
+
+lp_restart_engine() {
+  if systemctl restart docker.socket docker.service >/dev/null 2>&1; then
+    rm -f "$LP_SNAP_MARKER" 2>/dev/null || true
+    lp_say "Restarted Docker Engine."
+  else
+    lp_warn "Couldn't restart Docker Engine (systemctl restart docker.socket docker.service)."
+  fi
+}
+
+# lp_remove_snap_docker: snap Docker next to Docker Engine fights it for
+# /var/run/docker.sock and can't write the data folder ("read-only file
+# system"), so the snap goes. Only when Docker Engine is there to take over.
+# The marker finishes the restart on a later run if this one is cut short.
+lp_remove_snap_docker() {
+  if lp_snap_has docker; then
+    lp_engine_present || return 0
+    : >"$LP_SNAP_MARKER" 2>/dev/null || true
+    if snap remove --purge docker >/dev/null 2>&1; then
+      lp_say "Removed snap Docker (Docker Engine runs the kiosk)."
+      lp_restart_engine
+    else
+      lp_warn "Couldn't remove snap Docker (snap remove --purge docker)."
+    fi
+  elif [ -e "$LP_SNAP_MARKER" ]; then
+    lp_restart_engine
+  fi
+  return 0
+}
+
+# lp_chromium_raw_usb: snap Chromium reaches USB devices only through its
+# raw-usb interface, which is off by default.
+lp_chromium_raw_usb() {
+  lp_snap_has chromium || return 0
+  if snap connections chromium 2>/dev/null \
+       | awk '$2 == "chromium:raw-usb" && $3 != "-" { found = 1 } END { exit !found }'; then
+    return 0
+  fi
+  if snap connect chromium:raw-usb >/dev/null 2>&1; then
+    lp_say "Let snap Chromium use USB devices (snap connect chromium:raw-usb)."
+  else
+    lp_warn "Couldn't let snap Chromium use USB devices (snap connect chromium:raw-usb)."
+  fi
+  return 0
+}
+
+# lp_upkeep: every check above, cheapest first.
+lp_upkeep() {
+  lp_ensure_no_usblp
+  lp_remove_zebra_queues
+  lp_ensure_udev_rule
+  lp_chromium_raw_usb
+  lp_remove_snap_docker
+  return 0
+}
+# <<< USB label printers
+
+# label_upkeep: on Linux as root, put the USB label-printer setup back if
+# anything undid it (install.sh does the same at install time). Never on macOS.
+label_upkeep() {
+  [ "$OS" = Linux ] || return 0
+  [ "$(id -u 2>/dev/null)" = 0 ] || return 0
+  lp_upkeep
+}
+
+# Called on the last lines so a partially written script runs nothing. The
+# upkeep runs after host-network.json is written, in a subshell, so nothing
+# in it can change the exit code.
 if [ "${KIOSK_HOSTNET_LIB:-0}" != "1" ]; then
   main "$@" >/dev/null 2>&1
+  rc=$?
+  ( label_upkeep ) >/dev/null 2>&1 || true
+  exit "$rc"
 fi

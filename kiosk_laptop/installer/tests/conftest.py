@@ -99,3 +99,58 @@ def store_docker(tmp_path, mode, ref, tags, running="", pulled="", bad=()):
             out[n] = i
         return out, (d / "running").read_text().strip()
     return fake, tags_of
+
+
+# USB label-printer upkeep (the shared block in install.sh and hostnet.sh).
+# `lpstat -v` as Ubuntu prints it: two USB Zebras that system-config-printer
+# set up, a networked Zebra and a USB office printer (both left alone).
+LPSTAT_V = (
+    "device for Zebra_Technologies_ZTC_ZD421-203dpi_ZPL: "
+    "usb://Zebra%20Technologies/ZTC%20ZD421-203dpi%20ZPL?serial=D2J123456789\n"
+    "device for ZTC-GK420d: usb://Zebra%20Technologies/ZTC%20GK420d?serial=28J1\n"
+    "device for Dock_Zebra: socket://10.10.48.80:9100\n"
+    "device for HP_LaserJet: usb://HP/LaserJet%20Pro%20M404?serial=PHB1\n"
+)
+ZEBRA_QUEUES = ["Zebra_Technologies_ZTC_ZD421-203dpi_ZPL", "ZTC-GK420d"]
+
+
+def lp_stubs(tmp_path, usblp=True, lpstat=LPSTAT_V, snaps=(), engine=True, raw_usb=False,
+             pkg=True, fail=""):
+    """Bash stub functions for the upkeep's tools plus the fake roots, as a
+    script prefix. Every call goes to tmp_path/lp.calls. snaps: the installed
+    snaps (`snap remove` takes one away). A tool named in `fail` exits 1."""
+    calls = tmp_path / "lp.calls"
+    for d in ("udev", "modprobe", "run"):
+        (tmp_path / d).mkdir(exist_ok=True)
+    (tmp_path / "lp.lpstat").write_text(lpstat)
+    (tmp_path / "lp.snaps").write_text("".join(f"{s}\n" for s in snaps))
+    dockerd = tmp_path / "dockerd"
+    if engine:
+        dockerd.write_text("#!/bin/sh\n"); dockerd.chmod(0o755)
+    conn = "manual" if raw_usb else "-"
+    snaps_f = tmp_path / "lp.snaps"
+
+    def tool(name, body="return 0"):
+        f = 'return 1' if name in fail.split() else body
+        return f'{name}() {{ echo "{name} $*" >> "{calls}"; {f}; }}; '
+    return (
+        f'LP_UDEV_RULES="{tmp_path}/udev/60-serversherpa-label-printers.rules"; '
+        f'LP_MODPROBE_CONF="{tmp_path}/modprobe/serversherpa-no-usblp.conf"; '
+        f'LP_DOCKERD_BIN="{dockerd}"; LP_SNAP_MARKER="{tmp_path}/run/serversherpa-kiosk-snap-docker-removed"; '
+        + tool("lsmod", f'printf "Module Size Used\\n"; {"echo usblp 28672 0" if usblp else ":"}')
+        + tool("modprobe") + tool("udevadm") + tool("lpadmin")
+        + tool("lpstat", f'cat "{tmp_path}/lp.lpstat"')
+        + tool("systemctl", 'case "$1" in cat) return 1;; esac; return 0')
+        + tool("apt-get", f'echo "DEBIAN_FRONTEND=${{DEBIAN_FRONTEND:-}}" >> "{calls}"')
+        + tool("dpkg-query", f'{"printf \"install ok installed\"" if pkg else "return 1"}')
+        + tool("snap", f'case "$1" in '
+                       f'list) grep -qx "$2" "{snaps_f}";; '
+                       f'remove) grep -vx "$3" "{snaps_f}" > "{snaps_f}.t"; mv "{snaps_f}.t" "{snaps_f}";; '
+                       f'connections) printf "Interface Plug Slot Notes\\nraw-usb chromium:raw-usb {":raw-usb" if raw_usb else "-"} {conn}\\nx11 chromium:x11 :x11 -\\n";; '
+                       f'esac')
+    )
+
+
+def lp_calls(tmp_path):
+    f = tmp_path / "lp.calls"
+    return f.read_text().splitlines() if f.exists() else []

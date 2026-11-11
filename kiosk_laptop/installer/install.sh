@@ -595,7 +595,207 @@ setup_docker_cli() {
 
 docker_answers() { "${DOCKER[@]}" version >/dev/null 2>&1; }
 
-# ensure_docker: install Docker Desktop (macOS) or Docker Engine (Linux) if missing.
+# The label-printer block reports through these.
+lp_say() { info "$@"; }
+lp_warn() { warn "$@"; }
+
+# >>> USB label printers (Linux). This block is the same in install.sh and
+# hostnet.sh; tests/test_install_sh.py checks the two copies match. Every
+# step is best-effort, returns 0, and acts only when something is off: it
+# reports each change through lp_say and each failure through lp_warn, which
+# each script defines (install.sh: info/warn; hostnet.sh: silent).
+# Testing hooks: KIOSK_UDEV_RULES_DIR, KIOSK_MODPROBE_DIR, KIOSK_DOCKERD_BIN,
+# KIOSK_RUN_DIR replace /etc/udev/rules.d, /etc/modprobe.d, /usr/bin/dockerd, /run.
+LP_UDEV_RULES="${KIOSK_UDEV_RULES_DIR:-/etc/udev/rules.d}/60-serversherpa-label-printers.rules"
+LP_MODPROBE_CONF="${KIOSK_MODPROBE_DIR:-/etc/modprobe.d}/serversherpa-no-usblp.conf"
+LP_DOCKERD_BIN="${KIOSK_DOCKERD_BIN:-/usr/bin/dockerd}"
+# Present while a snap Docker removal waits for Docker Engine's restart.
+LP_SNAP_MARKER="${KIOSK_RUN_DIR:-/run}/serversherpa-kiosk-snap-docker-removed"
+
+# lp_udev_rule: Zebra (USB vendor 0a5f) printers open to Chrome's WebUSB, for
+# everyone and (uaccess) for whoever is signed in at the screen.
+lp_udev_rule() {
+  printf '%s\n' '# ServerSherpa kiosk: Chrome prints to USB Zebra label printers over WebUSB.' \
+    'SUBSYSTEM=="usb", ATTR{idVendor}=="0a5f", MODE="0666", TAG+="uaccess"'
+}
+
+# lp_modprobe_conf: keeps the usblp printer driver off the label printers
+# (it claims them, and WebUSB then gets "Access denied").
+lp_modprobe_conf() {
+  printf '%s\n' '# ServerSherpa kiosk: usblp claims USB label printers, which blocks WebUSB.' \
+    'blacklist usblp'
+}
+
+# lp_write FILE CONTENT: 0 when FILE was written, 1 when it already held
+# CONTENT, 2 when it couldn't be written. Mode 644.
+lp_write() {
+  local file="$1" want="$2"
+  if [ -f "$file" ] && [ "$(cat "$file" 2>/dev/null)" = "$want" ]; then return 1; fi
+  if mkdir -p "$(dirname "$file")" 2>/dev/null && printf '%s\n' "$want" >"$file" 2>/dev/null \
+     && chmod 644 "$file" 2>/dev/null; then
+    return 0
+  fi
+  return 2
+}
+
+lp_ensure_udev_rule() {
+  local rc=0
+  lp_write "$LP_UDEV_RULES" "$(lp_udev_rule)" || rc=$?
+  case "$rc" in
+    0)
+      lp_say "Wrote $LP_UDEV_RULES so Chrome can open USB Zebra label printers."
+      if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload >/dev/null 2>&1 || true
+        udevadm trigger --subsystem-match=usb --attr-match=idVendor=0a5f >/dev/null 2>&1 || true
+      fi ;;
+    2) lp_warn "Couldn't write $LP_UDEV_RULES; Chrome may not be able to open USB label printers." ;;
+  esac
+  return 0
+}
+
+lp_usblp_loaded() {
+  command -v lsmod >/dev/null 2>&1 || return 1
+  lsmod 2>/dev/null | awk '$1 == "usblp" { found = 1 } END { exit !found }'
+}
+
+lp_ensure_no_usblp() {
+  local rc=0
+  lp_write "$LP_MODPROBE_CONF" "$(lp_modprobe_conf)" || rc=$?
+  case "$rc" in
+    0) lp_say "Wrote $LP_MODPROBE_CONF (the usblp driver no longer claims label printers)." ;;
+    2) lp_warn "Couldn't write $LP_MODPROBE_CONF." ;;
+  esac
+  if lp_usblp_loaded && command -v modprobe >/dev/null 2>&1; then
+    if modprobe -r usblp >/dev/null 2>&1; then
+      lp_say "Unloaded the usblp driver."
+    else
+      lp_warn "Couldn't unload the usblp driver (it is blocked from the next start on)."
+    fi
+  fi
+  return 0
+}
+
+# lp_zebra_queues: `lpstat -v` on stdin -> the names of the CUPS queues whose
+# device URI starts with usb://Zebra, one per line.
+lp_zebra_queues() {
+  awk '$1 == "device" && $2 == "for" && index($4, "usb://Zebra") == 1 { q = $3; sub(/:$/, "", q); print q }'
+}
+
+# lp_remove_zebra_queues: the USB Zebra queues Ubuntu sets up on its own; CUPS
+# holding the printer blocks WebUSB. Other printers are never touched.
+lp_remove_zebra_queues() {
+  local q
+  command -v lpstat >/dev/null 2>&1 && command -v lpadmin >/dev/null 2>&1 || return 0
+  for q in $(LC_ALL=C lpstat -v 2>/dev/null | lp_zebra_queues); do
+    if lpadmin -x "$q" >/dev/null 2>&1; then
+      lp_say "Removed the CUPS printer queue $q (the kiosk prints to USB Zebras itself)."
+    else
+      lp_warn "Couldn't remove the CUPS printer queue $q."
+    fi
+  done
+  return 0
+}
+
+lp_snap_has() { command -v snap >/dev/null 2>&1 && snap list "$1" >/dev/null 2>&1; }
+
+# lp_engine_present: Docker Engine (docker-ce or docker.io), not the snap.
+lp_engine_present() {
+  [ -x "$LP_DOCKERD_BIN" ] && return 0
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl cat docker.service 2>/dev/null | awk '
+    /^ExecStart=/ { exec = 1 } /\/snap\// { snap = 1 } END { exit !(exec && !snap) }'
+}
+
+lp_restart_engine() {
+  if systemctl restart docker.socket docker.service >/dev/null 2>&1; then
+    rm -f "$LP_SNAP_MARKER" 2>/dev/null || true
+    lp_say "Restarted Docker Engine."
+  else
+    lp_warn "Couldn't restart Docker Engine (systemctl restart docker.socket docker.service)."
+  fi
+}
+
+# lp_remove_snap_docker: snap Docker next to Docker Engine fights it for
+# /var/run/docker.sock and can't write the data folder ("read-only file
+# system"), so the snap goes. Only when Docker Engine is there to take over.
+# The marker finishes the restart on a later run if this one is cut short.
+lp_remove_snap_docker() {
+  if lp_snap_has docker; then
+    lp_engine_present || return 0
+    : >"$LP_SNAP_MARKER" 2>/dev/null || true
+    if snap remove --purge docker >/dev/null 2>&1; then
+      lp_say "Removed snap Docker (Docker Engine runs the kiosk)."
+      lp_restart_engine
+    else
+      lp_warn "Couldn't remove snap Docker (snap remove --purge docker)."
+    fi
+  elif [ -e "$LP_SNAP_MARKER" ]; then
+    lp_restart_engine
+  fi
+  return 0
+}
+
+# lp_chromium_raw_usb: snap Chromium reaches USB devices only through its
+# raw-usb interface, which is off by default.
+lp_chromium_raw_usb() {
+  lp_snap_has chromium || return 0
+  if snap connections chromium 2>/dev/null \
+       | awk '$2 == "chromium:raw-usb" && $3 != "-" { found = 1 } END { exit !found }'; then
+    return 0
+  fi
+  if snap connect chromium:raw-usb >/dev/null 2>&1; then
+    lp_say "Let snap Chromium use USB devices (snap connect chromium:raw-usb)."
+  else
+    lp_warn "Couldn't let snap Chromium use USB devices (snap connect chromium:raw-usb)."
+  fi
+  return 0
+}
+
+# lp_upkeep: every check above, cheapest first.
+lp_upkeep() {
+  lp_ensure_no_usblp
+  lp_remove_zebra_queues
+  lp_ensure_udev_rule
+  lp_chromium_raw_usb
+  lp_remove_snap_docker
+  return 0
+}
+# <<< USB label printers
+
+# remove_printer_autoconfig: system-config-printer-udev makes a CUPS queue for
+# every USB printer plugged in, and CUPS then holds the label printers.
+remove_printer_autoconfig() {
+  local pkg=system-config-printer-udev
+  command -v dpkg-query >/dev/null 2>&1 || return 0
+  dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' || return 0
+  if DEBIAN_FRONTEND=noninteractive apt-get remove -y "$pkg" >/dev/null 2>&1; then
+    info "Removed $pkg (it set up USB label printers as system printers, which blocks the kiosk)."
+  else
+    warn "Couldn't remove $pkg (apt-get remove -y $pkg); the kiosk removes the printer queues it makes every minute."
+  fi
+  return 0
+}
+
+# setup_label_printers (Linux): USB label printers open to Chrome over WebUSB.
+# The host network job (hostnet.sh) keeps all of it in place from then on.
+setup_label_printers() {
+  [ "$OS" = Linux ] || return 0
+  remove_printer_autoconfig
+  lp_upkeep
+}
+
+# remove_label_printer_files (Linux, uninstall): the two files the installer
+# wrote. Packages it removed are not put back.
+remove_label_printer_files() {
+  [ "$OS" = Linux ] || return 0
+  rm -f "$LP_UDEV_RULES" "$LP_MODPROBE_CONF" 2>/dev/null || true
+  if command -v udevadm >/dev/null 2>&1; then udevadm control --reload >/dev/null 2>&1 || true; fi
+  return 0
+}
+
+# ensure_docker: install Docker Desktop (macOS) or Docker Engine (Linux) if
+# missing. On Linux snap Docker doesn't count: Docker Engine is installed next
+# to it, then the snap is removed (lp_remove_snap_docker).
 ensure_docker() {
   if [ "$OS" = Darwin ]; then
     if docker_answers || [ -d /Applications/Docker.app ]; then
@@ -604,12 +804,14 @@ ensure_docker() {
     fi
     install_docker_desktop
   else
-    if command -v docker >/dev/null 2>&1; then
-      info "Docker is installed."
+    if lp_engine_present; then
+      info "Docker Engine is installed."
     else
+      ! lp_snap_has docker || info "Snap Docker can't run the kiosk; installing Docker Engine to replace it."
       info "Installing Docker Engine (get.docker.com)"
       curl -fsSL https://get.docker.com | sh || die "Docker Engine didn't install. See the messages above, then re-run."
     fi
+    lp_remove_snap_docker
     if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && getent group docker >/dev/null 2>&1; then
       if ! id -nG "$SUDO_USER" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
         if usermod -aG docker "$SUDO_USER"; then
@@ -831,12 +1033,28 @@ wait_kiosk_healthy() {
   done
 }
 
-# start_kiosk: pull, start, wait until healthy, read the identity. Respects
-# update-state.json like the nightly update: a version that failed its health
-# check here before is not started again, and a new version that doesn't get
-# healthy is rolled back.
+# retry_rejected_image: running the installer is an explicit retry, so a
+# version the nightly update set aside after a failed health check
+# (rejected_image) is tried again. Only that key is cleared, in place.
+retry_rejected_image() {
+  local f="$KIOSK_DIR/update-state.json" text
+  [ -n "$UPD_REJECTED" ] || return 0
+  info "A version failed its health check on this laptop before; running the installer retries it."
+  UPD_REJECTED=''
+  if text=$(sed 's/"rejected_image"[[:space:]]*:[[:space:]]*"[^"]*"/"rejected_image": ""/' "$f" 2>/dev/null) \
+     && { printf '%s\n' "$text" >"$f"; } 2>/dev/null; then
+    return 0
+  fi
+  warn "Couldn't update $f."
+  return 0
+}
+
+# start_kiosk: pull, start, wait until healthy, read the identity. Uses
+# update-state.json like the nightly update, except that a version rejected
+# before is tried again (retry_rejected_image); a new version that doesn't get
+# healthy is rolled back and rejected.
 start_kiosk() {
-  local ref prev new kept logs
+  local ref prev new logs
   ref=$(image_ref)
   logs="See: docker compose -f \"$KIOSK_DIR/docker-compose.yml\" logs edge"
   stop_legacy_kiosk
@@ -847,21 +1065,7 @@ start_kiosk() {
   pull_image
   new=$("${DOCKER[@]}" image inspect -f '{{.Id}}' "$ref" 2>/dev/null || true)
   read_update_state
-  if [ -n "$prev" ] && [ -n "$new" ] && [ "$new" != "$prev" ] && [ "$new" = "$UPD_REJECTED" ]; then
-    warn "The newest version failed its health check on this laptop before; keeping the current one."
-    # The channel tag back on the running image, so compose doesn't recreate it.
-    retag "$prev" "$ref" || die "Couldn't keep the current version (docker tag failed)."
-    new="$prev"
-  elif [ -z "$prev" ] && [ -n "$new" ] && [ "$new" = "$UPD_REJECTED" ]; then
-    # No container to keep: like update.sh, the kept :previous image if there is one.
-    kept=$(image_id "$PREVIOUS_TAG")
-    if [ -n "$kept" ] && [ "$kept" != "$new" ] && "${DOCKER[@]}" tag "$PREVIOUS_TAG" "$ref"; then
-      warn "The newest version failed its health check on this laptop before; starting the kept previous version instead."
-      new="$kept"
-    else
-      warn "The newest version failed its health check on this laptop before, and no earlier version is kept, so starting it anyway."
-    fi
-  fi
+  retry_rejected_image
   info "Starting the kiosk"
   if ! { compose up -d && wait_kiosk_healthy; }; then
     if [ -n "$prev" ] && [ "$prev" != "$new" ]; then
@@ -1334,6 +1538,7 @@ uninstall() {
   for f in docker-compose.yml config.env update.sh launch.sh hostnet.sh install-state.json update-state.json; do
     rm -f "${KIOSK_DIR:?}/$f"
   done
+  remove_label_printer_files
   info "Removed the kiosk from $KIOSK_DIR (install.log and update.log were kept). Docker stays installed."
   if [ "$PURGE_DATA" = 1 ]; then
     if [ -d "$KIOSK_DATA_DIR" ]; then
@@ -1441,6 +1646,7 @@ main() {
   enable_docker_autostart
   wait_for_engine 180
   check_compose
+  setup_label_printers
   create_data_dir
   write_config "$KIOSK_DIR/config.env"
   render_compose "$KIOSK_DIR/docker-compose.yml"
