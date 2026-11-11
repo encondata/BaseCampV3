@@ -100,6 +100,23 @@ async def _process_move_setup(db: AsyncSession, job: ImportJob) -> None:
     await db.commit()
 
 
+async def _draft_client(db: AsyncSession, opts: dict) -> uuid.UUID | None:
+    """The client picked on a Create-a-move-in-steps draft, for its asset
+    check job (options.move_setup_id); None when there is none."""
+    try:
+        draft_id = uuid.UUID(str(opts.get("move_setup_id")))
+    except ValueError:
+        return None
+    draft = await db.get(ImportJob, draft_id)
+    if draft is None or draft.kind != move_setup.KIND:
+        return None
+    raw = ((draft.payload or {}).get("move") or {}).get("client_id")
+    try:
+        return uuid.UUID(str(raw)) if raw else None
+    except ValueError:
+        return None
+
+
 async def process_job(db: AsyncSession, job: ImportJob) -> None:
     """Run one claimed (status='running') job to a terminal status."""
     if job.cancel_requested:
@@ -154,6 +171,10 @@ async def process_job(db: AsyncSession, job: ImportJob) -> None:
     result = await run_import(
         db, initiative_id=job.initiative_id, added_by=job.created_by,
         rows=parsed,
+        client_choices=opts.get("client_choices"),
+        # a wizard check has no move yet: its client is the draft's
+        client_id=await _draft_client(db, opts) if job.initiative_id is None else None,
+        job_id=job.id,
         make_model_mode=str(opts.get("make_model_mode") or "fuzzy"),
         write=write,
         # a review-rows reprocess only sees a subset of the file; its rows

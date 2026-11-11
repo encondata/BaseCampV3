@@ -178,8 +178,11 @@ def test_the_rows_left_out_are_the_ones_with_an_error_and_the_ones_needing_revie
     assert count_left_out({"errors": 2, "review": 1, "created": 5, "updated": 1}) == 3
     assert count_left_out({"errors": 1}) == 1
     assert count_left_out({"review": 4}) == 4
-    # the other jobs' summaries (and a job with none) leave nothing out
-    assert count_left_out({"updated": 1, "skipped": 1, "unchanged": 1}) == 0
+    # rows skipped because their serial belongs to another client (SS-527)
+    assert count_left_out({"errors": 1, "skipped": 2, "moved": 1}) == 3
+    # a job with no summary leaves nothing out; other kinds' counts are ignored by their
+    # notices (test_only_a_from_to_import_says_how_many_rows_it_left_out)
+    assert count_left_out({"updated": 1, "unchanged": 1}) == 0
     assert count_left_out({}) == 0
     assert count_left_out(None) == 0
 

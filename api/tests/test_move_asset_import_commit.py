@@ -96,7 +96,7 @@ async def test_reimport_updates_and_resets_status(db):
     assert result["summary"] == {
         "total_rows": 1, "processed_rows": 1, "created": 0, "updated": 1,
         "review": 0, "errors": 0, "collisions_flagged": 0,
-        "orphans_flagged": 0}
+        "orphans_flagged": 0, "client_id": None, "moved": 0, "skipped": 0}
     await db.refresh(assoc)
     assert assoc.status == "loaded_in_system"       # v2 parity reset
     assert assoc.destination_rack == "B1"
