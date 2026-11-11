@@ -33,7 +33,7 @@ function Harness({ onNext = vi.fn() }) {
   const [job, setJob] = useState<ImportJobOut | null>(CHECK);
   return (
     <MemoryRouter>
-      <AssetsStep draft={DRAFT} job={job} setJob={setJob} onBack={vi.fn()}
+      <AssetsStep draft={DRAFT} job={job} clientName="Acme" setJob={setJob} onBack={vi.fn()}
                   onSkip={vi.fn(async () => {})} onNext={onNext} />
     </MemoryRouter>
   );
@@ -58,6 +58,20 @@ it('gates Next until every flagged serial is chosen, then saves the choices', as
   await waitFor(() => expect(next().disabled).toBe(false));
   await userEvent.click(next());
   expect(onNext).toHaveBeenCalled();
+});
+
+it('names the move client on each Continue button', () => {
+  render(<Harness />);
+  expect(screen.getAllByRole('tab', { name: 'Continue — move it to Acme' })).toHaveLength(2);
+});
+
+it('keeps the hint and Next disabled after a failed save', async () => {
+  api.putMoveSetupChoices.mockRejectedValue(new Error('x'));
+  render(<Harness />);
+  await userEvent.click(screen.getByRole('button', { name: 'Skip all' }));
+  await waitFor(() => expect(api.putMoveSetupChoices).toHaveBeenCalled());
+  expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText(/Choose Continue or Skip for every flagged row/)).toBeTruthy();
 });
 
 it('Skip all saves every choice', async () => {

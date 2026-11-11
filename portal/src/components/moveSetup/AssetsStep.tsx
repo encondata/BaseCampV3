@@ -24,6 +24,8 @@ const POLL_MS = 1500;
 
 interface Props {
   draft: MoveSetupDraft;
+  /** the move's client, resolved from the draft's client id */
+  clientName?: string | null;
   job: ImportJobOut | null;
   setJob: (job: ImportJobOut | null) => void;
   onBack: () => void;
@@ -31,7 +33,7 @@ interface Props {
   onNext: () => void;
 }
 
-export default function AssetsStep({ draft, job, setJob, onBack, onSkip, onNext }: Props) {
+export default function AssetsStep({ draft, clientName, job, setJob, onBack, onSkip, onNext }: Props) {
   const { can } = useAuth();
   const [file, setFile] = useState<File | null>(null);
   const [mode, setMode] = useState('fuzzy');
@@ -111,15 +113,20 @@ export default function AssetsStep({ draft, job, setJob, onBack, onSkip, onNext 
         && choices[d.serial_number.toLowerCase()] === 'continue').length : 0;
   const importable = counts ? counts.created + counts.updated + continued : 0;
 
+  const jobIdRef = useRef(job?.id);
+  jobIdRef.current = job?.id;
+
   const changeChoices = async (next: Record<string, ClientChoice>) => {
     setChoices(next);
     if (!flagged.every((x) => next[x])) return;
     const payload = Object.fromEntries(flagged.map((x) => [x, next[x]]));
     setError('');
     try {
+      const sentFor = job?.id;
       const updated = await putMoveSetupChoices(draft.id, payload);
+      if (jobIdRef.current !== sentFor) return;
       setSaved(choicesKey(next));
-      if (updated?.id === job?.id) setJob(updated);
+      if (updated?.id === sentFor) setJob(updated);
     } catch (err) {
       setError(moveSetupError(err));
     }
@@ -186,8 +193,7 @@ export default function AssetsStep({ draft, job, setJob, onBack, onSkip, onNext 
                         choices={choices} onChoicesChange={(c) => void changeChoices(c)}
                         clientId={typeof draft.payload?.move?.client_id === 'string'
                           ? draft.payload.move.client_id : null}
-                        clientName={typeof draft.payload?.move?.client_name === 'string'
-                          ? draft.payload.move.client_name : null} />
+                        clientName={clientName} />
           <div className="imp-card-foot">
             <button className="mini-btn" type="button" disabled={busy}
                     onClick={() => void run(() => recheckMoveSetupAssets(draft.id))}>
@@ -206,7 +212,7 @@ export default function AssetsStep({ draft, job, setJob, onBack, onSkip, onNext 
                     busy={busy || skipping} error={error}
                     note={job === null || replacing
                       ? 'Upload a From-To file, or skip this step.'
-                      : checked && !choicesDone ? CHOICES_HINT : undefined} />
+                      : checked && !choicesSaved ? CHOICES_HINT : undefined} />
 
       {fixTarget && (
         <FixMakeModelDialog text={fixTarget.text} make={fixTarget.make} model={fixTarget.model}

@@ -316,7 +316,9 @@ export default function ImportMoveAssets() {
                         <button className="btn-solid" type="button"
                                 disabled={busy || committable === 0 || !choicesDone}
                                 onClick={() => void run(() => commitImportJob(
-                                  job.id, flagged.length > 0 ? choices : undefined))}>
+                                  job.id, flagged.length > 0
+                                    ? Object.fromEntries(flagged.map((x) => [x, choices[x]]))
+                                    : undefined))}>
                           {busy ? 'Importing…' : `Import ${committable} rows`}
                         </button>
                         {!choicesDone && <span className="page-hint">{CHOICES_HINT}</span>}
