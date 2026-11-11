@@ -5,13 +5,20 @@ A roster row (`initiative_assets`) resolves to a group when its Owner's
 matching key equals the key of a group name or alias of the same client, and
 the row's move belongs to that client. Every function takes the session first,
 never commits, and leaves the commit to the caller.
+
+Every group mutation and every rematch first takes the client's transaction
+advisory lock (`lock_clients`), so two writers on one client run one after
+the other: no rematch reads a key map another transaction is changing, and
+no name/alias check races another create or rename. The lock is released at
+commit or rollback.
 """
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, func, select, union_all, update
+from sqlalchemy import delete, func, select, text, union_all, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.clientgroups.keys import group_key, is_blank_sql, owner_key_sql
@@ -21,6 +28,7 @@ from serversherpa.db.models import (
 )
 
 _CHUNK = 5000
+_FK_VIOLATION = "23503"
 
 
 class GroupError(Exception):
@@ -48,6 +56,15 @@ class ReviewValue:
     move_ids: list[uuid.UUID]
     move_names: list[str]
     dismissed: bool
+
+
+async def lock_clients(db: AsyncSession, client_ids) -> None:
+    """Take each client's group lock for the rest of the transaction, in a
+    fixed (sorted) order so two writers never deadlock. Re-taking a lock
+    this transaction already holds is a no-op."""
+    for cid in sorted({c for c in client_ids if c is not None}, key=str):
+        await db.execute(text("SELECT pg_advisory_xact_lock(hashtext('client_groups:' || :cid))"),
+                         {"cid": str(cid)})
 
 
 def _key_map():
@@ -103,6 +120,7 @@ async def rematch_client(db: AsyncSession, client_id: uuid.UUID,
     """Re-resolve the Owner group of every roster row on the client's moves
     (only rows whose Owner key is in `keys`, when given). Rows whose Owner no
     longer resolves go back to unmatched. Returns the rows changed."""
+    await lock_clients(db, [client_id])
     m = _key_map()
     new_group = (select(m.c.gid)
                  .where(m.c.cid == client_id, m.c.k == owner_key_sql(InitiativeAsset.owner))
@@ -123,6 +141,15 @@ async def rematch_rows(db: AsyncSession, row_ids: list[uuid.UUID]) -> int:
     """Re-resolve the given roster rows against their own move's client."""
     changed = 0
     ids = list(dict.fromkeys(row_ids))
+    if not ids:
+        return 0
+    clients: set[uuid.UUID] = set()
+    for i in range(0, len(ids), _CHUNK):
+        clients.update(await db.scalars(
+            select(Initiative.client_id).distinct()
+            .join(InitiativeAsset, InitiativeAsset.initiative_id == Initiative.id)
+            .where(InitiativeAsset.id.in_(ids[i:i + _CHUNK]))))
+    await lock_clients(db, clients)
     m = _key_map()
     for i in range(0, len(ids), _CHUNK):
         part = ids[i:i + _CHUNK]
@@ -150,6 +177,7 @@ async def rematch_initiative(db: AsyncSession, initiative_id: uuid.UUID) -> int:
 
 async def create_group(db: AsyncSession, client_id: uuid.UUID, name: str,
                        actor_id: uuid.UUID | None) -> ClientGroup:
+    await lock_clients(db, [client_id])
     shown, key = _clean_name(name)
     _check_free(await _taken_keys(db, client_id), key)
     group = ClientGroup(client_id=client_id, name=shown, name_key=key, created_by=actor_id)
@@ -163,6 +191,7 @@ async def create_group(db: AsyncSession, client_id: uuid.UUID, name: str,
 async def rename_group(db: AsyncSession, group: ClientGroup, new_name: str,
                        actor_id: uuid.UUID | None) -> ClientGroup:
     """Rename; the old name stays behind as an alias so its rows stay matched."""
+    await lock_clients(db, [group.client_id])
     shown, key = _clean_name(new_name)
     old_name, old_key = group.name, group.name_key
     if key != old_key:
@@ -182,6 +211,7 @@ async def rename_group(db: AsyncSession, group: ClientGroup, new_name: str,
 async def set_aliases(db: AsyncSession, group: ClientGroup, aliases: list[str]) -> list[str]:
     """Replace the group's aliases. Blank entries, repeats and spellings that
     equal the group's own name are dropped."""
+    await lock_clients(db, [group.client_id])
     wanted: dict[str, str] = {}
     for raw in aliases:
         shown = " ".join((raw or "").split())
@@ -210,6 +240,7 @@ async def merge_groups(db: AsyncSession, target: ClientGroup, source: ClientGrou
         raise GroupError("different_client", 422)
     if target.id == source.id:
         raise GroupError("same_group", 422)
+    await lock_clients(db, [target.client_id])
     own = {target.name_key}
     own.update(await db.scalars(select(ClientGroupAlias.alias_key)
                                 .where(ClientGroupAlias.group_id == target.id)))
@@ -237,6 +268,9 @@ async def merge_groups(db: AsyncSession, target: ClientGroup, source: ClientGrou
         ClientContactGroup.group_id == source.id,
         ClientContactGroup.person_id.not_in(has_target),
     ).values(group_id=target.id).execution_options(synchronize_session=False))
+    # people who had both keep the target chip; their source chip goes (the
+    # FK is NO ACTION, so no chip may still point at the source)
+    await db.execute(delete(ClientContactGroup).where(ClientContactGroup.group_id == source.id))
     # free the source's keys before the target takes them
     await db.execute(delete(ClientGroupAlias).where(ClientGroupAlias.group_id == source.id))
     await db.execute(delete(ClientGroup).where(ClientGroup.id == source.id))
@@ -248,16 +282,27 @@ async def merge_groups(db: AsyncSession, target: ClientGroup, source: ClientGrou
     return plan
 
 
+async def _chips_held(db: AsyncSession, group_id: uuid.UUID) -> int:
+    return await db.scalar(select(func.count()).select_from(ClientContactGroup).where(
+        ClientContactGroup.group_id == group_id)) or 0
+
+
 async def delete_group(db: AsyncSession, group: ClientGroup) -> None:
-    """Rows go back to unmatched (FK SET NULL); aliases cascade. Refused while
-    any contact holds the group as a chip: a Viewer whose last chip vanished
-    would silently become unrestricted."""
-    held = await db.scalar(select(func.count()).select_from(ClientContactGroup).where(
-        ClientContactGroup.group_id == group.id))
-    if held:
+    """Rows go back to unmatched (FK SET NULL); aliases cascade. Refused with
+    409 `group_in_use` while any contact holds the group as a chip: a Viewer
+    whose last chip vanished would silently become unrestricted. The
+    database backs the check (the chip FK is ON DELETE NO ACTION), so a chip
+    added by a writer that skipped the client lock still refuses."""
+    await lock_clients(db, [group.client_id])
+    if await _chips_held(db, group.id):
         raise GroupError("group_in_use", 409)
-    await db.execute(delete(ClientGroup).where(ClientGroup.id == group.id))
-    await db.flush()
+    try:
+        async with db.begin_nested():
+            await db.execute(delete(ClientGroup).where(ClientGroup.id == group.id))
+    except IntegrityError as exc:
+        if getattr(exc.orig, "sqlstate", None) == _FK_VIOLATION:
+            raise GroupError("group_in_use", 409) from exc
+        raise
     db.expunge(group)
 
 
@@ -302,6 +347,7 @@ async def review_values(db: AsyncSession, client_id: uuid.UUID,
 async def match_value(db: AsyncSession, client_id: uuid.UUID, value: str,
                       group_id: uuid.UUID) -> ClientGroup:
     """Point an Owner spelling at an existing group (adds it as an alias)."""
+    await lock_clients(db, [client_id])
     group = await db.get(ClientGroup, group_id)
     if group is None or group.client_id != client_id:
         raise GroupError("group_not_found", 404)
@@ -325,6 +371,7 @@ async def match_value(db: AsyncSession, client_id: uuid.UUID, value: str,
 
 async def set_dismissed(db: AsyncSession, client_id: uuid.UUID, value: str,
                         dismissed: bool, actor_id: uuid.UUID | None) -> None:
+    await lock_clients(db, [client_id])
     key = group_key(value)
     if not key:
         raise GroupError("value_required", 422)

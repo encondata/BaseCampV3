@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.access.resolver import can_touch_rank
-from serversherpa.access.role_mix import assert_no_client_worker_mix
+from serversherpa.access.role_mix import RoleMixError, assert_no_client_worker_mix, holds_worker
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
@@ -34,6 +34,7 @@ from serversherpa.api.schemas import (
     PersonListItem,
     WorkerItem,
 )
+from serversherpa.clientgroups.service import lock_clients
 from serversherpa.db.models import (
     Asset,
     Client,
@@ -663,6 +664,13 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
             result_tier = new_tier
 
         if group_ids is not None:
+            # chips limit what a viewer sees, but the kiosk applies no group
+            # rule: refused beside a worker role, even a legacy one
+            if group_ids and await holds_worker(db, person_id):
+                raise RoleMixError()
+            # the client's group lock: a group can't be deleted between the
+            # check below and this commit (clientgroups.service.delete_group)
+            await lock_clients(db, [org_id])
             found = set((await db.scalars(select(ClientGroup.id).where(
                 ClientGroup.client_id == org_id,
                 ClientGroup.id.in_(group_ids)))).all())
@@ -969,6 +977,7 @@ _ORG_TIER_ROLES: dict[str, tuple[str, str]] = {
     "client_owner": ("client", "owner"),
     "client_admin": ("client", "admin"),
     "client_viewer": ("client", "viewer"),
+    "client_individual": ("client", "individual"),
     "vendor_owner": ("partner", "owner"),
     "vendor_admin": ("partner", "admin"),
     "vendor_viewer": ("partner", "viewer"),

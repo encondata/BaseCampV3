@@ -6,6 +6,7 @@ Combinations that already exist are never revoked.
 
 Spec: docs/superpowers/specs/2026-11-10-client-groups-design.md (Answers to
 the open questions, item 4)"""
+import pytest
 from sqlalchemy import select
 
 from serversherpa.access.role_mix import (
@@ -263,3 +264,133 @@ async def test_assign_template_row_fails_on_client_person(db, seeded_user):
     assert second["person_id"] == str(plain.id)
     assert second["action"] == "assign" and second["becomes_worker"] is True
     assert out["can_commit"] is False
+
+
+# ── chips beside a worker role; the kiosk backstop ───────────────────
+
+async def test_chips_refused_for_legacy_viewer_worker(client, seeded_user, db):
+    """A viewer who also holds `worker` from before the rule can't be given
+    chips (the kiosk would ignore them): 409, nothing written. Clearing
+    chips (an empty set) still works."""
+    from serversherpa.db.models import ClientContactGroup, ClientGroup
+
+    acme = await _client(db)
+    both = await _contact(db, acme, worker=True)
+    g = ClientGroup(client_id=acme.id, name="Platform", name_key="platform")
+    db.add(g)
+    await db.commit()
+    both_id, g_id, acme_id = both.id, g.id, acme.id
+    admin = await login_admin(client, db, seeded_user)
+    r = await client.patch(f"/clients/{acme_id}/contacts/{both_id}", headers=admin,
+                           json={"group_ids": [str(g_id)]})
+    assert r.status_code == 409, r.text
+    assert _code(r) == CODE
+    async with get_sessionmaker()() as s:
+        assert list(await s.scalars(select(ClientContactGroup.group_id).where(
+            ClientContactGroup.person_id == both_id))) == []
+    r = await client.patch(f"/clients/{acme_id}/contacts/{both_id}", headers=admin,
+                           json={"group_ids": []})
+    assert r.status_code == 200, r.text
+    assert await _active(db, both_id) == ["client_viewer", "worker"]
+
+
+def _kiosk_calls(move_id, asset_id, other_id):
+    """Every person-session kiosk route that hands out or touches roster,
+    asset, container or truck data (or a key/password that would)."""
+    m = str(move_id)
+    a = str(asset_id)
+    o = str(other_id)
+    return [
+        ("GET", f"/kiosk/sync/assets?initiative_id={m}", None),
+        ("GET", f"/kiosk/sync/client-assets?initiative_id={m}", None),
+        ("GET", f"/kiosk/sync/containers?initiative_id={m}", None),
+        ("GET", f"/kiosk/sync/trucks?initiative_id={m}", None),
+        ("GET", f"/kiosk/sync/label-templates?initiative_id={m}", None),
+        ("GET", "/kiosk/setup-options", None),
+        ("GET", "/kiosk/setup?serial=K-1", None),
+        ("POST", "/kiosk/setup", {}),
+        ("POST", "/kiosk/station-key", {}),
+        ("GET", "/kiosk/edge/move-passwords?serial=K-1", None),
+        ("GET", "/kiosk/assets/lookup?serial=K-1&q=sn", None),
+        ("GET", f"/kiosk/assets/{a}?serial=K-1", None),
+        ("GET", f"/kiosk/assets/{a}/scans?serial=K-1", None),
+        ("POST", f"/kiosk/assets/{a}/rfid", {}),
+        ("POST", "/kiosk/scans", {}),
+        ("POST", f"/kiosk/containers/{o}/assets", {}),
+        ("POST", f"/kiosk/trucks/{o}/containers", {}),
+        ("GET", f"/kiosk/labels/bundle?initiative_id={m}&label_type=front", None),
+    ]
+
+
+async def _call(api, headers, method, url, body):
+    if method == "GET":
+        return await api.get(url, headers=headers)
+    return await api.post(url, headers=headers, json=body)
+
+
+async def _restricted_kiosk_person(db, api, s, how: str) -> dict:
+    """A viewer limited to Platform who reaches kiosk:view `how`: the worker
+    role written straight to the table (bypassing the guard), or a cloned
+    role with kiosk:view that the role-mix rule doesn't know by name."""
+    from serversherpa.db.models import Role, RolePermission
+    from tests.client_groups_fixtures import client_user
+
+    headers = await client_user(db, api, s.client.id, "client_viewer",
+                                group_ids=[s.groups["Platform"].id],
+                                email=f"rk-{how}@test.example.com")
+    person_id = await db.scalar(select(Person.id).where(
+        Person.email == f"rk-{how}@test.example.com"))
+    if how == "worker":
+        db.add(PersonRole(person_id=person_id, role="worker"))
+    else:
+        db.add(Role(name="field_hand", description="clone of worker", rank=10,
+                    scope_anchor="self", is_system=False, label="Field hand",
+                    color="c-green"))
+        await db.flush()
+        db.add(RolePermission(role="field_hand", resource="kiosk", action="view"))
+        db.add(PersonRole(person_id=person_id, role="field_hand"))
+    await db.commit()
+    return headers
+
+
+@pytest.mark.parametrize("how", ["worker", "cloned_role"])
+async def test_restricted_person_with_kiosk_view_gets_403(client, seeded_user, db, how):
+    """The backstop: a person with group limits who holds kiosk:view anyway
+    (a legacy worker role, a cloned role) gets 403 `forbidden` from every
+    kiosk route that would hand them roster or asset data."""
+    from serversherpa.clientgroups import service as cg
+    from tests.client_groups_fixtures import seed_grouped_client
+
+    s = await seed_grouped_client(db)
+    await cg.rematch_client(db, s.client.id)
+    await db.commit()
+    headers = await _restricted_kiosk_person(db, client, s, how)
+    me = await client.get("/auth/me", headers=headers)
+    assert me.json()["perms"]["kiosk"]["view"] is True, how
+    import uuid as _uuid
+    for method, url, body in _kiosk_calls(s.move.id, s.assets[0].id, _uuid.uuid4()):
+        r = await _call(client, headers, method, url, body)
+        assert r.status_code == 403, (how, method, url, r.text)
+        assert _code(r) == "forbidden", (how, method, url, r.text)
+
+
+async def test_unrestricted_kiosk_people_unchanged(client, seeded_user, db):
+    """A legacy client+worker person with no limits (viewer, no chips) and a
+    plain worker still sync the move."""
+    from tests.client_groups_fixtures import client_user, seed_grouped_client
+    from tests.test_status_values_write import _make
+
+    s = await seed_grouped_client(db)
+    legacy = await client_user(db, client, s.client.id, "client_viewer",
+                               email="legacy@test.example.com")
+    legacy_id = await db.scalar(select(Person.id).where(
+        Person.email == "legacy@test.example.com"))
+    db.add(PersonRole(person_id=legacy_id, role="worker"))
+    await db.commit()
+    worker = await _make(db, client, "worker", "plain-w@test.example.com")
+    for headers in (legacy, worker):
+        r = await client.get(f"/kiosk/sync/assets?initiative_id={s.move.id}", headers=headers)
+        assert r.status_code == 200, r.text
+        assert len(r.json()["assets"]) == 4
+        r = await client.get("/kiosk/setup-options", headers=headers)
+        assert r.status_code == 200, r.text

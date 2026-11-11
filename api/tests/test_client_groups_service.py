@@ -205,3 +205,130 @@ async def test_reimport_rematches_inside_each_batch(db, monkeypatch):
     await run_import(db, initiative_id=s.move.id, added_by=None, rows=rows,
                      make_model_mode="hybrid", write=True, progress=progress)
     assert seen == [s.groups["Storage"].id]
+
+
+# ── delete is DB-enforced; mutations serialize per client ─────────────
+
+async def test_chip_fk_blocks_group_delete(db):
+    """client_contact_groups.group_id is ON DELETE NO ACTION (client_id
+    stays CASCADE): the database itself refuses to drop a held group."""
+    from sqlalchemy import text
+    rows = dict((await db.execute(text(
+        "SELECT a.attname::text, c.confdeltype::text FROM pg_constraint c "
+        "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1] "
+        "WHERE c.conrelid = 'client_contact_groups'::regclass AND c.contype = 'f'"))).all())
+    assert rows == {"person_id": "c", "client_id": "c", "group_id": "a"}
+    fk = next(iter(ClientContactGroup.__table__.c.group_id.foreign_keys))
+    assert fk.ondelete is None or fk.ondelete.upper() == "NO ACTION"
+
+
+async def test_delete_race_maps_fk_to_group_in_use(db, monkeypatch):
+    """A chip that lands after the in-use check (the race the lock and the FK
+    close) still gives 409 group_in_use, and the group stays."""
+    s = await _seeded(db)
+    g = s.groups["Platform"]
+    gid = g.id
+    p = await _person(db, "late@test.example.com")
+    db.add(ClientContactGroup(person_id=p.id, client_id=s.client.id, group_id=gid))
+    await db.commit()
+
+    async def no_chips(*_a, **_k):
+        return 0
+    monkeypatch.setattr(cg, "_chips_held", no_chips)
+    with pytest.raises(cg.GroupError) as exc:
+        await cg.delete_group(db, g)
+    assert exc.value.code == "group_in_use" and exc.value.status == 409
+    await db.rollback()
+    assert await db.scalar(select(ClientGroup.id).where(ClientGroup.id == gid)) == gid
+
+
+async def test_client_delete_still_cascades_chips(db):
+    """Deleting a client takes its groups and their chips in one statement."""
+    from serversherpa.db.models import Client
+    s = await _seeded(db)
+    p = await _person(db, "gone@test.example.com")
+    db.add(ClientContactGroup(person_id=p.id, client_id=s.client.id,
+                              group_id=s.groups["Platform"].id))
+    await db.commit()
+    cid = s.client.id
+    from sqlalchemy import delete as sa_delete
+    await db.execute(sa_delete(InitiativeAsset))
+    from serversherpa.db.models import Asset, Initiative
+    await db.execute(sa_delete(Initiative).where(Initiative.client_id == cid))
+    await db.execute(sa_delete(Asset).where(Asset.client_id == cid))
+    await db.execute(sa_delete(Client).where(Client.id == cid))
+    await db.commit()
+    assert await db.scalar(select(ClientContactGroup.person_id)) is None
+    assert await db.scalar(select(ClientGroup.id).where(ClientGroup.client_id == cid)) is None
+
+
+async def _client_locks(db) -> set[int]:
+    """The advisory lock keys this session's transaction holds."""
+    from sqlalchemy import text
+    return set(await db.scalars(text(
+        "SELECT (classid::bigint << 32) | objid::bigint FROM pg_locks "
+        "WHERE locktype = 'advisory' AND pid = pg_backend_pid() AND granted")))
+
+
+async def _lock_key(db, client_id) -> int:
+    from sqlalchemy import text
+    return await db.scalar(text("SELECT hashtext('client_groups:' || :cid)::bigint"),
+                           {"cid": str(client_id)})
+
+
+async def test_group_mutations_take_the_client_lock(db):
+    """Every group mutation and every rematch takes the per-client
+    transaction advisory lock (released at commit)."""
+    s = await _seeded(db)
+    cid, other = s.client.id, s.other_client.id
+    key = await _lock_key(db, cid)
+    platform, storage = s.groups["Platform"], s.groups["Storage"]
+    row_ids = list(await db.scalars(select(InitiativeAsset.id)))
+
+    async def run(op):
+        await db.commit()
+        assert key not in await _client_locks(db)
+        await op()
+        assert key in await _client_locks(db), op.__name__
+        await db.commit()
+        assert key not in await _client_locks(db)
+
+    async def create():
+        await cg.create_group(db, cid, "Compute", None)
+
+    async def rename():
+        await cg.rename_group(db, platform, "Platforms", None)
+
+    async def aliases():
+        await cg.set_aliases(db, storage, ["Stor"])
+
+    async def match():
+        await cg.match_value(db, cid, "Platfrom", platform.id)
+
+    async def dismiss():
+        await cg.set_dismissed(db, cid, "Whatever", True, None)
+
+    async def rematch():
+        await cg.rematch_client(db, cid)
+
+    async def rows():
+        await cg.rematch_rows(db, row_ids)
+
+    async def initiative():
+        await cg.rematch_initiative(db, s.move.id)
+
+    async def merge():
+        await cg.merge_groups(db, platform, storage, dry_run=False)
+
+    async def remove():
+        compute = await db.scalar(select(ClientGroup).where(ClientGroup.name == "Compute"))
+        await cg.delete_group(db, compute)
+
+    for op in (create, rename, aliases, match, dismiss, rematch, rows, initiative,
+               merge, remove):
+        await run(op)
+    # rows spanning two clients lock both
+    await db.commit()
+    await cg.rematch_rows(db, row_ids)
+    assert {key, await _lock_key(db, other)} <= await _client_locks(db)
+    await db.commit()

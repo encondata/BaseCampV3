@@ -356,8 +356,10 @@ class ClientContactGroup(Base):
         ForeignKey("people.id", ondelete="CASCADE"), primary_key=True)
     client_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("clients.id", ondelete="CASCADE"), primary_key=True)
+    # ON DELETE NO ACTION: a held group can't be deleted (see
+    # clientgroups.service.delete_group)
     group_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("client_groups.id", ondelete="CASCADE"), primary_key=True)
+        ForeignKey("client_groups.id"), primary_key=True)
 
 
 # View created by migration 0128: each asset's newest roster row per client.

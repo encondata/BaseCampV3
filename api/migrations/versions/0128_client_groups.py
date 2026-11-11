@@ -96,8 +96,12 @@ def upgrade() -> None:
                   sa.ForeignKey("people.id", ondelete="CASCADE"), nullable=False),
         sa.Column("client_id", postgresql.UUID(as_uuid=True),
                   sa.ForeignKey("clients.id", ondelete="CASCADE"), nullable=False),
+        # NO ACTION, not CASCADE: a group someone still holds as a chip can't
+        # be deleted (a Viewer whose last chip vanished would silently become
+        # unrestricted). Deleting the client still takes every chip through
+        # client_id's CASCADE in the same statement.
         sa.Column("group_id", postgresql.UUID(as_uuid=True),
-                  sa.ForeignKey("client_groups.id", ondelete="CASCADE"), nullable=False),
+                  sa.ForeignKey("client_groups.id"), nullable=False),
         sa.PrimaryKeyConstraint("person_id", "client_id", "group_id"),
     )
 

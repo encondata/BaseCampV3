@@ -74,12 +74,34 @@ async def test_asset_owner_current_picks_newest_row(db):
 
 
 @pytest.mark.parametrize("value", [
-    "\tTeam\n", "  Platform   Team ", "A\tB", "   ", "\n", "", "Plain", "A \n\t B"])
+    "\tTeam\n", "  Platform   Team ", "A\tB", "   ", "\n", "", "Plain", "A \n\t B",
+    # whitespace Python's str.isspace knows and Postgres [[:space:]] may not
+    "Platform\u00a0Team", "\u00a0Platform\u00a0", "A\u202fB", "A\u2007B",
+    "A\x1cB", "A\x1fB", "A\u3000B", "A\u0085B", "\u2028A\u2029", "A\u1680\u205fB",
+    "\u00a0\u00a0", "\u3000"])
 async def test_python_and_sql_keys_agree(db, value):
     assert await db.scalar(select(owner_key_sql(literal(value)))) == group_key(value)
 
 
+def test_python_key_covers_every_isspace_char():
+    """group_key treats exactly str.isspace's characters as spacing."""
+    import sys
+    spaces = [chr(c) for c in range(sys.maxunicode + 1) if chr(c).isspace()]
+    for ch in spaces:
+        assert group_key(f"A{ch}{ch}B") == "a b", hex(ord(ch))
+    assert group_key("A\u200bB") == "a\u200bb"  # zero-width space is not spacing
+
+
+async def test_sql_key_covers_every_isspace_char(db):
+    import sys
+    spaces = [chr(c) for c in range(sys.maxunicode + 1) if chr(c).isspace()]
+    for ch in spaces:
+        got = await db.scalar(select(owner_key_sql(literal(f"A{ch}{ch}B"))))
+        assert got == "a b", hex(ord(ch))
+
+
 async def test_is_blank_sql(db):
-    for value, blank in [(None, True), ("", True), ("  ", True), ("\t\n", True), ("x", False)]:
+    for value, blank in [(None, True), ("", True), ("  ", True), ("\t\n", True), ("x", False),
+                         ("\u00a0", True), ("\u00a0 \u202f", True), ("\u3000x", False)]:
         got = await db.scalar(select(is_blank_sql(cast(literal(value), Text))))
         assert got is blank, value
