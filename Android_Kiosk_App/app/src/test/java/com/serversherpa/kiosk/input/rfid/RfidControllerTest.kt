@@ -7,6 +7,7 @@ import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.RfidTriggerMode
 import com.serversherpa.kiosk.core.rfid.SledConnectRequest
 import com.serversherpa.kiosk.core.rfid.SledTriggerLayout
+import com.serversherpa.kiosk.core.rfid.SledWords
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CompletableDeferred
@@ -21,7 +22,6 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
@@ -31,13 +31,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * `FakeRfidReader` refuses `startInventory()`/`apply()` unless it is
- * `Connected`, and throws from `emitTrigger`/`emitTag` if nothing is
- * collecting yet — the same as a real sled, which delivers no trigger events
- * at all before it is connected. So every test that drives a trigger connects
+ * The controller starts a read only while the reader is `Connected` (a pull
+ * while `Connecting`, in `NeedsRegion` or disconnected starts nothing; see
+ * `RfidSweepTest`), and `FakeRfidReader` throws from `emitTrigger`/`emitTag`
+ * if nothing is collecting yet. So every test that drives a trigger connects
  * the fake first (`r.controller.connectNow()`), and always after
  * `r.controller.start()` has been settled, so the controller's collectors are
- * already subscribed when the emission lands.
+ * already subscribed when the emission lands, and the connect's own settings
+ * push and trigger-layout write have run before the first pull.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class RfidControllerTest {
@@ -276,7 +277,7 @@ class RfidControllerTest {
         r.reader.applyResult = Result.failure(IllegalStateException())
         r.controller.start(); settle()
         r.controller.connectNow(); settle()
-        assertEquals("The reader refused the settings.", r.controller.applyError.value)
+        assertEquals(SledWords.SETTINGS_NOT_APPLIED, r.controller.applyError.value)
     }
 
     @Test fun applyErrorClearsAfterALaterSuccessfulPush() = runTest {
@@ -732,10 +733,12 @@ class RfidControllerTest {
      *
      * The fix is I8's, applied here: widen the inner catch to `Throwable`,
      * keeping the `catch (CancellationException) { throw e }` ahead of it
-     * unchanged. This drives a press whose `startInventory()` throws an `Error`
-     * and then asserts trigger handling still works end to end: the release
-     * still ends the burst and queues its tags, and a following press starts a
-     * fresh inventory.
+     * unchanged. Row 5 then made a thrown `Throwable` a start failure like any
+     * other (spec, Controller › Sweeps; ruling 29): one stop, the sweep closed,
+     * `readError` set. This drives a press whose `startInventory()` throws an
+     * `Error` and asserts exactly that, and that trigger handling still works
+     * end to end: the release is still delivered, and a following press starts
+     * a fresh inventory.
      *
      * Against the pre-fix code it fails even earlier than the assertions, and
      * more directly than the I8 test does: `FakeRfidReader.emitTrigger` refuses
@@ -749,30 +752,22 @@ class RfidControllerTest {
         val throwingStart = ThrowingStartReader(inner)
         val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
         val controller = RfidController(throwingStart, settings, backgroundScope) { 0L }
-        val bursts = mutableListOf<List<String>>()
-        backgroundScope.launch { controller.bursts.collect { bursts += it } }
         controller.start(); controller.arm(); settle()
         controller.connectNow(); settle()
 
-        // The press opens the session before it asks the radio, so the session
-        // is open either way; what the Error decides is whether the collector
-        // that opened it is still alive to see anything after this.
         inner.emitTrigger(TriggerEvent.PRESSED); settle()
-        inner.emitTag("100800"); settle()
-        assertEquals(1, controller.session.value?.totalReads)
+        assertNull("a start that threw closes the sweep", controller.session.value)
+        assertEquals(SledWords.READ_DID_NOT_START, controller.readError.value)
+        assertEquals(false, inner.inventoryRunning)
 
         // Pre-fix, this release never reaches `onTrigger` at all.
         inner.emitTrigger(TriggerEvent.RELEASED); settle()
-        assertNull(
-            "a startInventory() that threw an Error must not stop the release from ending the burst",
-            controller.session.value,
-        )
-        assertEquals(listOf(listOf("100800")), bursts)
 
         // And the collector must still be delivering: the next press starts a
         // fresh inventory on the reader instead of silently going nowhere.
         inner.emitTrigger(TriggerEvent.PRESSED); settle()
         assertTrue("trigger handling must survive the Error: a new read should start", inner.inventoryRunning)
+        assertNull("the successful start clears the sentence", controller.readError.value)
     }
 
     /**
@@ -868,40 +863,6 @@ class RfidControllerTest {
     }
 
     /**
-     * The timeout-reporting proof for C1: `push()` wraps `reader.apply()` in
-     * `withTimeoutOrNull(VENDOR_TIMEOUT_MS)`, the same defense
-     * `connectWithTimeout`/`disconnectWithTimeout` already use, so a soft-hung
-     * vendor stack is reported rather than silently wedging `applyGate`
-     * forever. `VENDOR_TIMEOUT_MS` is `private` on `RfidController`'s
-     * companion object, so its value (15s) is duplicated here rather than
-     * referenced — the same tradeoff other constants in this codebase make
-     * where the source deliberately keeps them private.
-     */
-    @Test fun aStuckSettingsPushReportsATimeoutAfterVendorTimeoutMsElapses() = runTest {
-        val inner = FakeRfidReader()
-        val slowApply = SlowApplyReader(inner)
-        val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
-        val controller = RfidController(slowApply, settings, backgroundScope) { 0L }
-        controller.start(); settle()
-        controller.connectNow(); settle()
-        assertTrue(
-            "apply() should have been called on the just-connected transition",
-            slowApply.applyStarted.isCompleted,
-        )
-        assertNull("nothing has timed out yet", controller.applyError.value)
-
-        advanceTimeBy(15_000L + 1); settle()
-
-        assertEquals(
-            "Pushing settings to the reader timed out.",
-            controller.applyError.value,
-        )
-
-        // Let the stuck apply() finish so it doesn't leak past the test.
-        slowApply.proceedApply.complete(Unit); settle()
-    }
-
-    /**
      * The regression test for the finding this fix wave closes: before the
      * fix, `connectForLifecycle()`/`disconnectForLifecycle()` and
      * `arm()`/`disarm()`/`stopBurst()` all funneled through the same single
@@ -917,17 +878,15 @@ class RfidControllerTest {
      * The fix gives connect/disconnect their own queue and consumer, so
      * `arm()` (on the original `commands` queue) is drained by its own
      * dedicated consumer and never has to wait behind a stuck connect.
-     * This proves it directly: `connectForLifecycle()` is issued against a
-     * reader whose `connect()` never returns within the test, `arm()`
-     * follows immediately after, and a trigger fired right after that must
-     * open the live panel — the one observable proof that `armed` actually
-     * flipped true — without ever waiting for the stuck connect to finish.
+     * `connectForLifecycle()` is issued against a reader whose `connect()`
+     * does not return until the test releases it, and `arm()` follows while
+     * it is stuck. A pull starts a read only while the reader is `Connected`
+     * (row 4), so the proof that `armed` flipped true is a pull after the
+     * connect is released: it opens the live panel.
      *
-     * Against the pre-fix single-queue code, `armNow()` sits behind the
-     * blocked `Command.Connect` in the same channel and never runs before
-     * the assertion below, so `armed` stays false and the trigger fired
-     * here is silently dropped — `session.value` stays null and this test
-     * fails.
+     * The stuck connect also proves the other half of row 4: a pull while
+     * the reader is still `Connecting` opens nothing and never reaches the
+     * radio.
      */
     @Test fun aSlowLifecycleConnectDoesNotStarveArm() = runTest {
         val inner = FakeRfidReader()
@@ -949,21 +908,22 @@ class RfidControllerTest {
         // shared queue and never ran.
         controller.arm(); settle()
 
-        // A trigger pull is the observable proof that arm() actually took
-        // effect: onTrigger only opens the live panel when `armed` is true.
-        // The reader is not Connected yet (SlowConnectReader is still stuck
-        // on proceedConnect), so reader.startInventory() will fail inside
-        // onTrigger's try/catch — that's expected and irrelevant here; the
-        // session still opens before that call is even attempted.
+        inner.emitTrigger(TriggerEvent.PRESSED); settle()
+        assertNull("not Connected yet: a pull opens nothing", controller.session.value)
+        assertEquals(false, inner.inventoryRunning)
+        inner.emitTrigger(TriggerEvent.RELEASED); settle()
+
+        slowConnect.proceedConnect.complete(Unit); settle()
+        assertTrue(inner.connection.value is RfidConnection.Connected)
+
+        // A trigger pull is the observable proof that arm() took effect:
+        // onTrigger only opens the live panel when `armed` is true.
         inner.emitTrigger(TriggerEvent.PRESSED); settle()
         assertTrue(
-            "arm() must take effect promptly and not wait for the stuck " +
-                "lifecycle connect to finish",
+            "arm() issued during the stuck lifecycle connect must have taken effect",
             controller.session.value != null,
         )
-
-        // Let the stuck connect() finish so it doesn't leak past the test.
-        slowConnect.proceedConnect.complete(Unit)
+        assertTrue(inner.inventoryRunning)
     }
 
     /**

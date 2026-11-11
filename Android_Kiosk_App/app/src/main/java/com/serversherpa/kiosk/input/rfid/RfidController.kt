@@ -16,11 +16,16 @@ import com.serversherpa.kiosk.core.rfid.SledNotConnected
 import com.serversherpa.kiosk.core.rfid.SledNudge
 import com.serversherpa.kiosk.core.rfid.SledRetry
 import com.serversherpa.kiosk.core.rfid.SledScannerState
+import com.serversherpa.kiosk.core.rfid.SledTriggerLayout
 import com.serversherpa.kiosk.core.rfid.SledWords
 import com.serversherpa.kiosk.core.rfid.TriggerAction
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
+import com.serversherpa.kiosk.core.rfid.TriggerPull
 import com.serversherpa.kiosk.core.rfid.burstToScans
+import com.serversherpa.kiosk.core.rfid.effectiveLayout
 import com.serversherpa.kiosk.core.rfid.isSledName
+import com.serversherpa.kiosk.core.rfid.layoutInForceReadsTags
+import com.serversherpa.kiosk.core.rfid.layoutInForceUsesScanner
 import com.serversherpa.kiosk.core.rfid.nextTriggerAction
 import com.serversherpa.kiosk.core.rfid.onTagRead
 import com.serversherpa.kiosk.core.rfid.queuedAfter
@@ -41,10 +46,16 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -71,25 +82,28 @@ object RfidOwner {
  * values and stops there. `ScanViewModel` does the matching and the queueing,
  * so the RFID commit rules sit beside the barcode commit rules.
  *
- * `start()` launches its collectors (settings, triggers, tags, the connection
- * collector that pushes settings, the link-state collector that notices a
- * drop, the sled-address collector, and the [commands] consumer) and the
- * [connectionCommands] consumer on `scope`, which in production is a real
- * thread pool (`Dispatchers.Default`), not a confined dispatcher — so every
- * one of them can run concurrently with every other, and with `arm()`/
- * `disarm()`/`stopBurst()`/`connectNow()`/`disconnectNow()` called from the UI
- * thread. All of the sweep state those touch (`current`, `_session`, `armed`,
- * `queued`, `stoppingBurst`, `queueOnStop`) is therefore only ever read or
- * written under `mutex`, the same idiom `Outbox` uses for its own multi-writer
- * state — every access, not just the ones with something else nearby to
- * protect, since a field a lock only sometimes guards gives no happens-before
- * edge to the accesses that skip it.
+ * `start()` launches its collectors (settings, trigger pulls, tags, the sled's
+ * own stops, the connection collector that queues each new generation's push
+ * and layout check, the link-state collector that notices a drop, the sled
+ * collector, the battery timer, and the [commands] consumer) and the
+ * [connectionCommands] and job-queue consumers on `scope`, which in production
+ * is a real thread pool (`Dispatchers.Default`), not a confined dispatcher —
+ * so every one of them can run concurrently with every other, and with
+ * `arm()`/`disarm()`/`stopBurst()`/`connectNow()`/`disconnectNow()` called
+ * from the UI thread. All of the sweep state those touch (`current`,
+ * `_session`, `armed`, `queued`, `stoppingBurst`, `queueOnStop`) is therefore
+ * only ever read or written under `mutex`, the same idiom `Outbox` uses for
+ * its own multi-writer state — every access, not just the ones with something
+ * else nearby to protect, since a field a lock only sometimes guards gives no
+ * happens-before edge to the accesses that skip it.
  *
  * Two deliberate exceptions to "every access happens under `mutex`" are
- * `reader.stopInventory()` inside [endBurst] and `reader.apply()` inside
- * [push] — both vendor round trips long enough (or, for `apply()`, unbounded
- * enough) that holding `mutex` across them would starve `onTag`/`onTrigger`
- * for the duration, or forever if the vendor stack soft-hangs.
+ * `reader.stopInventory()` inside [endBurst] and the reader call each queued
+ * job makes (a settings push, a layout write, a battery request, a region
+ * load) — vendor round trips long enough that holding `mutex` across them
+ * would starve `onTag`/`onTrigger` for the duration. The one reader call made
+ * under `mutex` is a trigger START's `startInventory()`, bounded by
+ * [START_WAIT_MS].
  *
  * `reader.stopInventory()`: on real hardware that is a vendor round trip of
  * tens of milliseconds during which tags can still arrive, and holding
@@ -101,23 +115,47 @@ object RfidOwner {
  * released so `onTag` stays free, then re-acquire the lock to claim the
  * session, update `queued`, and decide whether to emit.
  *
- * `reader.apply()`: on real hardware (`ZebraRfidReader.apply()`) that is eight
- * sequential vendor round trips, and unlike `connect()`/`disconnect()` it
- * used to have no timeout at all — a soft-hung vendor stack would wedge
- * whatever held the lock across it forever. [applyGate], a second, narrow
- * `Mutex`, is what lets [push] stay off `mutex` entirely: a slow or hung
- * settings push never blocks a tag report, an arm/disarm, or [endBurst] —
- * those only ever need `mutex`, which [push] never holds. A trigger START and
- * [setRegion] are the two exceptions: each deliberately serializes against a
- * concurrent push — and against each other — on the vendor link by acquiring
+ * [applyGate], a second, narrow `Mutex`, is held across every radio call the
+ * controller makes (not the scanner's soft trigger or its retry): each queued
+ * job's call, a START's `startInventory()`, every `stopInventory()`, a region
+ * write, and the link calls. That is what puts one call at a time on the sled while
+ * keeping the jobs off `mutex` entirely: a slow settings push never blocks a
+ * tag report, an arm/disarm, or [endBurst]'s session claim — those only ever
+ * need `mutex`. A trigger START and [setRegion] deliberately acquire
  * `applyGate` *while still holding `mutex`* (see the nesting in [onTrigger]'s
  * `TriggerAction.START` branch and in [setRegion]), so a start or a region
- * write can be delayed — bounded by `VENDOR_TIMEOUT_MS` in the worst case —
- * behind an in-flight push or region write. Nothing that holds `applyGate`
- * (i.e. [push] or [setRegion]) ever tries to acquire `mutex`, so nesting
- * `mutex` outside `applyGate` at either call site cannot deadlock: the lock
- * order is always `mutex` before `applyGate`, never the reverse, so there is
- * no cycle for two callers to deadlock on.
+ * write can wait behind a call already in flight, at most [CALL_WAIT_MS] for
+ * a job. Nothing that holds `applyGate` ever tries to acquire `mutex`,
+ * `stopGate` or `linkGate`, so there is no cycle for two callers to deadlock
+ * on: the lock order is `linkGate`, `stopGate`, `mutex`, `applyGate`, the
+ * adapter's worker, outermost first.
+ *
+ * **Sweeps** (spec, Controller › Sweeps; rulings 27, 29 and 45). A pull starts
+ * a read only while armed, `Connected`, and the layout in force has a trigger
+ * assigned to tags: the sled's accepted read-back, else the effective layout
+ * of [requestedLayout] (else the setting, for a link that came up without a
+ * controller connect). The latch window is measured from the pull's own
+ * stamp. A start waits [START_WAIT_MS]; a failed, timed-out or thrown start
+ * is followed by one stop, closes the sweep after `mutex` is released, and
+ * sets [readError]. A stop the sled answers with a failure is sent once more;
+ * if that fails too, the sled may still be reading: [readError] says so and
+ * the next pull sends one stop first. The sled ending a sweep by itself ends
+ * it here too, with its tags queued and no sentence.
+ *
+ * **The job queue** (spec, Controller › Job queue, Battery). Settings pushes,
+ * layout writes, battery requests and region loads are jobs on one queue
+ * with one consumer, and the collectors only ever enqueue. Pushes coalesce to
+ * the latest settings and layout writes to the latest layout, up to the
+ * moment the call is made; a battery job is dropped when a sweep is open; a
+ * region load is awaited by its caller (who runs it at once when nothing else
+ * is queued). Each job first waits until no sweep is open (a layout write
+ * first ends the open one, its tags queued), then takes `applyGate` with
+ * `tryLock()` under `mutex`, so no job call lands between a START's
+ * `startInventory()` and the stop that ends that sweep. Each call waits
+ * [CALL_WAIT_MS]. A new generation reaching `Connected` queues one push and,
+ * when the sled's read-back does not match the setting, one layout write.
+ * Battery is asked after each sweep and after [BATTERY_IDLE_MS] with no
+ * sweep and no other job while `Connected`.
  *
  * `arm()`, `disarm()` and `stopBurst()` are called from the UI thread and
  * must stay non-suspending, but their real work still has to happen on
@@ -261,6 +299,33 @@ class RfidController(
      *  stopped being wanted. */
     val connectionError: StateFlow<String?> = _connectionError
 
+    private val _readError = MutableStateFlow<String?>(null)
+    /** Why the last read did not start, or that the sled may still be reading
+     *  after a stop it did not confirm. Null once a start succeeds. */
+    val readError: StateFlow<String?> = _readError
+
+    private val _layoutError = MutableStateFlow<String?>(null)
+    /** Why the last trigger-layout write failed. Null once one succeeds. */
+    val layoutError: StateFlow<String?> = _layoutError
+
+    private val _lastActivityMs = MutableStateFlow(clock())
+    /** The [clock] time of the last trigger pull, tag, or [noteActivity];
+     *  the display effect's idle timer reads it. */
+    val lastActivityMs: StateFlow<Long> = _lastActivityMs
+
+    private val _requestedLayout = MutableStateFlow<SledTriggerLayout?>(null)
+    /** The layout the controller last asked of this generation's sled: its
+     *  connect request's, then the last layout write's. Null while `info` is
+     *  null, and for a link that came up without a controller connect until
+     *  a layout write runs. */
+    val requestedLayout: StateFlow<SledTriggerLayout?> = _requestedLayout
+
+    private val _layoutInForceUsesScanner = MutableStateFlow(false)
+    /** Whether the layout in force uses the sled's scanner: the accepted
+     *  read-back, else the effective layout of [requestedLayout] (else the
+     *  setting). False while `info` is null. */
+    val layoutInForceUsesScanner: StateFlow<Boolean> = _layoutInForceUsesScanner
+
     /** Guards every state transition below: `current`, `armed`, `queued`,
      *  `stoppingBurst`/`queueOnStop`, and `_session`'s check-then-act moves.
      *  Serializing them is also what keeps `startInventory()` from
@@ -274,6 +339,8 @@ class RfidController(
     private var owner: String? = null
     /** The owner armed when the open burst started; its emission carries it. */
     private var sessionOwner: String? = null
+    /** The reader generation the open burst started in (`info.generation`). */
+    private var sessionGeneration: Int? = null
     private var queued: Set<String> = emptySet()
     private var pressedAtMs: Long = 0L
 
@@ -294,26 +361,65 @@ class RfidController(
 
     /** Serializes `reader.stopInventory()` (and the session claim right
      *  after it) against trigger evaluation — see the class doc. Never held
-     *  across anything `onTag` needs. */
+     *  across anything `onTag` needs. The "may still be reading" stop at the
+     *  top of [onTrigger] holds it too. */
     private val stopGate = Mutex()
 
-    /** A second, narrow lock so [push] never has to hold `mutex` across
-     *  `reader.apply()` — see the class doc. It exists purely to serialize
-     *  `apply()` against `startInventory()` and against [setRegion] on the
-     *  vendor link (the nesting in [onTrigger]'s `TriggerAction.START`
-     *  branch, and in [setRegion] itself): a slow or hung settings push can
-     *  delay a later push, and can delay a trigger START or a region write
-     *  specifically (bounded by `VENDOR_TIMEOUT_MS` in the worst case, since
-     *  both wait on `applyGate` while holding `mutex`), but nothing else —
-     *  not a tag report, an arm/disarm, or `endBurst`, all of which only
-     *  ever need `mutex`, which [push] never holds. Nothing that holds
-     *  `applyGate` (`push()` or `setRegion()`) ever tries to acquire
-     *  `mutex`, so nesting `mutex` outside it at either call site cannot
-     *  deadlock: `mutex` is always acquired first and `applyGate` second,
-     *  by every caller, so there is no cycle. The link calls under [linkGate]
-     *  also hold it, for the reader call alone, so a push never overlaps a
-     *  connect or a disconnect. */
+    /** One radio call at a time — see the class doc. Held across each queued
+     *  job's call, a START's `startInventory()` (taken under `mutex`), every
+     *  `stopInventory()`, a region write (taken under `mutex`, the call made
+     *  after `mutex` is released) and the link calls under [linkGate].
+     *  Nothing that holds it ever tries to acquire `mutex`, `stopGate` or
+     *  `linkGate`, so taking it inside any of them cannot deadlock. */
     private val applyGate = Mutex()
+
+    /** A stop the sled answered with a failure twice: the next pull sends one
+     *  stop before anything else. Written and read under [stopGate]. */
+    @Volatile private var mayStillBeReading = false
+
+    // ── the layout in force (see requestedLayout) ──
+
+    /** A layout the controller asked for, and the generation it was asked of;
+     *  a null [generation] is a connect still in flight, which owns whatever
+     *  generation comes up. */
+    private class Requested(val generation: Int?, val layout: SledTriggerLayout)
+
+    @Volatile private var requested: Requested? = null
+
+    /** `current.triggerLayout`, readable without `mutex`. */
+    @Volatile private var settingLayout: SledTriggerLayout = DEFAULT_RFID_SETTINGS.triggerLayout
+
+    /** True once the settings collector has seen its first value. */
+    @Volatile private var settingsSeen = false
+
+    private val layoutStateLock = Any()
+
+    // ── the job queue (see the class doc) ──
+
+    private enum class JobKind { PUSH, LAYOUT, BATTERY, REGIONS }
+
+    /** What a job takes when its call is made. */
+    private sealed interface JobCall {
+        class Push(val settings: RfidSettings) : JobCall
+        class Layout(val layout: SledTriggerLayout) : JobCall
+        data object Battery : JobCall
+        class Regions(val reply: CompletableDeferred<Result<RfidRegions>>) : JobCall
+    }
+
+    /** Guards the queue below. Held only for plain reads and writes, never
+     *  across a suspension. A job stays at the head of [jobs] until its call
+     *  is made, so a change arriving meanwhile coalesces into it. */
+    private val jobLock = Any()
+    private val jobs = ArrayDeque<JobKind>()
+    private var layoutWanted: SledTriggerLayout? = null
+    private val regionReplies = ArrayDeque<CompletableDeferred<Result<RfidRegions>>>()
+    private val jobWake = Channel<Unit>(Channel.CONFLATED)
+    /** Held while a job runs: by the consumer, or by a region load its caller
+     *  runs itself because nothing else was queued. */
+    private val jobSlot = Mutex()
+    private val jobConsumerStarted = AtomicBoolean(false)
+    /** Counts finished jobs, so the battery timer restarts after each. */
+    private val jobsDone = MutableStateFlow(0)
 
     // ── the link (see the class doc) ──
 
@@ -425,11 +531,25 @@ class RfidController(
         /** A nudge within this long of an attempt ending is ignored. */
         const val NUDGE_QUIET_MS = 2_000L
 
-        /** Ceiling on how long `reader.apply()`, `reader.regions()` and
-         *  `reader.setRegion()` may suspend before the controller gives up on
-         *  them — defense against a vendor stack that never returns at all,
-         *  not a tuning knob. */
-        private const val VENDOR_TIMEOUT_MS = 15_000L
+        /** How long a trigger START waits for `startInventory()`, counted from
+         *  when the call is made. Then one stop, and the sweep closes. */
+        const val START_WAIT_MS = 5_000L
+
+        /** How long each `stopInventory()` is waited for. */
+        const val STOP_WAIT_MS = 4_000L
+
+        /** How long every other call is waited for: each queued job's, and a
+         *  region write. The reader's own work still finishes; the controller
+         *  stops waiting and says so. */
+        const val CALL_WAIT_MS = 10_000L
+
+        /** With no sweep and no other job for this long while `Connected`,
+         *  the controller asks for the battery level. */
+        const val BATTERY_IDLE_MS = 60_000L
+
+        /** How long the Scan button holds the sled's soft trigger when no
+         *  barcode arrives. */
+        const val SOFT_SCAN_HOLD_MS = 3_000L
 
         /** How often a retry waiting for the printer checks it again. */
         private const val PRINTER_POLL_MS = 500L
@@ -477,7 +597,7 @@ class RfidController(
                     // same reason: `apply()` never reads either. The layout
                     // reaches the sled through the connect request (built
                     // from `settings.first()` right before every connect) and
-                    // the reader's own layout write; the address only says
+                    // its own layout-write job below; the address only says
                     // which sled to dial. Neither should fire an eight-round-
                     // trip settings push on its own.
                     val c = s.copy(
@@ -489,48 +609,81 @@ class RfidController(
                     current = s
                     c
                 }
+                settingLayout = s.triggerLayout
+                settingsSeen = true
                 savedAddress = s.readerAddress
                 previous?.let { onSettingsChange(it, s) }
+                val layoutChanged = previous != null && previous?.triggerLayout != s.triggerLayout
                 previous = s
-                if (changed && reader.connection.value is RfidConnection.Connected) {
-                    // No `mutex` involved: `s` is already a plain value from
-                    // the collected flow, and `push()` must never run under
-                    // `mutex` — see the class doc and [applyGate].
-                    applyGate.withLock { push(s) }
+                // Only enqueues: the job queue waits for any open sweep and
+                // for `applyGate`, never this collector.
+                if (reader.connection.value is RfidConnection.Connected) {
+                    if (changed) enqueuePush()
+                    if (layoutChanged) enqueueLayout(s.triggerLayout)
                 }
+                refreshLayoutState()
             }
         }
-        scope.launch { reader.triggers.collect { onTrigger(it) } }
+        scope.launch { reader.pulls.collect { onTrigger(it) } }
         scope.launch { reader.tags.collect { onTag(it) } }
         scope.launch {
-            // Seeded false, not from reader.connection.value: a reader that
-            // is already Connected before start() runs must still have its
-            // first observed Connected treated as a transition, or its
-            // settings are never pushed and it is left running firmware
-            // defaults until an unrelated setting happens to change.
-            // StateFlow.collect always replays the current value first, so
-            // this costs nothing when the reader really is starting
-            // disconnected — that first replay just reads as "no change."
-            var wasConnected = false
-            reader.connection.collect { c ->
-                val nowConnected = c is RfidConnection.Connected
-                if (!nowConnected) {
-                    // A burst cannot survive the reader going away: end it where it
-                    // stopped and queue what was read rather than losing it. The
-                    // reader is already gone, so there is nothing left to stop.
-                    endBurst(stopReader = false, queue = true)
-                } else if (!wasConnected) {
-                    // Push current settings on every transition into Connected,
-                    // including a reconnect the sled did on its own — otherwise it
-                    // is left running firmware defaults with nothing on screen
-                    // saying so. Read `current` under `mutex`, then release it
-                    // before pushing — `push()` must never run under `mutex` —
-                    // see the class doc and [applyGate].
-                    val toPush = mutex.withLock { current }
-                    applyGate.withLock { push(toPush) }
-                }
-                wasConnected = nowConnected
+            reader.unsolicitedStops.collect { reason ->
+                // Ruling 45: no sentence; the tags queue and one stop goes out.
+                Log.i(TAG, "The sled ended the sweep by itself ($reason).")
+                endBurst(stopReader = true, queue = true)
             }
+        }
+        scope.launch {
+            // Seeded "not connected", not from reader.connection.value: a
+            // reader that is already Connected before start() runs must still
+            // have its first observed Connected treated as a new generation,
+            // or its settings are never pushed and it is left running
+            // firmware defaults until an unrelated setting happens to change.
+            // Keyed on the state's class and the generation only, so a
+            // battery update (a new Connected value) is not a new link.
+            var wasConnected = false
+            var lastGeneration: Int? = null
+            combine(reader.connection, reader.info) { c, i -> c to i }
+                .distinctUntilChangedBy { (c, i) -> c::class to i?.generation }
+                .collect { (c, i) ->
+                    val connected = c is RfidConnection.Connected
+                    val generation = i?.generation
+                    if (!connected || generation != lastGeneration) {
+                        // A burst cannot survive its link: end it where it
+                        // stopped and queue what was read. The link is already
+                        // gone, so there is nothing left to stop. A burst a pull
+                        // opened on the link that is up now (before this
+                        // collector got to it) is kept.
+                        endBurst(stopReader = false, queue = true, keepLiveLink = true)
+                    }
+                    // A Connected with no info (a hand-written double) is a new
+                    // generation on each transition into Connected.
+                    val newGeneration = connected && (!wasConnected || (generation != null && generation != lastGeneration))
+                    wasConnected = connected
+                    lastGeneration = generation
+                    if (newGeneration) {
+                        // One push and one layout check per generation, so a
+                        // sled that refuses the layout is not written in a loop.
+                        enqueuePush()
+                        val layout = settingLayoutFor(i)
+                        val want = effectiveLayout(layout, zebraHost, i?.hasScanner)
+                        if (i?.trigger?.layout != want) enqueueLayout(layout)
+                    }
+                }
+        }
+        scope.launch {
+            // The battery poll: after BATTERY_IDLE_MS with no sweep and no job
+            // finishing while Connected. Every change of the three restarts it.
+            combine(
+                reader.connection.map { it is RfidConnection.Connected }.distinctUntilChanged(),
+                _session.map { it != null }.distinctUntilChanged(),
+                jobsDone,
+            ) { connected, sweeping, _ -> connected && !sweeping }
+                .collectLatest { idle ->
+                    if (!idle) return@collectLatest
+                    delay(BATTERY_IDLE_MS)
+                    enqueueBattery()
+                }
         }
         // Its own collector, never suspending, so a push in flight above
         // never delays noticing a drop.
@@ -543,7 +696,12 @@ class RfidController(
                 }
             }
         }
-        scope.launch { reader.info.collect { i -> i?.address?.let { lastSledAddress = it } } }
+        scope.launch {
+            reader.info.collect { i ->
+                i?.address?.let { lastSledAddress = it }
+                refreshLayoutState()
+            }
+        }
         // Single consumer of `commands`, so arm()/disarm()/stopBurst() all
         // run in exactly the order they were sent — see the class doc.
         // Nothing here ever waits on `connectionCommands` or its consumer,
@@ -559,6 +717,7 @@ class RfidController(
             }
         }
         ensureLinkConsumer()
+        ensureJobConsumer()
     }
 
     /** A screen that reads RFID calls this while it is composed, with its own
@@ -719,35 +878,77 @@ class RfidController(
         queued = queued - values.mapNotNull { rfidKey(it) }.toSet()
     }
 
-    /** The one place `reader.apply()` is actually called — always under
-     *  [applyGate], never under `mutex`; see the class doc. Wrapped in the
-     *  `VENDOR_TIMEOUT_MS` defense, since `apply()` otherwise has no timeout
-     *  of its own and a soft-hung vendor stack would wedge `applyGate`
-     *  forever. */
-    private suspend fun push(s: RfidSettings) {
-        val result = withTimeoutOrNull(VENDOR_TIMEOUT_MS) { reader.apply(s) }
-            ?: Result.failure(IllegalStateException("Pushing settings to the reader timed out."))
-        _applyError.value = if (result.isFailure) {
-            result.exceptionOrNull()?.message?.takeIf { it.isNotBlank() }
-                ?: "The reader refused the settings."
-        } else {
-            null
+    /** The regions this reader allows and the one in force. Region is a
+     *  compliance setting, not part of [RfidSettings]: it is never pushed
+     *  automatically, only read or set on explicit admin action, and never
+     *  read at connect (the Admin tab asks). A job like the others: it waits
+     *  for any open sweep and runs alone on the radio, but its caller awaits
+     *  its result, and runs it itself when nothing else is queued. The reader
+     *  reports "not connected" when there is nothing to read; a read that
+     *  never answers fails with [SledWords.REGIONS_FAILED]. */
+    suspend fun loadRegions(): Result<RfidRegions> {
+        if (_session.value == null && jobSlot.tryLock()) {
+            try {
+                if (synchronized(jobLock) { jobs.isEmpty() }) {
+                    val reply = CompletableDeferred<Result<RfidRegions>>()
+                    val call = checkNotNull(claimForJob(dropIfSweeping = false) { JobCall.Regions(reply) })
+                    runCall(call)
+                    return reply.await()
+                }
+            } finally {
+                jobSlot.unlock()
+            }
         }
+        val reply = CompletableDeferred<Result<RfidRegions>>()
+        synchronized(jobLock) {
+            regionReplies.addLast(reply)
+            jobs.addLast(JobKind.REGIONS)
+        }
+        wakeJobs()
+        return reply.await()
     }
 
-    /** The regions this reader allows and the one in force — a plain
-     *  passthrough to [RfidReader.regions]. Region is a compliance setting,
-     *  not part of [RfidSettings]/[push]: it is never pushed automatically,
-     *  only read or set on explicit admin action. No controller state guards
-     *  it, so this never touches `mutex` or `applyGate`; the reader itself
-     *  reports "not connected" when there is nothing to read (see
-     *  `neitherCallWorksWhileDisconnected`). Wrapped in the same
-     *  `VENDOR_TIMEOUT_MS` defense [push]/[setRegion] use for their own
-     *  vendor calls, so a soft-hung vendor stack is reported rather than
-     *  leaving the caller suspended forever. */
-    suspend fun loadRegions(): Result<RfidRegions> =
-        withTimeoutOrNull(VENDOR_TIMEOUT_MS) { reader.regions() }
-            ?: Result.failure(IllegalStateException("Loading the reader's regions timed out."))
+    /** The sled's Scan button on a scan screen (ruling 12): pulls the sled's
+     *  soft trigger, then lets go on the first sled barcode or after
+     *  [SOFT_SCAN_HOLD_MS], whichever is first. A pull that failed is not
+     *  released. Runs on the controller's scope, so leaving the screen
+     *  never leaves the trigger pulled; the caller only awaits. */
+    suspend fun softScanOnce() {
+        scope.launch {
+            // Listening before the pull, so a fast barcode is not missed. A
+            // reader with no barcode flow (the interface's empty default) lets
+            // go at once.
+            val first = async(start = CoroutineStart.UNDISPATCHED) {
+                withTimeoutOrNull(SOFT_SCAN_HOLD_MS) {
+                    try {
+                        reader.barcodes.firstOrNull()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "The barcode flow failed during a soft scan.", e)
+                        null
+                    }
+                }
+            }
+            val pulled = guarded { reader.softScan(true) }
+            if (pulled.isFailure) {
+                first.cancel()
+                Log.i(TAG, "The soft trigger was not pulled: ${pulled.exceptionOrNull()?.javaClass?.simpleName}.")
+                return@launch
+            }
+            first.await()
+            guarded { reader.softScan(false) }.onFailure { Log.w(TAG, "Releasing the soft trigger failed.", it) }
+        }.join()
+    }
+
+    /** The scanner line's Try again: a plain pass-through. */
+    suspend fun retryScanner(): Result<Unit> = guarded { reader.retryScanner() }
+
+    /** A typed scan character or a sled barcode: activity, for the display's
+     *  idle timer (pulls and tags count by themselves). */
+    fun noteActivity() {
+        _lastActivityMs.value = clock()
+    }
 
     /** Set the regulatory domain. Refused while a burst is open — changing
      *  the radio's regulatory domain mid-sweep is not something to find out
@@ -777,10 +978,11 @@ class RfidController(
      *  never the reverse, so there is no cycle and this cannot deadlock —
      *  see the class doc.
      *
-     *  Wrapped in the same `VENDOR_TIMEOUT_MS` defense [push] uses: without
-     *  it, a soft-hung vendor stack would wedge `applyGate` — and therefore
-     *  every later trigger START and settings push — forever, not just this
-     *  call.
+     *  The write is waited for [CALL_WAIT_MS], like a job's call: without a
+     *  bound, a soft-hung vendor stack would wedge `applyGate` — and
+     *  therefore every later trigger START and job — forever, not just this
+     *  call. A write that never answers fails with [SledWords.REGION_NOT_SET];
+     *  one refused because a sweep is open, with [SledWords.FINISH_READ_FIRST].
      *
      *  A sled in `NeedsRegion` has to be set up again once it has a region:
      *  after a successful write there, `applyGate` is released first, then
@@ -794,11 +996,11 @@ class RfidController(
             true
         }
         if (!holdingGate) {
-            return Result.failure(IllegalStateException("Finish the current read before changing the region."))
+            return Result.failure(IllegalStateException(SledWords.FINISH_READ_FIRST))
         }
         val result = try {
-            withTimeoutOrNull(VENDOR_TIMEOUT_MS) { reader.setRegion(code, hopping) }
-                ?: Result.failure(IllegalStateException("Setting the region timed out."))
+            withTimeoutOrNull(CALL_WAIT_MS) { guarded { reader.setRegion(code, hopping) } }
+                ?: Result.failure(IllegalStateException(SledWords.REGION_NOT_SET))
         } finally {
             applyGate.unlock()
         }
@@ -810,6 +1012,242 @@ class RfidController(
         }
         return result
     }
+
+    // ── the job queue (see the class doc) ──
+
+    /** Starts the single consumer of the job queue, once: from [start], or
+     *  from the first job queued. */
+    private fun ensureJobConsumer() {
+        if (!jobConsumerStarted.compareAndSet(false, true)) return
+        scope.launch {
+            while (true) {
+                jobWake.receive()
+                jobSlot.withLock { drainJobs() }
+            }
+        }
+    }
+
+    private fun wakeJobs() {
+        ensureJobConsumer()
+        jobWake.trySend(Unit)
+    }
+
+    /** A settings push, of whatever the settings are when its call is made,
+     *  so pushes waiting together are one push of the latest. */
+    private fun enqueuePush() {
+        synchronized(jobLock) { if (JobKind.PUSH !in jobs) jobs.addLast(JobKind.PUSH) }
+        wakeJobs()
+    }
+
+    /** A layout write. One already waiting writes [layout] instead; one whose
+     *  call is already made is followed by another. */
+    private fun enqueueLayout(layout: SledTriggerLayout) {
+        synchronized(jobLock) {
+            layoutWanted = layout
+            if (JobKind.LAYOUT !in jobs) jobs.addLast(JobKind.LAYOUT)
+        }
+        wakeJobs()
+    }
+
+    /** A battery request, unless a sweep is open or the link is not up. */
+    private fun enqueueBattery() {
+        if (reader.connection.value !is RfidConnection.Connected || _session.value != null) return
+        synchronized(jobLock) { if (JobKind.BATTERY !in jobs) jobs.addLast(JobKind.BATTERY) }
+        wakeJobs()
+    }
+
+    /** Holding [jobSlot]: runs the queued jobs, oldest first, until none is left. */
+    private suspend fun drainJobs() {
+        while (true) {
+            val kind = synchronized(jobLock) { jobs.firstOrNull() } ?: return
+            val taken = AtomicBoolean(false)
+            try {
+                runJob(kind, taken)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                // Anything escaping would kill the one consumer and leave every
+                // later job, and every region load's caller, waiting forever.
+                Log.e(TAG, "A $kind job failed.", e)
+                if (!taken.get()) {
+                    val call = synchronized(jobLock) { takeHead(kind) { current } }
+                    (call as? JobCall.Regions)?.reply?.complete(Result.failure(IllegalStateException(SledWords.REGIONS_FAILED)))
+                }
+            }
+        }
+    }
+
+    /** The head job, [kind]: a layout write first ends the open sweep (its
+     *  tags queued, holding no lock); then the job waits for no sweep and a
+     *  free `applyGate`, and makes its call. A battery job finding a sweep
+     *  open is dropped. */
+    private suspend fun runJob(kind: JobKind, taken: AtomicBoolean) {
+        if (kind == JobKind.LAYOUT) endBurst(stopReader = true, queue = true)
+        val call = claimForJob(dropIfSweeping = kind == JobKind.BATTERY) {
+            taken.set(true)
+            synchronized(jobLock) { takeHead(kind) { current } }
+        }
+        if (call == null) {
+            taken.set(true)
+            synchronized(jobLock) { takeHead(kind) { current } }
+            Log.i(TAG, "Battery request dropped: a sweep is open.")
+            return
+        }
+        runCall(call)
+    }
+
+    /** Holding [jobLock]: removes the head job, which is [kind], and returns
+     *  its call; a push takes [settings] as they are now. */
+    private fun takeHead(kind: JobKind, settings: () -> RfidSettings): JobCall {
+        check(jobs.removeFirst() == kind) { "The job queue's head changed under its consumer." }
+        return when (kind) {
+            JobKind.PUSH -> JobCall.Push(settings())
+            JobKind.LAYOUT -> JobCall.Layout(layoutWanted ?: settingLayout).also { layoutWanted = null }
+            JobKind.BATTERY -> JobCall.Battery
+            JobKind.REGIONS -> JobCall.Regions(regionReplies.removeFirst())
+        }
+    }
+
+    /**
+     * Waits until no sweep is open, then under `mutex` checks again and takes
+     * `applyGate` with `tryLock()`: if a sweep opened meanwhile it waits for
+     * that one to end; if `applyGate` is taken it waits, holding nothing,
+     * until it is free, and tries again. Returns [take]'s value (run under
+     * `mutex`) holding `applyGate`, or null holding nothing when
+     * [dropIfSweeping] and a sweep is open. `mutex` is never held while
+     * waiting for `applyGate` here: only START and [setRegion] do that.
+     */
+    private suspend fun <T : Any> claimForJob(dropIfSweeping: Boolean, take: () -> T): T? {
+        while (true) {
+            if (dropIfSweeping && _session.value != null) return null
+            _session.first { it == null }
+            var busy = false
+            val got = mutex.withLock {
+                when {
+                    _session.value != null -> null
+                    !applyGate.tryLock() -> {
+                        busy = true
+                        null
+                    }
+                    else -> try {
+                        take()
+                    } catch (e: Throwable) {
+                        applyGate.unlock()
+                        throw e
+                    }
+                }
+            }
+            if (got != null) return got
+            if (busy) applyGate.withLock {}
+        }
+    }
+
+    /** Makes [call]'s reader call, holding `applyGate`, and releases it. */
+    private suspend fun runCall(call: JobCall) {
+        try {
+            when (call) {
+                is JobCall.Push -> push(call.settings)
+                is JobCall.Layout -> writeLayout(call.layout)
+                JobCall.Battery -> requestBattery()
+                is JobCall.Regions -> call.reply.complete(readRegions())
+            }
+        } finally {
+            applyGate.unlock()
+            // Answers a region load's caller whatever happened (a no-op when
+            // it already has its result).
+            (call as? JobCall.Regions)?.reply?.complete(Result.failure(IllegalStateException(SledWords.REGIONS_FAILED)))
+            jobsDone.update { it + 1 }
+        }
+    }
+
+    /** A settings push, while `Connected` only: in `NeedsRegion` or with the
+     *  link gone, the next generation pushes again. */
+    private suspend fun push(s: RfidSettings) {
+        if (reader.connection.value !is RfidConnection.Connected) return
+        val result = withTimeoutOrNull(CALL_WAIT_MS) { guarded { reader.apply(s) } }
+        _applyError.value = when {
+            result == null -> {
+                Log.w(TAG, "apply() gave no answer within $CALL_WAIT_MS ms.")
+                SledWords.PUSH_STOPPED
+            }
+            result.isSuccess -> null
+            result.exceptionOrNull() is SledNotConnected -> return
+            else -> result.exceptionOrNull()?.message?.takeIf { it.isNotBlank() } ?: SledWords.SETTINGS_NOT_APPLIED
+        }
+    }
+
+    /** A trigger-layout write, while `Connected` only. It becomes this
+     *  generation's [requestedLayout] when the call is made. */
+    private suspend fun writeLayout(layout: SledTriggerLayout) {
+        if (reader.connection.value !is RfidConnection.Connected) return
+        requested = Requested(reader.info.value?.generation, layout)
+        refreshLayoutState()
+        val result = withTimeoutOrNull(CALL_WAIT_MS) { guarded { reader.setTriggerLayout(layout) } }
+        when {
+            result == null -> {
+                Log.w(TAG, "setTriggerLayout($layout) gave no answer within $CALL_WAIT_MS ms.")
+                _layoutError.value = SledWords.TRIGGER_CHECK_FAILED
+            }
+            result.isSuccess -> {
+                Log.i(TAG, "Trigger layout $layout written; the sled reads back ${result.getOrNull()}.")
+                _layoutError.value = null
+            }
+            result.exceptionOrNull() is SledNotConnected -> Unit
+            else -> _layoutError.value =
+                result.exceptionOrNull()?.message?.takeIf { it.isNotBlank() } ?: SledWords.TRIGGER_CHECK_FAILED
+        }
+        refreshLayoutState()
+    }
+
+    private suspend fun requestBattery() {
+        if (reader.connection.value !is RfidConnection.Connected) return
+        val answered = withTimeoutOrNull(CALL_WAIT_MS) {
+            guarded {
+                reader.requestBattery()
+                Result.success(Unit)
+            }
+        }
+        if (answered == null) Log.w(TAG, "requestBattery() gave no answer within $CALL_WAIT_MS ms.")
+    }
+
+    private suspend fun readRegions(): Result<RfidRegions> =
+        withTimeoutOrNull(CALL_WAIT_MS) { guarded { reader.regions() } }
+            ?: Result.failure(IllegalStateException(SledWords.REGIONS_FAILED))
+
+    /** [body]'s result, or a failure carrying whatever it threw. */
+    private suspend fun <T> guarded(body: suspend () -> Result<T>): Result<T> = try {
+        body()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        Result.failure(e)
+    }
+
+    // ── the layout in force ──
+
+    /** The layout asked of [info]'s generation, or null. */
+    private fun requestedFor(info: SledInfo?): SledTriggerLayout? {
+        if (info == null) return null
+        val r = requested ?: return null
+        return if (r.generation == null || r.generation == info.generation) r.layout else null
+    }
+
+    private fun refreshLayoutState() {
+        synchronized(layoutStateLock) {
+            val info = reader.info.value
+            val asked = requestedFor(info)
+            _requestedLayout.value = asked
+            _layoutInForceUsesScanner.value =
+                info != null && layoutInForceUsesScanner(info.trigger, asked ?: settingLayout, zebraHost, info.hasScanner)
+        }
+    }
+
+    /** The trigger-layout setting. Before the settings collector's first
+     *  value, the layout of [info]'s connect request (built from the saved
+     *  settings) stands in for it. Never suspends: the connection collector
+     *  must not wait on a settings read. */
+    private fun settingLayoutFor(info: SledInfo?): SledTriggerLayout =
+        if (settingsSeen) settingLayout else requestedFor(info) ?: settingLayout
 
     // ── link internals ──
 
@@ -870,6 +1308,9 @@ class RfidController(
             reply?.complete(Result.failure(SledNotConnected()))
             return LinkOutcome.SKIPPED
         }
+        // The request's layout belongs to whatever generation this attempt
+        // brings up (see requestedLayout).
+        requested = Requested(null, request.layout)
         val result = try {
             awaitConnect(request) { sentence ->
                 _connectionError.value = sentence
@@ -877,8 +1318,11 @@ class RfidController(
             }
         } catch (e: Throwable) {
             synchronized(retryLock) { dialing = false }
+            requested = null
             throw e
         }
+        requested = if (result.isSuccess) Requested(reader.info.value?.generation, request.layout) else null
+        refreshLayoutState()
         endAttempt(attempt, request, result)
         reply?.complete(result)
         return LinkOutcome.DIALED
@@ -924,7 +1368,7 @@ class RfidController(
      *  the caller must outlast it. */
     private suspend fun awaitConnect(request: SledConnectRequest, onTimeout: (String) -> Unit): Result<Unit> =
         withContext(NonCancellable) {
-            val call = scope.async { applyGate.withLock { readerCall { reader.connect(request) } } }
+            val call = scope.async { applyGate.withLock { guarded { reader.connect(request) } } }
             val batchSeen = AtomicBoolean(false)
             val watch = scope.launch(start = CoroutineStart.UNDISPATCHED) {
                 reader.batchRecovery.first { it }
@@ -945,20 +1389,14 @@ class RfidController(
             }
         }
 
-    private suspend fun readerCall(body: suspend () -> Result<Unit>): Result<Unit> = try {
-        body()
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: Throwable) {
-        Result.failure(e)
-    }
-
     /** Called holding [linkGate]: ends any open sweep (its tags are queued:
      *  the operator asked the reader to stop, not for those tags to vanish),
-     *  then disconnects under [applyGate]. */
+     *  waits for a stop another caller already had in flight, then
+     *  disconnects under [applyGate]. */
     private suspend fun disconnectLocked(reply: CompletableDeferred<Unit>?) {
         try {
             endBurst(stopReader = true, queue = true)
+            stopGate.withLock {}
             val call = scope.async {
                 applyGate.withLock {
                     try {
@@ -1246,7 +1684,8 @@ class RfidController(
             linkWanted.get() && !dialing && schedule == null && retryJob == null && !givenUp
     }
 
-    private suspend fun onTrigger(event: TriggerEvent) {
+    private suspend fun onTrigger(pull: TriggerPull) {
+        _lastActivityMs.value = clock()
         // Wait for any in-flight stop to finish before evaluating anything.
         // `endBurst` releases `mutex` across `reader.stopInventory()` (see
         // the class doc), so without this a trigger landing in that window
@@ -1255,39 +1694,44 @@ class RfidController(
         // only gates trigger evaluation: `onTag` never touches `stopGate`,
         // so tags keep folding into the still-open session for the whole
         // vendor round trip.
-        stopGate.withLock {}
+        stopGate.withLock {
+            if (mayStillBeReading) {
+                // A stop the sled answered with a failure twice: one more
+                // before anything else, holding applyGate for the call only
+                // (released before `mutex` is taken), so it never overlaps a
+                // queued job.
+                mayStillBeReading = false
+                Log.i(TAG, "The last stop was not confirmed; stopping again before this pull.")
+                stopOnce()
+            }
+        }
         var stopRequested = false
+        var closeFailedStart = false
         mutex.withLock {
             if (!armed) return@withLock
+            val event = pull.event
+            val at = pull.atMs ?: clock()
             val reading = _session.value != null
-            val heldMs = if (event == TriggerEvent.RELEASED) clock() - pressedAtMs else 0L
-            if (event == TriggerEvent.PRESSED) pressedAtMs = clock()
+            val heldMs = if (event == TriggerEvent.RELEASED) at - pressedAtMs else 0L
+            if (event == TriggerEvent.PRESSED) pressedAtMs = at
             when (nextTriggerAction(current.triggerMode, event, reading, heldMs)) {
                 TriggerAction.START -> {
+                    if (!mayStartRead()) return@withLock
                     _session.value = startSession(clock())
                     sessionOwner = owner
+                    sessionGeneration = reader.info.value?.generation
                     // applyGate nested inside mutex (mutex outer, applyGate
-                    // inner) so a start can never race a settings push on
-                    // the vendor link. Nothing that holds applyGate (i.e.
-                    // push()) ever tries to acquire mutex, so this ordering
+                    // inner) so a start can never race a queued job or a
+                    // region write on the vendor link. Nothing that holds
+                    // applyGate ever tries to acquire mutex, so this ordering
                     // cannot deadlock — see the class doc.
-                    applyGate.withLock {
-                        try {
-                            reader.startInventory()
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Throwable) {
-                            // The reader may already be gone, or something worse
-                            // went wrong (e.g. an Error from the vendor stack) —
-                            // the session stays open and endBurst()'s own
-                            // try/catch covers the stop. `Throwable` rather than
-                            // `Exception` for the same reason endBurst catches
-                            // `Throwable` around its own vendor call: this runs
-                            // inside the single `reader.triggers` collector
-                            // launched in start(), so anything escaping here
-                            // kills that collector and leaves every later
-                            // trigger event undelivered for the rest of the
-                            // process's life.
+                    when (val outcome = applyGate.withLock { startOnce() }) {
+                        StartOutcome.Started -> _readError.value = null
+                        // Shows nothing: the link is going or gone.
+                        StartOutcome.NotConnected -> closeFailedStart = true
+                        is StartOutcome.Failed -> {
+                            _readError.value = outcome.sentence
+                            closeFailedStart = true
                         }
                     }
                 }
@@ -1299,12 +1743,102 @@ class RfidController(
                 TriggerAction.NONE -> Unit
             }
         }
+        // Ruling 29: every failed or timed-out start is followed by one stop,
+        // and the sweep is closed after `mutex` is released.
+        if (closeFailedStart) endBurst(stopReader = true, queue = true, retryStop = false)
         if (stopRequested) endBurst(stopReader = true, queue = true)
     }
 
-    private suspend fun onTag(epc: String) = mutex.withLock {
-        val open = _session.value ?: return@withLock
-        _session.value = onTagRead(open, epc, queued, current.repeatPolicy)
+    /** Holding `mutex`: the link is `Connected` and the layout in force has a
+     *  trigger assigned to tags (ruling 27). */
+    private fun mayStartRead(): Boolean {
+        if (reader.connection.value !is RfidConnection.Connected) return false
+        val info = reader.info.value
+        val layout = requestedFor(info) ?: current.triggerLayout
+        val reads = layoutInForceReadsTags(info?.trigger, layout, zebraHost, info?.hasScanner)
+        if (!reads) Log.d(TAG, "A pull with no trigger assigned to tags (layout $layout, read-back ${info?.trigger}).")
+        return reads
+    }
+
+    /** How a START's `startInventory()` went. */
+    private sealed interface StartOutcome {
+        /** Started, or sent and not yet confirmed (the reader returns success for that). */
+        data object Started : StartOutcome
+        /** The reader turned it away as not connected. */
+        data object NotConnected : StartOutcome
+        /** Refused, unanswered within [START_WAIT_MS], or thrown; [sentence] says so. */
+        class Failed(val sentence: String) : StartOutcome
+    }
+
+    /**
+     * Holding `mutex` and `applyGate`: `startInventory()`, waited for
+     * [START_WAIT_MS] from when the call is made. A thrown `Throwable` is a
+     * failure too: `Throwable` rather than `Exception` because this runs
+     * inside the single pulls collector launched in start(), so anything
+     * escaping here kills that collector and leaves every later trigger
+     * event undelivered for the rest of the process's life.
+     */
+    private suspend fun startOnce(): StartOutcome = try {
+        val result = withTimeoutOrNull(START_WAIT_MS) { reader.startInventory() }
+        when {
+            result == null -> {
+                Log.w(TAG, "startInventory() gave no answer within $START_WAIT_MS ms.")
+                StartOutcome.Failed(SledWords.READ_DID_NOT_START)
+            }
+            result.isSuccess -> StartOutcome.Started
+            result.exceptionOrNull() is SledNotConnected -> StartOutcome.NotConnected
+            else -> StartOutcome.Failed(
+                result.exceptionOrNull()?.message?.takeIf { it.isNotBlank() } ?: SledWords.READ_DID_NOT_START,
+            )
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        Log.w(TAG, "startInventory() threw.", e)
+        StartOutcome.Failed(SledWords.READ_DID_NOT_START)
+    }
+
+    private enum class StopOutcome { STOPPED, NOT_CONNECTED, FAILED, THREW }
+
+    /**
+     * One `stopInventory()`, holding `applyGate` for the call alone, waited
+     * for [STOP_WAIT_MS]. A wait that runs out counts as a failed stop: the
+     * sled may still be reading. A thrown `Throwable` is caught (see
+     * [endBurst]) and logged.
+     */
+    private suspend fun stopOnce(): StopOutcome = applyGate.withLock {
+        try {
+            val result = withTimeoutOrNull(STOP_WAIT_MS) { reader.stopInventory() }
+            when {
+                result == null -> {
+                    Log.w(TAG, "stopInventory() gave no answer within $STOP_WAIT_MS ms.")
+                    StopOutcome.FAILED
+                }
+                result.isSuccess -> StopOutcome.STOPPED
+                result.exceptionOrNull() is SledNotConnected -> StopOutcome.NOT_CONNECTED
+                else -> {
+                    Log.w(TAG, "stopInventory() failed: ${result.exceptionOrNull()?.message}")
+                    StopOutcome.FAILED
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // The reader is already gone, or something worse went wrong (e.g.
+            // an Error during a large sweep): the tags still count, and the
+            // claim after the stop must still run or the controller wedges for
+            // the process's remaining lifetime.
+            Log.w(TAG, "stopInventory() threw.", e)
+            StopOutcome.THREW
+        }
+    }
+
+    private suspend fun onTag(epc: String) {
+        _lastActivityMs.value = clock()
+        mutex.withLock {
+            val open = _session.value ?: return@withLock
+            _session.value = onTagRead(open, epc, queued, current.repeatPolicy)
+        }
     }
 
     /**
@@ -1341,11 +1875,26 @@ class RfidController(
      * queues the tags folded in so far exactly when the caller that owned
      * the stop wanted them queued (`queueOnStop`, unchanged by the
      * cancellation).
+     *
+     * The stop (spec, Controller › Sweeps): a failure the sled returns (not
+     * "not connected", not a throw) is sent once more when [retryStop]; if
+     * that fails too the sled may still be reading, [readError] says so, and
+     * the next pull sends one stop first. A failed start's own stop is not
+     * retried (ruling 29: one stop). With [keepLiveLink], a burst opened on
+     * the link that is `Connected` now (same generation) is left open. After
+     * a burst ends, a battery request is queued.
      */
-    private suspend fun endBurst(stopReader: Boolean, queue: Boolean, unlessOwnedBy: String? = null) {
+    private suspend fun endBurst(
+        stopReader: Boolean,
+        queue: Boolean,
+        unlessOwnedBy: String? = null,
+        retryStop: Boolean = true,
+        keepLiveLink: Boolean = false,
+    ) {
         val owns = mutex.withLock {
             if (_session.value == null) return@withLock false
             if (unlessOwnedBy != null && sessionOwner == unlessOwnedBy) return@withLock false
+            if (keepLiveLink && onTheLiveLink()) return@withLock false
             if (stoppingBurst) {
                 if (!queue) queueOnStop = false
                 return@withLock false
@@ -1365,16 +1914,14 @@ class RfidController(
         val (done, shouldQueue) = try {
             stopGate.withLock {
                 if (stopReader) {
-                    try {
-                        reader.stopInventory()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Throwable) {
-                        // the reader is already gone, or something worse went
-                        // wrong (e.g. an Error during a large sweep) — the
-                        // tags still count; the claim below must still run or
-                        // the controller wedges for the process's remaining
-                        // lifetime.
+                    var outcome = stopOnce()
+                    if (retryStop && outcome == StopOutcome.FAILED) {
+                        Log.i(TAG, "The stop was not confirmed; sending it once more.")
+                        outcome = stopOnce()
+                        if (outcome == StopOutcome.FAILED) {
+                            mayStillBeReading = true
+                            _readError.value = SledWords.MAY_STILL_BE_READING
+                        }
                     }
                 }
 
@@ -1416,5 +1963,11 @@ class RfidController(
         // Emitting outside the lock: a slow collector on `bursts` must not
         // stall trigger and tag handling for everyone else.
         if (done != null && shouldQueue) _bursts.emit(done)
+        if (done != null) enqueueBattery()
     }
+
+    /** Holding `mutex`: the open burst was started on the link that is
+     *  `Connected` now (`info.generation`, null for a reader with no `info`). */
+    private fun onTheLiveLink(): Boolean =
+        reader.connection.value is RfidConnection.Connected && reader.info.value?.generation == sessionGeneration
 }
