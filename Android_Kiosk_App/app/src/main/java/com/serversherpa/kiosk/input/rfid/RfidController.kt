@@ -796,7 +796,7 @@ class RfidController(
      *  mirror of [connectForLifecycle]. It also ends any reconnect schedule. */
     fun disconnectForLifecycle() {
         linkWanted.set(false)
-        cancelRetry()
+        logUnwanted("The app left the front", cancelRetry())
         send(ConnectionCommand.Disconnect(), "disconnectForLifecycle()")
     }
 
@@ -818,7 +818,7 @@ class RfidController(
      *  disconnect still queues what was already read. */
     suspend fun disconnectNow() {
         linkWanted.set(false)
-        cancelRetry()
+        logUnwanted("Disconnect", cancelRetry())
         val reply = CompletableDeferred<Unit>()
         send(ConnectionCommand.Disconnect(reply), "disconnectNow()")
         ensureLinkConsumer()
@@ -829,7 +829,7 @@ class RfidController(
      *  and the schedule ends. Nothing is disconnected. */
     fun stopReconnecting() {
         linkWanted.set(false)
-        cancelRetry()
+        logUnwanted("Stop", cancelRetry())
     }
 
     /**
@@ -853,21 +853,41 @@ class RfidController(
     fun nudge(reason: SledNudge, address: String? = null, name: String? = null) {
         if (reason == SledNudge.LINK_APPEARED && !isNudgeFromOurSled(address, name, nudgeAddress())) return
         synchronized(retryLock) {
-            if (dialing) return
+            if (dialing) {
+                Log.i(TAG, "Nudge ($reason) ignored: an attempt is dialing.")
+                return
+            }
             // The quiet window is for the link appearing, which also fires for
             // the app's own outgoing connect. Bluetooth turning on cannot be an
             // echo of an attempt (none dials while it is off), and after a
             // "Bluetooth is off" failure it is the only way back by itself.
-            if (reason == SledNudge.LINK_APPEARED) lastAttemptEndMs?.let { if (clock() - it < NUDGE_QUIET_MS) return }
+            if (reason == SledNudge.LINK_APPEARED) {
+                lastAttemptEndMs?.let {
+                    if (clock() - it < NUDGE_QUIET_MS) {
+                        Log.i(TAG, "Nudge ($reason) ignored: an attempt ended less than ${NUDGE_QUIET_MS / 1_000} s ago.")
+                        return
+                    }
+                }
+            }
             wake?.let {
                 Log.i(TAG, "Nudge ($reason): trying the sled now instead of at the end of the wait.")
                 it.complete(Unit)
                 wake = null
                 return
             }
-            if (retryJob != null || !linkWanted.get()) return
+            if (!linkWanted.get()) {
+                Log.i(TAG, "Nudge ($reason) ignored: the link is not wanted.")
+                return
+            }
+            if (retryJob != null) {
+                Log.i(TAG, "Nudge ($reason) ignored: a try is already on its way.")
+                return
+            }
             when (reader.connection.value) {
-                is RfidConnection.Connected, is RfidConnection.NeedsRegion, RfidConnection.Connecting -> return
+                is RfidConnection.Connected, is RfidConnection.NeedsRegion, RfidConnection.Connecting -> {
+                    Log.i(TAG, "Nudge ($reason) ignored: the link is up or connecting.")
+                    return
+                }
                 else -> Unit
             }
             Log.i(TAG, "Nudge ($reason): one try.")
@@ -1364,6 +1384,7 @@ class RfidController(
         }
         val state = reader.connection.value
         if (state is RfidConnection.Connected || state is RfidConnection.NeedsRegion) {
+            Log.i(TAG, "Attempt (${attempt.origin}): the link is already up.")
             reply?.complete(Result.success(Unit))
             return LinkOutcome.ALREADY_UP
         }
@@ -1375,6 +1396,7 @@ class RfidController(
             reply?.complete(Result.failure(SledNotConnected()))
             return LinkOutcome.SKIPPED
         }
+        Log.i(TAG, "Attempt (${attempt.origin}): dialing.")
         // The request's layout belongs to whatever generation this attempt
         // brings up (see requestedLayout). Once the call returns it is bound
         // to that generation, unless a layout write already replaced it: the
@@ -1532,7 +1554,7 @@ class RfidController(
             send(ConnectionCommand.Connect(Attempt(Origin.SWITCH, manual = false)), "the reader switch")
         } else if (before.enabled && !after.enabled) {
             linkWanted.set(false)
-            cancelRetry()
+            logUnwanted("The reader was turned off", cancelRetry())
             send(ConnectionCommand.Disconnect(), "the reader switch")
         }
         if (!before.readerAddress.equals(after.readerAddress, ignoreCase = true)) {
@@ -1601,11 +1623,13 @@ class RfidController(
                 // A try the schedule's end overtook (Stop while it was dialing):
                 // nothing more to do, and no failure sentence once the link is unwanted.
                 if (!linkWanted.get()) _connectionError.value = null
+                Log.i(TAG, "Attempt (${attempt.origin}) ended after the tries were stopped; nothing follows it.")
                 return
             }
             if (!linkWanted.get()) {
                 endSchedule()
                 _connectionError.value = null
+                Log.i(TAG, "Attempt (${attempt.origin}) ended with the link no longer wanted; no more tries.")
                 return
             }
             val failed = failureOf(result.exceptionOrNull())
@@ -1620,6 +1644,7 @@ class RfidController(
                 !failed.retryable -> {
                     endSchedule()
                     _connectionError.value = failed.reason
+                    Log.i(TAG, "Attempt (${attempt.origin}) failed and is not retried on a timer: ${failed.reason}")
                 }
                 attempt.manual && sledScreenOpen -> {
                     givenUp = false
@@ -1645,13 +1670,19 @@ class RfidController(
                     }
                 }
                 // A nudge's try after giving up: still given up.
-                givenUp -> _connectionError.value = giveUpSentence
+                givenUp -> {
+                    _connectionError.value = giveUpSentence
+                    Log.i(TAG, "Attempt (${attempt.origin}) failed after giving up; still given up.")
+                }
                 sledScreenOpen -> {
                     publish(Schedule(afterDrop = false, name = pairedName(request.address, paired), tries = 0, lastReason = failed.reason))
                     _connectionError.value = null
                     launchTry(Origin.RETRY, OutboxMachine.BACKOFF[0], manual = false)
                 }
-                else -> _connectionError.value = failed.reason
+                else -> {
+                    _connectionError.value = failed.reason
+                    Log.i(TAG, "Attempt (${attempt.origin}) failed off a sled screen; one attempt only.")
+                }
             }
         }
     }
@@ -1722,16 +1753,28 @@ class RfidController(
         }
     }
 
-    /** The link is no longer wanted: end the schedule and its pending try. */
-    private fun cancelRetry() {
-        synchronized(retryLock) {
-            epoch++
-            retryJob?.cancel()
-            retryJob = null
-            wake = null
-            endSchedule()
-            givenUp = false
+    /** The link is no longer wanted: end the schedule and its pending try.
+     *  Returns what that ended, read before anything is cleared, for the
+     *  caller's log line: the tries, and an attempt dialing now (which is
+     *  never cut short, so it runs to its end). */
+    private fun cancelRetry(): List<String> = synchronized(retryLock) {
+        val ended = buildList {
+            if (schedule != null || retryJob != null) add("the tries end")
+            if (dialing) add("the attempt dialing now runs to its end")
         }
+        epoch++
+        retryJob?.cancel()
+        retryJob = null
+        wake = null
+        endSchedule()
+        givenUp = false
+        ended
+    }
+
+    /** One line for a call that makes the link unwanted: [what] did it, then
+     *  each part of [ended] after a semicolon. */
+    private fun logUnwanted(what: String, ended: List<String>) {
+        Log.i(TAG, (listOf("$what: the link is no longer wanted") + ended).joinToString("; ") + ".")
     }
 
     /** The link came up outside an attempt (a test double, the Developer tab):
@@ -1756,7 +1799,17 @@ class RfidController(
      *  came up has no `info`, and its attempt applies the rules itself. */
     private fun onLinkLost(c: RfidConnection.Failed) {
         val sled = reader.info.value ?: return
-        if (!synchronized(retryLock) { dropScheduleDue() }) return
+        val notDue = synchronized(retryLock) {
+            when {
+                dropScheduleDue() -> null
+                !linkWanted.get() -> "the link is not wanted"
+                else -> "a try is already running"
+            }
+        }
+        if (notDue != null) {
+            Log.i(TAG, "The link dropped; not reconnecting: $notDue.")
+            return
+        }
         scope.launch { startScheduleForADrop(sled, c) }
     }
 
