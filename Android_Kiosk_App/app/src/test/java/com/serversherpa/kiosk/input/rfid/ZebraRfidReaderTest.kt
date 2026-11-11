@@ -2,8 +2,9 @@ package com.serversherpa.kiosk.input.rfid
 
 import androidx.test.core.app.ApplicationProvider
 import com.serversherpa.kiosk.core.rfid.RfidConnection
-import com.serversherpa.kiosk.core.rfid.RfidTriggerPersonality
-import com.serversherpa.kiosk.core.rfid.ScannerPluginMode
+import com.serversherpa.kiosk.core.rfid.SledConnectRequest
+import com.serversherpa.kiosk.core.rfid.SledTriggerLayout
+import com.serversherpa.kiosk.core.rfid.SledWords
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -34,7 +35,7 @@ class ZebraRfidReaderTest {
 
     @Test fun connectingWithNoReaderPresentFailsWithSomethingReadable() = runTest {
         val r = reader(backgroundScope)
-        val result = r.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
+        val result = r.connect(SledConnectRequest(null, SledTriggerLayout.RFID))
         assertTrue("connect must not throw, it must report", result.isFailure)
         val state = r.connection.value
         assertTrue("expected a Failed state, got $state", state is RfidConnection.Failed)
@@ -80,7 +81,7 @@ class ZebraRfidReaderTest {
 
         override fun hasOpenVendorConnection(): Boolean = attached
 
-        override fun openVendorConnection(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode): String {
+        override fun openVendorConnection(request: SledConnectRequest): String {
             openCalls++
             attached = true
             onOpen()
@@ -102,7 +103,7 @@ class ZebraRfidReaderTest {
         // = true) but before openVendorConnection() has returned.
         val r = fakeReader(backgroundScope) { throw CancellationException("simulated timeout") }
 
-        val thrown = runCatching { r.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO) }.exceptionOrNull()
+        val thrown = runCatching { r.connect(SledConnectRequest(null, SledTriggerLayout.RFID)) }.exceptionOrNull()
         assertTrue(
             "connect() must rethrow the cancellation rather than swallow it, got $thrown",
             thrown is CancellationException,
@@ -122,7 +123,7 @@ class ZebraRfidReaderTest {
     @Test fun aConnectFollowingADisconnectionEventTearsDownThePreviousReaderFirst() = runTest {
         val r = fakeReader(backgroundScope)
 
-        val first = r.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
+        val first = r.connect(SledConnectRequest(null, SledTriggerLayout.RFID))
         assertTrue(first.isSuccess)
         assertEquals(1, r.openCalls)
         assertEquals(0, r.closeCalls)
@@ -132,7 +133,7 @@ class ZebraRfidReaderTest {
         // attached here, exactly like the real class after that event.
         assertTrue(r.attached)
 
-        val second = r.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
+        val second = r.connect(SledConnectRequest(null, SledTriggerLayout.RFID))
         assertTrue(second.isSuccess)
         assertEquals(
             "connect() must build a new reader after tearing the old one down",
@@ -290,7 +291,7 @@ class ZebraRfidReaderTest {
 
     @Test fun batchModeUnrecoverableCarriesTheHonestFinalMessage() {
         val message = BatchModeUnrecoverableException().message
-        assertEquals(BATCH_MODE_UNRECOVERABLE_MESSAGE, message)
+        assertEquals(SledWords.BATCH_MODE_UNRECOVERABLE_MESSAGE, message)
         assertTrue(
             "must name the actual remedy, not just say it failed",
             message!!.contains("123RFID Mobile"),
@@ -313,7 +314,7 @@ class ZebraRfidReaderTest {
         // itself cannot swallow or retry.
         val r = fakeReaderThatThrows(backgroundScope, BatchModeUnrecoverableException())
 
-        val result = r.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
+        val result = r.connect(SledConnectRequest(null, SledTriggerLayout.RFID))
         assertTrue("connect must not throw, it must report", result.isFailure)
         assertTrue(
             "must surface as the exact exception recoverFromBatchMode throws",
@@ -322,43 +323,14 @@ class ZebraRfidReaderTest {
 
         val state = r.connection.value
         assertTrue("expected a Failed state, got $state", state is RfidConnection.Failed)
-        assertEquals(BATCH_MODE_UNRECOVERABLE_MESSAGE, (state as RfidConnection.Failed).reason)
+        assertEquals(SledWords.BATCH_MODE_UNRECOVERABLE_MESSAGE, (state as RfidConnection.Failed).reason)
     }
 
-    // ── trigger-mode setup (barcode-vs-RFID personality) ──
+    // ── connect notes ──
     //
-    // The sequence itself — calling the real `Config.setTriggerMode()`
-    // against a real reader that is actually running its barcode engine —
-    // cannot be exercised here: there is no sled under Robolectric,
-    // `setTriggerMode`'s boolean result depends on real vendor/firmware
-    // state, and `ZebraRfidReader.configureTriggerMode` takes a real
-    // `RFIDReader`, which can't be constructed or faked from a test (see the
-    // class doc's note on why `openVendorConnection`/`closeVendorConnection`
-    // are the seam instead). What *can* be proven without hardware: the pure
-    // resolution of `ScannerPluginMode.AUTO` into a concrete
-    // `updateScannerPlugin` flag given whether DataWedge is present, the
-    // note-combining logic, and the operator-facing note text
-    // `configureTriggerMode` leaves behind for both an accepted and a
-    // refused combination.
-
-    @Test fun resolveScannerPluginFlagFollowsDataWedgePresenceOnlyWhenAutomatic() {
-        assertTrue(
-            "AUTO with DataWedge present must resolve to true",
-            resolveScannerPluginFlag(ScannerPluginMode.AUTO, dataWedgePresent = true),
-        )
-        assertFalse(
-            "AUTO with DataWedge absent must resolve to false",
-            resolveScannerPluginFlag(ScannerPluginMode.AUTO, dataWedgePresent = false),
-        )
-        assertTrue(
-            "ON must resolve to true regardless of DataWedge",
-            resolveScannerPluginFlag(ScannerPluginMode.ON, dataWedgePresent = false),
-        )
-        assertFalse(
-            "OFF must resolve to false regardless of DataWedge",
-            resolveScannerPluginFlag(ScannerPluginMode.OFF, dataWedgePresent = true),
-        )
-    }
+    // The note-combining logic is pure, so it is proven here without a
+    // real `RFIDReader`: two independently true notes from one connect
+    // (the batch-mode note and the barcode stand-down note) both survive.
 
     @Test fun combineConnectNotesAppendsToAnExistingNote() {
         assertEquals("first note. second note.", combineConnectNotes("first note.", "second note."))
@@ -370,20 +342,6 @@ class ZebraRfidReaderTest {
         assertEquals("only note.", combineConnectNotes("   ", "only note."))
     }
 
-    @Test fun triggerModeOutcomeNoteNamesTheCombinationWhenAccepted() {
-        val message = triggerModeOutcomeNote(RfidTriggerPersonality.RFID, updateScannerPlugin = true, accepted = true)
-        assertTrue("must say which personality took", message.contains("RFID"))
-        assertTrue("must say the plugin flag used", message.contains("on"))
-        assertTrue(message.endsWith("."))
-    }
-
-    @Test fun triggerModeOutcomeNoteNamesTheCombinationWhenRefused() {
-        val message = triggerModeOutcomeNote(RfidTriggerPersonality.BARCODE, updateScannerPlugin = false, accepted = false)
-        assertTrue("must say what mode was being attempted", message.contains("barcode"))
-        assertTrue("must say the practical consequence", message.contains("trigger"))
-        assertTrue(message.endsWith("."))
-    }
-
     private class ThrowingVendorZebraRfidReader(
         context: android.content.Context,
         scope: CoroutineScope,
@@ -391,7 +349,7 @@ class ZebraRfidReaderTest {
     ) : ZebraRfidReader(context, scope) {
         override fun hasOpenVendorConnection(): Boolean = false
 
-        override fun openVendorConnection(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode): String =
+        override fun openVendorConnection(request: SledConnectRequest): String =
             throw failure
 
         override fun closeVendorConnection() = Unit

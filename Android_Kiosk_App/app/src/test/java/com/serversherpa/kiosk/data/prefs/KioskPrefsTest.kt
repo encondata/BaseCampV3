@@ -6,6 +6,8 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import com.serversherpa.kiosk.core.labels.PrinterConnection
 import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
+import com.serversherpa.kiosk.core.rfid.DEFAULT_RFID_SETTINGS
+import com.serversherpa.kiosk.core.rfid.SledBeeper
 import com.serversherpa.kiosk.core.settings.CheckpointId
 import com.serversherpa.kiosk.core.settings.DEFAULT_APPEARANCE
 import com.serversherpa.kiosk.core.settings.DEFAULT_SOUND_SETTINGS
@@ -15,7 +17,10 @@ import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -123,5 +128,23 @@ class KioskPrefsTest {
         prefs.settleSetupClearAck(sentAck = "x1", replyId = null); prefs.dismissSetupClearNotice()
         assertEquals("""{"id":"x1","acked":true,"notice":false}""", prefs.snapshot()[stringPreferencesKey("ss.kiosk.setupClear")])
         assertEquals(SetupClearRecord("x1", acked = true, notice = false), prefs.setupClear.first())
+    }
+
+    /** Ruling 31: every RFID settings change reads and writes inside one edit, so two
+     *  changes landing together each keep the other's field. */
+    @Test fun updateRfidAppliesTwoQuickWritesWithoutLosingEither() = runBlocking {
+        prefs.setRfid(DEFAULT_RFID_SETTINGS)
+        repeat(10) { round ->
+            val power = 10 + round
+            val beeper = if (round % 2 == 0) SledBeeper.OFF else SledBeeper.HIGH
+            coroutineScope {
+                val a = async(Dispatchers.Default) { prefs.updateRfid { it.copy(powerDbm = power) } }
+                val b = async(Dispatchers.Default) { prefs.updateRfid { it.copy(beeper = beeper) } }
+                awaitAll(a, b)
+            }
+            val s = prefs.rfid.first()
+            assertEquals(power, s.powerDbm)
+            assertEquals(beeper, s.beeper)
+        }
     }
 }

@@ -25,12 +25,9 @@ import androidx.test.ext.junit.rules.ActivityScenarioRule
 import com.serversherpa.kiosk.AppContainer
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.rfid.RfidConnection
-import com.serversherpa.kiosk.core.rfid.RfidRegions
 import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.RfidTriggerMode
-import com.serversherpa.kiosk.core.rfid.RfidTriggerPersonality
-import com.serversherpa.kiosk.core.rfid.ScannerPluginMode
-import com.serversherpa.kiosk.core.rfid.TriggerEvent
+import com.serversherpa.kiosk.core.rfid.SledConnectRequest
 import com.serversherpa.kiosk.core.settings.SETTINGS_TABS
 import com.serversherpa.kiosk.core.settings.SettingsTabId
 import com.serversherpa.kiosk.core.settings.visibleTabs
@@ -41,8 +38,6 @@ import com.serversherpa.kiosk.testContainer
 import com.serversherpa.kiosk.waitUntilIdlingMain
 import com.serversherpa.kiosk.ui.theme.KioskTheme
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -102,24 +97,6 @@ class RfidPanelTest {
         assertEquals(RfidTriggerMode.TOGGLE, runBlocking { c.prefs.rfid.first() }.triggerMode)
     }
 
-    @Test fun pickingATriggerPersonalityWritesIt() {
-        val c = testContainer()
-        compose.setRfidPanelContent(c)
-        compose.onNodeWithText("Barcode").performScrollTo().performClick()
-        // The write lands on DataStore's own thread after the click: wait for it, not just for Compose.
-        compose.waitUntilIdlingMain { runBlocking { c.prefs.rfid.first() }.triggerPersonality == RfidTriggerPersonality.BARCODE }
-        assertEquals(RfidTriggerPersonality.BARCODE, runBlocking { c.prefs.rfid.first() }.triggerPersonality)
-    }
-
-    @Test fun pickingAScannerPluginModeWritesIt() {
-        val c = testContainer()
-        compose.setRfidPanelContent(c)
-        compose.onNodeWithText("Yes").performScrollTo().performClick()
-        // The write lands on DataStore's own thread after the click: wait for it, not just for Compose.
-        compose.waitUntilIdlingMain { runBlocking { c.prefs.rfid.first() }.scannerPluginMode == ScannerPluginMode.ON }
-        assertEquals(ScannerPluginMode.ON, runBlocking { c.prefs.rfid.first() }.scannerPluginMode)
-    }
-
     @Test fun restoreDefaultsPutsEverythingBack() {
         val c = testContainer()
         runBlocking { c.prefs.setRfid(com.serversherpa.kiosk.core.rfid.RfidSettings(enabled = true, powerDbm = 9)) }
@@ -141,13 +118,7 @@ class RfidPanelTest {
      * real fake's connected-state checks for free instead of a stub that
      * would silently disagree with them.
      */
-    private class GatedConnectReader : RfidReader {
-        private val inner = FakeRfidReader()
-        override val connection: StateFlow<RfidConnection> = inner.connection
-        override val connectNote: StateFlow<String?> = inner.connectNote
-        override val tags: Flow<String> = inner.tags
-        override val triggers: Flow<TriggerEvent> = inner.triggers
-
+    private class GatedConnectReader(private val inner: FakeRfidReader = FakeRfidReader()) : RfidReader by inner {
         /** What the next `connect()` resolves to, once its gate (if any) opens. */
         var connectResult: Result<Unit> = Result.success(Unit)
 
@@ -156,7 +127,7 @@ class RfidPanelTest {
          *  that should resolve immediately. */
         var connectGate: CompletableDeferred<Unit>? = null
 
-        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode): Result<Unit> {
+        override suspend fun connect(request: SledConnectRequest): Result<Unit> {
             inner.setConnection(RfidConnection.Connecting)
             connectGate?.await()
             return connectResult
@@ -169,17 +140,6 @@ class RfidPanelTest {
                     inner.setConnection(RfidConnection.Failed(e.message ?: "Unknown error"))
                 }
         }
-        override suspend fun disconnect() = inner.disconnect()
-        override suspend fun apply(settings: RfidSettings): Result<Unit> = inner.apply(settings)
-        override suspend fun startInventory(): Result<Unit> = inner.startInventory()
-        override suspend fun stopInventory(): Result<Unit> = inner.stopInventory()
-        override suspend fun regions(): Result<RfidRegions> = inner.regions()
-        // Delegating rather than stubbing success unconditionally: the real
-        // reader (and FakeRfidReader) refuses this while disconnected, and a
-        // stub that always succeeded would disagree with that in any test
-        // that called it before connect() resolved.
-        override suspend fun setRegion(code: String, hopping: Boolean?): Result<Unit> =
-            inner.setRegion(code, hopping)
     }
 
     /**
@@ -295,9 +255,9 @@ class RfidPanelTest {
      * end to end: real click, real launcher, real (shadowed) platform call.
      *
      * The switch under test is found as the first toggleable node in the
-     * tree: `RfidPanel` has four `Switch`es total (this one, "Report each tag
-     * once", "Blink on read", "Dynamic power optimization"), all later in
-     * composition order than the enable switch, so `onAllNodes(isToggleable())[0]`
+     * tree: `RfidPanel` has three `Switch`es total (this one, "Report each tag
+     * once", "Dynamic power optimization"), all later in composition order
+     * than the enable switch, so `onAllNodes(isToggleable())[0]`
      * reliably means this one — there is no test tag on any of them to select
      * by name instead.
      */

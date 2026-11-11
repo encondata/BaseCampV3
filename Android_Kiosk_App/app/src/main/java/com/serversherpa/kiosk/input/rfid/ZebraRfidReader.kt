@@ -8,17 +8,15 @@ import com.serversherpa.kiosk.core.rfid.RfidRegion
 import com.serversherpa.kiosk.core.rfid.RfidRegions
 import com.serversherpa.kiosk.core.rfid.RfidSession
 import com.serversherpa.kiosk.core.rfid.RfidSettings
-import com.serversherpa.kiosk.core.rfid.RfidTriggerPersonality
-import com.serversherpa.kiosk.core.rfid.ScannerPluginMode
 import com.serversherpa.kiosk.core.rfid.SledBeeper
+import com.serversherpa.kiosk.core.rfid.SledConnectRequest
+import com.serversherpa.kiosk.core.rfid.SledWords
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.core.rfid.powerToTenths
-import com.serversherpa.kiosk.input.datawedge.DataWedge
 import com.zebra.rfid.api3.BATCH_MODE
 import com.zebra.rfid.api3.BEEPER_VOLUME
 import com.zebra.rfid.api3.DYNAMIC_POWER_OPTIMIZATION
 import com.zebra.rfid.api3.ENUM_TRANSPORT
-import com.zebra.rfid.api3.ENUM_TRIGGER_MODE
 import com.zebra.rfid.api3.HANDHELD_TRIGGER_EVENT_TYPE
 import com.zebra.rfid.api3.InvalidUsageException
 import com.zebra.rfid.api3.OperationFailureException
@@ -107,8 +105,16 @@ import kotlinx.coroutines.withContext
  * native `.so`) are both `LinkageError`, not `Exception`, so a bare
  * `catch (e: Exception)` would let either fall straight through as an
  * uncaught crash.
+ *
+ * [zebraHost] says whether the phone is a Zebra handheld (`isZebraHost`):
+ * there the sled always gets the RFID layout and no scanner session. It is
+ * stored here and not read yet; the adapter rewrite uses it.
  */
-open class ZebraRfidReader(private val context: Context, private val scope: CoroutineScope) : RfidReader {
+open class ZebraRfidReader(
+    private val context: Context,
+    private val scope: CoroutineScope,
+    @Suppress("unused") private val zebraHost: Boolean = false,
+) : RfidReader {
     private val _connection = MutableStateFlow<RfidConnection>(RfidConnection.Disconnected)
     override val connection: StateFlow<RfidConnection> = _connection
 
@@ -126,11 +132,9 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
 
     /** Wraps the separate `com.zebra.scannercontrol` SDK to stand the
      *  sled's barcode imager down — see [ZebraBarcodeEngine]'s class doc for
-     *  why the RFID SDK's own [configureTriggerMode] cannot do this alone.
-     *  Built fresh in [standDownBarcodeImager] for a connection whose
-     *  [RfidTriggerPersonality] is RFID, the same "new vendor object per
-     *  connect" shape `readers`/`reader` use; null otherwise (disconnected,
-     *  or the personality is BARCODE and this was never built), so
+     *  why the RFID SDK alone cannot do this. Built fresh in
+     *  [standDownBarcodeImager] on every connect, the same "new vendor object
+     *  per connect" shape `readers`/`reader` use; null while disconnected, so
      *  [disconnectBlocking] has something to tear down only when there is
      *  something to tear down. */
     private var barcodeEngine: ZebraBarcodeEngine? = null
@@ -205,8 +209,7 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
          *  ahead of [standDownBarcodeImager] inside [configurePostConnectSetup]
          *  — `rfid.connect()` itself (inside [attemptVendorConnection]),
          *  [recoverFromBatchMode] if a batch-mode recovery happened,
-         *  [preventBatchMode], [configureTriggerMode]'s up-to-two
-         *  `setTriggerMode` attempts, and the start/stop trigger pinning —
+         *  [preventBatchMode], and the start/stop trigger pinning —
          *  is ordinary RFID-radio SDK traffic that has always finished comfortably
          *  inside that 15s budget on real hardware. 5 seconds leaves that
          *  work generous headroom while still giving a real but slow
@@ -219,17 +222,11 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         private const val BARCODE_STAND_DOWN_TIMEOUT_MS = 5_000L
     }
 
-    /** [triggerPersonality]/[scannerPluginMode] are `RfidSettings`' two
-     *  connect-time-only knobs (see that class's doc and
-     *  [configureTriggerMode]'s): the caller — in production,
-     *  `RfidController`, reading its own current settings — decides what to
-     *  ask for; this function is what actually asks for it, once the vendor
-     *  reader exists (see [openVendorConnection]/[configurePostConnectSetup]/
-     *  [configureTriggerMode]). */
-    final override suspend fun connect(
-        triggerPersonality: RfidTriggerPersonality,
-        scannerPluginMode: ScannerPluginMode,
-    ): Result<Unit> = withContext(Dispatchers.IO) {
+    /** [request] carries the saved sled's address and the trigger layout to
+     *  write. This build hands it to [openVendorConnection], which does not
+     *  read it yet: choosing the sled by address and writing its layout come
+     *  with the adapter rewrite. */
+    final override suspend fun connect(request: SledConnectRequest): Result<Unit> = withContext(Dispatchers.IO) {
         _connection.value = RfidConnection.Connecting
         // A note set by a previous attempt (e.g. a batch-mode recovery) must
         // never linger into this one — it only means something about the
@@ -246,7 +243,7 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
                 if (hasOpenVendorConnection()) {
                     closeVendorConnection()
                 }
-                openVendorConnection(triggerPersonality, scannerPluginMode)
+                openVendorConnection(request)
             }
             _connection.value = RfidConnection.Connected(readerName, null)
             Result.success(Unit)
@@ -334,18 +331,18 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
      *  because that recovery dereferenced `Actions`/`Config` while they were
      *  still null and crashed before doing anything (see
      *  `.superpowers/sdd/batchmode-report.md`) — so a second bare attempt
-     *  had nothing to gain. */
-    protected open fun openVendorConnection(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode): String {
-        val result = attemptVendorConnection(triggerPersonality, scannerPluginMode)
+     *  had nothing to gain.
+     *
+     *  [request] is accepted and not read yet (see [connect]). */
+    protected open fun openVendorConnection(request: SledConnectRequest): String {
+        val result = attemptVendorConnection()
         if (result.recoveredFromBatchMode) {
             // Append rather than overwrite: attemptVendorConnection() runs
-            // configurePostConnectSetup() — and so configureTriggerMode() —
-            // before this returns, so _connectNote already carries
-            // configureTriggerMode()'s own outcome note (see its doc: it
-            // sets one every time, success or failure). Both are
-            // independently true facts about this connection and the
-            // operator should see whichever ones apply, not just whichever
-            // was set last.
+            // configurePostConnectSetup() — and so the barcode imager
+            // stand-down — before this returns, so _connectNote may already
+            // carry the stand-down's own note. Both are independently true
+            // facts about this connection and the operator should see
+            // whichever ones apply, not just whichever was set last.
             _connectNote.value = combineConnectNotes(_connectNote.value, BATCH_MODE_RECOVERY_NOTE)
             Log.w(TAG, "Batch-mode recovery complete: connected to \"${result.readerName}\".")
         }
@@ -364,7 +361,7 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
      *  [configurePostConnectSetup]. Pulled out of [openVendorConnection] so
      *  that function reads as orchestration rather than mixing in the
      *  `Readers`/`RFIDReader` setup. */
-    private fun attemptVendorConnection(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode): VendorConnectResult {
+    private fun attemptVendorConnection(): VendorConnectResult {
         // Readers registers a broadcast receiver internally with no
         // RECEIVER_EXPORTED/RECEIVER_NOT_EXPORTED flag. Android 14 (API 34)
         // enforces that one of those flags be supplied and throws
@@ -397,7 +394,7 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         // other Bluetooth device the phone happens to be paired with.
         val sledIdentity = SledIdentity(name = device.name, address = device.address, serial = device.serialNumber)
         val recoveredFromBatchMode = connectRfid(rfid)
-        configurePostConnectSetup(rfid, triggerPersonality, scannerPluginMode, sledIdentity)
+        configurePostConnectSetup(rfid, sledIdentity)
         return VendorConnectResult(device.name ?: "RFID reader", recoveredFromBatchMode)
     }
 
@@ -583,9 +580,9 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
      * already caused a failure.
      *
      * Runs first in [configurePostConnectSetup] — before the event-listener
-     * wiring, [configureTriggerMode], and the start/stop trigger pinning
-     * that can throw — precisely so a throw anywhere after it still leaves
-     * the sled batch-mode-safe; see that function's doc for the full
+     * wiring and the start/stop trigger pinning that can throw — precisely
+     * so a throw anywhere after it still leaves the sled batch-mode-safe;
+     * see that function's doc for the full
      * reasoning. [disconnectBlocking] is this function's teardown-side
      * counterpart: it leaves the sled just as batch-mode-safe on the way
      * *out* of a connection as this leaves it on the way *in*, which closes
@@ -637,14 +634,13 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
     /** The post-connect setup every successful attempt needs, whether it
      *  connected normally or after [connectRfid] recovered from batch mode:
      *  prevent batch mode from recurring, wire up [listener], pin the
-     *  physical trigger to immediate, and — last, and only for
-     *  [RfidTriggerPersonality.RFID] — stand the barcode imager down. Split
-     *  out of [attemptVendorConnection] only so that function reads as one
-     *  attempt rather than two copies of this block.
+     *  physical trigger to immediate, and — last — stand the barcode imager
+     *  down. Split out of [attemptVendorConnection] only so that function
+     *  reads as one attempt rather than two copies of this block.
      *
      *  [preventBatchMode] runs first, before anything else here, and
-     *  deliberately does not wait for the event-listener wiring or
-     *  [configureTriggerMode] to run first — it depends on neither, only on
+     *  deliberately does not wait for the event-listener wiring to run
+     *  first — it does not depend on it, only on
      *  `rfid.Config`, which is already usable the instant `rfid.connect()`
      *  returns, so there is no reason to delay it behind steps it doesn't
      *  need. The point of running it first: a sled that connects this far —
@@ -667,22 +663,17 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
      *  stack up long enough to break the unguarded start/stop trigger
      *  pinning below — RFID setup that had already succeeded. So every
      *  piece of setup this function treats as safety-relevant and lets fail
-     *  the whole connect (`configureTriggerMode`, the start/stop trigger
-     *  pinning) runs — and is fully settled — before [standDownBarcodeImager]
+     *  the whole connect (the start/stop trigger pinning) runs — and is
+     *  fully settled — before [standDownBarcodeImager]
      *  ever touches the Bluetooth stack, and [standDownBarcodeImager] is
      *  bounded by its own wall-clock timeout (see its doc) so it can never
      *  again tie that stack up for as long as it did in that log. */
-    private fun configurePostConnectSetup(
-        rfid: RFIDReader,
-        triggerPersonality: RfidTriggerPersonality,
-        scannerPluginMode: ScannerPluginMode,
-        sledIdentity: SledIdentity,
-    ) {
+    private fun configurePostConnectSetup(rfid: RFIDReader, sledIdentity: SledIdentity) {
         // Runs before anything else in this function — see this function's
         // doc for why: it only needs rfid.Config, which is already usable,
         // so there is no reason to delay it behind the event-listener
-        // wiring, configureTriggerMode(), or the start/stop trigger pinning
-        // (the one step below that can throw and fail this whole attempt).
+        // wiring or the start/stop trigger pinning (the one step below that
+        // can throw and fail this whole attempt).
         preventBatchMode(rfid)
 
         rfid.Events.addEventsListener(listener)
@@ -690,14 +681,6 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         rfid.Events.setTagReadEvent(true)
         rfid.Events.setBatteryEvent(true)
         rfid.Events.setAttachTagDataWithReadEvent(true)
-        // configureTriggerMode() never throws (see its doc) — every avenue it
-        // tries is caught and logged internally, except a real
-        // InterruptedException/CancellationException, which every other
-        // vendor call site in this file also lets through unchanged. That is
-        // deliberate: it guarantees the start/stop trigger pinning below
-        // still runs whether or not the radio/barcode switch actually took,
-        // instead of one failed avenue aborting setup partway through.
-        configureTriggerMode(rfid, triggerPersonality, scannerPluginMode)
         // Pin the reader's own start/stop trigger behavior to immediate: a
         // sled left on HANDHELD (its 123RFID Mobile default) would let its
         // own firmware decide when an inventory starts and stops, defeating
@@ -712,33 +695,24 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         val stopTrigger = rfid.Config.getStopTrigger()
         stopTrigger.triggerType = STOP_TRIGGER_TYPE.STOP_TRIGGER_TYPE_IMMEDIATE
         rfid.Config.setStopTrigger(stopTrigger)
-        // Unlike configureTriggerMode(), these four calls are left
-        // unguarded on purpose: they are pinning safety-relevant behavior
-        // (see above — RfidTrigger's latch/toggle modes depend on it), not
-        // a best-effort convenience, so a throw here should fail the whole
-        // connect() attempt exactly as it always has, via the ordinary
-        // Exception/LinkageError handling in connect(). That is unchanged
-        // by this function's configureTriggerMode() step: it runs first and
-        // never throws except a genuine cancellation, so a failure here can
-        // never be mistaken for a trigger-mode failure, and
-        // configureTriggerMode()'s own logging/connectNote work is already
-        // complete by the time any of this can throw. preventBatchMode()
-        // above has already run and completed by this point too, for the
-        // same reason — see this function's doc — so a throw here still
-        // leaves the sled batch-mode-safe even though it fails the rest of
-        // this connect() attempt. Only the barcode imager stand-down below
-        // still depends on everything above having actually succeeded — see
-        // the class-level ordering note on this function's doc.
-        // Only when the operator has the physical trigger driving the RFID
-        // radio does the barcode imager firing on the same pull actually
-        // corrupt anything — with BARCODE personality the imager firing is
-        // the point, so standing it down here would be actively wrong. This
+        // These four calls are left unguarded on purpose: they are pinning
+        // safety-relevant behavior (see above — RfidTrigger's latch/toggle
+        // modes depend on it), not a best-effort convenience, so a throw here
+        // should fail the whole connect() attempt exactly as it always has,
+        // via the ordinary Exception/LinkageError handling in connect().
+        // preventBatchMode() above has already run and completed by this
+        // point — see this function's doc — so a throw here still leaves the
+        // sled batch-mode-safe even though it fails the rest of this
+        // connect() attempt. Only the barcode imager stand-down below still
+        // depends on everything above having actually succeeded — see the
+        // class-level ordering note on this function's doc.
+        // The stand-down runs on every connect: the request's trigger layout
+        // is not read yet (see connect()), and the RFID layout, the default,
+        // is the one where the imager firing on a pull corrupts a sweep. This
         // is deliberately the *last* thing this function does — see the
         // ordering note on this function's own doc and [standDownBarcodeImager]'s
         // doc for why.
-        if (triggerPersonality == RfidTriggerPersonality.RFID) {
-            standDownBarcodeImager(sledIdentity)
-        }
+        standDownBarcodeImager(sledIdentity)
     }
 
     /** Builds a [ZebraBarcodeEngine] — identified by [sledIdentity] so it
@@ -746,9 +720,8 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
      *  paired Bluetooth device (see [chooseScanner]'s doc) — and asks it to
      *  stand the sled's barcode imager down; see that class's doc for the
      *  full story of why a second Zebra SDK is needed at all. Only called
-     *  from [configurePostConnectSetup], last, and only when
-     *  [RfidTriggerPersonality] is RFID — see that function's ordering note
-     *  for why "last" matters here specifically.
+     *  from [configurePostConnectSetup], last — see that function's ordering
+     *  note for why "last" matters here specifically.
      *
      *  [ZebraBarcodeEngine.standDown] never throws — it reduces every
      *  outcome, success included, to an operator-facing sentence — so
@@ -775,10 +748,9 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
      *  the reasoning behind its exact timeout value.
      *
      *  Appends to [_connectNote] via [combineConnectNotes] rather than
-     *  overwriting it, the same reasoning [configureTriggerMode]'s own
-     *  note-writing uses: this and [configureTriggerMode] each leave an
-     *  independently true fact about the same connect attempt, and the
-     *  operator should see both. */
+     *  overwriting it: this and the batch-mode recovery note (see
+     *  [openVendorConnection]) each leave an independently true fact about
+     *  the same connect attempt, and the operator should see both. */
     private fun standDownBarcodeImager(sledIdentity: SledIdentity) {
         val engine = ZebraBarcodeEngine(context, sledIdentity)
         barcodeEngine = engine
@@ -860,123 +832,6 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
             Log.w(TAG, "standDownBarcodeImager: ZebraBarcodeEngine.standDown() itself threw unexpectedly.", cause)
             "The sled's barcode imager couldn't be reached (${cause.javaClass.simpleName}); it may still fire on a trigger pull."
         }
-    }
-
-    /**
-     * Puts the physical trigger on whichever engine [triggerPersonality]
-     * asks for — the RFID radio, or the sled's barcode imager — and tells
-     * the SDK whether to also stand down the host's barcode scanner plugin
-     * via [scannerPluginMode]'s resolved [resolveScannerPluginFlag] value
-     * (Zebra's `updateScannerPlugin` flag on `Config.setTriggerMode`). Both
-     * are operator-configurable settings (see `RfidSettings`' doc) precisely
-     * because this combination cannot be verified from a desk: a device log
-     * proved `setTriggerMode(RFID_MODE, updateScannerPlugin = false)`
-     * returns **true** — the reader accepts RFID mode — while the sled's
-     * imager keeps firing, on a Pixel host with no DataWedge to reconfigure.
-     * [ScannerPluginMode.AUTO] follows [DataWedge.isPresent], the same guess
-     * this app always made; `ON`/`OFF` let an operator try the flag that
-     * guess gets wrong, on the device, with no rebuild.
-     *
-     * [Config.setTriggerMode] **returns a boolean** (confirmed via `javap`
-     * against the shipped `API3_LIB-release.aar`) that this app's original,
-     * hardcoded call discarded, and there is no getter to read the mode back
-     * afterward — that boolean, and the note this function leaves on
-     * [_connectNote] via [triggerModeOutcomeNote], are the only signal
-     * available about whether the switch actually took.
-     *
-     * The sequence below is **not documented Zebra behavior** — nobody on
-     * this team has seen Zebra's own account of what a host is supposed to
-     * do here; see [recoverFromBatchMode]'s doc for the same caveat about
-     * this SDK's public surface generally. It tries the resolved
-     * `updateScannerPlugin` flag first, then — only if that returns `false`
-     * — the opposite flag once, since a wrong guess costs nothing but one
-     * extra call. There is deliberately no third avenue: an earlier version
-     * of this function also tried `RFIDReader.switchMode()` (a plausible
-     * RFD40-specific personality toggle) followed by one more
-     * `setTriggerMode` retry, but the device log that diagnosed this feature
-     * showed the *first* `setTriggerMode` attempt already returning `true`
-     * — the trigger-mode call itself was never the problem, so
-     * `switchMode()` was never reached and added nothing but an unverified
-     * extra vendor call, so it was removed rather than kept as untested dead
-     * weight.
-     *
-     * Every attempt and its result is logged at warning level with the
-     * `ZebraRfidReader` tag, because that logging — not the fix itself — is
-     * how the team learns which combination an RFD40 actually accepts; see
-     * [recoverFromBatchMode]'s doc for the same reasoning. The final outcome
-     * — which combination was actually used, and whether the reader accepted
-     * it — is also written to [_connectNote] every time this function
-     * finishes, not only on failure: that is what lets the RFID settings tab
-     * show the operator what happened, on the device, with no computer or
-     * log puller needed. Never throws except a real `InterruptedException`
-     * (propagated, exactly like every other vendor call site in this file)
-     * — see [configurePostConnectSetup] for why that matters to the
-     * start/stop trigger pinning that follows.
-     */
-    private fun configureTriggerMode(
-        rfid: RFIDReader,
-        triggerPersonality: RfidTriggerPersonality,
-        scannerPluginMode: ScannerPluginMode,
-    ) {
-        Log.w(
-            TAG,
-            "Trigger-mode setup starting: isConnected()=${rfid.isConnected()} " +
-                "isCapabilitiesReceived()=${rfid.isCapabilitiesReceived()}",
-        )
-        val dataWedgePresent = DataWedge.isPresent(context)
-        val mode = triggerPersonality.toVendorTriggerMode()
-        val flag = resolveScannerPluginFlag(scannerPluginMode, dataWedgePresent)
-        val firstReason = "1st attempt: $triggerPersonality trigger, updateScannerPlugin=$flag " +
-            "(scannerPluginMode=$scannerPluginMode, DataWedge.isPresent()=$dataWedgePresent)"
-        if (trySetTriggerMode(rfid, mode, flag, firstReason)) {
-            _connectNote.value =
-                combineConnectNotes(_connectNote.value, triggerModeOutcomeNote(triggerPersonality, flag, accepted = true))
-            return
-        }
-        val secondReason = "2nd attempt: $triggerPersonality trigger, opposite updateScannerPlugin=${!flag}"
-        if (trySetTriggerMode(rfid, mode, !flag, secondReason)) {
-            _connectNote.value =
-                combineConnectNotes(_connectNote.value, triggerModeOutcomeNote(triggerPersonality, !flag, accepted = true))
-            return
-        }
-        Log.w(
-            TAG,
-            "Trigger-mode setup: both updateScannerPlugin flags failed for $triggerPersonality trigger mode. " +
-                "The reader stays on its current trigger personality.",
-        )
-        _connectNote.value =
-            combineConnectNotes(_connectNote.value, triggerModeOutcomeNote(triggerPersonality, flag, accepted = false))
-    }
-
-    /** One `Config.setTriggerMode(mode, updateScannerPlugin)` attempt,
-     *  logged either way: the boolean it returned, or — belt-and-braces,
-     *  since a vendor call can always surprise this app the way
-     *  `Actions.purgeTags()` once did (see [purgeAndDisableBatchMode]'s
-     *  doc) — that it threw. [reason] names which combination this is, for
-     *  [configureTriggerMode]'s caller-side logging story. A real
-     *  cancellation (`InterruptedException`) is not a failed attempt; it is
-     *  rethrown immediately, exactly like every other vendor call site in
-     *  this file. */
-    private fun trySetTriggerMode(rfid: RFIDReader, mode: ENUM_TRIGGER_MODE, updateScannerPlugin: Boolean, reason: String): Boolean {
-        val took = try {
-            rfid.Config.setTriggerMode(mode, updateScannerPlugin)
-        } catch (interrupt: InterruptedException) {
-            throw interrupt
-        } catch (e: Exception) {
-            Log.w(
-                TAG,
-                "Trigger-mode setup: setTriggerMode($mode, updateScannerPlugin=$updateScannerPlugin) " +
-                    "[$reason] threw; treating this attempt as failed.",
-                e,
-            )
-            return false
-        }
-        Log.w(
-            TAG,
-            "Trigger-mode setup: setTriggerMode($mode, updateScannerPlugin=$updateScannerPlugin) " +
-                "[$reason] returned $took.",
-        )
-        return took
     }
 
     /** Tears down whatever [openVendorConnection] built: leaves the sled
@@ -1211,7 +1066,6 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
                         SledBeeper.HIGH -> BEEPER_VOLUME.HIGH_BEEP
                     }
                 )
-                rfid.Config.setLedBlinkEnable(settings.ledOnRead)
                 rfid.Config.setUniqueTagReport(settings.uniqueTagReport)
                 // Config.dpoState does not resolve: the real accessors are
                 // getDPOState()/setDPOState(...) (capital DPO, per javap), which
@@ -1356,7 +1210,7 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         return when (e) {
             // BatchModeUnrecoverableException falls through to the `else`
             // branch below on purpose: its message is already the exact
-            // operator-facing sentence (see BATCH_MODE_UNRECOVERABLE_MESSAGE),
+            // operator-facing sentence (see SledWords.BATCH_MODE_UNRECOVERABLE_MESSAGE),
             // and genericMessage() passes an already-well-formed sentence
             // through unchanged, so a dedicated branch here would be an
             // untestable no-op — recoverFromBatchMode() already logs the
@@ -1391,17 +1245,6 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
             }
         }
     }
-}
-
-/** Maps the operator-facing [RfidTriggerPersonality] to the vendor's own
- *  enum. A private top-level function rather than a method on
- *  [RfidTriggerPersonality] itself, because `ENUM_TRIGGER_MODE` is a
- *  `com.zebra.*` type — see [ZebraRfidReader]'s class doc for why this file
- *  alone may import those, and `core.rfid` (where [RfidTriggerPersonality]
- *  lives) must not. */
-private fun RfidTriggerPersonality.toVendorTriggerMode(): ENUM_TRIGGER_MODE = when (this) {
-    RfidTriggerPersonality.RFID -> ENUM_TRIGGER_MODE.RFID_MODE
-    RfidTriggerPersonality.BARCODE -> ENUM_TRIGGER_MODE.BARCODE_MODE
 }
 
 /** Builds the operator-facing sentence for an `OperationFailureException`
@@ -1457,53 +1300,9 @@ private fun String?.blankToNull(): String? = this?.trim()?.takeUnless { it.isEmp
 internal fun batchModeRecoveryUsable(isConnected: Boolean, actionsPresent: Boolean, configPresent: Boolean): Boolean =
     isConnected && actionsPresent && configPresent
 
-/** Pure resolution behind [ZebraRfidReader.configureTriggerMode]: what
- *  `updateScannerPlugin` should be for a given [ScannerPluginMode].
- *  [ScannerPluginMode.AUTO] resolves against whether DataWedge is actually
- *  installed on this host — the same guess this app always made before this
- *  setting existed. `ON`/`OFF` ignore [dataWedgePresent] entirely: an
- *  operator picking one of those explicitly is overriding the guess, not
- *  asking for it. Pulled out of [ZebraRfidReader.configureTriggerMode] so
- *  this resolution is directly testable, unlike the vendor call it feeds,
- *  which needs a real `RFIDReader` and so can only be proven on hardware. */
-internal fun resolveScannerPluginFlag(mode: ScannerPluginMode, dataWedgePresent: Boolean): Boolean = when (mode) {
-    ScannerPluginMode.AUTO -> dataWedgePresent
-    ScannerPluginMode.ON -> true
-    ScannerPluginMode.OFF -> false
-}
-
-/** Pure text behind [ZebraRfidReader.configureTriggerMode]'s operator-facing
- *  note: what combination was actually tried ([triggerPersonality],
- *  [updateScannerPlugin]) and whether the reader accepted it. Written to
- *  [ZebraRfidReader.connectNote] every time `configureTriggerMode` finishes
- *  — success or failure — not only on failure: the point of these two
- *  settings is to let a hardware problem be diagnosed on the device instead
- *  of through rebuild cycles, so a combination that worked needs to be just
- *  as visible as one that didn't. Pulled out into a plain function over
- *  plain values, the same way [operationFailureMessage] is, so it is
- *  directly testable without a real `RFIDReader`. */
-internal fun triggerModeOutcomeNote(
-    triggerPersonality: RfidTriggerPersonality,
-    updateScannerPlugin: Boolean,
-    accepted: Boolean,
-): String {
-    val personalityWord = when (triggerPersonality) {
-        RfidTriggerPersonality.RFID -> "RFID"
-        RfidTriggerPersonality.BARCODE -> "barcode"
-    }
-    val pluginWord = if (updateScannerPlugin) "on" else "off"
-    return if (accepted) {
-        "The reader's trigger is set to $personalityWord mode (scanner plugin flag $pluginWord)."
-    } else {
-        "The reader refused every trigger-mode combination tried for $personalityWord mode (scanner plugin " +
-            "flag on and off). Its trigger may not behave as expected."
-    }
-}
-
 /** Appends [additional] to [existing] rather than overwriting it, so two
  *  independently true operator-facing notes set during the same connect()
- *  — for example [triggerModeOutcomeNote]'s result from
- *  [ZebraRfidReader.configureTriggerMode] and
+ *  — for example the barcode imager stand-down's note and
  *  [ZebraRfidReader.BATCH_MODE_RECOVERY_NOTE] from batch-mode recovery —
  *  both reach [ZebraRfidReader.connectNote] instead of the second one
  *  silently clobbering the first. A blank or absent [existing] is treated
@@ -1511,36 +1310,15 @@ internal fun triggerModeOutcomeNote(
 internal fun combineConnectNotes(existing: String?, additional: String): String =
     if (existing.isNullOrBlank()) additional else "$existing $additional"
 
-/** The message [ZebraRfidReader]'s batch-mode recovery surfaces to the
- *  operator once every avenue it knows (`PostConnectReaderUpdate()`, then
- *  `reconnect()`, then a bare second `connect()`) has failed to leave the
- *  reader usable. This is the honest end state, not a placeholder: this app
- *  has tried everything its vendor SDK's public surface offers, so the
- *  message names the one remedy known to actually work — Zebra's own
- *  123RFID Mobile app connecting to the sled and clearing it — instead of
- *  inviting another retry that would just fail the same way.
- *
- *  Also tells the operator two things a plain "couldn't clear it" sentence
- *  doesn't: that this should be a one-time fix, not a routine step to
- *  expect again, and that this app now prevents the sled from returning to
- *  this state once it has completed a single healthy session with it — see
- *  [preventBatchMode] (made more resilient by [configurePostConnectSetup]'s
- *  reordering) and [disconnectBlocking]'s teardown-side counterpart. Both
- *  are true regardless of why this particular sled ended up batching (this
- *  app's own earlier teardown, or some other source such as a prior
- *  123RFID Mobile session), so the message states them unconditionally. */
-internal const val BATCH_MODE_UNRECOVERABLE_MESSAGE =
-    "This reader is holding tags stored during an earlier offline session, and this app couldn't clear " +
-        "them. Open Zebra's 123RFID Mobile app and connect to the sled there — it can clear the stored " +
-        "batch; once that's done, reconnect here. This should only be a one-time fix: once this app " +
-        "completes one healthy connection with this sled, it turns batch mode off and keeps it off on " +
-        "every disconnect, so the sled should not return to this state on its own again."
-
 /** Thrown by [ZebraRfidReader.recoverFromBatchMode] when none of the three
  *  avenues — `PostConnectReaderUpdate()`, `reconnect()`, or a bare second
- *  `connect()` — leaves the reader usable.
+ *  `connect()` — leaves the reader usable. Its message is
+ *  [SledWords.BATCH_MODE_UNRECOVERABLE_MESSAGE], the honest end state: it
+ *  names the one remedy known to work (Zebra's 123RFID Mobile app), says it
+ *  should be a one-time fix, and says this app keeps batch mode off from
+ *  then on (see [ZebraRfidReader.preventBatchMode]).
  *  Unlike `OperationFailureException`/`InvalidUsageException`, this is a
  *  plain Kotlin exception this app defines itself — constructible from a
  *  test, which is what makes a real end-to-end test of this failure message
  *  possible without a `com.zebra.*` type (see `ZebraRfidReaderTest`). */
-internal class BatchModeUnrecoverableException : Exception(BATCH_MODE_UNRECOVERABLE_MESSAGE)
+internal class BatchModeUnrecoverableException : Exception(SledWords.BATCH_MODE_UNRECOVERABLE_MESSAGE)

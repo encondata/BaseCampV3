@@ -6,8 +6,7 @@ import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidReadSession
 import com.serversherpa.kiosk.core.rfid.RfidRegions
 import com.serversherpa.kiosk.core.rfid.RfidSettings
-import com.serversherpa.kiosk.core.rfid.RfidTriggerPersonality
-import com.serversherpa.kiosk.core.rfid.ScannerPluginMode
+import com.serversherpa.kiosk.core.rfid.SledConnectRequest
 import com.serversherpa.kiosk.core.rfid.TriggerAction
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.core.rfid.burstToScans
@@ -369,27 +368,19 @@ class RfidController(
                     // [setRegion], never folded into the ordinary settings
                     // push.
                     //
-                    // `triggerPersonality`/`scannerPluginMode` are excluded
-                    // for a third, related reason: they are the two knobs
-                    // that decide whether the sled's physical trigger drives
-                    // the RFID radio or its barcode imager (see
-                    // `RfidSettings`' doc and `ZebraRfidReader
-                    // .configureTriggerMode`), and — like `region` — the
-                    // reader only ever consults them while it is connecting,
-                    // never on a live `apply()` push (there is no vendor call
-                    // to re-set a trigger's personality on an already-open
-                    // connection). [connectWithTimeout] reads `current`'s
-                    // copy of both fresh, right before every connect, so a
-                    // change here still takes effect on the operator's next
-                    // connect; it just should not itself fire an eight-round-
-                    // trip settings push, which would otherwise happen on
-                    // every one of these toggles even though `apply()` never
-                    // reads either field.
+                    // `triggerLayout`/`readerAddress` are excluded for the
+                    // same reason: `apply()` never reads either. The layout
+                    // reaches the sled through the connect request
+                    // ([connectWithTimeout] reads `current`'s copy of both
+                    // fresh, right before every connect) and the reader's
+                    // own layout write; the address only says which sled to
+                    // dial. Neither should fire an eight-round-trip settings
+                    // push on its own.
                     val c = s.copy(
                         enabled = current.enabled,
                         region = current.region,
-                        triggerPersonality = current.triggerPersonality,
-                        scannerPluginMode = current.scannerPluginMode,
+                        triggerLayout = current.triggerLayout,
+                        readerAddress = current.readerAddress,
                     ) != current
                     current = s
                     c
@@ -571,17 +562,15 @@ class RfidController(
      *  [connectionError] reporting apply identically to both callers. Never
      *  called under `mutex`; see the class doc. */
     private suspend fun connectWithTimeout(): Result<Unit> {
-        // triggerPersonality/scannerPluginMode are the two connect-time-only
-        // knobs excluded from the settings-push comparison in start()'s
-        // collector (see that comment) — this is where they actually reach
-        // the reader instead: read fresh off `current` under `mutex`, the
-        // same idiom the Connected-transition collector already uses for
-        // `toPush` below, then handed to `reader.connect()` outside the
-        // lock, same as every other vendor call in this class.
-        val (triggerPersonality, scannerPluginMode) = mutex.withLock {
-            current.triggerPersonality to current.scannerPluginMode
-        }
-        val result = withTimeoutOrNull(VENDOR_TIMEOUT_MS) { reader.connect(triggerPersonality, scannerPluginMode) }
+        // The saved sled's address and the trigger layout are excluded from
+        // the settings-push comparison in start()'s collector (see that
+        // comment) — this is where they reach the reader instead: read fresh
+        // off `current` under `mutex`, the same idiom the Connected-transition
+        // collector already uses for `toPush` below, then handed to
+        // `reader.connect()` outside the lock, same as every other vendor
+        // call in this class.
+        val request = mutex.withLock { SledConnectRequest(current.readerAddress, current.triggerLayout) }
+        val result = withTimeoutOrNull(VENDOR_TIMEOUT_MS) { reader.connect(request) }
             ?: Result.failure(IllegalStateException("Connecting to the reader timed out."))
         _connectionError.value = if (result.isFailure) {
             result.exceptionOrNull()?.message?.takeIf { it.isNotBlank() }

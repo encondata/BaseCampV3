@@ -60,6 +60,7 @@ import com.serversherpa.kiosk.input.ScanBus
 import com.serversherpa.kiosk.input.camera.hasCamera
 import com.serversherpa.kiosk.input.datawedge.DataWedge
 import com.serversherpa.kiosk.input.datawedge.DataWedgeReceiver
+import com.serversherpa.kiosk.input.datawedge.isZebraHost
 import com.serversherpa.kiosk.input.rfid.RfidController
 import com.serversherpa.kiosk.input.rfid.RfidPermissions
 import com.serversherpa.kiosk.input.rfid.RfidReader
@@ -171,6 +172,7 @@ class AppContainer(
     val labelBuilder = LabelBuilder(db, labelEngine, labelSettings, scope)
     val outbox = Outbox(RoomOutboxStore(db.outbox()), api, identity, scope)
     val hasDataWedge: Boolean = DataWedge.isPresent(app)
+    val isZebraHost: Boolean = isZebraHost(app)
     val hasCamera: Boolean = hasCamera(app)
     val heartbeat = Heartbeat(api, identity, config, prefs, deviceInfo = {
         mapOf(
@@ -188,7 +190,7 @@ class AppContainer(
     // Every test passes rfidReaderOverride (see TestContainer.kt) so it never
     // constructs the real Zebra reader. Nothing above the interface can tell
     // the difference between this and the fake.
-    val rfidReader: RfidReader = rfidReaderOverride ?: ZebraRfidReader(app, scope)
+    val rfidReader: RfidReader = rfidReaderOverride ?: ZebraRfidReader(app, scope, isZebraHost)
     val rfid = RfidController(rfidReader, prefs.rfid, scope)
 
     /** The app coming to the front and going to the background (ProcessLifecycleOwner; [start]

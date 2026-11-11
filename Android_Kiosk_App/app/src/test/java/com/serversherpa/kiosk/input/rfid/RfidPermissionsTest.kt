@@ -58,6 +58,30 @@ class RfidPermissionsTest {
         assertTrue(RfidPermissions.granted(app))
     }
 
+    /** Ruling 22: the Connect button, the adapter's pre-check and the paired-sled list need only
+     *  Nearby devices, the two permissions whose absence makes the Bluetooth calls throw. */
+    @Test fun nearbyIsConnectAndScanOnApi31AndUpAndNothingBelow() {
+        val nearby = listOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN)
+        assertEquals(nearby, RfidPermissions.nearbyFor(31))
+        assertEquals(nearby, RfidPermissions.nearbyFor(34))
+        assertEquals(nearby, RfidPermissions.nearbyFor(36))
+        assertEquals(emptyList<String>(), RfidPermissions.nearbyFor(30))
+        assertEquals(emptyList<String>(), RfidPermissions.nearbyFor(26))
+        assertEquals(RfidPermissions.nearbyFor(34), RfidPermissions.NEARBY)
+    }
+
+    @Test fun nearbyGrantedIgnoresLocation() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val shadow = Shadows.shadowOf(app)
+        shadow.denyPermissions(*RfidPermissions.REQUESTED.toTypedArray())
+        assertFalse(RfidPermissions.nearbyGranted(app))
+        shadow.grantPermissions(Manifest.permission.BLUETOOTH_CONNECT)
+        assertFalse(RfidPermissions.nearbyGranted(app))
+        shadow.grantPermissions(Manifest.permission.BLUETOOTH_SCAN)
+        assertTrue(RfidPermissions.nearbyGranted(app))
+        assertFalse("the stored gate still needs location", RfidPermissions.granted(app))
+    }
+
     @Test fun nothingIsGrantedInAFreshTestApp() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         assertTrue(RfidPermissions.missing(context).isNotEmpty())

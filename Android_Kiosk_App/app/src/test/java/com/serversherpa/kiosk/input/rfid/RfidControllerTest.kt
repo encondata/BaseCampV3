@@ -5,8 +5,8 @@ import com.serversherpa.kiosk.core.rfid.RepeatSweepPolicy
 import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.RfidTriggerMode
-import com.serversherpa.kiosk.core.rfid.RfidTriggerPersonality
-import com.serversherpa.kiosk.core.rfid.ScannerPluginMode
+import com.serversherpa.kiosk.core.rfid.SledConnectRequest
+import com.serversherpa.kiosk.core.rfid.SledTriggerLayout
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CompletableDeferred
@@ -19,7 +19,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.advanceTimeBy
@@ -247,7 +246,7 @@ class RfidControllerTest {
      */
     @Test fun aControllerStartedAgainstAnAlreadyConnectedReaderPushesSettingsWithoutWaitingForAChange() = runTest {
         val reader = FakeRfidReader()
-        reader.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
+        reader.connect(SledConnectRequest(null, SledTriggerLayout.RFID))
         val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS)
         val controller = RfidController(reader, settings, backgroundScope)
 
@@ -335,30 +334,19 @@ class RfidControllerTest {
      * before `stopInventory()`. This class exists so a test can tell the
      * two orderings apart.
      */
-    private class OrderRecordingReader(private val inner: FakeRfidReader) : RfidReader {
-        override val connection: StateFlow<RfidConnection> get() = inner.connection
-        override val connectNote: StateFlow<String?> get() = inner.connectNote
-        override val tags: Flow<String> get() = inner.tags
-        override val triggers: Flow<TriggerEvent> get() = inner.triggers
-
+    private class OrderRecordingReader(private val inner: FakeRfidReader) : RfidReader by inner {
         /** The order `stopInventory()` and `disconnect()` were actually
          *  called in — what this class exists to prove. */
         val callOrder = CopyOnWriteArrayList<String>()
 
-        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode) =
-            inner.connect(triggerPersonality, scannerPluginMode)
         override suspend fun disconnect() {
             callOrder += "disconnect"
             inner.disconnect()
         }
-        override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
-        override suspend fun startInventory() = inner.startInventory()
         override suspend fun stopInventory(): Result<Unit> {
             callOrder += "stopInventory"
             return inner.stopInventory()
         }
-        override suspend fun regions() = inner.regions()
-        override suspend fun setRegion(code: String, hopping: Boolean?) = inner.setRegion(code, hopping)
     }
 
     /**
@@ -437,12 +425,9 @@ class RfidControllerTest {
      * the test can slip a tag in at an exact moment without going through
      * `FakeRfidReader`'s "nothing was collecting" guard timing.
      */
-    private class SlowStopReader(private val inner: FakeRfidReader) : RfidReader {
-        override val connection: StateFlow<RfidConnection> get() = inner.connection
-        override val connectNote: StateFlow<String?> get() = inner.connectNote
+    private class SlowStopReader(private val inner: FakeRfidReader) : RfidReader by inner {
         private val _tags = MutableSharedFlow<String>(extraBufferCapacity = 16)
         override val tags: Flow<String> = _tags
-        override val triggers: Flow<TriggerEvent> get() = inner.triggers
 
         /** Completes the instant `stopInventory()` is called. */
         val stopStarted = CompletableDeferred<Unit>()
@@ -460,10 +445,6 @@ class RfidControllerTest {
         var startInventoryCalls = 0
             private set
 
-        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode) =
-            inner.connect(triggerPersonality, scannerPluginMode)
-        override suspend fun disconnect() = inner.disconnect()
-        override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
         override suspend fun startInventory(): Result<Unit> {
             startInventoryCalls++
             return inner.startInventory()
@@ -473,8 +454,6 @@ class RfidControllerTest {
             proceedStop.await()
             return inner.stopInventory()
         }
-        override suspend fun regions() = inner.regions()
-        override suspend fun setRegion(code: String, hopping: Boolean?) = inner.setRegion(code, hopping)
 
         fun emitTag(epc: String) {
             check(_tags.tryEmit(epc)) { "Dropped tag $epc: nothing was collecting." }
@@ -668,19 +647,8 @@ class RfidControllerTest {
      *  during a large sweep would), instead of returning a failed `Result` —
      *  the seam the I8 regression test below needs and `FakeRfidReader` has
      *  no reason to support. Everything else delegates straight to [inner]. */
-    private class ThrowingStopReader(private val inner: FakeRfidReader) : RfidReader {
-        override val connection: StateFlow<RfidConnection> get() = inner.connection
-        override val connectNote: StateFlow<String?> get() = inner.connectNote
-        override val tags: Flow<String> get() = inner.tags
-        override val triggers: Flow<TriggerEvent> get() = inner.triggers
-        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode) =
-            inner.connect(triggerPersonality, scannerPluginMode)
-        override suspend fun disconnect() = inner.disconnect()
-        override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
-        override suspend fun startInventory() = inner.startInventory()
+    private class ThrowingStopReader(private val inner: FakeRfidReader) : RfidReader by inner {
         override suspend fun stopInventory(): Result<Unit> = throw OutOfMemoryError("simulated vendor Error")
-        override suspend fun regions() = inner.regions()
-        override suspend fun setRegion(code: String, hopping: Boolean?) = inner.setRegion(code, hopping)
     }
 
     /**
@@ -749,23 +717,12 @@ class RfidControllerTest {
      *  `startInventory()` so it can tell "the collector survived" from "the
      *  collector died", which one that always threw could not. Everything
      *  else delegates straight to [inner]. */
-    private class ThrowingStartReader(private val inner: FakeRfidReader) : RfidReader {
+    private class ThrowingStartReader(private val inner: FakeRfidReader) : RfidReader by inner {
         private var starts = 0
-        override val connection: StateFlow<RfidConnection> get() = inner.connection
-        override val connectNote: StateFlow<String?> get() = inner.connectNote
-        override val tags: Flow<String> get() = inner.tags
-        override val triggers: Flow<TriggerEvent> get() = inner.triggers
-        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode) =
-            inner.connect(triggerPersonality, scannerPluginMode)
-        override suspend fun disconnect() = inner.disconnect()
-        override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
         override suspend fun startInventory(): Result<Unit> {
             if (starts++ == 0) throw OutOfMemoryError("simulated vendor Error")
             return inner.startInventory()
         }
-        override suspend fun stopInventory() = inner.stopInventory()
-        override suspend fun regions() = inner.regions()
-        override suspend fun setRegion(code: String, hopping: Boolean?) = inner.setRegion(code, hopping)
     }
 
     /**
@@ -834,12 +791,7 @@ class RfidControllerTest {
      * `startInventory`/`stopInventory` and `triggers`/`tags` all delegate to
      * a real `FakeRfidReader`.
      */
-    private class SlowConnectReader(private val inner: FakeRfidReader) : RfidReader {
-        override val connection: StateFlow<RfidConnection> get() = inner.connection
-        override val connectNote: StateFlow<String?> get() = inner.connectNote
-        override val tags: Flow<String> get() = inner.tags
-        override val triggers: Flow<TriggerEvent> get() = inner.triggers
-
+    private class SlowConnectReader(private val inner: FakeRfidReader) : RfidReader by inner {
         /** Completes the instant `connect()` is called. */
         val connectStarted = CompletableDeferred<Unit>()
 
@@ -847,17 +799,11 @@ class RfidControllerTest {
          *  return. */
         val proceedConnect = CompletableDeferred<Unit>()
 
-        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode): Result<Unit> {
+        override suspend fun connect(request: SledConnectRequest): Result<Unit> {
             connectStarted.complete(Unit)
             proceedConnect.await()
-            return inner.connect(triggerPersonality, scannerPluginMode)
+            return inner.connect(request)
         }
-        override suspend fun disconnect() = inner.disconnect()
-        override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
-        override suspend fun startInventory() = inner.startInventory()
-        override suspend fun stopInventory() = inner.stopInventory()
-        override suspend fun regions() = inner.regions()
-        override suspend fun setRegion(code: String, hopping: Boolean?) = inner.setRegion(code, hopping)
     }
 
     /**
@@ -868,12 +814,7 @@ class RfidControllerTest {
      * `startInventory`/`stopInventory` and `triggers`/`tags` all delegate to
      * a real `FakeRfidReader`.
      */
-    private class SlowApplyReader(private val inner: FakeRfidReader) : RfidReader {
-        override val connection: StateFlow<RfidConnection> get() = inner.connection
-        override val connectNote: StateFlow<String?> get() = inner.connectNote
-        override val tags: Flow<String> get() = inner.tags
-        override val triggers: Flow<TriggerEvent> get() = inner.triggers
-
+    private class SlowApplyReader(private val inner: FakeRfidReader) : RfidReader by inner {
         /** Completes the instant `apply()` is called. */
         val applyStarted = CompletableDeferred<Unit>()
 
@@ -881,18 +822,11 @@ class RfidControllerTest {
          *  return. */
         val proceedApply = CompletableDeferred<Unit>()
 
-        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode) =
-            inner.connect(triggerPersonality, scannerPluginMode)
-        override suspend fun disconnect() = inner.disconnect()
         override suspend fun apply(settings: RfidSettings): Result<Unit> {
             applyStarted.complete(Unit)
             proceedApply.await()
             return inner.apply(settings)
         }
-        override suspend fun startInventory() = inner.startInventory()
-        override suspend fun stopInventory() = inner.stopInventory()
-        override suspend fun regions() = inner.regions()
-        override suspend fun setRegion(code: String, hopping: Boolean?) = inner.setRegion(code, hopping)
     }
 
     /**
@@ -1482,32 +1416,29 @@ class RfidControllerTest {
     }
 
     /**
-     * The trigger-toggle brief's hard requirement, mirroring the `enabled`/
-     * `region` exclusions above: `triggerPersonality`/`scannerPluginMode` are
-     * applied only at connect time — [RfidController.connectWithTimeout]
-     * reads them fresh off `current` right before every `reader.connect()`
-     * — never through `apply()`, which never reads either field. Without
-     * excluding them from the settings-collector's diff the same way
-     * `enabled`/`region` already are, flipping either row on the RFID tab
-     * would also fire a full eight-round-trip settings push for nothing.
+     * Row 1, mirroring the `enabled`/`region` exclusions above: `apply()`
+     * never reads `triggerLayout` or `readerAddress` — the layout reaches the
+     * sled through the connect request and its own layout write, and the
+     * address only says which sled to dial — so changing either one alone
+     * must not fire a full settings push for nothing.
      */
-    @Test fun togglingOnlyTriggerPersonalityOrScannerPluginModeDoesNotPushSettingsToTheReader() = runTest {
+    @Test fun togglingOnlyTriggerLayoutOrReaderAddressDoesNotPushSettingsToTheReader() = runTest {
         val r = Rig(backgroundScope)
         r.controller.start(); settle()
         r.controller.connectNow(); settle()
         val appliedAfterConnect = r.reader.applied
         assertEquals(27, appliedAfterConnect?.powerDbm)
 
-        r.settings.value = r.settings.value.copy(triggerPersonality = RfidTriggerPersonality.BARCODE); settle()
+        r.settings.value = r.settings.value.copy(triggerLayout = SledTriggerLayout.BARCODE); settle()
         assertEquals(
-            "flipping only `triggerPersonality` must not push a new settings block",
+            "changing only `triggerLayout` must not push a new settings block",
             appliedAfterConnect,
             r.reader.applied,
         )
 
-        r.settings.value = r.settings.value.copy(scannerPluginMode = ScannerPluginMode.ON); settle()
+        r.settings.value = r.settings.value.copy(readerAddress = "00:11:22:33:44:55"); settle()
         assertEquals(
-            "flipping only `scannerPluginMode` must not push a new settings block",
+            "changing only `readerAddress` must not push a new settings block",
             appliedAfterConnect,
             r.reader.applied,
         )

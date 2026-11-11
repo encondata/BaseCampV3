@@ -134,7 +134,16 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
     suspend fun setSound(s: SoundSettings) { store.edit { it[Keys.sound] = s.toJson() } }
 
     val rfid: Flow<RfidSettings> = store.data.map { parseRfidSettings(it[Keys.rfid]) }
+
+    /** Writes a whole snapshot. A snapshot built from a stale read can undo a change made
+     *  meanwhile, so settings changes go through [updateRfid]; this stays for tests. */
     suspend fun setRfid(s: RfidSettings) { store.edit { it[Keys.rfid] = s.toJson() } }
+
+    /** Reads and writes in one edit (ruling 31), so two changes landing together never
+     *  overwrite each other's field. */
+    suspend fun updateRfid(transform: (RfidSettings) -> RfidSettings) {
+        store.edit { it[Keys.rfid] = transform(parseRfidSettings(it[Keys.rfid])).toJson() }
+    }
 
     private fun decodeLabels(raw: String?): LabelOptions =
         raw?.let { try { json.decodeFromString<LabelOptions>(it) } catch (e: Exception) { null } } ?: LabelOptions()

@@ -1,6 +1,7 @@
 package com.serversherpa.kiosk.core.rfid
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class RfidConnectionTest {
@@ -12,5 +13,17 @@ class RfidConnectionTest {
         assertEquals("Connected to RFD4030", connectionLine(RfidConnection.Connected("RFD4030", null)))
         assertEquals("No RFID reader found. Pair the RFD40 in Android's Bluetooth settings first.",
             connectionLine(RfidConnection.Failed("No RFID reader found. Pair the RFD40 in Android's Bluetooth settings first.")))
+    }
+
+    @Test fun failedDefaultsAreNotRetryableAndHaveNoFix() {
+        val failed = RfidConnection.Failed("Couldn't reach the sled.")
+        assertEquals(false, failed.retryable)
+        assertNull(failed.fix)
+        val fixable = RfidConnection.Failed(SledWords.BLUETOOTH_OFF, retryable = false, fix = SledFix.TURN_ON_BLUETOOTH)
+        assertEquals(SledFix.TURN_ON_BLUETOOTH, fixable.fix)
+        assertEquals(
+            listOf("TURN_ON_BLUETOOTH", "BLUETOOTH_SETTINGS", "ALLOW", "CHOOSE_SLED", "CONNECT"),
+            SledFix.entries.map { it.name },
+        )
     }
 }
