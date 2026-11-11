@@ -20,7 +20,7 @@ from serversherpa.access.scope import roster_row_condition, scope_conditions
 from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    AssetTotalsOut, ImportJobOut, InitiativeAssetOut, InitiativeAssetsAddIn,
+    AssetTotalsOut, ImportCommitIn, ImportJobOut, InitiativeAssetOut, InitiativeAssetsAddIn,
     InitiativeAssetSummary, InitiativeAssetUpdateIn, InitiativeCreateIn,
     InitiativeDetailOut, InitiativeItem, InitiativeLinkAddIn,
     InitiativeLinkRow, InitiativeLinksOut, InitiativeLinkUpdateIn,
@@ -1390,8 +1390,12 @@ async def get_move_asset_import_job(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> ImportJob:
-    # read-only status poll: scope-checked, but not globally anchored
-    return await _get_import_job(db, job_id, actor)
+    # read-only status poll: scope-checked first (a foreign id reads as 404),
+    # then global like every other import route: the results name the clients
+    # that own flagged serials
+    job = await _get_import_job(db, job_id, actor)
+    _require_global(actor)
+    return job
 
 
 @router.post("/assets/import-jobs/{job_id}/commit",
@@ -1399,6 +1403,7 @@ async def get_move_asset_import_job(
 async def commit_move_asset_import_job(
     job_id: uuid.UUID,
     db: DbSession,
+    body: ImportCommitIn | None = None,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> ImportJob:
     job = await _get_import_job(db, job_id, actor)
@@ -1406,6 +1411,22 @@ async def commit_move_asset_import_job(
     _require_move_job(job)
     if job.phase != "validate" or job.status != "completed":
         raise _err(409, "job_not_ready")
+    choices: dict[str, str] = {}
+    for serial, value in ((body.client_choices if body else None) or {}).items():
+        if value not in ("continue", "skip"):
+            raise _err(422, "invalid_client_choice")
+        choices[str(serial).strip().lower()] = value
+    # every distinct serial the check flagged as another client's needs a choice
+    flagged = {d["serial_number"]
+               for d in ((job.results or {}).get("details") or [])
+               if d.get("status") == "conflict" and d.get("serial_number")}
+    missing = sorted(flagged - choices.keys())
+    if missing:
+        raise _err(422, "client_choices_required", serials=missing)
+    if flagged:
+        # only conflict serials are stored; reassign, never mutate in place
+        job.options = {**(job.options or {}),
+                       "client_choices": {s: choices[s] for s in sorted(flagged)}}
     job.phase = "commit"
     job.committed_by = actor.person.id      # not always the uploader: the worker tells both
     job.status = "queued"

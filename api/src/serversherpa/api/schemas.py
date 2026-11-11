@@ -2576,6 +2576,14 @@ class PlacementRecheckOut(BaseModel):
     cleared: int
 
 
+class ImportCommitIn(BaseModel):
+    """Optional body of POST /initiatives/assets/import-jobs/{id}/commit.
+    Values are checked by the route (not here) so a bad one answers with the
+    exact `invalid_client_choice` code instead of FastAPI's validation shape."""
+
+    client_choices: dict[str, str] | None = None
+
+
 class ImportJobOut(BaseModel):
     """import_jobs row as served to the portal's polling loop."""
 
