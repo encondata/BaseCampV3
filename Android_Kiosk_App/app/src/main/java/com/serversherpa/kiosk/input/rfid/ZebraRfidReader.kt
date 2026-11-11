@@ -1,27 +1,52 @@
 package com.serversherpa.kiosk.input.rfid
 
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
 import android.content.Context
-import android.os.Build
 import android.util.Log
+import com.serversherpa.kiosk.core.rfid.BondedDevice
+import com.serversherpa.kiosk.core.rfid.LinkTroubleTracker
+import com.serversherpa.kiosk.core.rfid.Precheck
+import com.serversherpa.kiosk.core.rfid.ResultClass
 import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidRegion
 import com.serversherpa.kiosk.core.rfid.RfidRegions
 import com.serversherpa.kiosk.core.rfid.RfidSession
 import com.serversherpa.kiosk.core.rfid.RfidSettings
+import com.serversherpa.kiosk.core.rfid.SLED_BEST_STEP_DEADLINE_MS
 import com.serversherpa.kiosk.core.rfid.SledBeeper
+import com.serversherpa.kiosk.core.rfid.SledCandidate
+import com.serversherpa.kiosk.core.rfid.SledConnectException
 import com.serversherpa.kiosk.core.rfid.SledConnectRequest
+import com.serversherpa.kiosk.core.rfid.SledFix
+import com.serversherpa.kiosk.core.rfid.SledInfo
+import com.serversherpa.kiosk.core.rfid.SledNotConnected
 import com.serversherpa.kiosk.core.rfid.SledWords
+import com.serversherpa.kiosk.core.rfid.TeardownPlan
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
+import com.serversherpa.kiosk.core.rfid.TriggerPull
+import com.serversherpa.kiosk.core.rfid.VendorError
+import com.serversherpa.kiosk.core.rfid.bestStepDue
+import com.serversherpa.kiosk.core.rfid.classifyResult
+import com.serversherpa.kiosk.core.rfid.connectFailure
 import com.serversherpa.kiosk.core.rfid.powerToTenths
+import com.serversherpa.kiosk.core.rfid.precheck as decidePrecheck
+import com.serversherpa.kiosk.core.rfid.teardownPlan
+import com.serversherpa.kiosk.core.rfid.triggerTypePasses
+import com.serversherpa.kiosk.core.rfid.vendorLogLine
+import com.zebra.rfid.api3.AttributeInfo
 import com.zebra.rfid.api3.BATCH_MODE
 import com.zebra.rfid.api3.BEEPER_VOLUME
 import com.zebra.rfid.api3.DYNAMIC_POWER_OPTIMIZATION
 import com.zebra.rfid.api3.ENUM_TRANSPORT
 import com.zebra.rfid.api3.HANDHELD_TRIGGER_EVENT_TYPE
+import com.zebra.rfid.api3.IEvents
 import com.zebra.rfid.api3.InvalidUsageException
 import com.zebra.rfid.api3.OperationFailureException
 import com.zebra.rfid.api3.RFIDReader
 import com.zebra.rfid.api3.RFIDResults
+import com.zebra.rfid.api3.RFID_EVENT_TYPE
 import com.zebra.rfid.api3.Readers
 import com.zebra.rfid.api3.RegulatoryConfig
 import com.zebra.rfid.api3.RfidEventsListener
@@ -31,84 +56,81 @@ import com.zebra.rfid.api3.SESSION
 import com.zebra.rfid.api3.START_TRIGGER_TYPE
 import com.zebra.rfid.api3.STATUS_EVENT_TYPE
 import com.zebra.rfid.api3.STOP_TRIGGER_TYPE
-import java.util.concurrent.ExecutionException
+import com.zebra.rfid.api3.StartTrigger
+import com.zebra.rfid.api3.StopTrigger
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.runInterruptible
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
+
+/** What the vendor connect sequence produced ([ZebraRfidReader.openVendorConnection]). */
+sealed interface VendorOpen {
+    /** The link is up and set up. */
+    data class Up(val info: SledInfo) : VendorOpen
+
+    /** The link is up but the sled has no region: only the listener and the disconnect event are registered. */
+    data class NoRegion(val info: SledInfo) : VendorOpen
+
+    /** The sled was holding a batch of offline tags; the recovery ran. [purged] says whether the tags were cleared. */
+    data class BatchCleared(val purged: Boolean) : VendorOpen
+}
 
 /**
- * Until `ZebraBarcodeEngine.kt` was added alongside this file, this was the
- * only file in this app that knew Zebra existed;
- * `CorePurityTest.onlyDesignatedFilesImportTheZebraSdk` (renamed from
- * `onlyZebraRfidReaderImportsTheZebraSdk`) now enforces the two-file version
- * of that rule instead of the one-file version. This file talks to
- * `com.zebra.rfid.api3` — the RFID radio. `ZebraBarcodeEngine` talks to the
- * separate `com.zebra.scannercontrol` SDK, for the sled's barcode imager —
- * a different physical device inside the same RFD40 housing; see that
- * file's class doc for why a second Zebra SDK is needed at all.
+ * The Zebra RFD40-family sled, through the vendor's `com.zebra.rfid.api3`.
+ * This file and `ZebraBarcodeEngine.kt` are the only two that import a Zebra
+ * SDK (`CorePurityTest.onlyDesignatedFilesImportTheZebraSdk`).
  *
- * The SDK calls back on its own thread ([listener]), so every callback does
- * one thing: push onto a flow. Never call back into the reader from inside a
- * callback.
+ * **One worker thread.** Every vendor block (connect, setup, teardown,
+ * apply, start, stop, regions, set region) runs on one thread,
+ * [WORKER_THREAD_NAME], made once for the life of the adapter, in the order
+ * the calls arrive. A call posts its block and awaits it; a caller that stops
+ * waiting stops only its wait, and the block still runs to the end. Nothing
+ * here interrupts a thread or cancels a future: the vendor bounds its own
+ * waits (2 s per status, 15 s for a save, under 30 s for a connect), and the
+ * controller's waits are its own. Every block checks the state before its
+ * first vendor call and returns [SledNotConnected] in the wrong one.
  *
- * Every outbound SDK call that can block — connecting, disconnecting, a
- * config push, starting or stopping an inventory — runs inside
- * [runInterruptible] on [Dispatchers.IO], never a bare
- * `withContext(Dispatchers.IO) { blockingCall() }`. That distinction matters:
- * `RfidController` wraps this class's `connect()`/`disconnect()` in a 15s
- * `withTimeoutOrNull`, but a plain blocking call inside `withContext` is not
- * itself cancellable — cancelling the coroutine does nothing to a JNI/
- * Bluetooth call already parked inside the vendor stack, so the timeout would
- * be decorative and a hung radio would wedge `RfidController`'s connection
- * command queue forever (see that class's doc for why that queue must never
- * stall). `runInterruptible` registers a cancellation handler that calls
- * `Thread.interrupt()` on the worker thread and turns the resulting
- * `InterruptedException` (or a lingering interrupted flag the blocking call
- * swallowed) into a `CancellationException`, which every call site below
- * rethrows rather than catches — the same `catch (CancellationException) {
- * throw e }` idiom `RfidController` already uses for its own cancellable
- * sections. Wrapping a `runInterruptible` call in `runCatching` would defeat
- * this: `runCatching` treats `CancellationException` as just another failure
- * and returns it as a `Result` instead of letting it propagate, which lets
- * the coroutine complete as if it were never cancelled — exactly the bug this
- * file exists to avoid.
+ * **Per-connection generation.** Each connect attempt and each disconnect
+ * starts a new generation. A new listener per connection carries its
+ * generation, and a tag, trigger, battery or disconnect callback from any
+ * other generation is dropped. State is written under one small lock with
+ * the generation check inside it, so a block that finishes after a newer
+ * call never overwrites what that call published. A loss (the vendor's
+ * disconnect event, or two link-trouble results in a row) is recorded for
+ * its generation; for the current one it writes
+ * `Failed(couldNotReach(name), retryable = true)` while the state is
+ * `Connecting`, `Connected` or `NeedsRegion`, and the link's blocks then
+ * return [SledNotConnected].
  *
- * Every vendor call site also catches `LinkageError` alongside `Exception`,
- * a belt-and-braces guard against a future vendor `.aar` update referencing
- * some class this app doesn't have on its classpath — the RFIDAPI3 `.aar` is
- * wired in as a raw local artifact (see `RFIDAPI3Library/build.gradle`), not
- * a real Maven/AAR dependency, so a bad reference fails silently at runtime
- * instead of at build time. As of the 2.0.5.292 upgrade (see the `.aar`'s
- * own history for the version this replaced) the vendor code no longer
- * touches `android.support.v4.content.LocalBroadcastManager` at all —
- * confirmed via `javap` against the new `classes.jar`, which is why the
- * `com.android.support:localbroadcastmanager:28.0.0` dependency this
- * comment used to explain was removed. `ZebraReadersConstructibleTest`
- * asserts `Readers` construction never throws a `LinkageError`/
- * `NoClassDefFoundError`, so a regression here — a future vendor `.aar`
- * update needing some class this app doesn't have — fails a build-time
- * test, not just a real device. The runtime catch stays anyway: it's what
- * keeps the "connect() never throws, it reports" contract true for any
- * other classloading gap the test doesn't happen to exercise (a different
- * reader model's code path, a different Android version, a future SDK
- * bump) — `NoClassDefFoundError` and `UnsatisfiedLinkError` (a missing
- * native `.so`) are both `LinkageError`, not `Exception`, so a bare
- * `catch (e: Exception)` would let either fall straight through as an
- * uncaught crash.
+ * **Connect.** A pre-check over Android's bonded list runs before any
+ * vendor object is built ([precheck]); then [openVendorConnection] runs the
+ * vendor sequence (spec, Connect sequence). A failed connect's cleanup runs
+ * once, on a thread of its own for that attempt; the worker's next block
+ * waits for it at most [CLEANUP_BOUND_MS] ([BATCH_CLEANUP_BOUND_MS] after a
+ * batch recovery) and then drops that attempt's vendor references.
+ *
+ * Every operator sentence is a [SledWords] member. Vendor result names and
+ * texts go to the log (`adb logcat -s ZebraRfidReader`) through
+ * [vendorLogLine], never onto the screen. A `LinkageError` (a class or native
+ * library the raw vendor `.aar` needs and the device lacks) is caught beside
+ * every `Exception`, so a connect still ends in a sentence.
  *
  * [zebraHost] says whether the phone is a Zebra handheld (`isZebraHost`):
  * there the sled always gets the RFID layout and no scanner session. It is
- * stored here and not read yet; the adapter rewrite uses it.
+ * stored for the trigger layout write and the scanner session, which are
+ * not in this file yet.
  */
 open class ZebraRfidReader(
     private val context: Context,
@@ -116,1209 +138,922 @@ open class ZebraRfidReader(
     @Suppress("unused") private val zebraHost: Boolean = false,
 ) : RfidReader {
     private val _connection = MutableStateFlow<RfidConnection>(RfidConnection.Disconnected)
-    override val connection: StateFlow<RfidConnection> = _connection
+    override val connection: StateFlow<RfidConnection> = _connection.asStateFlow()
 
     private val _connectNote = MutableStateFlow<String?>(null)
-    override val connectNote: StateFlow<String?> = _connectNote
+    override val connectNote: StateFlow<String?> = _connectNote.asStateFlow()
+
+    private val _info = MutableStateFlow<SledInfo?>(null)
+    override val info: StateFlow<SledInfo?> = _info.asStateFlow()
+
+    private val _batchRecovery = MutableStateFlow(false)
+    override val batchRecovery: StateFlow<Boolean> = _batchRecovery.asStateFlow()
 
     private val _tags = MutableSharedFlow<String>(extraBufferCapacity = 512)
-    override val tags: SharedFlow<String> = _tags
+    override val tags: SharedFlow<String> = _tags.asSharedFlow()
 
-    private val _triggers = MutableSharedFlow<TriggerEvent>(extraBufferCapacity = 16)
-    override val triggers: SharedFlow<TriggerEvent> = _triggers
+    private val _pulls = MutableSharedFlow<TriggerPull>(extraBufferCapacity = 16)
+    override val pulls: SharedFlow<TriggerPull> = _pulls.asSharedFlow()
+    override val triggers: Flow<TriggerEvent> = _pulls.map { it.event }
 
-    private var readers: Readers? = null
-    private var reader: RFIDReader? = null
+    /** The one thread every vendor block runs on; never interrupted. */
+    private val worker: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, WORKER_THREAD_NAME).apply { isDaemon = true }
+    }
 
-    /** Wraps the separate `com.zebra.scannercontrol` SDK to stand the
-     *  sled's barcode imager down — see [ZebraBarcodeEngine]'s class doc for
-     *  why the RFID SDK alone cannot do this. Built fresh in
-     *  [standDownBarcodeImager] on every connect, the same "new vendor object
-     *  per connect" shape `readers`/`reader` use; null while disconnected, so
-     *  [disconnectBlocking] has something to tear down only when there is
-     *  something to tear down. */
-    private var barcodeEngine: ZebraBarcodeEngine? = null
+    private val generations = AtomicInteger(0)
 
-    private val listener = object : RfidEventsListener {
-        override fun eventReadNotify(event: RfidReadEvents) {
-            // Never touch the reader from in here; just hand the value on.
-            val epc = event.readEventData?.tagData?.tagID
-            if (epc == null) {
-                Log.w(TAG, "Dropped a tag read with no tag ID.")
+    /** The generation callbacks and blocks must carry to count. */
+    internal val currentGeneration: Int get() = generations.get()
+
+    /** Guards a generation check together with the state writes it allows. Held briefly, never around a vendor call. */
+    private val stateLock = Any()
+
+    /** Every generation whose link was lost. */
+    private val lostGenerations: MutableSet<Int> = ConcurrentHashMap.newKeySet()
+
+    /** The chosen sled's name for the attempt in flight, for the link-loss sentence before `info` is set. */
+    @Volatile private var linkName: String? = null
+
+    /** The vendor objects of the open (or failed, not yet cleaned up) link. Read by the cleanup thread. */
+    @Volatile private var link: VendorLink? = null
+
+    // Worker-confined from here down.
+    private var openGeneration = NO_GENERATION
+    private var wroteLayout = false
+    private var links = LinkTroubleTracker()
+    private var batchInARow = false
+    private var batchNote: String? = null
+    private var pendingCleanup: Thread? = null
+    private var pendingCleanupBoundMs = CLEANUP_BOUND_MS
+
+    /** One connection's vendor objects and its listener. */
+    private class VendorLink(val readers: Readers, val listener: RfidEventsListener) {
+        @Volatile var reader: RFIDReader? = null
+        @Volatile var listenerAdded = false
+    }
+
+    /** A region refusal (or a region reading `NA`) surfaced in setup: the link stays up as `NeedsRegion`. */
+    private class RegionNotConfigured : Exception()
+
+    companion object {
+        internal const val TAG = "ZebraRfidReader"
+        internal const val WORKER_THREAD_NAME = "ZebraRfidWorker"
+        private const val CLEANUP_THREAD_PREFIX = "ZebraRfidCleanup-"
+
+        /** A best setup step not started this long after the vendor `connect()` returned is skipped. */
+        internal const val BEST_STEP_DEADLINE_MS = SLED_BEST_STEP_DEADLINE_MS
+
+        /** How long the worker's next block waits for a failed connect's cleanup. */
+        internal const val CLEANUP_BOUND_MS = 5_000L
+
+        /** The same, after a batch recovery (its close). */
+        internal const val BATCH_CLEANUP_BOUND_MS = 20_000L
+
+        /** The batch recovery's pause after its stop, and before its one retry of the batch-mode write. */
+        internal const val BATCH_PAUSE_MS = 500L
+
+        private const val NO_GENERATION = -1
+        private const val BATCH_MODE_ATTRIBUTE = 1500
+        private const val BATCH_MODE_OFF_VALUE = "0"
+        private const val REGION_NOT_SET_CODE = "NA"
+    }
+
+    // ── connect and disconnect ──
+
+    /**
+     * Publishes `Connecting` and clears [connectNote] and [info]; then, on
+     * the worker: tears a stale link down, runs the pre-check (a refusal
+     * builds no vendor object), runs [openVendorConnection], and publishes
+     * `Connected` or `NeedsRegion` after setting [info], or `Failed`. A link
+     * that recorded a loss or is not up at the end fails as retryable. The
+     * first batch clear fails as retryable with
+     * [SledWords.BATCH_CLEARED_RETRYING] and leaves a note for the next
+     * successful connect; a second batch result in a row is the end state,
+     * [SledWords.BATCH_MODE_UNRECOVERABLE_MESSAGE] with a
+     * [BatchModeUnrecoverableException] cause. A failure is a
+     * [SledConnectException] whose `failed` is the state just published.
+     */
+    final override suspend fun connect(request: SledConnectRequest): Result<Unit> {
+        val generation = synchronized(stateLock) {
+            val next = generations.incrementAndGet()
+            _connectNote.value = null
+            _info.value = null
+            _connection.update { RfidConnection.Connecting }
+            next
+        }
+        return onWorker { connectOnWorker(request, generation) }
+    }
+
+    /** Bumps the generation and publishes `Disconnected` (clearing [info]) first, then tears down on the worker. Idempotent; never throws. */
+    final override suspend fun disconnect() {
+        synchronized(stateLock) {
+            generations.incrementAndGet()
+            _info.value = null
+            _connection.update { RfidConnection.Disconnected }
+        }
+        try {
+            onWorker { tearDownOpenLink() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            Log.w(TAG, "Teardown after a disconnect threw; the state is Disconnected anyway.", t)
+        }
+    }
+
+    private fun connectOnWorker(request: SledConnectRequest, generation: Int): Result<Unit> {
+        // A disconnect or a newer connect came in while this block waited in
+        // the queue: its own block will run next, so there is nothing to dial.
+        if (generation != currentGeneration) return Result.failure(SledNotConnected())
+        return try {
+            attempt(request, generation)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Connect failed outside the vendor sequence.", t)
+            fail(generation, connectFailure(vendorErrorOf(t), linkName, severalPaired = false, classLoading = t is LinkageError))
+        } finally {
+            _batchRecovery.value = false
+        }
+    }
+
+    private fun attempt(request: SledConnectRequest, generation: Int): Result<Unit> {
+        tearDownOpenLink()
+        wroteLayout = false
+        links = LinkTroubleTracker()
+        linkName = null
+        val chosen = when (val pre = precheck(request.address)) {
+            is Precheck.Refused -> {
+                Log.i(TAG, "Pre-check refused the connect: ${pre.failed.reason}")
+                return fail(generation, pre.failed)
+            }
+            is Precheck.Chosen -> pre
+        }
+        val name = chosen.sled.name
+        linkName = name
+        openGeneration = generation
+        Log.i(TAG, "Connecting to $name (${chosen.sled.address}), generation $generation.")
+        val opened = try {
+            openVendorConnection(chosen.sled, request, generation)
+        } catch (t: Throwable) {
+            batchInARow = false
+            val failed = if (t !is SledConnectException && generation in lostGenerations) {
+                reached(name)
+            } else {
+                failureOf(t, name, chosen.severalPaired)
+            }
+            val linkUp = generation !in lostGenerations && !failed.retryable && vendorLinkUpQuietly()
+            cleanUpAfterFailedConnect(teardownPlan(linkUp, wroteLayout), CLEANUP_BOUND_MS, generation)
+            return fail(generation, failed)
+        }
+        return when (opened) {
+            is VendorOpen.BatchCleared -> batchCleared(opened.purged, generation)
+            is VendorOpen.Up -> linkCameUp(opened.info, chosen, generation, needsRegion = false)
+            is VendorOpen.NoRegion -> linkCameUp(opened.info, chosen, generation, needsRegion = true)
+        }
+    }
+
+    private fun linkCameUp(opened: SledInfo, chosen: Precheck.Chosen, generation: Int, needsRegion: Boolean): Result<Unit> {
+        batchInARow = false
+        if (generation in lostGenerations || !vendorLinkUpQuietly()) {
+            Log.w(TAG, "The link to ${chosen.sled.name} was not up at the end of setup (generation $generation).")
+            cleanUpAfterFailedConnect(teardownPlan(linkUp = false, wroteLayout = wroteLayout), CLEANUP_BOUND_MS, generation)
+            return fail(generation, reached(chosen.sled.name))
+        }
+        val info = opened.copy(
+            generation = generation,
+            address = opened.address ?: chosen.sled.address,
+            autoChosen = chosen.autoChosen,
+        )
+        val note = batchNote
+        val published = synchronized(stateLock) {
+            if (generation != currentGeneration) return@synchronized false
+            if (note != null) _connectNote.value = combineConnectNotes(_connectNote.value, note)
+            _info.value = info
+            _connection.update {
+                if (needsRegion) RfidConnection.NeedsRegion(info.name) else RfidConnection.Connected(info.name, null)
+            }
+            true
+        }
+        if (!published) {
+            Log.i(TAG, "Generation $generation came up after a newer call; leaving its link to that call's teardown.")
+            return Result.failure(SledNotConnected())
+        }
+        batchNote = null
+        Log.i(TAG, "${info.name} is ${if (needsRegion) "up with no region set" else "connected"} (generation $generation).")
+        return Result.success(Unit)
+    }
+
+    private fun batchCleared(purged: Boolean, generation: Int): Result<Unit> {
+        cleanUpAfterFailedConnect(teardownPlan(linkUp = false, wroteLayout = false), BATCH_CLEANUP_BOUND_MS, generation)
+        batchNote = if (purged) SledWords.BATCH_CLEARED_NOTE else SledWords.BATCH_NOT_CLEARED_NOTE
+        if (batchInARow) {
+            Log.w(TAG, "Batch mode: a second batch result in a row. Stopping here instead of clearing again.")
+            return fail(
+                generation,
+                RfidConnection.Failed(SledWords.BATCH_MODE_UNRECOVERABLE_MESSAGE),
+                BatchModeUnrecoverableException(),
+            )
+        }
+        batchInARow = true
+        return fail(generation, RfidConnection.Failed(SledWords.BATCH_CLEARED_RETRYING, retryable = true))
+    }
+
+    /** Publishes [failed] when [generation] is still current, and returns it as the connect's failure. */
+    private fun fail(generation: Int, failed: RfidConnection.Failed, cause: Throwable? = null): Result<Unit> {
+        synchronized(stateLock) {
+            if (generation == currentGeneration) _connection.update { failed }
+        }
+        val e = SledConnectException(failed)
+        if (cause != null) e.initCause(cause)
+        return Result.failure(e)
+    }
+
+    private fun failureOf(t: Throwable, name: String, severalPaired: Boolean): RfidConnection.Failed {
+        if (t is SledConnectException) {
+            Log.w(TAG, "Connect failed: ${t.failed.reason}", t)
+            return t.failed
+        }
+        val error = logFailure("connect", t)
+        return connectFailure(error, name, severalPaired, classLoading = t is LinkageError)
+    }
+
+    private fun reached(name: String?): RfidConnection.Failed =
+        RfidConnection.Failed(SledWords.couldNotReach(name), retryable = true, fix = SledFix.CONNECT)
+
+    // ── the worker, cleanup and teardown ──
+
+    /** Runs [block] on the worker after any pending cleanup, and awaits it. A caller that stops waiting leaves it running. */
+    private suspend fun <T> onWorker(block: () -> T): T {
+        val done = CompletableDeferred<T>()
+        worker.execute {
+            try {
+                awaitCleanup()
+                done.complete(block())
+            } catch (t: Throwable) {
+                done.completeExceptionally(t)
+            }
+        }
+        return done.await()
+    }
+
+    /** Starts the one cleanup of a failed attempt, on its own thread. Nothing to close: just drops the references. */
+    private fun cleanUpAfterFailedConnect(plan: TeardownPlan, boundMs: Long, generation: Int) {
+        if (!hasOpenVendorConnection()) {
+            dropVendorRefs()
+            return
+        }
+        val thread = Thread({ closeQuietly(plan, "cleanup after a failed connect") }, "$CLEANUP_THREAD_PREFIX$generation")
+        thread.isDaemon = true
+        pendingCleanup = thread
+        pendingCleanupBoundMs = boundMs
+        thread.start()
+    }
+
+    /** Waits for a failed attempt's cleanup, at most its bound, then drops that attempt's references. */
+    private fun awaitCleanup() {
+        val thread = pendingCleanup ?: return
+        pendingCleanup = null
+        try {
+            thread.join(pendingCleanupBoundMs)
+        } catch (e: InterruptedException) {
+            // Nothing interrupts the worker. The flag is left clear on purpose:
+            // set, it would make every later vendor wait end at once.
+            Log.w(TAG, "The wait for a failed connect's cleanup was interrupted; going on.", e)
+        }
+        if (thread.isAlive) {
+            Log.w(TAG, "The cleanup of a failed connect was still running after ${pendingCleanupBoundMs} ms; going on without it.")
+        }
+        dropVendorRefs()
+    }
+
+    /** Tears down whatever link is open, with the plan its state allows, then drops the references. */
+    private fun tearDownOpenLink() {
+        if (hasOpenVendorConnection()) {
+            closeQuietly(teardownPlan(linkKnownUp(), wroteLayout), "teardown")
+        }
+        dropVendorRefs()
+    }
+
+    private fun linkKnownUp(): Boolean = openGeneration !in lostGenerations && vendorLinkUpQuietly()
+
+    private fun vendorLinkUpQuietly(): Boolean = try {
+        vendorLinkUp()
+    } catch (t: Throwable) {
+        Log.w(TAG, "Checking whether the link is up threw; treating it as down.", t)
+        false
+    }
+
+    private fun closeQuietly(plan: TeardownPlan, why: String) {
+        try {
+            closeVendorConnection(plan)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Teardown ($why) threw; carrying on.", t)
+        }
+    }
+
+    private fun dropVendorRefs() {
+        link = null
+        openGeneration = NO_GENERATION
+    }
+
+    // ── seams (overridden by ZebraRfidReaderTest; the real bodies talk to the vendor) ──
+
+    /** Android's bonded list. Empty when Bluetooth is off or Nearby devices is not granted. */
+    @SuppressLint("MissingPermission")
+    protected open fun bondedDevices(): List<BondedDevice> {
+        if (!RfidPermissions.nearbyGranted(context)) return emptyList()
+        return try {
+            val adapter = bluetoothAdapter()
+            if (adapter == null || !adapter.isEnabled) {
+                emptyList()
+            } else {
+                adapter.bondedDevices.orEmpty().map { BondedDevice(it.name, it.address) }
+            }
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Reading the bonded list threw; treating it as empty.", e)
+            emptyList()
+        }
+    }
+
+    /** The pre-check (spec, Pre-check): Bluetooth, Nearby devices and the bonded list, before any vendor object. */
+    protected open fun precheck(savedAddress: String?): Precheck {
+        val bluetoothOn = try {
+            bluetoothAdapter()?.isEnabled == true
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Reading whether Bluetooth is on threw; treating it as off.", e)
+            false
+        }
+        return decidePrecheck(bluetoothOn, RfidPermissions.nearbyGranted(context), bondedDevices(), savedAddress)
+    }
+
+    /**
+     * The whole vendor connect sequence, on the worker. Builds `Readers` with
+     * the Bluetooth transport, lists it once and takes the entry whose
+     * address is [sled]'s, then: 1 `connect()`; 2 batch-mode prevention
+     * (best); 3 this generation's listener and the disconnect event; 4 the
+     * trigger events, checked and retried once; 5 tag events; 6 inventory,
+     * battery, power and temperature events (best); 7 start and stop triggers
+     * IMMEDIATE, one retry each. A best step not started within
+     * [BEST_STEP_DEADLINE_MS] of step 1 returning is skipped and logged. A
+     * region check (a region reading `NA`) runs right after step 1.
+     *
+     * Returns [VendorOpen.Up], or [VendorOpen.NoRegion] when the sled has no
+     * region (from `connect()`, a setup step or the region check), or
+     * [VendorOpen.BatchCleared] after the batch recovery. Throws on failure:
+     * a [SledConnectException] for a failure that already has its sentence
+     * (step 4's [SledWords.TRIGGER_NOT_SET_UP]; link trouble on any setup step
+     * or a loss recorded for [generation], both `couldNotReach`, retryable,
+     * [SledFix.CONNECT]), anything else for [connect] to map through
+     * [connectFailure].
+     */
+    protected open fun openVendorConnection(sled: SledCandidate, request: SledConnectRequest, generation: Int): VendorOpen {
+        val readers = Readers(ExportedReceiverContext(context), ENUM_TRANSPORT.BLUETOOTH)
+        val vendor = VendorLink(readers, LinkListener(generation))
+        link = vendor
+        val listed = readers.GetAvailableRFIDReaderList().orEmpty()
+        Log.i(TAG, "The vendor lists ${listed.size} paired reader(s): " + listed.joinToString { "${it.name} (${it.address})" })
+        val device = listed.firstOrNull { it.address.equals(sled.address, ignoreCase = true) }
+            ?: throw IllegalStateException("${sled.name} (${sled.address}) is not on the vendor's reader list.")
+        // getRFIDReader() is called by name: the vendor's setter is spelled
+        // setRFIDRReader, so Kotlin synthesizes no property for the pair.
+        val rfid = device.getRFIDReader()
+            ?: throw IllegalStateException("The vendor gave no reader object for ${sled.name}.")
+        vendor.reader = rfid
+        val name = device.name ?: sled.name
+        val info = SledInfo(generation, name, sled.address)
+
+        // Step 1.
+        try {
+            rfid.connect()
+        } catch (e: OperationFailureException) {
+            when (e.results) {
+                RFIDResults.RFID_BATCHMODE_IN_PROGRESS -> {
+                    logFailure("connect", e)
+                    return VendorOpen.BatchCleared(recoverFromBatchMode(rfid, vendor))
+                }
+                RFIDResults.RFID_READER_REGION_NOT_CONFIGURED -> {
+                    logFailure("connect", e)
+                    return noRegion(rfid, vendor, LinkSetup(name, generation), info)
+                }
+                else -> throw e
+            }
+        }
+        val setup = LinkSetup(name, generation)
+        return try {
+            setUpLink(rfid, vendor, setup)
+            VendorOpen.Up(info)
+        } catch (e: RegionNotConfigured) {
+            noRegion(rfid, vendor, setup, info)
+        }
+    }
+
+    /** The no-region link: only the listener and the disconnect event (what setup already registered stays). */
+    private fun noRegion(rfid: RFIDReader, vendor: VendorLink, setup: LinkSetup, info: SledInfo): VendorOpen.NoRegion {
+        Log.w(TAG, "${info.name} has no region set: keeping the link with only the listener and the disconnect event.")
+        try {
+            setup.must("link events") { registerLinkEvents(rfid, vendor) }
+        } catch (e: RegionNotConfigured) {
+            Log.w(TAG, "The sled refused the link events for want of a region too; keeping the link anyway.")
+        }
+        return VendorOpen.NoRegion(info)
+    }
+
+    /** Teardown steps 2 to 4 for the open link; the real body is [tearDownVendor]. */
+    protected open fun closeVendorConnection(plan: TeardownPlan) {
+        tearDownVendor(plan)
+    }
+
+    /** True while vendor objects of a link (open, or failed and not cleaned up) are held. */
+    protected open fun hasOpenVendorConnection(): Boolean = link != null
+
+    /** The vendor's own view of the link (`rfid.isConnected()`). */
+    protected open fun vendorLinkUp(): Boolean = link?.reader?.isConnected() == true
+
+    private fun bluetoothAdapter(): BluetoothAdapter? = context.getSystemService(BluetoothManager::class.java)?.adapter
+
+    // ── the connect sequence, steps 2 to 7 ──
+
+    /** One connect's setup: the best-step clock, started when step 1 returned, and the step rules. */
+    private inner class LinkSetup(private val name: String, private val generation: Int) {
+        private val connectReturnedAt = nowMs()
+
+        fun sinceConnectReturned(): Long = nowMs() - connectReturnedAt
+
+        fun lost(): Boolean = generation in lostGenerations
+
+        /** A loss recorded for this generation fails the connect, retryably. */
+        fun checkLoss() {
+            if (lost()) throw SledConnectException(reached(name))
+        }
+
+        /** A must step: a failure fails the connect. Link trouble fails it at once; otherwise [retries] more tries. */
+        fun must(step: String, retries: Int = 0, body: () -> Unit) {
+            var left = retries
+            while (true) {
+                try {
+                    body()
+                    break
+                } catch (t: Throwable) {
+                    screen(step, t)
+                    if (left-- <= 0) throw t
+                    Log.w(TAG, "Setup: trying $step once more.")
+                }
+            }
+            checkLoss()
+        }
+
+        /** A best step: skipped past the deadline; a refusal is logged and setup goes on; link trouble still fails it. */
+        fun best(step: String, body: () -> Unit) {
+            val since = sinceConnectReturned()
+            if (!bestStepDue(since)) {
+                Log.w(TAG, "Setup: skipped $step, $since ms after the connect returned.")
                 return
             }
-            if (!_tags.tryEmit(epc)) {
-                // The tags flow buffers 512 — this only fires if nothing is
-                // draining it fast enough. Silent drops here mean scans the
-                // operator thinks were read never reach the outbox.
-                Log.w(TAG, "Dropped a tag read: the tags flow's buffer is full.")
+            try {
+                body()
+            } catch (t: Throwable) {
+                screen(step, t)
+                Log.w(TAG, "Setup: $step was refused; carrying on.")
+            }
+            checkLoss()
+        }
+
+        /** Logs [t], then turns a region refusal into [RegionNotConfigured] and link trouble or a loss into the retryable failure. */
+        fun screen(step: String, t: Throwable) {
+            if (t is SledConnectException || t is RegionNotConfigured) throw t
+            val error = logFailure(step, t)
+            if (isRegionNotSet(t)) throw RegionNotConfigured()
+            if (lost() || (error != null && classifyResult(error) == ResultClass.LINK_TROUBLE)) {
+                throw SledConnectException(reached(name))
+            }
+        }
+    }
+
+    private fun setUpLink(rfid: RFIDReader, vendor: VendorLink, setup: LinkSetup) {
+        setup.best("region check") { checkRegion(rfid) }
+        // Step 2. Its save runs before any layout write, so a layout is never saved.
+        setup.best("batch-mode prevention") {
+            val value = readAttribute(rfid, BATCH_MODE_ATTRIBUTE)
+            Log.i(TAG, "Batch-mode prevention: attribute $BATCH_MODE_ATTRIBUTE reads ${value ?: "(no answer for it)"}.")
+            if (value != BATCH_MODE_OFF_VALUE) preventBatchMode(save = true, rfid = rfid)
+        }
+        // Step 3.
+        setup.must("link events") { registerLinkEvents(rfid, vendor) }
+        // Step 4.
+        setUpTriggerEvents(rfid, setup)
+        // Step 5.
+        setup.must("tag events") {
+            rfid.Events.setTagReadEvent(true)
+            rfid.Events.setAttachTagDataWithReadEvent(true)
+        }
+        // Step 6.
+        setup.best("inventory start event") { rfid.Events.setInventoryStartEvent(true) }
+        setup.best("inventory stop event") { rfid.Events.setInventoryStopEvent(true) }
+        setup.best("battery event") { rfid.Events.setBatteryEvent(true) }
+        setup.best("power event") { rfid.Events.setPowerEvent(true) }
+        setup.best("temperature event") { rfid.Events.setTemperatureAlarmEvent(true) }
+        // Step 7: a sled left on its own triggers could start the radio while the app is disarmed.
+        setup.must("start trigger", retries = 1) {
+            rfid.Config.setStartTrigger(StartTrigger().apply { triggerType = START_TRIGGER_TYPE.START_TRIGGER_TYPE_IMMEDIATE })
+        }
+        setup.must("stop trigger", retries = 1) {
+            rfid.Config.setStopTrigger(StopTrigger().apply { triggerType = STOP_TRIGGER_TYPE.STOP_TRIGGER_TYPE_IMMEDIATE })
+        }
+    }
+
+    /** The sled's region; one reading `NA` has none set. A failed read is logged and setup goes on. */
+    private fun checkRegion(rfid: RFIDReader) {
+        val region = rfid.Config.getRegulatoryConfig()?.region
+        Log.i(TAG, "Region check: the sled's region reads ${region ?: "(nothing)"}.")
+        if (region.equals(REGION_NOT_SET_CODE, ignoreCase = true)) throw RegionNotConfigured()
+    }
+
+    /** Step 3, and all the no-region and batch paths register: this generation's listener and the disconnect event. */
+    private fun registerLinkEvents(rfid: RFIDReader, vendor: VendorLink) {
+        if (!vendor.listenerAdded) {
+            rfid.Events.addEventsListener(vendor.listener)
+            vendor.listenerAdded = true
+        }
+        rfid.Events.setReaderDisconnectEvent(true)
+    }
+
+    /**
+     * Step 4: the trigger events, checked with `isEventRegistered`, tried
+     * twice. A failure is exactly [SledWords.TRIGGER_NOT_SET_UP]: retryable
+     * after link trouble, an open, send or timeout result, or a recorded
+     * loss; not retryable when the event simply stayed unregistered.
+     */
+    private fun setUpTriggerEvents(rfid: RFIDReader, setup: LinkSetup) {
+        var retryable = false
+        for (attempt in 1..2) {
+            try {
+                rfid.Events.setHandheldEvent(true)
+                if (rfid.Events.isEventRegistered(RFID_EVENT_TYPE.HANDHELD_TRIGGER_EVENT)) {
+                    setup.checkLoss()
+                    return
+                }
+                Log.w(TAG, "Setup: the trigger events are not registered after try $attempt.")
+            } catch (t: Throwable) {
+                if (t is SledConnectException) throw t
+                if (isRegionNotSet(t)) throw RegionNotConfigured()
+                val error = logFailure("trigger events", t)
+                if (error != null && retryableSetupError(error)) retryable = true
+            }
+        }
+        throw SledConnectException(
+            RfidConnection.Failed(SledWords.TRIGGER_NOT_SET_UP, retryable = retryable || setup.lost(), fix = SledFix.CONNECT),
+        )
+    }
+
+    private fun retryableSetupError(error: VendorError): Boolean =
+        classifyResult(error) == ResultClass.LINK_TROUBLE ||
+            connectFailure(error, name = null, severalPaired = false, classLoading = false).retryable
+
+    /** Reads attribute [number]; null when the reply was for another attribute (the vendor keeps one shared slot). */
+    private fun readAttribute(rfid: RFIDReader, number: Int): String? {
+        val read = rfid.Config.getAttribute(number, AttributeInfo())
+        if (read.attNum != number) {
+            Log.w(TAG, "Attribute $number: the reply was for attribute ${read.attNum}, so it was not accepted.")
+            return null
+        }
+        return read.value
+    }
+
+    /**
+     * The batch-mode safety step: batch mode off, saved only when [save]. Connect
+     * step 2 saves; teardown saves only when this connection wrote no trigger
+     * layout (`teardownPlan(...).saveConfig`), so a layout is never saved.
+     * Throws; the caller decides what a failure means.
+     */
+    private fun preventBatchMode(save: Boolean, rfid: RFIDReader? = link?.reader) {
+        val config = rfid?.Config ?: return
+        config.setBatchMode(BATCH_MODE.DISABLE)
+        if (save) config.saveConfig()
+        Log.i(TAG, if (save) "Batch mode set off and saved." else "Batch mode set off, not saved (this connection wrote a trigger layout).")
+    }
+
+    /**
+     * `connect()` said `RFID_BATCHMODE_IN_PROGRESS`: the link is up, the
+     * sled's capabilities were not fetched. Registers only the listener and
+     * the disconnect event (asking for trigger events without capabilities
+     * would tell the sled to leave them out), then, each step guarded and
+     * logged: stop, a pause, purge (false on failure), batch mode off (once
+     * more after a pause when refused as in progress), save. Returns whether
+     * the purge cleared the tags. The close runs as the failed connect's
+     * cleanup, bounded at [BATCH_CLEANUP_BOUND_MS]; the steps here are
+     * bounded by the vendor's own waits.
+     */
+    private fun recoverFromBatchMode(rfid: RFIDReader, vendor: VendorLink): Boolean {
+        _batchRecovery.value = true
+        Log.w(TAG, "Batch-mode recovery: the sled is holding tags from offline use. Clearing them.")
+        recoveryStep("disconnect event") { registerLinkEvents(rfid, vendor) }
+        recoveryStep("stop") { rfid.Actions.Inventory.stop() }
+        pause(BATCH_PAUSE_MS)
+        val purged = recoveryStep("purge") { rfid.Actions.purgeTags() } == true
+        recoveryStep("batch mode off") {
+            try {
+                rfid.Config.setBatchMode(BATCH_MODE.DISABLE)
+            } catch (e: OperationFailureException) {
+                if (e.results != RFIDResults.RFID_OPERATION_IN_PROGRESS) throw e
+                logFailure("batch mode off", e)
+                pause(BATCH_PAUSE_MS)
+                rfid.Config.setBatchMode(BATCH_MODE.DISABLE)
+            }
+        }
+        recoveryStep("save") { rfid.Config.saveConfig() }
+        return purged
+    }
+
+    private inline fun <T> recoveryStep(step: String, body: () -> T): T? = try {
+        body().also { Log.w(TAG, "Batch-mode recovery: $step returned ${it ?: "nothing"}.") }
+    } catch (t: Throwable) {
+        logFailure("batch-mode recovery: $step", t)
+        null
+    }
+
+    /** A pause on the worker. An interrupt (nothing sends one) only shortens it; see [awaitCleanup]. */
+    private fun pause(ms: Long) {
+        try {
+            Thread.sleep(ms)
+        } catch (e: InterruptedException) {
+            Log.w(TAG, "A pause on the worker was interrupted; going on.", e)
+        }
+    }
+
+    /**
+     * Teardown steps 2 to 4 for [link], each guarded on its own: only when
+     * [plan] says the link is up, stop and the batch-mode safety step; then
+     * remove the listener and disconnect; then dispose the `Readers`, which
+     * throws when no reader object was built. Runs on the worker, or on a
+     * failed connect's cleanup thread against that attempt's objects.
+     */
+    private fun tearDownVendor(plan: TeardownPlan) {
+        val vendor = link ?: return
+        val rfid = vendor.reader
+        if (rfid != null) {
+            if (plan.stopInventory) teardownStep("stop") { rfid.Actions?.Inventory?.stop() }
+            if (plan.disableBatchMode) teardownStep("batch-mode safety step") { preventBatchMode(save = plan.saveConfig, rfid = rfid) }
+            if (vendor.listenerAdded) teardownStep("remove the listener") { rfid.Events?.removeEventsListener(vendor.listener) }
+            teardownStep("disconnect") { rfid.disconnect() }
+        }
+        teardownStep("dispose") { vendor.readers.Dispose() }
+    }
+
+    private inline fun teardownStep(step: String, body: () -> Unit) {
+        try {
+            body()
+        } catch (t: Throwable) {
+            Log.i(TAG, "Teardown: $step threw (often expected, for example a stop with nothing running); carrying on.", t)
+        }
+    }
+
+    // ── listener entry points (also called by tests) ──
+
+    /** The link of [generation] was lost. Writes the failure only for the current generation in a linked state. */
+    internal fun onLinkLost(generation: Int) {
+        lostGenerations += generation
+        synchronized(stateLock) {
+            if (generation != currentGeneration) {
+                Log.i(TAG, "A loss for generation $generation (now $currentGeneration) changes nothing.")
+                return
+            }
+            val name = _info.value?.name ?: linkName
+            _connection.update { state ->
+                when (state) {
+                    is RfidConnection.Connecting, is RfidConnection.Connected, is RfidConnection.NeedsRegion ->
+                        RfidConnection.Failed(SledWords.couldNotReach(name), retryable = true)
+                    else -> state
+                }
+            }
+        }
+        Log.w(TAG, "The link of generation $generation was lost.")
+    }
+
+    /** A trigger event: only a SCAN-type one is dropped (ruling 26). Stamped on receipt. */
+    internal fun onTrigger(generation: Int, pressed: Boolean, typeName: String?) {
+        if (generation != currentGeneration) return
+        if (!triggerTypePasses(typeName)) {
+            Log.i(TAG, "Dropped a ${if (pressed) "pull" else "release"} of type $typeName.")
+            return
+        }
+        val pull = TriggerPull(if (pressed) TriggerEvent.PRESSED else TriggerEvent.RELEASED, System.currentTimeMillis())
+        // A dropped release is the dangerous one: it can leave a latched read
+        // running with nothing said anywhere, so it is worth a log line.
+        if (!_pulls.tryEmit(pull)) Log.w(TAG, "Dropped a trigger ${pull.event}: the flow's buffer is full.")
+    }
+
+    /** A tag read for [generation]; dropped unless current. */
+    internal fun onTag(generation: Int, epc: String) {
+        if (generation != currentGeneration) return
+        // The buffer holds 512; a drop here is a tag the operator thinks was read.
+        if (!_tags.tryEmit(epc)) Log.w(TAG, "Dropped a tag read: the tags flow's buffer is full.")
+    }
+
+    private fun onBattery(generation: Int, level: Int) {
+        synchronized(stateLock) {
+            if (generation != currentGeneration) return
+            _connection.update { state -> if (state is RfidConnection.Connected) state.copy(batteryPct = level) else state }
+        }
+    }
+
+    /**
+     * One connection's listener. It runs on the vendor's thread, so it only
+     * hands values on: it never calls the vendor, and it catches everything.
+     */
+    private inner class LinkListener(private val generation: Int) : RfidEventsListener {
+        override fun eventReadNotify(event: RfidReadEvents?) {
+            try {
+                val epc = event?.readEventData?.tagData?.tagID
+                if (epc == null) Log.w(TAG, "Dropped a tag read with no tag ID.") else onTag(generation, epc)
+            } catch (t: Throwable) {
+                Log.w(TAG, "A tag callback threw.", t)
             }
         }
 
-        override fun eventStatusNotify(event: RfidStatusEvents) {
-            val data = event.StatusEventData ?: return
+        override fun eventStatusNotify(event: RfidStatusEvents?) {
+            try {
+                status(event?.StatusEventData ?: return)
+            } catch (t: Throwable) {
+                Log.w(TAG, "A status callback threw.", t)
+            }
+        }
+
+        private fun status(data: IEvents.StatusEventData) {
             when (data.statusEventType) {
                 STATUS_EVENT_TYPE.HANDHELD_TRIGGER_EVENT -> {
-                    val triggerEvent = when (data.HandheldTriggerEventData?.handheldEvent) {
-                        HANDHELD_TRIGGER_EVENT_TYPE.HANDHELD_TRIGGER_PRESSED -> TriggerEvent.PRESSED
-                        HANDHELD_TRIGGER_EVENT_TYPE.HANDHELD_TRIGGER_RELEASED -> TriggerEvent.RELEASED
-                        else -> null
-                    }
-                    // A dropped RELEASED is the dangerous one: it can leave a
-                    // latched burst running forever with nothing reported
-                    // anywhere, so this is worth a log even though it can't
-                    // throw — this runs on the vendor's own callback thread.
-                    if (triggerEvent != null && !_triggers.tryEmit(triggerEvent)) {
-                        Log.w(TAG, "Dropped a trigger $triggerEvent event: the triggers flow's buffer is full.")
+                    val trigger = data.HandheldTriggerEventData
+                    val kind = trigger?.handheldEvent
+                    val type = trigger?.handheldTriggerType?.toString()
+                    Log.i(TAG, "Trigger event $kind, type ${type ?: "(none)"}, generation $generation.")
+                    when (kind) {
+                        HANDHELD_TRIGGER_EVENT_TYPE.HANDHELD_TRIGGER_PRESSED -> onTrigger(generation, pressed = true, typeName = type)
+                        HANDHELD_TRIGGER_EVENT_TYPE.HANDHELD_TRIGGER_RELEASED -> onTrigger(generation, pressed = false, typeName = type)
+                        else -> Unit
                     }
                 }
                 STATUS_EVENT_TYPE.BATTERY_EVENT -> {
-                    val level = data.BatteryData?.level
-                    val was = _connection.value
-                    if (was is RfidConnection.Connected && level != null) {
-                        _connection.value = was.copy(batteryPct = level)
-                    }
+                    val battery = data.BatteryData
+                    Log.i(TAG, "Battery event: level ${battery?.level}, cause ${battery?.cause}, generation $generation.")
+                    battery?.level?.let { onBattery(generation, it) }
                 }
                 STATUS_EVENT_TYPE.DISCONNECTION_EVENT -> {
-                    // Deliberately doesn't touch `reader`/`readers` — this runs on
-                    // the vendor's callback thread and must stay free of vendor
-                    // calls. They're torn down the next time connect() runs; see
-                    // [hasOpenVendorConnection]/[closeVendorConnection].
-                    _connection.value = RfidConnection.Failed("The reader disconnected.")
+                    Log.w(TAG, "Disconnection event ${data.DisconnectionEventData?.disconnectionEvent}, generation $generation.")
+                    onLinkLost(generation)
                 }
-                else -> Unit
+                else -> Log.i(TAG, "Status event ${data.statusEventType}, generation $generation.")
             }
         }
     }
 
-    companion object {
-        private const val TAG = "ZebraRfidReader"
+    // ── operations ──
 
-        /** Set on [connectNote] once a batch-mode recovery (see
-         *  [connectRfid]) has actually gotten the operator connected. Not an
-         *  error — factual, one line, American English — so the RFID
-         *  settings tab renders it in the same plain tone as the connection
-         *  line, never the red error tone `connectionError`/`applyError` use. */
-        private const val BATCH_MODE_RECOVERY_NOTE =
-            "The reader was holding tags from earlier offline use. They were discarded and batch mode is now off."
+    final override suspend fun apply(settings: RfidSettings): Result<Unit> = onWorker {
+        onLink("settings push", sentence = SledWords.SETTINGS_NOT_APPLIED) { rfid ->
+            val antenna = rfid.Config.Antennas.getAntennaRfConfig(1)
+            antenna.transmitPowerIndex = powerToTenths(settings.powerDbm)
+            rfid.Config.Antennas.setAntennaRfConfig(1, antenna)
 
-        /** Wall-clock bound for [runBarcodeStandDownWithTimeout] — see that
-         *  function's doc for the mechanism. `RfidController` wraps the
-         *  entire `connect()` call in a 15s `withTimeoutOrNull`
-         *  (`RfidController.VENDOR_TIMEOUT_MS`), and everything that runs
-         *  ahead of [standDownBarcodeImager] inside [configurePostConnectSetup]
-         *  — `rfid.connect()` itself (inside [attemptVendorConnection]),
-         *  [recoverFromBatchMode] if a batch-mode recovery happened,
-         *  [preventBatchMode], and the start/stop trigger pinning —
-         *  is ordinary RFID-radio SDK traffic that has always finished comfortably
-         *  inside that 15s budget on real hardware. 5 seconds leaves that
-         *  work generous headroom while still giving a real but slow
-         *  *correct* sled (the scenario this bound exists for, now that Bug
-         *  1 no longer wastes ~13s reaching a wrong one) a fair chance to
-         *  finish rather than being cut off almost immediately — deliberately
-         *  well under half the overall 15s budget, not a value tuned against
-         *  real hardware (none was available to tune it against; see this
-         *  task's report). */
-        private const val BARCODE_STAND_DOWN_TIMEOUT_MS = 5_000L
-    }
+            val singulation = rfid.Config.Antennas.getSingulationControl(1)
+            singulation.session = when (settings.session) {
+                RfidSession.S0 -> SESSION.SESSION_S0
+                RfidSession.S1 -> SESSION.SESSION_S1
+                RfidSession.S2 -> SESSION.SESSION_S2
+                RfidSession.S3 -> SESSION.SESSION_S3
+            }
+            singulation.tagPopulation = settings.tagPopulation.toShort()
+            rfid.Config.Antennas.setSingulationControl(1, singulation)
 
-    /** [request] carries the saved sled's address and the trigger layout to
-     *  write. This build hands it to [openVendorConnection], which does not
-     *  read it yet: choosing the sled by address and writing its layout come
-     *  with the adapter rewrite. */
-    final override suspend fun connect(request: SledConnectRequest): Result<Unit> = withContext(Dispatchers.IO) {
-        _connection.value = RfidConnection.Connecting
-        // A note set by a previous attempt (e.g. a batch-mode recovery) must
-        // never linger into this one — it only means something about the
-        // attempt currently in flight.
-        _connectNote.value = null
-        try {
-            val readerName = runInterruptible {
-                // A DISCONNECTION_EVENT sets `_connection` to Failed but never
-                // tears the reader down — nothing calls disconnect() from that
-                // state — so a stale reader/listener can still be sitting here
-                // the next time connect() runs. Tear it down first so the new
-                // reader gets a clean listener registration instead of a
-                // duplicate one (see IMPORTANT 2 in the class doc's history).
-                if (hasOpenVendorConnection()) {
-                    closeVendorConnection()
+            rfid.Config.setBeeperVolume(
+                when (settings.beeper) {
+                    SledBeeper.OFF -> BEEPER_VOLUME.QUIET_BEEP
+                    SledBeeper.LOW -> BEEPER_VOLUME.LOW_BEEP
+                    SledBeeper.MEDIUM -> BEEPER_VOLUME.MEDIUM_BEEP
+                    SledBeeper.HIGH -> BEEPER_VOLUME.HIGH_BEEP
                 }
-                openVendorConnection(request)
-            }
-            _connection.value = RfidConnection.Connected(readerName, null)
-            Result.success(Unit)
-        } catch (e: CancellationException) {
-            // The 15s timeout in RfidController cancelled us mid-connect. This
-            // mirrors disconnect()'s NonCancellable cleanup below, but unlike
-            // disconnect() — whose whole body already *is* the teardown —
-            // connect() can be cancelled before any teardown of what it just
-            // built was even attempted, so this has to actually close the
-            // connection, not just clear local state. Skipping this would
-            // leave `_connection` on Connecting forever (the controller's
-            // collector never sees another transition, so the UI is stuck)
-            // and, if the interrupt landed after the listener was registered
-            // and the reader connected but before `openVendorConnection()`
-            // returned, a live, listening reader with nothing left pointing
-            // at it — see [openVendorConnection]'s doc for why that reference
-            // survives to be torn down here.
-            withContext(NonCancellable) {
-                runInterruptible { closeVendorConnection() }
-                _connection.value = RfidConnection.Failed("Connecting to the reader was canceled.")
-            }
-            throw e
-        } catch (e: Exception) {
-            _connection.value = RfidConnection.Failed(readable(e))
-            cleanUpAfterFailedConnect()
-            Result.failure(e)
-        } catch (e: LinkageError) {
-            // A vendor .aar this raw can be missing a class the device or the
-            // build environment doesn't have wired up (see the class doc's
-            // NoClassDefFoundError note) — a classloading gap, not a checked
-            // failure, so it surfaces as an Error, not an Exception. Still
-            // reported as a sentence rather than crashing the app.
-            _connection.value = RfidConnection.Failed(readable(e))
-            cleanUpAfterFailedConnect()
-            Result.failure(e)
-        }
-    }
-
-    /** True while `reader`/`readers` still point at a live vendor connection
-     *  that hasn't been torn down — the case a DISCONNECTION_EVENT leaves
-     *  behind (see [ZebraRfidReader]'s eventStatusNotify). `connect()` checks
-     *  this before building a new one. Overridden by tests that fake
-     *  [openVendorConnection]/[closeVendorConnection] with no vendor state to
-     *  inspect here. */
-    protected open fun hasOpenVendorConnection(): Boolean = reader != null || readers != null
-
-    /** The one place a fresh vendor connection is built: construct `Readers`,
-     *  obtain the one available `RFIDReader`, connect it, wire up [listener],
-     *  and configure the physical trigger. Assumes any previous connection
-     *  has already been torn down — `connect()` sequences
-     *  [hasOpenVendorConnection]/[closeVendorConnection] ahead of this, so
-     *  this is never called with a live `reader`/`readers` still set.
-     *
-     *  `reader`/`readers` are assigned the instant each vendor object exists,
-     *  not only once every step below succeeds: a cancellation (the 15s
-     *  timeout in `RfidController`) landing anywhere in here — including
-     *  after the listener is registered and the reader is genuinely
-     *  connected and receiving events, but before this function returns —
-     *  must still find something in these fields for `connect()`'s
-     *  `CancellationException` handler to hand to [closeVendorConnection].
-     *  Runs inside `runInterruptible` on `Dispatchers.IO`; see the class doc
-     *  for why a bare `withContext(Dispatchers.IO)` would not be enough.
-     *
-     *  Overridden by test doubles (see `ZebraRfidReaderTest`) to exercise the
-     *  surrounding cancellation/teardown state machine in [connect] with no
-     *  Zebra hardware — real `Readers`/`RFIDReader` objects can't be built or
-     *  driven to a connected state under Robolectric (no reader is ever
-     *  found), so this seam is what makes that state machine testable at
-     *  all.
-     *
-     *  A real RFD40 that is still holding a batch of tags from an earlier
-     *  offline (no host) session refuses to finish `rfid.connect()`: the SDK
-     *  throws `OperationFailureException` with
-     *  `RFIDResults.RFID_BATCHMODE_IN_PROGRESS` instead. [connectRfid]
-     *  recovers from exactly that, against the same `rfid` this function
-     *  just obtained — see [recoverFromBatchMode] for the sequence and why
-     *  it is an unverified hypothesis, not documented Zebra behavior.
-     *  Recovery either leaves this connection usable (`connectRfid` returns
-     *  `true`) or throws [BatchModeUnrecoverableException], which propagates
-     *  straight out of this function to `connect()`'s ordinary failure
-     *  handling. There is deliberately no further fallback attempt here: an
-     *  earlier version of this function tore down and tried one bare, fresh
-     *  `connect()` when in-place recovery failed, but that just repeated
-     *  `RFID_BATCHMODE_IN_PROGRESS` — the batch was never actually cleared,
-     *  because that recovery dereferenced `Actions`/`Config` while they were
-     *  still null and crashed before doing anything (see
-     *  `.superpowers/sdd/batchmode-report.md`) — so a second bare attempt
-     *  had nothing to gain.
-     *
-     *  [request] is accepted and not read yet (see [connect]). */
-    protected open fun openVendorConnection(request: SledConnectRequest): String {
-        val result = attemptVendorConnection()
-        if (result.recoveredFromBatchMode) {
-            // Append rather than overwrite: attemptVendorConnection() runs
-            // configurePostConnectSetup() — and so the barcode imager
-            // stand-down — before this returns, so _connectNote may already
-            // carry the stand-down's own note. Both are independently true
-            // facts about this connection and the operator should see
-            // whichever ones apply, not just whichever was set last.
-            _connectNote.value = combineConnectNotes(_connectNote.value, BATCH_MODE_RECOVERY_NOTE)
-            Log.w(TAG, "Batch-mode recovery complete: connected to \"${result.readerName}\".")
-        }
-        return result.readerName
-    }
-
-    /** What [attemptVendorConnection] produced: the reader's display name,
-     *  and whether getting there required [connectRfid] to recover from
-     *  batch mode. */
-    private data class VendorConnectResult(val readerName: String, val recoveredFromBatchMode: Boolean)
-
-    /** The one attempt to build a vendor connection: construct `Readers`,
-     *  obtain the one available `RFIDReader`, connect it (via [connectRfid],
-     *  which is where batch-mode recovery happens), and — only once
-     *  connected — wire up [listener] and the physical trigger config via
-     *  [configurePostConnectSetup]. Pulled out of [openVendorConnection] so
-     *  that function reads as orchestration rather than mixing in the
-     *  `Readers`/`RFIDReader` setup. */
-    private fun attemptVendorConnection(): VendorConnectResult {
-        // Readers registers a broadcast receiver internally with no
-        // RECEIVER_EXPORTED/RECEIVER_NOT_EXPORTED flag. Android 14 (API 34)
-        // enforces that one of those flags be supplied and throws
-        // SecurityException otherwise; the flags themselves (and the
-        // registerReceiver overloads that take them) exist starting API 33,
-        // so wrapping from there too is harmless and one guard instead of
-        // two. See ExportedReceiverContext's doc for the full story and why
-        // RECEIVER_EXPORTED is the right flag to supply on the library's
-        // behalf. Below API 33 the flag doesn't exist at all, so the raw
-        // context is used unchanged.
-        val readerContext =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                ExportedReceiverContext(context)
-            } else {
-                context
-            }
-        val all = Readers(readerContext, ENUM_TRANSPORT.ALL)
-        readers = all
-        val device = all.GetAvailableRFIDReaderList()?.firstOrNull()
-            ?: error("No RFID reader found. Pair the RFD40 in Android's Bluetooth settings first.")
-        // device.getRFIDReader() is the real accessor: the SDK's setter is
-        // misspelled setRFIDRReader(...), which breaks Kotlin's usual
-        // getX()/setX(X) property synthesis, so the explicit Java call is
-        // used here rather than a synthetic `device.rfidReader` property.
-        val rfid = device.getRFIDReader()
-        reader = rfid
-        // The identity ZebraBarcodeEngine's chooseScanner() matches candidate
-        // scanners against — see that function's doc for why: without this,
-        // the barcode engine has no way to tell its own sled apart from some
-        // other Bluetooth device the phone happens to be paired with.
-        val sledIdentity = SledIdentity(name = device.name, address = device.address, serial = device.serialNumber)
-        val recoveredFromBatchMode = connectRfid(rfid)
-        configurePostConnectSetup(rfid, sledIdentity)
-        return VendorConnectResult(device.name ?: "RFID reader", recoveredFromBatchMode)
-    }
-
-    /** Calls `rfid.connect()`. Returns `false` if it just succeeds normally,
-     *  or `true` if it succeeded only after [recoverFromBatchMode] recovered
-     *  from a reader holding a batch of stored tags from an earlier offline
-     *  session. Any other failure — including a batch-mode recovery that
-     *  exhausted every avenue it knows — propagates straight out, through
-     *  [attemptVendorConnection] and [openVendorConnection], to `connect()`'s
-     *  own failure handling. */
-    private fun connectRfid(rfid: RFIDReader): Boolean {
-        try {
-            rfid.connect()
-            return false
-        } catch (e: OperationFailureException) {
-            if (e.results != RFIDResults.RFID_BATCHMODE_IN_PROGRESS) throw e
-            Log.w(
-                TAG,
-                "Connect failed with RFID_BATCHMODE_IN_PROGRESS: the reader is holding tags stored during " +
-                    "an earlier offline session. connect() throws before populating Actions/Config/Events/" +
-                    "ReaderCapabilities (see the class doc), so those fields are null right now and cannot " +
-                    "be used directly. Attempting recovery via PostConnectReaderUpdate() instead.",
             )
-            recoverFromBatchMode(rfid)
-            return true
-        }
-    }
-
-    /**
-     * An unverified recovery sequence for a reader stuck reporting
-     * `RFID_BATCHMODE_IN_PROGRESS`, derived from `RFIDReader`'s public
-     * surface (`PostConnectReaderUpdate()`, `reconnect()`, `connect()`,
-     * `isConnected()`, `isCapabilitiesReceived()` — all confirmed present,
-     * with the exception signatures below, via `javap` against the shipped
-     * `.aar`), **not from any Zebra documentation** — nobody on this team has
-     * seen Zebra's own account of what a host is supposed to do here. The
-     * hypothesis: `PostConnectReaderUpdate()` is a method on the reader
-     * object itself, callable even though `Actions`/`Config` are still null,
-     * and its name suggests it finishes whatever setup `connect()` left
-     * undone — including, maybe, populating those fields. Tried first; if it
-     * throws, or leaves the reader still unusable, `reconnect()` is tried as
-     * a second avenue, then — if that also fails — a bare second
-     * `rfid.connect()` on the same object that just threw
-     * `RFID_BATCHMODE_IN_PROGRESS`, with nothing torn down first, is tried
-     * as a third. This has never been tried before: the earlier fallback
-     * this file used to have (see `.superpowers/sdd/batchmode-report.md`)
-     * tore the connection down and rebuilt it from scratch before retrying,
-     * which is a different thing entirely. If none of the three avenues
-     * works, this throws [BatchModeUnrecoverableException] and stops — no
-     * fourth avenue, no loop. [BatchModeUnrecoverableException]'s message is
-     * the *supported* remedy: Zebra's own 123RFID Mobile app is known to be
-     * able to connect to a sled in this state and clear it, which is
-     * genuinely useful for the operator to hear instead of a generic connect
-     * failure inviting another doomed retry.
-     *
-     * Every step is logged at warning level with exactly what the reader
-     * reported — `isConnected()`, `isCapabilitiesReceived()`, and whether
-     * `Actions`/`Config` are null — because that is how this hypothesis gets
-     * checked against real hardware; this logging is as much the point of
-     * this function as the recovery itself. Never dereferences
-     * `Actions`/`Config` without checking them first — that is exactly how
-     * the previous recovery attempt crashed (a `NullPointerException` on
-     * `Actions.purgeTags()`; see `.superpowers/sdd/batchmode-report.md`).
-     *
-     * Now that [preventBatchMode] runs on every successful connect — and, as
-     * of [disconnectBlocking]'s own batch-mode-safe teardown, on every
-     * disconnect too — and leaves `BATCH_MODE.DISABLE` persisted both ways,
-     * hitting `RFID_BATCHMODE_IN_PROGRESS` here at all is expected to become
-     * rare — this app no longer routinely leaves a reader in a state that
-     * causes it, so a real hit is more likely a sled that arrived already
-     * batching from some other source (e.g. Zebra's own 123RFID Mobile app)
-     * than anything this app itself did. This recovery path stays exactly as
-     * it is functionally either way: [preventBatchMode] is prevention, not a
-     * replacement for having a recovery path at all.
-     */
-    private fun recoverFromBatchMode(rfid: RFIDReader) {
-        if (tryBatchModeRecoveryAvenue("PostConnectReaderUpdate()", rfid) { rfid.PostConnectReaderUpdate() }) return
-        if (tryBatchModeRecoveryAvenue("reconnect()", rfid) { rfid.reconnect() }) return
-        if (tryBatchModeRecoveryAvenue("connect()", rfid) { rfid.connect() }) return
-        Log.w(
-            TAG,
-            "Batch-mode recovery exhausted all three avenues (PostConnectReaderUpdate(), reconnect(), and a " +
-                "bare second connect()); the reader is still unusable. Stopping rather than retrying the same " +
-                "calls forever.",
-        )
-        throw BatchModeUnrecoverableException()
-    }
-
-    /**
-     * Runs one batch-mode recovery avenue: [action] (`PostConnectReaderUpdate()`,
-     * `reconnect()`, or a bare `connect()`, named by [label] for logging),
-     * then checks and logs whether the reader now looks usable
-     * ([logAndCheckUsable]), then — only if it does — purges the stored
-     * tags and disables/persists batch mode ([purgeAndDisableBatchMode]).
-     * Returns `true` only once all of that has actually succeeded. Any
-     * failure at any step — [action] itself throwing, the reader still not
-     * reporting `Actions`/`Config` as populated, or the purge/disable/save
-     * calls throwing — returns `false` so [recoverFromBatchMode] can move on
-     * to the next avenue or give up. `InterruptedException` (a real
-     * cancellation, not a recovery failure) is deliberately excluded from
-     * "failure" and rethrown immediately, exactly like every other vendor
-     * call site in this file.
-     */
-    private fun tryBatchModeRecoveryAvenue(label: String, rfid: RFIDReader, action: () -> Unit): Boolean {
-        try {
-            action()
-        } catch (interrupt: InterruptedException) {
-            throw interrupt
-        } catch (e: Exception) {
-            Log.w(TAG, "Batch-mode recovery: $label threw; treating this avenue as failed.", e)
-            return false
-        }
-        if (!logAndCheckUsable(label, rfid)) return false
-        return try {
-            purgeAndDisableBatchMode(rfid)
-            true
-        } catch (interrupt: InterruptedException) {
-            throw interrupt
-        } catch (e: Exception) {
-            Log.w(TAG, "Batch-mode recovery: $label left the reader looking usable, but purge/disable/save failed.", e)
-            false
-        }
-    }
-
-    /** Logs exactly what [avenue] left behind — `isConnected()`,
-     *  `isCapabilitiesReceived()`, and whether `Actions`/`Config` are null —
-     *  and returns whether that is enough to purge/configure through: per
-     *  the recovery hypothesis, connected with both `Actions` and `Config`
-     *  non-null (see [batchModeRecoveryUsable]). `isCapabilitiesReceived()`
-     *  is logged only; it is not part of the usability decision — this
-     *  whole function exists to learn what the SDK actually does in this
-     *  state, and that field is part of what there is to learn. */
-    private fun logAndCheckUsable(avenue: String, rfid: RFIDReader): Boolean {
-        val connected = rfid.isConnected()
-        val capabilitiesReceived = rfid.isCapabilitiesReceived()
-        val actionsPresent = rfid.Actions != null
-        val configPresent = rfid.Config != null
-        Log.w(
-            TAG,
-            "Batch-mode recovery via $avenue: isConnected()=$connected " +
-                "isCapabilitiesReceived()=$capabilitiesReceived " +
-                "Actions=${if (actionsPresent) "present" else "null"} " +
-                "Config=${if (configPresent) "present" else "null"}",
-        )
-        return batchModeRecoveryUsable(connected, actionsPresent, configPresent)
-    }
-
-    /** Purges the stored tags and turns batch mode off, persisted. Only
-     *  ever called once [logAndCheckUsable] has confirmed `Actions`/`Config`
-     *  are non-null, but re-checks them here rather than trusting that call
-     *  site — never dereference a possibly-null vendor field without
-     *  checking it first, which is exactly how the previous recovery
-     *  attempt crashed (see `.superpowers/sdd/batchmode-report.md`). */
-    private fun purgeAndDisableBatchMode(rfid: RFIDReader) {
-        val actions = rfid.Actions
-        val config = rfid.Config
-        checkNotNull(actions) { "unreachable: caller already confirmed Actions is non-null" }
-        checkNotNull(config) { "unreachable: caller already confirmed Config is non-null" }
-        // The stored tags carry no move/site context and the kiosk has
-        // nowhere to file them, so they are discarded rather than retrieved
-        // (getBatchedTags() is deliberately not called).
-        actions.purgeTags()
-        config.setBatchMode(BATCH_MODE.DISABLE)
-        // Persisted, not just set in memory: batch mode is stored in the
-        // reader's own non-volatile config, so without saveConfig() a power
-        // cycle could restore whatever was last saved there (most likely
-        // left on by a prior 123RFID Mobile session) and reproduce this
-        // exact failure the next time the sled is used.
-        config.saveConfig()
-        Log.w(TAG, "Batch-mode recovery: stored tags purged, batch mode disabled, saveConfig() ran.")
-    }
-
-    /**
-     * Prevention, not just recovery: until now, the only defense against
-     * `RFID_BATCHMODE_IN_PROGRESS` was [recoverFromBatchMode] — reached only
-     * *after* a connect had already failed once. This runs on every
-     * successful connect instead, unconditionally, from
-     * [configurePostConnectSetup] — which itself already runs on every
-     * successful [connectRfid], whether that was the plain path or the
-     * batch-mode-recovery path — so from here on, this app leaves every
-     * reader it connects to with batch mode off and that turned-off state
-     * persisted, instead of only fixing it reactively the one time it's
-     * already caused a failure.
-     *
-     * Runs first in [configurePostConnectSetup] — before the event-listener
-     * wiring and the start/stop trigger pinning that can throw — precisely
-     * so a throw anywhere after it still leaves the sled batch-mode-safe;
-     * see that function's doc for the full
-     * reasoning. [disconnectBlocking] is this function's teardown-side
-     * counterpart: it leaves the sled just as batch-mode-safe on the way
-     * *out* of a connection as this leaves it on the way *in*, which closes
-     * the one gap this function alone can't — a session that ends without
-     * ever calling `connect()` again.
-     *
-     * Logged with a distinctive, greppable `"Batch-mode prevention: "`
-     * prefix — parallel to [purgeAndDisableBatchMode]'s own
-     * `"Batch-mode recovery: "` prefix — so this step's evidence (the
-     * before value, and, once changed, the after value) is easy to find in
-     * a device log (`adb logcat -s ZebraRfidReader`); that evidence is what
-     * proves this fix actually runs and actually works, the same reasoning
-     * behind nearly every other log line in this file.
-     *
-     * Never fails `connect()`: wrapped exactly the way every other
-     * non-essential vendor call in this file already is —
-     * `InterruptedException` rethrown as a real cancellation, `Exception`/
-     * `LinkageError` logged and degraded — the same idiom
-     * [tryBatchModeRecoveryAvenue] uses for its own vendor calls. A failure
-     * to read/set/save the batch-mode config here must never break an
-     * otherwise-successful connect.
-     */
-    private fun preventBatchMode(rfid: RFIDReader) {
-        try {
-            val config = rfid.Config
-            val before = config.getBatchModeConfig()
-            Log.w(TAG, "Batch-mode prevention: current batch mode is $before.")
-            if (before == BATCH_MODE.DISABLE) return
-            config.setBatchMode(BATCH_MODE.DISABLE)
-            // Persisted, not just set in memory — the same reasoning
-            // purgeAndDisableBatchMode's own saveConfig() call documents:
-            // batch mode is stored in the reader's own non-volatile config,
-            // so without this a power cycle could restore whatever was last
-            // saved there (most likely left on by a prior 123RFID Mobile
-            // session) and reintroduce RFID_BATCHMODE_IN_PROGRESS on some
-            // future connect despite this step having run.
-            config.saveConfig()
-            val after = config.getBatchModeConfig()
-            Log.w(TAG, "Batch-mode prevention: batch mode was $before, now disabled and saved (now reads $after).")
-        } catch (interrupt: InterruptedException) {
-            throw interrupt
-        } catch (e: Exception) {
-            Log.w(TAG, "Batch-mode prevention: reading/setting/saving batch mode threw; leaving it as-is.", e)
-        } catch (e: LinkageError) {
-            Log.w(TAG, "Batch-mode prevention: reading/setting/saving batch mode threw; leaving it as-is.", e)
-        }
-    }
-
-    /** The post-connect setup every successful attempt needs, whether it
-     *  connected normally or after [connectRfid] recovered from batch mode:
-     *  prevent batch mode from recurring, wire up [listener], pin the
-     *  physical trigger to immediate, and — last — stand the barcode imager
-     *  down. Split out of [attemptVendorConnection] only so that function
-     *  reads as one attempt rather than two copies of this block.
-     *
-     *  [preventBatchMode] runs first, before anything else here, and
-     *  deliberately does not wait for the event-listener wiring to run
-     *  first — it does not depend on it, only on
-     *  `rfid.Config`, which is already usable the instant `rfid.connect()`
-     *  returns, so there is no reason to delay it behind steps it doesn't
-     *  need. The point of running it first: a sled that connects this far —
-     *  far enough for this function to have started — is left batch-mode-
-     *  safe even if the start/stop trigger pinning further down throws and
-     *  fails the rest of this `connect()` attempt (that pinning is
-     *  unguarded on purpose — see its own comment below — so a throw there
-     *  is expected to happen sometimes). Before this reordering,
-     *  [preventBatchMode] ran after that pinning, so a throw there meant it
-     *  never ran at all, and an otherwise-healthy sled was left armed for
-     *  the next `RFID_BATCHMODE_IN_PROGRESS`. [disconnectBlocking] is this
-     *  function's teardown-side counterpart — see its doc for the other
-     *  half of this same fix.
-     *
-     *  Ordering for everything else here is deliberate, not incidental —
-     *  see [standDownBarcodeImager]'s doc for the field evidence:
-     *  [standDownBarcodeImager] talks to a *different* Zebra SDK over the
-     *  *same* shared Bluetooth stack this function's own RFID calls use,
-     *  and a slow/failed attempt on that second SDK was observed tying the
-     *  stack up long enough to break the unguarded start/stop trigger
-     *  pinning below — RFID setup that had already succeeded. So every
-     *  piece of setup this function treats as safety-relevant and lets fail
-     *  the whole connect (the start/stop trigger pinning) runs — and is
-     *  fully settled — before [standDownBarcodeImager]
-     *  ever touches the Bluetooth stack, and [standDownBarcodeImager] is
-     *  bounded by its own wall-clock timeout (see its doc) so it can never
-     *  again tie that stack up for as long as it did in that log. */
-    private fun configurePostConnectSetup(rfid: RFIDReader, sledIdentity: SledIdentity) {
-        // Runs before anything else in this function — see this function's
-        // doc for why: it only needs rfid.Config, which is already usable,
-        // so there is no reason to delay it behind the event-listener
-        // wiring or the start/stop trigger pinning (the one step below that
-        // can throw and fail this whole attempt).
-        preventBatchMode(rfid)
-
-        rfid.Events.addEventsListener(listener)
-        rfid.Events.setHandheldEvent(true)
-        rfid.Events.setTagReadEvent(true)
-        rfid.Events.setBatteryEvent(true)
-        rfid.Events.setAttachTagDataWithReadEvent(true)
-        // Pin the reader's own start/stop trigger behavior to immediate: a
-        // sled left on HANDHELD (its 123RFID Mobile default) would let its
-        // own firmware decide when an inventory starts and stops, defeating
-        // RfidTrigger's latch/toggle modes and letting it transmit even
-        // while the controller is disarmed. StartTrigger/StopTrigger have no
-        // public constructor, so this follows the same get-mutate-set
-        // pattern as the antenna/singulation config in apply() below.
-        val startTrigger = rfid.Config.getStartTrigger()
-        startTrigger.triggerType = START_TRIGGER_TYPE.START_TRIGGER_TYPE_IMMEDIATE
-        rfid.Config.setStartTrigger(startTrigger)
-
-        val stopTrigger = rfid.Config.getStopTrigger()
-        stopTrigger.triggerType = STOP_TRIGGER_TYPE.STOP_TRIGGER_TYPE_IMMEDIATE
-        rfid.Config.setStopTrigger(stopTrigger)
-        // These four calls are left unguarded on purpose: they are pinning
-        // safety-relevant behavior (see above — RfidTrigger's latch/toggle
-        // modes depend on it), not a best-effort convenience, so a throw here
-        // should fail the whole connect() attempt exactly as it always has,
-        // via the ordinary Exception/LinkageError handling in connect().
-        // preventBatchMode() above has already run and completed by this
-        // point — see this function's doc — so a throw here still leaves the
-        // sled batch-mode-safe even though it fails the rest of this
-        // connect() attempt. Only the barcode imager stand-down below still
-        // depends on everything above having actually succeeded — see the
-        // class-level ordering note on this function's doc.
-        // The stand-down runs on every connect: the request's trigger layout
-        // is not read yet (see connect()), and the RFID layout, the default,
-        // is the one where the imager firing on a pull corrupts a sweep. This
-        // is deliberately the *last* thing this function does — see the
-        // ordering note on this function's own doc and [standDownBarcodeImager]'s
-        // doc for why.
-        standDownBarcodeImager(sledIdentity)
-    }
-
-    /** Builds a [ZebraBarcodeEngine] — identified by [sledIdentity] so it
-     *  matches candidates against this app's own sled rather than any other
-     *  paired Bluetooth device (see [chooseScanner]'s doc) — and asks it to
-     *  stand the sled's barcode imager down; see that class's doc for the
-     *  full story of why a second Zebra SDK is needed at all. Only called
-     *  from [configurePostConnectSetup], last — see that function's ordering
-     *  note for why "last" matters here specifically.
-     *
-     *  [ZebraBarcodeEngine.standDown] never throws — it reduces every
-     *  outcome, success included, to an operator-facing sentence — so
-     *  nothing it does can fail the RFID connect it runs alongside *by
-     *  throwing*. But the real field bug this function exists to prevent
-     *  was never a thrown exception: a real device log showed
-     *  [ZebraBarcodeEngine]'s attempt to reach the wrong device (see Bug 1)
-     *  taking roughly 13 seconds and tying up the phone's shared Bluetooth
-     *  stack for that whole time, which then made *separate,
-     *  already-succeeded* RFID SDK calls fail with
-     *  `RFID_OPERATION_IN_PROGRESS`. Bug 1 removes the "wrong device" half
-     *  of that (a sled this app can't positively identify is never
-     *  attempted at all), and [configurePostConnectSetup]'s reordering
-     *  removes the "breaks already-succeeded RFID setup" half by running
-     *  this after that setup is done — but a genuine, *correct*-device sled
-     *  can still be slow to answer, so [standDown] runs via
-     *  [runBarcodeStandDownWithTimeout] rather than being called directly
-     *  here: a plain, uninterruptible vendor call has no way to be bounded
-     *  by coroutine cancellation alone (see the class doc's
-     *  `runInterruptible` discussion — the same reasoning applies to a
-     *  second, nested blocking call like this one), so a real wall-clock
-     *  bound, independent of that, is what actually prevents a repeat of
-     *  the 13-second stall — see that function's doc for the mechanism and
-     *  the reasoning behind its exact timeout value.
-     *
-     *  Appends to [_connectNote] via [combineConnectNotes] rather than
-     *  overwriting it: this and the batch-mode recovery note (see
-     *  [openVendorConnection]) each leave an independently true fact about
-     *  the same connect attempt, and the operator should see both. */
-    private fun standDownBarcodeImager(sledIdentity: SledIdentity) {
-        val engine = ZebraBarcodeEngine(context, sledIdentity)
-        barcodeEngine = engine
-        val note = runBarcodeStandDownWithTimeout(engine)
-        _connectNote.value = combineConnectNotes(_connectNote.value, note)
-    }
-
-    /**
-     * Runs [engine]'s [ZebraBarcodeEngine.standDown] off this thread's own
-     * call stack, on a dedicated single-thread executor, and waits for it
-     * with a bounded `Future.get(timeoutMs, TimeUnit.MILLISECONDS)` — the
-     * `java.util.concurrent` mechanism [standDownBarcodeImager]'s doc
-     * points to instead of `withTimeout`/`withTimeoutOrNull`.
-     * [configurePostConnectSetup] (and everything that calls it, up to
-     * `connect()` itself) runs inside [runInterruptible] on [Dispatchers.IO]
-     * — a plain blocking call chain, not a suspend function — so a
-     * coroutine-based timeout cannot wrap it here without bridging back
-     * into a coroutine via `runBlocking` from already-blocking code, which
-     * this file's own `runInterruptible`/cancellation discipline (see the
-     * class doc) is built specifically to avoid needing. Running [engine]'s
-     * call on its own thread and bounding the wait with `Future.get`'s
-     * timeout sidesteps that entirely: it is a hard wall-clock bound with
-     * no dependency on coroutine machinery at all.
-     *
-     * [BARCODE_STAND_DOWN_TIMEOUT_MS] (see its own doc for the exact value
-     * and reasoning) is how long this function waits before giving up on
-     * [engine]. On a timeout, this deliberately does **not** call
-     * `future.cancel(true)`/interrupt the worker thread: this app has no
-     * way to know whether interrupting a vendor call mid-flight — inside a
-     * `.aar` it does not control the internals of — is safe, and getting
-     * that wrong risks a worse failure than the one this function exists to
-     * bound. Instead the executor is shut down with the ordinary
-     * (non-forcing) `shutdown()`, which lets an already-submitted task keep
-     * running to completion on its own thread even after this function has
-     * returned; whatever state that leaves in [engine] gets reconciled the
-     * conservative way — by [ZebraBarcodeEngine.tearDown], the next time
-     * this connection is torn down (see [disconnectBlocking]) — exactly the
-     * same "best-effort, never blocks the primary connect" contract this
-     * file already applies everywhere else a vendor call is not
-     * essential.
-     *
-     * `InterruptedException` from `future.get()` (this thread itself being
-     * interrupted — a real cancellation, e.g. `RfidController`'s 15s
-     * timeout landing here) is rethrown immediately, exactly like every
-     * other vendor call site in this file; it is deliberately not treated
-     * as a stand-down failure. `ExecutionException` — [engine.standDown]
-     * throwing despite its own contract that it never does — is handled
-     * only as a belt-and-braces guard, the same reasoning every other
-     * vendor call site in this file already uses for an `Exception`/
-     * `LinkageError` it doesn't expect either; `FutureTask` wraps both
-     * `Exception`s and `Error`s (including `LinkageError`) thrown from the
-     * submitted task the same way, as `ExecutionException`, so one catch
-     * covers both.
-     */
-    private fun runBarcodeStandDownWithTimeout(engine: ZebraBarcodeEngine): String {
-        val executor = Executors.newSingleThreadExecutor { runnable ->
-            Thread(runnable, "ZebraBarcodeEngine-standDown").apply { isDaemon = true }
-        }
-        val future = executor.submit<String> { engine.standDown() }
-        // Non-forcing: see this function's doc for why a timeout here must
-        // not try to interrupt/cancel the in-flight vendor call.
-        executor.shutdown()
-        return try {
-            future.get(BARCODE_STAND_DOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-        } catch (interrupt: InterruptedException) {
-            throw interrupt
-        } catch (timeout: TimeoutException) {
-            Log.w(
-                TAG,
-                "standDownBarcodeImager: timed out after ${BARCODE_STAND_DOWN_TIMEOUT_MS}ms waiting for " +
-                    "ZebraBarcodeEngine.standDown() to finish; letting connect() proceed. This is a real, " +
-                    "expected outcome for a slow-to-answer (but correctly identified) sled now that Bug 1 no " +
-                    "longer wastes time reaching the wrong device — the attempt keeps running in the " +
-                    "background and whatever it leaves behind is reconciled by tearDown()/the next standDown().",
+            rfid.Config.setUniqueTagReport(settings.uniqueTagReport)
+            // The accessors are getDPOState()/setDPOState(...): Kotlin makes no
+            // `dpoState` property from a name that starts with two capitals.
+            rfid.Config.setDPOState(
+                if (settings.dpo) DYNAMIC_POWER_OPTIMIZATION.ENABLE else DYNAMIC_POWER_OPTIMIZATION.DISABLE
             )
-            "The sled's barcode imager's stand-down is taking longer than expected; it may still fire on a trigger pull."
-        } catch (e: ExecutionException) {
-            val cause = e.cause ?: e
-            Log.w(TAG, "standDownBarcodeImager: ZebraBarcodeEngine.standDown() itself threw unexpectedly.", cause)
-            "The sled's barcode imager couldn't be reached (${cause.javaClass.simpleName}); it may still fire on a trigger pull."
         }
     }
 
-    /** Tears down whatever [openVendorConnection] built: leaves the sled
-     *  batch-mode-safe, removes [listener], disconnects, and disposes,
-     *  best-effort — see [disconnectBlocking]'s doc for the exact order. The
-     *  one function `connect()` (both its "tear down anything stale first"
-     *  step and its cancellation cleanup), `disconnect()`, and
-     *  [cleanUpAfterFailedConnect] all route through, so a test double only
-     *  has to override this once to observe or fake every teardown path —
-     *  and so [disconnectBlocking]'s batch-mode-safe steps run
-     *  unconditionally on every one of them, including the one path
-     *  (`RfidController`'s `endBurst(stopReader = false, ...)` reacting to a
-     *  `DISCONNECTION_EVENT` — see [ZebraRfidReader]'s `eventStatusNotify`
-     *  comment) that never calls `reader.stopInventory()` itself before the
-     *  stale connection is finally torn down here, the next time
-     *  `connect()` runs. */
-    protected open fun closeVendorConnection() {
-        disconnectBlocking()
+    final override suspend fun startInventory(): Result<Unit> = onWorker {
+        onLink("start", sentence = SledWords.READ_DID_NOT_START) { rfid -> rfid.Actions.Inventory.perform() }
     }
 
-    // Best-effort cleanup of whatever partially connected before a connect()
-    // failure. Still interruptible, and still never swallows a cancellation
-    // that lands during the cleanup itself. Deliberately never touches
-    // `_connection`: connect()'s catch already set it to `Failed(reason)`
-    // before calling this, and clearing the reader refs must not clobber
-    // that back to `Disconnected` (a real bug caught by
-    // connectingWithNoReaderPresentFailsWithSomethingReadable — this used to
-    // share resetState() with disconnect(), which unconditionally set
-    // Disconnected and silently overwrote the Failed state on every return
-    // path).
-    private suspend fun cleanUpAfterFailedConnect() {
-        try {
-            runInterruptible { closeVendorConnection() }
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (ignored: Exception) {
-            clearReaderRefs()
-        } catch (ignored: LinkageError) {
-            clearReaderRefs()
-        }
+    final override suspend fun stopInventory(): Result<Unit> = onWorker {
+        onLink("stop") { rfid -> rfid.Actions.Inventory.stop() }
     }
 
-    final override suspend fun disconnect() {
-        withContext(Dispatchers.IO) {
-            try {
-                runInterruptible { closeVendorConnection() }
-                _connection.value = RfidConnection.Disconnected
-            } catch (e: CancellationException) {
-                // The interrupt landed mid-cleanup. Leave local state consistent
-                // for the next connect() attempt — the same NonCancellable idiom
-                // RfidController.endBurst uses to finish its own claim before
-                // rethrowing — then let the cancellation keep propagating.
-                withContext(NonCancellable) {
-                    clearReaderRefs()
-                    _connection.value = RfidConnection.Disconnected
-                }
-                throw e
-            } catch (e: Exception) {
-                clearReaderRefs()
-                _connection.value = RfidConnection.Disconnected
-            } catch (e: LinkageError) {
-                clearReaderRefs()
-                _connection.value = RfidConnection.Disconnected
-            }
-        }
-    }
-
-    /** Teardown counterpart to [preventBatchMode], run from the opposite end
-     *  of a connection's life: stops any inventory the sled might still be
-     *  running before its connection goes away. Called first thing in
-     *  [disconnectBlocking], while the connection is still healthy — this
-     *  is the same `Actions.Inventory.stop()` call [stopInventory] makes
-     *  elsewhere in this file, just guarded individually here (via
-     *  [teardownStep] at the call site) so a failure in this one step can
-     *  never stop the rest of teardown from running.
-     *
-     *  **Null safety:** unlike [preventBatchMode], which only ever runs
-     *  against a freshly-connected, guaranteed non-null `RFIDReader`, this
-     *  runs on every teardown path — including ones where `reader` was
-     *  never fully set up (e.g. cleanup after a failed connect) — so it
-     *  reads the nullable `reader` field directly through a null-safe `?.`
-     *  chain rather than taking a non-null parameter.
-     *
-     *  `InterruptedException` is rethrown rather than logged, exactly like
-     *  every other vendor call site in this file: it is a real cancellation
-     *  (`disconnectBlocking()` runs inside [runInterruptible]), not a
-     *  teardown failure, and must not be swallowed as if it were one — the
-     *  enclosing [teardownStep] is what actually catches it and restores
-     *  the thread's interrupt status so the cancellation still propagates
-     *  once [disconnectBlocking] returns. */
-    private fun stopInventoryForTeardown() {
-        try {
-            reader?.Actions?.Inventory?.stop()
-        } catch (interrupt: InterruptedException) {
-            throw interrupt
-        } catch (e: Exception) {
-            // Expected, routine noise on most disconnects: Inventory.stop()
-            // throws whenever there was no inventory actually running to
-            // stop, which is the common case (a disconnect that never
-            // started scanning). Logged at a lower level than a genuine
-            // teardown problem so this line doesn't drown out real failures
-            // when grepping `adb logcat -s ZebraRfidReader` for teardown
-            // trouble — if this step is ever the actual cause of a bad
-            // disconnect, look here first, but expect to see it fire often
-            // and harmlessly.
-            Log.i(TAG, "Teardown: stopping the inventory before disconnect threw (expected when none was running); continuing teardown anyway.", e)
-        } catch (e: LinkageError) {
-            Log.w(TAG, "Teardown: stopping the inventory before disconnect threw; continuing teardown anyway.", e)
-        }
-    }
-
-    /** [stopInventoryForTeardown]'s sibling: reads the current batch mode
-     *  via `reader?.Config` and, if it is anything other than
-     *  `BATCH_MODE.DISABLE`, turns it off and persists the change — the
-     *  exact sequence [preventBatchMode] already uses on the way *in* to a
-     *  connection, reused here rather than reinvented (steals its
-     *  structure and logging shape on purpose). Called right after
-     *  [stopInventoryForTeardown] in [disconnectBlocking], guarded the same
-     *  way (via [teardownStep] at the call site, individually — a failure
-     *  here must not stop the rest of teardown, and must not be blamed on
-     *  [stopInventoryForTeardown] or vice versa).
-     *
-     *  Logs the before value unconditionally (that is the evidence this
-     *  step actually ran on hardware) and the after value only once a
-     *  change was actually made, under a distinctive, greppable
-     *  `"Teardown: "` prefix — parallel to [preventBatchMode]'s own
-     *  `"Batch-mode prevention: "` prefix and [purgeAndDisableBatchMode]'s
-     *  `"Batch-mode recovery: "` prefix, so all three are easy to tell
-     *  apart in a device log (`adb logcat -s ZebraRfidReader`) while still
-     *  reading naturally alongside them.
-     *
-     *  Same null-safety and `InterruptedException`-rethrown-first,
-     *  `Exception`/`LinkageError`-logged-and-swallowed idiom as
-     *  [stopInventoryForTeardown] — see that function's doc for why both
-     *  matter here. */
-    private fun disableBatchModeForTeardown() {
-        try {
-            val config = reader?.Config ?: return
-            val before = config.getBatchModeConfig()
-            Log.w(TAG, "Teardown: batch mode before disconnect is $before.")
-            if (before == BATCH_MODE.DISABLE) return
-            config.setBatchMode(BATCH_MODE.DISABLE)
-            config.saveConfig()
-            val after = config.getBatchModeConfig()
-            Log.w(TAG, "Teardown: batch mode was $before, now disabled and saved before disconnect (now reads $after).")
-        } catch (interrupt: InterruptedException) {
-            throw interrupt
-        } catch (e: Exception) {
-            Log.w(TAG, "Teardown: reading/setting/saving batch mode threw; leaving it as-is.", e)
-        } catch (e: LinkageError) {
-            Log.w(TAG, "Teardown: reading/setting/saving batch mode threw; leaving it as-is.", e)
-        }
-    }
-
-    /** Only ever called from inside [runInterruptible]; never suspends
-     *  itself. Leaves `_connection` untouched — see
-     *  [cleanUpAfterFailedConnect]'s doc.
-     *
-     *  Runs [stopInventoryForTeardown] and [disableBatchModeForTeardown]
-     *  first, ahead of everything else — while the connection is still
-     *  healthy, before `reader?.disconnect()` below makes any further
-     *  vendor call meaningless — so a sled that completes one healthy
-     *  session with this app is never left armed to fail its next
-     *  `connect()` with `RFID_BATCHMODE_IN_PROGRESS`; see those two
-     *  functions' docs for the detail. Each is wrapped in its own
-     *  [teardownStep] call, exactly like the four pre-existing steps below,
-     *  so a failure in either one — or in any of the four — can never stop
-     *  the rest of teardown from running. */
-    private fun disconnectBlocking() {
-        teardownStep { stopInventoryForTeardown() }
-        teardownStep { disableBatchModeForTeardown() }
-        // Runs before the RFID teardown below, not after: ZebraBarcodeEngine
-        // re-enables the imager itself (see its tearDown() doc for why),
-        // and there is no ordering reason to make that wait on the RFID
-        // radio being torn down first.
-        teardownStep { barcodeEngine?.tearDown() }
-        teardownStep { reader?.Events?.removeEventsListener(listener) }
-        teardownStep { reader?.disconnect() }
-        teardownStep { readers?.Dispose() }
-        clearReaderRefs()
-    }
-
-    /** Runs one best-effort vendor teardown call, the way a bare `runCatching`
-     *  around each step used to. The difference: an `InterruptedException`
-     *  restores the thread's interrupt status before moving on to the next
-     *  step, instead of just swallowing it. `runCatching` alone would clear
-     *  the flag as a side effect of catching it (throwing
-     *  `InterruptedException` clears it), which left every step after the
-     *  first one that got interrupted running with a clean flag — no longer
-     *  interruptible, and nothing left for the enclosing `runInterruptible`
-     *  to see and convert into a `CancellationException` once this whole
-     *  teardown finishes. */
-    private inline fun teardownStep(action: () -> Unit) {
-        try {
-            action()
-        } catch (e: InterruptedException) {
-            Thread.currentThread().interrupt()
-        } catch (ignored: Throwable) {
-            // Best-effort: the remaining steps still need to run.
-        }
-    }
-
-    private fun clearReaderRefs() {
-        reader = null
-        readers = null
-        barcodeEngine = null
-    }
-
-    final override suspend fun apply(settings: RfidSettings): Result<Unit> = withContext(Dispatchers.IO) {
-        try {
-            runInterruptible {
-                val rfid = reader ?: error("The reader is not connected.")
-                val antenna = rfid.Config.Antennas.getAntennaRfConfig(1)
-                antenna.transmitPowerIndex = powerToTenths(settings.powerDbm)
-                rfid.Config.Antennas.setAntennaRfConfig(1, antenna)
-
-                val singulation = rfid.Config.Antennas.getSingulationControl(1)
-                singulation.session = when (settings.session) {
-                    RfidSession.S0 -> SESSION.SESSION_S0
-                    RfidSession.S1 -> SESSION.SESSION_S1
-                    RfidSession.S2 -> SESSION.SESSION_S2
-                    RfidSession.S3 -> SESSION.SESSION_S3
-                }
-                singulation.tagPopulation = settings.tagPopulation.toShort()
-                rfid.Config.Antennas.setSingulationControl(1, singulation)
-
-                rfid.Config.setBeeperVolume(
-                    when (settings.beeper) {
-                        SledBeeper.OFF -> BEEPER_VOLUME.QUIET_BEEP
-                        SledBeeper.LOW -> BEEPER_VOLUME.LOW_BEEP
-                        SledBeeper.MEDIUM -> BEEPER_VOLUME.MEDIUM_BEEP
-                        SledBeeper.HIGH -> BEEPER_VOLUME.HIGH_BEEP
-                    }
-                )
-                rfid.Config.setUniqueTagReport(settings.uniqueTagReport)
-                // Config.dpoState does not resolve: the real accessors are
-                // getDPOState()/setDPOState(...) (capital DPO, per javap), which
-                // Kotlin does not fold into a `dpoState` property because a
-                // getter/setter pair whose base name starts with two uppercase
-                // letters (JavaBeans decapitalization rule) keeps its original
-                // capitalization. Called explicitly to sidestep the ambiguity.
-                rfid.Config.setDPOState(
-                    if (settings.dpo) DYNAMIC_POWER_OPTIMIZATION.ENABLE else DYNAMIC_POWER_OPTIMIZATION.DISABLE
+    /** The regions this reader allows and the one in force. Needs `Connected` or `NeedsRegion`. */
+    final override suspend fun regions(): Result<RfidRegions> = onWorker {
+        onLink("regions", allowNeedsRegion = true, sentence = SledWords.REGIONS_FAILED) { rfid ->
+            val supported = rfid.ReaderCapabilities.SupportedRegions
+            val regions = (0 until supported.length()).map { i ->
+                val region = supported.getRegionInfo(i)
+                RfidRegion(
+                    code = region.regionCode,
+                    name = region.name,
+                    hoppingConfigurable = region.isHoppingConfigurable,
+                    channels = region.supportedChannels?.toList().orEmpty(),
                 )
             }
-            Result.success(Unit)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        } catch (e: LinkageError) {
-            Result.failure(e)
+            RfidRegions(regions, rfid.Config.getRegulatoryConfig()?.region)
         }
     }
 
-    final override suspend fun startInventory(): Result<Unit> = withContext(Dispatchers.IO) {
-        try {
-            runInterruptible {
-                val rfid = reader ?: error("The reader is not connected.")
-                rfid.Actions.Inventory.perform()
-            }
-            Result.success(Unit)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        } catch (e: LinkageError) {
-            Result.failure(e)
+    /** Sets the regulatory domain; [hopping] applies only when not null. Needs `Connected` or `NeedsRegion`. */
+    final override suspend fun setRegion(code: String, hopping: Boolean?): Result<Unit> = onWorker {
+        onLink("set region", allowNeedsRegion = true, sentence = SledWords.REGION_NOT_SET) { rfid ->
+            val regulatoryConfig = RegulatoryConfig()
+            regulatoryConfig.region = code
+            // The getter is isHoppingon() (lowercase "on"), so the setter is called by name.
+            if (hopping != null) regulatoryConfig.setIsHoppingOn(hopping)
+            rfid.Config.setRegulatoryConfig(regulatoryConfig)
         }
     }
 
-    final override suspend fun stopInventory(): Result<Unit> = withContext(Dispatchers.IO) {
-        try {
-            runInterruptible {
-                val rfid = reader ?: error("The reader is not connected.")
-                rfid.Actions.Inventory.stop()
-            }
-            Result.success(Unit)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        } catch (e: LinkageError) {
-            Result.failure(e)
+    /**
+     * Runs [body] against the current link when the state allows it (`Connected`,
+     * or `NeedsRegion` with [allowNeedsRegion]) and the link was not lost;
+     * otherwise [SledNotConnected] with no vendor call. Each result counts
+     * toward marking the link lost. A failure carries [sentence] when given.
+     */
+    private inline fun <T> onLink(
+        step: String,
+        allowNeedsRegion: Boolean = false,
+        sentence: String? = null,
+        body: (RFIDReader) -> T,
+    ): Result<T> {
+        val state = _connection.value
+        val stateAllows = state is RfidConnection.Connected || (allowNeedsRegion && state is RfidConnection.NeedsRegion)
+        val generation = currentGeneration
+        val rfid = link?.reader
+        if (!stateAllows || rfid == null || openGeneration != generation || generation in lostGenerations) {
+            return Result.failure(SledNotConnected())
+        }
+        return try {
+            val value = body(rfid)
+            recordResult(generation, null)
+            Result.success(value)
+        } catch (t: Throwable) {
+            val error = logFailure(step, t)
+            recordResult(generation, error)
+            Result.failure(if (sentence == null) t else Exception(sentence, t))
         }
     }
 
-    /** The regions this reader allows and the one in force. Built from
-     *  `ReaderCapabilities.SupportedRegions` (a plain field, like `Config`/
-     *  `Events`/`Actions` elsewhere in this file — not a getter) and
-     *  `Config.getRegulatoryConfig().getRegion()`. Region is a compliance
-     *  setting, never pushed by [apply] and never re-asserted on reconnect —
-     *  only read or set on explicit admin action. */
-    final override suspend fun regions(): Result<RfidRegions> = withContext(Dispatchers.IO) {
-        try {
-            val result = runInterruptible {
-                val rfid = reader ?: error("The reader is not connected.")
-                val supported = rfid.ReaderCapabilities.SupportedRegions
-                val regions = (0 until supported.length()).map { i ->
-                    val info = supported.getRegionInfo(i)
-                    RfidRegion(
-                        code = info.regionCode,
-                        name = info.name,
-                        hoppingConfigurable = info.isHoppingConfigurable,
-                        channels = info.supportedChannels?.toList().orEmpty(),
-                    )
-                }
-                val active = rfid.Config.getRegulatoryConfig()?.region
-                RfidRegions(regions, active)
-            }
-            Result.success(result)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        } catch (e: LinkageError) {
-            Result.failure(e)
+    /** Counts one block's result; two link-trouble results in a row mark the link of [generation] lost. */
+    private fun recordResult(generation: Int, error: VendorError?) {
+        if (links.record(error?.let(::classifyResult))) {
+            Log.w(TAG, "Two link-trouble results in a row: marking the link lost.")
+            onLinkLost(generation)
         }
     }
 
-    /** Set the regulatory domain. `RegulatoryConfig` has a public
-     *  constructor (unlike `StartTrigger`/`StopTrigger` in
-     *  [openVendorConnection]), so this builds a fresh one rather than
-     *  get-mutate-set. `hopping` is applied via the explicit
-     *  `setIsHoppingOn(boolean)` call — its getter is `isHoppingon()` (note
-     *  the lowercase "on"), a case mismatch that keeps Kotlin from
-     *  synthesizing a property the way `setDPOState`'s mismatch does in
-     *  [apply] — only when non-null, leaving the reader's own hopping state
-     *  alone otherwise. */
-    final override suspend fun setRegion(code: String, hopping: Boolean?): Result<Unit> = withContext(Dispatchers.IO) {
-        try {
-            runInterruptible {
-                val rfid = reader ?: error("The reader is not connected.")
-                val regulatoryConfig = RegulatoryConfig()
-                regulatoryConfig.region = code
-                if (hopping != null) regulatoryConfig.setIsHoppingOn(hopping)
-                rfid.Config.setRegulatoryConfig(regulatoryConfig)
-            }
-            Result.success(Unit)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        } catch (e: LinkageError) {
-            Result.failure(e)
+    /** Logs a failed step: the vendor's result name and text, or the throwable. Returns its [VendorError], if it is one. */
+    private fun logFailure(step: String, t: Throwable): VendorError? {
+        val error = vendorErrorOf(t)
+        when {
+            error == null -> Log.w(TAG, "$step failed: ${t.javaClass.name}: ${t.message}", t)
+            t is OperationFailureException -> Log.w(TAG, "${vendorLogLine(step, error)} (status: ${t.statusDescription})", t)
+            else -> Log.w(TAG, vendorLogLine(step, error), t)
         }
+        return error
     }
 
-    /** SDK exceptions carry codes, not sentences — `e.message` alone is empty
-     *  or useless for Zebra's own exception types, which is why the sled
-     *  used to fail with nothing but "Couldn't connect to the reader."
-     *  no matter what actually went wrong. This unpacks what the vendor
-     *  really gives us — `OperationFailureException.getResults()`/
-     *  `getStatusDescription()`/`getVendorMessage()`,
-     *  `InvalidUsageException.getInfo()`/`getVendorMessage()` — logs all of
-     *  it at warning level so a failure is diagnosable over adb (`adb
-     *  logcat -s ZebraRfidReader`) without asking the operator to read the
-     *  phone screen, and turns it into an operator-facing sentence that
-     *  names the specific failure instead of hiding it. Only ever called
-     *  from `connect()`'s failure paths, so logging here already covers
-     *  "whenever a connect fails."
-     *
-     *  The actual formatting is pulled out into [operationFailureMessage]/
-     *  [invalidUsageMessage]/[genericMessage] — plain functions over plain
-     *  values, not the vendor exception types themselves — because building
-     *  a real `OperationFailureException`/`InvalidUsageException` from a
-     *  test means constructing a meaningful `RFIDResults`/status-code
-     *  argument the vendor SDK itself normally supplies, not this app; those
-     *  functions are what `ZebraRfidReaderTest` can actually exercise. (The
-     *  2.0.5.292 `.aar` made `OperationFailureException`'s constructor
-     *  `public` — confirmed via `javap` — where the previous 2.0.2.82 `.aar`
-     *  had it package-private; that alone doesn't make constructing one from
-     *  this app's test package any more meaningful, so the plain-function
-     *  split stays.) */
-    private fun readable(e: Throwable): String {
-        return when (e) {
-            // BatchModeUnrecoverableException falls through to the `else`
-            // branch below on purpose: its message is already the exact
-            // operator-facing sentence (see SledWords.BATCH_MODE_UNRECOVERABLE_MESSAGE),
-            // and genericMessage() passes an already-well-formed sentence
-            // through unchanged, so a dedicated branch here would be an
-            // untestable no-op — recoverFromBatchMode() already logs the
-            // step-by-step recovery detail this exception summarizes.
-            is OperationFailureException -> {
-                val resultsName = e.results?.toString()
-                val statusDescription = e.statusDescription
-                val vendorMessage = e.vendorMessage
-                Log.w(
-                    TAG,
-                    "Connect failed: OperationFailureException results=$resultsName " +
-                        "statusDescription=$statusDescription vendorMessage=$vendorMessage " +
-                        "timeStamp=${e.timeStamp}",
-                    e,
-                )
-                operationFailureMessage(resultsName, statusDescription, vendorMessage)
-            }
-            is InvalidUsageException -> {
-                val info = e.info
-                val vendorMessage = e.vendorMessage
-                Log.w(
-                    TAG,
-                    "Connect failed: InvalidUsageException info=$info vendorMessage=$vendorMessage " +
-                        "timeStamp=${e.timeStamp}",
-                    e,
-                )
-                invalidUsageMessage(info, vendorMessage)
-            }
-            else -> {
-                Log.w(TAG, "Connect failed: ${e.javaClass.name}", e)
-                genericMessage(e.message)
-            }
-        }
-    }
+    private fun isRegionNotSet(t: Throwable): Boolean =
+        t is OperationFailureException && t.results == RFIDResults.RFID_READER_REGION_NOT_CONFIGURED
+
+    private fun nowMs(): Long = System.nanoTime() / 1_000_000L
 }
 
-/** Builds the operator-facing sentence for an `OperationFailureException`
- *  from its already-unpacked detail. Pure and free of any `com.zebra.*`
- *  type, which is what makes it testable without constructing one — see
- *  [ZebraRfidReader.readable] for where the real exception is unpacked into
- *  [resultsName] (`getResults()?.toString()`, the `RFIDResults` constant's
- *  own name — e.g. "RFID_READER_REGION_NOT_CONFIGURED" — the one detail
- *  precise enough to identify the cause), [statusDescription]
- *  (`getStatusDescription()`), and [vendorMessage] (`getVendorMessage()`). */
-internal fun operationFailureMessage(
-    resultsName: String?,
-    statusDescription: String?,
-    vendorMessage: String?,
-): String {
-    if (resultsName == "RFID_READER_REGION_NOT_CONFIGURED") {
-        return "The reader hasn't been assigned a regulatory region yet " +
-            "(RFID_READER_REGION_NOT_CONFIGURED). Set the reader's region on the Admin tab, then try again."
-    }
-    val detail = statusDescription.blankToNull() ?: vendorMessage.blankToNull()
-    return when {
-        resultsName.isNullOrBlank() && detail == null -> "Couldn't connect to the reader."
-        resultsName.isNullOrBlank() -> "Couldn't connect to the reader ($detail)."
-        detail == null -> "Couldn't connect to the reader ($resultsName)."
-        else -> "Couldn't connect to the reader ($resultsName: $detail)."
-    }
+/**
+ * A vendor failure reduced to what the app decides on: an
+ * `OperationFailureException`'s result name and vendor text, an
+ * `InvalidUsageException` as invalid usage, anything else null.
+ */
+internal fun vendorErrorOf(t: Throwable): VendorError? = when (t) {
+    is OperationFailureException -> VendorError(t.results?.toString(), t.vendorMessage)
+    is InvalidUsageException -> VendorError(
+        resultName = null,
+        vendorMessage = t.vendorMessage?.takeUnless { it.isBlank() } ?: t.info,
+        invalidUsage = true,
+    )
+    else -> null
 }
 
-/** Same idea as [operationFailureMessage] but for `InvalidUsageException`,
- *  which carries no `RFIDResults` constant — just `getInfo()` and
- *  `getVendorMessage()`. */
-internal fun invalidUsageMessage(info: String?, vendorMessage: String?): String {
-    val detail = info.blankToNull() ?: vendorMessage.blankToNull()
-    return if (detail == null) "Couldn't connect to the reader." else "Couldn't connect to the reader ($detail)."
-}
-
-/** The pre-existing behavior for every other exception, unchanged: these
- *  don't come from `com.zebra.*`, so `e.message` is still all there is. */
-internal fun genericMessage(raw: String?): String {
-    val trimmed = raw?.trim().orEmpty()
-    if (trimmed.endsWith(".") && trimmed.length > 12) return trimmed
-    return if (trimmed.isEmpty()) "Couldn't connect to the reader." else "Couldn't connect to the reader ($trimmed)."
-}
-
-private fun String?.blankToNull(): String? = this?.trim()?.takeUnless { it.isEmpty() }
-
-/** Pure decision logic behind [ZebraRfidReader]'s batch-mode recovery: is
- *  the reader connected, with both `Actions` and `Config` populated? Pulled
- *  out of `logAndCheckUsable` so it is directly testable — unlike the rest
- *  of the recovery sequence, which calls real vendor methods and so can
- *  only be proven on hardware (see [ZebraRfidReader.recoverFromBatchMode]'s
- *  doc). */
-internal fun batchModeRecoveryUsable(isConnected: Boolean, actionsPresent: Boolean, configPresent: Boolean): Boolean =
-    isConnected && actionsPresent && configPresent
-
-/** Appends [additional] to [existing] rather than overwriting it, so two
- *  independently true operator-facing notes set during the same connect()
- *  — for example the barcode imager stand-down's note and
- *  [ZebraRfidReader.BATCH_MODE_RECOVERY_NOTE] from batch-mode recovery —
- *  both reach [ZebraRfidReader.connectNote] instead of the second one
- *  silently clobbering the first. A blank or absent [existing] is treated
- *  as nothing to append to. */
+/** Appends [additional] to [existing], so two notes from one connect both reach `connectNote`. A blank [existing] counts as none. */
 internal fun combineConnectNotes(existing: String?, additional: String): String =
     if (existing.isNullOrBlank()) additional else "$existing $additional"
 
-/** Thrown by [ZebraRfidReader.recoverFromBatchMode] when none of the three
- *  avenues — `PostConnectReaderUpdate()`, `reconnect()`, or a bare second
- *  `connect()` — leaves the reader usable. Its message is
- *  [SledWords.BATCH_MODE_UNRECOVERABLE_MESSAGE], the honest end state: it
- *  names the one remedy known to work (Zebra's 123RFID Mobile app), says it
- *  should be a one-time fix, and says this app keeps batch mode off from
- *  then on (see [ZebraRfidReader.preventBatchMode]).
- *  Unlike `OperationFailureException`/`InvalidUsageException`, this is a
- *  plain Kotlin exception this app defines itself — constructible from a
- *  test, which is what makes a real end-to-end test of this failure message
- *  possible without a `com.zebra.*` type (see `ZebraRfidReaderTest`). */
+/**
+ * The cause of the connect failure after a second batch result in a row
+ * (ruling 28). Its message is [SledWords.BATCH_MODE_UNRECOVERABLE_MESSAGE],
+ * the honest end state: it names the one remedy known to work (Zebra's
+ * 123RFID Mobile app), says it should be a one-time fix, and says the app
+ * keeps batch mode off from then on.
+ */
 internal class BatchModeUnrecoverableException : Exception(SledWords.BATCH_MODE_UNRECOVERABLE_MESSAGE)
