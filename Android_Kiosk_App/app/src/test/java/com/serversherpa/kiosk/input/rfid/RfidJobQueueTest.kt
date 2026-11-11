@@ -64,10 +64,19 @@ class RfidJobQueueTest {
     private val eu = RfidRegion("ETSI", "Europe", hoppingConfigurable = true, channels = emptyList())
 
     /** Records every queued call and every start and stop, in order. While
-     *  [holdApply] is set, `apply()` waits on it. */
+     *  [holdApply] is set, `apply()` waits on it. While [holdConnectReturn]
+     *  is set, `connect()` waits on it after the fake's own connect is done,
+     *  so the link is up while the controller's connect call is still out. */
     private class Recorder(private val inner: FakeRfidReader) : RfidReader by inner {
         val calls = CopyOnWriteArrayList<String>()
         @Volatile var holdApply: CompletableDeferred<Unit>? = null
+        @Volatile var holdConnectReturn: CompletableDeferred<Unit>? = null
+
+        override suspend fun connect(request: SledConnectRequest): Result<Unit> {
+            val result = inner.connect(request)
+            holdConnectReturn?.await()
+            return result
+        }
 
         override suspend fun apply(settings: RfidSettings): Result<Unit> {
             calls += "apply:${settings.powerDbm}"
@@ -136,20 +145,34 @@ class RfidJobQueueTest {
      * trigger starts and stops, region loads and region writes from several
      * coroutines on a real thread pool. The fake records any two calls in
      * flight at once and any call during a running inventory; the test ending
-     * at all proves nothing deadlocked.
+     * at all proves nothing deadlocked, and the counted starts and bursts
+     * prove sweeps really ran.
      */
     @Test fun connectDisconnectPushLayoutStartStopAndRegionLoadNeverDeadlockOrOverlap() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         try {
             val reader = FakeRfidReader()
             reader.reportedRegions = RfidRegions(listOf(usa, eu), "USA")
+            val started = AtomicInteger(0)
+            val counting = object : RfidReader by reader {
+                override suspend fun startInventory(): Result<Unit> =
+                    reader.startInventory().onSuccess { started.incrementAndGet() }
+            }
             val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
-            val controller = RfidController(reader, settings, scope)
+            val controller = RfidController(counting, settings, scope)
+            val ended = AtomicInteger(0)
+            scope.launch { controller.bursts.collect { ended.incrementAndGet() } }
             val dropped = AtomicInteger(0)
-            fun emit(block: () -> Unit) {
+            fun emit(flow: Flow<*>, block: () -> Unit) {
                 // The fake's pull buffer holds 16; a stalled collector here is
-                // buffer pressure, not what this test is about.
-                try { block() } catch (e: IllegalStateException) { dropped.incrementAndGet() }
+                // buffer pressure, not what this test is about. A collector that
+                // died (nothing subscribed any more) fails the test.
+                try {
+                    block()
+                } catch (e: IllegalStateException) {
+                    if ((flow as MutableSharedFlow<*>).subscriptionCount.value == 0) throw e
+                    dropped.incrementAndGet()
+                }
             }
             runBlocking {
                 withTimeout(60_000) {
@@ -171,9 +194,9 @@ class RfidJobQueueTest {
                         },
                         launch(Dispatchers.Default) {
                             repeat(rounds * 3) { i ->
-                                emit { reader.emitTrigger(TriggerEvent.PRESSED) }
-                                emit { reader.emitTag("T15-$i") }
-                                emit { reader.emitTrigger(TriggerEvent.RELEASED) }
+                                emit(reader.pulls) { reader.emitTrigger(TriggerEvent.PRESSED) }
+                                emit(reader.tags) { reader.emitTag("T15-$i") }
+                                emit(reader.pulls) { reader.emitTrigger(TriggerEvent.RELEASED) }
                                 delay(3)
                             }
                         },
@@ -193,6 +216,7 @@ class RfidJobQueueTest {
             assertTrue("the link went up and down", reader.connectCalls > 1 && reader.disconnectCalls > 0)
             assertTrue("layouts were written", reader.layoutCalls.isNotEmpty())
             assertTrue("regions were read (emissions dropped for buffer pressure: $dropped)", reader.regionsCalls > 0)
+            assertTrue("sweeps ran: $started reads started, $ended bursts ended", started.get() > 0 && ended.get() > 0)
         } finally {
             scope.cancel()
         }
@@ -381,6 +405,34 @@ class RfidJobQueueTest {
         assertFalse(z.controller.layoutInForceUsesScanner.value)
     }
 
+    /**
+     * Ruling 27, with the connect and a layout write racing: the generation's
+     * layout write waits on the `applyGate` the connect holds, and when the
+     * connect's call returns both resume at once. Here the write runs first
+     * (a setting changed during the connect, and the sled left no read-back);
+     * the connect's own request must not replace it afterward.
+     */
+    @Test fun aLayoutWriteThatRunsBeforeTheConnectReturnsStaysTheRequestedLayout() = runTest {
+        val r = Rig(this)
+        r.fake.layoutResult = Result.failure(IllegalStateException(SledWords.TRIGGER_CHECK_FAILED))
+        r.controller.start(); settle()
+        val release = CompletableDeferred<Unit>()
+        r.reader.holdConnectReturn = release
+        backgroundScope.launch { r.controller.connectNow() }; settle()
+        assertTrue("the link is up", r.fake.connection.value is RfidConnection.Connected)
+        assertEquals("the connect request's, for now", SledTriggerLayout.RFID, r.controller.requestedLayout.value)
+        assertEquals("nothing is written while the connect holds the radio", emptyList<SledTriggerLayout>(), r.fake.layoutCalls)
+
+        r.settings.value = r.settings.value.copy(triggerLayout = SledTriggerLayout.BARCODE); settle()
+        release.complete(Unit); settle()
+
+        assertEquals(listOf(SledTriggerLayout.BARCODE), r.fake.layoutCalls)
+        assertNull("the write left no read-back", r.fake.info.value?.trigger)
+        assertEquals("the last write is what this sled was asked", SledTriggerLayout.BARCODE, r.controller.requestedLayout.value)
+        assertTrue(r.controller.layoutInForceUsesScanner.value)
+        assertEquals(emptyList<String>(), r.fake.violations)
+    }
+
     /** A sled that will not take the layout is asked once per generation, not
      *  in a loop. */
     @Test fun aSledThatRefusesTheLayoutIsWrittenOnlyOncePerGeneration() = runTest {
@@ -509,6 +561,29 @@ class RfidJobQueueTest {
 
         r.controller.disconnectNow(); settle()
         assertTrue(r.controller.loadRegions().exceptionOrNull() is SledNotConnected)
+    }
+
+    /** A region load runs on the queue's one consumer, not in its caller:
+     *  cancelling the caller (leaving the Admin tab) never cuts the read
+     *  short, so nothing else reaches the radio until the sled answers. */
+    @Test fun cancellingARegionLoadsCallerLeavesTheReadToFinish() = runTest {
+        val r = Rig(this)
+        r.fake.reportedRegions = RfidRegions(listOf(usa, eu), "USA")
+        connectedAndArmed(r)
+        val hold = CompletableDeferred<Unit>()
+        r.fake.holdNext = hold
+        val caller = backgroundScope.launch { r.controller.loadRegions() }; settle()
+        assertEquals("the read is out", 1, r.fake.regionsCalls)
+
+        caller.cancel(); settle()
+        r.fake.emitTrigger(TriggerEvent.PRESSED); settle()
+        assertNotNull(r.controller.session.value)
+        assertFalse("the start waits for the region read", r.fake.inventoryRunning)
+
+        hold.complete(Unit); settle()
+        assertTrue("then the read starts", r.fake.inventoryRunning)
+        assertEquals(listOf("regions", "start"), r.reader.calls)
+        assertEquals(emptyList<String>(), r.fake.violations)
     }
 
     /** Row 19: a settings push the sled never answers is reported after

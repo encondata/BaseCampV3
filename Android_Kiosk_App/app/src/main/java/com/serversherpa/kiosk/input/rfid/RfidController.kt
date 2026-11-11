@@ -147,15 +147,14 @@ object RfidOwner {
  * with one consumer, and the collectors only ever enqueue. Pushes coalesce to
  * the latest settings and layout writes to the latest layout, up to the
  * moment the call is made; a battery job is dropped when a sweep is open; a
- * region load is awaited by its caller (who runs it at once when nothing else
- * is queued). Each job first waits until no sweep is open (a layout write
- * first ends the open one, its tags queued), then takes `applyGate` with
- * `tryLock()` under `mutex`, so no job call lands between a START's
- * `startInventory()` and the stop that ends that sweep. Each call waits
- * [CALL_WAIT_MS]. A new generation reaching `Connected` queues one push and,
- * when the sled's read-back does not match the setting, one layout write.
- * Battery is asked after each sweep and after [BATTERY_IDLE_MS] with no
- * sweep and no other job while `Connected`.
+ * region load is awaited by its caller. Each job first waits until no sweep
+ * is open (a layout write first ends the open one, its tags queued), then
+ * takes `applyGate` with `tryLock()` under `mutex`, so no job call lands
+ * between a START's `startInventory()` and the stop that ends that sweep.
+ * Each call waits [CALL_WAIT_MS]. A new generation reaching `Connected`
+ * queues one push and, when the sled's read-back does not match the setting,
+ * one layout write. Battery is asked after each sweep and after
+ * [BATTERY_IDLE_MS] with no sweep and no other job while `Connected`.
  *
  * `arm()`, `disarm()` and `stopBurst()` are called from the UI thread and
  * must stay non-suspending, but their real work still has to happen on
@@ -384,7 +383,10 @@ class RfidController(
      *  generation comes up. */
     private class Requested(val generation: Int?, val layout: SledTriggerLayout)
 
-    @Volatile private var requested: Requested? = null
+    /** The connect replaces only its own in-flight instance when its call
+     *  returns (`compareAndSet`): a layout write can run between the link
+     *  coming up and that return, and the write is the later request. */
+    private val requested = AtomicReference<Requested?>(null)
 
     /** `current.triggerLayout`, readable without `mutex`. */
     @Volatile private var settingLayout: SledTriggerLayout = DEFAULT_RFID_SETTINGS.triggerLayout
@@ -414,9 +416,6 @@ class RfidController(
     private var layoutWanted: SledTriggerLayout? = null
     private val regionReplies = ArrayDeque<CompletableDeferred<Result<RfidRegions>>>()
     private val jobWake = Channel<Unit>(Channel.CONFLATED)
-    /** Held while a job runs: by the consumer, or by a region load its caller
-     *  runs itself because nothing else was queued. */
-    private val jobSlot = Mutex()
     private val jobConsumerStarted = AtomicBoolean(false)
     /** Counts finished jobs, so the battery timer restarts after each. */
     private val jobsDone = MutableStateFlow(0)
@@ -882,23 +881,12 @@ class RfidController(
      *  compliance setting, not part of [RfidSettings]: it is never pushed
      *  automatically, only read or set on explicit admin action, and never
      *  read at connect (the Admin tab asks). A job like the others: it waits
-     *  for any open sweep and runs alone on the radio, but its caller awaits
-     *  its result, and runs it itself when nothing else is queued. The reader
-     *  reports "not connected" when there is nothing to read; a read that
-     *  never answers fails with [SledWords.REGIONS_FAILED]. */
+     *  for any open sweep and runs alone on the radio, on the queue's one
+     *  consumer, and its caller awaits its result. Cancelling the caller
+     *  never cuts the read short. The reader reports "not connected" when
+     *  there is nothing to read; a read that never answers fails with
+     *  [SledWords.REGIONS_FAILED]. */
     suspend fun loadRegions(): Result<RfidRegions> {
-        if (_session.value == null && jobSlot.tryLock()) {
-            try {
-                if (synchronized(jobLock) { jobs.isEmpty() }) {
-                    val reply = CompletableDeferred<Result<RfidRegions>>()
-                    val call = checkNotNull(claimForJob(dropIfSweeping = false) { JobCall.Regions(reply) })
-                    runCall(call)
-                    return reply.await()
-                }
-            } finally {
-                jobSlot.unlock()
-            }
-        }
         val reply = CompletableDeferred<Result<RfidRegions>>()
         synchronized(jobLock) {
             regionReplies.addLast(reply)
@@ -1022,7 +1010,7 @@ class RfidController(
         scope.launch {
             while (true) {
                 jobWake.receive()
-                jobSlot.withLock { drainJobs() }
+                drainJobs()
             }
         }
     }
@@ -1056,7 +1044,7 @@ class RfidController(
         wakeJobs()
     }
 
-    /** Holding [jobSlot]: runs the queued jobs, oldest first, until none is left. */
+    /** The consumer's loop body: runs the queued jobs, oldest first, until none is left. */
     private suspend fun drainJobs() {
         while (true) {
             val kind = synchronized(jobLock) { jobs.firstOrNull() } ?: return
@@ -1180,7 +1168,7 @@ class RfidController(
      *  generation's [requestedLayout] when the call is made. */
     private suspend fun writeLayout(layout: SledTriggerLayout) {
         if (reader.connection.value !is RfidConnection.Connected) return
-        requested = Requested(reader.info.value?.generation, layout)
+        requested.set(Requested(reader.info.value?.generation, layout))
         refreshLayoutState()
         val result = withTimeoutOrNull(CALL_WAIT_MS) { guarded { reader.setTriggerLayout(layout) } }
         when {
@@ -1228,7 +1216,7 @@ class RfidController(
     /** The layout asked of [info]'s generation, or null. */
     private fun requestedFor(info: SledInfo?): SledTriggerLayout? {
         if (info == null) return null
-        val r = requested ?: return null
+        val r = requested.get() ?: return null
         return if (r.generation == null || r.generation == info.generation) r.layout else null
     }
 
@@ -1309,8 +1297,11 @@ class RfidController(
             return LinkOutcome.SKIPPED
         }
         // The request's layout belongs to whatever generation this attempt
-        // brings up (see requestedLayout).
-        requested = Requested(null, request.layout)
+        // brings up (see requestedLayout). Once the call returns it is bound
+        // to that generation, unless a layout write already replaced it: the
+        // generation's jobs resume with this call's return and can run first.
+        val inFlight = Requested(null, request.layout)
+        requested.set(inFlight)
         val result = try {
             awaitConnect(request) { sentence ->
                 _connectionError.value = sentence
@@ -1318,10 +1309,10 @@ class RfidController(
             }
         } catch (e: Throwable) {
             synchronized(retryLock) { dialing = false }
-            requested = null
+            requested.compareAndSet(inFlight, null)
             throw e
         }
-        requested = if (result.isSuccess) Requested(reader.info.value?.generation, request.layout) else null
+        requested.compareAndSet(inFlight, if (result.isSuccess) Requested(reader.info.value?.generation, request.layout) else null)
         refreshLayoutState()
         endAttempt(attempt, request, result)
         reply?.complete(result)

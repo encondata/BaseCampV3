@@ -771,25 +771,22 @@ class RfidControllerTest {
     }
 
     /**
-     * A reader whose `connect()` signals [connectStarted] and then hangs on
-     * [proceedConnect] until the test releases it — [SlowStopReader]'s
-     * mirror for the connect side, so it lives here for the same reason:
-     * `FakeRfidReader` has no need for this seam. `disconnect`/`apply`/
-     * `startInventory`/`stopInventory` and `triggers`/`tags` all delegate to
-     * a real `FakeRfidReader`.
+     * A reader whose `connect()` runs the inner `FakeRfidReader`'s whole
+     * connect first (so the link is `Connected`, with `info`), then hangs on
+     * [proceedConnect] until the test releases it: the link is up while the
+     * controller's own connect call, and the `applyGate` it holds, is still
+     * stuck. [SlowStopReader]'s mirror for the connect side, so it lives here
+     * for the same reason: `FakeRfidReader` has no need for this seam.
+     * Everything else delegates to the inner fake.
      */
     private class SlowConnectReader(private val inner: FakeRfidReader) : RfidReader by inner {
-        /** Completes the instant `connect()` is called. */
-        val connectStarted = CompletableDeferred<Unit>()
-
-        /** The test completes this once it wants `connect()` to actually
-         *  return. */
+        /** The test completes this once it wants `connect()` to return. */
         val proceedConnect = CompletableDeferred<Unit>()
 
         override suspend fun connect(request: SledConnectRequest): Result<Unit> {
-            connectStarted.complete(Unit)
+            val result = inner.connect(request)
             proceedConnect.await()
-            return inner.connect(request)
+            return result
         }
     }
 
@@ -881,12 +878,16 @@ class RfidControllerTest {
      * `connectForLifecycle()` is issued against a reader whose `connect()`
      * does not return until the test releases it, and `arm()` follows while
      * it is stuck. A pull starts a read only while the reader is `Connected`
-     * (row 4), so the proof that `armed` flipped true is a pull after the
-     * connect is released: it opens the live panel.
+     * (row 4), so the proof that `armed` flipped true is a pull while the
+     * link is already `Connected` but the controller's connect call is still
+     * stuck: START opens the live panel under `mutex` before it waits on the
+     * `applyGate` the connect holds, so the panel shows before the release,
+     * and the read starts right after it. With `arm()` starved behind the
+     * connect, that pull would find the trigger disarmed and open nothing.
      *
-     * The stuck connect also proves the other half of row 4: a pull while
-     * the reader is still `Connecting` opens nothing and never reaches the
-     * radio.
+     * The inner fake holding the connect in `Connecting` (`holdNext`) proves
+     * the other half of row 4: a pull while the reader is still `Connecting`
+     * opens nothing and never reaches the radio.
      */
     @Test fun aSlowLifecycleConnectDoesNotStarveArm() = runTest {
         val inner = FakeRfidReader()
@@ -895,13 +896,11 @@ class RfidControllerTest {
         val controller = RfidController(slowConnect, settings, backgroundScope) { 0L }
         controller.start(); settle()
 
+        val connecting = CompletableDeferred<Unit>()
+        inner.holdNext = connecting
         controller.connectForLifecycle { true }; settle()
-        assertTrue("connect() should have been called", slowConnect.connectStarted.isCompleted)
-        assertEquals(
-            "the reader must still look mid-connect: connect() hasn't returned yet",
-            false,
-            inner.connection.value is RfidConnection.Connected,
-        )
+        assertEquals("connect() should have been called", 1, inner.connectCalls)
+        assertEquals(RfidConnection.Connecting, inner.connection.value)
 
         // arm() lands on the separate arm/disarm/stop queue. Before the fix,
         // this sat behind the still-blocked Command.Connect in the one
@@ -913,8 +912,10 @@ class RfidControllerTest {
         assertEquals(false, inner.inventoryRunning)
         inner.emitTrigger(TriggerEvent.RELEASED); settle()
 
-        slowConnect.proceedConnect.complete(Unit); settle()
+        // The link comes up; the controller's connect call is still out.
+        connecting.complete(Unit); settle()
         assertTrue(inner.connection.value is RfidConnection.Connected)
+        assertNull("the connect's push waits for the connect call to return", inner.applied)
 
         // A trigger pull is the observable proof that arm() took effect:
         // onTrigger only opens the live panel when `armed` is true.
@@ -923,7 +924,11 @@ class RfidControllerTest {
             "arm() issued during the stuck lifecycle connect must have taken effect",
             controller.session.value != null,
         )
-        assertTrue(inner.inventoryRunning)
+        assertEquals("the start waits for the connect's applyGate", false, inner.inventoryRunning)
+
+        slowConnect.proceedConnect.complete(Unit); settle()
+        assertTrue("the read starts once the connect returns", inner.inventoryRunning)
+        assertEquals(emptyList<String>(), inner.violations)
     }
 
     /**
