@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.util.Log
+import com.serversherpa.kiosk.core.rfid.BatchRecoveryPlan
 import com.serversherpa.kiosk.core.rfid.BondedDevice
 import com.serversherpa.kiosk.core.rfid.LinkTroubleTracker
 import com.serversherpa.kiosk.core.rfid.Precheck
@@ -27,6 +28,7 @@ import com.serversherpa.kiosk.core.rfid.TeardownPlan
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.core.rfid.TriggerPull
 import com.serversherpa.kiosk.core.rfid.VendorError
+import com.serversherpa.kiosk.core.rfid.batchRecoveryPlan
 import com.serversherpa.kiosk.core.rfid.bestStepDue
 import com.serversherpa.kiosk.core.rfid.classifyResult
 import com.serversherpa.kiosk.core.rfid.connectFailure
@@ -187,11 +189,27 @@ open class ZebraRfidReader(
     private var pendingCleanup: Thread? = null
     private var pendingCleanupBoundMs = CLEANUP_BOUND_MS
 
+    /**
+     * True when the last vendor open ended in a batch result, with no other
+     * open outcome since (a pre-check refusal leaves it as it was). A batch
+     * result now is then the second in a row, which only stops the radio
+     * ([batchRecoveryPlan], ruling 28). Read it on the worker, from
+     * [openVendorConnection].
+     */
+    protected val lastOpenWasBatch: Boolean get() = batchInARow
+
     /** One connection's vendor objects and its listener. */
     private class VendorLink(val readers: Readers, val listener: RfidEventsListener) {
         @Volatile var reader: RFIDReader? = null
         @Volatile var listenerAdded = false
     }
+
+    /**
+     * A failed connect's cleanup thread. It closes [vendor], the link its
+     * attempt built, captured on the worker when the cleanup started: never
+     * whatever [link] holds by the time the thread runs.
+     */
+    private class CleanupThread(val vendor: VendorLink?, body: Runnable, name: String) : Thread(body, name)
 
     /** A region refusal (or a region reading `NA`) surfaced in setup: the link stays up as `NeedsRegion`. */
     private class RegionNotConfigured : Exception()
@@ -232,7 +250,9 @@ open class ZebraRfidReader(
      * successful connect; a second batch result in a row is the end state,
      * [SledWords.BATCH_MODE_UNRECOVERABLE_MESSAGE] with a
      * [BatchModeUnrecoverableException] cause. A failure is a
-     * [SledConnectException] whose `failed` is the state just published.
+     * [SledConnectException] whose `failed` is the state just published; an
+     * attempt overtaken by a newer call publishes nothing and returns
+     * [SledNotConnected].
      */
     final override suspend fun connect(request: SledConnectRequest): Result<Unit> {
         val generation = synchronized(stateLock) {
@@ -313,39 +333,59 @@ open class ZebraRfidReader(
 
     private fun linkCameUp(opened: SledInfo, chosen: Precheck.Chosen, generation: Int, needsRegion: Boolean): Result<Unit> {
         batchInARow = false
-        if (generation in lostGenerations || !vendorLinkUpQuietly()) {
-            Log.w(TAG, "The link to ${chosen.sled.name} was not up at the end of setup (generation $generation).")
-            cleanUpAfterFailedConnect(teardownPlan(linkUp = false, wroteLayout = wroteLayout), CLEANUP_BOUND_MS, generation)
-            return fail(generation, reached(chosen.sled.name))
-        }
+        val name = chosen.sled.name
+        if (generation in lostGenerations || !vendorLinkUpQuietly()) return notUpAtTheEnd(name, generation)
         val info = opened.copy(
             generation = generation,
             address = opened.address ?: chosen.sled.address,
             autoChosen = chosen.autoChosen,
         )
         val note = batchNote
-        val published = synchronized(stateLock) {
-            if (generation != currentGeneration) return@synchronized false
-            if (note != null) _connectNote.value = combineConnectNotes(_connectNote.value, note)
-            _info.value = info
-            _connection.update {
-                if (needsRegion) RfidConnection.NeedsRegion(info.name) else RfidConnection.Connected(info.name, null)
+        // The loss is checked again under the lock. A disconnect event that
+        // lands after the check above records its loss before it takes the
+        // lock, so either this sees it, or its write lands after this publish.
+        val outcome = synchronized(stateLock) {
+            when {
+                generation != currentGeneration -> Publish.STALE
+                generation in lostGenerations -> Publish.LOST
+                else -> {
+                    if (note != null) _connectNote.value = combineConnectNotes(_connectNote.value, note)
+                    _info.value = info
+                    _connection.update {
+                        if (needsRegion) RfidConnection.NeedsRegion(info.name) else RfidConnection.Connected(info.name, null)
+                    }
+                    Publish.DONE
+                }
             }
-            true
         }
-        if (!published) {
-            Log.i(TAG, "Generation $generation came up after a newer call; leaving its link to that call's teardown.")
-            return Result.failure(SledNotConnected())
+        when (outcome) {
+            Publish.STALE -> {
+                Log.i(TAG, "Generation $generation came up after a newer call; leaving its link to that call's teardown.")
+                return Result.failure(SledNotConnected())
+            }
+            Publish.LOST -> return notUpAtTheEnd(name, generation)
+            Publish.DONE -> Unit
         }
         batchNote = null
         Log.i(TAG, "${info.name} is ${if (needsRegion) "up with no region set" else "connected"} (generation $generation).")
         return Result.success(Unit)
     }
 
+    /** What the publish at the end of a connect found under the lock. */
+    private enum class Publish { DONE, STALE, LOST }
+
+    /** A link that recorded a loss, or is not up, at the end of setup: cleaned up, and failed retryably. */
+    private fun notUpAtTheEnd(name: String, generation: Int): Result<Unit> {
+        Log.w(TAG, "The link to $name was not up at the end of setup (generation $generation).")
+        cleanUpAfterFailedConnect(teardownPlan(linkUp = false, wroteLayout = wroteLayout), CLEANUP_BOUND_MS, generation)
+        return fail(generation, reached(name))
+    }
+
     private fun batchCleared(purged: Boolean, generation: Int): Result<Unit> {
         cleanUpAfterFailedConnect(teardownPlan(linkUp = false, wroteLayout = false), BATCH_CLEANUP_BOUND_MS, generation)
-        batchNote = if (purged) SledWords.BATCH_CLEARED_NOTE else SledWords.BATCH_NOT_CLEARED_NOTE
         if (batchInARow) {
+            // This open only stopped the radio (batchRecoveryPlan), so the note
+            // stays the one from the recovery that ran the purge.
             Log.w(TAG, "Batch mode: a second batch result in a row. Stopping here instead of clearing again.")
             return fail(
                 generation,
@@ -354,13 +394,28 @@ open class ZebraRfidReader(
             )
         }
         batchInARow = true
+        batchNote = if (purged) SledWords.BATCH_CLEARED_NOTE else SledWords.BATCH_NOT_CLEARED_NOTE
         return fail(generation, RfidConnection.Failed(SledWords.BATCH_CLEARED_RETRYING, retryable = true))
     }
 
-    /** Publishes [failed] when [generation] is still current, and returns it as the connect's failure. */
+    /**
+     * Publishes [failed] when [generation] is still current, and returns it as
+     * the connect's failure. An attempt overtaken by a newer call publishes
+     * nothing and returns [SledNotConnected], so a [SledConnectException]
+     * always carries the state just published.
+     */
     private fun fail(generation: Int, failed: RfidConnection.Failed, cause: Throwable? = null): Result<Unit> {
-        synchronized(stateLock) {
-            if (generation == currentGeneration) _connection.update { failed }
+        val published = synchronized(stateLock) {
+            if (generation == currentGeneration) {
+                _connection.update { failed }
+                true
+            } else {
+                false
+            }
+        }
+        if (!published) {
+            Log.i(TAG, "Generation $generation failed after a newer call (${failed.reason}); publishing nothing.")
+            return Result.failure(SledNotConnected())
         }
         val e = SledConnectException(failed)
         if (cause != null) e.initCause(cause)
@@ -395,13 +450,21 @@ open class ZebraRfidReader(
         return done.await()
     }
 
-    /** Starts the one cleanup of a failed attempt, on its own thread. Nothing to close: just drops the references. */
+    /**
+     * Starts the one cleanup of a failed attempt, on its own thread, against
+     * that attempt's link (captured here, on the worker). Nothing to close:
+     * just drops the references.
+     */
     private fun cleanUpAfterFailedConnect(plan: TeardownPlan, boundMs: Long, generation: Int) {
         if (!hasOpenVendorConnection()) {
             dropVendorRefs()
             return
         }
-        val thread = Thread({ closeQuietly(plan, "cleanup after a failed connect") }, "$CLEANUP_THREAD_PREFIX$generation")
+        val thread = CleanupThread(
+            link,
+            Runnable { closeQuietly(plan, "cleanup after a failed connect") },
+            "$CLEANUP_THREAD_PREFIX$generation",
+        )
         thread.isDaemon = true
         pendingCleanup = thread
         pendingCleanupBoundMs = boundMs
@@ -451,7 +514,7 @@ open class ZebraRfidReader(
     }
 
     private fun dropVendorRefs() {
-        link = null
+        forgetVendorConnection()
         openGeneration = NO_GENERATION
     }
 
@@ -528,7 +591,8 @@ open class ZebraRfidReader(
             when (e.results) {
                 RFIDResults.RFID_BATCHMODE_IN_PROGRESS -> {
                     logFailure("connect", e)
-                    return VendorOpen.BatchCleared(recoverFromBatchMode(rfid, vendor))
+                    val plan = batchRecoveryPlan(secondInARow = lastOpenWasBatch)
+                    return VendorOpen.BatchCleared(recoverFromBatchMode(rfid, vendor, plan))
                 }
                 RFIDResults.RFID_READER_REGION_NOT_CONFIGURED -> {
                     logFailure("connect", e)
@@ -564,6 +628,15 @@ open class ZebraRfidReader(
 
     /** True while vendor objects of a link (open, or failed and not cleaned up) are held. */
     protected open fun hasOpenVendorConnection(): Boolean = link != null
+
+    /**
+     * Drops the references to the link's vendor objects without closing them:
+     * after its teardown, or when a failed connect's cleanup outlived its
+     * bound (that cleanup keeps the link it captured). On the worker.
+     */
+    protected open fun forgetVendorConnection() {
+        link = null
+    }
 
     /** The vendor's own view of the link (`rfid.isConnected()`). */
     protected open fun vendorLinkUp(): Boolean = link?.reader?.isConnected() == true
@@ -735,31 +808,44 @@ open class ZebraRfidReader(
      * `connect()` said `RFID_BATCHMODE_IN_PROGRESS`: the link is up, the
      * sled's capabilities were not fetched. Registers only the listener and
      * the disconnect event (asking for trigger events without capabilities
-     * would tell the sled to leave them out), then, each step guarded and
-     * logged: stop, a pause, purge (false on failure), batch mode off (once
-     * more after a pause when refused as in progress), save. Returns whether
-     * the purge cleared the tags. The close runs as the failed connect's
-     * cleanup, bounded at [BATCH_CLEANUP_BOUND_MS]; the steps here are
-     * bounded by the vendor's own waits.
+     * would tell the sled to leave them out), then runs the steps [plan]
+     * allows, each guarded and logged: stop, a pause, purge (false on
+     * failure), batch mode off (once more after a pause when refused as in
+     * progress), save. A second batch result in a row gets only the stop
+     * (ruling 28). Returns whether a purge cleared the tags. The close runs as
+     * the failed connect's cleanup, bounded at [BATCH_CLEANUP_BOUND_MS]; the
+     * steps here are bounded by the vendor's own waits.
      */
-    private fun recoverFromBatchMode(rfid: RFIDReader, vendor: VendorLink): Boolean {
+    private fun recoverFromBatchMode(rfid: RFIDReader, vendor: VendorLink, plan: BatchRecoveryPlan): Boolean {
         _batchRecovery.value = true
-        Log.w(TAG, "Batch-mode recovery: the sled is holding tags from offline use. Clearing them.")
+        Log.w(
+            TAG,
+            if (plan.purge) {
+                "Batch-mode recovery: the sled is holding tags from offline use. Clearing them."
+            } else {
+                "Batch-mode recovery: a second batch result in a row. Stopping the radio only; no second purge or save."
+            },
+        )
         recoveryStep("disconnect event") { registerLinkEvents(rfid, vendor) }
-        recoveryStep("stop") { rfid.Actions.Inventory.stop() }
-        pause(BATCH_PAUSE_MS)
-        val purged = recoveryStep("purge") { rfid.Actions.purgeTags() } == true
-        recoveryStep("batch mode off") {
-            try {
-                rfid.Config.setBatchMode(BATCH_MODE.DISABLE)
-            } catch (e: OperationFailureException) {
-                if (e.results != RFIDResults.RFID_OPERATION_IN_PROGRESS) throw e
-                logFailure("batch mode off", e)
-                pause(BATCH_PAUSE_MS)
-                rfid.Config.setBatchMode(BATCH_MODE.DISABLE)
+        if (plan.stop) recoveryStep("stop") { rfid.Actions.Inventory.stop() }
+        var purged = false
+        if (plan.purge) {
+            pause(BATCH_PAUSE_MS)
+            purged = recoveryStep("purge") { rfid.Actions.purgeTags() } == true
+        }
+        if (plan.disableBatchMode) {
+            recoveryStep("batch mode off") {
+                try {
+                    rfid.Config.setBatchMode(BATCH_MODE.DISABLE)
+                } catch (e: OperationFailureException) {
+                    if (e.results != RFIDResults.RFID_OPERATION_IN_PROGRESS) throw e
+                    logFailure("batch mode off", e)
+                    pause(BATCH_PAUSE_MS)
+                    rfid.Config.setBatchMode(BATCH_MODE.DISABLE)
+                }
             }
         }
-        recoveryStep("save") { rfid.Config.saveConfig() }
+        if (plan.saveConfig) recoveryStep("save") { rfid.Config.saveConfig() }
         return purged
     }
 
@@ -780,14 +866,24 @@ open class ZebraRfidReader(
     }
 
     /**
-     * Teardown steps 2 to 4 for [link], each guarded on its own: only when
+     * Teardown for the link this thread may close: on a failed connect's
+     * cleanup thread, the link captured for that attempt ([CleanupThread]);
+     * on the worker, [link].
+     */
+    private fun tearDownVendor(plan: TeardownPlan) {
+        val current = Thread.currentThread()
+        val vendor = (if (current is CleanupThread) current.vendor else link) ?: return
+        tearDownVendor(plan, vendor)
+    }
+
+    /**
+     * Teardown steps 2 to 4 for [vendor], each guarded on its own: only when
      * [plan] says the link is up, stop and the batch-mode safety step; then
      * remove the listener and disconnect; then dispose the `Readers`, which
      * throws when no reader object was built. Runs on the worker, or on a
      * failed connect's cleanup thread against that attempt's objects.
      */
-    private fun tearDownVendor(plan: TeardownPlan) {
-        val vendor = link ?: return
+    private fun tearDownVendor(plan: TeardownPlan, vendor: VendorLink) {
         val rfid = vendor.reader
         if (rfid != null) {
             if (plan.stopInventory) teardownStep("stop") { rfid.Actions?.Inventory?.stop() }

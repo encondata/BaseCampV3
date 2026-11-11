@@ -16,6 +16,23 @@ fun teardownPlan(linkUp: Boolean, wroteLayout: Boolean): TeardownPlan =
         TeardownPlan(stopInventory = true, disableBatchMode = true, saveConfig = !wroteLayout)
     }
 
+/** What the adapter runs when `connect()` says `RFID_BATCHMODE_IN_PROGRESS` (spec, Special connect results). */
+data class BatchRecoveryPlan(val stop: Boolean, val purge: Boolean, val disableBatchMode: Boolean, val saveConfig: Boolean)
+
+/**
+ * Ruling 28, one recovery then stop. The first batch result in a row runs the
+ * whole recovery: stop, purge, batch mode off, save. A [secondInARow] (the
+ * open before this one was a batch result too) only stops the radio and goes
+ * to the end state, so a sled holding stored tags gets one purge-and-save
+ * cycle, not one per Connect press.
+ */
+fun batchRecoveryPlan(secondInARow: Boolean): BatchRecoveryPlan =
+    if (secondInARow) {
+        BatchRecoveryPlan(stop = true, purge = false, disableBatchMode = false, saveConfig = false)
+    } else {
+        BatchRecoveryPlan(stop = true, purge = true, disableBatchMode = true, saveConfig = true)
+    }
+
 /**
  * Whether the sled's scanner session should be open (ruling 7): the link is
  * [connected], the layout in force uses the scanner, the phone is not a

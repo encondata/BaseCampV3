@@ -2,6 +2,7 @@ package com.serversherpa.kiosk.input.rfid
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.serversherpa.kiosk.core.rfid.BatchRecoveryPlan
 import com.serversherpa.kiosk.core.rfid.Precheck
 import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.SledCandidate
@@ -9,11 +10,13 @@ import com.serversherpa.kiosk.core.rfid.SledConnectException
 import com.serversherpa.kiosk.core.rfid.SledConnectRequest
 import com.serversherpa.kiosk.core.rfid.SledFix
 import com.serversherpa.kiosk.core.rfid.SledInfo
+import com.serversherpa.kiosk.core.rfid.SledNotConnected
 import com.serversherpa.kiosk.core.rfid.SledTriggerLayout
 import com.serversherpa.kiosk.core.rfid.SledWords
 import com.serversherpa.kiosk.core.rfid.TeardownPlan
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.core.rfid.TriggerPull
+import com.serversherpa.kiosk.core.rfid.batchRecoveryPlan
 import com.serversherpa.kiosk.core.rfid.teardownPlan
 import com.zebra.rfid.api3.OperationFailureException
 import com.zebra.rfid.api3.RFIDResults
@@ -21,8 +24,10 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
@@ -65,12 +70,16 @@ class ZebraRfidReaderTest {
      * The adapter with its vendor seams replaced. [onOpen] decides what the
      * open returns (or throws); [onClose] runs inside each close. [events]
      * records "open" and "close" in order; [plans] records each close's plan.
-     * The open marks the fake link attached before [onOpen] runs, so a throw
-     * from [onOpen] leaves something for the failed-connect cleanup to close.
+     * [attached] stands for the real link field: the open sets it before
+     * [onOpen] runs (so a throw from [onOpen] leaves something for the
+     * failed-connect cleanup to close), and only the adapter dropping its
+     * references clears it, never the close itself. [lastOpenWasBatchSeen]
+     * records, per open, whether the open before it was a batch result.
      */
     private class SeamReader(context: Context, scope: CoroutineScope) : ZebraRfidReader(context, scope) {
         val events = CopyOnWriteArrayList<String>()
         val plans = CopyOnWriteArrayList<TeardownPlan>()
+        val lastOpenWasBatchSeen = CopyOnWriteArrayList<Boolean>()
 
         @Volatile var attached = false
         @Volatile var linkUp = true
@@ -83,6 +92,7 @@ class ZebraRfidReaderTest {
         @Volatile var onOpen: (SledCandidate, Int) -> VendorOpen =
             { sled, generation -> VendorOpen.Up(SledInfo(generation, sled.name, sled.address)) }
         @Volatile var onClose: () -> Unit = {}
+        @Volatile var onLinkUpCheck: () -> Unit = {}
         @Volatile var closeThread: String? = null
 
         val openCalls: Int get() = events.count { it == "open" }
@@ -92,11 +102,15 @@ class ZebraRfidReaderTest {
 
         override fun hasOpenVendorConnection(): Boolean = attached
 
-        override fun vendorLinkUp(): Boolean = linkUp
+        override fun vendorLinkUp(): Boolean {
+            onLinkUpCheck()
+            return linkUp
+        }
 
         override fun openVendorConnection(sled: SledCandidate, request: SledConnectRequest, generation: Int): VendorOpen {
             events += "open"
             lastOpenGeneration = generation
+            lastOpenWasBatchSeen += lastOpenWasBatch
             attached = true
             return onOpen(sled, generation)
         }
@@ -106,6 +120,9 @@ class ZebraRfidReaderTest {
             plans += plan
             closeThread = Thread.currentThread().name
             onClose()
+        }
+
+        override fun forgetVendorConnection() {
             attached = false
         }
     }
@@ -282,6 +299,91 @@ class ZebraRfidReaderTest {
         assertEquals(RfidConnection.Disconnected, r.connection.value)
     }
 
+    @Test fun aCleanupThatOutlivesItsBoundIsAbandonedAndNeverRunTwice() = runTest {
+        // Real time: the bound is the companion's 5 s.
+        val closeEntered = CountDownLatch(1)
+        val releaseClose = CountDownLatch(1)
+        val r = seamReader(backgroundScope)
+        r.onOpen = { _, _ -> throw IllegalStateException("simulated partway failure") }
+        r.onClose = {
+            closeEntered.countDown()
+            releaseClose.await(3 * ZebraRfidReader.CLEANUP_BOUND_MS, TimeUnit.MILLISECONDS)
+        }
+        try {
+            assertTrue(r.connect(request).isFailure)
+            assertTrue("the cleanup's close has started", withContext(Dispatchers.IO) { closeEntered.awaitBriefly() })
+            r.onOpen = { sled, generation -> VendorOpen.Up(SledInfo(generation, sled.name, sled.address)) }
+
+            val startedNs = System.nanoTime()
+            val next = withContext(Dispatchers.Default) {
+                withTimeout(2 * ZebraRfidReader.CLEANUP_BOUND_MS) { r.connect(request) }
+            }
+            val waitedMs = (System.nanoTime() - startedNs) / 1_000_000L
+
+            assertTrue("the next block goes on without the stuck cleanup", next.isSuccess)
+            assertTrue("it waited out the bound first ($waitedMs ms)", waitedMs >= ZebraRfidReader.CLEANUP_BOUND_MS - 100)
+            assertEquals(RfidConnection.Connected("RFD4031", null), r.connection.value)
+            assertEquals("the abandoned cleanup's link is dropped, not closed again", 1, r.closeCalls)
+            assertEquals(2, r.openCalls)
+            assertTrue("the new link is untouched", r.attached)
+        } finally {
+            releaseClose.countDown()
+        }
+    }
+
+    @Test fun aConnectStaleWhenItsBlockStartsMakesNoVendorCall() = runTest {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val r = seamReader(backgroundScope)
+        r.onOpen = { sled, generation ->
+            entered.countDown()
+            release.awaitBriefly()
+            VendorOpen.Up(SledInfo(generation, sled.name, sled.address))
+        }
+        val held = async(Dispatchers.Default) { r.connect(request) }
+        assertTrue(withContext(Dispatchers.IO) { entered.awaitBriefly() })
+
+        // Both are posted now, behind the held block: a connect, then a disconnect.
+        val queued = async(start = CoroutineStart.UNDISPATCHED) { r.connect(request) }
+        val disconnecting = async(start = CoroutineStart.UNDISPATCHED) { r.disconnect() }
+        assertEquals(RfidConnection.Disconnected, r.connection.value)
+        release.countDown()
+
+        assertTrue("the queued connect is stale when it starts", realWait { queued.await() }.exceptionOrNull() is SledNotConnected)
+        assertTrue("the held connect came up after newer calls", realWait { held.await() }.exceptionOrNull() is SledNotConnected)
+        realWait { disconnecting.await() }
+        assertEquals("the stale connect makes no vendor call", 1, r.openCalls)
+        assertEquals(RfidConnection.Disconnected, r.connection.value)
+        assertNull(r.info.value)
+        assertEquals("the disconnect tears the held connect's link down", 1, r.closeCalls)
+    }
+
+    @Test fun aFailureAfterANewerCallPublishesNothingAndReturnsNotConnected() = runTest {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val r = seamReader(backgroundScope)
+        r.onOpen = { _, _ ->
+            entered.countDown()
+            release.awaitBriefly()
+            throw IllegalStateException("simulated partway failure")
+        }
+        val held = async(Dispatchers.Default) { r.connect(request) }
+        assertTrue(withContext(Dispatchers.IO) { entered.awaitBriefly() })
+        val disconnecting = async(start = CoroutineStart.UNDISPATCHED) { r.disconnect() }
+        assertEquals(RfidConnection.Disconnected, r.connection.value)
+
+        release.countDown()
+        val result = realWait { held.await() }
+
+        assertTrue(
+            "a failure that was never published is not a connect failure, got ${result.exceptionOrNull()}",
+            result.exceptionOrNull() is SledNotConnected,
+        )
+        realWait { disconnecting.await() }
+        assertEquals(RfidConnection.Disconnected, r.connection.value)
+        assertEquals("the failed attempt's cleanup closes it once", 1, r.closeCalls)
+    }
+
     // ── loss detection ──
 
     @Test fun aLossRecordedDuringSetupFailsTheConnectRetryably() = runTest {
@@ -298,6 +400,35 @@ class ZebraRfidReaderTest {
         assertNull("info is never set for a connect that did not come up", r.info.value)
         r.disconnect()   // joins the cleanup
         assertEquals(listOf(teardownPlan(linkUp = false, wroteLayout = false)), r.plans.toList())
+    }
+
+    @Test fun aLossBetweenTheLastCheckAndThePublishStillFailsTheConnect() = runTest {
+        // The disconnect event lands after setup's last loss check, while the
+        // vendor is asked whether the link is up, just before the publish.
+        // The loss is checked again under the state lock, so the connect
+        // fails retryably instead of showing a dead link as up.
+        for (needsRegion in listOf(false, true)) {
+            val r = seamReader(backgroundScope)
+            if (needsRegion) {
+                r.onOpen = { sled, generation -> VendorOpen.NoRegion(SledInfo(generation, sled.name, sled.address)) }
+            }
+            var fired = false
+            r.onLinkUpCheck = {
+                if (!fired) {
+                    fired = true
+                    r.onLinkLost(r.currentGeneration)
+                }
+            }
+
+            val result = r.connect(request)
+
+            assertEquals("needsRegion = $needsRegion", reached, failedOf(result))
+            assertEquals(reached, r.connection.value)
+            assertNull("info is never set for a connect that did not come up", r.info.value)
+            r.disconnect()   // joins the cleanup
+            assertEquals(listOf(teardownPlan(linkUp = false, wroteLayout = false)), r.plans.toList())
+            assertEquals(1, r.closeCalls)
+        }
     }
 
     @Test fun aStaleGenerationLossChangesNothing() = runTest {
@@ -566,6 +697,40 @@ class ZebraRfidReaderTest {
         assertTrue("expected a Failed state, got $state", state is RfidConnection.Failed)
         assertEquals(SledWords.BATCH_MODE_UNRECOVERABLE_MESSAGE, (state as RfidConnection.Failed).reason)
         assertEquals(2, r.openCalls)
+    }
+
+    @Test fun aSecondBatchResultInARowGetsOnlyAStopAndKeepsTheRecoverysNote() = runTest {
+        // Ruling 28, one recovery then stop. Each open learns whether the open
+        // before it was a batch result (lastOpenWasBatch), and
+        // batchRecoveryPlan turns that into the steps it runs: the whole
+        // recovery the first time, only a stop after that. A stuck sled gets
+        // one purge and one save, not one per Connect press.
+        val r = seamReader(backgroundScope)
+        var opens = 0
+        r.onOpen = { sled, generation ->
+            opens++
+            when (opens) {
+                1 -> VendorOpen.BatchCleared(purged = true)
+                2, 3 -> VendorOpen.BatchCleared(purged = false)   // a stop-only open purges nothing
+                else -> VendorOpen.Up(SledInfo(generation, sled.name, sled.address))
+            }
+        }
+        val unrecoverable = RfidConnection.Failed(SledWords.BATCH_MODE_UNRECOVERABLE_MESSAGE)
+
+        assertEquals(RfidConnection.Failed(SledWords.BATCH_CLEARED_RETRYING, retryable = true), failedOf(r.connect(request)))
+        assertEquals(unrecoverable, failedOf(r.connect(request)))
+        assertEquals("a third batch result is the end state again, with no new recovery", unrecoverable, failedOf(r.connect(request)))
+        assertTrue(r.connect(request).isSuccess)
+        assertEquals("the note is the one recovery's, which purged", SledWords.BATCH_CLEARED_NOTE, r.connectNote.value)
+        assertTrue(r.connect(request).isSuccess)
+
+        assertEquals(listOf(false, true, true, true, false), r.lastOpenWasBatchSeen.toList())
+        val full = BatchRecoveryPlan(stop = true, purge = true, disableBatchMode = true, saveConfig = true)
+        val stopOnly = BatchRecoveryPlan(stop = true, purge = false, disableBatchMode = false, saveConfig = false)
+        assertEquals(
+            listOf(full, stopOnly, stopOnly),
+            r.lastOpenWasBatchSeen.take(3).map { batchRecoveryPlan(secondInARow = it) },
+        )
     }
 
     // ── tags and trigger pulls ──

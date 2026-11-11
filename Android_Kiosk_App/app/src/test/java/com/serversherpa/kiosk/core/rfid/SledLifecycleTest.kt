@@ -5,7 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Teardown, the scanner session's gate, the region arguments and the best-step deadline. */
+/** Teardown, the batch recovery's steps, the scanner session's gate, the region arguments and the best-step deadline. */
 class SledLifecycleTest {
     @Test fun teardownStopsAndDisablesOnlyWhenTheLinkIsUp() {
         val down = TeardownPlan(stopInventory = false, disableBatchMode = false, saveConfig = false)
@@ -21,6 +21,19 @@ class SledLifecycleTest {
         assertEquals(
             TeardownPlan(stopInventory = true, disableBatchMode = true, saveConfig = false),
             teardownPlan(linkUp = true, wroteLayout = true),
+        )
+    }
+
+    @Test fun aBatchResultGetsOneRecoveryThenOnlyAStop() {
+        // Ruling 28: one recovery, then stop. A sled still batching at the
+        // next connect gets its radio stopped, and no second purge or save.
+        assertEquals(
+            BatchRecoveryPlan(stop = true, purge = true, disableBatchMode = true, saveConfig = true),
+            batchRecoveryPlan(secondInARow = false),
+        )
+        assertEquals(
+            BatchRecoveryPlan(stop = true, purge = false, disableBatchMode = false, saveConfig = false),
+            batchRecoveryPlan(secondInARow = true),
         )
     }
 
