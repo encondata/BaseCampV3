@@ -27,7 +27,17 @@ def ks(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("KIOSK_DIR", str(tmp_path / "kiosk"))
-    return load()
+    mod = load()
+    # Never the real edge: by default its /config.js says the lockdown is there.
+    mod.fetch_text = lambda url, timeout=5: CAPABLE_JS
+    return mod
+
+
+CAPABLE_JS = ('window.__KIOSK_CONFIG__ = { apiUrl: window.location.origin, portalUrl: "https://p.test", '
+              '"mode": "laptop", "lanAccess": false, "hostOs": "linux", '
+              '"identity": {"serial": "K-1", "name": "Kiosk 1"} };\n')
+OLD_JS = ('window.__KIOSK_CONFIG__ = { apiUrl: window.location.origin, portalUrl: "https://p.test", '
+          '"mode": "laptop", "lanAccess": false, "identity": {"serial": "K-1", "name": "Kiosk 1"} };\n')
 
 
 def done(cmd, rc=0, out="", err=""):
@@ -1091,3 +1101,179 @@ def test_sigterm_to_run_closes_chrome_and_restores(ks, tmp_path):
     assert marks.read_text().splitlines()[-1] == "restore"
     assert _gone(chrome_pid)
     assert "kiosk session ended" in (ks.state_dir() / "session.log").read_text()
+
+
+# ── Final fix round: lockdown capability, watcher backoff, stop-chrome ──
+def test_lockdown_support_reads_the_hostos_key(ks):
+    assert ks.lockdown_support(CAPABLE_JS) is True
+    assert ks.lockdown_support(OLD_JS) is False               # an old kiosk app: no key at all
+    # the key is there but host-network.json isn't written yet: not confirmed, not refused
+    assert ks.lockdown_support(CAPABLE_JS.replace('"linux"', "null")) is None
+
+
+def _capability_session(ks, monkeypatch, config):
+    """A session whose cloud has answered and whose edge answers; config is
+    what /config.js returns (a list, popped per fetch)."""
+    fetched = []
+    monkeypatch.setattr(ks, "url_answers", lambda url, timeout=5: True)
+    monkeypatch.setattr(ks, "fetch_text", lambda url, timeout=5: (fetched.append(url), config.pop(0))[1])
+    monkeypatch.setattr(ks, "EDGE_CACHE_S", 0)
+    s = ks.Session(TOKEN, "http://cloud.test")
+    s.cloud_ok = True
+    return s, fetched
+
+
+def test_marker_present_means_ready_to_forward(ks, monkeypatch):
+    s, fetched = _capability_session(ks, monkeypatch, [CAPABLE_JS])
+    assert s.ready_now() is True and s.lockdown is True
+    assert fetched == [ks.EDGE_CONFIG_URL] and not s.exit.is_set()
+    assert s.ready_now() is True and len(fetched) == 1        # cached while the edge stays up
+
+
+def test_no_forward_until_the_capability_is_confirmed(ks, monkeypatch):
+    s, fetched = _capability_session(ks, monkeypatch, [None, CAPABLE_JS.replace('"linux"', "null"), CAPABLE_JS])
+    s.edge_ok = True
+    assert s.ready is False                                   # the edge alone isn't enough
+    assert s.ready_now() is False                             # config.js didn't answer
+    assert s.ready_now() is False                             # hostOs still null
+    assert s.ready_now() is True and len(fetched) == 3
+    assert not s.exit.is_set() and not s.no_lockdown
+
+
+def test_marker_absent_ends_the_session(ks, monkeypatch):
+    s, _ = _capability_session(ks, monkeypatch, [OLD_JS])
+    assert s.ready_now() is False
+    assert s.no_lockdown is True and s.exit.is_set()
+    assert "no Esc" in (ks.state_dir() / "session.log").read_text()
+
+
+def test_the_capability_is_checked_again_after_the_edge_comes_back(ks, monkeypatch):
+    up = [True]
+    s, fetched = _capability_session(ks, monkeypatch, [CAPABLE_JS, OLD_JS])
+    monkeypatch.setattr(ks, "url_answers", lambda url, timeout=5: up[0])
+    assert s.ready_now() is True
+    up[0] = False
+    assert s.ready_now() is False and s.lockdown is None      # the edge went down: forgotten
+    up[0] = True
+    assert s.ready_now() is False and s.no_lockdown is True   # an update swapped in an old app
+    assert len(fetched) == 2
+
+
+def test_the_15s_check_re_reads_the_capability(ks, monkeypatch):
+    """A restart faster than the probes is still caught: check_once reads
+    /config.js every time; a refusal there ends the session too."""
+    s, fetched = _capability_session(ks, monkeypatch, [CAPABLE_JS, CAPABLE_JS, OLD_JS])
+    s.check_once()
+    assert s.ready and s.lockdown is True
+    s.check_once()
+    assert s.ready and len(fetched) == 2
+    s.check_once()
+    assert s.no_lockdown and s.exit.is_set()
+
+
+def test_state_endpoint_waits_for_the_capability(helper, ks, monkeypatch):
+    session, port = helper
+    monkeypatch.setattr(ks, "url_answers", lambda url, timeout=5: True)
+    monkeypatch.setattr(ks, "fetch_text", lambda url, timeout=5: None)
+    session.cloud_ok = True
+    out = json.loads(call(port, "GET", "/v1/state", token=TOKEN)[2])
+    assert out["ready"] is False
+
+
+def test_run_without_lockdown_support_stops_closes_restores_and_exits_3(ks, monkeypatch):
+    """The exit path, in order: the log line, the watcher stops, Chrome
+    closes, the desktop comes back; then the distinct exit code."""
+    events = []
+    monkeypatch.setattr(ks, "HELPER_PORT", 0)
+    monkeypatch.setattr(ks, "WATCH_S", 0.01)
+    monkeypatch.setattr(ks.signal, "signal", lambda *a: None)
+    chrome_up = threading.Event()        # the check answers once Chrome is open (no race)
+    monkeypatch.setattr(ks, "url_answers", lambda url, timeout=5: chrome_up.wait(5))
+    monkeypatch.setattr(ks, "fetch_text", lambda url, timeout=5: OLD_JS)
+    monkeypatch.setattr(ks, "ensure_start_icon", lambda: None)
+    monkeypatch.setattr(ks, "lock_desktop", lambda: events.append("lock") or 1)
+    monkeypatch.setattr(ks, "restore_desktop", lambda: events.append("restore") or True)
+    real_log = ks.log
+    monkeypatch.setattr(ks, "log", lambda m: (events.append("log: no lockdown") if "no Esc" in m else None,
+                                              real_log(m)))
+
+    class Chrome(FakeProc):
+        def poll(self):
+            return None              # stays open until it is closed
+    real_watch = ks.watch
+
+    def watch(session, browser):
+        real_watch(session, browser, launch=lambda b, u: (events.append("chrome"), chrome_up.set(), Chrome(0))[2])
+        events.append("watcher stopped")
+    monkeypatch.setattr(ks, "watch", watch)
+    monkeypatch.setattr(ks, "close_chrome", lambda p: events.append("close") if p is not None else None)
+    rc = ks.run("/usr/bin/google-chrome")
+    assert rc == ks.RC_NO_LOCKDOWN == 3
+    # the watcher's loop stops and closes Chrome; run's own close finds it closed
+    assert events == ["lock", "chrome", "log: no lockdown", "close", "watcher stopped", "close", "restore"]
+
+
+def test_watch_gives_up_after_five_fast_exits(ks, monkeypatch):
+    monkeypatch.setattr(ks, "WATCH_S", 0.001)
+    monkeypatch.setattr(ks, "RELAUNCH_DELAY_S", 0.001)
+    monkeypatch.setattr(ks, "close_chrome", lambda p: None)
+    s = ks.Session(TOKEN, "http://cloud.test")
+    launched = []
+    with pytest.raises(ks.ChromeKeepsClosing):
+        ks.watch(s, "/usr/bin/google-chrome", launch=lambda b, u: launched.append(1) or FakeProc(0))
+    assert len(launched) == ks.FAST_EXIT_LIMIT == 5 and ks.FAST_EXIT_S == 10
+    assert "closed 5 times within 10 s" in (ks.state_dir() / "session.log").read_text()
+
+
+def test_watch_a_slow_exit_resets_the_count(ks, monkeypatch):
+    monkeypatch.setattr(ks, "WATCH_S", 0.001)
+    monkeypatch.setattr(ks, "RELAUNCH_DELAY_S", 0.001)
+    monkeypatch.setattr(ks, "close_chrome", lambda p: None)
+    clock = [0.0]
+    monkeypatch.setattr(ks.time, "monotonic", lambda: clock[0])
+    s = ks.Session(TOKEN, "http://cloud.test")
+    n = [0]
+
+    class Proc(FakeProc):
+        def __init__(self, up_s):
+            super().__init__(0)
+            self.up_s = up_s
+
+        def poll(self):
+            clock[0] += self.up_s              # it stayed open this long
+            return super().poll()
+
+    def launch(b, u):
+        n[0] += 1
+        if n[0] == 9:
+            s.exit.set()
+        return Proc(30 if n[0] == 4 else 1)    # the 4th one stayed up 30 s
+    ks.watch(s, "/usr/bin/google-chrome", launch=launch)
+    assert n[0] == 9                             # never 5 fast ones in a row
+
+
+def test_run_ends_with_1_when_chrome_keeps_closing(ks, monkeypatch):
+    events = []
+    monkeypatch.setattr(ks, "HELPER_PORT", 0)
+    monkeypatch.setattr(ks.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(ks, "url_answers", lambda url, timeout=5: False)
+    monkeypatch.setattr(ks, "ensure_start_icon", lambda: None)
+    monkeypatch.setattr(ks, "lock_desktop", lambda: events.append("lock") or 1)
+    monkeypatch.setattr(ks, "restore_desktop", lambda: events.append("restore") or True)
+
+    def watch(session, browser):
+        raise ks.ChromeKeepsClosing()
+    monkeypatch.setattr(ks, "watch", watch)
+    assert ks.run("/usr/bin/google-chrome") == 1
+    assert events == ["lock", "restore"]
+
+
+def test_stop_chrome_cli_closes_the_kiosk_profile(ks, monkeypatch):
+    seen = []
+    monkeypatch.setattr(ks, "stop_kiosk_chrome", lambda profile: seen.append(profile))
+    assert ks.main(["stop-chrome", "--browser", "/usr/bin/google-chrome"]) == 0
+    assert seen == [ks.profile_dir("/usr/bin/google-chrome")]
+    seen.clear()
+    assert ks.main(["stop-chrome"]) == 0           # no browser known: both kiosk profiles
+    assert set(seen) == {ks.profile_dir("/usr/bin/google-chrome"), ks.profile_dir("/snap/bin/chromium")}
+    assert ks.main(["stop-chrome", "--browser"]) == 2

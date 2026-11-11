@@ -471,6 +471,7 @@ def _session_launch(tmp_path, rc):
     calls = tmp_path / "calls"
     body = (f'session_ready() {{ :; }}; run_session() {{ echo "run $*" >> "{calls}"; return {rc}; }}; '
             f'restore_session_desktop() {{ echo restore >> "{calls}"; }}; kiosk_answers() {{ :; }}; '
+            f'stop_session_chrome() {{ echo "stop-chrome $*" >> "{calls}"; }}; '
             f'run_browser() {{ echo "app $*" >> "{calls}"; }}; OS=Linux; main; echo rc=$?')
     r = _launch(tmp_path, body)
     return r, (calls.read_text().splitlines() if calls.exists() else [])
@@ -481,10 +482,31 @@ def test_launch_session_exit_zero_is_a_normal_exit(tmp_path):
     assert calls == ["run /usr/bin/google-chrome"] and "rc=0" in r.stdout
 
 
-def test_launch_session_crash_restores_then_opens_the_app_window(tmp_path):
-    r, calls = _session_launch(tmp_path, 1)
-    assert calls == ["run /usr/bin/google-chrome", "restore",
+@pytest.mark.parametrize("rc", [1, 3])   # 3: the kiosk app has no lockdown (RC_NO_LOCKDOWN)
+def test_launch_session_crash_closes_chrome_restores_then_opens_the_app_window(tmp_path, rc):
+    r, calls = _session_launch(tmp_path, rc)
+    assert calls == ["run /usr/bin/google-chrome", "stop-chrome /usr/bin/google-chrome", "restore",
                      "app /usr/bin/google-chrome --app=http://localhost:8090"]
+
+
+def test_launch_stop_session_chrome_calls_the_helper(tmp_path):
+    calls = tmp_path / "calls"
+    body = (f'python3() {{ echo "py $*" >> "{calls}"; return 1; }}; '
+            f'stop_session_chrome /usr/bin/google-chrome; restore_session_desktop; echo rc=$?')
+    r = _launch(tmp_path, body)
+    assert calls.read_text().splitlines() == [
+        f"py {tmp_path}/kiosk_session.py stop-chrome --browser /usr/bin/google-chrome",
+        f"py {tmp_path}/kiosk_session.py restore"]
+    assert "rc=0" in r.stdout          # a failing helper never stops the fallback
+
+
+def test_the_no_lockdown_code_matches_launch_sh(tmp_path):
+    """launch.sh's fallback comment and kiosk_session.py agree on rc 3."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ks_rc", LAUNCH_SH.parent / "kiosk_session.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.RC_NO_LOCKDOWN == 3 and "3 = the kiosk app has no lockdown" in LAUNCH_SH.read_text()
 
 
 def test_launch_detects_browser_when_none_configured_linux(tmp_path):

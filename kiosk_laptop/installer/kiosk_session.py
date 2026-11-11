@@ -21,6 +21,15 @@ update.sh (Linux only).
   kiosk_session.py restore [--cleanup]  put the desktop shortcuts back
                                         (install.sh --uninstall; --cleanup
                                         also removes the one-shot restore entry)
+  kiosk_session.py stop-chrome [--browser PATH]
+                                        close a Chrome left on the kiosk profile
+                                        (launch.sh, before its fallback window;
+                                        without --browser, both kiosk profiles)
+
+Exit codes of run: 0 a PIN exit (or another session already running); 1 the
+browser can't start or keeps closing; 3 (RC_NO_LOCKDOWN) the kiosk app on this
+laptop has no Esc → PIN exit. launch.sh opens the plain app window on any
+nonzero code.
 """
 from __future__ import annotations
 
@@ -28,6 +37,7 @@ import hmac
 import ipaddress
 import json
 import os
+import re
 import secrets
 import signal
 import subprocess
@@ -42,6 +52,11 @@ KIOSK_DIR = Path(os.environ.get("KIOSK_DIR") or Path(__file__).resolve().parent)
 KIOSK_URL = "http://localhost:8090"
 KIOSK_ORIGIN = KIOSK_URL
 EDGE_IDENTITY_URL = "http://127.0.0.1:8090/edge/identity"
+# The kiosk app's lockdown marker: the edge's /config.js has a "hostOs" key
+# (added in the same change set as the Esc → PIN pad). 127.0.0.1 as the
+# identity probe; the key is served whatever the Host.
+EDGE_CONFIG_URL = "http://127.0.0.1:8090/config.js"
+RC_NO_LOCKDOWN = 3          # run's exit code when the kiosk app lacks the lockdown
 DEFAULT_API_URL = "https://api.serversherpa.com"   # install.sh's default
 HELPER_HOST = "127.0.0.1"
 HELPER_PORT = 8092          # assumption: next to 8090 (UI) and 8091 (RFID reader)
@@ -56,6 +71,9 @@ PROBE_TIMEOUT_S = 5.0       # assumption
 EDGE_LIVE_TIMEOUT_S = 2.5   # assumption: /v1/state's own edge probe
 EDGE_CACHE_S = 2.0          # assumption: about the waiting page's poll
 CHROME_STOP_S = 5.0         # assumption: SIGTERM grace before SIGKILL
+FAST_EXIT_S = 10.0          # assumption: Chrome closing this soon after a launch is a "fast exit"
+FAST_EXIT_LIMIT = 5         # assumption: this many fast exits in a row end the session (rc 1)
+CONFIG_MAX_BYTES = 65536    # assumption: /config.js is well under 1 KB
 JOIN_WAIT_S = 45            # assumption: nmcli --wait
 JOIN_TIMEOUT_S = 60         # assumption
 MAX_BODY = 4096             # assumption
@@ -523,6 +541,37 @@ def url_answers(url: str, timeout: float = PROBE_TIMEOUT_S) -> bool:
         return False
 
 
+def fetch_text(url: str, timeout: float = PROBE_TIMEOUT_S) -> str | None:
+    """URL's body (at most CONFIG_MAX_BYTES) when it answers 2xx, else None."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "ServerSherpaKiosk"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            if not 200 <= r.status < 300:
+                return None
+            return r.read(CONFIG_MAX_BYTES).decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+_HOST_OS_KEY = re.compile(r"""["']?hostOs["']?\s*:""")
+_HOST_OS_LINUX = re.compile(r"""["']?hostOs["']?\s*:\s*["']linux["']""")
+
+
+def lockdown_support(config_js: str) -> bool | None:
+    """From the edge's /config.js: True when the kiosk app has the Esc → PIN
+    exit and will show it ("hostOs": "linux"); False when it is an older app
+    with no hostOs key at all (no way out of a locked desktop); None when the
+    key is there but not "linux" yet (hostnet.sh hasn't written host_os: the
+    page would hide the PIN pad, so not confirmed, but not refused either)."""
+    if not _HOST_OS_KEY.search(config_js):
+        return False
+    return True if _HOST_OS_LINUX.search(config_js) else None
+
+
+class ChromeKeepsClosing(Exception):
+    """Chrome closed FAST_EXIT_LIMIT times in a row within FAST_EXIT_S of its launch."""
+
+
 class Session:
     """What the helper, the check loop and the watcher share."""
 
@@ -542,10 +591,43 @@ class Session:
         self._sys_gen = 0              # bumped by forget_system: a refresh under way is dropped
         self._edge_lock = threading.Lock()
         self._edge_at: float | None = None   # monotonic time of the last edge answer
+        # The kiosk app supports the lockdown (lockdown_support): kept per edge
+        # start (forgotten when an edge probe fails, since an update can swap
+        # the image) and re-read by the 15 s check.
+        self.lockdown: bool | None = None
+        self.no_lockdown = False       # the edge's app has no lockdown: the session ends, rc 3
 
     @property
     def ready(self) -> bool:
-        return self.cloud_ok and self.edge_ok
+        return self.cloud_ok and self.edge_ok and self.lockdown is True
+
+    def _edge_answered(self, ok: bool, *, recheck: bool) -> None:
+        """After an edge probe (under _edge_lock). Down: the capability is
+        forgotten. Up: /config.js is read when the capability isn't known yet
+        (or recheck). An app without the marker ends the session: the
+        watcher stops, Chrome closes, the desktop comes back, rc 3."""
+        self.edge_ok = ok
+        self._edge_at = time.monotonic()
+        if not ok:
+            self.lockdown = None
+            return
+        if self.lockdown is True and not recheck:
+            return
+        text = fetch_text(EDGE_CONFIG_URL, timeout=EDGE_LIVE_TIMEOUT_S)
+        if text is None:
+            return                     # no answer this time: as it was
+        support = lockdown_support(text)
+        if support is False:
+            if not self.no_lockdown:
+                log("the kiosk app on this laptop has no Esc → PIN exit (its /config.js has no hostOs); "
+                    "ending the kiosk session so the kiosk opens in a plain window")
+            self.lockdown = False
+            self.no_lockdown = True
+            self.exit.set()
+            return
+        if support and self.lockdown is not True:
+            log("the kiosk app supports the lockdown")
+        self.lockdown = support
 
     def ready_now(self) -> bool:
         """ready, with the edge checked live (EDGE_LIVE_TIMEOUT_S) once the
@@ -557,8 +639,7 @@ class Session:
             return False
         with self._edge_lock:
             if self._edge_at is None or time.monotonic() - self._edge_at >= EDGE_CACHE_S:
-                self.edge_ok = url_answers(EDGE_IDENTITY_URL, timeout=EDGE_LIVE_TIMEOUT_S)
-                self._edge_at = time.monotonic()
+                self._edge_answered(url_answers(EDGE_IDENTITY_URL, timeout=EDGE_LIVE_TIMEOUT_S), recheck=False)
             return self.ready
 
     def system(self) -> dict:
@@ -604,8 +685,7 @@ class Session:
                 log(f"the cloud doesn't answer yet ({self.api_url}); trying every {CLOUD_CHECK_S} s")
             self._cloud_failing = not self.cloud_ok
         with self._edge_lock:
-            self.edge_ok = url_answers(EDGE_IDENTITY_URL)
-            self._edge_at = time.monotonic()
+            self._edge_answered(url_answers(EDGE_IDENTITY_URL), recheck=True)
 
     def check_loop(self) -> None:
         while not self.exit.is_set():
@@ -1054,7 +1134,11 @@ def close_chrome(proc: subprocess.Popen | None) -> None:
 def watch(session: Session, browser: str, launch=launch_chrome) -> None:
     """Chrome on the waiting page (which goes on to the kiosk once ready),
     reopened whenever it closes, until the session is told to exit. Then the
-    watcher stops and Chrome is closed."""
+    watcher stops and Chrome is closed. Chrome closing within FAST_EXIT_S of
+    its launch FAST_EXIT_LIMIT times in a row (a broken profile, a crash loop)
+    raises ChromeKeepsClosing: run ends the session with rc 1 and launch.sh
+    falls back to the plain window."""
+    fast = 0
     while not session.exit.is_set():
         try:
             proc = launch(browser, session.waiting_url)
@@ -1065,11 +1149,16 @@ def watch(session: Session, browser: str, launch=launch_chrome) -> None:
             log(f"can't start the browser {browser} ({exc.strerror or exc}); ending the kiosk session")
             raise
         session.chrome = proc
+        started = time.monotonic()
         while proc.poll() is None:
             if session.exit.wait(WATCH_S):
                 break
         if session.exit.is_set():
             break
+        fast = fast + 1 if time.monotonic() - started < FAST_EXIT_S else 0
+        if fast >= FAST_EXIT_LIMIT:
+            log(f"Chrome closed {fast} times within {FAST_EXIT_S:g} s of opening; ending the kiosk session")
+            raise ChromeKeepsClosing()
         log(f"Chrome closed (exit {proc.returncode}); opening it again")
         session.exit.wait(RELAUNCH_DELAY_S)
     close_chrome(session.chrome)
@@ -1099,8 +1188,8 @@ def run(browser: str) -> int:
         lock_desktop()
         threading.Thread(target=session.check_loop, name="cloud-check", daemon=True).start()
         watch(session, browser)
-    except OSError:
-        rc = 1            # the browser couldn't start (watch logged it)
+    except (OSError, ChromeKeepsClosing):
+        rc = 1            # the browser couldn't start or keeps closing (watch logged it)
     finally:
         session.exit.set()
         close_chrome(session.chrome)
@@ -1108,7 +1197,7 @@ def run(browser: str) -> int:
         server.shutdown()
         server.server_close()
         log("kiosk session ended")
-    return rc
+    return RC_NO_LOCKDOWN if session.no_lockdown else rc
 
 
 # ── Command line ──────────────────────────────────────────────────────
@@ -1120,6 +1209,12 @@ def main(argv: list[str]) -> int:
         if ok and argv[1:] == ["--cleanup"]:
             cleanup_restore_entry()
         return 0 if ok else 1
+    if argv[:1] == ["stop-chrome"] and (len(argv) == 1 or (len(argv) == 3 and argv[1] == "--browser" and argv[2])):
+        profiles = ([profile_dir(argv[2])] if len(argv) == 3
+                    else [profile_dir("google-chrome"), profile_dir("/snap/bin/chromium")])
+        for p in dict.fromkeys(profiles):
+            stop_kiosk_chrome(p)
+        return 0
     print(__doc__, file=sys.stderr)
     return 2
 

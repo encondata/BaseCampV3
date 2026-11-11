@@ -90,6 +90,9 @@ run_session() { python3 "$KIOSK_DIR/kiosk_session.py" run --browser "$1"; }
 # restore_session_desktop: the session can't start, so a desktop lock an
 # earlier session left is put back (never leave the shortcuts off).
 restore_session_desktop() { python3 "$KIOSK_DIR/kiosk_session.py" restore >/dev/null 2>&1 || true; }
+# stop_session_chrome BROWSER: a kiosk Chrome the session left behind (it
+# crashed, or ended without closing it) is closed before the app window opens.
+stop_session_chrome() { python3 "$KIOSK_DIR/kiosk_session.py" stop-chrome --browser "$1" >/dev/null 2>&1 || true; }
 
 main() {
   local b rc
@@ -101,7 +104,11 @@ main() {
       run_session "$b" || rc=$?
       # 0 = a normal PIN exit to the desktop: nothing more to do.
       [ "$rc" -eq 0 ] && return 0
-      # It crashed: put the desktop back, then the plain app window below.
+      # Any other code falls back: 3 = the kiosk app has no lockdown (an older
+      # kiosk image than this helper), 1 = the browser can't start or keeps
+      # closing, anything else = it crashed. Close its Chrome, put the desktop
+      # back, then the plain app window below.
+      stop_session_chrome "$b"
     fi
     restore_session_desktop
   fi
