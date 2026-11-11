@@ -422,8 +422,9 @@ def test_lock_keys_cover_the_four_groups(ks):
     assert keys[("org.gnome.desktop.wm.preferences", "num-workspaces")] == "1"
     assert keys[("org.gnome.desktop.wm.keybindings", "switch-to-workspace-12")] == "@as []"
     assert keys[("org.gnome.desktop.wm.keybindings", "move-to-workspace-last")] == "@as []"
-    # out of the approved list on purpose (spec §8)
-    assert ("org.gnome.desktop.wm.keybindings", "panel-run-dialog") not in keys
+    # Alt+F2 and Ctrl+Alt+T are real escapes, so they are locked too (spec §8)
+    assert keys[("org.gnome.desktop.wm.keybindings", "panel-run-dialog")] == "@as []"
+    assert keys[("org.gnome.settings-daemon.plugins.media-keys", "terminal")] == "@as []"
 
 
 def test_lock_saves_first_then_locks_and_restore_puts_everything_back(ks, monkeypatch):
@@ -766,6 +767,8 @@ LOCK_KEYS: tuple[tuple[str, str, str], ...] = (
     ("org.gnome.shell.extensions.dash-to-dock", "hot-keys", "false"),
     (_WM, "panel-main-menu", EMPTY),          # Alt+F1 opens the overview
     (_WM, "minimize", EMPTY),                 # Super+H
+    (_WM, "panel-run-dialog", EMPTY),         # Alt+F2 runs a command
+    ("org.gnome.settings-daemon.plugins.media-keys", "terminal", EMPTY),  # Ctrl+Alt+T
     # 2. Alt+Tab and the other window switchers
     *((_WM, k, EMPTY) for name in _SWITCHERS for k in (name, f"{name}-backward")),
     # 3. the Activities hot corner
@@ -2309,7 +2312,6 @@ current.
 
 Not blocked:
 - Ctrl+Alt+F1–F12 (text consoles), the power button, and Ctrl+Alt+Del;
-- Alt+F2 (run a command) and Ctrl+Alt+T (terminal);
 - the touchpad's three-finger swipe to the overview.
 
 If the shortcuts stay off: sign in, wait for the kiosk, press Esc and type

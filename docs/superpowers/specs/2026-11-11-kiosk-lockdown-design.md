@@ -283,9 +283,8 @@ forwards at once while ready.
 
 - Ctrl+Alt+F1–F12 virtual consoles, the power button and its GNOME dialog, and Ctrl+Alt+Del
   (log-out dialog).
-- **Alt+F2** (run a command) and **Ctrl+Alt+T** (terminal) are not in the approved list, so they are
-  left alone. Both are real escapes; adding `panel-run-dialog` and the media-keys `terminal` binding
-  is a one-line change each, pending a decision.
+- **Alt+F2** (run a command) and **Ctrl+Alt+T** (terminal) are locked too (`panel-run-dialog` and the
+  media-keys `terminal` binding), because both are real escapes.
 - Touchpad gestures. A three-finger swipe still opens the Activities overview; GNOME has no gsettings
   key for that. With one fixed workspace, the swipe has nowhere else to go.
 - Chrome's own dialogs (print, file pickers).
