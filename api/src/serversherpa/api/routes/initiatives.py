@@ -20,7 +20,7 @@ from serversherpa.access.scope import roster_row_condition, scope_conditions
 from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    AssetTotalsOut, ImportJobOut, InitiativeAssetOut, InitiativeAssetsAddIn,
+    AssetTotalsOut, ImportCommitIn, ImportJobOut, InitiativeAssetOut, InitiativeAssetsAddIn,
     InitiativeAssetSummary, InitiativeAssetUpdateIn, InitiativeCreateIn,
     InitiativeDetailOut, InitiativeItem, InitiativeLinkAddIn,
     InitiativeLinkRow, InitiativeLinksOut, InitiativeLinkUpdateIn,
@@ -34,6 +34,7 @@ from serversherpa.db.models import (
     InitiativeLink, InitiativePerson, Partner, Person, Site, StatusValue,
 )
 from serversherpa.db.ordering import natural
+from serversherpa.imports.client_choices import ChoiceError, stored_choices
 from serversherpa.imports.parsing import (
     MAX_BYTES, build_template_csv, build_template_xlsx, template_columns,
 )
@@ -1390,8 +1391,12 @@ async def get_move_asset_import_job(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> ImportJob:
-    # read-only status poll: scope-checked, but not globally anchored
-    return await _get_import_job(db, job_id, actor)
+    # read-only status poll: scope-checked first (a foreign id reads as 404),
+    # then global like every other import route: the results name the clients
+    # that own flagged serials
+    job = await _get_import_job(db, job_id, actor)
+    _require_global(actor)
+    return job
 
 
 @router.post("/assets/import-jobs/{job_id}/commit",
@@ -1399,6 +1404,7 @@ async def get_move_asset_import_job(
 async def commit_move_asset_import_job(
     job_id: uuid.UUID,
     db: DbSession,
+    body: ImportCommitIn | None = None,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> ImportJob:
     job = await _get_import_job(db, job_id, actor)
@@ -1406,6 +1412,30 @@ async def commit_move_asset_import_job(
     _require_move_job(job)
     if job.phase != "validate" or job.status != "completed":
         raise _err(409, "job_not_ready")
+    # the check ran against the move's client at the time; if the move has
+    # changed hands since, its conflicts (and Continue's target) are wrong
+    check_client = ((job.results or {}).get("summary") or {}).get("client_id")
+    move_client = await db.scalar(
+        select(Initiative.client_id).where(Initiative.id == job.initiative_id))
+    if check_client != (str(move_client) if move_client else None):
+        raise _err(409, "check_stale_client")
+    # every distinct serial the check flagged as another client's needs a
+    # choice; each is stored with the owner the check saw (a Continue
+    # applies only while the serial still belongs to that client)
+    try:
+        stored = stored_choices(body.client_choices if body else None,
+                                (job.results or {}).get("details"))
+    except ChoiceError as exc:
+        if exc.serials is not None:
+            raise _err(422, exc.code, serials=exc.serials) from None
+        raise _err(422, exc.code) from None
+    # ALWAYS replace the stored choices with this job's own flagged serials
+    # ({} when none): choices inherited or left from an earlier attempt must
+    # never apply to a conflict that first appears at commit time (that row
+    # is skipped without a fresh decision). Reassign, never mutate in place.
+    # check_client_id lets the worker repeat the stale-client guard.
+    job.options = {**(job.options or {}), "client_choices": stored,
+                   "check_client_id": check_client}
     job.phase = "commit"
     job.committed_by = actor.person.id      # not always the uploader: the worker tells both
     job.status = "queued"
@@ -1467,7 +1497,8 @@ async def reprocess_move_asset_import_job(
         kind=parent.kind, initiative_id=parent.initiative_id,
         created_by=actor.person.id, filename=parent.filename,
         file_key=parent.file_key,
-        options={**(parent.options or {}),
+        options={**{k: v for k, v in (parent.options or {}).items()
+                    if k not in ("client_choices", "check_client_id")},
                  "only_rows": review_rows,
                  "reprocess_of": str(parent.id)},
         phase="validate", status="queued")

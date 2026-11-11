@@ -156,7 +156,9 @@ function MoveSetupWizard() {
                     onDraft={setDraft} onNext={next} />
         )}
         {step === 1 && draft && (
-          <AssetsStep draft={draft} job={assetJob} setJob={setAssetJob}
+          <AssetsStep draft={draft} job={assetJob}
+                      clientName={lookups.clients.find(
+                        (c) => c.id === draft.payload?.move?.client_id)?.name ?? null} setJob={setAssetJob}
                       onBack={back} onSkip={skip('assets')} onNext={next} />
         )}
         {step === 2 && draft && crates && (

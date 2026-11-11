@@ -100,12 +100,15 @@ def recipients(done: JobDone) -> list[uuid.UUID]:
 
 def count_left_out(summary: dict | None) -> int:
     """How many rows of a From-To import's file were read but not imported, from the summary
-    the worker stored on the job: the rows with an error plus the rows whose make and model
-    needs review. `ImportJob.error_count` holds only the first kind, so it is not the number
-    on its own. The import page calls these rows "skipped", and a move setup records them as
-    `assets_left_out`."""
+    the worker stored on the job: the rows with an error, the rows whose make and model
+    needs review, and the rows skipped because their serial belongs to another client.
+    `ImportJob.error_count` holds only the first kind, so it is not the number on its own.
+    The import page calls these rows "skipped", and a move setup records them as
+    `assets_left_out`. Other jobs' summaries may carry a "skipped" count too; their notices
+    ignore the number."""
     summary = summary or {}
-    return int(summary.get("errors") or 0) + int(summary.get("review") or 0)
+    return (int(summary.get("errors") or 0) + int(summary.get("review") or 0)
+            + int(summary.get("skipped") or 0))
 
 
 def _link(template: str, initiative_id: uuid.UUID | None) -> str | None:

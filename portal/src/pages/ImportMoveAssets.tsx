@@ -18,10 +18,10 @@ import FixMakeModelDialog from '../components/initiatives/FixMakeModelDialog';
 import {
   cancelImportJob, commitImportJob, createMoveAssetImportJob,
   getImportJob, getInitiative, reprocessImportJob,
-  type ImportJobOut, type InitiativeDetail,
+  type ClientChoice, type ImportJobOut, type InitiativeDetail,
 } from '../lib/api';
 import {
-  countDetails, etaSeconds, IMPORT_ERRORS, importErrorMessage, jobIsActive,
+  CHOICES_HINT, conflictSerials, countDetails, etaSeconds, IMPORT_ERRORS, importErrorMessage, jobIsActive,
   rowsPerSecond, type SpeedSample,
 } from '../lib/moveAssetImport';
 import { clearHandedOffImportFile, peekHandedOffImportFile } from '../lib/importHandoff';
@@ -103,6 +103,11 @@ export default function ImportMoveAssets() {
   // itself changes (a fresh upload or a reprocess child both start clean).
   const [fixedTexts, setFixedTexts] = useState<Set<string>>(new Set());
   useEffect(() => { setFixedTexts(new Set()); }, [job?.id]);
+
+  // Continue/Skip per serial that belongs to another client — held here so
+  // Import can wait for every one; cleared with each new polled job.
+  const [choices, setChoices] = useState<Record<string, ClientChoice>>({});
+  useEffect(() => { setChoices({}); }, [job?.id]);
 
   // The row/group currently open in FixMakeModelDialog, or null when closed.
   const [fixTarget, setFixTarget] = useState<
@@ -260,11 +265,18 @@ export default function ImportMoveAssets() {
 
               {job.status === 'completed' && job.results && (() => {
                 const counts = countDetails(job.results.details);
-                const committable = counts.created + counts.updated;
+                const flagged = job.phase === 'validate'
+                  ? conflictSerials(job.results.details) : [];
+                const flaggedRows = job.results.details.filter((d) => d.status === 'conflict');
+                const continued = flaggedRows.filter(
+                  (d) => choices[d.serial_number.toLowerCase()] === 'continue').length;
+                const choicesDone = flagged.every((x) => choices[x]);
+                const committable = counts.created + counts.updated + continued;
                 const skippable = counts.review + counts.error;
                 const headline = job.phase === 'validate'
                   ? (committable > 0 ? `Ready to import ${committable} rows` : 'Nothing to import')
-                  : `Imported: ${counts.created} created, ${counts.updated} updated`;
+                  : `Imported: ${counts.created} created, ${counts.updated} updated`
+                    + (counts.skipped > 0 ? `, ${counts.skipped} skipped` : '');
 
                 return (
                   <>
@@ -294,15 +306,22 @@ export default function ImportMoveAssets() {
                     <h2 className="imp-report-headline">{headline}</h2>
 
                     <ImportReport job={job} fixedTexts={fixedTexts} onFix={setFixTarget}
-                                  canAddModels={canAddModels} canChangeModels={canChangeModels} />
+                                  canAddModels={canAddModels} canChangeModels={canChangeModels}
+                                  choices={choices} onChoicesChange={setChoices}
+                                  clientId={initiative?.client_id ?? null}
+                                  clientName={initiative?.client_name ?? null} />
 
                     {job.phase === 'validate' && (
                       <div className="imp-card-foot">
                         <button className="btn-solid" type="button"
-                                disabled={busy || committable === 0}
-                                onClick={() => void run(() => commitImportJob(job.id))}>
+                                disabled={busy || committable === 0 || !choicesDone}
+                                onClick={() => void run(() => commitImportJob(
+                                  job.id, flagged.length > 0
+                                    ? Object.fromEntries(flagged.map((x) => [x, choices[x]]))
+                                    : undefined))}>
                           {busy ? 'Importing…' : `Import ${committable} rows`}
                         </button>
+                        {!choicesDone && <span className="page-hint">{CHOICES_HINT}</span>}
                         {counts.review > 0 && can('initiatives', 'change') && (
                           <button className="mini-btn" type="button" disabled={busy}
                                   onClick={() => {

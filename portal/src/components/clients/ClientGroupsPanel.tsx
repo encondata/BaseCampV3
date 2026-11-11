@@ -35,7 +35,8 @@ type Modal =
   | { kind: 'match'; value: string };
 
 export default function ClientGroupsPanel({ clientId }: { clientId: string }) {
-  const [view, setView] = useState<'all' | 'review'>('all');
+  const [view, setView] = useState<'all' | 'review'>(
+    () => (new URLSearchParams(window.location.search).get('groups') === 'review' ? 'review' : 'all'));
   const [groups, setGroups] = useState<ClientGroup[] | null>(null);
   const [groupsError, setGroupsError] = useState('');
   const [review, setReview] = useState<ReviewValue[] | null>(null);

@@ -165,3 +165,14 @@ it('Review shows the groups error and disables Match when groups failed to load'
   // Create group and Dismiss still work without the group list
   expect((screen.getByRole('button', { name: 'Create group' }) as HTMLButtonElement).disabled).toBe(false);
 });
+
+it('?groups=review opens the Review tab', async () => {
+  window.history.replaceState({}, '', '/stakeholders/clients/c1?groups=review');
+  try {
+    render(<ClientGroupsPanel clientId="c1" />);
+    const tab = await screen.findByRole('tab', { name: /Review/ });
+    expect(tab.getAttribute('aria-selected')).toBe('true');
+  } finally {
+    window.history.replaceState({}, '', '/');
+  }
+});

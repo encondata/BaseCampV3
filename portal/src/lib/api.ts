@@ -3822,6 +3822,10 @@ export async function recheckInitiativePlacement(id: string): Promise<PlacementR
 // The API queues the job; a separate worker process runs it. The portal
 // polls getImportJob until the job reaches a terminal status.
 
+export type ClientChoice = 'continue' | 'skip';
+/** A choice as the API stores it: with the client that owned the serial at
+ *  the check (a Continue applies only while it still does). */
+export interface StoredClientChoice { choice: ClientChoice; from_client_id: string | null }
 export type ImportJobPhase = 'validate' | 'commit';
 export type ImportJobStatus =
   'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -3829,8 +3833,12 @@ export type ImportJobStatus =
 export interface ImportRowDetail {
   row: number;
   serial_number: string;
-  status: 'created' | 'updated' | 'review' | 'error';
+  status: 'created' | 'updated' | 'review' | 'error' | 'conflict' | 'skipped';
   message: string;
+  /** conflict (check) and skipped (commit) rows: the client the serial belongs to */
+  current_client?: { id: string; name: string };
+  /** created/updated rows a Continue moved from another client */
+  client_moved_from?: { id: string; name: string };
   asset_id?: string | null;
   asset_created?: boolean;
   serial_generated?: boolean;
@@ -3866,6 +3874,12 @@ export interface ImportJobOut {
     reprocess_of?: string; only_rows?: number[];
     // set on a Create-a-move-in-steps file check (no move yet)
     move_setup_id?: string;
+    // Continue/Skip per flagged serial (lower-cased), stored by the API
+    client_choices?: Record<string, StoredClientChoice>;
+    // a wizard check: the move's client it ran against
+    client_id?: string | null;
+    // a committed import: the move's client its check ran against
+    check_client_id?: string | null;
   };
   phase: ImportJobPhase;
   status: ImportJobStatus;
@@ -3902,9 +3916,15 @@ export async function getImportJob(jobId: string): Promise<ImportJobOut> {
   return resp.json();
 }
 
-export async function commitImportJob(jobId: string): Promise<ImportJobOut> {
+export async function commitImportJob(
+  jobId: string, clientChoices?: Record<string, ClientChoice>,
+): Promise<ImportJobOut> {
   const resp = await apiFetch(
-    `/initiatives/assets/import-jobs/${jobId}/commit`, { method: 'POST' });
+    `/initiatives/assets/import-jobs/${jobId}/commit`,
+    clientChoices
+      ? { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_choices: clientChoices }) }
+      : { method: 'POST' });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
@@ -4019,6 +4039,11 @@ export const recheckMoveSetupAssets = (id: string) =>
  *  so the wizard never polls the initiatives:change-gated
  *  /initiatives/assets/import-jobs route (getImportJob), which an
  *  initiatives:add-only admin cannot reach. */
+/** Save the Continue/Skip choice for every serial the check flagged as
+ *  belonging to another client. */
+export const putMoveSetupChoices = (id: string, clientChoices: Record<string, ClientChoice>) =>
+  moveSetupCall<ImportJobOut>(`/${id}/assets/choices`,
+    jsonInit('PUT', { client_choices: clientChoices }));
 export const getMoveSetupCheck = (id: string) => moveSetupCall<ImportJobOut>(`/${id}/assets`);
 export const createMoveFromSetup = (id: string) =>
   moveSetupCall<MoveSetupDraft>(`/${id}/create`, { method: 'POST' });

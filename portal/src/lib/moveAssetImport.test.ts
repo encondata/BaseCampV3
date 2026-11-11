@@ -23,13 +23,14 @@ const job = (over: Partial<ImportJobOut>): ImportJobOut => ({
 describe('countDetails', () => {
   it('tallies by status', () => {
     const details = [detail('created'), detail('created'), detail('updated'),
-                     detail('review'), detail('error')];
+                     detail('review'), detail('error'), detail('conflict'),
+                     detail('conflict'), detail('skipped')];
     expect(countDetails(details)).toEqual(
-      { created: 2, updated: 1, review: 1, error: 1 });
+      { created: 2, updated: 1, review: 1, error: 1, conflict: 2, skipped: 1 });
   });
   it('handles empty', () => {
     expect(countDetails([])).toEqual(
-      { created: 0, updated: 0, review: 0, error: 0 });
+      { created: 0, updated: 0, review: 0, error: 0, conflict: 0, skipped: 0 });
   });
 });
 
