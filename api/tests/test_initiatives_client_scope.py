@@ -411,9 +411,10 @@ async def test_client_writer_cannot_reach_foreign_import_jobs(
     for action in ("commit", "cancel", "reprocess"):
         assert (await client.post(f"{base}/{theirs.id}/{action}",
                                   headers=hdrs)).status_code == 404, action
-    # their own initiative's job is readable but not drivable
+    # client logins can't read or drive import jobs, even their own
+    # initiative's (the poll is staff-only: results can name other clients)
     assert (await client.get(f"{base}/{mine.id}",
-                             headers=hdrs)).status_code == 200
+                             headers=hdrs)).status_code == 403
     for action in ("commit", "cancel", "reprocess"):
         assert (await client.post(f"{base}/{mine.id}/{action}",
                                   headers=hdrs)).status_code == 403, action
