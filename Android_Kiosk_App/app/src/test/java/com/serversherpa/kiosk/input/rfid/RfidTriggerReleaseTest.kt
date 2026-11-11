@@ -182,6 +182,71 @@ class RfidTriggerReleaseTest {
         assertEquals(listOf("start", "stop"), r.reader.calls)
     }
 
+    /** The link drops and comes back as a new generation in one go, with no
+     *  dispatch between, so the controller's connection collector has not
+     *  yet seen the change when the next pull is handled. Under the test
+     *  dispatcher the pull collector, resumed by an emit made right after
+     *  this, runs before that collector (combine needs one more hop). */
+    private fun reconnectAtOnce(r: Rig) {
+        r.fake.dropLink("The sled disconnected.")
+        r.fake.setConnection(RfidConnection.Disconnected)
+        r.fake.setConnection(RfidConnection.Connected("Fake RFD40", null))
+    }
+
+    /** Pins the release-side generation check: a release whose press came
+     *  on the lost link is ignored even before the connection collector has
+     *  forgotten that press. Without the check the release would measure its
+     *  hold from the old press and stop on the new link. */
+    @Test fun aReleaseWhosePressCameOnTheLostLinkIsIgnoredBeforeTheCollectorRuns() = runTest {
+        val r = Rig(this, RfidTriggerMode.HOLD)
+        connectedAndArmed(r)
+        pull(r, TriggerEvent.PRESSED, 0)
+        assertNotNull(r.controller.session.value)
+        val generation = r.fake.generation
+        val activity = r.controller.lastActivityMs.value
+        r.reader.calls.clear()
+
+        reconnectAtOnce(r)
+        assertEquals(generation + 1, r.fake.generation)
+        r.now = 1_000
+        r.fake.emitTrigger(TriggerEvent.RELEASED, atMs = 1_000); settle()
+        assertEquals("ignored: no activity", activity, r.controller.lastActivityMs.value)
+        assertEquals("ignored: no stop on the new link", emptyList<String>(), r.reader.calls)
+        assertNull("the lost link's sweep ended with its link", r.controller.session.value)
+
+        // A real pull on the new generation still starts and stops a Hold sweep.
+        pull(r, TriggerEvent.PRESSED, 2_000)
+        assertNotNull(r.controller.session.value)
+        pull(r, TriggerEvent.RELEASED, 3_000)
+        assertNull("the release on the new link stops the sweep", r.controller.session.value)
+        assertEquals(listOf("start", "stop"), r.reader.calls)
+        assertEquals(emptyList<String>(), r.fake.violations)
+    }
+
+    /** Pins the live-link keep in the connection collector: a press handled
+     *  on the new generation before that collector saw the change is kept
+     *  when the collector forgets the lost link's press. Without the keep,
+     *  that press is forgotten, its release is ignored and the Hold sweep
+     *  never stops. */
+    @Test fun aPressOnTheNewLinkHandledBeforeTheCollectorRunsIsKept() = runTest {
+        val r = Rig(this, RfidTriggerMode.HOLD)
+        connectedAndArmed(r)
+        val generation = r.fake.generation
+
+        reconnectAtOnce(r)
+        r.now = 1_000
+        r.fake.emitTrigger(TriggerEvent.PRESSED, atMs = 1_000); settle()
+        assertEquals(generation + 1, r.fake.generation)
+        assertNotNull("the press on the new link starts a sweep", r.controller.session.value)
+        assertTrue(r.fake.inventoryRunning)
+
+        pull(r, TriggerEvent.RELEASED, 2_000)
+        assertNull("its release stops the Hold sweep", r.controller.session.value)
+        assertTrue("the reader got the stop", !r.fake.inventoryRunning)
+        assertEquals(listOf("start", "stop"), r.reader.calls)
+        assertEquals(emptyList<String>(), r.fake.violations)
+    }
+
     /** A press made while the trigger is not armed still counts, so its
      *  release is not mistaken for a stray one; the release does nothing
      *  while disarmed either way. */
