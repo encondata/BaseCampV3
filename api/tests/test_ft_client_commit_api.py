@@ -128,22 +128,42 @@ async def test_poll_requires_global_actor(client, db, seeded_user):
     assert resp.status_code == 200
 
 
-async def test_reprocessed_child_commit_applies_stored_choices(
+async def test_reprocessed_child_inherits_choices_and_needs_none(
         client, db, seeded_user):
-    """A reprocess child copies the parent's options, so choices stored at the
-    parent's commit are still there when the child is committed."""
-    headers, acme, _bravo, b1, _b2, job_id = await _setup(client, db)
+    """Conflict rows are never review rows, so a reprocess child (which reruns
+    only review rows) holds no conflicts: it inherits the parent's stored
+    choices through options, its commit needs no body, and the parent's
+    Continue/Skip outcomes stay as the parent applied them."""
+    csv = (b"Serial Number,Asset Name,Asset Make,Asset Model\n"
+           b"SN-B1,one,,\nSN-B2,two,,\nSN-REV,odd,HPE,DL380\n")
+    headers, acme, bravo, b1, b2, job_id = await _setup(client, db, csv=csv)
     resp = await _commit(client, headers, job_id, {"client_choices": {
         "sn-b1": "continue", "sn-b2": "skip"}})
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
     assert await run_once(get_sessionmaker()) is True
+    parent = await db.get(ImportJob, uuid.UUID(job_id))
+    await db.refresh(parent)
+    assert parent.status == "completed" and parent.results["summary"]["review"] == 1
+
     resp = await client.post(
         f"/initiatives/assets/import-jobs/{job_id}/reprocess", headers=headers)
-    if resp.status_code == 201:
-        child = await db.get(ImportJob, uuid.UUID(resp.json()["id"]))
-        assert child.options["client_choices"] == {"sn-b1": "continue",
-                                                   "sn-b2": "skip"}
-    else:
-        # nothing left in review: reprocess has nothing to do, which is the
-        # only way a child could exist without inherited choices
-        assert resp.status_code in (409, 422), resp.text
+    assert resp.status_code == 201, resp.text
+    child_id = resp.json()["id"]
+    assert resp.json()["options"]["client_choices"] == {"sn-b1": "continue",
+                                                        "sn-b2": "skip"}
+    assert await run_once(get_sessionmaker()) is True
+    child = await db.get(ImportJob, uuid.UUID(child_id))
+    await db.refresh(child)
+    assert child.status == "completed" and child.phase == "validate"
+    assert child.results["summary"]["conflicts"] == 0
+
+    resp = await _commit(client, headers, child_id)          # no body needed
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["options"]["client_choices"] == {"sn-b1": "continue",
+                                                        "sn-b2": "skip"}
+    assert await run_once(get_sessionmaker()) is True
+    await db.refresh(child)
+    assert child.status == "completed", child.error
+    await db.refresh(b1)
+    await db.refresh(b2)
+    assert b1.client_id == acme.id and b2.client_id == bravo.id
