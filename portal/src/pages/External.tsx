@@ -51,6 +51,7 @@ import {
   orgKey,
   parseOrgKey,
   PRIMARY_COL,
+  tierText,
   typeLabel,
 } from '../lib/external';
 import { avatarGradient, initials } from '../lib/format';
@@ -340,7 +341,7 @@ export default function External() {
             {p.links.length === 0 && <span className="chip tag">—</span>}
             {p.links.map((l) => (
               <span key={orgKey(l.kind, l.org_id)} className={`chip ${l.kind === 'client' ? 'c-blue' : 'c-violet'}`}>
-                {l.org_name} · {l.tier}
+                {l.org_name} · {tierText(l.tier)}
               </span>
             ))}
           </div>
@@ -574,7 +575,7 @@ function ExternalDetail({
               <div className="cell-top"><b>{l.org_name}</b></div>
             </div>
             <span className="chip tag">{l.kind === 'client' ? 'Client' : 'Partner'}</span>
-            <span className="chip tag">{l.tier}</span>
+            <span className="chip tag">{tierText(l.tier)}</span>
             <div style={{
               flexBasis: '100%', display: 'flex', gap: 8, marginTop: 8,
               alignItems: 'center', flexWrap: 'wrap',
@@ -675,17 +676,21 @@ export function EditPersonModal({
   const clientKey = person.links.filter((l) => l.kind === 'client').map((l) => l.org_id).join(',');
   const [clientInfo, setClientInfo] =
     useState<Record<string, { group_ids: string[]; restricted: boolean }>>({});
+  const [infoFailed, setInfoFailed] = useState<Record<string, boolean>>({});
   const [groupOptions, setGroupOptions] = useState<Record<string, { value: string; label: string }[]>>({});
   useEffect(() => {
     let alive = true;
     for (const orgId of clientKey ? clientKey.split(',') : []) {
       void listOrgContacts('client', orgId).then((rows) => {
         const row = rows.find((r) => r.person_id === person.person_id);
-        if (alive && row) {
+        if (!alive) return;
+        if (row) {
           setClientInfo((m) => ({ ...m, [orgId]: {
             group_ids: row.group_ids ?? [], restricted: row.restricted ?? false } }));
+        } else {
+          setInfoFailed((m) => ({ ...m, [orgId]: true }));
         }
-      }).catch(() => {});
+      }).catch(() => { if (alive) setInfoFailed((m) => ({ ...m, [orgId]: true })); });
       if (isStaff) {
         void listClientGroups(orgId).then((gs) => {
           if (alive) setGroupOptions((m) => ({ ...m, [orgId]: gs.map((g) => ({ value: g.id, label: g.name })) }));
@@ -721,7 +726,7 @@ export function EditPersonModal({
     }, 'Could not save — try again.');
   // A client login can't change or remove a restricted (individual / chipped) contact.
   const locked = (l: ExternalLinkItem) =>
-    l.kind === 'client' && (clientInfo[l.org_id]?.restricted ?? l.tier === 'individual');
+    l.kind === 'client' && (clientInfo[l.org_id]?.restricted ?? true); // fail closed until loaded
   const removeLink = (link: ExternalLinkItem) =>
     run(() => removeContactLink(link.kind, link.org_id, person.person_id),
       'Could not remove the link — try again.');
@@ -794,7 +799,7 @@ export function EditPersonModal({
                               disabled={busy || (!isStaff && locked(l))}
                               onChange={(tier) => void updateLink(l, { tier })} />
                 ) : (
-                  <span className="chip tag">{l.tier}</span>
+                  <span className="chip tag">{tierText(l.tier)}</span>
                 )}
                 {canManageLink(l.kind) && !(!isStaff && locked(l)) && (
                   <button className="mini-btn" disabled={busy} title="Remove link"
@@ -812,7 +817,13 @@ export function EditPersonModal({
                       <TagInput value={l.functions} suggestions={functionTags} disabled={busy}
                                 placeholder="Functions — billing, scheduling…"
                                 onChange={(fns) => void updateLink(l, { functions: fns })} />
-                      {l.kind === 'client' && isStaff && groupOptions[l.org_id] && (
+                      {l.kind === 'client' && isStaff && infoFailed[l.org_id] && (
+                        <p className="pf-error" style={{ flexBasis: '100%', margin: 0 }}>
+                          Could not load this contact&apos;s groups — close and reopen to edit them.
+                        </p>
+                      )}
+                      {l.kind === 'client' && isStaff && groupOptions[l.org_id]
+                        && clientInfo[l.org_id] && (
                         <GroupsField link={l} busy={busy}
                                      options={groupOptions[l.org_id]!}
                                      value={clientInfo[l.org_id]?.group_ids ?? []}
@@ -837,7 +848,10 @@ export function EditPersonModal({
                 <ComboBox
                   placeholder="Add an org link — type to search…"
                   value={addOrg}
-                  onChange={setAddOrg}
+                  onChange={(v) => {
+                    setAddOrg(v);
+                    if (v && parseOrgKey(v).kind !== 'client' && addTier === 'individual') setAddTier('viewer');
+                  }}
                   onOpen={loadAllOrgs}
                   options={addableOrgs.map((o) => ({
                     value: orgKey(o.kind, o.id), label: o.name,
@@ -1003,7 +1017,10 @@ function NewExternalContactModal({ allOrgs, loadAllOrgs, functionTags, onClose, 
                 <ComboBox
                   placeholder="Type to search clients & partners…"
                   value={org}
-                  onChange={setOrg}
+                  onChange={(v) => {
+                    setOrg(v);
+                    if (v && parseOrgKey(v).kind !== 'client' && tier === 'individual') setTier('viewer');
+                  }}
                   onOpen={loadAllOrgs}
                   options={(allOrgs ?? []).map((o) => ({
                     value: orgKey(o.kind, o.id), label: o.name,

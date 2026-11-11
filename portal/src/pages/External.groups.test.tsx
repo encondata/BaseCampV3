@@ -102,3 +102,31 @@ it('a client login sees the tier locked and no Remove on a restricted contact, a
   expect(screen.queryByText('Groups')).toBeNull();
   expect(api.listClientGroups).not.toHaveBeenCalled();
 });
+
+it('a failed contacts fetch leaves no editable chip field', async () => {
+  api.listOrgContacts.mockRejectedValue(new Error('boom'));
+  open(person('viewer'));
+  expect(await screen.findByText(/Could not load this contact/)).not.toBeNull();
+  expect(screen.queryByPlaceholderText('All groups.')).toBeNull();
+  expect(screen.queryByText('Groups')).toBeNull();
+  expect(api.patchContactLink).not.toHaveBeenCalled();
+});
+
+it('a slow contacts fetch shows no chip field until it lands', async () => {
+  let release: (v: unknown) => void = () => {};
+  api.listOrgContacts.mockReturnValue(new Promise((r) => { release = r; }));
+  open(person('viewer'));
+  await waitFor(() => expect(api.listClientGroups).toHaveBeenCalled());
+  expect(screen.queryByText('Groups')).toBeNull();
+  release([{ person_id: 'p1', tier: 'viewer', group_ids: ['g1'], restricted: true }]);
+  expect(await screen.findByText('Groups')).not.toBeNull();
+  expect(screen.getByText('Dallas')).not.toBeNull();
+});
+
+it('a client login keeps the tier locked and Remove hidden until the contact loads', async () => {
+  auth.global = false;
+  api.listOrgContacts.mockReturnValue(new Promise(() => {}));
+  open(person('viewer'));
+  expect((screen.getAllByRole('combobox')[0] as HTMLSelectElement).disabled).toBe(true);
+  expect(screen.queryByTitle('Remove link')).toBeNull();
+});

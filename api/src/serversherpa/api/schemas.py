@@ -1161,6 +1161,8 @@ class UserRoleGrant(BaseModel):
     org: OrgRefOut | None
     granted_by: PersonRef | None
     granted_at: datetime
+    # client grants only, global callers only; [] otherwise
+    group_ids: list[uuid.UUID] = []
 
 
 class UserWorkerCard(BaseModel):

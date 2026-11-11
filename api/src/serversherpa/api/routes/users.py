@@ -50,7 +50,8 @@ from serversherpa.api.schemas import (
 )
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
-    AccessGroup, AccessGroupMember, AuthSession, Client, NotificationGroup,
+    AccessGroup, AccessGroupMember, AuthSession, Client, ClientContactGroup,
+    NotificationGroup,
     NotificationGroupMember, NotificationMembershipRequest, Partner,
     PermissionOverride, Person, PersonRole,
     ResourceGroupGate, Role, UserAccount, WorkerLevel, WorkerProfile,
@@ -206,6 +207,15 @@ async def get_user_detail(
         db, {g.client_id for g, _ in grant_rows if g.client_id},
         {g.partner_id for g, _ in grant_rows if g.partner_id})
 
+    chips: dict = {}
+    if actor.access.is_global:
+        chip_rows = (await db.execute(
+            select(ClientContactGroup.client_id, ClientContactGroup.group_id)
+            .where(ClientContactGroup.person_id == person_id)
+            .order_by(ClientContactGroup.group_id))).all()
+        for cid, gid in chip_rows:
+            chips.setdefault(cid, []).append(gid)
+
     # ── worker card ──
     worker: UserWorkerCard | None = None
     profile = await db.get(WorkerProfile, person_id)
@@ -313,7 +323,8 @@ async def get_user_detail(
             scope_anchor=role.scope_anchor,
             org=(orgs.get(("client", g.client_id)) if g.client_id
                  else orgs.get(("partner", g.partner_id)) if g.partner_id else None),
-            granted_by=refs.get(g.granted_by), granted_at=g.granted_at)
+            granted_by=refs.get(g.granted_by), granted_at=g.granted_at,
+            group_ids=chips.get(g.client_id, []) if g.client_id else [])
             for g, role in grant_rows],
         max_rank=target_max_rank,
         worker=worker,

@@ -745,6 +745,8 @@ export interface UserDetailAccount {
 export interface UserRoleGrant {
   role: string; label: string; rank: number; scope_anchor: string;
   org: OrgRefOut | null; granted_by: PersonRef | null; granted_at: string;
+  /** client grants, global callers only; [] otherwise */
+  group_ids?: string[];
 }
 
 export interface UserWorkerCard {
