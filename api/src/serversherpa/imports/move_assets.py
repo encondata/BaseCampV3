@@ -24,6 +24,7 @@ from serversherpa.assets.model_index import (
     display_name,
     normalize_model_key,
 )
+from serversherpa.clientgroups.service import rematch_rows
 from serversherpa.db.models import Asset, AssetModel, InitiativeAsset
 from serversherpa.racks.recheck import recheck_placement
 
@@ -347,6 +348,8 @@ async def run_import(
     # matches nothing literally.
     resolved_cache: dict[str, tuple] = {}
 
+    touched: list = []      # roster rows written this run (Owner re-match)
+
     async def _one_row(r: dict) -> None:
         nonlocal created, updated, review, errors
         if r["status"] == "error":
@@ -467,6 +470,7 @@ async def run_import(
             assoc = roster[serial]
             if write and isinstance(assoc, InitiativeAsset):
                 _apply_row(assoc, r, now)
+                touched.append(assoc)
             updated += 1
             status, message = "updated", "Asset updated in move"
         else:
@@ -476,6 +480,7 @@ async def run_import(
                                         added_by=added_by)
                 _apply_row(assoc, r, now)
                 db.add(assoc)
+                touched.append(assoc)
                 roster[serial] = assoc
             else:
                 roster[serial] = _SIM_ASSOC
@@ -521,6 +526,11 @@ async def run_import(
               entity_id=str(initiative_id), action="asset_import",
               changes={**summary, "source": source_label})
     if write:
+        if touched:
+            # once per run, in this transaction: resolve each written row's
+            # Owner against its client's groups
+            await db.flush()
+            await rematch_rows(db, [a.id for a in touched])
         if progress is not None:
             await progress(processed, created, updated, errors)
         if commit:

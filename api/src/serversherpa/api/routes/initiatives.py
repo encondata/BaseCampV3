@@ -28,6 +28,7 @@ from serversherpa.api.schemas import (
     InitiativePersonUpdateIn, InitiativeUpdateIn, KioskPasswordOut, PlacementRecheckOut,
 )
 from serversherpa.assets.placement import asset_placements
+from serversherpa.clientgroups.service import rematch_initiative, rematch_rows
 from serversherpa.db.models import (
     Asset, AssetCategory, AssetModel, Client, ImportJob, Initiative, InitiativeAsset,
     InitiativeLink, InitiativePerson, Partner, Person, Site, StatusValue,
@@ -471,6 +472,10 @@ async def update_initiative(
         if learning_codes.EXPIRY_FIELDS & changes.keys():
             await db.flush()
             await learning_codes.refresh_expiry(db, initiative)
+        if "client_id" in changes:
+            # the move's Owner values now resolve against another client's groups
+            await db.flush()
+            await rematch_initiative(db, initiative.id)
         await db.commit()
     except IntegrityError as exc:
         # a racing save took the same code, or a racing admin the same
@@ -1232,6 +1237,9 @@ async def update_initiative_asset(
         audit(db, actor_id=actor.person.id, entity_type="initiative",
               entity_id=str(assoc.initiative_id), action="asset_update",
               changes=changes)
+    if "owner" in changes:
+        await db.flush()
+        await rematch_rows(db, [assoc.id])
     if "status" in changes:
         # A status edit is a scan event: record it and run the rules
         # engine here, anchored to THIS initiative. A failing rule rolls
