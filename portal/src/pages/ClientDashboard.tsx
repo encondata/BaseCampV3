@@ -16,13 +16,15 @@ import { Link } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import {
-  getClientActivity, getClientAssetTotals, getInitiativeAssetTotals, getOrg, listAssets, listAssetStatuses, listInitiativeAssets,
-  listInitiatives, listClients,
+  getClientActivity, getClientAssetTotals, getInitiativeAssetTotals, getOrg,
+  listAssets, listAssetStatuses, listInitiativeAssets, listInitiatives, listClients,
   type AssetItem, type AssetTotals, type ClientActivityItem, type InitiativeItem,
   type OrgRef, type StatusValue,
 } from '../lib/api';
 import { statusChip as chip } from '../lib/chips';
-import { assetDistribution, assetDistributionFromCounts, sortClientInitiatives } from '../lib/clientDashboard';
+import {
+  assetDistribution, assetDistributionFromCounts, sortClientInitiatives,
+} from '../lib/clientDashboard';
 import { moveAssetProgress, moveAssetProgressFromCounts } from '../lib/initiatives';
 import { avatarGradient, initials, longDateOf, relativeTime } from '../lib/format';
 import { STATUS_META, type OrgItem } from '../lib/orgs';
@@ -84,6 +86,7 @@ export default function ClientDashboard() {
   const [activityEvents, setActivityEvents] = useState<ClientActivityItem[] | null>(null);
   const [activity7d, setActivity7d] = useState(0);
   const [clientTotals, setClientTotals] = useState<AssetTotals | null>(null);
+  const [totalsError, setTotalsError] = useState(false);
   const [progressById, setProgressById] = useState<Record<string, { pct: number; countable: number }>>({});
 
   // ── client list (unarchived, sorted by name) ──
@@ -126,7 +129,9 @@ export default function ClientDashboard() {
       );
     }
     if (canAssets && scope?.restricted_client_ids?.includes(id)) {
-      jobs.push(getClientAssetTotals(id).then(setClientTotals).catch(quiet));
+      jobs.push(getClientAssetTotals(id)
+        .then((t) => { setClientTotals(t); setTotalsError(false); })
+        .catch(() => setTotalsError(true)));
     }
     if (canClients) {
       jobs.push(
@@ -149,6 +154,7 @@ export default function ClientDashboard() {
     setInitiatives(null);
     setClientAssets(null);
     setClientTotals(null);
+    setTotalsError(false);
     setActivityEvents(null);
     setActivity7d(0);
     setProgressById({});
@@ -403,7 +409,12 @@ export default function ClientDashboard() {
                   <Link className="dash-panel-link" to="/assets">All assets</Link>
                 </span>
               </div>
-              {!assetsReady && <div className="dash-panel-empty">Loading…</div>}
+              {!assetsReady && !(restricted && totalsError) && (
+                <div className="dash-panel-empty">Loading…</div>
+              )}
+              {restricted && totalsError && clientTotals === null && (
+                <div className="dash-panel-empty">Couldn't load this client's asset totals.</div>
+              )}
               {assetsReady && totalAssets === 0 && (
                 <div className="dash-panel-empty">No assets on file.</div>
               )}

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /** Restricted client logins see a shorter move roster; the counts stay true. */
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -238,4 +238,37 @@ it('restricted to a different client: the totals endpoint is not called', async 
   renderPage();
   expect(await screen.findByText('1 of 1 shown')).not.toBeNull();
   expect(api.getInitiativeAssetTotals).not.toHaveBeenCalled();
+});
+
+it('restricted login: while totals are pending, no visible-only count shows', async () => {
+  api.getInitiativeAssetTotals.mockReturnValue(new Promise(() => undefined));
+  renderPage();
+  expect(await screen.findByText('switch-01')).not.toBeNull();
+  expect(screen.getByRole('tab', { name: /^Assets/ }).textContent).toBe('Assets');
+  expect(screen.queryByText(/of \d+ shown/)).toBeNull();
+  expect(screen.queryByRole('img', { name: /Asset status breakdown/ })).toBeNull();
+});
+
+it('restricted login: a failed totals call shows the inline message and no count', async () => {
+  api.getInitiativeAssetTotals.mockRejectedValue(new Error('boom'));
+  renderPage();
+  expect(await screen.findByText(/Couldn't load this move's totals/)).not.toBeNull();
+  expect(screen.getByRole('tab', { name: /^Assets/ }).textContent).toBe('Assets');
+  expect(screen.queryByText(/of \d+ shown/)).toBeNull();
+});
+
+it('restricted login with no visible rows but a true total shows "0 of M shown"', async () => {
+  api.listInitiativeAssets.mockResolvedValue([]);
+  renderPage();
+  expect(await screen.findByText('0 of 4 shown')).not.toBeNull();
+  expect(screen.queryByText(/No assets on this move yet/)).toBeNull();
+});
+
+it('restricted login: the empty-move text waits for the totals', async () => {
+  api.listInitiativeAssets.mockResolvedValue([]);
+  api.getInitiativeAssetTotals.mockReturnValue(new Promise(() => undefined));
+  renderPage();
+  await waitFor(() => expect(api.listInitiativeAssets).toHaveBeenCalled());
+  await new Promise((res) => setTimeout(res, 50));
+  expect(screen.queryByText(/No assets on this move yet/)).toBeNull();
 });

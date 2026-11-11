@@ -366,18 +366,23 @@ export default function InitiativeDetail() {
   // Restricted client logins see a shorter roster; the server's true totals
   // (fetched only for them) drive the counts, donut and progress bar.
   const [assetTotals, setAssetTotals] = useState<AssetTotals | null>(null);
+  const [totalsError, setTotalsError] = useState(false);
   const restrictedMove = !!initiative?.client_id
     && !!scope?.restricted_client_ids?.includes(initiative.client_id);
   useEffect(() => {
     setAssetTotals(null);
+    setTotalsError(false);
     if (!initiative || initiative.initiative_type !== 'move' || !restrictedMove) return;
     let alive = true;
     void getInitiativeAssetTotals(initiative.id)
       .then((t) => { if (alive) setAssetTotals(t); })
-      .catch(() => undefined);
+      .catch(() => { if (alive) setTotalsError(true); });
     return () => { alive = false; };
   }, [initiative?.id, initiative?.initiative_type, restrictedMove]);
   const trueTotals = restrictedMove ? assetTotals : null;
+  // A restricted login's visible rows are not the move's size: hold every
+  // count until the server's totals arrive (and never fall back to rows).
+  const totalsReady = !restrictedMove || assetTotals !== null;
   const assetsTotal = trueTotals ? trueTotals.total : assets.length;
   const assetsProgress = useMemo(
     () => (trueTotals
@@ -803,7 +808,7 @@ export default function InitiativeDetail() {
 
       <div className="sysconf-tabbar idet-tabbar" role="tablist">
         {tabs.map((t) => {
-          const count = t.key === 'assets' && isMove ? assetsTotal
+          const count = t.key === 'assets' && isMove ? (totalsReady ? assetsTotal : null)
             : t.key === 'people' ? initiative.people.length : null;
           return (
             <button key={t.key} type="button" role="tab" aria-selected={tab === t.key}
@@ -816,7 +821,7 @@ export default function InitiativeDetail() {
         })}
       </div>
 
-      <div className={`detail-grid idet-grid${showOverview && isMove && assetsTotal > 0 ? ' idet-grid-3col' : ''}`}>
+      <div className={`detail-grid idet-grid${showOverview && isMove && totalsReady && assetsTotal > 0 ? ' idet-grid-3col' : ''}`}>
         {showOverview && (<>
         <div className="init-panel"
              style={!isMove ? { gridColumn: '1 / -1' } : undefined}>
@@ -841,7 +846,7 @@ export default function InitiativeDetail() {
           </dl>
         </div>
 
-        {isMove && assetsTotal > 0 && (
+        {isMove && totalsReady && assetsTotal > 0 && (
           <div className="init-panel">
             <p className="eyebrow-sm">Assets by status</p>
             <AssetStatusDonut rows={assets} statuses={moveStatuses}
@@ -887,24 +892,29 @@ export default function InitiativeDetail() {
 
         {showAssets && (
         <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
-          <p className="eyebrow-sm">Assets{isMove ? ` — ${assetsTotal}` : ''}</p>
+          <p className="eyebrow-sm">Assets{isMove && totalsReady ? ` — ${assetsTotal}` : ''}</p>
           {!isMove && <p className="page-hint">Asset tracking lands here next.</p>}
           {isMove && assetsError && (
             <div className="dir-empty" style={{ marginBottom: 12 }}>
               <b>Cannot load assets</b>{assetsError}
             </div>
           )}
-          {isMove && !assetsError && assetsLoaded && assets.length === 0 && assetsTotal > 0 && (
+          {isMove && restrictedMove && totalsError && (
+            <div className="dir-empty" style={{ marginBottom: 12 }}>
+              <b>Cannot load totals</b>Couldn't load this move's totals.
+            </div>
+          )}
+          {isMove && !assetsError && assetsLoaded && totalsReady && assets.length === 0 && assetsTotal > 0 && (
             <p className="page-hint">0 of {assetsTotal} shown</p>
           )}
-          {isMove && !assetsError && assetsLoaded && assets.length === 0 && assetsTotal === 0 && (
+          {isMove && !assetsError && assetsLoaded && totalsReady && assets.length === 0 && assetsTotal === 0 && (
             <p className="page-hint">
               No assets on this move yet — assets arrive via bulk import.
             </p>
           )}
           {isMove && !assetsError && assets.length > 0 && (
             <>
-              {assetsProgress.countable > 0 && (
+              {totalsReady && assetsProgress.countable > 0 && (
                 <div className="idet-assets-progress">
                   <div className="idet-assets-progress-label">
                     <span>{assetsProgress.pct}%</span>
@@ -925,8 +935,10 @@ export default function InitiativeDetail() {
                     <input placeholder="Filter assets…" value={assetsQuery}
                            onChange={(e) => setAssetsQuery(e.target.value)} />
                   </div>
-                  <span className="result-count">
-                    {visibleAssets.length} of {assetsTotal} shown</span>
+                  {totalsReady && (
+                    <span className="result-count">
+                      {visibleAssets.length} of {assetsTotal} shown</span>
+                  )}
                   <FilterSummaryChip filters={assetsFilters} onClear={clearAssetsFilters} />
                   <ColumnsButton columns={assetsOrderedCols} visible={assetsVisibleCols}
                                  onChange={setAssetsVisibleCols}

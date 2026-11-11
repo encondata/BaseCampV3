@@ -169,3 +169,11 @@ it('unrestricted login: the totals endpoints are never called', async () => {
   expect(api.getClientAssetTotals).not.toHaveBeenCalled();
   expect(api.getInitiativeAssetTotals).not.toHaveBeenCalled();
 });
+
+it('restricted login: a failed client totals call shows an error, not Loading forever', async () => {
+  api.getClientAssetTotals.mockRejectedValue(new Error('boom'));
+  render(<MemoryRouter><ClientDashboard /></MemoryRouter>);
+  const fleet = await screen.findByLabelText('Asset fleet');
+  expect(await within(fleet).findByText(/Couldn't load this client's asset totals/)).toBeTruthy();
+  expect(within(fleet).queryByText('Loading…')).toBeNull();
+});
