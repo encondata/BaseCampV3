@@ -101,10 +101,17 @@ async def create_group(
     await _client(db, actor, client_id)
     try:
         g = await cg.create_group(db, client_id, body.name, actor.person.id)
+        if body.aliases:
+            await cg.set_aliases(db, g, body.aliases)
+            await cg.rematch_client(db, client_id)
     except cg.GroupError as e:
+        await db.rollback()
         raise _group_err(e) from e
+    changes: dict = {"group_id": str(g.id), "name": g.name}
+    if body.aliases:
+        changes["aliases"] = body.aliases
     audit(db, actor_id=actor.person.id, entity_type="client", entity_id=str(client_id),
-          action="group.create", changes={"group_id": str(g.id), "name": g.name})
+          action="group.create", changes=changes)
     await db.commit()
     return (await _outs(db, client_id, g.id))[0]
 

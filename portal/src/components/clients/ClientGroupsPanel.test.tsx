@@ -106,3 +106,37 @@ it('delete in use shows the clear message', async () => {
   fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
   expect(await screen.findByText(/before deleting it/)).toBeTruthy();
 });
+
+it('Add group sends the typed aliases with the create call', async () => {
+  api.createClientGroup.mockResolvedValue({});
+  render(<ClientGroupsPanel clientId="c1" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Add group' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Add group' });
+  fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Platform Eng' } });
+  const tag = within(dialog).getByPlaceholderText('Add an alias…');
+  fireEvent.change(tag, { target: { value: 'Platfrom' } });
+  fireEvent.keyDown(tag, { key: 'Enter' });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Create group' }));
+  await waitFor(() => expect(api.createClientGroup).toHaveBeenCalledWith('c1',
+    { name: 'Platform Eng', aliases: ['Platfrom'] }));
+});
+
+it('Create group from a review value with an edited name also adds the original as an alias', async () => {
+  api.createClientGroup.mockResolvedValue({});
+  render(<ClientGroupsPanel clientId="c1" />);
+  fireEvent.click(await screen.findByRole('tab', { name: /Review/ }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Create group' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Add group' });
+  fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Accounts' } });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Create group' }));
+  await waitFor(() => expect(api.createClientGroup).toHaveBeenCalledWith('c1',
+    { name: 'Accounts', aliases: ['Accounting'] }));
+});
+
+it('Escape closes a group dialog', async () => {
+  render(<ClientGroupsPanel clientId="c1" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Add group' }));
+  await screen.findByRole('dialog', { name: 'Add group' });
+  fireEvent.keyDown(document, { key: 'Escape' });
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+});

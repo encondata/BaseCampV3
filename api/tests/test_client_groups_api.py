@@ -122,3 +122,21 @@ async def test_counts(client, seeded_user, db):
     by = {g["name"]: g for g in rows}
     assert by["Platform"]["asset_count"] == 1 and by["Platform"]["people_count"] == 2
     assert by["Storage"]["asset_count"] == 1 and by["Storage"]["people_count"] == 0
+
+
+async def test_create_with_aliases_persists_and_matches(client, seeded_user, db):
+    s = await _seeded(db)
+    h = await _headers(client)
+    base = f"/clients/{s.client.id}/groups"
+    r = await client.post(base, headers=h,
+                          json={"name": "Platform Eng", "aliases": ["Platfrom"]})
+    assert r.status_code == 201, r.text
+    assert "Platfrom" in r.json()["aliases"]
+    listed = next(g for g in (await client.get(base, headers=h)).json()
+                  if g["name"] == "Platform Eng")
+    assert "Platfrom" in listed["aliases"] and listed["asset_count"] == 1
+    assert (await client.get(f"{base}/review?include_dismissed=true", headers=h)).json() == []
+    r = await client.post(base, headers=h, json={"name": "Other", "aliases": ["Platfrom"]})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "alias_in_use"
+    names = {g["name"] for g in (await client.get(base, headers=h)).json()}
+    assert "Other" not in names

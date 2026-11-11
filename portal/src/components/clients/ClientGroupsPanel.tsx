@@ -14,6 +14,7 @@ import {
 import { groupMsgFor } from '../../lib/clientGroups';
 import { ACTIONS_TRACK, ColHead, listGridStyle, type ColumnDef } from '../../lib/listTools';
 import { RowActionsMenu } from '../hardware/RowActionsMenu';
+import StandardModal from '../StandardModal';
 import GroupEditModal from './GroupEditModal';
 import GroupMatchModal from './GroupMatchModal';
 import GroupMergeModal from './GroupMergeModal';
@@ -75,7 +76,7 @@ export default function ClientGroupsPanel({ clientId }: { clientId: string }) {
         </div>
         {view === 'all' && (
           <div className="toolbar-right">
-            <button className="btn-solid" onClick={() => setModal({ kind: 'edit' })}>Add group</button>
+            <button type="button" className="mini-btn accent" onClick={() => setModal({ kind: 'edit' })}>Add group</button>
           </div>
         )}
       </div>
@@ -162,30 +163,16 @@ function DeleteGroupModal({ clientId, group, onClose, onDeleted }: {
     catch (e) { setError(groupMsgFor(e)); setBusy(false); }
   };
   return (
-    <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-      <div className="modal-card reports-modal-card rgm-card" role="dialog" aria-label="Delete group"
-           style={{ width: 'min(480px, 96vw)' }}>
-        <div className="modal-head">
-          <div className="rgm-head-text">
-            <div className="eyebrow">Client groups</div>
-            <h3>Delete group</h3>
-            <p className="page-hint">
-              Delete “{group.name}”? Its rows become unmatched and the group comes off everyone who has it.
-            </p>
-          </div>
-          <button type="button" className="modal-close" aria-label="Close" onClick={onClose} disabled={busy}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
-                 strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
-          </button>
-        </div>
-        <div className="modal-foot">
-          <button className="btn-solid" disabled={busy} onClick={() => void run()}>
-            {busy ? 'Deleting…' : 'Delete'}
-          </button>
-          <button className="mini-btn" onClick={onClose} disabled={busy}>Cancel</button>
-          {error && <span className="pf-error">{error}</span>}
-        </div>
-      </div>
-    </div>
+    <StandardModal eyebrow="Client groups" title="Delete group" busy={busy} onClose={onClose}
+      cardClass="group-modal-card"
+      description={`Delete “${group.name}”? Its rows become unmatched and the group comes off everyone who has it.`}
+      footer={<>
+        <button className="btn-solid" disabled={busy} onClick={() => void run()}>
+          {busy ? 'Deleting…' : 'Delete'}
+        </button>
+        <button className="mini-btn" onClick={onClose} disabled={busy}>Cancel</button>
+      </>}>
+      {error ? <p className="pf-error">{error}</p> : <p className="set-note">This cannot be undone.</p>}
+    </StandardModal>
   );
 }

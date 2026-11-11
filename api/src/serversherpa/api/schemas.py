@@ -805,6 +805,7 @@ class ClientGroupOut(BaseModel):
 
 class ClientGroupIn(BaseModel):
     name: str
+    aliases: list[str] = []
 
 
 class ClientGroupPatchIn(BaseModel):
