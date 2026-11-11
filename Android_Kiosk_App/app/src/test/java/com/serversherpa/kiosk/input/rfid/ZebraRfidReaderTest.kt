@@ -3,8 +3,17 @@ package com.serversherpa.kiosk.input.rfid
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.serversherpa.kiosk.core.rfid.BatchRecoveryPlan
+import com.serversherpa.kiosk.core.rfid.BondedDevice
+import com.serversherpa.kiosk.core.rfid.DEFAULT_RFID_SETTINGS
+import com.serversherpa.kiosk.core.rfid.LayoutWriteOutcome
+import com.serversherpa.kiosk.core.rfid.LinkTroubleTracker
+import com.serversherpa.kiosk.core.rfid.PerformOutcome
 import com.serversherpa.kiosk.core.rfid.Precheck
+import com.serversherpa.kiosk.core.rfid.PushOutcome
 import com.serversherpa.kiosk.core.rfid.RfidConnection
+import com.serversherpa.kiosk.core.rfid.RfidSession
+import com.serversherpa.kiosk.core.rfid.RfidSettings
+import com.serversherpa.kiosk.core.rfid.SledBeeper
 import com.serversherpa.kiosk.core.rfid.SledCandidate
 import com.serversherpa.kiosk.core.rfid.SledConnectException
 import com.serversherpa.kiosk.core.rfid.SledConnectRequest
@@ -16,10 +25,16 @@ import com.serversherpa.kiosk.core.rfid.SledWords
 import com.serversherpa.kiosk.core.rfid.TeardownPlan
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.core.rfid.TriggerPull
+import com.serversherpa.kiosk.core.rfid.VendorError
 import com.serversherpa.kiosk.core.rfid.batchRecoveryPlan
+import com.serversherpa.kiosk.core.rfid.decodeKeyLayout
+import com.serversherpa.kiosk.core.rfid.powerTable
+import com.serversherpa.kiosk.core.rfid.runSettingSteps
 import com.serversherpa.kiosk.core.rfid.teardownPlan
 import com.zebra.rfid.api3.OperationFailureException
+import com.zebra.rfid.api3.RFIDReader
 import com.zebra.rfid.api3.RFIDResults
+import java.util.logging.Level
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -43,6 +58,8 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -186,10 +203,305 @@ class ZebraRfidReaderTest {
 
     @Test fun everyOperationOnADisconnectedReaderReportsRatherThanThrows() = runTest {
         val r = reader(backgroundScope)
-        assertTrue(r.startInventory().isFailure)
-        assertTrue(r.stopInventory().isFailure)
-        assertTrue(r.apply(com.serversherpa.kiosk.core.rfid.DEFAULT_RFID_SETTINGS).isFailure)
+        val results = mapOf(
+            "startInventory" to r.startInventory(),
+            "stopInventory" to r.stopInventory(),
+            "apply" to r.apply(DEFAULT_RFID_SETTINGS),
+            "regions" to r.regions(),
+            "setRegion" to r.setRegion("US", hopping = null),
+            "setTriggerLayout" to r.setTriggerLayout(SledTriggerLayout.BARCODE),
+            "softScan" to r.softScan(pull = true),
+            "retryScanner" to r.retryScanner(),
+        )
+        for ((member, result) in results) {
+            assertTrue("$member must report SledNotConnected, got ${result.exceptionOrNull()}", result.exceptionOrNull() is SledNotConnected)
+        }
+        r.requestBattery()   // returns, makes no vendor call
+        assertTrue(r.pairedSleds().isEmpty())
         r.disconnect()   // must not throw
+        assertEquals(RfidConnection.Disconnected, r.connection.value)
+    }
+
+    @After fun vendorLoggingOff() {
+        reader(CoroutineScope(Dispatchers.Unconfined)).setVendorLogging(false)
+    }
+
+    // ── the settings push ──
+
+    /** Records every [RadioSettingsOps] call by name; [failing] names a call that throws. */
+    private class RecordingRadio(private val failing: String? = null) : RadioSettingsOps {
+        val calls = mutableListOf<String>()
+        val powerIndexes = mutableListOf<Int>()
+
+        private fun call(name: String) {
+            calls += name
+            if (name == failing) throw IllegalStateException("simulated refusal of $name")
+        }
+
+        override fun beeper(level: SledBeeper) = call("beeper")
+        override fun powerIndex(index: Int) {
+            powerIndexes += index
+            call("powerIndex")
+        }
+        override fun session(session: RfidSession) = call("session")
+        override fun tagPopulation(n: Int) = call("tagPopulation")
+        override fun uniqueReport(on: Boolean) = call("uniqueReport")
+        override fun dpo(on: Boolean) = call("dpo")
+    }
+
+    @Test fun settingStepsAreLabeledWithTheRowLabelsInOrder() {
+        val radio = RecordingRadio()
+        val steps = settingSteps(DEFAULT_RFID_SETTINGS, table = null, ops = radio)
+
+        assertEquals(
+            listOf(
+                SledWords.ROW_SLED_BEEPER,
+                SledWords.ROW_TRANSMIT_POWER,
+                SledWords.ROW_SESSION,
+                SledWords.ROW_TAG_POPULATION,
+                SledWords.ROW_UNIQUE,
+                SledWords.ROW_DPO,
+            ),
+            steps.map { it.label },
+        )
+        steps.forEach { it.run() }
+        assertEquals(
+            "one call per step, in order, and no LED step",
+            listOf("beeper", "powerIndex", "session", "tagPopulation", "uniqueReport", "dpo"),
+            radio.calls,
+        )
+    }
+
+    @Test fun powerIsSentAsAnIndexIntoTheSledsTable() {
+        val settings = RfidSettings(powerDbm = 27)
+        val withTable = RecordingRadio()
+        settingSteps(settings, powerTable(IntArray(201) { 100 + it }), withTable).forEach { it.run() }
+        assertEquals("27 dBm is 270 tenths, entry 170 of a 100..300 table", listOf(170), withTable.powerIndexes)
+
+        val noTable = RecordingRadio()
+        settingSteps(settings, table = null, ops = noTable).forEach { it.run() }
+        assertEquals("with no table, today's tenths value", listOf(270), noTable.powerIndexes)
+    }
+
+    @Test fun aRefusedSettingDoesNotStopThePush() {
+        val radio = RecordingRadio(failing = "beeper")
+
+        val outcome = runSettingSteps(settingSteps(DEFAULT_RFID_SETTINGS, null, radio), ::vendorErrorOf)
+
+        assertEquals(PushOutcome.Refused(listOf(SledWords.ROW_SLED_BEEPER), othersApplied = true), outcome)
+        assertEquals(listOf("beeper", "powerIndex", "session", "tagPopulation", "uniqueReport", "dpo"), radio.calls)
+    }
+
+    // ── paired sleds and vendor logging ──
+
+    private class BondedReader(context: Context, scope: CoroutineScope, private val bonded: List<BondedDevice>) :
+        ZebraRfidReader(context, scope) {
+        override fun bondedDevices(): List<BondedDevice> = bonded
+    }
+
+    @Test fun pairedSledsListsOnlySledsFromTheBondedList() = runTest {
+        val r = BondedReader(
+            ApplicationProvider.getApplicationContext(),
+            backgroundScope,
+            listOf(
+                BondedDevice("RFD4031", "00:11:22:33:44:55"),
+                BondedDevice("ZD421", "66:77:88:99:AA:BB"),
+                BondedDevice("RFD9090", "CC:DD:EE:FF:00:11"),
+            ),
+        )
+
+        assertEquals(
+            listOf(SledCandidate("RFD4031", "00:11:22:33:44:55"), SledCandidate("RFD9090", "CC:DD:EE:FF:00:11")),
+            r.pairedSleds(),
+        )
+    }
+
+    @Test fun pairedSledsIsEmptyWithNothingGranted() = runTest {
+        assertTrue(reader(backgroundScope).pairedSleds().isEmpty())
+    }
+
+    @Test fun theLoggingSwitchGatesTheVendorLog() = runTest {
+        val r = reader(backgroundScope)
+        assertFalse(r.vendorLogging.value)
+
+        r.setVendorLogging(true)
+        ShadowLog.clear()
+        RFIDReader.LOGGER.log(Level.INFO, "probe")
+        assertTrue("on: the vendor's line appears", ShadowLog.getLogsForTag("IRFIDinfo").any { it.msg == "probe" })
+        assertTrue(r.vendorLogging.value)
+
+        r.setVendorLogging(false)
+        ShadowLog.clear()
+        RFIDReader.LOGGER.log(Level.INFO, "probe")
+        assertTrue("off: nothing", ShadowLog.getLogsForTag("IRFIDinfo").isEmpty())
+        assertFalse(r.vendorLogging.value)
+    }
+
+    // ── connect steps 8 to 11 ──
+
+    /** Records every [SetupOps] call; [layoutOutcome] and [batteryError] decide what those return. */
+    private class RecordingSetup(
+        private val layoutOutcome: LayoutWriteOutcome = LayoutWriteOutcome.Accepted(decodeKeyLayout(4)),
+        private val batteryError: VendorError? = null,
+    ) : SetupOps {
+        val calls = mutableListOf<String>()
+
+        override fun identity(): SledInfo {
+            calls += "identity"
+            return SledInfo(1, "RFD4031")
+        }
+
+        override fun dump() {
+            calls += "dump"
+        }
+
+        override fun writeLayout(layout: SledTriggerLayout): LayoutWriteOutcome {
+            calls += "layout $layout"
+            return layoutOutcome
+        }
+
+        override fun battery(): VendorError? {
+            calls += "battery"
+            return batteryError
+        }
+    }
+
+    private val timeout = VendorError("RFID_API_COMMAND_TIMEOUT", null)
+
+    @Test fun bestStepsRunInOrderAndSkipPastTheDeadline() {
+        val all = RecordingSetup()
+        val split = SledConnectRequest(null, SledTriggerLayout.SPLIT)
+
+        val noneSkipped = runBestSteps(split, { 0L }, all, LinkTroubleTracker(), "RFD4031")
+
+        assertEquals(listOf("identity", "dump", "layout SPLIT", "battery"), all.calls)
+        assertTrue(noneSkipped.isEmpty())
+
+        val late = RecordingSetup()
+        val clock = ArrayDeque(listOf(0L, 7_999L, 8_000L, 8_000L))
+        val skipped = runBestSteps(split, { clock.removeFirst() }, late, LinkTroubleTracker(), "RFD4031")
+
+        assertEquals("a step not started within 8 s is skipped", listOf("identity", "dump"), late.calls)
+        assertEquals(listOf(ZebraRfidReader.STEP_LAYOUT, ZebraRfidReader.STEP_BATTERY), skipped)
+    }
+
+    @Test fun theConnectAsksForBatteryOnce() {
+        val ops = RecordingSetup()
+        runBestSteps(request, { 0L }, ops, LinkTroubleTracker(), "RFD4031")
+        assertEquals(1, ops.calls.count { it == "battery" })
+    }
+
+    @Test fun twoBatteryReadTimeoutsInARowMarkTheLinkLost() {
+        val ops = RecordingSetup(batteryError = timeout)
+        val links = LinkTroubleTracker()
+
+        assertFalse(batteryBlock(ops, links))
+        assertTrue(batteryBlock(ops, links))
+    }
+
+    @Test fun linkTroubleInABestStepFailsTheConnectRetryably() {
+        for (ops in listOf(RecordingSetup(layoutOutcome = LayoutWriteOutcome.LinkTrouble), RecordingSetup(batteryError = timeout))) {
+            try {
+                runBestSteps(request, { 0L }, ops, LinkTroubleTracker(), "RFD4031")
+                fail("link trouble in a best step must fail the connect")
+            } catch (e: SledConnectException) {
+                assertEquals(reached, e.failed)
+            }
+        }
+        val layoutTrouble = RecordingSetup(layoutOutcome = LayoutWriteOutcome.LinkTrouble)
+        try {
+            runBestSteps(request, { 0L }, layoutTrouble, LinkTroubleTracker(), "RFD4031")
+        } catch (e: SledConnectException) {
+            // expected
+        }
+        assertEquals("nothing runs after the step that lost the link", listOf("identity", "dump", "layout RFID"), layoutTrouble.calls)
+    }
+
+    @Test fun aRefusedBestStepIsLoggedAndSetupGoesOn() {
+        val ops = object : SetupOps {
+            val calls = mutableListOf<String>()
+            override fun identity(): SledInfo = throw IllegalStateException("no capabilities").also { calls += "identity" }
+            override fun dump() {
+                calls += "dump"
+            }
+            override fun writeLayout(layout: SledTriggerLayout): LayoutWriteOutcome = LayoutWriteOutcome.CheckFailed.also { calls += "layout" }
+            override fun battery(): VendorError? = null.also { calls += "battery" }
+        }
+
+        assertTrue(runBestSteps(request, { 0L }, ops, LinkTroubleTracker(), "RFD4031").isEmpty())
+        assertEquals(listOf("identity", "dump", "layout", "battery"), ops.calls)
+    }
+
+    // ── inventory ──
+
+    private class RecordingInventory(private val purged: Boolean = true, private val error: VendorError? = null) : InventoryOps {
+        val calls = mutableListOf<String>()
+
+        override fun purge(): Boolean {
+            calls += "purge"
+            return purged
+        }
+
+        override fun perform(): VendorError? {
+            calls += "perform"
+            return error
+        }
+    }
+
+    @Test fun uniqueReportingPurgesBeforeEachStart() {
+        val unique = RecordingInventory()
+        assertEquals(PerformOutcome.STARTED, runStart(uniqueReport = true, ops = unique))
+        assertEquals(listOf("purge", "perform"), unique.calls)
+
+        val plain = RecordingInventory()
+        assertEquals(PerformOutcome.STARTED, runStart(uniqueReport = false, ops = plain))
+        assertEquals(listOf("perform"), plain.calls)
+
+        val purgeFailed = RecordingInventory(purged = false)
+        assertEquals("a failed purge is logged, and the start goes on", PerformOutcome.STARTED, runStart(true, purgeFailed))
+        assertEquals(PerformOutcome.CHARGING, runStart(false, RecordingInventory(error = VendorError("RFID_CHARGING_COMMAND_NOT_ALLOWED", null))))
+    }
+
+    @Test fun anUnsolicitedStopIsEmittedOnlyWhileAnInventoryRunsAndOnlyForTheCurrentGeneration() = runTest {
+        val r = seamReader(backgroundScope)
+        assertTrue(r.connect(request).isSuccess)
+        val stops = mutableListOf<String>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { r.unsolicitedStops.toList(stops) }
+        val g = r.currentGeneration
+
+        r.onStopEvent(g)
+        runCurrent()
+        assertTrue("nothing was running", stops.isEmpty())
+
+        r.onStartEvent(g - 1)
+        r.onStopEvent(g)
+        runCurrent()
+        assertTrue("a start event from an old generation runs nothing", stops.isEmpty())
+
+        r.onStartEvent(g)
+        r.onStopEvent(g - 1)
+        runCurrent()
+        assertTrue("a stop event from an old generation is dropped", stops.isEmpty())
+
+        r.onStopEvent(g)
+        runCurrent()
+        assertEquals(1, stops.size)
+        assertFalse("the reason is for the log; no vendor name in it either way", stops.single().contains("RFID_"))
+
+        r.onStopEvent(g)
+        runCurrent()
+        assertEquals("the sweep already ended", 1, stops.size)
+    }
+
+    // ── has-scanner ──
+
+    @Test fun hasScannerIsKnownFalseOnlyForTheModelsWithoutAnImager() {
+        assertEquals(true, hasScannerOf("PREMIUM PLUS(WiFi & SCAN)"))
+        assertEquals(false, hasScannerOf("PREMIUM (WiFi)"))
+        assertEquals(false, hasScannerOf("STANDARD"))
+        assertNull("a renamed sled is unknown, not known to lack one", hasScannerOf("RFDXXXX"))
+        assertNull(hasScannerOf("RFD8500"))
+        assertNull(hasScannerOf(null))
     }
 
     // ── the pre-check ──

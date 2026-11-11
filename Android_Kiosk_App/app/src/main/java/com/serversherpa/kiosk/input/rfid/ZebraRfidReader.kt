@@ -5,10 +5,17 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.util.Log
+import android.view.InputDevice
+import com.serversherpa.kiosk.core.rfid.AttributeRead
 import com.serversherpa.kiosk.core.rfid.BatchRecoveryPlan
 import com.serversherpa.kiosk.core.rfid.BondedDevice
+import com.serversherpa.kiosk.core.rfid.LayoutWrite
+import com.serversherpa.kiosk.core.rfid.LayoutWriteOutcome
 import com.serversherpa.kiosk.core.rfid.LinkTroubleTracker
+import com.serversherpa.kiosk.core.rfid.PerformOutcome
+import com.serversherpa.kiosk.core.rfid.PowerTable
 import com.serversherpa.kiosk.core.rfid.Precheck
+import com.serversherpa.kiosk.core.rfid.PushOutcome
 import com.serversherpa.kiosk.core.rfid.ResultClass
 import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidRegion
@@ -16,13 +23,17 @@ import com.serversherpa.kiosk.core.rfid.RfidRegions
 import com.serversherpa.kiosk.core.rfid.RfidSession
 import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.SLED_BEST_STEP_DEADLINE_MS
+import com.serversherpa.kiosk.core.rfid.SettingStep
 import com.serversherpa.kiosk.core.rfid.SledBeeper
 import com.serversherpa.kiosk.core.rfid.SledCandidate
 import com.serversherpa.kiosk.core.rfid.SledConnectException
 import com.serversherpa.kiosk.core.rfid.SledConnectRequest
 import com.serversherpa.kiosk.core.rfid.SledFix
 import com.serversherpa.kiosk.core.rfid.SledInfo
+import com.serversherpa.kiosk.core.rfid.SledKey
 import com.serversherpa.kiosk.core.rfid.SledNotConnected
+import com.serversherpa.kiosk.core.rfid.SledTriggerLayout
+import com.serversherpa.kiosk.core.rfid.SledTriggerReadback
 import com.serversherpa.kiosk.core.rfid.SledWords
 import com.serversherpa.kiosk.core.rfid.TeardownPlan
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
@@ -32,8 +43,18 @@ import com.serversherpa.kiosk.core.rfid.batchRecoveryPlan
 import com.serversherpa.kiosk.core.rfid.bestStepDue
 import com.serversherpa.kiosk.core.rfid.classifyResult
 import com.serversherpa.kiosk.core.rfid.connectFailure
-import com.serversherpa.kiosk.core.rfid.powerToTenths
+import com.serversherpa.kiosk.core.rfid.effectiveLayout
+import com.serversherpa.kiosk.core.rfid.message
+import com.serversherpa.kiosk.core.rfid.pairedSledsOf
+import com.serversherpa.kiosk.core.rfid.performOutcome
+import com.serversherpa.kiosk.core.rfid.powerIndex
+import com.serversherpa.kiosk.core.rfid.powerTable
 import com.serversherpa.kiosk.core.rfid.precheck as decidePrecheck
+import com.serversherpa.kiosk.core.rfid.regionArgs
+import com.serversherpa.kiosk.core.rfid.runLayoutWrite
+import com.serversherpa.kiosk.core.rfid.runSettingSteps
+import com.serversherpa.kiosk.core.rfid.sentence
+import com.serversherpa.kiosk.core.rfid.stopSettled
 import com.serversherpa.kiosk.core.rfid.teardownPlan
 import com.serversherpa.kiosk.core.rfid.triggerTypePasses
 import com.serversherpa.kiosk.core.rfid.vendorLogLine
@@ -41,23 +62,30 @@ import com.zebra.rfid.api3.AttributeInfo
 import com.zebra.rfid.api3.BATCH_MODE
 import com.zebra.rfid.api3.BEEPER_VOLUME
 import com.zebra.rfid.api3.DYNAMIC_POWER_OPTIMIZATION
+import com.zebra.rfid.api3.ENUM_NEW_KEYLAYOUT_TYPE
 import com.zebra.rfid.api3.ENUM_TRANSPORT
+import com.zebra.rfid.api3.ENUM_TRIGGER_MODE
 import com.zebra.rfid.api3.HANDHELD_TRIGGER_EVENT_TYPE
 import com.zebra.rfid.api3.IEvents
+import com.zebra.rfid.api3.INVENTORY_STATE
 import com.zebra.rfid.api3.InvalidUsageException
 import com.zebra.rfid.api3.OperationFailureException
 import com.zebra.rfid.api3.RFIDReader
 import com.zebra.rfid.api3.RFIDResults
 import com.zebra.rfid.api3.RFID_EVENT_TYPE
+import com.zebra.rfid.api3.ReaderDevice
 import com.zebra.rfid.api3.Readers
+import com.zebra.rfid.api3.RegionInfo
 import com.zebra.rfid.api3.RegulatoryConfig
 import com.zebra.rfid.api3.RfidEventsListener
 import com.zebra.rfid.api3.RfidReadEvents
 import com.zebra.rfid.api3.RfidStatusEvents
 import com.zebra.rfid.api3.SESSION
+import com.zebra.rfid.api3.SL_FLAG
 import com.zebra.rfid.api3.START_TRIGGER_TYPE
 import com.zebra.rfid.api3.STATUS_EVENT_TYPE
 import com.zebra.rfid.api3.STOP_TRIGGER_TYPE
+import com.zebra.rfid.api3.SetAttribute
 import com.zebra.rfid.api3.StartTrigger
 import com.zebra.rfid.api3.StopTrigger
 import java.util.concurrent.ConcurrentHashMap
@@ -67,6 +95,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -76,6 +105,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 
 /** What the vendor connect sequence produced ([ZebraRfidReader.openVendorConnection]). */
 sealed interface VendorOpen {
@@ -95,7 +125,8 @@ sealed interface VendorOpen {
  * SDK (`CorePurityTest.onlyDesignatedFilesImportTheZebraSdk`).
  *
  * **One worker thread.** Every vendor block (connect, setup, teardown,
- * apply, start, stop, regions, set region) runs on one thread,
+ * apply, start, stop, purge, regions, set region, trigger layout, battery)
+ * runs on one thread,
  * [WORKER_THREAD_NAME], made once for the life of the adapter, in the order
  * the calls arrive. A call posts its block and awaits it; a caller that stops
  * waiting stops only its wait, and the block still runs to the end. Nothing
@@ -130,14 +161,13 @@ sealed interface VendorOpen {
  * every `Exception`, so a connect still ends in a sentence.
  *
  * [zebraHost] says whether the phone is a Zebra handheld (`isZebraHost`):
- * there the sled always gets the RFID layout and no scanner session. It is
- * stored for the trigger layout write and the scanner session, which are
- * not in this file yet.
+ * there the sled always gets the RFID layout (`effectiveLayout`, used by
+ * every trigger layout write) and no scanner session.
  */
 open class ZebraRfidReader(
     private val context: Context,
     private val scope: CoroutineScope,
-    @Suppress("unused") private val zebraHost: Boolean = false,
+    private val zebraHost: Boolean = false,
 ) : RfidReader {
     private val _connection = MutableStateFlow<RfidConnection>(RfidConnection.Disconnected)
     override val connection: StateFlow<RfidConnection> = _connection.asStateFlow()
@@ -157,6 +187,12 @@ open class ZebraRfidReader(
     private val _pulls = MutableSharedFlow<TriggerPull>(extraBufferCapacity = 16)
     override val pulls: SharedFlow<TriggerPull> = _pulls.asSharedFlow()
     override val triggers: Flow<TriggerEvent> = _pulls.map { it.event }
+
+    private val _unsolicitedStops = MutableSharedFlow<String>(extraBufferCapacity = 16)
+    override val unsolicitedStops: SharedFlow<String> = _unsolicitedStops.asSharedFlow()
+
+    /** What [setVendorLogging] last set; the vendor's logger is process-wide, so this is too. */
+    override val vendorLogging: StateFlow<Boolean> = vendorLoggingState.asStateFlow()
 
     /** The one thread every vendor block runs on; never interrupted. */
     private val worker: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
@@ -188,6 +224,24 @@ open class ZebraRfidReader(
     private var batchNote: String? = null
     private var pendingCleanup: Thread? = null
     private var pendingCleanupBoundMs = CLEANUP_BOUND_MS
+
+    /** This connection's transmit-power table (connect step 8); null until read, or when the sled gave none. */
+    private var powerTable: PowerTable? = null
+
+    /** The settings the last push left on the sled (all of them, or all but the refused ones); null before any push. */
+    private var lastApplied: RfidSettings? = null
+
+    /** A start found an inventory already running: after the next stop, set the start and stop triggers IMMEDIATE again. */
+    private var reimmediateAfterStop = false
+
+    /** A vendor call in this connect's setup said the sled has no region (steps 8 to 11). */
+    private var sawRegionNotSet = false
+
+    // Written on the worker and on the vendor's event thread.
+    @Volatile private var inventoryRunning = false
+    @Volatile private var stopRequested = false
+    @Volatile private var stopEventSeen = false
+    @Volatile private var lastTagAtMs = 0L
 
     /**
      * True when the last vendor open ended in a batch result, with no other
@@ -231,10 +285,33 @@ open class ZebraRfidReader(
         /** The batch recovery's pause after its stop, and before its one retry of the batch-mode write. */
         internal const val BATCH_PAUSE_MS = 500L
 
+        /** The names of connect steps 8 to 11, as logged and as [runBestSteps] returns the skipped ones. */
+        internal const val STEP_IDENTITY = "identity"
+        internal const val STEP_DUMP = "dump"
+        internal const val STEP_LAYOUT = "trigger layout"
+        internal const val STEP_BATTERY = "battery"
+
+        /** How often the stop wait looks again, and how many looks a wait off the worker takes at most (500 ms). */
+        private const val STOP_SETTLE_POLL_MS = 10L
+        private const val STOP_SETTLE_MAX_POLLS = 50
+
         private const val NO_GENERATION = -1
         private const val BATCH_MODE_ATTRIBUTE = 1500
         private const val BATCH_MODE_OFF_VALUE = "0"
         private const val REGION_NOT_SET_CODE = "NA"
+
+        /** The key-layout attribute: written by a raw layout write, read back after every write, and read by the battery block. */
+        internal const val KEY_LAYOUT_ATTRIBUTE = 2269
+        private const val KEY_LAYOUT_ATTRIBUTE_TYPE = "B"
+
+        /** Connect step 9 reads these, as found: key layout, Bluetooth host mode, scan batch mode. */
+        private val DUMP_ATTRIBUTES = listOf(KEY_LAYOUT_ATTRIBUTE, 1587, 2325)
+
+        /** `setTriggerMode` sends anything only to this model; it is called for no other. */
+        private const val TRIGGER_MODE_MODEL = "RFD8500"
+
+        /** What [setVendorLogging] last set, for the whole process: the vendor's logger is one static object. */
+        private val vendorLoggingState = MutableStateFlow(false)
     }
 
     // ── connect and disconnect ──
@@ -300,6 +377,11 @@ open class ZebraRfidReader(
         wroteLayout = false
         links = LinkTroubleTracker()
         linkName = null
+        powerTable = null
+        reimmediateAfterStop = false
+        sawRegionNotSet = false
+        inventoryRunning = false
+        stopRequested = false
         val chosen = when (val pre = precheck(request.address)) {
             is Precheck.Refused -> {
                 Log.i(TAG, "Pre-check refused the connect: ${pre.failed.reason}")
@@ -555,11 +637,15 @@ open class ZebraRfidReader(
      * (best); 3 this generation's listener and the disconnect event; 4 the
      * trigger events, checked and retried once; 5 tag events; 6 inventory,
      * battery, power and temperature events (best); 7 start and stop triggers
-     * IMMEDIATE, one retry each. A best step not started within
+     * IMMEDIATE, one retry each; then the best steps 8 to 11 through
+     * [runBestSteps]: 8 identity and the power table, 9 the read-only dump,
+     * 10 the trigger layout write of `request.layout` and its read-back, 11
+     * the battery block. A best step not started within
      * [BEST_STEP_DEADLINE_MS] of step 1 returning is skipped and logged. A
      * region check (a region reading `NA`) runs right after step 1.
      *
-     * Returns [VendorOpen.Up], or [VendorOpen.NoRegion] when the sled has no
+     * Returns [VendorOpen.Up] (with the identity fields and `trigger` set as
+     * far as the steps got), or [VendorOpen.NoRegion] when the sled has no
      * region (from `connect()`, a setup step or the region check), or
      * [VendorOpen.BatchCleared] after the batch recovery. Throws on failure:
      * a [SledConnectException] for a failure that already has its sentence
@@ -604,7 +690,11 @@ open class ZebraRfidReader(
         val setup = LinkSetup(name, generation)
         return try {
             setUpLink(rfid, vendor, setup)
-            VendorOpen.Up(info)
+            // Steps 8 to 11. Link trouble in any of them fails the connect, retryably (ruling 46).
+            val ops = VendorSetupOps(rfid, device, setup::checkLoss, info)
+            runBestSteps(request, setup::sinceConnectReturned, ops, links, name)
+            setup.checkLoss()
+            if (sawRegionNotSet) noRegion(rfid, vendor, setup, ops.info) else VendorOpen.Up(ops.info)
         } catch (e: RegionNotConfigured) {
             noRegion(rfid, vendor, setup, info)
         }
@@ -940,8 +1030,44 @@ open class ZebraRfidReader(
     /** A tag read for [generation]; dropped unless current. */
     internal fun onTag(generation: Int, epc: String) {
         if (generation != currentGeneration) return
+        lastTagAtMs = nowMs()
         // The buffer holds 512; a drop here is a tag the operator thinks was read.
         if (!_tags.tryEmit(epc)) Log.w(TAG, "Dropped a tag read: the tags flow's buffer is full.")
+    }
+
+    /** The sled says an inventory started: one the app asked for, or one its own trigger started. */
+    internal fun onStartEvent(generation: Int) {
+        if (generation != currentGeneration) return
+        inventoryRunning = true
+        Log.i(TAG, "Inventory start event, generation $generation.")
+    }
+
+    /**
+     * The sled says an inventory stopped. A stop the app asked for is only
+     * noted (the stop wait looks for it). With no stop requested while an
+     * inventory runs, the sled ended the read by itself: after the same wait
+     * a requested stop gets, its reason goes out on [unsolicitedStops], from
+     * a coroutine on [scope] (ruling 45: logged, never shown).
+     */
+    internal fun onStopEvent(generation: Int) {
+        if (generation != currentGeneration) return
+        stopEventSeen = true
+        if (stopRequested || !inventoryRunning) {
+            Log.i(TAG, "Inventory stop event, generation $generation.")
+            return
+        }
+        inventoryRunning = false
+        val at = nowMs()
+        val reason = "The sled ended the read by itself (an inventory stop event with no stop asked for, generation $generation)."
+        Log.w(TAG, reason)
+        scope.launch {
+            var looks = 0
+            while (looks++ < STOP_SETTLE_MAX_POLLS && !stopSettled(nowMs() - at, stopEventSeen = true, sinceLastTagMs = nowMs() - lastTagAtMs)) {
+                delay(STOP_SETTLE_POLL_MS)
+            }
+            if (generation != currentGeneration) return@launch
+            if (!_unsolicitedStops.tryEmit(reason)) Log.w(TAG, "Dropped an unsolicited stop: the flow's buffer is full.")
+        }
     }
 
     private fun onBattery(generation: Int, level: Int) {
@@ -987,10 +1113,14 @@ open class ZebraRfidReader(
                     }
                 }
                 STATUS_EVENT_TYPE.BATTERY_EVENT -> {
+                    // Charging is not parsed (the vendor's flag parser only works for the word
+                    // "true"); the raw text, the cause, is logged with the level.
                     val battery = data.BatteryData
-                    Log.i(TAG, "Battery event: level ${battery?.level}, cause ${battery?.cause}, generation $generation.")
+                    Log.i(TAG, "Battery event: level ${battery?.level}, raw cause \"${battery?.cause}\", generation $generation.")
                     battery?.level?.let { onBattery(generation, it) }
                 }
+                STATUS_EVENT_TYPE.INVENTORY_START_EVENT -> onStartEvent(generation)
+                STATUS_EVENT_TYPE.INVENTORY_STOP_EVENT -> onStopEvent(generation)
                 STATUS_EVENT_TYPE.DISCONNECTION_EVENT -> {
                     Log.w(TAG, "Disconnection event ${data.DisconnectionEventData?.disconnectionEvent}, generation $generation.")
                     onLinkLost(generation)
@@ -1002,86 +1132,444 @@ open class ZebraRfidReader(
 
     // ── operations ──
 
+    /**
+     * The settings push: the six [settingSteps] through `runSettingSteps`.
+     * A refusal is logged and the push goes on; link trouble stops it. The
+     * failure message names what was refused, or says the push stopped.
+     */
     final override suspend fun apply(settings: RfidSettings): Result<Unit> = onWorker {
-        onLink("settings push", sentence = SledWords.SETTINGS_NOT_APPLIED) { rfid ->
-            val antenna = rfid.Config.Antennas.getAntennaRfConfig(1)
-            antenna.transmitPowerIndex = powerToTenths(settings.powerDbm)
-            rfid.Config.Antennas.setAntennaRfConfig(1, antenna)
-
-            val singulation = rfid.Config.Antennas.getSingulationControl(1)
-            singulation.session = when (settings.session) {
-                RfidSession.S0 -> SESSION.SESSION_S0
-                RfidSession.S1 -> SESSION.SESSION_S1
-                RfidSession.S2 -> SESSION.SESSION_S2
-                RfidSession.S3 -> SESSION.SESSION_S3
-            }
-            singulation.tagPopulation = settings.tagPopulation.toShort()
-            rfid.Config.Antennas.setSingulationControl(1, singulation)
-
-            rfid.Config.setBeeperVolume(
-                when (settings.beeper) {
-                    SledBeeper.OFF -> BEEPER_VOLUME.QUIET_BEEP
-                    SledBeeper.LOW -> BEEPER_VOLUME.LOW_BEEP
-                    SledBeeper.MEDIUM -> BEEPER_VOLUME.MEDIUM_BEEP
-                    SledBeeper.HIGH -> BEEPER_VOLUME.HIGH_BEEP
+        linkBlock("settings push", sentence = SledWords.SETTINGS_NOT_APPLIED) { rfid, generation ->
+            val steps = settingSteps(settings, powerTable, ConfigRadio(rfid)).map { step ->
+                SettingStep(step.label) {
+                    try {
+                        step.run()
+                    } catch (t: Throwable) {
+                        errorOf("settings push: ${step.label}", t)
+                        throw t
+                    }
                 }
-            )
-            rfid.Config.setUniqueTagReport(settings.uniqueTagReport)
-            // The accessors are getDPOState()/setDPOState(...): Kotlin makes no
-            // `dpoState` property from a name that starts with two capitals.
-            rfid.Config.setDPOState(
-                if (settings.dpo) DYNAMIC_POWER_OPTIMIZATION.ENABLE else DYNAMIC_POWER_OPTIMIZATION.DISABLE
-            )
+            }
+            when (val outcome = runSettingSteps(steps, ::vendorErrorOf)) {
+                PushOutcome.Applied -> {
+                    recordClass(generation, null)
+                    lastApplied = settings
+                    Result.success(Unit)
+                }
+                is PushOutcome.Refused -> {
+                    recordClass(generation, ResultClass.REFUSAL)
+                    lastApplied = settings
+                    Log.w(TAG, "Settings push: the sled refused ${outcome.labels}; the other settings were applied.")
+                    Result.failure(Exception(outcome.message()))
+                }
+                PushOutcome.LinkTrouble -> {
+                    recordClass(generation, ResultClass.LINK_TROUBLE)
+                    Log.w(TAG, "Settings push: stopped at link trouble.")
+                    Result.failure(Exception(outcome.message()))
+                }
+            }
         }
     }
 
+    /**
+     * One start, by the `perform()` outcome table: purge first when the last
+     * push turned unique reporting on ([runStart]); success for started, sent
+     * but not confirmed, and already running (whose start and stop triggers
+     * are set IMMEDIATE again after the next stop); for a batch result, a
+     * stop and the batch-mode safety step first; every failure carries
+     * [sentence] of its outcome.
+     */
     final override suspend fun startInventory(): Result<Unit> = onWorker {
-        onLink("start", sentence = SledWords.READ_DID_NOT_START) { rfid -> rfid.Actions.Inventory.perform() }
+        linkBlock("start", sentence = SledWords.READ_DID_NOT_START) { rfid, generation ->
+            stopRequested = false
+            var performError: VendorError? = null
+            val ops = object : InventoryOps {
+                override fun purge(): Boolean = try {
+                    rfid.Actions.purgeTags()
+                } catch (t: Throwable) {
+                    errorOf("purge", t)
+                    false
+                }
+
+                override fun perform(): VendorError? {
+                    performError = try {
+                        rfid.Actions.Inventory.perform()
+                        null
+                    } catch (t: Throwable) {
+                        errorOf("start", t)
+                    }
+                    return performError
+                }
+            }
+            val outcome = runStart(lastApplied?.uniqueTagReport == true, ops)
+            recordResult(generation, performError)
+            when (outcome) {
+                PerformOutcome.STARTED -> inventoryRunning = true
+                PerformOutcome.UNCONFIRMED -> {
+                    inventoryRunning = true
+                    Log.w(TAG, "Start: sent, unconfirmed (the start status may ride on the first tag).")
+                }
+                PerformOutcome.ALREADY_RUNNING -> {
+                    inventoryRunning = true
+                    reimmediateAfterStop = true
+                    Log.w(TAG, "Start: an inventory was already running; the triggers are set IMMEDIATE again after the next stop.")
+                }
+                PerformOutcome.BATCH_MODE -> stopAfterABatchStart(rfid)
+                PerformOutcome.CHARGING, PerformOutcome.NOT_SENT, PerformOutcome.REFUSED ->
+                    Log.w(TAG, "Start failed: $outcome.")
+            }
+            val sentence = outcome.sentence()
+            if (sentence == null) Result.success(Unit) else Result.failure(Exception(sentence))
+        }
     }
 
+    /** `perform()` said the sled is reading into its store: a stop, then the batch-mode safety step, each guarded. */
+    private fun stopAfterABatchStart(rfid: RFIDReader) {
+        Log.w(TAG, "Start: the sled is in batch mode. Stopping it and turning batch mode off.")
+        try {
+            rfid.Actions.Inventory.stop()
+        } catch (t: Throwable) {
+            errorOf("stop after a batch start", t)
+        }
+        try {
+            preventBatchMode(save = teardownPlan(linkUp = true, wroteLayout = wroteLayout).saveConfig, rfid = rfid)
+        } catch (t: Throwable) {
+            errorOf("batch-mode safety step after a batch start", t)
+        }
+    }
+
+    /**
+     * One stop. The stop is always sent; when nothing was running, its
+     * failure is logged and the stop still counts as done. After a stop that
+     * ended a running inventory, the worker waits until the stop event has
+     * arrived and no tag has come for 100 ms, at most 500 ms ([stopSettled]),
+     * because the vendor's stop returns before the last tags are delivered.
+     */
     final override suspend fun stopInventory(): Result<Unit> = onWorker {
-        onLink("stop") { rfid -> rfid.Actions.Inventory.stop() }
+        linkBlock("stop", sentence = SledWords.MAY_STILL_BE_READING) { rfid, generation ->
+            val wasRunning = inventoryRunning
+            stopRequested = true
+            stopEventSeen = false
+            val stoppedAt = nowMs()
+            val error = try {
+                rfid.Actions.Inventory.stop()
+                null
+            } catch (t: Throwable) {
+                errorOf("stop", t)
+            }
+            recordResult(generation, error)
+            if (error != null && wasRunning) return@linkBlock Result.failure(Exception(SledWords.MAY_STILL_BE_READING))
+            if (error != null) Log.i(TAG, "Stop: nothing was running, so the refusal counts as stopped.")
+            if (wasRunning) awaitStopSettled(stoppedAt)
+            inventoryRunning = false
+            // Settled: a later stop event belongs to an inventory the sled starts by itself.
+            stopRequested = false
+            if (reimmediateAfterStop) {
+                reimmediateAfterStop = false
+                setTriggersImmediate(rfid)
+            }
+            Result.success(Unit)
+        }
     }
 
-    /** The regions this reader allows and the one in force. Needs `Connected` or `NeedsRegion`. */
+    /** The stop wait, on the worker: see [stopInventory]. */
+    private fun awaitStopSettled(stoppedAt: Long) {
+        while (!stopSettled(nowMs() - stoppedAt, stopEventSeen, nowMs() - lastTagAtMs)) pause(STOP_SETTLE_POLL_MS)
+        Log.i(TAG, "Stop settled after ${nowMs() - stoppedAt} ms (stop event ${if (stopEventSeen) "seen" else "not seen"}).")
+    }
+
+    /** The start and stop triggers IMMEDIATE again, after a start that found an inventory already running. Each guarded. */
+    private fun setTriggersImmediate(rfid: RFIDReader) {
+        try {
+            rfid.Config.setStartTrigger(StartTrigger().apply { triggerType = START_TRIGGER_TYPE.START_TRIGGER_TYPE_IMMEDIATE })
+            rfid.Config.setStopTrigger(StopTrigger().apply { triggerType = STOP_TRIGGER_TYPE.STOP_TRIGGER_TYPE_IMMEDIATE })
+            Log.i(TAG, "Start and stop triggers set IMMEDIATE again.")
+        } catch (t: Throwable) {
+            errorOf("start and stop triggers IMMEDIATE after a stop", t)
+        }
+    }
+
+    /**
+     * The regions this sled allows and the one in force. The list's length
+     * is guarded (it throws when the sled never answered for its regions);
+     * the active region is read on its own guard, so the list loads without
+     * it; only the active region's detail (hopping, channels) is read.
+     * Needs `Connected` or `NeedsRegion`.
+     */
     final override suspend fun regions(): Result<RfidRegions> = onWorker {
-        onLink("regions", allowNeedsRegion = true, sentence = SledWords.REGIONS_FAILED) { rfid ->
-            val supported = rfid.ReaderCapabilities.SupportedRegions
-            val regions = (0 until supported.length()).map { i ->
-                val region = supported.getRegionInfo(i)
+        linkBlock("regions", allowNeedsRegion = true, sentence = SledWords.REGIONS_FAILED) { rfid, generation ->
+            val errors = mutableListOf<VendorError>()
+            val supported = try {
+                supportedRegions(rfid)
+            } catch (t: Throwable) {
+                recordResult(generation, errorOf("regions: the supported list", t))
+                return@linkBlock Result.failure(Exception(SledWords.REGIONS_FAILED))
+            }
+            val active = try {
+                rfid.Config.getRegulatoryConfig()?.region
+            } catch (t: Throwable) {
+                errors += errorOf("regions: the active region", t)
+                null
+            }
+            val regions = supported.mapNotNull { info ->
+                val code = info.regionCode ?: return@mapNotNull null
+                if (active != null && code.equals(active, ignoreCase = true)) regionDetail(rfid, info)?.let(errors::add)
                 RfidRegion(
-                    code = region.regionCode,
-                    name = region.name,
-                    hoppingConfigurable = region.isHoppingConfigurable,
-                    channels = region.supportedChannels?.toList().orEmpty(),
+                    code = code,
+                    name = info.name ?: code,
+                    hoppingConfigurable = info.isHoppingConfigurable,
+                    channels = info.supportedChannels.usable(),
                 )
             }
-            RfidRegions(regions, rfid.Config.getRegulatoryConfig()?.region)
+            recordResult(generation, worstOf(errors))
+            Log.i(TAG, "Regions: ${regions.size} supported, active ${active ?: "(unknown)"}.")
+            Result.success(RfidRegions(regions, active))
         }
     }
 
-    /** Sets the regulatory domain; [hopping] applies only when not null. Needs `Connected` or `NeedsRegion`. */
+    /**
+     * Sets the regulatory region. The picked region's detail is read first;
+     * when it says hopping is configurable, `hopping ?: true` is passed with
+     * its supported channels, and the channel array is never null
+     * ([regionArgs], ruling 23). A write that throws is checked by reading
+     * the region back before a failure is reported. Never reconnects. Needs
+     * `Connected` or `NeedsRegion`.
+     */
     final override suspend fun setRegion(code: String, hopping: Boolean?): Result<Unit> = onWorker {
-        onLink("set region", allowNeedsRegion = true, sentence = SledWords.REGION_NOT_SET) { rfid ->
-            val regulatoryConfig = RegulatoryConfig()
-            regulatoryConfig.region = code
+        linkBlock("set region", allowNeedsRegion = true, sentence = SledWords.REGION_NOT_SET) { rfid, generation ->
+            val errors = mutableListOf<VendorError>()
+            val picked = try {
+                supportedRegions(rfid).firstOrNull { it.regionCode.equals(code, ignoreCase = true) }
+            } catch (t: Throwable) {
+                errors += errorOf("set region: the supported list", t)
+                null
+            }
+            if (picked != null) regionDetail(rfid, picked)?.let(errors::add)
+            val args = regionArgs(picked?.isHoppingConfigurable == true, hopping, picked?.supportedChannels.usable())
+            Log.i(TAG, "Set region $code: hopping ${args.hopping ?: "(left out)"}, ${args.channels.size} channel(s).")
+            val config = RegulatoryConfig()
+            config.region = code
             // The getter is isHoppingon() (lowercase "on"), so the setter is called by name.
-            if (hopping != null) regulatoryConfig.setIsHoppingOn(hopping)
-            rfid.Config.setRegulatoryConfig(regulatoryConfig)
+            args.hopping?.let { config.setIsHoppingOn(it) }
+            config.setEnabledChannels(args.channels.toTypedArray())
+            val writeError = try {
+                rfid.Config.setRegulatoryConfig(config)
+                null
+            } catch (t: Throwable) {
+                errorOf("set region", t)
+            }
+            if (writeError == null) {
+                recordResult(generation, worstOf(errors))
+                return@linkBlock Result.success(Unit)
+            }
+            errors += writeError
+            val readBack = try {
+                rfid.Config.getRegulatoryConfig()?.region
+            } catch (t: Throwable) {
+                errors += errorOf("set region: the read-back", t)
+                null
+            }
+            recordResult(generation, worstOf(errors))
+            if (readBack.equals(code, ignoreCase = true)) {
+                Log.w(TAG, "Set region: the write threw, but the region reads back as $readBack; counting it as set.")
+                Result.success(Unit)
+            } else {
+                Log.w(TAG, "Set region: the region reads back as ${readBack ?: "(nothing)"}, not $code.")
+                Result.failure(Exception(SledWords.REGION_NOT_SET))
+            }
+        }
+    }
+
+    /** The sled's supported regions; throws when it never answered for them (the list inside is null). */
+    private fun supportedRegions(rfid: RFIDReader): List<RegionInfo> {
+        val supported = rfid.ReaderCapabilities?.SupportedRegions ?: throw IllegalStateException("The sled reported no region list.")
+        return (0 until supported.length()).map { supported.getRegionInfo(it) }
+    }
+
+    /** Fills [info]'s hopping flag and channels from the sled (`Config.getRegionInfo`, in place); the error, if any. */
+    private fun regionDetail(rfid: RFIDReader, info: RegionInfo): VendorError? = try {
+        rfid.Config.getRegionInfo(info)
+        Log.i(TAG, "Region ${info.regionCode}: hopping configurable ${info.isHoppingConfigurable}, channels ${info.supportedChannels?.toList()}.")
+        null
+    } catch (t: Throwable) {
+        errorOf("region detail for ${info.regionCode}", t)
+    }
+
+    /**
+     * Writes [layout] as the effective layout (`effectiveLayout`, so a Zebra
+     * host or a sled with no scanner gets RFID) and reports what the sled
+     * reads back. `Accepted` updates `info.trigger`; a read-back that could
+     * not be accepted sets it null and fails; link trouble counts toward
+     * marking the link lost, leaves `info.trigger` as it was and fails. Both
+     * failures are [SledWords.TRIGGER_CHECK_FAILED]. Never saved.
+     */
+    final override suspend fun setTriggerLayout(layout: SledTriggerLayout): Result<SledTriggerReadback> = onWorker {
+        linkBlock("trigger layout", sentence = SledWords.TRIGGER_CHECK_FAILED) { rfid, generation ->
+            val known = _info.value
+            when (val outcome = writeTriggerLayout(rfid, layout, known?.model ?: known?.name, known?.hasScanner)) {
+                is LayoutWriteOutcome.Accepted -> {
+                    recordClass(generation, null)
+                    updateTrigger(generation, outcome.readback)
+                    Result.success(outcome.readback)
+                }
+                LayoutWriteOutcome.CheckFailed -> {
+                    recordClass(generation, null)
+                    updateTrigger(generation, null)
+                    Result.failure(Exception(SledWords.TRIGGER_CHECK_FAILED))
+                }
+                LayoutWriteOutcome.LinkTrouble -> {
+                    recordClass(generation, ResultClass.LINK_TROUBLE)
+                    Result.failure(Exception(SledWords.TRIGGER_CHECK_FAILED))
+                }
+            }
+        }
+    }
+
+    private fun updateTrigger(generation: Int, readback: SledTriggerReadback?) {
+        synchronized(stateLock) {
+            if (generation == currentGeneration) _info.update { it?.copy(trigger = readback) }
+        }
+    }
+
+    /**
+     * The layout write and read-back for connect step 10 and [setTriggerLayout]
+     * (spec, Trigger layout). `setTriggerMode(mode, false)` goes only to a
+     * model whose name contains `RFD8500`. Marks this connection as having
+     * written a layout, so teardown skips the save.
+     */
+    private fun writeTriggerLayout(rfid: RFIDReader, requested: SledTriggerLayout, model: String?, hasScanner: Boolean?): LayoutWriteOutcome {
+        val effective = effectiveLayout(requested, zebraHost, hasScanner)
+        if (effective != requested) Log.i(TAG, "Trigger layout: $requested asked for, $effective written (Zebra host $zebraHost, has scanner $hasScanner).")
+        wroteLayout = true
+        if (model?.contains(TRIGGER_MODE_MODEL) == true) {
+            try {
+                rfid.Config.setTriggerMode(
+                    if (effective == SledTriggerLayout.BARCODE) ENUM_TRIGGER_MODE.BARCODE_MODE else ENUM_TRIGGER_MODE.RFID_MODE,
+                    false,
+                )
+            } catch (t: Throwable) {
+                errorOf("trigger mode", t)
+            }
+        }
+        val outcome = runLayoutWrite(effective, write = { writeLayoutEntry(rfid, it) }, readBack = { readKeyLayout(rfid) })
+        when (outcome) {
+            is LayoutWriteOutcome.Accepted -> Log.i(
+                TAG,
+                "Trigger layout: ${outcome.readback.raw} read back, upper ${outcome.readback.upper}, lower ${outcome.readback.lower} " +
+                    "(asked for $effective).",
+            )
+            LayoutWriteOutcome.CheckFailed -> Log.w(TAG, "Trigger layout: could not read the layout back.")
+            LayoutWriteOutcome.LinkTrouble -> Log.w(TAG, "Trigger layout: the sled stopped answering.")
+        }
+        return outcome
+    }
+
+    /** One layout write; null when it went through. */
+    private fun writeLayoutEntry(rfid: RFIDReader, write: LayoutWrite): VendorError? = try {
+        when (write) {
+            is LayoutWrite.Keys -> rfid.Config.setKeylayoutType(vendorKey(write.upper), vendorKey(write.lower))
+            is LayoutWrite.Raw -> rfid.Config.setAttribute(SetAttribute(KEY_LAYOUT_ATTRIBUTE, KEY_LAYOUT_ATTRIBUTE_TYPE, write.digits, 0))
+        }
+        Log.i(TAG, "Trigger layout: wrote $write.")
+        null
+    } catch (t: Throwable) {
+        errorOf("trigger layout write $write", t)
+    }
+
+    /** The key-layout attribute, accepted only when the reply is for that attribute number. */
+    private fun readKeyLayout(rfid: RFIDReader): AttributeRead = try {
+        val read = rfid.Config.getAttribute(KEY_LAYOUT_ATTRIBUTE, AttributeInfo())
+        val value = read.value?.trim()?.toIntOrNull()
+        when {
+            read.attNum != KEY_LAYOUT_ATTRIBUTE -> {
+                Log.w(TAG, "Trigger layout read-back: the reply was for attribute ${read.attNum}, so it was not accepted.")
+                AttributeRead.WrongAttribute
+            }
+            value == null -> {
+                Log.w(TAG, "Trigger layout read-back: \"${read.value}\" is not a number.")
+                AttributeRead.WrongAttribute
+            }
+            else -> AttributeRead.Value(value)
+        }
+    } catch (t: Throwable) {
+        AttributeRead.Error(errorOf("trigger layout read-back", t))
+    }
+
+    private fun vendorKey(key: SledKey): ENUM_NEW_KEYLAYOUT_TYPE = when (key) {
+        SledKey.RFID -> ENUM_NEW_KEYLAYOUT_TYPE.RFID
+        SledKey.SLED_SCAN -> ENUM_NEW_KEYLAYOUT_TYPE.SLED_SCAN
+        SledKey.TERMINAL_SCAN -> ENUM_NEW_KEYLAYOUT_TYPE.TERMINAL_SCAN
+        SledKey.SCAN_NOTIFY -> ENUM_NEW_KEYLAYOUT_TYPE.SCAN_NOTIFY
+        SledKey.NO_ACTION -> ENUM_NEW_KEYLAYOUT_TYPE.NO_ACTION
+        SledKey.UNKNOWN -> throw IllegalArgumentException("No vendor key for an unknown trigger key.")
+    }
+
+    /**
+     * Asks for the battery level: one block, the request and its consuming
+     * read ([batteryBlock]); the answer arrives as `Connected.batteryPct`.
+     * Two timeouts in a row on the read mark the link lost. Does nothing
+     * unless `Connected`.
+     */
+    final override suspend fun requestBattery() {
+        try {
+            onWorker {
+                linkBlock("battery") { rfid, generation ->
+                    val ops = VendorSetupOps(rfid, device = null, checkLoss = {}, start = _info.value ?: SledInfo(generation, linkName.orEmpty()))
+                    if (batteryBlock(ops, links)) {
+                        Log.w(TAG, "Two battery read timeouts in a row: marking the link lost.")
+                        onLinkLost(generation)
+                    }
+                    Result.success(Unit)
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            Log.w(TAG, "The battery request threw; nothing to report.", t)
+        }
+    }
+
+    /** The battery request, then the read that consumes its status line; returns the read's error. */
+    private fun batteryRequest(rfid: RFIDReader): VendorError? {
+        try {
+            rfid.Config.getDeviceStatus(true, false, false)
+        } catch (t: Throwable) {
+            errorOf("battery request", t)
+        }
+        return try {
+            val read = rfid.Config.getAttribute(KEY_LAYOUT_ATTRIBUTE, AttributeInfo())
+            Log.i(TAG, "Battery: the consuming read answered for attribute ${read.attNum}.")
+            null
+        } catch (t: Throwable) {
+            errorOf("battery read", t)
+        }
+    }
+
+    /** The sleds on Android's bonded list (by name prefix). Never builds a `Readers`; empty without Bluetooth or Nearby devices. */
+    final override fun pairedSleds(): List<SledCandidate> = pairedSledsOf(bondedDevices())
+
+    /** Turns the vendor's own debug log on or off, for the whole process; not saved. */
+    final override fun setVendorLogging(on: Boolean) {
+        try {
+            RFIDReader.LOGGER.EnableDebugLogs(on)
+            vendorLoggingState.value = on
+            Log.i(TAG, "Vendor logging ${if (on) "on" else "off"}.")
+        } catch (t: Throwable) {
+            Log.w(TAG, "Turning vendor logging ${if (on) "on" else "off"} threw; it is as it was.", t)
         }
     }
 
     /**
      * Runs [body] against the current link when the state allows it (`Connected`,
      * or `NeedsRegion` with [allowNeedsRegion]) and the link was not lost;
-     * otherwise [SledNotConnected] with no vendor call. Each result counts
-     * toward marking the link lost. A failure carries [sentence] when given.
+     * otherwise [SledNotConnected] with no vendor call. [body] records its own
+     * results toward marking the link lost; a throwable it lets out is logged,
+     * recorded and reported with [sentence] (the throwable itself when null).
      */
-    private inline fun <T> onLink(
+    private inline fun <T> linkBlock(
         step: String,
         allowNeedsRegion: Boolean = false,
         sentence: String? = null,
-        body: (RFIDReader) -> T,
+        body: (RFIDReader, Int) -> Result<T>,
     ): Result<T> {
         val state = _connection.value
         val stateAllows = state is RfidConnection.Connected || (allowNeedsRegion && state is RfidConnection.NeedsRegion)
@@ -1091,21 +1579,188 @@ open class ZebraRfidReader(
             return Result.failure(SledNotConnected())
         }
         return try {
-            val value = body(rfid)
-            recordResult(generation, null)
-            Result.success(value)
+            body(rfid, generation)
         } catch (t: Throwable) {
-            val error = logFailure(step, t)
-            recordResult(generation, error)
+            recordResult(generation, logFailure(step, t))
             Result.failure(if (sentence == null) t else Exception(sentence, t))
         }
     }
 
     /** Counts one block's result; two link-trouble results in a row mark the link of [generation] lost. */
     private fun recordResult(generation: Int, error: VendorError?) {
-        if (links.record(error?.let(::classifyResult))) {
+        recordClass(generation, error?.let(::classifyResult))
+    }
+
+    private fun recordClass(generation: Int, cls: ResultClass?) {
+        if (links.record(cls)) {
             Log.w(TAG, "Two link-trouble results in a row: marking the link lost.")
             onLinkLost(generation)
+        }
+    }
+
+    /** Logs a failed vendor call at [step] and returns its error (a non-vendor throwable is a refusal); notes a region refusal. */
+    private fun errorOf(step: String, t: Throwable): VendorError {
+        if (isRegionNotSet(t)) sawRegionNotSet = true
+        return logFailure(step, t) ?: VendorError(resultName = null, vendorMessage = "${t.javaClass.name}: ${t.message}")
+    }
+
+    /** The error a block counts: the first link trouble among [errors], else the first error, else none. */
+    private fun worstOf(errors: List<VendorError>): VendorError? =
+        errors.firstOrNull { classifyResult(it) == ResultClass.LINK_TROUBLE } ?: errors.firstOrNull()
+
+    private fun Array<String>?.usable(): List<String> = this?.filterNot { it.isBlank() }.orEmpty()
+
+    /** The sled's radio settings through the vendor's `Config`, one push step each. */
+    private class ConfigRadio(private val rfid: RFIDReader) : RadioSettingsOps {
+        override fun beeper(level: SledBeeper) {
+            rfid.Config.setBeeperVolume(
+                when (level) {
+                    SledBeeper.OFF -> BEEPER_VOLUME.QUIET_BEEP
+                    SledBeeper.LOW -> BEEPER_VOLUME.LOW_BEEP
+                    SledBeeper.MEDIUM -> BEEPER_VOLUME.MEDIUM_BEEP
+                    SledBeeper.HIGH -> BEEPER_VOLUME.HIGH_BEEP
+                },
+            )
+        }
+
+        override fun powerIndex(index: Int) {
+            val antenna = rfid.Config.Antennas.getAntennaRfConfig(1)
+            antenna.transmitPowerIndex = index
+            rfid.Config.Antennas.setAntennaRfConfig(1, antenna)
+        }
+
+        /** The session, with inventory state A and SL flag ALL pinned (ruling 24, as Zebra's sample does). */
+        override fun session(session: RfidSession) {
+            val singulation = rfid.Config.Antennas.getSingulationControl(1)
+            singulation.session = when (session) {
+                RfidSession.S0 -> SESSION.SESSION_S0
+                RfidSession.S1 -> SESSION.SESSION_S1
+                RfidSession.S2 -> SESSION.SESSION_S2
+                RfidSession.S3 -> SESSION.SESSION_S3
+            }
+            singulation.Action.inventoryState = INVENTORY_STATE.INVENTORY_STATE_A
+            singulation.Action.setSLFlag(SL_FLAG.SL_ALL)
+            rfid.Config.Antennas.setSingulationControl(1, singulation)
+        }
+
+        override fun tagPopulation(n: Int) {
+            val singulation = rfid.Config.Antennas.getSingulationControl(1)
+            singulation.tagPopulation = n.toShort()
+            rfid.Config.Antennas.setSingulationControl(1, singulation)
+        }
+
+        override fun uniqueReport(on: Boolean) {
+            rfid.Config.setUniqueTagReport(on)
+        }
+
+        override fun dpo(on: Boolean) {
+            // The accessors are getDPOState()/setDPOState(...): Kotlin makes no
+            // `dpoState` property from a name that starts with two capitals.
+            rfid.Config.setDPOState(if (on) DYNAMIC_POWER_OPTIMIZATION.ENABLE else DYNAMIC_POWER_OPTIMIZATION.DISABLE)
+        }
+    }
+
+    /**
+     * Connect steps 8 to 11 against [rfid] ([runBestSteps] decides which run),
+     * and the battery block for [requestBattery]. [info] collects what the
+     * steps learn: the identity fields, then the trigger read-back. Each step
+     * first runs [checkLoss], which throws when the link was lost. [device] is
+     * the vendor's list entry, for its capability classification; null
+     * outside a connect.
+     */
+    private inner class VendorSetupOps(
+        private val rfid: RFIDReader,
+        private val device: ReaderDevice?,
+        private val checkLoss: () -> Unit,
+        start: SledInfo,
+    ) : SetupOps {
+        var info: SledInfo = start
+            private set
+
+        /** Step 8: model, serial, firmware, scanner name, capability (has-scanner) and the power table. */
+        override fun identity(): SledInfo {
+            checkLoss()
+            val caps = rfid.ReaderCapabilities ?: throw IllegalStateException("The sled reported no capabilities.")
+            val model: String? = caps.modelName
+            val levels: IntArray? = caps.transmitPowerLevelValues
+            val table = powerTable(levels)
+            powerTable = table
+            val capability = capabilityOf(model).takeIf { hasScannerOf(it) != null } ?: capabilityOf(info.name)
+            val hasScanner = hasScannerOf(capability)
+            info = info.copy(
+                model = model,
+                serial = caps.serialNumber,
+                firmware = caps.firwareVersion,
+                hasScanner = hasScanner,
+                powerMinDbm = table?.minDbm,
+                powerMaxDbm = table?.maxDbm,
+            )
+            Log.i(
+                TAG,
+                "Identity: model $model, serial ${info.serial}, firmware ${info.firmware}, scanner name ${caps.scannerName}, " +
+                    "capability $capability (has scanner: ${hasScanner ?: "unknown"}); power table " +
+                    (levels?.let { "first ${it.firstOrNull()}, second ${it.getOrNull(1)}, last ${it.lastOrNull()}, size ${it.size}" } ?: "none") +
+                    (table?.let { ", ${if (it.inDbm) "dBm" else "tenths"}, ${it.minDbm} to ${it.maxDbm} dBm" } ?: "") + ".",
+            )
+            return info
+        }
+
+        /** The vendor's capability class for a sled [name]; null when it could not tell. */
+        private fun capabilityOf(name: String?): String? = try {
+            device?.getDeviceCapability(name)
+        } catch (e: RuntimeException) {
+            Log.i(TAG, "The vendor could not classify \"$name\".", e)
+            null
+        }
+
+        /** Step 9: attributes 2269, 1587 and 2325 as found, and the external keyboards; nothing is written. */
+        override fun dump() {
+            checkLoss()
+            for (attribute in DUMP_ATTRIBUTES) {
+                try {
+                    val read = rfid.Config.getAttribute(attribute, AttributeInfo())
+                    if (read.attNum != attribute) {
+                        Log.w(TAG, "Dump: attribute $attribute, the reply was for attribute ${read.attNum}, so it was not accepted.")
+                    } else {
+                        Log.i(TAG, "Dump: attribute $attribute reads ${read.value} (type ${read.type}).")
+                    }
+                } catch (t: Throwable) {
+                    val error = errorOf("dump: attribute $attribute", t)
+                    if (classifyResult(error) == ResultClass.LINK_TROUBLE) throw t
+                }
+            }
+            logExternalKeyboards()
+        }
+
+        /** Step 10: the layout write of [layout] and its read-back. */
+        override fun writeLayout(layout: SledTriggerLayout): LayoutWriteOutcome {
+            checkLoss()
+            val outcome = writeTriggerLayout(rfid, layout, info.model ?: info.name, info.hasScanner)
+            info = when (outcome) {
+                is LayoutWriteOutcome.Accepted -> info.copy(trigger = outcome.readback)
+                LayoutWriteOutcome.CheckFailed -> info.copy(trigger = null)
+                LayoutWriteOutcome.LinkTrouble -> info
+            }
+            return outcome
+        }
+
+        /** Step 11 and [requestBattery]: the battery request and its consuming read. */
+        override fun battery(): VendorError? {
+            checkLoss()
+            return batteryRequest(rfid)
+        }
+    }
+
+    /** The external keyboard input devices, by name, vendor id and product id (no vendor call). */
+    private fun logExternalKeyboards() {
+        try {
+            val keyboards = InputDevice.getDeviceIds().toList()
+                .mapNotNull { InputDevice.getDevice(it) }
+                .filter { it.isExternal && it.supportsSource(InputDevice.SOURCE_KEYBOARD) }
+            if (keyboards.isEmpty()) Log.i(TAG, "Dump: no external keyboard input devices.")
+            keyboards.forEach { Log.i(TAG, "Dump: external keyboard \"${it.name}\", vendor id ${it.vendorId}, product id ${it.productId}.") }
+        } catch (t: Throwable) {
+            Log.w(TAG, "Dump: listing the input devices threw.", t)
         }
     }
 
@@ -1153,3 +1808,178 @@ internal fun combineConnectNotes(existing: String?, additional: String): String 
  * keeps batch mode off from then on.
  */
 internal class BatchModeUnrecoverableException : Exception(SledWords.BATCH_MODE_UNRECOVERABLE_MESSAGE)
+
+// ── connect steps 8 to 11 ──
+
+/**
+ * Connect steps 8 to 11 (spec, Connect sequence), behind an interface so
+ * [runBestSteps] runs without a sled. The real one wraps the reader's
+ * capabilities, `Config` and the input-device list. A method throws on a
+ * failed vendor call; [battery] instead returns its consuming read's error.
+ */
+internal interface SetupOps {
+    /** Step 8: the identity fields and the power table; returns the info so far. */
+    fun identity(): SledInfo
+
+    /** Step 9: the read-only dump. */
+    fun dump()
+
+    /** Step 10: the layout write and its read-back. */
+    fun writeLayout(layout: SledTriggerLayout): LayoutWriteOutcome
+
+    /** Step 11: the battery request plus its consuming read; the read's error, or null. */
+    fun battery(): VendorError?
+}
+
+/**
+ * Runs identity, dump, the layout write of [request]'s layout and the
+ * battery block, in that order, each only while `bestStepDue` holds for
+ * [sinceConnectReturned] when it would start; a step past the deadline is
+ * skipped and logged, and the names of the skipped steps are returned. A
+ * refusal (any other failure) is logged and setup goes on. Link trouble in
+ * any step (a link-trouble result, a [LayoutWriteOutcome.LinkTrouble], or
+ * [links] reporting two in a row) throws a [SledConnectException] with
+ * `couldNotReach(name)`, retryable, [SledFix.CONNECT] (ruling 46). [name] is
+ * the chosen sled's name (preflight ruling 6).
+ */
+internal fun runBestSteps(
+    request: SledConnectRequest,
+    sinceConnectReturned: () -> Long,
+    ops: SetupOps,
+    links: LinkTroubleTracker,
+    name: String? = null,
+): List<String> {
+    val skipped = mutableListOf<String>()
+    fun linkLost(step: String): Nothing {
+        Log.w(ZebraRfidReader.TAG, "Setup: link trouble at $step; the connect fails.")
+        throw SledConnectException(RfidConnection.Failed(SledWords.couldNotReach(name), retryable = true, fix = SledFix.CONNECT))
+    }
+    fun step(step: String, body: () -> ResultClass?) {
+        val since = sinceConnectReturned()
+        if (!bestStepDue(since)) {
+            Log.w(ZebraRfidReader.TAG, "Setup: skipped $step, $since ms after the connect returned.")
+            skipped += step
+            return
+        }
+        val cls = try {
+            body()
+        } catch (e: SledConnectException) {
+            throw e
+        } catch (t: Throwable) {
+            val error = vendorErrorOf(t)
+            if (error == null) {
+                Log.w(ZebraRfidReader.TAG, "Setup: $step failed: ${t.javaClass.name}: ${t.message}", t)
+            } else {
+                Log.w(ZebraRfidReader.TAG, vendorLogLine("setup: $step", error), t)
+            }
+            error?.let(::classifyResult) ?: ResultClass.REFUSAL
+        }
+        if (links.record(cls) || cls == ResultClass.LINK_TROUBLE) linkLost(step)
+        if (cls != null) Log.w(ZebraRfidReader.TAG, "Setup: $step was refused; carrying on.")
+    }
+    step(ZebraRfidReader.STEP_IDENTITY) {
+        ops.identity()
+        null
+    }
+    step(ZebraRfidReader.STEP_DUMP) {
+        ops.dump()
+        null
+    }
+    step(ZebraRfidReader.STEP_LAYOUT) {
+        if (ops.writeLayout(request.layout) == LayoutWriteOutcome.LinkTrouble) ResultClass.LINK_TROUBLE else null
+    }
+    val since = sinceConnectReturned()
+    if (!bestStepDue(since)) {
+        Log.w(ZebraRfidReader.TAG, "Setup: skipped ${ZebraRfidReader.STEP_BATTERY}, $since ms after the connect returned.")
+        skipped += ZebraRfidReader.STEP_BATTERY
+    } else {
+        var cls: ResultClass? = null
+        if (batteryBlock(ops, links) { cls = it } || cls == ResultClass.LINK_TROUBLE) linkLost(ZebraRfidReader.STEP_BATTERY)
+    }
+    return skipped
+}
+
+/**
+ * The battery block: calls [ops]' `battery()` (a throw counts by its vendor
+ * result, else as a refusal), records the result's class on [links], hands
+ * it to [seen], and returns true when the link is now lost (two link-trouble
+ * results in a row). Connect step 11 and `requestBattery` both use it.
+ */
+internal fun batteryBlock(ops: SetupOps, links: LinkTroubleTracker, seen: (ResultClass?) -> Unit = {}): Boolean {
+    val cls = try {
+        ops.battery()?.let(::classifyResult)
+    } catch (t: Throwable) {
+        Log.w(ZebraRfidReader.TAG, "The battery block threw.", t)
+        vendorErrorOf(t)?.let(::classifyResult) ?: ResultClass.REFUSAL
+    }
+    seen(cls)
+    return links.record(cls)
+}
+
+// ── inventory ──
+
+/** One start's two vendor calls, behind an interface so [runStart] runs without a sled. */
+internal interface InventoryOps {
+    /** Clears the sled's unique-tag list; false on failure (never throws). */
+    fun purge(): Boolean
+
+    /** `Inventory.perform()`; its error, or null when it returned normally. */
+    fun perform(): VendorError?
+}
+
+/** One start: when [uniqueReport], [InventoryOps.purge] first (a false result is logged); then the `perform()` outcome. */
+internal fun runStart(uniqueReport: Boolean, ops: InventoryOps): PerformOutcome {
+    if (uniqueReport && !ops.purge()) {
+        Log.w(ZebraRfidReader.TAG, "Start: the purge before the read failed; reading anyway.")
+    }
+    return performOutcome(ops.perform())
+}
+
+// ── the settings push ──
+
+/** The sled's radio settings, one call per push step; the real one wraps `Config`. Each throws on failure. */
+internal interface RadioSettingsOps {
+    fun beeper(level: SledBeeper)
+
+    fun powerIndex(index: Int)
+
+    /** The session; the real one also pins inventory state A and SL flag ALL. */
+    fun session(session: RfidSession)
+
+    fun tagPopulation(n: Int)
+
+    fun uniqueReport(on: Boolean)
+
+    fun dpo(on: Boolean)
+}
+
+/**
+ * The push steps for [settings], each labeled with its RFID tab row label,
+ * in order: beeper, transmit power (an index into [table], `powerIndex`),
+ * session, tag population, unique reporting, dynamic power optimization.
+ * There is no LED step (ruling 21).
+ */
+internal fun settingSteps(settings: RfidSettings, table: PowerTable?, ops: RadioSettingsOps): List<SettingStep> = listOf(
+    SettingStep(SledWords.ROW_SLED_BEEPER) { ops.beeper(settings.beeper) },
+    SettingStep(SledWords.ROW_TRANSMIT_POWER) { ops.powerIndex(powerIndex(table, settings.powerDbm)) },
+    SettingStep(SledWords.ROW_SESSION) { ops.session(settings.session) },
+    SettingStep(SledWords.ROW_TAG_POPULATION) { ops.tagPopulation(settings.tagPopulation) },
+    SettingStep(SledWords.ROW_UNIQUE) { ops.uniqueReport(settings.uniqueTagReport) },
+    SettingStep(SledWords.ROW_DPO) { ops.dpo(settings.dpo) },
+)
+
+// ── identity ──
+
+/**
+ * Whether a sled has a barcode scanner, from the vendor's capability class
+ * of its model or name (`ReaderDevice.getDeviceCapability`): true for a
+ * class naming SCAN, false for the two classes without an imager ("PREMIUM
+ * (WiFi)", "STANDARD"), null (unknown, so treated as having one) for
+ * anything else, including the vendor's "RFDXXXX" for a name it cannot place.
+ */
+internal fun hasScannerOf(capability: String?): Boolean? = when {
+    capability == null -> null
+    capability.contains("SCAN") -> true
+    capability == "PREMIUM (WiFi)" || capability == "STANDARD" -> false
+    else -> null
+}
