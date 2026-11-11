@@ -87,7 +87,7 @@ export default function ImportReport({
   readyLabel = 'Ready — reprocess to apply', pagingOnlyWhenNeeded = false,
   choices = {}, onChoicesChange, clientId, clientName,
 }: Props) {
-  const { preferences } = useAuth();
+  const { preferences, scope, can } = useAuth();
   const reportGrid = listGridStyle(REPORT_COLUMNS, [], undefined, listScale(preferences?.list_size));
   const reportRowStyle = {
     gridTemplateColumns: reportGrid.gridTemplateColumns, minWidth: reportGrid.minWidth,
@@ -157,13 +157,24 @@ export default function ImportReport({
       </div>
 
       {ownerUnmatched > 0 && ownerClientId && (
+        // At the check the file's values are not on the move yet, so the
+        // client's Review list cannot show them: no link until the import.
         <p className="page-hint imp-owner-line">
-          {ownerUnmatched} Owner value{ownerUnmatched === 1 ? '' : 's'}
-          {' '}don&apos;t match a group{' '}
-          <Link className="imp-link-btn"
-                to={`/stakeholders/clients/${ownerClientId}?groups=review`}>
-            Review groups
-          </Link>
+          {job.phase === 'validate'
+            ? `${ownerUnmatched} Owner ${ownerUnmatched === 1
+                ? "value in this file doesn't" : "values in this file don't"} match a group yet. `
+              + `Match ${ownerUnmatched === 1 ? 'it' : 'them'} under Review groups after the import.`
+            : `${ownerUnmatched} Owner ${ownerUnmatched === 1
+                ? "value doesn't" : "values don't"} match a group`}
+          {job.phase === 'commit' && scope?.global && can('clients', 'change') && (
+            <>
+              {' '}
+              <Link className="imp-link-btn"
+                    to={`/stakeholders/clients/${ownerClientId}?groups=review`}>
+                Review groups
+              </Link>
+            </>
+          )}
         </p>
       )}
 

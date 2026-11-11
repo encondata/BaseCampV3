@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.schemas import MoveSetupMoveIn
 from serversherpa.db.models import ImportJob
+from serversherpa.imports.client_choices import flagged_owners
 from serversherpa.imports.move_assets import parse_row, run_import
 from serversherpa.imports.naming import (
     CRATE_MAX,
@@ -190,9 +191,7 @@ def draft_client(payload: dict | None) -> str | None:
 
 def flagged_serials(check: ImportJob | None) -> set[str]:
     """Distinct serials the check flagged as another client's (lower-cased)."""
-    return {d["serial_number"]
-            for d in (((check.results if check else None) or {}).get("details") or [])
-            if d.get("status") == "conflict" and d.get("serial_number")}
+    return set(flagged_owners(((check.results if check else None) or {}).get("details")))
 
 
 def check_is_stale(check: ImportJob, payload: dict | None) -> bool:
@@ -307,7 +306,7 @@ class Plan:
     make_model_mode: str
     filename: str
     crates: dict | None
-    client_choices: dict[str, str] = field(default_factory=dict)
+    client_choices: dict[str, dict] = field(default_factory=dict)
     crate_names: list[str] = field(default_factory=list)
     truck_names: list[str] = field(default_factory=list)
 

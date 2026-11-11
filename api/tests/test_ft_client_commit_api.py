@@ -3,11 +3,17 @@ rows flagged as belonging to another client need a choice before commit."""
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
-    Asset, Client, ImportJob, PermissionOverride, Person,
+    Asset,
+    Client,
+    ImportJob,
+    Initiative,
+    InitiativeAsset,
+    PermissionOverride,
+    Person,
 )
 from serversherpa.imports.worker import run_once
 
@@ -73,8 +79,8 @@ async def test_commit_with_choices_runs_and_moves(client, db, seeded_user):
     body = resp.json()
     assert body["phase"] == "commit" and body["status"] == "queued"
     # keys lower-cased; choices for non-conflicts are not stored
-    assert body["options"]["client_choices"] == {"sn-b1": "continue",
-                                                 "sn-b2": "skip"}
+    assert {s: c["choice"] for s, c in body["options"]["client_choices"].items()} == {
+        "sn-b1": "continue", "sn-b2": "skip"}
     assert await run_once(get_sessionmaker()) is True
     job = await db.get(ImportJob, uuid.UUID(job_id))
     await db.refresh(job)
@@ -185,3 +191,81 @@ async def test_commit_without_flags_clears_inherited_choices(
     await db.refresh(x)
     assert x.client_id == bravo.id                      # skipped, not moved
     assert job.results["summary"]["skipped"] == 1
+
+
+# ── final review fixes: stale client, owner carried with each choice ──
+
+async def test_commit_refuses_when_move_client_changed(client, db, seeded_user):
+    headers, _acme, bravo, b1, _b2, job_id = await _setup(client, db)
+    ini_id = (await db.get(ImportJob, uuid.UUID(job_id))).initiative_id
+    ini = await db.get(Initiative, ini_id)
+    ini.client_id = bravo.id
+    await db.commit()
+    resp = await _commit(client, headers, job_id, {"client_choices": {
+        "sn-b1": "continue", "sn-b2": "continue"}})
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == {"code": "check_stale_client"}
+    job = await db.get(ImportJob, uuid.UUID(job_id))
+    await db.refresh(job)
+    assert job.phase == "validate" and job.status == "completed"
+    assert "client_choices" not in job.options
+    await db.refresh(b1)
+    assert b1.client_id == bravo.id
+
+
+async def test_worker_fails_commit_when_client_changed_after_commit(
+        client, db, seeded_user):
+    headers, acme, bravo, b1, _b2, job_id = await _setup(client, db)
+    resp = await _commit(client, headers, job_id, {"client_choices": {
+        "sn-b1": "continue", "sn-b2": "skip"}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["options"]["check_client_id"] == str(acme.id)
+    job = await db.get(ImportJob, uuid.UUID(job_id))
+    ini = await db.get(Initiative, job.initiative_id)
+    charlie = Client(name="Charlie")
+    db.add(charlie)
+    await db.flush()
+    ini.client_id = charlie.id
+    await db.commit()
+    assert await run_once(get_sessionmaker()) is True
+    await db.refresh(job)
+    assert (job.status, job.error) == ("failed", "check_stale_client")
+    await db.refresh(b1)
+    assert b1.client_id == bravo.id
+    assert await db.scalar(select(Asset).where(Asset.serial_number == "sn-new")) is None
+    assert await db.scalar(select(func.count()).select_from(InitiativeAsset).where(
+        InitiativeAsset.initiative_id == ini.id)) == 0
+
+
+async def test_commit_stores_the_checked_owner_with_each_choice(
+        client, db, seeded_user):
+    headers, _acme, bravo, *_rest, job_id = await _setup(client, db)
+    resp = await _commit(client, headers, job_id, {"client_choices": {
+        "SN-B1": "continue", "sn-b2": "skip"}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["options"]["client_choices"] == {
+        "sn-b1": {"choice": "continue", "from_client_id": str(bravo.id)},
+        "sn-b2": {"choice": "skip", "from_client_id": str(bravo.id)}}
+
+
+async def test_owner_change_between_check_and_commit_skips(client, db, seeded_user):
+    headers, _acme, _bravo, b1, _b2, job_id = await _setup(client, db)
+    charlie = Client(name="Charlie")
+    db.add(charlie)
+    await db.flush()
+    b1.client_id = charlie.id            # someone moved it after the check
+    await db.commit()
+    resp = await _commit(client, headers, job_id, {"client_choices": {
+        "sn-b1": "continue", "sn-b2": "continue"}})
+    assert resp.status_code == 200, resp.text
+    assert await run_once(get_sessionmaker()) is True
+    job = await db.get(ImportJob, uuid.UUID(job_id))
+    await db.refresh(job)
+    assert job.status == "completed", job.error
+    await db.refresh(b1)
+    assert b1.client_id == charlie.id                       # not taken from Charlie
+    rows = [d for d in job.results["details"] if d["serial_number"] == "sn-b1"]
+    assert [d["status"] for d in rows] == ["skipped", "skipped"]
+    assert rows[0]["message"] == "Skipped — belongs to Charlie"
+    assert rows[0]["current_client"]["name"] == "Charlie"
+    assert job.results["summary"]["moved"] == 1              # sn-b2 still moved

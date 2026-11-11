@@ -162,5 +162,37 @@ async def test_wizard_choices_validation(client, db, admin_hdrs):
                              {"sn-b1": "skip", "SN-B2": "continue", "sn-zzz": "continue"})
     assert resp.status_code == 200, resp.text
     check = await client.get(f"{BASE}/{draft['id']}/assets", headers=admin_hdrs)
-    assert (await reload(check.json()["id"])).options["client_choices"] == {
+    stored = (await reload(check.json()["id"])).options["client_choices"]
+    assert {s: c["choice"] for s, c in stored.items()} == {
         "sn-b1": "skip", "sn-b2": "continue"}
+
+
+async def test_wizard_choices_carry_the_checked_owner(client, db, admin_hdrs):
+    draft, _acme, bravo, *_ = await setup(client, db, admin_hdrs)
+    resp = await put_choices(client, admin_hdrs, draft["id"],
+                             {"sn-b1": "continue", "sn-b2": "skip"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["options"]["client_choices"] == {
+        "sn-b1": {"choice": "continue", "from_client_id": str(bravo.id)},
+        "sn-b2": {"choice": "skip", "from_client_id": str(bravo.id)}}
+
+
+async def test_wizard_owner_change_after_check_skips(client, db, admin_hdrs):
+    draft, acme, _bravo, b1, b2 = await setup(client, db, admin_hdrs)
+    assert (await put_choices(client, admin_hdrs, draft["id"],
+                              {"sn-b1": "continue", "sn-b2": "continue"})).status_code == 200
+    charlie = Client(name="Charlie")
+    db.add(charlie)
+    await db.flush()
+    b1.client_id = charlie.id
+    await db.commit()
+    await queue(client, admin_hdrs, draft["id"])
+    assert await run_once(get_sessionmaker()) is True
+    done = await reload(draft["id"])
+    assert (done.status, done.error) == ("completed", None)
+    await db.refresh(b1)
+    await db.refresh(b2)
+    assert b1.client_id == charlie.id and b2.client_id == acme.id
+    rows = [d for d in done.results["assets"]["details"] if d.get("serial_number") == "sn-b1"]
+    assert {d["status"] for d in rows} == {"skipped"}
+    assert rows[0]["message"] == "Skipped — belongs to Charlie"

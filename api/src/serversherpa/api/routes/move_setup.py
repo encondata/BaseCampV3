@@ -19,6 +19,7 @@ from serversherpa.api.schemas import (
 )
 from serversherpa.db.models import ImportJob
 from serversherpa.imports import move_setup
+from serversherpa.imports.client_choices import ChoiceError, stored_choices
 from serversherpa.imports.naming import CRATE_MAX, TRUCK_MAX, NamingError, generate_names
 from serversherpa.imports.parsing import MAX_BYTES
 from serversherpa.logistics import bulk_create as container_create
@@ -244,16 +245,15 @@ async def set_draft_client_choices(
     check = await move_setup.check_job(db, job.payload)
     if check is None or check.status != "completed":
         raise _err(409, "no_completed_check")
-    choices: dict[str, str] = {}
-    for serial, value in (body.client_choices or {}).items():
-        if value not in ("continue", "skip"):
-            raise _err(422, "invalid_client_choice")
-        choices[str(serial).strip().lower()] = value
-    flagged = move_setup.flagged_serials(check)
-    if missing := sorted(flagged - choices.keys()):
-        raise _err(422, "client_choices_required", serials=missing)
-    check.options = {**(check.options or {}),
-                     "client_choices": {s: choices[s] for s in sorted(flagged)}}
+    # each choice is stored with the owner the check saw (a Continue applies
+    # only while the serial still belongs to that client)
+    try:
+        stored = stored_choices(body.client_choices, (check.results or {}).get("details"))
+    except ChoiceError as exc:
+        if exc.serials is not None:
+            raise _err(422, exc.code, serials=exc.serials) from None
+        raise _err(422, exc.code) from None
+    check.options = {**(check.options or {}), "client_choices": stored}
     await db.commit()
     return check
 

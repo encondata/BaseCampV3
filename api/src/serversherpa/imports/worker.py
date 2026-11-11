@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.assets.bulk_update import KIND as ASSET_BULK_UPDATE
 from serversherpa.assets.bulk_update import apply_job
 from serversherpa.db.engine import get_sessionmaker
-from serversherpa.db.models import ImportJob
+from serversherpa.db.models import ImportJob, Initiative
 from serversherpa.imports import crate_estimate, move_setup
 from serversherpa.imports.jobs import claim_next, requeue_stale, sweep_stale
 from serversherpa.imports.move_assets import parse_row, run_import
@@ -98,6 +98,13 @@ async def _process_move_setup(db: AsyncSession, job: ImportJob) -> None:
 
     await move_setup.apply_job(db, job, plan, progress=_progress)
     await db.commit()
+
+
+def _as_uuid(raw: object) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(str(raw)) if raw else None
+    except ValueError:
+        return None
 
 
 async def _draft_client(db: AsyncSession, opts: dict) -> uuid.UUID | None:
@@ -168,12 +175,28 @@ async def process_job(db: AsyncSession, job: ImportJob) -> None:
         return job.cancel_requested
 
     write = job.phase == "commit"
+    if write and job.initiative_id is not None and "check_client_id" in opts:
+        # the commit route checked this too; the move may have changed hands
+        # while the job sat in the queue. Nothing is written.
+        move_client = await db.scalar(
+            select(Initiative.client_id).where(Initiative.id == job.initiative_id))
+        if opts["check_client_id"] != (str(move_client) if move_client else None):
+            _finish(job, "failed", "check_stale_client")
+            await db.commit()
+            return
+    if job.initiative_id is not None:
+        check_client = None            # run_import reads the move's client
+    elif "client_id" in opts:
+        # a wizard check: the client stamped when it was queued (the draft's
+        # client may have changed since; that makes the check stale)
+        check_client = _as_uuid(opts["client_id"])
+    else:
+        check_client = await _draft_client(db, opts)
     result = await run_import(
         db, initiative_id=job.initiative_id, added_by=job.created_by,
         rows=parsed,
         client_choices=opts.get("client_choices"),
-        # a wizard check has no move yet: its client is the draft's
-        client_id=await _draft_client(db, opts) if job.initiative_id is None else None,
+        client_id=check_client,
         job_id=job.id,
         # the audit names whoever committed; the uploader still adds the rows
         audit_actor=job.committed_by or job.created_by,

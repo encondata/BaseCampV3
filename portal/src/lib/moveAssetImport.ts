@@ -2,7 +2,9 @@
  *  math, and API error mapping. The page stays thin per repo convention. */
 
 import { compareOrdinal } from './naturalSort';
-import { ApiError, type ImportJobOut, type ImportRowDetail } from './api';
+import {
+  ApiError, type ClientChoice, type ImportJobOut, type ImportRowDetail, type StoredClientChoice,
+} from './api';
 
 export interface ImportCounts {
   created: number;
@@ -36,6 +38,27 @@ export function conflictSerials(details: ImportRowDetail[]): string[] {
 export function choicesKey(choices: Record<string, string>): string {
   return JSON.stringify(
     Object.entries(choices).sort(([a], [b]) => compareOrdinal(a, b)));
+}
+
+/** serial → choice from the API's stored map (each entry also names the
+ *  owner the check saw, which the screen does not need). */
+export function choiceMap(
+  stored: Record<string, StoredClientChoice | ClientChoice> | null | undefined,
+): Record<string, ClientChoice> {
+  const out: Record<string, ClientChoice> = {};
+  for (const [serial, v] of Object.entries(stored ?? {})) {
+    const choice = typeof v === 'string' ? v : v?.choice;
+    if (choice === 'continue' || choice === 'skip') out[serial] = choice;
+  }
+  return out;
+}
+
+/** The move's client a check ran against: the wizard stamps it on the
+ *  job's options; otherwise the check's summary names it. */
+export function checkClientId(job: ImportJobOut): string | null {
+  if (job.options && 'client_id' in job.options) return job.options.client_id ?? null;
+  const v = (job.results?.summary as Record<string, unknown> | undefined)?.client_id;
+  return typeof v === 'string' ? v : null;
 }
 
 export const CHOICES_HINT = 'Choose Continue or Skip for every flagged row before importing.';

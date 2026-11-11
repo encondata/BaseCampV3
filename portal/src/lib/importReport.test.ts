@@ -324,14 +324,35 @@ describe('client-of-record rows', () => {
   const details: ImportRowDetail[] = [
     { row: 2, serial_number: 'SN1', status: 'conflict', message: 'x', current_client: INITECH },
     { row: 3, serial_number: 'SN2', status: 'skipped', message: 'x', current_client: INITECH },
-    { row: 4, serial_number: 'SN3', status: 'updated', message: 'Asset updated', client_moved_from: INITECH },
+    { row: 4, serial_number: 'SN3', status: 'updated',
+      message: 'Asset updated in move. Moved from Initech', client_moved_from: INITECH },
   ];
 
   it('labels conflicts, moves and skips with the client name', () => {
     const rows = rowsOf(build({ phase: 'commit', results: { summary: {}, details } }).workbook);
     expect(rows[1].slice(2, 4)).toEqual(['Conflict', 'Belongs to Initech']);
     expect(rows[2].slice(2, 4)).toEqual(['Skipped — belongs to Initech', 'Skipped — belongs to Initech']);
-    expect(rows[3][2]).toBe('Moved from Initech');
+    // the API's message already says "Moved from"; it is not repeated
+    expect(rows[3].slice(2, 4)).toEqual(
+      ['Moved from Initech', 'Asset updated in move. Moved from Initech']);
+  });
+
+  it('leaves out Conflicts, Moved and Skipped rows that count zero', () => {
+    const plain: ImportRowDetail[] = [
+      { row: 2, serial_number: 'SN1', status: 'created', message: 'Asset added to move' }];
+    const check = summaryOf(build({
+      results: { summary: { created: 1, conflicts: 0 }, details: plain } }).workbook);
+    expect(check.map((r) => r[0])).not.toContain('Conflicts');
+    const done = summaryOf(build({
+      phase: 'commit', results: { summary: { created: 1, moved: 0, skipped: 0 }, details: plain },
+    }).workbook);
+    expect(done.map((r) => r[0])).not.toContain('Moved');
+    expect(done.map((r) => r[0])).not.toContain('Skipped');
+    const some = summaryOf(build({
+      phase: 'commit', results: { summary: { created: 1, moved: 0, skipped: 2 }, details: plain },
+    }).workbook);
+    expect(some.slice(-1)).toEqual([['Skipped', 2]]);
+    expect(some.map((r) => r[0])).not.toContain('Moved');
   });
 
   it('adds Conflicts to a check summary and Moved and Skipped to an import summary', () => {

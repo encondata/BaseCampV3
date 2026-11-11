@@ -39,8 +39,8 @@ export const RESULT_LABELS: Record<ImportRowDetail['status'], string> = {
 function resultOf(d: ImportRowDetail): { result: string; message: string } {
   const result = RESULT_LABELS[d.status] ?? d.status;
   if (d.client_moved_from) {
-    const text = `Moved from ${d.client_moved_from.name}`;
-    return { result: text, message: d.message ? `${text}. ${d.message}` : text };
+    // the API's message already ends "Moved from {client}"
+    return { result: `Moved from ${d.client_moved_from.name}`, message: d.message ?? '' };
   }
   if (d.status === 'skipped' && d.current_client) {
     const text = `Skipped — belongs to ${d.current_client.name}`;
@@ -152,14 +152,12 @@ export function buildImportReport(input: ImportReportInput): ImportReportFile {
   }
 
   // Client-of-record rows appear only when the run produced any.
-  if (!isImport && (typeof summary.conflicts === 'number' || fromDetails.conflict > 0)) {
-    summaryRows.push(['Conflicts', count('conflicts', fromDetails.conflict)]);
-  }
-  if (isImport && (typeof summary.moved === 'number' || typeof summary.skipped === 'number'
-                   || fromDetails.skipped > 0)) {
-    summaryRows.push(
-      ['Moved', count('moved', details.filter((d) => d.client_moved_from).length)],
-      ['Skipped', count('skipped', fromDetails.skipped)]);
+  const clientRows: [string, number][] = isImport
+    ? [['Moved', count('moved', details.filter((d) => d.client_moved_from).length)],
+       ['Skipped', count('skipped', fromDetails.skipped)]]
+    : [['Conflicts', count('conflicts', fromDetails.conflict)]];
+  for (const [label, n] of clientRows) {
+    if (n > 0) summaryRows.push([label, n]);
   }
 
   const workbook = XLSX.utils.book_new();

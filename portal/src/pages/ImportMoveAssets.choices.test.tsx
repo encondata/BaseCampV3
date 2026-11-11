@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
-import type { ImportJobOut, InitiativeDetail } from '../lib/api';
+import { ApiError, type ImportJobOut, type InitiativeDetail } from '../lib/api';
 import ImportMoveAssets from './ImportMoveAssets';
 
 vi.mock('react-router-dom', async (importActual) => ({
@@ -68,4 +68,24 @@ it('Continue all unlocks Import', async () => {
   await open();
   await userEvent.click(screen.getByRole('button', { name: 'Continue all' }));
   expect((screen.getByRole('button', { name: /^Import 3 rows$/ }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+const STALE = "The move's client changed after the file was checked. Check the file again.";
+
+it('says the move client changed when the commit is refused as stale', async () => {
+  api.commitImportJob.mockRejectedValue(new ApiError(409, 'check_stale_client'));
+  await open();
+  await userEvent.click(screen.getByRole('button', { name: 'Continue all' }));
+  await userEvent.click(screen.getByRole('button', { name: /^Import \d+ rows$/ }));
+  expect(await screen.findByText(STALE)).toBeTruthy();
+});
+
+it('says the move client changed when the import job fails as stale', async () => {
+  api.commitImportJob.mockResolvedValue({ ...check, phase: 'commit', results: null, status: 'queued' });
+  api.getImportJob.mockResolvedValue({
+    ...check, phase: 'commit', results: null, status: 'failed', error: 'check_stale_client' });
+  await open();
+  await userEvent.click(screen.getByRole('button', { name: 'Continue all' }));
+  await userEvent.click(screen.getByRole('button', { name: /^Import \d+ rows$/ }));
+  expect(await screen.findByText(STALE, {}, { timeout: 4000 })).toBeTruthy();
 });

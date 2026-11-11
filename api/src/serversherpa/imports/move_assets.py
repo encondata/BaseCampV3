@@ -311,7 +311,7 @@ async def run_import(
     commit: bool = True,
     progress_every: int | None = None,
     reuse_by_name: bool = True,
-    client_choices: dict[str, str] | None = None,
+    client_choices: dict[str, dict] | None = None,
     client_id: uuid.UUID | None = None,
     job_id: uuid.UUID | None = None,
     audit_actor: uuid.UUID | None = None,
@@ -336,22 +336,26 @@ async def run_import(
     passes its draft's client). New assets, and existing ones with no client,
     get it. An existing asset (archived or not) that belongs to another client
     is a conflict: validate reports it as `conflict`; commit applies
-    client_choices ({serial_lower: "continue"|"skip"}) — continue moves the
-    asset to this client (audited, job_id in the changes) and imports the row
-    as usual; skip, or no choice at all, leaves the row out as `skipped`
-    with nothing written. A move without a client behaves exactly as before.
+    client_choices ({serial_lower: {"choice", "from_client_id"}}, see
+    client_choices.py) — continue moves the asset to this client (audited,
+    job_id in the changes) and imports the row as usual, but only while the
+    asset still belongs to from_client_id; skip, no choice, or an owner that
+    changed since the check leaves the row out as `skipped` (naming the
+    current owner) with nothing written. A move without a client behaves
+    exactly as before.
 
     audit_actor is who the audit rows name (the reassignments and the
     asset_import summary); it defaults to added_by. The worker passes the
     job's committer, while added_by stays the uploader on roster rows and
     created assets."""
+    from serversherpa.imports.client_choices import choice_of
     from serversherpa.imports.owner_check import unmatched_owner_count
     from serversherpa.services.audit import audit, diff, snapshot
 
     if client_id is None and initiative_id is not None:
         client_id = await db.scalar(
             select(Initiative.client_id).where(Initiative.id == initiative_id))
-    choices = {str(k).lower(): v for k, v in (client_choices or {}).items()}
+    choices = {str(k).lower(): choice_of(v) for k, v in (client_choices or {}).items()}
     actor = audit_actor if audit_actor is not None else added_by
 
     await assign_generated_serials(db, rows, initiative_id=initiative_id,
@@ -386,6 +390,7 @@ async def run_import(
     resolved_cache: dict[str, tuple] = {}
 
     touched: list = []      # roster rows written this run (Owner re-match)
+    imported_owners: list[str | None] = []   # Owner of each row that imported
 
     async def _one_row(r: dict) -> None:
         nonlocal created, updated, review, errors, conflicts, moved, skipped
@@ -417,7 +422,11 @@ async def run_import(
                 and asset.client_id is not None and asset.client_id != client_id):
             # The serial belongs to another client: the same physical device.
             current = _client_ref(asset.client_id)
-            if not write or choices.get(serial) != "continue":
+            choice, from_client = choices.get(serial, (None, None))
+            # a Continue holds only for the owner the check saw
+            go = (choice == "continue" and from_client is not None
+                  and from_client == str(asset.client_id))
+            if not write or not go:
                 if write:
                     skipped += 1
                     status = "skipped"
@@ -435,7 +444,10 @@ async def run_import(
                     "message": message,
                     "asset_id": str(asset.id) if getattr(asset, "id", None) else None,
                     "serial_generated": r["serial_generated"],
-                    "current_client": current})
+                    "current_client": current,
+                    # the crate estimate counts a row that may come along
+                    "model_id": str(asset.model_id) if getattr(asset, "model_id", None)
+                    else None})
                 return
             before = snapshot(asset, ["client_id"])
             asset.client_id = client_id
@@ -580,6 +592,7 @@ async def run_import(
         if moved_from is not None:
             detail["client_moved_from"] = moved_from
         details.append(detail)
+        imported_owners.append(r.get("owner"))
 
     async def _rematch_touched() -> None:
         # resolve each written row's Owner against its client's groups, in the
@@ -614,9 +627,11 @@ async def run_import(
         summary["skipped"] = skipped
     else:
         summary["conflicts"] = conflicts
-        if client_id is not None:
-            summary["owner_unmatched"] = await unmatched_owner_count(
-                db, client_id, [r.get("owner") for r in rows])
+    if client_id is not None:
+        # the check counts the whole file; the import only the rows it wrote
+        # (skipped, review and error rows never reach the client's groups)
+        summary["owner_unmatched"] = await unmatched_owner_count(
+            db, client_id, imported_owners if write else [r.get("owner") for r in rows])
 
     if write and not cancelled:
         placement = await recheck_placement(db, initiative_id)

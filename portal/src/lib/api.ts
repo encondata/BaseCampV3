@@ -3823,6 +3823,9 @@ export async function recheckInitiativePlacement(id: string): Promise<PlacementR
 // polls getImportJob until the job reaches a terminal status.
 
 export type ClientChoice = 'continue' | 'skip';
+/** A choice as the API stores it: with the client that owned the serial at
+ *  the check (a Continue applies only while it still does). */
+export interface StoredClientChoice { choice: ClientChoice; from_client_id: string | null }
 export type ImportJobPhase = 'validate' | 'commit';
 export type ImportJobStatus =
   'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -3872,7 +3875,11 @@ export interface ImportJobOut {
     // set on a Create-a-move-in-steps file check (no move yet)
     move_setup_id?: string;
     // Continue/Skip per flagged serial (lower-cased), stored by the API
-    client_choices?: Record<string, ClientChoice>;
+    client_choices?: Record<string, StoredClientChoice>;
+    // a wizard check: the move's client it ran against
+    client_id?: string | null;
+    // a committed import: the move's client its check ran against
+    check_client_id?: string | null;
   };
   phase: ImportJobPhase;
   status: ImportJobStatus;

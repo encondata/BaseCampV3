@@ -11,6 +11,7 @@ from serversherpa.clientgroups.keys import group_key
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
     Asset,
+    AssetModel,
     AuditLog,
     Client,
     ClientGroup,
@@ -53,6 +54,11 @@ async def _asset(db, serial, owner=None, move=None, **extra):
         db.add(InitiativeAsset(initiative_id=move.id, asset_id=asset.id))
         await db.flush()
     return asset
+
+
+def _pick(choice, owner):
+    """A stored choice: what staff chose and whose the serial was at the check."""
+    return {"choice": choice, "from_client_id": str(owner.id)}
 
 
 def _row(n, **over):
@@ -149,7 +155,8 @@ async def test_continue_reassigns_and_audits(db):
     result = await run_import(
         db, initiative_id=move.id, added_by=None, job_id=job_id, write=True,
         rows=[_row(2, serial_number="sn-away"), _row(3, serial_number="sn-here")],
-        client_choices={"sn-away": "continue", "sn-here": "continue"})
+        client_choices={"sn-away": _pick("continue", bravo),
+                        "sn-here": _pick("continue", bravo)})
 
     by_row = {d["row"]: d for d in result["details"]}
     # processed as usual once reassigned: added to this roster / updated on it
@@ -180,7 +187,7 @@ async def test_skip_leaves_asset_and_adds_no_roster_row(db):
     result = await run_import(
         db, initiative_id=move.id, added_by=None, write=True,
         rows=[_row(2, serial_number="sn-theirs", rfid_tag="TAG-1", source_pod="P9")],
-        client_choices={"sn-theirs": "skip"})
+        client_choices={"sn-theirs": _pick("skip", bravo)})
     [d] = result["details"]
     assert d["status"] == "skipped"
     assert d["current_client"] == {"id": str(bravo.id), "name": "Bravo"}
@@ -226,7 +233,8 @@ async def test_duplicate_conflict_serial_one_choice(db):
 
     result = await run_import(db, initiative_id=move.id, added_by=None, write=True,
                               rows=rows,
-                              client_choices={"sn-go": "continue", "sn-stay": "skip"})
+                              client_choices={"sn-go": _pick("continue", bravo),
+                                              "sn-stay": _pick("skip", bravo)})
     by_row = {d["row"]: d for d in result["details"]}
     assert by_row[2]["status"] == "created" and "client_moved_from" in by_row[2]
     assert by_row[4]["status"] == "updated"               # same device, already moved
@@ -302,7 +310,7 @@ async def test_owner_unmatched_count(db):
     assert check["summary"]["owner_unmatched"] == 2
     result = await run_import(db, initiative_id=move.id, added_by=None,
                               rows=rows, write=True)
-    assert "owner_unmatched" not in result["summary"]
+    assert result["summary"]["owner_unmatched"] == 2      # every row was imported
 
 
 def test_skipped_counts_as_left_out():
@@ -333,7 +341,8 @@ async def test_worker_commit_applies_job_choices(db):
     acme_id, bravo_id, go_id, stay_id = acme.id, bravo.id, go.id, stay.id
     job_id = await _file_job(
         db, initiative_id=move.id, phase="commit",
-        options={"client_choices": {"sn-go": "continue", "sn-stay": "skip"}},
+        options={"client_choices": {"sn-go": _pick("continue", bravo),
+                                     "sn-stay": _pick("skip", bravo)}},
         content=b"Serial Number\nSN-GO\nSN-STAY\n")
     assert await run_once(get_sessionmaker()) is True
     db.expire_all()
@@ -387,7 +396,7 @@ async def test_conflict_rfid_tag_held_at_check_as_at_commit(db):
     assert check["details"][0]["status"] == "conflict"
     assert note in check["details"][1]["message"]
     result = await run_import(db, initiative_id=move.id, added_by=None, write=True,
-                              rows=rows, client_choices={"sn-theirs": "continue"})
+                              rows=rows, client_choices={"sn-theirs": _pick("continue", bravo)})
     assert note in result["details"][1]["message"]
     new = await db.scalar(select(Asset).where(Asset.serial_number == "sn-new"))
     assert new.rfid_tag is None
@@ -404,7 +413,7 @@ async def test_reassignment_audit_names_committer(db):
     checker_id, committer_id, go_id, move_id = checker.id, committer.id, go.id, move.id
     job_id = await _file_job(
         db, initiative_id=move.id, phase="commit",
-        options={"client_choices": {"sn-go": "continue"}},
+        options={"client_choices": {"sn-go": _pick("continue", bravo)}},
         content=b"Serial Number\nSN-GO\n")
     job = await db.get(ImportJob, job_id)
     job.created_by, job.committed_by = checker_id, committer_id
@@ -421,3 +430,93 @@ async def test_reassignment_audit_names_committer(db):
     roster = await db.scalar(select(InitiativeAsset).where(
         InitiativeAsset.initiative_id == move_id, InitiativeAsset.asset_id == go_id))
     assert roster.added_by == checker_id
+
+
+# ── final review fixes ──
+
+async def test_continue_needs_the_checked_owner(db):
+    """A Continue applies only while the serial still belongs to the client
+    the check saw; otherwise (or with no owner recorded) the row is skipped
+    and names the client that holds it now."""
+    acme, bravo, charlie = await _clients(db, "Acme", "Bravo", "Charlie")
+    move = await _move(db, acme)
+    moved_on = await _asset(db, "sn-moved", charlie)       # checked as Bravo's
+    bare = await _asset(db, "sn-bare", bravo)
+    await db.commit()
+    result = await run_import(
+        db, initiative_id=move.id, added_by=None, write=True,
+        rows=[_row(2, serial_number="sn-moved"), _row(3, serial_number="sn-bare")],
+        client_choices={"sn-moved": _pick("continue", bravo), "sn-bare": "continue"})
+    by_row = {d["row"]: d for d in result["details"]}
+    assert by_row[2]["status"] == "skipped"
+    assert by_row[2]["message"] == "Skipped — belongs to Charlie"
+    assert by_row[2]["current_client"] == {"id": str(charlie.id), "name": "Charlie"}
+    assert by_row[3]["status"] == "skipped"
+    assert result["summary"]["moved"] == 0 and result["summary"]["skipped"] == 2
+    for asset, owner in ((moved_on, charlie), (bare, bravo)):
+        await db.refresh(asset)
+        assert asset.client_id == owner.id
+        assert await _roster(db, move, asset) == 0
+
+
+async def test_commit_owner_unmatched_counts_imported_rows_only(db):
+    acme, bravo = await _clients(db, "Acme", "Bravo")
+    move = await _move(db, acme)
+    await _asset(db, "sn-theirs", bravo)
+    await db.commit()
+    rows = [_row(2, serial_number="sn-a", owner="Team A"),
+            _row(3, serial_number="sn-b", owner="team   a"),       # same key
+            _row(4, serial_number="sn-theirs", owner="Team Skip"),   # skipped
+            _row(5, serial_number="sn-rev", owner="Team Review",
+                 asset_make="Nope", asset_model="Nothing"),        # review
+            _row(6, serial_number="", owner="Team Error"),          # error
+            _row(7, serial_number="sn-c", owner="Team C")]
+    assert rows[4]["status"] == "error"
+    check = await run_import(db, initiative_id=move.id, added_by=None,
+                             rows=rows, write=False)
+    # the whole file (an error row carries no Owner): a, skip, review, c
+    assert check["summary"]["owner_unmatched"] == 4
+    result = await run_import(db, initiative_id=move.id, added_by=None,
+                              rows=rows, write=True,
+                              client_choices={"sn-theirs": _pick("skip", bravo)})
+    statuses = [d["status"] for d in result["details"]]
+    assert statuses == ["created", "created", "skipped", "review", "error", "created"]
+    assert result["summary"]["owner_unmatched"] == 2           # team a, team c
+
+
+async def test_conflict_detail_carries_the_asset_model(db):
+    acme, bravo = await _clients(db, "Acme", "Bravo")
+    model = AssetModel(make="Dell", model="R740", ru_size=2)
+    db.add(model)
+    await db.flush()
+    move = await _move(db, acme)
+    await _asset(db, "sn-theirs", bravo, model_id=model.id)
+    await db.commit()
+    check = await run_import(db, initiative_id=move.id, added_by=None,
+                             rows=[_row(2, serial_number="sn-theirs")], write=False)
+    [d] = check["details"]
+    assert d["status"] == "conflict" and d["model_id"] == str(model.id)
+
+
+async def test_wizard_check_uses_the_stamped_client(db):
+    """The check's client is the one stamped when it was queued, not the
+    draft's client when the worker gets to it."""
+    acme, bravo = await _clients(db, "Acme", "Bravo")
+    await _asset(db, "sn-theirs", bravo)
+    draft = ImportJob(kind="move_setup", filename="", phase="commit", status="preview",
+                      options={},
+                      payload={"move": {"name": "Draft move", "client_id": str(bravo.id)},
+                               "assets": None, "crates": None, "trucks": None})
+    db.add(draft)
+    await db.commit()
+    acme_id = acme.id
+    job_id = await _file_job(db, initiative_id=None, phase="validate",
+                             options={"move_setup_id": str(draft.id),
+                                      "client_id": str(acme_id)},
+                             content=b"Serial Number\nSN-THEIRS\n")
+    assert await run_once(get_sessionmaker()) is True
+    db.expire_all()
+    job = await db.get(ImportJob, job_id)
+    assert job.status == "completed"
+    assert job.results["summary"]["client_id"] == str(acme_id)
+    assert [d["status"] for d in job.results["details"]] == ["conflict"]

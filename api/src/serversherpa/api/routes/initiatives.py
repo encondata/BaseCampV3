@@ -34,6 +34,7 @@ from serversherpa.db.models import (
     InitiativeLink, InitiativePerson, Partner, Person, Site, StatusValue,
 )
 from serversherpa.db.ordering import natural
+from serversherpa.imports.client_choices import ChoiceError, stored_choices
 from serversherpa.imports.parsing import (
     MAX_BYTES, build_template_csv, build_template_xlsx, template_columns,
 )
@@ -1411,24 +1412,30 @@ async def commit_move_asset_import_job(
     _require_move_job(job)
     if job.phase != "validate" or job.status != "completed":
         raise _err(409, "job_not_ready")
-    choices: dict[str, str] = {}
-    for serial, value in ((body.client_choices if body else None) or {}).items():
-        if value not in ("continue", "skip"):
-            raise _err(422, "invalid_client_choice")
-        choices[str(serial).strip().lower()] = value
-    # every distinct serial the check flagged as another client's needs a choice
-    flagged = {d["serial_number"]
-               for d in ((job.results or {}).get("details") or [])
-               if d.get("status") == "conflict" and d.get("serial_number")}
-    missing = sorted(flagged - choices.keys())
-    if missing:
-        raise _err(422, "client_choices_required", serials=missing)
+    # the check ran against the move's client at the time; if the move has
+    # changed hands since, its conflicts (and Continue's target) are wrong
+    check_client = ((job.results or {}).get("summary") or {}).get("client_id")
+    move_client = await db.scalar(
+        select(Initiative.client_id).where(Initiative.id == job.initiative_id))
+    if check_client != (str(move_client) if move_client else None):
+        raise _err(409, "check_stale_client")
+    # every distinct serial the check flagged as another client's needs a
+    # choice; each is stored with the owner the check saw (a Continue
+    # applies only while the serial still belongs to that client)
+    try:
+        stored = stored_choices(body.client_choices if body else None,
+                                (job.results or {}).get("details"))
+    except ChoiceError as exc:
+        if exc.serials is not None:
+            raise _err(422, exc.code, serials=exc.serials) from None
+        raise _err(422, exc.code) from None
     # ALWAYS replace the stored choices with this job's own flagged serials
     # ({} when none): choices inherited or left from an earlier attempt must
     # never apply to a conflict that first appears at commit time (that row
     # is skipped without a fresh decision). Reassign, never mutate in place.
-    job.options = {**(job.options or {}),
-                   "client_choices": {s: choices[s] for s in sorted(flagged)}}
+    # check_client_id lets the worker repeat the stale-client guard.
+    job.options = {**(job.options or {}), "client_choices": stored,
+                   "check_client_id": check_client}
     job.phase = "commit"
     job.committed_by = actor.person.id      # not always the uploader: the worker tells both
     job.status = "queued"
@@ -1491,7 +1498,7 @@ async def reprocess_move_asset_import_job(
         created_by=actor.person.id, filename=parent.filename,
         file_key=parent.file_key,
         options={**{k: v for k, v in (parent.options or {}).items()
-                    if k != "client_choices"},
+                    if k not in ("client_choices", "check_client_id")},
                  "only_rows": review_rows,
                  "reprocess_of": str(parent.id)},
         phase="validate", status="queued")

@@ -10,7 +10,8 @@ import {
   uploadMoveSetupAssets, type ClientChoice, type ImportJobOut, type MoveSetupDraft,
 } from '../../lib/api';
 import {
-  CHOICES_HINT, choicesKey, conflictSerials, countDetails, IMPORT_ERRORS, jobIsActive,
+  CHOICES_HINT, checkClientId, choiceMap, choicesKey, conflictSerials, countDetails,
+  IMPORT_ERRORS, jobIsActive,
 } from '../../lib/moveAssetImport';
 import { moveSetupError } from '../../lib/moveSetup';
 import WizardFooter from '../common/WizardFooter';
@@ -53,7 +54,7 @@ export default function AssetsStep({ draft, clientName, job, setJob, onBack, onS
   const [saved, setSaved] = useState('');
   const jobKey = job ? `${job.id}:${job.finished_at ?? ''}` : '';
   useEffect(() => {
-    const stored = job?.options?.client_choices ?? {};
+    const stored = choiceMap(job?.options?.client_choices);
     setChoices(stored);
     setSaved(choicesKey(stored));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -104,6 +105,11 @@ export default function AssetsStep({ draft, clientName, job, setJob, onBack, onS
   const showUpload = !active && (job === null || replacing || job.status !== 'completed');
   const checked = job?.status === 'completed' && !!job.results && !replacing;
   const counts = checked ? countDetails(job.results!.details) : null;
+  // the check ran against the move's client of the time; if the draft's
+  // client has changed since, its flags (and Continue's target) are wrong
+  const draftClient = typeof draft.payload?.move?.client_id === 'string'
+    ? draft.payload.move.client_id : null;
+  const stale = checked && checkClientId(job!) !== draftClient;
   const flagged = checked ? conflictSerials(job!.results!.details) : [];
   const choicesDone = flagged.every((x) => choices[x]);
   const currentKey = choicesKey(choices);
@@ -125,7 +131,8 @@ export default function AssetsStep({ draft, clientName, job, setJob, onBack, onS
       const sentFor = job?.id;
       const updated = await putMoveSetupChoices(draft.id, payload);
       if (jobIdRef.current !== sentFor) return;
-      setSaved(choicesKey(next));
+      // saved = what the server stored, not what was sent
+      setSaved(choicesKey(choiceMap(updated?.options?.client_choices)));
       if (updated?.id === sentFor) setJob(updated);
     } catch (err) {
       setError(moveSetupError(err));
@@ -190,10 +197,9 @@ export default function AssetsStep({ draft, clientName, job, setJob, onBack, onS
                         canAddModels={can('asset_models', 'add')}
                         canChangeModels={can('asset_models', 'change')}
                         readyLabel="Ready — check again to apply" pagingOnlyWhenNeeded
-                        choices={choices} onChoicesChange={(c) => void changeChoices(c)}
-                        clientId={typeof draft.payload?.move?.client_id === 'string'
-                          ? draft.payload.move.client_id : null}
-                        clientName={clientName} />
+                        choices={choices}
+                        onChoicesChange={stale ? undefined : (c) => void changeChoices(c)}
+                        clientId={draftClient} clientName={clientName} />
           <div className="imp-card-foot">
             <button className="mini-btn" type="button" disabled={busy}
                     onClick={() => void run(() => recheckMoveSetupAssets(draft.id))}>
@@ -208,11 +214,13 @@ export default function AssetsStep({ draft, clientName, job, setJob, onBack, onS
         </section>
       )}
 
-      <WizardFooter onBack={onBack} onSkip={skip} onNext={onNext} nextDisabled={!checked || !choicesSaved}
+      <WizardFooter onBack={onBack} onSkip={skip} onNext={onNext}
+                    nextDisabled={!checked || stale || !choicesSaved}
                     busy={busy || skipping} error={error}
                     note={job === null || replacing
                       ? 'Upload a From-To file, or skip this step.'
-                      : checked && !choicesSaved ? CHOICES_HINT : undefined} />
+                      : stale ? IMPORT_ERRORS.check_stale_client
+                        : checked && !choicesSaved ? CHOICES_HINT : undefined} />
 
       {fixTarget && (
         <FixMakeModelDialog text={fixTarget.text} make={fixTarget.make} model={fixTarget.model}
