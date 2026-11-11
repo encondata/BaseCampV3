@@ -13,6 +13,7 @@ import com.serversherpa.kiosk.core.rfid.PushOutcome
 import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidSession
 import com.serversherpa.kiosk.core.rfid.RfidSettings
+import com.serversherpa.kiosk.core.rfid.SettingStep
 import com.serversherpa.kiosk.core.rfid.SledBeeper
 import com.serversherpa.kiosk.core.rfid.SledCandidate
 import com.serversherpa.kiosk.core.rfid.SledConnectException
@@ -47,7 +48,9 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
@@ -112,6 +115,9 @@ class ZebraRfidReaderTest {
         @Volatile var onLinkUpCheck: () -> Unit = {}
         @Volatile var closeThread: String? = null
 
+        /** Replaces the adapter's clock when set (for example with the test scheduler's virtual time). */
+        @Volatile var clock: (() -> Long)? = null
+
         val openCalls: Int get() = events.count { it == "open" }
         val closeCalls: Int get() = events.count { it == "close" }
 
@@ -142,6 +148,8 @@ class ZebraRfidReaderTest {
         override fun forgetVendorConnection() {
             attached = false
         }
+
+        override fun nowMs(): Long = clock?.invoke() ?: super.nowMs()
     }
 
     private fun seamReader(scope: CoroutineScope) =
@@ -491,6 +499,231 @@ class ZebraRfidReaderTest {
         r.onStopEvent(g)
         runCurrent()
         assertEquals("the sweep already ended", 1, stops.size)
+    }
+
+    /** A connected seam reader on the test scheduler's clock, collecting [unsolicitedStops] into the returned list. */
+    private suspend fun TestScope.connectedOnVirtualTime(): Pair<SeamReader, MutableList<String>> {
+        val r = seamReader(backgroundScope)
+        r.clock = { testScheduler.currentTime }
+        assertTrue(r.connect(request).isSuccess)
+        val stops = mutableListOf<String>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { r.unsolicitedStops.toList(stops) }
+        return r to stops
+    }
+
+    @Test fun anUnsolicitedStopWaitsUntilTheTagsHaveGoneQuiet() = runTest {
+        val (r, stops) = connectedOnVirtualTime()
+        val g = r.currentGeneration
+        r.onStartEvent(g)
+        r.onTag(g, "E2000001")
+        r.onStopEvent(g)
+        runCurrent()
+        assertTrue("a tag just came: not settled", stops.isEmpty())
+
+        advanceTimeBy(90)
+        runCurrent()
+        assertTrue("90 ms after the last tag is not yet the 100 ms quiet gap", stops.isEmpty())
+
+        advanceTimeBy(20)
+        runCurrent()
+        assertEquals("the quiet gap passed", 1, stops.size)
+    }
+
+    @Test fun anUnsolicitedStopWaitsAtMostTheCapWhileTagsKeepComing() = runTest {
+        val (r, stops) = connectedOnVirtualTime()
+        val g = r.currentGeneration
+        r.onStartEvent(g)
+        r.onTag(g, "E2000001")
+        r.onStopEvent(g)
+        runCurrent()
+        repeat(9) {
+            advanceTimeBy(50)
+            runCurrent()
+            r.onTag(g, "E2000001")
+            assertTrue("tags keep coming within the cap", stops.isEmpty())
+        }
+        advanceTimeBy(60)
+        runCurrent()
+        assertEquals("the 500 ms cap ends the wait", 1, stops.size)
+    }
+
+    @Test fun aStartAskedForDuringTheUnsolicitedStopWaitDropsThatStop() = runTest {
+        val (r, stops) = connectedOnVirtualTime()
+        val g = r.currentGeneration
+        r.onStartEvent(g)
+        r.onTag(g, "E2000001")
+        r.onStopEvent(g)
+        runCurrent()
+
+        // A new sweep. The seam double has no vendor reader, so the start
+        // itself reports SledNotConnected; asking for it is what counts.
+        r.startInventory()
+        advanceTimeBy(600)
+        runCurrent()
+
+        assertTrue("the stop belonged to the sweep before; it must not end the new one", stops.isEmpty())
+    }
+
+    @Test fun aStopEventArrivingAfterItsWaitEndedDoesNotEndTheNextSweep() {
+        val t = InventoryTracker()
+        t.startAsked()
+        t.startSending()
+        t.markRunning()
+        assertTrue(t.beginStop())
+        t.stopEnded(waited = true)   // the wait reached its cap with no stop event
+
+        t.startAsked()
+        t.startSending()
+        t.markRunning()
+        assertEquals("the late event of the first stop is swallowed", StopEventKind.LATE, t.stopEvent())
+        assertTrue("the new sweep still runs", t.running)
+        assertEquals("the next one is the sled's own", StopEventKind.UNSOLICITED, t.stopEvent())
+        assertFalse(t.running)
+
+        // A stop whose event came within its wait owes nothing.
+        t.startSending()
+        t.markRunning()
+        assertTrue(t.beginStop())
+        assertEquals(StopEventKind.REQUESTED, t.stopEvent())
+        t.stopEnded(waited = true)
+        t.startSending()
+        t.markRunning()
+        assertEquals(StopEventKind.UNSOLICITED, t.stopEvent())
+
+        // A new connection owes nothing either.
+        t.markRunning()
+        t.beginStop()
+        t.stopEnded(waited = true)
+        t.reset()
+        t.markRunning()
+        assertEquals(StopEventKind.UNSOLICITED, t.stopEvent())
+    }
+
+    // ── the requested stop's wait ──
+
+    @Test fun theStopWaitIsMeasuredFromWhenTheStopReturned() {
+        var now = 1_000L
+        val error = stopThenSettle(
+            wasRunning = true,
+            stop = {
+                now += 600   // a slow stop, as during a busy read
+                null
+            },
+            now = { now },
+            pause = { now += it },
+            stopEventSeen = { false },
+            lastTagAtMs = { 0L },
+        )
+        assertNull(error)
+        assertEquals("the full 500 ms cap runs after the stop returned", 1_000L + 600 + 500, now)
+    }
+
+    @Test fun theStopWaitEndsOnceTheStopEventCameAndTagsWentQuiet() {
+        var now = 0L
+        var lastTag = 0L
+        var eventSeen = false
+        stopThenSettle(
+            wasRunning = true,
+            stop = {
+                now += 200
+                lastTag = now
+                eventSeen = true
+                null
+            },
+            now = { now },
+            pause = {
+                now += it
+                if (now == 240L) lastTag = now   // one more tag trails the stop
+            },
+            stopEventSeen = { eventSeen },
+            lastTagAtMs = { lastTag },
+        )
+        assertEquals("100 ms after the last tag, well within the cap", 340L, now)
+    }
+
+    @Test fun noStopWaitWhenNothingRanOrTheStopFailed() {
+        var now = 0L
+        val never: (Long) -> Unit = { fail("no wait expected") }
+        assertNull(stopThenSettle(false, { now += 50; null }, { now }, never, { false }, { 0L }))
+        assertEquals(timeout, stopThenSettle(true, { timeout }, { now }, never, { false }, { 0L }))
+    }
+
+    // ── the triggers set IMMEDIATE again ──
+
+    @Test fun eachTriggerWriteIsGuardedAndCountedOnItsOwn() {
+        val calls = mutableListOf<String>()
+        val recorded = mutableListOf<VendorError?>()
+        runGuardedWrites(
+            listOf(
+                SettingStep("start") {
+                    calls += "start"
+                    throw IllegalStateException("refused")
+                },
+                SettingStep("stop") { calls += "stop" },
+            ),
+            errorOf = { _, t -> VendorError(null, t.message) },
+            record = {
+                recorded += it
+                false
+            },
+        )
+        assertEquals("a refused write is tried once more, and the next write still runs", listOf("start", "start", "stop"), calls)
+        assertEquals(listOf(VendorError(null, "refused"), null), recorded)
+
+        calls.clear()
+        recorded.clear()
+        runGuardedWrites(
+            listOf(
+                SettingStep("start") {
+                    calls += "start"
+                    throw IllegalStateException("timed out")
+                },
+                SettingStep("stop") { calls += "stop" },
+            ),
+            errorOf = { _, _ -> timeout },
+            record = {
+                recorded += it
+                true   // the link is now lost
+            },
+        )
+        assertEquals("link trouble is not tried again, and a lost link stops the writes", listOf("start"), calls)
+        assertEquals(listOf<VendorError?>(timeout), recorded)
+    }
+
+    // ── the battery ──
+
+    @Test fun aLossFoundInsideTheBatteryBlockIsALossNotARefusal() {
+        val ops = object : SetupOps {
+            override fun identity(): SledInfo = SledInfo(1, "RFD4031")
+            override fun dump() = Unit
+            override fun writeLayout(layout: SledTriggerLayout): LayoutWriteOutcome = LayoutWriteOutcome.CheckFailed
+            override fun battery(): VendorError? = throw SledConnectException(reached)
+        }
+        try {
+            batteryBlock(ops, LinkTroubleTracker())
+            fail("the recorded loss must fail the connect")
+        } catch (e: SledConnectException) {
+            assertEquals(reached, e.failed)
+        }
+    }
+
+    @Test fun aBatteryLevelThatArrivesDuringTheConnectShowsWhenItComesUp() = runTest {
+        val r = seamReader(backgroundScope)
+        r.onOpen = { sled, g ->
+            r.onBattery(g, 77)   // step 11's answer, before the publish
+            VendorOpen.Up(SledInfo(g, sled.name, sled.address))
+        }
+        assertTrue(r.connect(request).isSuccess)
+        assertEquals(RfidConnection.Connected("RFD4031", 77), r.connection.value)
+
+        r.onBattery(r.currentGeneration - 1, 10)
+        assertEquals("an old generation's level is dropped", RfidConnection.Connected("RFD4031", 77), r.connection.value)
+        r.onBattery(r.currentGeneration, 60)
+        assertEquals(RfidConnection.Connected("RFD4031", 60), r.connection.value)
+
+        r.onOpen = { sled, g -> VendorOpen.Up(SledInfo(g, sled.name, sled.address)) }
+        assertTrue(r.connect(request).isSuccess)
+        assertEquals("a new connection does not carry the last one's level", RfidConnection.Connected("RFD4031", null), r.connection.value)
     }
 
     // ── has-scanner ──

@@ -238,10 +238,11 @@ open class ZebraRfidReader(
     private var sawRegionNotSet = false
 
     // Written on the worker and on the vendor's event thread.
-    @Volatile private var inventoryRunning = false
-    @Volatile private var stopRequested = false
-    @Volatile private var stopEventSeen = false
+    private val inventory = InventoryTracker()
     @Volatile private var lastTagAtMs = 0L
+
+    /** The last battery level the current generation reported, kept so the publish at the end of a connect can show it. */
+    @Volatile private var lastBatteryPct: Int? = null
 
     /**
      * True when the last vendor open ended in a batch result, with no other
@@ -291,8 +292,7 @@ open class ZebraRfidReader(
         internal const val STEP_LAYOUT = "trigger layout"
         internal const val STEP_BATTERY = "battery"
 
-        /** How often the stop wait looks again, and how many looks a wait off the worker takes at most (500 ms). */
-        private const val STOP_SETTLE_POLL_MS = 10L
+        /** How many looks ([STOP_SETTLE_POLL_MS] apart) the unsolicited-stop wait off the worker takes at most (500 ms). */
         private const val STOP_SETTLE_MAX_POLLS = 50
 
         private const val NO_GENERATION = -1
@@ -380,8 +380,8 @@ open class ZebraRfidReader(
         powerTable = null
         reimmediateAfterStop = false
         sawRegionNotSet = false
-        inventoryRunning = false
-        stopRequested = false
+        inventory.reset()
+        lastBatteryPct = null
         val chosen = when (val pre = precheck(request.address)) {
             is Precheck.Refused -> {
                 Log.i(TAG, "Pre-check refused the connect: ${pre.failed.reason}")
@@ -434,7 +434,7 @@ open class ZebraRfidReader(
                     if (note != null) _connectNote.value = combineConnectNotes(_connectNote.value, note)
                     _info.value = info
                     _connection.update {
-                        if (needsRegion) RfidConnection.NeedsRegion(info.name) else RfidConnection.Connected(info.name, null)
+                        if (needsRegion) RfidConnection.NeedsRegion(info.name) else RfidConnection.Connected(info.name, lastBatteryPct)
                     }
                     Publish.DONE
                 }
@@ -871,14 +871,23 @@ open class ZebraRfidReader(
         classifyResult(error) == ResultClass.LINK_TROUBLE ||
             connectFailure(error, name = null, severalPaired = false, classLoading = false).retryable
 
-    /** Reads attribute [number]; null when the reply was for another attribute (the vendor keeps one shared slot). */
-    private fun readAttribute(rfid: RFIDReader, number: Int): String? {
+    /** Reads attribute [number]'s value; null when the reply was for another attribute ([readCheckedAttribute]). */
+    private fun readAttribute(rfid: RFIDReader, number: Int): String? = readCheckedAttribute(rfid, number, "Batch-mode prevention")?.value
+
+    /**
+     * Reads attribute [number], accepted only when the reply is for that
+     * attribute number: the vendor keeps one shared reply slot, so a reply
+     * can be another attribute's. Null (logged under [step]) when it was not
+     * accepted; throws what the vendor throws. The batch-mode read, the dump
+     * and the key-layout read-back all read through this.
+     */
+    private fun readCheckedAttribute(rfid: RFIDReader, number: Int, step: String): AttributeInfo? {
         val read = rfid.Config.getAttribute(number, AttributeInfo())
         if (read.attNum != number) {
-            Log.w(TAG, "Attribute $number: the reply was for attribute ${read.attNum}, so it was not accepted.")
+            Log.w(TAG, "$step: attribute $number, the reply was for attribute ${read.attNum}, so it was not accepted.")
             return null
         }
-        return read.value
+        return read
     }
 
     /**
@@ -1038,25 +1047,33 @@ open class ZebraRfidReader(
     /** The sled says an inventory started: one the app asked for, or one its own trigger started. */
     internal fun onStartEvent(generation: Int) {
         if (generation != currentGeneration) return
-        inventoryRunning = true
+        inventory.markRunning()
         Log.i(TAG, "Inventory start event, generation $generation.")
     }
 
     /**
      * The sled says an inventory stopped. A stop the app asked for is only
-     * noted (the stop wait looks for it). With no stop requested while an
-     * inventory runs, the sled ended the read by itself: after the same wait
-     * a requested stop gets, its reason goes out on [unsolicitedStops], from
-     * a coroutine on [scope] (ruling 45: logged, never shown).
+     * noted (the stop wait looks for it), and so is the late event of an
+     * earlier stop whose wait ended without it ([InventoryTracker.stopEvent]).
+     * With no stop requested while an inventory runs, the sled ended the read
+     * by itself: after the same wait a requested stop gets, its reason goes
+     * out on [unsolicitedStops], from a coroutine on [scope] (ruling 45:
+     * logged, never shown), unless a start was asked for meanwhile.
      */
     internal fun onStopEvent(generation: Int) {
         if (generation != currentGeneration) return
-        stopEventSeen = true
-        if (stopRequested || !inventoryRunning) {
-            Log.i(TAG, "Inventory stop event, generation $generation.")
-            return
+        val sweep = inventory.sweep
+        when (inventory.stopEvent()) {
+            StopEventKind.REQUESTED, StopEventKind.IDLE -> {
+                Log.i(TAG, "Inventory stop event, generation $generation.")
+                return
+            }
+            StopEventKind.LATE -> {
+                Log.i(TAG, "Inventory stop event, generation $generation: the late one from the last stop, after its wait ended.")
+                return
+            }
+            StopEventKind.UNSOLICITED -> Unit
         }
-        inventoryRunning = false
         val at = nowMs()
         val reason = "The sled ended the read by itself (an inventory stop event with no stop asked for, generation $generation)."
         Log.w(TAG, reason)
@@ -1066,13 +1083,23 @@ open class ZebraRfidReader(
                 delay(STOP_SETTLE_POLL_MS)
             }
             if (generation != currentGeneration) return@launch
+            if (inventory.sweep != sweep) {
+                Log.i(TAG, "Dropped an unsolicited stop: a start was asked for during its wait, so it belongs to the sweep before.")
+                return@launch
+            }
             if (!_unsolicitedStops.tryEmit(reason)) Log.w(TAG, "Dropped an unsolicited stop: the flow's buffer is full.")
         }
     }
 
-    private fun onBattery(generation: Int, level: Int) {
+    /**
+     * A battery level for [generation]; dropped unless current. Kept for the
+     * publish at the end of a connect, since connect step 11's answer
+     * usually lands while the state is still `Connecting`.
+     */
+    internal fun onBattery(generation: Int, level: Int) {
         synchronized(stateLock) {
             if (generation != currentGeneration) return
+            lastBatteryPct = level
             _connection.update { state -> if (state is RfidConnection.Connected) state.copy(batteryPct = level) else state }
         }
     }
@@ -1178,9 +1205,16 @@ open class ZebraRfidReader(
      * stop and the batch-mode safety step first; every failure carries
      * [sentence] of its outcome.
      */
-    final override suspend fun startInventory(): Result<Unit> = onWorker {
+    final override suspend fun startInventory(): Result<Unit> {
+        // Counted before the wait for the worker: an unsolicited stop still
+        // waiting to go out belongs to the sweep before this one.
+        inventory.startAsked()
+        return onWorker { startOnWorker() }
+    }
+
+    private fun startOnWorker(): Result<Unit> =
         linkBlock("start", sentence = SledWords.READ_DID_NOT_START) { rfid, generation ->
-            stopRequested = false
+            inventory.startSending()
             var performError: VendorError? = null
             val ops = object : InventoryOps {
                 override fun purge(): Boolean = try {
@@ -1203,13 +1237,13 @@ open class ZebraRfidReader(
             val outcome = runStart(lastApplied?.uniqueTagReport == true, ops)
             recordResult(generation, performError)
             when (outcome) {
-                PerformOutcome.STARTED -> inventoryRunning = true
+                PerformOutcome.STARTED -> inventory.markRunning()
                 PerformOutcome.UNCONFIRMED -> {
-                    inventoryRunning = true
+                    inventory.markRunning()
                     Log.w(TAG, "Start: sent, unconfirmed (the start status may ride on the first tag).")
                 }
                 PerformOutcome.ALREADY_RUNNING -> {
-                    inventoryRunning = true
+                    inventory.markRunning()
                     reimmediateAfterStop = true
                     Log.w(TAG, "Start: an inventory was already running; the triggers are set IMMEDIATE again after the next stop.")
                 }
@@ -1220,7 +1254,6 @@ open class ZebraRfidReader(
             val sentence = outcome.sentence()
             if (sentence == null) Result.success(Unit) else Result.failure(Exception(sentence))
         }
-    }
 
     /** `perform()` said the sled is reading into its store: a stop, then the batch-mode safety step, each guarded. */
     private fun stopAfterABatchStart(rfid: RFIDReader) {
@@ -1243,49 +1276,61 @@ open class ZebraRfidReader(
      * ended a running inventory, the worker waits until the stop event has
      * arrived and no tag has come for 100 ms, at most 500 ms ([stopSettled]),
      * because the vendor's stop returns before the last tags are delivered.
+     * The wait is measured from when the stop returned ([stopThenSettle]).
      */
     final override suspend fun stopInventory(): Result<Unit> = onWorker {
         linkBlock("stop", sentence = SledWords.MAY_STILL_BE_READING) { rfid, generation ->
-            val wasRunning = inventoryRunning
-            stopRequested = true
-            stopEventSeen = false
-            val stoppedAt = nowMs()
-            val error = try {
-                rfid.Actions.Inventory.stop()
-                null
-            } catch (t: Throwable) {
-                errorOf("stop", t)
-            }
+            val wasRunning = inventory.beginStop()
+            val error = stopThenSettle(
+                wasRunning,
+                stop = {
+                    try {
+                        rfid.Actions.Inventory.stop()
+                        null
+                    } catch (t: Throwable) {
+                        errorOf("stop", t)
+                    }
+                },
+                now = ::nowMs,
+                pause = ::pause,
+                stopEventSeen = { inventory.stopEventSeen },
+                lastTagAtMs = { lastTagAtMs },
+            )
             recordResult(generation, error)
             if (error != null && wasRunning) return@linkBlock Result.failure(Exception(SledWords.MAY_STILL_BE_READING))
             if (error != null) Log.i(TAG, "Stop: nothing was running, so the refusal counts as stopped.")
-            if (wasRunning) awaitStopSettled(stoppedAt)
-            inventoryRunning = false
-            // Settled: a later stop event belongs to an inventory the sled starts by itself.
-            stopRequested = false
+            // Settled: a later stop event belongs to an inventory the sled starts
+            // by itself, or is the late one of this stop when its wait ended without it.
+            inventory.stopEnded(waited = wasRunning)
             if (reimmediateAfterStop) {
                 reimmediateAfterStop = false
-                setTriggersImmediate(rfid)
+                setTriggersImmediate(rfid, generation)
             }
             Result.success(Unit)
         }
     }
 
-    /** The stop wait, on the worker: see [stopInventory]. */
-    private fun awaitStopSettled(stoppedAt: Long) {
-        while (!stopSettled(nowMs() - stoppedAt, stopEventSeen, nowMs() - lastTagAtMs)) pause(STOP_SETTLE_POLL_MS)
-        Log.i(TAG, "Stop settled after ${nowMs() - stoppedAt} ms (stop event ${if (stopEventSeen) "seen" else "not seen"}).")
-    }
-
-    /** The start and stop triggers IMMEDIATE again, after a start that found an inventory already running. Each guarded. */
-    private fun setTriggersImmediate(rfid: RFIDReader) {
-        try {
-            rfid.Config.setStartTrigger(StartTrigger().apply { triggerType = START_TRIGGER_TYPE.START_TRIGGER_TYPE_IMMEDIATE })
-            rfid.Config.setStopTrigger(StopTrigger().apply { triggerType = STOP_TRIGGER_TYPE.STOP_TRIGGER_TYPE_IMMEDIATE })
-            Log.i(TAG, "Start and stop triggers set IMMEDIATE again.")
-        } catch (t: Throwable) {
-            errorOf("start and stop triggers IMMEDIATE after a stop", t)
-        }
+    /**
+     * The start and stop triggers IMMEDIATE again, after a start that found an
+     * inventory already running. Each write on its own guard, with one more
+     * try as in connect step 7, and each result counted ([runGuardedWrites]).
+     */
+    private fun setTriggersImmediate(rfid: RFIDReader, generation: Int) {
+        runGuardedWrites(
+            listOf(
+                SettingStep("start trigger IMMEDIATE after a stop") {
+                    rfid.Config.setStartTrigger(StartTrigger().apply { triggerType = START_TRIGGER_TYPE.START_TRIGGER_TYPE_IMMEDIATE })
+                },
+                SettingStep("stop trigger IMMEDIATE after a stop") {
+                    rfid.Config.setStopTrigger(StopTrigger().apply { triggerType = STOP_TRIGGER_TYPE.STOP_TRIGGER_TYPE_IMMEDIATE })
+                },
+            ),
+            errorOf = ::errorOf,
+            record = { error ->
+                recordResult(generation, error)
+                generation in lostGenerations
+            },
+        )
     }
 
     /**
@@ -1477,13 +1522,10 @@ open class ZebraRfidReader(
 
     /** The key-layout attribute, accepted only when the reply is for that attribute number. */
     private fun readKeyLayout(rfid: RFIDReader): AttributeRead = try {
-        val read = rfid.Config.getAttribute(KEY_LAYOUT_ATTRIBUTE, AttributeInfo())
-        val value = read.value?.trim()?.toIntOrNull()
+        val read = readCheckedAttribute(rfid, KEY_LAYOUT_ATTRIBUTE, "Trigger layout read-back")
+        val value = read?.value?.trim()?.toIntOrNull()
         when {
-            read.attNum != KEY_LAYOUT_ATTRIBUTE -> {
-                Log.w(TAG, "Trigger layout read-back: the reply was for attribute ${read.attNum}, so it was not accepted.")
-                AttributeRead.WrongAttribute
-            }
+            read == null -> AttributeRead.WrongAttribute
             value == null -> {
                 Log.w(TAG, "Trigger layout read-back: \"${read.value}\" is not a number.")
                 AttributeRead.WrongAttribute
@@ -1718,10 +1760,7 @@ open class ZebraRfidReader(
             checkLoss()
             for (attribute in DUMP_ATTRIBUTES) {
                 try {
-                    val read = rfid.Config.getAttribute(attribute, AttributeInfo())
-                    if (read.attNum != attribute) {
-                        Log.w(TAG, "Dump: attribute $attribute, the reply was for attribute ${read.attNum}, so it was not accepted.")
-                    } else {
+                    readCheckedAttribute(rfid, attribute, "Dump")?.let { read ->
                         Log.i(TAG, "Dump: attribute $attribute reads ${read.value} (type ${read.type}).")
                     }
                 } catch (t: Throwable) {
@@ -1778,7 +1817,8 @@ open class ZebraRfidReader(
     private fun isRegionNotSet(t: Throwable): Boolean =
         t is OperationFailureException && t.results == RFIDResults.RFID_READER_REGION_NOT_CONFIGURED
 
-    private fun nowMs(): Long = System.nanoTime() / 1_000_000L
+    /** The adapter's monotonic clock, in milliseconds: the setup deadline, the stop waits and the last-tag time. A seam for the tests. */
+    protected open fun nowMs(): Long = System.nanoTime() / 1_000_000L
 }
 
 /**
@@ -1903,11 +1943,16 @@ internal fun runBestSteps(
  * The battery block: calls [ops]' `battery()` (a throw counts by its vendor
  * result, else as a refusal), records the result's class on [links], hands
  * it to [seen], and returns true when the link is now lost (two link-trouble
- * results in a row). Connect step 11 and `requestBattery` both use it.
+ * results in a row). A [SledConnectException] (a loss the step's own check
+ * found) passes through, as in [runBestSteps]. Connect step 11 and
+ * `requestBattery` both use it.
  */
 internal fun batteryBlock(ops: SetupOps, links: LinkTroubleTracker, seen: (ResultClass?) -> Unit = {}): Boolean {
     val cls = try {
         ops.battery()?.let(::classifyResult)
+    } catch (e: SledConnectException) {
+        // A loss recorded for this connect (the step's loss check): the connect fails as a loss, not a refusal.
+        throw e
     } catch (t: Throwable) {
         Log.w(ZebraRfidReader.TAG, "The battery block threw.", t)
         vendorErrorOf(t)?.let(::classifyResult) ?: ResultClass.REFUSAL
@@ -1933,6 +1978,163 @@ internal fun runStart(uniqueReport: Boolean, ops: InventoryOps): PerformOutcome 
         Log.w(ZebraRfidReader.TAG, "Start: the purge before the read failed; reading anyway.")
     }
     return performOutcome(ops.perform())
+}
+
+/** How often a stop wait looks again. */
+private const val STOP_SETTLE_POLL_MS = 10L
+
+/**
+ * One stop and its settle: sends [stop]; when [wasRunning] and the stop went
+ * through, waits ([pause]) until `stopSettled` holds, the 500 ms cap and the
+ * 100 ms quiet gap both measured on [now] from when [stop] returned (the
+ * vendor's stop returns before the last tags are delivered, and a stop is
+ * slowest during a busy read, when tags trail). Returns the stop's error.
+ */
+internal fun stopThenSettle(
+    wasRunning: Boolean,
+    stop: () -> VendorError?,
+    now: () -> Long,
+    pause: (Long) -> Unit,
+    stopEventSeen: () -> Boolean,
+    lastTagAtMs: () -> Long,
+): VendorError? {
+    val error = stop()
+    if (error != null || !wasRunning) return error
+    // Taken after the stop returned: its own round trip must not come out of the cap.
+    val stoppedAt = now()
+    while (!stopSettled(now() - stoppedAt, stopEventSeen(), now() - lastTagAtMs())) pause(STOP_SETTLE_POLL_MS)
+    Log.i(ZebraRfidReader.TAG, "Stop settled ${now() - stoppedAt} ms after the stop returned (stop event ${if (stopEventSeen()) "seen" else "not seen"}).")
+    return null
+}
+
+/**
+ * Vendor writes that each stand alone: each runs on its own guard, with one
+ * more try after a failure that is not link trouble (as connect step 7 does);
+ * each write's last result goes to [record], and the writes stop when
+ * [record] says the link is now lost. [errorOf] logs a throw and returns its
+ * error.
+ */
+internal fun runGuardedWrites(
+    writes: List<SettingStep>,
+    errorOf: (String, Throwable) -> VendorError,
+    record: (VendorError?) -> Boolean,
+) {
+    for (write in writes) {
+        var error: VendorError? = null
+        for (attempt in 1..2) {
+            error = try {
+                write.run()
+                null
+            } catch (t: Throwable) {
+                errorOf(write.label, t)
+            }
+            if (error == null || classifyResult(error) == ResultClass.LINK_TROUBLE) break
+            if (attempt == 1) Log.w(ZebraRfidReader.TAG, "${write.label}: trying once more.")
+        }
+        if (error == null) Log.i(ZebraRfidReader.TAG, "${write.label}: done.")
+        if (record(error)) {
+            Log.w(ZebraRfidReader.TAG, "The link is lost; the writes after ${write.label} are not sent.")
+            return
+        }
+    }
+}
+
+/** What one inventory stop event means ([InventoryTracker.stopEvent]). */
+internal enum class StopEventKind {
+    /** A stop the app asked for is in progress: the stop wait looks for this event. */
+    REQUESTED,
+
+    /** The late event of an earlier requested stop whose wait ended without it: swallowed. */
+    LATE,
+
+    /** Nothing was running. */
+    IDLE,
+
+    /** The sled ended a running read by itself. */
+    UNSOLICITED,
+}
+
+/**
+ * The inventory state the worker and the vendor's event thread share:
+ * whether a read runs, the stop in progress, whether a stop event is still
+ * owed by a stop whose wait ended without one, and the count of starts asked
+ * for (the sweep). One small lock, never held around a vendor call.
+ */
+internal class InventoryTracker {
+    private val lock = Any()
+    private var stopRequested = false
+
+    /** A requested stop's wait ended without its stop event: the next one that comes with no stop in progress is that one, late. */
+    private var stopEventOwed = false
+
+    @Volatile var running = false
+        private set
+
+    /** Whether a stop event arrived since the last [beginStop]. */
+    @Volatile var stopEventSeen = false
+        private set
+
+    /** Counts the starts asked for; an unsolicited stop still waiting to go out is dropped when it changed. */
+    @Volatile var sweep = 0
+        private set
+
+    /** A new connection: nothing runs and nothing is owed. */
+    fun reset() = synchronized(lock) {
+        running = false
+        stopRequested = false
+        stopEventSeen = false
+        stopEventOwed = false
+    }
+
+    /** A start was asked for: a new sweep. */
+    fun startAsked() = synchronized(lock) { sweep++ }
+
+    /** The start is about to be sent: any earlier stop request is over. */
+    fun startSending() = synchronized(lock) { stopRequested = false }
+
+    /** A start went through, or the sled said a read started. */
+    fun markRunning() {
+        running = true
+    }
+
+    /** A stop is about to be sent; returns whether a read was running. */
+    fun beginStop(): Boolean = synchronized(lock) {
+        stopRequested = true
+        stopEventSeen = false
+        running
+    }
+
+    /**
+     * The stop went through and, when [waited], its wait ended: nothing runs,
+     * no stop is in progress, and a wait that ended without the stop event
+     * leaves that event owed.
+     */
+    fun stopEnded(waited: Boolean) = synchronized(lock) {
+        running = false
+        stopRequested = false
+        if (waited) stopEventOwed = !stopEventSeen
+    }
+
+    /**
+     * Classifies one stop event and updates the state for it: noted while a
+     * stop is in progress; swallowed as [StopEventKind.LATE] when one is
+     * owed; otherwise idle, or the sled's own stop of a running read.
+     */
+    fun stopEvent(): StopEventKind = synchronized(lock) {
+        stopEventSeen = true
+        when {
+            stopRequested -> StopEventKind.REQUESTED
+            stopEventOwed -> {
+                stopEventOwed = false
+                StopEventKind.LATE
+            }
+            !running -> StopEventKind.IDLE
+            else -> {
+                running = false
+                StopEventKind.UNSOLICITED
+            }
+        }
+    }
 }
 
 // ── the settings push ──
