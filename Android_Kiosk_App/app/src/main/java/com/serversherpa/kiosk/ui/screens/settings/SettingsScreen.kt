@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,6 +38,13 @@ fun SettingsScreen(nav: NavHostController, requestedTab: String?) {
     }
     // A selection that is no longer visible falls back rather than crashing.
     val active = tabs.firstOrNull { it.id == selected } ?: tabs.first()
+    // Ruling 33: the tab on screen, for the sled-screen signal (Settings › RFID is a sled screen).
+    // Only this screen's own value is cleared, so a Settings entry composed over another keeps its own.
+    DisposableEffect(container, active.id) {
+        val tab = active.id
+        container.settingsTab.value = tab
+        onDispose { container.settingsTab.compareAndSet(tab, null) }
+    }
     Column {
         PageHeader("Kiosk · Settings", "Settings")
         Segmented(tabs.map { it.id.wire to it.label }, active.id.wire) { w -> SettingsTabId.fromWire(w)?.let { selected = it } }

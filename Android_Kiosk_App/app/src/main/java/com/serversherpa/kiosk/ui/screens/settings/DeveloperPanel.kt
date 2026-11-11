@@ -19,11 +19,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.rfid.SledConnectRequest
 import com.serversherpa.kiosk.core.rfid.SledTriggerLayout
+import com.serversherpa.kiosk.core.rfid.SledWords
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.core.scan.displayRfid
 import com.serversherpa.kiosk.core.setup.SetupState
@@ -125,6 +127,12 @@ fun DeveloperPanel(goHome: () -> Unit = {}) {
                     }
                 })
             }
+        }
+        // Ruling 35: the one on-screen text that names the vendor's SDK, for developers only. It
+        // shows the reader's own state; nothing is saved.
+        val vendorLogging by container.rfidReader.vendorLogging.collectAsStateWithLifecycle()
+        SettingsRow("Zebra SDK logging", SledWords.VENDOR_LOGGING_HINT) {
+            Switch(checked = vendorLogging, onCheckedChange = { on -> container.rfidReader.setVendorLogging(on) }, modifier = Modifier.testTag("vendor-logging"))
         }
         LocalDataInspector()
     }

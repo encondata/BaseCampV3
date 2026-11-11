@@ -1,5 +1,6 @@
 package com.serversherpa.kiosk.ui.screens.timeclock
 
+import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.size
@@ -35,6 +36,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.ui.components.CameraIcon
+import com.serversherpa.kiosk.ui.components.LocalSledScanGuard
 import com.serversherpa.kiosk.ui.screens.timeclock.flow.TcStep
 import com.serversherpa.kiosk.ui.screens.timeclock.flow.TimeclockFlowViewModel
 import com.serversherpa.kiosk.ui.screens.timeclock.flow.firstNameOf
@@ -72,6 +74,7 @@ fun TimeclockFlowScreen(
     keyMissing: Boolean = false,
 ) {
     val container = LocalAppContainer.current
+    val guard = LocalSledScanGuard.current
     val ui by vm.state.collectAsStateWithLifecycle()
     var camera by rememberSaveable { mutableStateOf(false) }
     val step = ui.step
@@ -127,11 +130,19 @@ fun TimeclockFlowScreen(
                 if (!catchesKeys) return@onPreviewKeyEvent false
                 val query = vm.state.value.query
                 when (e.key) {
-                    Key.Enter, Key.NumPadEnter -> { vm.onSearch(); true }
+                    // A code the sled's scanner already delivered: cleared, not searched again.
+                    Key.Enter, Key.NumPadEnter -> {
+                        if (query.isBlank() || guard.acceptTyped(query, SystemClock.elapsedRealtime())) vm.onSearch() else vm.onType("")
+                        true
+                    }
                     Key.Backspace -> { vm.onType(query.dropLast(1)); true }
                     else -> {
                         val cp = e.utf16CodePoint
-                        if (cp >= 32 && !e.isCtrlPressed && !e.isAltPressed) { vm.onType(query + String(Character.toChars(cp))); true } else false
+                        if (cp >= 32 && !e.isCtrlPressed && !e.isAltPressed) {
+                            guard.noteTyping(SystemClock.elapsedRealtime())
+                            vm.onType(query + String(Character.toChars(cp)))
+                            true
+                        } else false
                     }
                 }
             }

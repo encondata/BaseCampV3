@@ -15,6 +15,7 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -41,6 +42,9 @@ import com.serversherpa.kiosk.core.model.KioskLookupMatch
 import com.serversherpa.kiosk.core.model.KioskLookupResult
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.core.rfid.DEFAULT_RFID_SETTINGS
+import com.serversherpa.kiosk.core.rfid.RfidConnection
+import com.serversherpa.kiosk.core.rfid.SledScannerState
+import com.serversherpa.kiosk.core.rfid.SledWords
 import com.serversherpa.kiosk.core.rfid.RfidTriggerMode
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.core.setup.SetupState
@@ -52,11 +56,15 @@ import com.serversherpa.kiosk.data.fakeSession
 import com.serversherpa.kiosk.input.ScanEvent
 import com.serversherpa.kiosk.input.ScanSource
 import com.serversherpa.kiosk.input.rfid.FakeRfidReader
+import com.serversherpa.kiosk.input.rfid.RfidPermissions
 import com.serversherpa.kiosk.testContainer
 import com.serversherpa.kiosk.ui.KioskApp
 import com.serversherpa.kiosk.ui.theme.KioskTheme
 import com.serversherpa.kiosk.waitUntilIdlingMain
+import android.app.Application
+import androidx.test.core.app.ApplicationProvider
 import java.time.ZoneId
+import org.robolectric.Shadows
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -537,5 +545,40 @@ class AssetLookupScreenTest {
         compose.waitUntilIdlingMain { "lookupAssets:SN-100" in api.calls }
         waitForText("Tina T")
         assertEquals(0, runBlocking { c.db.outbox().all().size })
+    }
+
+    /** The sled slot on Asset Lookup waits for the screen to be ready: before Kiosk Setup is
+     *  complete nothing the sled does is passed on, so nothing about it is said either. */
+    @Test fun theSlotShowsOnlyWhenTheScreenIsReady() {
+        Shadows.shadowOf(ApplicationProvider.getApplicationContext<Application>())
+            .grantPermissions(*RfidPermissions.REQUIRED.toTypedArray())
+        val reader = FakeRfidReader()
+        reader.setConnection(RfidConnection.Failed(SledWords.couldNotReach("Fake RFD40")))
+        val c = rig(FakeKioskApi(), setup = false, reader = reader)
+        runBlocking { c.prefs.setRfid(DEFAULT_RFID_SETTINGS.copy(enabled = true)) }
+        show(c)
+        compose.waitForIdle(); Thread.sleep(200); compose.waitForIdle()
+        missing(SledWords.couldNotReach("Fake RFD40"))
+
+        runBlocking { c.prefs.setSetupSelection(selection); c.prefs.setSetupState(SetupState.COMPLETE) }
+        waitReady()
+        waitForText(SledWords.couldNotReach("Fake RFD40"))
+        assertEquals("already there at open: muted", 1, compose.onAllNodesWithTag("sled-slot-muted").fetchSemanticsNodes().size)
+        assertEquals(0, compose.onAllNodesWithTag("sled-slot-red").fetchSemanticsNodes().size)
+    }
+
+    /** Ruling 44: Asset Lookup's tool row has the sled's controls only, never the DataWedge
+     *  Scan button, so the MC2200's Asset Lookup is unchanged. */
+    @Test fun assetLookupShowsSledControlsButNeverTheDataWedgeButton() {
+        val reader = FakeRfidReader()
+        reader.setConnection(RfidConnection.Connected("Fake RFD40", 80))
+        show(rig(FakeKioskApi(), reader = reader))
+        waitReady()
+        compose.onNodeWithText("Both").performScrollTo().assertIsDisplayed()
+        missing("Scan")
+        reader.setScanner(SledScannerState.Ready)
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag("sled-scan").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("sled-scan").performScrollTo().assertIsDisplayed()
+        assertEquals("only the sled's own Scan button", 1, compose.onAllNodesWithText("Scan").fetchSemanticsNodes().size)
     }
 }

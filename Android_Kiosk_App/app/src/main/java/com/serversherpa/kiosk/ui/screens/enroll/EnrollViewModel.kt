@@ -9,6 +9,7 @@ import com.serversherpa.kiosk.core.scan.EnrollLogEntry
 import com.serversherpa.kiosk.core.scan.ScanIndex
 import com.serversherpa.kiosk.core.scan.ScanMatchKind
 import com.serversherpa.kiosk.core.scan.buildScanIndex
+import com.serversherpa.kiosk.core.scan.checkEnrollRaw
 import com.serversherpa.kiosk.core.scan.checkEnrollTag
 import com.serversherpa.kiosk.core.scan.enrollTagText
 import com.serversherpa.kiosk.core.scan.enrolledThisSession
@@ -188,6 +189,11 @@ class EnrollViewModel(
     fun submitTag(raw: String) {
         val target = _state.value.asset ?: return
         if (_state.value.saving || _state.value.awaitingUpdate) return
+        // The web's first check, on the raw value before padding: an asset ID or
+        // serial scanned here is a barcode, not a tag (ruling 13).
+        checkEnrollRaw(index, target, raw)?.let {
+            flashBad(); _state.update { st -> st.copy(tagValue = "") }; showError(enrollTagText(it)); return
+        }
         val (tag, problem) = padRfid(raw)
         if (problem != null) { _state.update { it.copy(tagValue = "") }; showError(rfidProblemText(problem)); return }
         // Instantly, from what this kiosk holds: the tag on this very asset, the

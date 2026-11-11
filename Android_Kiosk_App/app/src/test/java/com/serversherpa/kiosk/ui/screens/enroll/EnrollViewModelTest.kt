@@ -137,4 +137,22 @@ class EnrollViewModelTest {
         assertEquals("a1", vm.state.value.asset?.id)   // stays on step two
         vm.submitTag("bad-tag"); assertEquals("That tag has characters we can't store — letters and numbers only.", vm.state.value.error)
     }
+
+    /** Ruling 13 (the web's gate): the asset's own barcode, or another asset's, scanned at the
+     *  tag step is refused before padding, so "SN1" is never stored as a zero-padded tag and
+     *  "A-1" gets the barcode sentence, not the letters-and-numbers one. */
+    @Test fun submitTagRefusesTheAssetsOwnBarcodeBeforePadding() = runTest {
+        val api = FakeKioskApi()
+        val (vm, _) = build(api)
+        vm.onScan("A-1")
+        vm.submitTag("SN1"); settle()
+        assertEquals("That's this asset's own serial, not an RFID tag.", vm.state.value.error)
+        vm.submitTag("A-1"); settle()
+        assertEquals("That's this asset's own asset ID, not an RFID tag.", vm.state.value.error)
+        vm.submitTag(" SN2 "); settle()
+        assertEquals("That's the serial for Tagged, not an RFID tag.", vm.state.value.error)
+        assertEquals(0, api.calls.count { it == "rfid" })
+        assertEquals("a1", vm.state.value.asset?.id)   // stays on step two
+        assertEquals("", vm.state.value.tagValue)
+    }
 }

@@ -26,6 +26,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -111,6 +112,11 @@ fun LoginScreen(nav: NavHostController) {
     // scan's error lands in moveError, which no other view shows.
     // It also resets when the view leaves MOVE, so coming back never reopens the camera.
     LaunchedEffect(ui.view) { if (ui.view != LoginView.MOVE) scanning = false }
+    // The same over the scan bus: a sled barcode (or a DataWedge scan) of the move QR signs in.
+    val onMoveScan by rememberUpdatedState { value: String -> vm.submitScannedMove(value, goHome) }
+    LaunchedEffect(ui.view) {
+        if (ui.view == LoginView.MOVE) container.scanBus.events.collect { onMoveScan(it.value) }
+    }
     if (scanning && ui.view == LoginView.MOVE) CameraScanSheet(
         onScan = { vm.submitScannedMove(it.value, goHome) },
         onDismiss = { scanning = false },
