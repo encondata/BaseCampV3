@@ -90,8 +90,14 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
         inbox.items.forEach((i) => seen.current!.add(i.id));
         if (fresh.length) playNotificationSound(soundRef.current);
       }
+      // A block that moved up a rung comes back as a fresh card (the API
+      // replaces the old one): its toast takes the old card's place.
+      const blockKey = (i: InboxItem) => (i.kind === ADDRESS_BLOCKED_KIND
+        ? `${String(i.payload.address)}|${String(i.payload.blocked_at)}` : null);
+      const replaced = new Set(fresh.map(blockKey).filter((k): k is string => k !== null));
+      const gone = (i: InboxItem) => settled(i) || (!fresh.includes(i) && replaced.has(blockKey(i) ?? ''));
       setNewItems((cur) => {
-        const kept = cur.some(settled) ? cur.filter((i) => !settled(i)) : cur;
+        const kept = cur.some(gone) ? cur.filter((i) => !gone(i)) : cur;
         return fresh.length ? [...fresh, ...kept].slice(0, 3) : kept;
       });
     } catch {

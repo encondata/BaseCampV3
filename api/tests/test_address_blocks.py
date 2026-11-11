@@ -340,6 +340,58 @@ async def test_blocked_attempts_are_counted_and_reset_by_the_next_block(db, seed
     assert block.attempts_while_blocked == 0 and block.last_attempt_at is None
 
 
+async def tries(db, n: int, now: datetime, xff="203.0.113.7") -> HTTPException:
+    """n attempts from a blocked address at `now`; returns the last 429."""
+    errors = []
+    for _ in range(n):
+        with pytest.raises(HTTPException) as caught:
+            await ab.raise_if_blocked(db, req(xff), now=now)
+        errors.append(caught.value)
+    return errors[-1]
+
+
+async def test_ten_tries_while_blocked_move_up_a_rung_from_now(db):
+    await fail(db, 10, T0)
+    later = T0 + timedelta(minutes=20)
+    err = await tries(db, 9, later)
+    block = await ab.active_block(db, "203.0.113.7", now=later)
+    assert block.level == 1 and block.ends_at == T0 + timedelta(hours=1)
+    assert err.detail["retry_after"] == 40 * 60
+
+    err = await tries(db, 1, later)  # the 10th try
+    block = await ab.active_block(db, "203.0.113.7", now=later)
+    assert block.level == 2
+    assert block.ends_at == later + timedelta(hours=6)  # the clock restarts now
+    assert block.permanent is False
+    assert block.blocked_at == T0 and block.times_blocked == 1  # still the same block
+    assert block.attempts_while_blocked == 10
+    assert err.detail["retry_after"] == 6 * 3600  # the 10th try already sees the new end
+
+
+async def test_tries_climb_the_ladder_to_permanent_and_keep_counting(db):
+    await fail(db, 10, T0)
+    for level, hours in [(2, 6), (3, 12), (4, 24)]:
+        await tries(db, 10, T0)
+        block = await ab.active_block(db, "203.0.113.7", now=T0)
+        assert (block.level, block.ends_at) == (level, T0 + timedelta(hours=hours))
+    err = await tries(db, 10, T0)
+    block = await ab.active_block(db, "203.0.113.7", now=T0)
+    assert block.level == 5 and block.permanent is True and block.ends_at is None
+    assert block.made_permanent_by is None  # the ladder, not an admin
+    assert err.detail == {"code": "address_blocked", "retry_after": None}
+    await tries(db, 15, T0)
+    block = await ab.active_block(db, "203.0.113.7", now=T0)
+    assert block.level == 5 and block.attempts_while_blocked == 55
+
+
+async def test_a_new_block_after_escalation_continues_up_the_ladder(db):
+    await fail(db, 10, T0)
+    await tries(db, 10, T0)  # level 2, ends T0 + 6 h
+    after = T0 + timedelta(hours=7)
+    block = await fail(db, 10, after)
+    assert block.level == 3 and block.attempts_while_blocked == 0
+
+
 async def test_list_blocks(db, seeded_user):
     now = T0 + timedelta(days=40)
     # active timed
