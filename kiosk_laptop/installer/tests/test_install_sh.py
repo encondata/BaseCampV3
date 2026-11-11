@@ -1280,7 +1280,7 @@ def test_both_scripts_write_the_same_udev_and_modprobe_files(sh, tmp_path):
                             capture_output=True, text=True, env=env).stdout
     assert mine == theirs
     rule, conf, paths = mine.split("---\n")
-    assert 'SUBSYSTEM=="usb", ATTR{idVendor}=="0a5f", MODE="0666", TAG+="uaccess"' in rule.splitlines()
+    assert 'SUBSYSTEM=="usb", ATTR{idVendor}=="0a5f", TAG+="uaccess"' in rule.splitlines()
     assert "blacklist usblp" in conf.splitlines()
     assert paths.splitlines() == ["/etc/udev/rules.d/60-serversherpa-label-printers.rules",
                                   "/etc/modprobe.d/serversherpa-no-usblp.conf"]
@@ -1304,7 +1304,8 @@ def test_setup_label_printers_fixes_everything_once(sh, tmp_path):
     assert "udevadm trigger --subsystem-match=usb --attr-match=idVendor=0a5f" in calls
     assert "snap connect chromium:raw-usb" in calls
     rule = (tmp_path / "udev" / "60-serversherpa-label-printers.rules").read_text()
-    assert 'ATTR{idVendor}=="0a5f", MODE="0666"' in rule
+    assert 'ATTR{idVendor}=="0a5f", TAG+="uaccess"' in rule
+    assert "0666" not in rule
     assert "blacklist usblp" in (tmp_path / "modprobe" / "serversherpa-no-usblp.conf").read_text()
     # one info line per change: package, modprobe file, usblp, 2 queues, udev rule, chromium
     assert r.stdout.count("==>") == 7, r.stdout

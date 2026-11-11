@@ -613,10 +613,10 @@ LP_DOCKERD_BIN="${KIOSK_DOCKERD_BIN:-/usr/bin/dockerd}"
 LP_SNAP_MARKER="${KIOSK_RUN_DIR:-/run}/serversherpa-kiosk-snap-docker-removed"
 
 # lp_udev_rule: Zebra (USB vendor 0a5f) printers open to Chrome's WebUSB, for
-# everyone and (uaccess) for whoever is signed in at the screen.
+# whoever is signed in at the screen (uaccess) only, never world-writable.
 lp_udev_rule() {
   printf '%s\n' '# ServerSherpa kiosk: Chrome prints to USB Zebra label printers over WebUSB.' \
-    'SUBSYSTEM=="usb", ATTR{idVendor}=="0a5f", MODE="0666", TAG+="uaccess"'
+    'SUBSYSTEM=="usb", ATTR{idVendor}=="0a5f", TAG+="uaccess"'
 }
 
 # lp_modprobe_conf: keeps the usblp printer driver off the label printers
