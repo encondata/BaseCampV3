@@ -1,6 +1,9 @@
 package com.serversherpa.kiosk.input.rfid
 
+import android.bluetooth.BluetoothAdapter
 import android.content.Context
+import android.content.Intent
+import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import com.serversherpa.kiosk.core.rfid.BatchRecoveryPlan
 import com.serversherpa.kiosk.core.rfid.BondedDevice
@@ -20,7 +23,10 @@ import com.serversherpa.kiosk.core.rfid.SledConnectException
 import com.serversherpa.kiosk.core.rfid.SledConnectRequest
 import com.serversherpa.kiosk.core.rfid.SledFix
 import com.serversherpa.kiosk.core.rfid.SledInfo
+import com.serversherpa.kiosk.core.rfid.SledKey
 import com.serversherpa.kiosk.core.rfid.SledNotConnected
+import com.serversherpa.kiosk.core.rfid.SledScannerFault
+import com.serversherpa.kiosk.core.rfid.SledScannerState
 import com.serversherpa.kiosk.core.rfid.SledTriggerLayout
 import com.serversherpa.kiosk.core.rfid.SledWords
 import com.serversherpa.kiosk.core.rfid.TeardownPlan
@@ -30,6 +36,7 @@ import com.serversherpa.kiosk.core.rfid.VendorError
 import com.serversherpa.kiosk.core.rfid.batchRecoveryPlan
 import com.serversherpa.kiosk.core.rfid.decodeKeyLayout
 import com.serversherpa.kiosk.core.rfid.powerTable
+import com.serversherpa.kiosk.core.rfid.readbackOf
 import com.serversherpa.kiosk.core.rfid.runSettingSteps
 import com.serversherpa.kiosk.core.rfid.teardownPlan
 import com.zebra.rfid.api3.OperationFailureException
@@ -38,6 +45,7 @@ import com.zebra.rfid.api3.RFIDResults
 import java.util.logging.Level
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -66,6 +74,7 @@ import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowLog
 
@@ -95,9 +104,13 @@ class ZebraRfidReaderTest {
      * failed-connect cleanup to close), and only the adapter dropping its
      * references clears it, never the close itself. [lastOpenWasBatchSeen]
      * records, per open, whether the open before it was a batch result.
+     * [scannerRig], when set before first use, supplies the scanner engine
+     * (a real engine over a fake scanner SDK).
      */
-    private class SeamReader(context: Context, scope: CoroutineScope) : ZebraRfidReader(context, scope) {
+    private class SeamReader(context: Context, scope: CoroutineScope, zebraHost: Boolean = false) :
+        ZebraRfidReader(context, scope, zebraHost) {
         val events = CopyOnWriteArrayList<String>()
+        @Volatile var scannerRig: ZebraBarcodeEngineTest.Rig? = null
         val plans = CopyOnWriteArrayList<TeardownPlan>()
         val lastOpenWasBatchSeen = CopyOnWriteArrayList<Boolean>()
 
@@ -150,6 +163,8 @@ class ZebraRfidReaderTest {
         }
 
         override fun nowMs(): Long = clock?.invoke() ?: super.nowMs()
+
+        override fun buildScannerEngine(): ZebraBarcodeEngine = scannerRig?.engine ?: super.buildScannerEngine()
     }
 
     private fun seamReader(scope: CoroutineScope) =
@@ -1322,6 +1337,190 @@ class ZebraRfidReaderTest {
             pulls.map { it.event },
         )
         assertTrue("every pull is stamped on receipt: $pulls", pulls.all { it.atMs != null && it.atMs!! in before..after })
+    }
+
+    // ── the sled's scanner session (connect step 12) ──
+    //
+    // The engine is real; only its scanner SDK is fake (ZebraBarcodeEngineTest.Rig).
+    // By default the engine's worker is the calling thread, so the session is
+    // settled by the time the reader call returns.
+
+    private val barcodeRequest = SledConnectRequest(null, SledTriggerLayout.BARCODE)
+
+    private fun scannerReader(
+        scope: CoroutineScope,
+        zebraHost: Boolean = false,
+        rig: ZebraBarcodeEngineTest.Rig = ZebraBarcodeEngineTest.Rig(),
+    ) = SeamReader(ApplicationProvider.getApplicationContext(), scope, zebraHost).apply { scannerRig = rig }
+
+    private val SeamReader.scannerCalls: List<String> get() = scannerRig!!.sdk.calls.toList()
+
+    @Test fun theScannerStaysOffOnAZebraHost() = runTest {
+        val r = scannerReader(backgroundScope, zebraHost = true)
+
+        assertTrue(r.connect(barcodeRequest).isSuccess)
+
+        assertEquals(RfidConnection.Connected("RFD4031", null), r.connection.value)
+        assertEquals(SledScannerState.Off, r.scanner.value)
+        assertTrue(r.scannerCalls.isEmpty())
+        assertEquals("the scanner SDK is never built", 0, r.scannerRig!!.sdkBuilds.get())
+    }
+
+    @Test fun theScannerOpensOnlyWhenTheLayoutInForceUsesIt() = runTest {
+        val rfid = scannerReader(backgroundScope)
+        assertTrue(rfid.connect(request).isSuccess)
+        assertEquals("RFID opens nothing", SledScannerState.Off, rfid.scanner.value)
+        assertTrue(rfid.scannerCalls.isEmpty())
+
+        for (layout in listOf(SledTriggerLayout.BARCODE, SledTriggerLayout.SPLIT)) {
+            val r = scannerReader(backgroundScope)
+            assertTrue(r.connect(SledConnectRequest(null, layout)).isSuccess)
+            assertEquals("$layout", SledScannerState.Ready, r.scanner.value)
+            assertEquals(ZebraBarcodeEngineTest.OPEN_CALLS, r.scannerCalls)
+        }
+
+        // The sled read back RFID on both triggers: the read-back is the layout in force.
+        val readBackRfid = scannerReader(backgroundScope)
+        readBackRfid.onOpen = { sled, g ->
+            VendorOpen.Up(SledInfo(g, sled.name, sled.address, trigger = readbackOf(SledKey.RFID, SledKey.RFID, 4)))
+        }
+        assertTrue(readBackRfid.connect(barcodeRequest).isSuccess)
+        assertEquals(SledScannerState.Off, readBackRfid.scanner.value)
+        assertTrue(readBackRfid.scannerCalls.isEmpty())
+
+        // The sled read back Barcode although RFID was asked for: the scanner opens.
+        val readBackBarcode = scannerReader(backgroundScope)
+        readBackBarcode.onOpen = { sled, g ->
+            VendorOpen.Up(SledInfo(g, sled.name, sled.address, trigger = readbackOf(SledKey.SLED_SCAN, SledKey.SLED_SCAN, 10)))
+        }
+        assertTrue(readBackBarcode.connect(request).isSuccess)
+        assertEquals(SledScannerState.Ready, readBackBarcode.scanner.value)
+
+        val noScanner = scannerReader(backgroundScope)
+        noScanner.onOpen = { sled, g -> VendorOpen.Up(SledInfo(g, sled.name, sled.address, hasScanner = false)) }
+        assertTrue(noScanner.connect(barcodeRequest).isSuccess)
+        assertEquals("a sled known to have no scanner", SledScannerState.Off, noScanner.scanner.value)
+        assertTrue(noScanner.scannerCalls.isEmpty())
+
+        val noRegion = scannerReader(backgroundScope)
+        noRegion.onOpen = { sled, g -> VendorOpen.NoRegion(SledInfo(g, sled.name, sled.address)) }
+        assertTrue(noRegion.connect(barcodeRequest).isSuccess)
+        assertEquals("NeedsRegion is not Connected", SledScannerState.Off, noRegion.scanner.value)
+        assertTrue(noRegion.scannerCalls.isEmpty())
+    }
+
+    @Test fun aLinkLossTurnsTheScannerOffAtOnce() = runTest {
+        val r = scannerReader(backgroundScope)
+        assertTrue(r.connect(barcodeRequest).isSuccess)
+        assertEquals(SledScannerState.Ready, r.scanner.value)
+
+        r.onLinkLost(r.currentGeneration)
+
+        assertEquals(SledScannerState.Off, r.scanner.value)
+        assertEquals(ZebraBarcodeEngineTest.OPEN_CALLS + ZebraBarcodeEngineTest.CLOSE_CALLS, r.scannerCalls)
+
+        // The next link opens it again; a loss for the old generation changes nothing.
+        assertTrue(r.connect(barcodeRequest).isSuccess)
+        assertEquals(SledScannerState.Ready, r.scanner.value)
+        r.onLinkLost(r.currentGeneration - 1)
+        assertEquals(SledScannerState.Ready, r.scanner.value)
+    }
+
+    @Test fun aNewAttemptAndADisconnectTurnTheScannerOffFirst() = runTest {
+        val r = scannerReader(backgroundScope)
+        assertTrue(r.connect(barcodeRequest).isSuccess)
+        assertEquals(SledScannerState.Ready, r.scanner.value)
+        var scannerAtOpen: SledScannerState? = null
+        r.onOpen = { sled, g ->
+            scannerAtOpen = r.scanner.value
+            VendorOpen.Up(SledInfo(g, sled.name, sled.address))
+        }
+
+        assertTrue(r.connect(barcodeRequest).isSuccess)
+
+        assertEquals("a new attempt closes the old session before it dials", SledScannerState.Off, scannerAtOpen)
+        assertEquals(SledScannerState.Ready, r.scanner.value)
+
+        r.disconnect()
+
+        assertEquals(SledScannerState.Off, r.scanner.value)
+        assertEquals(ZebraBarcodeEngineTest.CLOSE_CALLS, r.scannerCalls.takeLast(2))
+    }
+
+    @Test fun softScanFailsUnlessReady() = runTest {
+        val r = scannerReader(backgroundScope)
+        assertTrue("not connected", r.softScan(pull = true).exceptionOrNull() is SledNotConnected)
+
+        assertTrue(r.connect(request).isSuccess)
+        assertTrue("the RFID layout opens no scanner", r.softScan(pull = true).exceptionOrNull() is SledNotConnected)
+
+        assertTrue(r.connect(barcodeRequest).isSuccess)
+        assertEquals(SledScannerState.Ready, r.scanner.value)
+        assertTrue(r.softScan(pull = true).isSuccess)
+        assertTrue(r.softScan(pull = false).isSuccess)
+
+        r.disconnect()
+        assertTrue(r.softScan(pull = true).exceptionOrNull() is SledNotConnected)
+        assertEquals(listOf("pull 10", "release 10"), r.scannerCalls.filter { it.startsWith("pull") || it.startsWith("release") })
+    }
+
+    @Test fun retryScannerFailsAtOnceWhenStoppedResponding() = runTest {
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            val rig = ZebraBarcodeEngineTest.Rig(worker)
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            rig.sdk.beforeEstablished = {
+                entered.countDown()
+                release.awaitBriefly()
+            }
+            val r = scannerReader(backgroundScope, rig = rig)
+            assertTrue("not connected", r.retryScanner().exceptionOrNull() is SledNotConnected)
+
+            assertTrue(r.connect(barcodeRequest).isSuccess)
+            assertTrue("the open runs on the scanner worker, off the connect path", withContext(Dispatchers.IO) { entered.awaitBriefly() })
+            rig.timers.live(ZebraBarcodeEngine.ESTABLISH_WATCHDOG_MS).single().fire()
+            assertEquals(SledScannerState.Unavailable(SledScannerFault.STOPPED_RESPONDING), r.scanner.value)
+            val callsBefore = r.scannerCalls
+
+            val stuck = r.retryScanner()
+
+            assertEquals(SledWords.SCANNER_STOPPED_RESPONDING, stuck.exceptionOrNull()?.message)
+            assertEquals("no vendor call", callsBefore, r.scannerCalls)
+
+            release.countDown()
+            realWait { r.scanner.first { it == SledScannerState.Ready } }
+            rig.sdk.calls.clear()
+
+            assertTrue("Try again while Ready", r.retryScanner().isSuccess)
+            withContext(Dispatchers.IO) { worker.submit {}.get(5, TimeUnit.SECONDS) }
+            assertEquals(
+                ZebraBarcodeEngineTest.CLOSE_CALLS + listOf("mode DISABLED", "mode BT_NORMAL", "establish 10"),
+                r.scannerCalls,
+            )
+            assertEquals(SledScannerState.Ready, r.scanner.value)
+        } finally {
+            worker.shutdown()
+        }
+    }
+
+    @Test fun theAdaptersBluetoothReceiverClosesTheScannerWhenBluetoothTurnsOff() = runTest {
+        val r = scannerReader(backgroundScope)
+        assertTrue(r.connect(barcodeRequest).isSuccess)
+        assertEquals(SledScannerState.Ready, r.scanner.value)
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        context.sendBroadcast(Intent(BluetoothAdapter.ACTION_STATE_CHANGED).putExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.STATE_ON))
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("Bluetooth turning on changes nothing", SledScannerState.Ready, r.scanner.value)
+
+        context.sendBroadcast(
+            Intent(BluetoothAdapter.ACTION_STATE_CHANGED).putExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.STATE_TURNING_OFF),
+        )
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(SledScannerState.Off, r.scanner.value)
+        assertEquals(ZebraBarcodeEngineTest.OPEN_CALLS + ZebraBarcodeEngineTest.CLOSE_CALLS, r.scannerCalls)
     }
 
     // ── connect notes ──

@@ -3,9 +3,13 @@ package com.serversherpa.kiosk.input.rfid
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.util.Log
 import android.view.InputDevice
+import androidx.core.content.ContextCompat
 import com.serversherpa.kiosk.core.rfid.AttributeRead
 import com.serversherpa.kiosk.core.rfid.BatchRecoveryPlan
 import com.serversherpa.kiosk.core.rfid.BondedDevice
@@ -24,6 +28,7 @@ import com.serversherpa.kiosk.core.rfid.RfidSession
 import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.SLED_BEST_STEP_DEADLINE_MS
 import com.serversherpa.kiosk.core.rfid.SettingStep
+import com.serversherpa.kiosk.core.rfid.SledBarcode
 import com.serversherpa.kiosk.core.rfid.SledBeeper
 import com.serversherpa.kiosk.core.rfid.SledCandidate
 import com.serversherpa.kiosk.core.rfid.SledConnectException
@@ -32,6 +37,7 @@ import com.serversherpa.kiosk.core.rfid.SledFix
 import com.serversherpa.kiosk.core.rfid.SledInfo
 import com.serversherpa.kiosk.core.rfid.SledKey
 import com.serversherpa.kiosk.core.rfid.SledNotConnected
+import com.serversherpa.kiosk.core.rfid.SledScannerState
 import com.serversherpa.kiosk.core.rfid.SledTriggerLayout
 import com.serversherpa.kiosk.core.rfid.SledTriggerReadback
 import com.serversherpa.kiosk.core.rfid.SledWords
@@ -44,6 +50,7 @@ import com.serversherpa.kiosk.core.rfid.bestStepDue
 import com.serversherpa.kiosk.core.rfid.classifyResult
 import com.serversherpa.kiosk.core.rfid.connectFailure
 import com.serversherpa.kiosk.core.rfid.effectiveLayout
+import com.serversherpa.kiosk.core.rfid.layoutInForceUsesScanner
 import com.serversherpa.kiosk.core.rfid.message
 import com.serversherpa.kiosk.core.rfid.pairedSledsOf
 import com.serversherpa.kiosk.core.rfid.performOutcome
@@ -53,6 +60,7 @@ import com.serversherpa.kiosk.core.rfid.precheck as decidePrecheck
 import com.serversherpa.kiosk.core.rfid.regionArgs
 import com.serversherpa.kiosk.core.rfid.runLayoutWrite
 import com.serversherpa.kiosk.core.rfid.runSettingSteps
+import com.serversherpa.kiosk.core.rfid.scannerWanted
 import com.serversherpa.kiosk.core.rfid.sentence
 import com.serversherpa.kiosk.core.rfid.stopSettled
 import com.serversherpa.kiosk.core.rfid.teardownPlan
@@ -163,6 +171,15 @@ sealed interface VendorOpen {
  * [zebraHost] says whether the phone is a Zebra handheld (`isZebraHost`):
  * there the sled always gets the RFID layout (`effectiveLayout`, used by
  * every trigger layout write) and no scanner session.
+ *
+ * **The scanner session** (connect step 12) is [ZebraBarcodeEngine]'s, on its
+ * own worker. The adapter asks it for the session `scannerWanted` calls for
+ * (ruling 7: `Connected`, the layout in force uses the scanner, not a Zebra
+ * host, a sled not known to lack one) after a connect comes up and after each
+ * [setTriggerLayout], and for none at the start of each attempt, on a
+ * disconnect and on a link loss, so [scanner] is `Off` whenever the link is
+ * not `Connected`. It never waits for the session. The adapter's own
+ * Bluetooth receiver closes the session when Bluetooth turns off.
  */
 open class ZebraRfidReader(
     private val context: Context,
@@ -193,6 +210,29 @@ open class ZebraRfidReader(
 
     /** What [setVendorLogging] last set; the vendor's logger is process-wide, so this is too. */
     override val vendorLogging: StateFlow<Boolean> = vendorLoggingState.asStateFlow()
+
+    /**
+     * The sled's scanner session, built on first use by [buildScannerEngine]
+     * and never from the constructor, where a test subclass's override would
+     * run before its own fields exist (preflight ruling 2). The adapter's
+     * Bluetooth receiver is registered with it, for the adapter's life.
+     */
+    private val scannerEngine: ZebraBarcodeEngine by lazy {
+        buildScannerEngine().also { registerBluetoothReceiver(it) }
+    }
+
+    /** `Off` whenever the link is not `Connected`; otherwise the engine's `Opening`, `Ready` or `Unavailable`. */
+    final override val scanner: StateFlow<SledScannerState> get() = scannerEngine.state
+
+    /** Barcodes from the sled's scanner, emitted only while [scanner] is `Ready`. */
+    final override val barcodes: SharedFlow<SledBarcode> get() = scannerEngine.barcodes
+
+    /**
+     * The layout the last connect request or [setTriggerLayout] asked for.
+     * While no read-back was accepted, the layout in force is its
+     * `effectiveLayout` (ruling 27), and the scanner session follows it.
+     */
+    @Volatile private var requestedLayout: SledTriggerLayout = SledTriggerLayout.RFID
 
     /** The one thread every vendor block runs on; never interrupted. */
     private val worker: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
@@ -312,6 +352,9 @@ open class ZebraRfidReader(
 
         /** What [setVendorLogging] last set, for the whole process: the vendor's logger is one static object. */
         private val vendorLoggingState = MutableStateFlow(false)
+
+        /** The sled the scanner session is closed for: none in particular. */
+        private val NO_SLED = SledIdentity(name = null, address = null, serial = null)
     }
 
     // ── connect and disconnect ──
@@ -334,6 +377,9 @@ open class ZebraRfidReader(
     final override suspend fun connect(request: SledConnectRequest): Result<Unit> {
         val generation = synchronized(stateLock) {
             val next = generations.incrementAndGet()
+            requestedLayout = request.layout
+            // Off before Connecting shows: the scanner is Off whenever the link is not Connected.
+            scannerEngine.want(next, open = false, target = NO_SLED)
             _connectNote.value = null
             _info.value = null
             _connection.update { RfidConnection.Connecting }
@@ -342,10 +388,15 @@ open class ZebraRfidReader(
         return onWorker { connectOnWorker(request, generation) }
     }
 
-    /** Bumps the generation and publishes `Disconnected` (clearing [info]) first, then tears down on the worker. Idempotent; never throws. */
+    /**
+     * Bumps the generation and publishes `Disconnected` (clearing [info]) first,
+     * with the scanner session's terminate queued (teardown step 1, not waited
+     * for), then tears down on the worker. Idempotent; never throws.
+     */
     final override suspend fun disconnect() {
         synchronized(stateLock) {
-            generations.incrementAndGet()
+            val next = generations.incrementAndGet()
+            scannerEngine.want(next, open = false, target = NO_SLED)
             _info.value = null
             _connection.update { RfidConnection.Disconnected }
         }
@@ -436,6 +487,8 @@ open class ZebraRfidReader(
                     _connection.update {
                         if (needsRegion) RfidConnection.NeedsRegion(info.name) else RfidConnection.Connected(info.name, lastBatteryPct)
                     }
+                    // Step 12: queued on the scanner worker; the connect does not wait for it.
+                    syncScannerLocked()
                     Publish.DONE
                 }
             }
@@ -620,14 +673,24 @@ open class ZebraRfidReader(
     }
 
     /** The pre-check (spec, Pre-check): Bluetooth, Nearby devices and the bonded list, before any vendor object. */
-    protected open fun precheck(savedAddress: String?): Precheck {
-        val bluetoothOn = try {
-            bluetoothAdapter()?.isEnabled == true
-        } catch (e: RuntimeException) {
-            Log.w(TAG, "Reading whether Bluetooth is on threw; treating it as off.", e)
-            false
-        }
-        return decidePrecheck(bluetoothOn, RfidPermissions.nearbyGranted(context), bondedDevices(), savedAddress)
+    protected open fun precheck(savedAddress: String?): Precheck =
+        decidePrecheck(bluetoothOn(), RfidPermissions.nearbyGranted(context), bondedDevices(), savedAddress)
+
+    /**
+     * The scanner engine seam. Internal, not protected, because the engine's
+     * types are internal (preflight ruling 2). The real engine runs the
+     * vendor's scanner SDK on its own worker; [scannerEngine] calls this once,
+     * on first use.
+     */
+    internal open fun buildScannerEngine(): ZebraBarcodeEngine =
+        vendorScannerEngine(context.applicationContext ?: context, ::bluetoothOn)
+
+    /** Whether Bluetooth is on; off when it cannot be read. The pre-check and the scanner engine both ask. */
+    private fun bluetoothOn(): Boolean = try {
+        bluetoothAdapter()?.isEnabled == true
+    } catch (e: RuntimeException) {
+        Log.w(TAG, "Reading whether Bluetooth is on threw; treating it as off.", e)
+        false
     }
 
     /**
@@ -1011,6 +1074,8 @@ open class ZebraRfidReader(
                 Log.i(TAG, "A loss for generation $generation (now $currentGeneration) changes nothing.")
                 return
             }
+            // Off at once, before the failure shows; terminate and the mode reset are queued.
+            scannerEngine.linkLost(generation)
             val name = _info.value?.name ?: linkName
             _connection.update { state ->
                 when (state) {
@@ -1445,9 +1510,18 @@ open class ZebraRfidReader(
      * reads back. `Accepted` updates `info.trigger`; a read-back that could
      * not be accepted sets it null and fails; link trouble counts toward
      * marking the link lost, leaves `info.trigger` as it was and fails. Both
-     * failures are [SledWords.TRIGGER_CHECK_FAILED]. Never saved.
+     * failures are [SledWords.TRIGGER_CHECK_FAILED]. Never saved. Afterward,
+     * whatever the outcome, the scanner session is opened or closed to match
+     * the layout in force, without waiting for it.
      */
     final override suspend fun setTriggerLayout(layout: SledTriggerLayout): Result<SledTriggerReadback> = onWorker {
+        requestedLayout = layout
+        val result = writeLayoutBlock(layout)
+        synchronized(stateLock) { syncScannerLocked() }
+        result
+    }
+
+    private fun writeLayoutBlock(layout: SledTriggerLayout): Result<SledTriggerReadback> =
         linkBlock("trigger layout", sentence = SledWords.TRIGGER_CHECK_FAILED) { rfid, generation ->
             val known = _info.value
             when (val outcome = writeTriggerLayout(rfid, layout, known?.model ?: known?.name, known?.hasScanner)) {
@@ -1467,7 +1541,6 @@ open class ZebraRfidReader(
                 }
             }
         }
-    }
 
     private fun updateTrigger(generation: Int, readback: SledTriggerReadback?) {
         synchronized(stateLock) {
@@ -1597,6 +1670,73 @@ open class ZebraRfidReader(
             Log.i(TAG, "Vendor logging ${if (on) "on" else "off"}.")
         } catch (t: Throwable) {
             Log.w(TAG, "Turning vendor logging ${if (on) "on" else "off"} threw; it is as it was.", t)
+        }
+    }
+
+    // ── the scanner session ──
+
+    /**
+     * The sled's Scan button: a trigger pull or release on the scanner's
+     * worker. Fails with [SledNotConnected] unless [scanner] is `Ready`; a
+     * failed pull makes it `Unavailable(DID_NOT_START)`.
+     */
+    final override suspend fun softScan(pull: Boolean): Result<Unit> = scannerEngine.softScan(pull)
+
+    /**
+     * The Try again button: terminate, then establish once more, queued on
+     * the scanner's worker; returns without waiting for it. Needs `Connected`
+     * and a layout in force that uses the scanner (otherwise
+     * [SledNotConnected]); fails at once while the scanner stopped responding.
+     */
+    final override suspend fun retryScanner(): Result<Unit> {
+        val generation = synchronized(stateLock) {
+            if (_connection.value !is RfidConnection.Connected) return Result.failure(SledNotConnected())
+            currentGeneration
+        }
+        return scannerEngine.retry(generation)
+    }
+
+    /**
+     * Asks the scanner engine for the session `scannerWanted` calls for now
+     * (ruling 7), for the current generation. Called under [stateLock], so a
+     * loss or a newer call cannot land between reading the state and asking.
+     */
+    private fun syncScannerLocked() {
+        val info = _info.value
+        val usesScanner = layoutInForceUsesScanner(info?.trigger, requestedLayout, zebraHost, info?.hasScanner)
+        val wanted = scannerWanted(_connection.value is RfidConnection.Connected, usesScanner, zebraHost, info?.hasScanner)
+        scannerEngine.want(currentGeneration, wanted, SledIdentity(info?.name, info?.address, info?.serial))
+    }
+
+    /**
+     * The adapter's own Bluetooth receiver, for the adapter's life: Bluetooth
+     * turning off (or off) closes the scanner session at once and drops its
+     * cached id. A receiver that cannot be registered is logged; the link
+     * loss that follows Bluetooth going off still closes the session.
+     */
+    private fun registerBluetoothReceiver(engine: ZebraBarcodeEngine) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                try {
+                    val state = intent?.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+                    if (state == BluetoothAdapter.STATE_TURNING_OFF || state == BluetoothAdapter.STATE_OFF) {
+                        Log.i(TAG, "Bluetooth is turning off (state $state): closing the sled's scanner session.")
+                        engine.bluetoothTurningOff()
+                    }
+                } catch (t: Throwable) {
+                    Log.w(TAG, "The Bluetooth receiver threw; carrying on.", t)
+                }
+            }
+        }
+        try {
+            ContextCompat.registerReceiver(
+                context.applicationContext ?: context,
+                receiver,
+                IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Registering the Bluetooth receiver threw; the scanner closes on the link loss instead.", e)
         }
     }
 
