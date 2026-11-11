@@ -205,3 +205,52 @@ it('Blue/Green never deployed: no snapshot, and it says why', () => {
   expect(within(dialog).queryByRole('checkbox', { name: 'Save a snapshot first' })).toBeNull();
   expect(within(dialog).getByText(/No slot has run a deploy yet/)).toBeTruthy();
 });
+
+const FORCE_HINT = "For an environment Sirdar can't reach. Every step that fails is skipped, the environment is removed "
+  + 'from Sirdar anyway, and the log lists what may be left behind to clean up by hand.';
+
+it('Force delete is off by default; on, it sends force and the button says so', async () => {
+  const { onStarted, dialog } = show();
+  const force = within(dialog).getByRole('checkbox', { name: 'Force delete' }) as HTMLInputElement;
+  expect(force.checked).toBe(false);
+  expect(within(dialog).getByText(FORCE_HINT)).toBeTruthy();
+  expect(within(dialog).queryByRole('button', { name: 'Force delete' })).toBeNull();
+  await userEvent.click(force);
+  const go = within(dialog).getByRole('button', { name: 'Force delete' }) as HTMLButtonElement;
+  expect(go.disabled).toBe(true);                            // the typed name is still needed
+  await userEvent.type(within(dialog).getByLabelText('Type uat to confirm'), 'uat');
+  await userEvent.click(go);
+  await waitFor(() => expect(onStarted).toHaveBeenCalledWith(TEARDOWN));
+  expect(api.startDeployment).toHaveBeenCalledWith('uat', { mode: 'teardown', confirm_name: 'uat', force: true });
+});
+
+it('Force delete hides the snapshot choice and never sends one', async () => {
+  const { dialog } = show(DO_ENV);
+  expect(within(dialog).getByRole('checkbox', { name: 'Save a snapshot first' })).toBeTruthy();
+  await userEvent.click(within(dialog).getByRole('checkbox', { name: 'Force delete' }));
+  expect(within(dialog).queryByRole('checkbox', { name: 'Save a snapshot first' })).toBeNull();
+  await userEvent.type(within(dialog).getByLabelText('Type uat9 to confirm'), 'uat9');
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Force delete' }));
+  expect(api.startDeployment).toHaveBeenCalledWith('uat9', { mode: 'teardown', confirm_name: 'uat9', force: true });
+});
+
+it('a forced production delete keeps the phrase but drops the snapshot line', async () => {
+  const { dialog } = show({ ...PROD_ENV, retiring: true, active_slot: null });
+  await userEvent.click(within(dialog).getByRole('checkbox', { name: 'Force delete' }));
+  expect(within(dialog).queryByText(/A snapshot is always saved first/)).toBeNull();
+  await userEvent.type(within(dialog).getByLabelText('Type prod to confirm'), 'prod');
+  const go = within(dialog).getByRole('button', { name: 'Force delete' }) as HTMLButtonElement;
+  expect(go.disabled).toBe(true);
+  await userEvent.type(within(dialog).getByLabelText('Type delete production prod to confirm'), 'delete production prod');
+  await userEvent.click(go);
+  expect(api.startDeployment).toHaveBeenCalledWith('prod', {
+    mode: 'teardown', confirm_name: 'prod', confirm_production: 'delete production prod', force: true });
+});
+
+it('opened with force, the switch starts on', () => {
+  render(<DeleteEnvironmentModal env={DO_ENV} force onStarted={vi.fn()} onClose={vi.fn()} />);
+  const dialog = screen.getByRole('dialog', { name: 'Delete uat9' });
+  expect((within(dialog).getByRole('checkbox', { name: 'Force delete' }) as HTMLInputElement).checked).toBe(true);
+  expect(within(dialog).queryByRole('checkbox', { name: 'Save a snapshot first' })).toBeNull();
+  expect(within(dialog).getByRole('button', { name: 'Force delete' })).toBeTruthy();
+});

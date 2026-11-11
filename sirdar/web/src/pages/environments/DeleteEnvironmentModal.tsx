@@ -5,7 +5,10 @@
  *  DigitalOcean: removes everything Sirdar built there, after a snapshot
  *  (optional, except for production); production must be retiring and
  *  deactivated, and needs "delete production <name>" typed as well.
- *  LAN Blue/Green: destroys the data VM and both app VMs, after an optional snapshot. */
+ *  LAN Blue/Green: destroys the data VM and both app VMs, after an optional snapshot.
+ *  Force delete (for an environment Sirdar can't reach): every step that fails is
+ *  skipped, the environment goes anyway, and no snapshot is taken. `force` opens
+ *  the dialog with it switched on (a failed Delete's Deployments tab). */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
@@ -19,17 +22,21 @@ import {
 import { DO_RESOURCE_LABEL, hostLabel, onBluegreen, onDo, onVmHost, vmRef, vmStage } from './labels';
 
 /** snapshot: null when the environment doesn't choose; phrase: production's "delete production <name>". */
-type Attempt = { confirm: string; snapshot: boolean | null; phrase: string | null };
+type Attempt = { confirm: string; snapshot: boolean | null; phrase: string | null; force: boolean };
 const NOUN: Record<ManagedRecordRef['kind'], string> = {
   dns_record: 'DNS record', proxy_host: 'Proxy host', certificate: 'Certificate', switchyard_host: 'Switchyard host',
 };
 const line = (r: ManagedRecordRef) => `${NOUN[r.kind]} ${r.name}`;
 
-export default function DeleteEnvironmentModal({ env, onStarted, onClose }: {
-  env: Environment; onStarted: (dep: Deployment) => void; onClose: () => void;
+export const FORCE_HINT = "For an environment Sirdar can't reach. Every step that fails is skipped, the environment is "
+  + 'removed from Sirdar anyway, and the log lists what may be left behind to clean up by hand.';
+
+export default function DeleteEnvironmentModal({ env, force: forceAtStart = false, onStarted, onClose }: {
+  env: Environment; force?: boolean; onStarted: (dep: Deployment) => void; onClose: () => void;
 }) {
   const { can } = useAuth();
   const [confirm, setConfirm] = useState('');
+  const [force, setForce] = useState(forceAtStart);
   const cloud = onDo(env);
   const bluegreen = onBluegreen(env);
   // DigitalOcean and Blue/Green save a snapshot of the shared data first (optional, except for production).
@@ -81,6 +88,7 @@ export default function DeleteEnvironmentModal({ env, onStarted, onClose }: {
         mode: 'teardown', confirm_name: attempt.confirm,
         ...(attempt.snapshot === false ? { snapshot: false } : {}),
         ...(attempt.phrase ? { confirm_production: attempt.phrase } : {}),
+        ...(attempt.force ? { force: true } : {}),
       }));
     } catch (e) {
       if (!hostKey.handle(e, env.target, attempt)) setError(deployErrorText(e, "Couldn't start deleting it."));
@@ -173,7 +181,8 @@ export default function DeleteEnvironmentModal({ env, onStarted, onClose }: {
             {!snapshots && made.length === 0 && claimed.length === 0 && (
               <p className="page-hint">Sirdar manages no DNS records or proxy hosts for it.</p>
             )}
-            {snapshots && (production && deployed ? (
+            {/* Force delete never takes the snapshot: it needs the environment to answer. */}
+            {snapshots && !force && (production && deployed ? (
               <p className="page-hint">A snapshot is always saved first for production.</p>
             ) : deployed ? (
               <div className="sirdar-switch-row">
@@ -185,6 +194,13 @@ export default function DeleteEnvironmentModal({ env, onStarted, onClose }: {
             ) : (
               <p className="page-hint">Nothing was deployed, so there is no snapshot to save.</p>
             ))}
+            <div>
+              <div className="sirdar-switch-row">
+                <Switch checked={force} disabled={busy} onChange={setForce} label="Force delete" />
+                <span aria-hidden="true">Force delete</span>
+              </div>
+              <p className="page-hint">{FORCE_HINT}</p>
+            </div>
             <p className="page-hint">This can't be undone.</p>
             {production && !env.retiring && (
               <p className="form-error">Mark this production environment retiring first (Settings).</p>
@@ -211,10 +227,10 @@ export default function DeleteEnvironmentModal({ env, onStarted, onClose }: {
             <button type="button" className="btn-ghost" disabled={busy} onClick={onClose}>Cancel</button>
             <button type="button" className="btn-solid btn-danger" disabled={!ready}
                     onClick={() => void run({
-                      confirm, snapshot: snapshots && !production && deployed ? snapshot : null,
-                      phrase: production ? phrase : null,
+                      confirm, snapshot: snapshots && !production && deployed && !force ? snapshot : null,
+                      phrase: production ? phrase : null, force,
                     })}>
-              {busy ? 'Starting…' : 'Delete environment'}
+              {busy ? 'Starting…' : force ? 'Force delete' : 'Delete environment'}
             </button>
           </div>
         </div>
