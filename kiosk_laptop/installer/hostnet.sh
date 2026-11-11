@@ -24,6 +24,7 @@
 # bridge adapters (docker0, br-*, veth*, bridge100) and adapters that are
 # down included. The edge's printer guard refuses all of them, so a printer
 # address can never lead back to the laptop.
+# On Linux it also writes "host_os": "linux" (the kiosk page turns the Linux lockdown on with it); macOS's file has no such key.
 # Prints nothing; exits 1 (keeping the old file, which then goes stale) when it
 # can't read or write.
 #
@@ -197,11 +198,13 @@ self_only() {
   '
 }
 
-# to_json STAMP [GATEWAY [SELF]]: "name<TAB>ipv4<TAB>prefix" lines on stdin ->
-# the file's JSON, with a "gateway" key after the interfaces when GATEWAY
-# isn't empty, then "self_addresses" (SELF split on spaces) when SELF is given.
+# to_json STAMP [GATEWAY [SELF [HOST_OS]]]: "name<TAB>ipv4<TAB>prefix" lines on
+# stdin -> the file's JSON, with a "gateway" key after the interfaces when
+# GATEWAY isn't empty, then "self_addresses" (SELF split on spaces) when SELF is
+# given, then "host_os" when HOST_OS isn't empty.
 to_json() {
-  awk -F '\t' -v stamp="$1" -v gw="${2:-}" -v hasself="$([ $# -ge 3 ] && echo 1 || echo 0)" -v selfs="${3:-}" '
+  awk -F '\t' -v stamp="$1" -v gw="${2:-}" -v hasself="$([ $# -ge 3 ] && echo 1 || echo 0)" -v selfs="${3:-}" \
+      -v hostos="${4:-}" '
     function esc(v) { gsub(/\\/, "\\\\", v); gsub(/"/, "\\\"", v); return v }
     { items = items (NR > 1 ? ", " : "") sprintf("{\"name\": \"%s\", \"ipv4\": \"%s\", \"prefix\": %d}", esc($1), $2, $3) }
     END {
@@ -211,10 +214,15 @@ to_json() {
         for (i = 1; i <= n; i++) list = list (list != "" ? ", " : "") sprintf("\"%s\"", esc(ips[i]))
         extra = extra sprintf(", \"self_addresses\": [%s]", list)
       }
+      if (hostos != "") extra = extra sprintf(", \"host_os\": \"%s\"", esc(hostos))
       printf "{\"updated_at\": \"%s\", \"interfaces\": [%s]%s}\n", stamp, items, extra
     }
   '
 }
+
+# host_os: "linux" on Linux, for the kiosk page (only a Linux laptop gets the
+# kiosk lockdown). Nothing elsewhere, so macOS's file stays as it was.
+host_os() { [ "$OS" != Linux ] || printf 'linux'; }
 
 # The gateway parsers read their input to the end instead of exiting at the
 # match: an early exit closes the pipe while the writer may still be writing
@@ -294,7 +302,7 @@ main() {
   raw=$(read_tool) || return 1
   found=$(printf '%s\n' "$raw" | lan_list)
   self=$(printf '%s\n' "$raw" | self_list)
-  write_host_network "$(data_dir)" "$(printf '%s' "$found" | usable_only | to_json "$(utc_now)" "$(gateway)" "$self")"
+  write_host_network "$(data_dir)" "$(printf '%s' "$found" | usable_only | to_json "$(utc_now)" "$(gateway)" "$self" "$(host_os)")"
 }
 
 # The label-printer block is silent here.

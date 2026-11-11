@@ -92,6 +92,17 @@ def read_self_addresses(data_dir) -> frozenset[str]:
         return frozenset()
 
 
+def read_host_os(data_dir) -> str | None:
+    """The laptop's OS as the host helper reports it: "linux" (hostnet.sh
+    writes it on Linux only), else None. Stale or not, since an OS doesn't
+    change. Never raises."""
+    try:
+        value = json.loads((Path(data_dir) / FILE_NAME).read_text()).get("host_os")
+    except Exception:
+        return None
+    return "linux" if value == "linux" else None
+
+
 def read_gateway(data_dir, *, now: datetime | None = None) -> str | None:
     """The default gateway from a fresh host-network.json, or None. Never raises."""
     try:

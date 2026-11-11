@@ -7,7 +7,7 @@ import httpx
 from edge import hostnet
 from edge.app import create_app
 from edge.hostnet import (DynamicHosts, HostInterface, laptop_ip_for, read_host_network,
-                          scan_targets)
+                          read_host_os, scan_targets)
 
 NOW = datetime(2026, 10, 1, 18, 0, 0, tzinfo=timezone.utc)
 
@@ -174,3 +174,23 @@ def test_read_self_addresses(tmp_path):
     assert hostnet.read_self_addresses(tmp_path) == frozenset()
     (tmp_path / hostnet.FILE_NAME).write_text("{")
     assert hostnet.read_self_addresses(tmp_path) == frozenset()
+
+
+def test_read_host_os(tmp_path):
+    f = tmp_path / "host-network.json"
+    assert read_host_os(tmp_path) is None                      # no file
+    f.write_text('{"updated_at": "2020-01-01T00:00:00Z", "interfaces": [], "host_os": "linux"}')
+    assert read_host_os(tmp_path) == "linux"                   # stale still names the OS
+    for bad in ('{"host_os": "Linux"}', '{"host_os": 1}', '{"interfaces": []}', '[]', 'nope'):
+        f.write_text(bad)
+        assert read_host_os(tmp_path) is None
+
+
+async def test_config_js_carries_host_os(settings, cloud):
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    (settings.data_dir / "host-network.json").write_text(
+        json.dumps({"updated_at": "2026-11-11T09:00:00Z", "interfaces": [], "host_os": "linux"}))
+    transport = httpx.ASGITransport(app=create_app(settings))
+    async with httpx.AsyncClient(transport=transport, base_url="http://edge.test") as c:
+        r = await c.get("/config.js", headers={"host": "localhost:8090"})
+    assert '"hostOs": "linux"' in r.text

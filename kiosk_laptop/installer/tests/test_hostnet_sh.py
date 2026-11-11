@@ -799,3 +799,38 @@ def test_interrupted_removal_also_brings_the_kiosk_back(tmp_path):
 def test_no_kiosk_start_without_a_snap_removal(tmp_path):
     _upkeep(tmp_path, snaps=(), extra=_docker_stub(tmp_path))
     assert not [c for c in lp_calls(tmp_path) if c.startswith("docker")]
+
+
+# ── host_os: which OS the laptop runs (Linux only) ────────────────────
+def test_to_json_with_host_os(tmp_path):
+    r = hn(tmp_path, 'to_json 2026-10-01T18:00:00Z 10.10.48.1 "10.10.48.57" linux',
+           stdin="en0\t10.10.48.57\t24\n")
+    data = json.loads(r.stdout)
+    assert list(data) == ["updated_at", "interfaces", "gateway", "self_addresses", "host_os"]
+    assert data["host_os"] == "linux"
+
+
+def test_host_os_is_linux_only(tmp_path):
+    assert hn(tmp_path, "OS=Linux; host_os").stdout == "linux"
+    assert hn(tmp_path, "OS=Darwin; host_os").stdout == ""
+
+
+def test_main_on_linux_writes_host_os(tmp_path):
+    data = tmp_path / "data"; data.mkdir()
+    ipj = tmp_path / "ip.json"; ipj.write_text(IP_JSON)
+    r = hn(tmp_path, f'OS=Linux; ip() {{ [ "$*" = "-j -4 addr" ] && cat "{ipj}"; }}; main; echo rc=$?',
+           env={"KIOSK_DATA_DIR": str(data), "KIOSK_SYSFS_NET": str(fake_sysfs(tmp_path))})
+    assert r.stdout == "rc=0\n", r.stderr
+    assert json.loads((data / "host-network.json").read_text())["host_os"] == "linux"
+    assert _edge_reader().read_host_os(data) == "linux"
+
+
+def test_main_on_macos_writes_no_host_os(tmp_path):
+    data = tmp_path / "data"; data.mkdir()
+    ifc = tmp_path / "ifconfig.txt"; ifc.write_text(IFCONFIG)
+    ports = tmp_path / "ports.txt"; ports.write_text(PORTS)
+    r = hn(tmp_path, f'OS=Darwin; ifconfig() {{ cat "{ifc}"; }}; '
+                     f'networksetup() {{ cat "{ports}"; }}; main; echo rc=$?',
+           env={"KIOSK_DATA_DIR": str(data)})
+    assert r.stdout == "rc=0\n", r.stderr
+    assert "host_os" not in json.loads((data / "host-network.json").read_text())
