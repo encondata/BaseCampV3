@@ -6,7 +6,9 @@ import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.SledCandidate
 import com.serversherpa.kiosk.core.rfid.SledConnectException
 import com.serversherpa.kiosk.core.rfid.SledConnectRequest
+import com.serversherpa.kiosk.core.rfid.SledFix
 import com.serversherpa.kiosk.core.rfid.SledNudge
+import com.serversherpa.kiosk.core.rfid.SledRetry
 import com.serversherpa.kiosk.core.rfid.SledTriggerLayout
 import com.serversherpa.kiosk.core.rfid.SledWords
 import java.util.concurrent.CopyOnWriteArrayList
@@ -233,6 +235,11 @@ class RfidLinkTest {
 
             r.settings.value = r.settings.value.copy(enabled = false); settle()
             assertEquals("the attempt is not cut short", 0, r.fake.disconnectCalls)
+            // A real attempt on a struggling link can outlast the connect wait: the
+            // switch is off, so its timeout raises no failure sentence either.
+            at(currentTime + RfidController.CONNECT_WAIT_MS + 1)
+            assertEquals(RfidConnection.Connecting, r.fake.connection.value)
+            assertNull("no sentence while the switch is off", r.controller.connectionError.value)
             hold.complete(Unit); settle()
 
             assertEquals(RfidConnection.Disconnected, r.fake.connection.value)
@@ -424,5 +431,150 @@ class RfidLinkTest {
 
         assertTrue(r.fake.connection.value is RfidConnection.Connected)
         assertEquals(1, r.fake.connectCalls)
+    }
+
+    /** Stop tapped while a slow try is still dialing: the try runs to its end, and neither
+     *  its connect wait nor its failure leaves a sentence behind (the link is not wanted). */
+    @Test fun stopDuringASlowTryLeavesNoFailureSentence() = runTest {
+        val r = Rig(this)
+        r.controller.start(); settle()
+        r.controller.connectForLifecycle { true }; settle()
+        assertTrue(r.fake.connection.value is RfidConnection.Connected)
+        r.fake.connectResult = retryableFailure()
+        val hold = CompletableDeferred<Unit>()
+        val t0 = currentTime
+        r.fake.dropLink("The sled disconnected."); settle()
+        r.fake.holdNext = hold
+        at(t0 + 2_000)
+        assertEquals("try 1 is dialing", RfidConnection.Connecting, r.fake.connection.value)
+        at(t0 + 2_000 + RfidController.CONNECT_WAIT_MS + 1)
+        assertNull("a schedule shows its loss once, not on a try's timeout", r.controller.connectionError.value)
+
+        r.controller.stopReconnecting(); settle()
+        hold.complete(Unit); settle()
+        assertFalse(r.controller.reconnecting.value)
+        assertNull("nothing left behind once the link is not wanted", r.controller.connectionError.value)
+        at(currentTime + 300_000)
+        assertEquals("nothing tried again", 2, r.fake.connectCalls)
+    }
+
+    /** Leaving the Admin tab mid-write (its scope cancels the caller) only stops the
+     *  waiting: the write, the caller's follow-up and the reconnect a sled with no region
+     *  needs all run on the controller's scope, so it does not stay in NeedsRegion. */
+    @Test fun aRegionSetWhoseCallerIsCancelledStillReconnectsTheSled() = runTest {
+        val r = Rig(this)
+        r.fake.needsRegion = true
+        r.controller.start(); settle()
+        r.controller.connectNow(); settle()
+        assertEquals(RfidConnection.NeedsRegion("Fake RFD40"), r.fake.connection.value)
+
+        val hold = CompletableDeferred<Unit>()
+        r.fake.holdNext = hold
+        var saved = false
+        val caller = backgroundScope.launch { r.controller.setRegion("ETSI", hopping = null) { saved = true } }; settle()
+        caller.cancel(); settle()
+        r.fake.needsRegion = false
+        hold.complete(Unit); settle()
+
+        assertEquals("ETSI" to null, r.fake.lastRegionSet)
+        assertTrue("the caller's follow-up ran", saved)
+        assertEquals(1, r.fake.disconnectCalls)
+        assertEquals(2, r.fake.connectCalls)
+        assertTrue("set up again, not left in NeedsRegion", r.fake.connection.value is RfidConnection.Connected)
+        assertEquals(emptyList<String>(), r.fake.violations)
+    }
+
+    /** Two sleds paired and none chosen: the connect fails with the choose-one sentence and
+     *  does not retry by itself. Choosing one in the chooser dials it. */
+    @Test fun choosingASledAfterTheChooseOneFailureConnectsToIt() = runTest {
+        val r = Rig(this)
+        r.fake.paired = listOf(SledCandidate("RFD4031-A", "AA:BB:CC:00:00:01"), SledCandidate("RFD4031-B", "AA:BB:CC:00:00:02"))
+        r.fake.connectResult = Result.failure(
+            SledConnectException(RfidConnection.Failed(SledWords.SEVERAL_PAIRED, retryable = false, fix = SledFix.CHOOSE_SLED)),
+        )
+        r.controller.start(); settle()
+        r.controller.connectForLifecycle { true }; settle()
+        assertEquals(1, r.fake.connectCalls)
+        assertEquals(SledWords.SEVERAL_PAIRED, (r.fake.connection.value as RfidConnection.Failed).reason)
+
+        r.fake.connectResult = Result.success(Unit)
+        r.settings.value = r.settings.value.copy(readerAddress = "AA:BB:CC:00:00:02"); settle()
+        assertEquals(2, r.fake.connectCalls)
+        assertEquals("AA:BB:CC:00:00:02", r.fake.lastRequest?.address)
+        assertTrue(r.fake.connection.value is RfidConnection.Connected)
+
+        // Any other failure is not waiting for a choice: a new address alone dials nothing.
+        val o = Rig(this)
+        o.fake.connectResult = Result.failure(
+            SledConnectException(RfidConnection.Failed(SledWords.BLUETOOTH_OFF, retryable = false, fix = SledFix.TURN_ON_BLUETOOTH)),
+        )
+        o.controller.start(); settle()
+        o.controller.connectForLifecycle { true }; settle()
+        o.settings.value = o.settings.value.copy(readerAddress = "AA:BB:CC:00:00:02"); settle()
+        assertEquals(1, o.fake.connectCalls)
+    }
+
+    /** Whose connect comes first, a first batch clear, then its immediate try; the try's
+     *  connect is held until the test releases it. */
+    private class BatchThenHeld(private val inner: FakeRfidReader) : RfidReader by inner {
+        val second = CompletableDeferred<Unit>()
+        private var calls = 0
+
+        override suspend fun connect(request: SledConnectRequest): Result<Unit> {
+            calls++
+            if (calls == 1) {
+                inner.connectResult = Result.failure(SledConnectException(RfidConnection.Failed(SledWords.BATCH_CLEARED_RETRYING, retryable = true)))
+                return inner.connect(request).also { inner.connectResult = Result.success(Unit) }
+            }
+            if (calls == 2) inner.holdNext = second
+            return inner.connect(request)
+        }
+    }
+
+    /** The immediate try after a first batch clear first waits, on the reader, for that
+     *  attempt's own cleanup (up to 20 s): it gets the 60 s batch wait, so a slow cleanup
+     *  plus a slow connect does not say the sled couldn't be reached while it still runs. */
+    @Test fun theTryAfterABatchClearGetsTheBatchWait() = runTest {
+        val fake = FakeRfidReader()
+        val reader = BatchThenHeld(fake)
+        val r = Rig(this, fake = fake, reader = reader)
+        r.controller.start(); settle()
+        val t0 = currentTime
+        r.controller.connectForLifecycle { true }; settle()
+        assertEquals("the clear, then its try at once", 2, fake.connectCalls)
+        assertEquals(RfidConnection.Connecting, fake.connection.value)
+
+        at(t0 + RfidController.CONNECT_WAIT_MS + 1)
+        assertNull("30 s is not the limit for this try", r.controller.connectionError.value)
+        at(t0 + RfidController.CONNECT_WAIT_BATCH_MS)
+        assertEquals(SledWords.couldNotReach(null), r.controller.connectionError.value)
+        reader.second.complete(Unit); settle()
+        assertTrue(fake.connection.value is RfidConnection.Connected)
+        assertNull(r.controller.connectionError.value)
+    }
+
+    /** With Location missing and Nearby kept (hardware script step 33) the stored gate is
+     *  closed: a drop starts no schedule whose every try would be skipped, and the line goes
+     *  straight to the failure, with no Stop to offer. */
+    @Test fun aDropWithTheStoredGateClosedStartsNoSchedule() = runTest {
+        val r = Rig(this)
+        var gate = false
+        r.controller.start(); settle()
+        r.controller.connectForLifecycle { gate }; settle()
+        assertEquals("the gate is closed: nothing dials by itself", 0, r.fake.connectCalls)
+        assertTrue("Connect needs only linkWanted", r.controller.connectNow().isSuccess)
+
+        r.fake.dropLink("The sled disconnected."); settle()
+        assertFalse("no schedule to flash", r.controller.reconnecting.value)
+        assertNull(r.controller.retry.value)
+        at(currentTime + 300_000)
+        assertEquals(1, r.fake.connectCalls)
+
+        // With the gate open, the same drop reconnects as before.
+        gate = true
+        assertTrue(r.controller.connectNow().isSuccess)
+        r.fake.dropLink("The sled disconnected."); settle()
+        assertTrue(r.controller.reconnecting.value)
+        assertEquals(SledRetry(afterDrop = true, name = "Fake RFD40", lastReason = "The sled disconnected."), r.controller.retry.value)
     }
 }

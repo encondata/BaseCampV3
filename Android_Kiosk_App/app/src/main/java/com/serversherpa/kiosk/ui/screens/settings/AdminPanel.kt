@@ -82,15 +82,18 @@ fun AdminPanel() {
         settingInNeedsRegion = connection is RfidConnection.NeedsRegion
         scope.launch {
             try {
-                val result = container.rfid.setRegion(code, hopping)
-                result.onSuccess {
-                    regionError = null
-                    regions = container.rfid.loadRegions().getOrNull() ?: regions
+                // The write, the save below and the reconnect after it run on the
+                // controller's scope: leaving the tab only stops this waiting.
+                val result = container.rfid.setRegion(code, hopping) {
                     // The last known code, so this row (and the RFID tab's read-only line)
                     // can say something useful while disconnected. Excluded from
                     // RfidController's ordinary settings-push comparison — see the class
                     // doc there — so writing it here never triggers a full radio push.
                     container.prefs.updateRfid { it.copy(region = code) }
+                }
+                result.onSuccess {
+                    regionError = null
+                    regions = container.rfid.loadRegions().getOrNull() ?: regions
                 }.onFailure { e ->
                     regionError = e.message?.takeIf { it.isNotBlank() } ?: SledWords.REGION_NOT_SET
                     onRefused()
@@ -113,7 +116,7 @@ fun AdminPanel() {
             "RFID region",
             "The regulatory domain the reader transmits in. It must match the country this kiosk is operating in.",
         ) {
-            val choice = regionChoice(regions)
+            val choice = regionChoice(regions, needsRegion = connection is RfidConnection.NeedsRegion)
             Column {
                 // Set on a sled that had no region: the write was taken once the link left
                 // NeedsRegion, and the sled is being set up again until setRegion returns.

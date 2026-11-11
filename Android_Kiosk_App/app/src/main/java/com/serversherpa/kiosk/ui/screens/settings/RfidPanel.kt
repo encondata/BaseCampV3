@@ -206,18 +206,14 @@ fun RfidPanel() {
                 }
             }
         }
-        SettingsRow("Trigger", s.triggerMode.hint) {
-            Segmented(RfidTriggerMode.entries.map { it.wire to it.label }, s.triggerMode.wire) { w ->
-                RfidTriggerMode.fromWire(w)?.let { mode -> save { it.copy(triggerMode = mode) } }
-            }
-        }
+        // Where "Trigger drives" was: right under the RFID reader row, above Trigger.
         // Dimmed (a Zebra host, or a sled with no scanner), the hint says what the triggers do
         // in force, not what the saved option would do: both read tags there.
         val triggersDimmed = container.isZebraHost || info?.hasScanner == false
         val triggersHint = if (triggersDimmed) effectiveLayout(s.triggerLayout, container.isZebraHost, info?.hasScanner).hint else s.triggerLayout.hint
         SettingsRow(SledWords.SLED_TRIGGERS, triggersHint) {
             Column {
-                SledTriggersControl(caption = false)
+                SledTriggersControl(caption = false, saved = s)
                 when {
                     container.isZebraHost -> Text(SledWords.ZEBRA_HOST, color = c.textMute)
                     info?.hasScanner == false -> Text(SledWords.NO_SCANNER, color = c.textMute)
@@ -245,17 +241,22 @@ fun RfidPanel() {
                 }
             }
         }
+        SettingsRow("Trigger", s.triggerMode.hint) {
+            Segmented(RfidTriggerMode.entries.map { it.wire to it.label }, s.triggerMode.wire) { w ->
+                RfidTriggerMode.fromWire(w)?.let { mode -> save { it.copy(triggerMode = mode) } }
+            }
+        }
         SettingsRow("Repeat sweeps", s.repeatPolicy.hint) {
             Segmented(RepeatSweepPolicy.entries.map { it.wire to it.label }, s.repeatPolicy.wire) { w ->
                 RepeatSweepPolicy.fromWire(w)?.let { policy -> save { it.copy(repeatPolicy = policy) } }
             }
         }
-        SettingsRow(SledWords.ROW_SLED_BEEPER, "The reader's own beep on each tag. Off is its quiet setting.") {
+        SettingsRow(SledWords.ROW_SLED_BEEPER, SledWords.HINT_SLED_BEEPER) {
             Segmented(SledBeeper.entries.map { it.wire to it.label }, s.beeper.wire) { w ->
                 SledBeeper.fromWire(w)?.let { beeper -> save { it.copy(beeper = beeper) } }
             }
         }
-        SettingsRow(SledWords.ROW_TRANSMIT_POWER, "How far the reader reaches. Lower it if a sweep is picking up the next rack.") {
+        SettingsRow(SledWords.ROW_TRANSMIT_POWER, SledWords.HINT_TRANSMIT_POWER) {
             // Dragging a Slider fires onValueChange dozens of times a second.
             // Writing every tick straight to the DataStore would hammer the
             // file with writes the operator never asked for, and
@@ -283,12 +284,12 @@ fun RfidPanel() {
                 if (sledMax != null && s.powerDbm > sledMax) Text(SledWords.powerCap(sledMax), color = c.textMute)
             }
         }
-        SettingsRow(SledWords.ROW_SESSION, "A higher setting keeps a tag quiet longer after it answers.") {
+        SettingsRow(SledWords.ROW_SESSION, SledWords.HINT_SESSION) {
             Segmented(RfidSession.entries.map { it.wire to it.label }, s.session.wire) { w ->
                 RfidSession.fromWire(w)?.let { session -> save { it.copy(session = session) } }
             }
         }
-        SettingsRow(SledWords.ROW_TAG_POPULATION, "Roughly how many tags are in front of the reader at once.") {
+        SettingsRow(SledWords.ROW_TAG_POPULATION, SledWords.HINT_TAG_POPULATION) {
             // Same reasoning as transmit power above: local state while dragging,
             // one write and one radio push on release.
             var draft by remember(s.tagPopulation) { mutableFloatStateOf(s.tagPopulation.toFloat()) }
@@ -302,14 +303,14 @@ fun RfidPanel() {
                 )
             }
         }
-        SettingsRow(SledWords.ROW_UNIQUE, "The reader reports a tag once per sweep instead of repeatedly.") {
+        SettingsRow(SledWords.ROW_UNIQUE, SledWords.HINT_UNIQUE) {
             Switch(checked = s.uniqueTagReport, onCheckedChange = { on -> save { it.copy(uniqueTagReport = on) } })
         }
-        SettingsRow(SledWords.ROW_DPO, "Saves battery during a long sweep.") {
+        SettingsRow(SledWords.ROW_DPO, SledWords.HINT_DPO) {
             Switch(checked = s.dpo, onCheckedChange = { on -> save { it.copy(dpo = on) } })
         }
-        SettingsRow("Region", "A compliance setting. It's set on the Admin tab, not here.") {
-            Text(s.region?.let { "The active region is $it." } ?: "The reader's own setting applies.", color = c.textMute)
+        SettingsRow("Region", SledWords.HINT_REGION) {
+            Text(s.region?.let { SledWords.activeRegion(it) } ?: SledWords.READERS_OWN_REGION, color = c.textMute)
         }
         // The setting, the sled's region and which sled it is are not radio defaults.
         MiniButton("Restore defaults", {

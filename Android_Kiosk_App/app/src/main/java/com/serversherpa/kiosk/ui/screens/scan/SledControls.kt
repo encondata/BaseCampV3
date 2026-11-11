@@ -16,11 +16,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -31,13 +33,17 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.rfid.DEFAULT_RFID_SETTINGS
+import com.serversherpa.kiosk.core.rfid.RfidConnection
+import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.SledFix
 import com.serversherpa.kiosk.core.rfid.SledScannerFault
 import com.serversherpa.kiosk.core.rfid.SledScannerState
 import com.serversherpa.kiosk.core.rfid.SledTriggerLayout
 import com.serversherpa.kiosk.core.rfid.SledWords
+import com.serversherpa.kiosk.core.rfid.effectiveLayout
 import com.serversherpa.kiosk.core.rfid.scanSlotLine
 import com.serversherpa.kiosk.core.rfid.sledLine
+import com.serversherpa.kiosk.core.rfid.slotDropDuringVisit
 import com.serversherpa.kiosk.input.rfid.RfidPermissions
 import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.components.Segmented
@@ -52,19 +58,24 @@ import kotlinx.coroutines.launch
  * `updateRfid` (ruling 31). With [caption], the one-word "Sled triggers" sits
  * above it (the scan screens). Dimmed, and deaf to taps, on a Zebra host and
  * for a sled known to have no scanner (rulings 1 and 2): both triggers read
- * tags there whatever the setting says.
+ * tags there whatever the setting says, so the option lit is the layout in
+ * force (RFID), not the saved one. A screen that already collects the saved
+ * settings passes them ([saved], the RFID tab), so its hint and the option
+ * lit always come from the same value; otherwise the control collects them.
  */
 @Composable
-fun SledTriggersControl(caption: Boolean) {
+fun SledTriggersControl(caption: Boolean, saved: RfidSettings? = null) {
     val container = LocalAppContainer.current
     val c = LocalKioskColors.current
     val scope = rememberCoroutineScope()
-    val settings by container.prefs.rfid.collectAsStateWithLifecycle(initialValue = DEFAULT_RFID_SETTINGS)
+    val collected by container.prefs.rfid.collectAsStateWithLifecycle(initialValue = DEFAULT_RFID_SETTINGS)
+    val settings = saved ?: collected
     val info by container.rfid.info.collectAsStateWithLifecycle()
     val enabled = !container.isZebraHost && info?.hasScanner != false
+    val lit = if (enabled) settings.triggerLayout else effectiveLayout(settings.triggerLayout, container.isZebraHost, info?.hasScanner)
     Column {
         if (caption) Text(SledWords.SLED_TRIGGERS, style = MaterialTheme.typography.labelMedium, color = c.textMute)
-        Segmented(SledTriggerLayout.entries.map { it.wire to it.label }, settings.triggerLayout.wire, enabled = enabled) { wire ->
+        Segmented(SledTriggerLayout.entries.map { it.wire to it.label }, lit.wire, enabled = enabled) { wire ->
             SledTriggerLayout.fromWire(wire)?.let { layout ->
                 scope.launch { container.prefs.updateRfid { it.copy(triggerLayout = layout) } }
             }
@@ -129,11 +140,14 @@ internal fun openAppSettings(context: Context) {
  * lays it out. Stop shows while the app is reconnecting, and Try again when
  * the sled's barcode scanner did not start (its sentence says to tap it).
  *
- * Red for a change during this visit, muted for what was already there when
- * the screen opened (the text at first composition, worked out as if the
- * reader were on, since the saved settings arrive a moment later). Shown
- * only while the reader is on, and on Asset Lookup only once the screen is
- * ready ([screenReady]).
+ * Red for what went wrong during this visit, muted for what was already
+ * there when the screen opened ([scanSlotLine]): a connection line turns red
+ * only for a drop this visit saw ([slotDropDuringVisit]), so the tries
+ * opening the screen starts for a sled that was already out of reach stay
+ * muted. The region and scanner sentences are compared with the text at
+ * first composition (worked out as if the reader were on, since the saved
+ * settings arrive a moment later). Shown only while the reader is on, and on
+ * Asset Lookup only once the screen is ready ([screenReady]).
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -149,9 +163,16 @@ fun SledSlot(screenReady: Boolean = true) {
     val scanner by container.rfid.scanner.collectAsStateWithLifecycle()
     val readError by container.rfid.readError.collectAsStateWithLifecycle()
     val permissionMissing = rememberMissingRfidPermissions().value.isNotEmpty()
+    // What the visit has seen: the link up (when it opened or since), and whether a
+    // reconnect after a drop was already running when it opened.
+    val linkIsUp = connection is RfidConnection.Connected || connection is RfidConnection.NeedsRegion
+    var linkWasUp by remember { mutableStateOf(linkIsUp) }
+    LaunchedEffect(linkIsUp) { if (linkIsUp) linkWasUp = true }
+    val dropAtOpen = remember { reconnecting && retry?.afterDrop == true }
+    val dropDuringVisit = slotDropDuringVisit(connection, reconnecting, retry, linkWasUp, dropAtOpen)
     fun slot(textAtOpen: String?) = scanSlotLine(
         sledLine(connection, reconnecting, enabled = true, permissionMissing = permissionMissing, retry = retry),
-        connection, scanner, readError, textAtOpen,
+        connection, scanner, readError, textAtOpen, dropDuringVisit,
     )
     val textAtOpen = remember { slot(null)?.text }
     if (!settings.enabled || !screenReady) return

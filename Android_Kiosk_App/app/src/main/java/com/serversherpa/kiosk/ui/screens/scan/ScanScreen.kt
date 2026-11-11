@@ -111,10 +111,12 @@ fun ScanScreen(nav: NavHostController) {
         // The grey empty-roster line above already says it; the red toast is for a scan that arrived anyway.
         if (ui.error != null && !empty) KioskToast(ui.error, error = true)
         KioskToast(ui.storageError, error = true)
-        // The sled's one line, where the box never moves: nothing while it is connected and
-        // working; red for a change during this visit, muted for what was there at open.
-        SledSlot()
         ScanTools(showTrigger = container.hasDataWedge, onTrigger = { DataWedge.softScan(context, true) })
+        // The sled's one line, under the tool row so a line coming or going (the sled's
+        // scanner starting after a tap on Sled triggers) never moves a control under the
+        // operator's finger, and below the box, which never moves: nothing while the sled is
+        // connected and working; red for a drop during this visit, muted for what was there at open.
+        SledSlot()
         val counts = snapshot.counts
         Text("Queued ${counts.queued} · Sent ${counts.accepted} · Failed ${counts.failed} · No match ${counts.nomatch}", fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, color = c.textMute, modifier = Modifier.padding(top = 8.dp))
         FlowRow(

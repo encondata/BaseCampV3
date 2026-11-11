@@ -577,6 +577,35 @@ class RfidControllerTest {
      * finishes it once the reader answers, queues the tags, disconnects, and
      * is clean for the next connect and trigger.
      */
+    /**
+     * `endBurst`'s cancellation branch, the backstop for the one way left to cancel a stop
+     * in flight: the controller's own scope ending. The claim still runs (the session
+     * closes, so nothing is left looking open) and the tags read so far are queued, as the
+     * caller that owned the stop wanted.
+     */
+    @Test fun theControllersScopeEndingMidStopStillClaimsTheSessionAndQueuesTheTags() = runTest {
+        val inner = FakeRfidReader()
+        val slowStop = SlowStopReader(inner)
+        val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
+        // Its own job, so ending it leaves the test's collector below running.
+        val controllerScope = CoroutineScope(backgroundScope.coroutineContext + SupervisorJob())
+        val controller = RfidController(slowStop, settings, controllerScope) { 0L }
+        val bursts = CopyOnWriteArrayList<List<String>>()
+        backgroundScope.launch { controller.bursts.collect { bursts += it } }
+        controller.start(); controller.arm(); settle()
+        controller.connectNow(); settle()
+
+        inner.emitTrigger(TriggerEvent.PRESSED); settle()
+        slowStop.emitTag("100700"); settle()
+        controller.stopBurst(); settle()
+        assertTrue("stopInventory() is in flight", slowStop.stopStarted.isCompleted)
+        assertTrue("the burst still looks open", controller.session.value != null)
+
+        controllerScope.cancel(); settle()
+        assertNull("the claim ran under cancellation", controller.session.value)
+        assertEquals("the tags read so far are queued", listOf(listOf("100700")), bursts)
+    }
+
     @Test fun aDisconnectWhoseCallerIsCancelledMidStopStillFinishesAndLeavesTheControllerClean() = runTest {
         val inner = FakeRfidReader()
         val slowStop = SlowStopReader(inner)

@@ -42,6 +42,7 @@ class SledWordsTest {
         for (label in rowLabels) add(SledWords.refused(listOf(label)))
         add(SledWords.refused(emptyList()))
         add(SledWords.powerCap(27))
+        add(SledWords.activeRegion("ETSI"))
         add(SledWords.enrollOtherAssetId("Dell R740")); add(SledWords.enrollOtherAssetId(null))
         add(SledWords.enrollOtherSerial("Dell R740")); add(SledWords.enrollOtherSerial(null))
     }

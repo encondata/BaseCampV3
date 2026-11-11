@@ -4,10 +4,12 @@ import android.app.Application
 import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
@@ -27,12 +29,14 @@ import com.serversherpa.kiosk.core.model.KioskAssetRow
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidSettings
+import com.serversherpa.kiosk.core.rfid.SledScannerState
 import com.serversherpa.kiosk.core.rfid.SledWords
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.data.db.toEntity
 import com.serversherpa.kiosk.input.rfid.FakeRfidReader
 import com.serversherpa.kiosk.input.rfid.RfidPermissions
 import com.serversherpa.kiosk.testContainer
+import com.serversherpa.kiosk.waitUntilIdlingMain
 import com.serversherpa.kiosk.ui.theme.KioskTheme
 import com.serversherpa.kiosk.core.scan.displayRfid
 import kotlinx.coroutines.runBlocking
@@ -71,11 +75,11 @@ class ScanScreenTest {
     private fun rig(reader: FakeRfidReader): AppContainer =
         testContainer(reader).also { c -> runBlocking { c.prefs.setRfid(RfidSettings(enabled = true)) } }
 
-    /** The screen on a scrolling page, as KioskShell hosts it. */
+    /** The screen on a scrolling page with the page's 16 dp padding, as KioskShell hosts it. */
     private fun show(c: AppContainer) {
         compose.setContent {
             CompositionLocalProvider(LocalAppContainer provides c) {
-                KioskTheme { Column(Modifier.verticalScroll(rememberScrollState())) { ScanScreen(rememberNavController()) } }
+                KioskTheme { Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp)) { ScanScreen(rememberNavController()) } }
             }
         }
         compose.waitForIdle()
@@ -151,7 +155,8 @@ class ScanScreenTest {
     /** Native graphics: the legacy mode measures text at almost no width, so all three would fit on one line. */
     @Test @GraphicsMode(GraphicsMode.Mode.NATIVE) @Config(qualifiers = "w320dp-h533dp-hdpi") fun theThreeButtonsWrapAt320dp() {
         show(rig(FakeRfidReader()))
-        val width = compose.onRoot().fetchSemanticsNode().size.width
+        // The page's edge: 288 dp of a 320 dp phone, inside the shell's padding.
+        val width = compose.onRoot().fetchSemanticsNode().size.width - with(compose.density) { 16.dp.toPx() }
         // The unclipped extent: the page's scroll clips `boundsInRoot` to the screen, so a
         // button squeezed or pushed past the edge would still pass on it.
         fun node(label: String) = compose.onNodeWithText(label).performScrollTo().assertIsDisplayed().fetchSemanticsNode()
@@ -168,6 +173,27 @@ class ScanScreenTest {
             "Discard failed is not on a second line: ${third.positionInRoot.y} < ${first.positionInRoot.y + first.size.height}",
             third.positionInRoot.y >= first.positionInRoot.y + first.size.height - 1f,
         )
+    }
+
+    /** Tapping Barcode brings up "Starting the sled's barcode scanner…" in the slot; the slot
+     *  sits under the tool row, so the Sled triggers control under the operator's finger stays
+     *  where it was while the line comes and goes. */
+    @Test fun theSledControlsDoNotMoveWhenTheSlotLineAppears() {
+        val reader = FakeRfidReader()
+        reader.setConnection(RfidConnection.Connected("Fake RFD40", 80))
+        show(rig(reader))
+        val both = compose.onNodeWithText("Both").performScrollTo().assertIsDisplayed()
+        val before = both.fetchSemanticsNode().positionInRoot.y
+
+        reader.setScanner(SledScannerState.Opening)
+        waitFor("sled-slot-muted", SledWords.SCANNER_STARTING)
+        assertEquals("the control stays put", before, both.fetchSemanticsNode().positionInRoot.y, 0.5f)
+        val slot = compose.onNodeWithText(SledWords.SCANNER_STARTING).fetchSemanticsNode().positionInRoot.y
+        assertTrue("the slot line is under the tool row", slot > before)
+
+        reader.setScanner(SledScannerState.Ready)
+        compose.waitUntilIdlingMain { compose.onAllNodesWithText(SledWords.SCANNER_STARTING).fetchSemanticsNodes().isEmpty() }
+        assertEquals(before, both.fetchSemanticsNode().positionInRoot.y, 0.5f)
     }
 
     @Test fun theSledControlsShowWhileTheSledIsConnected() {

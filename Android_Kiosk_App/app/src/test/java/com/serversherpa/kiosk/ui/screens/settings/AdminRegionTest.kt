@@ -92,7 +92,9 @@ class AdminRegionTest {
         compose.waitForText("Europe")
 
         compose.onNodeWithText("Europe").performScrollTo().performClick()
-        compose.waitForIdle()
+        // The write runs on the controller's scope, not the tab's (leaving the tab must not
+        // cut it short), so waiting for the screen to idle is not waiting for the write.
+        compose.waitUntilIdlingMain { reader.lastRegionSet != null }
 
         assertEquals("ETSI" to null, reader.lastRegionSet)
     }
@@ -180,6 +182,26 @@ class AdminRegionTest {
         assertEquals(RfidConnection.NeedsRegion("Fake RFD40"), reader.connection.value)
         compose.setAdminPanelContent(c)
         compose.waitForText("Europe")
+    }
+
+    /** A one-region sled with no region set (it reads back "NA") is not region-locked: its one
+     *  region is offered, with the no-region line, and a tap sets it. */
+    @Test fun aOneRegionSledWithNoneSetOffersThatRegion() {
+        val reader = FakeRfidReader()
+        reader.needsRegion = true
+        reader.reportedRegions = RfidRegions(listOf(usa), "NA")
+        val c = testContainer(reader)
+        runBlocking { c.rfid.connectNow() }
+        compose.setAdminPanelContent(c)
+        compose.waitForText("United States")
+        compose.onNodeWithText("No region set on this reader yet.").performScrollTo().assertIsDisplayed()
+        assertEquals(0, compose.onAllNodesWithText("This reader supports only United States (USA).").fetchSemanticsNodes().size)
+
+        reader.needsRegion = false
+        compose.onNodeWithText("United States").performScrollTo().performClick()
+        compose.waitUntilIdlingMain { reader.lastRegionSet != null }
+        assertEquals("USA" to null, reader.lastRegionSet)
+        compose.waitUntilIdlingMain { reader.connection.value is RfidConnection.Connected }
     }
 
     /** After the first region is set the sled has to be set up again: the row says so until

@@ -1,5 +1,6 @@
 package com.serversherpa.kiosk.ui.screens.login
 
+import android.os.SystemClock
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -55,6 +56,7 @@ import com.serversherpa.kiosk.data.station.TIMECLOCK_STATION
 import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.guards.StationIdleReturn
+import com.serversherpa.kiosk.ui.components.LocalSledScanGuard
 import com.serversherpa.kiosk.ui.components.kioskViewModel
 import com.serversherpa.kiosk.ui.screens.timeclock.flow.initialsOf
 import com.serversherpa.kiosk.ui.screens.timeclock.screens.TcArrowLeftIcon
@@ -72,6 +74,7 @@ import kotlinx.coroutines.flow.map
 @Composable
 fun LoginScreen(nav: NavHostController) {
     val container = LocalAppContainer.current
+    val guard = LocalSledScanGuard.current
     val vm = kioskViewModel { LoginViewModel(container.auth, container.api, container.biometric, container.enrollOffer) }
     val pairVm = kioskViewModel { PairViewModel(container.api, container.identity) }
     val ui by vm.state.collectAsStateWithLifecycle()
@@ -97,7 +100,19 @@ fun LoginScreen(nav: NavHostController) {
         actions = LoginActions(
             setEmail = vm::setEmail, setPassword = vm::setPassword, togglePassword = vm::togglePassword,
             submitPassword = { vm.submitPassword(goHome) },
-            setView = vm::setView, setMovePassword = vm::setMovePassword, submitMove = { vm.submitMove(goHome) },
+            setView = vm::setView,
+            // The Move password field goes through the guard like a scan box (ruling 3): a sled
+            // that types the move QR and also sends it through its scanner, whose copy the bus
+            // below signs in with, makes one attempt. A code the scanner already delivered is cleared.
+            setMovePassword = { next ->
+                if (next.length > vm.state.value.movePassword.length) guard.noteTyping(SystemClock.elapsedRealtime())
+                vm.setMovePassword(next)
+            },
+            submitMove = { vm.submitMove(goHome) },
+            submitMoveTyped = {
+                val typed = vm.state.value.movePassword.trim()
+                if (typed.isEmpty() || guard.acceptTyped(typed, SystemClock.elapsedRealtime())) vm.submitMove(goHome) else vm.setMovePassword("")
+            },
             openSettings = { nav.navigate(Routes.settings("this-kiosk")) },
             scanMove = { scanning = true },
             bioSignIn = { vm.signInWithBiometric(prompter, goHome) },
@@ -132,6 +147,7 @@ internal class LoginActions(
     val submitPassword: () -> Unit,
     val setView: (LoginView) -> Unit,
     val setMovePassword: (String) -> Unit,
+    /** The Sign in button. */
     val submitMove: () -> Unit,
     val openSettings: () -> Unit,
     val scanMove: () -> Unit,
@@ -139,6 +155,8 @@ internal class LoginActions(
     val bioSignIn: () -> Unit = {},
     val usePassword: () -> Unit = {},
     val otherAccount: () -> Unit = {},
+    /** Enter in the Move password field: what a sled typing the move QR ends with. */
+    val submitMoveTyped: () -> Unit = submitMove,
 )
 
 /** The artwork's band takes up to this share of the screen's height (a 480x800 Zebra MC2200 is ~533 dp tall). */
@@ -216,7 +234,7 @@ internal fun LoginContent(
                     LoginView.MOVE -> {
                         LoginField(
                             "Move password", ui.movePassword, actions.setMovePassword, tag = "login-move", masked = true, password = true,
-                            invalid = ui.moveError != null, onDone = actions.submitMove,
+                            invalid = ui.moveError != null, onDone = actions.submitMoveTyped,
                             trailing = if (canScan) ({ MoveScanButton(enabled = !ui.moveLoading, onClick = actions.scanMove) }) else null,
                         )
                         ui.moveError?.let { Text(it, color = LoginPalette.ErrorText, fontFamily = Geologica, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp)) }

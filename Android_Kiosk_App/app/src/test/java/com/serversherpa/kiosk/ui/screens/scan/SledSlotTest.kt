@@ -3,6 +3,14 @@ package com.serversherpa.kiosk.ui.screens.scan
 import android.app.Application
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import com.serversherpa.kiosk.NativeFontsSettled
+import com.serversherpa.kiosk.core.rfid.SledConnectException
+import com.serversherpa.kiosk.waitUntilIdlingMain
+import org.junit.rules.RuleChain
+import org.robolectric.annotation.GraphicsMode
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
@@ -37,11 +45,14 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 
-/** The scan-screen slot: one sled line under the scan box, red for a change during the visit. */
+/** The scan-screen slot: one sled line under the scan box, red for a drop during the visit. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w360dp-h800dp")
 class SledSlotTest {
-    @get:Rule val compose = createComposeRule()
+    private val compose = createComposeRule()
+
+    // Waits out a font copy before a native-graphics test (see NativeFontsSettled).
+    @get:Rule val rules: RuleChain = RuleChain.outerRule(NativeFontsSettled()).around(compose)
 
     /** Robolectric grants nothing; with a permission missing every line would be the permission one. */
     @Before fun grant() {
@@ -52,9 +63,12 @@ class SledSlotTest {
     private fun rig(reader: FakeRfidReader, enabled: Boolean = true): AppContainer =
         testContainer(reader).also { c -> runBlocking { c.prefs.setRfid(RfidSettings(enabled = enabled)) } }
 
-    private fun show(c: AppContainer) {
+    /** With [inShellPadding], inside the 16 dp page padding KioskShell gives every screen. */
+    private fun show(c: AppContainer, inShellPadding: Boolean = false) {
         compose.setContent {
-            CompositionLocalProvider(LocalAppContainer provides c) { KioskTheme { Column { SledSlot() } } }
+            CompositionLocalProvider(LocalAppContainer provides c) {
+                KioskTheme { Column(if (inShellPadding) Modifier.padding(SHELL_PAD) else Modifier) { SledSlot() } }
+            }
         }
         compose.waitForIdle()
     }
@@ -84,17 +98,59 @@ class SledSlotTest {
         compose.onNodeWithText(SledWords.CONNECT).assertIsDisplayed()
     }
 
-    @Test @Config(qualifiers = "w320dp-h533dp-hdpi") fun theFixButtonSitsUnderTheSentenceAndFitsAt320dp() {
+    /** Native graphics: the legacy mode measures text at almost no width, so nothing would
+     *  overflow. Inside the shell's page padding, as on a real 320 dp phone: 288 dp to fit in. */
+    @Test @GraphicsMode(GraphicsMode.Mode.NATIVE) @Config(qualifiers = "w320dp-h533dp-hdpi")
+    fun theFixButtonSitsUnderTheSentenceAndFitsAt320dp() {
         val reader = FakeRfidReader()
         reader.setConnection(RfidConnection.Failed(SledWords.BLUETOOTH_OFF, fix = SledFix.TURN_ON_BLUETOOTH))
-        show(rig(reader))
+        show(rig(reader), inShellPadding = true)
         waitFor("sled-slot-muted", SledWords.BLUETOOTH_OFF)
-        val width = compose.onRoot().fetchSemanticsNode().size.width
-        val sentence = compose.onNodeWithText(SledWords.BLUETOOTH_OFF).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
-        val button = compose.onNodeWithText("Turn on Bluetooth").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
-        assertTrue("the button is under the sentence: ${button.top} < ${sentence.bottom}", button.top >= sentence.bottom - 1f)
-        assertTrue("clipped: ${button.right} > $width", button.right <= width + 1f)
-        assertTrue("clipped: ${sentence.right} > $width", sentence.right <= width + 1f)
+        val edge = compose.onRoot().fetchSemanticsNode().size.width - with(compose.density) { SHELL_PAD.toPx() }
+        // The unclipped extent: `boundsInRoot` is clipped to the root, so it could never
+        // report past the edge.
+        val sentence = compose.onNodeWithText(SledWords.BLUETOOTH_OFF).assertIsDisplayed().fetchSemanticsNode()
+        val button = compose.onNodeWithText("Turn on Bluetooth").assertIsDisplayed().fetchSemanticsNode()
+        val sentenceBottom = sentence.positionInRoot.y + sentence.size.height
+        assertTrue("the button is under the sentence: ${button.positionInRoot.y} < $sentenceBottom", button.positionInRoot.y >= sentenceBottom - 1f)
+        for ((label, n) in listOf("button" to button, "sentence" to sentence)) {
+            val right = n.positionInRoot.x + n.size.width
+            assertTrue("the $label is past the page's edge: $right > $edge", right <= edge + 1f)
+            assertTrue("the $label is clipped: ${n.boundsInRoot.width} < ${n.size.width}", n.boundsInRoot.width >= n.size.width - 1f)
+        }
+    }
+
+    /**
+     * Row 14 with the controller running (hardware script step 14): the sled was already out
+     * of reach when the screen opened, a retryable failure with no `info`. Opening the screen
+     * starts the reconnect schedule, which changes the line to "Connecting to the sled…" with
+     * Stop. That is not a drop during the visit: it stays muted, through a failed try and after
+     * the schedule ends.
+     */
+    @Test fun aSledAlreadyOutOfReachStaysMutedThroughTheTriesOpeningTheScreenStarts() {
+        val reader = FakeRfidReader()
+        val unreachable = RfidConnection.Failed(SledWords.couldNotReach("Fake RFD40"), retryable = true, fix = SledFix.CONNECT)
+        reader.connectResult = Result.failure(SledConnectException(unreachable))
+        val c = rig(reader)
+        c.rfid.start()
+        c.rfid.connectForLifecycle { true }
+        compose.waitUntilIdlingMain { reader.connection.value == unreachable && reader.connectCalls == 1 }
+        show(c)
+        waitFor("sled-slot-muted", unreachable.reason)
+        // What SledScreenSignal does once the screen's first frame is in.
+        c.rfid.setSledScreenOpen(true)
+        waitFor("sled-slot-muted", SledWords.connectingTo(null))
+        compose.onNodeWithText(SledWords.STOP).assertIsDisplayed()
+        assertEquals(0, countTag("sled-slot-red"))
+        // Try 1 (2 s on) fails too; the schedule goes on, muted.
+        compose.waitUntilIdlingMain(5_000) { reader.connectCalls == 2 }
+        compose.waitForIdle()
+        assertTrue(c.rfid.reconnecting.value)
+        assertEquals(0, countTag("sled-slot-red"))
+        // The schedule ends (Stop here; giving up leaves the same state): the reason, muted.
+        c.rfid.stopReconnecting()
+        waitFor("sled-slot-muted", unreachable.reason)
+        assertEquals(0, countTag("sled-slot-red"))
     }
 
     /** Granted in Android's Settings and back: the slot reads the permission again on resume. */
@@ -128,5 +184,10 @@ class SledSlotTest {
         compose.waitForIdle()
         assertEquals(0, countTag("sled-slot-red") + countTag("sled-slot-muted"))
         assertEquals(0, compose.onAllNodes(hasText("Turn on Bluetooth")).fetchSemanticsNodes().size)
+    }
+
+    private companion object {
+        /** KioskShell's page padding (KioskShell.kt). */
+        val SHELL_PAD = 16.dp
     }
 }

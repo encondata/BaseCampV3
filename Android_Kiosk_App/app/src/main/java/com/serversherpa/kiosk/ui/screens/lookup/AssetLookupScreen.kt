@@ -146,10 +146,11 @@ fun AssetLookupScreen(@Suppress("UNUSED_PARAMETER") nav: NavController) {
             SolidButton("Search", onClick = { if (ready) vm.lookup() }, enabled = ready, modifier = Modifier.weight(1f))
             MiniButton("Clear", { vm.clear() })
         }
-        // The sled's one line once the screen is ready, and its controls (never the DataWedge
-        // Scan button here: the MC2200's Asset Lookup stays as it was, ruling 44).
-        SledSlot(screenReady = ready)
+        // The sled's controls (never the DataWedge Scan button here: the MC2200's Asset Lookup
+        // stays as it was, ruling 44), then its one line once the screen is ready, under them so
+        // a line coming or going never moves a control under the operator's finger.
         ScanTools(showTrigger = false, onTrigger = {})
+        SledSlot(screenReady = ready)
         if (ui.offline) OfflineLine()
         ui.miss?.let { KioskToast("No asset matches $it.", error = true) }
         KioskToast(ui.error, error = true)

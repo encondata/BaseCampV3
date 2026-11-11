@@ -5,10 +5,12 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -91,11 +93,12 @@ class RfidPanelTest {
     // matches how the panel is actually shown, and performScrollTo() before
     // a click on a row that may be below the fold mirrors what a real
     // operator's swipe would do.
-    private fun ComposeContentTestRule.setRfidPanelContent(c: AppContainer) {
+    // With [inShellPadding], inside the page's 16 dp padding too, as on a real phone.
+    private fun ComposeContentTestRule.setRfidPanelContent(c: AppContainer, inShellPadding: Boolean = false) {
         setContent {
             CompositionLocalProvider(LocalAppContainer provides c) {
                 KioskTheme {
-                    Column(Modifier.verticalScroll(rememberScrollState())) { RfidPanel() }
+                    Column(Modifier.verticalScroll(rememberScrollState()).then(if (inShellPadding) Modifier.padding(16.dp) else Modifier)) { RfidPanel() }
                 }
             }
         }
@@ -530,6 +533,55 @@ class RfidPanelTest {
         compose.onAllNodesWithText(SledWords.NO_SCANNER).assertCountEquals(0)
     }
 
+    /** Dimmed, the option lit is the layout in force (both triggers read tags), not the
+     *  saved one: a kiosk that inherited Barcode (ruling 16) shows RFID lit on the MC2200,
+     *  beside the Zebra-host sentence that says why. */
+    @Test @Config(sdk = [30]) fun aDimmedSledTriggersControlLightsTheLayoutInForce() {
+        ShadowBuild.setManufacturer("Zebra Technologies")
+        val c = testContainer()
+        // The region line says when the tab has the saved settings (the hint here is the layout
+        // in force either way); the control lights from the same value.
+        runBlocking { c.prefs.setRfid(RfidSettings(triggerLayout = SledTriggerLayout.BARCODE, region = "ETSI")) }
+        compose.setRfidPanelContent(c)
+        compose.waitForText(SledWords.ZEBRA_HOST)
+        compose.waitForText(SledWords.activeRegion("ETSI"))
+        compose.onNodeWithText("RFID").performScrollTo().assertIsSelected()
+        compose.onNodeWithText("Barcode").assertIsNotSelected()
+        assertEquals("the saved setting is kept", SledTriggerLayout.BARCODE, saved(c).triggerLayout)
+    }
+
+    /** Not dimmed, the saved option is lit; a sled with no scanner lights RFID. */
+    @Test fun theSledTriggersControlLightsTheSavedOptionUnlessDimmed() {
+        val reader = FakeRfidReader()
+        reader.setConnection(RfidConnection.Connected("Fake RFD40", 80))
+        val c = testContainer(reader)
+        runBlocking { c.prefs.setRfid(RfidSettings(triggerLayout = SledTriggerLayout.SPLIT)) }
+        compose.setRfidPanelContent(c)
+        // The control collects the saved settings on its own, a frame or so after the tab.
+        // The hint and the option lit come from the same value: once one says Both, so does the other.
+        compose.waitForText(SledWords.hint(SledTriggerLayout.SPLIT))
+        compose.onNodeWithText("Both").performScrollTo().assertIsSelected()
+        compose.onNodeWithText("RFID").assertIsNotSelected()
+
+        reader.setInfo(SledInfo(generation = reader.generation, name = "Fake RFD40", hasScanner = false))
+        compose.waitForText(SledWords.NO_SCANNER)
+        compose.waitForIdle()
+        compose.onNodeWithText("RFID").performScrollTo().assertIsSelected()
+        compose.onNodeWithText("Both").assertIsNotSelected()
+    }
+
+    /** The spec puts the Sled triggers row where "Trigger drives" was: right under the
+     *  RFID reader row, above Trigger. */
+    @Test fun sledTriggersSitsAboveTrigger() {
+        val c = testContainer()
+        compose.setRfidPanelContent(c)
+        compose.waitForText(SledWords.SLED_TRIGGERS)
+        val top = { text: String -> compose.onNodeWithText(text).fetchSemanticsNode().positionInRoot.y }
+        assertTrue("RFID reader, then Sled triggers", top("RFID reader") < top(SledWords.SLED_TRIGGERS))
+        assertTrue("Sled triggers, then Trigger", top(SledWords.SLED_TRIGGERS) < top("Trigger"))
+        assertTrue("Trigger, then Repeat sweeps", top("Trigger") < top("Repeat sweeps"))
+    }
+
     @Test fun sledTriggersIsDimmedForASledWithNoScanner() {
         val reader = FakeRfidReader()
         reader.setConnection(RfidConnection.Connected("Fake RFD40", 80))
@@ -764,9 +816,10 @@ class RfidPanelTest {
         reader.setConnection(RfidConnection.Failed(SledWords.BLUETOOTH_OFF, fix = SledFix.TURN_ON_BLUETOOTH))
         val c = testContainer(reader)
         runBlocking { c.prefs.setRfid(RfidSettings(enabled = true)) }
-        compose.setRfidPanelContent(c)
+        compose.setRfidPanelContent(c, inShellPadding = true)
         compose.waitForText("Turn on Bluetooth")
-        val width = compose.onRoot().fetchSemanticsNode().size.width
+        // The page's edge: 288 dp of a 320 dp phone, inside the shell's padding.
+        val width = compose.onRoot().fetchSemanticsNode().size.width - with(compose.density) { 16.dp.toPx() }
         fun fits(text: String, scroll: Boolean = true) {
             val node = compose.onNodeWithText(text)
             if (scroll) node.performScrollTo()
@@ -781,7 +834,7 @@ class RfidPanelTest {
         for (text in listOf(sledA.name, sledB.name, "Turn on Bluetooth")) fits(text)
         // The options' own scroll parent is the control's row, so the page is scrolled to the
         // row below them instead, which leaves the control just above it in view.
-        compose.onNodeWithText("Repeat sweeps").performScrollTo()
+        compose.onNodeWithText("Trigger").performScrollTo()
         for (text in listOf("RFID", "Barcode", "Both")) fits(text, scroll = false)
     }
 }

@@ -57,9 +57,13 @@ data class SlotLine(val text: String, val fix: SledFix?, val offersStop: Boolean
  * reconnect is running), the region ([line] in `NeedsRegion`), the sled's
  * barcode scanner (starting, or one of its two failures), then [readError].
  *
- * The line is red unless its text equals [textAtOpen] (what the slot said
- * when the screen opened), so a state already there at open stays muted and
- * a change during the visit stands out. Starting the scanner is always
+ * Red is for what went wrong during this visit (spec, Screens: a drop during
+ * the visit is red; a state already there at open is muted). A connection
+ * line is red exactly when [dropDuringVisit] says it is the sign of a drop
+ * seen during the visit ([slotDropDuringVisit]); a sled that was already out
+ * of reach stays muted, and so do the tries an open screen starts for it.
+ * The region and scanner lines are red unless their text equals [textAtOpen]
+ * (what the slot said when the screen opened). Starting the scanner is always
  * muted; a read error is always red.
  */
 fun scanSlotLine(
@@ -68,10 +72,13 @@ fun scanSlotLine(
     scanner: SledScannerState,
     readError: String?,
     textAtOpen: String?,
+    dropDuringVisit: Boolean,
 ): SlotLine? {
     fun tone(text: String) = text != textAtOpen
-    val linkUp = connection is RfidConnection.Connected && !line.offersStop
-    if (!linkUp) return SlotLine(line.text, line.fix, line.offersStop, tone(line.text))
+    if (line.offersStop || (connection !is RfidConnection.Connected && connection !is RfidConnection.NeedsRegion)) {
+        return SlotLine(line.text, line.fix, line.offersStop, red = dropDuringVisit)
+    }
+    if (connection is RfidConnection.NeedsRegion) return SlotLine(line.text, line.fix, false, tone(line.text))
     val scannerText = when (scanner) {
         SledScannerState.Opening -> return SlotLine(SledWords.SCANNER_STARTING, null, false, red = false)
         is SledScannerState.Unavailable -> when (scanner.kind) {
@@ -84,4 +91,26 @@ fun scanSlotLine(
     if (scannerText != null) return SlotLine(scannerText, null, false, tone(scannerText))
     if (readError != null) return SlotLine(readError, null, false, red = true)
     return null
+}
+
+/**
+ * Whether the slot's connection line is a drop seen during this visit, so red:
+ * - while reconnecting, only a reconnect after a drop ([retry] `afterDrop`) that this
+ *   visit saw begin: the link was up since the screen opened ([linkWasUp]), or that
+ *   reconnect was not already running when it opened ([dropAtOpen] false);
+ * - a failure, once the link was up since the screen opened (the drop's own reason, or
+ *   the give-up after it);
+ * - never for the app's own doing (`Connecting`, `Disconnected`), nor for a sled that was
+ *   already out of reach at open and the tries the open screen starts for it.
+ */
+fun slotDropDuringVisit(
+    connection: RfidConnection,
+    reconnecting: Boolean,
+    retry: SledRetry?,
+    linkWasUp: Boolean,
+    dropAtOpen: Boolean,
+): Boolean = when {
+    reconnecting -> retry?.afterDrop == true && (linkWasUp || !dropAtOpen)
+    connection is RfidConnection.Failed -> linkWasUp
+    else -> false
 }

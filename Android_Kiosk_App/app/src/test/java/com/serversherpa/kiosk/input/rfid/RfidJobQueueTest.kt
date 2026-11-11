@@ -7,6 +7,7 @@ import com.serversherpa.kiosk.core.rfid.RfidRegions
 import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.SledBarcode
 import com.serversherpa.kiosk.core.rfid.SledConnectRequest
+import com.serversherpa.kiosk.core.rfid.SledInfo
 import com.serversherpa.kiosk.core.rfid.SledKey
 import com.serversherpa.kiosk.core.rfid.SledNotConnected
 import com.serversherpa.kiosk.core.rfid.SledScannerState
@@ -14,6 +15,7 @@ import com.serversherpa.kiosk.core.rfid.SledTriggerLayout
 import com.serversherpa.kiosk.core.rfid.SledTriggerReadback
 import com.serversherpa.kiosk.core.rfid.SledWords
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
+import com.serversherpa.kiosk.core.rfid.keys
 import com.serversherpa.kiosk.core.rfid.readbackOf
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
@@ -22,11 +24,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
@@ -635,25 +639,128 @@ class RfidJobQueueTest {
         assertEquals("a pull that failed is not released", listOf(true, false, true, false, true), r.fake.softScans)
     }
 
-    @Test fun lastActivityMovesOnEveryPullTagAndNote() = runTest {
+    /** Every pull, tag and note is activity, in steps of [RfidController.ACTIVITY_STEP_MS]:
+     *  a sweep's hundreds of tags a second change it about once a second, so the display
+     *  effect does not restart its idle timer on every tag. */
+    @Test fun lastActivityMovesOnEveryPullTagAndNoteAtMostOncePerStep() = runTest {
         var now = 500L
         val fake = FakeRfidReader()
         val controller = RfidController(fake, MutableStateFlow(DEFAULT_RFID_SETTINGS), backgroundScope) { now }
         assertEquals(500L, controller.lastActivityMs.value)
+        val changes = CopyOnWriteArrayList<Long>()
+        backgroundScope.launch { controller.lastActivityMs.collect { changes += it } }
         controller.start(); settle()
 
-        now = 1_000
+        now = 1_500
         fake.emitTrigger(TriggerEvent.PRESSED); settle()
-        assertEquals("a pull, armed or not", 1_000L, controller.lastActivityMs.value)
-        now = 2_000
+        assertEquals("a pull, armed or not", 1_500L, controller.lastActivityMs.value)
+        now = 2_500
         fake.emitTag("100348"); settle()
-        assertEquals("a tag, in a sweep or not", 2_000L, controller.lastActivityMs.value)
-        now = 3_000
+        assertEquals("a tag, in a sweep or not", 2_500L, controller.lastActivityMs.value)
+        for (ms in 2_501L..3_499L step 7) {
+            now = ms
+            fake.emitTag("100348"); settle()
+        }
+        now = 3_499
         controller.noteActivity()
-        assertEquals(3_000L, controller.lastActivityMs.value)
-        now = 4_000
+        assertEquals("within a step of the last stamp: unchanged", 2_500L, controller.lastActivityMs.value)
+        now = 3_500
+        controller.noteActivity()
+        assertEquals(3_500L, controller.lastActivityMs.value)
+        now = 4_500
         fake.emitTrigger(TriggerEvent.RELEASED, atMs = 10L); settle()
-        assertEquals("by the clock, not the pull's stamp", 4_000L, controller.lastActivityMs.value)
+        assertEquals("by the clock, not the pull's stamp", 4_500L, controller.lastActivityMs.value)
+        assertEquals("one change per step, not one per tag", listOf(500L, 1_500L, 2_500L, 3_500L, 4_500L), changes)
+    }
+
+    /**
+     * The Zebra adapter's connect writes the requested layout and reads it back
+     * (connect step 10) before it publishes `Connected`, so a generation whose
+     * read-back already matches gets no layout job. Its layout writes run on a
+     * worker, so one the controller stopped waiting for still finishes.
+     */
+    private class StepTenReader(private val inner: FakeRfidReader, private val worker: CoroutineScope) : RfidReader by inner {
+        private val _info = MutableStateFlow<SledInfo?>(null)
+        private val _connection = MutableStateFlow<RfidConnection>(RfidConnection.Disconnected)
+        override val info: StateFlow<SledInfo?> = _info
+        override val connection: StateFlow<RfidConnection> = _connection
+
+        private fun mirror() {
+            _info.value = inner.info.value
+            _connection.value = inner.connection.value
+        }
+
+        override suspend fun connect(request: SledConnectRequest): Result<Unit> {
+            _info.value = null
+            _connection.value = RfidConnection.Connecting
+            val result = inner.connect(request)
+            if (result.isSuccess) {
+                val (upper, lower) = request.layout.keys()
+                inner.setInfo(inner.info.value!!.copy(trigger = readbackOf(upper, lower, null)))
+            }
+            mirror()
+            return result
+        }
+
+        override suspend fun disconnect() {
+            inner.disconnect()
+            mirror()
+        }
+
+        override suspend fun setTriggerLayout(layout: SledTriggerLayout): Result<SledTriggerReadback> =
+            worker.async { inner.setTriggerLayout(layout).also { _info.value = inner.info.value } }.await()
+
+        fun drop(reason: String) {
+            inner.dropLink(reason)
+            mirror()
+        }
+    }
+
+    /** A failed layout write belongs to its link: after a reconnect whose connect-time
+     *  read-back matches (no layout job), after a write that finished late with an accepted
+     *  read-back, and after a disconnect, the check-failed sentence is gone. */
+    @Test fun aLayoutErrorDoesNotOutliveItsLinkOrALateWriteThatTook() = runTest {
+        val fake = FakeRfidReader()
+        val reader = StepTenReader(fake, backgroundScope)
+        val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
+        val controller = RfidController(reader, settings, backgroundScope) { testScheduler.currentTime }
+        controller.start(); settle()
+        controller.connectForLifecycle { true }; settle()
+        assertTrue(reader.connection.value is RfidConnection.Connected)
+        assertEquals("the read-back matches: no layout job", emptyList<SledTriggerLayout>(), fake.layoutCalls)
+
+        // A write that meets link trouble keeps the read-back and fails.
+        fake.layoutResult = Result.failure(IllegalStateException(SledWords.TRIGGER_CHECK_FAILED))
+        settings.value = settings.value.copy(triggerLayout = SledTriggerLayout.BARCODE); settle()
+        assertEquals(SledWords.TRIGGER_CHECK_FAILED, controller.layoutError.value)
+
+        // The link drops; the reconnect's own step 10 writes Barcode and reads it back.
+        fake.layoutResult = null
+        reader.drop("The sled disconnected.")
+        at(currentTime + 2_000)
+        assertTrue(reader.connection.value is RfidConnection.Connected)
+        assertEquals(SledTriggerLayout.BARCODE, reader.info.value?.trigger?.layout)
+        assertEquals("no job: the reconnect wrote it", listOf(SledTriggerLayout.BARCODE), fake.layoutCalls)
+        assertNull("the new link's read-back stands", controller.layoutError.value)
+
+        // A write past the call wait that finishes later with an accepted read-back.
+        val hold = CompletableDeferred<Unit>()
+        fake.holdNext = hold
+        val t0 = currentTime
+        settings.value = settings.value.copy(triggerLayout = SledTriggerLayout.SPLIT); settle()
+        at(t0 + RfidController.CALL_WAIT_MS)
+        assertEquals(SledWords.TRIGGER_CHECK_FAILED, controller.layoutError.value)
+        hold.complete(Unit); settle()
+        assertEquals(SledTriggerLayout.SPLIT, reader.info.value?.trigger?.layout)
+        assertNull("the late write took", controller.layoutError.value)
+
+        // A failure, then a disconnect.
+        fake.layoutResult = Result.failure(IllegalStateException(SledWords.TRIGGER_CHECK_FAILED))
+        settings.value = settings.value.copy(triggerLayout = SledTriggerLayout.RFID); settle()
+        assertEquals(SledWords.TRIGGER_CHECK_FAILED, controller.layoutError.value)
+        controller.disconnectNow(); settle()
+        assertNull(controller.layoutError.value)
+        assertEquals(emptyList<String>(), fake.violations)
     }
 
     @Test fun retryScannerPassesThrough() = runTest {

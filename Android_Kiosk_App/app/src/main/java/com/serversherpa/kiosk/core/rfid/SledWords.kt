@@ -164,6 +164,22 @@ object SledWords {
     const val ROW_UNIQUE = "Report each tag once"
     const val ROW_DPO = "Dynamic power optimization"
 
+    // ── Settings: the RFID tab's row hints ──
+
+    const val HINT_SLED_BEEPER = "The reader's own beep on each tag. Off is its quiet setting."
+    const val HINT_TRANSMIT_POWER = "How far the reader reaches. Lower it if a sweep is picking up the next rack."
+    const val HINT_SESSION = "A higher setting keeps a tag quiet longer after it answers."
+    const val HINT_TAG_POPULATION = "Roughly how many tags are in front of the reader at once."
+    const val HINT_UNIQUE = "The reader reports a tag once per sweep instead of repeatedly."
+    const val HINT_DPO = "Saves battery during a long sweep."
+    const val HINT_REGION = "A compliance setting. It's set on the Admin tab, not here."
+
+    /** The RFID tab's read-only region line, with the last region an admin set ([code]). */
+    fun activeRegion(code: String): String = "The active region is $code."
+
+    /** The RFID tab's region line when no admin has set one here. */
+    const val READERS_OWN_REGION = "The reader's own setting applies."
+
     /**
      * The settings the sled refused, named by their row [labels] with the first
      * letter lowercased ("a", "a and b", "a, b, and c"). With [othersApplied]

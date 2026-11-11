@@ -8,6 +8,9 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performTextInput
@@ -25,6 +28,7 @@ import com.serversherpa.kiosk.core.rfid.SledBarcode
 import com.serversherpa.kiosk.core.scan.SledScanGuard
 import com.serversherpa.kiosk.core.settings.DEFAULT_APPEARANCE
 import com.serversherpa.kiosk.core.setup.SetupState
+import com.serversherpa.kiosk.data.FakeKioskApi
 import com.serversherpa.kiosk.data.db.toEntity
 import com.serversherpa.kiosk.input.rfid.FakeRfidReader
 import com.serversherpa.kiosk.testContainer
@@ -32,6 +36,7 @@ import com.serversherpa.kiosk.ui.components.LocalSledScanGuard
 import com.serversherpa.kiosk.ui.components.kioskViewModel
 import com.serversherpa.kiosk.ui.screens.enroll.EnrollScreen
 import com.serversherpa.kiosk.ui.screens.enroll.EnrollViewModel
+import com.serversherpa.kiosk.ui.screens.login.LoginScreen
 import com.serversherpa.kiosk.ui.screens.scan.LoadStatus
 import com.serversherpa.kiosk.ui.screens.scan.ScanScreen
 import com.serversherpa.kiosk.ui.screens.timeclock.TimeclockFlowScreen
@@ -56,8 +61,8 @@ import org.robolectric.annotation.Config
 
 /**
  * Spec test 25 on screen (T1, T2): a sled that types a barcode and also sends it through its
- * scanner delivers it once on Scanning, on RFID Enroll and on Time Clock's Welcome, in either
- * order; the same route twice delivers twice. The screens get the container's guard the way
+ * scanner delivers it once on Scanning, on RFID Enroll, on Time Clock's Welcome and Enter Your
+ * Name, and on sign-in's Move password, in either order; the same route twice delivers twice. The screens get the container's guard the way
  * MainActivity provides it, and the sled's copy comes through the container's own collector.
  */
 @OptIn(ExperimentalTestApi::class)
@@ -245,5 +250,71 @@ class SledScanGuardScreenTest {
         flow.performKeyInput { pressKey(Key.Enter) }
         compose.waitForIdle()
         assertNotNull(vm.state.value.shownMessage)
+    }
+
+    // ── Time Clock Enter Your Name: a real text field, and the bus collected too ──
+
+    @Test fun timeClockEnterYourNameGoesThroughTheGuard() {
+        val c = testContainer()
+        val owner = object : ViewModelStoreOwner { override val viewModelStore = ViewModelStore() }
+        lateinit var vm: TimeclockFlowViewModel
+        compose.setContent {
+            CompositionLocalProvider(LocalAppContainer provides c, LocalViewModelStoreOwner provides owner, LocalSledScanGuard provides c.sledScanGuard) {
+                vm = kioskViewModel { TimeclockFlowViewModel(TcMode.STATION, FakeTcBackend(), c.flash, null, flowOf(DEFAULT_APPEARANCE)) }
+                TimeclockFlowScreen(vm)
+            }
+        }
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(100)
+        compose.runOnIdle { vm.enterName() }
+        compose.waitUntilIdlingMain { compose.onAllNodesWithTag("tc-search-text").fetchSemanticsNodes().isNotEmpty() }
+        assertEquals(TcStep.NAME, vm.state.value.step)
+        val field = compose.onNodeWithTag("tc-search-text")
+
+        // The scanner's copy came first (the bus handed it to the view model); then the sled
+        // types the same code into the box and presses Enter.
+        assertTrue(c.sledScanGuard.acceptSession("9989", SystemClock.elapsedRealtime()))
+        field.performTextInput("9989")
+        compose.waitForIdle()
+        // Typing was noted: a session copy arriving now would be held past the settle.
+        val now = SystemClock.elapsedRealtime()
+        assertTrue(c.sledScanGuard.sessionHoldMs(now, now) > SledScanGuard.SETTLE_MS)
+        field.performImeAction()
+        compose.waitForIdle()
+        assertEquals("refused: the box is cleared", "", vm.state.value.query)
+        assertNull("and nothing was searched", vm.state.value.shownMessage)
+
+        // A code only typed is searched as before.
+        field.performTextInput("9988")
+        field.performImeAction()
+        compose.waitForIdle()
+        assertNotNull(vm.state.value.shownMessage)
+    }
+
+    // ── Sign-in's Move password: a real text field, and the bus collected too ──
+
+    @Test fun typedThenBusOnTheMovePasswordSignsInOnce() {
+        val api = FakeKioskApi()
+        val c = testContainer(api = api)
+        c.start()
+        c.foreground.value = true
+        compose.setContent {
+            CompositionLocalProvider(LocalAppContainer provides c, LocalSledScanGuard provides c.sledScanGuard) {
+                KioskTheme { LoginScreen(rememberNavController()) }
+            }
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("Move password").performScrollTo().performClick()
+        compose.waitUntilIdlingMain { c.scanBus.events.collectors() > 0 }
+
+        // The sled types the move QR and Enter. The fake turns the password down at once, so
+        // that attempt is over before the scanner's copy is offered.
+        val field = compose.onNodeWithTag("login-move")
+        field.performTextInput("MOVE-QR")
+        field.performImeAction()
+        compose.waitUntilIdlingMain { api.moveLoginPasswords.isNotEmpty() }
+        sledSends(c, "MOVE-QR")
+        waitOutTheHold()
+        assertEquals("one sign-in attempt", listOf("MOVE-QR"), api.moveLoginPasswords)
     }
 }

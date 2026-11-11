@@ -1354,25 +1354,37 @@ open class ZebraRfidReader(
         linkBlock("start", sentence = SledWords.READ_DID_NOT_START) { rfid, generation ->
             inventory.startSending()
             var performError: VendorError? = null
+            // How long each round trip took, for sizing the controller's start wait
+            // (hardware script steps 7 and 8): a purge only runs with unique reporting on.
+            var purgeMs: Long? = null
+            var performMs = 0L
             val ops = object : InventoryOps {
-                override fun purge(): Boolean = try {
-                    rfid.Actions.purgeTags()
-                } catch (t: Throwable) {
-                    errorOf("purge", t)
-                    false
+                override fun purge(): Boolean {
+                    val t0 = nowMs()
+                    return try {
+                        rfid.Actions.purgeTags()
+                    } catch (t: Throwable) {
+                        errorOf("purge", t)
+                        false
+                    } finally {
+                        purgeMs = nowMs() - t0
+                    }
                 }
 
                 override fun perform(): VendorError? {
+                    val t0 = nowMs()
                     performError = try {
                         rfid.Actions.Inventory.perform()
                         null
                     } catch (t: Throwable) {
                         errorOf("start", t)
                     }
+                    performMs = nowMs() - t0
                     return performError
                 }
             }
             val outcome = runStart(lastApplied?.uniqueTagReport == true, ops)
+            Log.i(TAG, "Start: ${purgeMs?.let { "purge $it ms, " } ?: ""}perform $performMs ms ($outcome).")
             recordResult(generation, performError)
             when (outcome) {
                 PerformOutcome.STARTED -> inventory.markRunning()

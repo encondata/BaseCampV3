@@ -164,7 +164,24 @@ class FakeRfidReader(name: String = "Fake RFD40") : RfidReader {
 
     /** What [setTriggerLayout] returns while connected. Null: accept, with the
      *  read-back of `effectiveLayout(layout, false, info?.hasScanner)`. A
-     *  success also becomes `info.trigger`; a failure leaves it as it was. */
+     *  success also becomes `info.trigger`; a failure leaves it as it was.
+     *
+     *  Two ways this differs from the Zebra adapter, which a test of the
+     *  trigger gate or the RFID tab's layout lines has to allow for:
+     *  - The accepted read-back is worked out as for a phone (`zebraHost`
+     *    false). The adapter writes the effective layout for its own host, so
+     *    on a Zebra host it always reads back RFID. A controller test with
+     *    `zebraHost = true`, a Barcode setting and an accepting fake gets a
+     *    Barcode read-back here, and so a gate that refuses every sweep, where
+     *    the device sweeps. Give such a test a [layoutResult] with the RFID
+     *    read-back.
+     *  - Every failure keeps `info.trigger`, as the adapter does only for link
+     *    trouble. A check that fails on a sled that answers ("Couldn't check
+     *    the sled's trigger setting.") leaves it null on the adapter (the
+     *    contract in [RfidReader.setTriggerLayout]), so the layout in force
+     *    falls back to the requested one. A test of "an accepted read-back,
+     *    then a failed check" calls [setInfo] with `trigger = null` after the
+     *    failure. */
     @Volatile var layoutResult: Result<SledTriggerReadback>? = null
 
     /** What this fake claims to support. Set it in a test before connecting. */

@@ -10,6 +10,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
@@ -55,18 +56,10 @@ fun KioskApp() {
     KioskTheme(theme = prefs?.theme ?: "light", accent = prefs?.accent ?: "amber") {
         val nav = rememberNavController()
         // The last touch anywhere, for the display's idle timer: seen in the initial pass, never
-        // consumed, on the controller's clock.
+        // consumed, on the controller's clock. Only a finger going down counts (every drag and
+        // fling starts with one), so a scroll does not restamp it on every frame.
         val lastTouch = remember { mutableLongStateOf(0L) }
-        Box(
-            Modifier.fillMaxSize().pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        awaitPointerEvent(PointerEventPass.Initial)
-                        lastTouch.longValue = System.currentTimeMillis()
-                    }
-                }
-            },
-        ) {
+        Box(Modifier.fillMaxSize().onEveryTouchDown { lastTouch.longValue = System.currentTimeMillis() }) {
             NavHost(nav, startDestination = Routes.HOME) {
                 composable(Routes.LOGIN) { LoginScreen(nav) }
                 // A signed-out Time Clock station rests on Welcome here (KioskGuard).
@@ -94,6 +87,18 @@ fun KioskApp() {
             SledEffects(container, nav, lastTouch)
             EnrollOfferHost(container.enrollOffer)
             SetupClearedRedirect(nav, container.heartbeat.setupCleared)
+        }
+    }
+}
+
+/** Calls [onDown] each time a finger goes down anywhere inside: seen in the initial pass and
+ *  never consumed, so the content still gets every event. Moves are ignored (a drag or a fling
+ *  starts with a down), so a scroll costs nothing per frame. */
+internal fun Modifier.onEveryTouchDown(onDown: () -> Unit): Modifier = pointerInput(Unit) {
+    awaitPointerEventScope {
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            if (event.changes.any { it.changedToDown() }) onDown()
         }
     }
 }

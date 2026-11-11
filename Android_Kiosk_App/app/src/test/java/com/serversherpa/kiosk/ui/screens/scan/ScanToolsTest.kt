@@ -1,6 +1,9 @@
 package com.serversherpa.kiosk.ui.screens.scan
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
@@ -45,10 +48,11 @@ class ScanToolsTest {
     // Waits out a font copy before a native-graphics test (see NativeFontsSettled).
     @get:Rule val rules: RuleChain = RuleChain.outerRule(NativeFontsSettled()).around(compose)
 
-    private fun show(c: AppContainer) {
+    /** With [inShellPadding], inside the 16 dp page padding KioskShell gives every screen. */
+    private fun show(c: AppContainer, inShellPadding: Boolean = false) {
         compose.setContent {
             CompositionLocalProvider(LocalAppContainer provides c) {
-                KioskTheme { Column { ScanTools(showTrigger = false, onTrigger = {}) } }
+                KioskTheme { Column(if (inShellPadding) Modifier.padding(16.dp) else Modifier) { ScanTools(showTrigger = false, onTrigger = {}) } }
             }
         }
         compose.waitForIdle()
@@ -121,19 +125,20 @@ class ScanToolsTest {
         assertEquals(0, countTag("sled-scan"))
     }
 
-    /** Native graphics: the legacy mode measures text at almost no width, so nothing would overflow. */
+    /** Native graphics: the legacy mode measures text at almost no width, so nothing would
+     *  overflow. Inside the shell's page padding, as on a real 320 dp phone: 288 dp to fit in. */
     @Test @GraphicsMode(GraphicsMode.Mode.NATIVE) @Config(qualifiers = "w320dp-h533dp-hdpi") fun everySledControlFitsAt320dp() {
         val reader = FakeRfidReader()
         reader.setConnection(RfidConnection.Connected("Fake RFD40", 80))
         reader.setScanner(SledScannerState.Ready)
-        show(testContainer(reader))
-        val width = compose.onRoot().fetchSemanticsNode().size.width
+        show(testContainer(reader), inShellPadding = true)
+        val width = compose.onRoot().fetchSemanticsNode().size.width - with(compose.density) { 16.dp.toPx() }
         // The unclipped extent: `boundsInRoot` is clipped by the segmented row's own
         // horizontal scroll, so an option pushed half out of view would still pass on it.
         fun SemanticsNodeInteraction.inside() = apply {
             val n = assertIsDisplayed().fetchSemanticsNode()
             val right = n.positionInRoot.x + n.size.width
-            assertTrue("past the edge: $right > $width", right <= width + 1f)
+            assertTrue("past the page's edge: $right > $width", right <= width + 1f)
             assertTrue("clipped: ${n.boundsInRoot.width} < ${n.size.width}", n.boundsInRoot.width >= n.size.width - 1f)
         }
         for (label in listOf("RFID", "Barcode", "Both")) compose.onNodeWithText(label).inside()

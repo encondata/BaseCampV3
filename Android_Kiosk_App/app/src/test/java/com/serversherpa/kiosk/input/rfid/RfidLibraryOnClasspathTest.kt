@@ -15,10 +15,11 @@ class RfidLibraryOnClasspathTest {
     }
 
     /** Same idea, for the second Zebra SDK the same `.aar` bundles —
-     *  `com.zebra.scannercontrol`, which [ZebraBarcodeEngine] uses to stand
-     *  the sled's barcode imager down. Confirmed present via `javap` before
-     *  `ZebraBarcodeEngine.kt` was written against it; this is what keeps
-     *  that confirmation true. */
+     *  `com.zebra.scannercontrol`, which [ZebraBarcodeEngine] uses to carry
+     *  the sled's barcodes through a scanner session (it opens the session,
+     *  pulls the soft trigger and receives each barcode). Confirmed present
+     *  via `javap` before `ZebraBarcodeEngine.kt` was written against it;
+     *  this is what keeps that confirmation true. */
     @Test fun zebraScannerControlClassesAreOnTheClasspath() {
         assertNotNull(Class.forName("com.zebra.scannercontrol.SDKHandler"))
         assertNotNull(Class.forName("com.zebra.scannercontrol.IDcsSdkApi"))

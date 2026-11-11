@@ -212,28 +212,52 @@ class RfidSweepTest {
     }
 
     /** Spec test 9 (ruling 29): a start that gives no answer within the start
-     *  wait is followed by one stop; the sweep closes with the reason. */
+     *  wait is followed by one stop; the sweep closes with the reason. With
+     *  "Report each tag once" on (the default) the reader clears the sled's tag
+     *  list first, a round trip of its own inside the same call, so the wait
+     *  grows by [RfidController.PURGE_WAIT_MS]. */
     @Test fun aStartThatTimesOutIsFollowedByOneStop() = runTest {
+        for (unique in listOf(false, true)) {
+            val r = Rig(this, DEFAULT_RFID_SETTINGS.copy(enabled = true, uniqueTagReport = unique))
+            connectedAndArmed(r)
+            val hold = CompletableDeferred<Unit>()
+            r.fake.holdNext = hold
+            val t0 = currentTime
+            val wait = RfidController.START_WAIT_MS + if (unique) RfidController.PURGE_WAIT_MS else 0L
+
+            r.fake.emitTrigger(TriggerEvent.PRESSED); settle()
+            assertNotNull("the panel opens while the start waits", r.controller.session.value)
+            at(t0 + wait - 1)
+            assertEquals("unique $unique", listOf("start"), r.reader.calls)
+            assertNotNull(r.controller.session.value)
+            assertNull(r.controller.readError.value)
+
+            at(t0 + wait)
+            assertEquals("unique $unique", listOf("start", "stop"), r.reader.calls)
+            assertNull(r.controller.session.value)
+            assertEquals(SledWords.READ_DID_NOT_START, r.controller.readError.value)
+            assertEquals(emptyList<String>(), r.fake.violations)
+            hold.complete(Unit); settle()
+            assertEquals(listOf("start", "stop"), r.reader.calls)
+        }
+    }
+
+    /** A start that went through slowly (a purge and a start, each a round trip with its
+     *  own status wait) is not reported as one that didn't start. */
+    @Test fun aSlowStartWithUniqueReportingOnIsStillAStart() = runTest {
         val r = Rig(this)
+        assertTrue(r.settings.value.uniqueTagReport)
         connectedAndArmed(r)
         val hold = CompletableDeferred<Unit>()
         r.fake.holdNext = hold
         val t0 = currentTime
-
         r.fake.emitTrigger(TriggerEvent.PRESSED); settle()
-        assertNotNull("the panel opens while the start waits", r.controller.session.value)
-        at(t0 + RfidController.START_WAIT_MS - 1)
-        assertEquals(listOf("start"), r.reader.calls)
-        assertNotNull(r.controller.session.value)
-        assertNull(r.controller.readError.value)
-
-        at(t0 + RfidController.START_WAIT_MS)
-        assertEquals(listOf("start", "stop"), r.reader.calls)
-        assertNull(r.controller.session.value)
-        assertEquals(SledWords.READ_DID_NOT_START, r.controller.readError.value)
-        assertEquals(emptyList<String>(), r.fake.violations)
+        at(t0 + RfidController.START_WAIT_MS + 2_000)
         hold.complete(Unit); settle()
-        assertEquals(listOf("start", "stop"), r.reader.calls)
+        assertEquals(listOf("start"), r.reader.calls)
+        assertNotNull("still reading", r.controller.session.value)
+        assertNull(r.controller.readError.value)
+        assertTrue(r.fake.inventoryRunning)
     }
 
     /** Spec test 13 (T4): a start the sled refuses is followed by one stop and

@@ -7,9 +7,12 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
+import androidx.core.content.ContextCompat
 import androidx.test.core.app.ApplicationProvider
 import com.serversherpa.kiosk.core.rfid.SledNudge
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -92,6 +95,26 @@ class SledNudgeReceiverTest {
         // Bluetooth coming on needs no device.
         receive(stateChanged(BluetoothAdapter.STATE_ON))
         assertEquals(listOf(Triple(SledNudge.BLUETOOTH_ON, null, null)), nudges)
+    }
+
+    private fun registration() = shadowOf(app).registeredReceivers.single { it.broadcastReceiver === receiver }
+
+    /** ACL_CONNECTED comes from the Bluetooth process (its own uid), which a receiver that is
+     *  not exported never hears on API 33 and up (the Pixel): the receiver is exported. */
+    @Test fun theReceiverIsExportedSoTheBluetoothProcessReachesIt() {
+        receiver.register(app)
+        val flags = registration().flags
+        assertTrue("exported: $flags", flags and ContextCompat.RECEIVER_EXPORTED != 0)
+        assertEquals("not marked not exported: $flags", 0, flags and ContextCompat.RECEIVER_NOT_EXPORTED)
+        receiver.unregister(app)
+    }
+
+    /** Below API 33 (the MC2200 on API 30), ContextCompat would stand in for "not exported"
+     *  with this app's own signature permission, which the Bluetooth app does not hold. */
+    @Test @Config(sdk = [30]) fun onApi30TheReceiverAsksNoPermissionOfTheSender() {
+        receiver.register(app)
+        assertNull(registration().broadcastPermission)
+        receiver.unregister(app)
     }
 
     @Test fun registerAndUnregisterAreIdempotent() {

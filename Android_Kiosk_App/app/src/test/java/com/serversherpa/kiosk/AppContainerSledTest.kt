@@ -16,6 +16,7 @@ import com.serversherpa.kiosk.input.ScanEvent
 import com.serversherpa.kiosk.input.ScanSource
 import com.serversherpa.kiosk.input.datawedge.DataWedge
 import com.serversherpa.kiosk.input.rfid.FakeRfidReader
+import com.serversherpa.kiosk.input.rfid.RfidController
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
@@ -31,6 +32,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -42,6 +44,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowBuild
+import org.robolectric.shadows.ShadowLog
 
 /**
  * The container's sled wiring: sled barcodes on the scan bus once (spec tests 27 and 34, T11),
@@ -70,6 +73,11 @@ class AppContainerSledTest {
 
     private suspend fun AppContainer.shutDown() {
         withTimeout(10_000) { scope.coroutineContext[Job]!!.cancelAndJoin() }
+        // Room deadlocks a close that races the database's first open (the close holds its
+        // close lock and waits for the open's process lock; the open waits for the close lock),
+        // and a query start() made may still be opening it on Room's own executor: finish that
+        // open first (it holds the helper's monitor, so this waits for it).
+        withContext(Dispatchers.IO) { db.openHelper.writableDatabase }
         db.close()
     }
 
@@ -113,12 +121,21 @@ class AppContainerSledTest {
             val events = c.inFront()
             reader.awaitBarcodeCollector()
             val before = c.rfid.lastActivityMs.value
-            delay(5)
+            // Activity moves in steps (RfidController.ACTIVITY_STEP_MS), so wait one out first.
+            delay(RfidController.ACTIVITY_STEP_MS + 5)
+            ShadowLog.clear()
             reader.emitBarcode(SledBarcode("102466", "Code 128"))
             eventually("published") { events.isNotEmpty() }
             delay(400)
             assertEquals(listOf(ScanEvent("102466", ScanSource.SLED, "Code 128")), events)
             assertTrue("activity noted", c.rfid.lastActivityMs.value > before)
+            // Hardware script step 18: a positive line for the route, with no value in it.
+            val lines = ShadowLog.getLogsForTag(SLED_LOG_TAG).map { it.msg }
+            assertEquals(
+                listOf("Delivered a sled scan through the scanner session (6 characters, Code 128)."),
+                lines.filter { it.startsWith("Delivered") },
+            )
+            assertTrue("never the value: $lines", lines.none { "102466" in it })
         } finally {
             c.shutDown()
         }
@@ -299,11 +316,13 @@ class AppContainerSledTest {
 
     @Test fun theScannerInputBroadcastGoesOncePerProcessOnAZebraHostOnly() = runBlocking<Unit> {
         ShadowBuild.setManufacturer("Google")
+        ShadowLog.clear()
         val phone = testContainer()
         try {
             assertFalse(phone.isZebraHost)
             phone.enableScannerInputOnce(app)
             assertEquals(0, scannerInputBroadcasts())
+            assertEquals("nothing sent, nothing logged", 0, ShadowLog.getLogsForTag(DATAWEDGE_LOG_TAG).size)
         } finally {
             phone.shutDown()
         }
@@ -312,11 +331,14 @@ class AppContainerSledTest {
         val zebra = testContainer()
         try {
             assertTrue(zebra.isZebraHost)
+            ShadowLog.clear()
             zebra.enableScannerInputOnce(app)
             zebra.enableScannerInputOnce(app)
             zebra.enableScannerInputOnce(app)
             assertEquals(1, scannerInputBroadcasts())
             assertEquals(DataWedge.PACKAGE, shadowOf(app).broadcastIntents.last().`package`)
+            // Hardware script step 30 reads this from the app's own log: one line, one broadcast.
+            assertEquals(1, ShadowLog.getLogsForTag(DATAWEDGE_LOG_TAG).count { "ENABLE_PLUGIN" in it.msg })
         } finally {
             zebra.shutDown()
         }

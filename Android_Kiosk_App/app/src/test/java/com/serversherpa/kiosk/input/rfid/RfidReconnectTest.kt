@@ -179,16 +179,80 @@ class RfidReconnectTest {
         at(19_500); assertEquals("then 15 s: the nudge's try counted", 4, r.fake.connectCalls)
     }
 
-    @Test fun aNudgeWithin2sOfAnAttemptEndingIsIgnored() = runTest {
+    /** The link appearing also fires for the app's own outgoing connect, so within 2 s of
+     *  an attempt ending it is ignored. */
+    @Test fun aLinkAppearedNudgeWithin2sOfAnAttemptEndingIsIgnored() = runTest {
         val r = Rig(this)
         connectedThenDropped(r)
         at(2_000); assertEquals(2, r.fake.connectCalls)
 
         at(3_999)
-        r.controller.nudge(SledNudge.BLUETOOTH_ON); settle()
+        r.controller.nudge(SledNudge.LINK_APPEARED, address = "AA:BB:CC:DD:EE:FF", name = "RFD40 21234"); settle()
         assertEquals(2, r.fake.connectCalls)
         at(5_999); assertEquals(2, r.fake.connectCalls)
         at(6_000); assertEquals("the schedule goes on as planned", 3, r.fake.connectCalls)
+    }
+
+    /** Ruling 41 as amended: Bluetooth turning on is no echo of an attempt, so the 2 s
+     *  guard does not apply to it. Hardware script step 13: Bluetooth off drops the link,
+     *  try 1 fails "Bluetooth is off" (not retryable, the schedule ends), and Bluetooth comes
+     *  back on a second later. That is the only way back by itself, so it tries. */
+    @Test fun bluetoothComingOnRightAfterABluetoothOffFailureTriesAgain() = runTest {
+        val r = Rig(this)
+        connectedThenDropped(r)
+        r.fake.connectResult = notRetryable(SledWords.BLUETOOTH_OFF, SledFix.TURN_ON_BLUETOOTH)
+        at(2_000)
+        assertEquals(2, r.fake.connectCalls)
+        assertFalse("the schedule ended", r.controller.reconnecting.value)
+        assertEquals(SledWords.BLUETOOTH_OFF, r.controller.connectionError.value)
+
+        r.fake.connectResult = Result.success(Unit)
+        at(3_000)
+        r.controller.nudge(SledNudge.BLUETOOTH_ON); settle()
+        assertEquals("one try, within 2 s of the failure", 3, r.fake.connectCalls)
+        assertTrue(r.fake.connection.value is RfidConnection.Connected)
+        assertNull(r.controller.connectionError.value)
+
+        // Bluetooth on inside a running wait: that wait ends at once, as before.
+        val w = Rig(this)
+        val t0 = currentTime
+        connectedThenDropped(w)
+        at(t0 + 2_000); assertEquals(2, w.fake.connectCalls)
+        at(t0 + 2_500)
+        w.controller.nudge(SledNudge.BLUETOOTH_ON); settle()
+        assertEquals(3, w.fake.connectCalls)
+    }
+
+    /** Hardware script step 32: the saved sled was forgotten in Bluetooth settings and the
+     *  other one is paired. A link appearing for the other one nudges (the sled-name rule),
+     *  since a sled no longer paired is no longer the one to wait for. */
+    @Test fun aForgottenSavedSledNoLongerFiltersTheNudge() = runTest {
+        val r = Rig(this, DEFAULT_RFID_SETTINGS.copy(enabled = true, readerAddress = "AA:BB:CC:00:00:01"))
+        r.fake.paired = listOf(SledCandidate("RFD4031-B", "AA:BB:CC:00:00:02"))
+        r.fake.connectResult = retryable()
+        r.controller.start(); settle()
+        r.controller.connectForLifecycle { true }; settle()
+        assertEquals("one attempt off a sled screen", 1, r.fake.connectCalls)
+        assertEquals("the saved sled is not paired: none known", null, r.controller.nudgeAddress())
+
+        at(5_000)
+        r.fake.connectResult = Result.success(Unit)
+        r.controller.nudge(SledNudge.LINK_APPEARED, address = "AA:BB:CC:00:00:02", name = "RFD4031-B"); settle()
+        assertEquals(2, r.fake.connectCalls)
+
+        // While the saved sled is still paired, only its own link counts.
+        val k = Rig(this, DEFAULT_RFID_SETTINGS.copy(enabled = true, readerAddress = "AA:BB:CC:00:00:01"))
+        k.fake.paired = listOf(SledCandidate("RFD4031-A", "AA:BB:CC:00:00:01"), SledCandidate("RFD4031-B", "AA:BB:CC:00:00:02"))
+        k.fake.connectResult = retryable()
+        k.controller.start(); settle()
+        val tk = currentTime
+        k.controller.connectForLifecycle { true }; settle()
+        assertEquals("AA:BB:CC:00:00:01", k.controller.nudgeAddress())
+        at(tk + 5_000)
+        k.controller.nudge(SledNudge.LINK_APPEARED, address = "AA:BB:CC:00:00:02", name = "RFD4031-B"); settle()
+        assertEquals(1, k.fake.connectCalls)
+        k.controller.nudge(SledNudge.LINK_APPEARED, address = "aa:bb:cc:00:00:01", name = "RFD4031-A"); settle()
+        assertEquals(2, k.fake.connectCalls)
     }
 
     /** Ruling 41: after giving up, a nudge starts one try; when that fails the
@@ -206,6 +270,27 @@ class RfidReconnectTest {
         assertEquals(6, r.fake.connectCalls)
         assertFalse(r.controller.reconnecting.value)
         assertEquals(SledWords.couldNotReach("Fake RFD40"), r.controller.connectionError.value)
+        at(400_000)
+        assertEquals(6, r.fake.connectCalls)
+    }
+
+    /** Stop while a nudge's try after giving up is still dialing: when that try fails, the
+     *  link is no longer wanted, so no failure sentence is left behind. */
+    @Test fun stopDuringANudgesTryAfterGivingUpLeavesNoSentence() = runTest {
+        val r = Rig(this)
+        connectedThenDropped(r)
+        at(81_000)
+        assertFalse(r.controller.reconnecting.value)
+        assertEquals(SledWords.couldNotReach("Fake RFD40"), r.controller.connectionError.value)
+
+        val hold = CompletableDeferred<Unit>()
+        r.fake.holdNext = hold
+        at(90_000)
+        r.controller.nudge(SledNudge.BLUETOOTH_ON); settle()
+        assertEquals("the nudge's try is dialing", RfidConnection.Connecting, r.fake.connection.value)
+        r.controller.stopReconnecting(); settle()
+        hold.complete(Unit); settle()
+        assertNull(r.controller.connectionError.value)
         at(400_000)
         assertEquals(6, r.fake.connectCalls)
     }
@@ -241,6 +326,7 @@ class RfidReconnectTest {
         r.controller.start(); settle()
         r.controller.connectForLifecycle { true }; settle()
         assertFalse(r.controller.reconnecting.value)
+        assertEquals(SledWords.couldNotReach("Fake RFD40"), r.controller.connectionError.value)
 
         at(10_000)
         r.controller.setSledScreenOpen(true)
@@ -248,10 +334,20 @@ class RfidReconnectTest {
         r.controller.setSledScreenOpen(true)
         settle()
         assertTrue(r.controller.reconnecting.value)
+        // The failure's sentence is the connection line's now: no red "tap Connect" under
+        // "Connecting to…", which offers only Stop.
+        assertNull("the schedule raises no error of its own", r.controller.connectionError.value)
         at(11_999); assertEquals(1, r.fake.connectCalls)
         at(12_000); assertEquals("one schedule, at try 1", 2, r.fake.connectCalls)
         at(15_999); assertEquals(2, r.fake.connectCalls)
+        // A try that outlasts the connect wait raises none either.
+        val hold = CompletableDeferred<Unit>()
+        r.fake.holdNext = hold
         at(16_000); assertEquals(3, r.fake.connectCalls)
+        at(16_000 + RfidController.CONNECT_WAIT_MS + 1)
+        assertTrue(r.controller.reconnecting.value)
+        assertNull(r.controller.connectionError.value)
+        hold.complete(Unit); settle()
     }
 
     /** The first batch clear fails retryably with its own sentence; one more

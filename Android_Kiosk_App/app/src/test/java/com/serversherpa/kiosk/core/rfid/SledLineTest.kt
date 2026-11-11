@@ -89,7 +89,11 @@ class SledLineTest {
         readError: String? = null,
         reconnecting: Boolean = false,
         textAtOpen: String? = null,
-    ): SlotLine? = scanSlotLine(sledLine(c, reconnecting, enabled = true, permissionMissing = false), c, scanner, readError, textAtOpen)
+        dropDuringVisit: Boolean = false,
+        retry: SledRetry? = null,
+    ): SlotLine? = scanSlotLine(
+        sledLine(c, reconnecting, enabled = true, permissionMissing = false, retry = retry), c, scanner, readError, textAtOpen, dropDuringVisit,
+    )
 
     @Test fun nothingShowsWhileConnectedAndWorking() {
         assertNull(slot(connected))
@@ -133,14 +137,54 @@ class SledLineTest {
 
     // ── scanSlotLine: tone ──
 
-    @Test fun aLineThatWasAlreadyThereAtOpenIsMutedAndAnyOtherIsRed() {
-        val failed = RfidConnection.Failed(SledWords.couldNotReach(name))
+    /** A connection line is red only as the sign of a drop during the visit, whatever the
+     *  slot said at open: a sled already out of reach, and the tries for it, stay muted. */
+    @Test fun aConnectionLineIsRedOnlyForADropDuringTheVisit() {
+        val failed = RfidConnection.Failed(SledWords.couldNotReach(name), retryable = true, fix = SledFix.CONNECT)
         assertFalse(slot(failed, textAtOpen = SledWords.couldNotReach(name))!!.red)
-        assertTrue(slot(failed, textAtOpen = null)!!.red)
-        assertTrue(slot(failed, textAtOpen = SledWords.NOT_CONNECTED)!!.red)
+        assertFalse("a changed line is not a drop by itself", slot(failed, textAtOpen = null)!!.red)
+        assertTrue(slot(failed, textAtOpen = SledWords.couldNotReach(name), dropDuringVisit = true)!!.red)
+        val neverUp = SledRetry(afterDrop = false, name = name, lastReason = SledWords.couldNotReach(name))
+        val trying = slot(failed, reconnecting = true, retry = neverUp, textAtOpen = SledWords.couldNotReach(name))!!
+        assertEquals(SledWords.connectingTo(name), trying.text)
+        assertFalse("the tries an open screen starts are muted", trying.red)
+        assertTrue(slot(failed, reconnecting = true, dropDuringVisit = true)!!.red)
+    }
+
+    /** The region and scanner lines are still compared with what the slot said at open. */
+    @Test fun aRegionOrScannerLineThatWasAlreadyThereAtOpenIsMutedAndAnyOtherIsRed() {
+        val region = RfidConnection.NeedsRegion(name)
+        assertFalse(slot(region, textAtOpen = SledWords.noRegion(name))!!.red)
+        assertTrue(slot(region, textAtOpen = null)!!.red)
+        assertFalse("not a connection line", slot(region, textAtOpen = SledWords.noRegion(name), dropDuringVisit = true)!!.red)
         val stopped = SledScannerState.Unavailable(SledScannerFault.STOPPED_RESPONDING)
         assertFalse(slot(connected, stopped, textAtOpen = SledWords.SCANNER_STOPPED_RESPONDING)!!.red)
         assertTrue(slot(connected, stopped, textAtOpen = null)!!.red)
+    }
+
+    // ── slotDropDuringVisit ──
+
+    @Test fun aDropDuringTheVisitIsAFailureAfterTheLinkWasUpOrAReconnectAfterADropThatBeganSince() {
+        val failed = RfidConnection.Failed(SledWords.couldNotReach(name), retryable = true)
+        val drop = SledRetry(afterDrop = true, name = name, lastReason = "The sled disconnected.")
+        val neverUp = SledRetry(afterDrop = false, name = name, lastReason = SledWords.couldNotReach(name))
+        fun seen(c: RfidConnection, reconnecting: Boolean = false, retry: SledRetry? = null, linkWasUp: Boolean = false, dropAtOpen: Boolean = false) =
+            slotDropDuringVisit(c, reconnecting, retry, linkWasUp, dropAtOpen)
+
+        // A failure: the drop's own reason, or the give-up after it, once the link was up.
+        assertTrue(seen(failed, linkWasUp = true))
+        assertFalse("already out of reach at open, and its give-up", seen(failed))
+        // A reconnect after a drop: this visit saw it begin.
+        assertTrue(seen(failed, reconnecting = true, retry = drop, linkWasUp = true))
+        assertTrue("the link came and went between frames", seen(failed, reconnecting = true, retry = drop))
+        assertFalse("the same reconnect was running at open", seen(failed, reconnecting = true, retry = drop, dropAtOpen = true))
+        assertTrue("it reconnected, then dropped again", seen(failed, reconnecting = true, retry = drop, linkWasUp = true, dropAtOpen = true))
+        // The tries an open screen starts for a sled that never came up.
+        assertFalse(seen(failed, reconnecting = true, retry = neverUp))
+        assertFalse(seen(failed, reconnecting = true, retry = neverUp, linkWasUp = true))
+        // The app's own doing.
+        assertFalse(seen(RfidConnection.Connecting, linkWasUp = true))
+        assertFalse(seen(RfidConnection.Disconnected, linkWasUp = true))
     }
 
     @Test fun startingTheScannerIsAlwaysMuted() {

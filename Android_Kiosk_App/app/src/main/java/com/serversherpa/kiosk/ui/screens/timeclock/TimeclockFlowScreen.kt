@@ -61,7 +61,7 @@ import kotlinx.coroutines.delay
  * the view model needs — scans from the [com.serversherpa.kiosk.input.ScanBus] (DataWedge and the
  * camera sheet), hardware keys on Welcome (a reader that types like a keyboard; on Enter Your Name
  * the search box is a real text field with the system keyboard), and every touch or key for the
- * idle countdown. All state is the view model's.
+ * idle countdown. Both typed routes go through [LocalSledScanGuard]. All state is the view model's.
  *
  * Station mode (Task 4) passes [onSettings] for the gear on Welcome, and [paused] / [keyMissing]
  * when the station key is lapsed or missing; Welcome then takes nobody.
@@ -162,8 +162,19 @@ fun TimeclockFlowScreen(
                 onScan = { if (container.hasCamera) camera = true },
                 onName = { vm.enterName() },
             )
+            // The search box goes through the guard like a scan box (ruling 3): a sled that types
+            // a code and also sends it through its scanner, whose copy the bus above hands to
+            // onScan, acts once. A code the scanner already delivered is cleared, not searched.
             TcStep.NAME -> EnterName(
-                query = ui.query, onQueryChange = vm::onType, onSearch = vm::onSearch,
+                query = ui.query,
+                onQueryChange = { next ->
+                    if (next.length > vm.state.value.query.length) guard.noteTyping(SystemClock.elapsedRealtime())
+                    vm.onType(next)
+                },
+                onSearch = {
+                    val query = vm.state.value.query
+                    if (query.isBlank() || guard.acceptTyped(query, SystemClock.elapsedRealtime())) vm.onSearch() else vm.onType("")
+                },
                 results = ui.results, noMatches = ui.noMatches, message = ui.shownMessage,
                 disabled = ui.looking, onPick = vm::pick, focusRequester = nameFocus, fit = fit,
                 trailing = if (container.hasCamera) ({

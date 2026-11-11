@@ -216,15 +216,13 @@ class AppContainer(
      *  route, it tells the controller whether Settings › RFID, a sled screen, is open. */
     val settingsTab = MutableStateFlow<SettingsTabId?>(null)
 
-    /** The last sled this app was connected to, and the saved one: whose link appearing nudges. */
-    @Volatile private var lastSledAddress: String? = null
-    @Volatile private var savedSledAddress: String? = null
-
     /** Bluetooth on, or the sled's link appearing: a nudge for the reconnect (registered while
-     *  in front, by [processLifecycle]). */
+     *  in front, by [processLifecycle]). Whose link counts is the controller's own rule
+     *  (`nudgeAddress()`: the last or saved sled while it is still paired), so the two filters
+     *  never disagree. */
     internal val sledNudgeReceiver = SledNudgeReceiver(
         nudge = { reason, address, name -> rfid.nudge(reason, address, name) },
-        lastSledAddress = { lastSledAddress ?: savedSledAddress },
+        lastSledAddress = { rfid.nudgeAddress() },
         canReadDevices = { context ->
             Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
                 ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
@@ -238,7 +236,11 @@ class AppContainer(
      *  from MainActivity's onResume, after [start] has configured DataWedge. */
     fun enableScannerInputOnce(context: Context) {
         if (!isZebraHost) return
-        if (scannerInputSent.compareAndSet(false, true)) DataWedge.enableScannerInput(context)
+        if (scannerInputSent.compareAndSet(false, true)) {
+            DataWedge.enableScannerInput(context)
+            // Hardware script step 30 counts this line: one per process.
+            Log.i(DATAWEDGE_LOG_TAG, "Sent DataWedge's ENABLE_PLUGIN for the scanner input (once per process).")
+        }
     }
 
     /** The app coming to the front and going to the background (ProcessLifecycleOwner; [start]
@@ -305,7 +307,6 @@ class AppContainer(
     private fun startSledWiring() {
         scope.launch { rfidReader.scanner.collect { sledScanGuard.scannerReady = it == SledScannerState.Ready } }
         scope.launch { rfidReader.barcodes.collect { onSledBarcode(it) } }
-        scope.launch { prefs.rfid.collect { savedSledAddress = it.readerAddress } }
         scope.launch { rfidReader.info.collect { onSledInfo(it) } }
     }
 
@@ -330,6 +331,8 @@ class AppContainer(
             return
         }
         scanBus.publish(ScanEvent(barcode.value, ScanSource.SLED, barcode.label))
+        // The positive line for the route (hardware script step 18): length and type, never the value.
+        Log.i(SLED_LOG_TAG, "Delivered a sled scan through the scanner session (${barcode.value.length} characters, ${barcode.label ?: "type unknown"}).")
         rfid.noteActivity()
     }
 
@@ -339,7 +342,6 @@ class AppContainer(
      * meanwhile (one still paired) is kept.
      */
     private suspend fun onSledInfo(info: SledInfo?) {
-        info?.address?.let { lastSledAddress = it }
         if (info == null || !info.autoChosen) return
         val address = info.address ?: return
         if (prefs.rfid.first().readerAddress.equals(address, ignoreCase = true)) return
@@ -428,3 +430,6 @@ val LocalAppContainer = staticCompositionLocalOf<AppContainer> { error("No AppCo
 
 /** The log tag of the sled scan path: the guard, sled barcodes and the external keyboard log. */
 internal const val SLED_LOG_TAG = "SledScanGuard"
+
+/** The tag of the one DataWedge line the container writes (its ENABLE_PLUGIN broadcast). */
+internal const val DATAWEDGE_LOG_TAG = "DataWedge"
