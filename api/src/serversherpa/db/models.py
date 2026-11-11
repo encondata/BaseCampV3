@@ -2815,5 +2815,5 @@ class AddressBlock(Base):
 
 # Register the learning and project-plan models on Base.metadata (they import
 # Base from here).
-import serversherpa.learning.models
+import serversherpa.learning.models  # noqa: F401
 import serversherpa.plans.models  # noqa: F401

@@ -16,11 +16,12 @@ def group_key(value: str | None) -> str:
 
 
 def owner_key_sql(col) -> ColumnElement[str]:
-    """SQL twin of `group_key`; NULL stays NULL, blank gives an empty string."""
-    return func.lower(func.regexp_replace(
-        func.btrim(col), literal(r"[[:space:]]+"), literal(" "), literal("g")))
+    """SQL twin of `group_key`: collapse every whitespace run to one space, then
+    trim. NULL stays NULL; blank gives an empty string."""
+    return func.lower(func.btrim(func.regexp_replace(
+        col, literal(r"[[:space:]]+"), literal(" "), literal("g"))))
 
 
 def is_blank_sql(col) -> ColumnElement[bool]:
     """True when the column is NULL or only whitespace."""
-    return func.coalesce(func.btrim(col) == "", True)
+    return func.coalesce(owner_key_sql(col) == "", True)

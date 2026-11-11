@@ -112,9 +112,9 @@ def upgrade() -> None:
         INSERT INTO roles (name, description, rank, scope_anchor, is_system, label, color)
         VALUES ('client_individual',
                 'A client contact limited to the groups they are given',
-                8, 'client', true, 'Client individual', 'c-teal')
+                8, 'client', true, 'Client individual', 'c-blue')
         ON CONFLICT (name) DO UPDATE SET rank = 8, scope_anchor = 'client',
-            is_system = true, label = 'Client individual', color = 'c-teal'
+            is_system = true, label = 'Client individual', color = 'c-blue'
     """))
     op.drop_constraint("person_roles_client_scope_check", "person_roles")
     _client_scope_check(NEW_TIERS)
