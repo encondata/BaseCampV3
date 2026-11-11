@@ -479,6 +479,8 @@ SYS = {"battery": None, "wifi": None, "wired": None, "network": "none"}
 @pytest.fixture
 def helper(ks, monkeypatch):
     monkeypatch.setattr(ks, "system_info", lambda: dict(SYS))
+    # /proc/net/tcp isn't there on every test machine: the peer is "us"
+    monkeypatch.setattr(ks, "peer_uid", lambda addr, port: os.getuid())
     session = ks.Session(TOKEN, "http://cloud.test")
     server = ks.HelperServer(session, port=0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -548,8 +550,9 @@ def test_waiting_page(helper):
     assert call(port, "GET", "/waiting", origin="http://evil.test")[0] == 403
 
 
-def test_state_is_ready_once_cloud_and_edge_answer(helper):
+def test_state_is_ready_once_cloud_and_edge_answer(helper, ks, monkeypatch):
     session, port = helper
+    monkeypatch.setattr(ks, "url_answers", lambda url, timeout=5: True)
     out = json.loads(call(port, "GET", "/v1/state", token=TOKEN)[2])
     assert out == {"ready": False, "cloud": False, "last_attempt": None, "system": SYS}
     session.cloud_ok = session.edge_ok = True
@@ -690,3 +693,401 @@ def test_chrome_keeps_the_users_language(ks, monkeypatch):
     env = os.environ if env is None else env      # None: Popen inherits the user's environment
     assert env.get("LANGUAGE") == "nl:en" and env.get("LANG") == "nl_NL.UTF-8"
     assert "LC_ALL" not in env
+
+
+# ── Task 3, fix round 1 ───────────────────────────────────────────────
+import signal
+import time
+
+TCP_HEAD = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+
+
+def v4hex(ip):
+    """An IPv4 address as /proc/net/tcp prints it (a native-order u32)."""
+    return "%08X" % int.from_bytes(socket.inet_aton(ip), sys.byteorder)
+
+
+def v6hex(ip):
+    raw = socket.inet_pton(socket.AF_INET6, ip)
+    return "".join("%08X" % int.from_bytes(raw[i:i + 4], sys.byteorder) for i in range(0, 16, 4))
+
+
+def tcp_row(n, local, remote, uid):
+    return (f"{n:4d}: {local} {remote} 01 00000000:00000000 00:00000000 00000000 {uid:5d}        0 "
+            f"{4000 + n} 1 0000000000000000 20 4 30 10 -1\n")
+
+
+def fake_proc_net(tmp_path, tcp=(), tcp6=()):
+    root = tmp_path / "proc"
+    (root / "net").mkdir(parents=True)
+    (root / "net" / "tcp").write_text(TCP_HEAD + "".join(tcp))
+    (root / "net" / "tcp6").write_text(TCP_HEAD + "".join(tcp6))
+    return root
+
+
+def test_peer_uid_ipv4(ks, tmp_path):
+    lo = v4hex("127.0.0.1")
+    root = fake_proc_net(tmp_path, tcp=[
+        tcp_row(0, f"{lo}:1F9C", "00000000:0000", 1000),        # the helper listening (8092)
+        tcp_row(1, f"{lo}:1F9C", f"{lo}:D431", 1000),           # the helper's side of it
+        tcp_row(2, f"{lo}:D431", f"{lo}:1F90", 0),              # same port, to 8080: not ours
+        tcp_row(3, f"{lo}:D431", f"{lo}:1F9C", 1001),           # the client (54321 -> 8092)
+    ])
+    assert ks.peer_uid(("127.0.0.1", 54321), 8092, proc_root=str(root)) == 1001
+
+
+def test_peer_uid_ipv4_mapped_ipv6(ks, tmp_path):
+    mapped = v6hex("::ffff:127.0.0.1")
+    root = fake_proc_net(tmp_path, tcp6=[tcp_row(0, f"{mapped}:D431", f"{mapped}:1F9C", 1002)])
+    assert ks.peer_uid(("127.0.0.1", 54321), 8092, proc_root=str(root)) == 1002
+    assert ks.peer_uid(("::ffff:127.0.0.1", 54321, 0, 0), 8092, proc_root=str(root)) == 1002
+
+
+def test_peer_uid_not_found_is_none(ks, tmp_path):
+    lo = v4hex("127.0.0.1")
+    root = fake_proc_net(tmp_path, tcp=[tcp_row(0, f"{lo}:D432", f"{lo}:1F9C", 1000), "garbage line\n"])
+    assert ks.peer_uid(("127.0.0.1", 54321), 8092, proc_root=str(root)) is None
+    assert ks.peer_uid(("127.0.0.1", 54321), 8092, proc_root=str(tmp_path / "nothing")) is None
+
+
+@pytest.mark.skipif(not Path("/proc/net/tcp").exists(), reason="Linux /proc only")
+def test_peer_uid_finds_a_real_connection(ks):
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen()
+    cli = socket.create_connection(srv.getsockname())
+    try:
+        conn, addr = srv.accept()
+        assert ks.peer_uid(addr, srv.getsockname()[1]) == os.getuid()
+        conn.close()
+    finally:
+        cli.close()
+        srv.close()
+
+
+@pytest.mark.parametrize("uid", [None, "other"])
+def test_only_the_session_users_processes_get_an_answer(helper, ks, monkeypatch, uid):
+    _, port = helper
+    seen = []
+    other = os.getuid() + 1
+
+    def fake(addr, server_port):
+        seen.append((addr, server_port))
+        return other if uid == "other" else None
+    monkeypatch.setattr(ks, "peer_uid", fake)
+    status, _, raw = call(port, "GET", "/waiting")
+    assert status == 403 and TOKEN.encode() not in raw
+    assert call(port, "GET", "/v1/state", token=TOKEN)[0] == 403
+    assert call(port, "OPTIONS", "/v1/exit", origin=KIOSK)[0] == 403
+    assert call(port, "POST", "/v1/exit", token=TOKEN, body={"pin": "csg"})[0] == 403
+    assert not helper[0].exit.is_set()
+    assert seen and seen[0][0][0] == "127.0.0.1" and seen[0][1] == port
+    text = (ks.state_dir() / "session.log").read_text()
+    assert "helper: refused" in text and TOKEN not in text
+
+
+def test_state_checks_the_edge_live_and_caches_it_briefly(ks, monkeypatch):
+    probes = []
+    answer = [False]
+    monkeypatch.setattr(ks, "url_answers", lambda url, timeout=5: (probes.append((url, timeout)), answer[0])[1])
+    s = ks.Session(TOKEN, "http://cloud.test")
+    assert s.ready_now() is False and probes == []          # no cloud yet: no edge probe
+    s.cloud_ok = s.edge_ok = True                           # the last 15 s check said yes
+    assert s.ready_now() is False                           # the edge is down now
+    assert probes == [(ks.EDGE_IDENTITY_URL, ks.EDGE_LIVE_TIMEOUT_S)] and ks.EDGE_LIVE_TIMEOUT_S <= 3
+    answer[0] = True
+    assert s.ready_now() is False and len(probes) == 1      # cached
+    assert ks.EDGE_CACHE_S <= 2
+    monkeypatch.setattr(ks, "EDGE_CACHE_S", 0)
+    assert s.ready_now() is True and len(probes) == 2
+
+
+def test_state_endpoint_uses_the_live_edge(helper, ks, monkeypatch):
+    session, port = helper
+    monkeypatch.setattr(ks, "url_answers", lambda url, timeout=5: False)
+    session.cloud_ok = session.edge_ok = True
+    out = json.loads(call(port, "GET", "/v1/state", token=TOKEN)[2])
+    assert out["ready"] is False and out["cloud"] is True
+
+
+def test_system_serves_the_cached_value_while_a_refresh_runs(ks, monkeypatch):
+    gate = threading.Event()
+    started = threading.Event()
+    n = [0]
+
+    def info():
+        n[0] += 1
+        if n[0] == 2:
+            started.set()
+            gate.wait(5)
+        return {"n": n[0]}
+    monkeypatch.setattr(ks, "system_info", info)
+    s = ks.Session(TOKEN, "http://cloud.test")
+    assert s.system() == {"n": 1}
+    monkeypatch.setattr(ks, "SYSTEM_CACHE_S", 0)
+    out = []
+    t = threading.Thread(target=lambda: out.append(s.system()))
+    t.start()
+    assert started.wait(2)
+    t0 = time.monotonic()
+    assert s.system() == {"n": 1}                           # stale, but not blocked
+    s.cloud_ok = True
+    monkeypatch.setattr(ks, "url_answers", lambda url, timeout=5: True)
+    assert s.ready_now() is True                            # the edge probe doesn't wait either
+    assert time.monotonic() - t0 < 1
+    gate.set()
+    t.join(5)
+    assert out == [{"n": 2}]
+    monkeypatch.setattr(ks, "SYSTEM_CACHE_S", 60)
+    assert s.system() == {"n": 2}
+
+
+def test_system_first_callers_share_one_refresh(ks, monkeypatch):
+    gate = threading.Event()
+    calls = []
+    monkeypatch.setattr(ks, "system_info", lambda: (calls.append(1), gate.wait(5), {"ok": 1})[2])
+    s = ks.Session(TOKEN, "http://cloud.test")
+    out = []
+    threads = [threading.Thread(target=lambda: out.append(s.system())) for _ in range(3)]
+    for t in threads:
+        t.start()
+    time.sleep(0.1)
+    gate.set()
+    for t in threads:
+        t.join(5)
+    assert out == [{"ok": 1}] * 3 and len(calls) == 1
+
+
+def test_forget_system_drops_a_refresh_already_running(ks, monkeypatch):
+    gate = threading.Event()
+    started = threading.Event()
+    n = [0]
+
+    def info():
+        n[0] += 1
+        if n[0] == 1:
+            started.set()
+            gate.wait(5)
+        return {"n": n[0]}
+    monkeypatch.setattr(ks, "system_info", info)
+    s = ks.Session(TOKEN, "http://cloud.test")
+    t = threading.Thread(target=s.system)
+    t.start()
+    assert started.wait(2)
+    s.forget_system()                     # a Wi-Fi join just finished
+    gate.set()
+    t.join(5)
+    assert s.system() == {"n": 2}         # the pre-join answer wasn't kept
+
+
+def test_options_needs_the_right_host_and_a_v1_path(helper):
+    _, port = helper
+    assert call(port, "OPTIONS", "/v1/exit", origin=KIOSK, host=f"localhost:{port}")[0] == 403
+    assert call(port, "OPTIONS", "/waiting", origin=KIOSK)[0] == 403
+    assert call(port, "OPTIONS", "/", origin=KIOSK)[0] == 403
+
+
+def test_post_body_size_edge(helper):
+    session, port = helper
+    ok = json.dumps({"pin": "x" * (4096 - 11)}).encode()
+    big = json.dumps({"pin": "x" * (4097 - 11)}).encode()
+    assert len(ok) == 4096 and len(big) == 4097
+    status, _, raw = call(port, "POST", "/v1/exit", origin=KIOSK, token=TOKEN, body=ok)
+    assert status == 403 and json.loads(raw) == {"error": "wrong_pin"}     # read and judged
+    status, _, raw = call(port, "POST", "/v1/exit", origin=KIOSK, token=TOKEN, body=big)
+    assert status == 400 and json.loads(raw) == {"error": "bad_request"}
+    assert not session.exit.is_set()
+
+
+def test_wifi_endpoint_shape(helper, ks, monkeypatch):
+    _, port = helper
+    nets = [{"ssid": "CSG-Ops", "signal": 80, "secure": True, "active": True},
+            {"ssid": "Guest", "signal": 40, "secure": False, "active": False}]
+    rescans = []
+    monkeypatch.setattr(ks, "wifi_networks", lambda rescan=True: rescans.append(rescan) or nets)
+    monkeypatch.setattr(ks, "wired_status", lambda: {"connected": False, "device": "enp0s31f6"})
+    status, hdrs, raw = call(port, "GET", "/v1/wifi", origin=KIOSK, token=TOKEN)
+    assert status == 200 and hdrs["content-type"] == "application/json"
+    assert json.loads(raw) == {"networks": nets, "wired": {"connected": False, "device": "enp0s31f6"}}
+    assert rescans == [True]
+    monkeypatch.setattr(ks, "wired_status", lambda: None)
+    assert json.loads(call(port, "GET", "/v1/wifi", token=TOKEN)[2])["wired"] is None
+
+
+# A leftover kiosk Chrome (the helper was SIGKILLed; Chrome lived on in its own session)
+def fake_procs(tmp_path, procs):
+    root = tmp_path / "procs"
+    root.mkdir(exist_ok=True)
+    (root / "self").mkdir(exist_ok=True)
+    for pid, args in procs.items():
+        d = root / str(pid)
+        d.mkdir()
+        (d / "cmdline").write_bytes(b"\0".join(a.encode() for a in args) + b"\0")
+    return root
+
+
+def test_kiosk_chrome_pids_match_only_the_kiosk_profile(ks, tmp_path):
+    prof = "/home/kiosk/.local/share/serversherpa-kiosk/chrome"
+    root = fake_procs(tmp_path, {
+        101: ["/opt/google/chrome/chrome", "--kiosk", f"--user-data-dir={prof}", "http://x"],
+        102: ["/opt/google/chrome/chrome", "--user-data-dir=/home/kiosk/.config/google-chrome"],
+        103: ["/opt/google/chrome/chrome", "--user-data-dir", prof],
+        104: ["/opt/google/chrome/chrome", f"--user-data-dir={prof}-2"],
+        105: ["/opt/google/chrome/chrome"],                   # the user's everyday Chrome
+        os.getpid(): ["python3", f"--user-data-dir={prof}"],  # never this process
+    })
+    assert ks.kiosk_chrome_pids(Path(prof), proc_root=str(root)) == [101, 103]
+    assert ks.kiosk_chrome_pids(Path(prof), proc_root=str(tmp_path / "none")) == []
+
+
+def test_stop_kiosk_chrome_terms_then_kills_only_the_kiosk_ones(ks, tmp_path, monkeypatch):
+    import shutil
+    monkeypatch.setattr(ks, "CHROME_STOP_S", 0.2)
+    prof = "/p/kiosk"
+    root = fake_procs(tmp_path, {201: ["chrome", f"--user-data-dir={prof}"],
+                                 202: ["chrome", f"--user-data-dir={prof}", "--type=renderer"],
+                                 203: ["chrome", "--user-data-dir=/p/everyday"]})
+    sent = []
+
+    def kill(pid, sig):
+        sent.append((pid, sig))
+        if pid == 201 or sig == signal.SIGKILL:      # 202 ignores SIGTERM
+            shutil.rmtree(root / str(pid))
+    ks.stop_kiosk_chrome(Path(prof), proc_root=str(root), kill=kill)
+    assert sent == [(201, signal.SIGTERM), (202, signal.SIGTERM), (202, signal.SIGKILL)]
+    assert (root / "203").exists()
+    assert "left over" in (ks.state_dir() / "session.log").read_text()
+
+
+def test_stop_kiosk_chrome_with_none_left_does_nothing(ks, tmp_path):
+    root = fake_procs(tmp_path, {301: ["chrome", "--user-data-dir=/p/everyday"]})
+    ks.stop_kiosk_chrome(Path("/p/kiosk"), proc_root=str(root), kill=lambda *a: pytest.fail("no kill"))
+
+
+def test_launch_chrome_stops_a_leftover_first(ks, monkeypatch, tmp_path):
+    order = []
+    monkeypatch.setattr(ks, "stop_kiosk_chrome", lambda profile: order.append(("stop", profile)))
+    monkeypatch.setattr(ks.subprocess, "Popen", lambda args, **kw: order.append(("popen",)) or "proc")
+    ks.launch_chrome("/usr/bin/google-chrome", "http://127.0.0.1:8092/waiting")
+    assert order == [("stop", ks.profile_dir("/usr/bin/google-chrome")), ("popen",)]
+
+
+# A missing browser: the session ends (desktop back), never locked with no Chrome
+def test_watch_names_a_missing_browser_and_gives_up(ks):
+    s = ks.Session(TOKEN, "http://cloud.test")
+
+    def launch(browser, url):
+        raise FileNotFoundError(2, "No such file or directory", browser)
+    with pytest.raises(FileNotFoundError):
+        ks.watch(s, "/usr/bin/google-chrome", launch=launch)
+    text = (ks.state_dir() / "session.log").read_text()
+    assert "can't start the browser /usr/bin/google-chrome" in text
+
+
+@pytest.mark.parametrize("kind", ["missing", "not_executable"])
+def test_run_with_a_browser_that_cant_start_restores_and_fails(ks, monkeypatch, tmp_path, kind):
+    events = []
+    monkeypatch.setattr(ks, "HELPER_PORT", 0)
+    monkeypatch.setattr(ks.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(ks, "url_answers", lambda url, timeout=5: False)
+    monkeypatch.setattr(ks, "ensure_start_icon", lambda: None)
+    monkeypatch.setattr(ks, "lock_desktop", lambda: events.append("lock") or 1)
+    monkeypatch.setattr(ks, "restore_desktop", lambda: events.append("restore") or True)
+    browser = tmp_path / "chrome"
+    if kind == "not_executable":
+        browser.write_text("#!/bin/sh\n")
+        browser.chmod(0o644)
+    assert ks.run(str(browser)) == 1
+    assert events == ["lock", "restore"]
+    assert f"can't start the browser {browser}" in (ks.state_dir() / "session.log").read_text()
+
+
+# close_chrome on real processes
+def _spawn(code):
+    p = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True, start_new_session=True)
+    line = p.stdout.readline().strip()
+    return p, line
+
+
+def _gone(pid, within=3.0):
+    end = time.monotonic() + within
+    while time.monotonic() < end:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_close_chrome_terms_the_whole_group(ks):
+    p, child = _spawn("import subprocess, sys, time\n"
+                      "c = subprocess.Popen(['sleep', '30']); print(c.pid, flush=True); time.sleep(30)")
+    ks.close_chrome(p)
+    assert p.returncode == -signal.SIGTERM
+    assert _gone(int(child))
+
+
+def test_close_chrome_kills_after_the_grace(ks, monkeypatch):
+    monkeypatch.setattr(ks, "CHROME_STOP_S", 0.3)
+    p, _ = _spawn("import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                  "print('ready', flush=True)\ntime.sleep(30)")
+    t0 = time.monotonic()
+    ks.close_chrome(p)
+    assert p.returncode == -signal.SIGKILL and time.monotonic() - t0 < 3
+
+
+def test_close_chrome_on_a_process_already_gone(ks, monkeypatch):
+    p = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+    p.wait(5)
+    monkeypatch.setattr(ks.os, "killpg", lambda *a: pytest.fail("no signal to an exited process"))
+    ks.close_chrome(p)
+    ks.close_chrome(None)
+
+    class Vanished:          # poll() hasn't seen it yet, but the group is gone
+        pid = 999999
+
+        def poll(self):
+            return None
+    monkeypatch.setattr(ks.os, "killpg", lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError()))
+    ks.close_chrome(Vanished())
+
+
+RUN_SCRIPT = """
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ks", sys.argv[1])
+ks = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ks)
+ks.HELPER_PORT = 0
+ks.url_answers = lambda url, timeout=5: False
+ks.ensure_start_icon = lambda: None
+def mark(m):
+    with open(sys.argv[2], "a") as f:
+        f.write(m + "\\n")
+ks.lock_desktop = lambda: mark("lock") or 1
+ks.restore_desktop = lambda: mark("restore") or True
+sys.exit(ks.main(["run", "--browser", sys.argv[3]]))
+"""
+
+
+def test_sigterm_to_run_closes_chrome_and_restores(ks, tmp_path):
+    marks = tmp_path / "marks"
+    browser = tmp_path / "chrome"
+    browser.write_text(f'#!/bin/sh\necho "chrome $$" >> "{marks}"\nexec sleep 30\n')
+    browser.chmod(0o755)
+    p = subprocess.Popen([sys.executable, "-c", RUN_SCRIPT, str(SESSION_PY), str(marks), str(browser)])
+    try:
+        end = time.monotonic() + 10
+        while time.monotonic() < end and "chrome" not in (marks.read_text() if marks.exists() else ""):
+            time.sleep(0.05)
+        lines = marks.read_text().split()
+        assert lines[:2] == ["lock", "chrome"]
+        chrome_pid = int(lines[2])
+        p.send_signal(signal.SIGTERM)
+        assert p.wait(10) == 0
+    finally:
+        if p.poll() is None:
+            p.kill()
+    assert marks.read_text().splitlines()[-1] == "restore"
+    assert _gone(chrome_pid)
+    assert "kiosk session ended" in (ks.state_dir() / "session.log").read_text()

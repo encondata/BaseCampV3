@@ -25,6 +25,7 @@ update.sh (Linux only).
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import os
 import secrets
@@ -52,6 +53,8 @@ RELAUNCH_DELAY_S = 2.0      # assumption: Chrome is back within about 3 s
 WAIT_POLL_MS = 2000         # assumption: the waiting page's poll
 SYSTEM_CACHE_S = 5.0        # assumption
 PROBE_TIMEOUT_S = 5.0       # assumption
+EDGE_LIVE_TIMEOUT_S = 2.5   # assumption: /v1/state's own edge probe
+EDGE_CACHE_S = 2.0          # assumption: about the waiting page's poll
 CHROME_STOP_S = 5.0         # assumption: SIGTERM grace before SIGKILL
 JOIN_WAIT_S = 45            # assumption: nmcli --wait
 JOIN_TIMEOUT_S = 60         # assumption
@@ -533,25 +536,61 @@ class Session:
         self.chrome: subprocess.Popen | None = None
         self.waiting_url = ""
         self._cloud_failing = False
-        self._lock = threading.Lock()
+        self._sys_cond = threading.Condition()
         self._system: tuple[float, dict] | None = None
+        self._sys_refreshing = False
+        self._sys_gen = 0              # bumped by forget_system: a refresh under way is dropped
+        self._edge_lock = threading.Lock()
+        self._edge_at: float | None = None   # monotonic time of the last edge answer
 
     @property
     def ready(self) -> bool:
         return self.cloud_ok and self.edge_ok
 
+    def ready_now(self) -> bool:
+        """ready, with the edge checked live (EDGE_LIVE_TIMEOUT_S) once the
+        cloud has answered, so the waiting page never forwards to a dead
+        localhost:8090 on a check up to 15 s old. A result is kept for
+        EDGE_CACHE_S, so the page's 2 s poll doesn't hammer the edge; callers
+        arriving during a probe wait for that one. Not under the system lock."""
+        if not self.cloud_ok:
+            return False
+        with self._edge_lock:
+            if self._edge_at is None or time.monotonic() - self._edge_at >= EDGE_CACHE_S:
+                self.edge_ok = url_answers(EDGE_IDENTITY_URL, timeout=EDGE_LIVE_TIMEOUT_S)
+                self._edge_at = time.monotonic()
+            return self.ready
+
     def system(self) -> dict:
-        with self._lock:
-            now = time.monotonic()
-            if self._system and now - self._system[0] < SYSTEM_CACHE_S:
-                return self._system[1]
+        """system_info, cached SYSTEM_CACHE_S. The nmcli calls run outside the
+        lock: while one refresh runs, others get the last value (only the very
+        first callers, with nothing cached, wait for it)."""
+        with self._sys_cond:
+            while True:
+                if self._system and time.monotonic() - self._system[0] < SYSTEM_CACHE_S:
+                    return self._system[1]
+                if not self._sys_refreshing:
+                    break
+                if self._system:
+                    return self._system[1]
+                self._sys_cond.wait()
+            self._sys_refreshing = True
+            gen = self._sys_gen
+        info = None
+        try:
             info = system_info()
-            self._system = (now, info)
             return info
+        finally:
+            with self._sys_cond:
+                self._sys_refreshing = False
+                if info is not None and gen == self._sys_gen:
+                    self._system = (time.monotonic(), info)
+                self._sys_cond.notify_all()
 
     def forget_system(self) -> None:
-        with self._lock:
+        with self._sys_cond:
             self._system = None
+            self._sys_gen += 1
 
     def check_once(self) -> None:
         """The cloud until it has answered once (decided: every 15 s, never
@@ -564,7 +603,9 @@ class Session:
             elif not self._cloud_failing:
                 log(f"the cloud doesn't answer yet ({self.api_url}); trying every {CLOUD_CHECK_S} s")
             self._cloud_failing = not self.cloud_ok
-        self.edge_ok = url_answers(EDGE_IDENTITY_URL)
+        with self._edge_lock:
+            self.edge_ok = url_answers(EDGE_IDENTITY_URL)
+            self._edge_at = time.monotonic()
 
     def check_loop(self) -> None:
         while not self.exit.is_set():
@@ -573,6 +614,48 @@ class Session:
 
 
 # ── Helper HTTP server ────────────────────────────────────────────────
+def _proc_addr(hex_addr: str):
+    """An address as /proc/net/tcp{,6} prints it: 32-bit words in native byte
+    order, each as %08X. IPv4-mapped IPv6 comes back as IPv4."""
+    raw = b"".join(int(hex_addr[i:i + 8], 16).to_bytes(4, sys.byteorder) for i in range(0, len(hex_addr), 8))
+    ip = ipaddress.ip_address(raw)
+    return ip.ipv4_mapped or ip if ip.version == 6 else ip
+
+
+def _norm_ip(text: str):
+    ip = ipaddress.ip_address(text.split("%", 1)[0])
+    return ip.ipv4_mapped or ip if ip.version == 6 else ip
+
+
+def peer_uid(client_addr, server_port: int, proc_root: str = "/proc") -> int | None:
+    """The UID that owns the client end of a connection to this helper: the
+    /proc/net/tcp or tcp6 row whose local end is the client's (address, port)
+    and whose remote port is the server's. None when it can't be found (no
+    /proc, a row gone, a parse error): the caller refuses then."""
+    try:
+        want_ip, want_port = _norm_ip(client_addr[0]), int(client_addr[1])
+    except (ValueError, TypeError, IndexError):
+        return None
+    for name in ("tcp", "tcp6"):
+        try:
+            lines = Path(proc_root, "net", name).read_text(encoding="ascii", errors="replace").splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            f = line.split()
+            if len(f) < 8:
+                continue
+            try:
+                l_ip, l_port = f[1].rsplit(":", 1)
+                _, r_port = f[2].rsplit(":", 1)
+                if (int(l_port, 16) == want_port and int(r_port, 16) == server_port
+                        and _proc_addr(l_ip) == want_ip):
+                    return int(f[7])
+            except ValueError:
+                continue
+    return None
+
+
 CSP = ("default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
        "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
@@ -609,9 +692,22 @@ class Handler(BaseHTTPRequestHandler):
     def _path(self) -> str:
         return self.path.split("?", 1)[0]
 
+    def _peer_ok(self) -> bool:
+        """Only the session user's own processes (Chrome) get an answer, so
+        another Linux account on this laptop can't read the token from
+        /waiting. Fails closed: an unknown peer is refused too."""
+        uid = peer_uid(self.client_address, self.server.server_port)
+        if uid == os.getuid():
+            return True
+        log("helper: refused a request from " + ("an unknown process" if uid is None else f"uid {uid}"))
+        self._json(403, {"error": "forbidden"})
+        return False
+
     def _gate(self) -> bool:
-        """Host (no DNS rebinding), Origin (only the kiosk and this page) and,
-        for /v1/*, the session token."""
+        """The peer's UID, Host (no DNS rebinding), Origin (only the kiosk and
+        this page) and, for /v1/*, the session token."""
+        if not self._peer_ok():
+            return False
         if self.headers.get("Host") != self.server.host_header:
             self._send(400, b"Invalid host header", "text/plain; charset=utf-8")
             return False
@@ -642,6 +738,8 @@ class Handler(BaseHTTPRequestHandler):
         return data if isinstance(data, dict) else None
 
     def do_OPTIONS(self):  # noqa: N802
+        if not self._peer_ok():
+            return
         if (self.headers.get("Host") != self.server.host_header
                 or self.headers.get("Origin") != KIOSK_ORIGIN or not self._path().startswith("/v1/")):
             self._send(403, b"", "text/plain; charset=utf-8")
@@ -662,7 +760,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, waiting_page(s.token).encode(), "text/html; charset=utf-8",
                        (("Content-Security-Policy", CSP), ("X-Frame-Options", "DENY")))
         elif path == "/v1/state":
-            self._json(200, {"ready": s.ready, "cloud": s.cloud_ok, "last_attempt": s.last_attempt_ms,
+            self._json(200, {"ready": s.ready_now(), "cloud": s.cloud_ok, "last_attempt": s.last_attempt_ms,
                              "system": s.system()})
         elif path == "/v1/system":
             self._json(200, s.system())
@@ -870,11 +968,67 @@ def profile_dir(browser: str) -> Path:
     return Path.home() / ".local" / "share" / "serversherpa-kiosk" / "chrome"
 
 
+def kiosk_chrome_pids(profile: Path, proc_root: str = "/proc") -> list[int]:
+    """Live processes started on the kiosk profile (--user-data-dir=PROFILE,
+    or --user-data-dir PROFILE), never this one. A Chrome on any other profile
+    is never listed. No owner check: a sandboxed Chrome process can show as
+    root in /proc, and another account's process can't be signalled anyway."""
+    want = str(profile)
+    me = os.getpid()
+    found = []
+    try:
+        entries = sorted((e for e in os.listdir(proc_root) if e.isdigit()), key=int)
+    except OSError:
+        return []
+    for e in entries:
+        pid = int(e)
+        if pid == me:
+            continue
+        try:
+            with open(os.path.join(proc_root, e, "cmdline"), "rb") as f:
+                args = f.read().decode("utf-8", "replace").split("\0")
+        except OSError:
+            continue
+        if f"--user-data-dir={want}" in args or any(
+                a == "--user-data-dir" and b == want for a, b in zip(args, args[1:])):
+            found.append(pid)
+    return found
+
+
+def stop_kiosk_chrome(profile: Path, proc_root: str = "/proc", kill=os.kill) -> None:
+    """A Chrome left over on the kiosk profile (the session was SIGKILLed:
+    Chrome runs in its own session, so it lives on) would take the next launch
+    and exit it at once, and the watcher would loop. Each one gets SIGTERM,
+    then SIGKILL if still there after CHROME_STOP_S. A PID is signalled only
+    while /proc still shows it on the kiosk profile."""
+    pids = kiosk_chrome_pids(profile, proc_root)
+    if not pids:
+        return
+    log(f"a kiosk Chrome was left over ({len(pids)} processes); closing it")
+    for pid in pids:
+        try:
+            kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    end = time.monotonic() + CHROME_STOP_S
+    while time.monotonic() < end:
+        if not set(pids) & set(kiosk_chrome_pids(profile, proc_root)):
+            return
+        time.sleep(0.05)
+    for pid in set(pids) & set(kiosk_chrome_pids(profile, proc_root)):
+        try:
+            kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
 def launch_chrome(browser: str, url: str) -> subprocess.Popen:
     """Chrome starts with the user's own environment (no env=, and not through
-    run_cmd/tool_env), so its UI keeps the laptop's language."""
+    run_cmd/tool_env), so its UI keeps the laptop's language. A Chrome left
+    over on the kiosk profile is closed first."""
     profile = profile_dir(browser)
     profile.mkdir(parents=True, exist_ok=True)
+    stop_kiosk_chrome(profile)
     return subprocess.Popen([browser, *CHROME_FLAGS, f"--user-data-dir={profile}", url],
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, start_new_session=True)
@@ -902,7 +1056,14 @@ def watch(session: Session, browser: str, launch=launch_chrome) -> None:
     reopened whenever it closes, until the session is told to exit. Then the
     watcher stops and Chrome is closed."""
     while not session.exit.is_set():
-        proc = launch(browser, session.waiting_url)
+        try:
+            proc = launch(browser, session.waiting_url)
+        except OSError as exc:
+            # Missing or not executable: it won't fix itself, and a locked
+            # desktop with no Chrome has no way out. The session ends (run
+            # puts the desktop back); Start Kiosk tries again.
+            log(f"can't start the browser {browser} ({exc.strerror or exc}); ending the kiosk session")
+            raise
         session.chrome = proc
         while proc.poll() is None:
             if session.exit.wait(WATCH_S):
@@ -932,11 +1093,14 @@ def run(browser: str) -> int:
         signal.signal(s, stop)
     threading.Thread(target=server.serve_forever, name="helper", daemon=True).start()
     log(f"kiosk session started (browser {browser})")
+    rc = 0
     try:
         ensure_start_icon()
         lock_desktop()
         threading.Thread(target=session.check_loop, name="cloud-check", daemon=True).start()
         watch(session, browser)
+    except OSError:
+        rc = 1            # the browser couldn't start (watch logged it)
     finally:
         session.exit.set()
         close_chrome(session.chrome)
@@ -944,7 +1108,7 @@ def run(browser: str) -> int:
         server.shutdown()
         server.server_close()
         log("kiosk session ended")
-    return 0
+    return rc
 
 
 # ── Command line ──────────────────────────────────────────────────────
