@@ -115,10 +115,14 @@ ZEBRA_QUEUES = ["Zebra_Technologies_ZTC_ZD421-203dpi_ZPL", "ZTC-GK420d"]
 
 
 def lp_stubs(tmp_path, usblp=True, lpstat=LPSTAT_V, snaps=(), engine=True, raw_usb=False,
-             pkg=True, fail=""):
+             pkg=True, fail="", unit=None, active=False, units=("docker.socket", "docker.service"),
+             restart_fails=False):
     """Bash stub functions for the upkeep's tools plus the fake roots, as a
     script prefix. Every call goes to tmp_path/lp.calls. snaps: the installed
-    snaps (`snap remove` takes one away). A tool named in `fail` exits 1."""
+    snaps (`snap remove` takes one away). A tool named in `fail` exits 1.
+    systemctl: `cat` prints `unit` (fails when None), `is-active` follows
+    `active`, `list-unit-files` knows `units`, `restart` fails with
+    `restart_fails`."""
     calls = tmp_path / "lp.calls"
     for d in ("udev", "modprobe", "run"):
         (tmp_path / d).mkdir(exist_ok=True)
@@ -128,6 +132,8 @@ def lp_stubs(tmp_path, usblp=True, lpstat=LPSTAT_V, snaps=(), engine=True, raw_u
     if engine:
         dockerd.write_text("#!/bin/sh\n"); dockerd.chmod(0o755)
     conn = "manual" if raw_usb else "-"
+    if unit is not None:
+        (tmp_path / "lp.unit").write_text(unit)
     snaps_f = tmp_path / "lp.snaps"
 
     def tool(name, body="return 0"):
@@ -140,7 +146,13 @@ def lp_stubs(tmp_path, usblp=True, lpstat=LPSTAT_V, snaps=(), engine=True, raw_u
         + tool("lsmod", f'printf "Module Size Used\\n"; {"echo usblp 28672 0" if usblp else ":"}')
         + tool("modprobe") + tool("udevadm") + tool("lpadmin")
         + tool("lpstat", f'cat "{tmp_path}/lp.lpstat"')
-        + tool("systemctl", 'case "$1" in cat) return 1;; esac; return 0')
+        + tool("systemctl", 'case "$1" in '
+                            + ('cat) return 1;; ' if unit is None
+                               else f'cat) cat "{tmp_path}/lp.unit";; ')
+                            + f'is-active) return {0 if active else 1};; '
+                            + f'list-unit-files) case " {" ".join(units)} " in *" $3 "*) echo "$3 enabled";; esac;; '
+                            + f'restart) return {1 if restart_fails else 0};; '
+                            + 'esac; return 0')
         + tool("apt-get", f'echo "DEBIAN_FRONTEND=${{DEBIAN_FRONTEND:-}}" >> "{calls}"')
         + tool("dpkg-query", f'{"printf \"install ok installed\"" if pkg else "return 1"}')
         + tool("snap", f'case "$1" in '

@@ -598,6 +598,8 @@ docker_answers() { "${DOCKER[@]}" version >/dev/null 2>&1; }
 # The label-printer block reports through these.
 lp_say() { info "$@"; }
 lp_warn() { warn "$@"; }
+# start_kiosk starts the kiosk right after the upkeep, after its own pull.
+lp_kiosk_after_snap_removal() { :; }
 
 # >>> USB label printers (Linux). This block is the same in install.sh and
 # hostnet.sh; tests/test_install_sh.py checks the two copies match. Every
@@ -706,31 +708,57 @@ lp_engine_present() {
     /^ExecStart=/ { exec = 1 } /\/snap\// { snap = 1 } END { exit !(exec && !snap) }'
 }
 
+# lp_restart_engine: restart whichever of docker.socket and docker.service
+# exist (docker.io may ship no socket unit).
 lp_restart_engine() {
-  if systemctl restart docker.socket docker.service >/dev/null 2>&1; then
-    rm -f "$LP_SNAP_MARKER" 2>/dev/null || true
+  local u units=()
+  for u in docker.socket docker.service; do
+    [ -z "$(systemctl list-unit-files --no-legend "$u" 2>/dev/null)" ] || units+=("$u")
+  done
+  if [ "${#units[@]}" = 0 ]; then
+    lp_warn "Couldn't restart Docker Engine: systemd has no docker.service."
+  elif systemctl restart "${units[@]}" >/dev/null 2>&1; then
     lp_say "Restarted Docker Engine."
   else
-    lp_warn "Couldn't restart Docker Engine (systemctl restart docker.socket docker.service)."
+    lp_warn "Couldn't restart Docker Engine (systemctl restart ${units[*]})."
   fi
+}
+
+# lp_finish_snap_removal [restart]: the marker goes first, so a restart that
+# fails or is cut short is never retried every minute (each one would bounce
+# the kiosk). Docker Engine restarts when asked to (right after the purge) or
+# when it isn't running. Then lp_kiosk_after_snap_removal, which each script
+# defines: the purge deletes a kiosk container the snap ran (install.sh: no-op,
+# start_kiosk follows; hostnet.sh: starts the kiosk on Docker Engine if it
+# isn't running, never pulling, else hands over to the update job). That
+# can't live in this block: install.sh must not start the kiosk before its
+# own pull and start.
+lp_finish_snap_removal() {
+  rm -f "$LP_SNAP_MARKER" 2>/dev/null || true
+  if [ "${1:-}" = restart ] || ! systemctl is-active --quiet docker.service 2>/dev/null; then
+    lp_restart_engine
+  fi
+  lp_kiosk_after_snap_removal
+  return 0
 }
 
 # lp_remove_snap_docker: snap Docker next to Docker Engine fights it for
 # /var/run/docker.sock and can't write the data folder ("read-only file
 # system"), so the snap goes. Only when Docker Engine is there to take over.
-# The marker finishes the restart on a later run if this one is cut short.
+# The marker finishes the job on a later run if this one is cut short during
+# the purge; while the snap is still there it is only the purge that's retried.
 lp_remove_snap_docker() {
   if lp_snap_has docker; then
     lp_engine_present || return 0
     : >"$LP_SNAP_MARKER" 2>/dev/null || true
     if snap remove --purge docker >/dev/null 2>&1; then
       lp_say "Removed snap Docker (Docker Engine runs the kiosk)."
-      lp_restart_engine
+      lp_finish_snap_removal restart
     else
       lp_warn "Couldn't remove snap Docker (snap remove --purge docker)."
     fi
   elif [ -e "$LP_SNAP_MARKER" ]; then
-    lp_restart_engine
+    lp_finish_snap_removal
   fi
   return 0
 }
@@ -768,7 +796,7 @@ remove_printer_autoconfig() {
   local pkg=system-config-printer-udev
   command -v dpkg-query >/dev/null 2>&1 || return 0
   dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' || return 0
-  if DEBIAN_FRONTEND=noninteractive apt-get remove -y "$pkg" >/dev/null 2>&1; then
+  if DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 remove -y "$pkg" >/dev/null 2>&1; then
     info "Removed $pkg (it set up USB label printers as system printers, which blocks the kiosk)."
   else
     warn "Couldn't remove $pkg (apt-get remove -y $pkg); the kiosk removes the printer queues it makes every minute."
@@ -1037,16 +1065,41 @@ wait_kiosk_healthy() {
 # version the nightly update set aside after a failed health check
 # (rejected_image) is tried again. Only that key is cleared, in place.
 retry_rejected_image() {
-  local f="$KIOSK_DIR/update-state.json" text
   [ -n "$UPD_REJECTED" ] || return 0
   info "A version failed its health check on this laptop before; running the installer retries it."
-  UPD_REJECTED=''
-  if text=$(sed 's/"rejected_image"[[:space:]]*:[[:space:]]*"[^"]*"/"rejected_image": ""/' "$f" 2>/dev/null) \
-     && { printf '%s\n' "$text" >"$f"; } 2>/dev/null; then
+  put_rejected_image ''
+}
+
+# put_rejected_image ID: set rejected_image to ID in update-state.json in
+# place, every other key (phase included) kept; the file is written whole
+# when it doesn't exist or has no such key.
+put_rejected_image() {
+  local f="$KIOSK_DIR/update-state.json" text
+  UPD_REJECTED="$1"
+  if [ -f "$f" ] && grep -q '"rejected_image"' "$f" 2>/dev/null; then
+    if text=$(sed "s/\"rejected_image\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"rejected_image\": \"$1\"/" "$f" 2>/dev/null) \
+       && { printf '%s\n' "$text" >"$f"; } 2>/dev/null; then
+      return 0
+    fi
+    warn "Couldn't update $f."
     return 0
   fi
-  warn "Couldn't update $f."
-  return 0
+  write_update_state
+}
+
+# start_kept_previous REF NEW LOGS: no kiosk container ran before and NEW
+# didn't get healthy. Start the kept :previous image when there is one other
+# than NEW (as update.sh's start_without_container does); dies once it tried.
+start_kept_previous() {
+  local ref="$1" new="$2" logs="$3" kept
+  kept=$(image_id "$PREVIOUS_TAG")
+  [ -n "$kept" ] && [ "$kept" != "$new" ] || return 0
+  warn "The new version didn't become healthy (status: ${KIOSK_STATUS:-unknown}); starting the kept previous version $kept."
+  if "${DOCKER[@]}" tag "$PREVIOUS_TAG" "$ref" && compose up -d && wait_kiosk_healthy; then
+    write_update_state
+    die "The new kiosk version didn't become healthy, so the installer started the previous version, which is running. $logs"
+  fi
+  die "The new kiosk version didn't become healthy, and the previous version isn't healthy either (status: ${KIOSK_STATUS:-unknown}). $logs"
 }
 
 # start_kiosk: pull, start, wait until healthy, read the identity. Uses
@@ -1054,7 +1107,7 @@ retry_rejected_image() {
 # before is tried again (retry_rejected_image); a new version that doesn't get
 # healthy is rolled back and rejected.
 start_kiosk() {
-  local ref prev new logs
+  local ref prev new logs rejected_before
   ref=$(image_ref)
   logs="See: docker compose -f \"$KIOSK_DIR/docker-compose.yml\" logs edge"
   stop_legacy_kiosk
@@ -1065,6 +1118,7 @@ start_kiosk() {
   pull_image
   new=$("${DOCKER[@]}" image inspect -f '{{.Id}}' "$ref" 2>/dev/null || true)
   read_update_state
+  rejected_before="$UPD_REJECTED"
   retry_rejected_image
   info "Starting the kiosk"
   if ! { compose up -d && wait_kiosk_healthy; }; then
@@ -1078,6 +1132,13 @@ start_kiosk() {
       write_update_state
       die "The new kiosk version didn't become healthy, and the previous version isn't healthy either (status: ${KIOSK_STATUS:-unknown}). $logs"
     fi
+    # No earlier container to go back to: the version that failed stays
+    # rejected (so the retry above doesn't undo the nightly update's
+    # rejection), then the kept :previous image gets its chance.
+    if [ -n "$new" ] && { [ -z "$prev" ] || [ -n "$rejected_before" ]; }; then
+      put_rejected_image "$new"
+    fi
+    [ -n "$prev" ] || start_kept_previous "$ref" "$new" "$logs"
     die "The kiosk didn't become healthy in time (status: ${KIOSK_STATUS:-unknown}). $logs"
   fi
   # A re-run ends any update a crash left half done.

@@ -564,9 +564,9 @@ UDEV = "udev/60-serversherpa-label-printers.rules"
 MODPROBE = "modprobe/serversherpa-no-usblp.conf"
 
 
-def _upkeep(tmp_path, os_name="Linux", uid="0", **kw):
+def _upkeep(tmp_path, os_name="Linux", uid="0", extra="", **kw):
     stubs = lp_stubs(tmp_path, **kw)
-    return hn(tmp_path, stubs + f'OS={os_name}; id() {{ echo {uid}; }}; label_upkeep; echo rc=$?')
+    return hn(tmp_path, stubs + extra + f'OS={os_name}; id() {{ echo {uid}; }}; label_upkeep; echo rc=$?')
 
 
 def test_upkeep_as_root_on_linux_fixes_what_is_off(tmp_path):
@@ -667,3 +667,135 @@ def test_script_run_keeps_mains_exit_code(tmp_path):
     r = subprocess.run([BASH, str(HOSTNET_SH)], capture_output=True, text=True, env=env)
     assert r.returncode == 1 and r.stdout == "" and r.stderr == ""
     assert (tmp_path / "u" / "60-serversherpa-label-printers.rules").exists()   # upkeep still ran
+
+
+# ── snap Docker removal: no restart loop, kiosk back up ──────────────
+MARKER = "run/serversherpa-kiosk-snap-docker-removed"
+RESTART = "systemctl restart docker.socket docker.service"
+
+
+def _marker(tmp_path):
+    (tmp_path / "run").mkdir(exist_ok=True)
+    (tmp_path / MARKER).write_text("")
+
+
+def test_upkeep_failed_restart_is_not_retried_on_the_next_run(tmp_path):
+    _upkeep(tmp_path, snaps=("docker",), restart_fails=True)
+    calls = lp_calls(tmp_path)
+    assert "snap remove --purge docker" in calls and RESTART in calls
+    assert not (tmp_path / MARKER).exists()   # gone before the restart was tried
+    (tmp_path / "lp.calls").unlink()
+    _upkeep(tmp_path, snaps=(), restart_fails=True)
+    assert not [c for c in lp_calls(tmp_path) if c.startswith("systemctl restart")]
+
+
+def test_upkeep_marker_with_engine_already_running_only_clears_the_marker(tmp_path):
+    _marker(tmp_path)
+    _upkeep(tmp_path, snaps=(), active=True)
+    calls = lp_calls(tmp_path)
+    assert "systemctl is-active --quiet docker.service" in calls
+    assert not [c for c in calls if c.startswith("systemctl restart")]
+    assert not (tmp_path / MARKER).exists()
+
+
+def test_upkeep_restarts_right_after_the_purge_even_when_engine_is_active(tmp_path):
+    _upkeep(tmp_path, snaps=("docker",), active=True)
+    assert RESTART in lp_calls(tmp_path)
+
+
+def test_upkeep_restarts_only_the_units_that_exist(tmp_path):
+    _marker(tmp_path)
+    _upkeep(tmp_path, snaps=(), units=("docker.service",))
+    calls = lp_calls(tmp_path)
+    assert "systemctl restart docker.service" in calls and RESTART not in calls
+    (tmp_path / "lp.calls").unlink()
+    _marker(tmp_path)
+    _upkeep(tmp_path, snaps=(), units=())
+    assert not [c for c in lp_calls(tmp_path) if c.startswith("systemctl restart")]
+    assert not (tmp_path / MARKER).exists()
+
+
+def test_upkeep_failed_snap_removal_with_the_marker_never_restarts_engine(tmp_path):
+    _marker(tmp_path)
+    snap_fails = (f'snap() {{ echo "snap $*" >> "{tmp_path}/lp.calls"; '
+                  'case "$1" in list) [ "$2" = docker ];; *) return 1;; esac; }; ')
+    for _ in range(2):
+        r = _upkeep(tmp_path, snaps=("docker",), extra=snap_fails)
+        assert r.stdout == "rc=0\n"
+    calls = lp_calls(tmp_path)
+    assert calls.count("snap remove --purge docker") == 2
+    assert not [c for c in calls if c.startswith("systemctl restart")]
+    assert (tmp_path / MARKER).exists()   # the purge is still owed
+
+
+def test_upkeep_detects_engine_from_its_systemd_unit(tmp_path):
+    unit = "# /lib/systemd/system/docker.service\n[Service]\nExecStart=/usr/bin/dockerd -H fd://\n"
+    _upkeep(tmp_path, snaps=("docker",), engine=False, unit=unit)
+    calls = lp_calls(tmp_path)
+    assert "systemctl cat docker.service" in calls
+    assert "snap remove --purge docker" in calls and RESTART in calls
+
+
+def test_upkeep_leaves_snap_docker_when_the_unit_is_the_snaps(tmp_path):
+    unit = "[Service]\nExecStart=/usr/bin/snap run docker.dockerd\nX=/snap/docker/1\n"
+    _upkeep(tmp_path, snaps=("docker",), engine=False, unit=unit)
+    assert "snap remove --purge docker" not in lp_calls(tmp_path)
+
+
+IMAGE = "ghcr.io/encondata/serversherpa-kiosk-laptop:stable"
+
+
+def _docker_stub(tmp_path, running=False, image=True, up_ok=True):
+    """docker and timeout stubs for the kiosk start after the purge."""
+    (tmp_path / "docker-compose.yml").write_text(f"name: serversherpa-kiosk\nservices:\n  edge:\n    image: {IMAGE}\n")
+    c = tmp_path / "lp.calls"
+    return (f'timeout() {{ echo "timeout $1" >> "{c}"; shift; "$@"; }}; '
+            f'docker() {{ echo "docker $*" >> "{c}"; case "$1 $2" in '
+            f'"inspect -f") echo {"true" if running else "false"};; '
+            f'"image inspect") return {0 if image else 1};; '
+            f'"compose -f") return {0 if up_ok else 1};; esac; return 0; }}; ')
+
+
+UP = f"compose -f {{}}/docker-compose.yml up -d --pull never"
+KICK = "systemctl start --no-block serversherpa-kiosk-update.service"
+
+
+def test_after_the_purge_a_stopped_kiosk_starts_from_the_image_it_has(tmp_path):
+    _upkeep(tmp_path, snaps=("docker",), extra=_docker_stub(tmp_path))
+    calls = lp_calls(tmp_path)
+    assert f"docker image inspect {IMAGE}" in calls
+    assert "docker " + UP.format(tmp_path) in calls
+    assert "timeout 15" in calls   # bounded, inside the 30 s budget
+    assert calls.index(RESTART) < calls.index("docker " + UP.format(tmp_path))
+    assert KICK not in calls and not any("pull" in c and "--pull never" not in c for c in calls)
+
+
+def test_after_the_purge_a_missing_image_is_left_to_the_update_job(tmp_path):
+    _upkeep(tmp_path, snaps=("docker",), extra=_docker_stub(tmp_path, image=False))
+    calls = lp_calls(tmp_path)
+    assert not [c for c in calls if c.startswith("docker compose")]
+    assert KICK in calls
+
+
+def test_after_the_purge_a_failed_start_is_left_to_the_update_job(tmp_path):
+    _upkeep(tmp_path, snaps=("docker",), extra=_docker_stub(tmp_path, up_ok=False))
+    calls = lp_calls(tmp_path)
+    assert "docker " + UP.format(tmp_path) in calls and KICK in calls
+
+
+def test_after_the_purge_a_running_kiosk_is_left_alone(tmp_path):
+    _upkeep(tmp_path, snaps=("docker",), extra=_docker_stub(tmp_path, running=True))
+    calls = lp_calls(tmp_path)
+    assert not [c for c in calls if c.startswith(("docker compose", "docker image"))]
+    assert KICK not in calls
+
+
+def test_interrupted_removal_also_brings_the_kiosk_back(tmp_path):
+    _marker(tmp_path)
+    _upkeep(tmp_path, snaps=(), active=True, extra=_docker_stub(tmp_path))
+    assert "docker " + UP.format(tmp_path) in lp_calls(tmp_path)
+
+
+def test_no_kiosk_start_without_a_snap_removal(tmp_path):
+    _upkeep(tmp_path, snaps=(), extra=_docker_stub(tmp_path))
+    assert not [c for c in lp_calls(tmp_path) if c.startswith("docker")]

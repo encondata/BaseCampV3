@@ -341,8 +341,14 @@ instead.
   snap Docker was installed next to Docker Engine. The installer and the host
   network job remove snap Docker and restart Docker Engine on their own; if
   only snap Docker was there, the installer installs Docker Engine first.
+  Removing the snap deletes a kiosk container it ran, so the host network job
+  then starts the kiosk on Docker Engine from the image already there, or
+  starts the update job when the image has to be downloaded.
 - macOS and Linux, "skipping ... it failed its health check before" in
-  `update.log`: re-running the installer tries that version again.
+  `update.log`: re-running the installer tries that version again. If it
+  still isn't healthy, the installer goes back to the previous version (or
+  starts the kept previous image when no kiosk was running), rejects the
+  version again, and exits with an error.
 - Kiosk logs: `docker compose -f <install folder>/docker-compose.yml logs -f edge`
 - Health: `docker compose -f <install folder>/docker-compose.yml ps` shows the
   container as healthy once the kiosk answers.

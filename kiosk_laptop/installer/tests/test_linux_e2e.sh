@@ -90,8 +90,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-install_kiosk() {
-  sudo env KIOSK_IMAGE="$IMAGE" KIOSK_TEMPLATE_DIR="$INSTALLER_DIR" KIOSK_NONINTERACTIVE=1 \
+install_kiosk() {  # install_kiosk [VAR=value...]
+  sudo env "$@" KIOSK_IMAGE="$IMAGE" KIOSK_TEMPLATE_DIR="$INSTALLER_DIR" KIOSK_NONINTERACTIVE=1 \
     bash "$INSTALLER_DIR/install.sh" --api-url http://127.0.0.1:9 --yes
 }
 
@@ -234,19 +234,26 @@ update_log | grep -q "skipping $BROKEN_IMAGE" || fail "update.log doesn't say it
 [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$GOOD_IMAGE" ] || fail "the channel tag wasn't pointed back at the running image"
 pass "exit 0, rejected image skipped, container untouched"
 
-step "4c. Re-install keeps the rejected image off too"
-CREATED=$(container_field '{{.Created}}')
-REJECTED=$(state_value rejected_image)
-rc=0; OUT=$(install_kiosk 2>&1) || rc=$?
+step "4c. Re-install retries the rejected image, then rolls back"
+# Running the installer is an explicit retry: the rejected image is started
+# again, fails again, and the installer goes back to the good image, rejects
+# the broken one again and exits nonzero.
+rc=0; OUT=$(install_kiosk HEALTH_TIMEOUT_S=90 HEALTH_POLL_S=2 2>&1) || rc=$?
 printf '%s\n' "$OUT" | tail -n 20
-[ "$rc" = 0 ] || fail "install.sh exited $rc on a re-install with the rejected image published"
-printf '%s\n' "$OUT" | grep -q "failed its health check on this laptop before" \
-  || fail "install.sh didn't warn that the newest version failed its health check before"
-[ "$(container_field '{{.Created}}')" = "$CREATED" ] || fail "the re-install recreated the container"
-[ "$(container_field '{{.Image}}')" = "$GOOD_IMAGE" ] || fail "the re-install left the good image $GOOD_IMAGE"
-[ "$(state_value rejected_image)" = "$REJECTED" ] || fail "the re-install changed rejected_image ($REJECTED -> $(state_value rejected_image))"
+[ "$rc" != 0 ] || fail "install.sh exited 0 although the retried image is still broken"
+printf '%s\n' "$OUT" | grep -q "running the installer retries it" \
+  || fail "install.sh didn't say it retries the version that failed its health check before"
+printf '%s\n' "$OUT" | grep -q "going back to the previous one" || fail "install.sh didn't roll back"
+printf '%s\n' "$OUT" | grep -q "rolled back to the previous version, which is running" \
+  || fail "install.sh didn't say the rollback worked"
+[ "$(container_field '{{.Image}}')" = "$GOOD_IMAGE" ] || fail "the re-install didn't go back to the good image $GOOD_IMAGE"
+wait_healthy 150 || fail "container didn't get healthy again after the installer's rollback"
+[ "$(state_value rejected_image)" = "$BROKEN_IMAGE" ] \
+  || fail "update-state.json doesn't reject $BROKEN_IMAGE again (rejected_image: $(state_value rejected_image))"
+[ "$(state_value phase)" = "done" ] || fail "update-state.json phase isn't done after the installer's rollback"
+[ "$(serial || true)" = "$SERIAL" ] || fail "serial changed across the installer's rollback"
 stop_timer
-pass "exit 0, warned, container untouched, rejected_image unchanged"
+pass "exit $rc, retried, rolled back, healthy on the good image, broken image rejected again"
 
 # ── 5. Uninstall, then purge ──────────────────────────────────────────
 step "5. Uninstall (data kept)"

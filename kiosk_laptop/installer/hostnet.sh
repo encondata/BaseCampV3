@@ -301,6 +301,42 @@ main() {
 lp_say() { :; }
 lp_warn() { :; }
 
+# lp_kiosk_after_snap_removal: the label-printer block calls this after it
+# removed snap Docker, whose purge deletes a kiosk container the snap ran.
+# When no kiosk container runs on Docker Engine, it is started from the image
+# already there: never pulled, detached, and cut off after
+# HOSTNET_START_TIMEOUT_S so the run stays inside its 30 s budget. When the
+# image is missing or the start fails, the update job is started now (not
+# waited for); it pulls the image and starts a missing container.
+HOSTNET_KIOSK_CONTAINER='serversherpa-kiosk-edge-1'
+HOSTNET_UPDATE_SERVICE='serversherpa-kiosk-update.service'
+HOSTNET_START_TIMEOUT_S="${HOSTNET_START_TIMEOUT_S:-15}"
+
+# compose_image: the image docker-compose.yml runs.
+compose_image() {
+  local line
+  line=$(grep -E '^[[:space:]]*image:' "$KIOSK_DIR/docker-compose.yml" 2>/dev/null | head -n 1)
+  line="${line#*image:}"
+  printf '%s' "${line#"${line%%[![:space:]]*}"}"
+}
+
+bounded() {
+  if command -v timeout >/dev/null 2>&1; then timeout "$HOSTNET_START_TIMEOUT_S" "$@"; else "$@"; fi
+}
+
+lp_kiosk_after_snap_removal() {
+  local compose_file="$KIOSK_DIR/docker-compose.yml" ref
+  [ -f "$compose_file" ] && command -v docker >/dev/null 2>&1 || return 0
+  [ "$(docker inspect -f '{{.State.Running}}' "$HOSTNET_KIOSK_CONTAINER" 2>/dev/null)" != true ] || return 0
+  ref=$(compose_image)
+  if [ -n "$ref" ] && docker image inspect "$ref" >/dev/null 2>&1 \
+     && bounded docker compose -f "$compose_file" up -d --pull never >/dev/null 2>&1; then
+    return 0
+  fi
+  systemctl start --no-block "$HOSTNET_UPDATE_SERVICE" >/dev/null 2>&1 || true
+  return 0
+}
+
 # >>> USB label printers (Linux). This block is the same in install.sh and
 # hostnet.sh; tests/test_install_sh.py checks the two copies match. Every
 # step is best-effort, returns 0, and acts only when something is off: it
@@ -408,31 +444,57 @@ lp_engine_present() {
     /^ExecStart=/ { exec = 1 } /\/snap\// { snap = 1 } END { exit !(exec && !snap) }'
 }
 
+# lp_restart_engine: restart whichever of docker.socket and docker.service
+# exist (docker.io may ship no socket unit).
 lp_restart_engine() {
-  if systemctl restart docker.socket docker.service >/dev/null 2>&1; then
-    rm -f "$LP_SNAP_MARKER" 2>/dev/null || true
+  local u units=()
+  for u in docker.socket docker.service; do
+    [ -z "$(systemctl list-unit-files --no-legend "$u" 2>/dev/null)" ] || units+=("$u")
+  done
+  if [ "${#units[@]}" = 0 ]; then
+    lp_warn "Couldn't restart Docker Engine: systemd has no docker.service."
+  elif systemctl restart "${units[@]}" >/dev/null 2>&1; then
     lp_say "Restarted Docker Engine."
   else
-    lp_warn "Couldn't restart Docker Engine (systemctl restart docker.socket docker.service)."
+    lp_warn "Couldn't restart Docker Engine (systemctl restart ${units[*]})."
   fi
+}
+
+# lp_finish_snap_removal [restart]: the marker goes first, so a restart that
+# fails or is cut short is never retried every minute (each one would bounce
+# the kiosk). Docker Engine restarts when asked to (right after the purge) or
+# when it isn't running. Then lp_kiosk_after_snap_removal, which each script
+# defines: the purge deletes a kiosk container the snap ran (install.sh: no-op,
+# start_kiosk follows; hostnet.sh: starts the kiosk on Docker Engine if it
+# isn't running, never pulling, else hands over to the update job). That
+# can't live in this block: install.sh must not start the kiosk before its
+# own pull and start.
+lp_finish_snap_removal() {
+  rm -f "$LP_SNAP_MARKER" 2>/dev/null || true
+  if [ "${1:-}" = restart ] || ! systemctl is-active --quiet docker.service 2>/dev/null; then
+    lp_restart_engine
+  fi
+  lp_kiosk_after_snap_removal
+  return 0
 }
 
 # lp_remove_snap_docker: snap Docker next to Docker Engine fights it for
 # /var/run/docker.sock and can't write the data folder ("read-only file
 # system"), so the snap goes. Only when Docker Engine is there to take over.
-# The marker finishes the restart on a later run if this one is cut short.
+# The marker finishes the job on a later run if this one is cut short during
+# the purge; while the snap is still there it is only the purge that's retried.
 lp_remove_snap_docker() {
   if lp_snap_has docker; then
     lp_engine_present || return 0
     : >"$LP_SNAP_MARKER" 2>/dev/null || true
     if snap remove --purge docker >/dev/null 2>&1; then
       lp_say "Removed snap Docker (Docker Engine runs the kiosk)."
-      lp_restart_engine
+      lp_finish_snap_removal restart
     else
       lp_warn "Couldn't remove snap Docker (snap remove --purge docker)."
     fi
   elif [ -e "$LP_SNAP_MARKER" ]; then
-    lp_restart_engine
+    lp_finish_snap_removal
   fi
   return 0
 }

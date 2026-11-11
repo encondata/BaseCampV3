@@ -807,7 +807,7 @@ def test_start_kiosk_retries_a_version_that_was_rejected(sh, tmp_path):
     assert (st["phase"], st["rejected_image"], st["previous_image"]) == ("done", "", "sha256:older")
 
 
-def test_start_kiosk_forgets_the_rejected_version_in_the_file_before_starting(sh, tmp_path):
+def test_start_kiosk_failed_retry_without_a_container_rejects_it_again_in_place(sh, tmp_path):
     _write_state(tmp_path, previous_image="sha256:older", rejected_image="sha256:bad", phase="updating")
     st_file = tmp_path / "update-state.json"
     ino = st_file.stat().st_ino
@@ -815,8 +815,49 @@ def test_start_kiosk_forgets_the_rejected_version_in_the_file_before_starting(sh
     r = _start(sh, tmp_path, fake)
     assert r.returncode != 0 and "didn't become healthy in time" in r.stderr
     st = _state_of(tmp_path)
-    assert (st["rejected_image"], st["phase"], st["previous_image"]) == ("", "updating", "sha256:older")
+    assert (st["rejected_image"], st["phase"], st["previous_image"]) == ("sha256:bad", "updating", "sha256:older")
     assert st_file.stat().st_ino == ino   # rewritten in place: owner and mode stay
+
+
+def test_start_kiosk_clears_the_rejection_in_the_file_before_starting(sh, tmp_path):
+    _write_state(tmp_path, rejected_image="sha256:bad")
+    fake = _kiosk_docker(tmp_path, running="", pulled="sha256:bad")
+    _start(sh, tmp_path, fake, extra=f'compose() {{ cat "{tmp_path}/update-state.json" > "{tmp_path}/seen"; }}; ')
+    import json
+    assert json.loads((tmp_path / "seen").read_text())["rejected_image"] == ""
+
+
+def test_start_kiosk_failed_retry_without_a_container_starts_the_kept_previous(sh, tmp_path):
+    _write_state(tmp_path, rejected_image="sha256:bad")
+    fake = _kiosk_docker(tmp_path, running="", pulled="sha256:bad", previous_tag="sha256:prev",
+                         health=("unhealthy", "healthy"))
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode != 0
+    assert "started the previous version, which is running" in r.stderr, r.stderr
+    calls = (tmp_path / "docker.log").read_text().splitlines()
+    i_tag = calls.index(f"tag serversherpa-kiosk-laptop:previous {STABLE}")
+    assert any(c.endswith(" up -d") for c in calls[i_tag:])
+    st = _state_of(tmp_path)
+    assert (st["rejected_image"], st["phase"]) == ("sha256:bad", "done")
+
+
+def test_start_kiosk_kept_previous_that_fails_too_says_so(sh, tmp_path):
+    _write_state(tmp_path, rejected_image="sha256:bad")
+    fake = _kiosk_docker(tmp_path, running="", pulled="sha256:bad", previous_tag="sha256:prev",
+                         health=("unhealthy",))
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode != 0 and "isn't healthy either" in r.stderr
+    assert _state_of(tmp_path)["rejected_image"] == "sha256:bad"
+
+
+def test_start_kiosk_kept_previous_that_is_the_failed_image_is_not_tried(sh, tmp_path):
+    _write_state(tmp_path, rejected_image="sha256:bad")
+    fake = _kiosk_docker(tmp_path, running="", pulled="sha256:bad", previous_tag="sha256:bad",
+                         health=("unhealthy",))
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode != 0 and "didn't become healthy in time" in r.stderr
+    assert not any(c.startswith("tag ") for c in (tmp_path / "docker.log").read_text().splitlines())
+    assert _state_of(tmp_path)["rejected_image"] == "sha256:bad"
 
 
 def test_start_kiosk_without_a_rejected_version_says_nothing_about_it(sh, tmp_path):
@@ -1080,6 +1121,18 @@ def test_store_installer_retries_a_rejected_version(sh, tmp_path, mode):
 
 
 @pytest.mark.parametrize("mode", ["containerd", "classic"])
+def test_store_installer_no_container_failed_retry_falls_back_to_previous(sh, tmp_path, mode):
+    _write_state(tmp_path, rejected_image="sha256:bad")
+    fake, store = store_docker(tmp_path, mode, STABLE, {STABLE: "sha256:old", PREV_TAG: "sha256:prev"},
+                               running="", pulled="sha256:bad", bad=("sha256:bad",))
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode != 0 and "started the previous version, which is running" in r.stderr, r.stderr
+    tags, running = store()
+    assert running == "sha256:prev" and tags[STABLE] == "sha256:prev"
+    assert _state_of(tmp_path)["rejected_image"] == "sha256:bad"
+
+
+@pytest.mark.parametrize("mode", ["containerd", "classic"])
 def test_store_installer_no_container_retries_a_rejected_version(sh, tmp_path, mode):
     _write_state(tmp_path, rejected_image="sha256:bad")
     fake, store = store_docker(tmp_path, mode, STABLE, {STABLE: "sha256:old", PREV_TAG: "sha256:old"},
@@ -1296,7 +1349,7 @@ def test_setup_label_printers_fixes_everything_once(sh, tmp_path):
     stubs = lp_stubs(tmp_path, snaps=("chromium",))
     r = sh(stubs + "OS=Linux; setup_label_printers")
     calls = lp_calls(tmp_path)
-    assert "apt-get remove -y system-config-printer-udev" in calls
+    assert "apt-get -o DPkg::Lock::Timeout=120 remove -y system-config-printer-udev" in calls
     assert "DEBIAN_FRONTEND=noninteractive" in calls
     assert "modprobe -r usblp" in calls
     assert [c for c in calls if c.startswith("lpadmin")] == [f"lpadmin -x {q}" for q in ZEBRA_QUEUES]
@@ -1379,6 +1432,30 @@ def test_ensure_docker_with_snap_and_engine_only_removes_the_snap(sh, tmp_path):
     assert "snap remove --purge docker" in calls
     assert "systemctl restart docker.socket docker.service" in calls
     assert "Removed snap Docker" in r.stdout
+
+
+def test_ensure_docker_snap_removal_failure_is_a_warning_and_restarts_nothing(sh, tmp_path):
+    stubs = lp_stubs(tmp_path, snaps=("docker",))
+    marker = tmp_path / "run" / "serversherpa-kiosk-snap-docker-removed"
+    marker.write_text("")
+    r = sh(stubs + f'snap() {{ echo "snap $*" >> "{tmp_path}/lp.calls"; '
+                   'case "$1" in list) [ "$2" = docker ];; *) return 1;; esac; }; '
+                   'OS=Linux; lp_remove_snap_docker; echo rc=$?')
+    assert "rc=0" in r.stdout and "Couldn't remove snap Docker" in r.stderr
+    assert not [c for c in lp_calls(tmp_path) if c.startswith("systemctl restart")]
+    assert marker.exists()
+
+
+def test_install_failed_engine_restart_is_a_warning_and_clears_the_marker(sh, tmp_path):
+    r, calls = _ensure_docker_linux(sh, tmp_path, snaps=("docker",), engine=True, restart_fails=True)
+    assert "systemctl restart docker.socket docker.service" in calls
+    assert "Couldn't restart Docker Engine (systemctl restart docker.socket docker.service)." in r.stderr
+    assert not (tmp_path / "run" / "serversherpa-kiosk-snap-docker-removed").exists()
+
+
+def test_install_starts_no_kiosk_from_the_label_printer_block(sh, tmp_path):
+    r, calls = _ensure_docker_linux(sh, tmp_path, snaps=("docker",), engine=True)
+    assert not any(c.startswith(("docker", "systemctl start")) for c in calls)
 
 
 def test_ensure_docker_with_engine_only_touches_no_snap(sh, tmp_path):
