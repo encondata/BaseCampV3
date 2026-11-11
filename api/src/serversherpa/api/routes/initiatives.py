@@ -16,11 +16,11 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from serversherpa.access.defaults import GATE_BYPASS_RANK
-from serversherpa.access.scope import scope_conditions
+from serversherpa.access.scope import roster_row_condition, scope_conditions
 from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    ImportJobOut, InitiativeAssetOut, InitiativeAssetsAddIn,
+    AssetTotalsOut, ImportJobOut, InitiativeAssetOut, InitiativeAssetsAddIn,
     InitiativeAssetSummary, InitiativeAssetUpdateIn, InitiativeCreateIn,
     InitiativeDetailOut, InitiativeItem, InitiativeLinkAddIn,
     InitiativeLinkRow, InitiativeLinksOut, InitiativeLinkUpdateIn,
@@ -28,6 +28,7 @@ from serversherpa.api.schemas import (
     InitiativePersonUpdateIn, InitiativeUpdateIn, KioskPasswordOut, PlacementRecheckOut,
 )
 from serversherpa.assets.placement import asset_placements
+from serversherpa.clientgroups.service import rematch_initiative, rematch_rows
 from serversherpa.db.models import (
     Asset, AssetCategory, AssetModel, Client, ImportJob, Initiative, InitiativeAsset,
     InitiativeLink, InitiativePerson, Partner, Person, Site, StatusValue,
@@ -471,6 +472,10 @@ async def update_initiative(
         if learning_codes.EXPIRY_FIELDS & changes.keys():
             await db.flush()
             await learning_codes.refresh_expiry(db, initiative)
+        if "client_id" in changes:
+            # the move's Owner values now resolve against another client's groups
+            await db.flush()
+            await rematch_initiative(db, initiative.id)
         await db.commit()
     except IntegrityError as exc:
         # a racing save took the same code, or a racing admin the same
@@ -1015,12 +1020,18 @@ NULLABLE_TEXT_ASSET_FIELDS = (
 async def _initiative_asset_rows(
     db: DbSession, initiative_id: uuid.UUID, actor: AuthContext,
 ) -> list[InitiativeAssetOut]:
-    rows = (await db.execute(
+    query = (
         select(InitiativeAsset, Asset)
         .join(Asset, Asset.id == InitiativeAsset.asset_id)
         .where(InitiativeAsset.initiative_id == initiative_id)
         .order_by(InitiativeAsset.priority_wave.nullslast(),
-                  natural(Asset.serial_number)))).all()
+                  natural(Asset.serial_number)))
+    # client groups: a restricted login sees only its groups' rows (never
+    # leaning on an assets grant — the roster needs initiatives:view alone)
+    row_cond = roster_row_condition(actor.access)
+    if row_cond is not None:
+        query = query.where(row_cond)
+    rows = (await db.execute(query)).all()
     # one merged vocabulary (0022) labels both the roster row's own
     # status and the embedded asset's status
     statuses = {s.key: (s.label, s.color) for s in await db.scalars(
@@ -1094,6 +1105,22 @@ async def list_initiative_assets(
 ) -> list[InitiativeAssetOut]:
     await _get_initiative(db, initiative_id, actor)
     return await _initiative_asset_rows(db, initiative_id, actor)
+
+
+@router.get("/{initiative_id}/asset-totals", response_model=AssetTotalsOut)
+async def initiative_asset_totals(
+    initiative_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "view"),
+) -> AssetTotalsOut:
+    """True roster counts for the move: every row, whatever groups the
+    actor sees (the list itself may be shorter for a restricted login)."""
+    await _get_initiative(db, initiative_id, actor)
+    counts = dict((await db.execute(
+        select(InitiativeAsset.status, func.count())
+        .where(InitiativeAsset.initiative_id == initiative_id)
+        .group_by(InitiativeAsset.status))).all())
+    return AssetTotalsOut(total=sum(counts.values()), by_status=counts)
 
 
 async def _already_attached(
@@ -1232,6 +1259,9 @@ async def update_initiative_asset(
         audit(db, actor_id=actor.person.id, entity_type="initiative",
               entity_id=str(assoc.initiative_id), action="asset_update",
               changes=changes)
+    if "owner" in changes:
+        await db.flush()
+        await rematch_rows(db, [assoc.id])
     if "status" in changes:
         # A status edit is a scan event: record it and run the rules
         # engine here, anchored to THIS initiative. A failing rule rolls

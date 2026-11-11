@@ -345,3 +345,31 @@ async def test_revoke_all_sessions_requires_users_change(client, db, seeded_user
     worker_hdrs = await _login(client, "worker@test.example.com")   # no users:change
     resp = await client.post(f"/users/{target.id}/sessions/revoke-all", headers=worker_hdrs)
     assert resp.status_code == 403
+
+
+async def test_user_detail_affiliation_group_ids(client, db, seeded_user):
+    from serversherpa.db.models import ClientContactGroup
+    from tests.client_groups_fixtures import client_user, seed_grouped_client
+
+    s = await seed_grouped_client(db)
+    cid = s.client.id
+    owner_headers = await client_user(db, client, cid, "client_owner")
+    chipped = await _add_user(db, first="Chip", last="Ped",
+                              email="chip@test.example.com", role="staff")
+    pid = chipped.id
+    db.add(PersonRole(person_id=pid, role="client_viewer", client_id=cid))
+    db.add(ClientContactGroup(client_id=cid, person_id=pid,
+                              group_id=s.groups["Platform"].id))
+    await db.commit()
+    plat = str(s.groups["Platform"].id)
+
+    hdrs = await login_admin(client, db, seeded_user)
+    body = (await client.get(f"/users/{pid}", headers=hdrs)).json()
+    grants = [r for r in body["roles"] if r["org"] and r["org"]["kind"] == "client"]
+    assert [r["group_ids"] for r in grants] == [[plat]]
+
+    # a non-global caller never sees the ids (here: a client login on their own row)
+    # a client login can't read the detail at all (users:view is staff-only),
+    # so the ids can never reach it; the route also fills them only for global callers
+    mine = await client.get(f"/users/{pid}", headers=owner_headers)
+    assert mine.status_code == 403

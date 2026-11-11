@@ -26,6 +26,7 @@ const SKIP_REASONS: Record<NonNullable<CopyPlanRow['reason']>, string> = {
   no_account: 'they have no login account',
   role_rank_too_low: "the source holds a role you can't grant",
   person_not_found: 'they no longer exist',
+  client_worker_conflict: "they're a client contact, who can't also be a worker",
 };
 const ERRORS: Record<string, string> = {
   person_not_found: 'The source person no longer exists — refresh and try again.',

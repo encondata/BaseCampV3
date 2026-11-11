@@ -117,7 +117,8 @@ def clear_trust_cookie(response: Response) -> None:
 def _scope_out(access) -> ScopeOut:
     return ScopeOut(**{"global": access.is_global},
                     client_ids=sorted(access.client_ids),
-                    partner_ids=sorted(access.partner_ids))
+                    partner_ids=sorted(access.partner_ids),
+                    restricted_client_ids=sorted(access.restricted_clients()))
 
 
 async def totp_status_out(db: AsyncSession, account: UserAccount) -> TotpStatusOut:

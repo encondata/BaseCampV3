@@ -16,8 +16,10 @@ transaction:
 3. **Tell** the owner of each watch that is due, with one `asset_watch` notice written with
    notify(), so their switches, schedule and summary apply as to any other. Only while their
    account is in use (`active_ids`) and they can still open the asset, and the initiative too for
-   a watch set there (notifications/access.py), the rule asset_watches.py sets and lists watches
-   by; a watch whose person has lost either since ends without a notice. The text is written for
+   a watch set there, with the asset's row by that move's group rule (`openable_places`), the rule
+   asset_watches.py sets and lists watches by; a watch whose person has lost either since ends
+   without a notice. The notice names the asset and the initiative in its payload, so its email
+   is re-checked by the same rule just before it goes (event_sweep.watch_recheck). The text is written for
    its person: it names a container or a truck only to someone whose Assets list shows one
    (assets/placement.py), and an initiative only to someone who can open it.
 4. **End** every watch that was due, told or not (an Inbox switch that is off writes nothing).
@@ -52,8 +54,12 @@ from serversherpa.db.models import (
 )
 from serversherpa.notifications.access import active_ids, visible_among
 from serversherpa.notifications.asset_watches import (
+    Place,
     asset_label,
     asset_watch_link,
+    asset_watch_payload,
+    openable_places,
+    place_of,
     snapshot,
     watched_status,
 )
@@ -364,12 +370,13 @@ async def _claim(db: AsyncSession) -> list[AssetWatch]:
 @dataclass(frozen=True)
 class _Audience:
     """Who may be told of the due watches, loaded once for all of them: the people whose account
-    is in use, their access, the assets and the initiatives each of them can open (notifications/
-    access.py), and what the notices name."""
+    is in use, their access, the watches' places they can still open (asset_watches.
+    openable_places), the initiatives each of them can open (notifications/access.py), and what
+    the notices name."""
 
     active: set[uuid.UUID]
     access: Mapping[uuid.UUID, AccessInfo]
-    assets: Mapping[uuid.UUID, frozenset[uuid.UUID]]
+    places: set[Place]
     initiatives: Mapping[uuid.UUID, frozenset[uuid.UUID]]
     names: _Names
 
@@ -384,29 +391,31 @@ async def _audience(db: AsyncSession, due: Sequence[AssetWatch],
         return None
     access = await resolve_access_many(db, active)
     names = await _names(db, due, snapshots)
-    assets = await visible_among(db, "asset", [watch.asset_id for watch in due], active,
-                                 access=access)
+    places = await openable_places(
+        db, [place_of(watch) for watch in due if watch.person_id in active], access=access)
     initiatives = await visible_among(db, "initiative",
                                       [uuid.UUID(ref) for ref in names.initiatives], active,
                                       access=access)
-    return _Audience(active, access, assets, initiatives, names)
+    return _Audience(active, access, places, initiatives, names)
 
 
 async def _tell(db: AsyncSession, watch: AssetWatch, current: Mapping | None,
                 audience: _Audience | None, at: datetime) -> None:
     """Send the watch's notice to its person, if their account is in use and they can still open
-    its asset, and its initiative too for a watch set on one."""
+    its asset, and its initiative too for a watch set on one, with the asset's row there by
+    that move's row rule (asset_watches.openable_places). The notice's payload names the asset
+    and the initiative, so its email is re-checked the same way at send time
+    (event_sweep.watch_recheck)."""
     if audience is None or current is None or watch.person_id not in audience.active:
         return
-    if watch.asset_id not in audience.assets.get(watch.person_id, frozenset()):
+    if place_of(watch) not in audience.places:
         return
     opens = audience.initiatives.get(watch.person_id, frozenset())
-    if watch.initiative_id is not None and watch.initiative_id not in opens:
-        return
     sight = _sight(audience.access[watch.person_id], watch.person_id, opens)
     title, body = _notice(watch, current, audience.names, sight, at)
     link = asset_watch_link(watch, _row_id(current, watch.initiative_id))
-    await notify(db, watch.person_id, "asset_watch", title, body=body, link=link)
+    await notify(db, watch.person_id, "asset_watch", title, body=body, link=link,
+                 payload=asset_watch_payload(watch))
 
 
 async def _end(db: AsyncSession, due: Sequence[AssetWatch],

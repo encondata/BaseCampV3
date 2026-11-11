@@ -745,6 +745,8 @@ export interface UserDetailAccount {
 export interface UserRoleGrant {
   role: string; label: string; rank: number; scope_anchor: string;
   org: OrgRefOut | null; granted_by: PersonRef | null; granted_at: string;
+  /** client grants, global callers only; [] otherwise */
+  group_ids?: string[];
 }
 
 export interface UserWorkerCard {
@@ -1064,7 +1066,7 @@ export interface CopyPlanRow {
   person_id: string; display_name: string; avatar_url: string | null;
   status: 'ok' | 'skipped';
   reason: 'cannot_target_self' | 'rank_too_low' | 'no_account'
-    | 'role_rank_too_low' | 'person_not_found' | null;
+    | 'role_rank_too_low' | 'person_not_found' | 'client_worker_conflict' | null;
   roles: { from: string[]; to: string[] } | null;
   groups: { from: string[]; to: string[] } | null;
   overrides: { added: number; removed: number; changed: number } | null;
@@ -1127,7 +1129,7 @@ export async function setUserRoles(personId: string, roles: string[]): Promise<s
 
 /* ── external directory (client/partner contacts + external role) ── */
 
-export type ContactTier = 'owner' | 'admin' | 'viewer';
+export type ContactTier = 'owner' | 'admin' | 'viewer' | 'individual';
 export type OrgKind = 'client' | 'partner';
 
 export interface ExternalLinkItem {
@@ -1191,6 +1193,10 @@ export interface ContactItem {
   tier: ContactTier;
   org_title: string | null;
   functions: string[];
+  /** filled only for global callers; [] otherwise */
+  group_ids?: string[];
+  /** individual, or has group chips (partners: always false) */
+  restricted?: boolean;
 }
 
 export async function listOrgContacts(kind: OrgKind, id: string): Promise<ContactItem[]> {
@@ -1251,6 +1257,8 @@ export interface ContactUpdatePatch {
   tier?: ContactTier;
   org_title?: string | null;
   functions?: string[];
+  /** client links, global staff only; replaces the person's group chips */
+  group_ids?: string[];
 }
 
 export async function patchContactLink(
@@ -7337,6 +7345,95 @@ export async function searchWiki(
 ): Promise<WikiSearchHit[]> {
   const qs = new URLSearchParams({ q, kind, limit: String(limit), log: 'false' });
   const resp = await apiFetch(`/wiki/search?${qs.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/* ── client groups (staff, global scope) ───────────────────────── */
+
+export interface ClientGroup {
+  id: string; name: string; aliases: string[]; asset_count: number; people_count: number;
+}
+export interface ReviewValue {
+  value: string; value_key: string; asset_count: number;
+  move_ids: string[]; move_names: string[]; dismissed: boolean;
+}
+export interface MergePlan {
+  aliases_added: string[]; rows_moved: number; people_moved: number; conflicts: string[];
+}
+
+const jsonPost = (method: string, body: unknown): RequestInit => ({
+  method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+});
+
+export async function listClientGroups(clientId: string): Promise<ClientGroup[]> {
+  const resp = await apiFetch(`/clients/${clientId}/groups`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function createClientGroup(
+  clientId: string, body: { name: string; aliases?: string[] },
+): Promise<ClientGroup> {
+  const resp = await apiFetch(`/clients/${clientId}/groups`, jsonPost('POST', body));
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateClientGroup(
+  clientId: string, groupId: string, body: { name?: string; aliases?: string[] },
+): Promise<ClientGroup> {
+  const resp = await apiFetch(`/clients/${clientId}/groups/${groupId}`, jsonPost('PATCH', body));
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function deleteClientGroup(clientId: string, groupId: string): Promise<void> {
+  const resp = await apiFetch(`/clients/${clientId}/groups/${groupId}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function mergeClientGroups(
+  clientId: string, targetId: string, sourceId: string, dryRun: boolean,
+): Promise<MergePlan> {
+  const resp = await apiFetch(`/clients/${clientId}/groups/${targetId}/merge`,
+    jsonPost('POST', { source_id: sourceId, dry_run: dryRun }));
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listGroupReview(clientId: string, includeDismissed = false): Promise<ReviewValue[]> {
+  const resp = await apiFetch(`/clients/${clientId}/groups/review?include_dismissed=${includeDismissed}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function matchGroupReview(
+  clientId: string, body: { value: string; group_id: string },
+): Promise<void> {
+  const resp = await apiFetch(`/clients/${clientId}/groups/review/match`, jsonPost('POST', body));
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function dismissGroupReview(
+  clientId: string, body: { value: string; dismissed: boolean },
+): Promise<void> {
+  const resp = await apiFetch(`/clients/${clientId}/groups/review/dismiss`, jsonPost('POST', body));
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+/** True asset counts, unfiltered by client groups — what a restricted login
+ *  sees as the totals while its lists are shorter. */
+export interface AssetTotals { total: number; by_status: Record<string, number> }
+
+export async function getInitiativeAssetTotals(initiativeId: string): Promise<AssetTotals> {
+  const resp = await apiFetch(`/initiatives/${initiativeId}/asset-totals`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getClientAssetTotals(clientId: string): Promise<AssetTotals> {
+  const resp = await apiFetch(`/clients/${clientId}/asset-totals`);
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

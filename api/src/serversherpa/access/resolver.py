@@ -6,6 +6,7 @@ NEVER past a hard gate."""
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,8 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.access.defaults import GATE_BYPASS_RANK, TOP_RANK
 from serversherpa.access.resources import ACTIONS, REGISTRY
 from serversherpa.db.models import (
-    AccessGroupMember, PermissionOverride, PersonRole, ResourceGroupGate, Role,
-    RolePermission,
+    AccessGroupMember, ClientContactGroup, PermissionOverride, PersonRole,
+    ResourceGroupGate, Role, RolePermission,
 )
 
 
@@ -54,27 +55,56 @@ class AccessInfo:
     client_ids: set[uuid.UUID] = field(default_factory=set)
     partner_ids: set[uuid.UUID] = field(default_factory=set)
     is_global: bool = False
+    # client_id -> tier key at that client ("owner", "admin", "viewer" or
+    # "individual"), the highest-ranked client_* role when there are two
+    client_tiers: dict[uuid.UUID, str] = field(default_factory=dict)
+    # client_id -> the client groups this person is limited to there (chips)
+    client_group_ids: dict[uuid.UUID, frozenset[uuid.UUID]] = field(default_factory=dict)
 
     def can(self, resource: str, action: str) -> bool:
         return self.perms.get(resource, {}).get(action, False)
 
+    def restricted_clients(self) -> dict[
+            uuid.UUID, tuple[Literal["viewer", "individual"], frozenset[uuid.UUID]]]:
+        """The clients where this person sees only some groups' assets: every
+        client where they are an individual, and every client where they are
+        a viewer with at least one chip. Empty for global actors; owners,
+        admins and unchipped viewers are never restricted."""
+        if self.is_global:
+            return {}
+        out: dict[uuid.UUID, tuple[Literal["viewer", "individual"],
+                                   frozenset[uuid.UUID]]] = {}
+        for client_id, tier in self.client_tiers.items():
+            groups = self.client_group_ids.get(client_id, frozenset())
+            if tier == "individual":
+                out[client_id] = ("individual", groups)
+            elif tier == "viewer" and groups:
+                out[client_id] = ("viewer", groups)
+        return out
+
 
 def _assemble(grants, granted: dict[str, set[str]],
               overrides: dict[str, dict[str, bool]],
-              gated_resources: set[str], member_ok: set[str]) -> AccessInfo:
+              gated_resources: set[str], member_ok: set[str],
+              chips: dict[uuid.UUID, frozenset[uuid.UUID]] | None = None) -> AccessInfo:
     """One person's AccessInfo from their loaded rows: `grants` are their
     (role, client_id, partner_id, rank, scope_anchor) rows, `granted` the
     union of their roles' grants, `overrides` their permission overrides,
     `gated_resources` every group-gated resource and `member_ok` the gated
-    resources one of their groups opens. Shared by `resolve_access` and
-    `resolve_access_many`, so the two can't disagree."""
-    info = AccessInfo()
+    resources one of their groups opens and `chips` their client group
+    chips per client. Shared by `resolve_access` and `resolve_access_many`,
+    so the two can't disagree."""
+    info = AccessInfo(client_group_ids=dict(chips or {}))
+    tier_rank: dict[uuid.UUID, int] = {}
     for role, client_id, partner_id, rank, anchor in grants:
         info.role_names.append(role)
         info.max_rank = max(info.max_rank, rank)
         info.anchors.add(anchor)
         if anchor == "client" and client_id:
             info.client_ids.add(client_id)
+            if role.startswith("client_") and rank > tier_rank.get(client_id, -1):
+                tier_rank[client_id] = rank
+                info.client_tiers[client_id] = role.removeprefix("client_")
         elif anchor == "partner" and partner_id:
             info.partner_ids.add(partner_id)
     info.role_names = sorted(set(info.role_names))
@@ -112,6 +142,20 @@ def _grants_query():
             .where(PersonRole.revoked_at.is_(None)))
 
 
+def _chips_query():
+    return select(ClientContactGroup.person_id, ClientContactGroup.client_id,
+                  ClientContactGroup.group_id)
+
+
+def _collect_chips(rows) -> dict[uuid.UUID, dict[uuid.UUID, frozenset[uuid.UUID]]]:
+    """person_id -> client_id -> chip group ids, from `_chips_query` rows."""
+    acc: dict[uuid.UUID, dict[uuid.UUID, set[uuid.UUID]]] = {}
+    for pid, client_id, group_id in rows:
+        acc.setdefault(pid, {}).setdefault(client_id, set()).add(group_id)
+    return {pid: {cid: frozenset(g) for cid, g in by_client.items()}
+            for pid, by_client in acc.items()}
+
+
 async def resolve_access(db: AsyncSession, person_id: uuid.UUID, *,
                          role_grants_override: RoleGrants | None = None) -> AccessInfo:
     grants = [tuple(row[1:]) for row in (await db.execute(
@@ -138,13 +182,19 @@ async def resolve_access(db: AsyncSession, person_id: uuid.UUID, *,
             .where(AccessGroupMember.person_id == person_id)))
         member_ok = {res for res, gid in gates if gid in my_groups}
 
-    return _assemble(grants, granted, overrides, gated_resources, member_ok)
+    chips: dict[uuid.UUID, frozenset[uuid.UUID]] = {}
+    if any(row[4] == "client" for row in grants):
+        chips = _collect_chips((await db.execute(
+            _chips_query().where(ClientContactGroup.person_id == person_id))).all()
+        ).get(person_id, {})
+
+    return _assemble(grants, granted, overrides, gated_resources, member_ok, chips)
 
 
 async def resolve_access_many(db: AsyncSession,
                               person_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, AccessInfo]:
     """`resolve_access` for many people at once — the same result for each,
-    in a fixed number of queries (at most five) however many there are.
+    in a fixed number of queries (at most six) however many there are.
     For fan-outs that check many people's access in one request."""
     ids = list(dict.fromkeys(person_ids))
     if not ids:
@@ -181,6 +231,12 @@ async def resolve_access_many(db: AsyncSession,
             .where(AccessGroupMember.person_id.in_(ids)))).all():
             groups[pid].add(gid)
 
+    chips: dict[uuid.UUID, dict[uuid.UUID, frozenset[uuid.UUID]]] = {}
+    client_pids = [pid for pid in ids if any(row[4] == "client" for row in grants[pid])]
+    if client_pids:
+        chips = _collect_chips((await db.execute(
+            _chips_query().where(ClientContactGroup.person_id.in_(client_pids)))).all())
+
     out: dict[uuid.UUID, AccessInfo] = {}
     for pid in ids:
         granted: dict[str, set[str]] = {}
@@ -189,5 +245,5 @@ async def resolve_access_many(db: AsyncSession,
                 granted.setdefault(res, set()).add(action)
         member_ok = {res for res, gid in gates if gid in groups[pid]}
         out[pid] = _assemble(grants[pid], granted, overrides[pid],
-                             gated_resources, member_ok)
+                             gated_resources, member_ok, chips.get(pid, {}))
     return out

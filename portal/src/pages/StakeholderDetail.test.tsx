@@ -42,6 +42,8 @@ const api = vi.hoisted(() => ({
   listPartnerChildren: vi.fn(),
   listPartnerItems: vi.fn(),
   setPartnerParent: vi.fn(),
+  listClientGroups: vi.fn(() => Promise.resolve([])),
+  listGroupReview: vi.fn(() => Promise.resolve([])),
 }));
 
 const partnerOrg = (over: Partial<OrgItem> = {}): OrgItem => ({
@@ -494,4 +496,26 @@ it('adding or removing a child re-reads the partner row (child_count stays fresh
   fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove' }));
   await waitFor(() => expect(api.getOrg).toHaveBeenCalledTimes(2));
   vi.restoreAllMocks();
+});
+
+it('the Groups section shows for global staff on a client page only', async () => {
+  api.getOrg.mockResolvedValue(org());
+  api.listInitiatives.mockResolvedValue([]);
+  api.listOrgContacts.mockResolvedValue([]);
+  api.listPartnerTypes.mockResolvedValue([]);
+  renderPage();
+  expect(await screen.findByRole('tab', { name: 'All' })).not.toBeNull();
+  expect(api.listClientGroups).toHaveBeenCalledWith('c1');
+});
+
+it('a non-global user on a client page gets no Groups section', async () => {
+  auth.global = false;
+  api.getOrg.mockResolvedValue(org());
+  api.listInitiatives.mockResolvedValue([]);
+  api.listOrgContacts.mockResolvedValue([]);
+  api.listPartnerTypes.mockResolvedValue([]);
+  renderPage();
+  await screen.findByText('Acme');
+  expect(screen.queryByRole('tab', { name: 'All' })).toBeNull();
+  expect(api.listClientGroups).not.toHaveBeenCalled();
 });
