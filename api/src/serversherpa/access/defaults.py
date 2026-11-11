@@ -62,6 +62,11 @@ DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
     "client_viewer": {"dashboard": ("view",), "clients": ("view",),
                       "assets": ("view",), "initiatives": ("view",),
                       "wiki": WIKI_VIEW},
+    # one contact limited to chosen groups (0128); same grants as the viewer,
+    # the group limit comes from client_contact_groups, not from here
+    "client_individual": {"dashboard": ("view",), "clients": ("view",),
+                          "assets": ("view",), "initiatives": ("view",),
+                          "wiki": WIKI_VIEW},
     "vendor_owner":  {"dashboard": ("view",), "partners": ("view", "change"),
                       "workers": ("view",), "wiki": WIKI_VIEW},
     "vendor_admin":  {"dashboard": ("view",), "partners": ("view", "change"),
