@@ -30,7 +30,7 @@ const line = (r: ManagedRecordRef) => `${NOUN[r.kind]} ${r.name}`;
 
 export const FORCE_HINT = "For an environment Sirdar can't reach. Every step that fails is skipped, the environment is "
   + 'removed from Sirdar anyway, and the log lists what may be left behind to clean up by hand. DNS records are '
-  + "always removed first; if Cloudflare can't be reached, the delete stops.";
+  + "never skipped: if Cloudflare can't be reached, the delete stops.";
 
 export default function DeleteEnvironmentModal({ env, force: forceAtStart = false, onStarted, onClose }: {
   env: Environment; force?: boolean; onStarted: (dep: Deployment) => void; onClose: () => void;
