@@ -151,6 +151,62 @@ fun runLayoutWrite(
     return firstRead?.let { LayoutWriteOutcome.Accepted(it) } ?: LayoutWriteOutcome.CheckFailed
 }
 
+/** How the no-beam write ([runInterimWrite]) ended. */
+sealed interface InterimWriteOutcome {
+    /** The sled read back the no-beam pair ([readback] is it). */
+    data class Accepted(val readback: SledTriggerReadback) : InterimWriteOutcome
+
+    /**
+     * The sled refused the write (a refusal, or out of step twice), or took
+     * the write and reads back another pair: the caller writes the real keys
+     * instead.
+     */
+    data object Refused : InterimWriteOutcome
+
+    /** The write went through and no value could be read back. */
+    data object CheckFailed : InterimWriteOutcome
+
+    /** The sled stopped answering, on the write or on its read-back. */
+    data object LinkTrouble : InterimWriteOutcome
+}
+
+/**
+ * Writes [layout]'s no-beam pair ([interimKeys]) once through [write] and
+ * checks it with [readBack], by the rules of [runLayoutWrite] but with no
+ * fallbacks: a read-back of the no-beam pair is
+ * [InterimWriteOutcome.Accepted], even after a failed write; out of step
+ * retries the write once; link trouble, from the write or from a read-back
+ * error, is [InterimWriteOutcome.LinkTrouble]; a refusal, a second out of
+ * step, or a write that went through while the sled reads back another pair
+ * is [InterimWriteOutcome.Refused]; a write that went through with nothing
+ * read back is [InterimWriteOutcome.CheckFailed]. For a layout that uses the
+ * scanner.
+ */
+fun runInterimWrite(
+    layout: SledTriggerLayout,
+    write: (LayoutWrite) -> VendorError?,
+    readBack: () -> AttributeRead,
+): InterimWriteOutcome {
+    val (upper, lower) = layout.interimKeys()
+    val entry = LayoutWrite.Keys(upper, lower)
+    var retried = false
+    while (true) {
+        val error = write(entry)
+        val read = readBack()
+        if (read is AttributeRead.Error && classifyResult(read.error) == ResultClass.LINK_TROUBLE) {
+            return InterimWriteOutcome.LinkTrouble
+        }
+        val readback = (read as? AttributeRead.Value)?.let { decodeKeyLayout(it.value) }
+        if (readback != null && readback.isInterimFor(layout)) return InterimWriteOutcome.Accepted(readback)
+        if (error == null) return if (readback == null) InterimWriteOutcome.CheckFailed else InterimWriteOutcome.Refused
+        when (classifyResult(error)) {
+            ResultClass.LINK_TROUBLE -> return InterimWriteOutcome.LinkTrouble
+            ResultClass.OUT_OF_STEP -> if (retried) return InterimWriteOutcome.Refused else retried = true
+            ResultClass.REFUSAL -> return InterimWriteOutcome.Refused
+        }
+    }
+}
+
 /** The trigger-type filter is a deny-list (ruling 26): only a SCAN-type event is dropped. */
 private const val SCAN_TRIGGER_TYPE = "HANDHELD_TRIGGER_SCAN"
 

@@ -15,6 +15,7 @@ import com.serversherpa.kiosk.core.rfid.SledTriggerLayout
 import com.serversherpa.kiosk.core.rfid.SledTriggerReadback
 import com.serversherpa.kiosk.core.rfid.SledWords
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
+import com.serversherpa.kiosk.core.rfid.interimKeys
 import com.serversherpa.kiosk.core.rfid.keys
 import com.serversherpa.kiosk.core.rfid.readbackOf
 import java.util.concurrent.CopyOnWriteArrayList
@@ -455,6 +456,24 @@ class RfidJobQueueTest {
         assertEquals("a new generation is checked once", 2, r.fake.layoutCalls.size)
     }
 
+    /** A connect whose step 10 left the no-beam keys for the layout asked (the
+     *  sled's scanner was not ready yet; the reader writes the real keys once it
+     *  is) queues no layout job: that read-back stands in for the layout. */
+    @Test fun aConnectThatLeftTheNoBeamKeysQueuesNoLayoutJob() = runTest {
+        val fake = FakeRfidReader()
+        val reader = StepTenReader(fake, backgroundScope) { it.interimKeys() }
+        val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true, triggerLayout = SledTriggerLayout.BARCODE))
+        val controller = RfidController(reader, settings, backgroundScope) { testScheduler.currentTime }
+        controller.start(); settle()
+        controller.connectNow(); settle()
+        assertTrue(reader.connection.value is RfidConnection.Connected)
+        assertEquals(readbackOf(SledKey.NO_ACTION, SledKey.NO_ACTION, null), reader.info.value?.trigger)
+        assertEquals("no layout job", emptyList<SledTriggerLayout>(), fake.layoutCalls)
+        assertTrue(controller.layoutInForceUsesScanner.value)
+        assertNull(controller.layoutError.value)
+        assertEquals(emptyList<String>(), fake.violations)
+    }
+
     @Test fun aLayoutFailureSetsLayoutError() = runTest {
         val r = Rig(this)
         r.fake.layoutResult = Result.failure(IllegalStateException(SledWords.TRIGGER_CHECK_FAILED))
@@ -679,7 +698,12 @@ class RfidJobQueueTest {
      * read-back already matches gets no layout job. Its layout writes run on a
      * worker, so one the controller stopped waiting for still finishes.
      */
-    private class StepTenReader(private val inner: FakeRfidReader, private val worker: CoroutineScope) : RfidReader by inner {
+    private class StepTenReader(
+        private val inner: FakeRfidReader,
+        private val worker: CoroutineScope,
+        /** The pair the connect's step 10 leaves on the sled for the layout asked. */
+        private val connectKeys: (SledTriggerLayout) -> Pair<SledKey, SledKey> = { it.keys() },
+    ) : RfidReader by inner {
         private val _info = MutableStateFlow<SledInfo?>(null)
         private val _connection = MutableStateFlow<RfidConnection>(RfidConnection.Disconnected)
         override val info: StateFlow<SledInfo?> = _info
@@ -695,7 +719,7 @@ class RfidJobQueueTest {
             _connection.value = RfidConnection.Connecting
             val result = inner.connect(request)
             if (result.isSuccess) {
-                val (upper, lower) = request.layout.keys()
+                val (upper, lower) = connectKeys(request.layout)
                 inner.setInfo(inner.info.value!!.copy(trigger = readbackOf(upper, lower, null)))
             }
             mirror()

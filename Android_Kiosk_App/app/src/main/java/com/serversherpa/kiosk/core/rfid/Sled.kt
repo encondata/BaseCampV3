@@ -31,6 +31,23 @@ fun SledTriggerLayout.keys(): Pair<SledKey, SledKey> = when (this) {
     SledTriggerLayout.BARCODE -> SledKey.SLED_SCAN to SledKey.SLED_SCAN
 }
 
+/**
+ * The no-beam pair written while the sled's scanner is not ready yet (the
+ * spec's step-18 fork): [keys] with every [SledKey.SLED_SCAN] made
+ * [SledKey.NO_ACTION]. RFID (RFID, RFID); Both (RFID, NO_ACTION), wire value
+ * 8; Barcode (NO_ACTION, NO_ACTION), wire value 28. A trigger that would scan
+ * gives no beam until the scanner can deliver what it reads.
+ */
+fun SledTriggerLayout.interimKeys(): Pair<SledKey, SledKey> {
+    fun noBeam(key: SledKey) = if (key == SledKey.SLED_SCAN) SledKey.NO_ACTION else key
+    val (upper, lower) = keys()
+    return noBeam(upper) to noBeam(lower)
+}
+
+/** True when this read-back is the no-beam stand-in for [asked]: [asked] uses the scanner and the pair is its [interimKeys]. */
+fun SledTriggerReadback.isInterimFor(asked: SledTriggerLayout): Boolean =
+    asked.usesScanner() && (upper to lower) == asked.interimKeys()
+
 /** The layout an (upper, lower) pair forms, or null when it forms none of the three. */
 fun layoutOf(upper: SledKey, lower: SledKey): SledTriggerLayout? =
     SledTriggerLayout.entries.firstOrNull { it.keys() == (upper to lower) }
@@ -103,13 +120,18 @@ fun SledTriggerLayout.usesScanner(): Boolean = this != SledTriggerLayout.RFID
 fun SledTriggerReadback.usesScanner(): Boolean = upper == SledKey.SLED_SCAN || lower == SledKey.SLED_SCAN
 
 /** Whether the layout in force uses the sled's scanner: the accepted [readback] when there is one,
- *  else the effective layout of the [requested] one. */
+ *  else the effective layout of the [requested] one. A read-back of the effective layout's no-beam
+ *  stand-in ([isInterimFor]) counts as using it: the scanner session opens from it, and the real
+ *  keys are written once the session is ready. */
 fun layoutInForceUsesScanner(
     readback: SledTriggerReadback?,
     requested: SledTriggerLayout,
     zebraHost: Boolean,
     hasScanner: Boolean?,
-): Boolean = readback?.usesScanner() ?: effectiveLayout(requested, zebraHost, hasScanner).usesScanner()
+): Boolean {
+    val effective = effectiveLayout(requested, zebraHost, hasScanner)
+    return if (readback == null) effective.usesScanner() else readback.usesScanner() || readback.isInterimFor(effective)
+}
 
 /** Whether the layout in force has a trigger assigned to tags (ruling 27): the accepted [readback]
  *  when there is one, else anything but an effective Barcode layout. */

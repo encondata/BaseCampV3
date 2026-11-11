@@ -755,6 +755,97 @@ class ZebraBarcodeEngineTest {
         }
     }
 
+    // ── telling the reader that the scanner is ready ──
+    //
+    // The reader writes the sled's real trigger keys only once the scanner can
+    // deliver what a pull reads (the spec's step-18 fork), so the engine says
+    // when Ready shows, and for which generation.
+
+    @Test fun theReadyListenerHearsEachTurnToReadyWithItsGenerationOutsideTheLock() {
+        val rig = Rig()
+        val heard = CopyOnWriteArrayList<Int>()
+        val lockFree = CopyOnWriteArrayList<Boolean>()
+        rig.engine.onReady = { generation ->
+            heard += generation
+            // Another thread takes the engine's lock (a no-op request): it can
+            // only finish while the listener runs outside that lock.
+            val other = Thread { rig.engine.want(generation, open = true, target = SLED_IDENTITY) }
+            other.start()
+            other.join(2_000)
+            lockFree += !other.isAlive
+        }
+        rig.sdk.tail = 100L
+
+        rig.open(generation = 3)
+        assertEquals(OPENING, rig.state)
+        assertEquals("nothing while Starting", emptyList<Int>(), heard.toList())
+        rig.clock.now += 150
+        rig.timers.liveOne().fire()
+        assertEquals(READY, rig.state)
+        assertEquals(listOf(3), heard.toList())
+        assertEquals("called outside the engine's lock", listOf(true), lockFree.toList())
+
+        // A failed open is never Ready; Try again's open is heard again.
+        rig.sdk.tail = ZebraBarcodeEngine.STALE_WINDOW_MS
+        rig.sdk.establishResults += ScannerResult.FAILURE
+        rig.open(generation = 4)
+        assertEquals(DID_NOT_START, rig.state)
+        assertEquals(listOf(3), heard.toList())
+        assertTrue(runBlocking { rig.engine.retry(4) }.isSuccess)
+        assertEquals(READY, rig.state)
+        assertEquals(listOf(3, 4), heard.toList())
+
+        rig.close(generation = 4)
+        assertEquals(OFF, rig.state)
+        assertEquals(listOf(3, 4), heard.toList())
+    }
+
+    @Test fun theReadyListenerHearsReadyAgainWhenAStuckCallReturns() {
+        val worker = singleWorker()
+        try {
+            val rig = Rig(worker)
+            val heard = CopyOnWriteArrayList<Int>()
+            rig.engine.onReady = { heard += it }
+            rig.open()
+            drain(worker)
+            assertEquals(READY, rig.state)
+            assertEquals(listOf(1), heard.toList())
+
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            rig.sdk.onCall = { call ->
+                if (call.startsWith("pull")) {
+                    entered.countDown()
+                    release.awaitBriefly()
+                }
+            }
+            val pull = Thread { runBlocking { rig.engine.softScan(pull = true) } }
+            pull.start()
+            assertTrue(entered.awaitBriefly())
+            rig.timers.live(ZebraBarcodeEngine.COMMAND_WATCHDOG_MS).single().fire()
+            assertEquals(STOPPED_RESPONDING, rig.state)
+            assertEquals(listOf(1), heard.toList())
+
+            release.countDown()
+            pull.join(5_000)
+            drain(worker)
+            assertEquals(READY, rig.state)
+            assertEquals("Ready again is heard again", listOf(1, 1), heard.toList())
+        } finally {
+            worker.shutdown()
+        }
+    }
+
+    @Test fun aThrowingReadyListenerDoesNotStopTheEngine() {
+        val rig = Rig()
+        rig.engine.onReady = { throw IllegalStateException("listener") }
+        rig.open()
+        assertEquals(READY, rig.state)
+        assertTrue(rig.logs.any { it.contains("ready listener threw") })
+        rig.close()
+        assertEquals(OFF, rig.state)
+    }
+
     // ── the vendor's leaked reader threads ──
     //
     // The vendor's reader thread swallows the one interrupt its own cancel()

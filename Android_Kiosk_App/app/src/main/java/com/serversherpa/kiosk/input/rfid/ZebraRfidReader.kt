@@ -14,6 +14,7 @@ import com.serversherpa.kiosk.core.rfid.AttributeRead
 import com.serversherpa.kiosk.core.rfid.BatchPrevention
 import com.serversherpa.kiosk.core.rfid.BatchRecoveryPlan
 import com.serversherpa.kiosk.core.rfid.BondedDevice
+import com.serversherpa.kiosk.core.rfid.InterimWriteOutcome
 import com.serversherpa.kiosk.core.rfid.LayoutWrite
 import com.serversherpa.kiosk.core.rfid.LayoutWriteOutcome
 import com.serversherpa.kiosk.core.rfid.LinkTroubleTracker
@@ -53,6 +54,7 @@ import com.serversherpa.kiosk.core.rfid.bestStepDue
 import com.serversherpa.kiosk.core.rfid.classifyResult
 import com.serversherpa.kiosk.core.rfid.connectFailure
 import com.serversherpa.kiosk.core.rfid.effectiveLayout
+import com.serversherpa.kiosk.core.rfid.isInterimFor
 import com.serversherpa.kiosk.core.rfid.layoutInForceUsesScanner
 import com.serversherpa.kiosk.core.rfid.message
 import com.serversherpa.kiosk.core.rfid.pairedSledsOf
@@ -61,6 +63,7 @@ import com.serversherpa.kiosk.core.rfid.powerIndex
 import com.serversherpa.kiosk.core.rfid.powerTable
 import com.serversherpa.kiosk.core.rfid.precheck as decidePrecheck
 import com.serversherpa.kiosk.core.rfid.regionArgs
+import com.serversherpa.kiosk.core.rfid.runInterimWrite
 import com.serversherpa.kiosk.core.rfid.runLayoutWrite
 import com.serversherpa.kiosk.core.rfid.runSettingSteps
 import com.serversherpa.kiosk.core.rfid.scannerWanted
@@ -68,6 +71,7 @@ import com.serversherpa.kiosk.core.rfid.sentence
 import com.serversherpa.kiosk.core.rfid.stopSettled
 import com.serversherpa.kiosk.core.rfid.teardownPlan
 import com.serversherpa.kiosk.core.rfid.triggerTypePasses
+import com.serversherpa.kiosk.core.rfid.usesScanner
 import com.serversherpa.kiosk.core.rfid.vendorLogLine
 import com.zebra.rfid.api3.AttributeInfo
 import com.zebra.rfid.api3.BATCH_MODE
@@ -102,6 +106,7 @@ import com.zebra.rfid.api3.StopTrigger
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -187,6 +192,19 @@ sealed interface VendorOpen {
  * disconnect and on a link loss, so [scanner] is `Off` whenever the link is
  * not `Connected`. It never waits for the session. The adapter's own
  * Bluetooth receiver closes the session when Bluetooth turns off.
+ *
+ * **No beam until the scanner is ready** (the spec's step-18 fork). The
+ * session takes about a second or two to come up after a layout that uses
+ * the scanner is written, and a scan made meanwhile is dropped. So a layout
+ * that uses the scanner, written while [scanner] is not `Ready` for the
+ * current generation (always at connect), gets its no-beam keys
+ * (`interimKeys`) first; the session opens from that read-back
+ * (`layoutInForceUsesScanner`), and when the engine turns `Ready` for the
+ * current generation the real keys are written on the worker, once, unless a
+ * newer layout or generation came first (during a sweep, after its stop). A
+ * scanner that does not start keeps
+ * the no-beam keys; Try again's `Ready` writes the real ones. A sled that
+ * refuses the no-beam keys gets the real keys at once.
  */
 open class ZebraRfidReader(
     private val context: Context,
@@ -222,10 +240,14 @@ open class ZebraRfidReader(
      * The sled's scanner session, built on first use by [buildScannerEngine]
      * and never from the constructor, where a test subclass's override would
      * run before its own fields exist (preflight ruling 2). The adapter's
-     * Bluetooth receiver is registered with it, for the adapter's life.
+     * Bluetooth receiver is registered with it, for the adapter's life, and
+     * its turns to `Ready` post the real trigger keys ([scannerReady]).
      */
     private val scannerEngine: ZebraBarcodeEngine by lazy {
-        buildScannerEngine().also { registerBluetoothReceiver(it) }
+        buildScannerEngine().also {
+            registerBluetoothReceiver(it)
+            it.onReady = ::scannerReady
+        }
     }
 
     /** `Off` whenever the link is not `Connected`; otherwise the engine's `Opening`, `Ready` or `Unavailable`. */
@@ -292,6 +314,18 @@ open class ZebraRfidReader(
     /** A vendor call in this connect's setup said the sled has no region (steps 8 to 11). */
     private var sawRegionNotSet = false
 
+    /**
+     * The no-beam keys the last layout write left on the sled, for the
+     * generation and the effective layout they stand in for; null after a
+     * write of real keys, or when that write was refused. The scanner's
+     * `Ready` writes the real keys only while this still names the current
+     * generation and the effective layout asked of it ([finishNoBeamLayout]).
+     */
+    private var noBeamFor: NoBeam? = null
+
+    /** The scanner came up while an inventory was running: [finishNoBeamLayout] runs again after the next stop. */
+    private var noBeamAfterStop = false
+
     // Written on the worker and on the vendor's event thread.
     private val inventory = InventoryTracker { nowMs() }
     @Volatile private var lastTagAtMs = 0L
@@ -323,6 +357,9 @@ open class ZebraRfidReader(
 
     /** A region refusal (or a region reading `NA`) surfaced in setup: the link stays up as `NeedsRegion`. */
     private class RegionNotConfigured : Exception()
+
+    /** No-beam keys on the sled for [generation], standing in for the effective [layout] until the scanner is ready. */
+    private data class NoBeam(val generation: Int, val layout: SledTriggerLayout)
 
     companion object {
         internal const val TAG = "ZebraRfidReader"
@@ -458,6 +495,8 @@ open class ZebraRfidReader(
         powerTable = null
         reimmediateAfterStop = false
         sawRegionNotSet = false
+        noBeamFor = null
+        noBeamAfterStop = false
         inventory.reset()
         lastBatteryPct = null
         val chosen = when (val pre = precheck(request.address)) {
@@ -1464,6 +1503,10 @@ open class ZebraRfidReader(
                 reimmediateAfterStop = false
                 setTriggersImmediate(rfid, generation)
             }
+            if (noBeamAfterStop) {
+                noBeamAfterStop = false
+                scannerReady(generation)
+            }
             Result.success(Unit)
         }
 
@@ -1599,15 +1642,19 @@ open class ZebraRfidReader(
     /**
      * Writes [layout] as the effective layout (`effectiveLayout`, so a Zebra
      * host or a sled with no scanner gets RFID) and reports what the sled
-     * reads back. `Accepted` updates `info.trigger`; a read-back that could
-     * not be accepted sets it null and fails; link trouble counts toward
-     * marking the link lost, leaves `info.trigger` as it was and fails. Both
-     * failures are [SledWords.TRIGGER_CHECK_FAILED]. Never saved. Only a call
-     * that passes the state check, in the generation still current, becomes
-     * the requested layout: a refused one, for example a call still queued
-     * when a newer connect asked for its own layout, changes nothing
-     * (ruling 27). Afterward, whatever the outcome, the scanner session is
-     * opened or closed to match the layout in force, without waiting for it.
+     * reads back. A layout that uses the scanner, while [scanner] is not
+     * `Ready` for the current generation, is written as its no-beam keys
+     * first, and the result is that write's read-back; the real keys follow
+     * once the scanner is ready ([finishNoBeamLayout]). `Accepted` updates
+     * `info.trigger`; a read-back that could not be accepted sets it null and
+     * fails; link trouble counts toward marking the link lost, leaves
+     * `info.trigger` as it was and fails. Both failures are
+     * [SledWords.TRIGGER_CHECK_FAILED]. Never saved. Only a call that passes
+     * the state check, in the generation still current, becomes the requested
+     * layout: a refused one, for example a call still queued when a newer
+     * connect asked for its own layout, changes nothing (ruling 27).
+     * Afterward, whatever the outcome, the scanner session is opened or
+     * closed to match the layout in force, without waiting for it.
      */
     final override suspend fun setTriggerLayout(layout: SledTriggerLayout): Result<SledTriggerReadback> = onWorker {
         val result = writeLayoutBlock(layout)
@@ -1617,25 +1664,31 @@ open class ZebraRfidReader(
 
     private fun writeLayoutBlock(layout: SledTriggerLayout): Result<SledTriggerReadback> =
         linkBlock("trigger layout", sentence = SledWords.TRIGGER_CHECK_FAILED) { rfid, generation ->
-            synchronized(stateLock) { if (generation == currentGeneration) requestedLayout = layout }
-            val known = _info.value
-            when (val outcome = writeTriggerLayout(rfid, layout, known?.model ?: known?.name, known?.hasScanner)) {
-                is LayoutWriteOutcome.Accepted -> {
-                    recordClass(generation, null)
-                    updateTrigger(generation, outcome.readback)
-                    Result.success(outcome.readback)
-                }
-                LayoutWriteOutcome.CheckFailed -> {
-                    recordClass(generation, null)
-                    updateTrigger(generation, null)
-                    Result.failure(Exception(SledWords.TRIGGER_CHECK_FAILED))
-                }
-                LayoutWriteOutcome.LinkTrouble -> {
-                    recordClass(generation, ResultClass.LINK_TROUBLE)
-                    Result.failure(Exception(SledWords.TRIGGER_CHECK_FAILED))
-                }
+            val scannerReady = synchronized(stateLock) {
+                if (generation == currentGeneration) requestedLayout = layout
+                generation == currentGeneration && scannerEngine.state.value == SledScannerState.Ready
             }
+            val known = _info.value
+            layoutResult(generation, writeTriggerLayout(rfid, layout, known?.model ?: known?.name, known?.hasScanner, generation, scannerReady))
         }
+
+    /** What a layout write in [generation] reports, with `info.trigger` and the link-trouble count updated to match. */
+    private fun layoutResult(generation: Int, outcome: LayoutWriteOutcome): Result<SledTriggerReadback> = when (outcome) {
+        is LayoutWriteOutcome.Accepted -> {
+            recordClass(generation, null)
+            updateTrigger(generation, outcome.readback)
+            Result.success(outcome.readback)
+        }
+        LayoutWriteOutcome.CheckFailed -> {
+            recordClass(generation, null)
+            updateTrigger(generation, null)
+            Result.failure(Exception(SledWords.TRIGGER_CHECK_FAILED))
+        }
+        LayoutWriteOutcome.LinkTrouble -> {
+            recordClass(generation, ResultClass.LINK_TROUBLE)
+            Result.failure(Exception(SledWords.TRIGGER_CHECK_FAILED))
+        }
+    }
 
     private fun updateTrigger(generation: Int, readback: SledTriggerReadback?) {
         synchronized(stateLock) {
@@ -1644,26 +1697,68 @@ open class ZebraRfidReader(
     }
 
     /**
-     * The layout write and read-back for connect step 10 and [setTriggerLayout]
-     * (spec, Trigger layout). `setTriggerMode(mode, false)` goes only to a
-     * model whose name contains `RFD8500`. Notes the sled in [layoutMemory]
-     * before the first write, so nothing saves its config from then on, in
-     * this connection or a later one.
+     * Connect step 10 for [info]'s generation: the layout write of [layout]
+     * and its read-back. The scanner is never ready this early in a connect,
+     * so a layout that uses it gets its no-beam keys. The vendor sequence
+     * runs it through [runBestSteps]; a seam double whose open stands in for
+     * that sequence can run it the same way.
      */
-    private fun writeTriggerLayout(rfid: RFIDReader, requested: SledTriggerLayout, model: String?, hasScanner: Boolean?): LayoutWriteOutcome {
+    protected fun writeLayoutAtConnect(rfid: RFIDReader, info: SledInfo, layout: SledTriggerLayout): LayoutWriteOutcome =
+        writeTriggerLayout(rfid, layout, info.model ?: info.name, info.hasScanner, info.generation, scannerReady = false)
+
+    /**
+     * The layout write and read-back for connect step 10, [setTriggerLayout]
+     * and [finishNoBeamLayout] (spec, Trigger layout). A layout that uses the
+     * scanner, while the scanner is not [scannerReady], goes in as its
+     * no-beam keys ([runInterimWrite]) and is noted in [noBeamFor]; a sled
+     * that refuses them gets the real keys at once. Otherwise the real keys
+     * ([runLayoutWrite], with the spec's fallbacks). `setTriggerMode(mode,
+     * false)` goes only to a model whose name contains `RFD8500`, with
+     * `BARCODE_MODE` only for the real Barcode keys. Notes the sled in
+     * [layoutMemory] before the first write, so nothing saves its config from
+     * then on, in this connection or a later one. On the worker.
+     */
+    private fun writeTriggerLayout(
+        rfid: RFIDReader,
+        requested: SledTriggerLayout,
+        model: String?,
+        hasScanner: Boolean?,
+        generation: Int,
+        scannerReady: Boolean,
+    ): LayoutWriteOutcome {
         val effective = effectiveLayout(requested, zebraHost, hasScanner)
         if (effective != requested) Log.i(TAG, "Trigger layout: $requested asked for, $effective written (Zebra host $zebraHost, has scanner $hasScanner).")
         layoutMemory.written(linkAddress)
-        if (model?.contains(TRIGGER_MODE_MODEL) == true) {
-            try {
-                rfid.Config.setTriggerMode(
-                    if (effective == SledTriggerLayout.BARCODE) ENUM_TRIGGER_MODE.BARCODE_MODE else ENUM_TRIGGER_MODE.RFID_MODE,
-                    false,
+        noBeamFor = null
+        if (effective.usesScanner() && !scannerReady) {
+            sendTriggerMode(rfid, model, barcode = false)
+            val noBeam = runInterimWrite(effective, write = { writeLayoutEntry(rfid, it) }, readBack = { readKeyLayout(rfid) })
+            when (noBeam) {
+                is InterimWriteOutcome.Accepted -> {
+                    noBeamFor = NoBeam(generation, effective)
+                    Log.i(
+                        TAG,
+                        "Trigger layout: ${noBeam.readback.raw} read back, upper ${noBeam.readback.upper}, lower ${noBeam.readback.lower} " +
+                            "(the no-beam keys for $effective, until the sled's scanner is ready).",
+                    )
+                    return LayoutWriteOutcome.Accepted(noBeam.readback)
+                }
+                InterimWriteOutcome.CheckFailed -> {
+                    noBeamFor = NoBeam(generation, effective)
+                    Log.w(TAG, "Trigger layout: could not read the no-beam keys for $effective back.")
+                    return LayoutWriteOutcome.CheckFailed
+                }
+                InterimWriteOutcome.LinkTrouble -> {
+                    Log.w(TAG, "Trigger layout: the sled stopped answering.")
+                    return LayoutWriteOutcome.LinkTrouble
+                }
+                InterimWriteOutcome.Refused -> Log.w(
+                    TAG,
+                    "Trigger layout: the sled refused the no-beam layout; the scanner keys are live before the scanner is ready.",
                 )
-            } catch (t: Throwable) {
-                errorOf("trigger mode", t)
             }
         }
+        sendTriggerMode(rfid, model, barcode = effective == SledTriggerLayout.BARCODE)
         val outcome = runLayoutWrite(effective, write = { writeLayoutEntry(rfid, it) }, readBack = { readKeyLayout(rfid) })
         when (outcome) {
             is LayoutWriteOutcome.Accepted -> Log.i(
@@ -1675,6 +1770,75 @@ open class ZebraRfidReader(
             LayoutWriteOutcome.LinkTrouble -> Log.w(TAG, "Trigger layout: the sled stopped answering.")
         }
         return outcome
+    }
+
+    /** `setTriggerMode(mode, false)`, only for a model whose name contains `RFD8500`: `BARCODE_MODE` when [barcode], else `RFID_MODE`. */
+    private fun sendTriggerMode(rfid: RFIDReader, model: String?, barcode: Boolean) {
+        if (model?.contains(TRIGGER_MODE_MODEL) != true) return
+        try {
+            rfid.Config.setTriggerMode(if (barcode) ENUM_TRIGGER_MODE.BARCODE_MODE else ENUM_TRIGGER_MODE.RFID_MODE, false)
+        } catch (t: Throwable) {
+            errorOf("trigger mode", t)
+        }
+    }
+
+    /**
+     * The scanner engine turned `Ready` for [generation] ([ZebraBarcodeEngine.onReady],
+     * on the engine's timer or worker): posts [finishNoBeamLayout] on the RFID
+     * worker, behind whatever is queued there, and returns at once.
+     */
+    private fun scannerReady(generation: Int) {
+        try {
+            worker.execute {
+                try {
+                    awaitCleanup()
+                    finishNoBeamLayout(generation)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Trigger layout: the write after the scanner came up threw.", t)
+                }
+            }
+        } catch (e: RejectedExecutionException) {
+            Log.w(TAG, "Trigger layout: the worker refused the write after the scanner came up.", e)
+        }
+    }
+
+    /**
+     * The scanner is ready for [generation]: when the no-beam keys still
+     * stand in for the effective layout asked of that generation, now
+     * current and `Connected`, and the scanner is still `Ready`, one write of
+     * the real keys and its read-back, which updates `info.trigger`. A newer
+     * layout or generation, or a scanner that went away meanwhile, writes
+     * nothing. While an inventory runs (Both's upper trigger still reads
+     * tags) the write waits for the next stop, as the controller's layout
+     * jobs never run during a sweep. On the worker.
+     */
+    private fun finishNoBeamLayout(generation: Int) {
+        val pending = noBeamFor ?: return
+        var wrote = false
+        linkBlock("trigger layout", sentence = SledWords.TRIGGER_CHECK_FAILED) { rfid, current ->
+            val info = _info.value
+            val due = synchronized(stateLock) {
+                val target = effectiveLayout(requestedLayout, zebraHost, info?.hasScanner)
+                current == generation && pending == NoBeam(current, target) && scannerEngine.state.value == SledScannerState.Ready
+            }
+            if (!due) {
+                Log.i(TAG, "Trigger layout: the scanner was ready (generation $generation), but a newer layout or link, or the scanner, moved on first; nothing written.")
+                return@linkBlock Result.success(Unit)
+            }
+            if (inventory.running) {
+                Log.i(TAG, "Trigger layout: the sled's scanner is ready during a sweep; the keys for ${pending.layout} go in after its stop.")
+                noBeamAfterStop = true
+                return@linkBlock Result.success(Unit)
+            }
+            Log.i(TAG, "Trigger layout: the sled's scanner is ready; writing the keys for ${pending.layout}.")
+            wrote = true
+            val outcome = writeTriggerLayout(rfid, pending.layout, info?.model ?: info?.name, info?.hasScanner, current, scannerReady = true)
+            if ((outcome as? LayoutWriteOutcome.Accepted)?.readback?.isInterimFor(pending.layout) == true) {
+                Log.w(TAG, "Trigger layout: the sled still reads back the no-beam keys for ${pending.layout}.")
+            }
+            layoutResult(current, outcome).map { }
+        }
+        if (wrote) synchronized(stateLock) { syncScannerLocked() }
     }
 
     /** One layout write; null when it went through. */
@@ -2028,15 +2192,11 @@ open class ZebraRfidReader(
             }
         }
 
-        /** Step 10: the layout write of [layout] and its read-back. */
+        /** Step 10: the layout write of [layout] and its read-back ([writeLayoutAtConnect]). */
         override fun writeLayout(layout: SledTriggerLayout): LayoutWriteOutcome {
             checkLoss()
-            val outcome = writeTriggerLayout(rfid, layout, info.model ?: info.name, info.hasScanner)
-            info = when (outcome) {
-                is LayoutWriteOutcome.Accepted -> info.copy(trigger = outcome.readback)
-                LayoutWriteOutcome.CheckFailed -> info.copy(trigger = null)
-                LayoutWriteOutcome.LinkTrouble -> info
-            }
+            val outcome = writeLayoutAtConnect(rfid, info, layout)
+            info = info.afterLayoutWrite(outcome)
             return outcome
         }
 
@@ -2091,6 +2251,13 @@ internal fun vendorErrorOf(t: Throwable): VendorError? = when (t) {
         invalidUsage = true,
     )
     else -> null
+}
+
+/** [this] with the read-back a layout write left: an accepted one, none after a failed check, unchanged after link trouble. */
+internal fun SledInfo.afterLayoutWrite(outcome: LayoutWriteOutcome): SledInfo = when (outcome) {
+    is LayoutWriteOutcome.Accepted -> copy(trigger = outcome.readback)
+    LayoutWriteOutcome.CheckFailed -> copy(trigger = null)
+    LayoutWriteOutcome.LinkTrouble -> this
 }
 
 /** Appends [additional] to [existing], so two notes from one connect both reach `connectNote`. A blank [existing] counts as none. */

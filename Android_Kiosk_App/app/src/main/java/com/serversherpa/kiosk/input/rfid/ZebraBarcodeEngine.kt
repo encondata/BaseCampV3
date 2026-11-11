@@ -104,7 +104,9 @@ internal class ScannerCommandFailed(val result: ScannerResult) : Exception()
  *
  * **Ready** comes only once establish returned `SUCCESS` and
  * [STALE_WINDOW_MS] passed since the established callback (the vendor's
- * barcode queue is static and outlives sessions). A barcode is emitted only
+ * barcode queue is static and outlives sessions). Each turn to `Ready` is
+ * told to [onReady] with its generation, outside the lock: the reader writes
+ * the sled's real trigger keys only then. A barcode is emitted only
  * while [state] shows `Ready`; one before that, inside the window or while not
  * Ready is dropped and logged with its length, never its value.
  *
@@ -151,6 +153,16 @@ internal class ZebraBarcodeEngine(
 
     private val _barcodes = MutableSharedFlow<SledBarcode>(extraBufferCapacity = 16)
     val barcodes: SharedFlow<SledBarcode> = _barcodes.asSharedFlow()
+
+    /**
+     * Called each time [state] turns `Ready`, with the generation it is ready
+     * for: when the stale window ends, and when a call that outlived its
+     * watchdog returns to a session still up. Called outside the engine's
+     * lock, on the thread that saw it (the timer's or the worker's), so it
+     * must only post its work. The reader sets it once, when it builds the
+     * engine, and writes the sled's real trigger keys from it.
+     */
+    @Volatile var onReady: (generation: Int) -> Unit = {}
 
     /** What the reader asked for. [request] numbers each open request; [parked] holds it closed after the engine closed it by itself, and says why. */
     private data class Desire(
@@ -589,16 +601,27 @@ internal class ZebraBarcodeEngine(
 
     /** The stale window's timer: `Ready` once the window has passed by [clock], else armed again for the rest. */
     private fun windowEnded(s: Session) {
+        var turnedReady = false
         val rest = synchronized(lock) {
             if (session !== s || !isCurrentLocked(s.generation, s.request)) return
             val untilEnd = STALE_WINDOW_MS - (clock() - s.windowStart)
             if (untilEnd <= 0) {
                 found = SledScannerState.Ready
-                renderLocked()
+                turnedReady = renderLocked()
             }
             untilEnd
         }
+        if (turnedReady) announceReady(s.generation)
         if (rest > 0) armWindow(s, rest)
+    }
+
+    /** Tells [onReady] that [state] turned `Ready` for [generation]; a listener that throws is logged. */
+    private fun announceReady(generation: Int) {
+        try {
+            onReady(generation)
+        } catch (t: Throwable) {
+            log("Scanner: the ready listener threw ${t.javaClass.name}: ${t.message}")
+        }
     }
 
     /** Terminate, then the mode reset in a `finally`, then a reap once the session is gone. */
@@ -723,16 +746,18 @@ internal class ZebraBarcodeEngine(
             } catch (t: Throwable) {
                 log("Scanner: cancelling the watchdog for $what threw ${t.javaClass.name}.")
             }
+            var readyAgain = NO_GENERATION
             val late = synchronized(lock) {
                 callInFlight = 0
                 val wasStuck = stuck
                 if (wasStuck) {
                     stuck = false
-                    renderLocked()
+                    if (renderLocked()) readyAgain = desire.generation
                 }
                 wasStuck
             }
             if (late) log("Scanner: $what returned after its watchdog; its result is applied.")
+            if (readyAgain != NO_GENERATION) announceReady(readyAgain)
         }
     }
 
@@ -769,8 +794,10 @@ internal class ZebraBarcodeEngine(
      * `DID_NOT_START` while an open request is held closed after the scanner
      * ended its session by itself; else `Off` unless a session is wanted;
      * `STOPPED_RESPONDING` while a call is stuck; else what the open flow found.
+     * Returns true when this turned [state] to `Ready` (the caller then
+     * tells [onReady], once outside the lock).
      */
-    private fun renderLocked() {
+    private fun renderLocked(): Boolean {
         val shown = when {
             desire.open && desire.parked == Parked.ENDED_BY_ITSELF -> DID_NOT_START
             !desire.wanted -> SledScannerState.Off
@@ -778,9 +805,10 @@ internal class ZebraBarcodeEngine(
             else -> found
         }
         val before = _state.value
-        if (shown == before) return
+        if (shown == before) return false
         _state.value = shown
         log("Scanner: $before -> $shown (generation ${desire.generation}).")
+        return shown == SledScannerState.Ready
     }
 
     companion object {

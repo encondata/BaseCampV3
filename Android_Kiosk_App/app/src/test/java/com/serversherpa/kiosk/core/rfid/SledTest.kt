@@ -54,6 +54,46 @@ class SledTest {
         assertFalse(layoutInForceUsesScanner(readbackOf(SledKey.RFID, SledKey.RFID, 4), SledTriggerLayout.SPLIT, zebraHost = false, hasScanner = null))
     }
 
+    @Test fun theNoBeamKeysAreTheLayoutsKeysWithNoScanKey() {
+        assertEquals(SledKey.RFID to SledKey.RFID, SledTriggerLayout.RFID.interimKeys())
+        assertEquals(SledKey.RFID to SledKey.NO_ACTION, SledTriggerLayout.SPLIT.interimKeys())
+        assertEquals(SledKey.NO_ACTION to SledKey.NO_ACTION, SledTriggerLayout.BARCODE.interimKeys())
+        // The wire values the sled reads back for them.
+        assertEquals(8, keyLayoutValue(SledKey.RFID, SledKey.NO_ACTION))
+        assertEquals(28, keyLayoutValue(SledKey.NO_ACTION, SledKey.NO_ACTION))
+    }
+
+    @Test fun aReadbackIsTheNoBeamLayoutOnlyForALayoutThatUsesTheScanner() {
+        val noBeamBarcode = readbackOf(SledKey.NO_ACTION, SledKey.NO_ACTION, 28)
+        val noBeamSplit = readbackOf(SledKey.RFID, SledKey.NO_ACTION, 8)
+        assertTrue(noBeamBarcode.isInterimFor(SledTriggerLayout.BARCODE))
+        assertFalse(noBeamBarcode.isInterimFor(SledTriggerLayout.SPLIT))
+        assertTrue(noBeamSplit.isInterimFor(SledTriggerLayout.SPLIT))
+        assertFalse(noBeamSplit.isInterimFor(SledTriggerLayout.BARCODE))
+        assertFalse("RFID has no stand-in", readbackOf(SledKey.RFID, SledKey.RFID, 4).isInterimFor(SledTriggerLayout.RFID))
+        assertFalse("the real layout is not its own stand-in", readbackOf(SledKey.SLED_SCAN, SledKey.SLED_SCAN, 10).isInterimFor(SledTriggerLayout.BARCODE))
+        assertNull("the no-beam pairs name no layout", noBeamBarcode.layout)
+        assertNull(noBeamSplit.layout)
+    }
+
+    @Test fun theNoBeamLayoutCountsAsUsingTheScannerForTheLayoutItStandsIn() {
+        val noBeamBarcode = readbackOf(SledKey.NO_ACTION, SledKey.NO_ACTION, 28)
+        val noBeamSplit = readbackOf(SledKey.RFID, SledKey.NO_ACTION, 8)
+        assertTrue(layoutInForceUsesScanner(noBeamBarcode, SledTriggerLayout.BARCODE, zebraHost = false, hasScanner = null))
+        assertTrue(layoutInForceUsesScanner(noBeamSplit, SledTriggerLayout.SPLIT, zebraHost = false, hasScanner = true))
+        assertFalse("asked for RFID", layoutInForceUsesScanner(noBeamBarcode, SledTriggerLayout.RFID, zebraHost = false, hasScanner = null))
+        assertFalse("the effective layout is RFID on a Zebra host", layoutInForceUsesScanner(noBeamBarcode, SledTriggerLayout.BARCODE, zebraHost = true, hasScanner = null))
+        assertFalse("or for a sled with no scanner", layoutInForceUsesScanner(noBeamSplit, SledTriggerLayout.SPLIT, zebraHost = false, hasScanner = false))
+        assertFalse("another layout's stand-in", layoutInForceUsesScanner(noBeamSplit, SledTriggerLayout.BARCODE, zebraHost = false, hasScanner = null))
+    }
+
+    @Test fun duringTheNoBeamLayoutPullsSweepOnlyWhereATriggerStillReadsTags() {
+        val noBeamBarcode = readbackOf(SledKey.NO_ACTION, SledKey.NO_ACTION, 28)
+        val noBeamSplit = readbackOf(SledKey.RFID, SledKey.NO_ACTION, 8)
+        assertFalse("Barcode: no trigger reads tags", layoutInForceReadsTags(noBeamBarcode, SledTriggerLayout.BARCODE, zebraHost = false, hasScanner = null))
+        assertTrue("Both: the upper trigger still reads tags", layoutInForceReadsTags(noBeamSplit, SledTriggerLayout.SPLIT, zebraHost = false, hasScanner = null))
+    }
+
     @Test fun sledNamesAreRecognizedByPrefix() {
         assertTrue(isSledName("RFD4031-G10B700-US"))
         assertTrue(isSledName("RFD9090"))

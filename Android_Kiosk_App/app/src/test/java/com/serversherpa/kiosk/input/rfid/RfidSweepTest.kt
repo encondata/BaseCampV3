@@ -180,6 +180,21 @@ class RfidSweepTest {
         }
     }
 
+    /** While the sled holds the no-beam keys (its scanner is still starting), the
+     *  gate follows them: no trigger reads tags in Barcode's, and Both's upper
+     *  trigger still does. The scanner counts as the layout in force's. */
+    @Test fun theTriggerGateFollowsTheNoBeamLayoutWhileTheScannerStarts() = runTest {
+        val noBeamBarcode = Result.success(readbackOf(SledKey.NO_ACTION, SledKey.NO_ACTION, 28))
+        assertFalse("no-beam Barcode does not sweep", sweepsWith(SledTriggerLayout.BARCODE, noBeamBarcode))
+        val noBeamSplit = Result.success(readbackOf(SledKey.RFID, SledKey.NO_ACTION, 8))
+        assertTrue("no-beam Both still sweeps on its upper trigger", sweepsWith(SledTriggerLayout.SPLIT, noBeamSplit))
+
+        val r = Rig(this, DEFAULT_RFID_SETTINGS.copy(enabled = true, triggerLayout = SledTriggerLayout.BARCODE))
+        r.fake.layoutResult = noBeamBarcode
+        connectedAndArmed(r)
+        assertTrue("the no-beam keys stand in for a layout that uses the scanner", r.controller.layoutInForceUsesScanner.value)
+    }
+
     /** A pull's latch window is measured from the stamp the reader put on it,
      *  not from when the controller got to it; an unstamped pull uses the clock. */
     @Test fun theLatchWindowIsMeasuredFromThePullStamp() = runTest {
