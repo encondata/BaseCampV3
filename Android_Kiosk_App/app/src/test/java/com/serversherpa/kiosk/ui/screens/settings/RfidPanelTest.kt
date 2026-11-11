@@ -15,6 +15,9 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isToggleable
 import androidx.compose.ui.test.junit4.AndroidComposeTestRule
 import androidx.compose.ui.test.junit4.ComposeContentTestRule
@@ -28,6 +31,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.rules.ActivityScenarioRule
 import com.serversherpa.kiosk.AppContainer
 import com.serversherpa.kiosk.LocalAppContainer
+import com.serversherpa.kiosk.NativeFontsSettled
 import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.SledCandidate
 import com.serversherpa.kiosk.core.rfid.SledConnectException
@@ -39,6 +43,7 @@ import com.serversherpa.kiosk.core.rfid.SledScannerState
 import com.serversherpa.kiosk.core.rfid.SledTriggerLayout
 import com.serversherpa.kiosk.core.rfid.SledWords
 import com.serversherpa.kiosk.core.rfid.readbackOf
+import com.serversherpa.kiosk.core.rfid.sledWordsViolations
 import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.RfidTriggerMode
 import com.serversherpa.kiosk.core.rfid.SledConnectRequest
@@ -57,17 +62,22 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
+import org.junit.rules.RuleChain
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadows.ShadowBuild
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w360dp-h800dp")
 class RfidPanelTest {
-    @get:Rule val compose = createComposeRule()
+    private val compose = createComposeRule()
+
+    // Waits out a font copy before a native-graphics test (see NativeFontsSettled).
+    @get:Rule val rules: RuleChain = RuleChain.outerRule(NativeFontsSettled()).around(compose)
 
     // RfidPanel is by far the longest panel in Settings — well past a
     // 360x800 test window's height. In the real app it is always reached
@@ -531,6 +541,47 @@ class RfidPanelTest {
         compose.onAllNodesWithText(SledWords.ZEBRA_HOST).assertCountEquals(0)
     }
 
+    /** Dimmed, the row's hint says what the triggers do in force, not what was saved: on a
+     *  Zebra host a saved Barcode still reads tags on both triggers. */
+    @Test @Config(sdk = [30]) fun aDimmedSledTriggersRowHintsTheLayoutInForceOnAZebraHost() {
+        ShadowBuild.setManufacturer("Zebra Technologies")
+        val c = testContainer()
+        runBlocking { c.prefs.setRfid(RfidSettings(triggerLayout = SledTriggerLayout.BARCODE)) }
+        compose.setRfidPanelContent(c)
+        compose.waitForText(SledWords.ZEBRA_HOST)
+        compose.waitUntilIdlingMain { saved(c).triggerLayout == SledTriggerLayout.BARCODE }
+        compose.waitForIdle()
+        compose.onNodeWithText(SledWords.hint(SledTriggerLayout.RFID)).performScrollTo().assertIsDisplayed()
+        compose.onAllNodesWithText(SledWords.hint(SledTriggerLayout.BARCODE)).assertCountEquals(0)
+    }
+
+    @Test fun aDimmedSledTriggersRowHintsTheLayoutInForceForASledWithNoScanner() {
+        val reader = FakeRfidReader()
+        reader.setConnection(RfidConnection.Connected("Fake RFD40", 80))
+        reader.setInfo(SledInfo(generation = reader.generation, name = "Fake RFD40", hasScanner = false))
+        val c = testContainer(reader)
+        runBlocking { c.prefs.setRfid(RfidSettings(triggerLayout = SledTriggerLayout.SPLIT)) }
+        compose.setRfidPanelContent(c)
+        compose.waitForText(SledWords.NO_SCANNER)
+        compose.waitForIdle()
+        compose.onNodeWithText(SledWords.hint(SledTriggerLayout.RFID)).performScrollTo().assertIsDisplayed()
+        compose.onAllNodesWithText(SledWords.hint(SledTriggerLayout.SPLIT)).assertCountEquals(0)
+    }
+
+    /** The words rule on the whole tab: "session" only as the Session row's own label. */
+    @Test fun noTextOnTheTabBreaksTheWordsRule() {
+        grantRequired()
+        val c = testContainer()
+        runBlocking { c.prefs.setRfid(RfidSettings(enabled = true)) }
+        compose.setRfidPanelContent(c)
+        compose.waitForText(SledWords.ROW_SESSION)
+        val texts = compose.onAllNodes(hasText("", substring = true)).fetchSemanticsNodes()
+            .flatMap { it.config.getOrNull(SemanticsProperties.Text).orEmpty() }.map { it.text }
+        assertTrue("no text read", texts.isNotEmpty())
+        val broken = texts.filter { it != SledWords.ROW_SESSION && sledWordsViolations(it).isNotEmpty() }
+        assertEquals(emptyList<String>(), broken)
+    }
+
     @Test fun theDisagreementLineShowsOnlyWhenTheSledDisagrees() {
         val reader = FakeRfidReader()
         val c = testContainer(reader)
@@ -706,7 +757,8 @@ class RfidPanelTest {
         assertEquals("one disconnect, from the setting's edge", 1, reader.disconnectCalls)
     }
 
-    @Test @Config(qualifiers = "w320dp-h533dp-hdpi") fun theChooserAndFixButtonsFitAt320dp() {
+    /** Native graphics: the legacy mode measures text at almost no width, so nothing would overflow. */
+    @Test @GraphicsMode(GraphicsMode.Mode.NATIVE) @Config(qualifiers = "w320dp-h533dp-hdpi") fun theChooserAndFixButtonsFitAt320dp() {
         grantRequired()
         val reader = FakeRfidReader().apply { paired = listOf(sledA, sledB) }
         reader.setConnection(RfidConnection.Failed(SledWords.BLUETOOTH_OFF, fix = SledFix.TURN_ON_BLUETOOTH))
@@ -719,8 +771,12 @@ class RfidPanelTest {
             val node = compose.onNodeWithText(text)
             if (scroll) node.performScrollTo()
             assertTrue("$text is not displayed", runCatching { node.assertIsDisplayed() }.isSuccess)
-            val b = node.fetchSemanticsNode().boundsInRoot
-            assertTrue("$text clipped: ${b.right} > $width", b.right <= width + 1f)
+            // The unclipped extent: the page's and the segmented row's scrolls clip
+            // `boundsInRoot` to the screen, so it could never report past the edge.
+            val n = node.fetchSemanticsNode()
+            val right = n.positionInRoot.x + n.size.width
+            assertTrue("$text past the edge: $right > $width", right <= width + 1f)
+            assertTrue("$text clipped: ${n.boundsInRoot.width} < ${n.size.width}", n.boundsInRoot.width >= n.size.width - 1f)
         }
         for (text in listOf(sledA.name, sledB.name, "Turn on Bluetooth")) fits(text)
         // The options' own scroll parent is the control's row, so the page is scrolled to the

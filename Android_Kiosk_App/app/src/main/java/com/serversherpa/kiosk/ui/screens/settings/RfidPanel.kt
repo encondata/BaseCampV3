@@ -13,7 +13,6 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -25,9 +24,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.rfid.DEFAULT_RFID_SETTINGS
@@ -55,6 +51,7 @@ import com.serversherpa.kiosk.ui.components.SetupCard
 import com.serversherpa.kiosk.ui.screens.scan.SledFixButton
 import com.serversherpa.kiosk.ui.screens.scan.SledTriggersControl
 import com.serversherpa.kiosk.ui.screens.scan.openAppSettings
+import com.serversherpa.kiosk.ui.screens.scan.rememberMissingRfidPermissions
 import com.serversherpa.kiosk.ui.theme.ChipTone
 import com.serversherpa.kiosk.ui.theme.FragmentMono
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
@@ -109,23 +106,12 @@ fun RfidPanel() {
         }
     }
 
-    // Snapshotted rather than read live from RfidPermissions.missing(context) on every
-    // recomposition: nothing tells Compose to recompose a plain function call when the
-    // operator grants the permission in Android's own Settings app and returns, so this
-    // is refreshed explicitly below — once immediately by the permission launcher's
-    // callback, and again on every ON_RESUME in case the operator went by Settings instead.
-    var missingPermissions by remember { mutableStateOf(RfidPermissions.missing(context)) }
+    // Read again on every ON_RESUME (the operator may have gone by Android's Settings), and
+    // at once by the permission launcher's callback.
+    var missingPermissions by rememberMissingRfidPermissions()
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         missingPermissions = RfidPermissions.missing(context)
         afterPermissionPrompt(missingPermissions, ::connect)
-    }
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) missingPermissions = RfidPermissions.missing(context)
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     // A plain call into the reader: read again when the link or the permissions change.
     val paired = remember(connection, missingPermissions) { container.rfidReader.pairedSleds() }
@@ -225,7 +211,11 @@ fun RfidPanel() {
                 RfidTriggerMode.fromWire(w)?.let { mode -> save { it.copy(triggerMode = mode) } }
             }
         }
-        SettingsRow(SledWords.SLED_TRIGGERS, s.triggerLayout.hint) {
+        // Dimmed (a Zebra host, or a sled with no scanner), the hint says what the triggers do
+        // in force, not what the saved option would do: both read tags there.
+        val triggersDimmed = container.isZebraHost || info?.hasScanner == false
+        val triggersHint = if (triggersDimmed) effectiveLayout(s.triggerLayout, container.isZebraHost, info?.hasScanner).hint else s.triggerLayout.hint
+        SettingsRow(SledWords.SLED_TRIGGERS, triggersHint) {
             Column {
                 SledTriggersControl(caption = false)
                 when {
@@ -293,7 +283,7 @@ fun RfidPanel() {
                 if (sledMax != null && s.powerDbm > sledMax) Text(SledWords.powerCap(sledMax), color = c.textMute)
             }
         }
-        SettingsRow(SledWords.ROW_SESSION, "Higher sessions keep a tag quiet longer after it answers.") {
+        SettingsRow(SledWords.ROW_SESSION, "A higher setting keeps a tag quiet longer after it answers.") {
             Segmented(RfidSession.entries.map { it.wire to it.label }, s.session.wire) { w ->
                 RfidSession.fromWire(w)?.let { session -> save { it.copy(session = session) } }
             }

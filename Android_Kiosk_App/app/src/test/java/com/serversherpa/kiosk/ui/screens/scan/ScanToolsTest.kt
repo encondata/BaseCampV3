@@ -13,6 +13,7 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import com.serversherpa.kiosk.AppContainer
 import com.serversherpa.kiosk.LocalAppContainer
+import com.serversherpa.kiosk.NativeFontsSettled
 import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.SledBarcode
 import com.serversherpa.kiosk.core.rfid.SledInfo
@@ -27,17 +28,22 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
+import org.junit.rules.RuleChain
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadows.ShadowBuild
 
 /** Spec tests 36 and 37 (T14): the sled's controls in the scan screens' tool row, per host. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w360dp-h800dp")
 class ScanToolsTest {
-    @get:Rule val compose = createComposeRule()
+    private val compose = createComposeRule()
+
+    // Waits out a font copy before a native-graphics test (see NativeFontsSettled).
+    @get:Rule val rules: RuleChain = RuleChain.outerRule(NativeFontsSettled()).around(compose)
 
     private fun show(c: AppContainer) {
         compose.setContent {
@@ -115,15 +121,20 @@ class ScanToolsTest {
         assertEquals(0, countTag("sled-scan"))
     }
 
-    @Test @Config(qualifiers = "w320dp-h533dp-hdpi") fun everySledControlFitsAt320dp() {
+    /** Native graphics: the legacy mode measures text at almost no width, so nothing would overflow. */
+    @Test @GraphicsMode(GraphicsMode.Mode.NATIVE) @Config(qualifiers = "w320dp-h533dp-hdpi") fun everySledControlFitsAt320dp() {
         val reader = FakeRfidReader()
         reader.setConnection(RfidConnection.Connected("Fake RFD40", 80))
         reader.setScanner(SledScannerState.Ready)
         show(testContainer(reader))
         val width = compose.onRoot().fetchSemanticsNode().size.width
+        // The unclipped extent: `boundsInRoot` is clipped by the segmented row's own
+        // horizontal scroll, so an option pushed half out of view would still pass on it.
         fun SemanticsNodeInteraction.inside() = apply {
-            val b = assertIsDisplayed().fetchSemanticsNode().boundsInRoot
-            assertTrue("clipped: ${b.right} > $width", b.right <= width + 1f)
+            val n = assertIsDisplayed().fetchSemanticsNode()
+            val right = n.positionInRoot.x + n.size.width
+            assertTrue("past the edge: $right > $width", right <= width + 1f)
+            assertTrue("clipped: ${n.boundsInRoot.width} < ${n.size.width}", n.boundsInRoot.width >= n.size.width - 1f)
         }
         for (label in listOf("RFID", "Barcode", "Both")) compose.onNodeWithText(label).inside()
         compose.onNodeWithTag("sled-scan").inside()

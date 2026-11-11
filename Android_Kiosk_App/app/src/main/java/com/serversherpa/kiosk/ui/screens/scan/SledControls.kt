@@ -15,13 +15,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.rfid.DEFAULT_RFID_SETTINGS
@@ -84,6 +90,28 @@ fun SledFixButton(fix: SledFix, onConnect: () -> Unit) {
     }
 }
 
+/**
+ * `RfidPermissions.missing(context)`, snapshotted rather than read on every
+ * recomposition: nothing tells Compose to recompose a plain call when the
+ * operator grants the permission in Android's own Settings app and returns,
+ * so it is read again on every `ON_RESUME`. A permission prompt's callback
+ * writes the state directly (the RFID tab does).
+ */
+@Composable
+fun rememberMissingRfidPermissions(): MutableState<List<String>> {
+    val context = LocalContext.current
+    val missing = remember { mutableStateOf(RfidPermissions.missing(context)) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) missing.value = RfidPermissions.missing(context)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    return missing
+}
+
 /** This app's page in Android's Settings, where its permissions are granted. */
 internal fun openAppSettings(context: Context) {
     runCatching {
@@ -120,7 +148,7 @@ fun SledSlot(screenReady: Boolean = true) {
     val retry by container.rfid.retry.collectAsStateWithLifecycle()
     val scanner by container.rfid.scanner.collectAsStateWithLifecycle()
     val readError by container.rfid.readError.collectAsStateWithLifecycle()
-    val permissionMissing = RfidPermissions.missing(context).isNotEmpty()
+    val permissionMissing = rememberMissingRfidPermissions().value.isNotEmpty()
     fun slot(textAtOpen: String?) = scanSlotLine(
         sledLine(connection, reconnecting, enabled = true, permissionMissing = permissionMissing, retry = retry),
         connection, scanner, readError, textAtOpen,

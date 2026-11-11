@@ -150,6 +150,26 @@ class AdminRegionTest {
         assertEquals(0, compose.onAllNodesWithText(SledWords.REGIONS_FAILED).fetchSemanticsNodes().size)
     }
 
+    /** A refused set's sentence belongs to that link: it goes when the sled drops, and does
+     *  not come back with the reconnect. */
+    @Test fun aRefusalClearsWhenTheLinkDrops() {
+        val reader = FakeRfidReader()
+        reader.reportedRegions = RfidRegions(listOf(usa, eu), "USA")
+        reader.regionResult = Result.failure(IllegalStateException(SledWords.FINISH_READ_FIRST))
+        val c = testContainer(reader)
+        runBlocking { c.rfid.connectNow() }
+        compose.setAdminPanelContent(c)
+        compose.waitForText("Europe")
+        compose.onNodeWithText("Europe").performScrollTo().performClick()
+        compose.waitForText(SledWords.FINISH_READ_FIRST)
+
+        reader.setConnection(RfidConnection.Disconnected)
+        compose.waitUntil(5_000) { compose.onAllNodesWithText(SledWords.FINISH_READ_FIRST).fetchSemanticsNodes().isEmpty() }
+        reader.setConnection(RfidConnection.Connected("Fake RFD40", 80))
+        compose.waitForText("Europe")
+        assertEquals(0, compose.onAllNodesWithText(SledWords.FINISH_READ_FIRST).fetchSemanticsNodes().size)
+    }
+
     /** A sled with no region set is up but cannot read: its region list is what fixes it. */
     @Test fun regionsLoadInNeedsRegion() {
         val reader = FakeRfidReader()

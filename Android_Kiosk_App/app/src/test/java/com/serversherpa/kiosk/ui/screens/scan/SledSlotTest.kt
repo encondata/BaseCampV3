@@ -1,16 +1,21 @@
 package com.serversherpa.kiosk.ui.screens.scan
 
 import android.app.Application
+import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.junit4.AndroidComposeTestRule
+import androidx.compose.ui.test.junit4.ComposeContentTestRule
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.rules.ActivityScenarioRule
 import com.serversherpa.kiosk.AppContainer
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.rfid.RfidConnection
@@ -91,6 +96,27 @@ class SledSlotTest {
         assertTrue("clipped: ${button.right} > $width", button.right <= width + 1f)
         assertTrue("clipped: ${sentence.right} > $width", sentence.right <= width + 1f)
     }
+
+    /** Granted in Android's Settings and back: the slot reads the permission again on resume. */
+    @Test fun aPermissionGrantedWhileAwayIsReadAgainOnResume() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        Shadows.shadowOf(app).denyPermissions(*RfidPermissions.REQUIRED.toTypedArray())
+        val reader = FakeRfidReader()
+        reader.setConnection(RfidConnection.Failed(SledWords.BLUETOOTH_OFF, fix = SledFix.TURN_ON_BLUETOOTH))
+        show(rig(reader))
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText(SledWords.PERMISSION_MISSING)).fetchSemanticsNodes().isNotEmpty() }
+
+        Shadows.shadowOf(app).grantPermissions(*RfidPermissions.REQUIRED.toTypedArray())
+        compose.androidRule.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+        compose.androidRule.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText(SledWords.BLUETOOTH_OFF)).fetchSemanticsNodes().isNotEmpty() }
+        assertEquals(0, compose.onAllNodes(hasText(SledWords.PERMISSION_MISSING)).fetchSemanticsNodes().size)
+    }
+
+    /** See `RfidPanelTest.androidRule`: the rule's activity, to drive its lifecycle. */
+    @Suppress("UNCHECKED_CAST")
+    private val ComposeContentTestRule.androidRule
+        get() = this as AndroidComposeTestRule<ActivityScenarioRule<ComponentActivity>, ComponentActivity>
 
     @Test fun nothingShowsWhileTheReaderIsOff() {
         val reader = FakeRfidReader()

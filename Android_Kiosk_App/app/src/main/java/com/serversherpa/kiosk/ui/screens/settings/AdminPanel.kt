@@ -64,6 +64,9 @@ fun AdminPanel() {
     // value would trigger needless Bluetooth round trips. [reloads] is Retry.
     val linkUp = connection is RfidConnection.Connected || connection is RfidConnection.NeedsRegion
     LaunchedEffect(linkUp, reloads) {
+        // A refusal belongs to the link it came from. A set refused in NeedsRegion returns
+        // before the link moves, so its sentence still shows; one left from before a drop goes.
+        if (!linkUp) regionError = null
         regionsFailed = false
         regions = if (linkUp) {
             val result = container.rfid.loadRegions()

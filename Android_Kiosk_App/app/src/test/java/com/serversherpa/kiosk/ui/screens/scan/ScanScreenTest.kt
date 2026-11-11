@@ -22,6 +22,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.test.core.app.ApplicationProvider
 import com.serversherpa.kiosk.AppContainer
 import com.serversherpa.kiosk.LocalAppContainer
+import com.serversherpa.kiosk.NativeFontsSettled
 import com.serversherpa.kiosk.core.model.KioskAssetRow
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.core.rfid.RfidConnection
@@ -39,12 +40,14 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
+import org.junit.rules.RuleChain
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /**
  * The Scanning screen: the sled slot under the scan box (row 14: it replaces the
@@ -54,7 +57,10 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w360dp-h800dp")
 class ScanScreenTest {
-    @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
+    private val compose = createAndroidComposeRule<ComponentActivity>()
+
+    // Waits out a font copy before a native-graphics test (see NativeFontsSettled).
+    @get:Rule val rules: RuleChain = RuleChain.outerRule(NativeFontsSettled()).around(compose)
 
     /** Robolectric grants nothing; with a permission missing every line would be the permission one. */
     @Before fun grant() {
@@ -142,13 +148,26 @@ class ScanScreenTest {
         }
     }
 
-    @Test @Config(qualifiers = "w320dp-h533dp-hdpi") fun theThreeButtonsWrapAt320dp() {
+    /** Native graphics: the legacy mode measures text at almost no width, so all three would fit on one line. */
+    @Test @GraphicsMode(GraphicsMode.Mode.NATIVE) @Config(qualifiers = "w320dp-h533dp-hdpi") fun theThreeButtonsWrapAt320dp() {
         show(rig(FakeRfidReader()))
         val width = compose.onRoot().fetchSemanticsNode().size.width
+        // The unclipped extent: the page's scroll clips `boundsInRoot` to the screen, so a
+        // button squeezed or pushed past the edge would still pass on it.
+        fun node(label: String) = compose.onNodeWithText(label).performScrollTo().assertIsDisplayed().fetchSemanticsNode()
         for (label in listOf("Retry failed", "Clear sent", "Discard failed")) {
-            val b = compose.onNodeWithText(label).performScrollTo().assertIsDisplayed().fetchSemanticsNode().boundsInRoot
-            assertTrue("$label clipped: ${b.right} > $width", b.right <= width + 1f)
+            val n = node(label)
+            val right = n.positionInRoot.x + n.size.width
+            assertTrue("$label past the edge: $right > $width", right <= width + 1f)
+            assertTrue("$label clipped: ${n.boundsInRoot.width} < ${n.size.width}", n.boundsInRoot.width >= n.size.width - 1f)
         }
+        // The third button wraps onto a line of its own (both read after one scroll).
+        val third = node("Discard failed")
+        val first = compose.onNodeWithText("Retry failed").fetchSemanticsNode()
+        assertTrue(
+            "Discard failed is not on a second line: ${third.positionInRoot.y} < ${first.positionInRoot.y + first.size.height}",
+            third.positionInRoot.y >= first.positionInRoot.y + first.size.height - 1f,
+        )
     }
 
     @Test fun theSledControlsShowWhileTheSledIsConnected() {
