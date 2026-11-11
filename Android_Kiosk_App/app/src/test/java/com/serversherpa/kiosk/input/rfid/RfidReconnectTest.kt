@@ -13,6 +13,7 @@ import com.serversherpa.kiosk.core.rfid.SledWords
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
@@ -134,6 +135,58 @@ class RfidReconnectTest {
             assertNull(name, r.controller.retry.value)
             at(t0 + 300_000)
             assertEquals(name, 1, r.fake.connectCalls)
+        }
+    }
+
+    /** With a try dialing, each of the four ways to stop wanting the link ends the tries: that
+     *  try runs to its end, nothing follows it, and Bluetooth turning on afterwards does not
+     *  dial. A disconnect waits for the try. Found on hardware, 2026-11-11 (steps 12 and 13). */
+    @Test fun nothingFollowsATryDialingWhenTheLinkStopsBeingWanted() = runTest {
+        val stops = listOf("stopReconnecting", "disconnectForLifecycle", "disconnectNow", "turning the reader off")
+        for (name in stops) {
+            val r = Rig(this)
+            val t0 = currentTime
+            connectedThenDropped(r)
+            val hold = CompletableDeferred<Unit>()
+            r.fake.holdNext = hold
+            at(t0 + 2_000)
+            assertEquals(name, 2, r.fake.connectCalls)
+            assertEquals(name, RfidConnection.Connecting, r.fake.connection.value)
+
+            at(t0 + 2_500)
+            // disconnectNow() awaits a reply that comes only after the held try.
+            val pending = when (name) {
+                "stopReconnecting" -> { r.controller.stopReconnecting(); null }
+                "disconnectForLifecycle" -> { r.controller.disconnectForLifecycle(); null }
+                "disconnectNow" -> launch { r.controller.disconnectNow() }
+                else -> { r.settings.value = r.settings.value.copy(enabled = false); null }
+            }
+            settle()
+            assertFalse(name, r.controller.reconnecting.value)
+            assertNull(name, r.controller.retry.value)
+            assertEquals("$name: nothing disconnects while the try dials", 0, r.fake.disconnectCalls)
+
+            at(t0 + 12_700)
+            hold.complete(Unit); settle()
+            pending?.join()
+
+            at(t0 + 300_000)
+            assertEquals("$name: nothing follows the try", 2, r.fake.connectCalls)
+            r.controller.nudge(SledNudge.BLUETOOTH_ON); settle()
+            assertEquals("$name: Bluetooth on dials nothing", 2, r.fake.connectCalls)
+            if (name == "stopReconnecting") {
+                assertEquals(name, 0, r.fake.disconnectCalls)
+                assertEquals(
+                    "$name: the try's own failure",
+                    RfidConnection.Failed(SledWords.couldNotReach("Fake RFD40"), retryable = true),
+                    r.fake.connection.value,
+                )
+                assertNull(name, r.controller.connectionError.value)
+            } else {
+                assertEquals("$name: one disconnect, after the try ended", 1, r.fake.disconnectCalls)
+                assertEquals(name, RfidConnection.Disconnected, r.fake.connection.value)
+            }
+            assertEquals(name, emptyList<String>(), r.fake.violations)
         }
     }
 
