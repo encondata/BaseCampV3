@@ -2707,6 +2707,10 @@ class AddressBlock(Base):
     made_permanent_at: Mapped[datetime | None]
     made_permanent_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("people.id", ondelete="SET NULL"))
+    # Attempts this block turned away with a 429, and the latest one's time
+    # (migration 0127); both reset when a new block trips.
+    attempts_while_blocked: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    last_attempt_at: Mapped[datetime | None]
 
 
 # Register the learning and project-plan models on Base.metadata (they import

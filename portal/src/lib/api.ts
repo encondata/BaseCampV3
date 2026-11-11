@@ -4537,6 +4537,9 @@ export interface BlockedAddress {
   cleared_by_name: string | null;
   made_permanent_at: string | null;
   made_permanent_by_name: string | null;
+  /** Sign-in attempts this block turned away, and the latest one's time. */
+  attempts_while_blocked: number;
+  last_attempt_at: string | null;
 }
 
 /** Admin only (403 otherwise). `active` = timed and permanent blocks;

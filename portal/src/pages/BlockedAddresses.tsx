@@ -24,6 +24,8 @@ import '../styles/directory.css';
 type Show = 'active' | 'ended';
 
 // Fit: these columns + ACTIONS_TRACK ≤ LIST_FIT.page (asserted in the test).
+// To stay inside it, the trip's failure count is the Times blocked cell's
+// hover title and the last try's time is the Tries cell's.
 // Dates are mono `YYYY-MM-DD HH:MM`; Address holds an IPv6 /64 at 160px
 // and truncates with a hover title past that.
 export const BLOCKED_ADDRESS_COLUMNS: ColumnDef[] = [
@@ -31,7 +33,7 @@ export const BLOCKED_ADDRESS_COLUMNS: ColumnDef[] = [
   { key: 'status', label: 'Status', width: '104px', default: true },
   { key: 'ends', label: 'Ends', width: '1fr', default: true, min: 132 },
   { key: 'times_blocked', label: 'Times blocked', short: 'Times', width: '72px', default: true },
-  { key: 'failure_count', label: 'Failures', width: '72px', default: true },
+  { key: 'attempts', label: 'Tries while blocked', short: 'Tries', width: '72px', default: true },
   { key: 'last_route', label: 'Last route tried', short: 'Route', width: '1fr', default: true, min: 132 },
   { key: 'first_blocked', label: 'First blocked', short: 'First', width: '1fr', default: true, min: 132 },
   { key: 'last_blocked', label: 'Last blocked', short: 'Last', width: '1fr', default: true, min: 132 },
@@ -138,8 +140,17 @@ export default function BlockedAddresses() {
       case 'status':
         return <span className={`chip ${STATUS_CHIP[b.status] ?? 'c-slate'}`}>{statusLabel(b)}</span>;
       case 'ends': return mono(endsText(b));
-      case 'times_blocked': return mono(String(b.times_blocked));
-      case 'failure_count': return mono(String(b.failure_count));
+      case 'times_blocked':
+        return (
+          <span className="mono cell-line" title={`This block tripped on ${b.failure_count} failed sign-ins`}>
+            {b.times_blocked}
+          </span>
+        );
+      case 'attempts': {
+        const text = String(b.attempts_while_blocked);
+        const title = b.last_attempt_at ? `Last try ${when(b.last_attempt_at)}` : 'No tries since the block';
+        return <span className="mono cell-line" title={title}>{text}</span>;
+      }
       case 'last_route': {
         const text = ROUTE_LABELS[b.last_route] ?? b.last_route;
         return <span className="cell-line" title={titleFor(text)}>{text}</span>;

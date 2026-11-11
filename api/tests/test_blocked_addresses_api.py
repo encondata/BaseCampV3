@@ -76,6 +76,7 @@ async def test_list_active_and_ended(client, db, seeded_user):
     assert row["status"] == "blocked" and row["level"] == 1
     assert row["ends_at"] and row["ended_at"] is None
     assert row["failure_count"] == 10 and row["last_route"] == "login"
+    assert row["attempts_while_blocked"] == 0 and row["last_attempt_at"] is None
     ended = (await client.get(URL, headers=admin, params={"show": "ended"})).json()
     assert [x["address"] for x in ended] == ["203.0.113.9"]
     assert ended[0]["status"] == "ended" and ended[0]["ended_at"]

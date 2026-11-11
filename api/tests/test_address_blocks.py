@@ -309,6 +309,37 @@ async def test_raise_if_blocked(db, seeded_user):
     assert not caught.value.headers
 
 
+async def test_blocked_attempts_are_counted_and_reset_by_the_next_block(db, seeded_user):
+    now = datetime.now(UTC)
+    await fail(db, 10, now, xff="203.0.113.21")
+    block = await ab.active_block(db, "203.0.113.21")
+    assert block.attempts_while_blocked == 0 and block.last_attempt_at is None
+
+    for _ in range(3):
+        with pytest.raises(HTTPException):
+            await ab.raise_if_blocked(db, req("203.0.113.21"))
+    # committed by raise_if_blocked: a fresh read sees it
+    block = await ab.active_block(db, "203.0.113.21")
+    assert block.attempts_while_blocked == 3
+    assert now <= block.last_attempt_at <= datetime.now(UTC)
+
+    # a permanent block keeps counting
+    await ab.make_permanent(db, "203.0.113.21", actor_id=seeded_user.id)
+    await db.commit()
+    with pytest.raises(HTTPException):
+        await ab.raise_if_blocked(db, req("203.0.113.21"))
+    assert (await ab.active_block(db, "203.0.113.21")).attempts_while_blocked == 4
+
+    # cleared: the count stays on the ended row, and the next block starts at zero
+    await ab.clear(db, "203.0.113.21", actor_id=seeded_user.id)
+    await db.commit()
+    await ab.raise_if_blocked(db, req("203.0.113.21"))  # not blocked: no-op, not counted
+    row = await db.get(AddressBlock, "203.0.113.21", populate_existing=True)
+    assert row.attempts_while_blocked == 4
+    block = await fail(db, 10, datetime.now(UTC), xff="203.0.113.21")
+    assert block.attempts_while_blocked == 0 and block.last_attempt_at is None
+
+
 async def test_list_blocks(db, seeded_user):
     now = T0 + timedelta(days=40)
     # active timed
