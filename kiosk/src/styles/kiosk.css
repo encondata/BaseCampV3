@@ -1492,3 +1492,19 @@ a.kiosk-crumb:focus-visible { opacity: 1; outline: 2px solid var(--accent); outl
     scrollbar-color: color-mix(in srgb, var(--text-mute) 45%, transparent) transparent;
   }
 }
+
+/* ── Linux laptop lockdown: the PIN pad's host ─────────────────────
+   A .portal-shell.kiosk-shell of its own on <body> (LockdownLayer), so the
+   PIN pad gets the tokens and the pinned-foot .confirm-card rules on every
+   screen, the sign-in page included. It covers nothing itself. */
+.portal-shell.kiosk-shell.kiosk-pin-host {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: block;
+  height: auto;
+  background: transparent;
+  overflow: visible;
+  pointer-events: none;
+}
+.kiosk-pin-host > * { pointer-events: auto; }
