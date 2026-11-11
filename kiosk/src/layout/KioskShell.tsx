@@ -17,6 +17,7 @@ import { useKioskAuth } from '../auth/KioskAuthContext';
 import LabelRegenScreen from '../components/LabelRegenScreen';
 import OffMoveAlarm from '../components/OffMoveAlarm';
 import ScanFlash from '../components/ScanFlash';
+import SystemTray from '../components/lockdown/SystemTray';
 import type { RegistrationState } from '../lib/api';
 import { kioskVersion } from '../lib/config';
 import { useDevMode } from '../lib/devMode';
@@ -181,6 +182,8 @@ export default function KioskShell({ children }: { children: ReactNode }) {
           {identity.name}
         </button>
         <div className="kiosk-user">
+          {/* Linux laptop only: battery and network (renders nothing elsewhere). */}
+          <SystemTray />
           {authed && registration && (
             <span className={`chip ${REG_CHIP[registration]}`}>
               <span className="dot" />{registrationLabel(registration)}

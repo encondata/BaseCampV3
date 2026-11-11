@@ -1508,3 +1508,39 @@ a.kiosk-crumb:focus-visible { opacity: 1; outline: 2px solid var(--accent); outl
   pointer-events: none;
 }
 .kiosk-pin-host > * { pointer-events: auto; }
+
+/* ── Linux laptop lockdown: top-bar battery and network ───────────── */
+.kiosk-sys-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--snow);
+  white-space: nowrap;
+}
+.kiosk-sys-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--snow);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: .06em;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 8px;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 22vw;
+}
+.kiosk-sys-btn:hover { background: var(--ink-2); }
+.kiosk-sys-btn > span { overflow: hidden; text-overflow: ellipsis; }
+.kiosk-sys-icon { width: 18px; height: 18px; flex: none; }
+/* Network modal footer: the password and the message line take the space
+   left of Close/Join, which stay put. */
+.kiosk-net-foot { margin-right: auto; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.kiosk-net-foot .form-error, .kiosk-net-foot .form-notice { margin: 0; }
+.kiosk-wifi-pass { max-width: 260px; }
