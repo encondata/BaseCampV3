@@ -142,6 +142,7 @@ const LINK_ERRORS: Record<string, string> = {
   individual_is_staff_only: 'Only staff can give a contact the Individual tier.',
   group_not_in_client: 'One of those groups does not belong to this client.',
   tier_not_for_partners: 'Partner links can only be Owner, Admin or Viewer.',
+  client_worker_conflict: "This person is a worker. A worker can't also be a client contact.",
   forbidden: "You don't have permission for that.",
 };
 
@@ -631,7 +632,9 @@ function GroupsField({ link, options, value, busy, onChange }: {
     <div style={{ flexBasis: '100%' }}>
       <label className="eyebrow-sm" style={{ display: 'block', marginBottom: 4 }}>Groups</label>
       <div style={seesAll ? { opacity: 0.55 } : undefined}>
-        <TagInput value={value} options={options} disabled={busy}
+        {/* a contact may hold every group the client has (TagInput's own
+            cap of 12 is for free-text tags) */}
+        <TagInput value={value} options={options} disabled={busy} maxTags={options.length}
                   placeholder={value.length === 0 && !seesAll ? empty : 'Add a group…'}
                   onChange={onChange} />
       </div>

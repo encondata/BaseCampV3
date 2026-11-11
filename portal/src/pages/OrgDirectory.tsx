@@ -923,6 +923,7 @@ const NEW_CONTACT_ERRORS: Record<string, string> = {
   already_a_contact: 'That person is already a contact of this org.',
   rank_too_low: "You don't have permission to grant that tier.",
   invalid_functions: 'Functions must be short, unique tags (max 12).',
+  client_worker_conflict: "This person is a worker. A worker can't also be a client contact.",
 };
 
 function ContactsPanel({ cfg, orgId, contacts, canManage, onChanged }: {

@@ -130,3 +130,33 @@ it('a client login keeps the tier locked and Remove hidden until the contact loa
   expect((screen.getAllByRole('combobox')[0] as HTMLSelectElement).disabled).toBe(true);
   expect(screen.queryByTitle('Remove link')).toBeNull();
 });
+
+it('a contact can hold more than 12 groups (every group the client has)', async () => {
+  const many = Array.from({ length: 14 }, (_, i) => ({
+    id: `m${i}`, name: `Site ${String(i).padStart(2, '0')}`, aliases: [], asset_count: 1, people_count: 0,
+  }));
+  api.listClientGroups.mockResolvedValue(many);
+  const held = many.slice(0, 12).map((g) => g.id);
+  contact('viewer', held, true);
+  open(person('viewer'));
+  expect(await screen.findByText('Site 11')).not.toBeNull();
+  const field = screen.getByText('Groups', { selector: 'label' }).parentElement as HTMLElement;
+  const input = field.querySelector('.tag-input-field') as HTMLInputElement;
+  fireEvent.focus(input);
+  fireEvent.mouseDown(await screen.findByText('Site 12'));
+  await waitFor(() => expect(api.patchContactLink)
+    .toHaveBeenCalledWith('client', 'c1', 'p1', { group_ids: [...held, 'm12'] }));
+});
+
+it('a tier change refused with client_worker_conflict shows the plain message', async () => {
+  const { ApiError } = await import('../lib/api');
+  api.patchContactLink.mockImplementationOnce(() => Promise.reject(
+    new ApiError(409, 'client_worker_conflict', 'x')));
+  contact('viewer', [], false);
+  open(person('viewer'));
+  const sel = (await screen.findAllByRole('combobox'))[0] as HTMLSelectElement;
+  await waitFor(() => expect(sel.disabled).toBe(false));
+  fireEvent.change(sel, { target: { value: 'admin' } });
+  expect(await screen.findByText(
+    "This person is a worker. A worker can't also be a client contact.")).not.toBeNull();
+});

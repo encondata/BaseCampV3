@@ -13,11 +13,14 @@ import { groupMsgFor } from '../../lib/clientGroups';
 import '../../styles/assets.css';
 
 export default function GroupReviewPanel({
-  clientId, data, loadError, showDismissed, onToggleDismissed, onMatch, onCreate, onChanged,
+  clientId, data, loadError, matchDisabled = false, showDismissed, onToggleDismissed, onMatch,
+  onCreate, onChanged,
 }: {
   clientId: string;
   data: ReviewValue[] | null;
   loadError: string;
+  /** Match to group… is off while the parent has no group list to offer. */
+  matchDisabled?: boolean;
   showDismissed: boolean;
   onToggleDismissed: (next: boolean) => void;
   onMatch: (value: string) => void;
@@ -69,7 +72,8 @@ export default function GroupReviewPanel({
             {v.move_names.length > 0 && <span className="rv-note">{v.move_names.join(', ')}</span>}
           </div>
           <div className="rv-actions">
-            <button className="mini-btn accent" data-action="match" disabled={busy === v.value_key}
+            <button className="mini-btn accent" data-action="match"
+                    disabled={matchDisabled || busy === v.value_key}
                     onClick={() => onMatch(v.value)}>Match to group…</button>
             <button className="mini-btn" data-action="create" disabled={busy === v.value_key}
                     onClick={() => onCreate(v.value)}>Create group</button>

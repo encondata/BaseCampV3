@@ -122,8 +122,13 @@ export default function ClientGroupsPanel({ clientId }: { clientId: string }) {
         </>
       )}
 
+      {view === 'review' && groupsError && !groups && (
+        // Match to group… needs the group list: say why it is off
+        <p className="pf-error">Cannot load groups. {groupsError}</p>
+      )}
       {view === 'review' && (
         <GroupReviewPanel clientId={clientId} data={review} loadError={reviewError}
+                          matchDisabled={!groups}
                           showDismissed={showDismissed} onToggleDismissed={setShowDismissed}
                           onMatch={(value) => setModal({ kind: 'match', value })}
                           onCreate={(value) => setModal({ kind: 'edit', seedValue: value })}
@@ -165,7 +170,7 @@ function DeleteGroupModal({ clientId, group, onClose, onDeleted }: {
   return (
     <StandardModal eyebrow="Client groups" title="Delete group" busy={busy} onClose={onClose}
       cardClass="group-modal-card"
-      description={`Delete “${group.name}”? Its rows become unmatched and the group comes off everyone who has it.`}
+      description={`Delete “${group.name}”? Its rows become unmatched. A group someone still has can't be deleted — remove it from them or merge it into another group first.`}
       footer={<>
         <button className="btn-solid" disabled={busy} onClick={() => void run()}>
           {busy ? 'Deleting…' : 'Delete'}
