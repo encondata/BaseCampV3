@@ -207,3 +207,32 @@ async def test_a_tagged_droplet_with_an_environment_gets_one_card(client, db, wi
     d = (await client.get("/api/dashboard", headers=h)).json()
     assert [(e["id"], e["environment"]) for e in d["environments"]] == [
         ("production", None), ("dev", None), ("beta", None), ("qa-team", "qa-team")]
+
+
+async def _without(client, db, email: str, denied: list[tuple[str, str]]) -> dict:
+    from sqlalchemy import select
+
+    from sirdar_api.db.models import PermissionOverride, User
+    h = await auth_headers(client, db, email=email, roles=("developer",))
+    user = await db.scalar(select(User).where(User.email == email))
+    for resource, action in denied:
+        db.add(PermissionOverride(person_id=user.person_id, resource=resource, action=action,
+                                  allow=False))
+    await db.commit()
+    return h
+
+
+async def test_deploy_view_reads_the_cards_but_not_the_infrastructure(client, db, with_token):
+    """The Environments page (gated on deploy) shows the dashboard's cards:
+    deploy:view reads them, without the infrastructure tree or demo data."""
+    h = await _without(client, db, "deployer@test.example.com", [("dashboard", "view")])
+    d = (await client.get("/api/dashboard", headers=h)).json()
+    assert d["demo"] is False and d["environments"]
+    assert d["infrastructure"] == {"source": "none", "error": None, "tree": [], "accounts": []}
+    assert (await client.get("/api/dashboard?demo=1", headers=h)).json()["demo"] is False
+    full = (await client.get("/api/dashboard", headers=await auth_headers(client, db))).json()
+    assert full["infrastructure"]["tree"]
+    nobody = await _without(client, db, "nobody@test.example.com",
+                            [("dashboard", "view"), ("deploy", "view")])
+    r = await client.get("/api/dashboard", headers=nobody)
+    assert (r.status_code, r.json()) == (403, {"detail": {"code": "forbidden"}})

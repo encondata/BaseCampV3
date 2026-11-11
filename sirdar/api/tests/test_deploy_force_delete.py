@@ -38,6 +38,7 @@ from .lan_helpers import lan_built, make_bluegreen_environment
 from .ssh_server import ssh_server  # noqa: F401
 from .test_deploy_api import deploy_env  # noqa: F401
 from .test_deploy_pipeline import SHA, _load, env  # noqa: F401
+from .test_deploy_pipeline_vm import vm_env  # noqa: F401
 
 
 async def _force(db, env, **kw):
@@ -220,8 +221,64 @@ async def test_unreadable_cloudflare_credentials_stop_a_forced_delete_at_dns(
     dep, steps, e = await _load(dep_id)
     assert (dep.status, dep.failed_step) == ("failed", 17)
     assert dep.error == f"The stored credentials don't open. {DNS_NOTE}"
-    assert [s.status for s in steps] == ["succeeded", "failed", "failed"]
-    assert e is not None
+    # known before anything ran: nothing on the host was removed first
+    assert [s.status for s in steps] == ["not_run", "not_run", "failed"]
+    assert fake_runner.requests == [] and fake_publisher.calls == []
+    assert e is not None and e.status == "failed"
+
+
+async def test_a_vm_plan_destroys_nothing_when_dns_can_t_be_removed(
+        db, vm_env, fake_runner, fake_publisher, fake_provisioner, monkeypatch):
+    from sirdar_api.deploy import publish
+
+    async def unreadable(db_, env_, settings):
+        raise publish.PublishError("The stored credentials don't open.")
+    monkeypatch.setattr(publish, "prepare", unreadable)
+    dep_id = await _force(db, vm_env, vm=True)
+    dep, steps, e = await _load(dep_id)
+    assert [s.key for s in steps] == ["destroy", "unproxy", "undns"]
+    assert (dep.status, dep.failed_step) == ("failed", 17)
+    assert [s.status for s in steps] == ["not_run", "not_run", "failed"]
+    assert fake_provisioner.calls == []                     # the VM is still there
+    assert e is not None and e.status == "failed"
+
+
+async def test_a_retried_forced_delete_keeps_what_earlier_attempts_skipped(
+        db, vm_env, fake_runner, fake_publisher, fake_provisioner):
+    """Destroy VM and proxy hosts skipped, DNS failed; the retry from 17
+    succeeds: the list still names the skipped steps and the VM."""
+    from sirdar_api.deploy import provision
+    await provision._set_vm(vm_env.id, vmid=120, created=True, ip="127.0.0.1")
+    fake_provisioner.fail["destroy"] = "Proxmox didn't answer."
+    fake_publisher.fail["unproxy"] = "Nginx Proxy Manager didn't answer."
+    fake_publisher.fail["undns"] = "Cloudflare didn't answer."
+    first = await _force(db, vm_env, vm=True)
+    d, _, env = await _load(first)
+    assert (d.status, d.failed_step) == ("failed", 17)
+    fake_publisher.fail.pop("undns")
+    env = await db.get(Environment, vm_env.id, populate_existing=True)
+    await _force(db, env, vm=True, start_step=17, retry_of=first)
+    assert await _gone(vm_env.id)
+    audit = await _delete_audit()
+    assert audit.changes["left_behind"] == [
+        "Step 15 (Destroy VM) was skipped.",
+        "Step 16 (Remove proxy hosts) was skipped.",
+        "Proxmox VM ss-uat3"]
+
+
+async def test_a_retry_that_runs_a_skipped_step_again_drops_it(
+        db, vm_env, fake_runner, fake_publisher, fake_provisioner):
+    from sirdar_api.deploy import provision
+    await provision._set_vm(vm_env.id, vmid=120, created=True, ip="127.0.0.1")
+    fake_provisioner.fail["destroy"] = "Proxmox didn't answer."
+    fake_publisher.fail["undns"] = "Cloudflare didn't answer."
+    first = await _force(db, vm_env, vm=True)
+    fake_publisher.fail.clear()
+    fake_provisioner.fail.clear()
+    env = await db.get(Environment, vm_env.id, populate_existing=True)
+    await _force(db, env, vm=True, start_step=15, retry_of=first)
+    assert await _gone(vm_env.id)
+    assert (await _delete_audit()).changes["left_behind"] == []
 
 
 async def test_a_raising_python_step_is_skipped(db, env, fake_runner, fake_publisher):

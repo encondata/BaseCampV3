@@ -1096,15 +1096,39 @@ async def _force_skip(db: AsyncSession, step: DeploymentStep, text: str) -> None
     await db.commit()
 
 
+async def _skipped_in_chain(db: AsyncSession, dep: Deployment) -> list[tuple[int, str, str]]:
+    """The steps a forced Delete and the attempts it retries left skipped:
+    walked oldest first, each step's last outcome counts (a retry that ran
+    a skipped step again drops it). In a forced Delete that got this far,
+    a failed step is one that was skipped."""
+    chain: list[uuid.UUID] = []
+    at: uuid.UUID | None = dep.id
+    while at is not None and at not in chain:
+        chain.append(at)
+        at = await db.scalar(select(Deployment.retry_of).where(Deployment.id == at))
+    last: dict[int, tuple[str, str, str]] = {}
+    for dep_id in reversed(chain):
+        rows = await db.execute(select(DeploymentStep.number, DeploymentStep.key,
+                                       DeploymentStep.name, DeploymentStep.status)
+                                .where(DeploymentStep.deployment_id == dep_id,
+                                       DeploymentStep.status.in_(("succeeded", "failed"))))
+        for number, key, name, status in rows:
+            last[number] = (key, name, status)
+    return [(number, key, name) for number, (key, name, status) in sorted(last.items())
+            if status == "failed"]
+
+
 async def _force_finish(db: AsyncSession, env: Environment, dep: Deployment,
                         steps: list[DeploymentStep],
                         skipped: list[tuple[int, str, str]]) -> list[str]:
-    """What a forced Delete may leave behind: every skipped step, every
+    """What a forced Delete may leave behind: every skipped step (of its
+    retry chain too; `skipped` is this attempt's, kept for callers), every
     record Sirdar made and still holds (a removal that failed), the VMs of
     a Destroy VM that was skipped, and every DigitalOcean resource still
     recorded. They end the last step's log (committed before the
     environment goes) and the audit row; the DigitalOcean rows are
     forgotten, so the environment can go."""
+    skipped = await _skipped_in_chain(db, dep)
     left = [f"Step {number} ({name}) was skipped." for number, _, name in skipped]
     records = list(await db.scalars(select(ManagedRecord).where(
         ManagedRecord.environment_id == env.id, ManagedRecord.origin == "created")))
@@ -1319,6 +1343,21 @@ async def _run(deployment_id: uuid.UUID) -> None:
                     if dep.force:
                         publishing, vm_ctx, ctx, more, unavailable = await _prepare_forced(
                             db, env, dep, settings, runs, todo[0])
+                        blocked = next((s for s in todo if s.key in FORCE_NEVER_SKIPPED
+                                        and STEPS_BY_KEY[s.key].runs in unavailable), None)
+                        if blocked is not None:
+                            # DNS can't be removed, so nothing is removed before it
+                            # (a VM or droplet destroyed first would free its address).
+                            why = unavailable[STEPS_BY_KEY[blocked.key].runs]
+                            if todo[0].id != blocked.id:
+                                todo[0].status, todo[0].started_at = "pending", None
+                            current = blocked.number
+                            await db.commit()
+                            await _close(deployment_id, env_id, current, step_status="failed",
+                                         dep_status="failed", error=f"{why} {FORCE_DNS_NOTE}",
+                                         failed_step=current,
+                                         append_log=f"{why}\n{FORCE_DNS_NOTE}\n")
+                            return
                     else:
                         publishing = (await publish.prepare(db, env, settings)
                                       if "python" in runs else None)
