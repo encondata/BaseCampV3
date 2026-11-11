@@ -84,20 +84,24 @@ open_kiosk() {
 
 have_python3() { command -v python3 >/dev/null 2>&1; }
 session_ready() { [ -f "$KIOSK_DIR/kiosk_session.py" ] && have_python3; }
-# run_session BROWSER: the Linux kiosk session, in place of this script.
-run_session() { exec python3 "$KIOSK_DIR/kiosk_session.py" run --browser "$1"; }
+# run_session BROWSER: the Linux kiosk session, as a child so a crash at startup
+# (a bad nightly refresh) still leaves a way back. Returns its exit code.
+run_session() { python3 "$KIOSK_DIR/kiosk_session.py" run --browser "$1"; }
 # restore_session_desktop: the session can't start, so a desktop lock an
 # earlier session left is put back (never leave the shortcuts off).
 restore_session_desktop() { python3 "$KIOSK_DIR/kiosk_session.py" restore >/dev/null 2>&1 || true; }
 
 main() {
-  local b
+  local b rc
   if [ "$OS" = Linux ] && session_ready; then
     b=$(browser)
     [ -n "$b" ] || b=$(find_browser)
     if [ -n "$b" ]; then
-      run_session "$b"
-      return $?
+      rc=0
+      run_session "$b" || rc=$?
+      # 0 = a normal PIN exit to the desktop: nothing more to do.
+      [ "$rc" -eq 0 ] && return 0
+      # It crashed: put the desktop back, then the plain app window below.
     fi
     restore_session_desktop
   fi

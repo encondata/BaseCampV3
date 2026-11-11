@@ -1226,8 +1226,11 @@ install_start_icon() {
     return 0
   fi
   uid=$(id -u "$user" 2>/dev/null || true)
-  if [ -n "$uid" ]; then
+  # Only on the user's real session bus (as session_restore): without it gio can
+  # report success and save nothing.
+  if [ -n "$uid" ] && [ -S "$RUN_USER_DIR/$uid/bus" ]; then
     as_user "$user" env "DBUS_SESSION_BUS_ADDRESS=unix:path=$RUN_USER_DIR/$uid/bus" \
+      "XDG_RUNTIME_DIR=$RUN_USER_DIR/$uid" \
       gio set "$d/$START_ICON_FILE" metadata::trusted true >/dev/null 2>&1 || true
   fi
   return 0

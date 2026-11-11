@@ -1660,3 +1660,32 @@ def test_remove_login_items_linux_waits_for_the_stopped_session(sh, tmp_path):
        f'session_restore() {{ echo "restore $*" >> "{calls}"; }}; OS=Linux; remove_login_items')
     assert "restore alice" not in calls.read_text()
     assert not (home / ".config/autostart/serversherpa-kiosk-restore.desktop").exists()
+
+
+def _icon_env(run_dir, calls):
+    return (f'RUN_USER_DIR="{run_dir}"; START_ICON_FILE=icon.desktop; '
+            'user_desktop_dir() { printf /d; }; render_start_icon() { :; }; '
+            'write_as_user() { :; }; id() { echo 501; }; '
+            f'as_user() {{ echo "$*" >> "{calls}"; }}; ')
+
+
+def test_start_icon_is_trusted_as_the_user_on_their_session_bus(sh, tmp_path):
+    import shutil
+    d, s = _bus_dir()
+    try:
+        calls = tmp_path / "calls"
+        sh(_icon_env(d, calls) + 'install_start_icon alice /home/alice')
+        gio = [l for l in calls.read_text().splitlines() if " gio " in l]
+        assert gio == [f"alice env DBUS_SESSION_BUS_ADDRESS=unix:path={d}/501/bus XDG_RUNTIME_DIR={d}/501 "
+                       "gio set /d/icon.desktop metadata::trusted true"]
+    finally:
+        s.close()
+        shutil.rmtree(d)
+
+
+def test_start_icon_is_not_trusted_without_the_session_bus(sh, tmp_path):
+    calls = tmp_path / "calls"
+    (tmp_path / "run" / "501").mkdir(parents=True)
+    (tmp_path / "run" / "501" / "bus").write_text("")   # a plain file is not the bus
+    sh(_icon_env(tmp_path / "run", calls) + 'install_start_icon alice /home/alice')
+    assert " gio " not in calls.read_text()

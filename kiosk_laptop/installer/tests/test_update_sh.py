@@ -467,6 +467,26 @@ def test_launch_without_browser_uses_default_opener(tmp_path):
 
 
 
+def _session_launch(tmp_path, rc):
+    calls = tmp_path / "calls"
+    body = (f'session_ready() {{ :; }}; run_session() {{ echo "run $*" >> "{calls}"; return {rc}; }}; '
+            f'restore_session_desktop() {{ echo restore >> "{calls}"; }}; kiosk_answers() {{ :; }}; '
+            f'run_browser() {{ echo "app $*" >> "{calls}"; }}; OS=Linux; main; echo rc=$?')
+    r = _launch(tmp_path, body)
+    return r, (calls.read_text().splitlines() if calls.exists() else [])
+
+
+def test_launch_session_exit_zero_is_a_normal_exit(tmp_path):
+    r, calls = _session_launch(tmp_path, 0)
+    assert calls == ["run /usr/bin/google-chrome"] and "rc=0" in r.stdout
+
+
+def test_launch_session_crash_restores_then_opens_the_app_window(tmp_path):
+    r, calls = _session_launch(tmp_path, 1)
+    assert calls == ["run /usr/bin/google-chrome", "restore",
+                     "app /usr/bin/google-chrome --app=http://localhost:8090"]
+
+
 def test_launch_detects_browser_when_none_configured_linux(tmp_path):
     bindir = tmp_path / "bin"; bindir.mkdir()
     for name in ("microsoft-edge", "chromium"):
