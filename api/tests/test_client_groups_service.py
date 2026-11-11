@@ -175,3 +175,25 @@ async def test_initiative_client_change_rematches(client, db, seeded_user):
                               json={"client_id": str(s.client.id)})
     assert resp.status_code == 200, resp.text
     assert await _group_of(db, s.other_assets[0]) == s.groups["Platform"].id
+
+
+async def test_reimport_rematches_inside_each_batch(db, monkeypatch):
+    """A committed batch is never left with stale owner groups."""
+    from serversherpa.imports import move_assets
+    s = await _seeded(db)
+    monkeypatch.setattr(move_assets, "BATCH_SIZE", 1)
+    seen = []
+
+    async def progress(processed, *_):
+        # runs right before the batch commit; nothing re-matches after it
+        if processed == 1:
+            seen.append(await _group_of(db, s.assets[0]))
+
+    rows = []
+    for serial in ("sn-0", "sn-1"):
+        canonical = {c: "" for c in CANONICAL}
+        canonical.update(serial_number=serial, owner="Storage")
+        rows.append(parse_row(2, canonical, dict(canonical), generate_serials=False))
+    await run_import(db, initiative_id=s.move.id, added_by=None, rows=rows,
+                     make_model_mode="hybrid", write=True, progress=progress)
+    assert seen == [s.groups["Storage"].id]

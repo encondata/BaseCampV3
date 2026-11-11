@@ -499,11 +499,20 @@ async def run_import(
             "make_model_final": make_model_final,
             "model_id": str(model_id) if model_id else None})
 
+    async def _rematch_touched() -> None:
+        # resolve each written row's Owner against its client's groups, in the
+        # same transaction as the rows (so a commit never leaves them stale)
+        if touched:
+            await db.flush()
+            await rematch_rows(db, [a.id for a in touched])
+            touched.clear()
+
     every = progress_every or BATCH_SIZE       # read at call time: tests patch BATCH_SIZE
     for r in rows:
         processed += 1
         await _one_row(r)
         if write and processed % every == 0:
+            await _rematch_touched()
             if progress is not None:
                 await progress(processed, created, updated, errors)
             if commit:
@@ -526,11 +535,7 @@ async def run_import(
               entity_id=str(initiative_id), action="asset_import",
               changes={**summary, "source": source_label})
     if write:
-        if touched:
-            # once per run, in this transaction: resolve each written row's
-            # Owner against its client's groups
-            await db.flush()
-            await rematch_rows(db, [a.id for a in touched])
+        await _rematch_touched()
         if progress is not None:
             await progress(processed, created, updated, errors)
         if commit:
