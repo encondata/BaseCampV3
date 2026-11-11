@@ -193,7 +193,6 @@ async def _wiki_visible(db: AsyncSession, thing_type: str, ids: Sequence[uuid.UU
 async def visible_among(db: AsyncSession, thing_type: str, ids: Iterable[uuid.UUID],
                         person_ids: Iterable[uuid.UUID], *,
                         access: Mapping[uuid.UUID, AccessInfo] | None = None,
-                        group_rule: bool = True,
                         ) -> dict[uuid.UUID, frozenset[uuid.UUID]]:
     """For each person among `person_ids` who can open some of the things `ids`, all of one
     kind (`thing_type`), the ids of the ones they can open right now: what each thing's page
@@ -214,8 +213,7 @@ async def visible_among(db: AsyncSession, thing_type: str, ids: Iterable[uuid.UU
     person it has no entry for opens nothing.
 
     An asset's page also follows its client's groups (access/scope.py): a restricted login opens
-    only the assets of its groups. `group_rule=False` leaves that rule off, the client scope alone,
-    for a caller that asks `visible_rows` about the asset's row on a move instead."""
+    only the assets of its groups."""
     page = _page(thing_type)
     things = list(dict.fromkeys(ids))
     people = list(dict.fromkeys(person_ids))
@@ -233,7 +231,7 @@ async def visible_among(db: AsyncSession, thing_type: str, ids: Iterable[uuid.UU
         info = access.get(person_id)
         if info is None or not info.can(page.resource, "view"):
             continue
-        cond = (scope_conditions(page.resource, info, person_id, group_rule=group_rule)
+        cond = (scope_conditions(page.resource, info, person_id)
                 if page.scope is not None else None)
         if cond is None:                  # global, or a global-only resource
             out[person_id] = present

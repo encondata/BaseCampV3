@@ -35,20 +35,16 @@ SCOPE_COLUMNS = {
 
 
 def scope_conditions(
-    resource: str, access: AccessInfo, person_id: uuid.UUID, *, group_rule: bool = True,
+    resource: str, access: AccessInfo, person_id: uuid.UUID,
 ) -> ColumnElement | None:
     """None = unrestricted. sa.false() = actor has no scope into this
-    resource (require_permission should already have blocked; defensive).
-    `group_rule=False` leaves the Owner-group rule off assets: the client scope
-    alone, for a caller that applies `roster_row_condition` to the asset's
-    row on a move instead (an asset watch set on that move)."""
+    resource (require_permission should already have blocked; defensive)."""
     if access.is_global:
         return None
     cols = SCOPE_COLUMNS.get(resource, {})
     conds: list[ColumnElement] = []
     if "client" in cols and access.client_ids:
-        restricted = (access.restricted_clients()
-                      if resource == "assets" and group_rule else {})
+        restricted = access.restricted_clients() if resource == "assets" else {}
         if not restricted:
             conds.append(cols["client"].in_(access.client_ids))
         else:

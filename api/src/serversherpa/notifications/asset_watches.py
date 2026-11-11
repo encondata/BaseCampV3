@@ -9,8 +9,7 @@ which status it reads, for the routes and the check alike.
 A watch needs what the asset's page needs (`assets:view`, the asset's client scope and its
 client's groups). One on an initiative also needs what the initiative's asset list needs
 (`initiatives:view` and the initiative's scope), and the asset has to be on that initiative; there
-the asset's row on the move, by that move's group rule, stands in for the asset's own group
-(`openable_places`). Both are asked of the tests every notification asks (notifications/
+the asset's row on the move must also pass that move's group rule (`openable_places`). Both are asked of the tests every notification asks (notifications/
 access.py), and the check and the email re-check ask the same when a watch fires
 (asset_watch_check.py, event_sweep.watch_recheck), so setting, listing and firing agree: no watch
 can be set that would end without a notice for want of access. Access is not stored: a watch whose owner can't open its
@@ -193,10 +192,12 @@ async def openable_places(db: AsyncSession, places: Iterable[Place], *,
 
     - a watch on the asset: the asset's page (`assets:view`, its client scope and its client's
       groups);
-    - a watch on an initiative: the initiative, and the asset's row on it by that move's row
-      rule (`visible_rows`), with `assets:view` and the asset's client scope but not the asset's
-      own group, which comes from its newest row and may be another move's (client groups spec,
-      item 12). Once the asset has no row there (it left the move), the asset's page decides.
+    - a watch on an initiative: the initiative, the asset's page as above, and, while the
+      asset has a row on that move, the row by that move's row rule (`visible_rows`, client
+      groups spec item 12). Both rules, because a notice carries asset-level details (the latest
+      scan's site and operator, its container and truck) that may come from another move: a row
+      a restricted login sees on an older move, of an asset whose newest row is another group's,
+      tells them nothing (controller ruling, 2026-11-10).
 
     Setting, listing, firing and the email re-check all ask this, so they agree. Asked once per
     kind of thing however many places there are; `access` skips resolving."""
@@ -210,14 +211,11 @@ async def openable_places(db: AsyncSession, places: Iterable[Place], *,
     assets = await visible_among(db, "asset", asset_ids, people, access=access)
     on_moves = [place for place in places if place[2] is not None]
     moves: Mapping[uuid.UUID, frozenset[uuid.UUID]] = {}
-    in_client: Mapping[uuid.UUID, frozenset[uuid.UUID]] = {}
     rows: Mapping[uuid.UUID, frozenset[tuple[uuid.UUID, uuid.UUID]]] = {}
     present: set[tuple[uuid.UUID, uuid.UUID]] = set()
     if on_moves:
         moves = await visible_among(db, "initiative", [place[2] for place in on_moves], people,
                                     access=access)
-        in_client = await visible_among(db, "asset", [place[1] for place in on_moves], people,
-                                        access=access, group_rule=False)
         pairs = [(asset_id, initiative_id) for _, asset_id, initiative_id in on_moves]
         rows = await visible_rows(db, pairs, people, access=access)
         present = set((await db.execute(
@@ -233,12 +231,10 @@ async def openable_places(db: AsyncSession, places: Iterable[Place], *,
             continue
         if initiative_id not in moves.get(person_id, ()):
             continue
-        if (asset_id, initiative_id) in present:
-            ok = (asset_id in in_client.get(person_id, ())
-                  and (asset_id, initiative_id) in rows.get(person_id, ()))
-        else:
-            ok = asset_id in assets.get(person_id, ())
-        if ok:
+        if asset_id not in assets.get(person_id, ()):
+            continue
+        if ((asset_id, initiative_id) not in present
+                or (asset_id, initiative_id) in rows.get(person_id, ())):
             out.add(place)
     return out
 

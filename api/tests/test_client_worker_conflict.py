@@ -116,15 +116,38 @@ async def test_add_worker_to_client_contact_409(client, seeded_user, db):
     async with get_sessionmaker()() as fresh:
         assert await fresh.get(UserAccount, user.id) is not None
 
-    # POST /access/copy from a worker source refuses the same way
+
+
+async def test_access_copy_reports_client_worker_conflict(client, seeded_user, db):
+    """POST /access/copy from a worker: a client-contact target is skipped
+    with reason `client_worker_conflict`, in the dry run's plan and on
+    apply, as the endpoint's other skips are; other targets copy as usual."""
+    acme = await _client(db)
+    contact = await _mk_user(db, first="Cara", last="Contact", email="cara@test.example.com",
+                             roles=("staff",))
+    db.add(PersonRole(person_id=contact.id, role="client_viewer", client_id=acme.id))
+    plain = await _mk_user(db, first="Pia", last="Plain", email="pia@test.example.com",
+                           roles=("staff",))
     src = await _mk_user(db, first="Wyn", last="Worker", email="wyn@test.example.com",
                          roles=("worker",))
-    r = await client.post("/access/copy", headers=admin, json={
-        "source_id": str(src.id), "target_ids": [str(user.id)],
-        "parts": ["roles"], "mode": "replace", "dry_run": False})
-    assert r.status_code == 409, r.text
-    assert _code(r) == CODE
-    assert await _active(db, user.id) == ["client_viewer", "staff"]
+    await db.commit()
+    contact_id, plain_id, src_id = contact.id, plain.id, src.id
+    admin = await login_admin(client, db, seeded_user)
+
+    for dry_run in (True, False):
+        r = await client.post("/access/copy", headers=admin, json={
+            "source_id": str(src_id), "target_ids": [str(contact_id), str(plain_id)],
+            "parts": ["roles"], "mode": "replace", "dry_run": dry_run})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["applied"] is (not dry_run)
+        by_id = {t["person_id"]: t for t in body["targets"]}
+        assert (by_id[str(contact_id)]["status"], by_id[str(contact_id)]["reason"]) == (
+            "skipped", CODE), dry_run
+        assert by_id[str(contact_id)]["roles"] is None
+        assert by_id[str(plain_id)]["status"] == "ok", dry_run
+    assert await _active(db, contact_id) == ["client_viewer", "staff"]
+    assert await _active(db, plain_id) == ["worker"]
 
 
 async def test_add_client_contact_to_worker_409(client, seeded_user, db):

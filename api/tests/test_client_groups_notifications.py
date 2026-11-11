@@ -32,7 +32,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.notifications.access import visible_among
 from serversherpa.notifications.asset_watch_check import run_asset_watches_once
-from serversherpa.notifications.asset_watches import add_asset_watch
+from serversherpa.notifications.asset_watches import AssetWatchError, add_asset_watch
 from serversherpa.notifications.summary import run_summaries_once
 from serversherpa.status_rules.engine import invalidate_cache
 from tests.client_groups_fixtures import client_user, seed_grouped_client
@@ -210,10 +210,14 @@ async def test_watches_listed_only_while_visible(client, seeded_user, db):
     assert len((await client.get(WATCHES, headers=h)).json()) == 2
 
 
-async def test_watch_on_move_uses_the_move_row_rule(db):
-    """sn-0's newest Acme row is Platform's, so the asset rule hides it from
-    Storage's individual; but on an older Acme move its row is Storage's,
-    and a watch set there follows that move's row rule (spec item 12)."""
+async def test_watch_on_move_needs_the_row_rule_and_the_asset_rule(db):
+    """A watch set on a move needs that move's row rule (spec item 12) and
+    the asset rule too (controller ruling: the notice carries asset-level
+    details). sn-0's newest Acme row is Platform's; an older Acme move has
+    it under Storage. Storage's individual sees that older row on its move
+    but not the asset, so they can't watch sn-0 anywhere; the Platform
+    viewer can watch it on its own and on the new move, not on the old
+    move's Storage row; the owner can watch it everywhere."""
     s = await _world(db)
     old = Initiative(name="Acme old move", initiative_type="move", sub_type="migration",
                      client_id=s.client.id)
@@ -225,30 +229,67 @@ async def test_watch_on_move_uses_the_move_row_rule(db):
     await cg.rematch_client(db, s.client.id)
     await db.commit()
 
-    from serversherpa.notifications.asset_watches import AssetWatchError
-    for place in (None, s.move):
+    for person, place in ((s.ind, None), (s.ind, s.move), (s.ind, old), (s.plat, old)):
         with pytest.raises(AssetWatchError) as exc:
-            await add_asset_watch(db, s.ind.id, asset_id=s.assets[0].id,
+            await add_asset_watch(db, person.id, asset_id=s.assets[0].id,
                                   initiative_id=place.id if place else None,
                                   condition="next_update", status=None)
-        assert exc.value.code == "thing_not_found"
-    on_old = await _arm(db, s.ind, s.assets[0], old)
-    # the Platform viewer is the other way round: sn-0 on its own and on the
-    # new move, never on the old move's Storage row
+        assert exc.value.code == "thing_not_found", (person.last_name, place)
     await _arm(db, s.plat, s.assets[0])
     await _arm(db, s.plat, s.assets[0], s.move)
-    with pytest.raises(AssetWatchError):
-        await add_asset_watch(db, s.plat.id, asset_id=s.assets[0].id, initiative_id=old.id,
-                              condition="next_update", status=None)
+    on_old = await _arm(db, s.owner, s.assets[0], old)
 
     await _change(s.assets[0], location_detail="Dock 2")
     assert await _check() == 3
-    [note] = await _notifications(s.ind)
-    assert note.kind == "asset_watch" and note.title.startswith("sn-0")
-    assert note.payload == {"asset_id": str(s.assets[0].id),
-                            "initiative_id": str(old.id)}
-    assert on_old.id not in set(await db.scalars(select(AssetWatch.id)))
     assert len(await _notifications(s.plat)) == 2
+    [note] = await _notifications(s.owner)
+    assert note.kind == "asset_watch" and note.title.startswith("sn-0")
+    assert note.payload == {"asset_id": str(s.assets[0].id), "initiative_id": str(old.id)}
+    assert on_old.id not in set(await db.scalars(select(AssetWatch.id)))
+    assert await _notifications(s.ind) == []
+
+
+async def test_move_watch_skips_row_whose_asset_is_hidden(db, email_on):
+    """sn-0's row on the Acme move is Platform's, and both the Platform
+    viewer and an unchipped viewer watch it there. Then sn-0 lands on a
+    newer Acme move under Storage: its row on the Acme move still passes
+    that move's row rule for the Platform viewer, but the asset is now
+    Storage's. The Platform viewer's watch ends without a notice; the
+    unchipped viewer hears. A notice that fired before the newer row is
+    re-checked the same way: its email is dropped `no_access`."""
+    s = await _world(db)
+    early = await _arm(db, s.plat, s.assets[2], s.move)    # blank row: re-check case
+    plat_watch = await _arm(db, s.plat, s.assets[0], s.move)
+    await _arm(db, s.viewer, s.assets[0], s.move)
+    await _change(s.assets[2], location_detail="Dock 1")
+    assert await _check() == 1
+    [early_mail] = await _mails(s.plat)
+    assert await _recheck(early_mail) is None
+
+    newer = Initiative(name="Acme new move", initiative_type="move", sub_type="migration",
+                       client_id=s.client.id)
+    db.add(newer)
+    await db.flush()
+    for asset in (s.assets[0], s.assets[2]):
+        db.add(InitiativeAsset(initiative_id=newer.id, asset_id=asset.id, owner="Storage",
+                               created_at=datetime.now(UTC) + timedelta(days=1)))
+    await db.commit()
+    await cg.rematch_client(db, s.client.id)
+    await db.commit()
+    # still on the Acme move's roster for the Platform viewer, by its row rule
+    from serversherpa.notifications.access import visible_rows
+    rows = await visible_rows(db, [(s.assets[0].id, s.move.id)], [s.plat.id])
+    assert rows[s.plat.id] == {(s.assets[0].id, s.move.id)}
+
+    await _change(s.assets[0], location_detail="Dock 2")
+    assert await _check() == 2
+    assert plat_watch.id not in set(await db.scalars(select(AssetWatch.id)))
+    [only] = await _notifications(s.plat)                      # the early one alone
+    assert only.title.startswith("sn-2")
+    [heard] = await _notifications(s.viewer)
+    assert heard.title.startswith("sn-0")
+    assert early.id not in set(await db.scalars(select(AssetWatch.id)))
+    assert await _recheck(early_mail) == "no_access"
 
 
 # ── firing and the email re-check ───────────────────────────────────
