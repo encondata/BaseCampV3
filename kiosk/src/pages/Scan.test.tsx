@@ -243,6 +243,23 @@ it('takes focus back when it drifts to something that does not want it', async (
   stray.remove();
 });
 
+it('leaves focus alone while a modal (the Esc PIN pad) is open over the page', async () => {
+  const input = await renderScan();
+  const scrim = document.createElement('div');
+  scrim.className = 'modal-scrim';
+  const card = document.createElement('div');
+  card.className = 'modal-card';
+  card.tabIndex = -1;
+  scrim.appendChild(card);
+  document.body.appendChild(scrim);
+
+  card.focus();
+  card.blur();                                     // focus falls to <body>
+  await new Promise((r) => { setTimeout(r, 20); });
+  expect(document.activeElement).not.toBe(input);
+  scrim.remove();
+});
+
 it('returns focus to the input after Clear sent resolves', async () => {
   const input = await renderScan();
   await userEvent.type(input, 'nope123{Enter}');

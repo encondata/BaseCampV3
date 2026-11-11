@@ -4,7 +4,7 @@
  *  house tokens and the kiosk's pinned-foot modal rules everywhere, and the
  *  signed-in person's theme when a shell is up (otherwise the system's). */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { installEscapeToPin } from '../../lib/escapeToPin';
@@ -21,8 +21,22 @@ function hostAttrs(): { theme: string; accent: string | undefined } {
 export default function LockdownLayer() {
   const enabled = lockdownAvailable();
   const [open, setOpen] = useState(false);
-  useEffect(() => (enabled ? installEscapeToPin(() => setOpen(true)) : undefined), [enabled]);
+  // Where focus was when Esc opened the PIN pad; it goes back there on close.
+  const returnTo = useRef<HTMLElement | null>(null);
+  useEffect(() => (enabled
+    ? installEscapeToPin(() => {
+      const active = document.activeElement;
+      returnTo.current = active instanceof HTMLElement && active !== document.body ? active : null;
+      setOpen(true);
+    })
+    : undefined), [enabled]);
   const close = useCallback(() => setOpen(false), []);
+  useEffect(() => {
+    if (open) return;
+    const el = returnTo.current;
+    returnTo.current = null;
+    if (el?.isConnected) el.focus();
+  }, [open]);
   if (!enabled || !open) return null;
   const { theme, accent } = hostAttrs();
   return createPortal(
