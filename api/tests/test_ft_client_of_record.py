@@ -19,6 +19,7 @@ from serversherpa.db.models import (
     ImportJob,
     Initiative,
     InitiativeAsset,
+    Person,
 )
 from serversherpa.imports.move_assets import parse_row, run_import
 from serversherpa.imports.notices import count_left_out
@@ -368,3 +369,55 @@ async def test_wizard_check_reads_draft_client(db):
     assert summary["client_id"] == str(acme_id)
     assert summary["conflicts"] == 1
     assert [d["status"] for d in job.results["details"]] == ["conflict", "created"]
+
+
+async def test_conflict_rfid_tag_held_at_check_as_at_commit(db):
+    """A conflict row's new tag is recorded at the check as a processed row's
+    would be, so a later row with the same tag gets the same note at check
+    and at commit (Continue)."""
+    acme, bravo = await _clients(db, "Acme", "Bravo")
+    move = await _move(db, acme)
+    await _asset(db, "sn-theirs", bravo)
+    await db.commit()
+    rows = [_row(2, serial_number="sn-theirs", rfid_tag="TAG-X"),
+            _row(3, serial_number="sn-new", rfid_tag="TAG-X")]
+    note = "RFID tag 'TAG-X' skipped: already assigned to serial 'sn-theirs'"
+    check = await run_import(db, initiative_id=move.id, added_by=None,
+                             rows=rows, write=False)
+    assert check["details"][0]["status"] == "conflict"
+    assert note in check["details"][1]["message"]
+    result = await run_import(db, initiative_id=move.id, added_by=None, write=True,
+                              rows=rows, client_choices={"sn-theirs": "continue"})
+    assert note in result["details"][1]["message"]
+    new = await db.scalar(select(Asset).where(Asset.serial_number == "sn-new"))
+    assert new.rfid_tag is None
+
+
+async def test_reassignment_audit_names_committer(db):
+    checker = Person(first_name="Che", last_name="Cker", email="checker@test.example.com")
+    committer = Person(first_name="Com", last_name="Mitter", email="committer@test.example.com")
+    db.add_all([checker, committer])
+    acme, bravo = await _clients(db, "Acme", "Bravo")
+    move = await _move(db, acme)
+    go = await _asset(db, "sn-go", bravo)
+    await db.commit()
+    checker_id, committer_id, go_id, move_id = checker.id, committer.id, go.id, move.id
+    job_id = await _file_job(
+        db, initiative_id=move.id, phase="commit",
+        options={"client_choices": {"sn-go": "continue"}},
+        content=b"Serial Number\nSN-GO\n")
+    job = await db.get(ImportJob, job_id)
+    job.created_by, job.committed_by = checker_id, committer_id
+    await db.commit()
+    assert await run_once(get_sessionmaker()) is True
+    db.expire_all()
+    [moved] = (await db.scalars(select(AuditLog).where(
+        AuditLog.entity_type == "asset", AuditLog.entity_id == str(go_id)))).all()
+    assert moved.actor_person_id == committer_id
+    [summary] = (await db.scalars(select(AuditLog).where(
+        AuditLog.action == "asset_import", AuditLog.entity_id == str(move_id)))).all()
+    assert summary.actor_person_id == committer_id
+    # who added the roster row is unchanged: the uploader, as before
+    roster = await db.scalar(select(InitiativeAsset).where(
+        InitiativeAsset.initiative_id == move_id, InitiativeAsset.asset_id == go_id))
+    assert roster.added_by == checker_id

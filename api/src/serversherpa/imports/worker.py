@@ -175,6 +175,8 @@ async def process_job(db: AsyncSession, job: ImportJob) -> None:
         # a wizard check has no move yet: its client is the draft's
         client_id=await _draft_client(db, opts) if job.initiative_id is None else None,
         job_id=job.id,
+        # the audit names whoever committed; the uploader still adds the rows
+        audit_actor=job.committed_by or job.created_by,
         make_model_mode=str(opts.get("make_model_mode") or "fuzzy"),
         write=write,
         # a review-rows reprocess only sees a subset of the file; its rows

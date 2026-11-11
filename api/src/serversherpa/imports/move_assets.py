@@ -314,6 +314,7 @@ async def run_import(
     client_choices: dict[str, str] | None = None,
     client_id: uuid.UUID | None = None,
     job_id: uuid.UUID | None = None,
+    audit_actor: uuid.UUID | None = None,
 ) -> dict:
     """The shared pipeline. write=False (validate) runs the identical
     decision path with every DB write suppressed — created assets/models
@@ -338,7 +339,12 @@ async def run_import(
     client_choices ({serial_lower: "continue"|"skip"}) — continue moves the
     asset to this client (audited, job_id in the changes) and imports the row
     as usual; skip, or no choice at all, leaves the row out as `skipped`
-    with nothing written. A move without a client behaves exactly as before."""
+    with nothing written. A move without a client behaves exactly as before.
+
+    audit_actor is who the audit rows name (the reassignments and the
+    asset_import summary); it defaults to added_by. The worker passes the
+    job's committer, while added_by stays the uploader on roster rows and
+    created assets."""
     from serversherpa.imports.owner_check import unmatched_owner_count
     from serversherpa.services.audit import audit, diff, snapshot
 
@@ -346,6 +352,7 @@ async def run_import(
         client_id = await db.scalar(
             select(Initiative.client_id).where(Initiative.id == initiative_id))
     choices = {str(k).lower(): v for k, v in (client_choices or {}).items()}
+    actor = audit_actor if audit_actor is not None else added_by
 
     await assign_generated_serials(db, rows, initiative_id=initiative_id,
                                    reuse_by_name=reuse_by_name)
@@ -419,6 +426,10 @@ async def run_import(
                     conflicts += 1
                     status = "conflict"
                     message = f"Belongs to {current['name']}"
+                    # held as a processed row's tag would be, so a later row
+                    # with the same tag reads the same at check and commit
+                    if rfid_to_write:
+                        rfid_map[rfid_to_write.lower()] = asset
                 details.append({
                     "row": r["row"], "serial_number": serial, "status": status,
                     "message": message,
@@ -429,7 +440,7 @@ async def run_import(
             before = snapshot(asset, ["client_id"])
             asset.client_id = client_id
             asset.updated_at = now
-            audit(db, actor_id=added_by, entity_type="asset", entity_id=str(asset.id),
+            audit(db, actor_id=actor, entity_type="asset", entity_id=str(asset.id),
                   action="update",
                   changes={**diff(before, snapshot(asset, ["client_id"])),
                            "source": {"from": None, "to": "from_to_import"},
@@ -611,7 +622,7 @@ async def run_import(
         placement = await recheck_placement(db, initiative_id)
         summary["collisions_flagged"] = placement["collisions"]
         summary["orphans_flagged"] = placement["orphans"]
-        audit(db, actor_id=added_by, entity_type="initiative",
+        audit(db, actor_id=actor, entity_type="initiative",
               entity_id=str(initiative_id), action="asset_import",
               changes={**summary, "source": source_label})
     if write:
