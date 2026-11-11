@@ -537,7 +537,9 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
                 tier=_tier_of(role),
                 org_title=org_title,
                 functions=list(functions or []),
-                group_ids=chips.get(person.id, []),
+                group_ids=chips.get(person.id, []) if actor.access.is_global else [],
+                restricted=(not is_partner and (
+                    _tier_of(role) == "individual" or person.id in chips)),
             )
             for person, granted_at, role, account_id, org_title, functions in rows
         ]

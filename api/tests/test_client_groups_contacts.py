@@ -141,3 +141,43 @@ async def test_contact_list_returns_group_ids(client, seeded_user, db):
             (await client.get(f"/clients/{s.client.id}/contacts", headers=h)).json()}
     assert rows[str(p.id)]["group_ids"] == [str(plat)]
     assert rows[str(q.id)]["group_ids"] == []
+
+
+async def _restricted_setup(client, db):
+    s = await seed_grouped_client(db)
+    cid = s.client.id
+    staff = await _headers(client)
+    ids = {}
+    for key, (f, t) in {"ind": ("Ina", "individual"), "chip": ("Chip", "viewer"),
+                        "plain": ("Plain", "viewer")}.items():
+        pid = (await _mk_person(db, f, "Test")).id
+        ids[key] = str(pid)
+        await _add(client, staff, cid, pid, t)
+    plat = s.groups["Platform"].id
+    await client.patch(f"/clients/{cid}/contacts/{ids['chip']}", headers=staff,
+                       json={"group_ids": [str(plat)]})
+    owner = await client_user(db, client, cid, "client_owner")
+    return cid, staff, owner, ids, plat
+
+
+async def _rows(client, cid, h):
+    return {r["person_id"]: r for r in
+            (await client.get(f"/clients/{cid}/contacts", headers=h)).json()}
+
+
+async def test_contact_list_hides_group_ids_from_client_logins(client, seeded_user, db):
+    cid, staff, owner, ids, plat = await _restricted_setup(client, db)
+    seen = (await _rows(client, cid, owner))[ids["chip"]]
+    assert seen["group_ids"] == []
+    assert seen["restricted"] is True
+    assert (await _rows(client, cid, staff))[ids["chip"]]["group_ids"] == [str(plat)]
+
+
+async def test_contact_list_restricted_flag(client, seeded_user, db):
+    cid, staff, owner, ids, _ = await _restricted_setup(client, db)
+    rows = await _rows(client, cid, staff)
+    assert rows[ids["ind"]]["restricted"] is True
+    assert rows[ids["chip"]]["restricted"] is True
+    assert rows[ids["plain"]]["restricted"] is False
+    owner_rows = [r for k, r in rows.items() if r["email"] == "cg-user@test.example.com"]
+    assert owner_rows and owner_rows[0]["restricted"] is False

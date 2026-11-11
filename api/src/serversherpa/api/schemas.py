@@ -982,6 +982,7 @@ class ContactItem(BaseModel):
     org_title: str | None = None
     functions: list[str] = []
     group_ids: list[uuid.UUID] = []
+    restricted: bool = False
 
 
 class ContactAddIn(BaseModel):
