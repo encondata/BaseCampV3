@@ -8,12 +8,14 @@ import ForceChangePassword from './ForceChangePassword';
 /** `fallback`: where an account below `minRank` is sent instead of the
  *  No access page (a page it may still read, e.g. the templates list).
  *  `learningManager`: the Learning pages' gate — learning:view or a global
- *  wiki:delete (canManageLearning), not a plain resource check. */
+ *  wiki:delete (canManageLearning), not a plain resource check.
+ *  `globalOnly`: staff pages a client or partner login must not open by URL
+ *  either (the nav already hides them; NavItem's flag of the same name). */
 export default function ProtectedRoute({
-  children, resource, minRank, fallback, learningManager,
+  children, resource, minRank, fallback, learningManager, globalOnly,
 }: {
   children: ReactNode; resource?: string; minRank?: number; fallback?: string;
-  learningManager?: boolean;
+  learningManager?: boolean; globalOnly?: boolean;
 }) {
   const { status, mustChangePassword, can, maxRank, scope } = useAuth();
   const location = useLocation();
@@ -28,6 +30,15 @@ export default function ProtectedRoute({
   if (mustChangePassword) {
     // temp-password accounts set their own password before anything else
     return <ForceChangePassword />;
+  }
+  if (globalOnly && !(scope?.global ?? true)) {
+    return (
+      <div className="portal-page">
+        <div className="eyebrow">Access control</div>
+        <h1 className="page-title">No access</h1>
+        <p className="page-hint">You don&apos;t have permission to view this page.</p>
+      </div>
+    );
   }
   if (learningManager && !canManageLearning({ can, isGlobal: scope?.global ?? true })) {
     return (

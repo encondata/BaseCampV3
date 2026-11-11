@@ -16,6 +16,7 @@ from serversherpa.access.resolver import can_touch_rank
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
+    AssetTotalsOut,
     ClientActivityItem,
     ClientActivityOut,
     ContactAddIn,
@@ -769,16 +770,8 @@ partners_router = _make_org_router(
 # here — duplicate its org-lookup + scope-404 shape instead, same as
 # list_partner_workers does below for the partners side.
 
-@clients_router.get("/{org_id}/activity", response_model=ClientActivityOut)
-async def client_activity(
-    org_id: uuid.UUID, db: DbSession,
-    actor: AuthContext = require_permission("clients", "view"),
-    limit: int = Query(30, ge=1, le=100),
-) -> ClientActivityOut:
-    """Recent processed scans on the client's assets — the dashboard's
-    read-only activity feed. activity_7d spans the trailing 7 days
-    regardless of limit. Lives under `clients` so client anchors need no
-    scans grant."""
+async def _client_in_scope(db: AsyncSession, org_id: uuid.UUID,
+                           actor: AuthContext) -> None:
     if await db.get(Client, org_id) is None:
         raise _err(404, "org_not_found")
     cond = scope_conditions("clients", actor.access, actor.person.id)
@@ -788,8 +781,25 @@ async def client_activity(
         if visible is None:
             raise _err(404, "org_not_found")
 
+
+@clients_router.get("/{org_id}/activity", response_model=ClientActivityOut)
+async def client_activity(
+    org_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("clients", "view"),
+    limit: int = Query(30, ge=1, le=100),
+) -> ClientActivityOut:
+    """Recent processed scans on the client's assets — the dashboard's
+    read-only activity feed. activity_7d spans the trailing 7 days
+    regardless of limit. Lives under `clients` so client anchors need no
+    scans grant. Only assets the actor can see count (the asset scope,
+    client groups included)."""
+    await _client_in_scope(db, org_id, actor)
+
     asset_ids = select(Asset.id).where(Asset.client_id == org_id,
                                        Asset.archived_at.is_(None))
+    asset_cond = scope_conditions("assets", actor.access, actor.person.id)
+    if asset_cond is not None:
+        asset_ids = asset_ids.where(asset_cond)
     base = (ProcessedScan.asset_id.in_(asset_ids)
             & ProcessedScan.archived_at.is_(None))
     week_ago = datetime.now(UTC) - timedelta(days=7)
@@ -820,6 +830,21 @@ async def client_activity(
             status_color=sv.color if sv else "#51606f",
             site_name=sites.get(s.site_id), device_id=s.device_id))
     return ClientActivityOut(events=events, activity_7d=activity_7d)
+
+
+@clients_router.get("/{org_id}/asset-totals", response_model=AssetTotalsOut)
+async def client_asset_totals(
+    org_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("clients", "view"),
+) -> AssetTotalsOut:
+    """True counts of the client's live assets, never narrowed by client
+    groups (the dashboard's "Total assets" and "In transit")."""
+    await _client_in_scope(db, org_id, actor)
+    counts = dict((await db.execute(
+        select(Asset.status, func.count())
+        .where(Asset.client_id == org_id, Asset.archived_at.is_(None))
+        .group_by(Asset.status))).all())
+    return AssetTotalsOut(total=sum(counts.values()), by_status=counts)
 
 
 # ── partner-supplied workers (rollup via worker_profiles.partner_id) ─

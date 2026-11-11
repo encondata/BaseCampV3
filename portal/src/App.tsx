@@ -109,7 +109,7 @@ export default function App() {
               >
                 <Route path="/" element={<ProtectedRoute resource="dashboard"><Home /></ProtectedRoute>} />
                 <Route path="/dashboards/move" element={
-                  <ProtectedRoute resource="dashboard"><MoveDashboard /></ProtectedRoute>
+                  <ProtectedRoute resource="dashboard" globalOnly><MoveDashboard /></ProtectedRoute>
                 } />
                 <Route path="/dashboards/shipments" element={
                   <ProtectedRoute resource="trucks"><ShipmentsDashboard /></ProtectedRoute>

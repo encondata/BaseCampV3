@@ -1023,6 +1023,14 @@ class ClientActivityOut(BaseModel):
     activity_7d: int
 
 
+class AssetTotalsOut(BaseModel):
+    """True asset counts for a move's roster or a client's assets, never
+    narrowed by client groups: `total` and a count per status key."""
+
+    total: int
+    by_status: dict[str, int]
+
+
 # ── external directory (client/partner contacts + external role) ──
 
 class ExternalLinkItem(BaseModel):
