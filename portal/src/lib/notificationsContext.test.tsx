@@ -200,6 +200,17 @@ it('a later poll keeps other new toasts while it drops a decided address block',
   await screen.findByText('unread:1 new:b');
 });
 
+it('a fresh card for the same block (it moved up a rung) replaces its old toast', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const key = { blocked_at: '2026-11-10T12:00:00+00:00' };
+  api.listInbox.mockResolvedValue(inbox([blockedItem('blk', key), item('a')]));
+  render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await screen.findByText('unread:2 new:blk');
+  api.listInbox.mockResolvedValue(inbox([blockedItem('blk2', { ...key, level: 2 }), item('a')]));
+  await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_MS + 50); });
+  await screen.findByText('unread:2 new:blk2');
+});
+
 it('a block that already ended by the time a poll first sees it does not toast', async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   api.listInbox.mockResolvedValue(inbox([]));

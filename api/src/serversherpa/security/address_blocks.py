@@ -37,7 +37,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from fastapi import HTTPException, Request
-from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.deps import DbSession, rate_limit_ip
@@ -46,6 +46,9 @@ from serversherpa.wiki.share_links import bucket_for
 
 TRIP_FAILURES = 10
 TRIP_WINDOW = timedelta(hours=1)
+# Every this many sign-in attempts turned away during one block move it up
+# a rung of the ladder, its clock restarting at the attempt (Jimmy, 2026-11-10).
+ESCALATE_TRIES = 10
 RESET_AFTER = timedelta(days=7)
 ENDED_WINDOW = timedelta(days=30)
 LADDER: dict[int, timedelta | None] = {
@@ -255,23 +258,52 @@ def blocked_error(block: AddressBlock, now: datetime) -> HTTPException:
         headers={"Retry-After": str(retry_after)})
 
 
-async def raise_if_blocked(db: AsyncSession, request: Request) -> None:
+def _escalate(block: AddressBlock, now: datetime) -> None:
+    """Move an active timed block up one rung, its clock restarting `now`.
+    The block keeps its `blocked_at` (it is the same block, and its admin
+    cards are keyed on it)."""
+    block.level = min(block.level + 1, 5)
+    duration = LADDER[block.level]
+    block.permanent = duration is None
+    block.ends_at = None if duration is None else now + duration
+
+
+async def _on_escalate(db: AsyncSession, block: AddressBlock) -> None:
+    from serversherpa.notifications.address_blocks import reannounce_block
+    await reannounce_block(db, block)
+
+
+async def raise_if_blocked(db: AsyncSession, request: Request,
+                           now: datetime | None = None) -> None:
     """Raise the address_blocked 429 when the caller's address is blocked,
     after counting the attempt on the block row (committed, so an attack
-    that keeps going after the trip stays visible). A no-op for exempt
-    addresses."""
+    that keeps going after the trip stays visible). Every ESCALATE_TRIES-th
+    attempt moves a timed block up a rung and refreshes the admins' cards.
+    A no-op for exempt addresses."""
     address = address_for(request)
     if address is None:
         return
-    now = _now(None)
-    block = await active_block(db, address, now)
-    if block is None:
+    now = _now(now)
+    if await active_block(db, address, now) is None:
         return
+    await db.execute(_LOCK_SQL, {"address": address})
+    block = await _load(db, address, lock=True)
+    if block is None or block_state(block, now) == "ended":
+        await db.commit()  # cleared or ran out meanwhile
+        return
+    block.attempts_while_blocked += 1
+    block.last_attempt_at = now
+    if not block.permanent and block.attempts_while_blocked % ESCALATE_TRIES == 0:
+        _escalate(block, now)
+        await db.flush()
+        # A failed announcement must not lose the escalation (as on a trip).
+        try:
+            async with db.begin_nested():
+                await _on_escalate(db, block)
+        except Exception as exc:  # noqa: BLE001 (any announce error, logged)
+            logger.error("address block re-announce failed for %s: %s: %s",
+                         address, type(exc).__name__, exc)
     error = blocked_error(block, now)
-    await db.execute(
-        update(AddressBlock).where(AddressBlock.address == address)
-        .values(attempts_while_blocked=AddressBlock.attempts_while_blocked + 1,
-                last_attempt_at=now))
     await db.commit()
     raise error
 

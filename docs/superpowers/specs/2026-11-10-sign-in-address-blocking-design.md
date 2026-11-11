@@ -30,6 +30,7 @@ In production the portal is open to the internet. Today V3 protects sign-in only
 
 - **Trip:** 10 failed sign-in attempts from one address within a rolling **1 hour**. Only failures count.
 - **Block lengths:** first block **1 h**, second **6 h**, third **12 h**, fourth **24 h**. A fifth trip makes the block **permanent until an admin clears it**.
+- **Trying while blocked** (Jimmy, 2026-11-10): every attempt a block turns away is counted on the block (`attempts_while_blocked`, `last_attempt_at`; System › Blocked addresses shows it as *Tries while blocked*). Every **10** of them move the block up one rung at once (1 h → 6 h → 12 h → 24 h → permanent), its clock restarting at that attempt. It stays the same block (same `blocked_at`), and each admin's open card for it is replaced by a fresh, unread one with the new length and the try count, so the toast comes back even after Leave as is.
 - **Who is told and can act:** admin and above, meaning users whose global access has a highest role rank of at least 60 (Administrator 60, Super admin 80, Founder and Developer 100). Use the existing `GATE_BYPASS_RANK` constant (60) in `access/defaults.py`; the portal's `ADMIN_RANK`.
 - **On a block:** a notification goes to those admins, and an admin signed in to the portal sees a **toast**. The toast and the notification both offer **Clear block**, **Block permanently** and **Leave as is**.
 - **Page:** **System › Blocked addresses** in the portal nav, next to Access control (Claude's recommendation; Jimmy asked whether Admin or System and did not object).
