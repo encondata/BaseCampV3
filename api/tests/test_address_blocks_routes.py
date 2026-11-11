@@ -59,6 +59,18 @@ async def test_login_ten_wrong_passwords_blocks(client, db, seeded_user):
     _blocked(await _login(client))
 
 
+async def test_attempts_while_blocked_are_counted(client, db, seeded_user):
+    from serversherpa.db.models import AddressBlock
+    await _fail_logins(client, 10)
+    for _ in range(8):
+        r = await _login(client)
+        assert r.status_code == 429 and r.json()["detail"]["code"] == "address_blocked"
+    block = await db.get(AddressBlock, "203.0.113.7", populate_existing=True)
+    assert block.attempts_while_blocked == 8
+    assert block.last_attempt_at is not None
+    assert await _failures(db) == 0  # turned away, never a failure row
+
+
 async def test_unknown_account_failures_count(client, db, seeded_user):
     await _fail_logins(client, 9)
     assert await _failures(db) == 9

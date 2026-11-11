@@ -37,7 +37,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from fastapi import HTTPException, Request
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.deps import DbSession, rate_limit_ip
@@ -256,15 +256,24 @@ def blocked_error(block: AddressBlock, now: datetime) -> HTTPException:
 
 
 async def raise_if_blocked(db: AsyncSession, request: Request) -> None:
-    """Raise the address_blocked 429 when the caller's address is blocked.
-    A no-op for exempt addresses."""
+    """Raise the address_blocked 429 when the caller's address is blocked,
+    after counting the attempt on the block row (committed, so an attack
+    that keeps going after the trip stays visible). A no-op for exempt
+    addresses."""
     address = address_for(request)
     if address is None:
         return
     now = _now(None)
     block = await active_block(db, address, now)
-    if block is not None:
-        raise blocked_error(block, now)
+    if block is None:
+        return
+    error = blocked_error(block, now)
+    await db.execute(
+        update(AddressBlock).where(AddressBlock.address == address)
+        .values(attempts_while_blocked=AddressBlock.attempts_while_blocked + 1,
+                last_attempt_at=now))
+    await db.commit()
+    raise error
 
 
 async def guard_sign_in(request: Request, db: DbSession) -> None:
@@ -324,6 +333,8 @@ async def record_failure(db: AsyncSession, request: Request, route: str,
     block.cleared_by = None
     block.made_permanent_at = None
     block.made_permanent_by = None
+    block.attempts_while_blocked = 0
+    block.last_attempt_at = None
     await db.flush()
     await db.execute(_DELETE_ADDRESS_SQL, {"address": address})
     # A failed announcement must not lose the block: the cards roll back

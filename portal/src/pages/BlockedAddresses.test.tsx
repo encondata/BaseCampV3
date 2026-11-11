@@ -37,6 +37,7 @@ const base: BlockedAddress = {
   times_blocked: 2, failure_count: 10, last_route: 'login',
   first_blocked_at: '2026-11-09T08:00:00',
   cleared_at: null, cleared_by_name: null, made_permanent_at: null, made_permanent_by_name: null,
+  attempts_while_blocked: 37, last_attempt_at: '2026-11-10T09:40:00',
 };
 
 const ACTIVE: BlockedAddress[] = [
@@ -45,6 +46,7 @@ const ACTIVE: BlockedAddress[] = [
     ...base, address: '2001:db8:1:2::/64', status: 'permanent', level: 5, ends_at: null,
     times_blocked: 5, failure_count: 12, last_route: 'password_reset_confirm',
     made_permanent_at: '2026-11-10T10:00:00', made_permanent_by_name: 'Pat Admin',
+    attempts_while_blocked: 0, last_attempt_at: null,
   },
 ];
 
@@ -70,8 +72,8 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 it('default columns fit the page with the actions track', () => {
   expect(BLOCKED_ADDRESS_COLUMNS.map((c) => c.label)).toEqual([
-    'Address', 'Status', 'Ends', 'Times blocked', 'Failures', 'Last route tried',
-    'First blocked', 'Last blocked',
+    'Address', 'Status', 'Ends', 'Times blocked', 'Tries while blocked',
+    'Last route tried', 'First blocked', 'Last blocked',
   ]);
   expect(listGridStyle(BLOCKED_ADDRESS_COLUMNS, [ACTIONS_TRACK]).minWidth)
     .toBeLessThanOrEqual(LIST_FIT.page);
@@ -88,12 +90,15 @@ it('renders active rows with their labels', async () => {
   expect(within(timed).getByText('Password sign-in')).toBeTruthy();
   expect(within(timed).getByText('2026-11-09 08:00')).toBeTruthy();
   expect(within(timed).getByText('2026-11-10 09:05')).toBeTruthy();
-  expect(within(timed).getByText('2')).toBeTruthy();
-  expect(within(timed).getByText('10')).toBeTruthy();
+  expect(within(timed).getByText('2').getAttribute('title'))
+    .toBe('This block tripped on 10 failed sign-ins');
+  expect(within(timed).getByText('37')).toBeTruthy();
+  expect(within(timed).getByText('37').getAttribute('title')).toBe('Last try 2026-11-10 09:40');
 
   const perm = rowFor('2001:db8:1:2::/64');
   expect(within(perm).getByText('Permanent')).toBeTruthy();
   expect(within(perm).getByText('—')).toBeTruthy();
+  expect(within(perm).getByText('0').getAttribute('title')).toBe('No tries since the block');
   expect(within(perm).getByText('Password reset link')).toBeTruthy();
 });
 

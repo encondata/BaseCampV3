@@ -2612,6 +2612,9 @@ class BlockedAddressOut(BaseModel):
     cleared_by_name: str | None
     made_permanent_at: datetime | None
     made_permanent_by_name: str | None
+    # Sign-in attempts this block turned away, and the latest one's time.
+    attempts_while_blocked: int
+    last_attempt_at: datetime | None
 
 
 class BlockedAddressActionIn(BaseModel):

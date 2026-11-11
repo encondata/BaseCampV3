@@ -38,7 +38,9 @@ def _out(block: AddressBlock, names: dict[uuid.UUID, str],
         cleared_by_name=names.get(block.cleared_by) if block.cleared_by else None,
         made_permanent_at=block.made_permanent_at,
         made_permanent_by_name=(names.get(block.made_permanent_by)
-                                if block.made_permanent_by else None))
+                                if block.made_permanent_by else None),
+        attempts_while_blocked=block.attempts_while_blocked,
+        last_attempt_at=block.last_attempt_at)
 
 
 @router.get("", response_model=list[BlockedAddressOut])
