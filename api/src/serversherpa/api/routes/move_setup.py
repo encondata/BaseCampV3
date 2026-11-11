@@ -14,8 +14,8 @@ from serversherpa.api.bulk_routes import require_bulk_rank
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.routes.initiatives import IMPORT_EXTENSIONS, MAKE_MODEL_MODES
 from serversherpa.api.schemas import (
-    ImportJobOut, MoveSetupCratesIn, MoveSetupMoveIn, MoveSetupOut, MoveSetupPatchIn,
-    MoveSetupTrucksIn,
+    ImportCommitIn, ImportJobOut, MoveSetupCratesIn, MoveSetupMoveIn, MoveSetupOut,
+    MoveSetupPatchIn, MoveSetupTrucksIn,
 )
 from serversherpa.db.models import ImportJob
 from serversherpa.imports import move_setup
@@ -218,10 +218,42 @@ async def recheck_draft_assets(
     old = await move_setup.check_job(db, job.payload)
     if old is None:
         raise _err(409, "no_asset_file")
-    options = {k: v for k, v in (old.options or {}).items() if k != "move_setup_id"}
+    # a recheck starts clean: new client stamp, no earlier choices
+    options = {k: v for k, v in (old.options or {}).items()
+               if k not in ("move_setup_id", "client_id", "client_choices")}
     check = await move_setup.new_check(db, job, filename=old.filename, options=options,
                                        file_key=old.file_key)
     await move_setup.attach_check(db, job, check)
+    await db.commit()
+    return check
+
+
+@router.put("/{draft_id}/assets/choices", response_model=ImportJobOut)
+async def set_draft_client_choices(
+    draft_id: uuid.UUID,
+    body: ImportCommitIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "add"),
+) -> ImportJob:
+    """Continue/Skip for each serial the check flagged as another client's
+    (same codes as the import commit). Replaces the stored choices with only
+    the current check's flagged serials."""
+    _guard(actor)
+    job = await _draft(db, draft_id, actor, lock=True)
+    _require_editable(job)
+    check = await move_setup.check_job(db, job.payload)
+    if check is None or check.status != "completed":
+        raise _err(409, "no_completed_check")
+    choices: dict[str, str] = {}
+    for serial, value in (body.client_choices or {}).items():
+        if value not in ("continue", "skip"):
+            raise _err(422, "invalid_client_choice")
+        choices[str(serial).strip().lower()] = value
+    flagged = move_setup.flagged_serials(check)
+    if missing := sorted(flagged - choices.keys()):
+        raise _err(422, "client_choices_required", serials=missing)
+    check.options = {**(check.options or {}),
+                     "client_choices": {s: choices[s] for s in sorted(flagged)}}
     await db.commit()
     return check
 
@@ -251,6 +283,13 @@ async def create_move_from_draft(
     _guard(actor)
     job = await _draft(db, draft_id, actor, lock=True)
     _require_editable(job)
+    if (job.payload or {}).get("assets") is not None:
+        check = await move_setup.check_job(db, job.payload)
+        if check is not None and check.status == "completed":
+            if move_setup.check_is_stale(check, job.payload):
+                raise _err(409, "check_stale_client")
+            if missing := move_setup.missing_choices(check):
+                raise _err(422, "client_choices_required", serials=missing)
     invalid, clashes = await move_setup.draft_problems(db, job.payload or {})
     if invalid or clashes:
         raise _err(422, "setup_invalid", reasons=invalid + clashes)
