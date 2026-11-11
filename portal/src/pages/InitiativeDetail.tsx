@@ -38,7 +38,7 @@ import {
   getTimeSummary,
   listAssetStatuses,
   listClients,
-  listInitiativeAssets,
+  listInitiativeAssets, getInitiativeAssetTotals, type AssetTotals,
   listInitiativeStatuses,
   listInitiativeSubTypes,
   listInitiativeTypes,
@@ -70,7 +70,8 @@ import { statusChip as chip } from '../lib/chips';
 import { relativeTime } from '../lib/format';
 import {
   INITIATIVE_ERRORS, MOVE_ASSET_COLUMNS, MOVE_ASSET_EDIT_FIELDS, MOVE_ASSET_ERRORS,
-  initiativeCellText, moveAssetCellText, moveAssetProgress, moveAssetStatusBreakdown,
+  initiativeCellText, moveAssetCellText, moveAssetProgress, moveAssetProgressFromCounts, moveAssetStatusBreakdown,
+  moveAssetStatusBreakdownFromCounts,
 } from '../lib/initiatives';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
@@ -212,7 +213,7 @@ function personRatingValue(row: InitiativePersonRow): number {
 export default function InitiativeDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { can, maxRank, preferences } = useAuth();
+  const { can, maxRank, preferences, scope } = useAuth();
   const listGridScale = listScale(preferences?.list_size);
   const toast = useToast();
   const canChange = can('initiatives', 'change');
@@ -362,8 +363,27 @@ export default function InitiativeDetail() {
       moveKey(assetsOrderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
+  // Restricted client logins see a shorter roster; the server's true totals
+  // (fetched only for them) drive the counts, donut and progress bar.
+  const [assetTotals, setAssetTotals] = useState<AssetTotals | null>(null);
+  const restrictedMove = !!initiative?.client_id
+    && !!scope?.restricted_client_ids?.includes(initiative.client_id);
+  useEffect(() => {
+    setAssetTotals(null);
+    if (!initiative || initiative.initiative_type !== 'move' || !restrictedMove) return;
+    let alive = true;
+    void getInitiativeAssetTotals(initiative.id)
+      .then((t) => { if (alive) setAssetTotals(t); })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, [initiative?.id, initiative?.initiative_type, restrictedMove]);
+  const trueTotals = restrictedMove ? assetTotals : null;
+  const assetsTotal = trueTotals ? trueTotals.total : assets.length;
   const assetsProgress = useMemo(
-    () => moveAssetProgress(assets, moveStatuses), [assets, moveStatuses]);
+    () => (trueTotals
+      ? moveAssetProgressFromCounts(trueTotals.by_status, moveStatuses)
+      : moveAssetProgress(assets, moveStatuses)),
+    [assets, moveStatuses, trueTotals]);
   const assetsHaystackText = useCallback((a: InitiativeAssetRow) =>
     MOVE_ASSET_COLUMNS.map((c) => moveAssetCellText(a, c.key)).join(' ').toLowerCase(), []);
   const assetsHaystack = useSearchHaystacks(assets, assetsHaystackText);
@@ -783,7 +803,7 @@ export default function InitiativeDetail() {
 
       <div className="sysconf-tabbar idet-tabbar" role="tablist">
         {tabs.map((t) => {
-          const count = t.key === 'assets' && isMove ? assets.length
+          const count = t.key === 'assets' && isMove ? assetsTotal
             : t.key === 'people' ? initiative.people.length : null;
           return (
             <button key={t.key} type="button" role="tab" aria-selected={tab === t.key}
@@ -796,7 +816,7 @@ export default function InitiativeDetail() {
         })}
       </div>
 
-      <div className={`detail-grid idet-grid${showOverview && isMove && assets.length > 0 ? ' idet-grid-3col' : ''}`}>
+      <div className={`detail-grid idet-grid${showOverview && isMove && assetsTotal > 0 ? ' idet-grid-3col' : ''}`}>
         {showOverview && (<>
         <div className="init-panel"
              style={!isMove ? { gridColumn: '1 / -1' } : undefined}>
@@ -821,10 +841,11 @@ export default function InitiativeDetail() {
           </dl>
         </div>
 
-        {isMove && assets.length > 0 && (
+        {isMove && assetsTotal > 0 && (
           <div className="init-panel">
             <p className="eyebrow-sm">Assets by status</p>
-            <AssetStatusDonut rows={assets} statuses={moveStatuses} />
+            <AssetStatusDonut rows={assets} statuses={moveStatuses}
+                              totals={trueTotals} />
           </div>
         )}
 
@@ -866,14 +887,17 @@ export default function InitiativeDetail() {
 
         {showAssets && (
         <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
-          <p className="eyebrow-sm">Assets{isMove ? ` — ${assets.length}` : ''}</p>
+          <p className="eyebrow-sm">Assets{isMove ? ` — ${assetsTotal}` : ''}</p>
           {!isMove && <p className="page-hint">Asset tracking lands here next.</p>}
           {isMove && assetsError && (
             <div className="dir-empty" style={{ marginBottom: 12 }}>
               <b>Cannot load assets</b>{assetsError}
             </div>
           )}
-          {isMove && !assetsError && assetsLoaded && assets.length === 0 && (
+          {isMove && !assetsError && assetsLoaded && assets.length === 0 && assetsTotal > 0 && (
+            <p className="page-hint">0 of {assetsTotal} shown</p>
+          )}
+          {isMove && !assetsError && assetsLoaded && assets.length === 0 && assetsTotal === 0 && (
             <p className="page-hint">
               No assets on this move yet — assets arrive via bulk import.
             </p>
@@ -902,7 +926,7 @@ export default function InitiativeDetail() {
                            onChange={(e) => setAssetsQuery(e.target.value)} />
                   </div>
                   <span className="result-count">
-                    {visibleAssets.length} of {assets.length} shown</span>
+                    {visibleAssets.length} of {assetsTotal} shown</span>
                   <FilterSummaryChip filters={assetsFilters} onClear={clearAssetsFilters} />
                   <ColumnsButton columns={assetsOrderedCols} visible={assetsVisibleCols}
                                  onChange={setAssetsVisibleCols}
@@ -1603,14 +1627,20 @@ function donutTooltipText(entry: DonutBreakdownEntry): string {
   return `${entry.label} — ${entry.count} (${Math.round(entry.pct)}%)`;
 }
 
-function AssetStatusDonut({ rows, statuses }: {
+function AssetStatusDonut({ rows, statuses, totals = null }: {
   rows: InitiativeAssetRow[];
   statuses: StatusValue[];
+  /** Server-side true counts for a restricted login; null = count `rows`. */
+  totals?: AssetTotals | null;
 }) {
-  const entries = useMemo(() => moveAssetStatusBreakdown(rows, statuses), [rows, statuses]);
+  const entries = useMemo(
+    () => (totals
+      ? moveAssetStatusBreakdownFromCounts(totals.by_status, statuses, rows)
+      : moveAssetStatusBreakdown(rows, statuses)),
+    [rows, statuses, totals]);
   const segments = useMemo(() => donutSegments(entries), [entries]);
   const entryByKey = useMemo(() => new Map(entries.map((e) => [e.key, e])), [entries]);
-  const total = rows.length;
+  const total = totals ? totals.total : rows.length;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [hoverKey, setHoverKey] = useState<string | null>(null);

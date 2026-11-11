@@ -16,14 +16,14 @@ import { Link } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import {
-  getClientActivity, getOrg, listAssets, listAssetStatuses, listInitiativeAssets,
+  getClientActivity, getClientAssetTotals, getInitiativeAssetTotals, getOrg, listAssets, listAssetStatuses, listInitiativeAssets,
   listInitiatives, listClients,
-  type AssetItem, type ClientActivityItem, type InitiativeItem,
+  type AssetItem, type AssetTotals, type ClientActivityItem, type InitiativeItem,
   type OrgRef, type StatusValue,
 } from '../lib/api';
 import { statusChip as chip } from '../lib/chips';
-import { assetDistribution, sortClientInitiatives } from '../lib/clientDashboard';
-import { moveAssetProgress } from '../lib/initiatives';
+import { assetDistribution, assetDistributionFromCounts, sortClientInitiatives } from '../lib/clientDashboard';
+import { moveAssetProgress, moveAssetProgressFromCounts } from '../lib/initiatives';
 import { avatarGradient, initials, longDateOf, relativeTime } from '../lib/format';
 import { STATUS_META, type OrgItem } from '../lib/orgs';
 import { parseApiDay } from '../lib/timeline';
@@ -60,7 +60,7 @@ function scheduledDate(iso: string | null): string {
 }
 
 export default function ClientDashboard() {
-  const { can } = useAuth();
+  const { can, scope } = useAuth();
   const canClients = can('clients', 'view');
   const canInitiatives = can('initiatives', 'view');
   const canAssets = can('assets', 'view');
@@ -83,6 +83,7 @@ export default function ClientDashboard() {
   const [assetStatuses, setAssetStatuses] = useState<StatusValue[]>([]);
   const [activityEvents, setActivityEvents] = useState<ClientActivityItem[] | null>(null);
   const [activity7d, setActivity7d] = useState(0);
+  const [clientTotals, setClientTotals] = useState<AssetTotals | null>(null);
   const [progressById, setProgressById] = useState<Record<string, { pct: number; countable: number }>>({});
 
   // ── client list (unarchived, sorted by name) ──
@@ -124,6 +125,9 @@ export default function ClientDashboard() {
           .catch(quiet),
       );
     }
+    if (canAssets && scope?.restricted_client_ids?.includes(id)) {
+      jobs.push(getClientAssetTotals(id).then(setClientTotals).catch(quiet));
+    }
     if (canClients) {
       jobs.push(
         getClientActivity(id)
@@ -132,7 +136,7 @@ export default function ClientDashboard() {
       );
     }
     if (jobs.length) void Promise.allSettled(jobs).then(() => setUpdatedAt(new Date()));
-  }, [canClients, canInitiatives, canAssets]);
+  }, [canClients, canInitiatives, canAssets, scope]);
 
   // Switching clients clears the previous client's panels first — unlike
   // the auto-refresh interval below (which must never blank a panel on a
@@ -144,6 +148,7 @@ export default function ClientDashboard() {
     setOrg(null);
     setInitiatives(null);
     setClientAssets(null);
+    setClientTotals(null);
     setActivityEvents(null);
     setActivity7d(0);
     setProgressById({});
@@ -164,7 +169,19 @@ export default function ClientDashboard() {
     const moves = initiatives
       .filter((i) => i.initiative_type === 'move' && !i.real_end_at)
       .slice(0, MAX_PROGRESS_FETCHES);
+    const restricted = !!selectedId && !!scope?.restricted_client_ids?.includes(selectedId);
     moves.forEach((init) => {
+      if (restricted) {
+        getInitiativeAssetTotals(init.id)
+          .then((t) => {
+            if (!alive || t.total === 0) return;
+            setProgressById((prev) => ({
+              ...prev, [init.id]: moveAssetProgressFromCounts(t.by_status, assetStatuses),
+            }));
+          })
+          .catch(() => undefined);
+        return;
+      }
       listInitiativeAssets(init.id)
         .then((rows) => {
           if (!alive || rows.length === 0) return;
@@ -173,7 +190,7 @@ export default function ClientDashboard() {
         .catch(() => undefined);
     });
     return () => { alive = false; };
-  }, [initiatives, assetStatuses]);
+  }, [initiatives, assetStatuses, selectedId, scope]);
 
   /* ── derived numbers ─────────────────────────────────────── */
 
@@ -185,13 +202,23 @@ export default function ClientDashboard() {
     () => (clientAssets ?? []).filter((a) => !a.archived_at),
     [clientAssets],
   );
+  // A restricted login's asset list is shorter than the client's fleet, so
+  // the counts come from the server's true totals (null until they load).
+  const restricted = !!selectedId && !!scope?.restricted_client_ids?.includes(selectedId);
+  const trueTotals = restricted ? clientTotals : null;
+  const assetsReady = restricted ? clientTotals !== null : clientAssets !== null;
+  const totalAssets = trueTotals ? trueTotals.total : liveAssets.length;
   const inTransit = useMemo(
-    () => liveAssets.filter((a) => a.status === 'in_transit').length,
-    [liveAssets],
+    () => (trueTotals
+      ? trueTotals.by_status.in_transit ?? 0
+      : liveAssets.filter((a) => a.status === 'in_transit').length),
+    [liveAssets, trueTotals],
   );
   const dist = useMemo(
-    () => assetDistribution(clientAssets ?? [], assetStatuses),
-    [clientAssets, assetStatuses],
+    () => (trueTotals
+      ? assetDistributionFromCounts(trueTotals.by_status, assetStatuses)
+      : assetDistribution(clientAssets ?? [], assetStatuses)),
+    [clientAssets, assetStatuses, trueTotals],
   );
 
   const orgMeta = useMemo(() => {
@@ -302,7 +329,7 @@ export default function ClientDashboard() {
               <div className="dash-kpi">
                 <span className="dash-kpi-label">Total assets</span>
                 <span className="dash-kpi-value">
-                  {clientAssets ? nf.format(liveAssets.length) : skel}
+                  {assetsReady ? nf.format(totalAssets) : skel}
                 </span>
               </div>
             )}
@@ -310,7 +337,7 @@ export default function ClientDashboard() {
               <div className="dash-kpi">
                 <span className="dash-kpi-label">In transit</span>
                 <span className="dash-kpi-value">
-                  {clientAssets ? nf.format(inTransit) : skel}
+                  {assetsReady ? nf.format(inTransit) : skel}
                 </span>
               </div>
             )}
@@ -370,18 +397,18 @@ export default function ClientDashboard() {
               <div className="dash-panel-head">
                 <span className="dash-panel-title">Asset fleet by status</span>
                 <span className="dash-panel-head-right">
-                  {clientAssets !== null && (
-                    <span className="dash-panel-count">{nf.format(liveAssets.length)}</span>
+                  {assetsReady && (
+                    <span className="dash-panel-count">{nf.format(totalAssets)}</span>
                   )}
                   <Link className="dash-panel-link" to="/assets">All assets</Link>
                 </span>
               </div>
-              {clientAssets === null && <div className="dash-panel-empty">Loading…</div>}
-              {clientAssets !== null && liveAssets.length === 0 && (
+              {!assetsReady && <div className="dash-panel-empty">Loading…</div>}
+              {assetsReady && totalAssets === 0 && (
                 <div className="dash-panel-empty">No assets on file.</div>
               )}
-              {clientAssets !== null && liveAssets.length > 0 && (
-                <Distribution entries={dist} total={liveAssets.length} limit={STATUS_ROWS} />
+              {assetsReady && totalAssets > 0 && (
+                <Distribution entries={dist} total={totalAssets} limit={STATUS_ROWS} />
               )}
             </section>
           )}

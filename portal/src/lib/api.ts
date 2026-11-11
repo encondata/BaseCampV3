@@ -7421,3 +7421,19 @@ export async function dismissGroupReview(
   const resp = await apiFetch(`/clients/${clientId}/groups/review/dismiss`, jsonPost('POST', body));
   if (!resp.ok) throw await errorFrom(resp);
 }
+
+/** True asset counts, unfiltered by client groups — what a restricted login
+ *  sees as the totals while its lists are shorter. */
+export interface AssetTotals { total: number; by_status: Record<string, number> }
+
+export async function getInitiativeAssetTotals(initiativeId: string): Promise<AssetTotals> {
+  const resp = await apiFetch(`/initiatives/${initiativeId}/asset-totals`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getClientAssetTotals(clientId: string): Promise<AssetTotals> {
+  const resp = await apiFetch(`/clients/${clientId}/asset-totals`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
