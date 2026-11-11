@@ -509,8 +509,448 @@ def cleanup_restore_entry() -> None:
         log(f"restore cleanup: {exc}")
 
 
+# ── Cloud and edge checks ─────────────────────────────────────────────
+def url_answers(url: str, timeout: float = PROBE_TIMEOUT_S) -> bool:
+    """True when URL answers 2xx (a 4xx/5xx, a timeout or no network is False)."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "ServerSherpaKiosk"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return 200 <= r.status < 300
+    except Exception:
+        return False
+
+
+class Session:
+    """What the helper, the check loop and the watcher share."""
+
+    def __init__(self, token: str, api_url: str):
+        self.token = token
+        self.api_url = api_url.rstrip("/")
+        self.exit = threading.Event()
+        self.cloud_ok = False          # the cloud answered once this session
+        self.edge_ok = False           # the edge answered at the last check
+        self.last_attempt_ms: int | None = None
+        self.chrome: subprocess.Popen | None = None
+        self.waiting_url = ""
+        self._cloud_failing = False
+        self._lock = threading.Lock()
+        self._system: tuple[float, dict] | None = None
+
+    @property
+    def ready(self) -> bool:
+        return self.cloud_ok and self.edge_ok
+
+    def system(self) -> dict:
+        with self._lock:
+            now = time.monotonic()
+            if self._system and now - self._system[0] < SYSTEM_CACHE_S:
+                return self._system[1]
+            info = system_info()
+            self._system = (now, info)
+            return info
+
+    def forget_system(self) -> None:
+        with self._lock:
+            self._system = None
+
+    def check_once(self) -> None:
+        """The cloud until it has answered once (decided: every 15 s, never
+        giving up), then the edge, every time."""
+        if not self.cloud_ok:
+            self.last_attempt_ms = int(time.time() * 1000)
+            self.cloud_ok = url_answers(f"{self.api_url}/system/status")
+            if self.cloud_ok:
+                log("the cloud answered")
+            elif not self._cloud_failing:
+                log(f"the cloud doesn't answer yet ({self.api_url}); trying every {CLOUD_CHECK_S} s")
+            self._cloud_failing = not self.cloud_ok
+        self.edge_ok = url_answers(EDGE_IDENTITY_URL)
+
+    def check_loop(self) -> None:
+        while not self.exit.is_set():
+            self.check_once()
+            self.exit.wait(CLOUD_CHECK_S)
+
+
+# ── Helper HTTP server ────────────────────────────────────────────────
+CSP = ("default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+       "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "ServerSherpaKiosk"
+    sys_version = ""
+
+    def log_message(self, format, *args):  # noqa: A002 (the base class's name)
+        """Request lines never reach a log."""
+
+    @property
+    def session(self) -> Session:
+        return self.server.session
+
+    def _send(self, status: int, body: bytes, ctype: str, extra=()) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if self.headers.get("Origin") == KIOSK_ORIGIN:
+            self.send_header("Access-Control-Allow-Origin", KIOSK_ORIGIN)
+            self.send_header("Vary", "Origin")
+        for k, v in extra:
+            self.send_header(k, v)
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
+    def _json(self, status: int, obj) -> None:
+        self._send(status, json.dumps(obj).encode(), "application/json")
+
+    def _path(self) -> str:
+        return self.path.split("?", 1)[0]
+
+    def _gate(self) -> bool:
+        """Host (no DNS rebinding), Origin (only the kiosk and this page) and,
+        for /v1/*, the session token."""
+        if self.headers.get("Host") != self.server.host_header:
+            self._send(400, b"Invalid host header", "text/plain; charset=utf-8")
+            return False
+        origin = self.headers.get("Origin")
+        if origin is not None and origin not in (KIOSK_ORIGIN, self.server.origin):
+            self._json(403, {"error": "forbidden"})
+            return False
+        if self._path().startswith("/v1/"):
+            given = self.headers.get("X-Kiosk-Token", "").encode("utf-8", "replace")
+            if not hmac.compare_digest(given, self.session.token.encode()):
+                self._json(403, {"error": "forbidden"})
+                return False
+        return True
+
+    def _body(self) -> dict | None:
+        if self.headers.get_content_type() != "application/json":
+            return None
+        try:
+            n = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return None
+        if not 0 < n <= MAX_BODY:
+            return None
+        try:
+            data = json.loads(self.rfile.read(n))
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def do_OPTIONS(self):  # noqa: N802
+        if (self.headers.get("Host") != self.server.host_header
+                or self.headers.get("Origin") != KIOSK_ORIGIN or not self._path().startswith("/v1/")):
+            self._send(403, b"", "text/plain; charset=utf-8")
+            return
+        self._send(204, b"", "text/plain; charset=utf-8", (
+            ("Access-Control-Allow-Methods", "GET, POST"),
+            ("Access-Control-Allow-Headers", "Content-Type, X-Kiosk-Token"),
+            ("Access-Control-Allow-Private-Network", "true"),
+            ("Access-Control-Max-Age", "600"),
+        ))
+
+    def do_GET(self):  # noqa: N802
+        if not self._gate():
+            return
+        path = self._path()
+        s = self.session
+        if path == "/waiting":
+            self._send(200, waiting_page(s.token).encode(), "text/html; charset=utf-8",
+                       (("Content-Security-Policy", CSP), ("X-Frame-Options", "DENY")))
+        elif path == "/v1/state":
+            self._json(200, {"ready": s.ready, "cloud": s.cloud_ok, "last_attempt": s.last_attempt_ms,
+                             "system": s.system()})
+        elif path == "/v1/system":
+            self._json(200, s.system())
+        elif path == "/v1/wifi":
+            self._json(200, {"networks": wifi_networks(rescan=True), "wired": wired_status()})
+        else:
+            self._json(404, {"error": "not_found"})
+
+    def do_POST(self):  # noqa: N802
+        if not self._gate():
+            return
+        path = self._path()
+        body = self._body()
+        if body is None:
+            self._json(400, {"error": "bad_request"})
+            return
+        if path == "/v1/exit":
+            pin = body.get("pin")
+            if not isinstance(pin, str) or not hmac.compare_digest(pin.encode(), EXIT_PIN.encode()):
+                log("exit: wrong PIN")
+                self._json(403, {"error": "wrong_pin"})
+                return
+            self._json(200, {"ok": True})
+            log("exit: PIN accepted")
+            self.session.exit.set()
+        elif path == "/v1/wifi/join":
+            ssid, password = body.get("ssid"), body.get("password", "")
+            if not valid_ssid(ssid) or not valid_password(password):
+                self._json(400, {"error": "bad_request"})
+                return
+            code = join_wifi(ssid, password)
+            log(f"join Wi-Fi {ssid!r}: {code}")
+            self.session.forget_system()
+            if code == "ok":
+                self._json(200, {"ok": True})
+            else:
+                self._json(422, {"error": code})
+        else:
+            self._json(404, {"error": "not_found"})
+
+
+class HelperServer(ThreadingHTTPServer):
+    """127.0.0.1 only. The bind is also the single-instance lock: a second
+    session finds the port taken."""
+    daemon_threads = True
+
+    def __init__(self, session: Session, port: int | None = None):
+        super().__init__((HELPER_HOST, HELPER_PORT if port is None else port), Handler)
+        self.session = session
+        self.host_header = f"{HELPER_HOST}:{self.server_port}"
+        self.origin = f"http://{self.host_header}"
+
+
+# ── Waiting page ──────────────────────────────────────────────────────
+# Served by the helper, not the container (which may be down while the cloud
+# is too) and not a file:// page (origin null). House tokens, light/dark from
+# the system, no scrollbars. Esc opens the same PIN pad as the kiosk.
+WAITING_HTML = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connecting to ServerSherpa</title>
+<style>
+:root { color-scheme: light dark;
+  --ink: #0c1117; --paper: #fbfcfd; --paper-2: #f1f4f7; --paper-line: #e4e8ee;
+  --text-dark: #1b2129; --text-mute: #667085; --surface: #fff; --accent: #ffa12e; --c-red: #c03540;
+  --font-display: 'Geologica', system-ui, sans-serif; --font-mono: 'Fragment Mono', ui-monospace, monospace; }
+@media (prefers-color-scheme: dark) { :root {
+  --paper: #10151f; --paper-2: #0b0f17; --paper-line: rgba(255, 255, 255, 0.09);
+  --text-dark: #e8edf4; --text-mute: #8a97aa; --surface: #161d2a; --c-red: #ff5d6c; } }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--paper-2);
+  color: var(--text-dark); font-family: var(--font-display); }
+main { height: 100%; display: grid; place-items: center; text-align: center; }
+.mark { font-weight: 600; font-size: 22px; letter-spacing: .01em; }
+.mark em { font-style: normal; color: var(--accent); }
+h1 { font-size: 28px; font-weight: 600; margin: 18px 0 12px; }
+.facts { font-family: var(--font-mono); font-size: 14px; color: var(--text-mute); line-height: 1.9; }
+.scrim { position: fixed; inset: 0; display: none; place-items: center; padding: 24px;
+  background: rgba(5, 8, 12, 0.55); backdrop-filter: blur(4px); }
+.scrim.open { display: grid; }
+.card { width: min(420px, 96vw); background: var(--surface); color: var(--text-dark);
+  border: 1px solid var(--paper-line); border-radius: 16px; overflow: hidden; text-align: left;
+  box-shadow: 0 40px 90px -30px rgba(0, 0, 0, 0.6); }
+.head { padding: 18px 20px 12px; border-bottom: 1px solid var(--paper-line); }
+.eyebrow, label { font-family: var(--font-mono); font-size: 11px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--text-mute); }
+.head h3 { margin: 4px 0; font-size: 18px; }
+.hint { margin: 0; font-size: 13px; color: var(--text-mute); }
+.body { padding: 16px 20px; }
+label { display: block; margin-bottom: 6px; }
+input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--paper-line);
+  border-radius: 10px; background: var(--paper); color: var(--text-dark); font: inherit; }
+.err { color: var(--c-red); font-size: 13px; margin: 8px 0 0; min-height: 1em; }
+.foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 20px;
+  border-top: 1px solid var(--paper-line); }
+button { font: inherit; font-size: 13px; border-radius: 999px; padding: 8px 16px; cursor: pointer; }
+.ghost { background: transparent; color: var(--text-dark); border: 1px solid var(--paper-line); }
+.solid { background: var(--accent); color: var(--ink); border: 1px solid var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <div>
+    <div class="mark">Server<em>Sherpa</em></div>
+    <h1>Connecting to ServerSherpa…</h1>
+    <div class="facts">
+      <div>Last attempt <span id="last">—</span></div>
+      <div>Network: <span id="net">…</span></div>
+    </div>
+  </div>
+</main>
+<div class="scrim" id="pin-scrim">
+  <form class="card" id="pin-form" role="dialog" aria-modal="true" aria-label="Exit the kiosk">
+    <div class="head">
+      <div class="eyebrow">This laptop</div>
+      <h3>Exit the kiosk</h3>
+      <p class="hint">Enter the PIN to close the kiosk and go to the desktop. Start Kiosk on the desktop opens it again.</p>
+    </div>
+    <div class="body">
+      <label for="pin">PIN</label>
+      <input id="pin" type="password" autocomplete="new-password" spellcheck="false" maxlength="32">
+      <p class="err" id="pin-err" role="alert"></p>
+      <p class="hint" id="pin-msg" role="status"></p>
+    </div>
+    <div class="foot">
+      <button type="button" class="ghost" id="pin-cancel">Cancel</button>
+      <button type="submit" class="solid" id="pin-ok">Exit kiosk</button>
+    </div>
+  </form>
+</div>
+<script>
+const TOKEN = __TOKEN__;
+const KIOSK = __KIOSK_URL__;
+const POLL_MS = __POLL_MS__;
+const $ = (id) => document.getElementById(id);
+const two = (n) => String(n).padStart(2, '0');
+const hhmm = (ms) => { const d = new Date(ms); return two(d.getHours()) + ':' + two(d.getMinutes()); };
+function networkText(s) {
+  if (s && s.network === 'wifi' && s.wifi) return 'Wi-Fi: ' + s.wifi.ssid;
+  if (s && s.network === 'wired') return 'Wired network';
+  return 'No network';
+}
+const pinOpen = () => $('pin-scrim').classList.contains('open');
+async function poll() {
+  try {
+    const r = await fetch('/v1/state', { headers: { 'X-Kiosk-Token': TOKEN }, cache: 'no-store' });
+    if (r.ok) {
+      const st = await r.json();
+      $('last').textContent = st.last_attempt ? hhmm(st.last_attempt) : '—';
+      $('net').textContent = networkText(st.system);
+      if (st.ready && !pinOpen()) { location.replace(KIOSK + '/#kh=' + TOKEN); return; }
+    }
+  } catch (e) { /* this page's own server; try again */ }
+  setTimeout(poll, POLL_MS);
+}
+function openPin() { $('pin-scrim').classList.add('open'); $('pin').value = ''; $('pin-err').textContent = ''; $('pin').focus(); }
+function closePin() { $('pin-scrim').classList.remove('open'); }
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || e.repeat) return;
+  if (pinOpen()) closePin(); else openPin();
+});
+$('pin-cancel').addEventListener('click', closePin);
+$('pin-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const pin = $('pin').value;
+  if (!pin) return;
+  $('pin-ok').disabled = true;
+  try {
+    const r = await fetch('/v1/exit', { method: 'POST', body: JSON.stringify({ pin }),
+      headers: { 'Content-Type': 'application/json', 'X-Kiosk-Token': TOKEN } });
+    if (r.ok) { $('pin-err').textContent = ''; $('pin-msg').textContent = 'Closing the kiosk…'; return; }
+    $('pin-err').textContent = r.status === 403 ? "That PIN isn't right." : "Couldn't exit. Try again.";
+  } catch (e2) { $('pin-err').textContent = "Couldn't exit. Try again."; }
+  $('pin').value = '';
+  $('pin-ok').disabled = false;
+});
+poll();
+</script>
+</body>
+</html>
+"""
+
+
+def waiting_page(token: str) -> str:
+    return (WAITING_HTML.replace("__TOKEN__", json.dumps(token))
+            .replace("__KIOSK_URL__", json.dumps(KIOSK_URL))
+            .replace("__POLL_MS__", str(WAIT_POLL_MS)))
+
+
+# ── Chrome and the watcher ────────────────────────────────────────────
+CHROME_FLAGS = ("--kiosk", "--no-first-run", "--no-default-browser-check", "--noerrdialogs",
+                "--password-store=basic", "--hide-crash-restore-bubble")
+
+
+def profile_dir(browser: str) -> Path:
+    """The kiosk's own Chrome profile. Without its own, a Chrome already open
+    on the desktop would take the launch and exit at once. Snap Chromium
+    can't reach hidden folders, so it gets its snap's own folder."""
+    real = os.path.realpath(browser)
+    snap = (browser.startswith("/snap/") or real.startswith("/snap/") or real.endswith("/usr/bin/snap")
+            or (Path(browser).name == "chromium-browser" and Path("/snap/bin/chromium").exists()))
+    if snap:
+        return Path.home() / "snap" / "chromium" / "common" / "serversherpa-kiosk"
+    return Path.home() / ".local" / "share" / "serversherpa-kiosk" / "chrome"
+
+
+def launch_chrome(browser: str, url: str) -> subprocess.Popen:
+    """Chrome starts with the user's own environment (no env=, and not through
+    run_cmd/tool_env), so its UI keeps the laptop's language."""
+    profile = profile_dir(browser)
+    profile.mkdir(parents=True, exist_ok=True)
+    return subprocess.Popen([browser, *CHROME_FLAGS, f"--user-data-dir={profile}", url],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def close_chrome(proc: subprocess.Popen | None) -> None:
+    """SIGTERM to Chrome's process group, SIGKILL after CHROME_STOP_S."""
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+        proc.wait(timeout=CHROME_STOP_S)
+    except ProcessLookupError:
+        return
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=CHROME_STOP_S)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            pass
+
+
+def watch(session: Session, browser: str, launch=launch_chrome) -> None:
+    """Chrome on the waiting page (which goes on to the kiosk once ready),
+    reopened whenever it closes, until the session is told to exit. Then the
+    watcher stops and Chrome is closed."""
+    while not session.exit.is_set():
+        proc = launch(browser, session.waiting_url)
+        session.chrome = proc
+        while proc.poll() is None:
+            if session.exit.wait(WATCH_S):
+                break
+        if session.exit.is_set():
+            break
+        log(f"Chrome closed (exit {proc.returncode}); opening it again")
+        session.exit.wait(RELAUNCH_DELAY_S)
+    close_chrome(session.chrome)
+
+
+def run(browser: str) -> int:
+    """The session. Exit order (decided): the watcher stops, Chrome closes,
+    then the desktop shortcuts come back. A signal (sign-out, power-off,
+    uninstall) takes the same way out."""
+    session = Session(secrets.token_urlsafe(32), config_value("EDGE_CLOUD_API_URL") or DEFAULT_API_URL)
+    try:
+        server = HelperServer(session)
+    except OSError:
+        log("another kiosk session is running; nothing to do")
+        return 0
+    session.waiting_url = f"{server.origin}/waiting"
+
+    def stop(signum, frame):
+        session.exit.set()
+    for s in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(s, stop)
+    threading.Thread(target=server.serve_forever, name="helper", daemon=True).start()
+    log(f"kiosk session started (browser {browser})")
+    try:
+        ensure_start_icon()
+        lock_desktop()
+        threading.Thread(target=session.check_loop, name="cloud-check", daemon=True).start()
+        watch(session, browser)
+    finally:
+        session.exit.set()
+        close_chrome(session.chrome)
+        restore_desktop()
+        server.shutdown()
+        server.server_close()
+        log("kiosk session ended")
+    return 0
+
+
 # ── Command line ──────────────────────────────────────────────────────
 def main(argv: list[str]) -> int:
+    if argv[:1] == ["run"] and len(argv) == 3 and argv[1] == "--browser" and argv[2]:
+        return run(argv[2])
     if argv[:1] == ["restore"] and argv[1:] in ([], ["--cleanup"]):
         ok = restore_desktop()
         if ok and argv[1:] == ["--cleanup"]:

@@ -464,3 +464,229 @@ def test_ensure_start_icon_writes_marks_executable_and_trusted(ks, monkeypatch, 
     assert f.read_text() == ks.start_icon_text(ks.KIOSK_DIR / "launch.sh")
     assert f.stat().st_mode & 0o777 == 0o755
     assert (["gio", "set", str(f), "metadata::trusted", "true"], None) in tools.calls
+
+
+# ── Task 3: helper server, waiting page, cloud check, watcher ─────────
+import http.client
+import socket
+import threading
+
+KIOSK = "http://localhost:8090"
+TOKEN = "t" * 43
+SYS = {"battery": None, "wifi": None, "wired": None, "network": "none"}
+
+
+@pytest.fixture
+def helper(ks, monkeypatch):
+    monkeypatch.setattr(ks, "system_info", lambda: dict(SYS))
+    session = ks.Session(TOKEN, "http://cloud.test")
+    server = ks.HelperServer(session, port=0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield session, server.server_port
+    server.shutdown()
+    server.server_close()
+
+
+def call(port, method, path, *, host=None, origin=None, token=None, body=None, ctype="application/json"):
+    headers = {"Host": host or f"127.0.0.1:{port}"}
+    if origin:
+        headers["Origin"] = origin
+    if token:
+        headers["X-Kiosk-Token"] = token
+    data = None
+    if body is not None:
+        data = body if isinstance(body, bytes) else json.dumps(body).encode()
+        headers["Content-Type"] = ctype
+        headers["Content-Length"] = str(len(data))
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.request(method, path, body=data, headers=headers)
+    r = conn.getresponse()
+    raw = r.read()
+    hdrs = {k.lower(): v for k, v in r.getheaders()}
+    conn.close()
+    return r.status, hdrs, raw
+
+
+def test_wrong_host_is_400(helper):
+    _, port = helper
+    for path in ("/waiting", "/v1/system"):
+        assert call(port, "GET", path, host=f"evil.test:{port}", token=TOKEN)[0] == 400
+        assert call(port, "GET", path, host=f"localhost:{port}", token=TOKEN)[0] == 400
+
+
+def test_v1_needs_the_token_and_a_known_origin(helper):
+    _, port = helper
+    assert call(port, "GET", "/v1/system", origin=KIOSK)[0] == 403
+    assert call(port, "GET", "/v1/system", origin=KIOSK, token="x" * 43)[0] == 403
+    assert call(port, "GET", "/v1/system", origin="http://evil.test", token=TOKEN)[0] == 403
+    assert call(port, "GET", "/v1/system", origin="http://10.10.48.57:8090", token=TOKEN)[0] == 403
+    status, hdrs, raw = call(port, "GET", "/v1/system", origin=KIOSK, token=TOKEN)
+    assert status == 200 and json.loads(raw) == SYS
+    assert hdrs["access-control-allow-origin"] == KIOSK
+    status, hdrs, _ = call(port, "GET", "/v1/system", origin=f"http://127.0.0.1:{port}", token=TOKEN)
+    assert status == 200 and "access-control-allow-origin" not in hdrs   # same origin: no CORS
+
+
+def test_preflight_only_for_the_kiosk(helper):
+    _, port = helper
+    status, hdrs, _ = call(port, "OPTIONS", "/v1/exit", origin=KIOSK)
+    assert status == 204
+    assert hdrs["access-control-allow-origin"] == KIOSK
+    assert "X-Kiosk-Token" in hdrs["access-control-allow-headers"]
+    assert hdrs["access-control-allow-private-network"] == "true"
+    assert call(port, "OPTIONS", "/v1/exit", origin="http://evil.test")[0] == 403
+
+
+def test_waiting_page(helper):
+    _, port = helper
+    status, hdrs, raw = call(port, "GET", "/waiting")
+    page = raw.decode()
+    assert status == 200 and hdrs["content-type"].startswith("text/html")
+    assert "Connecting to ServerSherpa" in page and TOKEN in page and '"http://localhost:8090"' in page
+    assert "frame-ancestors 'none'" in hdrs["content-security-policy"] and hdrs["x-frame-options"] == "DENY"
+    assert "access-control-allow-origin" not in hdrs
+    assert call(port, "GET", "/waiting", origin="http://evil.test")[0] == 403
+
+
+def test_state_is_ready_once_cloud_and_edge_answer(helper):
+    session, port = helper
+    out = json.loads(call(port, "GET", "/v1/state", token=TOKEN)[2])
+    assert out == {"ready": False, "cloud": False, "last_attempt": None, "system": SYS}
+    session.cloud_ok = session.edge_ok = True
+    session.last_attempt_ms = 1762851900000
+    out = json.loads(call(port, "GET", "/v1/state", token=TOKEN)[2])
+    assert out["ready"] is True and out["last_attempt"] == 1762851900000
+
+
+def test_exit_needs_the_pin(helper):
+    session, port = helper
+    status, _, raw = call(port, "POST", "/v1/exit", origin=KIOSK, token=TOKEN, body={"pin": "CSG"})
+    assert status == 403 and json.loads(raw) == {"error": "wrong_pin"} and not session.exit.is_set()
+    status, _, raw = call(port, "POST", "/v1/exit", origin=KIOSK, token=TOKEN, body={"pin": "csg"})
+    # the answer goes out first, then the session is told to exit
+    assert status == 200 and json.loads(raw) == {"ok": True} and session.exit.wait(2)
+
+
+def test_post_body_rules(helper):
+    session, port = helper
+    assert call(port, "POST", "/v1/exit", origin=KIOSK, token=TOKEN, body=b"pin=csg", ctype="text/plain")[0] == 400
+    assert call(port, "POST", "/v1/exit", origin=KIOSK, token=TOKEN, body=b"[1]")[0] == 400
+    assert call(port, "POST", "/v1/exit", origin=KIOSK, token=TOKEN, body={"pin": "x" * 5000})[0] == 400
+    assert not session.exit.is_set()
+
+
+def test_join_maps_codes_and_never_logs_the_password(helper, ks, monkeypatch):
+    _, port = helper
+    codes = iter(["wrong_password", "ok"])
+    monkeypatch.setattr(ks, "join_wifi", lambda ssid, password: next(codes))
+    body = {"ssid": "CSG-Ops", "password": "hunter2-secret"}
+    status, _, raw = call(port, "POST", "/v1/wifi/join", origin=KIOSK, token=TOKEN, body=body)
+    assert status == 422 and json.loads(raw) == {"error": "wrong_password"}
+    status, _, raw = call(port, "POST", "/v1/wifi/join", origin=KIOSK, token=TOKEN, body=body)
+    assert status == 200 and json.loads(raw) == {"ok": True}
+    assert call(port, "POST", "/v1/wifi/join", origin=KIOSK, token=TOKEN, body={"ssid": "", "password": ""})[0] == 400
+    log = ks.state_dir() / "session.log"
+    assert "hunter2" not in log.read_text() and TOKEN not in log.read_text()
+
+
+def test_check_once_tries_the_cloud_until_it_answers_then_only_the_edge(ks, monkeypatch):
+    answers = {"http://cloud.test/system/status": [False, True], ks.EDGE_IDENTITY_URL: [True, True, True]}
+    seen = []
+    monkeypatch.setattr(ks, "url_answers", lambda url, timeout=5: (seen.append(url), answers[url].pop(0))[1])
+    s = ks.Session(TOKEN, "http://cloud.test")
+    s.check_once()
+    assert not s.ready and s.last_attempt_ms is not None
+    s.check_once()
+    assert s.ready
+    s.check_once()
+    assert seen.count("http://cloud.test/system/status") == 2 and seen.count(ks.EDGE_IDENTITY_URL) == 3
+
+
+class FakeProc:
+    def __init__(self, life):
+        self.life, self.returncode, self.pid = life, None, 999999
+
+    def poll(self):
+        if self.life <= 0:
+            self.returncode = 0
+            return 0
+        self.life -= 1
+        return None
+
+
+def test_watch_reopens_chrome_until_exit(ks, monkeypatch):
+    monkeypatch.setattr(ks, "WATCH_S", 0.01)
+    monkeypatch.setattr(ks, "RELAUNCH_DELAY_S", 0.01)
+    closed = []
+    monkeypatch.setattr(ks, "close_chrome", lambda p: closed.append(p))
+    s = ks.Session(TOKEN, "http://cloud.test")
+    s.waiting_url = "http://127.0.0.1:8092/waiting"
+    launched = []
+
+    def launch(browser, url):
+        launched.append((browser, url))
+        if len(launched) == 3:
+            s.exit.set()
+        return FakeProc(2)
+    ks.watch(s, "/usr/bin/google-chrome", launch=launch)
+    assert launched == [("/usr/bin/google-chrome", "http://127.0.0.1:8092/waiting")] * 3
+    assert closed == [s.chrome]
+
+
+def test_launch_chrome_flags_and_profile(ks, monkeypatch, tmp_path):
+    got = {}
+    monkeypatch.setattr(ks.subprocess, "Popen", lambda args, **kw: got.update(args=args, kw=kw) or "proc")
+    assert ks.launch_chrome("/usr/bin/google-chrome", "http://127.0.0.1:8092/waiting") == "proc"
+    profile = tmp_path / "home" / ".local" / "share" / "serversherpa-kiosk" / "chrome"
+    assert got["args"] == ["/usr/bin/google-chrome", *ks.CHROME_FLAGS, f"--user-data-dir={profile}",
+                           "http://127.0.0.1:8092/waiting"]
+    assert "--kiosk" in ks.CHROME_FLAGS and got["kw"]["start_new_session"] is True
+    assert profile.is_dir()
+    assert ks.profile_dir("/snap/bin/chromium") == tmp_path / "home" / "snap" / "chromium" / "common" / "serversherpa-kiosk"
+
+
+def test_run_order_lock_watch_close_restore(ks, monkeypatch):
+    events = []
+    monkeypatch.setattr(ks, "HELPER_PORT", 0)
+    monkeypatch.setattr(ks.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(ks, "url_answers", lambda url, timeout=5: False)
+    monkeypatch.setattr(ks, "ensure_start_icon", lambda: events.append("icon"))
+    monkeypatch.setattr(ks, "lock_desktop", lambda: events.append("lock") or 1)
+    monkeypatch.setattr(ks, "restore_desktop", lambda: events.append("restore") or True)
+    monkeypatch.setattr(ks, "close_chrome", lambda p: events.append("close"))
+
+    def fake_watch(session, browser):
+        events.append("watch")
+        assert session.waiting_url.endswith("/waiting")
+        session.exit.set()
+    monkeypatch.setattr(ks, "watch", fake_watch)
+    assert ks.run("/usr/bin/google-chrome") == 0
+    assert events == ["icon", "lock", "watch", "close", "restore"]
+
+
+def test_a_second_session_exits_quietly_when_the_port_is_taken(ks, monkeypatch):
+    blocker = socket.socket()
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen()
+    try:
+        monkeypatch.setattr(ks, "HELPER_PORT", blocker.getsockname()[1])
+        monkeypatch.setattr(ks, "lock_desktop", lambda: pytest.fail("a second session must not lock"))
+        assert ks.run("/usr/bin/google-chrome") == 0
+    finally:
+        blocker.close()
+
+
+def test_chrome_keeps_the_users_language(ks, monkeypatch):
+    """Chrome starts with the user's own environment, not tool_env's C
+    locale, so its UI stays in the laptop's language."""
+    monkeypatch.setenv("LANGUAGE", "nl:en")
+    monkeypatch.setenv("LANG", "nl_NL.UTF-8")
+    monkeypatch.delenv("LC_ALL", raising=False)
+    got = {}
+    monkeypatch.setattr(ks.subprocess, "Popen", lambda args, **kw: got.update(kw=kw) or "proc")
+    monkeypatch.setattr(ks, "run_cmd", lambda *a, **k: pytest.fail("Chrome must not go through run_cmd"))
+    ks.launch_chrome("/usr/bin/google-chrome", "http://127.0.0.1:8092/waiting")
+    env = got["kw"].get("env")
+    env = os.environ if env is None else env      # None: Popen inherits the user's environment
+    assert env.get("LANGUAGE") == "nl:en" and env.get("LANG") == "nl_NL.UTF-8"
+    assert "LC_ALL" not in env
