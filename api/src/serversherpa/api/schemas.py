@@ -228,6 +228,8 @@ class ScopeOut(BaseModel):
     global_: bool = Field(alias="global")
     client_ids: list[uuid.UUID] = []
     partner_ids: list[uuid.UUID] = []
+    # clients where this login sees only some client groups' assets
+    restricted_client_ids: list[uuid.UUID] = []
     model_config = ConfigDict(populate_by_name=True)
 
 
