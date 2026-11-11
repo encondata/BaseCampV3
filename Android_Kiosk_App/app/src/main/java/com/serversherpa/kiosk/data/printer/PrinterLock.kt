@@ -27,6 +27,10 @@ class PrinterLock {
 
     /** Runs [block] once every earlier caller's block has finished. */
     suspend fun <T> withLock(block: suspend () -> T): T = mutex.withLock { block() }
+
+    /** True while a block runs (the RFID controller starts no sled attempt then). A snapshot:
+     *  it can change the moment it is read. */
+    val isLocked: Boolean get() = mutex.isLocked
 }
 
 /** Sends ZPL to the saved printer, the way its connection reaches it (a [ZebraTransport]'s `send`

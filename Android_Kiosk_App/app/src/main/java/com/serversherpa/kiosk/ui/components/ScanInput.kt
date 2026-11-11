@@ -1,5 +1,6 @@
 package com.serversherpa.kiosk.ui.components
 
+import android.os.SystemClock
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -10,6 +11,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -19,13 +21,21 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import com.serversherpa.kiosk.core.scan.SledScanGuard
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
 import kotlinx.coroutines.delay
+
+/** The guard that delivers each sled scan once (MainActivity provides the container's; with
+ *  none provided every value is accepted, as before). */
+val LocalSledScanGuard = staticCompositionLocalOf { SledScanGuard.ACCEPT_ALL }
 
 /**
  * The always-focused box: a barcode scanner is a keyboard, so whatever
  * it types lands here and its Enter submits. `keepFocus` reclaims focus
  * when it drifts (a tap on empty space, the app coming back).
+ *
+ * Typing is noted on [LocalSledScanGuard], and a submit the sled's scanner already delivered is
+ * refused there: the box is cleared and nothing is submitted.
  */
 @Composable
 fun ScanInput(
@@ -41,16 +51,25 @@ fun ScanInput(
     trailingIcon: @Composable (() -> Unit)? = null,
 ) {
     val requester = remember { FocusRequester() }
+    val guard = LocalSledScanGuard.current
     LaunchedEffect(enabled, keepFocus) { if (enabled && keepFocus) { delay(50); runCatching { requester.requestFocus() } } }
     OutlinedTextField(
         value = value,
-        onValueChange = onValueChange,
+        onValueChange = { next ->
+            if (next.length > value.length) guard.noteTyping(SystemClock.elapsedRealtime())
+            onValueChange(next)
+        },
         enabled = enabled,
         singleLine = true,
         // One line, always: a long hint trails off with "…" instead of making the box two lines tall.
         placeholder = { Text(placeholder, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Done, autoCorrectEnabled = false),
-        keyboardActions = KeyboardActions(onDone = { val v = value.trim(); if (v.isNotEmpty()) onSubmit(v) }),
+        keyboardActions = KeyboardActions(onDone = {
+            val v = value.trim()
+            if (v.isNotEmpty()) {
+                if (guard.acceptTyped(v, SystemClock.elapsedRealtime())) onSubmit(v) else onValueChange("")
+            }
+        }),
         trailingIcon = trailingIcon,
         modifier = modifier.fillMaxWidth().testTag("scan-input").focusRequester(requester)
             .onFocusChanged { if (!it.isFocused && enabled && keepFocus) runCatching { requester.requestFocus() } },
