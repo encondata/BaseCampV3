@@ -928,26 +928,28 @@ class ContactItem(BaseModel):
     avatar_url: str | None
     has_account: bool
     granted_at: datetime
-    tier: Literal["owner", "admin", "viewer"]
+    tier: Literal["owner", "admin", "viewer", "individual"]
     org_title: str | None = None
     functions: list[str] = []
+    group_ids: list[uuid.UUID] = []
 
 
 class ContactAddIn(BaseModel):
     person_id: uuid.UUID
-    tier: Literal["owner", "admin", "viewer"] = "viewer"
+    tier: Literal["owner", "admin", "viewer", "individual"] = "viewer"
 
 
 class ContactUpdateIn(BaseModel):
-    """Any subset of {tier, org_title, functions}. Rank rules apply only
+    """Any subset of {tier, org_title, functions, group_ids}. Rank rules apply only
     when tier is present; org_title=null clears; functions replaces the
     whole tag list (validated/normalized server-side)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    tier: Literal["owner", "admin", "viewer"] | None = None
+    tier: Literal["owner", "admin", "viewer", "individual"] | None = None
     org_title: str | None = None
     functions: list[str] | None = None
+    group_ids: list[uuid.UUID] | None = None
 
 
 class ClientActivityItem(BaseModel):
@@ -976,7 +978,7 @@ class ExternalLinkItem(BaseModel):
     kind: Literal["client", "partner"]
     org_id: uuid.UUID
     org_name: str
-    tier: Literal["owner", "admin", "viewer"]
+    tier: Literal["owner", "admin", "viewer", "individual"]
     org_title: str | None
     functions: list[str]
 
