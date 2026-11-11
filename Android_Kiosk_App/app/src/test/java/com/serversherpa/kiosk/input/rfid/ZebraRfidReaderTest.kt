@@ -39,6 +39,11 @@ import com.serversherpa.kiosk.core.rfid.powerTable
 import com.serversherpa.kiosk.core.rfid.readbackOf
 import com.serversherpa.kiosk.core.rfid.runSettingSteps
 import com.serversherpa.kiosk.core.rfid.teardownPlan
+import com.zebra.rfid.api3.Actions
+import com.zebra.rfid.api3.AttributeInfo
+import com.zebra.rfid.api3.Config as VendorConfig
+import com.zebra.rfid.api3.ENUM_NEW_KEYLAYOUT_TYPE
+import com.zebra.rfid.api3.Inventory
 import com.zebra.rfid.api3.OperationFailureException
 import com.zebra.rfid.api3.RFIDReader
 import com.zebra.rfid.api3.RFIDResults
@@ -110,10 +115,14 @@ class ZebraRfidReaderTest {
      * set, is the reader object every operation's block finds, even after a
      * teardown dropped the link, so only the adapter's state and generation
      * checks can refuse a call; with it unset every operation finds no
-     * reader and returns `SledNotConnected` whatever the state.
+     * reader and returns `SledNotConnected` whatever the state. With
+     * [layoutAtConnect], an open that comes up also runs the real connect
+     * step 10 ([writeLayoutAtConnect]) against [vendorReaderDouble], as the
+     * vendor sequence does after its other setup steps.
      */
     private class SeamReader(context: Context, scope: CoroutineScope, zebraHost: Boolean = false) :
         ZebraRfidReader(context, scope, zebraHost) {
+        @Volatile var layoutAtConnect = false
         val events = CopyOnWriteArrayList<String>()
         @Volatile var scannerRig: ZebraBarcodeEngineTest.Rig? = null
         val plans = CopyOnWriteArrayList<TeardownPlan>()
@@ -154,7 +163,10 @@ class ZebraRfidReaderTest {
             lastOpenGeneration = generation
             lastOpenWasBatchSeen += lastOpenWasBatch
             attached = true
-            return onOpen(sled, generation)
+            val opened = onOpen(sled, generation)
+            val rfid = vendorReaderDouble
+            if (!layoutAtConnect || rfid == null || opened !is VendorOpen.Up) return opened
+            return VendorOpen.Up(opened.info.afterLayoutWrite(writeLayoutAtConnect(rfid, opened.info, request.layout)))
         }
 
         override fun closeVendorConnection(plan: TeardownPlan) {
@@ -1771,6 +1783,224 @@ class ZebraRfidReaderTest {
         realWait { held.await() }
         assertNull("no read-back", r.info.value?.trigger)
         assertEquals("the scanner follows the newer connect's Barcode", SledScannerState.Ready, r.scanner.value)
+    }
+
+    // ── no beam until the sled's scanner is ready (the spec's step-18 fork) ──
+    //
+    // The sled answers key-layout writes through KeyLayoutConfig, by attribute
+    // value: 4 RFID, 5 Both, 10 Barcode, and the no-beam pairs 8 (Both) and
+    // 28 (Barcode). With slowRig(), the scanner comes up only when the test
+    // ends its stale window.
+
+    /**
+     * The sled's key-layout attribute (2269) behind the vendor's own `Config`
+     * type, for [SeamReader.vendorReaderDouble]. Each typed write is recorded
+     * in [writes] by its attribute value and becomes what the read-back
+     * answers, unless [refuse] names it (turned away with [refusal]) or
+     * [ignore] does (it goes through and the sled keeps its value).
+     * [beforeWrite] runs first, on the RFID worker.
+     */
+    private class KeyLayoutConfig(private val refusal: () -> Throwable) : VendorConfig() {
+        val writes = CopyOnWriteArrayList<Int>()
+        @Volatile var held = 4
+        @Volatile var refuse: Set<Int> = emptySet()
+        @Volatile var ignore: Set<Int> = emptySet()
+        @Volatile var beforeWrite: (Int) -> Unit = {}
+
+        override fun setKeylayoutType(upper: ENUM_NEW_KEYLAYOUT_TYPE, lower: ENUM_NEW_KEYLAYOUT_TYPE): RFIDResults {
+            val written = upper.enumValue * 5 + 4 + lower.enumValue
+            writes += written
+            beforeWrite(written)
+            if (written in refuse) throw refusal()
+            if (written !in ignore) held = written
+            return RFIDResults.RFID_API_SUCCESS
+        }
+
+        /** The battery request: answered by the battery event, which this sled never sends. */
+        override fun getDeviceStatus(battery: Boolean, temperature: Boolean, power: Boolean) = Unit
+
+        override fun getAttribute(number: Int, info: AttributeInfo): AttributeInfo {
+            val answer = held
+            return info.apply {
+                AttNum = number
+                Type = "B"
+                Value = answer.toString()
+            }
+        }
+    }
+
+    /** A scanner reader whose sled answers layout writes through the returned config, and whose connect runs step 10. */
+    private fun layoutReader(
+        scope: CoroutineScope,
+        rig: ZebraBarcodeEngineTest.Rig = ZebraBarcodeEngineTest.Rig(),
+        zebraHost: Boolean = false,
+    ): Pair<SeamReader, KeyLayoutConfig> {
+        val sled = KeyLayoutConfig { operationFailure(RFIDResults.RFID_API_PARAM_OUT_OF_RANGE) }
+        val vendor = hollowVendorReader()
+        vendor.Config = sled
+        val r = scannerReader(scope, zebraHost, rig)
+        r.vendorReaderDouble = vendor
+        r.layoutAtConnect = true
+        return r to sled
+    }
+
+    /** A scanner whose session stays "Starting" until [endStaleWindow]. */
+    private fun slowRig() = ZebraBarcodeEngineTest.Rig().apply { sdk.tail = 0L }
+
+    private fun ZebraBarcodeEngineTest.Rig.endStaleWindow() {
+        clock.now += ZebraBarcodeEngine.STALE_WINDOW_MS
+        timers.live(ZebraBarcodeEngine.STALE_WINDOW_MS).single().fire()
+    }
+
+    private val refusedNoBeamLine =
+        "Trigger layout: the sled refused the no-beam layout; the scanner keys are live before the scanner is ready."
+
+    @Test fun aScannerLayoutAskedWhileTheScannerOpensIsNoBeamUntilTheScannerIsReady() = runTest {
+        for ((layout, noBeam, real) in listOf(Triple(SledTriggerLayout.BARCODE, 28, 10), Triple(SledTriggerLayout.SPLIT, 8, 5))) {
+            val rig = slowRig()
+            val (r, sled) = layoutReader(backgroundScope, rig)
+            assertTrue(r.connect(request).isSuccess)
+            assertEquals("RFID is written at once", listOf(4), sled.writes.toList())
+            assertEquals(SledScannerState.Off, r.scanner.value)
+
+            val result = r.setTriggerLayout(layout)
+
+            assertEquals("$layout: the call reports the no-beam read-back", decodeKeyLayout(noBeam), result.getOrNull())
+            assertEquals(noBeam, r.info.value?.trigger?.raw)
+            assertEquals("$layout: the session opens from the no-beam layout", SledScannerState.Opening, r.scanner.value)
+            assertEquals(listOf(4, noBeam), sled.writes.toList())
+
+            rig.endStaleWindow()
+
+            realWait { r.info.first { it?.trigger?.raw == real } }
+            assertEquals(SledScannerState.Ready, r.scanner.value)
+            assertEquals(decodeKeyLayout(real), r.info.value?.trigger)
+            assertEquals("$layout: one write of the real keys once ready", listOf(4, noBeam, real), sled.writes.toList())
+
+            // While the scanner is ready, the other scanner layout is written at once.
+            val other = if (layout == SledTriggerLayout.BARCODE) SledTriggerLayout.SPLIT else SledTriggerLayout.BARCODE
+            val otherValue = if (other == SledTriggerLayout.BARCODE) 10 else 5
+            assertEquals(decodeKeyLayout(otherValue), r.setTriggerLayout(other).getOrNull())
+            r.disconnect()
+            assertEquals(listOf(4, noBeam, real, otherValue), sled.writes.toList())
+        }
+    }
+
+    @Test fun aReadyArrivingAfterANewerRfidRequestWritesNothingMore() = runTest {
+        val rig = slowRig()
+        val (r, sled) = layoutReader(backgroundScope, rig)
+        assertTrue(r.connect(request).isSuccess)
+        assertEquals(decodeKeyLayout(28), r.setTriggerLayout(SledTriggerLayout.BARCODE).getOrNull())
+        assertEquals(SledScannerState.Opening, r.scanner.value)
+
+        // The RFID write is on the worker, not yet answered, when the scanner comes up.
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        sled.beforeWrite = { value ->
+            if (value == 4) {
+                entered.countDown()
+                release.awaitBriefly()
+            }
+        }
+        val rfid = async(Dispatchers.Default) { r.setTriggerLayout(SledTriggerLayout.RFID) }
+        assertTrue(withContext(Dispatchers.IO) { entered.awaitBriefly() })
+        rig.endStaleWindow()
+        assertEquals("the scanner came up before the RFID write closed it", SledScannerState.Ready, r.scanner.value)
+        release.countDown()
+
+        assertEquals(decodeKeyLayout(4), realWait { rfid.await() }.getOrNull())
+        assertEquals(SledScannerState.Off, r.scanner.value)
+        r.disconnect()   // runs after anything the Ready queued on the worker
+        assertEquals("nothing after the newer RFID write", listOf(4, 28, 4), sled.writes.toList())
+    }
+
+    @Test fun aScannerThatDidNotStartKeepsTheNoBeamLayoutUntilTryAgainBringsItUp() = runTest {
+        val rig = ZebraBarcodeEngineTest.Rig()
+        rig.sdk.establishResults += ScannerResult.FAILURE
+        val (r, sled) = layoutReader(backgroundScope, rig)
+        assertTrue(r.connect(request).isSuccess)
+
+        assertEquals(decodeKeyLayout(28), r.setTriggerLayout(SledTriggerLayout.BARCODE).getOrNull())
+
+        assertEquals(SledScannerState.Unavailable(SledScannerFault.DID_NOT_START), r.scanner.value)
+        assertEquals("no beam means not ready", listOf(4, 28), sled.writes.toList())
+        assertEquals(28, r.info.value?.trigger?.raw)
+
+        assertTrue(r.retryScanner().isSuccess)
+
+        realWait { r.info.first { it?.trigger?.raw == 10 } }
+        assertEquals(SledScannerState.Ready, r.scanner.value)
+        r.disconnect()
+        assertEquals(listOf(4, 28, 10), sled.writes.toList())
+    }
+
+    @Test fun aNoBeamWriteTheSledRefusesFallsBackToTheRealKeysAtOnce() = runTest {
+        for (refused in listOf(true, false)) {
+            ShadowLog.clear()
+            val rig = slowRig()
+            val (r, sled) = layoutReader(backgroundScope, rig)
+            if (refused) sled.refuse = setOf(28) else sled.ignore = setOf(28)
+            assertTrue(r.connect(request).isSuccess)
+
+            val result = r.setTriggerLayout(SledTriggerLayout.BARCODE)
+
+            val how = if (refused) "refused" else "written but not taken"
+            assertEquals("$how: the real keys at once", decodeKeyLayout(10), result.getOrNull())
+            assertEquals(listOf(4, 28, 10), sled.writes.toList())
+            assertTrue(how, ShadowLog.getLogsForTag(ZebraRfidReader.TAG).any { it.msg == refusedNoBeamLine })
+
+            rig.endStaleWindow()
+            assertEquals(SledScannerState.Ready, r.scanner.value)
+            r.disconnect()
+            assertEquals("$how: nothing more once the scanner is ready", listOf(4, 28, 10), sled.writes.toList())
+        }
+    }
+
+    @Test fun theRealKeysWaitForTheStopWhenTheScannerComesUpDuringASweep() = runTest {
+        val rig = slowRig()
+        val (r, sled) = layoutReader(backgroundScope, rig)
+        // An inventory that starts, and stops with the sled's stop event.
+        r.vendorReaderDouble!!.Actions = unconstructed(Actions::class.java).apply {
+            Inventory = object : Inventory() {
+                override fun perform() = Unit
+
+                override fun stop() = r.onStopEvent(r.currentGeneration)
+            }
+        }
+        assertTrue(r.connect(request).isSuccess)
+        assertEquals(decodeKeyLayout(8), r.setTriggerLayout(SledTriggerLayout.SPLIT).getOrNull())
+        // Both's upper trigger still reads tags: a sweep opens while the scanner starts.
+        assertTrue(r.startInventory().isSuccess)
+
+        rig.endStaleWindow()
+        r.requestBattery()   // runs after the block the Ready posted
+        assertEquals("nothing is written while the sweep runs", listOf(4, 8), sled.writes.toList())
+
+        assertTrue(r.stopInventory().isSuccess)
+        realWait { r.info.first { it?.trigger?.raw == 5 } }
+        assertEquals(listOf(4, 8, 5), sled.writes.toList())
+        assertEquals(SledScannerState.Ready, r.scanner.value)
+    }
+
+    @Test fun aConnectIntoBarcodeWritesNoBeamAtConnectThenTheRealKeysOnceReady() = runTest {
+        val (r, sled) = layoutReader(backgroundScope)
+        assertTrue(r.connect(barcodeRequest).isSuccess)
+        realWait { r.info.first { it?.trigger?.raw == 10 } }
+        assertEquals(listOf(28, 10), sled.writes.toList())
+        assertEquals(SledScannerState.Ready, r.scanner.value)
+
+        // The link drops; the reconnect writes the no-beam layout again at connect, then the real keys.
+        r.onLinkLost(r.currentGeneration)
+        assertTrue(r.connect(barcodeRequest).isSuccess)
+        realWait { r.info.first { it?.trigger?.raw == 10 } }
+        assertEquals(listOf(28, 10, 28, 10), sled.writes.toList())
+        assertEquals(SledScannerState.Ready, r.scanner.value)
+
+        // On a Zebra host the sled always gets RFID, at once, and no session.
+        val (z, zSled) = layoutReader(backgroundScope, zebraHost = true)
+        assertTrue(z.connect(barcodeRequest).isSuccess)
+        z.disconnect()
+        assertEquals(listOf(4), zSled.writes.toList())
     }
 
     @Test fun aCallMadeDuringTeardownReturnsNotConnectedAndShowsNoError() = runTest {

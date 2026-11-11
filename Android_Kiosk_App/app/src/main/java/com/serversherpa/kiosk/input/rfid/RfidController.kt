@@ -24,6 +24,7 @@ import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.core.rfid.TriggerPull
 import com.serversherpa.kiosk.core.rfid.burstToScans
 import com.serversherpa.kiosk.core.rfid.effectiveLayout
+import com.serversherpa.kiosk.core.rfid.isInterimFor
 import com.serversherpa.kiosk.core.rfid.isNudgeFromOurSled
 import com.serversherpa.kiosk.core.rfid.layoutInForceReadsTags
 import com.serversherpa.kiosk.core.rfid.layoutInForceUsesScanner
@@ -695,7 +696,10 @@ class RfidController(
                         _layoutError.value = null
                         val layout = settingLayoutFor(i)
                         val want = effectiveLayout(layout, zebraHost, i?.hasScanner)
-                        if (i?.trigger?.layout != want) enqueueLayout(layout)
+                        // The no-beam keys a connect left for `want` stand in for it until the
+                        // sled's scanner is ready, and the reader then writes the real keys itself.
+                        val trigger = i?.trigger
+                        if (trigger?.layout != want && trigger?.isInterimFor(want) != true) enqueueLayout(layout)
                     }
                 }
         }

@@ -43,6 +43,7 @@ import com.serversherpa.kiosk.core.rfid.SledKey
 import com.serversherpa.kiosk.core.rfid.SledScannerFault
 import com.serversherpa.kiosk.core.rfid.SledScannerState
 import com.serversherpa.kiosk.core.rfid.SledTriggerLayout
+import com.serversherpa.kiosk.core.rfid.SledTriggerReadback
 import com.serversherpa.kiosk.core.rfid.SledWords
 import com.serversherpa.kiosk.core.rfid.readbackOf
 import com.serversherpa.kiosk.core.rfid.sledWordsViolations
@@ -651,6 +652,29 @@ class RfidPanelTest {
         compose.waitForText(SledWords.didNotTake(disagrees))
         compose.onNodeWithText(SledWords.didNotTake(disagrees)).performScrollTo().assertIsDisplayed()
     }
+
+    /** While the sled holds the no-beam keys for the layout asked (its scanner is still
+     *  starting), the tab says the scanner is starting, not that the sled disagrees. */
+    private fun noDisagreementWhileTheScannerStarts(layout: SledTriggerLayout, noBeam: SledTriggerReadback) {
+        val reader = FakeRfidReader()
+        reader.layoutResult = Result.success(noBeam)
+        val c = testContainer(reader)
+        runBlocking { c.prefs.setRfid(RfidSettings(enabled = true, triggerLayout = layout)) }
+        c.rfid.start()
+        runBlocking { c.rfid.connectNow() }
+        compose.setRfidPanelContent(c)
+        compose.waitUntilIdlingMain { reader.info.value?.trigger == noBeam && c.rfid.layoutInForceUsesScanner.value }
+        reader.setScanner(SledScannerState.Opening)
+        compose.waitForText(SledWords.SCANNER_STARTING)
+        compose.onAllNodesWithText(SledWords.didNotTake(noBeam)).assertCountEquals(0)
+        compose.onAllNodesWithText(SledWords.TRIGGER_CHECK_FAILED).assertCountEquals(0)
+    }
+
+    @Test fun theNoBeamBarcodeLayoutShowsNoDisagreementWhileTheScannerStarts() =
+        noDisagreementWhileTheScannerStarts(SledTriggerLayout.BARCODE, readbackOf(SledKey.NO_ACTION, SledKey.NO_ACTION, 28))
+
+    @Test fun theNoBeamBothLayoutShowsNoDisagreementWhileTheScannerStarts() =
+        noDisagreementWhileTheScannerStarts(SledTriggerLayout.SPLIT, readbackOf(SledKey.RFID, SledKey.NO_ACTION, 8))
 
     @Test fun theScannerLineOffersTryAgainWhenItDidNotStart() {
         val reader = FakeRfidReader()

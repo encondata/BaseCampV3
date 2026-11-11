@@ -42,6 +42,7 @@ import com.serversherpa.kiosk.core.rfid.SledScannerFault
 import com.serversherpa.kiosk.core.rfid.SledScannerState
 import com.serversherpa.kiosk.core.rfid.SledWords
 import com.serversherpa.kiosk.core.rfid.effectiveLayout
+import com.serversherpa.kiosk.core.rfid.isInterimFor
 import com.serversherpa.kiosk.core.rfid.sledLine
 import com.serversherpa.kiosk.input.rfid.RfidPermissions
 import com.serversherpa.kiosk.ui.components.MiniButton
@@ -218,10 +219,14 @@ fun RfidPanel() {
                     container.isZebraHost -> Text(SledWords.ZEBRA_HOST, color = c.textMute)
                     info?.hasScanner == false -> Text(SledWords.NO_SCANNER, color = c.textMute)
                 }
-                // Only when needed: the sled reports a layout other than the one asked of it.
+                // Only when needed: the sled reports a layout other than the one asked of it. The
+                // no-beam keys that stand in for it while the scanner starts are not a disagreement:
+                // the scanner line below says "Starting…" meanwhile.
                 val readback = info?.trigger
                 val asked = effectiveLayout(requestedLayout ?: s.triggerLayout, container.isZebraHost, info?.hasScanner)
-                if (readback != null && readback.layout != asked) Text(SledWords.didNotTake(readback), color = ChipTone.RED.text)
+                if (readback != null && readback.layout != asked && !readback.isInterimFor(asked)) {
+                    Text(SledWords.didNotTake(readback), color = ChipTone.RED.text)
+                }
                 layoutError?.let { Text(it, color = ChipTone.RED.text) }
                 // The sled's own barcode scanner, while the layout in force uses it.
                 if (usesScanner && !container.isZebraHost) {

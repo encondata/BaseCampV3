@@ -181,6 +181,66 @@ class SledKeyLayoutTest {
         assertEquals(LayoutWriteOutcome.CheckFailed, run(SledTriggerLayout.RFID, refused))
     }
 
+    // ── the no-beam write, while the sled's scanner is not ready yet ──
+
+    private fun runInterim(layout: SledTriggerLayout, script: Script) =
+        runInterimWrite(layout, script::write, script::readBack)
+
+    @Test fun theNoBeamWriteIsOneWriteOfTheNoBeamPair() {
+        val barcode = Script(writes = listOf(null), reads = listOf(AttributeRead.Value(28)))
+        assertEquals(InterimWriteOutcome.Accepted(decodeKeyLayout(28)), runInterim(SledTriggerLayout.BARCODE, barcode))
+        assertEquals(listOf(LayoutWrite.Keys(SledKey.NO_ACTION, SledKey.NO_ACTION)), barcode.written)
+        assertEquals(1, barcode.reads)
+
+        val split = Script(writes = listOf(null), reads = listOf(AttributeRead.Value(8)))
+        assertEquals(InterimWriteOutcome.Accepted(decodeKeyLayout(8)), runInterim(SledTriggerLayout.SPLIT, split))
+        assertEquals(listOf(LayoutWrite.Keys(SledKey.RFID, SledKey.NO_ACTION)), split.written)
+    }
+
+    @Test fun aNoBeamWriteTheSledRefusesOrDoesNotTakeIsRefusedWithNoFallback() {
+        val refused = Script(writes = listOf(refusal), reads = listOf(AttributeRead.Value(4)))
+        assertEquals(InterimWriteOutcome.Refused, runInterim(SledTriggerLayout.BARCODE, refused))
+        assertEquals("no fallback of its own", 1, refused.written.size)
+
+        val notTaken = Script(writes = listOf(null), reads = listOf(AttributeRead.Value(4)))
+        assertEquals("written, but the sled reads back another pair", InterimWriteOutcome.Refused, runInterim(SledTriggerLayout.BARCODE, notTaken))
+        assertEquals(1, notTaken.written.size)
+
+        val refusedUnread = Script(writes = listOf(refusal), reads = listOf(AttributeRead.WrongAttribute))
+        assertEquals(InterimWriteOutcome.Refused, runInterim(SledTriggerLayout.SPLIT, refusedUnread))
+        assertEquals(1, refusedUnread.written.size)
+    }
+
+    @Test fun aFailedNoBeamWriteWhoseReadbackMatchesIsAccepted() {
+        val script = Script(writes = listOf(refusal), reads = listOf(AttributeRead.Value(28)))
+        assertEquals(InterimWriteOutcome.Accepted(decodeKeyLayout(28)), runInterim(SledTriggerLayout.BARCODE, script))
+        assertEquals(1, script.written.size)
+    }
+
+    @Test fun anOutOfStepNoBeamWriteIsRetriedOnceThenRefused() {
+        val once = Script(writes = listOf(outOfStep, null), reads = listOf(AttributeRead.Value(4), AttributeRead.Value(8)))
+        assertEquals(InterimWriteOutcome.Accepted(decodeKeyLayout(8)), runInterim(SledTriggerLayout.SPLIT, once))
+        val noBeam = LayoutWrite.Keys(SledKey.RFID, SledKey.NO_ACTION)
+        assertEquals(listOf(noBeam, noBeam), once.written)
+
+        val twice = Script(writes = listOf(outOfStep, outOfStep), reads = listOf(AttributeRead.Value(4), AttributeRead.Value(4)))
+        assertEquals(InterimWriteOutcome.Refused, runInterim(SledTriggerLayout.SPLIT, twice))
+        assertEquals(listOf(noBeam, noBeam), twice.written)
+    }
+
+    @Test fun aNoBeamWriteWithNoReadbackIsACheckFailureAndLinkTroubleIsLinkTrouble() {
+        val unread = Script(writes = listOf(null), reads = listOf(AttributeRead.WrongAttribute))
+        assertEquals(InterimWriteOutcome.CheckFailed, runInterim(SledTriggerLayout.BARCODE, unread))
+        val readRefused = Script(writes = listOf(null), reads = listOf(AttributeRead.Error(refusal)))
+        assertEquals(InterimWriteOutcome.CheckFailed, runInterim(SledTriggerLayout.BARCODE, readRefused))
+
+        val writeTimeout = Script(writes = listOf(timeout), reads = listOf(AttributeRead.Value(4)))
+        assertEquals(InterimWriteOutcome.LinkTrouble, runInterim(SledTriggerLayout.BARCODE, writeTimeout))
+        val readTimeout = Script(writes = listOf(null), reads = listOf(AttributeRead.Error(timeout)))
+        assertEquals(InterimWriteOutcome.LinkTrouble, runInterim(SledTriggerLayout.BARCODE, readTimeout))
+        assertEquals(1, readTimeout.written.size)
+    }
+
     @Test fun onlyAScanTypeTriggerIsDropped() {
         assertFalse(triggerTypePasses("HANDHELD_TRIGGER_SCAN"))
         assertTrue(triggerTypePasses("HANDHELD_TRIGGER_RFID"))
