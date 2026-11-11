@@ -1,29 +1,48 @@
 package com.serversherpa.kiosk.input.rfid
 
+import android.util.Log
+import com.serversherpa.kiosk.core.outbox.OutboxMachine
 import com.serversherpa.kiosk.core.rfid.DEFAULT_RFID_SETTINGS
 import com.serversherpa.kiosk.core.rfid.RepeatSweepPolicy
 import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidReadSession
 import com.serversherpa.kiosk.core.rfid.RfidRegions
 import com.serversherpa.kiosk.core.rfid.RfidSettings
+import com.serversherpa.kiosk.core.rfid.SledCandidate
+import com.serversherpa.kiosk.core.rfid.SledConnectException
 import com.serversherpa.kiosk.core.rfid.SledConnectRequest
+import com.serversherpa.kiosk.core.rfid.SledInfo
+import com.serversherpa.kiosk.core.rfid.SledNotConnected
+import com.serversherpa.kiosk.core.rfid.SledNudge
+import com.serversherpa.kiosk.core.rfid.SledRetry
+import com.serversherpa.kiosk.core.rfid.SledScannerState
+import com.serversherpa.kiosk.core.rfid.SledWords
 import com.serversherpa.kiosk.core.rfid.TriggerAction
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.core.rfid.burstToScans
+import com.serversherpa.kiosk.core.rfid.isSledName
 import com.serversherpa.kiosk.core.rfid.nextTriggerAction
 import com.serversherpa.kiosk.core.rfid.onTagRead
 import com.serversherpa.kiosk.core.rfid.queuedAfter
 import com.serversherpa.kiosk.core.rfid.startSession
 import com.serversherpa.kiosk.core.scan.rfidKey
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -45,24 +64,26 @@ object RfidOwner {
 /**
  * Owns one reader. Turns trigger events into inventories using whichever
  * trigger mode is set, accumulates the burst, and emits the tags to queue when
- * it ends.
+ * it ends. It also owns the link to the sled: when to connect and disconnect,
+ * and when to try again after a drop.
  *
  * It knows nothing about assets, the roster, or the outbox: it produces tag
  * values and stops there. `ScanViewModel` does the matching and the queueing,
  * so the RFID commit rules sit beside the barcode commit rules.
  *
- * `start()` launches six independent collectors (settings, triggers, tags,
- * connection, the [commands] consumer, and the [connectionCommands]
- * consumer) on `scope`, which in production is a real thread pool
- * (`Dispatchers.Default`), not a confined dispatcher — so every one of them
- * can run concurrently with every other, and with `arm()`/`disarm()`/
- * `stopBurst()`/`connectNow()`/`disconnectNow()` called from the UI thread.
- * All of the state those touch (`current`, `_session`, `armed`, `queued`,
- * `stoppingBurst`, `queueOnStop`) is therefore only ever read or written
- * under `mutex`, the same idiom `Outbox` uses for its own multi-writer state
- * — every access, not just the ones with something else nearby to protect,
- * since a field a lock only sometimes guards gives no happens-before edge to
- * the accesses that skip it.
+ * `start()` launches its collectors (settings, triggers, tags, the connection
+ * collector that pushes settings, the link-state collector that notices a
+ * drop, the sled-address collector, and the [commands] consumer) and the
+ * [connectionCommands] consumer on `scope`, which in production is a real
+ * thread pool (`Dispatchers.Default`), not a confined dispatcher — so every
+ * one of them can run concurrently with every other, and with `arm()`/
+ * `disarm()`/`stopBurst()`/`connectNow()`/`disconnectNow()` called from the UI
+ * thread. All of the sweep state those touch (`current`, `_session`, `armed`,
+ * `queued`, `stoppingBurst`, `queueOnStop`) is therefore only ever read or
+ * written under `mutex`, the same idiom `Outbox` uses for its own multi-writer
+ * state — every access, not just the ones with something else nearby to
+ * protect, since a field a lock only sometimes guards gives no happens-before
+ * edge to the accesses that skip it.
  *
  * Two deliberate exceptions to "every access happens under `mutex`" are
  * `reader.stopInventory()` inside [endBurst] and `reader.apply()` inside
@@ -113,68 +134,59 @@ object RfidOwner {
  * `start()` creates) so a command sent before `start()` runs is buffered,
  * not lost.
  *
- * [connectForLifecycle] and [disconnectForLifecycle] are the same idiom
- * applied to `ProcessLifecycleOwner`'s observer: `AppContainer` used to fire
- * `connectNow()`/`disconnectNow()` from two independent `scope.launch`
- * blocks in `onStart`/`onStop`, with nothing ordering one against the other
- * — a quick background/foreground/background flurry could let an earlier
- * disconnect finish after a later connect, or the reverse. Both are queued
- * for strict ordering the same way `arm()`/`disarm()`/`stopBurst()` are, but
- * onto a *second*, separate channel — [connectionCommands], drained by its
- * own single consumer coroutine — not [commands]. The two were merged for
- * one fix and then split apart for this one: routing everything through one
- * channel gave lifecycle connect/disconnect the ordering guarantee they
- * needed, but it also meant a slow `reader.connect()` — on real hardware, a
- * Bluetooth vendor call that can take seconds when the sled is out of range,
- * the radio is busy, or the stack soft-hangs — blocked whatever
- * arm()/disarm()/stopBurst() happened to be queued behind it. A phone
- * returning to the foreground enqueues a connect; the operator opening the
- * Scanning screen a beat later enqueues an arm that then sat stuck behind
- * it, `armed` stayed false, and every trigger pull was a silent no-op with
- * nothing on screen explaining it. Two queues keep both orderings — connect/
- * disconnect strictly in lifecycle order, arm/disarm/stop strictly in
- * screen-issued order — while removing any way for one kind to delay the
- * other. The caller enqueues *synchronously* — `connectForLifecycle`/
- * `disconnectForLifecycle` never suspend, so `AppContainer` can call them
- * directly from the lifecycle callback body instead of a nested
- * `scope.launch` — which is what actually fixes the ordering race: two
- * lifecycle callbacks never overlap (Android runs `onStart`/`onStop`
- * strictly in turn, on the main thread), so a synchronous enqueue in each
- * preserves that order into the channel regardless of how long the *effect*
- * of an earlier one takes to run. `connectForLifecycle`'s `gate` — the
- * enabled-and-permitted check, which needs a suspending prefs read — is
- * deliberately evaluated by the consumer, not the caller, once that
- * command's turn comes up: running it before enqueueing would reintroduce
- * exactly the race this fixes, since the gate's own suspension is what let
- * a later `onStop`'s call get ahead of an earlier `onStart`'s in the first
- * place.
+ * **The link** (spec, Controller › Link management). Every connect and
+ * disconnect — [connectForLifecycle]/[disconnectForLifecycle] from
+ * `ProcessLifecycleOwner`, [connectNow]/[disconnectNow] from the RFID tab, the
+ * reader switch's edges, a newly chosen sled, the reconnect after a region is
+ * set — is a command on [connectionCommands], a *second* queue with its own
+ * single consumer, so a slow `reader.connect()` (on real hardware, a Bluetooth
+ * call that can take seconds when the sled is out of range) never delays
+ * arm/disarm/stop, and the link calls run strictly in the order they were
+ * issued: the caller enqueues *synchronously*, so a quick background/
+ * foreground/background flurry lands in lifecycle order whatever each call
+ * then takes. `connectNow()`/`disconnectNow()` only await their command's
+ * answer, so cancelling the caller (leaving the RFID tab) never cancels the
+ * attempt; they start the consumer themselves when [start] has not run, so a
+ * screen that only ever calls them still works. The retry schedule's own
+ * tries take [linkGate] directly.
  *
- * [connectWithTimeout] and [disconnectWithTimeout] wrap `reader.connect()`
- * and `reader.disconnect()` in `withTimeoutOrNull(VENDOR_TIMEOUT_MS)` —
- * defense against a vendor stack that never returns at all, which nothing
- * described above helps with: splitting the queues stops a slow connect
- * from blocking *other* commands, but does nothing for the connect command
- * itself, which would otherwise wait on the consumer forever. A timeout is
- * reported the same way every other connect/disconnect outcome is —
- * [connectionError] is set to a readable reason, mirroring how [applyError]
- * reports a settings push failure — rather than the connection command
- * silently never finishing. [connection] is a plain read-through of
- * `reader.connection`, which only the reader implementation can write, so a
- * timeout (the one failure mode the reader itself never sees, since the
- * controller gave up waiting on it, not the reader) has nowhere else to
- * surface. `connectNow()`/`disconnectNow()` route through the same two
- * helpers, so the Settings screen's direct calls get the same timeout
- * defense and the same `connectionError` reporting as the lifecycle path.
+ * [linkGate] serializes every connect and disconnect; it is outermost in the
+ * lock order (`linkGate`, `stopGate`, `mutex`, `applyGate`, the adapter).
+ * Each reader call it guards also holds [applyGate] for the call alone, so a
+ * settings push never overlaps a connect or a disconnect on the reader.
+ * [linkWanted] is written without suspending, on the caller's thread, before
+ * anything is queued: true from [connectForLifecycle] (which stores its gate
+ * for every automatic attempt), [connectNow] and the reader switch turning
+ * on; false from [disconnectForLifecycle], [disconnectNow], [stopReconnecting]
+ * and the switch turning off, which also cancel the retry schedule. Once they
+ * hold `linkGate`, automatic attempts (lifecycle, the switch, a retry, a
+ * nudge) re-read `linkWanted` and run the stored gate (`enabled` and the
+ * permissions, ruling 32); a manual one (Connect, a new sled, the region
+ * reconnect) re-reads only `linkWanted`. So whichever link call was issued
+ * last decides where the link ends up. A connect that finds the link up
+ * (`Connected` or `NeedsRegion`) succeeds without dialing.
  *
- * `connectNow()`/`disconnectNow()` are otherwise unchanged: the Settings
- * screen calls them directly, synchronously, wanting their own `Result`,
- * and does not need — and must not lose — the ability to cancel a
- * disconnect it kicked off from a screen that then navigated away (see
- * [endBurst]'s cancellation handling). Routing them through
- * [connectionCommands] as well would run their real work on the consumer
- * coroutine instead of the caller's, breaking that direct cancellability.
- * Only the fire-and-forget lifecycle path needs queuing, so only it uses
- * [connectionCommands].
+ * The connect wait is [CONNECT_WAIT_MS] ([CONNECT_WAIT_BATCH_MS] once the
+ * reader reported a batch-mode recovery in the attempt). When it runs out the
+ * caller is answered and [connectionError] says the sled couldn't be reached,
+ * but `linkGate` stays held until the reader's own call returns, so the next
+ * link call never overlaps it. A disconnect waits [DISCONNECT_WAIT_MS] the
+ * same way and only logs when it runs out.
+ *
+ * **Reconnect** (spec, Controller › Reconnect; rulings 4 and 41). One
+ * schedule at a time; [reconnecting] is true while it runs and [retry] says
+ * what it is about. It starts on a retryable failure while the link is
+ * wanted: after a drop (the link was up, so `info` is kept), or after a
+ * connect that never came up while a sled screen is open
+ * ([setSledScreenOpen]). Tries wait `OutboxMachine.BACKOFF` (2, 4, 15, 60 s);
+ * the fourth failure gives up with the couldn't-reach sentence. The first
+ * batch clear gets one more try at once, uncounted. Any other attempt cancels
+ * a pending wait and takes its place; Connect failing retryably on a sled
+ * screen starts the count over. A failure the operator has to fix
+ * (`retryable = false`, every pre-check) ends it. No try starts while
+ * [printerBusy] is true. A [nudge] shortens a wait or starts one try; it is
+ * ignored during an attempt and for [NUDGE_QUIET_MS] after one, and a try it
+ * starts after giving up leaves the schedule given up when it fails.
  *
  * [stopGate] is a second, narrower lock than `mutex`: it is held by
  * [endBurst] for the entire window it owns a stop, `reader.stopInventory()`
@@ -198,11 +210,26 @@ class RfidController(
     private val reader: RfidReader,
     private val settings: Flow<RfidSettings>,
     private val scope: CoroutineScope,
+    private val zebraHost: Boolean = false,
+    private val printerBusy: () -> Boolean = { false },
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     val connection: StateFlow<RfidConnection> = reader.connection
     /** A plain read-through of the reader's own note — see [RfidReader.connectNote]. */
     val connectNote: StateFlow<String?> = reader.connectNote
+    /** A plain read-through of [RfidReader.info]. */
+    val info: StateFlow<SledInfo?> = reader.info
+    /** A plain read-through of [RfidReader.scanner]. */
+    val scanner: StateFlow<SledScannerState> = reader.scanner
+
+    private val _reconnecting = MutableStateFlow(false)
+    /** True while the reconnect schedule runs (see the class doc). */
+    val reconnecting: StateFlow<Boolean> = _reconnecting
+
+    private val _retry = MutableStateFlow<SledRetry?>(null)
+    /** What the running reconnect is about; non-null exactly while [reconnecting]
+     *  (set before it turns true, cleared after it turns false). */
+    val retry: StateFlow<SledRetry?> = _retry
 
     private val _session = MutableStateFlow<RfidReadSession?>(null)
     /** Non-null only while a burst is running. Scanning's and Asset Lookup's live panel. */
@@ -225,16 +252,13 @@ class RfidController(
     val applyError: StateFlow<String?> = _applyError
 
     private val _connectionError = MutableStateFlow<String?>(null)
-    /** Why the last `connect()`/`disconnect()` attempt failed, including a
-     *  timeout — [applyError]'s counterpart for the connection itself. It
-     *  exists because [connection] is a plain read-through of
-     *  `reader.connection`, which only the reader implementation can write:
-     *  a normal connect failure still reaches the operator that way (the
-     *  reader sets its own state to `Failed` before returning), but a
-     *  timeout is exactly the case where the reader never gets to do that —
-     *  the controller gave up waiting on it, the reader did not fail on its
-     *  own — so this is the only place left to report it. Null once a later
-     *  attempt succeeds. */
+    /** Why the last connect failed, when the connection line alone does not
+     *  say it: the couldn't-reach sentence when the connect wait ran out (the
+     *  reader is still `Connecting` then) or when the reconnect schedule gave
+     *  up, else the failure's own sentence. Null while the schedule is still
+     *  trying (the loss shows once, on the connection line), once an attempt
+     *  succeeds, after a disconnect, and when a failure arrives after the link
+     *  stopped being wanted. */
     val connectionError: StateFlow<String?> = _connectionError
 
     /** Guards every state transition below: `current`, `armed`, `queued`,
@@ -286,8 +310,63 @@ class RfidController(
      *  `applyGate` (`push()` or `setRegion()`) ever tries to acquire
      *  `mutex`, so nesting `mutex` outside it at either call site cannot
      *  deadlock: `mutex` is always acquired first and `applyGate` second,
-     *  by every caller, so there is no cycle. */
+     *  by every caller, so there is no cycle. The link calls under [linkGate]
+     *  also hold it, for the reader call alone, so a push never overlaps a
+     *  connect or a disconnect. */
     private val applyGate = Mutex()
+
+    // ── the link (see the class doc) ──
+
+    /** Serializes every connect and disconnect; outermost in the lock order. */
+    private val linkGate = Mutex()
+
+    /** Whether the last link call wanted the link up. Written without
+     *  suspending, before the matching command is queued. */
+    private val linkWanted = AtomicBoolean(false)
+
+    /** [connectForLifecycle]'s gate, run by every automatic attempt. Null
+     *  until the first lifecycle connect, and a null gate does not dial. */
+    private val storedGate = AtomicReference<(suspend () -> Boolean)?>(null)
+
+    @Volatile private var sledScreenOpen = false
+
+    /** The address of the last sled the link was up with, for [nudge]. */
+    @Volatile private var lastSledAddress: String? = null
+
+    /** The saved `readerAddress`, as the settings collector last saw it. */
+    @Volatile private var savedAddress: String? = null
+
+    /** A reconnect schedule in progress: [tries] made so far (the drop or the
+     *  first failure is not one), and what [retry] publishes. */
+    private data class Schedule(val afterDrop: Boolean, val name: String?, val tries: Int, val lastReason: String?)
+
+    /** Where an attempt came from. RETRY, NUDGE and BATCH run as the retry job. */
+    private enum class Origin { LIFECYCLE, SWITCH, MANUAL, RETRY, NUDGE, BATCH }
+
+    /** One connect attempt. A manual one re-reads only [linkWanted]; an
+     *  automatic one also runs [storedGate]. [epoch] is the retry epoch a
+     *  retry-job attempt was launched in. */
+    private class Attempt(val origin: Origin, val manual: Boolean, val epoch: Int = 0) {
+        val fromJob: Boolean get() = origin == Origin.RETRY || origin == Origin.NUDGE || origin == Origin.BATCH
+    }
+
+    private enum class LinkOutcome { SKIPPED, ALREADY_UP, DIALED }
+
+    /** Guards the retry fields below. Held only for plain reads and writes,
+     *  never across a suspension. */
+    private val retryLock = Any()
+    private var schedule: Schedule? = null
+    /** The one pending or running retry-job try, if any. */
+    private var retryJob: Job? = null
+    /** Completed by [nudge] to end the retry job's wait early. Non-null only during that wait. */
+    private var wake: CompletableDeferred<Unit>? = null
+    /** Bumped by [cancelRetry]; a retry job launched in an earlier epoch never dials. */
+    private var epoch = 0
+    /** True from the moment an attempt dials until its outcome is handled. */
+    private var dialing = false
+    private var lastAttemptEndMs: Long? = null
+    private var givenUp = false
+    private var giveUpSentence: String? = null
 
     private sealed interface Command {
         data class Arm(val owner: String) : Command
@@ -305,39 +384,65 @@ class RfidController(
     private val commands = Channel<Command>(Channel.UNLIMITED)
 
     private sealed interface ConnectionCommand {
-        /** [gate] is the caller's enabled-and-permitted check; it runs on the
-         *  consumer (see [connectForLifecycle]), never on the caller. */
-        class Connect(val gate: suspend () -> Boolean) : ConnectionCommand
-        data object Disconnect : ConnectionCommand
+        /** Answers the caller when the command could not run at all. */
+        fun abandon()
+
+        class Connect(val attempt: Attempt, val reply: CompletableDeferred<Result<Unit>>? = null) : ConnectionCommand {
+            override fun abandon() { reply?.complete(Result.failure(SledNotConnected())) }
+        }
+
+        class Disconnect(val reply: CompletableDeferred<Unit>? = null) : ConnectionCommand {
+            override fun abandon() { reply?.complete(Unit) }
+        }
+
+        /** A disconnect and a manual connect: for a newly chosen sled
+         *  ([forAddress]) or after a region was set in `NeedsRegion`. */
+        class Reconnect(val forAddress: Boolean, val reply: CompletableDeferred<Unit>? = null) : ConnectionCommand {
+            override fun abandon() { reply?.complete(Unit) }
+        }
     }
 
-    /** [commands]'s sibling for `connectForLifecycle()`/
-     *  `disconnectForLifecycle()` — same unlimited-capacity, never-lost,
-     *  buffered-before-`start()` reasoning, but its own channel and its own
-     *  single consumer (started in [start]) so lifecycle connect/disconnect
-     *  order among themselves without ever blocking arm/disarm/stop, or
-     *  being blocked by them. See the class doc for why the two were split. */
+    /** [commands]'s sibling for every link call — same unlimited-capacity,
+     *  never-lost, buffered-before-`start()` reasoning, but its own channel
+     *  and its own single consumer so link calls order among themselves
+     *  without ever blocking arm/disarm/stop, or being blocked by them. */
     private val connectionCommands = Channel<ConnectionCommand>(Channel.UNLIMITED)
+    private val linkConsumerStarted = AtomicBoolean(false)
 
-    private companion object {
-        /** Ceiling on how long `reader.connect()`/`reader.disconnect()` may
-         *  suspend before the controller gives up on them — defense against
-         *  a vendor stack that never returns at all, not a tuning knob for
-         *  normal connects. 15s is comfortably above Android's own ~12s
-         *  RFCOMM connect timeout and the multi-second scan/pair negotiation
-         *  a Bluetooth sled can genuinely need when it is out of range or
-         *  the radio is busy, so a legitimate slow connect is never cut off
-         *  early; it is still short enough that a soft-hung stack leaves the
-         *  operator waiting seconds, not indefinitely, for [connectionError]
-         *  to explain what happened. The same value covers `disconnect()`
-         *  too: it calls into the same vendor stack and can wedge on the
-         *  same soft hang, and there is no data suggesting disconnect
-         *  deserves a different number than connect. */
-        const val VENDOR_TIMEOUT_MS = 15_000L
+    companion object {
+        /** How long a connect may take before the caller is told the sled
+         *  couldn't be reached. Every vendor wait inside is bounded, so the
+         *  reader's own call still returns, later. */
+        const val CONNECT_WAIT_MS = 30_000L
+
+        /** The connect wait once the reader reported a batch-mode recovery in
+         *  the attempt (its own cleanup takes up to 20 s). */
+        const val CONNECT_WAIT_BATCH_MS = 60_000L
+
+        /** How long a disconnect may take before the controller logs it. */
+        const val DISCONNECT_WAIT_MS = 10_000L
+
+        /** A nudge within this long of an attempt ending is ignored. */
+        const val NUDGE_QUIET_MS = 2_000L
+
+        /** Ceiling on how long `reader.apply()`, `reader.regions()` and
+         *  `reader.setRegion()` may suspend before the controller gives up on
+         *  them — defense against a vendor stack that never returns at all,
+         *  not a tuning knob. */
+        private const val VENDOR_TIMEOUT_MS = 15_000L
+
+        /** How often a retry waiting for the printer checks it again. */
+        private const val PRINTER_POLL_MS = 500L
+
+        private const val TAG = "RfidController"
     }
 
     fun start() {
         scope.launch {
+            // The first collected value is not a change: the reader switch's
+            // edges and a newly chosen sled are both changes between two
+            // collected values (prefs.rfid re-emits on every DataStore write).
+            var previous: RfidSettings? = null
             settings.collect { s ->
                 // The compare-and-write has to happen inside the lock, not
                 // just the push: `current` is read by every other collector
@@ -348,13 +453,13 @@ class RfidController(
                 // until something else happened to take the lock.
                 val changed = mutex.withLock {
                     // Toggling only `enabled` is a real, common event — the
-                    // RFID panel's switch does exactly this, alongside a
-                    // disconnectNow() call — and `apply()` never reads
-                    // `enabled` at all, so it is not worth a push: comparing
-                    // with `enabled` forced to match `current`'s isolates
-                    // that one field without hand-listing every other one of
-                    // RfidSettings. `current` itself must still hold the
-                    // true, current `enabled` value.
+                    // RFID panel's switch does exactly this — and `apply()`
+                    // never reads `enabled` at all, so it is not worth a push
+                    // (its edges connect and disconnect instead, below):
+                    // comparing with `enabled` forced to match `current`'s
+                    // isolates that one field without hand-listing every other
+                    // one of RfidSettings. `current` itself must still hold
+                    // the true, current `enabled` value.
                     //
                     // `region` is excluded the same way, for the same
                     // reason: [setRegion] writes the picked code straight
@@ -370,12 +475,11 @@ class RfidController(
                     //
                     // `triggerLayout`/`readerAddress` are excluded for the
                     // same reason: `apply()` never reads either. The layout
-                    // reaches the sled through the connect request
-                    // ([connectWithTimeout] reads `current`'s copy of both
-                    // fresh, right before every connect) and the reader's
-                    // own layout write; the address only says which sled to
-                    // dial. Neither should fire an eight-round-trip settings
-                    // push on its own.
+                    // reaches the sled through the connect request (built
+                    // from `settings.first()` right before every connect) and
+                    // the reader's own layout write; the address only says
+                    // which sled to dial. Neither should fire an eight-round-
+                    // trip settings push on its own.
                     val c = s.copy(
                         enabled = current.enabled,
                         region = current.region,
@@ -385,6 +489,9 @@ class RfidController(
                     current = s
                     c
                 }
+                savedAddress = s.readerAddress
+                previous?.let { onSettingsChange(it, s) }
+                previous = s
                 if (changed && reader.connection.value is RfidConnection.Connected) {
                     // No `mutex` involved: `s` is already a plain value from
                     // the collected flow, and `push()` must never run under
@@ -425,11 +532,23 @@ class RfidController(
                 wasConnected = nowConnected
             }
         }
+        // Its own collector, never suspending, so a push in flight above
+        // never delays noticing a drop.
+        scope.launch {
+            reader.connection.collect { c ->
+                when (c) {
+                    is RfidConnection.Connected, is RfidConnection.NeedsRegion -> onLinkUp()
+                    is RfidConnection.Failed -> if (c.retryable) onLinkLost(c)
+                    else -> Unit
+                }
+            }
+        }
+        scope.launch { reader.info.collect { i -> i?.address?.let { lastSledAddress = it } } }
         // Single consumer of `commands`, so arm()/disarm()/stopBurst() all
         // run in exactly the order they were sent — see the class doc.
-        // Nothing here ever waits on `connectionCommands` or its consumer
-        // below, so a slow or hung connect/disconnect on the *other* queue
-        // can never delay any of these three.
+        // Nothing here ever waits on `connectionCommands` or its consumer,
+        // so a slow or hung connect/disconnect on the *other* queue can
+        // never delay any of these three.
         scope.launch {
             for (command in commands) {
                 when (command) {
@@ -439,28 +558,7 @@ class RfidController(
                 }
             }
         }
-        // Single consumer of `connectionCommands`, so connectForLifecycle()/
-        // disconnectForLifecycle() run in exactly the order they were sent —
-        // see the class doc. Neither `gate()` below nor
-        // [connectWithTimeout]/[disconnectWithTimeout] is ever called under
-        // `mutex` — the same discipline `endBurst` already follows for
-        // `reader.stopInventory()` — so a slow vendor call parks only this
-        // loop (delaying a later connect/disconnect, exactly as intended),
-        // never a collector or caller that is waiting on `mutex`, and never
-        // the `commands` consumer above. Nothing else in this class ever
-        // waits *on either consumer* to make progress, and neither consumer
-        // ever sends to or awaits the other's channel, so there is no cycle
-        // between them either: a slow gate/connect/disconnect can only ever
-        // delay a later command on its own queue, never deadlock against the
-        // other queue.
-        scope.launch {
-            for (command in connectionCommands) {
-                when (command) {
-                    is ConnectionCommand.Connect -> if (command.gate()) connectWithTimeout()
-                    ConnectionCommand.Disconnect -> disconnectNowImpl()
-                }
-            }
-        }
+        ensureLinkConsumer()
     }
 
     /** A screen that reads RFID calls this while it is composed, with its own
@@ -488,23 +586,94 @@ class RfidController(
         }
     }
 
-    /** `ProcessLifecycleOwner`'s observer calls this from `onStart` — see the
-     *  class doc for why it must be called directly there, not from inside
-     *  its own `scope.launch`. [gate] runs on the consumer once this
-     *  command's turn comes up, not here: evaluating it before enqueueing
-     *  would let its suspension reorder this call behind a later
-     *  [disconnectForLifecycle], the exact race this exists to close. */
+    /** `ProcessLifecycleOwner`'s observer calls this from `onStart`, directly,
+     *  never from inside its own `scope.launch` — see the class doc. [gate]
+     *  (`enabled` and the permissions, which needs a suspending prefs read) is
+     *  stored for every automatic attempt and runs once the command's turn
+     *  comes up, not here: evaluating it before enqueueing would let its
+     *  suspension reorder this call behind a later [disconnectForLifecycle]. */
     fun connectForLifecycle(gate: suspend () -> Boolean) {
-        check(connectionCommands.trySend(ConnectionCommand.Connect(gate)).isSuccess) {
-            "Couldn't queue connectForLifecycle(): the connection command channel is closed."
-        }
+        storedGate.set(gate)
+        linkWanted.set(true)
+        send(ConnectionCommand.Connect(Attempt(Origin.LIFECYCLE, manual = false)), "connectForLifecycle()")
     }
 
     /** `ProcessLifecycleOwner`'s observer calls this from `onStop` — the
-     *  mirror of [connectForLifecycle]; see the class doc. */
+     *  mirror of [connectForLifecycle]. It also ends any reconnect schedule. */
     fun disconnectForLifecycle() {
-        check(connectionCommands.trySend(ConnectionCommand.Disconnect).isSuccess) {
-            "Couldn't queue disconnectForLifecycle(): the connection command channel is closed."
+        linkWanted.set(false)
+        cancelRetry()
+        send(ConnectionCommand.Disconnect(), "disconnectForLifecycle()")
+    }
+
+    /** The Connect button: a manual attempt, which ignores `enabled` (ruling
+     *  32). Runs on the controller's scope; the caller only awaits the answer,
+     *  which comes at the connect wait at the latest. Settings are pushed by
+     *  the connection collector on the resulting Connected transition, the
+     *  same path a self-initiated reconnect uses. */
+    suspend fun connectNow(): Result<Unit> {
+        linkWanted.set(true)
+        val reply = CompletableDeferred<Result<Unit>>()
+        send(ConnectionCommand.Connect(Attempt(Origin.MANUAL, manual = true), reply), "connectNow()")
+        ensureLinkConsumer()
+        return reply.await()
+    }
+
+    /** The Disconnect button. Ends any reconnect schedule, then disconnects
+     *  on the controller's scope; the caller only awaits. An explicit
+     *  disconnect still queues what was already read. */
+    suspend fun disconnectNow() {
+        linkWanted.set(false)
+        cancelRetry()
+        val reply = CompletableDeferred<Unit>()
+        send(ConnectionCommand.Disconnect(reply), "disconnectNow()")
+        ensureLinkConsumer()
+        reply.await()
+    }
+
+    /** The RFID tab's Stop while reconnecting: the link is no longer wanted
+     *  and the schedule ends. Nothing is disconnected. */
+    fun stopReconnecting() {
+        linkWanted.set(false)
+        cancelRetry()
+    }
+
+    /**
+     * Whether a sled screen is in front (Scanning, Asset Lookup, RFID Enroll,
+     * Print Labels, Settings › RFID). While one is, a connect that never came
+     * up gets the reconnect schedule; opening one while the link is in such a
+     * retryable failure starts it, once.
+     */
+    fun setSledScreenOpen(open: Boolean) {
+        sledScreenOpen = open
+        if (open) scope.launch { startScheduleForANeverUpFailure() }
+    }
+
+    /**
+     * The app's Bluetooth receiver: Bluetooth came on, or a link appeared.
+     * [SledNudge.LINK_APPEARED] counts only for the last connected sled's
+     * address or, when none is known, a device whose [name] is a sled's. A
+     * nudge shortens a reconnect wait in progress, or starts one try when the
+     * link is wanted and down; see the class doc for when it is ignored.
+     */
+    fun nudge(reason: SledNudge, address: String? = null, name: String? = null) {
+        if (reason == SledNudge.LINK_APPEARED && !isOurSled(address, name)) return
+        synchronized(retryLock) {
+            if (dialing) return
+            lastAttemptEndMs?.let { if (clock() - it < NUDGE_QUIET_MS) return }
+            wake?.let {
+                Log.i(TAG, "Nudge ($reason): trying the sled now instead of at the end of the wait.")
+                it.complete(Unit)
+                wake = null
+                return
+            }
+            if (retryJob != null || !linkWanted.get()) return
+            when (reader.connection.value) {
+                is RfidConnection.Connected, is RfidConnection.NeedsRegion, RfidConnection.Connecting -> return
+                else -> Unit
+            }
+            Log.i(TAG, "Nudge ($reason): one try.")
+            launchTry(Origin.NUDGE, waitMs = 0, manual = false)
         }
     }
 
@@ -550,56 +719,9 @@ class RfidController(
         queued = queued - values.mapNotNull { rfidKey(it) }.toSet()
     }
 
-    suspend fun connectNow(): Result<Unit> = connectWithTimeout()
-    // Settings are pushed by the connection collector on the resulting
-    // Connected transition, the same path a self-initiated reconnect uses —
-    // so there is exactly one place this happens, not two racing to set
-    // `applyError`.
-
-    /** The one place `reader.connect()` is actually called — by
-     *  `connectNow()` directly and by the [connectionCommands] consumer for
-     *  `connectForLifecycle()` — so the timeout defense and
-     *  [connectionError] reporting apply identically to both callers. Never
-     *  called under `mutex`; see the class doc. */
-    private suspend fun connectWithTimeout(): Result<Unit> {
-        // The saved sled's address and the trigger layout are excluded from
-        // the settings-push comparison in start()'s collector (see that
-        // comment) — this is where they reach the reader instead: read fresh
-        // off `current` under `mutex`, the same idiom the Connected-transition
-        // collector already uses for `toPush` below, then handed to
-        // `reader.connect()` outside the lock, same as every other vendor
-        // call in this class.
-        val request = mutex.withLock { SledConnectRequest(current.readerAddress, current.triggerLayout) }
-        val result = withTimeoutOrNull(VENDOR_TIMEOUT_MS) { reader.connect(request) }
-            ?: Result.failure(IllegalStateException("Connecting to the reader timed out."))
-        _connectionError.value = if (result.isFailure) {
-            result.exceptionOrNull()?.message?.takeIf { it.isNotBlank() }
-                ?: "Couldn't connect to the reader."
-        } else {
-            null
-        }
-        return result
-    }
-
-    /** [connectWithTimeout]'s mirror for `reader.disconnect()`, shared by
-     *  [disconnectNowImpl] — so `disconnectNow()` and
-     *  `disconnectForLifecycle()` both get the same timeout defense and
-     *  [connectionError] reporting. `disconnect()` returns no `Result`, so a
-     *  timeout is the only failure this can observe or report. Never called
-     *  under `mutex`; see the class doc. */
-    private suspend fun disconnectWithTimeout() {
-        val completed = withTimeoutOrNull(VENDOR_TIMEOUT_MS) { reader.disconnect() }
-        _connectionError.value = if (completed == null) {
-            "Disconnecting from the reader timed out."
-        } else {
-            null
-        }
-    }
-
     /** The one place `reader.apply()` is actually called — always under
      *  [applyGate], never under `mutex`; see the class doc. Wrapped in the
-     *  same `VENDOR_TIMEOUT_MS` defense [connectWithTimeout]/
-     *  [disconnectWithTimeout] use, since `apply()` otherwise has no timeout
+     *  `VENDOR_TIMEOUT_MS` defense, since `apply()` otherwise has no timeout
      *  of its own and a soft-hung vendor stack would wedge `applyGate`
      *  forever. */
     private suspend fun push(s: RfidSettings) {
@@ -613,8 +735,6 @@ class RfidController(
         }
     }
 
-    suspend fun disconnectNow() = disconnectNowImpl()
-
     /** The regions this reader allows and the one in force — a plain
      *  passthrough to [RfidReader.regions]. Region is a compliance setting,
      *  not part of [RfidSettings]/[push]: it is never pushed automatically,
@@ -622,10 +742,9 @@ class RfidController(
      *  it, so this never touches `mutex` or `applyGate`; the reader itself
      *  reports "not connected" when there is nothing to read (see
      *  `neitherCallWorksWhileDisconnected`). Wrapped in the same
-     *  `VENDOR_TIMEOUT_MS` defense [push]/[connectWithTimeout]/
-     *  [disconnectWithTimeout]/[setRegion] use for their own vendor calls,
-     *  so a soft-hung vendor stack is reported rather than leaving the
-     *  caller suspended forever. */
+     *  `VENDOR_TIMEOUT_MS` defense [push]/[setRegion] use for their own
+     *  vendor calls, so a soft-hung vendor stack is reported rather than
+     *  leaving the caller suspended forever. */
     suspend fun loadRegions(): Result<RfidRegions> =
         withTimeoutOrNull(VENDOR_TIMEOUT_MS) { reader.regions() }
             ?: Result.failure(IllegalStateException("Loading the reader's regions timed out."))
@@ -661,7 +780,13 @@ class RfidController(
      *  Wrapped in the same `VENDOR_TIMEOUT_MS` defense [push] uses: without
      *  it, a soft-hung vendor stack would wedge `applyGate` — and therefore
      *  every later trigger START and settings push — forever, not just this
-     *  call. */
+     *  call.
+     *
+     *  A sled in `NeedsRegion` has to be set up again once it has a region:
+     *  after a successful write there, `applyGate` is released first, then
+     *  the sled is disconnected and connected under [linkGate] (a manual
+     *  attempt), and this returns once that connect has finished. The result
+     *  is the region write's. */
     suspend fun setRegion(code: String, hopping: Boolean?): Result<Unit> {
         val holdingGate = mutex.withLock {
             if (_session.value != null) return@withLock false
@@ -671,28 +796,454 @@ class RfidController(
         if (!holdingGate) {
             return Result.failure(IllegalStateException("Finish the current read before changing the region."))
         }
-        return try {
+        val result = try {
             withTimeoutOrNull(VENDOR_TIMEOUT_MS) { reader.setRegion(code, hopping) }
                 ?: Result.failure(IllegalStateException("Setting the region timed out."))
         } finally {
             applyGate.unlock()
         }
+        if (result.isSuccess && reader.connection.value is RfidConnection.NeedsRegion) {
+            val reply = CompletableDeferred<Unit>()
+            send(ConnectionCommand.Reconnect(forAddress = false, reply), "setRegion()")
+            ensureLinkConsumer()
+            reply.await()
+        }
+        return result
     }
 
-    // Shared by disconnectNow() (runs in the caller's own coroutine, so a
-    // caller that gets cancelled — e.g. a screen's viewModelScope cleared on
-    // navigation away — cancels this directly, same as before this class
-    // grew a command queue; see endBurst's cancellation handling) and the
-    // consumer's Command.Disconnect case (runs fire-and-forget on the
-    // consumer, for disconnectForLifecycle()). Extracting this avoids two
-    // copies of the same three lines, not a change in what either caller
-    // experiences.
-    private suspend fun disconnectNowImpl() {
-        // An explicit disconnect still queues what was already read, the same
-        // rule as an involuntary drop: the operator asked the reader to stop,
-        // not for those tags to vanish.
-        endBurst(stopReader = true, queue = true)
-        disconnectWithTimeout()
+    // ── link internals ──
+
+    private fun send(command: ConnectionCommand, caller: String) {
+        check(connectionCommands.trySend(command).isSuccess) {
+            "Couldn't queue $caller: the connection command channel is closed."
+        }
+    }
+
+    /** Starts the single consumer of [connectionCommands], once: from [start],
+     *  or from the first call that awaits a link command. */
+    private fun ensureLinkConsumer() {
+        if (!linkConsumerStarted.compareAndSet(false, true)) return
+        scope.launch {
+            for (command in connectionCommands) {
+                try {
+                    linkGate.withLock {
+                        when (command) {
+                            is ConnectionCommand.Connect -> connectLocked(command.attempt, command.reply)
+                            is ConnectionCommand.Disconnect -> disconnectLocked(command.reply)
+                            is ConnectionCommand.Reconnect -> reconnectLocked(command.forAddress, command.reply)
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    command.abandon()
+                    throw e
+                } catch (e: Throwable) {
+                    // Anything escaping here would kill the one consumer and
+                    // leave every later link call unanswered.
+                    Log.e(TAG, "A link command failed.", e)
+                    command.abandon()
+                }
+            }
+        }
+    }
+
+    /** Called holding [linkGate]. Dials unless the attempt is not wanted any
+     *  more or its gate is closed, or the link is already up. Answers [reply]
+     *  at the connect wait at the latest, and returns only once the reader's
+     *  own call has returned. */
+    private suspend fun connectLocked(attempt: Attempt, reply: CompletableDeferred<Result<Unit>>?): LinkOutcome {
+        val skip = whyNotDial(attempt)
+        if (skip != null) {
+            Log.i(TAG, "Not connecting (${attempt.origin}): $skip.")
+            reply?.complete(Result.failure(SledNotConnected()))
+            return LinkOutcome.SKIPPED
+        }
+        val state = reader.connection.value
+        if (state is RfidConnection.Connected || state is RfidConnection.NeedsRegion) {
+            reply?.complete(Result.success(Unit))
+            return LinkOutcome.ALREADY_UP
+        }
+        // From the saved settings, not `current`: a lifecycle connect issued
+        // before the settings collector's first value still carries the saved
+        // sled and trigger layout.
+        val request = settings.first().let { SledConnectRequest(it.readerAddress, it.triggerLayout) }
+        if (!beginAttempt(attempt)) {
+            reply?.complete(Result.failure(SledNotConnected()))
+            return LinkOutcome.SKIPPED
+        }
+        val result = try {
+            awaitConnect(request) { sentence ->
+                _connectionError.value = sentence
+                reply?.complete(Result.failure(SledConnectException(RfidConnection.Failed(sentence, retryable = true))))
+            }
+        } catch (e: Throwable) {
+            synchronized(retryLock) { dialing = false }
+            throw e
+        }
+        endAttempt(attempt, request, result)
+        reply?.complete(result)
+        return LinkOutcome.DIALED
+    }
+
+    private suspend fun whyNotDial(attempt: Attempt): String? {
+        if (!linkWanted.get()) return "the link is not wanted"
+        if (attempt.manual) return null
+        val gate = storedGate.get() ?: return "no lifecycle gate yet"
+        if (!gateOpen(gate)) return "the reader is off or a permission is missing"
+        return if (linkWanted.get()) null else "the link is not wanted"
+    }
+
+    private suspend fun gateOpen(gate: suspend () -> Boolean): Boolean = try {
+        gate()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        Log.w(TAG, "The connect gate failed.", e)
+        false
+    }
+
+    /** Marks the attempt as dialing and cancels a pending retry wait (any
+     *  attempt takes the place of the next try). False when the attempt is
+     *  a retry job's from an earlier epoch, or the link stopped being wanted. */
+    private fun beginAttempt(attempt: Attempt): Boolean = synchronized(retryLock) {
+        if (!linkWanted.get()) return false
+        if (attempt.fromJob && attempt.epoch != epoch) return false
+        dialing = true
+        if (!attempt.fromJob) {
+            retryJob?.cancel()
+            retryJob = null
+            wake = null
+        }
+        if (attempt.manual) givenUp = false
+        true
+    }
+
+    /** Runs `reader.connect()` on the controller's scope, under [applyGate],
+     *  and waits for it. When the connect wait runs out, [onTimeout] gets the
+     *  couldn't-reach sentence and the wait goes on: the reader's call always
+     *  returns (every vendor wait inside it is bounded), and the gate held by
+     *  the caller must outlast it. */
+    private suspend fun awaitConnect(request: SledConnectRequest, onTimeout: (String) -> Unit): Result<Unit> =
+        withContext(NonCancellable) {
+            val call = scope.async { applyGate.withLock { readerCall { reader.connect(request) } } }
+            val batchSeen = AtomicBoolean(false)
+            val watch = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                reader.batchRecovery.first { it }
+                batchSeen.set(true)
+            }
+            try {
+                var answer = withTimeoutOrNull(CONNECT_WAIT_MS) { call.await() }
+                if (answer == null && batchSeen.get()) {
+                    answer = withTimeoutOrNull(CONNECT_WAIT_BATCH_MS - CONNECT_WAIT_MS) { call.await() }
+                }
+                if (answer == null) {
+                    Log.w(TAG, "connect() gave no answer within the connect wait; holding the link until it returns.")
+                    onTimeout(couldNotReach(request))
+                }
+                call.await()
+            } finally {
+                watch.cancel()
+            }
+        }
+
+    private suspend fun readerCall(body: suspend () -> Result<Unit>): Result<Unit> = try {
+        body()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        Result.failure(e)
+    }
+
+    /** Called holding [linkGate]: ends any open sweep (its tags are queued:
+     *  the operator asked the reader to stop, not for those tags to vanish),
+     *  then disconnects under [applyGate]. */
+    private suspend fun disconnectLocked(reply: CompletableDeferred<Unit>?) {
+        try {
+            endBurst(stopReader = true, queue = true)
+            val call = scope.async {
+                applyGate.withLock {
+                    try {
+                        reader.disconnect()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "disconnect() threw.", e)
+                    }
+                }
+            }
+            if (withTimeoutOrNull(DISCONNECT_WAIT_MS) { call.await() } == null) {
+                Log.w(TAG, "disconnect() gave no answer within $DISCONNECT_WAIT_MS ms; holding the link until it returns.")
+                reply?.complete(Unit)
+            }
+            call.await()
+            _connectionError.value = null
+        } finally {
+            reply?.complete(Unit)
+        }
+    }
+
+    /** Called holding [linkGate]: a disconnect and a manual connect, while
+     *  the link is wanted. For a newly chosen sled, nothing happens when the
+     *  link is already up with the saved sled. */
+    private suspend fun reconnectLocked(forAddress: Boolean, reply: CompletableDeferred<Unit>?) {
+        try {
+            if (!linkWanted.get()) {
+                Log.i(TAG, "Not reconnecting: the link is not wanted.")
+                return
+            }
+            if (forAddress && upWithTheSavedSled()) return
+            disconnectLocked(null)
+            connectLocked(Attempt(Origin.MANUAL, manual = true), null)
+        } finally {
+            reply?.complete(Unit)
+        }
+    }
+
+    private suspend fun upWithTheSavedSled(): Boolean {
+        val state = reader.connection.value
+        val up = state is RfidConnection.Connected || state is RfidConnection.NeedsRegion
+        return up && reader.info.value?.address.equals(settings.first().readerAddress, ignoreCase = true)
+    }
+
+    /** The reader switch's edges and a newly chosen sled. Only enqueues. */
+    private fun onSettingsChange(before: RfidSettings, after: RfidSettings) {
+        if (!before.enabled && after.enabled) {
+            linkWanted.set(true)
+            send(ConnectionCommand.Connect(Attempt(Origin.SWITCH, manual = false)), "the reader switch")
+        } else if (before.enabled && !after.enabled) {
+            linkWanted.set(false)
+            cancelRetry()
+            send(ConnectionCommand.Disconnect(), "the reader switch")
+        }
+        if (!before.readerAddress.equals(after.readerAddress, ignoreCase = true) && reconnectsFor(after.readerAddress)) {
+            send(ConnectionCommand.Reconnect(forAddress = true), "the saved sled")
+        }
+    }
+
+    /** A new saved address reconnects while a connect runs, or while the link
+     *  is up with a sled at another address. */
+    private fun reconnectsFor(address: String?): Boolean = when (reader.connection.value) {
+        RfidConnection.Connecting -> true
+        is RfidConnection.Connected, is RfidConnection.NeedsRegion ->
+            !reader.info.value?.address.equals(address, ignoreCase = true)
+        else -> false
+    }
+
+    private fun isOurSled(address: String?, name: String?): Boolean {
+        val known = lastSledAddress ?: savedAddress
+        return if (known != null) address.equals(known, ignoreCase = true) else isSledName(name)
+    }
+
+    private fun failureOf(e: Throwable?): RfidConnection.Failed =
+        (e as? SledConnectException)?.failed
+            ?: RfidConnection.Failed(e?.message?.takeIf { it.isNotBlank() } ?: SledWords.couldNotReach(null))
+
+    private fun pairedName(address: String?, paired: List<SledCandidate>): String? =
+        address?.let { a -> paired.firstOrNull { it.address.equals(a, ignoreCase = true) }?.name }
+
+    private fun couldNotReach(request: SledConnectRequest): String {
+        val paired = reader.pairedSleds()
+        val name = synchronized(retryLock) { schedule?.name } ?: pairedName(request.address, paired)
+        return SledWords.couldNotReach(name, severalPaired = paired.size >= 2)
+    }
+
+    /** The reconnect rules, applied to an attempt that dialed. */
+    private fun endAttempt(attempt: Attempt, request: SledConnectRequest, result: Result<Unit>) {
+        val paired = if (result.isFailure) reader.pairedSleds() else emptyList()
+        synchronized(retryLock) {
+            dialing = false
+            lastAttemptEndMs = clock()
+            if (attempt.fromJob && attempt.epoch == epoch) {
+                // This job is finishing (an epoch still current means the slot
+                // holds it); a next try is a new job.
+                retryJob = null
+                wake = null
+            }
+            if (result.isSuccess) {
+                endSchedule()
+                givenUp = false
+                _connectionError.value = null
+                return
+            }
+            if (attempt.fromJob && attempt.epoch != epoch) return
+            if (!linkWanted.get()) {
+                endSchedule()
+                _connectionError.value = null
+                return
+            }
+            val failed = failureOf(result.exceptionOrNull())
+            val running = schedule
+            when {
+                failed.retryable && failed.reason == SledWords.BATCH_CLEARED_RETRYING && attempt.origin != Origin.BATCH -> {
+                    // One more try at once, on any screen; the count stays.
+                    running?.let { publish(it.copy(lastReason = failed.reason)) }
+                    _connectionError.value = null
+                    launchTry(Origin.BATCH, waitMs = 0, manual = attempt.manual)
+                }
+                !failed.retryable -> {
+                    endSchedule()
+                    _connectionError.value = failed.reason
+                }
+                attempt.manual && sledScreenOpen -> {
+                    givenUp = false
+                    publish(
+                        Schedule(
+                            afterDrop = running?.afterDrop ?: false,
+                            name = running?.name ?: pairedName(request.address, paired),
+                            tries = 0,
+                            lastReason = failed.reason,
+                        ),
+                    )
+                    _connectionError.value = null
+                    launchTry(Origin.RETRY, OutboxMachine.BACKOFF[0], manual = false)
+                }
+                running != null -> {
+                    val next = running.copy(tries = running.tries + 1, lastReason = failed.reason)
+                    if (next.tries >= OutboxMachine.BACKOFF.size) {
+                        giveUp(next, paired)
+                    } else {
+                        publish(next)
+                        _connectionError.value = null
+                        launchTry(Origin.RETRY, OutboxMachine.BACKOFF[next.tries], manual = false)
+                    }
+                }
+                // A nudge's try after giving up: still given up.
+                givenUp -> _connectionError.value = giveUpSentence
+                sledScreenOpen -> {
+                    publish(Schedule(afterDrop = false, name = pairedName(request.address, paired), tries = 0, lastReason = failed.reason))
+                    _connectionError.value = null
+                    launchTry(Origin.RETRY, OutboxMachine.BACKOFF[0], manual = false)
+                }
+                else -> _connectionError.value = failed.reason
+            }
+        }
+    }
+
+    /** Holding [retryLock]. */
+    private fun giveUp(last: Schedule, paired: List<SledCandidate>) {
+        endSchedule()
+        givenUp = true
+        val sentence = SledWords.couldNotReach(last.name, severalPaired = paired.size >= 2)
+        giveUpSentence = sentence
+        _connectionError.value = sentence
+        Log.i(TAG, "Stopped reconnecting after ${OutboxMachine.BACKOFF.size} tries.")
+    }
+
+    /** Holding [retryLock]: [s] is the running schedule; [retry] first, so a
+     *  reader that sees [reconnecting] true always finds it. */
+    private fun publish(s: Schedule) {
+        schedule = s
+        _retry.value = SledRetry(s.afterDrop, s.name, s.lastReason)
+        _reconnecting.value = true
+    }
+
+    /** Holding [retryLock]. */
+    private fun endSchedule() {
+        if (schedule == null) return
+        schedule = null
+        _reconnecting.value = false
+        _retry.value = null
+    }
+
+    /** Holding [retryLock]: one retry-job try after [waitMs]. */
+    private fun launchTry(origin: Origin, waitMs: Long, manual: Boolean) {
+        val attempt = Attempt(origin, manual, epoch)
+        retryJob = scope.launch { runTry(attempt, waitMs) }
+    }
+
+    private suspend fun runTry(attempt: Attempt, waitMs: Long) {
+        if (waitMs > 0) {
+            val w = CompletableDeferred<Unit>()
+            synchronized(retryLock) {
+                if (attempt.epoch != epoch) return
+                wake = w
+            }
+            withTimeoutOrNull(waitMs) { w.await() }
+            synchronized(retryLock) { if (wake === w) wake = null }
+        }
+        while (printerBusy()) delay(PRINTER_POLL_MS)
+        linkGate.lock()
+        val outcome = try {
+            // Once it holds the gate the try runs to the end: cancelling the
+            // schedule (Stop, Disconnect, the reader off, the background) never
+            // cuts a vendor call short, and the attempt re-reads linkWanted.
+            withContext(NonCancellable) { connectLocked(attempt, null) }
+        } finally {
+            linkGate.unlock()
+        }
+        if (outcome != LinkOutcome.DIALED) {
+            synchronized(retryLock) {
+                if (attempt.epoch == epoch) {
+                    // The gate was closed, or the link was up already: the
+                    // schedule has nothing left to do.
+                    retryJob = null
+                    wake = null
+                    endSchedule()
+                    if (outcome == LinkOutcome.ALREADY_UP) givenUp = false
+                }
+            }
+        }
+    }
+
+    /** The link is no longer wanted: end the schedule and its pending try. */
+    private fun cancelRetry() {
+        synchronized(retryLock) {
+            epoch++
+            retryJob?.cancel()
+            retryJob = null
+            wake = null
+            endSchedule()
+            givenUp = false
+        }
+    }
+
+    /** The link came up outside an attempt (a test double, the Developer tab):
+     *  nothing is left to retry. */
+    private fun onLinkUp() {
+        synchronized(retryLock) {
+            if (dialing) return
+            // A try already past its wait must not dial after this.
+            if (retryJob != null) epoch++
+            retryJob?.cancel()
+            retryJob = null
+            wake = null
+            endSchedule()
+            givenUp = false
+        }
+    }
+
+    /** A retryable failure seen on the connection flow. With `info` kept it is
+     *  a drop, and starts the schedule; a connect that never came up has no
+     *  `info`, and its attempt applies the rules itself. */
+    private fun onLinkLost(c: RfidConnection.Failed) {
+        val sled = reader.info.value ?: return
+        synchronized(retryLock) {
+            if (dialing || schedule != null || retryJob != null || !linkWanted.get()) return
+            Log.i(TAG, "The link dropped; reconnecting.")
+            publish(Schedule(afterDrop = true, name = sled.name, tries = 0, lastReason = c.reason))
+            launchTry(Origin.RETRY, OutboxMachine.BACKOFF[0], manual = false)
+        }
+    }
+
+    private suspend fun startScheduleForANeverUpFailure() {
+        if (!synchronized(retryLock) { neverUpScheduleDue() }) return
+        val gate = storedGate.get() ?: return
+        if (!gateOpen(gate)) return
+        val address = settings.first().readerAddress
+        val paired = reader.pairedSleds()
+        synchronized(retryLock) {
+            if (!neverUpScheduleDue()) return
+            val failed = reader.connection.value as? RfidConnection.Failed ?: return
+            publish(Schedule(afterDrop = false, name = pairedName(address, paired), tries = 0, lastReason = failed.reason))
+            launchTry(Origin.RETRY, OutboxMachine.BACKOFF[0], manual = false)
+        }
+    }
+
+    /** Holding [retryLock]: a sled screen is open on a retryable failure from a
+     *  connect that never came up, with nothing running and not given up. */
+    private fun neverUpScheduleDue(): Boolean {
+        val state = reader.connection.value
+        return sledScreenOpen && state is RfidConnection.Failed && state.retryable && reader.info.value == null &&
+            linkWanted.get() && !dialing && schedule == null && retryJob == null && !givenUp
     }
 
     private suspend fun onTrigger(event: TriggerEvent) {
@@ -774,26 +1325,22 @@ class RfidController(
      * The ownership window (`stoppingBurst = true` through the claim at the
      * bottom) is also the one place a cancelled caller could otherwise leak
      * state forever: if the coroutine running this call is cancelled while
-     * suspended in `reader.stopInventory()` — e.g. `disconnectNow()` called
-     * from a screen's `viewModelScope` that gets cleared on navigation away —
-     * plain cancellation would unwind straight past the claim below,
-     * leaving `stoppingBurst` stuck true and `_session` stuck non-null.
-     * Every later `endBurst` would then return early forever, the live
-     * panel would never close, the radio would keep inventorying, `bursts`
-     * would never emit again, and in HOLD mode a new trigger press would
-     * evaluate as NONE because a session still looks open — wedged until
-     * the process restarts. The `catch (CancellationException)` below
-     * finishes the same claim `withContext(NonCancellable)` (a cancelled
-     * coroutine cannot otherwise suspend to take `mutex`), the same idiom
-     * `Outbox.sendBatch` uses to persist a batch's outcome under
-     * cancellation, before rethrowing — so a cancelled stop still leaves
-     * the controller consistent for the next trigger pull. It queues the
-     * tags folded in so far exactly when the caller that owned the stop
-     * wanted them queued (`queueOnStop`, unchanged by the cancellation):
-     * the operator genuinely read those tags, so a cancelled
-     * `disconnectNow()` (`queue = true`) still queues them, the same as an
-     * uncancelled one, while a cancelled `disarm()` (`queue = false`) still
-     * discards them, the same as an uncancelled one.
+     * suspended in `reader.stopInventory()`, plain cancellation would unwind
+     * straight past the claim below, leaving `stoppingBurst` stuck true and
+     * `_session` stuck non-null. Every later `endBurst` would then return
+     * early forever, the live panel would never close, the radio would keep
+     * inventorying, `bursts` would never emit again, and in HOLD mode a new
+     * trigger press would evaluate as NONE because a session still looks
+     * open — wedged until the process restarts. Every caller now runs on the
+     * controller's own scope (a disconnect included: its caller only awaits),
+     * so only the scope's end can cancel one, but the `catch
+     * (CancellationException)` below still finishes the same claim
+     * `withContext(NonCancellable)` (a cancelled coroutine cannot otherwise
+     * suspend to take `mutex`), the same idiom `Outbox.sendBatch` uses to
+     * persist a batch's outcome under cancellation, before rethrowing. It
+     * queues the tags folded in so far exactly when the caller that owned
+     * the stop wanted them queued (`queueOnStop`, unchanged by the
+     * cancellation).
      */
     private suspend fun endBurst(stopReader: Boolean, queue: Boolean, unlessOwnedBy: String? = null) {
         val owns = mutex.withLock {

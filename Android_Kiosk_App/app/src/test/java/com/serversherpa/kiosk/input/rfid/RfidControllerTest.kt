@@ -328,11 +328,10 @@ class RfidControllerTest {
      * [callOrder] before delegating. A bare `assertEquals(false,
      * reader.inventoryRunning)` after a disconnect proves nothing about
      * *order* — `FakeRfidReader.disconnect()` unconditionally clears
-     * `inventoryRunning` itself (see its own comment: "a sled that has just
-     * dropped no longer has an inventory to stop... this is a harmless
-     * no-op"), so that assertion would pass even if `disconnect()` ran
-     * before `stopInventory()`. This class exists so a test can tell the
-     * two orderings apart.
+     * `inventoryRunning` itself, and a stop after it just reports
+     * `SledNotConnected`, so that assertion would pass even if
+     * `disconnect()` ran before `stopInventory()`. This class exists so a
+     * test can tell the two orderings apart.
      */
     private class OrderRecordingReader(private val inner: FakeRfidReader) : RfidReader by inner {
         /** The order `stopInventory()` and `disconnect()` were actually
@@ -352,12 +351,11 @@ class RfidControllerTest {
     /**
      * Regression test for the guarantee this task's `ZebraRfidReader.kt`
      * teardown fix leans on: `RfidController` itself already stops the
-     * inventory before disconnecting the reader —
-     * `disconnectNowImpl()` calls `endBurst(stopReader = true, queue =
-     * true)`, which calls `reader.stopInventory()`, before
-     * `disconnectWithTimeout()`, which calls `reader.disconnect()`.
-     * `ZebraRfidReader.disconnectBlocking()`'s own stop-inventory-then-
-     * disable-batch-mode sequence is the second, independent line of
+     * inventory before disconnecting the reader — its disconnect calls
+     * `endBurst(stopReader = true, queue = true)`, which calls
+     * `reader.stopInventory()`, before `reader.disconnect()`. The adapter's
+     * teardown, with its own stop-inventory-then-disable-batch-mode
+     * sequence, is the second, independent line of
      * defense, for the paths that don't go through this controller at all
      * (a stale connection `connect()` tears down, or the
      * `DISCONNECTION_EVENT` path that calls `endBurst(stopReader = false,
@@ -564,25 +562,21 @@ class RfidControllerTest {
     }
 
     /**
-     * Regression test for the leak this fix closes: if the coroutine running
-     * `endBurst` is cancelled while suspended in `reader.stopInventory()` —
-     * e.g. `disconnectNow()` called from a screen's `viewModelScope` that
-     * then gets cleared because the screen navigated away — the stopping
-     * marker and the open session must not be left behind forever. Before
-     * the fix, cancellation unwound straight past the claim at the bottom of
-     * `endBurst`, leaving `stoppingBurst` stuck true and `_session` stuck
-     * non-null: every later `endBurst` returned early, the live panel never
-     * closed, the radio kept inventorying, `bursts` never emitted again, and
-     * a following trigger press read as NONE because a session still looked
-     * open — wedged until the process restarted.
+     * The leak `endBurst`'s cancellation handling once closed: a
+     * `disconnectNow()` caller cancelled while the stop is suspended in
+     * `reader.stopInventory()` (a screen's `viewModelScope` cleared on
+     * navigation away) used to cancel `endBurst` itself, and before that fix
+     * left `stoppingBurst` stuck true and `_session` stuck non-null — the live
+     * panel never closed, `bursts` never emitted again, and the next press
+     * read as NONE.
      *
-     * `disconnectNow()` is a plain `suspend fun` (unlike `arm`/`disarm`/
-     * `stopBurst`, which only enqueue onto [commands]), so cancelling the
-     * coroutine that is running it cancels `endBurst` itself directly while
-     * it is suspended inside `stopInventory()` — exactly the window the
-     * finding describes.
+     * The disconnect now runs on the controller's scope and its caller only
+     * awaits (spec, Controller › Link management), so cancelling the caller
+     * no longer reaches the stop at all: the controller still owns it,
+     * finishes it once the reader answers, queues the tags, disconnects, and
+     * is clean for the next connect and trigger.
      */
-    @Test fun aStopCancelledWhileSuspendedInStopInventoryLeavesTheControllerCleanForTheNextTrigger() = runTest {
+    @Test fun aDisconnectWhoseCallerIsCancelledMidStopStillFinishesAndLeavesTheControllerClean() = runTest {
         val inner = FakeRfidReader()
         val slowStop = SlowStopReader(inner)
         val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
@@ -606,28 +600,26 @@ class RfidControllerTest {
 
         disconnector.cancel()
         settle()
-
-        assertNull(
-            "a cancelled stop must still claim the session, not leave it stuck open",
-            controller.session.value,
+        assertTrue(
+            "cancelling the caller does not abandon the stop: the controller still owns it",
+            controller.session.value != null,
         )
+
+        slowStop.proceedStop.complete(Unit); settle()
+        assertNull("the stop finished and claimed the session", controller.session.value)
         // The caller wanted the tags queued (disconnectNow's normal rule),
         // and they were genuinely read: the cancellation must not discard
         // them.
         assertEquals(listOf(listOf("100700")), bursts)
+        assertEquals("the disconnect went through as well", RfidConnection.Disconnected, inner.connection.value)
 
-        // Let the underlying vendor call unblock for any *future* stop —
-        // it was abandoned, not answered, by the cancelled caller above; this
-        // only prevents a later stopInventory() call from hanging on the same
-        // single-use CompletableDeferred.
-        slowStop.proceedStop.complete(Unit)
-
-        // The next trigger pull must behave normally: reading = false, so
-        // this PRESSED must start a fresh inventory rather than being read
-        // as NONE because a session still looks open.
+        // The next connect and trigger pull must behave normally: reading =
+        // false, so this PRESSED must start a fresh inventory rather than
+        // being read as NONE because a session still looks open.
+        controller.connectNow(); settle()
         inner.emitTrigger(TriggerEvent.PRESSED); settle()
         assertEquals(
-            "a trigger after the cancelled stop should start a new read",
+            "a trigger after the reconnect should start a new read",
             2,
             slowStop.startInventoryCalls,
         )
@@ -1354,12 +1346,13 @@ class RfidControllerTest {
     }
 
     /**
-     * M6: toggling only `enabled` must not push a full settings block to the
-     * reader — `apply()` never reads `enabled`, and the RFID panel pairs this
-     * with a `disconnectNow()` call, so pushing here is pure waste. A real
-     * change (e.g. `powerDbm`) must still push, `enabled` value notwithstanding.
+     * Row 7: turning the reader off is the `enabled` true-to-false edge, which
+     * the controller turns into one disconnect of its own. It is still not a
+     * settings push: `apply()` never reads `enabled`. Connect works with the
+     * reader off (`enabled` gates automatic connects only, ruling 32), and a
+     * real change (e.g. `powerDbm`) still pushes.
      */
-    @Test fun togglingOnlyEnabledDoesNotPushSettingsToTheReader() = runTest {
+    @Test fun turningTheReaderOffDisconnectsAndPushesNothing() = runTest {
         val r = Rig(backgroundScope)
         r.controller.start(); settle()
         r.controller.connectNow(); settle()
@@ -1367,12 +1360,15 @@ class RfidControllerTest {
         assertEquals(27, appliedAfterConnect?.powerDbm)
 
         r.settings.value = r.settings.value.copy(enabled = false); settle()
+        assertEquals("switching the reader off disconnects it", RfidConnection.Disconnected, r.reader.connection.value)
+        assertEquals(1, r.reader.disconnectCalls)
         assertEquals(
             "flipping only `enabled` must not push a new settings block",
             appliedAfterConnect,
             r.reader.applied,
         )
 
+        r.controller.connectNow(); settle()
         r.settings.value = r.settings.value.copy(powerDbm = 12); settle()
         assertEquals(
             "a real settings change must still push",
@@ -1420,7 +1416,9 @@ class RfidControllerTest {
      * never reads `triggerLayout` or `readerAddress` — the layout reaches the
      * sled through the connect request and its own layout write, and the
      * address only says which sled to dial — so changing either one alone
-     * must not fire a full settings push for nothing.
+     * must not fire a full settings push for nothing. The address saved here
+     * is the connected sled's own, so nothing reconnects either (a change to
+     * another sled is `RfidLinkTest.aReaderAddressChangeToAnotherSledReconnects`).
      */
     @Test fun togglingOnlyTriggerLayoutOrReaderAddressDoesNotPushSettingsToTheReader() = runTest {
         val r = Rig(backgroundScope)
@@ -1436,7 +1434,9 @@ class RfidControllerTest {
             r.reader.applied,
         )
 
+        r.reader.setInfo(r.reader.info.value!!.copy(address = "00:11:22:33:44:55"))
         r.settings.value = r.settings.value.copy(readerAddress = "00:11:22:33:44:55"); settle()
+        assertEquals("the connected sled's own address reconnects nothing", 1, r.reader.connectCalls)
         assertEquals(
             "changing only `readerAddress` must not push a new settings block",
             appliedAfterConnect,

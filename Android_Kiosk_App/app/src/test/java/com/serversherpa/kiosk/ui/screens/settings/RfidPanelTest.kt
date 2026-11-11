@@ -167,6 +167,8 @@ class RfidPanelTest {
         val staleError = "Simulated failure from a previous attempt."
         reader.connectResult = Result.failure(RuntimeException(staleError))
         compose.onNodeWithText("Connect").performScrollTo().performClick()
+        // connectNow() runs on the controller's scope, off the main thread.
+        compose.waitUntilIdlingMain { c.rfid.connectionError.value == staleError }
         compose.waitForIdle()
 
         // Anchor: the error must actually be on screen before the retry,
@@ -178,6 +180,7 @@ class RfidPanelTest {
         reader.connectResult = Result.success(Unit)
         reader.connectGate = CompletableDeferred()
         compose.onNodeWithText("Connect").performScrollTo().performClick()
+        compose.waitUntilIdlingMain { reader.connection.value == RfidConnection.Connecting }
         compose.waitForIdle()
 
         // The stale error from the first attempt must not be showing while
@@ -323,6 +326,8 @@ class RfidPanelTest {
         val failureReason = "No RFID reader found. Pair the RFD40 in Android's Bluetooth settings first."
         reader.connectResult = Result.failure(RuntimeException(failureReason))
         compose.onNodeWithText("Connect").performScrollTo().performClick()
+        // connectNow() runs on the controller's scope, off the main thread.
+        compose.waitUntilIdlingMain { c.rfid.connectionError.value == failureReason }
         compose.waitForIdle()
 
         // The sentence should appear exactly once, not twice.
@@ -366,6 +371,8 @@ class RfidPanelTest {
         // additional check that when they're NOT the same, the error stays visible.
         reader.connectGate = CompletableDeferred()
         compose.onNodeWithText("Connect").performScrollTo().performClick()
+        // connectNow() runs on the controller's scope, off the main thread.
+        compose.waitUntilIdlingMain { reader.connection.value == RfidConnection.Connecting }
         compose.waitForIdle()
 
         // Verify that while connect() is stuck, the connection line shows
