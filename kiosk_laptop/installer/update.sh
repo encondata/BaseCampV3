@@ -9,9 +9,9 @@
 # scans are uploading; pull the channel image; if it changed (and isn't one
 # that already failed), restart on it and wait for healthy; if it doesn't get
 # healthy, put the previous image back and remember the bad one.
-# Then, whatever happened above, hostnet.sh and launch.sh are refreshed from
-# the ref the laptop was installed from (never update.sh itself); a failure
-# there never changes the exit code. On macOS the folder is root's and only
+# Then, whatever happened above, hostnet.sh and launch.sh (and, on Linux,
+# kiosk_session.py) are refreshed from the ref the laptop was installed from
+# (never update.sh itself); a failure there never changes the exit code. On macOS the folder is root's and only
 # those two files belong to the desktop user (install.sh), so they are
 # overwritten in place; where even that isn't possible the log says to re-run
 # the install command.
@@ -369,6 +369,26 @@ fetch_helper() {
   fi
 }
 
+# helper_shebang NAME: the first line a published helper must have.
+helper_shebang() {
+  case "$1" in
+    *.py) printf '#!/usr/bin/env python3' ;;
+    *) printf '#!/usr/bin/env bash' ;;
+  esac
+}
+
+# helper_syntax_ok NAME FILE: bash -n for a shell script; for a .py, it must
+# parse (python3's ast; no python3 counts as a failure).
+helper_syntax_ok() {
+  local py
+  case "$1" in
+    *.py)
+      py=$(python_bin) || return 1
+      "$py" -c 'import ast, sys; ast.parse(open(sys.argv[1], encoding="utf-8").read())' "$2" >/dev/null 2>&1 ;;
+    *) bash -n "$2" 2>/dev/null ;;
+  esac
+}
+
 # refresh_helper NAME: replace $KIOSK_DIR/NAME with the published copy when it
 # is a sound script that differs. 0 = replaced; 1 = unchanged or failed (the
 # old file stays; one log line says which).
@@ -379,7 +399,7 @@ fetch_helper() {
 #   place, so its mode and owner stay;
 #   neither: say so, before downloading anything.
 refresh_helper() {
-  local name="$1" cur="$KIOSK_DIR/$1" tmp inplace=0
+  local name="$1" cur="$KIOSK_DIR/$1" tmp inplace=0 want
   if [ -w "$KIOSK_DIR" ]; then
     tmp=$(mktemp "$KIOSK_DIR/.$name.XXXXXX" 2>/dev/null) || { log "$name: failed (can't write to $KIOSK_DIR)"; return 1; }
   elif [ -f "$cur" ] && [ -w "$cur" ]; then
@@ -395,10 +415,11 @@ refresh_helper() {
   if [ ! -s "$tmp" ]; then
     rm -f "$tmp"; log "$name: failed (empty)"; return 1
   fi
-  if [ "$(head -n 1 "$tmp")" != '#!/usr/bin/env bash' ]; then
-    rm -f "$tmp"; log "$name: failed (no bash shebang)"; return 1
+  want=$(helper_shebang "$name")
+  if [ "$(head -n 1 "$tmp")" != "$want" ]; then
+    rm -f "$tmp"; log "$name: failed (no ${want##* } shebang)"; return 1
   fi
-  if ! bash -n "$tmp" 2>/dev/null; then
+  if ! helper_syntax_ok "$name" "$tmp"; then
     rm -f "$tmp"; log "$name: failed (syntax error)"; return 1
   fi
   if [ -f "$cur" ] && cmp -s "$tmp" "$cur"; then
@@ -442,13 +463,18 @@ run_hostnet_limited() {
   return "$rc"
 }
 
-# refresh_helpers: hostnet.sh and launch.sh (never update.sh itself). A
-# refreshed hostnet.sh runs once now, so what it reports shows up without
-# waiting for its next run. Nothing here changes the updater's exit code.
+# refresh_helpers: hostnet.sh and launch.sh, and on Linux kiosk_session.py
+# (never update.sh itself). A refreshed hostnet.sh runs once now, so what it
+# reports shows up without waiting for its next run; a refreshed
+# kiosk_session.py takes effect at the next sign-in. Nothing here changes the
+# updater's exit code.
 refresh_helpers() {
   HELPER_REF=$(installer_ref)
   log "Refreshing helper scripts (ref $HELPER_REF)"
   refresh_helper launch.sh || true
+  if [ "$OS" = Linux ]; then
+    refresh_helper kiosk_session.py || true
+  fi
   if refresh_helper hostnet.sh; then
     run_hostnet_limited || true
   fi

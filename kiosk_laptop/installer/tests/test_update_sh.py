@@ -704,3 +704,72 @@ def test_helper_hostnet_run_is_time_limited(tmp_path):
     assert time.time() - t0 < 10
     assert "rc=0" in r.stdout and "hostnet.sh: refreshed" in r.stdout
     assert "didn't finish" in r.stdout
+
+
+# ── kiosk lockdown: launch.sh hands off to kiosk_session.py on Linux ──
+def test_launch_hands_off_to_the_session_on_linux(tmp_path):
+    (tmp_path / "kiosk_session.py").write_text("#!/usr/bin/env python3\n")
+    calls = tmp_path / "calls"
+    body = (f'have_python3() {{ :; }}; run_session() {{ echo "session $*" >> "{calls}"; }}; '
+            f'run_browser() {{ echo "app $*" >> "{calls}"; }}; kiosk_answers() {{ :; }}; OS=Linux; main')
+    _launch(tmp_path, body)
+    assert calls.read_text().splitlines() == ["session /usr/bin/google-chrome"]
+
+
+def test_launch_without_the_session_file_keeps_the_app_window(tmp_path):
+    calls = tmp_path / "calls"
+    body = (f'have_python3() {{ :; }}; run_session() {{ echo "session $*" >> "{calls}"; }}; '
+            f'run_browser() {{ echo "app $*" >> "{calls}"; }}; kiosk_answers() {{ :; }}; OS=Linux; main')
+    _launch(tmp_path, body)
+    assert calls.read_text().splitlines() == ["app /usr/bin/google-chrome --app=http://localhost:8090"]
+
+
+def test_launch_never_hands_off_on_macos(tmp_path):
+    (tmp_path / "kiosk_session.py").write_text("#!/usr/bin/env python3\n")
+    calls = tmp_path / "calls"
+    body = (f'have_python3() {{ :; }}; run_session() {{ echo "session $*" >> "{calls}"; }}; '
+            f'kiosk_answers() {{ :; }}; open() {{ echo "open $*" >> "{calls}"; }}; OS=Darwin; main')
+    _launch(tmp_path, body, config="KIOSK_BROWSER=/Applications/Google Chrome.app\n")
+    assert calls.read_text().splitlines() == ["open -na /Applications/Google Chrome.app --args --app=http://localhost:8090"]
+
+
+def test_launch_without_a_browser_restores_the_desktop_then_opens_the_default(tmp_path):
+    (tmp_path / "kiosk_session.py").write_text("#!/usr/bin/env python3\n")
+    calls = tmp_path / "calls"
+    body = (f'have_python3() {{ :; }}; find_browser() {{ :; }}; kiosk_answers() {{ :; }}; '
+            f'restore_session_desktop() {{ echo restore >> "{calls}"; }}; '
+            f'xdg-open() {{ echo "xdg $*" >> "{calls}"; }}; OS=Linux; main')
+    _launch(tmp_path, body, config="KIOSK_BROWSER=\n")
+    assert calls.read_text().splitlines() == ["restore", "xdg http://localhost:8090"]
+
+
+# ── kiosk lockdown: update.sh refreshes kiosk_session.py on Linux ─────
+GOOD_PY = "#!/usr/bin/env python3\nprint('new session')\n"
+
+
+def test_session_py_is_refreshed_on_linux(tmp_path):
+    r, k = _helpers(tmp_path, {"hostnet.sh": NEW_HOSTNET, "launch.sh": NEW_HOSTNET},
+                    {"hostnet.sh": NEW_HOSTNET, "launch.sh": NEW_HOSTNET, "kiosk_session.py": GOOD_PY},
+                    body='OS=Linux; refresh_helpers; echo rc=$?')
+    assert "rc=0" in r.stdout and "kiosk_session.py: refreshed" in r.stdout
+    assert (k / "kiosk_session.py").read_text() == GOOD_PY
+    assert oct((k / "kiosk_session.py").stat().st_mode & 0o777) == "0o755"
+
+
+def test_session_py_is_never_refreshed_on_macos(tmp_path):
+    r, k = _helpers(tmp_path, {"hostnet.sh": NEW_HOSTNET, "launch.sh": NEW_HOSTNET},
+                    {"hostnet.sh": NEW_HOSTNET, "launch.sh": NEW_HOSTNET, "kiosk_session.py": GOOD_PY},
+                    body='OS=Darwin; refresh_helpers; echo rc=$?')
+    assert "rc=0" in r.stdout and "kiosk_session.py" not in r.stdout
+    assert not (k / "kiosk_session.py").exists()
+
+
+@pytest.mark.parametrize("bad,why", [
+    ("#!/usr/bin/env bash\necho hi\n", "no python3 shebang"),
+    ("#!/usr/bin/env python3\ndef broken(:\n", "syntax error"),
+])
+def test_a_bad_session_py_is_rejected_and_the_old_one_kept(tmp_path, bad, why):
+    r, k = _helpers(tmp_path, {"kiosk_session.py": GOOD_PY}, {"kiosk_session.py": bad},
+                    body='OS=Linux; refresh_helpers; echo rc=$?')
+    assert "rc=0" in r.stdout and f"kiosk_session.py: failed ({why})" in r.stdout
+    assert (k / "kiosk_session.py").read_text() == GOOD_PY

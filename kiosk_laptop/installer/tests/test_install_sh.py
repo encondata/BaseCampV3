@@ -1497,3 +1497,166 @@ def test_main_sets_up_label_printers_after_docker_and_before_the_kiosk_starts():
     text = (INSTALL_SH_DIR / "install.sh").read_text()
     body = text[text.index("\nmain() {"):]
     assert body.index("check_compose") < body.index("setup_label_printers") < body.index("start_kiosk")
+
+
+# ── kiosk lockdown (Linux) ────────────────────────────────────────────
+# A runner with xdg-user-dirs installed would answer for its own HOME.
+NO_XDG = 'xdg-user-dir() { return 1; }; '
+
+
+def _session_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ks_drift", INSTALL_SH_DIR / "kiosk_session.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize("kiosk_dir", ["/opt/serversherpa-kiosk", "/opt/Server Sherpa/50%"])
+def test_start_icon_matches_kiosk_session(sh, tmp_path, kiosk_dir):
+    f = tmp_path / "icon.desktop"
+    sh(f'KIOSK_DIR="{kiosk_dir}"; render_start_icon "{f}"')
+    from pathlib import Path
+    assert f.read_text() == _session_module().start_icon_text(Path(kiosk_dir) / "launch.sh")
+
+
+def test_install_login_items_linux_adds_the_session_and_the_start_icon(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    auto = home / ".config" / "autostart"; auto.mkdir(parents=True)
+    (auto / "serversherpa-kiosk-restore.desktop").write_text("x")       # left by an earlier uninstall
+    sh(stubs + NO_XDG + 'OS=Linux; have_python3() { :; }; install_login_items')
+    assert (inst / "kiosk_session.py").stat().st_mode & 0o777 == 0o755
+    icon = home / "Desktop" / "serversherpa-start-kiosk.desktop"
+    assert f"Exec={inst}/launch.sh" in icon.read_text() and "Name=Start Kiosk" in icon.read_text()
+    assert icon.stat().st_mode & 0o777 == 0o755
+    assert not (auto / "serversherpa-kiosk-restore.desktop").exists()
+
+
+def test_install_login_items_macos_has_no_session(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + 'OS=Darwin; install_login_items')
+    assert not (inst / "kiosk_session.py").exists() and not (home / "Desktop").exists()
+
+
+def test_ensure_python3_installs_it_when_missing(sh, tmp_path):
+    calls = tmp_path / "calls"
+    sh(f'have_python3() {{ return 1; }}; apt-get() {{ echo "apt-get $*" >> "{calls}"; }}; ensure_python3')
+    assert "install -y python3" in calls.read_text()
+    calls.unlink()
+    sh(f'have_python3() {{ :; }}; apt-get() {{ echo "apt-get $*" >> "{calls}"; }}; ensure_python3')
+    assert not calls.exists()
+
+
+def _locked(home):
+    state = home / ".local" / "state" / "serversherpa-kiosk"; state.mkdir(parents=True)
+    (state / "desktop-lock.json").write_text('{"version": 1, "saved": []}')
+    return state
+
+
+def test_remove_login_items_linux_restores_in_the_users_session(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + NO_XDG + 'OS=Linux; have_python3() { :; }; install_login_items')
+    state = _locked(home)
+    restore = (f'pkill() {{ echo "pkill $*" >> "{calls}"; }}; SESSION_STOP_WAIT_S=0; '
+               f'session_restore() {{ echo "restore $*" >> "{calls}"; rm -f "{state}/desktop-lock.json"; }}; ')
+    sh(stubs + NO_XDG + restore + 'OS=Linux; remove_login_items')
+    log = calls.read_text()
+    assert f"pkill -TERM -u alice -f {inst}/kiosk_session.py" in log and "restore alice 501" in log
+    assert not (home / "Desktop" / "serversherpa-start-kiosk.desktop").exists()
+    assert not (home / ".config/autostart/serversherpa-kiosk-restore.desktop").exists()
+
+
+def test_remove_login_items_linux_leaves_a_one_shot_restore_when_signed_out(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + NO_XDG + 'OS=Linux; have_python3() { :; }; install_login_items')
+    state = _locked(home)
+    sh(stubs + NO_XDG + 'pkill() { :; }; SESSION_STOP_WAIT_S=0; have_python3() { :; }; session_restore() { return 1; }; '
+               'OS=Linux; remove_login_items')
+    entry = (home / ".config/autostart/serversherpa-kiosk-restore.desktop").read_text()
+    assert f"Exec=python3 {state}/kiosk_session.py restore --cleanup" in entry
+    assert (state / "kiosk_session.py").read_text() == (inst / "kiosk_session.py").read_text()
+
+
+def test_uninstall_removes_the_session_file(sh, tmp_path):
+    inst = tmp_path / "inst"; inst.mkdir()
+    (inst / "kiosk_session.py").write_text("x")
+    sh(f'KIOSK_DIR="{inst}"; KIOSK_DATA_DIR="{tmp_path / "data"}"; OS=Linux; '
+       'remove_login_items() { :; }; remove_label_printer_files() { :; }; check_rm_target() { :; }; uninstall')
+    assert not (inst / "kiosk_session.py").exists()
+
+
+# session_restore runs restore on the user's real session bus. Without it,
+# gsettings could fall back to its memory backend, "succeed" and save nothing.
+def _bus_dir():
+    """A RUN_USER_DIR holding 501/bus as a real socket (a short path: a Unix
+    socket path is limited to about 100 bytes)."""
+    import socket
+    import tempfile
+    d = tempfile.mkdtemp(prefix="ks")
+    os.mkdir(os.path.join(d, "501"))
+    s = socket.socket(socket.AF_UNIX)
+    s.bind(os.path.join(d, "501", "bus"))
+    return d, s
+
+
+def test_session_restore_runs_as_the_user_on_their_session_bus(sh, tmp_path):
+    import shutil
+    d, s = _bus_dir()
+    try:
+        calls = tmp_path / "calls"
+        r = sh(f'KIOSK_DIR=/k; RUN_USER_DIR="{d}"; as_user() {{ echo "$*" >> "{calls}"; return 1; }}; '
+               'rc=0; session_restore alice 501 || rc=$?; echo rc=$rc')
+        assert calls.read_text().splitlines() == [
+            f"alice env DBUS_SESSION_BUS_ADDRESS=unix:path={d}/501/bus XDG_RUNTIME_DIR={d}/501 "
+            "python3 /k/kiosk_session.py restore"]
+        assert "rc=1" in r.stdout       # restore's exit 1 ("couldn't confirm") is passed on
+    finally:
+        s.close()
+        shutil.rmtree(d)
+
+
+def test_session_restore_without_the_session_bus_does_nothing(sh, tmp_path):
+    calls = tmp_path / "calls"
+    (tmp_path / "run" / "501").mkdir(parents=True)
+    (tmp_path / "run" / "501" / "bus").write_text("")   # a plain file is not the bus
+    r = sh(f'KIOSK_DIR=/k; RUN_USER_DIR="{tmp_path / "run"}"; as_user() {{ echo "$*" >> "{calls}"; }}; '
+           'rc=0; session_restore alice 501 || rc=$?; echo rc=$rc')
+    assert "rc=1" in r.stdout and not calls.exists()
+
+
+def test_remove_login_items_linux_without_the_session_bus_leaves_a_one_shot_restore(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + NO_XDG + 'OS=Linux; have_python3() { :; }; install_login_items')
+    state = _locked(home)
+    # No bus socket under RUN_USER_DIR: restore never runs; the entry does it at sign-in.
+    sh(stubs + NO_XDG + f'pkill() {{ :; }}; SESSION_STOP_WAIT_S=0; have_python3() {{ :; }}; '
+       f'RUN_USER_DIR="{tmp_path / "no-run"}"; python3() {{ echo "python3 $*" >> "{calls}"; }}; '
+       'OS=Linux; remove_login_items')
+    assert "kiosk_session.py restore" not in calls.read_text()
+    entry = (home / ".config/autostart/serversherpa-kiosk-restore.desktop").read_text()
+    assert f"Exec=python3 {state}/kiosk_session.py restore --cleanup" in entry
+    assert (state / "desktop-lock.json").exists()
+
+
+def test_remove_login_items_linux_keeps_the_one_shot_restore_when_restore_cant_confirm(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + NO_XDG + 'OS=Linux; have_python3() { :; }; install_login_items')
+    state = _locked(home)
+    auto = home / ".config" / "autostart"
+    (auto / "serversherpa-kiosk-restore.desktop").write_text("from an earlier uninstall")
+    # restore exits 1 and even removes the save file: still not confirmed.
+    sh(stubs + NO_XDG + f'pkill() {{ :; }}; SESSION_STOP_WAIT_S=0; have_python3() {{ :; }}; '
+       f'session_restore() {{ rm -f "{state}/desktop-lock.json"; return 1; }}; OS=Linux; remove_login_items')
+    entry = (auto / "serversherpa-kiosk-restore.desktop").read_text()
+    assert f"Exec=python3 {state}/kiosk_session.py restore --cleanup" in entry
+
+
+def test_remove_login_items_linux_waits_for_the_stopped_session(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + NO_XDG + 'OS=Linux; have_python3() { :; }; install_login_items')
+    state = _locked(home)
+    # The SIGTERMed session restores (removes the save file): no direct restore, no entry.
+    sh(stubs + NO_XDG + f'pkill() {{ rm -f "{state}/desktop-lock.json"; }}; SESSION_STOP_WAIT_S=5; '
+       f'session_restore() {{ echo "restore $*" >> "{calls}"; }}; OS=Linux; remove_login_items')
+    assert "restore alice" not in calls.read_text()
+    assert not (home / ".config/autostart/serversherpa-kiosk-restore.desktop").exists()

@@ -1163,6 +1163,127 @@ DESKTOP_FILE='serversherpa-kiosk.desktop'
 SYSTEMD_UNIT_DIR='/etc/systemd/system'
 MAC_APP_DIR='/Applications/ServerSherpa Kiosk.app'
 
+# Linux kiosk lockdown (kiosk_session.py): the session, the Start Kiosk icon on
+# the desktop, and the one-shot restore an uninstall leaves when the desktop
+# user isn't signed in.
+SESSION_PY='kiosk_session.py'
+START_ICON_FILE='serversherpa-start-kiosk.desktop'
+RESTORE_AUTOSTART='serversherpa-kiosk-restore.desktop'
+SESSION_STOP_WAIT_S="${SESSION_STOP_WAIT_S:-10}"
+RUN_USER_DIR='/run/user'   # XDG_RUNTIME_DIR's parent: /run/user/UID/bus is a session's D-Bus
+
+have_python3() { command -v python3 >/dev/null 2>&1; }
+
+# ensure_python3 (Linux): the kiosk session runs on python3, which every
+# Ubuntu desktop has; installed with apt when it is missing.
+ensure_python3() {
+  have_python3 && return 0
+  if command -v apt-get >/dev/null 2>&1 \
+     && DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y python3 >/dev/null 2>&1 \
+     && have_python3; then
+    info "Installed python3 (the kiosk lockdown runs on it)."
+  else
+    warn "python3 isn't installed, so the kiosk opens in a normal window, without the lockdown."
+  fi
+  return 0
+}
+
+# render_start_icon FILE: Start Kiosk on the desktop. kiosk_session.py's
+# start_icon_text writes the same text at every session start
+# (tests/test_install_sh.py checks they match).
+render_start_icon() {
+  cat >"$1" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Start Kiosk
+Comment=Open the ServerSherpa kiosk
+Exec=$(exec_path "$KIOSK_DIR/launch.sh")
+Icon=web-browser
+Terminal=false
+EOF
+}
+
+# user_desktop_dir USER HOME: their desktop folder (xdg-user-dir), else ~/Desktop.
+user_desktop_dir() {
+  local d
+  d=$(as_user "$1" xdg-user-dir DESKTOP 2>/dev/null || true)
+  if [ -z "$d" ] || [ "$d" = "$2" ]; then d="$2/Desktop"; fi
+  printf '%s' "$d"
+}
+
+# install_start_icon USER HOME: written as USER, executable, and trusted so the
+# desktop launches it on a double-click (best-effort: gio needs their session;
+# the kiosk session marks it again when it starts).
+install_start_icon() {
+  local user="$1" home="$2" d tmp uid
+  d=$(user_desktop_dir "$user" "$home")
+  tmp=$(mktemp "${TMPDIR:-/tmp}/kiosk-icon.XXXXXX")
+  TMP_FILES+=("$tmp")
+  render_start_icon "$tmp"
+  if ! { as_user "$user" mkdir -p "$d" && write_as_user "$user" "$tmp" "$d/$START_ICON_FILE" \
+         && as_user "$user" chmod 755 "$d/$START_ICON_FILE"; }; then
+    warn "Couldn't put the Start Kiosk icon on $user's desktop."
+    return 0
+  fi
+  uid=$(id -u "$user" 2>/dev/null || true)
+  if [ -n "$uid" ]; then
+    as_user "$user" env "DBUS_SESSION_BUS_ADDRESS=unix:path=$RUN_USER_DIR/$uid/bus" \
+      gio set "$d/$START_ICON_FILE" metadata::trusted true >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
+# render_restore_entry PY: the one-shot autostart entry that puts the desktop
+# shortcuts back at the next sign-in, then deletes itself and PY.
+render_restore_entry() {
+  printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=ServerSherpa Kiosk desktop restore' \
+    "Exec=python3 $(exec_path "$1") restore --cleanup" 'Terminal=false' 'NoDisplay=true' \
+    'X-GNOME-Autostart-enabled=true'
+}
+
+# session_restore USER UID: kiosk_session.py restore in USER's desktop session
+# (its D-Bus), so gsettings reaches their settings. Only when that session's
+# bus is there: without it gsettings can fall back to its memory backend,
+# report success and save nothing. 1 = not run, or restore couldn't confirm.
+session_restore() {
+  local run="$RUN_USER_DIR/$2"
+  [ -S "$run/bus" ] || return 1
+  as_user "$1" env "DBUS_SESSION_BUS_ADDRESS=unix:path=$run/bus" "XDG_RUNTIME_DIR=$run" \
+    python3 "$KIOSK_DIR/$SESSION_PY" restore >/dev/null 2>&1
+}
+
+# restore_desktop_lock USER HOME (Linux, uninstall): a running kiosk session is
+# stopped (SIGTERM: it closes Chrome and puts the GNOME shortcuts back). If they
+# are still off, restore runs in the user's session; when they aren't signed
+# in, a copy of kiosk_session.py and a one-shot autostart entry do it at their
+# next sign-in. Never fails the uninstall.
+restore_desktop_lock() {
+  local user="$1" home="$2" state lock uid i=0 auto
+  state="$home/.local/state/serversherpa-kiosk"
+  lock="$state/desktop-lock.json"
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -TERM -u "$user" -f "$KIOSK_DIR/$SESSION_PY" >/dev/null 2>&1 || true
+  fi
+  while [ -f "$lock" ] && [ "$i" -lt "$SESSION_STOP_WAIT_S" ]; do sleep 1; i=$((i + 1)); done
+  [ -f "$lock" ] || return 0
+  uid=$(id -u "$user" 2>/dev/null || true)
+  if [ -n "$uid" ] && [ -f "$KIOSK_DIR/$SESSION_PY" ] && have_python3 \
+     && session_restore "$user" "$uid" && [ ! -f "$lock" ]; then
+    info "Put $user's desktop shortcuts back."
+    return 0
+  fi
+  [ -f "$KIOSK_DIR/$SESSION_PY" ] || { warn "Couldn't put $user's desktop shortcuts back ($SESSION_PY is missing)."; return 0; }
+  auto="$home/.config/autostart/$RESTORE_AUTOSTART"
+  if as_user "$user" mkdir -p "$state" "$home/.config/autostart" \
+     && write_as_user "$user" "$KIOSK_DIR/$SESSION_PY" "$state/$SESSION_PY" \
+     && render_restore_entry "$state/$SESSION_PY" | as_user "$user" tee "$auto" >/dev/null; then
+    info "$user's desktop shortcuts come back at their next sign-in."
+  else
+    warn "Couldn't put $user's desktop shortcuts back. While signed in as $user: python3 $KIOSK_DIR/$SESSION_PY restore"
+  fi
+  return 0
+}
+
 user_home() { SUDO_USER="$1" home_of_user; }
 
 # as_user USER CMD...: run CMD as USER, so the files it makes are theirs.
@@ -1402,6 +1523,7 @@ install_login_items_macos() {
 
 install_login_items_linux() {
   local user home d tmp since
+  ensure_python3
   render_systemd_units "$SYSTEMD_UNIT_DIR"
   if systemctl daemon-reload && systemctl enable --now "$UPDATE_UNIT.timer"; then
     info "Nightly update scheduled (03:00, $UPDATE_UNIT.timer)."
@@ -1427,13 +1549,19 @@ install_login_items_linux() {
       warn "Couldn't write $d/$DESKTOP_FILE."
     fi
   done
+  install_start_icon "$user" "$home"
+  # The kiosk is back: its own session restores; an uninstall's one-shot
+  # restore must not race it.
+  rm -f "$home/.config/autostart/$RESTORE_AUTOSTART"
   info "The kiosk opens when $user signs in, or from the app menu (ServerSherpa Kiosk)."
+  info "Esc then the PIN csg closes the kiosk; Start Kiosk on the desktop opens it again."
 }
 
-# install_login_items: copy update.sh/launch.sh/hostnet.sh in, then schedule them.
+# install_login_items: copy update.sh/launch.sh/hostnet.sh (and on Linux kiosk_session.py) in, then schedule them.
 install_login_items() {
-  local f
-  for f in update.sh launch.sh hostnet.sh; do
+  local f files='update.sh launch.sh hostnet.sh'
+  [ "$OS" = Darwin ] || files="$files $SESSION_PY"
+  for f in $files; do
     fetch_companion "$f" "$KIOSK_DIR/$f"
     chmod 755 "$KIOSK_DIR/$f"
   done
@@ -1467,6 +1595,8 @@ remove_login_items() {
     systemctl daemon-reload >/dev/null 2>&1 || true
     if [ -n "$user" ]; then
       home=$(user_home "$user")
+      restore_desktop_lock "$user" "$home"
+      rm -f "$(user_desktop_dir "$user" "$home")/$START_ICON_FILE"
       rm -f "$home/.config/autostart/$DESKTOP_FILE" "$home/.local/share/applications/$DESKTOP_FILE"
     else
       warn "No desktop user found; remove ~/.config/autostart/$DESKTOP_FILE and ~/.local/share/applications/$DESKTOP_FILE from that account yourself."
@@ -1596,7 +1726,7 @@ uninstall() {
   if [ -f "$KIOSK_DIR/docker-compose.yml" ]; then
     stop_kiosk_for_uninstall
   fi
-  for f in docker-compose.yml config.env update.sh launch.sh hostnet.sh install-state.json update-state.json; do
+  for f in docker-compose.yml config.env update.sh launch.sh hostnet.sh "$SESSION_PY" install-state.json update-state.json; do
     rm -f "${KIOSK_DIR:?}/$f"
   done
   remove_label_printer_files

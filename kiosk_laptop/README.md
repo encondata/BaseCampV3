@@ -187,6 +187,56 @@ and the kiosk points the reader's tag data at this laptop.
 - Linux starts the kiosk at boot (Docker starts it); the browser opens when
   someone signs in to the desktop.
 
+## Kiosk lockdown (Linux)
+
+On Linux the kiosk takes over the screen. Windows and macOS are unchanged:
+the kiosk opens in a Chrome app window there.
+
+- At sign-in a **Connecting to ServerSherpa…** screen shows until the cloud
+  answers. It tries every 15 seconds and never gives up, and it shows the time
+  of the last try and the network (Wi-Fi name, wired, or no network).
+- Then Chrome opens the kiosk full screen (`--kiosk`): no address bar, no
+  tabs, and F11 does nothing. If Chrome closes (Alt+F4, a crash), it opens
+  again within a few seconds.
+- While the kiosk runs, these GNOME shortcuts are off for the desktop user:
+  - the Super key and the overview;
+  - Alt+Tab and the other window switchers;
+  - the Activities hot corner;
+  - workspace switching (there is one workspace).
+- **Esc** opens a PIN pad (when no dialog is open; Esc closes a dialog
+  first). The PIN **csg** closes the kiosk and turns the shortcuts back on.
+- **Start Kiosk** on the desktop, signing in again, or a reboot brings the
+  kiosk back.
+- The kiosk's top bar shows the battery and the Wi-Fi network. Tap the
+  network to see the wired connection or join a Wi-Fi network.
+
+How it works:
+- `kiosk_session.py` is installed next to `launch.sh`, and `launch.sh` runs
+  it as the desktop user at sign-in.
+- It serves the waiting page and a small helper on `127.0.0.1:8092`.
+  - The helper only answers the kiosk page: the page must come from
+    `http://localhost:8090` and carry a token that changes every session.
+  - A Wi-Fi password goes to NetworkManager (`nmcli`) and is never logged.
+- The kiosk Chrome has its own profile: `~/.local/share/serversherpa-kiosk/chrome`,
+  or `~/snap/chromium/common/serversherpa-kiosk` for snap Chromium. The first
+  time, sign in to the kiosk again and pick the label printer once.
+- The shortcut values from before the lock are saved in
+  `~/.local/state/serversherpa-kiosk/desktop-lock.json`. The session's log is
+  `session.log`, next to it.
+
+Getting it: run the install command once (an existing laptop's nightly update
+can't add a new file). From then on the nightly update keeps `kiosk_session.py`
+current.
+
+Not blocked:
+- Ctrl+Alt+F1–F12 (text consoles), the power button, and Ctrl+Alt+Del;
+- the touchpad's three-finger swipe to the overview.
+
+If the shortcuts stay off: sign in, wait for the kiosk, press Esc and type
+`csg`. A crash or power loss can't lose them, because the next session puts
+the saved values back on exit. Uninstalling puts them back too: right away if
+the desktop user is signed in, otherwise at their next sign-in.
+
 ## Updates
 
 - The kiosk updates itself every night at 03:00 local time, to the newest
@@ -199,11 +249,11 @@ and the kiosk points the reader's tag data at this laptop.
   tried again until a newer one is published, or (macOS and Linux) until
   the installer is run again.
 - The nightly update also refreshes the helper scripts (`hostnet` and
-  `launch`, `.sh` or `.ps1`) from the version of the installer the laptop was
-  installed from (recorded as `KIOSK_INSTALLER_REF` in `config.env`, `main`
-  by default; only a plain git ref is accepted, else `main`). A download that
-  isn't a sound script is skipped and logged, and never changes the update's
-  result.
+  `launch`, `.sh` or `.ps1`, and on Linux `kiosk_session.py`) from the
+  version of the installer the laptop was installed from (recorded as
+  `KIOSK_INSTALLER_REF` in `config.env`, `main` by default; only a plain git
+  ref is accepted, else `main`). A download that isn't a sound script is
+  skipped and logged, and never changes the update's result.
   - Linux: the update job (root) does it, each night.
   - macOS: the update job runs as the desktop user, who owns only `hostnet.sh`
     and `launch.sh` in the install folder; the installer sets that, so it
