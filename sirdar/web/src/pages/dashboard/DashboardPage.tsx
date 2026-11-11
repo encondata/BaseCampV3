@@ -150,14 +150,14 @@ export default function DashboardPage() {
             {selected && (
               <Spotlight card={selected} demo={data.demo} motion={motion} canDeploy={canDeploy}
                          canView={can('deploy', 'view')} canActivate={canDeploy && can('deploy', 'change')}
-                         onDeploy={(name) => void openDeploy(name)} onSetUp={() => navigate('/deploy')}
+                         onDeploy={(name) => void openDeploy(name)} onSetUp={() => navigate('/deploy/new')}
                          onActivate={(server) => setActivating({ card: selected, server })} />
             )}
             <div className="sd-env-grid">
               {cards.map((env) => (
                 <EnvCard key={env.id} env={env} demo={data.demo} canDeploy={canDeploy}
                          selected={env.id === selected?.id} onSelect={() => select(env.id)}
-                         onDeploy={(name) => void openDeploy(name)} onSetUp={() => navigate('/deploy')} />
+                         onDeploy={(name) => void openDeploy(name)} onSetUp={() => navigate('/deploy/new')} />
               ))}
             </div>
             <InfraTree source={data.infrastructure.source} error={data.infrastructure.error}

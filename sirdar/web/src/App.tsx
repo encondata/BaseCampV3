@@ -7,6 +7,7 @@ import Access from './pages/Access';
 import Audit from './pages/Audit';
 import Dashboard from './pages/Dashboard';
 import Deploy from './pages/Deploy';
+import NewDeployment from './pages/NewDeployment';
 import EnvironmentDetail from './pages/environments/EnvironmentDetail';
 import MeLayout from './pages/me/MeLayout';
 import Settings from './pages/Settings';
@@ -26,6 +27,7 @@ export default function App() {
             <Routes>
               <Route path="/" element={<Gate resource="dashboard"><Dashboard /></Gate>} />
               <Route path="/deploy" element={<Gate resource="deploy"><Deploy /></Gate>} />
+              <Route path="/deploy/new" element={<Gate resource="deploy"><NewDeployment /></Gate>} />
               <Route path="/deploy/environments/:name" element={<Gate resource="deploy"><EnvironmentDetail /></Gate>} />
               <Route path="/seed/db" element={<Gate resource="seed_data"><SeedDb /></Gate>} />
               <Route path="/seed/spaces" element={<Gate resource="seed_data"><SeedSpaces /></Gate>} />
