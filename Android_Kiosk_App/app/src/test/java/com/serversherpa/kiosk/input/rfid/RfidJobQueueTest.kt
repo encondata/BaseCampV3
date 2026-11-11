@@ -530,6 +530,68 @@ class RfidJobQueueTest {
         assertEquals(emptyList<String>(), r.fake.violations)
     }
 
+    /** One quick sweep: a press and a release, with a tag between. */
+    private fun TestScope.sweep(r: Rig) {
+        r.fake.emitTrigger(TriggerEvent.PRESSED); r.fake.emitTag("100348"); settle()
+        r.fake.emitTrigger(TriggerEvent.RELEASED); settle()
+    }
+
+    /** Hardware session 2026-11-11: five quick sweeps sent five battery
+     *  requests in 4 s. An after-sweep request is skipped when the last one
+     *  was less than BATTERY_AFTER_SWEEP_MIN_GAP_MS ago. */
+    @Test fun twoSweeps5SecondsApartAskForBatteryOnce() = runTest {
+        val r = Rig(this)
+        connectedAndArmed(r)
+        sweep(r)
+        assertEquals(1, r.fake.batteryRequests)
+        at(currentTime + 5_000)
+        sweep(r)
+        assertEquals("the second sweep's request is skipped", 1, r.fake.batteryRequests)
+        at(currentTime + 4_000)
+        sweep(r)
+        assertEquals(1, r.fake.batteryRequests)
+        assertEquals(emptyList<String>(), r.fake.violations)
+    }
+
+    @Test fun twoSweeps31SecondsApartAskForBatteryTwice() = runTest {
+        val r = Rig(this)
+        connectedAndArmed(r)
+        val t0 = currentTime
+        sweep(r)
+        assertEquals(1, r.fake.batteryRequests)
+        at(t0 + RfidController.BATTERY_AFTER_SWEEP_MIN_GAP_MS - 1)
+        sweep(r)
+        assertEquals("29.999 s later: skipped", 1, r.fake.batteryRequests)
+        at(t0 + 31_000)
+        sweep(r)
+        assertEquals("31 s later: asked", 2, r.fake.batteryRequests)
+        assertEquals(emptyList<String>(), r.fake.violations)
+    }
+
+    /** The idle request still fires after 60 s idle, even when the sweep
+     *  before it skipped its own request; and an idle request counts as the
+     *  last request for the next sweep. */
+    @Test fun theIdleBatteryRequestStillFiresAndCountsForTheNextSweep() = runTest {
+        val r = Rig(this)
+        connectedAndArmed(r)
+        sweep(r)
+        at(currentTime + 5_000)
+        sweep(r)
+        assertEquals(1, r.fake.batteryRequests)
+        val t2 = currentTime
+        at(t2 + RfidController.BATTERY_IDLE_MS - 1)
+        assertEquals(1, r.fake.batteryRequests)
+        at(t2 + RfidController.BATTERY_IDLE_MS)
+        assertEquals("the idle request", 2, r.fake.batteryRequests)
+
+        at(currentTime + 10_000)
+        sweep(r)
+        assertEquals("10 s after the idle request: skipped", 2, r.fake.batteryRequests)
+        at(currentTime + RfidController.BATTERY_IDLE_MS)
+        assertEquals("idle again", 3, r.fake.batteryRequests)
+        assertEquals(emptyList<String>(), r.fake.violations)
+    }
+
     /** A region load returns its result to its caller; the controller never
      *  reads regions at connect, in `Connected` or `NeedsRegion`; a load that
      *  never answers fails with the Retry sentence. */

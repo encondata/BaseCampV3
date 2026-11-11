@@ -73,6 +73,14 @@ class MainActivityConfigTest {
         for ((name, bit) in ruling15) assertTrue(name, info.configChanges and bit == bit)
     }
 
+    /** Hardware session 2026-11-11 (log audit Problem 3): started by `am start -n`, a later
+     *  launcher tap stacked a second MainActivity in the same task, and with two copies on scan
+     *  screens one scan could be handled twice. One activity, however it is launched. */
+    @Test fun mainActivityIsSingleTask() {
+        val info = app.packageManager.getActivityInfo(ComponentName(app, MainActivity::class.java), 0)
+        assertEquals(ActivityInfo.LAUNCH_SINGLE_TASK, info.launchMode)
+    }
+
     @Test fun theAppNoLongerRequestsReadExternalStorage() {
         @Suppress("DEPRECATION")
         val requested = app.packageManager.getPackageInfo(app.packageName, PackageManager.GET_PERMISSIONS).requestedPermissions!!.toList()

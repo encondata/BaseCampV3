@@ -137,7 +137,10 @@ object RfidOwner {
  * assigned to tags: the sled's accepted read-back, else the effective layout
  * of [requestedLayout] (else the setting, for a link that came up without a
  * controller connect). The latch window is measured from the pull's own
- * stamp. A start waits [START_WAIT_MS]; a failed, timed-out or thrown start
+ * stamp. A release with no press before it on the link that is up now
+ * (presses and releases are bookkept whether or not armed; a press is
+ * forgotten when its link is lost) is ignored entirely, before anything
+ * else. A start waits [START_WAIT_MS]; a failed, timed-out or thrown start
  * is followed by one stop, closes the sweep after `mutex` is released, and
  * sets [readError]. A stop the sled answers with a failure is sent once more;
  * if that fails too, the sled may still be reading: [readError] says so and
@@ -155,7 +158,8 @@ object RfidOwner {
  * between a START's `startInventory()` and the stop that ends that sweep.
  * Each call waits [CALL_WAIT_MS]. A new generation reaching `Connected`
  * queues one push and, when the sled's read-back does not match the setting,
- * one layout write. Battery is asked after each sweep and after
+ * one layout write. Battery is asked after each sweep (unless the last
+ * request was less than [BATTERY_AFTER_SWEEP_MIN_GAP_MS] ago) and after
  * [BATTERY_IDLE_MS] with no sweep and no other job while `Connected`.
  *
  * `arm()`, `disarm()` and `stopBurst()` are called from the UI thread and
@@ -350,7 +354,18 @@ class RfidController(
     /** The reader generation the open burst started in (`info.generation`). */
     private var sessionGeneration: Int? = null
     private var queued: Set<String> = emptySet()
+
+    /** Guards [triggerDown], [pressedAtMs] and [pressGeneration]. Held only
+     *  for plain reads and writes, never across a suspension, so it sits
+     *  outside the lock order. */
+    private val triggerLock = Any()
+    /** True from a PRESSED until its RELEASED, the link it came on being
+     *  lost, or a new generation. Kept whether or not the trigger is armed:
+     *  a RELEASED while it is false is ignored entirely (see [noteTrigger]). */
+    private var triggerDown = false
     private var pressedAtMs: Long = 0L
+    /** The reader generation (`info.generation`) the last press came on. */
+    private var pressGeneration: Int? = null
 
     /** True while some caller owns stopping the current burst's reader —
      *  i.e. is between claiming ownership in [endBurst] and re-acquiring the
@@ -432,6 +447,9 @@ class RfidController(
     private val jobConsumerStarted = AtomicBoolean(false)
     /** Counts finished jobs, so the battery timer restarts after each. */
     private val jobsDone = MutableStateFlow(0)
+    /** The [clock] time the last battery request was made (after a sweep or
+     *  idle), for [BATTERY_AFTER_SWEEP_MIN_GAP_MS]; null before the first. */
+    @Volatile private var lastBatteryAtMs: Long? = null
 
     // ── the link (see the class doc) ──
 
@@ -566,6 +584,15 @@ class RfidController(
          *  the controller asks for the battery level. */
         const val BATTERY_IDLE_MS = 60_000L
 
+        /** ‡ An after-sweep battery request is skipped when the controller's
+         *  last battery request (after a sweep, or after [BATTERY_IDLE_MS]
+         *  idle) was less than this long ago: quick sweeps each cost a round
+         *  trip and its consuming read on the worker, right when the operator
+         *  may pull again (hardware session 2026-11-11: five in 4 s). The idle
+         *  request is never skipped, and the adapter's own request at connect
+         *  is not counted. */
+        const val BATTERY_AFTER_SWEEP_MIN_GAP_MS = 30_000L
+
         /** How long the Scan button holds the sled's soft trigger when no
          *  barcode arrives. */
         const val SOFT_SCAN_HOLD_MS = 3_000L
@@ -679,6 +706,10 @@ class RfidController(
                         // opened on the link that is up now (before this
                         // collector got to it) is kept.
                         endBurst(stopReader = false, queue = true, keepLiveLink = true)
+                        // A press on the lost link has no release coming on
+                        // this one; kept, like the burst, when it came on the
+                        // link that is up now.
+                        forgetPressUnlessOnTheLiveLink()
                     }
                     // A Connected with no info (a hand-written double) is a new
                     // generation on each transition into Connected.
@@ -710,7 +741,7 @@ class RfidController(
                 .collectLatest { idle ->
                     if (!idle) return@collectLatest
                     delay(BATTERY_IDLE_MS)
-                    enqueueBattery()
+                    enqueueBattery(afterSweep = false)
                 }
         }
         // Its own collector, never suspending, so a push in flight above
@@ -1098,9 +1129,18 @@ class RfidController(
         wakeJobs()
     }
 
-    /** A battery request, unless a sweep is open or the link is not up. */
-    private fun enqueueBattery() {
+    /** A battery request, unless a sweep is open or the link is not up; one
+     *  [afterSweep] is also skipped within [BATTERY_AFTER_SWEEP_MIN_GAP_MS] of
+     *  the last request made. */
+    private fun enqueueBattery(afterSweep: Boolean) {
         if (reader.connection.value !is RfidConnection.Connected || _session.value != null) return
+        if (afterSweep) {
+            val last = lastBatteryAtMs
+            if (last != null && clock() - last in 0 until BATTERY_AFTER_SWEEP_MIN_GAP_MS) {
+                Log.d(TAG, "Battery request after the sweep skipped: the last one was less than $BATTERY_AFTER_SWEEP_MIN_GAP_MS ms ago.")
+                return
+            }
+        }
         synchronized(jobLock) { if (JobKind.BATTERY !in jobs) jobs.addLast(JobKind.BATTERY) }
         wakeJobs()
     }
@@ -1268,6 +1308,7 @@ class RfidController(
 
     private suspend fun requestBattery() {
         if (reader.connection.value !is RfidConnection.Connected) return
+        lastBatteryAtMs = clock()
         val answered = withTimeoutOrNull(CALL_WAIT_MS) {
             guarded {
                 reader.requestBattery()
@@ -1804,7 +1845,52 @@ class RfidController(
             linkWanted.get() && !dialing && schedule == null && retryJob == null && !givenUp
     }
 
+    /**
+     * The trigger's bookkeeping for [event] at [at], kept whether or not the
+     * trigger is armed. Returns how long the trigger was held (0 for a
+     * press), or null for a release with no press before it on the link that
+     * is up now, which the caller ignores entirely. An RFD40 sent press,
+     * release and a second release 708 ms later with no press between
+     * (hardware session 2026-11-11); in Hold-or-latch mode that second
+     * release, measured from the old press, ended a latched sweep.
+     */
+    private fun noteTrigger(event: TriggerEvent, at: Long): Long? {
+        val generation = reader.info.value?.generation
+        synchronized(triggerLock) {
+            return when (event) {
+                TriggerEvent.PRESSED -> {
+                    triggerDown = true
+                    pressedAtMs = at
+                    pressGeneration = generation
+                    0L
+                }
+                TriggerEvent.RELEASED -> {
+                    // A press on an earlier generation is the lost link's, even
+                    // when the connection collector has not yet forgotten it.
+                    val down = triggerDown && pressGeneration == generation
+                    triggerDown = false
+                    if (down) at - pressedAtMs else null
+                }
+            }
+        }
+    }
+
+    /** On leaving `Connected` or a generation change: the press belongs to
+     *  the lost link, unless it came on the link that is `Connected` now
+     *  (a pull handled before the connection collector got to the change). */
+    private fun forgetPressUnlessOnTheLiveLink() {
+        val live = reader.connection.value is RfidConnection.Connected
+        val generation = reader.info.value?.generation
+        synchronized(triggerLock) { if (!live || pressGeneration != generation) triggerDown = false }
+    }
+
     private suspend fun onTrigger(pull: TriggerPull) {
+        val at = pull.atMs ?: clock()
+        val heldMs = noteTrigger(pull.event, at)
+        if (heldMs == null) {
+            Log.i(TAG, "A trigger release with no press before it; ignored.")
+            return
+        }
         stampActivity()
         // Wait for any in-flight stop to finish before evaluating anything.
         // `endBurst` releases `mutex` across `reader.stopInventory()` (see
@@ -1830,10 +1916,7 @@ class RfidController(
         mutex.withLock {
             if (!armed) return@withLock
             val event = pull.event
-            val at = pull.atMs ?: clock()
             val reading = _session.value != null
-            val heldMs = if (event == TriggerEvent.RELEASED) at - pressedAtMs else 0L
-            if (event == TriggerEvent.PRESSED) pressedAtMs = at
             when (nextTriggerAction(current.triggerMode, event, reading, heldMs)) {
                 TriggerAction.START -> {
                     if (!mayStartRead()) return@withLock
@@ -2005,7 +2088,7 @@ class RfidController(
      * the next pull sends one stop first. A failed start's own stop is not
      * retried (ruling 29: one stop). With [keepLiveLink], a burst opened on
      * the link that is `Connected` now (same generation) is left open. After
-     * a burst ends, a battery request is queued.
+     * a burst ends, a battery request is queued (see [enqueueBattery]).
      */
     private suspend fun endBurst(
         stopReader: Boolean,
@@ -2086,7 +2169,7 @@ class RfidController(
         // Emitting outside the lock: a slow collector on `bursts` must not
         // stall trigger and tag handling for everyone else.
         if (done != null && shouldQueue) _bursts.emit(done)
-        if (done != null) enqueueBattery()
+        if (done != null) enqueueBattery(afterSweep = true)
     }
 
     /** Holding `mutex`: the open burst was started on the link that is
