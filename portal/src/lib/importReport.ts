@@ -31,7 +31,26 @@ export const REPORT_HEADERS: Cell[] = [
 
 export const RESULT_LABELS: Record<ImportRowDetail['status'], string> = {
   created: 'Created', updated: 'Updated', review: 'Needs review', error: 'Error',
+  conflict: 'Conflict', skipped: 'Skipped',
 };
+
+/** The Result and Message cells for a row: moved and skipped rows name the
+ *  client; a conflict says which client it belongs to. */
+function resultOf(d: ImportRowDetail): { result: string; message: string } {
+  const result = RESULT_LABELS[d.status] ?? d.status;
+  if (d.client_moved_from) {
+    const text = `Moved from ${d.client_moved_from.name}`;
+    return { result: text, message: d.message ? `${text}. ${d.message}` : text };
+  }
+  if (d.status === 'skipped' && d.current_client) {
+    const text = `Skipped — belongs to ${d.current_client.name}`;
+    return { result: text, message: text };
+  }
+  if (d.status === 'conflict' && d.current_client) {
+    return { result, message: `Belongs to ${d.current_client.name}` };
+  }
+  return { result, message: d.message ?? '' };
+}
 
 const MAX_COLUMN_WIDTH = 60;
 const SLUG_MAX = 40;
@@ -105,8 +124,8 @@ export function buildImportReport(input: ImportReportInput): ImportReportFile {
     ...details.map((d): Cell[] => [
       d.row,
       d.serial_number ?? '',
-      RESULT_LABELS[d.status] ?? d.status,
-      d.message ?? '',
+      resultOf(d).result,
+      resultOf(d).message,
       d.make_model_final ?? null,
       d.match_method ?? null,
       yesNo(d.asset_created),
@@ -130,6 +149,17 @@ export function buildImportReport(input: ImportReportInput): ImportReportFile {
   }
   if (isImport && typeof summary.orphans_flagged === 'number') {
     summaryRows.push(['Orphan nodes flagged', summary.orphans_flagged]);
+  }
+
+  // Client-of-record rows appear only when the run produced any.
+  if (!isImport && (typeof summary.conflicts === 'number' || fromDetails.conflict > 0)) {
+    summaryRows.push(['Conflicts', count('conflicts', fromDetails.conflict)]);
+  }
+  if (isImport && (typeof summary.moved === 'number' || typeof summary.skipped === 'number'
+                   || fromDetails.skipped > 0)) {
+    summaryRows.push(
+      ['Moved', count('moved', details.filter((d) => d.client_moved_from).length)],
+      ['Skipped', count('skipped', fromDetails.skipped)]);
   }
 
   const workbook = XLSX.utils.book_new();

@@ -6,10 +6,12 @@ import { useEffect, useRef, useState } from 'react';
 
 import { useAuth } from '../../auth/AuthContext';
 import {
-  ApiError, getMoveSetupCheck, recheckMoveSetupAssets, uploadMoveSetupAssets,
-  type ImportJobOut, type MoveSetupDraft,
+  ApiError, getMoveSetupCheck, putMoveSetupChoices, recheckMoveSetupAssets,
+  uploadMoveSetupAssets, type ClientChoice, type ImportJobOut, type MoveSetupDraft,
 } from '../../lib/api';
-import { countDetails, IMPORT_ERRORS, jobIsActive } from '../../lib/moveAssetImport';
+import {
+  CHOICES_HINT, choicesKey, conflictSerials, countDetails, IMPORT_ERRORS, jobIsActive,
+} from '../../lib/moveAssetImport';
 import { moveSetupError } from '../../lib/moveSetup';
 import WizardFooter from '../common/WizardFooter';
 import ImportProgress from '../imports/ImportProgress';
@@ -42,6 +44,18 @@ export default function AssetsStep({ draft, job, setJob, onBack, onSkip, onNext 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const { skipping, skip } = useSkip(onSkip, setError);
   useEffect(() => { setFixedTexts(new Set()); }, [job?.id]);
+
+  // Continue/Skip per serial that belongs to another client. Saved to the
+  // draft once every flagged serial has a choice; Next waits for the save.
+  const [choices, setChoices] = useState<Record<string, ClientChoice>>({});
+  const [saved, setSaved] = useState('');
+  const jobKey = job ? `${job.id}:${job.finished_at ?? ''}` : '';
+  useEffect(() => {
+    const stored = job?.options?.client_choices ?? {};
+    setChoices(stored);
+    setSaved(choicesKey(stored));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobKey]);
 
   // poll the draft's check while it is running: one request at a time,
   // stopped on unmount; a network blip keeps polling, an API error stops.
@@ -88,7 +102,28 @@ export default function AssetsStep({ draft, job, setJob, onBack, onSkip, onNext 
   const showUpload = !active && (job === null || replacing || job.status !== 'completed');
   const checked = job?.status === 'completed' && !!job.results && !replacing;
   const counts = checked ? countDetails(job.results!.details) : null;
-  const importable = counts ? counts.created + counts.updated : 0;
+  const flagged = checked ? conflictSerials(job!.results!.details) : [];
+  const choicesDone = flagged.every((x) => choices[x]);
+  const currentKey = choicesKey(choices);
+  const choicesSaved = flagged.length === 0 || (choicesDone && saved === currentKey);
+  const continued = checked
+    ? job!.results!.details.filter((d) => d.status === 'conflict'
+        && choices[d.serial_number.toLowerCase()] === 'continue').length : 0;
+  const importable = counts ? counts.created + counts.updated + continued : 0;
+
+  const changeChoices = async (next: Record<string, ClientChoice>) => {
+    setChoices(next);
+    if (!flagged.every((x) => next[x])) return;
+    const payload = Object.fromEntries(flagged.map((x) => [x, next[x]]));
+    setError('');
+    try {
+      const updated = await putMoveSetupChoices(draft.id, payload);
+      setSaved(choicesKey(next));
+      if (updated?.id === job?.id) setJob(updated);
+    } catch (err) {
+      setError(moveSetupError(err));
+    }
+  };
 
   return (
     <>
@@ -147,7 +182,12 @@ export default function AssetsStep({ draft, job, setJob, onBack, onSkip, onNext 
           <ImportReport job={job} fixedTexts={fixedTexts} onFix={setFixTarget}
                         canAddModels={can('asset_models', 'add')}
                         canChangeModels={can('asset_models', 'change')}
-                        readyLabel="Ready — check again to apply" pagingOnlyWhenNeeded />
+                        readyLabel="Ready — check again to apply" pagingOnlyWhenNeeded
+                        choices={choices} onChoicesChange={(c) => void changeChoices(c)}
+                        clientId={typeof draft.payload?.move?.client_id === 'string'
+                          ? draft.payload.move.client_id : null}
+                        clientName={typeof draft.payload?.move?.client_name === 'string'
+                          ? draft.payload.move.client_name : null} />
           <div className="imp-card-foot">
             <button className="mini-btn" type="button" disabled={busy}
                     onClick={() => void run(() => recheckMoveSetupAssets(draft.id))}>
@@ -162,10 +202,11 @@ export default function AssetsStep({ draft, job, setJob, onBack, onSkip, onNext 
         </section>
       )}
 
-      <WizardFooter onBack={onBack} onSkip={skip} onNext={onNext} nextDisabled={!checked}
+      <WizardFooter onBack={onBack} onSkip={skip} onNext={onNext} nextDisabled={!checked || !choicesSaved}
                     busy={busy || skipping} error={error}
                     note={job === null || replacing
-                      ? 'Upload a From-To file, or skip this step.' : undefined} />
+                      ? 'Upload a From-To file, or skip this step.'
+                      : checked && !choicesDone ? CHOICES_HINT : undefined} />
 
       {fixTarget && (
         <FixMakeModelDialog text={fixTarget.text} make={fixTarget.make} model={fixTarget.model}

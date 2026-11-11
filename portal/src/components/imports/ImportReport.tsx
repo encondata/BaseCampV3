@@ -4,14 +4,15 @@
  *  drops every fix action, and `readyLabel` says what a fixed group needs
  *  next (reprocess on the import page, check again in the wizard). */
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { useAuth } from '../../auth/AuthContext';
-import type { ImportJobOut, ImportRowDetail } from '../../lib/api';
+import type { ClientChoice, ImportJobOut, ImportRowDetail } from '../../lib/api';
 import {
   ColHead, listGridStyle, listScale, titleFor, type ColumnDef,
 } from '../../lib/listTools';
 import {
-  countDetails, missingMakeModels, reviewMakeModel, suggestSplit,
+  conflictSerials, countDetails, missingMakeModels, reviewMakeModel, suggestSplit,
 } from '../../lib/moveAssetImport';
 
 export const PAGE_SIZE = 500;
@@ -42,16 +43,20 @@ const REPORT_COLUMNS: ColumnDef[] = [
  *  list (matches the c-* chip idiom used across the portal). */
 export const STATUS_CHIP: Record<string, string> = {
   created: 'c-green', updated: 'c-amber', review: 'c-slate', error: 'c-red',
+  conflict: 'c-amber', skipped: 'c-slate',
 };
 
 /** summary-chip labels differ by phase — the validate report previews what
  *  WILL happen, the commit report says what DID happen. */
 export const PHASE_LABELS: Record<'validate' | 'commit',
-  { created: string; updated: string; review: string; error: string }> = {
+  { created: string; updated: string; review: string; error: string;
+    conflict: string; skipped: string }> = {
   validate: { created: 'will create', updated: 'will update',
-              review: 'needs review', error: 'errors' },
+              review: 'needs review', error: 'errors',
+              conflict: 'belong to another client', skipped: 'skipped' },
   commit: { created: 'created', updated: 'updated',
-            review: 'review skipped', error: 'errors' },
+            review: 'review skipped', error: 'errors',
+            conflict: 'belong to another client', skipped: 'skipped' },
 };
 
 const NO_DETAILS: ImportRowDetail[] = [];
@@ -67,11 +72,20 @@ interface Props {
   /** Hide Prev/Next when every row fits on one page — the wizard's own
    *  footer Next sits just below, and two Next buttons would compete. */
   pagingOnlyWhenNeeded?: boolean;
+  /** The Continue/Skip choice per flagged serial (lower-cased). With
+   *  `onChoicesChange` the "Belongs to another client" card is shown. */
+  choices?: Record<string, ClientChoice>;
+  onChoicesChange?: (choices: Record<string, ClientChoice>) => void;
+  /** The move's client, for the Owner line's link when the summary lacks one. */
+  clientId?: string | null;
+  /** The move's client, named on each Continue button. */
+  clientName?: string | null;
 }
 
 export default function ImportReport({
   job, fixedTexts, onFix, canAddModels, canChangeModels, readOnly = false,
   readyLabel = 'Ready — reprocess to apply', pagingOnlyWhenNeeded = false,
+  choices = {}, onChoicesChange, clientId, clientName,
 }: Props) {
   const { preferences } = useAuth();
   const reportGrid = listGridStyle(REPORT_COLUMNS, [], undefined, listScale(preferences?.list_size));
@@ -90,6 +104,25 @@ export default function ImportReport({
   const end = Math.min(start + PAGE_SIZE, total);
   const pageRows = details.slice(start, end);
   const collisions = job.results?.summary.collisions_flagged ?? 0;
+  const ownerUnmatched = job.results?.summary.owner_unmatched ?? 0;
+  const summaryClient = (job.results?.summary as Record<string, unknown> | undefined)?.client_id;
+  const ownerClientId = typeof summaryClient === 'string' ? summaryClient : clientId;
+  const serials = useMemo(() => conflictSerials(details), [details]);
+  const conflicts = useMemo(() => {
+    const byClient = new Map<string, { serial: string; client: string }>();
+    for (const d of details) {
+      if (d.status !== 'conflict' || !d.serial_number) continue;
+      const key = d.serial_number.toLowerCase();
+      if (!byClient.has(key)) {
+        byClient.set(key, { serial: key, client: d.current_client?.name ?? 'another client' });
+      }
+    }
+    return [...byClient.values()];
+  }, [details]);
+  const setChoice = (serial: string, value: ClientChoice) =>
+    onChoicesChange?.({ ...choices, [serial]: value });
+  const setAll = (value: ClientChoice) =>
+    onChoicesChange?.(Object.fromEntries(serials.map((x) => [x, value])));
 
   return (
     <>
@@ -106,12 +139,73 @@ export default function ImportReport({
         <span className="chip c-red">
           <span className="dot" />{counts.error} {labels.error}
         </span>
+        {counts.conflict > 0 && (
+          <span className="chip c-amber">
+            <span className="dot" />{counts.conflict} {labels.conflict}
+          </span>
+        )}
+        {counts.skipped > 0 && (
+          <span className="chip c-slate">
+            <span className="dot" />{counts.skipped} {labels.skipped}
+          </span>
+        )}
         {collisions > 0 && (
           <span className="chip c-amber">
             <span className="dot" />{collisions} collisions flagged
           </span>
         )}
       </div>
+
+      {ownerUnmatched > 0 && ownerClientId && (
+        <p className="page-hint imp-owner-line">
+          {ownerUnmatched} Owner value{ownerUnmatched === 1 ? '' : 's'}
+          {' '}don&apos;t match a group{' '}
+          <Link className="imp-link-btn"
+                to={`/stakeholders/clients/${ownerClientId}?groups=review`}>
+            Review groups
+          </Link>
+        </p>
+      )}
+
+      {onChoicesChange && conflicts.length > 0 && (
+        <div className="init-panel imp-missing-card">
+          <div className="imp-card-head">
+            <p className="eyebrow-sm">
+              {conflicts.length} serial{conflicts.length === 1 ? '' : 's'} belong
+              {conflicts.length === 1 ? 's' : ''} to another client
+            </p>
+            <span className="imp-missing-actions">
+              <button type="button" className="mini-btn"
+                      onClick={() => setAll('continue')}>Continue all</button>
+              <button type="button" className="mini-btn"
+                      onClick={() => setAll('skip')}>Skip all</button>
+            </span>
+          </div>
+          <div className="mini-list imp-missing-list">
+            {conflicts.map((c) => (
+              <div key={c.serial} className="mini-row flex imp-missing-row">
+                <span className="mono">{c.serial}</span>
+                <span className="cell-top">Belongs to {c.client}</span>
+                <div className="segmented imp-missing-actions" role="tablist"
+                     aria-label={`Choice for ${c.serial}`}>
+                  <button role="tab" type="button"
+                          aria-selected={choices[c.serial] === 'continue'}
+                          className={choices[c.serial] === 'continue' ? 'on' : ''}
+                          onClick={() => setChoice(c.serial, 'continue')}>
+                    Continue — move it to {clientName || 'this move’s client'}
+                  </button>
+                  <button role="tab" type="button"
+                          aria-selected={choices[c.serial] === 'skip'}
+                          className={choices[c.serial] === 'skip' ? 'on' : ''}
+                          onClick={() => setChoice(c.serial, 'skip')}>
+                    Skip
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {!readOnly && missing.length > 0 && (
         <div className="init-panel imp-missing-card">
