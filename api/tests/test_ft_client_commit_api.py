@@ -128,12 +128,10 @@ async def test_poll_requires_global_actor(client, db, seeded_user):
     assert resp.status_code == 200
 
 
-async def test_reprocessed_child_inherits_choices_and_needs_none(
-        client, db, seeded_user):
-    """Conflict rows are never review rows, so a reprocess child (which reruns
-    only review rows) holds no conflicts: it inherits the parent's stored
-    choices through options, its commit needs no body, and the parent's
-    Continue/Skip outcomes stay as the parent applied them."""
+async def test_reprocess_child_drops_client_choices(client, db, seeded_user):
+    """Conflict rows are never review rows, so a reprocess child (only review
+    rows) holds no conflicts; it does not inherit the parent's choices, its
+    commit needs no body and stores {}, and the parent's outcomes stand."""
     csv = (b"Serial Number,Asset Name,Asset Make,Asset Model\n"
            b"SN-B1,one,,\nSN-B2,two,,\nSN-REV,odd,HPE,DL380\n")
     headers, acme, bravo, b1, b2, job_id = await _setup(client, db, csv=csv)
@@ -149,8 +147,7 @@ async def test_reprocessed_child_inherits_choices_and_needs_none(
         f"/initiatives/assets/import-jobs/{job_id}/reprocess", headers=headers)
     assert resp.status_code == 201, resp.text
     child_id = resp.json()["id"]
-    assert resp.json()["options"]["client_choices"] == {"sn-b1": "continue",
-                                                        "sn-b2": "skip"}
+    assert "client_choices" not in resp.json()["options"]
     assert await run_once(get_sessionmaker()) is True
     child = await db.get(ImportJob, uuid.UUID(child_id))
     await db.refresh(child)
@@ -159,11 +156,32 @@ async def test_reprocessed_child_inherits_choices_and_needs_none(
 
     resp = await _commit(client, headers, child_id)          # no body needed
     assert resp.status_code == 200, resp.text
-    assert resp.json()["options"]["client_choices"] == {"sn-b1": "continue",
-                                                        "sn-b2": "skip"}
+    assert resp.json()["options"]["client_choices"] == {}
     assert await run_once(get_sessionmaker()) is True
     await db.refresh(child)
     assert child.status == "completed", child.error
     await db.refresh(b1)
     await db.refresh(b2)
     assert b1.client_id == acme.id and b2.client_id == bravo.id
+
+
+async def test_commit_without_flags_clears_inherited_choices(
+        client, db, seeded_user):
+    csv = b"Serial Number,Asset Name\nSN-X,x\n"
+    headers, acme, bravo, _b1, _b2, job_id = await _setup(client, db, csv=csv)
+    job = await db.get(ImportJob, uuid.UUID(job_id))
+    job.options = {**job.options, "client_choices": {"sn-x": "continue"}}
+    await db.commit()
+    # sn-x becomes another client's asset only after the check ran
+    x = Asset(name="x", serial_number="sn-x", client_id=bravo.id)
+    db.add(x)
+    await db.commit()
+    resp = await _commit(client, headers, job_id)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["options"]["client_choices"] == {}
+    assert await run_once(get_sessionmaker()) is True
+    await db.refresh(job)
+    assert job.status == "completed", job.error
+    await db.refresh(x)
+    assert x.client_id == bravo.id                      # skipped, not moved
+    assert job.results["summary"]["skipped"] == 1

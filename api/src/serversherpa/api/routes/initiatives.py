@@ -1423,10 +1423,12 @@ async def commit_move_asset_import_job(
     missing = sorted(flagged - choices.keys())
     if missing:
         raise _err(422, "client_choices_required", serials=missing)
-    if flagged:
-        # only conflict serials are stored; reassign, never mutate in place
-        job.options = {**(job.options or {}),
-                       "client_choices": {s: choices[s] for s in sorted(flagged)}}
+    # ALWAYS replace the stored choices with this job's own flagged serials
+    # ({} when none): choices inherited or left from an earlier attempt must
+    # never apply to a conflict that first appears at commit time (that row
+    # is skipped without a fresh decision). Reassign, never mutate in place.
+    job.options = {**(job.options or {}),
+                   "client_choices": {s: choices[s] for s in sorted(flagged)}}
     job.phase = "commit"
     job.committed_by = actor.person.id      # not always the uploader: the worker tells both
     job.status = "queued"
@@ -1488,7 +1490,8 @@ async def reprocess_move_asset_import_job(
         kind=parent.kind, initiative_id=parent.initiative_id,
         created_by=actor.person.id, filename=parent.filename,
         file_key=parent.file_key,
-        options={**(parent.options or {}),
+        options={**{k: v for k, v in (parent.options or {}).items()
+                    if k != "client_choices"},
                  "only_rows": review_rows,
                  "reprocess_of": str(parent.id)},
         phase="validate", status="queued")
