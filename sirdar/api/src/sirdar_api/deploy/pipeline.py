@@ -138,6 +138,15 @@ FORCE_CARRIED_ON = "Force delete skipped it and carried on.\n"
 FORCE_SKIPPED = "Step {number} ({name}) {why}. " + FORCE_CARRIED_ON
 FORCE_LEFT_BEHIND = ("Force delete: Sirdar removed {name} from its records. These may be left "
                      "behind; clean them up by hand:\n")
+# Never skipped, forced or not: a DNS record left at an address that is gone
+# (a destroyed load balancer or VM) could be claimed by someone else, and
+# Cloudflare doesn't need the environment to answer. Its failure keeps the
+# environment and every record for a retry; on DigitalOcean 17 runs before
+# 18, so nothing is destroyed first.
+FORCE_NEVER_SKIPPED = ("undns",)
+FORCE_DNS_NOTE = ("Force delete never skips removing DNS records: a record left pointing at a "
+                  "removed address could be taken over. Fix the problem (Cloudflare), then "
+                  "retry.")
 FORCE_NOTHING_LEFT = "Force delete: no step failed, so nothing should be left behind.\n"
 _RECORD_LABELS = {"dns_record": "DNS record", "proxy_host": "Proxy host",
                   "certificate": "Certificate", "switchyard_host": "Switchyard host"}
@@ -1346,6 +1355,13 @@ async def _run(deployment_id: uuid.UUID) -> None:
                     if step.status != "running":
                         await _mark_running(db, step)
                     runs_on = STEPS_BY_KEY[step.key].runs
+                    if runs_on in unavailable and step.key in FORCE_NEVER_SKIPPED:
+                        reason = f"{unavailable[runs_on]} {FORCE_DNS_NOTE}"
+                        await db.rollback()
+                        await _close(deployment_id, env_id, current, step_status="failed",
+                                     dep_status="failed", error=reason, failed_step=current,
+                                     append_log=f"{unavailable[runs_on]}\n{FORCE_DNS_NOTE}\n")
+                        return
                     if runs_on in unavailable:
                         # Force delete: this kind of step can't start (the host
                         # didn't answer, or its credentials can't be read).
@@ -1426,7 +1442,8 @@ async def _run(deployment_id: uuid.UUID) -> None:
                             and result.status == "successful":
                         # Only 0 and 10 count; anything else keeps the password.
                         result = replace(result, status="failed")
-                    if result.status != "successful" and dep.force:
+                    if result.status != "successful" and dep.force \
+                            and step.key not in FORCE_NEVER_SKIPPED:
                         # Force delete: say so and carry on with the next step.
                         reason = _failure_reason(step, result, bluegreen=dep.bluegreen)
                         await _force_skip(db, step, reason.removesuffix(" See its log.")
@@ -1446,6 +1463,8 @@ async def _run(deployment_id: uuid.UUID) -> None:
                             # record stays pending (PUT …/first-admin, Retry).
                             # No code reported (-1): the step failed before it.
                             note = first_admins.refusal(admin_rc)
+                        if dep.force:              # a step Force delete never skips
+                            note = FORCE_DNS_NOTE
                         await db.rollback()
                         await _close(deployment_id, env_id, current, step_status="failed",
                                      dep_status="failed",

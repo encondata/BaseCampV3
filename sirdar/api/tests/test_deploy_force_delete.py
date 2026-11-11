@@ -129,9 +129,9 @@ async def test_an_unreachable_host_skips_the_ssh_step(db, env, fake_runner, fake
 async def test_the_skip_and_left_behind_lines_reach_the_logs(db, env, fake_runner,
                                                              fake_publisher, monkeypatch):
     fake_runner.results["teardown"] = RunResult(status="timeout", rc=-1)
-    fake_publisher.fail["undns"] = "Cloudflare didn't answer."
-    db.add(_record(env.id, "dns_record", "api.uat.serversherpa.com"))
-    db.add(_record(env.id, "proxy_host", "kiosk.uat.serversherpa.com", origin="claimed"))
+    fake_publisher.fail["unproxy"] = "Nginx Proxy Manager didn't answer."
+    db.add(_record(env.id, "proxy_host", "api.uat.serversherpa.com"))
+    db.add(_record(env.id, "dns_record", "kiosk.uat.serversherpa.com", origin="claimed"))
     await db.commit()
     logs: dict[str, str] = {}
     real_finish = pipeline._force_finish
@@ -148,21 +148,22 @@ async def test_the_skip_and_left_behind_lines_reach_the_logs(db, env, fake_runne
     assert logs["teardown"].endswith(
         "Step 15 (Remove environment) timed out after 30 minutes. Force delete skipped it "
         "and carried on.\n")
-    assert "Cloudflare didn't answer.\nStep 17 (Remove DNS records) failed. Force delete " \
-        "skipped it and carried on.\n" in logs["undns"]
+    assert logs["unproxy"].endswith(
+        "Nginx Proxy Manager didn't answer.\nStep 16 (Remove proxy hosts) failed. Force delete "
+        "skipped it and carried on.\n")
     # the last lines of the last step's log
-    tail = logs["undns"].split("carried on.\n", 1)[1]
-    assert tail == (
+    assert logs["undns"] == (
+        "undns: ok\n"
         "Force delete: Sirdar removed uat from its records. These may be left behind; "
         "clean them up by hand:\n"
         "- Step 15 (Remove environment) was skipped.\n"
-        "- Step 17 (Remove DNS records) was skipped.\n"
-        "- DNS record api.uat.serversherpa.com\n")
+        "- Step 16 (Remove proxy hosts) was skipped.\n"
+        "- Proxy host api.uat.serversherpa.com\n")
     audit = await _delete_audit()
     assert audit.changes["left_behind"] == [
         "Step 15 (Remove environment) was skipped.",
-        "Step 17 (Remove DNS records) was skipped.",
-        "DNS record api.uat.serversherpa.com"]       # never a claimed record
+        "Step 16 (Remove proxy hosts) was skipped.",
+        "Proxy host api.uat.serversherpa.com"]       # never a claimed record
 
 
 async def test_a_clean_forced_delete_says_so_in_the_log(db, env, fake_runner, fake_publisher,
@@ -180,6 +181,47 @@ async def test_a_clean_forced_delete_says_so_in_the_log(db, env, fake_runner, fa
     await _force(db, env)
     assert logs[0].endswith("Force delete: no step failed, so nothing should be left "
                             "behind.\n")
+
+
+DNS_NOTE = ("Force delete never skips removing DNS records: a record left pointing at a "
+            "removed address could be taken over. Fix the problem (Cloudflare), then retry.")
+
+
+async def test_dns_removal_is_never_skipped(db, env, fake_runner, fake_publisher):
+    """A DNS record left at an address that is gone could be claimed by
+    someone else: a failed step 17 fails the forced Delete, which keeps the
+    environment and its records for a retry."""
+    env_id = env.id
+    fake_runner.results["teardown"] = RunResult(status="failed", rc=2)
+    fake_publisher.fail["undns"] = "Cloudflare didn't answer."
+    db.add(_record(env.id, "dns_record", "api.uat.serversherpa.com"))
+    await db.commit()
+    dep_id = await _force(db, env)
+    dep, steps, e = await _load(dep_id)
+    assert (dep.status, dep.failed_step) == ("failed", 17)
+    assert dep.error == f"Step 17 (Remove DNS records) failed. See its log. {DNS_NOTE}"
+    assert [s.status for s in steps] == ["failed", "succeeded", "failed"]
+    assert steps[-1].log.endswith(f"Cloudflare didn't answer.\n{DNS_NOTE}\n")
+    assert e is not None and e.status == "failed"
+    async with get_sessionmaker()() as s:
+        assert await s.scalar(select(func.count()).select_from(ManagedRecord).where(
+            ManagedRecord.environment_id == env_id)) == 1
+    assert await _delete_audit() is None
+
+
+async def test_unreadable_cloudflare_credentials_stop_a_forced_delete_at_dns(
+        db, env, fake_runner, fake_publisher, monkeypatch):
+    from sirdar_api.deploy import publish
+
+    async def unreadable(db_, env_, settings):
+        raise publish.PublishError("The stored credentials don't open.")
+    monkeypatch.setattr(publish, "prepare", unreadable)
+    dep_id = await _force(db, env)
+    dep, steps, e = await _load(dep_id)
+    assert (dep.status, dep.failed_step) == ("failed", 17)
+    assert dep.error == f"The stored credentials don't open. {DNS_NOTE}"
+    assert [s.status for s in steps] == ["succeeded", "failed", "failed"]
+    assert e is not None
 
 
 async def test_a_raising_python_step_is_skipped(db, env, fake_runner, fake_publisher):
@@ -240,6 +282,25 @@ async def test_a_forced_digitalocean_delete_forgets_what_it_couldn_t_remove(
     labels = {"vpc": "VPC", "load_balancer": "load balancer"}
     assert left[1:] == [f"DigitalOcean {labels.get(kind, kind)} {name}"
                         for kind, name in names]
+
+
+async def test_a_forced_digitalocean_delete_removes_dns_before_anything_else(
+        db, do_env, fake_runner, fake_publisher, fake_provisioner):
+    env_id = do_env.id
+    from sirdar_api.deploy.steps import plan_for
+    assert [s.key for s in plan_for("teardown", cloud=True)] == ["undns", "do_destroy"]
+    fake_publisher.fail["undns"] = "Cloudflare didn't answer."
+    left = await db.scalar(select(func.count()).select_from(DoResource).where(
+        DoResource.environment_id == env_id))
+    dep_id = await _force(db, do_env, sha=SHA, cloud=True)
+    d, steps, e = await _load(dep_id)
+    assert (d.status, d.failed_step) == ("failed", 17)
+    assert fake_provisioner.calls == []                  # the load balancer stays
+    assert [s.status for s in steps] == ["failed", "not_run"]
+    assert e is not None
+    async with get_sessionmaker()() as s:
+        assert await s.scalar(select(func.count()).select_from(DoResource).where(
+            DoResource.environment_id == env_id)) == left
 
 
 async def test_a_forced_digitalocean_delete_never_takes_a_snapshot(db, do_env, fake_runner,

@@ -367,8 +367,13 @@ images stay on the host.
 `mode: "teardown"`; migration 0019) is for an environment Sirdar can't reach.
 It runs every step of the Delete plan, but a step that fails, times out or
 can't start is skipped instead of stopping the run, and the environment is
-removed from Sirdar anyway. It never takes the snapshot (production's other
-rules still apply). The host steps don't wait out a playbook's timeout: the
+removed from Sirdar anyway. Removing the DNS records (step 17) is never
+skipped: a record left at a destroyed load balancer's or VM's address could be
+taken over, and Cloudflare doesn't need the environment to answer. If it fails,
+the forced Delete fails like a normal one and keeps the environment and its
+records for a retry (on DigitalOcean step 17 runs before step 18, so nothing is
+destroyed first). It never takes the snapshot (production's other rules still
+apply). The host steps don't wait out a playbook's timeout: the
 SSH connection Sirdar opens before them is the reachability check, so an
 unreachable host costs its connect retries (about two minutes) and the step
 is skipped. The last step's log, and the `deploy.environment_delete` audit row

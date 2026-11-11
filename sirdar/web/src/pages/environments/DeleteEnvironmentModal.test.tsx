@@ -207,7 +207,8 @@ it('Blue/Green never deployed: no snapshot, and it says why', () => {
 });
 
 const FORCE_HINT = "For an environment Sirdar can't reach. Every step that fails is skipped, the environment is removed "
-  + 'from Sirdar anyway, and the log lists what may be left behind to clean up by hand.';
+  + 'from Sirdar anyway, and the log lists what may be left behind to clean up by hand. DNS records are always '
+  + "removed first; if Cloudflare can't be reached, the delete stops.";
 
 it('Force delete is off by default; on, it sends force and the button says so', async () => {
   const { onStarted, dialog } = show();
