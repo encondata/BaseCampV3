@@ -793,6 +793,56 @@ class UserCreateIn(BaseModel):
     invite: bool = False
 
 
+# ── client groups ──────────────────────────────────────────────────
+
+class ClientGroupOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    aliases: list[str]
+    asset_count: int
+    people_count: int
+
+
+class ClientGroupIn(BaseModel):
+    name: str
+
+
+class ClientGroupPatchIn(BaseModel):
+    name: str | None = None
+    aliases: list[str] | None = None
+
+
+class GroupReviewValueOut(BaseModel):
+    value: str
+    value_key: str
+    asset_count: int
+    move_ids: list[uuid.UUID]
+    move_names: list[str]
+    dismissed: bool
+
+
+class GroupMergeIn(BaseModel):
+    source_id: uuid.UUID
+    dry_run: bool = True
+
+
+class GroupMergePlanOut(BaseModel):
+    aliases_added: list[str]
+    rows_moved: int
+    people_moved: int
+    conflicts: list[str]
+
+
+class GroupReviewMatchIn(BaseModel):
+    value: str
+    group_id: uuid.UUID
+
+
+class GroupReviewDismissIn(BaseModel):
+    value: str
+    dismissed: bool = True
+
+
 # ── stakeholders (clients & partners) ──────────────────────────────
 
 ORG_STATUSES = {"prospect", "active", "inactive"}

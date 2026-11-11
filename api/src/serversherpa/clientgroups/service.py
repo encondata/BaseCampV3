@@ -249,7 +249,13 @@ async def merge_groups(db: AsyncSession, target: ClientGroup, source: ClientGrou
 
 
 async def delete_group(db: AsyncSession, group: ClientGroup) -> None:
-    """Rows go back to unmatched (FK SET NULL); chips and aliases cascade."""
+    """Rows go back to unmatched (FK SET NULL); aliases cascade. Refused while
+    any contact holds the group as a chip: a Viewer whose last chip vanished
+    would silently become unrestricted."""
+    held = await db.scalar(select(func.count()).select_from(ClientContactGroup).where(
+        ClientContactGroup.group_id == group.id))
+    if held:
+        raise GroupError("group_in_use", 409)
     await db.execute(delete(ClientGroup).where(ClientGroup.id == group.id))
     await db.flush()
     db.expunge(group)

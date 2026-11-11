@@ -116,18 +116,26 @@ async def test_merge_dry_run_then_apply(db):
     assert chips == {(both.id, target.id), (only.id, target.id)}
 
 
-async def test_delete_unmatches_rows_and_chips(db):
+async def test_delete_unmatches_rows(db):
+    s = await _seeded(db)
+    g = s.groups["Platform"]
+    await cg.delete_group(db, g)
+    await db.commit()
+    assert await _group_of(db, s.assets[0]) is None
+    vals = await cg.review_values(db, s.client.id, include_dismissed=False)
+    assert {v.value for v in vals} == {"Platform", "Platfrom"}
+
+
+async def test_delete_refused_while_chips_held(db):
     s = await _seeded(db)
     g = s.groups["Platform"]
     p = await _person(db, "chip@test.example.com")
     db.add(ClientContactGroup(person_id=p.id, client_id=s.client.id, group_id=g.id))
     await db.commit()
-    await cg.delete_group(db, g)
-    await db.commit()
-    assert await _group_of(db, s.assets[0]) is None
-    assert (await db.scalars(select(ClientContactGroup))).all() == []
-    vals = await cg.review_values(db, s.client.id, include_dismissed=False)
-    assert {v.value for v in vals} == {"Platform", "Platfrom"}
+    with pytest.raises(cg.GroupError) as exc:
+        await cg.delete_group(db, g)
+    assert exc.value.code == "group_in_use" and exc.value.status == 409
+    assert await _group_of(db, s.assets[0]) == g.id
 
 
 async def test_groups_never_cross_clients(db):
