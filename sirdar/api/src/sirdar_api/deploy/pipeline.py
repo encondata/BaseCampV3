@@ -48,7 +48,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -62,6 +62,7 @@ from sirdar_api.db.models import (
     Environment,
     EnvironmentSecret,
     EnvironmentService,
+    ManagedRecord,
     Snapshot,
     VmSlot,
 )
@@ -131,6 +132,18 @@ KEPT_DUMP = "Keeping the pre-deploy backup from the first attempt"
 # Step 20's log ends with this on success: the one font no seed can fetch.
 SEED_FONT_NOTE = ("Zebra's TT0003M_.TTF isn't seeded: upload it by hand in the portal "
                   "(Label builder › Fonts).\n")
+# Force delete: a step that fails is skipped; the last step's log ends with
+# what may be left behind.
+FORCE_CARRIED_ON = "Force delete skipped it and carried on.\n"
+FORCE_SKIPPED = "Step {number} ({name}) {why}. " + FORCE_CARRIED_ON
+FORCE_LEFT_BEHIND = ("Force delete: Sirdar removed {name} from its records. These may be left "
+                     "behind; clean them up by hand:\n")
+FORCE_NOTHING_LEFT = "Force delete: no step failed, so nothing should be left behind.\n"
+_RECORD_LABELS = {"dns_record": "DNS record", "proxy_host": "Proxy host",
+                  "certificate": "Certificate", "switchyard_host": "Switchyard host"}
+_DO_LABELS = {"vpc": "VPC", "load_balancer": "load balancer", "spaces_key": "Spaces key",
+              "bucket": "Spaces bucket"}
+_VM_LABELS = {targets.PROXMOX_TARGET: "Proxmox", targets.ESXI_TARGET: "ESXi"}
 RUNNER_DIR_UNWRITABLE = ("Sirdar can't write its runner folder (SIRDAR_RUNNER_DIR). It must "
                          "be owned by uid 10001 with mode 700.")
 
@@ -293,7 +306,7 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                             slot: str | None = None, go_live: bool = False,
                             first_admin: bool = False,
                             bluegreen: bool = False,
-                            seed_content: bool = False) -> Deployment:
+                            seed_content: bool = False, force: bool = False) -> Deployment:
     """Add a running deployment and its step rows. The caller commits, then
     calls launch(). start_step None means the plan's first step (1, or 12
     for a publish job, 15 for a teardown). Raises DeployInProgress (only the
@@ -321,7 +334,12 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
     Activate names its slot (DoEnvError slot_required), and any slot given is
     orange or purple (slot_invalid).
 
-    seed_content: its plan ends with step 20 Seed starter content (an Update that starts empty)."""
+    seed_content: its plan ends with step 20 Seed starter content (an Update that starts empty).
+
+    force: a Force delete (teardown only, never with a snapshot): every step
+    runs, a step that fails is skipped, and the environment goes anyway."""
+    if force and (mode != "teardown" or snapshot_id is not None):
+        raise ValueError("only a Delete without a snapshot is forced")
     on_do = env.target_id == targets.DO_TARGET
     if on_do and mode in NOT_ON_DIGITALOCEAN:
         raise NotSupportedOnDigitalOcean(mode)
@@ -390,7 +408,7 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                      dump_path=dump_path, publish=publish, vm=vm,
                      take_vm_snapshot=take_vm_snapshot, vm_snapshot=vm_snapshot,
                      cloud=cloud, slot=slot, go_live=go_live, first_admin=first_admin,
-                     bluegreen=bluegreen, seed_content=seed_content)
+                     bluegreen=bluegreen, seed_content=seed_content, force=force)
     try:
         async with db.begin_nested():
             db.add(dep)
@@ -1024,6 +1042,83 @@ def _ran_in_place(env: Environment, dep: Deployment, key: str) -> bool:
             and len(env.slots or ()) == 1 and key in ("slot_smoke", "go_live", "seed"))
 
 
+async def _prepare_forced(db: AsyncSession, env: Environment, dep: Deployment,
+                          settings: Settings, runs: set[str], first: DeploymentStep):
+    """A forced Delete's contexts. Each kind of step whose context can't be
+    built (the host doesn't answer, credentials that can't be read) is
+    skipped later, with the reason, instead of failing the run. The SSH
+    connection _prepare opens is the host steps' reachability probe: an
+    unreachable host costs its connect timeout and retries (about two
+    minutes), never a playbook's 30-minute timeout."""
+    unavailable: dict[str, str] = {}
+    publishing = vm_ctx = None
+    if "python" in runs:
+        try:
+            publishing = await publish.prepare(db, env, settings)
+        except publish.PublishError as e:
+            unavailable["python"] = e.reason
+    if publishing is not None and dep.bluegreen:
+        publishing = replace(publishing, slot=dep.slot)
+    if "vm" in runs:
+        try:
+            vm_ctx = await vmsteps.prepare(db, env, dep, settings)
+        except vmsteps.VmPrepareError as e:
+            unavailable["vm"] = e.reason
+    more = (*(publishing.secret_values if publishing else ()),
+            *(vm_ctx.secret_values if vm_ctx else ()))
+    if dep.cloud:
+        more = (*more, *await do_envs.secret_values(db, settings, env))
+    ctx = None
+    if "ansible" in runs and STEPS_BY_KEY[first.key].runs != "vm":
+        try:
+            ctx = await _prepare(db, env, dep, settings, more_secrets=more)
+        except PrepareError as e:
+            unavailable["ansible"] = e.reason
+    if ctx is None:
+        ctx = await _prepare(db, env, dep, settings, needs_host=False, more_secrets=more)
+    return publishing, vm_ctx, ctx, more, unavailable
+
+
+async def _force_skip(db: AsyncSession, step: DeploymentStep, text: str) -> None:
+    """A forced Delete's failed step: its log says it was skipped."""
+    step.status, step.finished_at = "failed", _now()
+    await db.execute(update(DeploymentStep).where(DeploymentStep.id == step.id)
+                     .values(log=DeploymentStep.log + text))
+    await db.commit()
+
+
+async def _force_finish(db: AsyncSession, env: Environment, dep: Deployment,
+                        steps: list[DeploymentStep],
+                        skipped: list[tuple[int, str, str]]) -> list[str]:
+    """What a forced Delete may leave behind: every skipped step, every
+    record Sirdar made and still holds (a removal that failed), the VMs of
+    a Destroy VM that was skipped, and every DigitalOcean resource still
+    recorded. They end the last step's log (committed before the
+    environment goes) and the audit row; the DigitalOcean rows are
+    forgotten, so the environment can go."""
+    left = [f"Step {number} ({name}) was skipped." for number, _, name in skipped]
+    records = list(await db.scalars(select(ManagedRecord).where(
+        ManagedRecord.environment_id == env.id, ManagedRecord.origin == "created")))
+    kinds = list(_RECORD_LABELS)
+    records.sort(key=lambda r: (kinds.index(r.kind) if r.kind in kinds else len(kinds), r.name))
+    left += [f"{_RECORD_LABELS.get(r.kind, r.kind)} {r.name}" for r in records]
+    if any(key == "destroy" for _, key, _ in skipped):
+        label = _VM_LABELS.get(env.target_id, "")
+        left += [f"{label} VM {m.name}".lstrip() for m in await vms.machines(db, env)
+                 if vms.stage(m) != "none"]
+    resources = await db.scalars(select(DoResource).where(DoResource.environment_id == env.id)
+                                 .order_by(DoResource.kind, DoResource.name))
+    left += [f"DigitalOcean {_DO_LABELS.get(r.kind, r.kind)} {r.name}" for r in resources]
+    text = (FORCE_LEFT_BEHIND.format(name=env.name) + "".join(f"- {line}\n" for line in left)
+            if left else FORCE_NOTHING_LEFT)
+    await db.execute(update(DeploymentStep).where(DeploymentStep.id == steps[-1].id)
+                     .values(log=DeploymentStep.log + text))
+    await db.commit()
+    # do_resources is ON DELETE RESTRICT; each row went into the list above.
+    await db.execute(delete(DoResource).where(DoResource.environment_id == env.id))
+    return left
+
+
 async def _seeded_failed(deployment_id: uuid.UUID, env_id: uuid.UUID) -> None:
     """Step 20 runs last, after the stack is up and traffic moved: when it
     fails the environment records the commit it serves as a success would
@@ -1190,6 +1285,10 @@ async def _connections(deployment_id: uuid.UUID) -> AsyncIterator[ControlDir | N
 async def _run(deployment_id: uuid.UUID) -> None:
     current: int | None = None                 # number of the step in progress
     env_id: uuid.UUID | None = None
+    # Force delete: the kinds of step that can't start (and why), and the
+    # steps skipped, as (number, key, name).
+    unavailable: dict[str, str] = {}
+    skipped: list[tuple[int, str, str]] = []
     succeeded = False
     # The connections close after the step work and its cleanup, before the
     # database session.
@@ -1208,23 +1307,27 @@ async def _run(deployment_id: uuid.UUID) -> None:
                 await _mark_running(db, todo[0])
                 runs = {STEPS_BY_KEY[s.key].runs for s in todo}
                 try:
-                    publishing = (await publish.prepare(db, env, settings)
-                                  if "python" in runs else None)
-                    if publishing is not None and dep.bluegreen:
-                        # 14 Switch traffic moves the proxy hosts to this slot.
-                        publishing = replace(publishing, slot=dep.slot)
-                    vm_ctx = (await vmsteps.prepare(db, env, dep, settings)
-                              if "vm" in runs else None)
-                    more = (*(publishing.secret_values if publishing else ()),
-                            *(vm_ctx.secret_values if vm_ctx else ()))
-                    if dep.cloud:
-                        # The renewal token, Spaces secret, doadmin password and
-                        # ACME key aren't all in the DigitalOcean context.
-                        more = (*more, *await do_envs.secret_values(db, settings, env))
-                    # Step 0 first: the SSH host is prepared once the VM is up.
-                    host_now = "ansible" in runs and STEPS_BY_KEY[todo[0].key].runs != "vm"
-                    ctx = await _prepare(db, env, dep, settings, needs_host=host_now,
-                                         more_secrets=more)
+                    if dep.force:
+                        publishing, vm_ctx, ctx, more, unavailable = await _prepare_forced(
+                            db, env, dep, settings, runs, todo[0])
+                    else:
+                        publishing = (await publish.prepare(db, env, settings)
+                                      if "python" in runs else None)
+                        if publishing is not None and dep.bluegreen:
+                            # 14 Switch traffic moves the proxy hosts to this slot.
+                            publishing = replace(publishing, slot=dep.slot)
+                        vm_ctx = (await vmsteps.prepare(db, env, dep, settings)
+                                  if "vm" in runs else None)
+                        more = (*(publishing.secret_values if publishing else ()),
+                                *(vm_ctx.secret_values if vm_ctx else ()))
+                        if dep.cloud:
+                            # The renewal token, Spaces secret, doadmin password and
+                            # ACME key aren't all in the DigitalOcean context.
+                            more = (*more, *await do_envs.secret_values(db, settings, env))
+                        # Step 0 first: the SSH host is prepared once the VM is up.
+                        host_now = "ansible" in runs and STEPS_BY_KEY[todo[0].key].runs != "vm"
+                        ctx = await _prepare(db, env, dep, settings, needs_host=host_now,
+                                             more_secrets=more)
                 except (PrepareError, publish.PublishError, vmsteps.VmPrepareError) as e:
                     await db.rollback()
                     await _close(deployment_id, env_id, current, step_status="failed",
@@ -1243,10 +1346,26 @@ async def _run(deployment_id: uuid.UUID) -> None:
                     if step.status != "running":
                         await _mark_running(db, step)
                     runs_on = STEPS_BY_KEY[step.key].runs
+                    if runs_on in unavailable:
+                        # Force delete: this kind of step can't start (the host
+                        # didn't answer, or its credentials can't be read).
+                        await _force_skip(db, step, unavailable[runs_on] + "\n"
+                                          + FORCE_SKIPPED.format(number=step.number,
+                                                                 name=step.name,
+                                                                 why="couldn't start"))
+                        skipped.append((step.number, step.key, step.name))
+                        continue
                     if runs_on == "ansible" and ctx.target is None:
                         try:
                             host = await _prepare(db, env, dep, settings, more_secrets=more)
                         except PrepareError as e:
+                            if dep.force:
+                                unavailable["ansible"] = e.reason
+                                await _force_skip(db, step, e.reason + "\n" + FORCE_SKIPPED
+                                                  .format(number=step.number, name=step.name,
+                                                          why="couldn't start"))
+                                skipped.append((step.number, step.key, step.name))
+                                continue
                             await db.rollback()
                             await _close(deployment_id, env_id, current, step_status="failed",
                                          dep_status="failed", error=e.reason,
@@ -1307,6 +1426,13 @@ async def _run(deployment_id: uuid.UUID) -> None:
                             and result.status == "successful":
                         # Only 0 and 10 count; anything else keeps the password.
                         result = replace(result, status="failed")
+                    if result.status != "successful" and dep.force:
+                        # Force delete: say so and carry on with the next step.
+                        reason = _failure_reason(step, result, bluegreen=dep.bluegreen)
+                        await _force_skip(db, step, reason.removesuffix(" See its log.")
+                                          .removesuffix(".") + ". " + FORCE_CARRIED_ON)
+                        skipped.append((step.number, step.key, step.name))
+                        continue
                     if result.status != "successful":
                         # Before the rollback, which may expire `step`: reloading
                         # it would need a greenlet.
@@ -1384,7 +1510,7 @@ async def _run(deployment_id: uuid.UUID) -> None:
             current = None
             now = _now()
             dep.status, dep.finished_at = "succeeded", now
-            if dep.mode in REMOVING_MODES and dep.cloud:
+            if dep.mode in REMOVING_MODES and dep.cloud and not dep.force:
                 left = await db.scalar(select(func.count()).select_from(DoResource)
                                        .where(DoResource.environment_id == env.id))
                 if left:
@@ -1403,9 +1529,12 @@ async def _run(deployment_id: uuid.UUID) -> None:
             if dep.mode == "teardown":
                 # Its deployments, steps, services, secrets and managed
                 # records go with it (ON DELETE CASCADE); the audit row stays.
+                changes = {"environment": env.name, "deployment": str(dep.id)}
+                if dep.force:
+                    left_behind = await _force_finish(db, env, dep, steps, skipped)
+                    changes |= {"force": True, "left_behind": left_behind}
                 audit(db, actor_id=dep.actor_id, action="deploy.environment_delete",
-                      entity_type="environment", entity_id=env.name,
-                      changes={"environment": env.name, "deployment": str(dep.id)})
+                      entity_type="environment", entity_id=env.name, changes=changes)
                 await db.delete(env)
             elif dep.mode == "cleanup":
                 # Delete's steps removed what the deploys built; the

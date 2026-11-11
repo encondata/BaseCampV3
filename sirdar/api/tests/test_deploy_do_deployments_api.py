@@ -720,3 +720,54 @@ async def test_a_renew_retry_must_be_the_latest(client, db, ready, fake_runner):
     await db.commit()
     assert (await _start(client, h, "uat9", mode="update")).status_code == 201
     assert _code(await _retry(client, h, renew.id)) == (409, "retry_not_latest")
+
+
+# ---- Force delete --------------------------------------------------------------------
+
+async def test_a_forced_delete_never_takes_the_snapshot(client, db, ready):
+    env = await ready()
+    await _deployed(db, env)
+    h = await auth_headers(client, db)
+    for snapshot in (None, True):
+        extra = {} if snapshot is None else {"snapshot": snapshot}
+        resp = await client.post(f"{URL}/uat9/deployments", headers=h, json={
+            "mode": "teardown", "confirm_name": "uat9", "force": True, **extra})
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert [s["key"] for s in body["steps"]] == ["undns", "do_destroy"]
+        assert body["snapshot"] is None and body["force"] is True
+        await pipeline.wait(uuid.UUID(body["id"]))
+        if snapshot is None:
+            assert await _gone(db, env)
+            env = await ready()
+            await _deployed(db, env)
+    assert (await db.scalars(select(Snapshot))).all() == []
+
+
+async def test_a_forced_production_delete_keeps_production_s_rules_but_the_snapshot(
+        client, db, ready, fake_provisioner):
+    env = await ready(name="prod", type_="production", account="production")
+    await _deployed(db, env, active="blue")
+    h = await auth_headers(client, db)
+    base = {"mode": "teardown", "confirm_name": "prod", "confirm_production": PHRASE,
+            "force": True}
+    assert _code(await _start(client, h, "prod", **base)) == (409, "production_not_retiring")
+    await db.execute(update(Environment).where(Environment.id == env.id)
+                     .values(retiring=True))
+    await db.commit()
+    assert _code(await _start(client, h, "prod", **base)) == (409, "production_slot_active")
+    await db.execute(update(Environment).where(Environment.id == env.id)
+                     .values(active_slot=None))
+    await db.commit()
+    resp = await _start(client, h, "prod", **{**base, "confirm_production": "yes"})
+    assert _code(resp) == (422, "confirm_production_mismatch")
+    # The snapshot needs the environment to answer: a forced Delete never takes it.
+    fake_provisioner.fail["do_destroy"] = "DigitalOcean didn't answer."
+    resp = await _start(client, h, "prod", **{**base, "snapshot": False})
+    assert resp.status_code == 201, resp.text
+    assert [s["key"] for s in resp.json()["steps"]] == ["undns", "do_destroy"]
+    assert await _gone(db, env)
+    audit = await db.scalar(select(AuditLog.changes).where(
+        AuditLog.action == "deploy.environment_delete"))
+    assert audit["force"] is True
+    assert audit["left_behind"][0] == "Step 18 (Remove DigitalOcean resources) was skipped."

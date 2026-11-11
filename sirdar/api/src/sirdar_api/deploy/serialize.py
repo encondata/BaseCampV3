@@ -53,6 +53,7 @@ async def deployment_summary(db: AsyncSession, dep: Deployment) -> dict:
             "first_admin": dep.first_admin,
             "seed_content": dep.seed_content,
             "bluegreen": dep.bluegreen,
+            "force": dep.force,
             "previous_sha": dep.previous_sha, "error": dep.error,
             "actor_name": await _actor_name(db, dep.actor_id),
             "started_at": dep.started_at, "finished_at": dep.finished_at,
