@@ -83,6 +83,8 @@ HAS_SYSTEMD="${HAS_SYSTEMD:-}"   # 1/0; detected by check_minimums when blank
 BROWSER_BIN=''                   # Chrome/Chromium/Edge (a .app path on macOS)
 KIOSK_IDENTITY=''                # /edge/identity JSON, read by start_kiosk
 ADDED_DOCKER_GROUP=0
+CHROME_INSTALLED=0              # 1 once ensure_chrome installed Chrome this run
+DOCKER_NET_ERR=75                # install_docker_engine_apt: Docker's repository unreachable
 HEALTH_POLL_S="${HEALTH_POLL_S:-3}"
 HEALTH_TIMEOUT_S="${HEALTH_TIMEOUT_S:-120}"
 ENGINE_POLL_S="${ENGINE_POLL_S:-3}"
@@ -898,6 +900,7 @@ remove_label_printer_files() {
 # missing. On Linux snap Docker doesn't count: Docker Engine is installed next
 # to it, then the snap is removed (lp_remove_snap_docker).
 ensure_docker() {
+  local rc=0
   if [ "$OS" = Darwin ]; then
     if docker_answers || [ -d /Applications/Docker.app ]; then
       info "Docker Desktop is installed."
@@ -909,7 +912,10 @@ ensure_docker() {
       info "Docker Engine is installed."
     else
       ! lp_snap_has docker || info "Snap Docker can't run the kiosk; installing Docker Engine to replace it."
-      install_docker_engine || die "Docker Engine didn't install. See the messages above, then re-run."
+      install_docker_engine || rc=$?
+      [ "$rc" != "$DOCKER_NET_ERR" ] \
+        || die "Couldn't reach Docker's apt repository ($DOCKER_APT_URL). Check the network connection, then re-run."
+      [ "$rc" = 0 ] || die "Docker Engine didn't install. See the messages above, then re-run."
     fi
     ensure_compose_plugin
     lp_remove_snap_docker
@@ -925,21 +931,35 @@ ensure_docker() {
   fi
 }
 
-# docker_repo_serves CODENAME: Docker's apt repository has a release for it.
+# docker_repo_serves CODENAME: 0 when Docker's apt repository has a release
+# for it, 1 when it answers with an HTTP error (a 404: not served), 2 when it
+# can't be reached at all (DNS, timeout, captive portal).
 docker_repo_serves() {
-  curl -fsSI --max-time 15 "$DOCKER_APT_URL/dists/$1/Release" >/dev/null 2>&1
+  local rc=0
+  curl -fsSI --max-time 15 "$DOCKER_APT_URL/dists/$1/Release" >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    22) return 1 ;;
+    *) return 2 ;;
+  esac
 }
 
 # install_docker_engine_apt (Ubuntu): Docker's documented apt steps. A new
 # Ubuntu release Docker doesn't serve yet gets Ubuntu's own docker.io and
-# docker-compose-v2, and any docker.list is removed: a source for a missing
-# release makes every later apt-get update fail.
+# docker-compose-v2, and any Docker source (docker.list, or the deb822
+# docker.sources) is removed: a source for a missing release makes every later
+# apt-get update fail. Writing docker.list removes a docker.sources too, so
+# there is only ever one Docker source. When the repository can't be reached
+# it returns DOCKER_NET_ERR and changes nothing.
 install_docker_engine_apt() {
-  local codename key="$APT_KEYRINGS/docker.asc" list="$APT_SOURCES/docker.list"
+  local codename key="$APT_KEYRINGS/docker.asc" list="$APT_SOURCES/docker.list" served=0
   codename=$(ubuntu_codename)
   [ -n "$codename" ] || { warn "Couldn't read this Ubuntu's codename from $OS_RELEASE_FILE."; return 1; }
-  if docker_repo_serves "$codename"; then
+  docker_repo_serves "$codename" || served=$?
+  [ "$served" != 2 ] || return "$DOCKER_NET_ERR"
+  if [ "$served" = 0 ]; then
     install -m 0755 -d "$APT_KEYRINGS" || return 1
+    rm -f "$APT_SOURCES/docker.sources"
     curl -fsSL "$DOCKER_APT_URL/gpg" -o "$key" || return 1
     chmod a+r "$key"
     printf 'deb [arch=%s signed-by=%s] %s %s stable\n' "$(dpkg --print-architecture)" "$key" \
@@ -947,7 +967,7 @@ install_docker_engine_apt() {
     apt_update && apt_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
   else
     info "Docker's apt repository doesn't serve Ubuntu $codename yet; installing Ubuntu's docker.io and docker-compose-v2 instead."
-    rm -f "$list"
+    rm -f "$list" "$APT_SOURCES/docker.sources"
     apt_update && apt_install docker.io docker-compose-v2
   fi
 }
@@ -973,7 +993,7 @@ ensure_compose_plugin() {
   ! "${DOCKER[@]}" compose version >/dev/null 2>&1 || return 0
   ! pkg_installed docker-ce || pkg=docker-compose-plugin
   info "Installing $pkg (docker compose)"
-  apt_install "$pkg" || warn "Couldn't install $pkg (apt-get install -y $pkg)."
+  { apt_update && apt_install "$pkg"; } || warn "Couldn't install $pkg (apt-get update, then apt-get install -y $pkg)."
   return 0
 }
 
@@ -1966,7 +1986,8 @@ chrome_installed() { command -v google-chrome-stable >/dev/null 2>&1; }
 
 # install_chrome_apt: Google's signing key and apt source, then the browser.
 # Chrome's own package keeps its source in the same google-chrome.list, so
-# there is never a second, conflicting entry.
+# there is never a second, conflicting entry. A failed install leaves the
+# source in place (harmless, and rewritten the same way next time).
 install_chrome_apt() {
   local key="$APT_KEYRINGS/google-chrome.gpg"
   install -m 0755 -d "$APT_KEYRINGS" || return 1
@@ -1974,7 +1995,10 @@ install_chrome_apt() {
   chmod a+r "$key"
   printf 'deb [arch=amd64 signed-by=%s] %s stable main\n' "$key" "$CHROME_APT_URL" \
     >"$APT_SOURCES/google-chrome.list" || return 1
-  apt_update && apt_install google-chrome-stable
+  if ! { apt_update && apt_install google-chrome-stable; }; then
+    info "Google's apt source stays in $APT_SOURCES/google-chrome.list; a re-run will retry the install."
+    return 1
+  fi
 }
 
 # ensure_chrome warn|strict (Linux): Google Chrome from Google's apt repository
@@ -1997,7 +2021,10 @@ ensure_chrome() {
     return 0
   fi
   info "Installing Google Chrome (Google's apt repository)"
-  install_chrome_apt && return 0
+  if install_chrome_apt; then
+    CHROME_INSTALLED=1
+    return 0
+  fi
   [ "$mode" = warn ] || die "Google Chrome didn't install. See the messages above, then try again."
   warn "Couldn't install Google Chrome; the kiosk uses another browser if one is installed."
   return 0
@@ -2096,7 +2123,9 @@ main() {
   check_compose
   setup_label_printers
   ensure_chrome warn
-  find_browser   # again, so write_config records the Chrome just installed
+  # Again only after a Chrome install, so the saved config records it (and the
+  # no-browser warning from preflight isn't repeated).
+  [ "$CHROME_INSTALLED" = 0 ] || find_browser
   create_data_dir
   write_config "$KIOSK_DIR/config.env"
   render_compose "$KIOSK_DIR/docker-compose.yml"

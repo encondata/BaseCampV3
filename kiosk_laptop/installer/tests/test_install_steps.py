@@ -137,14 +137,16 @@ def test_start_and_download_share_the_keep_previous_helper():
         assert "keep_running_image" in func(name) and "keep_previous" not in func(name)
 
 
-def _apt_env(tmp_path, release_ok=True, ubuntu=True, codename="noble"):
+def _apt_env(tmp_path, release_ok=True, ubuntu=True, codename="noble", release_rc=None):
+    if release_rc is None:
+        release_rc = 0 if release_ok else 22
     rel = tmp_path / "os-release"
     rel.write_text(f'ID={"ubuntu" if ubuntu else "debian"}\nVERSION_ID="24.04"\n'
                    f'VERSION_CODENAME={codename}\nUBUNTU_CODENAME={codename}\n')
     for d in ("keyrings", "sources"):
         (tmp_path / d).mkdir(exist_ok=True)
     calls = tmp_path / "apt.calls"
-    stubs = (f'curl() {{ echo "curl $*" >> "{calls}"; case "$*" in *dists/*) return {0 if release_ok else 22};; '
+    stubs = (f'curl() {{ echo "curl $*" >> "{calls}"; case "$*" in *dists/*) return {release_rc};; '
              f'*" -o "*) for a; do l=$a; done; echo KEY > "$l";; *) echo ARMORED;; esac; }}; '
              f'gpg() {{ echo "gpg $*" >> "{calls}"; for a; do l=$a; done; cat > "$l"; }}; '
              f'apt-get() {{ echo "apt-get $*" >> "{calls}"; }}; dpkg() {{ echo amd64; }}; ')
@@ -178,8 +180,44 @@ def test_docker_falls_back_to_ubuntus_packages_for_a_new_codename(sh, tmp_path):
 def test_docker_fallback_removes_a_stale_docker_list(sh, tmp_path):
     stubs, env, calls = _apt_env(tmp_path, release_ok=False)
     (tmp_path / "sources" / "docker.list").write_text("deb stale\n")
+    (tmp_path / "sources" / "docker.sources").write_text("Types: deb\n")
     sh(stubs + 'install_docker_engine', env=env)
     assert not (tmp_path / "sources" / "docker.list").exists()
+    assert not (tmp_path / "sources" / "docker.sources").exists()
+
+
+def test_docker_list_replaces_a_deb822_docker_sources(sh, tmp_path):
+    stubs, env, _ = _apt_env(tmp_path)
+    (tmp_path / "sources" / "docker.sources").write_text("Types: deb\n")
+    sh(stubs + 'install_docker_engine', env=env)
+    assert not (tmp_path / "sources" / "docker.sources").exists()
+    assert (tmp_path / "sources" / "docker.list").exists()
+
+
+ENSURE_DOCKER = ('OS=Linux; lp_engine_present() { return 1; }; lp_snap_has() { return 1; }; '
+                 'ensure_compose_plugin() { :; }; lp_remove_snap_docker() { :; }; unset SUDO_USER; ensure_docker')
+
+
+@pytest.mark.parametrize("rc", [6, 28])
+def test_docker_network_failure_stops_without_falling_back(sh, tmp_path, rc):
+    stubs, env, calls = _apt_env(tmp_path, release_rc=rc)
+    (tmp_path / "sources" / "docker.list").write_text("deb kept\n")
+    (tmp_path / "sources" / "docker.sources").write_text("Types: deb\n")
+    r = sh(stubs + ENSURE_DOCKER, env=env, check=False)
+    assert r.returncode != 0
+    assert "Couldn't reach Docker's apt repository" in r.stderr and "re-run" in r.stderr
+    assert "Docker Engine didn't install" not in r.stderr
+    log = calls.read_text()
+    assert "docker.io" not in log and "apt-get" not in log
+    assert (tmp_path / "sources" / "docker.list").read_text() == "deb kept\n"
+    assert (tmp_path / "sources" / "docker.sources").exists()
+
+
+def test_docker_http_error_still_falls_back(sh, tmp_path):
+    stubs, env, calls = _apt_env(tmp_path, release_rc=22, codename="zesty")
+    r = sh(stubs + ENSURE_DOCKER, env=env)
+    assert "install -y docker.io docker-compose-v2" in calls.read_text()
+    assert "Couldn't reach" not in r.stderr
 
 
 def test_docker_off_ubuntu_keeps_get_docker_com(sh, tmp_path):
@@ -199,7 +237,9 @@ def test_missing_compose_is_installed_to_match_the_engine(sh, tmp_path, have, pk
     stubs, env, calls = _apt_env(tmp_path)
     sh(stubs + f'DOCKER=(false); lp_engine_present() {{ :; }}; pkg_installed() {{ [ "$1" = {have} ]; }}; '
        'ensure_compose_plugin', env=env)
-    assert f"install -y {pkg}" in calls.read_text()
+    log = calls.read_text()
+    assert f"install -y {pkg}" in log
+    assert "update" in log and log.index("update") < log.index(f"install -y {pkg}")
 
 
 def test_chrome_from_googles_apt_repo(sh, tmp_path):
@@ -235,6 +275,8 @@ def test_chrome_install_failure_strict_dies_warn_continues(sh, tmp_path):
     stubs += 'apt-get() { return 100; }; '
     r = sh(stubs + 'ARCH=amd64; OS=Linux; chrome_installed() { return 1; }; ensure_chrome strict', env=env, check=False)
     assert r.returncode != 0 and "Google Chrome didn't install" in r.stderr
+    assert "a re-run will retry" in r.stdout
+    assert (tmp_path / "sources" / "google-chrome.list").exists()
     r = sh(stubs + 'ARCH=amd64; OS=Linux; chrome_installed() { return 1; }; ensure_chrome warn', env=env)
     assert "Couldn't install Google Chrome" in r.stderr
 
@@ -245,3 +287,22 @@ def test_main_installs_chrome_before_the_config_is_written():
     body = body[body.index("\nmain() {"):]
     assert body.index("setup_label_printers") < body.index("ensure_chrome warn") \
         < body.index("find_browser") < body.index("write_config")
+
+
+MAIN_FUNCS = ("parse_args detect_os default_dirs load_config ensure_root check_minimums start_log prompt_settings "
+              "merge_config check_api_reachable setup_docker_cli ensure_docker enable_docker_autostart "
+              "wait_for_engine check_compose setup_label_printers create_data_dir write_config render_compose "
+              "migrate_legacy_data start_kiosk install_login_items summary")
+
+
+@pytest.mark.parametrize("case,count", [("darwin", 1), ("not-ubuntu", 1), ("installed", 1), ("new", 2)])
+def test_main_looks_for_the_browser_again_only_after_installing_chrome(sh, tmp_path, case, count):
+    calls = tmp_path / "browser.calls"
+    stubs = (f'for f in {MAIN_FUNCS}; do eval "$f() {{ :; }}"; done; KIOSK_DIR="$PWD/k"; ARCH=amd64; '
+             f'find_browser() {{ echo find_browser >> "{calls}"; }}; install_chrome_apt() {{ :; }}; ')
+    stubs += {"darwin": "OS=Darwin; ",
+              "not-ubuntu": "OS=Linux; is_ubuntu() { return 1; }; ",
+              "installed": "OS=Linux; is_ubuntu() { :; }; chrome_installed() { :; }; ",
+              "new": "OS=Linux; is_ubuntu() { :; }; chrome_installed() { return 1; }; "}[case]
+    sh(stubs + 'main')
+    assert calls.read_text().count("find_browser") == count
