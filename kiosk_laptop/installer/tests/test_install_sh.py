@@ -173,7 +173,8 @@ def test_shellcheck_clean():
     if sc is None:
         pytest.skip("shellcheck not installed")
     for script in (INSTALL_SH, INSTALL_SH.parent / "update.sh", INSTALL_SH.parent / "launch.sh",
-                   INSTALL_SH.parent / "hostnet.sh", INSTALL_SH.parent / "tests" / "test_linux_e2e.sh"):
+                   INSTALL_SH.parent / "hostnet.sh", INSTALL_SH.parent / "setup.sh",
+                   INSTALL_SH.parent / "tests" / "test_linux_e2e.sh"):
         r = subprocess.run([sc, "-s", "bash", str(script)], capture_output=True, text=True)
         assert r.returncode == 0, (script.name, r.stdout)
 

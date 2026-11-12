@@ -166,3 +166,93 @@ def lp_stubs(tmp_path, usblp=True, lpstat=LPSTAT_V, snaps=(), engine=True, raw_u
 def lp_calls(tmp_path):
     f = tmp_path / "lp.calls"
     return f.read_text().splitlines() if f.exists() else []
+
+
+# ── setup.sh (the Ubuntu front end) ───────────────────────────────────
+SETUP_SH = INSTALL_SH.parent / "setup.sh"
+
+# whiptail stub: logs each call (one arg per line, then ----); --gauge input
+# goes to WT_LOG.gauge; --infobox needs no answer; every other dialog takes the
+# next line of WT_ANSWERS ("RC [OUTPUT]") and prints OUTPUT on stderr, as
+# whiptail does. No answers left = Esc (255), so a test never hangs.
+WHIPTAIL = r'''#!/bin/sh
+{ for a in "$@"; do printf '%s\n' "$a"; done; echo ----; } >> "$WT_LOG"
+case " $* " in
+  *" --gauge "*) cat >> "$WT_LOG.gauge"; exit 0 ;;
+  *" --infobox "*) exit 0 ;;
+esac
+[ -s "$WT_ANSWERS" ] || exit 255
+line=$(head -n 1 "$WT_ANSWERS")
+tail -n +2 "$WT_ANSWERS" > "$WT_ANSWERS.t"; mv "$WT_ANSWERS.t" "$WT_ANSWERS"
+rc=${line%% *}; out=''
+[ "$rc" = "$line" ] || out=${line#* }
+printf '%s' "$out" >&2
+exit "$rc"
+'''
+
+# sudo stub: -v / -n true succeed unless SUDO_FAIL is set; otherwise runs the command.
+SUDO = r'''#!/bin/sh
+echo "sudo $*" >> "$SUDO_LOG"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -n) shift ;;
+    -v|true) [ -z "${SUDO_FAIL:-}" ]; exit $? ;;
+    *) break ;;
+  esac
+done
+exec "$@"
+'''
+
+# A fake install.sh: logs "STEP|ARGS|KIOSK_DATA_DIR|stdin=N" to engine.log
+# (N = bytes it could read from stdin); --step check prints engine.rows; a
+# step listed in engine.fail fails once per line (printing "Error: STEP broke");
+# download writes "changed" into $KIOSK_DIR/config.env first, like the real one.
+ENGINE = r'''#!/usr/bin/env bash
+d="$(dirname "$0")"; step=''; all="$*"
+while [ "$#" -gt 0 ]; do [ "$1" = --step ] && step="$2"; shift; done
+input=$(cat)
+printf '%s|%s|%s|stdin=%s\n' "$step" "$all" "${KIOSK_DATA_DIR:-}" "${#input}" >> "$d/engine.log"
+if [ "$step" = check ]; then cat "$d/engine.rows" 2>/dev/null; exit 0; fi
+[ "$step" != download ] || [ ! -f "$KIOSK_DIR/config.env" ] || echo changed > "$KIOSK_DIR/config.env"
+if [ -f "$d/engine.fail" ] && grep -qx "$step" "$d/engine.fail"; then
+  awk -v s="$step" '!done && $0 == s { done = 1; next } { print }' "$d/engine.fail" > "$d/engine.fail.t"
+  mv "$d/engine.fail.t" "$d/engine.fail"
+  echo "Working on $step"; echo "Error: $step broke" >&2; exit 1
+fi
+echo "Did $step"
+'''
+
+ALL_ROWS_OK = "".join(f"row|{r}|ok|fine\n" for r in
+                      ("docker", "snapdocker", "chrome", "python3", "printers", "kiosk"))
+SYS_OK = 'free_kib() { echo 99999999; }; net_ok() { :; }; have_cmd() { :; }; pkg_installed() { :; }; '
+
+
+@pytest.fixture
+def setup(tmp_path):
+    """Run `body` with setup.sh sourced in library mode; stubs on PATH.
+    Returns (CompletedProcess, tmp_path)."""
+    bin_ = tmp_path / "bin"; bin_.mkdir()
+    for name, text in (("whiptail", WHIPTAIL), ("sudo", SUDO)):
+        (bin_ / name).write_text(text); (bin_ / name).chmod(0o755)
+    engine = tmp_path / "engine.sh"; engine.write_text(ENGINE); engine.chmod(0o755)
+    (tmp_path / "engine.rows").write_text(ALL_ROWS_OK)
+    osr = tmp_path / "os-release"
+    osr.write_text('ID=ubuntu\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\n')
+    (tmp_path / "opt").mkdir()
+
+    def run(body, env=None, check=True, answers=(), tty=""):
+        (tmp_path / "answers").write_text("".join(f"{a}\n" for a in answers))
+        (tmp_path / "tty").write_text(tty)
+        full_env = {**os.environ, "KIOSK_SETUP_LIB": "1", "PATH": f"{bin_}:{os.environ['PATH']}",
+                    "WT_LOG": str(tmp_path / "wt.log"), "WT_ANSWERS": str(tmp_path / "answers"),
+                    "SUDO_LOG": str(tmp_path / "sudo.log"), "KIOSK_TTY": str(tmp_path / "tty"),
+                    "KIOSK_TTY_OUT": str(tmp_path / "tty.out"), "KIOSK_SETUP_ENGINE": str(engine),
+                    "KIOSK_SETUP_LOG": str(tmp_path / "setup.log"), "KIOSK_OS_RELEASE": str(osr),
+                    "KIOSK_DIR": str(tmp_path / "opt"), "KIOSK_VAR_LIB": str(tmp_path / "varlib"),
+                    "KIOSK_SETUP_POLL_S": "0.05", "TERM": "xterm", **(env or {})}
+        proc = subprocess.run([BASH, "-c", f'source "{SETUP_SH}"; {body}'], input="leftover script text\n",
+                              capture_output=True, text=True, env=full_env, cwd=tmp_path, timeout=60)
+        if check and proc.returncode != 0:
+            raise AssertionError(f"exit {proc.returncode}\nstdout:{proc.stdout}\nstderr:{proc.stderr}")
+        return proc
+    return run
