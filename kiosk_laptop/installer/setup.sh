@@ -936,10 +936,9 @@ quit_after_failure() {
   local id="${STEP_IDS[$1]}" label msg
   ACTIVE_STEP=''
   label=$(env_short_label "$CURRENT_ENV")
-  if [ "$id" = download ] && [ "$(last_engine_step)" = move-dev-data ]; then
-    # install.sh's move-dev-data picks up a move that was cut short.
-    msg="The setup stopped while moving this laptop's kiosk data to the dev folder, so the data move didn't finish. Run the setup again to finish it."
-  elif { [ "$id" = download ] || [ "$id" = start ]; } && [ -e "$STEP_LOG_DIR/snapshot.taken" ] \
+  # A snapshot owed a restore wins over everything else: the switch may already
+  # have written the new environment's config.
+  if { [ "$id" = download ] || [ "$id" = start ]; } && [ -e "$STEP_LOG_DIR/snapshot.taken" ] \
      && [ "$CURRENT_ENV" != none ] && [ "$CHOSEN_ENV" != "$CURRENT_ENV" ]; then
     ui_info "Putting this laptop back on ${label}…" "$TITLE_PROGRESS"
     SETUP_STEP_LOG="$STEP_LOG_DIR/restore.log"
@@ -951,6 +950,9 @@ quit_after_failure() {
     fi
     log_line "---- restore $CURRENT_ENV ----"
     log_file "$SETUP_STEP_LOG"
+  elif [ "$id" = download ] && [ "$(last_engine_step)" = move-dev-data ]; then
+    # install.sh's move-dev-data picks up a move that was cut short.
+    msg="The setup stopped while moving this laptop's kiosk data to the dev folder, so the data move didn't finish. Run the setup again to finish it."
   elif [ "$CURRENT_ENV" = none ]; then
     msg="The setup stopped before the kiosk was installed. Run the setup again to finish."
   else

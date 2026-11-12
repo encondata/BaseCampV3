@@ -710,3 +710,16 @@ def test_interrupting_a_half_done_switch_puts_the_laptop_back(setup, tmp_path):
     assert (tmp_path / "opt" / "docker-compose.yml").read_text() == "prod compose\n"
     assert "restart" in engine_steps(tmp_path)
     assert "The setup put this laptop back on Prod" in out
+
+
+def test_a_failed_move_on_retry_still_restores_a_half_done_switch(setup, tmp_path):
+    # Prod -> Dev: download fails, Try again then fails in move-dev-data. The
+    # snapshot is owed a restore, so Quit must put Prod back (not just say the move didn't finish).
+    write_config(tmp_path, *PROD, "stable")
+    before = (tmp_path / "opt" / "config.env").read_text()
+    (tmp_path / "opt" / "docker-compose.yml").write_text("prod compose\n")
+    (tmp_path / "engine.fail").write_text("download\nmove-dev-data\n")
+    r = setup(FLOW + 'main', answers=["0", "0 dev", "0", "0 retry", "0 quit", "0"], check=False)
+    assert r.returncode == 1
+    assert (tmp_path / "opt" / "config.env").read_text() == before
+    assert "back on Prod" in wt_calls(tmp_path)[-1]
