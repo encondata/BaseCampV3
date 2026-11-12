@@ -2,9 +2,14 @@
 # build the image, smoke-test it, run the Linux installer end to end, then
 # publish amd64 + arm64 to GHCR.
 #
-#   push to main               -> :edge, :sha-<sha7>
-#   tag kiosk-laptop-vX.Y.Z    -> :X.Y.Z, :stable
-#   pull request               -> tests, build, smoke and e2e only (nothing pushed)
+#   push to main                    -> :edge, :sha-<sha7>
+#   tag kiosk-laptop-vX.Y.Z         -> :X.Y.Z, :stable, :beta (beta is never older than stable)
+#   tag kiosk-laptop-vX.Y.Z-rcN     -> :X.Y.Z-rcN, :beta (a release candidate, N >= 1)
+#   pull request                    -> tests, build, smoke and e2e only (nothing pushed)
+#
+# Every image carries org.opencontainers.image.revision = the full commit it
+# was built from; the nightly update.sh refreshes the helper scripts from that
+# commit, so a laptop's scripts always match its app.
 #
 # Release notes for maintainers:
 #   - The encondata org must allow GitHub Actions to create packages
@@ -12,7 +17,7 @@
 #   - After the first publish, make the serversherpa-kiosk-laptop package
 #     public: the installers pull it without logging in.
 #   - Only a kiosk-laptop-vX.Y.Z tag moves :stable (the installers' default
-#     channel); every push to main moves :edge only.
+#     channel); an -rcN tag moves :beta only; every push to main moves :edge only.
 name: kiosk-laptop-image
 
 on:
@@ -150,9 +155,14 @@ jobs:
           case "$GITHUB_REF" in
             refs/tags/kiosk-laptop-v*)
               version="${GITHUB_REF#refs/tags/kiosk-laptop-v}"
-              [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-                || { echo "::error::Tag ${GITHUB_REF#refs/tags/} isn't kiosk-laptop-vX.Y.Z"; exit 1; }
-              tags="$IMAGE:$version,$IMAGE:stable"
+              if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                tags="$IMAGE:$version,$IMAGE:stable,$IMAGE:beta"
+              elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc[1-9][0-9]*$ ]]; then
+                tags="$IMAGE:$version,$IMAGE:beta"
+              else
+                echo "::error::Tag ${GITHUB_REF#refs/tags/} is neither kiosk-laptop-vX.Y.Z (a release) nor kiosk-laptop-vX.Y.Z-rcN (a release candidate, N >= 1)"
+                exit 1
+              fi
               ;;
             refs/heads/main)
               version="0.0.0-$sha7"
@@ -175,10 +185,14 @@ jobs:
           platforms: linux/amd64
           load: true
           tags: kiosk-laptop:ci
-          build-args: KIOSK_VERSION=${{ steps.version.outputs.version }}
+          # Keep build-args and labels the same as the publish job's.
+          build-args: |
+            KIOSK_VERSION=${{ steps.version.outputs.version }}
+            KIOSK_REVISION=${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/encondata/BaseCampV3
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Smoke test
@@ -213,9 +227,13 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ needs.image.outputs.tags }}
-          build-args: KIOSK_VERSION=${{ needs.image.outputs.version }}
+          # Keep build-args and labels the same as the CI build's.
+          build-args: |
+            KIOSK_VERSION=${{ needs.image.outputs.version }}
+            KIOSK_REVISION=${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/encondata/BaseCampV3
             org.opencontainers.image.version=${{ needs.image.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

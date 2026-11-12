@@ -41,4 +41,11 @@ EXPOSE 8090 8091
 # python's urllib, so the slim image needs no curl
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/edge/identity', timeout=4)"]
+# The full commit this image was built from (CI passes github.sha). The
+# nightly update.sh refreshes the helper scripts from it; an empty value (a
+# local build) makes it fall back to main.
+#   docker build --build-arg KIOSK_REVISION="$(git rev-parse HEAD)" ...
+# Last, so a new commit never invalidates the cached layers above.
+ARG KIOSK_REVISION=
+LABEL org.opencontainers.image.revision=$KIOSK_REVISION
 CMD ["python", "-m", "edge", "serve"]
