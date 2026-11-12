@@ -47,5 +47,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 #   docker build --build-arg KIOSK_REVISION="$(git rev-parse HEAD)" ...
 # Last, so a new commit never invalidates the cached layers above.
 ARG KIOSK_REVISION=
-LABEL org.opencontainers.image.revision=$KIOSK_REVISION
+LABEL org.opencontainers.image.revision="$KIOSK_REVISION"
 CMD ["python", "-m", "edge", "serve"]

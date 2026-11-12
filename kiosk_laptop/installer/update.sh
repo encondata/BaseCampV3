@@ -381,7 +381,7 @@ installer_ref() {
         log "Helper scripts follow the running image's revision label ($rev)." >&2
         ref="$rev"
       else
-        log "Helper scripts: the running kiosk image has no usable revision label (${rev:-none}); using main." >&2
+        log "Helper scripts: the running kiosk image has no usable revision label ($(printf '%s' "${rev:-none}" | tr -cd 'A-Za-z0-9._-' | cut -c1-64)); using main." >&2
         ref=main
       fi ;;
     *[!A-Za-z0-9._/-]*|*..*) log "Ignoring the installer ref in config.env (not a plain git ref); using main." >&2; ref=main ;;
