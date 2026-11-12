@@ -2,7 +2,10 @@
  *  (NetworkManager, through the kiosk helper). A secured network takes its
  *  password in the pinned footer, next to Join, so it never scrolls away.
  *  The password goes to the helper and on to nmcli's stdin, nowhere else.
- *  An empty one uses a network the laptop already knows. */
+ *  An empty one uses a network the laptop already knows.
+ *  The list is read again WIFI_LIST_MS after the last read settles (a slow
+ *  rescan never overlaps the next), never during a join, and not while the
+ *  page is hidden (it reads at once when the page is back). */
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 
@@ -10,6 +13,11 @@ import { getWifiNetworks, HelperError, joinWifi, type WifiNetwork, type Wired } 
 import { ChoiceCard } from '../printers/ChoiceCard';
 
 export const WIFI_LIST_MS = 15_000;   // assumption
+
+function wiredLine(networks: WifiNetwork[] | null, listFailed: boolean, wired: Wired | null): string {
+  if (networks === null) return listFailed ? "Couldn't read the wired status." : 'Checking…';
+  return wiredText(wired);
+}
 
 function wiredText(wired: Wired | null): string {
   if (!wired) return 'No wired adapter';
@@ -40,24 +48,56 @@ export default function NetworkModal({ onClose, onChanged }: { onClose: () => vo
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const live = useRef(true);
+  const loading = useRef(false);
+  const again = useRef(false);       // a read was asked for while one ran: one more after it
+  const joining = useRef(false);
 
   const load = useCallback(async () => {
+    if (loading.current) { again.current = true; return; }
+    loading.current = true;
     try {
-      const out = await getWifiNetworks();
-      if (!live.current) return;
-      setNetworks(out.networks);
-      setWired(out.wired);
-      setListFailed(false);
-    } catch {
-      if (live.current) setListFailed(true);
+      do {
+        again.current = false;
+        try {
+          const out = await getWifiNetworks();
+          if (!live.current) return;
+          setNetworks(out.networks);
+          setWired(out.wired);
+          setListFailed(false);
+        } catch {
+          if (live.current) setListFailed(true);
+        }
+      } while (again.current && live.current);
+    } finally {
+      loading.current = false;
     }
   }, []);
 
   useEffect(() => {
     live.current = true;
-    void load();
-    const timer = setInterval(() => void load(), WIFI_LIST_MS);
-    return () => { live.current = false; clearInterval(timer); };
+    let timer: number | null = null;
+    const clear = () => { if (timer !== null) { window.clearTimeout(timer); timer = null; } };
+    const next = () => {
+      clear();
+      if (!live.current || document.visibilityState === 'hidden') return;
+      timer = window.setTimeout(tick, WIFI_LIST_MS);
+    };
+    function tick() {
+      timer = null;
+      if (joining.current) { next(); return; }   // skipped during a join; the join reads it after
+      void load().finally(next);
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') clear();
+      else if (timer === null && !loading.current) tick();
+    };
+    if (document.visibilityState !== 'hidden') void load().finally(next);   // hidden: when it's shown
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      live.current = false;
+      clear();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [load]);
 
   useEffect(() => {
@@ -79,11 +119,13 @@ export default function NetworkModal({ onClose, onChanged }: { onClose: () => vo
     e.preventDefault();
     if (!pick || pick.active || busy) return;
     const ssid = pick.ssid;
+    joining.current = true;
     setBusy(true);
     setError(null);
     setNote(null);
     joinWifi(ssid, pick.secure ? password : '').then(
       () => {
+        joining.current = false;
         if (!live.current) return;
         setBusy(false);
         setPassword('');
@@ -92,6 +134,7 @@ export default function NetworkModal({ onClose, onChanged }: { onClose: () => vo
         void load();
       },
       (err: unknown) => {
+        joining.current = false;
         if (!live.current) return;
         setBusy(false);
         const code = err instanceof HelperError ? err.code : 'failed';
@@ -118,7 +161,7 @@ export default function NetworkModal({ onClose, onChanged }: { onClose: () => vo
         </div>
         <div className="modal-body">
           <div className="modal-section">Wired</div>
-          <p className="page-hint">{networks === null && !listFailed ? 'Checking…' : wiredText(wired)}</p>
+          <p className="page-hint">{wiredLine(networks, listFailed, wired)}</p>
           <div className="modal-section">Wi-Fi</div>
           {networks === null && !listFailed && <p className="page-hint">Looking for Wi-Fi networks…</p>}
           {listFailed && networks === null && (

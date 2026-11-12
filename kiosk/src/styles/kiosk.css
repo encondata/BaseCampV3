@@ -1537,6 +1537,8 @@ a.kiosk-crumb:focus-visible { opacity: 1; outline: 2px solid var(--accent); outl
   max-width: 22vw;
 }
 .kiosk-sys-btn:hover { background: var(--ink-2); }
+/* The same ring as the top-bar crumbs beside it. */
+.kiosk-sys-btn:focus-visible { background: var(--ink-2); outline: 2px solid var(--accent); outline-offset: 1px; }
 .kiosk-sys-btn > span { overflow: hidden; text-overflow: ellipsis; }
 .kiosk-sys-icon { width: 18px; height: 18px; flex: none; }
 /* Network modal footer: the password and the message line take the space

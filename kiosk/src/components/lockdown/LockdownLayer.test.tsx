@@ -81,7 +81,7 @@ it('a helper that does not answer gets the unreachable copy', async () => {
   helper.exitKiosk.mockRejectedValueOnce(new HelperError('unreachable'));
   await userEvent.type(pinField(), 'csg{Enter}');
   expect((await screen.findByRole('alert')).textContent)
-    .toBe("Couldn't reach the kiosk helper on this laptop. Try again.");
+    .toBe("Couldn't reach the kiosk helper. Press Alt+F4 to close this window.");
 });
 
 it('a stale token (forbidden) says to close the window instead of retrying', async () => {

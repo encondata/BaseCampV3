@@ -20,7 +20,9 @@ function errorCopy(err: unknown): string {
   // window does, because the watcher reopens Chrome on the waiting page,
   // which hands over the fresh token.
   if (code === 'forbidden') return 'This kiosk window is out of date. Close it with Alt+F4 and it will reopen.';
-  return "Couldn't reach the kiosk helper on this laptop. Try again.";
+  // The helper is gone or stuck: closing the window always works (the
+  // watcher reopens it, or launch.sh opens the plain kiosk window).
+  return "Couldn't reach the kiosk helper. Press Alt+F4 to close this window.";
 }
 
 export default function PinPadModal({ onClose }: { onClose: () => void }) {
