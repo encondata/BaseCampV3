@@ -90,6 +90,10 @@ HEALTH_TIMEOUT_S="${HEALTH_TIMEOUT_S:-120}"
 ENGINE_POLL_S="${ENGINE_POLL_S:-3}"
 
 DEFAULT_API_URL='https://api.serversherpa.com'
+DEV_API_URL='https://api.dev.serversherpa.com'
+# Each server set keeps its own data folder (KIOSK_VAR_LIB is a testing hook).
+PROD_DATA_DIR="${KIOSK_VAR_LIB:-/var/lib}/serversherpa-kiosk"
+DEV_DATA_DIR="${KIOSK_VAR_LIB:-/var/lib}/serversherpa-kiosk-dev"
 LEGACY_PROJECT='serversherpa-kiosk-laptop'
 LEGACY_FILTER="label=com.docker.compose.project=$LEGACY_PROJECT"
 KIOSK_CONTAINER='serversherpa-kiosk-edge-1'   # project "serversherpa-kiosk", service "edge"
@@ -388,6 +392,23 @@ write_config() {
     printf 'KIOSK_INSTALLER_REF=%s\n' "$ref"   # where update.sh refreshes the helper scripts from
   } >"$tmp"
   mv "$tmp" "$file"
+}
+
+# set_config_line FILE KEY VALUE: replace KEY's line (or append it), keeping
+# every other line; written atomically, mode 644.
+set_config_line() {
+  local file="$1" tmp
+  check_config_value "$2" "$3"
+  tmp=$(mktemp "$file.XXXXXX") || die "Couldn't write $file."
+  TMP_FILES+=("$tmp")
+  # ENVIRON, not awk -v, so a backslash in the value stays literal.
+  CFG_K="$2" CFG_V="$3" awk '
+    BEGIN { k = ENVIRON["CFG_K"]; v = ENVIRON["CFG_V"] }
+    index($0, k "=") == 1 { if (!done) print k "=" v; done = 1; next }
+    { print }
+    END { if (!done) print k "=" v }
+  ' "$file" >"$tmp" || die "Couldn't write $file."
+  { chmod 644 "$tmp" && mv -f "$tmp" "$file"; } || die "Couldn't write $file."
 }
 
 image_ref() {
@@ -2101,7 +2122,51 @@ install_setup_launcher() {
   fi
   install_desktop_icon "$user" "$(user_home "$user")" "$SETUP_ICON_FILE" render_setup_icon "Set up kiosk"
 }
-move_dev_data() { die "Not implemented yet."; }
+# move_dev_data (--step move-dev-data): a laptop already on the dev servers
+# keeps its data in the production folder; move it, once, to the dev folder.
+# It goes by the *saved* environment (no merge_config). Production data, and a
+# custom KIOSK_DATA_DIR, are never moved. Order: stop the kiosk, mv (one
+# rename between sibling folders, so atomic), then config.env, then compose.
+# A run cut short after the mv leaves the data in the dev folder with the
+# config still naming the (now missing) production folder; the next run sees
+# exactly that and finishes the config update, so the data is never lost track
+# of. Updating the config first would instead leave a config naming the dev
+# folder while the data still sat in the production one, which no later run
+# would recognize. It starts nothing: the start step brings the kiosk back.
+move_dev_data() {
+  local cfg="$KIOSK_DIR/config.env" api="$CFG_API_URL" dir="$CFG_DATA_DIR"
+  [ -f "$cfg" ] || return 0
+  while [ "${api%/}" != "$api" ]; do api="${api%/}"; done
+  while [ "${dir%/}" != "$dir" ]; do dir="${dir%/}"; done
+  [ "$api" = "$DEV_API_URL" ] || return 0
+  [ -z "$dir" ] || [ "$dir" = "$PROD_DATA_DIR" ] || return 0
+  if [ ! -e "$PROD_DATA_DIR" ] && [ ! -L "$PROD_DATA_DIR" ]; then
+    # Nothing to move, unless an earlier run moved it and stopped short.
+    [ -d "$DEV_DATA_DIR" ] && [ -n "$(ls -A "$DEV_DATA_DIR" 2>/dev/null)" ] || return 0
+    info "Finishing the earlier move of the dev kiosk's data to $DEV_DATA_DIR."
+  else
+    if [ -d "$DEV_DATA_DIR" ] && [ -n "$(ls -A "$DEV_DATA_DIR" 2>/dev/null)" ]; then
+      die "Both $PROD_DATA_DIR and $DEV_DATA_DIR hold kiosk data. Move one of them aside, then try again."
+    fi
+    if [ -f "$KIOSK_DIR/docker-compose.yml" ] && docker_answers; then
+      compose stop >/dev/null 2>&1 \
+        || die "Couldn't stop the kiosk to move its data. Check 'systemctl status docker', then try again."
+    fi
+    rmdir "$DEV_DATA_DIR" 2>/dev/null || true
+    # An existing DEV_DATA_DIR would make mv put the data inside it.
+    if [ -e "$DEV_DATA_DIR" ] || [ -L "$DEV_DATA_DIR" ]; then
+      die "Couldn't clear the empty folder $DEV_DATA_DIR to move the dev kiosk's data there. Remove it, then try again."
+    fi
+    mv "$PROD_DATA_DIR" "$DEV_DATA_DIR" \
+      || die "Couldn't move $PROD_DATA_DIR to $DEV_DATA_DIR. The kiosk's data is still in $PROD_DATA_DIR."
+  fi
+  KIOSK_DATA_DIR="$DEV_DATA_DIR"
+  CFG_DATA_DIR="$DEV_DATA_DIR"
+  check_data_dir "$DEV_DATA_DIR"
+  set_config_line "$cfg" KIOSK_DATA_DIR "$DEV_DATA_DIR"
+  render_compose "$KIOSK_DIR/docker-compose.yml"
+  info "Moved the dev kiosk's data from $PROD_DATA_DIR to $DEV_DATA_DIR (production and dev kiosks now keep separate data)."
+}
 
 # ── Google Chrome (Ubuntu) ────────────────────────────────────────────
 chrome_installed() { command -v google-chrome-stable >/dev/null 2>&1; }

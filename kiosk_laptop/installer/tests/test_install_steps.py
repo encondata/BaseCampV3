@@ -409,3 +409,113 @@ def test_uninstall_removes_the_setup_launcher(sh, tmp_path):
     sh(stubs + f'OS=Linux; SYSTEMD_UNIT_DIR="{tmp_path}"; systemctl() {{ :; }}; '
        'restore_desktop_lock() { :; }; remove_login_items')
     assert not (home / "Desktop" / "serversherpa-setup-kiosk.desktop").exists()
+
+
+def _saved(tmp_path, api, data_dir, channel="beta"):
+    inst = tmp_path / "inst"; inst.mkdir(exist_ok=True)
+    (inst / "config.env").write_text(
+        f"EDGE_CLOUD_API_URL={api}\nEDGE_PORTAL_URL=https://portal.x\nKIOSK_CHANNEL={channel}\n"
+        f"KIOSK_DATA_DIR={data_dir}\nKIOSK_BROWSER=/usr/bin/google-chrome\nKIOSK_INSTALLER_REF=main\n")
+    (inst / "docker-compose.yml").write_text("old\n")
+    varlib = tmp_path / "varlib"; varlib.mkdir(exist_ok=True)
+    calls = tmp_path / "docker.calls"
+    fake = tmp_path / "docker"; fake.write_text(f'#!/bin/sh\necho "$*" >> "{calls}"\n'); fake.chmod(0o755)
+    body = (f'KIOSK_DIR="{inst}"; DOCKER=("{fake}"); load_config "{inst}/config.env"; move_dev_data')
+    return inst, varlib, calls, body, {"KIOSK_VAR_LIB": str(varlib), "KIOSK_IMAGE": ""}
+
+
+def test_move_dev_data_moves_a_dev_laptops_folder_once(sh, tmp_path):
+    varlib = tmp_path / "varlib"; varlib.mkdir()
+    prod = varlib / "serversherpa-kiosk"; prod.mkdir(); (prod / "identity.json").write_text("dev-id")
+    inst, _, calls, body, env = _saved(tmp_path, "https://api.dev.serversherpa.com/", str(prod), channel="edge")
+    r = sh(body, env=env)
+    dev = varlib / "serversherpa-kiosk-dev"
+    assert (dev / "identity.json").read_text() == "dev-id" and not prod.exists()
+    cfg = (inst / "config.env").read_text()
+    assert f"KIOSK_DATA_DIR={dev}\n" in cfg and "KIOSK_BROWSER=/usr/bin/google-chrome\n" in cfg
+    compose = (inst / "docker-compose.yml").read_text()
+    assert f'"{dev}:/data"' in compose and "serversherpa-kiosk-laptop:edge" in compose
+    assert "compose" in calls.read_text() and " stop" in calls.read_text()
+    assert "Moved the dev kiosk's data" in r.stdout
+    sh(body, env=env)   # second run: config now names the dev folder -> nothing to do
+    assert (dev / "identity.json").exists()
+
+
+def test_move_dev_data_never_moves_production_data(sh, tmp_path):
+    varlib = tmp_path / "varlib"; varlib.mkdir()
+    prod = varlib / "serversherpa-kiosk"; prod.mkdir(); (prod / "identity.json").write_text("prod-id")
+    inst, _, calls, body, env = _saved(tmp_path, "https://api.serversherpa.com", str(prod), channel="stable")
+    sh(body, env=env)
+    assert (prod / "identity.json").read_text() == "prod-id"
+    assert not (varlib / "serversherpa-kiosk-dev").exists() and not calls.exists()
+
+
+def test_move_dev_data_never_moves_a_custom_folder(sh, tmp_path):
+    custom = tmp_path / "srv-kiosk"; custom.mkdir(); (custom / "identity.json").write_text("x")
+    inst, varlib, calls, body, env = _saved(tmp_path, "https://api.dev.serversherpa.com", str(custom))
+    sh(body, env=env)
+    assert (custom / "identity.json").exists() and not (varlib / "serversherpa-kiosk-dev").exists()
+
+
+def test_move_dev_data_without_config_does_nothing(sh, tmp_path):
+    r = sh(f'KIOSK_DIR="{tmp_path}"; DOCKER=(false); load_config "{tmp_path}/none"; move_dev_data; echo rc=$?',
+           env={"KIOSK_VAR_LIB": str(tmp_path)})
+    assert "rc=0" in r.stdout
+
+
+def test_move_dev_data_refuses_when_both_folders_hold_data(sh, tmp_path):
+    varlib = tmp_path / "varlib"; varlib.mkdir()
+    prod = varlib / "serversherpa-kiosk"; prod.mkdir(); (prod / "edge.db").write_text("a")
+    dev = varlib / "serversherpa-kiosk-dev"; dev.mkdir(); (dev / "edge.db").write_text("b")
+    inst, _, _, body, env = _saved(tmp_path, "https://api.dev.serversherpa.com", str(prod))
+    r = sh(body, env=env, check=False)
+    assert r.returncode != 0 and "Both" in r.stderr and "Move one of them aside" in r.stderr
+    assert (prod / "edge.db").read_text() == "a" and (dev / "edge.db").read_text() == "b"
+
+
+def test_move_dev_data_into_an_empty_dev_folder(sh, tmp_path):
+    varlib = tmp_path / "varlib"; varlib.mkdir()
+    prod = varlib / "serversherpa-kiosk"; prod.mkdir(); (prod / "edge.db").write_text("a")
+    (varlib / "serversherpa-kiosk-dev").mkdir()
+    inst, _, _, body, env = _saved(tmp_path, "https://api.dev.serversherpa.com", str(prod))
+    sh(body, env=env)
+    assert (varlib / "serversherpa-kiosk-dev" / "edge.db").read_text() == "a"
+
+
+def test_set_config_line_keeps_other_lines(sh, tmp_path):
+    f = tmp_path / "c.env"; f.write_text("A=1\nB=2\n")
+    sh(f'set_config_line "{f}" B 3; set_config_line "{f}" C 4')
+    assert f.read_text() == "A=1\nB=3\nC=4\n" and oct(f.stat().st_mode & 0o777) == "0o644"
+
+
+def test_move_dev_data_finishes_a_move_cut_short_before_the_config_update(sh, tmp_path):
+    # The folder moved, then the run died before config.env was updated: the
+    # next run must point the config at the dev folder, not leave it on an
+    # empty production path (where the kiosk would start fresh).
+    varlib = tmp_path / "varlib"; varlib.mkdir()
+    prod = varlib / "serversherpa-kiosk"
+    dev = varlib / "serversherpa-kiosk-dev"; dev.mkdir(); (dev / "identity.json").write_text("dev-id")
+    inst, _, _, body, env = _saved(tmp_path, "https://api.dev.serversherpa.com", str(prod), channel="edge")
+    sh(body, env=env)
+    assert f"KIOSK_DATA_DIR={dev}\n" in (inst / "config.env").read_text()
+    assert f'"{dev}:/data"' in (inst / "docker-compose.yml").read_text()
+    assert (dev / "identity.json").read_text() == "dev-id" and not prod.exists()
+
+
+def test_move_dev_data_never_moves_into_a_dev_folder_it_cant_remove(sh, tmp_path):
+    # An empty dev folder that won't go away (a mount point, say) would make
+    # mv put the data *inside* it; refuse instead.
+    varlib = tmp_path / "varlib"; varlib.mkdir()
+    prod = varlib / "serversherpa-kiosk"; prod.mkdir(); (prod / "edge.db").write_text("a")
+    (varlib / "serversherpa-kiosk-dev").mkdir()
+    inst, _, _, body, env = _saved(tmp_path, "https://api.dev.serversherpa.com", str(prod))
+    r = sh('rmdir() { return 1; }; ' + body, env=env, check=False)
+    assert r.returncode != 0 and (prod / "edge.db").read_text() == "a"
+    assert not (varlib / "serversherpa-kiosk-dev" / "serversherpa-kiosk").exists()
+    assert f"KIOSK_DATA_DIR={prod}\n" in (inst / "config.env").read_text()
+
+
+def test_set_config_line_keeps_a_backslash_and_ignores_lookalike_keys(sh, tmp_path):
+    f = tmp_path / "c.env"; f.write_text("KEY_X=1\nKEY=2\n")
+    sh(f"set_config_line \"{f}\" KEY 'a\\tb'")
+    assert f.read_text() == "KEY_X=1\nKEY=a\\tb\n"
