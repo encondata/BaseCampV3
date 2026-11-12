@@ -12,6 +12,7 @@
 #   --uninstall        remove the kiosk (the data folder is kept)
 #   --purge-data       with --uninstall, also delete the data folder (asks you to type DELETE)
 #   --start-fresh      don't look for a phase-1 kiosk's data (it gets a new identity)
+#   --step NAME        run one setup step (used by setup.sh on Ubuntu)
 #   --help             show this help
 #
 # Environment overrides:
@@ -63,6 +64,7 @@ OPT_API_URL="${OPT_API_URL:-}"
 OPT_PORTAL_URL="${OPT_PORTAL_URL:-}"
 OPT_CHANNEL="${OPT_CHANNEL:-}"
 DO_UNINSTALL=0
+STEP=''          # --step NAME: run one setup step (setup.sh, Ubuntu)
 PURGE_DATA=0
 START_FRESH=0    # --start-fresh: skip a phase-1 kiosk's data knowingly
 LEGACY_DIR=''         # phase-1 data to copy (find_legacy_data)
@@ -151,6 +153,7 @@ Options:
   --uninstall        remove the kiosk (the data folder is kept)
   --purge-data       with --uninstall, also delete the data folder (asks you to type DELETE)
   --start-fresh      don't look for a phase-1 kiosk's data (it gets a new identity)
+  --step NAME        run one setup step (used by setup.sh on Ubuntu)
   --help             show this help
 
 Environment: KIOSK_DIR, KIOSK_DATA_DIR, KIOSK_IMAGE, KIOSK_INSTALLER_REF,
@@ -791,13 +794,39 @@ lp_upkeep() {
 }
 # <<< USB label printers
 
+# One apt idiom: wait up to 120 s for another apt (unattended-upgrades) to let go.
+pkg_installed() {  # pkg_installed PKG: 0 when dpkg says it is installed
+  dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'
+}
+apt_update() { apt-get -o DPkg::Lock::Timeout=120 update; }
+apt_install() { DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y "$@"; }
+apt_remove() { DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 remove -y "$@"; }
+
+# ensure_download_tools (Ubuntu): curl, ca-certificates and gpg, which the
+# Docker and Chrome repositories need; only the missing ones are installed.
+ensure_download_tools() {
+  local missing=''
+  command -v curl >/dev/null 2>&1 || missing="$missing curl"
+  pkg_installed ca-certificates || missing="$missing ca-certificates"
+  command -v gpg >/dev/null 2>&1 || missing="$missing gpg"
+  missing="${missing# }"
+  if [ -z "$missing" ]; then
+    info "curl, ca-certificates and gpg are installed."
+    return 0
+  fi
+  info "Installing $missing"
+  # shellcheck disable=SC2086  # one word per package
+  { apt_update && apt_install $missing; } \
+    || die "Couldn't install $missing (apt-get install). See the messages above, then try again."
+}
+
 # remove_printer_autoconfig: system-config-printer-udev makes a CUPS queue for
 # every USB printer plugged in, and CUPS then holds the label printers.
 remove_printer_autoconfig() {
   local pkg=system-config-printer-udev
   command -v dpkg-query >/dev/null 2>&1 || return 0
-  dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' || return 0
-  if DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 remove -y "$pkg" >/dev/null 2>&1; then
+  pkg_installed "$pkg" || return 0
+  if apt_remove "$pkg" >/dev/null 2>&1; then
     info "Removed $pkg (it set up USB label printers as system printers, which blocks the kiosk)."
   else
     warn "Couldn't remove $pkg (apt-get remove -y $pkg); the kiosk removes the printer queues it makes every minute."
@@ -1149,6 +1178,20 @@ start_kiosk() {
   info "The kiosk is running."
 }
 
+# prepare_kiosk_image (--step download): keep the running image as :previous
+# while the channel tag still names it, then pull. Starts nothing; the start
+# step's start_kiosk pulls again (cached, so quick), which also moves the
+# channel tag back to the new image on a retry after a rollback.
+prepare_kiosk_image() {
+  local ref prev
+  ref=$(image_ref)
+  stop_legacy_kiosk
+  prev=$("${DOCKER[@]}" inspect -f '{{.Image}}' "$KIOSK_CONTAINER" 2>/dev/null || true)
+  [ -z "$prev" ] || keep_previous "$prev" "$ref" || true
+  info "Downloading the kiosk image"
+  pull_image
+}
+
 # ── Login items ───────────────────────────────────────────────────────
 # Linux: root systemd timers run update.sh (nightly) and hostnet.sh (every
 # 60 s); an autostart entry (and a menu entry) runs launch.sh at sign-in.
@@ -1180,7 +1223,7 @@ have_python3() { command -v python3 >/dev/null 2>&1; }
 ensure_python3() {
   have_python3 && return 0
   if command -v apt-get >/dev/null 2>&1 \
-     && DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y python3 >/dev/null 2>&1 \
+     && apt_install python3 >/dev/null 2>&1 \
      && have_python3; then
     info "Installed python3 (the kiosk lockdown runs on it)."
   else
@@ -1756,6 +1799,7 @@ parse_args() {
       --uninstall)  DO_UNINSTALL=1; shift ;;
       --purge-data) PURGE_DATA=1; shift ;;
       --start-fresh) START_FRESH=1; shift ;;
+      --step)       [ "$#" -ge 2 ] || die "--step needs a value."; STEP="$2"; shift 2 ;;
       --help|-h)    usage; exit 0 ;;
       *) die "Unknown option '$1'. Try --help." ;;
     esac
@@ -1812,11 +1856,79 @@ create_data_dir() {
   chmod 700 "$KIOSK_DATA_DIR" || die "Couldn't set the permissions of $KIOSK_DATA_DIR."
 }
 
+# Filled in by later steps of the Ubuntu setup (setup.sh).
+ensure_chrome() { die "Not implemented yet."; }
+check_rows() { die "Not implemented yet."; }
+install_setup_launcher() { die "Not implemented yet."; }
+move_dev_data() { die "Not implemented yet."; }
+
+# restart_kiosk (--step restart): start the kiosk from the docker-compose.yml
+# in place and wait until it is healthy.
+restart_kiosk() {
+  if ! { compose up -d >/dev/null 2>&1 && wait_kiosk_healthy; }; then
+    die "The kiosk didn't become healthy (status: ${KIOSK_STATUS:-unknown}). See: docker compose -f \"$KIOSK_DIR/docker-compose.yml\" logs edge"
+  fi
+  info "The kiosk is running."
+}
+
+# run_step NAME ARGS...: one setup step for setup.sh. ARGS are install.sh's
+# own arguments, so ensure_root re-runs the same command under sudo.
+# Exit 0 means the step is done; a failure goes through die.
+run_step() {
+  local name="$1"
+  shift
+  [ "$OS" = Linux ] || die "--step is for the Ubuntu setup (setup.sh)."
+  KIOSK_NONINTERACTIVE=1
+  case "$name" in
+    check) setup_docker_cli; check_rows ;;   # no root, no log
+    tools|docker|docker-start|chrome|python3|printers|move-dev-data|download|start|login-items|launcher|restart) ;;
+    *) die "Unknown step '$name'. Steps: check tools docker docker-start chrome python3 printers move-dev-data download start login-items launcher restart." ;;
+  esac
+  [ "$name" != check ] || return 0
+  ensure_root "$@"
+  check_minimums
+  mkdir -p "$KIOSK_DIR"
+  chmod 755 "$KIOSK_DIR"
+  start_log "$@"
+  case "$name" in
+    tools) ensure_download_tools ;;
+    docker) setup_docker_cli; ensure_docker ;;
+    docker-start) setup_docker_cli; enable_docker_autostart; wait_for_engine 180; check_compose ;;
+    chrome) ensure_chrome strict ;;
+    python3)
+      ensure_python3
+      have_python3 || die "python3 didn't install, so kiosk mode can't run. See the messages above, then try again."
+      ;;
+    printers) setup_label_printers ;;
+    move-dev-data) setup_docker_cli; move_dev_data ;;
+    download)
+      merge_config
+      setup_docker_cli
+      find_browser
+      create_data_dir
+      write_config "$KIOSK_DIR/config.env"
+      render_compose "$KIOSK_DIR/docker-compose.yml"
+      migrate_legacy_data
+      prepare_kiosk_image
+      ;;
+    start) merge_config; setup_docker_cli; start_kiosk ;;
+    login-items) install_login_items ;;
+    launcher) install_setup_launcher ;;
+    restart) setup_docker_cli; restart_kiosk ;;
+  esac
+  return 0
+}
+
 main() {
   parse_args "$@"
   detect_os
   default_dirs
   load_config "$KIOSK_DIR/config.env"
+  if [ -n "$STEP" ]; then
+    [ "$DO_UNINSTALL" = 0 ] || die "--step and --uninstall can't be used together."
+    run_step "$STEP" "$@"
+    return 0
+  fi
   if [ "$DO_UNINSTALL" = 1 ]; then
     ensure_root "$@"
     # Only the data folder from the saved config: a damaged setting elsewhere must not block uninstall.
