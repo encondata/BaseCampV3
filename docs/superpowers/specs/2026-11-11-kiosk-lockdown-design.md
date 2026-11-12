@@ -306,6 +306,10 @@ forwards at once while ready.
 | PIN match | exact, case-sensitive `csg` |
 | Start Kiosk icon | `Icon=web-browser` (theme icon) |
 | Session log | `~/.local/state/serversherpa-kiosk/session.log`, last 1 MB (as `update.log`) |
+| Watcher backoff | Chrome closing within 10 s of its launch 5 times in a row ends the session with rc 1; launch.sh restores and opens the plain app window |
+
+- **Capability check.** `update.sh` refreshes `kiosk_session.py` from `main`, but the kiosk image only moves on a `kiosk-laptop-v*` tag, so a laptop can have the new helper with an older kiosk app that has no Esc → PIN pad. The helper forwards from the waiting page only once the edge's `/config.js` has `"hostOs": "linux"`. With no `hostOs` key at all, it logs, stops the watcher, closes Chrome, restores the desktop and exits with rc 3, and launch.sh opens the plain app window. The result is kept per edge start (forgotten when an edge probe fails) and re-read by the 15 s check.
+- **Token in Chrome history.** Chrome's history on the kiosk profile may record `localhost:8090/#kh=<token>`. The risk is low: the token lasts one session, and the helper answers only the local origin and the session user's own processes.
 
 ## 10. Testing
 
