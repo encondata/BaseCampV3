@@ -341,15 +341,6 @@ def test_check_rows_missing_things_are_add(sh, tmp_path):
     assert rows["kiosk"] == ["add", "will be installed"]
 
 
-def test_check_rows_engine_not_running_and_kiosk_unhealthy(sh, tmp_path):
-    (tmp_path / "docker-compose.yml").write_text("x")
-    fake = tmp_path / "d"; fake.write_text('#!/bin/sh\necho unhealthy\n'); fake.chmod(0o755)
-    rows = _rows(sh(CHECK + f'KIOSK_DIR="{tmp_path}"; DOCKER=("{fake}"); '
-                    'systemctl() { [ "$1" != is-active ]; }; check_rows').stdout)
-    assert rows["docker"] == ["add", "installed; will be started"]
-    assert rows["kiosk"] == ["add", "installed, not healthy (unhealthy); will be started"]
-
-
 def test_check_rows_chrome_on_arm64_is_a_problem(sh, tmp_path):
     rows = _rows(sh(CHECK + f'KIOSK_DIR="{tmp_path}"; ARCH=arm64; chrome_installed() {{ return 1; }}; check_rows').stdout)
     assert rows["chrome"] == ["fix", "Google Chrome isn't available for this processor."]
@@ -519,3 +510,120 @@ def test_set_config_line_keeps_a_backslash_and_ignores_lookalike_keys(sh, tmp_pa
     f = tmp_path / "c.env"; f.write_text("KEY_X=1\nKEY=2\n")
     sh(f"set_config_line \"{f}\" KEY 'a\\tb'")
     assert f.read_text() == "KEY_X=1\nKEY=a\\tb\n"
+
+
+# ── Fix round 1 ────────────────────────────────────────────────────────
+def test_move_dev_data_compose_failure_changes_nothing_and_a_retry_finishes(sh, tmp_path):
+    # The compose template can't be fetched (offline): nothing is stopped,
+    # moved or rewritten. The retry then moves the data and mounts it.
+    varlib = tmp_path / "varlib"; varlib.mkdir()
+    prod = varlib / "serversherpa-kiosk"; prod.mkdir(); (prod / "identity.json").write_text("dev-id")
+    inst, _, calls, body, env = _saved(tmp_path, "https://api.dev.serversherpa.com", str(prod), channel="edge")
+    cfg_before = (inst / "config.env").read_text()
+    r = sh('fetch_companion() { die "Couldn\'t download $1"; }; ' + body, env=env, check=False)
+    assert r.returncode != 0 and "Couldn't download docker-compose.yml" in r.stderr
+    assert (prod / "identity.json").read_text() == "dev-id"
+    assert not (varlib / "serversherpa-kiosk-dev").exists() and not calls.exists()
+    assert (inst / "config.env").read_text() == cfg_before
+    assert (inst / "docker-compose.yml").read_text() == "old\n"
+    assert sorted(p.name for p in inst.iterdir()) == ["config.env", "docker-compose.yml"]
+    sh(body, env=env)
+    dev = varlib / "serversherpa-kiosk-dev"
+    assert (dev / "identity.json").read_text() == "dev-id" and not prod.exists()
+    assert f'"{dev}:/data"' in (inst / "docker-compose.yml").read_text()
+    assert f"KIOSK_DATA_DIR={dev}\n" in (inst / "config.env").read_text()
+
+
+def test_move_dev_data_rerenders_compose_still_mounting_production(sh, tmp_path):
+    # config.env already names the dev folder, but compose still mounts the
+    # production one (an older run cut short): point compose at the data.
+    varlib = tmp_path / "varlib"; varlib.mkdir()
+    prod = varlib / "serversherpa-kiosk"
+    dev = varlib / "serversherpa-kiosk-dev"; dev.mkdir(); (dev / "identity.json").write_text("dev-id")
+    inst, _, _, body, env = _saved(tmp_path, "https://api.dev.serversherpa.com", str(dev), channel="edge")
+    (inst / "docker-compose.yml").write_text(f'    volumes:\n      - "{prod}:/data"\n')
+    sh(body, env=env)
+    compose = (inst / "docker-compose.yml").read_text()
+    assert f'"{dev}:/data"' in compose and f'"{prod}:/data"' not in compose
+    assert (dev / "identity.json").read_text() == "dev-id" and not prod.exists()
+
+
+def test_move_dev_data_leaves_a_compose_that_already_mounts_dev(sh, tmp_path):
+    varlib = tmp_path / "varlib"; varlib.mkdir()
+    dev = varlib / "serversherpa-kiosk-dev"; dev.mkdir(); (dev / "identity.json").write_text("dev-id")
+    inst, _, calls, body, env = _saved(tmp_path, "https://api.dev.serversherpa.com", str(dev))
+    sh(body, env=env)
+    assert (inst / "docker-compose.yml").read_text() == "old\n" and not calls.exists()
+
+
+def test_move_dev_data_refuses_a_symlinked_production_folder(sh, tmp_path):
+    varlib = tmp_path / "varlib"; varlib.mkdir()
+    real = tmp_path / "elsewhere"; real.mkdir(); (real / "identity.json").write_text("dev-id")
+    prod = varlib / "serversherpa-kiosk"; prod.symlink_to(real)
+    inst, _, calls, body, env = _saved(tmp_path, "https://api.dev.serversherpa.com", str(prod))
+    r = sh(body, env=env, check=False)
+    assert r.returncode != 0 and "symbolic link" in r.stderr and str(real) in r.stderr
+    assert prod.is_symlink() and (real / "identity.json").read_text() == "dev-id"
+    assert not (varlib / "serversherpa-kiosk-dev").exists() and not calls.exists()
+    assert f"KIOSK_DATA_DIR={prod}\n" in (inst / "config.env").read_text()
+
+
+def test_move_dev_data_finishing_prints_finishing_and_finished_only(sh, tmp_path):
+    varlib = tmp_path / "varlib"; varlib.mkdir()
+    prod = varlib / "serversherpa-kiosk"
+    dev = varlib / "serversherpa-kiosk-dev"; dev.mkdir(); (dev / "identity.json").write_text("dev-id")
+    inst, _, _, body, env = _saved(tmp_path, "https://api.dev.serversherpa.com", str(prod))
+    out = sh(body, env=env).stdout
+    assert "Finishing the earlier move" in out and "Finished moving the dev kiosk's data" in out
+    assert "Moved the dev kiosk's data" not in out
+
+
+def _logging_docker(tmp_path, script):
+    calls = tmp_path / "docker.calls"
+    fake = tmp_path / "d"
+    fake.write_text(f'#!/bin/sh\necho "$*" >> "{calls}"\n{script}'); fake.chmod(0o755)
+    return fake, calls
+
+
+def test_check_rows_engine_inactive_reports_the_kiosk_stopped_without_waking_docker(sh, tmp_path):
+    (tmp_path / "docker-compose.yml").write_text("x")
+    fake, calls = _logging_docker(tmp_path, "echo healthy\n")
+    rows = _rows(sh(CHECK + f'KIOSK_DIR="{tmp_path}"; DOCKER=("{fake}"); '
+                    'systemctl() { [ "$1" != is-active ]; }; check_rows').stdout)
+    assert rows["docker"] == ["add", "installed; will be started"]
+    assert rows["kiosk"] == ["add", "installed, stopped (Docker isn't running); will be started"]
+    assert not calls.exists() or "inspect" not in calls.read_text()
+
+
+def test_check_rows_kiosk_unhealthy(sh, tmp_path):
+    (tmp_path / "docker-compose.yml").write_text("x")
+    fake, _ = _logging_docker(tmp_path, "echo unhealthy\n")
+    rows = _rows(sh(CHECK + f'KIOSK_DIR="{tmp_path}"; DOCKER=("{fake}"); check_rows').stdout)
+    assert rows["kiosk"] == ["add", "installed, not healthy (unhealthy); will be started"]
+
+
+def test_check_rows_kiosk_without_docker_permission_is_not_checked(sh, tmp_path):
+    (tmp_path / "docker-compose.yml").write_text("x")
+    fake, _ = _logging_docker(tmp_path, (
+        'echo "permission denied while trying to connect to the Docker daemon socket at '
+        'unix:///var/run/docker.sock" >&2\nexit 1\n'))
+    rows = _rows(sh(CHECK + f'KIOSK_DIR="{tmp_path}"; DOCKER=("{fake}"); check_rows').stdout)
+    assert rows["kiosk"][0] == "add" and "not checked" in rows["kiosk"][1]
+    assert "not healthy" not in rows["kiosk"][1]
+
+
+def test_check_rows_compose_missing_while_the_engine_runs_is_add(sh, tmp_path):
+    fake, _ = _logging_docker(tmp_path, 'if [ "$1" = compose ]; then exit 1; fi\necho healthy\n')
+    rows = _rows(sh(CHECK + f'KIOSK_DIR="{tmp_path}"; DOCKER=("{fake}"); check_rows').stdout)
+    assert rows["docker"] == ["add", "installed; will be started"]
+
+
+def test_uninstall_removes_the_setup_runner_and_snapshot(sh, tmp_path):
+    inst, data = tmp_path / "inst", tmp_path / "data"
+    inst.mkdir(); data.mkdir()
+    for f in ("config.env", "setup-kiosk.sh"):
+        (inst / f).write_text("x")
+    snap = inst / "setup-snapshot"; snap.mkdir(); (snap / "config.env").write_text("x")
+    sh(f'DOCKER=(true); KIOSK_DIR="{inst}"; KIOSK_DATA_DIR="{data}"; '
+       'remove_login_items() { :; }; remove_label_printer_files() { :; }; uninstall')
+    assert not (inst / "setup-kiosk.sh").exists() and not snap.exists()

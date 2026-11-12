@@ -395,7 +395,9 @@ write_config() {
 }
 
 # set_config_line FILE KEY VALUE: replace KEY's line (or append it), keeping
-# every other line; written atomically, mode 644.
+# every other line; written atomically, mode 644. When KEY appears more than
+# once, the first line is replaced and the later duplicates are dropped, so
+# the value written is the one config_value (first KEY= line) reads back.
 set_config_line() {
   local file="$1" tmp
   check_config_value "$2" "$3"
@@ -2062,7 +2064,21 @@ check_rows() {
     check_row kiosk add "will be installed"
     return 0
   fi
-  status=$("${DOCKER[@]}" inspect -f '{{.State.Health.Status}}' "$KIOSK_CONTAINER" 2>/dev/null </dev/null || true)
+  # Ask Docker only when the engine is already active: with socket-activated
+  # docker.io, docker inspect would start it.
+  if ! systemctl is-active --quiet docker.service 2>/dev/null </dev/null; then
+    check_row kiosk add "installed, stopped (Docker isn't running); will be started"
+    return 0
+  fi
+  if ! status=$("${DOCKER[@]}" inspect -f '{{.State.Health.Status}}' "$KIOSK_CONTAINER" 2>&1 </dev/null); then
+    case "$status" in
+      *[Pp]ermission\ denied*)
+        # Not root and not in the docker group (setup.sh has only ok/add/fix).
+        check_row kiosk add "installed, not checked (no permission to ask Docker); will be started"
+        return 0 ;;
+    esac
+    status=''
+  fi
   if [ "$status" = healthy ]; then
     check_row kiosk ok "running"
   else
@@ -2125,30 +2141,50 @@ install_setup_launcher() {
 # move_dev_data (--step move-dev-data): a laptop already on the dev servers
 # keeps its data in the production folder; move it, once, to the dev folder.
 # It goes by the *saved* environment (no merge_config). Production data, and a
-# custom KIOSK_DATA_DIR, are never moved. Order: stop the kiosk, mv (one
-# rename between sibling folders, so atomic), then config.env, then compose.
+# custom KIOSK_DATA_DIR, are never moved. Order:
+#   1. render the new compose file to a temp file (this can fail offline), so
+#      a failure there changes nothing;
+#   2. stop the kiosk, then mv (one rename between sibling folders, so atomic);
+#   3. mv the rendered compose file into place, then config.env last.
 # A run cut short after the mv leaves the data in the dev folder with the
 # config still naming the (now missing) production folder; the next run sees
-# exactly that and finishes the config update, so the data is never lost track
-# of. Updating the config first would instead leave a config naming the dev
-# folder while the data still sat in the production one, which no later run
-# would recognize. It starts nothing: the start step brings the kiosk back.
+# exactly that and finishes the update, so the data is never lost track of.
+# A config that already names the dev folder while compose still mounts the
+# production one (an older run cut short) gets its compose file re-rendered.
+# It starts nothing: the start step brings the kiosk back.
 move_dev_data() {
-  local cfg="$KIOSK_DIR/config.env" api="$CFG_API_URL" dir="$CFG_DATA_DIR"
+  local cfg="$KIOSK_DIR/config.env" file="$KIOSK_DIR/docker-compose.yml"
+  local api="$CFG_API_URL" dir="$CFG_DATA_DIR" finishing=0 tmp
   [ -f "$cfg" ] || return 0
   while [ "${api%/}" != "$api" ]; do api="${api%/}"; done
   while [ "${dir%/}" != "$dir" ]; do dir="${dir%/}"; done
   [ "$api" = "$DEV_API_URL" ] || return 0
+  if [ "$dir" = "$DEV_DATA_DIR" ]; then
+    [ -f "$file" ] && grep -qF "\"$PROD_DATA_DIR:/data\"" "$file" || return 0
+    KIOSK_DATA_DIR="$DEV_DATA_DIR"
+    move_dev_compose
+    info "Pointed the kiosk's compose file at its data in $DEV_DATA_DIR."
+    return 0
+  fi
   [ -z "$dir" ] || [ "$dir" = "$PROD_DATA_DIR" ] || return 0
-  if [ ! -e "$PROD_DATA_DIR" ] && [ ! -L "$PROD_DATA_DIR" ]; then
+  if [ -L "$PROD_DATA_DIR" ]; then
+    die "$PROD_DATA_DIR is a symbolic link (to $(readlink "$PROD_DATA_DIR")), so the installer won't move the dev kiosk's data. Replace the link with the folder it points to (or move that folder to $DEV_DATA_DIR and remove the link), then try again."
+  fi
+  if [ ! -e "$PROD_DATA_DIR" ]; then
     # Nothing to move, unless an earlier run moved it and stopped short.
     [ -d "$DEV_DATA_DIR" ] && [ -n "$(ls -A "$DEV_DATA_DIR" 2>/dev/null)" ] || return 0
+    finishing=1
     info "Finishing the earlier move of the dev kiosk's data to $DEV_DATA_DIR."
-  else
-    if [ -d "$DEV_DATA_DIR" ] && [ -n "$(ls -A "$DEV_DATA_DIR" 2>/dev/null)" ]; then
-      die "Both $PROD_DATA_DIR and $DEV_DATA_DIR hold kiosk data. Move one of them aside, then try again."
-    fi
-    if [ -f "$KIOSK_DIR/docker-compose.yml" ] && docker_answers; then
+  elif [ -d "$DEV_DATA_DIR" ] && [ -n "$(ls -A "$DEV_DATA_DIR" 2>/dev/null)" ]; then
+    die "Both $PROD_DATA_DIR and $DEV_DATA_DIR hold kiosk data. Move one of them aside, then try again."
+  fi
+  check_data_dir "$DEV_DATA_DIR"
+  KIOSK_DATA_DIR="$DEV_DATA_DIR"
+  tmp=$(mktemp "$file.XXXXXX") || die "Couldn't write $file."
+  TMP_FILES+=("$tmp")
+  render_compose "$tmp"
+  if [ "$finishing" = 0 ]; then
+    if [ -f "$file" ] && docker_answers; then
       compose stop >/dev/null 2>&1 \
         || die "Couldn't stop the kiosk to move its data. Check 'systemctl status docker', then try again."
     fi
@@ -2160,12 +2196,25 @@ move_dev_data() {
     mv "$PROD_DATA_DIR" "$DEV_DATA_DIR" \
       || die "Couldn't move $PROD_DATA_DIR to $DEV_DATA_DIR. The kiosk's data is still in $PROD_DATA_DIR."
   fi
-  KIOSK_DATA_DIR="$DEV_DATA_DIR"
+  mv -f "$tmp" "$file" || die "Couldn't write $file."
   CFG_DATA_DIR="$DEV_DATA_DIR"
-  check_data_dir "$DEV_DATA_DIR"
   set_config_line "$cfg" KIOSK_DATA_DIR "$DEV_DATA_DIR"
-  render_compose "$KIOSK_DIR/docker-compose.yml"
-  info "Moved the dev kiosk's data from $PROD_DATA_DIR to $DEV_DATA_DIR (production and dev kiosks now keep separate data)."
+  if [ "$finishing" = 1 ]; then
+    info "Finished moving the dev kiosk's data to $DEV_DATA_DIR."
+  else
+    info "Moved the dev kiosk's data from $PROD_DATA_DIR to $DEV_DATA_DIR (production and dev kiosks now keep separate data)."
+  fi
+}
+
+# move_dev_compose: render the compose file (KIOSK_DATA_DIR already set) to a
+# temp file beside it, then mv it into place, so a failed render leaves the
+# old file as it was.
+move_dev_compose() {
+  local file="$KIOSK_DIR/docker-compose.yml" tmp
+  tmp=$(mktemp "$file.XXXXXX") || die "Couldn't write $file."
+  TMP_FILES+=("$tmp")
+  render_compose "$tmp"
+  mv -f "$tmp" "$file" || die "Couldn't write $file."
 }
 
 # ── Google Chrome (Ubuntu) ────────────────────────────────────────────
