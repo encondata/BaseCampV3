@@ -1,3 +1,8 @@
+import os
+import signal
+import subprocess
+import time
+
 import pytest
 
 from conftest import ALL_ROWS_OK, SYS_OK
@@ -598,3 +603,110 @@ def test_cleanup_removes_a_downloaded_engine_only(setup, tmp_path):
     setup(f'STEP_LOG_DIR=$(mktemp -d); ENGINE="{dl}"; cleanup')
     setup('STEP_LOG_DIR=$(mktemp -d); cleanup')
     assert not dl.exists() and given.exists()
+
+
+# ── Task 7 fix round 1 ────────────────────────────────────────────────
+
+def test_done_screen_defaults_to_close(setup, tmp_path):
+    setup(FLOW + 'main', answers=["0", "0 prod", "1"], check=False)
+    done = wt_calls(tmp_path)[-1].splitlines()
+    assert "--defaultno" in done and "Restart now" in done
+
+
+def test_plain_done_screen_enter_means_close(setup, tmp_path):
+    r = setup(FLOW + 'as_root() { "$@"; }; systemctl() { echo "systemctl $*" >> "$PWD/sys.calls"; }; main',
+              env={"KIOSK_SETUP_PLAIN": "1"}, tty="1\n1\n\n", check=False)
+    assert r.returncode == 0, r.stderr
+    assert not (tmp_path / "sys.calls").exists()
+    assert "2) Close (press Enter)" in (tmp_path / "tty.out").read_text()
+
+
+def test_move_dev_data_failure_says_the_move_did_not_finish(setup, tmp_path):
+    write_config(tmp_path, *DEV, "edge")
+    (tmp_path / "engine.fail").write_text("move-dev-data\n")
+    r = setup(FLOW + 'main --env edge --yes', check=False)
+    assert r.returncode == 1
+    assert "keeps its current version and settings" not in r.stdout
+    assert "the data move didn't finish. Run the setup again to finish it." in r.stdout
+    assert "download" not in engine_steps(tmp_path)
+
+
+def test_setup_log_is_root_only(setup, tmp_path):
+    (tmp_path / "setup.log").write_text("old\n"); (tmp_path / "setup.log").chmod(0o644)
+    setup(FLOW + 'main --env prod --yes', check=False)
+    assert (tmp_path / "setup.log").stat().st_mode & 0o777 == 0o600
+
+
+# A step that runs until it is stopped: its pid and its child's pid go to files.
+SLOW_ENGINE = r'''#!/usr/bin/env bash
+d="$(dirname "$0")"
+case " $* " in
+  *" --step $SLOW_STEP "*)
+    echo $$ > "$d/slow.pid"; sleep 300 & echo $! > "$d/sleep.pid.t"; mv "$d/sleep.pid.t" "$d/sleep.pid"
+    wait; exit 0 ;;
+esac
+exec bash "$d/engine.sh" "$@"
+'''
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def interrupted(tmp_path, body, slow_step, sig):
+    from conftest import BASH, SETUP_SH
+    eng = tmp_path / "slow.sh"; eng.write_text(SLOW_ENGINE); eng.chmod(0o755)
+    tmp = tmp_path / "tmpdir"; tmp.mkdir()
+    (tmp_path / "answers").write_text(""); (tmp_path / "tty").write_text("")
+    env = {**os.environ, "KIOSK_SETUP_LIB": "1", "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}",
+           "WT_LOG": str(tmp_path / "wt.log"), "WT_ANSWERS": str(tmp_path / "answers"),
+           "SUDO_LOG": str(tmp_path / "sudo.log"), "KIOSK_TTY": str(tmp_path / "tty"),
+           "KIOSK_TTY_OUT": str(tmp_path / "tty.out"), "KIOSK_SETUP_ENGINE": str(eng),
+           "KIOSK_SETUP_LOG": str(tmp_path / "setup.log"), "KIOSK_OS_RELEASE": str(tmp_path / "os-release"),
+           "KIOSK_DIR": str(tmp_path / "opt"), "KIOSK_VAR_LIB": str(tmp_path / "varlib"),
+           "KIOSK_SETUP_POLL_S": "0.05", "TERM": "xterm", "TMPDIR": str(tmp), "SLOW_STEP": slow_step}
+    proc = subprocess.Popen([BASH, "-c", f'source "{SETUP_SH}"; {body}'], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, cwd=tmp_path)
+    deadline = time.time() + 20
+    while not (tmp_path / "sleep.pid").exists():
+        assert proc.poll() is None and time.time() < deadline, proc.communicate()
+        time.sleep(0.05)
+    proc.send_signal(sig)
+    pids = [int((tmp_path / f).read_text()) for f in ("slow.pid", "sleep.pid")]
+    try:
+        out, err = proc.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        for p in pids:   # never leave the fake step behind
+            if alive(p):
+                os.kill(p, signal.SIGKILL)
+        raise
+    time.sleep(0.2)
+    return proc.returncode, out, err, pids, tmp
+
+
+@pytest.mark.parametrize("sig,code", [(signal.SIGINT, 130), (signal.SIGTERM, 143)])
+def test_interrupt_stops_the_running_step(setup, tmp_path, sig, code):
+    rc, out, err, pids, tmp = interrupted(tmp_path, FLOW + 'main --env prod --yes', "printers", sig)
+    assert rc == code, out + err
+    assert not any(alive(p) for p in pids)
+    assert list(tmp.iterdir()) == []           # the step logs are gone, and nothing still writes there
+    assert "Step 6 of 9: Set up USB label printers ... " in out
+    assert "download" not in engine_steps(tmp_path)
+
+
+def test_interrupting_a_half_done_switch_puts_the_laptop_back(setup, tmp_path):
+    write_config(tmp_path, *PROD, "stable")
+    before = (tmp_path / "opt" / "config.env").read_text()
+    (tmp_path / "opt" / "docker-compose.yml").write_text("prod compose\n")
+    rc, out, err, pids, _ = interrupted(tmp_path, FLOW + 'main --env dev --yes', "start", signal.SIGINT)
+    assert rc == 130, out + err
+    assert not any(alive(p) for p in pids)
+    assert (tmp_path / "opt" / "config.env").read_text() == before
+    assert (tmp_path / "opt" / "docker-compose.yml").read_text() == "prod compose\n"
+    assert "restart" in engine_steps(tmp_path)
+    assert "The setup put this laptop back on Prod" in out

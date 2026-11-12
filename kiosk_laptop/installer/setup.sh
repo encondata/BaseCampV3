@@ -455,11 +455,31 @@ has_problems() {
 # appended to LOG. stdin is /dev/null: when piped, bash is reading this script
 # from stdin. The output goes through a pipe read to EOF: install.sh logs with
 # `exec > >(tee …)`, which can still be writing after install.sh exits.
+# It runs in a process group of its own (sudo, install.sh and all they start),
+# whose id is in engine_pgid_file while it runs, so stop_step can stop it.
 run_engine() {
+  local cmd pgf rc
   engine_env
-  as_root env "${ENGINE_ENV[@]}" bash "$ENGINE" --step "$1" --yes ${ENGINE_ARGS[@]+"${ENGINE_ARGS[@]}"} \
-    </dev/null 2>&1 | cat >>"$2"
-  return "${PIPESTATUS[0]}"
+  cmd=(env "${ENGINE_ENV[@]}" bash "$ENGINE" --step "$1" --yes ${ENGINE_ARGS[@]+"${ENGINE_ARGS[@]}"})
+  is_root || cmd=(sudo -n "${cmd[@]}")
+  pgf=$(engine_pgid_file)
+  in_own_group "$pgf" "${cmd[@]}" </dev/null 2>&1 | cat >>"$2"
+  rc=${PIPESTATUS[0]}
+  [ "$pgf" = /dev/null ] || rm -f "$pgf"
+  return "$rc"
+}
+
+# engine_pgid_file: where run_engine notes the running step's group id.
+engine_pgid_file() {
+  if [ -n "$STEP_LOG_DIR" ]; then printf '%s' "$STEP_LOG_DIR/engine.pgid"; else printf '/dev/null'; fi
+}
+
+# in_own_group PIDFILE CMD...: exec CMD as the leader of a new process group,
+# its pid (= the group id) written to PIDFILE first. bash 3.2 has no setpgid
+# and macOS no setsid; perl is on every Ubuntu (perl-base is essential).
+in_own_group() {
+  perl -e 'open(my $f, ">", shift) or die "group id file: $!\n"; print $f "$$\n"; close $f;
+    setpgrp(0, 0) or die "setpgrp: $!\n"; exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n"' "$@"
 }
 
 # ── UI layer ──────────────────────────────────────────────────────────
@@ -523,24 +543,28 @@ plain_ask() { { printf '%s' "$1" >>"$TTY_OUT"; } 2>/dev/null || printf '%s' "$1"
 
 plain_title() { tty_say ''; tty_say "== $1 =="; tty_say ''; }
 
-# ui_yesno TITLE TEXT YES_LABEL NO_LABEL: 0 = yes; 1 = no, Esc or EOF.
+# ui_yesno TITLE TEXT YES_LABEL NO_LABEL [no]: 0 = yes; 1 = no, Esc or EOF.
+# With "no", NO_LABEL is the default: Enter picks it.
 ui_yesno() {
-  local ans size
+  local ans size defno=()
   if [ "$UI" = whiptail ]; then
+    [ "${5:-}" != no ] || defno=(--defaultno)
     size=$(wt_size "$2" 7)
     # shellcheck disable=SC2086  # size is "HEIGHT WIDTH"
-    wt --backtitle "$BACKTITLE" --title "$1" --scrolltext --yes-button "$3" --no-button "$4" \
-      --yesno "$2" $size >/dev/null || return 1   # No and Esc (255) are both 1
+    wt --backtitle "$BACKTITLE" --title "$1" --scrolltext ${defno[@]+"${defno[@]}"} --yes-button "$3" \
+      --no-button "$4" --yesno "$2" $size >/dev/null || return 1   # No and Esc (255) are both 1
     return 0
   fi
   plain_title "$1"; tty_say "$2"; tty_say ''
-  tty_say "1) $3"; tty_say "2) $4"
+  tty_say "1) $3"
+  if [ "${5:-}" = no ]; then tty_say "2) $4 (press Enter)"; else tty_say "2) $4"; fi
   while :; do
     plain_ask 'Choose 1 or 2: '
     plain_read ans || { tty_say ''; return 1; }
     case "$ans" in
       1) return 0 ;;
       2) return 1 ;;
+      '') [ "${5:-}" != no ] || return 1 ;;
     esac
     tty_say 'Type 1 or 2.'
   done
@@ -757,6 +781,8 @@ SETUP_STEP_LOG=''      # the log of the step running now
 CURRENT_ENV=none
 CHOSEN_ENV=''
 KEEPALIVE_PID=''
+STEP_PID=''            # the running step's background subshell
+ACTIVE_STEP=''         # index of the step running or failed, until it is done or quit
 
 # log_line TEXT: one timestamped (24-hour) line in SETUP_LOG.
 log_line() {
@@ -808,14 +834,25 @@ restore_config() {
   run_engine restart "$SETUP_STEP_LOG"
 }
 
-# run_setup_step IDX LOG: the install.sh steps behind progress step IDX.
+# run_setup_step IDX LOG: the install.sh steps behind progress step IDX. The
+# install.sh step running now goes in $STEP_LOG_DIR/engine.step (a file:
+# steps run in a background subshell).
 run_setup_step() {
   case "${STEP_IDS[$1]}" in
-    download) run_engine move-dev-data "$2" && snapshot_config && run_engine download "$2" ;;
-    finish) run_engine login-items "$2" && run_engine launcher "$2" ;;
-    *) run_engine "${STEP_IDS[$1]}" "$2" ;;
+    download) engine_step move-dev-data "$2" && snapshot_config && engine_step download "$2" ;;
+    finish) engine_step login-items "$2" && engine_step launcher "$2" ;;
+    *) engine_step "${STEP_IDS[$1]}" "$2" ;;
   esac
 }
+
+# engine_step STEP LOG: run_engine, noting STEP in $STEP_LOG_DIR/engine.step.
+engine_step() {
+  printf '%s\n' "$1" >"$STEP_LOG_DIR/engine.step"
+  run_engine "$1" "$2"
+}
+
+# last_engine_step: the install.sh step that ran last.
+last_engine_step() { cat "$STEP_LOG_DIR/engine.step" 2>/dev/null; }
 
 # step_reason LOG: the last "Error: " line of LOG without its prefix.
 step_reason() {
@@ -870,8 +907,11 @@ run_one_step() {
   : >"$log"
   rm -f "$STEP_LOG_DIR/step.done"
   STEP_STATES[i]=running
+  # A background job ignores Ctrl+C, and install.sh runs in a group of its
+  # own: the INT trap (on_signal) stops the step.
   ( run_setup_step "$i" "$log"; rc=$?; : >"$STEP_LOG_DIR/step.done"; exit "$rc" ) &
   pid=$!
+  STEP_PID=$pid
   if [ "$UI" = whiptail ] && [ "$KIOSK_SETUP_YES" != 1 ]; then
     pct=$(progress_percent)
     size=$(wt_size "$(progress_text)" 6)
@@ -882,6 +922,7 @@ run_one_step() {
     say_part "Step $((i + 1)) of ${#STEP_IDS[@]}: ${STEP_LABELS[$i]} ... "
   fi
   wait "$pid"; rc=$?
+  STEP_PID=''
   log_line "---- step ${STEP_IDS[$i]} ----"
   log_file "$log"
   if [ "$UI" != whiptail ] || [ "$KIOSK_SETUP_YES" = 1 ]; then
@@ -893,8 +934,12 @@ run_one_step() {
 # quit_after_failure IDX: put a failed switch back, say what happened; 1.
 quit_after_failure() {
   local id="${STEP_IDS[$1]}" label msg
+  ACTIVE_STEP=''
   label=$(env_short_label "$CURRENT_ENV")
-  if { [ "$id" = download ] || [ "$id" = start ]; } && [ -e "$STEP_LOG_DIR/snapshot.taken" ] \
+  if [ "$id" = download ] && [ "$(last_engine_step)" = move-dev-data ]; then
+    # install.sh's move-dev-data picks up a move that was cut short.
+    msg="The setup stopped while moving this laptop's kiosk data to the dev folder, so the data move didn't finish. Run the setup again to finish it."
+  elif { [ "$id" = download ] || [ "$id" = start ]; } && [ -e "$STEP_LOG_DIR/snapshot.taken" ] \
      && [ "$CURRENT_ENV" != none ] && [ "$CHOSEN_ENV" != "$CURRENT_ENV" ]; then
     ui_info "Putting this laptop back on ${label}…" "$TITLE_PROGRESS"
     SETUP_STEP_LOG="$STEP_LOG_DIR/restore.log"
@@ -935,7 +980,8 @@ run_steps() {
           || say "Step $((i + 1)) of $n: ${STEP_LABELS[$i]} (already installed)"
         i=$((i + 1)); continue ;;
     esac
-    if run_one_step "$i"; then STEP_STATES[i]="done"; i=$((i + 1)); continue; fi
+    ACTIVE_STEP=$i   # running, or failed and waiting for Try again / Quit
+    if run_one_step "$i"; then STEP_STATES[i]="done"; ACTIVE_STEP=''; i=$((i + 1)); continue; fi
     STEP_STATES[i]=failed
     reason=$(step_reason "$SETUP_STEP_LOG")
     log_line "Step $((i + 1)) failed: ${STEP_LABELS[$i]}: $reason"
@@ -965,7 +1011,7 @@ finish_screen() {
   log_line "Done."
   text=$(printf 'Done. Sign out and back in (or restart) to start the kiosk.\n\nLog: %s' "$SETUP_LOG")
   if [ "$KIOSK_SETUP_YES" = 1 ]; then printf '%s\n' "$text"; return 0; fi
-  if ui_yesno "Done" "$text" "Restart now" "Close"; then
+  if ui_yesno "Done" "$text" "Restart now" "Close" no; then   # Enter = Close, never a reboot
     log_line "Restarting the laptop."
     as_root systemctl reboot
   fi
@@ -1024,6 +1070,58 @@ cleanup() {
   [ -z "$ENGINE" ] || [ "$ENGINE" = "${KIOSK_SETUP_ENGINE:-}" ] || rm -f "$ENGINE"
 }
 
+# engine_pgid: the running install.sh step's process group id, or nothing.
+engine_pgid() {
+  local pg
+  pg=$(cat "$(engine_pgid_file)" 2>/dev/null)
+  case "$pg" in ''|*[!0123456789]*) ;; *) printf '%s' "$pg" ;; esac
+}
+
+# stop_group PGID: TERM to the whole group. Its root processes need a root
+# kill: a user's kill reaches only sudo, which passes it to install.sh alone.
+stop_group() {
+  kill -TERM -- "-$1" 2>/dev/null
+  is_root || as_root kill -TERM -- "-$1" >/dev/null 2>&1
+}
+
+# stop_step: stop the running step: its subshell (so no later install.sh step
+# starts) and the install.sh step's process group, then wait for them to end
+# (up to KIOSK_SETUP_STOP_WAIT_S, default 30 s).
+stop_step() {
+  local pid="$STEP_PID" pg pg2 n=0 max
+  STEP_PID=''
+  [ -z "$pid" ] || kill -TERM "$pid" 2>/dev/null
+  pg=$(engine_pgid)
+  [ -z "$pg" ] || stop_group "$pg"
+  [ -z "$pid" ] || { wait "$pid"; } 2>/dev/null
+  pg2=$(engine_pgid)   # a step that was just starting when the subshell got TERM
+  if [ -n "$pg2" ] && [ "$pg2" != "$pg" ]; then stop_group "$pg2"; pg=$pg2; fi
+  [ -n "$pg" ] || return 0
+  max=$(( ${KIOSK_SETUP_STOP_WAIT_S:-30} * 5 ))
+  while pgrep -g "$pg" >/dev/null 2>&1 && [ "$n" -lt "$max" ]; do
+    sleep 0.2; n=$((n + 1))
+  done
+  rm -f "$(engine_pgid_file)"
+}
+
+# on_signal INT|TERM: stop the running step, put a half-done switch back the
+# way Quit does, then exit 130 (INT) or 143 (TERM); the EXIT trap cleans up.
+on_signal() {
+  local code=130 was_running="$STEP_PID"
+  [ "$1" = INT ] || code=143
+  trap '' INT TERM
+  stop_step
+  log_line "Interrupted ($1)."
+  if [ -n "$ACTIVE_STEP" ]; then
+    if [ -n "$was_running" ] && { [ "$UI" != whiptail ] || [ "$KIOSK_SETUP_YES" = 1 ]; }; then
+      say "stopped"
+    fi
+    STEP_STATES[ACTIVE_STEP]=failed
+    quit_after_failure "$ACTIVE_STEP"
+  fi
+  exit "$code"
+}
+
 # start_sudo_keepalive: keep sudo's cached credentials fresh during the install.
 start_sudo_keepalive() {
   ! is_root && [ "$(row_state admin)" = ok ] || return 0
@@ -1042,12 +1140,15 @@ main() {
   fi
   STEP_LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/serversherpa-setup.XXXXXX") || return 1
   trap cleanup EXIT
+  trap 'on_signal INT' INT
+  trap 'on_signal TERM' TERM
   ui_init
   [ "$KIOSK_SETUP_YES" != 1 ] || UI=plain
   load_saved_config
   CURRENT_ENV=$(current_env)
   checklist_screen || return 1
-  as_root touch "$SETUP_LOG" && as_root chmod 644 "$SETUP_LOG"
+  # Root only: install output can include URLs and settings.
+  ( umask 077; as_root touch "$SETUP_LOG" ) && as_root chmod 600 "$SETUP_LOG"
   log_line "---- setup.sh $* ----"
   start_sudo_keepalive
   while :; do
