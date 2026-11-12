@@ -451,12 +451,15 @@ has_problems() {
   return 1
 }
 
-# run_engine STEP LOG: run one install.sh step as root, output appended to LOG.
-# stdin is /dev/null: when piped, bash is reading this script from stdin.
+# run_engine STEP LOG: run one install.sh step as root, stdout and stderr
+# appended to LOG. stdin is /dev/null: when piped, bash is reading this script
+# from stdin. The output goes through a pipe read to EOF: install.sh logs with
+# `exec > >(tee …)`, which can still be writing after install.sh exits.
 run_engine() {
   engine_env
   as_root env "${ENGINE_ENV[@]}" bash "$ENGINE" --step "$1" --yes ${ENGINE_ARGS[@]+"${ENGINE_ARGS[@]}"} \
-    </dev/null >>"$2" 2>&1
+    </dev/null 2>&1 | cat >>"$2"
+  return "${PIPESTATUS[0]}"
 }
 
 # ── UI layer ──────────────────────────────────────────────────────────
@@ -668,6 +671,11 @@ checklist_screen() {
 pick_env() {
   local cur="${CURRENT_ENV:-none}" def env desc note items
   def=$cur; [ "$def" != none ] || def=prod
+  # --env highlights that choice (custom only where it is offered).
+  case "$OPT_ENV" in
+    prod|rc|dev|edge) def=$OPT_ENV ;;
+    custom) [ "$cur" != custom ] || def=custom ;;
+  esac
   if [ "$KIOSK_SETUP_YES" = 1 ]; then
     env=${OPT_ENV:-$def}
     case "$env" in
@@ -736,13 +744,325 @@ api_check_screen() {
   done
 }
 
+# ── Progress ──────────────────────────────────────────────────────────
+STEP_IDS=(tools docker docker-start chrome python3 printers download start finish)
+STEP_LABELS=("Install download tools" "Install Docker Engine" "Start Docker and enable it at boot"
+             "Install Google Chrome" "Install python3" "Set up USB label printers"
+             "Download the kiosk app for the chosen environment"
+             "Start the kiosk and wait for it to be healthy"
+             "Install kiosk mode, the Start Kiosk icon, sign-in startup and nightly updates")
+STEP_STATES=(pending pending pending pending pending pending pending pending pending)
+STEP_LOG_DIR=''        # per-step logs; removed on exit
+SETUP_STEP_LOG=''      # the log of the step running now
+CURRENT_ENV=none
+CHOSEN_ENV=''
+KEEPALIVE_PID=''
+
+# log_line TEXT: one timestamped (24-hour) line in SETUP_LOG.
+log_line() {
+  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | as_root tee -a "$SETUP_LOG" >/dev/null 2>&1 || true
+}
+
+# log_file FILE: append FILE to SETUP_LOG.
+log_file() { as_root tee -a "$SETUP_LOG" <"$1" >/dev/null 2>&1 || true; }
+
+# say TEXT / say_part TEXT: progress lines, on stdout with --yes, else the tty.
+say() { if [ "$KIOSK_SETUP_YES" = 1 ]; then printf '%s\n' "$1"; else tty_say "$1"; fi; }
+say_part() { if [ "$KIOSK_SETUP_YES" = 1 ]; then printf '%s' "$1"; else plain_ask "$1"; fi; }
+
+# step_needed IDX: 0 when step IDX has work to do.
+step_needed() {
+  case "${STEP_IDS[$1]}" in
+    tools) [ "$(row_state tools)" = add ] ;;
+    docker) [ "$(row_state docker)" = add ] || [ "$(row_state snapdocker)" = add ] ;;
+    chrome|python3) [ "$(row_state "${STEP_IDS[$1]}")" = add ] ;;
+    *) return 0 ;;
+  esac
+}
+
+# snapshot_config: copy config.env and docker-compose.yml aside once per run,
+# before the first download (a retry must not snapshot a half-written switch).
+# The marker is a file: steps run in a background subshell.
+snapshot_config() {
+  local snap="$KIOSK_DIR/setup-snapshot"
+  [ ! -e "$STEP_LOG_DIR/snapshot.taken" ] || return 0
+  if [ -f "$KIOSK_DIR/config.env" ]; then
+    as_root rm -rf "$snap" || return 1   # never mix in an earlier run's files
+    as_root mkdir -p "$snap" || return 1
+    as_root cp -p "$KIOSK_DIR/config.env" "$snap/config.env" || return 1
+    if [ -f "$KIOSK_DIR/docker-compose.yml" ]; then
+      as_root cp -p "$KIOSK_DIR/docker-compose.yml" "$snap/docker-compose.yml" || return 1
+    fi
+  fi
+  touch "$STEP_LOG_DIR/snapshot.taken"
+}
+
+# restore_config: put the snapshot back and restart that kiosk as it was.
+restore_config() {
+  local snap="$KIOSK_DIR/setup-snapshot"
+  ENGINE_ARGS=(); ENGINE_DATA_DIR=''
+  as_root cp -p "$snap/config.env" "$KIOSK_DIR/config.env" || return 1
+  if [ -f "$snap/docker-compose.yml" ]; then
+    as_root cp -p "$snap/docker-compose.yml" "$KIOSK_DIR/docker-compose.yml" || return 1
+  fi
+  run_engine restart "$SETUP_STEP_LOG"
+}
+
+# run_setup_step IDX LOG: the install.sh steps behind progress step IDX.
+run_setup_step() {
+  case "${STEP_IDS[$1]}" in
+    download) run_engine move-dev-data "$2" && snapshot_config && run_engine download "$2" ;;
+    finish) run_engine login-items "$2" && run_engine launcher "$2" ;;
+    *) run_engine "${STEP_IDS[$1]}" "$2" ;;
+  esac
+}
+
+# step_reason LOG: the last "Error: " line of LOG without its prefix.
+step_reason() {
+  local r
+  r=$(awk 'index($0, "Error: ") == 1 { l = substr($0, 8) } END { print l }' "$1" 2>/dev/null)
+  printf '%s' "${r:-See the details.}"
+}
+
+# progress_percent: 100 * (done + skipped) / steps.
+progress_percent() {
+  local s n=0
+  for s in "${STEP_STATES[@]}"; do
+    case "$s" in done|skipped) n=$((n + 1)) ;; esac
+  done
+  printf '%s' $((100 * n / ${#STEP_IDS[@]}))
+}
+
+# progress_text: one "MARKER  LABEL" line per step, then the log path.
+progress_text() {
+  local i=0 m extra
+  while [ "$i" -lt "${#STEP_IDS[@]}" ]; do
+    extra=''
+    case "${STEP_STATES[$i]}" in
+      done) m='[ OK ]' ;;
+      skipped) m='[ OK ]'; extra=' (already installed)' ;;
+      running) m='[ .. ]' ;;
+      failed) m='[FAIL]' ;;
+      *) m='[    ]' ;;
+    esac
+    printf '%s  %s%s\n' "$m" "${STEP_LABELS[$i]}" "$extra"
+    i=$((i + 1))
+  done
+  printf '\nLog: %s\n' "$SETUP_LOG"
+}
+
+# gauge_feed PID PERCENT: whiptail --gauge updates while PID runs.
+gauge_feed() {
+  local text
+  text=$(progress_text)
+  while :; do
+    printf 'XXX\n%s\n%s\nXXX\n' "$2" "$text"
+    kill -0 "$1" 2>/dev/null && [ ! -e "$STEP_LOG_DIR/step.done" ] || break
+    sleep "${KIOSK_SETUP_POLL_S:-1}"
+  done
+}
+
+# run_one_step IDX: run step IDX in the background with progress; its rc.
+run_one_step() {
+  local i="$1" log pid rc size pct
+  log="$STEP_LOG_DIR/step-${STEP_IDS[$i]}.log"
+  SETUP_STEP_LOG=$log
+  : >"$log"
+  rm -f "$STEP_LOG_DIR/step.done"
+  STEP_STATES[i]=running
+  ( run_setup_step "$i" "$log"; rc=$?; : >"$STEP_LOG_DIR/step.done"; exit "$rc" ) &
+  pid=$!
+  if [ "$UI" = whiptail ] && [ "$KIOSK_SETUP_YES" != 1 ]; then
+    pct=$(progress_percent)
+    size=$(wt_size "$(progress_text)" 6)
+    # shellcheck disable=SC2086  # size is "HEIGHT WIDTH"
+    gauge_feed "$pid" "$pct" | { whiptail --backtitle "$BACKTITLE" --title "$TITLE_PROGRESS" \
+      --gauge "$(progress_text)" $size "$pct" >>"$TTY_OUT"; } 2>/dev/null
+  else
+    say_part "Step $((i + 1)) of ${#STEP_IDS[@]}: ${STEP_LABELS[$i]} ... "
+  fi
+  wait "$pid"; rc=$?
+  log_line "---- step ${STEP_IDS[$i]} ----"
+  log_file "$log"
+  if [ "$UI" != whiptail ] || [ "$KIOSK_SETUP_YES" = 1 ]; then
+    if [ "$rc" -eq 0 ]; then say "done"; else say "failed"; fi
+  fi
+  return "$rc"
+}
+
+# quit_after_failure IDX: put a failed switch back, say what happened; 1.
+quit_after_failure() {
+  local id="${STEP_IDS[$1]}" label msg
+  label=$(env_short_label "$CURRENT_ENV")
+  if { [ "$id" = download ] || [ "$id" = start ]; } && [ -e "$STEP_LOG_DIR/snapshot.taken" ] \
+     && [ "$CURRENT_ENV" != none ] && [ "$CHOSEN_ENV" != "$CURRENT_ENV" ]; then
+    ui_info "Putting this laptop back on ${label}…" "$TITLE_PROGRESS"
+    SETUP_STEP_LOG="$STEP_LOG_DIR/restore.log"
+    : >"$SETUP_STEP_LOG"
+    if restore_config; then
+      msg="The setup put this laptop back on $label, and its kiosk is running again."
+    else
+      msg="The setup couldn't restart the $label kiosk. Run the setup again, or see the log."
+    fi
+    log_line "---- restore $CURRENT_ENV ----"
+    log_file "$SETUP_STEP_LOG"
+  elif [ "$CURRENT_ENV" = none ]; then
+    msg="The setup stopped before the kiosk was installed. Run the setup again to finish."
+  else
+    msg="The setup stopped. Run the setup again to finish; the kiosk keeps its current version and settings."
+  fi
+  msg=$(printf '%s\n\nLog: %s' "$msg" "$SETUP_LOG")
+  log_line "Stopped: ${msg%%$'\n'*}"
+  if [ "$KIOSK_SETUP_YES" = 1 ]; then printf '%s\n' "$msg"
+  else ui_msg "Setup stopped" "$msg"
+  fi
+  return 1
+}
+
+# run_steps: 0 = all done, 1 = quit. Try again re-runs only the failed step.
+run_steps() {
+  local i=0 n=${#STEP_IDS[@]} reason text tag
+  while [ "$i" -lt "$n" ]; do
+    [ "${STEP_STATES[$i]}" != pending ] || step_needed "$i" || STEP_STATES[i]=skipped
+    i=$((i + 1))
+  done
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    case "${STEP_STATES[$i]}" in
+      done) i=$((i + 1)); continue ;;
+      skipped)
+        [ "$UI" = whiptail ] && [ "$KIOSK_SETUP_YES" != 1 ] \
+          || say "Step $((i + 1)) of $n: ${STEP_LABELS[$i]} (already installed)"
+        i=$((i + 1)); continue ;;
+    esac
+    if run_one_step "$i"; then STEP_STATES[i]="done"; i=$((i + 1)); continue; fi
+    STEP_STATES[i]=failed
+    reason=$(step_reason "$SETUP_STEP_LOG")
+    log_line "Step $((i + 1)) failed: ${STEP_LABELS[$i]}: $reason"
+    if [ "$KIOSK_SETUP_YES" = 1 ]; then
+      printf 'Step %s failed: %s: %s\n' "$((i + 1))" "${STEP_LABELS[$i]}" "$reason" >&2
+      quit_after_failure "$i"
+      return 1
+    fi
+    text=$(printf 'Step %s failed: %s\n\n%s\n\nLog: %s' "$((i + 1))" "${STEP_LABELS[$i]}" "$reason" "$SETUP_LOG")
+    while :; do
+      tag=$(ui_menu "$TITLE_PROGRESS" "$text" retry retry "Try again" details "Show details" quit "Quit") || tag=quit
+      case "$tag" in
+        retry) break ;;
+        details) ui_textbox "Details: ${STEP_LABELS[$i]}" "$SETUP_STEP_LOG" ;;
+        *) quit_after_failure "$i"; return 1 ;;
+      esac
+    done
+    STEP_STATES[i]=pending
+  done
+  return 0
+}
+
+# finish_screen: the Done screen; Restart now reboots.
+finish_screen() {
+  local text
+  as_root rm -rf "$KIOSK_DIR/setup-snapshot" >/dev/null 2>&1 || true
+  log_line "Done."
+  text=$(printf 'Done. Sign out and back in (or restart) to start the kiosk.\n\nLog: %s' "$SETUP_LOG")
+  if [ "$KIOSK_SETUP_YES" = 1 ]; then printf '%s\n' "$text"; return 0; fi
+  if ui_yesno "Done" "$text" "Restart now" "Close"; then
+    log_line "Restarting the laptop."
+    as_root systemctl reboot
+  fi
+  return 0
+}
+
 # ── Main ──────────────────────────────────────────────────────────────
-# The screens and progress come later; for now, print the checklist.
+OPT_HELP=0
+
+usage() {
+  cat <<'EOF'
+Usage: setup.sh [--env prod|rc|dev|edge|custom] [--yes] [--help]
+
+Sets up this Ubuntu laptop as a ServerSherpa kiosk: shows what is installed
+and what is missing, lets you pick the environment, then installs with
+progress and Try again.
+
+  --env NAME   the environment: prod (default on a new laptop), rc, dev, edge,
+               or custom (keep this laptop's current settings)
+  --yes        no questions: stop on any problem (use with --env)
+  --help       show this help
+
+Exit codes: 0 done, 1 quit or failure, 2 bad usage.
+EOF
+}
+
+# parse_args ARGS...: sets OPT_ENV, KIOSK_SETUP_YES and OPT_HELP; 2 = bad usage.
+parse_args() {
+  local env
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --env|--env=*)
+        if [ "$1" = --env ]; then env="${2-}"; [ "$#" -lt 2 ] || shift
+        else env="${1#--env=}"
+        fi
+        case "$env" in
+          prod|rc|dev|edge|custom) OPT_ENV=$env ;;
+          *) printf "Unknown environment '%s' (use prod, rc, dev, edge or custom).\n" "$env" >&2; return 2 ;;
+        esac ;;
+      --yes|-y) KIOSK_SETUP_YES=1 ;;
+      --help|-h) OPT_HELP=1 ;;
+      *) printf "Unknown option '%s'. Try --help.\n" "$1" >&2; return 2 ;;
+    esac
+    shift
+  done
+}
+
+cleanup() {
+  if [ -n "$KEEPALIVE_PID" ]; then
+    pkill -P "$KEEPALIVE_PID" sleep 2>/dev/null   # its sleep first, or the sleep outlives it
+    kill "$KEEPALIVE_PID" 2>/dev/null || true
+    KEEPALIVE_PID=''
+  fi
+  [ -z "$STEP_LOG_DIR" ] || rm -rf "$STEP_LOG_DIR"
+  # An install.sh that fetch_engine downloaded (not one given with the hook).
+  [ -z "$ENGINE" ] || [ "$ENGINE" = "${KIOSK_SETUP_ENGINE:-}" ] || rm -f "$ENGINE"
+}
+
+# start_sudo_keepalive: keep sudo's cached credentials fresh during the install.
+start_sudo_keepalive() {
+  ! is_root && [ "$(row_state admin)" = ok ] || return 0
+  ( while sleep "${KIOSK_SUDO_KEEPALIVE_S:-50}"; do sudo -n -v >/dev/null 2>&1 || exit 0; done ) \
+    </dev/null >/dev/null 2>&1 &
+  KEEPALIVE_PID=$!
+}
+
 main() {
+  local rc
+  parse_args "$@" || return 2
+  if [ "$OPT_HELP" = 1 ]; then usage; return 0; fi
+  if [ "$KIOSK_SETUP_YES" != 1 ] && ! tty_ok; then
+    printf 'This setup asks questions on a terminal. Run it in a terminal, or pass --env NAME --yes.\n' >&2
+    return 1
+  fi
+  STEP_LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/serversherpa-setup.XXXXXX") || return 1
+  trap cleanup EXIT
+  ui_init
+  [ "$KIOSK_SETUP_YES" != 1 ] || UI=plain
   load_saved_config
-  run_checks
-  checklist_text
-  ! has_problems
+  CURRENT_ENV=$(current_env)
+  checklist_screen || return 1
+  as_root touch "$SETUP_LOG" && as_root chmod 644 "$SETUP_LOG"
+  log_line "---- setup.sh $* ----"
+  start_sudo_keepalive
+  while :; do
+    pick_env || return 1
+    log_line "Environment: $(env_short_label "$CHOSEN_ENV") (was $(env_short_label "$CURRENT_ENV"))"
+    set_engine_args "$CHOSEN_ENV"
+    api_check_screen; rc=$?
+    case "$rc" in
+      0) break ;;
+      2) ;;
+      *) return 1 ;;
+    esac
+  done
+  run_steps || return 1
+  finish_screen
 }
 
 if [ "${KIOSK_SETUP_LIB:-0}" != 1 ]; then main "$@"; exit $?; fi

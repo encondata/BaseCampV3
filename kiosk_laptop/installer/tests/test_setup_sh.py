@@ -378,3 +378,223 @@ def test_wt_size_counts_wrapped_lines(setup):
     r = setup('stty() { echo "40 80"; }; wt_size "$(printf "%0150d" 0)" 7')
     # 150 characters in a 74-column box wrap to 3 lines.
     assert r.stdout.strip() == "10 78"
+
+
+# ── Task 7: progress, Try again, snapshot and restore, main ───────────
+
+def engine_steps(tmp_path):
+    return [line.split("|")[0] for line in (tmp_path / "engine.log").read_text().splitlines()]
+
+
+FLOW = SYS_OK + 'api_ok() { :; }; '
+
+ADDS = ALL_ROWS_OK.replace("row|docker|ok|fine", "row|docker|add|will be installed") \
+                  .replace("row|chrome|ok|fine", "row|chrome|add|will be installed")
+
+
+def test_fresh_laptop_runs_every_needed_step_once(setup, tmp_path):
+    (tmp_path / "engine.rows").write_text(ADDS)
+    r = setup(FLOW + 'main', answers=["0", "0 prod", "1"], check=False)
+    assert r.returncode == 0, r.stderr
+    assert engine_steps(tmp_path) == ["check", "docker", "docker-start", "chrome", "printers",
+                                      "move-dev-data", "download", "start", "login-items", "launcher"]
+    download = next(l for l in (tmp_path / "engine.log").read_text().splitlines() if l.startswith("download|"))
+    assert ("--channel stable" in download and "--api-url https://api.serversherpa.com" in download
+            and "--portal-url https://portal.serversherpa.com" in download)
+    assert download.split("|")[2] == f"{tmp_path}/varlib/serversherpa-kiosk"
+    done = wt_calls(tmp_path)[-1]
+    assert "Done. Sign out and back in (or restart) to start the kiosk." in done
+    assert "Restart now" in done and "Close" in done and str(tmp_path / "setup.log") in done
+    gauge = (tmp_path / "wt.log.gauge").read_text()
+    assert "Install download tools" in gauge and "(already installed)" in gauge
+
+
+def test_engine_never_reads_the_script_pipe(setup, tmp_path):
+    setup(FLOW + 'main', answers=["0", "0 prod", "1"], check=False)
+    assert all(line.endswith("stdin=0") for line in (tmp_path / "engine.log").read_text().splitlines())
+
+
+def test_try_again_reruns_only_the_failed_step(setup, tmp_path):
+    (tmp_path / "engine.fail").write_text("start\n")
+    r = setup(FLOW + 'main', answers=["0", "0 prod", "0 retry", "1"], check=False)
+    assert r.returncode == 0
+    steps = engine_steps(tmp_path)
+    assert steps.count("start") == 2 and steps.count("download") == 1 and steps.count("printers") == 1
+    fail = next(c for c in wt_calls(tmp_path) if "Try again" in c)
+    assert "Show details" in fail and "Quit" in fail and "start broke" in fail
+    assert "Start the kiosk and wait for it to be healthy" in fail and str(tmp_path / "setup.log") in fail
+
+
+def test_show_details_then_quit_on_a_new_laptop(setup, tmp_path):
+    (tmp_path / "engine.fail").write_text("download\n")
+    r = setup(FLOW + 'main', answers=["0", "0 prod", "0 details", "0", "0 quit", "0"], check=False)
+    assert r.returncode == 1
+    calls = wt_calls(tmp_path)
+    assert any("--textbox" in c for c in calls)
+    assert "Error: download broke" in (tmp_path / "setup.log").read_text()
+    assert "Run the setup again" in calls[-1]
+    assert "restart" not in engine_steps(tmp_path)
+
+
+def test_quit_after_a_failed_switch_restores_the_previous_environment(setup, tmp_path):
+    write_config(tmp_path, *PROD, "stable")
+    before = (tmp_path / "opt" / "config.env").read_text()
+    (tmp_path / "opt" / "docker-compose.yml").write_text("prod compose\n")
+    (tmp_path / "engine.fail").write_text("start\n")
+    r = setup(FLOW + 'main', answers=["0", "0 dev", "0", "0 quit", "0"], check=False)
+    assert r.returncode == 1
+    assert (tmp_path / "opt" / "config.env").read_text() == before
+    assert (tmp_path / "opt" / "docker-compose.yml").read_text() == "prod compose\n"
+    restart = [l for l in (tmp_path / "engine.log").read_text().splitlines() if l.startswith("restart|")]
+    assert restart and "--api-url" not in restart[0] and restart[0].split("|")[2] == ""
+    assert "back on Prod" in wt_calls(tmp_path)[-1]
+
+
+def test_retrying_download_keeps_the_first_snapshot(setup, tmp_path):
+    write_config(tmp_path, *PROD, "stable")
+    before = (tmp_path / "opt" / "config.env").read_text()
+    (tmp_path / "opt" / "docker-compose.yml").write_text("prod compose\n")
+    (tmp_path / "engine.fail").write_text("download\nstart\n")
+    setup(FLOW + 'main', answers=["0", "0 dev", "0", "0 retry", "0 quit", "0"], check=False)
+    assert (tmp_path / "opt" / "config.env").read_text() == before
+
+
+def test_quit_after_a_failed_same_environment_update_restores_nothing(setup, tmp_path):
+    write_config(tmp_path, *PROD, "stable")
+    (tmp_path / "engine.fail").write_text("start\n")
+    r = setup(FLOW + 'main', answers=["0", "0 prod", "0 quit", "0"], check=False)
+    assert r.returncode == 1 and "restart" not in engine_steps(tmp_path)
+
+
+def test_success_removes_the_snapshot(setup, tmp_path):
+    write_config(tmp_path, *PROD, "stable")
+    setup(FLOW + 'main', answers=["0", "0 prod", "1"], check=False)
+    assert not (tmp_path / "opt" / "setup-snapshot").exists()
+
+
+def test_yes_mode_needs_no_dialogs(setup, tmp_path):
+    r = setup(FLOW + 'main --env edge --yes', check=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not (tmp_path / "wt.log").exists()
+    assert "Done. Sign out and back in (or restart) to start the kiosk." in r.stdout
+    download = next(l for l in (tmp_path / "engine.log").read_text().splitlines() if l.startswith("download|"))
+    assert "--channel edge" in download and download.split("|")[2] == f"{tmp_path}/varlib/serversherpa-kiosk-dev"
+
+
+def test_yes_mode_stops_on_a_problem(setup, tmp_path):
+    (tmp_path / "os-release").write_text('ID=fedora\n')
+    r = setup(FLOW + 'main --yes', check=False)
+    assert r.returncode == 1 and "This setup supports Ubuntu 22.04 and newer." in r.stdout
+
+
+def test_bad_arguments(setup):
+    r = setup('main --env nightly', check=False)
+    assert r.returncode == 2 and "prod, rc, dev, edge or custom" in r.stderr
+    assert "--env" in setup('main --help').stdout
+
+
+def test_restart_now_reboots(setup, tmp_path):
+    r = setup(FLOW + 'as_root() { "$@"; }; systemctl() { echo "systemctl $*" >> "$PWD/sys.calls"; }; main',
+              answers=["0", "0 prod", "0"], check=False)
+    assert r.returncode == 0 and "systemctl reboot" in (tmp_path / "sys.calls").read_text()
+
+
+def test_log_gets_every_steps_output_with_24_hour_times(setup, tmp_path):
+    setup(FLOW + 'main', answers=["0", "0 prod", "1"], check=False)
+    log = (tmp_path / "setup.log").read_text()
+    assert "Did download" in log and "Did start" in log
+    import re
+    assert re.search(r"^\d{4}-\d{2}-\d{2} [0-2]\d:[0-5]\d:[0-5]\d ", log, re.M)
+    assert " AM" not in log and " PM" not in log
+
+
+# install.sh --step logs through `exec > >(tee …) 2>&1`: its Error line can be
+# on stdout and can land after the process has exited.
+LATE_STDOUT_ENGINE = r'''#!/usr/bin/env bash
+exec > >(sleep 0.3; cat) 2>&1
+echo "Error: an earlier problem"
+echo "Error: printed late on stdout"
+exit 1
+'''
+
+
+def test_reason_is_the_last_error_line_even_on_stdout_and_late(setup, tmp_path):
+    eng = tmp_path / "late.sh"; eng.write_text(LATE_STDOUT_ENGINE); eng.chmod(0o755)
+    r = setup('STEP_LOG_DIR=$(mktemp -d); run_setup_step 7 "$PWD/s.log"; echo "rc=$?"; step_reason "$PWD/s.log"',
+              env={"KIOSK_SETUP_ENGINE": str(eng)})
+    assert r.stdout.splitlines() == ["rc=1", "printed late on stdout"]
+    assert "Error: an earlier problem" in (tmp_path / "s.log").read_text()
+
+
+def test_reason_without_an_error_line(setup, tmp_path):
+    (tmp_path / "s.log").write_text("something went wrong\n")
+    assert setup('step_reason "$PWD/s.log"').stdout == "See the details."
+
+
+def test_step_needed(setup):
+    out = setup('row_set tools ok x; row_set docker ok x; row_set snapdocker add x; row_set chrome ok x; '
+                'row_set python3 add x; i=0; while [ "$i" -lt 9 ]; do '
+                'step_needed "$i" && printf "%s " "${STEP_IDS[$i]}"; i=$((i + 1)); done').stdout
+    assert out.split() == ["docker", "docker-start", "python3", "printers", "download", "start", "finish"]
+
+
+def test_no_tty_and_no_yes_says_how_to_run_it(setup, tmp_path):
+    gone = str(tmp_path / "no-such-dir" / "tty")
+    r = setup(FLOW + 'main', env={"KIOSK_TTY": gone, "KIOSK_TTY_OUT": gone}, check=False)
+    assert r.returncode == 1
+    assert r.stderr.strip().splitlines() == [
+        "This setup asks questions on a terminal. Run it in a terminal, or pass --env NAME --yes."]
+    assert not (tmp_path / "engine.log").exists()
+
+
+def test_unknown_option(setup):
+    r = setup('main --frobnicate', check=False)
+    assert r.returncode == 2 and r.stderr.strip() == "Unknown option '--frobnicate'. Try --help."
+
+
+def test_yes_mode_failure_quits_with_the_reason(setup, tmp_path):
+    (tmp_path / "engine.fail").write_text("printers\n")
+    r = setup(FLOW + 'main --env prod --yes', check=False)
+    assert r.returncode == 1
+    assert "Step 6 of 9: Set up USB label printers ... failed" in r.stdout
+    assert "printers broke" in r.stderr
+    assert "The setup stopped before the kiosk was installed." in r.stdout
+    assert not (tmp_path / "wt.log").exists()
+
+
+def test_plain_progress_on_the_tty(setup, tmp_path):
+    r = setup(FLOW + 'main', env={"KIOSK_SETUP_PLAIN": "1"}, tty="1\n1\n2\n", check=False)
+    assert r.returncode == 0, r.stderr
+    out = (tmp_path / "tty.out").read_text()
+    assert "Step 1 of 9: Install download tools (already installed)" in out
+    assert "Step 8 of 9: Start the kiosk and wait for it to be healthy ... done" in out
+    assert "Done. Sign out and back in (or restart) to start the kiosk." in out
+
+
+def test_env_option_preselects_the_picker(setup, tmp_path):
+    setup(FLOW + 'main --env rc', answers=["0", "0 rc", "1"], check=False)
+    call = next(c for c in wt_calls(tmp_path) if "--menu" in c).splitlines()
+    assert call[call.index("--default-item") + 1] == "rc"
+
+
+def test_sudo_keepalive_stops_with_the_setup(setup, tmp_path):
+    r = setup(NOT_ROOT + 'row_set admin ok sudo; KIOSK_SUDO_KEEPALIVE_S=4711; start_sudo_keepalive; '
+              'sleep 0.3; pgrep -f "sleep 4711" >/dev/null && echo running; cleanup; sleep 0.3; '
+              'pgrep -f "sleep 4711" >/dev/null && echo left || echo gone')
+    assert r.stdout.split() == ["running", "gone"]
+
+
+def test_snapshot_never_keeps_an_earlier_runs_compose(setup, tmp_path):
+    write_config(tmp_path, *PROD, "stable")
+    snap = tmp_path / "opt" / "setup-snapshot"; snap.mkdir()
+    (snap / "docker-compose.yml").write_text("stale\n")
+    setup('STEP_LOG_DIR=$(mktemp -d); snapshot_config')
+    assert sorted(p.name for p in snap.iterdir()) == ["config.env"]
+
+
+def test_cleanup_removes_a_downloaded_engine_only(setup, tmp_path):
+    dl = tmp_path / "dl.sh"; dl.write_text("x")
+    given = tmp_path / "engine.sh"
+    setup(f'STEP_LOG_DIR=$(mktemp -d); ENGINE="{dl}"; cleanup')
+    setup('STEP_LOG_DIR=$(mktemp -d); cleanup')
+    assert not dl.exists() and given.exists()
