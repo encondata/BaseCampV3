@@ -365,3 +365,16 @@ def test_yes_mode_with_a_problem_and_a_bad_env(setup, tmp_path):
               'CURRENT_ENV=none; OPT_ENV=custom; pick_env; echo "pick=$?"')
     assert "Fix the [ FIX ] rows, then choose Check again." in r.stdout
     assert "rc=1" in r.stdout and "pick=1" in r.stdout
+
+
+def test_checklist_esc_counts_as_quit(setup, tmp_path):
+    # No answers: the whiptail stub behaves like Esc (exit 255); the screen must say 1.
+    (tmp_path / "engine.rows").write_text(ALL_ROWS_OK)
+    r = setup(SYS_OK + 'ui_init; load_saved_config; checklist_screen; echo rc=$?', answers=[])
+    assert "rc=1" in r.stdout
+
+
+def test_wt_size_counts_wrapped_lines(setup):
+    r = setup('stty() { echo "40 80"; }; wt_size "$(printf "%0150d" 0)" 7')
+    # 150 characters in a 74-column box wrap to 3 lines.
+    assert r.stdout.strip() == "10 78"

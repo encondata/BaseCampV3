@@ -496,9 +496,10 @@ wt_size() {
     *[!0123456789\ ]*|'') ;;
     *) rows=${size% *}; cols=${size#* } ;;
   esac
-  h=$(( $(printf '%s\n' "$1" | wc -l) + $2 ))
-  [ "$h" -le $((rows - 2)) ] || h=$((rows - 2))
   w=78; [ "$w" -le $((cols - 2)) ] || w=$((cols - 2))
+  # Wrapped lines, not just newlines: each line takes ceil(len / (w - 4)) rows.
+  h=$(( $(printf '%s\n' "$1" | awk -v c=$((w - 4)) '{ n += (length($0) > c) ? int((length($0) + c - 1) / c) : 1 } END { print n + 0 }') + $2 ))
+  [ "$h" -le $((rows - 2)) ] || h=$((rows - 2))
   printf '%s %s' "$h" "$w"
 }
 
@@ -526,8 +527,8 @@ ui_yesno() {
     size=$(wt_size "$2" 7)
     # shellcheck disable=SC2086  # size is "HEIGHT WIDTH"
     wt --backtitle "$BACKTITLE" --title "$1" --scrolltext --yes-button "$3" --no-button "$4" \
-      --yesno "$2" $size >/dev/null
-    return $?
+      --yesno "$2" $size >/dev/null || return 1   # No and Esc (255) are both 1
+    return 0
   fi
   plain_title "$1"; tty_say "$2"; tty_say ''
   tty_say "1) $3"; tty_say "2) $4"
