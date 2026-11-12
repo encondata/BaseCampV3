@@ -10,7 +10,8 @@ the cloud is reachable again.
 ## Requirements
 
 - Windows 10 22H2 (build 19045) or Windows 11, macOS 13 or later, or a Linux
-  system that runs systemd.
+  system that runs systemd. The guided setup (see Install) needs Ubuntu 22.04
+  or newer (amd64) and 10 GB free on `/var/lib`.
 - Docker. On Windows and macOS the installer installs Docker Desktop for you.
   On Linux it installs Docker Engine if it is missing.
 - Chrome or Edge (WebUSB label printing does not work in other browsers).
@@ -20,6 +21,56 @@ the cloud is reachable again.
   has no such limit.
 
 ## Install
+
+### Ubuntu (recommended)
+
+On Ubuntu 22.04 or newer, run the guided setup:
+
+```
+wget -qO- https://raw.githubusercontent.com/encondata/BaseCampV3/main/kiosk_laptop/installer/setup.sh | bash
+```
+
+It uses `wget` because a fresh Ubuntu has no `curl`. It asks for your password
+(it needs `sudo`) and then shows three screens:
+
+1. **What this laptop has.** A checklist, each row marked `[ OK ]` (nothing to
+   do), `[ ADD ]` (the setup installs it) or `[ FIX ]` (a problem you must fix
+   first, such as too little disk space; fix it, then choose Check again).
+2. **Environment.** Pick where this kiosk connects:
+
+   | Environment | Servers | Channel |
+   | --- | --- | --- |
+   | Prod | Production | `stable` (released versions) |
+   | RC | Production | `beta` (release candidates) |
+   | Dev | Dev | `beta` (release candidates) |
+   | Edge | Dev | `edge` (every build of `main`) |
+   | Custom (keep current settings) | This laptop's current settings | Unchanged |
+
+   A new laptop starts on Prod. Custom keeps whatever server addresses and
+   channel are already in `config.env`.
+3. **Installing.** Each step shows its progress. If one fails, choose
+   **Try again** (re-runs only that step), **Show details** (the end of the
+   log) or **Quit**. The log is `/var/log/serversherpa-kiosk-setup.log`.
+   Quit after a failed switch puts the laptop back on its previous
+   environment.
+
+Run the same command again to update in place: it preselects the laptop's
+current environment.
+
+To run it without questions, name the environment and add `--yes`; it stops on
+any problem:
+
+```
+wget -qO- https://raw.githubusercontent.com/encondata/BaseCampV3/main/kiosk_laptop/installer/setup.sh | bash -s -- --env edge --yes
+```
+
+The setup also puts a **Set up kiosk** icon on the desktop. It downloads and
+runs the newest setup each time.
+
+`install.sh` (below) remains the command for macOS and other Linux, and has
+the flags for per-laptop settings.
+
+### Windows, macOS and other Linux
 
 Windows (PowerShell):
 
@@ -256,6 +307,8 @@ the desktop user is signed in, otherwise at their next sign-in.
   previous version is put back. A version that failed its health check isn't
   tried again until a newer one is published, or (macOS and Linux) until
   the installer is run again.
+- The nightly helper refresh doesn't include `setup.sh`: the Set up kiosk icon
+  downloads it fresh each run.
 - The nightly update also refreshes the helper scripts (`hostnet` and
   `launch`, `.sh` or `.ps1`, and on Linux `kiosk_session.py`). A download
   that isn't a sound script is skipped and logged, and never changes the
@@ -312,6 +365,14 @@ the desktop user is signed in, otherwise at their next sign-in.
   the cloud refuses outright is marked failed, and Edge settings can retry
   it.
 
+## Docker and Chrome on Ubuntu
+
+- Docker comes from Docker's apt repository. When Docker doesn't serve a new
+  Ubuntu release yet, the install falls back to Ubuntu's `docker.io` and
+  `docker-compose-v2`.
+- Chrome comes from Google's apt repository (amd64 only). Snap Chromium is
+  left installed.
+
 ## Label printers on Linux
 
 Nothing needs doing by hand. So Chrome can print to USB Zebra label printers,
@@ -360,6 +421,16 @@ on the laptop, not a Docker volume. It holds:
 - `host-network.json` — the laptop's network addresses, rewritten every minute
   (see [RFID station](#rfid-station)); nothing to back up.
 
+On Ubuntu the setup keeps production and dev data apart:
+
+- production data: `/var/lib/serversherpa-kiosk`;
+- dev data (the Dev and Edge environments): `/var/lib/serversherpa-kiosk-dev`.
+
+Switching between server sets keeps both folders. A laptop that was already
+on the dev servers has its data moved, once, from the production folder to
+the dev folder; production data is never moved. A custom `KIOSK_DATA_DIR` is
+never moved.
+
 Back this folder up. Deleting it creates a brand-new kiosk, and any scans that
 had not uploaded are lost. Stop the kiosk first so the copy of `edge.db` is
 consistent, then copy the whole folder, then start it again:
@@ -389,11 +460,15 @@ Windows:
 
 (Or run `install.ps1 -Uninstall` from a checkout.)
 
-It removes the update job, the host network job and the launcher first, then
+It removes the update job, the host network job, the launcher and the Set up
+kiosk icon first, then
 stops the kiosk. If
 Docker isn't running, it stops and asks you to start Docker and run the
 command again. It keeps the data folder, `install.log` and `update.log`, and
 it never uninstalls Docker.
+
+On the Ubuntu test laptop, its own `update-kiosk.sh` and `install-kiosk.sh`
+are left alone.
 
 To delete the data folder too, add `--purge-data` (Windows: `-PurgeData`). It
 asks you to type `DELETE`. For a scripted run, set `KIOSK_CONFIRM_PURGE=DELETE`
