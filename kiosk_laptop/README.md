@@ -48,9 +48,17 @@ flags.
 | --- | --- | --- |
 | `--api-url URL` | `-ApiUrl URL` | Cloud API (default `https://api.serversherpa.com`). |
 | `--portal-url URL` | `-PortalUrl URL` | Portal address (default: the API URL with `api.` replaced by `portal.`). |
-| `--channel NAME` | `-Channel NAME` | `stable` (default) or `edge`. `edge` is for test laptops. |
+| `--channel NAME` | `-Channel NAME` | The release channel (see below): `stable` (default), `beta` or `edge`. Windows takes `stable` or `edge` only for now. |
 | `--yes` | `-Yes` | Never prompt. |
 | `--start-fresh` | `-StartFresh` | Don't copy an earlier (manually installed) kiosk's data; this laptop gets a new identity. |
+
+Channels (each moves when the `kiosk-laptop-image` workflow publishes):
+
+| Channel | Image tag | What it gets |
+| --- | --- | --- |
+| `stable` (default) | `:stable` | Releases only: a `kiosk-laptop-vX.Y.Z` tag. |
+| `beta` | `:beta` | Release candidates (a `kiosk-laptop-vX.Y.Z-rcN` tag) and every release, so it is never older than `stable`. For laptops that try a release first. macOS and Linux only for now. |
+| `edge` | `:edge` | Every build of `main`. For test laptops. |
 
 What it does: installs Docker if needed, saves your settings in
 `config.env`, writes `docker-compose.yml`, downloads the kiosk image, starts
@@ -240,8 +248,8 @@ the desktop user is signed in, otherwise at their next sign-in.
 ## Updates
 
 - The kiosk updates itself every night at 03:00 local time, to the newest
-  image on its channel (`stable` by default; `edge` follows every build of
-  `main`).
+  image on its channel (`stable` by default; `beta` adds release candidates;
+  `edge` follows every build of `main`).
 - It skips the update while scans are uploading, and tries again the next
   night.
 - It waits up to 2 minutes for the new version to be healthy. If it isn't, the
@@ -249,11 +257,18 @@ the desktop user is signed in, otherwise at their next sign-in.
   tried again until a newer one is published, or (macOS and Linux) until
   the installer is run again.
 - The nightly update also refreshes the helper scripts (`hostnet` and
-  `launch`, `.sh` or `.ps1`, and on Linux `kiosk_session.py`) from the
-  version of the installer the laptop was installed from (recorded as
-  `KIOSK_INSTALLER_REF` in `config.env`, `main` by default; only a plain git
-  ref is accepted, else `main`). A download that isn't a sound script is
-  skipped and logged, and never changes the update's result.
+  `launch`, `.sh` or `.ps1`, and on Linux `kiosk_session.py`). A download
+  that isn't a sound script is skipped and logged, and never changes the
+  update's result.
+  - Where from, on macOS and Linux: the exact commit the running kiosk
+    image was built from (the image's `org.opencontainers.image.revision`
+    label), read after the image update or rollback, so the scripts always
+    match the app the laptop runs on its channel. An image without that label (built before
+    it existed, or a local build) means `main`. A developer can pin another
+    ref with `KIOSK_INSTALLER_REF` in `config.env`; any value but `main`
+    (the default the installer writes) wins over the label. Only a plain git
+    ref is accepted, else `main`. `update.log` says which ref was used and
+    why.
   - Linux: the update job (root) does it, each night.
   - macOS: the update job runs as the desktop user, who owns only `hostnet.sh`
     and `launch.sh` in the install folder; the installer sets that, so it
@@ -263,7 +278,8 @@ the desktop user is signed in, otherwise at their next sign-in.
     host-network task (which runs as SYSTEM) does it, at most once a day
     (`helpers-refresh.json` in the install folder records the last attempt),
     from the next installer run on. A refreshed `hostnet.ps1` takes effect on
-    its next run, within a minute.
+    its next run, within a minute. Windows refreshes from
+    `KIOSK_INSTALLER_REF` (`main` by default), not from the image's commit.
   - Laptops installed before this change need one run of the install command
     on macOS and Windows.
 - It logs to `update.log` in the install folder.
@@ -451,9 +467,18 @@ Images are published to `ghcr.io/encondata/serversherpa-kiosk-laptop` by the
 
 - `main` builds publish `:edge` (and `:sha-<sha7>`). Only a release tag moves
   `:stable`, the installers' default channel.
-- Cut a release:
+- A release candidate tag `kiosk-laptop-vX.Y.Z-rcN` (N from 1) publishes
+  `:X.Y.Z-rcN` and moves `:beta`. A release tag `kiosk-laptop-vX.Y.Z`
+  publishes `:X.Y.Z` and moves both `:stable` and `:beta`. Any other
+  `kiosk-laptop-v*` tag fails the workflow.
+- Every image is labeled `org.opencontainers.image.revision` with the full
+  commit it was built from (the Dockerfile's `KIOSK_REVISION` build arg sets
+  it for a local build too), and the macOS and Linux nightly update refreshes
+  the helper scripts from that commit.
+- Cut a release candidate, then the release:
 
   ```
+  git tag kiosk-laptop-vX.Y.Z-rc1 && git push origin kiosk-laptop-vX.Y.Z-rc1
   git tag kiosk-laptop-vX.Y.Z && git push origin kiosk-laptop-vX.Y.Z
   ```
 

@@ -63,6 +63,26 @@ def test_merge_defaults_and_rejects_bad_channel(sh, tmp_path):
     assert bad.returncode != 0 and "channel" in bad.stderr.lower()
 
 
+@pytest.mark.parametrize("channel", ["stable", "beta", "edge"])
+def test_every_channel_is_accepted_and_names_its_image(sh, tmp_path, channel):
+    out = sh(f'load_config "{tmp_path}/none"; OPT_CHANNEL={channel}; merge_config; '
+             f'echo "$CFG_CHANNEL"; image_ref').stdout.splitlines()
+    assert out == [channel, f"ghcr.io/encondata/serversherpa-kiosk-laptop:{channel}"]
+
+
+@pytest.mark.parametrize("channel", ["nightly", "Beta", "rc", "stable "])
+def test_an_unknown_channel_is_rejected_naming_all_three(sh, tmp_path, channel):
+    bad = sh(f'load_config "{tmp_path}/none"; OPT_CHANNEL="{channel}"; merge_config', check=False)
+    assert bad.returncode != 0
+    assert "use stable, beta or edge" in bad.stderr
+
+
+def test_channel_flag_and_usage_know_beta(sh, tmp_path):
+    out = sh(f'load_config "{tmp_path}/none"; parse_args --channel beta; merge_config; echo "$CFG_CHANNEL"').stdout
+    assert out.strip().splitlines()[-1] == "beta"
+    assert "stable (default), beta or edge" in sh('usage').stdout
+
+
 def test_write_config_rejects_unsafe_values(sh, tmp_path):
     bad = sh(f'CFG_API_URL=\'https://x.com/$(id)\' CFG_PORTAL_URL= CFG_CHANNEL=stable CFG_DATA_DIR=/d; '
              f'write_config "{tmp_path}/c.env"', check=False)

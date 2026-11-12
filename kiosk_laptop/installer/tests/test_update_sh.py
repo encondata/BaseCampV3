@@ -815,3 +815,157 @@ def test_a_bad_session_py_is_rejected_and_the_old_one_kept(tmp_path, bad, why):
                     body='OS=Linux; refresh_helpers; echo rc=$?')
     assert "rc=0" in r.stdout and f"kiosk_session.py: failed ({why})" in r.stdout
     assert (k / "kiosk_session.py").read_text() == GOOD_PY
+
+
+# ── release channels: the helper scripts follow the running image's commit ──
+SHA_A = "a" * 40
+SHA_B = "0123456789abcdef0123456789abcdef01234567"
+REVISION_FMT = '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+
+# A fake docker whose images carry a revision label. refid = what the channel
+# tag names; `compose pull` points it at sha256:new; `tag SRC REF` points it
+# at SRC (:previous is sha256:old); `compose up -d` runs it. LABELS maps an
+# image ID to its revision label (no entry = no label: docker's "<no value>").
+# Health is unhealthy for sha256:new when the file "bad" exists.
+LABEL_DOCKER = r'''#!/bin/sh
+D="$(dirname "$0")/ld"
+echo "$*" >> "$D/docker.log"
+last() { for a in "$@"; do l="$a"; done; printf '%s' "$l"; }
+resolve() {
+  case "$1" in
+    sha256:*) echo "$1" ;;
+    *:previous) echo sha256:old ;;
+    *) cat "$D/refid" ;;
+  esac
+}
+label_of() { v=$(grep "^$1 " "$D/labels" | cut -d' ' -f2); echo "${v:-<no value>}"; }
+case "$1" in
+  inspect)
+    run=$(cat "$D/running")
+    [ -n "$run" ] || { echo "Error: No such object" >&2; exit 1; }
+    case "$*" in
+      *State.Health*) if [ "$run" = sha256:new ] && [ -f "$D/bad" ]; then echo unhealthy; else echo healthy; fi ;;
+      *"{{.Image}}"*) echo "$run" ;;
+      *Labels*) [ -f "$D/no-image-inspect" ] || exit 0; label_of "$run" ;;
+    esac ;;
+  image)
+    case "$*" in
+      *Labels*) [ ! -f "$D/no-image-inspect" ] || { echo "Error: No such image" >&2; exit 1; }
+                label_of "$(last "$@")" ;;
+      *"{{.Id}}"*) resolve "$(last "$@")" ;;
+    esac ;;
+  tag) case "$3" in *:previous) ;; *) resolve "$2" > "$D/refid" ;; esac ;;
+  compose)
+    case "$*" in
+      *" pull") echo sha256:new > "$D/refid" ;;
+      *" up -d") cat "$D/refid" > "$D/running" ;;
+    esac ;;
+esac
+exit 0
+'''
+
+
+def _label_run(tmp_path, labels, body='main; echo rc=$?', config="", running="sha256:old",
+               bad=False, no_image_inspect=False):
+    """update.sh against LABEL_DOCKER, helpers downloaded through a curl stub;
+    returns (CompletedProcess, curl.log text, update.log text)."""
+    k = tmp_path / "k"; k.mkdir()
+    (k / "hostnet.sh").write_text(OLD_HOSTNET); (k / "launch.sh").write_text(OLD_HOSTNET)
+    if config:
+        (k / "config.env").write_text(config)
+    d = tmp_path / "ld"; d.mkdir()
+    (d / "running").write_text(running)
+    (d / "refid").write_text(running)
+    (d / "labels").write_text("".join(f"{i} {v}\n" for i, v in labels.items()))
+    if bad:
+        (d / "bad").write_text("")
+    if no_image_inspect:
+        (d / "no-image-inspect").write_text("")
+    fake = tmp_path / "docker"; fake.write_text(LABEL_DOCKER); fake.chmod(0o755)
+    st = tmp_path / "status.json"; st.write_text(IDLE)
+    bindir = _curl_stub(tmp_path)
+    env = {**os.environ, "KIOSK_UPDATE_LIB": "1", "KIOSK_DIR": str(k), "TMPDIR": str(tmp_path),
+           "PATH": f"{bindir}:{os.environ['PATH']}"}
+    env.pop("KIOSK_TEMPLATE_DIR", None)
+    r = subprocess.run([BASH, "-c", f'source "{UPDATE_SH}"; DOCKER=("{fake}"); '
+                        f'status_json() {{ cat "{st}"; }}; HEALTH_POLL_S=0; HEALTH_TIMEOUT_S=0; {body}'],
+                       capture_output=True, text=True, env=env)
+    curl = (bindir / "curl.log").read_text() if (bindir / "curl.log").exists() else ""
+    log = (k / "update.log").read_text() if (k / "update.log").exists() else ""
+    return r, curl, log
+
+
+@pytest.mark.parametrize("config", ["", "KIOSK_INSTALLER_REF=\n", "KIOSK_INSTALLER_REF=main\n"])
+def test_helper_ref_is_the_running_images_revision_label(tmp_path, config):
+    r, _, _ = _label_run(tmp_path, {"sha256:old": SHA_B}, body='installer_ref', config=config)
+    assert r.stdout == SHA_B
+    assert f"the running image's revision label ({SHA_B})" in r.stderr
+    assert f"image inspect --format {REVISION_FMT} sha256:old" in (tmp_path / "ld" / "docker.log").read_text()
+
+
+def test_helper_refresh_downloads_from_the_revision(tmp_path):
+    r, curl, _ = _label_run(tmp_path, {"sha256:old": SHA_B}, body='refresh_helpers; echo rc=$?')
+    assert "rc=0" in r.stdout
+    assert f"/BaseCampV3/{SHA_B}/kiosk_laptop/installer/hostnet.sh" in curl
+    assert f"/{SHA_B}/kiosk_laptop/installer/launch.sh" in curl
+    assert "/main/" not in curl
+    assert f"Refreshing helper scripts (ref {SHA_B})" in r.stdout
+
+
+@pytest.mark.parametrize("label", [
+    None,                                         # built before this change: no label at all
+    "",                                           # a local build (KIOSK_REVISION left empty)
+    "a" * 39, "a" * 41, "A" * 40,                 # wrong length, uppercase
+    "g" * 40, "main", "0123456789abcdef0123456789abcdef0123456;",
+])
+def test_helper_ref_falls_back_to_main_without_a_valid_label(tmp_path, label):
+    labels = {} if label is None else {"sha256:old": label}
+    r, _, _ = _label_run(tmp_path, labels, body='installer_ref')
+    assert r.stdout == "main"
+    assert "no usable revision label" in r.stderr and "using main" in r.stderr
+
+
+def test_helper_ref_is_main_when_no_kiosk_container_runs(tmp_path):
+    r, _, _ = _label_run(tmp_path, {"sha256:old": SHA_B}, body='installer_ref', running="")
+    assert r.stdout == "main" and "using main" in r.stderr
+
+
+def test_helper_ref_reads_the_containers_labels_when_the_image_cant_be_inspected(tmp_path):
+    # Docker Desktop's containerd store can't find an image by ID once no name is left.
+    r, _, _ = _label_run(tmp_path, {"sha256:old": SHA_B}, body='installer_ref', no_image_inspect=True)
+    assert r.stdout == SHA_B
+
+
+@pytest.mark.parametrize("pinned", ["feature-x", "release/1.2", SHA_A])
+def test_a_pinned_installer_ref_beats_the_label(tmp_path, pinned):
+    r, _, _ = _label_run(tmp_path, {"sha256:old": SHA_B}, body='installer_ref',
+                         config=f"KIOSK_INSTALLER_REF={pinned}\n")
+    assert r.stdout == pinned
+    assert f"pinned by KIOSK_INSTALLER_REF in config.env ({pinned})" in r.stderr
+    calls = tmp_path / "ld" / "docker.log"
+    assert not calls.exists() or "Labels" not in calls.read_text()   # the label isn't even read
+
+
+def test_a_40_hex_ref_passes_validation(tmp_path):
+    k = tmp_path / "k"; k.mkdir()
+    (k / "config.env").write_text(f"KIOSK_INSTALLER_REF={SHA_B}\n")
+    env = {**os.environ, "KIOSK_UPDATE_LIB": "1", "KIOSK_DIR": str(k)}
+    out = subprocess.run([BASH, "-c", f'source "{UPDATE_SH}"; DOCKER=(false); installer_ref'],
+                         capture_output=True, text=True, env=env)
+    assert out.stdout == SHA_B and "Ignoring" not in out.stderr
+
+
+def test_the_refresh_follows_the_image_the_update_just_started(tmp_path):
+    r, curl, log = _label_run(tmp_path, {"sha256:old": SHA_A, "sha256:new": SHA_B})
+    assert "rc=0" in r.stdout, log
+    assert (tmp_path / "ld" / "running").read_text().strip() == "sha256:new"
+    assert f"/{SHA_B}/kiosk_laptop/installer/hostnet.sh" in curl and SHA_A not in curl
+    assert log.index("updated to sha256:new") < log.index(f"Refreshing helper scripts (ref {SHA_B})")
+
+
+def test_the_refresh_follows_the_image_a_rollback_put_back(tmp_path):
+    r, curl, log = _label_run(tmp_path, {"sha256:old": SHA_A, "sha256:new": SHA_B}, bad=True)
+    assert "rc=1" in r.stdout, log
+    assert (tmp_path / "ld" / "running").read_text().strip() == "sha256:old"
+    assert f"/{SHA_A}/kiosk_laptop/installer/hostnet.sh" in curl and SHA_B not in curl
+    assert log.index("rolled back to sha256:old") < log.index(f"Refreshing helper scripts (ref {SHA_A})")

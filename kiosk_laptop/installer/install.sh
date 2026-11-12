@@ -7,7 +7,7 @@
 # Options:
 #   --api-url URL      cloud API URL (default https://api.serversherpa.com)
 #   --portal-url URL   portal URL (default: the API URL with api. -> portal.)
-#   --channel NAME     stable (default) or edge
+#   --channel NAME     stable (default), beta or edge
 #   --yes              never prompt
 #   --uninstall        remove the kiosk (the data folder is kept)
 #   --purge-data       with --uninstall, also delete the data folder (asks you to type DELETE)
@@ -18,7 +18,8 @@
 #   KIOSK_DIR              install folder (default: see default_dirs)
 #   KIOSK_DATA_DIR         data folder    (default: see default_dirs)
 #   KIOSK_IMAGE            full image reference (tests and CI)
-#   KIOSK_INSTALLER_REF    git ref the companion files are fetched from (default main)
+#   KIOSK_INSTALLER_REF    git ref the companion files are fetched from (default main);
+#                          a ref other than main also pins update.sh's helper refresh
 #   KIOSK_NONINTERACTIVE   1 = never prompt
 #
 # Testing hooks (not for normal use):
@@ -145,7 +146,7 @@ ServerSherpa kiosk installer (laptop edition) for macOS and Linux.
 Options:
   --api-url URL      cloud API URL (default https://api.serversherpa.com)
   --portal-url URL   portal URL (default: the API URL with api. -> portal.)
-  --channel NAME     stable (default) or edge
+  --channel NAME     stable (default), beta or edge
   --yes              never prompt
   --uninstall        remove the kiosk (the data folder is kept)
   --purge-data       with --uninstall, also delete the data folder (asks you to type DELETE)
@@ -289,8 +290,8 @@ merge_config() {
   [ -z "$OPT_CHANNEL" ] || CFG_CHANNEL="$OPT_CHANNEL"
   [ -n "$CFG_CHANNEL" ] || CFG_CHANNEL=stable
   case "$CFG_CHANNEL" in
-    stable|edge) ;;
-    *) die "Unknown channel '$CFG_CHANNEL' (use stable or edge)." ;;
+    stable|beta|edge) ;;
+    *) die "Unknown channel '$CFG_CHANNEL' (use stable, beta or edge)." ;;
   esac
   # Data folder: environment, then saved config, then the OS default.
   if [ "$ENV_DATA_DIR_SET" = 1 ] || [ -z "$CFG_DATA_DIR" ]; then

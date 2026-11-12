@@ -18,7 +18,8 @@
 #   1. install: exit 0, kiosk-laptop-* serial, laptop config.js, timer enabled,
 #      host-network timer enabled and host-network.json written
 #   2. re-install: same serial
-#   3. update with an unchanged image: exit 0, container not recreated
+#   3. update with an unchanged image: exit 0, container not recreated, the
+#      helper scripts refreshed from the image's revision label (else main)
 #   3b. update to a newer good image: exit 0, running it, :previous = the old
 #      one, same serial, phase done
 #   4. update to a broken image: exit 1, rolled back to the (3b) image and
@@ -179,6 +180,13 @@ rc=0; run_update || rc=$?
 [ "$(container_field '{{.Created}}')" = "$CREATED" ] || fail "container was recreated by a no-op update"
 update_log | grep -q 'Already up to date' || fail "update.log doesn't say 'Already up to date'"
 pass "exit 0, container not recreated"
+# The helper scripts follow the running image's commit (its revision label,
+# github.sha in CI); an image without a usable label means main.
+REVISION=$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE" 2>/dev/null || true)
+if [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]; then HELPER_REF="$REVISION"; else HELPER_REF=main; fi
+update_log | grep -qF "Refreshing helper scripts (ref $HELPER_REF)" \
+  || fail "update.log doesn't say the helper scripts were refreshed from $HELPER_REF"
+pass "helper scripts refreshed from $HELPER_REF"
 
 # ── 3b. Update to a newer good image ──────────────────────────────────
 step "3b. Update to a newer image"

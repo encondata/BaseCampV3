@@ -10,11 +10,12 @@
 # that already failed), restart on it and wait for healthy; if it doesn't get
 # healthy, put the previous image back and remember the bad one.
 # Then, whatever happened above, hostnet.sh and launch.sh (and, on Linux,
-# kiosk_session.py) are refreshed from the ref the laptop was installed from
-# (never update.sh itself); a failure there never changes the exit code. On macOS the folder is root's and only
-# those two files belong to the desktop user (install.sh), so they are
-# overwritten in place; where even that isn't possible the log says to re-run
-# the install command.
+# kiosk_session.py) are refreshed from the commit the running image was built
+# from (its revision label; main for older images), or from the ref pinned in
+# config.env (never update.sh itself); a failure there never changes the
+# exit code. On macOS the folder is root's and only those two files belong to
+# the desktop user (install.sh), so they are overwritten in place; where even
+# that isn't possible the log says to re-run the install command.
 # Logged to update.log (last 1 MB kept).
 #
 # Exit codes: 0 updated, unchanged or skipped; 1 rolled back; 2 other failure.
@@ -332,19 +333,59 @@ trim_log() {
 }
 
 # ── Helper scripts ────────────────────────────────────────────────────
-# installer_ref: the git ref this laptop was installed from (config.env's
-# KIOSK_INSTALLER_REF, written by install.sh), else main. Only a plain ref is
-# used (letters, digits, . _ / -, no ".."); anything else is logged and main
-# is used. The log line goes to stderr so $(installer_ref) stays the ref.
+# REVISION_LABEL: the label the kiosk-laptop-image workflow (and the
+# Dockerfile's KIOSK_REVISION build arg) sets to the full commit of the build.
+REVISION_LABEL='org.opencontainers.image.revision'
+
+# is_commit_sha VALUE: 0 when VALUE is exactly 40 lowercase hex characters.
+is_commit_sha() {
+  [ "${#1}" -eq 40 ] || return 1
+  case "$1" in *[!0-9a-f]*) return 1 ;; esac
+  return 0
+}
+
+# running_revision: the revision label of the image the kiosk container runs
+# now (empty when there is no container or no label). The image is inspected
+# by the container's image ID; where that fails (Docker Desktop's containerd
+# store can't find an image by ID once no name is left), the container's own
+# labels, which it inherits from its image, are read instead.
+running_revision() {
+  local id fmt="{{index .Config.Labels \"$REVISION_LABEL\"}}"
+  id=$(current_digest || true)
+  [ -n "$id" ] || return 0
+  "${DOCKER[@]}" image inspect --format "$fmt" "$id" 2>/dev/null \
+    || "${DOCKER[@]}" inspect --format "$fmt" "$KIOSK_CONTAINER" 2>/dev/null \
+    || true
+}
+
+# installer_ref: the git ref the helper scripts are refreshed from. The log
+# line saying which and why goes to stderr, so $(installer_ref) stays the ref.
+#   config.env's KIOSK_INSTALLER_REF (written by install.sh) empty or main,
+#   the default: the commit the running kiosk image was built from (its
+#   revision label), so the scripts match the app the laptop runs on its
+#   channel. A label that isn't exactly 40 lowercase hex characters (images
+#   built before the label existed, local builds) means main.
+#   any other plain ref (letters, digits, . _ / -, no ".."): a developer
+#   pinned it, and it wins over the label.
+#   anything else: logged, and main is used.
 installer_ref() {
-  local line='' ref=''
+  local line='' ref='' rev
   if [ -f "$KIOSK_DIR/config.env" ]; then
     line=$(grep -E '^KIOSK_INSTALLER_REF=' "$KIOSK_DIR/config.env" | head -n 1 || true)
     ref="${line#*=}"
   fi
   case "$ref" in
-    '') ref=main ;;
+    ''|main)
+      rev=$(running_revision)
+      if is_commit_sha "$rev"; then
+        log "Helper scripts follow the running image's revision label ($rev)." >&2
+        ref="$rev"
+      else
+        log "Helper scripts: the running kiosk image has no usable revision label (${rev:-none}); using main." >&2
+        ref=main
+      fi ;;
     *[!A-Za-z0-9._/-]*|*..*) log "Ignoring the installer ref in config.env (not a plain git ref); using main." >&2; ref=main ;;
+    *) log "Helper scripts use the ref pinned by KIOSK_INSTALLER_REF in config.env ($ref)." >&2 ;;
   esac
   printf '%s' "$ref"
 }
@@ -502,6 +543,10 @@ run_update() {
   local rc
   log "---- update.sh ----"
   update_image; rc=$?
+  # The helpers come after the image step on purpose: installer_ref reads the
+  # revision label of the image running once the update, rollback, recovery
+  # or skip has settled, so the scripts match the app the laptop now runs
+  # (not the one it ran before, nor one that was just rolled back).
   refresh_helpers || true
   return "$rc"
 }
