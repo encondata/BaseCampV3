@@ -40,6 +40,8 @@ import os
 import re
 import secrets
 import signal
+import socket
+import socketserver
 import subprocess
 import sys
 import threading
@@ -892,6 +894,15 @@ class HelperServer(ThreadingHTTPServer):
         self.session = session
         self.host_header = f"{HELPER_HOST}:{self.server_port}"
         self.origin = f"http://{self.host_header}"
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind also runs socket.getfqdn(), a reverse DNS
+        # lookup that can hang for a long time when the network is down (a
+        # laptop booting offline). The name is never used, so skip it.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
 
 
 # ── Waiting page ──────────────────────────────────────────────────────

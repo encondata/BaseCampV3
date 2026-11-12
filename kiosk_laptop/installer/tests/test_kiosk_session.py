@@ -1284,3 +1284,16 @@ def test_stop_chrome_cli_closes_the_kiosk_profile(ks, monkeypatch):
     assert ks.main(["stop-chrome"]) == 0           # no browser known: both kiosk profiles
     assert set(seen) == {ks.profile_dir("/usr/bin/google-chrome"), ks.profile_dir("/snap/bin/chromium")}
     assert ks.main(["stop-chrome", "--browser"]) == 2
+
+
+def test_helper_server_never_does_a_reverse_dns_lookup(ks, monkeypatch):
+    # HTTPServer's own server_bind calls socket.getfqdn, which hangs offline.
+    def boom(*a, **k):
+        raise AssertionError("getfqdn called")
+    monkeypatch.setattr(ks.socket, "getfqdn", boom)
+    server = ks.HelperServer(ks.Session(TOKEN, "http://cloud.test"), port=0)
+    try:
+        assert server.server_port > 0
+        assert server.host_header == f"127.0.0.1:{server.server_port}"
+    finally:
+        server.server_close()
