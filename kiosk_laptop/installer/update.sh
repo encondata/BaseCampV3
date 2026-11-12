@@ -340,7 +340,8 @@ REVISION_LABEL='org.opencontainers.image.revision'
 # is_commit_sha VALUE: 0 when VALUE is exactly 40 lowercase hex characters.
 is_commit_sha() {
   [ "${#1}" -eq 40 ] || return 1
-  case "$1" in *[!0-9a-f]*) return 1 ;; esac
+  # Spelled out: in bash 3.2 a range like a-f can match capitals under some locales.
+  case "$1" in *[!0123456789abcdef]*) return 1 ;; esac
   return 0
 }
 
