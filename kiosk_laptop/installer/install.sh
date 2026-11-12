@@ -862,12 +862,38 @@ lp_upkeep() {
 }
 # <<< USB label printers
 
+# dpkg_recover: once per run (as root), finish a package install that was cut
+# off (Ctrl+C or a closed window during apt), or every apt-get after it stops
+# with "dpkg was interrupted". dpkg has no lock timeout, so a locked dpkg is
+# retried every 2 s for up to DPKG_LOCK_WAIT_S (120 s, like apt's
+# DPkg::Lock::Timeout). Best effort: a failure is a warning, never a stop.
+DPKG_RECOVERED=0
+DPKG_LOCK_WAIT_S=120
+dpkg_recover() {
+  local out rc waited=0
+  [ "$DPKG_RECOVERED" = 0 ] || return 0
+  DPKG_RECOVERED=1
+  is_root && command -v dpkg >/dev/null 2>&1 || return 0
+  while :; do
+    rc=0
+    out=$(DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>&1 </dev/null) || rc=$?
+    [ -z "$out" ] || printf '%s\n' "$out"
+    [ "$rc" != 0 ] || return 0
+    case "$out" in *lock*) ;; *) break ;; esac
+    [ "$waited" -lt "$DPKG_LOCK_WAIT_S" ] || break
+    sleep 2
+    waited=$((waited + 2))
+  done
+  warn "dpkg --configure -a didn't finish (exit $rc); apt-get may stop with \"dpkg was interrupted\"."
+  return 0
+}
+
 # One apt idiom: wait up to 120 s for another apt (unattended-upgrades) to let go.
 pkg_installed() {  # pkg_installed PKG: 0 when dpkg says it is installed
   dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'
 }
-apt_update() { apt-get -o DPkg::Lock::Timeout=120 update; }
-apt_install() { DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y "$@"; }
+apt_update() { dpkg_recover; apt-get -o DPkg::Lock::Timeout=120 update; }
+apt_install() { dpkg_recover; DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y "$@"; }
 apt_remove() { DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 remove -y "$@"; }
 
 # ensure_download_tools (Ubuntu): curl, ca-certificates and gpg, which the
@@ -2090,16 +2116,18 @@ check_rows() {
 # render_setup_runner FILE: the Set up kiosk icon's script. It downloads the
 # newest setup.sh (from the installer ref this install came from) every time.
 render_setup_runner() {
-  local url
-  url="https://raw.githubusercontent.com/encondata/BaseCampV3/$(safe_ref "${KIOSK_INSTALLER_REF:-main}")/kiosk_laptop/installer/setup.sh"
+  local ref url
+  ref=$(safe_ref "${KIOSK_INSTALLER_REF:-main}")
+  url="https://raw.githubusercontent.com/encondata/BaseCampV3/$ref/kiosk_laptop/installer/setup.sh"
   cat >"$1" <<EOF
 #!/usr/bin/env bash
-# Set up kiosk (desktop launcher): runs the newest setup.sh, downloaded fresh each time.
+# Set up kiosk (desktop launcher): runs the newest setup.sh, downloaded fresh
+# each time. setup.sh gets the same ref, so it fetches install.sh from it too.
 url='$url'
 tmp=\$(mktemp "\${TMPDIR:-/tmp}/kiosk-setup.XXXXXX") || exit 1
 rc=0
 if wget -qO "\$tmp" "\$url" 2>/dev/null || curl -fsSL "\$url" -o "\$tmp" 2>/dev/null; then
-  bash "\$tmp" "\$@" || rc=\$?
+  KIOSK_INSTALLER_REF='$ref' bash "\$tmp" "\$@" || rc=\$?
 else
   echo "Couldn't download the kiosk setup from \$url. Check the network, then try again."
   rc=1

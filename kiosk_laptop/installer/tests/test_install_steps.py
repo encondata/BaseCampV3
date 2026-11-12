@@ -627,3 +627,80 @@ def test_uninstall_removes_the_setup_runner_and_snapshot(sh, tmp_path):
     sh(f'DOCKER=(true); KIOSK_DIR="{inst}"; KIOSK_DATA_DIR="{data}"; '
        'remove_login_items() { :; }; remove_label_printer_files() { :; }; uninstall')
     assert not (inst / "setup-kiosk.sh").exists() and not snap.exists()
+
+
+# ── Final fix round ───────────────────────────────────────────────────
+
+def _dpkg_stubs(tmp_path, dpkg_body="return 0"):
+    calls = tmp_path / "dpkg.calls"
+    return calls, ('is_root() { :; }; '
+                   f'dpkg() {{ echo "dpkg $* FRONTEND=${{DEBIAN_FRONTEND:-}}" >> "{calls}"; {dpkg_body}; }}; '
+                   f'apt-get() {{ echo "apt-get $*" >> "{calls}"; }}; sleep() {{ echo "sleep $*" >> "{calls}"; }}; ')
+
+
+def test_apt_first_finishes_an_interrupted_dpkg_once(sh, tmp_path):
+    calls, stubs = _dpkg_stubs(tmp_path)
+    sh(stubs + 'apt_update && apt_install curl && apt_update')
+    lines = calls.read_text().splitlines()
+    assert lines[0] == "dpkg --configure -a FRONTEND=noninteractive"
+    assert [l for l in lines if l.startswith("dpkg")] == [lines[0]]
+    assert [l.split()[-1] for l in lines[1:]] == ["update", "curl", "update"]
+
+
+def test_apt_install_alone_also_finishes_an_interrupted_dpkg(sh, tmp_path):
+    calls, stubs = _dpkg_stubs(tmp_path)
+    sh(stubs + 'apt_install curl')
+    assert calls.read_text().splitlines()[0] == "dpkg --configure -a FRONTEND=noninteractive"
+
+
+def test_dpkg_recovery_waits_for_the_lock(sh, tmp_path):
+    n = tmp_path / "n"; n.write_text("")
+    calls, stubs = _dpkg_stubs(tmp_path, f'echo x >> "{n}"; [ "$(wc -l < "{n}")" -ge 3 ] && return 0; '
+                                         'echo "dpkg: error: dpkg frontend lock was locked by another process" >&2; return 2')
+    r = sh(stubs + 'apt_update')
+    lines = calls.read_text().splitlines()
+    assert sum(l.startswith("dpkg --configure -a") for l in lines) == 3
+    assert any(l.startswith("sleep") for l in lines) and lines[-1] == "apt-get -o DPkg::Lock::Timeout=120 update"
+    assert "Warning" not in r.stderr
+
+
+def test_dpkg_recovery_is_best_effort_and_logged(sh, tmp_path):
+    calls, stubs = _dpkg_stubs(tmp_path, 'echo "dpkg: error: something else" >&2; return 1')
+    r = sh(stubs + 'apt_update')
+    lines = calls.read_text().splitlines()
+    assert sum(l.startswith("dpkg --configure -a") for l in lines) == 1
+    assert not any(l.startswith("sleep") for l in lines)
+    assert lines[-1] == "apt-get -o DPkg::Lock::Timeout=120 update"
+    assert "dpkg --configure -a" in r.stderr and "something else" in r.stdout + r.stderr
+
+
+def test_dpkg_recovery_gives_up_on_the_lock_after_the_timeout(sh, tmp_path):
+    calls, stubs = _dpkg_stubs(tmp_path, 'echo "dpkg status database is locked by another process" >&2; return 2')
+    r = sh(stubs + 'DPKG_LOCK_WAIT_S=6; apt_update')
+    lines = calls.read_text().splitlines()
+    assert sum(l.startswith("dpkg --configure -a") for l in lines) == 4   # 0, 2, 4, 6 s
+    assert lines[-1].startswith("apt-get") and "dpkg --configure -a" in r.stderr
+
+
+def test_setup_runner_passes_its_ref_to_setup(sh, tmp_path):
+    inst, home, stubs = _launcher_env(tmp_path)
+    sh(stubs + 'install_setup_launcher', env={"KIOSK_INSTALLER_REF": "release/1.2"})
+    runner = inst / "setup-kiosk.sh"
+    assert "KIOSK_INSTALLER_REF='release/1.2' bash " in runner.read_text()
+    bin_ = tmp_path / "rbin"; bin_.mkdir()
+    (bin_ / "wget").write_text('#!/bin/sh\nwhile [ "$#" -gt 0 ]; do [ "$1" = -qO ] && out="$2"; shift; done\n'
+                               'printf \'#!/usr/bin/env bash\\necho "ref=$KIOSK_INSTALLER_REF args=$*"\\n\' > "$out"\n')
+    (bin_ / "wget").chmod(0o755)
+    import os
+    import subprocess
+    from conftest import BASH
+    env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "TMPDIR": str(tmp_path)}
+    env.pop("KIOSK_INSTALLER_REF", None)
+    r = subprocess.run([BASH, str(runner), "--env", "dev"], capture_output=True, text=True, env=env)
+    assert r.returncode == 0 and r.stdout == "ref=release/1.2 args=--env dev\n"
+
+
+def test_setup_runner_passes_main_for_an_unsafe_ref(sh, tmp_path):
+    inst, home, stubs = _launcher_env(tmp_path)
+    sh(stubs + 'install_setup_launcher', env={"KIOSK_INSTALLER_REF": "a;rm"})
+    assert "KIOSK_INSTALLER_REF='main' bash " in (inst / "setup-kiosk.sh").read_text()
