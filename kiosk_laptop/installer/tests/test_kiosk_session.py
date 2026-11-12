@@ -1085,11 +1085,18 @@ def test_sigterm_to_run_closes_chrome_and_restores(ks, tmp_path):
     browser = tmp_path / "chrome"
     browser.write_text(f'#!/bin/sh\necho "chrome $$" >> "{marks}"\nexec sleep 30\n')
     browser.chmod(0o755)
-    p = subprocess.Popen([sys.executable, "-c", RUN_SCRIPT, str(SESSION_PY), str(marks), str(browser)])
+    err = tmp_path / "stderr"
+    with err.open("w") as errf:
+        p = subprocess.Popen([sys.executable, "-c", RUN_SCRIPT, str(SESSION_PY), str(marks), str(browser)],
+                             stderr=errf)
     try:
-        end = time.monotonic() + 10
-        while time.monotonic() < end and "chrome" not in (marks.read_text() if marks.exists() else ""):
+        # Generous: shared CI runners can be slow to start Python.
+        end = time.monotonic() + 30
+        while time.monotonic() < end and p.poll() is None and "chrome" not in (marks.read_text() if marks.exists() else ""):
             time.sleep(0.05)
+        log = ks.state_dir() / "session.log"
+        assert marks.exists(), (f"rc={p.poll()} stderr={err.read_text()!r} "
+                                f"log={log.read_text() if log.exists() else ''!r}")
         lines = marks.read_text().split()
         assert lines[:2] == ["lock", "chrome"]
         chrome_pid = int(lines[2])
