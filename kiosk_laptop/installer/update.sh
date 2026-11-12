@@ -509,7 +509,8 @@ run_hostnet_limited() {
 # (never update.sh itself). A refreshed hostnet.sh runs once now, so what it
 # reports shows up without waiting for its next run; a refreshed
 # kiosk_session.py takes effect at the next sign-in. Nothing here changes the
-# updater's exit code.
+# updater's exit code. setup-kiosk.sh (the Set up kiosk icon's runner) isn't
+# refreshed: it downloads setup.sh fresh on every run, so it never goes stale.
 refresh_helpers() {
   HELPER_REF=$(installer_ref)
   log "Refreshing helper scripts (ref $HELPER_REF)"
