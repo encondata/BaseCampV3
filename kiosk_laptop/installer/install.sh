@@ -27,6 +27,13 @@
 #   KIOSK_TTY              file to read answers from instead of /dev/tty
 #   KIOSK_TEMPLATE_DIR     read companion files from this folder instead of downloading
 #   KIOSK_INSTALL_LIB=1    define the functions without running main
+#   KIOSK_OS_RELEASE       os-release file (default /etc/os-release)
+#   KIOSK_APT_KEYRINGS     apt keyring folder (default /etc/apt/keyrings)
+#   KIOSK_APT_SOURCES      apt sources folder (default /etc/apt/sources.list.d)
+#
+# On Ubuntu, Docker Engine and Google Chrome come from the vendors' own apt
+# repositories (Docker's, falling back to Ubuntu's docker.io when Docker's
+# doesn't serve the release yet); other Linux uses get.docker.com.
 #
 # Written for bash 3.2 (macOS's bash).
 # shellcheck disable=SC2034  # globals set here are read by later steps of the installer
@@ -156,6 +163,10 @@ Options:
   --step NAME        run one setup step (used by setup.sh on Ubuntu)
   --help             show this help
 
+On Ubuntu, Docker Engine and Google Chrome are installed from the vendors'
+apt repositories (Docker's, or Ubuntu's docker.io when Docker's doesn't serve
+the release yet). Other Linux gets Docker from get.docker.com.
+
 Environment: KIOSK_DIR, KIOSK_DATA_DIR, KIOSK_IMAGE, KIOSK_INSTALLER_REF,
 KIOSK_NONINTERACTIVE.
 EOF
@@ -209,6 +220,38 @@ detect_os() {
   if [ "$OS" = Darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ]; then
     ARCH=arm64
   fi
+}
+
+# Ubuntu's vendor apt repositories (keys in APT_KEYRINGS, each source line
+# signed-by its key, as Docker and Google document).
+OS_RELEASE_FILE="${KIOSK_OS_RELEASE:-/etc/os-release}"
+APT_KEYRINGS="${KIOSK_APT_KEYRINGS:-/etc/apt/keyrings}"
+APT_SOURCES="${KIOSK_APT_SOURCES:-/etc/apt/sources.list.d}"
+DOCKER_APT_URL='https://download.docker.com/linux/ubuntu'
+CHROME_KEY_URL='https://dl.google.com/linux/linux_signing_key.pub'
+CHROME_APT_URL='https://dl.google.com/linux/chrome/deb/'
+
+# os_release_value KEY: KEY's value in OS_RELEASE_FILE, surrounding quotes
+# stripped; read as text, never sourced. Empty when the file or key is missing.
+os_release_value() {
+  local v
+  [ -r "$OS_RELEASE_FILE" ] || return 0
+  v=$(awk -v k="$1" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }' "$OS_RELEASE_FILE" 2>/dev/null) || v=''
+  case "$v" in
+    \"*\") v=${v#\"}; v=${v%\"} ;;
+    \'*\') v=${v#\'}; v=${v%\'} ;;
+  esac
+  printf '%s' "$v"
+}
+
+is_ubuntu() { [ "$(os_release_value ID)" = ubuntu ]; }
+
+# ubuntu_codename: UBUNTU_CODENAME, else VERSION_CODENAME (e.g. noble).
+ubuntu_codename() {
+  local c
+  c=$(os_release_value UBUNTU_CODENAME)
+  [ -n "$c" ] || c=$(os_release_value VERSION_CODENAME)
+  printf '%s' "$c"
 }
 
 default_dirs() {
@@ -866,9 +909,9 @@ ensure_docker() {
       info "Docker Engine is installed."
     else
       ! lp_snap_has docker || info "Snap Docker can't run the kiosk; installing Docker Engine to replace it."
-      info "Installing Docker Engine (get.docker.com)"
-      curl -fsSL https://get.docker.com | sh || die "Docker Engine didn't install. See the messages above, then re-run."
+      install_docker_engine || die "Docker Engine didn't install. See the messages above, then re-run."
     fi
+    ensure_compose_plugin
     lp_remove_snap_docker
     if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && getent group docker >/dev/null 2>&1; then
       if ! id -nG "$SUDO_USER" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
@@ -880,6 +923,58 @@ ensure_docker() {
       fi
     fi
   fi
+}
+
+# docker_repo_serves CODENAME: Docker's apt repository has a release for it.
+docker_repo_serves() {
+  curl -fsSI --max-time 15 "$DOCKER_APT_URL/dists/$1/Release" >/dev/null 2>&1
+}
+
+# install_docker_engine_apt (Ubuntu): Docker's documented apt steps. A new
+# Ubuntu release Docker doesn't serve yet gets Ubuntu's own docker.io and
+# docker-compose-v2, and any docker.list is removed: a source for a missing
+# release makes every later apt-get update fail.
+install_docker_engine_apt() {
+  local codename key="$APT_KEYRINGS/docker.asc" list="$APT_SOURCES/docker.list"
+  codename=$(ubuntu_codename)
+  [ -n "$codename" ] || { warn "Couldn't read this Ubuntu's codename from $OS_RELEASE_FILE."; return 1; }
+  if docker_repo_serves "$codename"; then
+    install -m 0755 -d "$APT_KEYRINGS" || return 1
+    curl -fsSL "$DOCKER_APT_URL/gpg" -o "$key" || return 1
+    chmod a+r "$key"
+    printf 'deb [arch=%s signed-by=%s] %s %s stable\n' "$(dpkg --print-architecture)" "$key" \
+      "$DOCKER_APT_URL" "$codename" >"$list" || return 1
+    apt_update && apt_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  else
+    info "Docker's apt repository doesn't serve Ubuntu $codename yet; installing Ubuntu's docker.io and docker-compose-v2 instead."
+    rm -f "$list"
+    apt_update && apt_install docker.io docker-compose-v2
+  fi
+}
+
+# install_docker_engine (Linux): Docker's apt repository on Ubuntu, else get.docker.com.
+install_docker_engine() {
+  if is_ubuntu; then
+    info "Installing Docker Engine (Docker's apt repository)"
+    install_docker_engine_apt
+  else
+    info "Installing Docker Engine (get.docker.com)"
+    curl -fsSL https://get.docker.com | sh
+  fi
+}
+
+# ensure_compose_plugin (Ubuntu): an engine without `docker compose` gets the
+# compose package that matches it. A failure is only a warning: check_compose
+# reports it.
+ensure_compose_plugin() {
+  local pkg=docker-compose-v2
+  is_ubuntu || return 0
+  lp_engine_present || return 0
+  ! "${DOCKER[@]}" compose version >/dev/null 2>&1 || return 0
+  ! pkg_installed docker-ce || pkg=docker-compose-plugin
+  info "Installing $pkg (docker compose)"
+  apt_install "$pkg" || warn "Couldn't install $pkg (apt-get install -y $pkg)."
+  return 0
 }
 
 install_docker_desktop() {
@@ -1132,6 +1227,17 @@ start_kept_previous() {
   die "The new kiosk version didn't become healthy, and the previous version isn't healthy either (status: ${KIOSK_STATUS:-unknown}). $logs"
 }
 
+RUNNING_IMAGE=''   # the kiosk container's image ID before the pull (keep_running_image)
+
+# keep_running_image REF: stop a phase-1 kiosk, then keep the running kiosk's
+# image as :previous. Called before the pull, while the channel tag REF still
+# names the running image. Sets RUNNING_IMAGE (empty when none runs).
+keep_running_image() {
+  stop_legacy_kiosk
+  RUNNING_IMAGE=$("${DOCKER[@]}" inspect -f '{{.Image}}' "$KIOSK_CONTAINER" 2>/dev/null || true)
+  [ -z "$RUNNING_IMAGE" ] || keep_previous "$RUNNING_IMAGE" "$1" || true
+}
+
 # start_kiosk: pull, start, wait until healthy, read the identity. Uses
 # update-state.json like the nightly update, except that a version rejected
 # before is tried again (retry_rejected_image); a new version that doesn't get
@@ -1140,10 +1246,8 @@ start_kiosk() {
   local ref prev new logs rejected_before
   ref=$(image_ref)
   logs="See: docker compose -f \"$KIOSK_DIR/docker-compose.yml\" logs edge"
-  stop_legacy_kiosk
-  prev=$("${DOCKER[@]}" inspect -f '{{.Image}}' "$KIOSK_CONTAINER" 2>/dev/null || true)
-  # Before the pull, while the channel tag still names the running image.
-  [ -z "$prev" ] || keep_previous "$prev" "$ref" || true
+  keep_running_image "$ref"
+  prev="$RUNNING_IMAGE"
   info "Downloading the kiosk image"
   pull_image
   new=$("${DOCKER[@]}" image inspect -f '{{.Id}}' "$ref" 2>/dev/null || true)
@@ -1183,11 +1287,7 @@ start_kiosk() {
 # step's start_kiosk pulls again (cached, so quick), which also moves the
 # channel tag back to the new image on a retry after a rollback.
 prepare_kiosk_image() {
-  local ref prev
-  ref=$(image_ref)
-  stop_legacy_kiosk
-  prev=$("${DOCKER[@]}" inspect -f '{{.Image}}' "$KIOSK_CONTAINER" 2>/dev/null || true)
-  [ -z "$prev" ] || keep_previous "$prev" "$ref" || true
+  keep_running_image "$(image_ref)"
   info "Downloading the kiosk image"
   pull_image
 }
@@ -1857,15 +1957,56 @@ create_data_dir() {
 }
 
 # Filled in by later steps of the Ubuntu setup (setup.sh).
-ensure_chrome() { die "Not implemented yet."; }
 check_rows() { die "Not implemented yet."; }
 install_setup_launcher() { die "Not implemented yet."; }
 move_dev_data() { die "Not implemented yet."; }
 
+# ── Google Chrome (Ubuntu) ────────────────────────────────────────────
+chrome_installed() { command -v google-chrome-stable >/dev/null 2>&1; }
+
+# install_chrome_apt: Google's signing key and apt source, then the browser.
+# Chrome's own package keeps its source in the same google-chrome.list, so
+# there is never a second, conflicting entry.
+install_chrome_apt() {
+  local key="$APT_KEYRINGS/google-chrome.gpg"
+  install -m 0755 -d "$APT_KEYRINGS" || return 1
+  curl -fsSL "$CHROME_KEY_URL" | gpg --dearmor --yes -o "$key" || return 1
+  chmod a+r "$key"
+  printf 'deb [arch=amd64 signed-by=%s] %s stable main\n' "$key" "$CHROME_APT_URL" \
+    >"$APT_SOURCES/google-chrome.list" || return 1
+  apt_update && apt_install google-chrome-stable
+}
+
+# ensure_chrome warn|strict (Linux): Google Chrome from Google's apt repository
+# on Ubuntu (amd64 only). strict (setup.sh's chrome step) dies when it can't;
+# warn (install.sh on its own) carries on with whatever browser there is.
+ensure_chrome() {
+  local mode="$1"
+  [ "$OS" = Linux ] || return 0
+  if chrome_installed; then
+    info "Google Chrome is installed."
+    return 0
+  fi
+  if ! is_ubuntu; then
+    [ "$mode" = warn ] || die "This setup supports Ubuntu 22.04 and newer."
+    return 0
+  fi
+  if [ "$ARCH" != amd64 ]; then
+    [ "$mode" = warn ] || die "Google Chrome isn't available for this processor."
+    warn "Google Chrome isn't available for this processor."
+    return 0
+  fi
+  info "Installing Google Chrome (Google's apt repository)"
+  install_chrome_apt && return 0
+  [ "$mode" = warn ] || die "Google Chrome didn't install. See the messages above, then try again."
+  warn "Couldn't install Google Chrome; the kiosk uses another browser if one is installed."
+  return 0
+}
+
 # restart_kiosk (--step restart): start the kiosk from the docker-compose.yml
 # in place and wait until it is healthy.
 restart_kiosk() {
-  if ! { compose up -d >/dev/null 2>&1 && wait_kiosk_healthy; }; then
+  if ! { compose up -d && wait_kiosk_healthy; }; then
     die "The kiosk didn't become healthy (status: ${KIOSK_STATUS:-unknown}). See: docker compose -f \"$KIOSK_DIR/docker-compose.yml\" logs edge"
   fi
   info "The kiosk is running."
@@ -1954,6 +2095,8 @@ main() {
   wait_for_engine 180
   check_compose
   setup_label_printers
+  ensure_chrome warn
+  find_browser   # again, so write_config records the Chrome just installed
   create_data_dir
   write_config "$KIOSK_DIR/config.env"
   render_compose "$KIOSK_DIR/docker-compose.yml"

@@ -115,3 +115,133 @@ def test_ensure_download_tools_installs_only_what_is_missing(sh, tmp_path):
 def test_ensure_download_tools_failure_is_fatal(sh):
     r = sh('apt-get() { return 100; }; pkg_installed() { return 1; }; ensure_download_tools', check=False)
     assert r.returncode != 0 and "Couldn't install" in r.stderr
+
+
+def test_restart_kiosk_shows_compose_errors(sh, tmp_path):
+    fake = tmp_path / "docker"
+    fake.write_text('#!/bin/sh\ncase "$1" in compose) echo "compose: port 8090 is taken" >&2;; '
+                    'inspect) echo healthy;; esac\nexit 0\n')
+    fake.chmod(0o755)
+    r = sh(f'DOCKER=("{fake}"); KIOSK_DIR="{tmp_path}"; HEALTH_POLL_S=0; HEALTH_TIMEOUT_S=0; restart_kiosk')
+    assert "compose: port 8090 is taken" in r.stderr
+
+
+def test_start_and_download_share_the_keep_previous_helper():
+    from conftest import INSTALL_SH
+    body = INSTALL_SH.read_text()
+
+    def func(name):
+        start = body.index(f"\n{name}() {{")
+        return body[start:body.index("\n}\n", start)]
+    for name in ("start_kiosk", "prepare_kiosk_image"):
+        assert "keep_running_image" in func(name) and "keep_previous" not in func(name)
+
+
+def _apt_env(tmp_path, release_ok=True, ubuntu=True, codename="noble"):
+    rel = tmp_path / "os-release"
+    rel.write_text(f'ID={"ubuntu" if ubuntu else "debian"}\nVERSION_ID="24.04"\n'
+                   f'VERSION_CODENAME={codename}\nUBUNTU_CODENAME={codename}\n')
+    for d in ("keyrings", "sources"):
+        (tmp_path / d).mkdir(exist_ok=True)
+    calls = tmp_path / "apt.calls"
+    stubs = (f'curl() {{ echo "curl $*" >> "{calls}"; case "$*" in *dists/*) return {0 if release_ok else 22};; '
+             f'*" -o "*) for a; do l=$a; done; echo KEY > "$l";; *) echo ARMORED;; esac; }}; '
+             f'gpg() {{ echo "gpg $*" >> "{calls}"; for a; do l=$a; done; cat > "$l"; }}; '
+             f'apt-get() {{ echo "apt-get $*" >> "{calls}"; }}; dpkg() {{ echo amd64; }}; ')
+    env = {"KIOSK_OS_RELEASE": str(rel), "KIOSK_APT_KEYRINGS": str(tmp_path / "keyrings"),
+           "KIOSK_APT_SOURCES": str(tmp_path / "sources")}
+    return stubs, env, calls
+
+
+def test_docker_from_dockers_apt_repo(sh, tmp_path):
+    stubs, env, calls = _apt_env(tmp_path)
+    sh(stubs + 'install_docker_engine', env=env)
+    assert (tmp_path / "keyrings" / "docker.asc").read_text() == "KEY\n"
+    assert (tmp_path / "sources" / "docker.list").read_text() == (
+        f"deb [arch=amd64 signed-by={tmp_path}/keyrings/docker.asc] "
+        "https://download.docker.com/linux/ubuntu noble stable\n")
+    log = calls.read_text()
+    assert "https://download.docker.com/linux/ubuntu/dists/noble/Release" in log
+    assert ("install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
+            in log)
+    assert "get.docker.com" not in log
+
+
+def test_docker_falls_back_to_ubuntus_packages_for_a_new_codename(sh, tmp_path):
+    stubs, env, calls = _apt_env(tmp_path, release_ok=False, codename="zesty")
+    r = sh(stubs + 'install_docker_engine', env=env)
+    assert "install -y docker.io docker-compose-v2" in calls.read_text()
+    assert "Docker's apt repository doesn't serve Ubuntu zesty yet" in r.stdout
+    assert not (tmp_path / "sources" / "docker.list").exists()
+
+
+def test_docker_fallback_removes_a_stale_docker_list(sh, tmp_path):
+    stubs, env, calls = _apt_env(tmp_path, release_ok=False)
+    (tmp_path / "sources" / "docker.list").write_text("deb stale\n")
+    sh(stubs + 'install_docker_engine', env=env)
+    assert not (tmp_path / "sources" / "docker.list").exists()
+
+
+def test_docker_off_ubuntu_keeps_get_docker_com(sh, tmp_path):
+    stubs, env, calls = _apt_env(tmp_path, ubuntu=False)
+    sh(stubs.replace('*) echo ARMORED;;', '*) echo true;;') + 'install_docker_engine', env=env)
+    assert "https://get.docker.com" in calls.read_text() and "apt-get" not in calls.read_text()
+
+
+def test_docker_install_is_idempotent(sh, tmp_path):
+    stubs, env, _ = _apt_env(tmp_path)
+    sh(stubs + 'install_docker_engine; install_docker_engine', env=env)
+    assert (tmp_path / "sources" / "docker.list").read_text().count("deb ") == 1
+
+
+@pytest.mark.parametrize("have,pkg", [("docker-ce", "docker-compose-plugin"), ("docker.io", "docker-compose-v2")])
+def test_missing_compose_is_installed_to_match_the_engine(sh, tmp_path, have, pkg):
+    stubs, env, calls = _apt_env(tmp_path)
+    sh(stubs + f'DOCKER=(false); lp_engine_present() {{ :; }}; pkg_installed() {{ [ "$1" = {have} ]; }}; '
+       'ensure_compose_plugin', env=env)
+    assert f"install -y {pkg}" in calls.read_text()
+
+
+def test_chrome_from_googles_apt_repo(sh, tmp_path):
+    stubs, env, calls = _apt_env(tmp_path)
+    r = sh(stubs + 'ARCH=amd64; OS=Linux; chrome_installed() { return 1; }; ensure_chrome strict', env=env)
+    assert r.returncode == 0
+    assert (tmp_path / "keyrings" / "google-chrome.gpg").read_text() == "ARMORED\n"
+    assert (tmp_path / "sources" / "google-chrome.list").read_text() == (
+        f"deb [arch=amd64 signed-by={tmp_path}/keyrings/google-chrome.gpg] "
+        "https://dl.google.com/linux/chrome/deb/ stable main\n")
+    log = calls.read_text()
+    assert "https://dl.google.com/linux/linux_signing_key.pub" in log and "--dearmor" in log
+    assert "install -y google-chrome-stable" in log
+
+
+def test_chrome_already_installed_touches_nothing(sh, tmp_path):
+    stubs, env, calls = _apt_env(tmp_path)
+    sh(stubs + 'ARCH=amd64; OS=Linux; chrome_installed() { :; }; ensure_chrome strict', env=env)
+    assert not calls.exists()
+
+
+@pytest.mark.parametrize("mode,fails", [("strict", True), ("warn", False)])
+def test_chrome_on_arm64(sh, tmp_path, mode, fails):
+    stubs, env, _ = _apt_env(tmp_path)
+    r = sh(stubs + f'ARCH=arm64; OS=Linux; chrome_installed() {{ return 1; }}; ensure_chrome {mode}',
+           env=env, check=False)
+    assert (r.returncode != 0) == fails
+    assert "Google Chrome isn't available for this processor." in r.stderr
+
+
+def test_chrome_install_failure_strict_dies_warn_continues(sh, tmp_path):
+    stubs, env, _ = _apt_env(tmp_path)
+    stubs += 'apt-get() { return 100; }; '
+    r = sh(stubs + 'ARCH=amd64; OS=Linux; chrome_installed() { return 1; }; ensure_chrome strict', env=env, check=False)
+    assert r.returncode != 0 and "Google Chrome didn't install" in r.stderr
+    r = sh(stubs + 'ARCH=amd64; OS=Linux; chrome_installed() { return 1; }; ensure_chrome warn', env=env)
+    assert "Couldn't install Google Chrome" in r.stderr
+
+
+def test_main_installs_chrome_before_the_config_is_written():
+    from conftest import INSTALL_SH
+    body = INSTALL_SH.read_text()
+    body = body[body.index("\nmain() {"):]
+    assert body.index("setup_label_printers") < body.index("ensure_chrome warn") \
+        < body.index("find_browser") < body.index("write_config")

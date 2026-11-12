@@ -15,6 +15,7 @@ def sh(tmp_path):
     def run(body, env=None, check=True):
         full_env = {**os.environ, "KIOSK_INSTALL_LIB": "1", "HOME": str(tmp_path / "home"),
                     "KIOSK_NONINTERACTIVE": "1", "KIOSK_TEMPLATE_DIR": str(INSTALL_SH.parent),
+                    "KIOSK_OS_RELEASE": str(tmp_path / "no-os-release"),  # not Ubuntu unless a test says so
                     **(env or {})}
         (tmp_path / "home").mkdir(exist_ok=True)
         proc = subprocess.run([BASH, "-c", f'source "{INSTALL_SH}"; {body}'],
