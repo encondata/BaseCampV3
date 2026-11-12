@@ -887,6 +887,17 @@ setup_label_printers() {
   lp_upkeep
 }
 
+# printers_ok (Linux, setup checklist): 0 when the udev rule and the modprobe
+# file hold exactly what the upkeep writes, usblp isn't loaded and CUPS has no
+# USB Zebra queue (no lpstat: nothing to check there).
+printers_ok() {
+  [ -f "$LP_UDEV_RULES" ] && [ "$(cat "$LP_UDEV_RULES" 2>/dev/null)" = "$(lp_udev_rule)" ] || return 1
+  [ -f "$LP_MODPROBE_CONF" ] && [ "$(cat "$LP_MODPROBE_CONF" 2>/dev/null)" = "$(lp_modprobe_conf)" ] || return 1
+  ! lp_usblp_loaded || return 1
+  command -v lpstat >/dev/null 2>&1 || return 0
+  [ -z "$(LC_ALL=C lpstat -v 2>/dev/null | lp_zebra_queues)" ]
+}
+
 # remove_label_printer_files (Linux, uninstall): the two files the installer
 # wrote. Packages it removed are not put back.
 remove_label_printer_files() {
@@ -1375,18 +1386,19 @@ user_desktop_dir() {
   printf '%s' "$d"
 }
 
-# install_start_icon USER HOME: written as USER, executable, and trusted so the
+# install_desktop_icon USER HOME FILE RENDER_FN LABEL: FILE on USER's desktop,
+# as RENDER_FN writes it; written as USER, executable, and trusted so the
 # desktop launches it on a double-click (best-effort: gio needs their session;
-# the kiosk session marks it again when it starts).
-install_start_icon() {
-  local user="$1" home="$2" d tmp uid
+# the kiosk session marks Start Kiosk again when it starts).
+install_desktop_icon() {
+  local user="$1" home="$2" file="$3" render="$4" label="$5" d tmp uid
   d=$(user_desktop_dir "$user" "$home")
   tmp=$(mktemp "${TMPDIR:-/tmp}/kiosk-icon.XXXXXX")
   TMP_FILES+=("$tmp")
-  render_start_icon "$tmp"
-  if ! { as_user "$user" mkdir -p "$d" && write_as_user "$user" "$tmp" "$d/$START_ICON_FILE" \
-         && as_user "$user" chmod 755 "$d/$START_ICON_FILE"; }; then
-    warn "Couldn't put the Start Kiosk icon on $user's desktop."
+  "$render" "$tmp"
+  if ! { as_user "$user" mkdir -p "$d" && write_as_user "$user" "$tmp" "$d/$file" \
+         && as_user "$user" chmod 755 "$d/$file"; }; then
+    warn "Couldn't put the $label icon on $user's desktop."
     return 0
   fi
   uid=$(id -u "$user" 2>/dev/null || true)
@@ -1395,9 +1407,14 @@ install_start_icon() {
   if [ -n "$uid" ] && [ -S "$RUN_USER_DIR/$uid/bus" ]; then
     as_user "$user" env "DBUS_SESSION_BUS_ADDRESS=unix:path=$RUN_USER_DIR/$uid/bus" \
       "XDG_RUNTIME_DIR=$RUN_USER_DIR/$uid" \
-      gio set "$d/$START_ICON_FILE" metadata::trusted true >/dev/null 2>&1 || true
+      gio set "$d/$file" metadata::trusted true >/dev/null 2>&1 || true
   fi
   return 0
+}
+
+# install_start_icon USER HOME: the Start Kiosk icon.
+install_start_icon() {
+  install_desktop_icon "$1" "$2" "$START_ICON_FILE" render_start_icon "Start Kiosk"
 }
 
 # render_restore_entry PY: the one-shot autostart entry that puts the desktop
@@ -1764,6 +1781,7 @@ remove_login_items() {
       home=$(user_home "$user")
       restore_desktop_lock "$user" "$home"
       rm -f "$(user_desktop_dir "$user" "$home")/$START_ICON_FILE"
+      rm -f "$(user_desktop_dir "$user" "$home")/$SETUP_ICON_FILE"
       rm -f "$home/.config/autostart/$DESKTOP_FILE" "$home/.local/share/applications/$DESKTOP_FILE"
     else
       warn "No desktop user found; remove ~/.config/autostart/$DESKTOP_FILE and ~/.local/share/applications/$DESKTOP_FILE from that account yourself."
@@ -1893,9 +1911,11 @@ uninstall() {
   if [ -f "$KIOSK_DIR/docker-compose.yml" ]; then
     stop_kiosk_for_uninstall
   fi
-  for f in docker-compose.yml config.env update.sh launch.sh hostnet.sh "$SESSION_PY" install-state.json update-state.json; do
+  for f in docker-compose.yml config.env update.sh launch.sh hostnet.sh "$SESSION_PY" "$SETUP_RUNNER" \
+           install-state.json update-state.json; do
     rm -f "${KIOSK_DIR:?}/$f"
   done
+  rm -rf "${KIOSK_DIR:?}/setup-snapshot"
   remove_label_printer_files
   info "Removed the kiosk from $KIOSK_DIR (install.log and update.log were kept). Docker stays installed."
   if [ "$PURGE_DATA" = 1 ]; then
@@ -1976,9 +1996,111 @@ create_data_dir() {
   chmod 700 "$KIOSK_DATA_DIR" || die "Couldn't set the permissions of $KIOSK_DATA_DIR."
 }
 
-# Filled in by later steps of the Ubuntu setup (setup.sh).
-check_rows() { die "Not implemented yet."; }
-install_setup_launcher() { die "Not implemented yet."; }
+# ── Ubuntu setup (setup.sh): checklist rows and the Set up kiosk launcher ──
+SETUP_ICON_FILE='serversherpa-setup-kiosk.desktop'
+SETUP_RUNNER='setup-kiosk.sh'
+
+# check_row ID STATE NOTE: one checklist line for setup.sh. NOTE never has a |.
+check_row() {
+  printf 'row|%s|%s|%s\n' "$1" "$2" "$(printf '%s' "$3" | tr '|' '/')"
+}
+
+# docker_running: the engine is active and enabled at boot, and compose answers.
+docker_running() {
+  systemctl is-active --quiet docker.service 2>/dev/null </dev/null \
+    && systemctl is-enabled --quiet docker.service 2>/dev/null </dev/null \
+    && "${DOCKER[@]}" compose version >/dev/null 2>&1 </dev/null
+}
+
+# check_rows (--step check): what setup.sh's checklist shows, one
+# row|ID|STATE|NOTE line per row (STATE ok, add or fix), in setup's order.
+check_rows() {
+  local status
+  if ! lp_engine_present; then
+    check_row docker add "will be installed"
+  elif docker_running; then
+    check_row docker ok "running"
+  else
+    check_row docker add "installed; will be started"
+  fi
+  if lp_snap_has docker; then
+    check_row snapdocker add "will be replaced"
+  else
+    check_row snapdocker ok "not installed"
+  fi
+  if chrome_installed; then
+    check_row chrome ok "installed"
+  elif [ "$ARCH" != amd64 ]; then
+    check_row chrome fix "Google Chrome isn't available for this processor."
+  else
+    check_row chrome add "will be installed"
+  fi
+  if have_python3; then check_row python3 ok "installed"; else check_row python3 add "will be installed"; fi
+  if printers_ok; then check_row printers ok "set up"; else check_row printers add "will be set up"; fi
+  if [ ! -f "$KIOSK_DIR/docker-compose.yml" ]; then
+    check_row kiosk add "will be installed"
+    return 0
+  fi
+  status=$("${DOCKER[@]}" inspect -f '{{.State.Health.Status}}' "$KIOSK_CONTAINER" 2>/dev/null </dev/null || true)
+  if [ "$status" = healthy ]; then
+    check_row kiosk ok "running"
+  else
+    check_row kiosk add "installed, not healthy (${status:-stopped}); will be started"
+  fi
+  return 0
+}
+
+# render_setup_runner FILE: the Set up kiosk icon's script. It downloads the
+# newest setup.sh (from the installer ref this install came from) every time.
+render_setup_runner() {
+  local url
+  url="https://raw.githubusercontent.com/encondata/BaseCampV3/$(safe_ref "${KIOSK_INSTALLER_REF:-main}")/kiosk_laptop/installer/setup.sh"
+  cat >"$1" <<EOF
+#!/usr/bin/env bash
+# Set up kiosk (desktop launcher): runs the newest setup.sh, downloaded fresh each time.
+url='$url'
+tmp=\$(mktemp "\${TMPDIR:-/tmp}/kiosk-setup.XXXXXX") || exit 1
+rc=0
+if wget -qO "\$tmp" "\$url" 2>/dev/null || curl -fsSL "\$url" -o "\$tmp" 2>/dev/null; then
+  bash "\$tmp" "\$@" || rc=\$?
+else
+  echo "Couldn't download the kiosk setup from \$url. Check the network, then try again."
+  rc=1
+fi
+rm -f "\$tmp"
+if [ "\$rc" != 0 ]; then printf 'Press Enter to close this window.'; read -r _ </dev/tty; fi
+exit "\$rc"
+EOF
+}
+
+# render_setup_icon FILE: Set up kiosk on the desktop (opens in a terminal).
+render_setup_icon() {
+  cat >"$1" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Set up kiosk
+Comment=Install, update or switch the ServerSherpa kiosk
+Exec=$(exec_path "$KIOSK_DIR/$SETUP_RUNNER")
+Icon=system-software-install
+Terminal=true
+EOF
+}
+
+# install_setup_launcher (--step launcher): the runner in KIOSK_DIR (root's,
+# mode 755) and the Set up kiosk icon on the desktop user's desktop.
+install_setup_launcher() {
+  local runner="$KIOSK_DIR/$SETUP_RUNNER" tmp user
+  tmp=$(mktemp "$KIOSK_DIR/.setup-runner.XXXXXX") || die "Couldn't write $runner."
+  TMP_FILES+=("$tmp")
+  render_setup_runner "$tmp"
+  { chmod 755 "$tmp" && mv -f "$tmp" "$runner"; } || die "Couldn't write $runner."
+  user=$(desktop_user)
+  if [ -z "$user" ]; then
+    warn "No desktop user found, so the Set up kiosk icon wasn't added. Run $runner to set up again."
+    return 0
+  fi
+  install_desktop_icon "$user" "$(user_home "$user")" "$SETUP_ICON_FILE" render_setup_icon "Set up kiosk"
+}
 move_dev_data() { die "Not implemented yet."; }
 
 # ── Google Chrome (Ubuntu) ────────────────────────────────────────────

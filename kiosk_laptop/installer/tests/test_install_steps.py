@@ -306,3 +306,106 @@ def test_main_looks_for_the_browser_again_only_after_installing_chrome(sh, tmp_p
               "new": "OS=Linux; is_ubuntu() { :; }; chrome_installed() { return 1; }; "}[case]
     sh(stubs + 'main')
     assert calls.read_text().count("find_browser") == count
+
+
+# ── check rows and the Set up kiosk launcher (Task 3) ──────────────────
+from conftest import lp_stubs  # noqa: E402
+
+CHECK = ('ARCH=amd64; chrome_installed() { :; }; have_python3() { :; }; printers_ok() { :; }; '
+         'lp_engine_present() { :; }; lp_snap_has() { return 1; }; '
+         'systemctl() { return 0; }; DOCKER=(true); ')
+
+
+def _rows(out):
+    return {line.split("|")[1]: line.split("|")[2:] for line in out.splitlines() if line.startswith("row|")}
+
+
+def test_check_rows_all_installed(sh, tmp_path):
+    (tmp_path / "docker-compose.yml").write_text("x")
+    fake = tmp_path / "d"; fake.write_text('#!/bin/sh\necho healthy\n'); fake.chmod(0o755)
+    rows = _rows(sh(CHECK + f'KIOSK_DIR="{tmp_path}"; DOCKER=("{fake}"); check_rows').stdout)
+    assert list(rows) == ["docker", "snapdocker", "chrome", "python3", "printers", "kiosk"]
+    assert all(state == "ok" for state, _ in rows.values())
+
+
+def test_check_rows_missing_things_are_add(sh, tmp_path):
+    out = sh(CHECK + f'KIOSK_DIR="{tmp_path}"; lp_engine_present() {{ return 1; }}; '
+             'lp_snap_has() { [ "$1" = docker ]; }; chrome_installed() { return 1; }; '
+             'have_python3() { return 1; }; printers_ok() { return 1; }; check_rows').stdout
+    rows = _rows(out)
+    assert rows["docker"] == ["add", "will be installed"]
+    assert rows["snapdocker"] == ["add", "will be replaced"]
+    assert rows["chrome"] == ["add", "will be installed"]
+    assert rows["python3"] == ["add", "will be installed"]
+    assert rows["printers"] == ["add", "will be set up"]
+    assert rows["kiosk"] == ["add", "will be installed"]
+
+
+def test_check_rows_engine_not_running_and_kiosk_unhealthy(sh, tmp_path):
+    (tmp_path / "docker-compose.yml").write_text("x")
+    fake = tmp_path / "d"; fake.write_text('#!/bin/sh\necho unhealthy\n'); fake.chmod(0o755)
+    rows = _rows(sh(CHECK + f'KIOSK_DIR="{tmp_path}"; DOCKER=("{fake}"); '
+                    'systemctl() { [ "$1" != is-active ]; }; check_rows').stdout)
+    assert rows["docker"] == ["add", "installed; will be started"]
+    assert rows["kiosk"] == ["add", "installed, not healthy (unhealthy); will be started"]
+
+
+def test_check_rows_chrome_on_arm64_is_a_problem(sh, tmp_path):
+    rows = _rows(sh(CHECK + f'KIOSK_DIR="{tmp_path}"; ARCH=arm64; chrome_installed() {{ return 1; }}; check_rows').stdout)
+    assert rows["chrome"] == ["fix", "Google Chrome isn't available for this processor."]
+
+
+def test_printers_ok_follows_the_printer_block(sh, tmp_path):
+    stubs = lp_stubs(tmp_path, usblp=False, lpstat="")
+    assert sh(stubs + 'printers_ok && echo yes || echo no').stdout.strip() == "no"
+    sh(stubs + 'lp_ensure_udev_rule; lp_ensure_no_usblp')
+    assert sh(stubs + 'printers_ok && echo yes || echo no').stdout.strip() == "yes"
+    from conftest import LPSTAT_V
+    stubs = lp_stubs(tmp_path, usblp=False, lpstat=LPSTAT_V)
+    assert sh(stubs + 'printers_ok && echo yes || echo no').stdout.strip() == "no"
+
+
+def _launcher_env(tmp_path):
+    inst = tmp_path / "inst"; inst.mkdir()
+    home = tmp_path / "uhome"; home.mkdir()
+    return inst, home, (f'KIOSK_DIR="{inst}"; desktop_user() {{ printf alice; }}; '
+                        f'user_home() {{ printf "%s" "{home}"; }}; as_user() {{ shift; "$@"; }}; '
+                        'xdg-user-dir() { return 1; }; id() { echo 501; }; ')
+
+
+def test_setup_launcher_runs_a_fresh_setup_from_the_ref(sh, tmp_path):
+    inst, home, stubs = _launcher_env(tmp_path)
+    sh(stubs + 'install_setup_launcher', env={"KIOSK_INSTALLER_REF": "release/1.2"})
+    runner = (inst / "setup-kiosk.sh")
+    assert runner.stat().st_mode & 0o777 == 0o755
+    text = runner.read_text()
+    assert text.startswith("#!/usr/bin/env bash\n")
+    assert ("https://raw.githubusercontent.com/encondata/BaseCampV3/release/1.2/kiosk_laptop/installer/setup.sh"
+            in text)
+    icon = (home / "Desktop" / "serversherpa-setup-kiosk.desktop")
+    assert icon.stat().st_mode & 0o777 == 0o755
+    t = icon.read_text()
+    assert "Name=Set up kiosk\n" in t and f"Exec={inst}/setup-kiosk.sh\n" in t and "Terminal=true\n" in t
+    import subprocess
+    from conftest import BASH
+    assert subprocess.run([BASH, "-n", str(runner)]).returncode == 0
+
+
+def test_setup_launcher_is_idempotent_and_ignores_an_unsafe_ref(sh, tmp_path):
+    inst, home, stubs = _launcher_env(tmp_path)
+    sh(stubs + 'install_setup_launcher; install_setup_launcher', env={"KIOSK_INSTALLER_REF": "a;rm"})
+    assert "/main/kiosk_laptop/installer/setup.sh" in (inst / "setup-kiosk.sh").read_text()
+
+
+def test_setup_launcher_without_desktop_user_warns(sh, tmp_path):
+    inst, home, stubs = _launcher_env(tmp_path)
+    r = sh(stubs + 'desktop_user() { :; }; install_setup_launcher')
+    assert "Set up kiosk" in r.stderr and (inst / "setup-kiosk.sh").exists()
+
+
+def test_uninstall_removes_the_setup_launcher(sh, tmp_path):
+    inst, home, stubs = _launcher_env(tmp_path)
+    sh(stubs + 'install_setup_launcher')
+    sh(stubs + f'OS=Linux; SYSTEMD_UNIT_DIR="{tmp_path}"; systemctl() {{ :; }}; '
+       'restore_desktop_lock() { :; }; remove_login_items')
+    assert not (home / "Desktop" / "serversherpa-setup-kiosk.desktop").exists()
