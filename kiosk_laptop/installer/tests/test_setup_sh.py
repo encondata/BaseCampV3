@@ -465,10 +465,12 @@ def test_retrying_download_keeps_the_first_snapshot(setup, tmp_path):
 
 
 def test_quit_after_a_failed_same_environment_update_restores_nothing(setup, tmp_path):
+    # Nothing to put back (same environment), but the kiosk is restarted as it is.
     write_config(tmp_path, *PROD, "stable")
     (tmp_path / "engine.fail").write_text("start\n")
     r = setup(FLOW + 'main', answers=["0", "0 prod", "0 quit", "0"], check=False)
-    assert r.returncode == 1 and "restart" not in engine_steps(tmp_path)
+    assert r.returncode == 1 and engine_steps(tmp_path).count("restart") == 1
+    assert (tmp_path / "opt" / "config.env").read_text() == "changed\n"
 
 
 def test_success_removes_the_snapshot(setup, tmp_path):
@@ -657,7 +659,7 @@ def alive(pid):
     return True
 
 
-def interrupted(tmp_path, body, slow_step, sig):
+def interrupted(tmp_path, body, slow_step, sig, env=None):
     from conftest import BASH, SETUP_SH
     eng = tmp_path / "slow.sh"; eng.write_text(SLOW_ENGINE); eng.chmod(0o755)
     tmp = tmp_path / "tmpdir"; tmp.mkdir()
@@ -668,7 +670,8 @@ def interrupted(tmp_path, body, slow_step, sig):
            "KIOSK_TTY_OUT": str(tmp_path / "tty.out"), "KIOSK_SETUP_ENGINE": str(eng),
            "KIOSK_SETUP_LOG": str(tmp_path / "setup.log"), "KIOSK_OS_RELEASE": str(tmp_path / "os-release"),
            "KIOSK_DIR": str(tmp_path / "opt"), "KIOSK_VAR_LIB": str(tmp_path / "varlib"),
-           "KIOSK_SETUP_POLL_S": "0.05", "TERM": "xterm", "TMPDIR": str(tmp), "SLOW_STEP": slow_step}
+           "KIOSK_SETUP_POLL_S": "0.05", "TERM": "xterm", "TMPDIR": str(tmp), "SLOW_STEP": slow_step,
+           **(env or {})}
     proc = subprocess.Popen([BASH, "-c", f'source "{SETUP_SH}"; {body}'], stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, cwd=tmp_path)
     deadline = time.time() + 20
@@ -723,3 +726,104 @@ def test_a_failed_move_on_retry_still_restores_a_half_done_switch(setup, tmp_pat
     assert r.returncode == 1
     assert (tmp_path / "opt" / "config.env").read_text() == before
     assert "back on Prod" in wt_calls(tmp_path)[-1]
+
+
+# ── Final fix round ───────────────────────────────────────────────────
+
+def test_same_environment_download_failure_then_quit_restarts_the_kiosk(setup, tmp_path):
+    # A dev laptop's first run with Dev: move-dev-data stops the kiosk, then download fails.
+    write_config(tmp_path, *DEV, "beta")
+    (tmp_path / "engine.fail").write_text("download\n")
+    r = setup(FLOW + 'main', answers=["0", "0 dev", "0 quit", "0"], check=False)
+    assert r.returncode == 1
+    steps = engine_steps(tmp_path)
+    assert steps.count("restart") == 1 and steps.index("restart") > steps.index("download")
+    restart = next(l for l in (tmp_path / "engine.log").read_text().splitlines() if l.startswith("restart|"))
+    assert "--api-url" not in restart
+    last = wt_calls(tmp_path)[-1]
+    assert "The kiosk is running again on its current version." in last
+    assert "Run the setup again to finish" in last
+    log = (tmp_path / "setup.log").read_text()
+    assert "---- restart dev ----" in log and "Did restart" in log
+
+
+def test_same_environment_failure_when_the_restart_fails_says_so(setup, tmp_path):
+    write_config(tmp_path, *PROD, "stable")
+    (tmp_path / "engine.fail").write_text("download\nrestart\n")
+    r = setup(FLOW + 'main --env prod --yes', check=False)
+    assert r.returncode == 1 and engine_steps(tmp_path).count("restart") == 1
+    assert "The setup couldn't restart the kiosk. Run the setup again, or see the log." in r.stdout
+    assert "running again" not in r.stdout
+
+
+def test_a_failed_switch_still_restores_and_restarts_once(setup, tmp_path):
+    write_config(tmp_path, *PROD, "stable")
+    before = (tmp_path / "opt" / "config.env").read_text()
+    (tmp_path / "engine.fail").write_text("download\n")
+    r = setup(FLOW + 'main --env dev --yes', check=False)
+    assert r.returncode == 1
+    assert (tmp_path / "opt" / "config.env").read_text() == before
+    assert engine_steps(tmp_path).count("restart") == 1
+    assert "The setup put this laptop back on Prod" in r.stdout and "current version" not in r.stdout
+
+
+def test_a_new_laptop_failure_restarts_nothing(setup, tmp_path):
+    (tmp_path / "engine.fail").write_text("start\n")
+    r = setup(FLOW + 'main --env prod --yes', check=False)
+    assert r.returncode == 1 and "restart" not in engine_steps(tmp_path)
+
+
+def test_hangup_restores_a_half_done_switch_into_the_log(setup, tmp_path):
+    write_config(tmp_path, *PROD, "stable")
+    before = (tmp_path / "opt" / "config.env").read_text()
+    (tmp_path / "opt" / "docker-compose.yml").write_text("prod compose\n")
+    rc, out, err, pids, tmp = interrupted(tmp_path, FLOW + 'main --env dev --yes', "start", signal.SIGHUP,
+                                          env={"KIOSK_TTY": str(tmp_path / "gone"),
+                                               "KIOSK_TTY_OUT": str(tmp_path / "gone")})
+    assert rc == 129, out + err
+    assert not any(alive(p) for p in pids)
+    assert list(tmp.iterdir()) == []
+    assert (tmp_path / "opt" / "config.env").read_text() == before
+    assert "restart" in engine_steps(tmp_path)
+    log = (tmp_path / "setup.log").read_text()
+    assert "Interrupted (HUP)." in log
+    assert "Putting this laptop back on Prod" in log and "The setup put this laptop back on Prod" in log
+    assert "Putting this laptop back" not in out + err
+
+
+STTY = '#!/bin/sh\necho "stty $*" >> "$(dirname "$0")/../stty.calls"\n'
+
+
+def _stty(tmp_path):
+    f = tmp_path / "bin" / "stty"; f.write_text(STTY); f.chmod(0o755)
+    calls = tmp_path / "stty.calls"
+    return lambda: calls.read_text().splitlines() if calls.exists() else []
+
+
+def test_cleanup_and_signals_restore_the_terminal(setup, tmp_path):
+    calls = _stty(tmp_path)
+    setup('STEP_LOG_DIR=$(mktemp -d); cleanup')
+    assert calls() == ["stty sane"]
+    r = setup('STEP_LOG_DIR=$(mktemp -d); trap cleanup EXIT; on_signal INT', check=False)
+    assert r.returncode == 130 and calls().count("stty sane") >= 3   # on_signal, then the EXIT trap
+
+
+def test_terminal_restore_is_silent_without_a_tty(setup, tmp_path):
+    calls = _stty(tmp_path)
+    r = setup('STEP_LOG_DIR=$(mktemp -d); trap cleanup EXIT; on_signal INT', check=False,
+              env={"KIOSK_TTY": str(tmp_path / "gone")})
+    assert r.returncode == 130 and calls() == []
+    assert r.stdout == "" and r.stderr == ""
+
+
+def test_an_early_log_line_creates_a_root_only_log(setup, tmp_path):
+    setup('umask 022; log_line hello')
+    assert (tmp_path / "setup.log").stat().st_mode & 0o777 == 0o600
+    assert "hello" in (tmp_path / "setup.log").read_text()
+
+
+def test_ctrl_c_at_the_checklist_leaves_a_root_only_log(setup, tmp_path):
+    r = setup('umask 022; STEP_LOG_DIR=$(mktemp -d); trap cleanup EXIT; on_signal INT', check=False)
+    assert r.returncode == 130
+    assert (tmp_path / "setup.log").stat().st_mode & 0o777 == 0o600
+    assert "Interrupted (INT)." in (tmp_path / "setup.log").read_text()

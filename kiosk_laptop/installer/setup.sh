@@ -419,11 +419,8 @@ engine_checks() {
     return 0
   fi
   engine_env
-  if [ "$(row_state admin)" = ok ]; then
-    out=$(as_root env "${ENGINE_ENV[@]}" bash "$ENGINE" --step check --yes </dev/null 2>/dev/null)
-  else
-    out=$(env "${ENGINE_ENV[@]}" bash "$ENGINE" --step check --yes </dev/null 2>/dev/null)
-  fi
+  # The admin row is ok here: check_admin sets only ok or fix.
+  out=$(as_root env "${ENGINE_ENV[@]}" bash "$ENGINE" --step check --yes </dev/null 2>/dev/null)
   while IFS='|' read -r tag id state note; do
     [ "$tag" = row ] || continue
     case " $ENGINE_ROWS " in *" $id "*) ;; *) continue ;; esac
@@ -783,14 +780,26 @@ CHOSEN_ENV=''
 KEEPALIVE_PID=''
 STEP_PID=''            # the running step's background subshell
 ACTIVE_STEP=''         # index of the step running or failed, until it is done or quit
+SETUP_LOG_READY=0      # 1 once SETUP_LOG exists with mode 600
+TTY_GONE=0             # 1 after a hangup: the terminal is gone
+
+# setup_log_open: make SETUP_LOG root-only (mode 600) before the first line
+# goes in, whenever that is (a Ctrl+C at the checklist logs before main gets
+# that far); 1 when it can't, and then nothing is written.
+setup_log_open() {
+  [ "$SETUP_LOG_READY" != 1 ] || return 0
+  { ( umask 077; as_root touch "$SETUP_LOG" ) && as_root chmod 600 "$SETUP_LOG"; } >/dev/null 2>&1 || return 1
+  SETUP_LOG_READY=1
+}
 
 # log_line TEXT: one timestamped (24-hour) line in SETUP_LOG.
 log_line() {
+  setup_log_open || return 0
   printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | as_root tee -a "$SETUP_LOG" >/dev/null 2>&1 || true
 }
 
 # log_file FILE: append FILE to SETUP_LOG.
-log_file() { as_root tee -a "$SETUP_LOG" <"$1" >/dev/null 2>&1 || true; }
+log_file() { setup_log_open || return 0; as_root tee -a "$SETUP_LOG" <"$1" >/dev/null 2>&1 || true; }
 
 # say TEXT / say_part TEXT: progress lines, on stdout with --yes, else the tty.
 say() { if [ "$KIOSK_SETUP_YES" = 1 ]; then printf '%s\n' "$1"; else tty_say "$1"; fi; }
@@ -953,6 +962,20 @@ quit_after_failure() {
   elif [ "$id" = download ] && [ "$(last_engine_step)" = move-dev-data ]; then
     # install.sh's move-dev-data picks up a move that was cut short.
     msg="The setup stopped while moving this laptop's kiosk data to the dev folder, so the data move didn't finish. Run the setup again to finish it."
+  elif { [ "$id" = download ] || [ "$id" = start ]; } && [ "$CURRENT_ENV" != none ]; then
+    # Nothing to put back (same environment), but the kiosk may be stopped:
+    # move-dev-data stops it before download, and start may have failed.
+    ui_info "Restarting the kiosk…" "$TITLE_PROGRESS"
+    SETUP_STEP_LOG="$STEP_LOG_DIR/restart.log"
+    : >"$SETUP_STEP_LOG"
+    ENGINE_ARGS=(); ENGINE_DATA_DIR=''
+    if run_engine restart "$SETUP_STEP_LOG"; then
+      msg="The setup stopped. The kiosk is running again on its current version. Run the setup again to finish."
+    else
+      msg="The setup couldn't restart the kiosk. Run the setup again, or see the log."
+    fi
+    log_line "---- restart $CURRENT_ENV ----"
+    log_file "$SETUP_STEP_LOG"
   elif [ "$CURRENT_ENV" = none ]; then
     msg="The setup stopped before the kiosk was installed. Run the setup again to finish."
   else
@@ -1061,7 +1084,16 @@ parse_args() {
   done
 }
 
+# tty_restore: put the terminal back to normal (a stopped whiptail can leave
+# it raw), silently, and only when the answer tty opens.
+tty_restore() {
+  [ "$TTY_GONE" != 1 ] || return 0
+  { : <"$TTY_IN"; } 2>/dev/null || return 0
+  { stty sane <"$TTY_IN"; } >/dev/null 2>&1 || true
+}
+
 cleanup() {
+  tty_restore
   if [ -n "$KEEPALIVE_PID" ]; then
     pkill -P "$KEEPALIVE_PID" sleep 2>/dev/null   # its sleep first, or the sleep outlives it
     kill "$KEEPALIVE_PID" 2>/dev/null || true
@@ -1106,12 +1138,21 @@ stop_step() {
   rm -f "$(engine_pgid_file)"
 }
 
-# on_signal INT|TERM: stop the running step, put a half-done switch back the
-# way Quit does, then exit 130 (INT) or 143 (TERM); the EXIT trap cleans up.
+# on_signal INT|TERM|HUP: stop the running step, put a half-done switch back
+# the way Quit does, then exit 130 (INT), 143 (TERM) or 129 (HUP); the EXIT
+# trap cleans up. After a hangup (the terminal window closed) there is no tty:
+# no dialogs, and what the setup says goes to the log.
 on_signal() {
-  local code=130 was_running="$STEP_PID"
-  [ "$1" = INT ] || code=143
-  trap '' INT TERM
+  local code was_running="$STEP_PID" out=''
+  case "$1" in INT) code=130 ;; TERM) code=143 ;; *) code=129 ;; esac
+  trap '' INT TERM HUP
+  if [ "$1" = HUP ]; then
+    TTY_GONE=1; UI=plain; KIOSK_SETUP_YES=1
+    if [ -n "$STEP_LOG_DIR" ]; then out="$STEP_LOG_DIR/hangup.out"; exec >>"$out" 2>&1
+    else exec >/dev/null 2>&1
+    fi
+  fi
+  tty_restore
   stop_step
   log_line "Interrupted ($1)."
   if [ -n "$ACTIVE_STEP" ]; then
@@ -1121,6 +1162,7 @@ on_signal() {
     STEP_STATES[ACTIVE_STEP]=failed
     quit_after_failure "$ACTIVE_STEP"
   fi
+  [ -z "$out" ] || [ ! -s "$out" ] || log_file "$out"
   exit "$code"
 }
 
@@ -1144,13 +1186,14 @@ main() {
   trap cleanup EXIT
   trap 'on_signal INT' INT
   trap 'on_signal TERM' TERM
+  trap 'on_signal HUP' HUP
   ui_init
   [ "$KIOSK_SETUP_YES" != 1 ] || UI=plain
   load_saved_config
   CURRENT_ENV=$(current_env)
   checklist_screen || return 1
   # Root only: install output can include URLs and settings.
-  ( umask 077; as_root touch "$SETUP_LOG" ) && as_root chmod 600 "$SETUP_LOG"
+  setup_log_open || true
   log_line "---- setup.sh $* ----"
   start_sudo_keepalive
   while :; do
