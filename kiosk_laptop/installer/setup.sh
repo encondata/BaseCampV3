@@ -35,6 +35,8 @@ SETUP_LOG="${KIOSK_SETUP_LOG:-/var/log/serversherpa-kiosk-setup.log}"
 TTY_IN="${KIOSK_TTY:-/dev/tty}"
 TTY_OUT="${KIOSK_TTY_OUT:-/dev/tty}"
 ENGINE="${KIOSK_SETUP_ENGINE:-}"
+KIOSK_SETUP_YES="${KIOSK_SETUP_YES:-0}"   # 1 = --yes: no dialogs at all
+OPT_ENV=''                                # --env ENV
 MIN_FREE_KIB=10485760   # 10 GB
 
 HAVE_CONFIG=0
@@ -85,6 +87,22 @@ env_label() {
     edge) printf 'Edge' ;;
     custom) printf 'Custom (keep current settings)' ;;
     none) printf 'Not set up' ;;
+  esac
+}
+
+# env_short_label ENV: the label for use inside a sentence ("Custom").
+env_short_label() {
+  if [ "$1" = custom ]; then printf 'Custom'; else env_label "$1"; fi
+}
+
+# env_desc ENV: the picker's description of ENV.
+env_desc() {
+  case "$1" in
+    prod) printf 'Production servers, released versions (stable)' ;;
+    rc) printf 'Production servers, release candidates (beta)' ;;
+    dev) printf 'Dev servers, release candidates (beta)' ;;
+    edge) printf 'Dev servers, every build of main (edge)' ;;
+    custom) printf '%s, %s' "$SAVED_API" "$SAVED_CHANNEL" ;;
   esac
 }
 
@@ -223,6 +241,15 @@ as_root() {
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+# tty_ok: the answer tty opens for reading and the prompt tty for writing.
+# ([ -r /dev/tty ] is true even with no controlling terminal, so open them.)
+tty_ok() { { : <"$TTY_IN" >>"$TTY_OUT"; } 2>/dev/null; }
+
+# tty_say TEXT: one line on the prompt tty, or on stderr when it won't open.
+tty_say() {
+  { printf '%s\n' "$1" >>"$TTY_OUT"; } 2>/dev/null || printf '%s\n' "$1" >&2
+}
+
 pkg_installed() {
   dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'
 }
@@ -319,10 +346,10 @@ check_ubuntu() {
 check_admin() {
   if is_root; then row_set admin ok "running as root"; return 0; fi
   if sudo -n true >/dev/null 2>&1; then row_set admin ok "sudo"; return 0; fi
-  if [ "${KIOSK_SETUP_YES:-0}" != 1 ]; then
-    printf 'Administrator rights are needed; sudo may ask for your password.\n' >"$TTY_OUT" 2>/dev/null
+  if [ "$KIOSK_SETUP_YES" != 1 ] && tty_ok; then
+    tty_say 'Administrator rights are needed; sudo may ask for your password.'
     # shellcheck disable=SC2024  # the redirects are ours: sudo reads the password from the tty
-    sudo -v <"$TTY_IN" >"$TTY_OUT" 2>&1
+    { sudo -v <"$TTY_IN" >>"$TTY_OUT" 2>&1; } 2>/dev/null
     if sudo -n true >/dev/null 2>&1; then row_set admin ok "sudo"; return 0; fi
   fi
   row_set admin fix "This account can't use sudo. Sign in as an administrator, then run the setup again."
@@ -405,7 +432,7 @@ engine_checks() {
 $out
 EOF
   if [ "$(row_state kiosk)" = ok ] && [ "$HAVE_CONFIG" = 1 ]; then
-    row_set kiosk ok "$(row_note kiosk) ($(env_label "$(current_env)"))"
+    row_set kiosk ok "$(row_note kiosk) ($(env_short_label "$(current_env)"))"
   fi
 }
 
@@ -432,17 +459,288 @@ run_engine() {
     </dev/null >>"$2" 2>&1
 }
 
-# ── Main ──────────────────────────────────────────────────────────────
-# The screens and progress come later; for now, print the checklist.
-main() {
-  local i
-  load_saved_config
-  run_checks
+# ── UI layer ──────────────────────────────────────────────────────────
+# whiptail when it is installed and there is a terminal to answer from,
+# else plain numbered prompts on the same tty. Dialogs read /dev/tty: stdin
+# is this script when it is piped into bash.
+UI=plain
+BACKTITLE='ServerSherpa kiosk setup'
+TITLE_CHECK='1 of 3: What this laptop has'
+TITLE_ENV='2 of 3: Environment'
+TITLE_PROGRESS='3 of 3: Installing'
+PLAIN_FD_OPEN=0   # plain mode reads answers through fd 7, opened once
+
+ui_init() {
+  UI=plain
+  if [ "${KIOSK_SETUP_PLAIN:-0}" != 1 ] && command -v whiptail >/dev/null 2>&1 && tty_ok; then
+    UI=whiptail
+  fi
+}
+
+# wt ARGS...: run whiptail on the tty; prints its answer, returns its rc.
+wt() {
+  local tmp rc
+  tmp=$(mktemp "${TMPDIR:-/tmp}/serversherpa-wt.XXXXXX") || return 255
+  { whiptail "$@" <"$TTY_IN" >"$TTY_OUT" 2>"$tmp"; } 2>/dev/null
+  rc=$?
+  cat "$tmp"
+  rm -f "$tmp"
+  return "$rc"
+}
+
+# wt_size TEXT EXTRA: "HEIGHT WIDTH" for a box holding TEXT plus EXTRA lines.
+wt_size() {
+  local rows=24 cols=80 size h w
+  size=$({ stty size <"$TTY_IN"; } 2>/dev/null) || size=''
+  case "$size" in
+    *[!0123456789\ ]*|'') ;;
+    *) rows=${size% *}; cols=${size#* } ;;
+  esac
+  h=$(( $(printf '%s\n' "$1" | wc -l) + $2 ))
+  [ "$h" -le $((rows - 2)) ] || h=$((rows - 2))
+  w=78; [ "$w" -le $((cols - 2)) ] || w=$((cols - 2))
+  printf '%s %s' "$h" "$w"
+}
+
+# plain_read VAR: one line from the tty into VAR; 1 on EOF or no tty.
+plain_read() {
+  local line
+  if [ "$PLAIN_FD_OPEN" != 1 ]; then
+    { : <"$TTY_IN"; } 2>/dev/null || return 1
+    exec 7<"$TTY_IN"
+    PLAIN_FD_OPEN=1
+  fi
+  IFS= read -r line <&7 || [ -n "$line" ] || return 1
+  printf -v "$1" '%s' "$line"
+}
+
+# plain_ask PROMPT: the prompt without a newline.
+plain_ask() { { printf '%s' "$1" >>"$TTY_OUT"; } 2>/dev/null || printf '%s' "$1" >&2; }
+
+plain_title() { tty_say ''; tty_say "== $1 =="; tty_say ''; }
+
+# ui_yesno TITLE TEXT YES_LABEL NO_LABEL: 0 = yes; 1 = no, Esc or EOF.
+ui_yesno() {
+  local ans size
+  if [ "$UI" = whiptail ]; then
+    size=$(wt_size "$2" 7)
+    # shellcheck disable=SC2086  # size is "HEIGHT WIDTH"
+    wt --backtitle "$BACKTITLE" --title "$1" --scrolltext --yes-button "$3" --no-button "$4" \
+      --yesno "$2" $size >/dev/null
+    return $?
+  fi
+  plain_title "$1"; tty_say "$2"; tty_say ''
+  tty_say "1) $3"; tty_say "2) $4"
+  while :; do
+    plain_ask 'Choose 1 or 2: '
+    plain_read ans || { tty_say ''; return 1; }
+    case "$ans" in
+      1) return 0 ;;
+      2) return 1 ;;
+    esac
+    tty_say 'Type 1 or 2.'
+  done
+}
+
+# ui_menu TITLE TEXT DEFAULT_TAG TAG LABEL [TAG LABEL...]: prints the chosen
+# tag; 1 on cancel, Esc or EOF.
+ui_menu() {
+  local title="$1" text="$2" def="$3" ans n i size tags=() labels=()
+  shift 3
+  while [ "$#" -ge 2 ]; do tags+=("$1"); labels+=("$2"); shift 2; done
+  n=${#tags[@]}
+  if [ "$UI" = whiptail ]; then
+    size=$(wt_size "$text" $((n + 8)))
+    local args=()
+    i=0
+    while [ "$i" -lt "$n" ]; do args+=("${tags[$i]}" "${labels[$i]}"); i=$((i + 1)); done
+    # shellcheck disable=SC2086  # size is "HEIGHT WIDTH"
+    wt --backtitle "$BACKTITLE" --title "$title" --notags --default-item "$def" \
+      --menu "$text" $size "$n" "${args[@]}"
+    return $?
+  fi
+  plain_title "$title"; tty_say "$text"; tty_say ''
   i=0
+  while [ "$i" -lt "$n" ]; do
+    if [ "${tags[$i]}" = "$def" ]; then tty_say "$((i + 1))) ${labels[$i]} (press Enter)"
+    else tty_say "$((i + 1))) ${labels[$i]}"
+    fi
+    i=$((i + 1))
+  done
+  while :; do
+    plain_ask "Choose 1-$n: "
+    plain_read ans || { tty_say ''; return 1; }
+    if [ -z "$ans" ]; then
+      i=0
+      while [ "$i" -lt "$n" ]; do
+        if [ "${tags[$i]}" = "$def" ]; then printf '%s' "$def"; return 0; fi
+        i=$((i + 1))
+      done
+    else
+      case "$ans" in
+        *[!0123456789]*) ;;
+        *) if [ "$((10#$ans))" -ge 1 ] && [ "$((10#$ans))" -le "$n" ]; then
+             printf '%s' "${tags[$((10#$ans - 1))]}"; return 0
+           fi ;;
+      esac
+    fi
+    tty_say "Type a number from 1 to $n."
+  done
+}
+
+# ui_msg TITLE TEXT
+ui_msg() {
+  local ans size
+  if [ "$UI" = whiptail ]; then
+    size=$(wt_size "$2" 7)
+    # shellcheck disable=SC2086  # size is "HEIGHT WIDTH"
+    wt --backtitle "$BACKTITLE" --title "$1" --scrolltext --msgbox "$2" $size >/dev/null
+    return 0
+  fi
+  plain_title "$1"; tty_say "$2"; tty_say ''
+  plain_ask 'Press Enter to continue. '
+  plain_read ans || tty_say ''
+  return 0
+}
+
+# ui_textbox TITLE FILE: a scrolling view of FILE.
+ui_textbox() {
+  local ans rows=24 cols=80 size
+  if [ "$UI" = whiptail ]; then
+    size=$({ stty size <"$TTY_IN"; } 2>/dev/null) || size=''
+    case "$size" in *[!0123456789\ ]*|'') ;; *) rows=${size% *}; cols=${size#* } ;; esac
+    wt --backtitle "$BACKTITLE" --title "$1" --scrolltext --textbox "$2" $((rows - 4)) $((cols - 4)) >/dev/null
+    return 0
+  fi
+  plain_title "$1"
+  { cat "$2" >>"$TTY_OUT"; } 2>/dev/null || cat "$2" >&2
+  tty_say ''
+  plain_ask 'Press Enter to continue. '
+  plain_read ans || tty_say ''
+  return 0
+}
+
+# ui_info TEXT [TITLE]: a message that stays up while work runs (no answer).
+ui_info() {
+  if [ "$KIOSK_SETUP_YES" = 1 ]; then printf '%s\n' "$1"; return 0; fi
+  if [ "$UI" = whiptail ]; then
+    wt --backtitle "$BACKTITLE" --title "${2:-$TITLE_ENV}" --infobox "$1" 8 70 >/dev/null
+    return 0
+  fi
+  tty_say "$1"
+}
+
+# ── Screens ───────────────────────────────────────────────────────────
+# checklist_text: one "MARKER  LABEL: NOTE" line per row, then what to do.
+checklist_text() {
+  local i=0
   while [ "$i" -lt "${#ROW_IDS[@]}" ]; do
     printf '%s  %s: %s\n' "$(row_marker "${ROW_STATES[$i]}")" "${ROW_LABELS[$i]}" "${ROW_NOTES[$i]}"
     i=$((i + 1))
   done
+  printf '\n'
+  if has_problems; then printf 'Fix the [ FIX ] rows, then choose Check again.\n'
+  else printf '[ ADD ] rows are installed in the next steps.\n'
+  fi
+}
+
+# checklist_screen: 0 = continue, 1 = quit. Check again re-runs the checks.
+checklist_screen() {
+  local text
+  while :; do
+    run_checks
+    text=$(checklist_text)
+    if [ "$KIOSK_SETUP_YES" = 1 ]; then
+      printf '%s\n' "$text"
+      if has_problems; then return 1; fi
+      return 0
+    fi
+    if ! has_problems; then
+      ui_yesno "$TITLE_CHECK" "$text" "Continue" "Quit"
+      return $?
+    fi
+    ui_yesno "$TITLE_CHECK" "$text" "Check again" "Quit" || return 1
+  done
+}
+
+# pick_env: set CHOSEN_ENV (CURRENT_ENV is set by the caller). 1 = quit.
+pick_env() {
+  local cur="${CURRENT_ENV:-none}" def env desc note items
+  def=$cur; [ "$def" != none ] || def=prod
+  if [ "$KIOSK_SETUP_YES" = 1 ]; then
+    env=${OPT_ENV:-$def}
+    case "$env" in
+      prod|rc|dev|edge) ;;
+      custom) if [ "$cur" != custom ]; then
+                printf "This laptop has no custom settings to keep; choose prod, rc, dev or edge.\n" >&2
+                return 1
+              fi ;;
+      *) printf "Unknown environment '%s'; choose prod, rc, dev or edge.\n" "$env" >&2; return 1 ;;
+    esac
+    note=$(server_set_note "$cur" "$env")
+    [ -z "$note" ] || printf '%s\n' "$note"
+    CHOSEN_ENV=$env
+    return 0
+  fi
+  while :; do
+    items=()
+    for env in prod rc dev edge custom; do
+      [ "$env" != custom ] || [ "$cur" = custom ] || continue
+      desc=$(env_desc "$env")
+      [ "$env" != "$cur" ] || desc="$desc (current)"
+      items+=("$env" "$(env_label "$env")  $desc")
+    done
+    env=$(ui_menu "$TITLE_ENV" \
+      "Choose the servers and app version for this laptop. Press Enter to keep the highlighted choice." \
+      "$def" "${items[@]}") || return 1
+    note=$(server_set_note "$cur" "$env")
+    if [ -z "$note" ] || ui_yesno "Switch servers" "$note" "Continue" "Back"; then
+      CHOSEN_ENV=$env
+      return 0
+    fi
+  done
+}
+
+# api_ok URL: 0 when URL/system/status answers; else prints the error, 1.
+api_ok() {
+  local err
+  if have_cmd curl; then
+    err=$(curl -fsS --max-time 10 "$1/system/status" -o /dev/null 2>&1) && return 0
+  else
+    err=$(wget -nv --timeout=10 --tries=1 -O /dev/null "$1/system/status" 2>&1) && return 0
+  fi
+  err=$(printf '%s\n' "$err" | awk 'NF { l = $0 } END { print l }')
+  printf '%s' "${err:-no answer}"
+  return 1
+}
+
+# api_check_screen: 0 = continue, 1 = quit, 2 = pick again.
+api_check_screen() {
+  local api label err tag
+  api=$(trim_slashes "$(env_api "$CHOSEN_ENV")"); label=$(env_short_label "$CHOSEN_ENV")
+  while :; do
+    ui_info "Checking that the $label servers answer…"
+    err=$(api_ok "$api") && return 0
+    if [ "$KIOSK_SETUP_YES" = 1 ]; then
+      printf "The %s servers didn't answer (%s/system/status): %s\n" "$label" "$api" "$err" >&2
+      return 1
+    fi
+    tag=$(ui_menu "$TITLE_ENV" "$(printf "The %s servers didn't answer (%s/system/status):\n%s" "$label" "$api" "$err")" \
+      retry retry "Try again" pick "Pick another environment" quit "Quit") || return 1
+    case "$tag" in
+      retry) ;;
+      pick) return 2 ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
+# ── Main ──────────────────────────────────────────────────────────────
+# The screens and progress come later; for now, print the checklist.
+main() {
+  load_saved_config
+  run_checks
+  checklist_text
   ! has_problems
 }
 
