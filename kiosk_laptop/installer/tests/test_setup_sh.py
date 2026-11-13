@@ -585,9 +585,11 @@ def test_env_option_preselects_the_picker(setup, tmp_path):
 
 
 def test_sudo_keepalive_stops_with_the_setup(setup, tmp_path):
+    # By PID: a pgrep -f by name also matches this test's own shell on Linux.
     r = setup(NOT_ROOT + 'row_set admin ok sudo; KIOSK_SUDO_KEEPALIVE_S=4711; start_sudo_keepalive; '
-              'sleep 0.3; pgrep -f "sleep 4711" >/dev/null && echo running; cleanup; sleep 0.3; '
-              'pgrep -f "sleep 4711" >/dev/null && echo left || echo gone')
+              'sleep 0.3; k=$KEEPALIVE_PID; s=$(pgrep -P "$k" sleep); '
+              '[ -n "$s" ] && kill -0 "$s" && echo running; cleanup; sleep 0.3; '
+              'if kill -0 "$k" 2>/dev/null || kill -0 "$s" 2>/dev/null; then echo left; else echo gone; fi')
     assert r.stdout.split() == ["running", "gone"]
 
 

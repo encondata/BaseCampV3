@@ -1095,8 +1095,8 @@ tty_restore() {
 cleanup() {
   tty_restore
   if [ -n "$KEEPALIVE_PID" ]; then
-    pkill -P "$KEEPALIVE_PID" sleep 2>/dev/null   # its sleep first, or the sleep outlives it
-    kill "$KEEPALIVE_PID" 2>/dev/null || true
+    kill "$KEEPALIVE_PID" 2>/dev/null || true   # its TERM trap stops its sleep too
+    wait "$KEEPALIVE_PID" 2>/dev/null || true
     KEEPALIVE_PID=''
   fi
   [ -z "$STEP_LOG_DIR" ] || rm -rf "$STEP_LOG_DIR"
@@ -1169,8 +1169,18 @@ on_signal() {
 # start_sudo_keepalive: keep sudo's cached credentials fresh during the install.
 start_sudo_keepalive() {
   ! is_root && [ "$(row_state admin)" = ok ] || return 0
-  ( while sleep "${KIOSK_SUDO_KEEPALIVE_S:-50}"; do sudo -n -v >/dev/null 2>&1 || exit 0; done ) \
-    </dev/null >/dev/null 2>&1 &
+  # The sleep runs in the background and is waited on, so a TERM from cleanup
+  # reaches the trap at once and the trap takes its sleep down with it.
+  (
+    s=''
+    trap '[ -z "$s" ] || kill "$s" 2>/dev/null; exit 0' TERM
+    while :; do
+      sleep "${KIOSK_SUDO_KEEPALIVE_S:-50}" & s=$!
+      wait "$s" || exit 0
+      s=''
+      sudo -n -v >/dev/null 2>&1 || exit 0
+    done
+  ) </dev/null >/dev/null 2>&1 &
   KEEPALIVE_PID=$!
 }
 
