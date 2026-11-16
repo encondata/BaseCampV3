@@ -16,6 +16,22 @@ FAKE_DOCKER = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DOCKER_LOG"
 case "$*" in
   "network inspect "*) [[ -n "${FAKE_NETWORK_EXISTS:-}" ]] && exit 0 || exit 1 ;;
+  "volume ls -q")
+    [[ -n "${FAKE_DOCKER_DOWN:-}" ]] && exit 1
+    [[ -n "${FAKE_VOLUMES:-}" ]] && printf '%s\n' $FAKE_VOLUMES
+    exit 0 ;;
+  *"to_regclass('public.alembic_version') IS NOT NULL")
+    [[ -n "${FAKE_FAIL_PSQL:-}" ]] && exit 1
+    echo "${FAKE_HAS_TABLES:-f}" ;;
+  *"python /objects.py "*)
+    # what objects.py would be given: the S3 settings arrive in the environment
+    printf 'endpoint=%s key=%s secret=%s bucket=%s region=%s style=%s\n' \
+      "${SS_OBJECTS_ENDPOINT-unset}" "${SS_OBJECTS_KEY_ID-unset}" "${SS_OBJECTS_SECRET-unset}" \
+      "${SS_OBJECTS_BUCKET-unset}" "${SS_OBJECTS_REGION-unset}" "${SS_OBJECTS_PATH_STYLE-unset}" \
+      >> "$DOCKER_LOG.objects"
+    [[ -n "${FAKE_FAIL_OBJECTS:-}" ]] && { echo "objects.py: the object store failed" >&2; exit 1; }
+    exit 0 ;;
+  *"auth_sessions"*) [[ -n "${FAKE_FAIL_PSQL:-}" ]] && exit 1 ;;
   *" ps --status running -q postgres") [[ -n "${FAKE_DB_RUNNING:-}" ]] && echo 0123abcdef ;;
   *pg_dump*)
     [[ -n "${FAKE_FAIL_PG_DUMP:-}" ]] && { printf 'PGDMP-cut'; exit 1; }
@@ -121,6 +137,11 @@ def test_unknown_command_prints_usage(env_dir: Path, fake: dict[str, str]) -> No
     assert out.returncode == 2
     assert "ss-stack build" in out.stdout + out.stderr
     assert "ss-stack restore <env-dir> <file.dump> [--clear-sessions]" in out.stdout + out.stderr
+    for command in ("has-data", "accepts", "verify-dump", "clear-sessions", "export-objects",
+                    "import-objects"):
+        assert f"ss-stack {command} <env-dir>" in out.stdout, command
+    # the header's env-dir paragraph isn't part of the usage
+    assert "holds the environment's .env" not in out.stdout
 
 
 def test_build_uses_only_the_build_file(env_dir: Path, fake: dict[str, str]) -> None:
@@ -372,7 +393,8 @@ def test_up_and_restore_on_a_data_vm_write_the_hba_too(env_dir: Path, fake: dict
     assert db_calls and all(f"-f {STACK_DIR}/db/lan.yml" in c for c in db_calls)
 
 
-@pytest.mark.parametrize("command", ["down", "ps", "dump", "pgdump", "revision"])
+@pytest.mark.parametrize("command", ["down", "ps", "dump", "pgdump", "revision",
+                                     "clear-sessions"])
 def test_every_db_call_on_a_data_vm_takes_the_override(env_dir: Path, fake: dict[str, str],
                                                        command: str, tmp_path: Path) -> None:
     with (env_dir / ".env").open("a") as f:
@@ -697,12 +719,21 @@ def test_the_smtp_password_never_reaches_argv(env_dir: Path, fake: dict[str, str
     assert not any("Mail-Secret-1" in c for c in calls(fake))
 
 
-@pytest.mark.parametrize("args, commands", [
-    ((), ["seed-label-fonts", "seed-label-templates"]),
-    (("--learning",), ["seed-label-fonts", "seed-label-templates", "learning-seed"]),
+LABELS = ["seed-label-fonts", "seed-label-templates"]
+
+
+@pytest.mark.parametrize("apps, args, commands", [
+    # the learning site runs (every app runs, or STACK_APPS lists learn): its space is seeded too
+    ("", (), [*LABELS, "learning-seed"]),
+    ("STACK_APPS=wiki,learn\n", (), [*LABELS, "learning-seed"]),
+    ("STACK_APPS=wiki,kiosk\n", (), LABELS),
+    ("STACK_APPS=none\n", (), LABELS),
+    ("STACK_APPS=wiki,kiosk\n", ("--learning",), [*LABELS, "learning-seed"]),
 ])
 def test_seed_runs_the_starter_content_commands_in_the_api_container(
-        env_dir: Path, fake: dict[str, str], args: tuple[str, ...], commands: list[str]) -> None:
+        env_dir: Path, fake: dict[str, str], apps: str, args: tuple[str, ...],
+        commands: list[str]) -> None:
+    _apps(env_dir, apps)
     out = run(fake, "seed", str(env_dir), *args)
     assert out.returncode == 0, out.stderr
     assert calls(fake) == [dc(env_dir, "api", f"exec -T api serversherpa {c}") for c in commands]
@@ -722,3 +753,320 @@ def test_seed_takes_only_learning(env_dir: Path, fake: dict[str, str]) -> None:
     out = run(fake, "seed", str(env_dir), "--everything")
     assert out.returncode == 2
     assert calls(fake) == []
+
+
+# ---- Slipway's data commands (slipway.yml: has_data, accepts, verify_dump,
+# after_import, export_files, import_files) ----
+
+VOLUME = "ss-uat-db_pgdata"
+HAS_TABLES = ("exec -T postgres psql -U serversherpa -d serversherpa -v ON_ERROR_STOP=1 -tAc "
+              "SELECT to_regclass('public.alembic_version') IS NOT NULL")
+
+
+def test_has_data_without_the_volume_is_empty(env_dir: Path, fake: dict[str, str]) -> None:
+    out = run({**fake, "FAKE_VOLUMES": "ss-other-db_pgdata ss-uat-db_pgdata-old"},
+              "has-data", str(env_dir))
+    assert out.returncode == 3, out.stderr
+    assert f"there is no volume {VOLUME}" in out.stdout
+    # nothing is started, nothing is created
+    assert calls(fake) == ["volume ls -q"]
+
+
+@pytest.mark.parametrize("tables, code", [("t", 0), ("f", 3)])
+def test_has_data_asks_the_database(env_dir: Path, fake: dict[str, str], tables: str,
+                                    code: int) -> None:
+    out = run({**fake, "FAKE_VOLUMES": f"other {VOLUME}", "FAKE_HAS_TABLES": tables},
+              "has-data", str(env_dir))
+    assert out.returncode == code, out.stderr
+    assert calls(fake) == ["volume ls -q", "network inspect ss-uat", "network create ss-uat",
+                           dc(env_dir, "db", WAIT), dc(env_dir, "db", HAS_TABLES)]
+    assert ("has ServerSherpa's tables" if code == 0 else "has no tables") in out.stdout
+
+
+@pytest.mark.parametrize("change", [{"FAKE_DOCKER_DOWN": "1"}, {"FAKE_FAIL_PSQL": "1"}])
+def test_has_data_that_cant_tell_is_an_error_not_empty(env_dir: Path, fake: dict[str, str],
+                                                        change: dict[str, str]) -> None:
+    out = run({**fake, "FAKE_VOLUMES": VOLUME, **change}, "has-data", str(env_dir))
+    assert out.returncode == 1
+    assert "ss-stack: couldn't" in out.stderr
+
+
+@pytest.mark.parametrize("extra", [
+    "STACK_EXTERNAL_DATA=1\n",
+    "STACK_DB_HOST=10.10.48.47\n",
+    LAN_DATA,
+])
+def test_has_data_is_4_when_the_database_is_shared_or_elsewhere(env_dir: Path,
+                                                                fake: dict[str, str],
+                                                                extra: str) -> None:
+    _apps(env_dir, extra)
+    out = run({**fake, "FAKE_VOLUMES": VOLUME, "FAKE_HAS_TABLES": "t"}, "has-data", str(env_dir))
+    assert out.returncode == 4, out.stderr
+    assert calls(fake) == []
+
+
+def test_has_data_takes_no_arguments(env_dir: Path, fake: dict[str, str]) -> None:
+    assert run(fake, "has-data", str(env_dir), "--now").returncode == 2
+
+
+def _revision(tmp_path: Path, text: str) -> Path:
+    f = tmp_path / "revision"
+    f.write_text(text)
+    return f
+
+
+def _newest_migration() -> str:
+    versions = STACK_DIR.parent.parent / "api" / "migrations" / "versions"
+    return max(p.name.split("_")[0] for p in versions.glob("[0-9]*_*.py"))
+
+
+@pytest.mark.parametrize("text", ["{rev}", "{rev}\n", "  {rev}\n\n", "0001"])
+def test_accepts_a_revision_this_commit_has(env_dir: Path, fake: dict[str, str], tmp_path: Path,
+                                            text: str) -> None:
+    rev = _newest_migration()
+    out = run(fake, "accepts", str(env_dir), str(_revision(tmp_path, text.format(rev=rev))))
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "This commit has migration" in out.stdout
+    assert calls(fake) == []   # no database, no docker
+
+
+def test_accepts_refuses_a_newer_or_foreign_revision(env_dir: Path, fake: dict[str, str],
+                                                     tmp_path: Path) -> None:
+    newer = f"{int(_newest_migration()) + 1:04d}"
+    out = run(fake, "accepts", str(env_dir), str(_revision(tmp_path, newer + "\n")))
+    assert out.returncode == 3
+    assert out.stdout.strip().splitlines()[-1] == (
+        f"This commit has no migration {newer}: the data is newer than this commit, or from "
+        "another branch; deploy a commit that has it")
+
+
+@pytest.mark.parametrize("text, shown", [
+    ("abc123", "abc123"),
+    ("", ""),
+    ("0090 0091", "0090?0091"),
+    ("../0001", "..?0001"),
+    ("*", "?"),
+    ("123456789", "123456789"),
+    ("ae1027a6acf\n", "ae1027a6acf"),
+])
+def test_accepts_refuses_what_isnt_a_migration_number(env_dir: Path, fake: dict[str, str],
+                                                      tmp_path: Path, text: str,
+                                                      shown: str) -> None:
+    out = run(fake, "accepts", str(env_dir), str(_revision(tmp_path, text)))
+    assert out.returncode == 3
+    assert out.stdout.strip().splitlines()[-1] == f"'{shown}' isn't a ServerSherpa migration number"
+
+
+def test_accepts_reads_only_the_start_of_the_file(env_dir: Path, fake: dict[str, str],
+                                                  tmp_path: Path) -> None:
+    out = run(fake, "accepts", str(env_dir), str(_revision(tmp_path, "9" * 5000)))
+    assert out.returncode == 3
+    assert len(out.stdout) < 200
+
+
+@pytest.mark.parametrize("args, code", [([], 2), (["/no/such/revision"], 1), (["a", "b"], 2)])
+def test_accepts_arguments(env_dir: Path, fake: dict[str, str], args: list[str],
+                           code: int) -> None:
+    assert run(fake, "accepts", str(env_dir), *args).returncode == code
+
+
+VERIFY = "run --rm -i --network none postgres:16-alpine pg_restore -f /dev/null"
+
+
+def test_verify_dump_reads_the_whole_archive_without_a_network(
+        env_dir: Path, fake: dict[str, str], tmp_path: Path) -> None:
+    dump = _dump(tmp_path)
+    out = run(fake, "verify-dump", str(env_dir), str(dump))
+    assert out.returncode == 0, out.stderr
+    assert calls(fake) == [VERIFY]
+    assert Path(fake["DOCKER_LOG"] + ".stdin").read_bytes() == b"PGDMP-restore-me"
+
+
+def test_verify_dump_refuses_a_broken_archive(env_dir: Path, fake: dict[str, str],
+                                              tmp_path: Path) -> None:
+    dump = _dump(tmp_path)
+    out = run({**fake, "FAKE_FAIL_PG_RESTORE": "1"}, "verify-dump", str(env_dir), str(dump))
+    assert out.returncode == 1
+    assert f"ss-stack: {dump} isn't a complete pg_dump archive" in out.stderr
+
+
+@pytest.mark.parametrize("args, code", [([], 2), (["/no/such.dump"], 1)])
+def test_verify_dump_arguments(env_dir: Path, fake: dict[str, str], args: list[str],
+                               code: int) -> None:
+    assert run(fake, "verify-dump", str(env_dir), *args).returncode == code
+    assert calls(fake) == []
+
+
+def test_clear_sessions_signs_everyone_out(env_dir: Path, fake: dict[str, str]) -> None:
+    out = run(fake, "clear-sessions", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert calls(fake) == [dc(env_dir, "db", f"{PSQL} -c {CLEAR}")]
+
+
+def test_clear_sessions_reports_a_failure(env_dir: Path, fake: dict[str, str]) -> None:
+    out = run({**fake, "FAKE_FAIL_PSQL": "1"}, "clear-sessions", str(env_dir))
+    assert out.returncode == 1
+    assert "couldn't clear the sessions" in out.stderr
+
+
+def test_clear_sessions_on_the_managed_database(env_dir: Path, fake: dict[str, str]) -> None:
+    _apps(env_dir, "STACK_EXTERNAL_DATA=1\nSTACK_DB_HOST=db.internal\nSTACK_DB_PORT=25060\n"
+                   "STACK_DB_NAME=serversherpa\nSTACK_DB_USER=serversherpa\n")
+    out = run({**fake, "FAKE_NETWORK_EXISTS": "1"}, "clear-sessions", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    psql = [c for c in calls(fake) if "auth_sessions" in c]
+    assert len(psql) == 1 and "postgres:16-alpine psql" in psql[0] and "PGHOST=db.internal" in psql[0]
+
+
+SPACES_SECRET = "Spaces-Secret-0123"
+
+
+def _objects_call(env_dir: Path, action: str, folder: Path, name: str, ro: str = "") -> str:
+    uid, gid = os.getuid(), os.getgid()
+    return (f"run --rm --network ss-uat --user {uid}:{gid} -e HOME=/tmp "
+            "-e SS_OBJECTS_ENDPOINT -e SS_OBJECTS_KEY_ID -e SS_OBJECTS_SECRET -e SS_OBJECTS_BUCKET "
+            "-e SS_OBJECTS_REGION -e SS_OBJECTS_PATH_STYLE "
+            f"-v {STACK_DIR}/objects.py:/objects.py:ro -v {folder}:/work{ro} "
+            f"serversherpa-api:local python /objects.py {action} /work/{name}")
+
+
+def _objects_env(fake: dict[str, str]) -> list[str]:
+    return Path(fake["DOCKER_LOG"] + ".objects").read_text().splitlines()
+
+
+def test_export_objects_runs_objects_py_in_the_api_image(env_dir: Path, fake: dict[str, str],
+                                                         tmp_path: Path) -> None:
+    _apps(env_dir, f"SPACES_SECRET_KEY={SPACES_SECRET}\n")
+    folder = (tmp_path / "incoming").resolve()
+    folder.mkdir()
+    out = run({**fake, "FAKE_NETWORK_EXISTS": "1"}, "export-objects", str(env_dir),
+              str(folder / "files.partial"))
+    assert out.returncode == 0, out.stderr
+    assert calls(fake) == ["network inspect ss-uat",
+                           _objects_call(env_dir, "export", folder, "files.partial")]
+    # this host's SeaweedFS, with its fixed key; the secret only in the environment
+    assert _objects_env(fake) == [f"endpoint=http://seaweedfs:8333 key=serversherpa "
+                                  f"secret={SPACES_SECRET} bucket=serversherpa region=us-east-1 "
+                                  "style=true"]
+    assert SPACES_SECRET not in "\n".join(calls(fake)) + out.stdout + out.stderr
+
+
+def test_import_objects_mounts_the_file_read_only(env_dir: Path, fake: dict[str, str],
+                                                  tmp_path: Path) -> None:
+    folder = tmp_path.resolve()
+    src = folder / "files"
+    src.write_bytes(b"tar")
+    out = run({**fake, "FAKE_NETWORK_EXISTS": "1"}, "import-objects", str(env_dir), str(src))
+    assert out.returncode == 0, out.stderr
+    assert calls(fake)[-1] == _objects_call(env_dir, "import", folder, "files", ":ro")
+
+
+def test_objects_go_to_the_bucket_the_api_uses(env_dir: Path, fake: dict[str, str],
+                                               tmp_path: Path) -> None:
+    _apps(env_dir, "STACK_EXTERNAL_DATA=1\nSTACK_IMAGE_TAG=0123456789ab\n"
+                   "SS_SPACES_ENDPOINT=https://ams3.digitaloceanspaces.com\n"
+                   "SS_SPACES_ACCESS_KEY=DO00KEYID\nSS_SPACES_SECRET_KEY=Do-Secret-1\n"
+                   "SS_SPACES_BUCKET=ss-uat-files\nSS_SPACES_REGION=ams3\n"
+                   "SS_SPACES_USE_PATH_STYLE=false\n")
+    src = tmp_path / "files"
+    src.write_bytes(b"tar")
+    out = run({**fake, "FAKE_NETWORK_EXISTS": "1"}, "import-objects", str(env_dir), str(src))
+    assert out.returncode == 0, out.stderr
+    assert calls(fake)[-1].endswith("serversherpa-api:0123456789ab python /objects.py import "
+                                    "/work/files")
+    assert _objects_env(fake) == ["endpoint=https://ams3.digitaloceanspaces.com key=DO00KEYID "
+                                  "secret=Do-Secret-1 bucket=ss-uat-files region=ams3 style=false"]
+    assert not any("Do-Secret-1" in c or "DO00KEYID" in c for c in calls(fake))
+
+
+def test_external_objects_need_an_endpoint(env_dir: Path, fake: dict[str, str],
+                                           tmp_path: Path) -> None:
+    _apps(env_dir, "STACK_EXTERNAL_DATA=1\n")
+    out = run(fake, "export-objects", str(env_dir), str(tmp_path / "files"))
+    assert out.returncode == 1
+    assert "SS_SPACES_ENDPOINT, which isn't set" in out.stderr
+    assert calls(fake) == []
+
+
+def test_a_failed_export_passes_its_exit_code_and_leaves_no_partial(
+        env_dir: Path, fake: dict[str, str], tmp_path: Path) -> None:
+    target = tmp_path / "files"
+    (tmp_path / "files.partial").write_bytes(b"half")   # what a killed objects.py leaves
+    out = run({**fake, "FAKE_FAIL_OBJECTS": "1"}, "export-objects", str(env_dir), str(target))
+    assert out.returncode == 1
+    assert "objects.py: the object store failed" in out.stderr
+    assert not (tmp_path / "files.partial").exists() and not target.exists()
+
+
+@pytest.mark.parametrize("command, make, code, message", [
+    ("export-objects", True, 1, "already exists"),
+    ("import-objects", False, 1, "no such objects file"),
+    ("export-objects", None, 2, "ss-stack build"),
+    ("import-objects", None, 2, "ss-stack build"),
+])
+def test_objects_arguments(env_dir: Path, fake: dict[str, str], tmp_path: Path, command: str,
+                           make: bool | None, code: int, message: str) -> None:
+    f = tmp_path / "files"
+    if make:
+        f.write_bytes(b"there")
+    args = [] if make is None else [str(f)]
+    out = run(fake, command, str(env_dir), *args)
+    assert out.returncode == code
+    assert message in out.stdout + out.stderr
+    assert calls(fake) == []
+    if make:
+        assert f.read_bytes() == b"there"
+
+
+@pytest.mark.e2e
+@pytest.mark.skipif(os.environ.get("SS_STACK_E2E") != "1", reason="set SS_STACK_E2E=1")
+def test_verify_dump_refuses_a_cut_off_real_dump(env_dir: Path, tmp_path: Path) -> None:
+    """Real Docker: a real pg_dump passes verify-dump, and the same file cut
+    in half fails it (pg_restore --list alone would pass it)."""
+    name = f"verifydump{os.getpid() % 10000}"
+    subprocess.run(["docker", "run", "-d", "--name", name, "-e", "POSTGRES_PASSWORD=x",
+                    "postgres:16-alpine"], check=True, capture_output=True)
+    try:
+        for _ in range(60):
+            if subprocess.run(["docker", "exec", name, "pg_isready", "-U", "postgres"],
+                              capture_output=True).returncode == 0:
+                break
+            time.sleep(1)
+        time.sleep(2)
+        subprocess.run(["docker", "exec", name, "psql", "-U", "postgres", "-qc",
+                        "CREATE TABLE t AS SELECT g, md5(g::text) m FROM generate_series(1, 100000) g"],
+                       check=True, capture_output=True)
+        full = tmp_path / "full.dump"
+        with full.open("wb") as f:
+            subprocess.run(["docker", "exec", name, "pg_dump", "-U", "postgres", "-Fc",
+                            "--no-owner", "--no-acl"], check=True, stdout=f)
+        half = tmp_path / "half.dump"
+        half.write_bytes(full.read_bytes()[:full.stat().st_size // 2])
+        ok = run(dict(os.environ), "verify-dump", str(env_dir), str(full))
+        assert ok.returncode == 0, ok.stderr
+        cut = run(dict(os.environ), "verify-dump", str(env_dir), str(half))
+        assert cut.returncode == 1 and "isn't a complete pg_dump archive" in cut.stderr
+        listed = subprocess.run(["docker", "run", "--rm", "-i", "--network", "none",
+                                 "postgres:16-alpine", "pg_restore", "--list"],
+                                stdin=half.open("rb"), capture_output=True)
+        assert listed.returncode == 0   # why verify-dump reads the whole archive
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+
+
+def test_every_subcommand_slipway_yml_runs_exists() -> None:
+    """slipway.yml (how Slipway deploys this repository) runs ss-stack
+    subcommands by name; each one must be a case of the script."""
+    import re
+
+    from conftest import REPO
+
+    manifest = (REPO / "slipway.yml").read_text()
+    used = set(re.findall(r"\[deploy/stack/ss-stack, ([a-z-]+),", manifest))
+    assert {"build", "up", "down", "has-data", "data", "pgdump", "verify-dump", "revision",
+            "accepts", "restore", "export-objects", "import-objects", "clear-sessions", "seed",
+            "admin"} <= used
+    script = SS_STACK.read_text()
+    for sub in used:
+        assert re.search(rf"^  {re.escape(sub)}\)$", script, re.M), sub
+    assert (STACK_DIR / "objects.py").is_file()
