@@ -3,6 +3,7 @@ on PATH records every call, so these tests need no daemon."""
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -494,6 +495,179 @@ def test_a_bad_db_port_on_a_data_vm_is_refused(env_dir: Path, fake: dict[str, st
     out = run(fake, "data", str(env_dir))
     assert out.returncode != 0 and "STACK_DB_PORT" in out.stderr
     assert not any("/db/compose.yml" in c for c in calls(fake))
+
+
+# ---- Slipway's data server (slipway.yml data.server): a data VM whose .env
+# leaves every app secret empty ----
+
+def _data_server(env_dir: Path) -> None:
+    """The .env as Slipway writes it for an environment's data server: only
+    the data secrets set, every SS_* secret empty, the database published."""
+    lines = []
+    for line in ENV_EXAMPLE.read_text().splitlines():
+        key, sep, value = line.partition("=")
+        if sep and value == "CHANGEME":
+            line = f"{key}=" if key.startswith("SS_") else f"{key}=0123abcd"
+        lines.append(line)
+    (env_dir / ".env").write_text("\n".join(lines) + "\n" + LAN_DATA)
+
+
+def _stacks(env: dict[str, str]) -> list[str]:
+    """The stack of each compose call, in order (db/lan.yml counts as db)."""
+    found = []
+    for c in calls(env):
+        if c.startswith("compose "):
+            first = c.split(" -f ", 1)[1].split()[0]
+            found.append(Path(first).parent.name)
+    return found
+
+
+def _lan_dc(env_dir: Path, rest: str) -> str:
+    """A db call on a data VM: db/compose.yml with the db/lan.yml override."""
+    return (f"compose --env-file {env_dir}/.env -f {STACK_DIR}/db/compose.yml "
+            f"-f {STACK_DIR}/db/lan.yml {rest}")
+
+
+def test_a_data_server_env_leaves_the_app_secrets_empty(env_dir: Path) -> None:
+    _data_server(env_dir)
+    lines = (env_dir / ".env").read_text().splitlines()
+    assert "SS_JWT_SECRET=" in lines and "POSTGRES_PASSWORD=0123abcd" in lines
+    assert not any(line.endswith("=CHANGEME") for line in lines)
+
+
+def test_a_data_vm_stops_only_storage_then_db(env_dir: Path, fake: dict[str, str]) -> None:
+    _data_server(env_dir)
+    out = run(fake, "down", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert calls(fake) == [dc(env_dir, "storage", "down"), _lan_dc(env_dir, "down")]
+
+
+def test_a_data_vm_lists_only_db_and_storage(env_dir: Path, fake: dict[str, str]) -> None:
+    _data_server(env_dir)
+    out = run(fake, "ps", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert _stacks(fake) == ["db", "storage"]
+
+
+def test_restore_on_a_data_vm_stops_no_stack(env_dir: Path, fake: dict[str, str],
+                                             tmp_path: Path) -> None:
+    """The app servers that write to a data VM are other hosts, which Slipway
+    stops itself (stop_slots) before it restores."""
+    _data_server(env_dir)
+    dump = _dump(tmp_path)
+    out = run({**fake, "FAKE_NETWORK_EXISTS": "1"}, "restore", str(env_dir), str(dump),
+              "--clear-sessions")
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == f"restored {dump}"
+    assert calls(fake) == [
+        "network inspect ss-uat",
+        _lan_dc(env_dir, WAIT),
+        _lan_dc(env_dir, f"{PSQL} -c DROP SCHEMA public CASCADE; CREATE SCHEMA public;"),
+        _lan_dc(env_dir, "exec -T postgres pg_restore --exit-on-error --no-owner --no-acl "
+                         "-U serversherpa -d serversherpa"),
+        _lan_dc(env_dir, f"{PSQL} -c {CLEAR}"),
+    ]
+    assert Path(fake["DOCKER_LOG"] + ".stdin").read_bytes() == b"PGDMP-restore-me"
+
+
+def test_has_data_server_without_the_volume_starts_nothing(env_dir: Path,
+                                                           fake: dict[str, str]) -> None:
+    _data_server(env_dir)
+    out = run({**fake, "FAKE_VOLUMES": "ss-other-db_pgdata"}, "has-data", str(env_dir), "--server")
+    assert out.returncode == 3, out.stderr
+    assert calls(fake) == ["volume ls -q"]
+    assert not (env_dir / "pg_hba.conf").exists()
+
+
+@pytest.mark.parametrize("tables, code", [("t", 0), ("f", 3)])
+def test_has_data_server_asks_the_data_vms_own_database(env_dir: Path, fake: dict[str, str],
+                                                        tables: str, code: int) -> None:
+    """--server: a data VM answers for its own database, which its app servers
+    elsewhere use, instead of 4; the database starts with its pg_hba.conf."""
+    _data_server(env_dir)
+    out = run({**fake, "FAKE_VOLUMES": VOLUME, "FAKE_HAS_TABLES": tables},
+              "has-data", str(env_dir), "--server")
+    assert out.returncode == code, out.stderr
+    assert "10.10.48.49/32" in (env_dir / "pg_hba.conf").read_text()
+    assert calls(fake) == ["volume ls -q", "network inspect ss-uat", "network create ss-uat",
+                           _lan_dc(env_dir, WAIT), _lan_dc(env_dir, HAS_TABLES)]
+    # without --server the same host is still 4: nothing restores over its app servers' data
+    Path(fake["DOCKER_LOG"]).write_text("")
+    plain = run({**fake, "FAKE_VOLUMES": VOLUME, "FAKE_HAS_TABLES": tables}, "has-data", str(env_dir))
+    assert plain.returncode == 4 and calls(fake) == []
+
+
+@pytest.mark.parametrize("extra, code", [
+    ("", 0),                                         # not a data VM: plain has-data
+    ("STACK_EXTERNAL_DATA=1\n", 4),                  # the database is elsewhere
+    ("STACK_DB_HOST=10.10.48.47\n", 4),
+])
+def test_has_data_server_changes_nothing_else(env_dir: Path, fake: dict[str, str], extra: str,
+                                              code: int) -> None:
+    _apps(env_dir, extra)
+    out = run({**fake, "FAKE_VOLUMES": VOLUME, "FAKE_HAS_TABLES": "t"},
+              "has-data", str(env_dir), "--server")
+    assert out.returncode == code, out.stderr
+    assert not (env_dir / "pg_hba.conf").exists()
+
+
+def test_has_data_server_takes_nothing_more(env_dir: Path, fake: dict[str, str]) -> None:
+    _data_server(env_dir)
+    assert run(fake, "has-data", str(env_dir), "--server", "--now").returncode == 2
+    assert calls(fake) == []
+
+
+SERVER_ROLE = STACK_DIR / "test-server-role.sh"
+
+
+def test_the_server_role_script_passes() -> None:
+    """§16.2 test 70 (Slipway phase 3): the real ss-stack against a data
+    server's .env, with a docker that fails like Compose on an empty
+    ${VAR:?} (deploy/stack/test-server-role.sh)."""
+    out = subprocess.run(["bash", str(SERVER_ROLE)], capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "FAIL" not in out.stdout
+    assert out.stdout.rstrip().endswith("test-server-role: every check passed")
+
+
+def _ss_stack_before_the_data_server() -> str:
+    """ss-stack as it was before it learned the data server role: the parent
+    of the commit that added in_stacks, or HEAD while that is uncommitted."""
+    from conftest import REPO
+
+    def git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["git", "-C", str(REPO), *args], capture_output=True, text=True)
+
+    try:
+        found = git("log", "--format=%H", "-Sin_stacks()", "--", "deploy/stack/ss-stack")
+    except FileNotFoundError:
+        pytest.skip("git isn't installed")
+    if found.returncode != 0:
+        pytest.skip("not a git checkout")
+    added = found.stdout.split()
+    rev = f"{added[-1]}^" if added else "HEAD"
+    old = git("show", f"{rev}:deploy/stack/ss-stack")
+    if old.returncode != 0 or "in_stacks" in old.stdout:
+        pytest.skip(f"no ss-stack from before the data server role at {rev}")
+    return old.stdout
+
+
+def test_the_server_role_script_fails_on_the_old_ss_stack(tmp_path: Path) -> None:
+    """The script can fail: on ss-stack before the data server role, down and
+    restore walk into the app stacks and die on an empty SS_* secret, and
+    has-data --server is a usage error."""
+    old = _ss_stack_before_the_data_server()
+    copy = tmp_path / "deploy" / "stack"
+    shutil.copytree(STACK_DIR, copy)
+    (copy / "ss-stack").write_text(old)
+    out = subprocess.run(["bash", str(SERVER_ROLE)], env={**os.environ, "SS_STACK": str(copy / "ss-stack")},
+                         capture_output=True, text=True, timeout=120)
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert out.stdout.rstrip().endswith("test-server-role: FAILED")
+    failed = [line for line in out.stdout.splitlines() if line.startswith("FAIL: ")]
+    assert any(line.startswith("FAIL: down exited 1") for line in failed), failed
+    assert any("SS_JWT_SECRET" in line or "SS_WIKI_SERVICE_TOKEN" in line for line in failed), failed
+    assert any(line.startswith("FAIL: has-data --server (tables) exited 2") for line in failed), failed
 
 
 def _free_port() -> int:

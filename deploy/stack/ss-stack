@@ -18,8 +18,9 @@
 #                                           container; stdin (a password) passes through
 #   ss-stack seed    <env-dir> [--learning] starter content in the running api container: label
 #                                           fonts and templates, and the Learning space when learn runs
-#   ss-stack has-data <env-dir>             exit 0: this host's database has ServerSherpa's tables;
+#   ss-stack has-data <env-dir> [--server]  exit 0: this host's database has ServerSherpa's tables;
 #                                           3: no data yet; 4: the database is shared or elsewhere
+#                                           (--server: a data VM answers 0 or 3 for its own database)
 #   ss-stack accepts <env-dir> <file>       exit 0 when this commit can run a database at the
 #                                           revision in <file> (up migrates it); 3 when it can't
 #   ss-stack verify-dump <env-dir> <file>   check that <file> is a complete pg_dump archive
@@ -35,12 +36,16 @@
 # stacks don't run (mailpit does), and the database commands use one-off
 # postgres containers. With STACK_CADDY=1 the proxy stack (Caddy) runs last.
 # With STACK_DB_PUBLISH=1 (a LAN Blue/Green data VM) the db stack listens on
-# the LAN for STACK_DB_ALLOW's addresses only (pg_hba.conf, written here).
+# the LAN for STACK_DB_ALLOW's addresses only (pg_hba.conf, written here), and
+# the data VM runs only the db and storage stacks: down, ps and restore leave
+# api, web and status alone, so a data VM's .env may leave the app secrets
+# (SS_JWT_SECRET and the rest) empty, as Slipway's data server does.
 # STACK_DB_SSLMODE=disable: the external database is a LAN data VM (no TLS).
 # STACK_APPS lists the optional apps that run (wiki, kiosk, learn, status, mailpit;
 # "none" for none); without it every app runs. API and portal always run. The
 # learning site needs the wiki (its documents render there).
-# Sirdar's deploy pipeline runs exactly these commands over SSH.
+# Slipway (slipway.yml) and Sirdar's deploy pipeline run exactly these
+# commands over SSH.
 set -euo pipefail
 # dumps hold every secret in the database: backups/ and its files are owner-only
 umask 077
@@ -195,8 +200,23 @@ if external && [[ -z $(env_value SPACES_SECRET_KEY) ]]; then
   export SPACES_SECRET_KEY=unused-external-data
 fi
 
-if external; then STACKS=(storage api web status); else STACKS=(db storage api web status); fi
+# A data VM (STACK_DB_PUBLISH=1) runs only the database and the object store:
+# its app servers are other hosts, and the api and web compose files refuse
+# the empty app secrets its .env may have (${SS_JWT_SECRET:?} and others).
+if external; then
+  STACKS=(storage api web status)
+elif lan_db; then
+  STACKS=(db storage)
+else
+  STACKS=(db storage api web status)
+fi
 if caddy; then STACKS+=(proxy); fi
+# Whether a stack is one of this host's STACKS.
+in_stacks() {
+  local s
+  for s in "${STACKS[@]}"; do [[ $s == "$1" ]] && return 0; done
+  return 1
+}
 
 dc() {  # dc <stack> <compose args…>
   local stack=$1; shift
@@ -466,11 +486,15 @@ case $cmd in
     ensure_network
     # nothing may write while the database is replaced: stop the writers
     # (stopping a stack that isn't running is a no-op), keep the database up.
-    # This stops writers only on this droplet (this host). On DigitalOcean
-    # two slots share one managed database, so Sirdar (phase 7b) restores
-    # only while no slot has run a deploy (pipeline: seed_not_allowed; an
-    # added slot's first deploy never seeds): no other slot is writing.
-    for s in status web api; do dc "$s" stop </dev/null; done
+    # This stops writers only on this host, and only the app stacks it runs
+    # (STACKS): a data VM runs none, so it stops nothing here. Its writers are
+    # the app servers elsewhere, which Slipway stops before a restore. On
+    # DigitalOcean two slots share one managed database, so Sirdar (phase 7b)
+    # restores only while no slot has run a deploy (pipeline: seed_not_allowed;
+    # an added slot's first deploy never seeds): no other slot is writing.
+    for s in status web api; do
+      if in_stacks "$s"; then dc "$s" stop </dev/null; fi
+    done
     if ! external; then dc db up -d "${WAIT[@]}" </dev/null; fi
     # an empty schema, never pg_restore --clean: tables a newer migration
     # created aren't in the dump, and --clean would leave them behind
@@ -577,13 +601,22 @@ case $cmd in
     #      database (STACK_EXTERNAL_DATA, STACK_DB_HOST), or this host is a
     #      data VM that app servers elsewhere write to (STACK_DB_PUBLISH).
     #      Slipway still backs it up but won't restore over or reset it.
+    # --server: this host is the data server of a Slipway environment
+    # (slipway.yml's data.server.commands.has_data), which stops the app
+    # servers itself before it restores or resets. A data VM then answers 0
+    # or 3 for its own database instead of 4. Without --server a data VM still
+    # answers 4, so a single instance on a hand-made data VM never restores
+    # over the app servers' database. --server changes nothing else: a
+    # database outside this host is still 4.
     # Docker or Postgres not answering is an error (exit 1), never "no data".
+    server=""
+    if [[ ${1:-} == --server ]]; then server=1; shift; fi
     [[ $# -eq 0 ]] || usage
     if external || [[ -n $(env_value STACK_DB_HOST) ]]; then
       echo "The database is outside this host (STACK_EXTERNAL_DATA or STACK_DB_HOST is set)."
       exit 4
     fi
-    if lan_db; then
+    if lan_db && [[ -z $server ]]; then
       echo "This host is a data VM: app servers on other hosts use its database (STACK_DB_PUBLISH=1)."
       exit 4
     fi
@@ -594,6 +627,10 @@ case $cmd in
       exit 3
     fi
     # The volume is there: start its database (never anything else) and ask it.
+    # A data VM's database starts with db/lan.yml, which mounts pg_hba.conf:
+    # write it first (as data does), so a new environment folder over an old
+    # volume never mounts a missing file.
+    if lan_db; then write_hba; fi
     ensure_network
     dc db up -d "${WAIT[@]}" </dev/null
     tables=$(pg_local psql -v ON_ERROR_STOP=1 -tAc \
