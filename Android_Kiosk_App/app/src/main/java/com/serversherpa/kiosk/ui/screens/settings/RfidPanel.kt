@@ -21,6 +21,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -83,6 +84,8 @@ fun RfidPanel() {
     val requestedLayout by rfid.requestedLayout.collectAsStateWithLifecycle()
     val layoutError by rfid.layoutError.collectAsStateWithLifecycle()
     val usesScanner by rfid.layoutInForceUsesScanner.collectAsStateWithLifecycle()
+    // H7: a device setting, on this kiosk only; never part of a sled push.
+    val sledFlash by container.prefs.sledFlash.collectAsStateWithLifecycle(initialValue = true)
     // connection is a plain read-through of the reader's own state, and the
     // reader can never write it on a connect/disconnect the controller gave
     // up waiting on — so a connect timeout leaves this line reading
@@ -207,7 +210,16 @@ fun RfidPanel() {
                 }
             }
         }
-        // Where "Trigger drives" was: right under the RFID reader row, above Trigger.
+        // H7 (Jimmy, 2026-11-17): the full-screen red "Sled disconnected" and green "Ready to
+        // scan", right under the row whose connection they report.
+        SettingsRow(SledWords.ROW_SLED_FLASH, SledWords.HINT_SLED_FLASH) {
+            Switch(
+                checked = sledFlash,
+                onCheckedChange = { on -> scope.launch { container.prefs.setSledFlash(on) } },
+                modifier = Modifier.testTag("sled-flash"),
+            )
+        }
+        // Where "Trigger drives" was: under the RFID reader row (and its flash switch), above Trigger.
         // Dimmed (a Zebra host, or a sled with no scanner), the hint says what the triggers do
         // in force, not what the saved option would do: both read tags there.
         val triggersDimmed = container.isZebraHost || info?.hasScanner == false

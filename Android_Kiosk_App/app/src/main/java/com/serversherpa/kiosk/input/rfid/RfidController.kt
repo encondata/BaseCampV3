@@ -11,6 +11,8 @@ import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.SledCandidate
 import com.serversherpa.kiosk.core.rfid.SledConnectException
 import com.serversherpa.kiosk.core.rfid.SledConnectRequest
+import com.serversherpa.kiosk.core.rfid.SledFlash
+import com.serversherpa.kiosk.core.rfid.SledFlashDecider
 import com.serversherpa.kiosk.core.rfid.SledFix
 import com.serversherpa.kiosk.core.rfid.SledInfo
 import com.serversherpa.kiosk.core.rfid.SledNotConnected
@@ -32,6 +34,7 @@ import com.serversherpa.kiosk.core.rfid.nextTriggerAction
 import com.serversherpa.kiosk.core.rfid.onTagRead
 import com.serversherpa.kiosk.core.rfid.queuedAfter
 import com.serversherpa.kiosk.core.rfid.sledNudgeAddress
+import com.serversherpa.kiosk.core.rfid.sledReady
 import com.serversherpa.kiosk.core.rfid.startSession
 import com.serversherpa.kiosk.core.scan.rfidKey
 import java.util.concurrent.atomic.AtomicBoolean
@@ -48,6 +51,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
@@ -56,6 +60,7 @@ import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -258,6 +263,8 @@ class RfidController(
     private val scope: CoroutineScope,
     private val zebraHost: Boolean = false,
     private val printerBusy: () -> Boolean = { false },
+    /** The RFID tab's "Flash when the sled connects or drops" (task H7); off, [sledFlashes] stays quiet. */
+    private val sledFlashesOn: Flow<Boolean> = flowOf(true),
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     val connection: StateFlow<RfidConnection> = reader.connection
@@ -338,6 +345,13 @@ class RfidController(
      *  read-back, else the effective layout of [requestedLayout] (else the
      *  setting). False while `info` is null. */
     val layoutInForceUsesScanner: StateFlow<Boolean> = _layoutInForceUsesScanner
+
+    private val _sledFlashes = MutableSharedFlow<SledFlash>(extraBufferCapacity = 8)
+    /** The full-screen sled flashes (task H7), as [SledFlashDecider] decides them from the
+     *  reader's `connection`, `info` and `scanner` and the layout in force: red when the link
+     *  drops by itself, green the first time each connection is usable. No replay: a flash
+     *  nobody is collecting (the app in the background) is gone. Nothing while the setting is off. */
+    val sledFlashes: SharedFlow<SledFlash> = _sledFlashes
 
     /** Guards every state transition below: `current`, `armed`, `queued`,
      *  `stoppingBurst`/`queueOnStop`, and `_session`'s check-then-act moves.
@@ -771,6 +785,16 @@ class RfidController(
                 seen = i
                 refreshLayoutState()
             }
+        }
+        scope.launch {
+            // The layout in force is worked out from the same `info` snapshot here, not read
+            // from [layoutInForceUsesScanner]: that one follows `info` in a collector of its
+            // own, so a new generation could otherwise be seen as ready before it is. Its
+            // changes still wake this up (a layout write or a settings change moves it).
+            val decider = SledFlashDecider()
+            combine(reader.connection, reader.info, reader.scanner, _layoutInForceUsesScanner, sledFlashesOn) { c, i, s, _, on ->
+                decider.next(c, i?.generation, sledReady(c, usesScannerFor(i), s), on)
+            }.collect { flash -> if (flash != null) _sledFlashes.tryEmit(flash) }
         }
         // Single consumer of `commands`, so arm()/disarm()/stopBurst() all
         // run in exactly the order they were sent — see the class doc.
@@ -1369,10 +1393,14 @@ class RfidController(
             val info = reader.info.value
             val asked = requestedFor(info)
             _requestedLayout.value = asked
-            _layoutInForceUsesScanner.value =
-                info != null && layoutInForceUsesScanner(info.trigger, asked ?: settingLayout, zebraHost, info.hasScanner)
+            _layoutInForceUsesScanner.value = usesScannerFor(info, asked)
         }
     }
+
+    /** Whether the layout in force for [info]'s generation uses the sled's scanner: the accepted
+     *  read-back, else the effective layout of [asked] (else the setting). False for no `info`. */
+    private fun usesScannerFor(info: SledInfo?, asked: SledTriggerLayout? = requestedFor(info)): Boolean =
+        info != null && layoutInForceUsesScanner(info.trigger, asked ?: settingLayout, zebraHost, info.hasScanner)
 
     /** The trigger-layout setting. Before the settings collector's first
      *  value, the layout of [info]'s connect request (built from the saved

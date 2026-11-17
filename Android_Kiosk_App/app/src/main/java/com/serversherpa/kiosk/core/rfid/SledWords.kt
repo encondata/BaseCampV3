@@ -86,6 +86,13 @@ object SledWords {
         "If the sled drops, the app tries to reconnect four times over the next few minutes. Tap Stop, or turn " +
             "the reader off, to stop it."
 
+    // ── The full-screen sled flashes (task H7) and their RFID tab row ──
+
+    const val FLASH_DISCONNECTED = "Sled disconnected"
+    const val FLASH_READY = "Ready to scan"
+    const val ROW_SLED_FLASH = "Flash when the sled connects or drops"
+    const val HINT_SLED_FLASH = "A full-screen red “Sled disconnected” or green “Ready to scan”."
+
     // ── Buttons ──
 
     const val CONNECT = "Connect"

@@ -53,6 +53,7 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
         val labels = stringPreferencesKey("ss.kiosk.labels")
         val devMode = booleanPreferencesKey("ss.kiosk.devMode")
         val offerSledBothToEveryone = booleanPreferencesKey("ss.kiosk.offerSledBothToEveryone")
+        val sledFlash = booleanPreferencesKey("ss.kiosk.sledFlash")
         val apiUrl = stringPreferencesKey("ss.kiosk.apiUrl")
         val portalUrl = stringPreferencesKey("ss.kiosk.portalUrl")
         val serial = stringPreferencesKey("ss.kiosk.serial")
@@ -171,6 +172,12 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
      *  it is never part of a sled push. */
     val offerSledBothToEveryone: Flow<Boolean> = store.data.map { it[Keys.offerSledBothToEveryone] ?: false }
     suspend fun setOfferSledBothToEveryone(on: Boolean) { store.edit { it[Keys.offerSledBothToEveryone] = on } }
+
+    /** The RFID tab's "Flash when the sled connects or drops" (H7): on, a full-screen red "Sled
+     *  disconnected" or green "Ready to scan". Its own key, never part of [rfid], so it is never
+     *  part of a sled push. */
+    val sledFlash: Flow<Boolean> = store.data.map { it[Keys.sledFlash] ?: true }
+    suspend fun setSledFlash(on: Boolean) { store.edit { it[Keys.sledFlash] = on } }
 
     /** How the person signed in here last ("password" | "link" | "biometric"), as the last sign-in heartbeat
      *  told the portal; a restored session is that same sign-in. */
